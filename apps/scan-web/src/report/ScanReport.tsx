@@ -4,9 +4,13 @@ import type {
   ScanBundleV1,
   ScanFinding,
 } from "@grimodex/scan-contract";
+import { scanMessages } from "../i18n/scanMessages";
+import type { ScanLocale } from "../i18n/scanLocale";
 
 interface Props {
   bundle: ScanBundleV1;
+  locale?: ScanLocale;
+  writingLanguageSource?: "detected" | "selected";
   reportMode?: "private" | "demo";
   onOpenEditor?: () => void;
   onFeedback?: (
@@ -20,23 +24,20 @@ interface Props {
   editorBusy?: boolean;
 }
 
-function statusLabel(status: FindingStatus): string {
-  switch (status) {
-    case "candidate":
-      return "要確認";
-    case "confirmed":
-      return "確認済み";
-    case "rejected":
-      return "誤り";
-    case "intentional":
-      return "意図的";
-  }
-}
-
-function EvidenceList({ finding }: { finding: ScanFinding }) {
+function EvidenceList({
+  finding,
+  locale,
+}: {
+  finding: ScanFinding;
+  locale: ScanLocale;
+}) {
+  const copy = scanMessages(locale).report;
   return (
     <details className="scan-evidence">
-      <summary>根拠 {finding.evidence.length}件</summary>
+      <summary>
+        {copy.evidence} {finding.evidence.length}
+        {locale === "ja" ? "件" : ""}
+      </summary>
       <ul>
         {finding.evidence.map((evidence) => (
           <li key={`${evidence.sectionId}:${evidence.paragraphId}`}>
@@ -49,8 +50,26 @@ function EvidenceList({ finding }: { finding: ScanFinding }) {
   );
 }
 
+function countSummary(bundle: ScanBundleV1, locale: ScanLocale): string {
+  const characters = bundle.source.characterCount.toLocaleString(
+    locale === "ja" ? "ja-JP" : "en-US",
+  );
+  if (locale === "ja") {
+    return `${characters}文字 · ${bundle.source.sectionCount}章 · ${bundle.source.paragraphCount}段落`;
+  }
+  const sections = `${bundle.source.sectionCount} ${
+    bundle.source.sectionCount === 1 ? "section" : "sections"
+  }`;
+  const paragraphs = `${bundle.source.paragraphCount} ${
+    bundle.source.paragraphCount === 1 ? "paragraph" : "paragraphs"
+  }`;
+  return `${characters} characters · ${sections} · ${paragraphs}`;
+}
+
 export function ScanReport({
   bundle,
+  locale = "ja",
+  writingLanguageSource = "detected",
   reportMode = "private",
   onOpenEditor,
   onFeedback,
@@ -61,23 +80,30 @@ export function ScanReport({
   editorBusy,
 }: Props) {
   const [activeFinding, setActiveFinding] = useState<string | null>(null);
+  const copy = scanMessages(locale).report;
+  const writingLanguage =
+    bundle.source.language === "ja"
+      ? copy.japanese
+      : bundle.source.language === "en"
+        ? copy.english
+        : copy.other;
+  const writingLanguageMethod =
+    writingLanguageSource === "selected" ? copy.selected : copy.detected;
+
   return (
     <main className="scan-report" data-testid="scan-report">
       <header className="scan-report__header">
         <div>
           <p className="scan-eyebrow">
-            Grimodex Scan ·{" "}
-            {reportMode === "demo" ? "デモレポート" : "Private report"}
+            Grimodex Scan · {reportMode === "demo" ? copy.demo : copy.private}
           </p>
           <h1>{bundle.source.title}</h1>
           {reportMode === "demo" && (
-            <p className="scan-muted">
-              操作確認用のサンプルです。実際の原稿を解析した結果ではありません。
-            </p>
+            <p className="scan-muted">{copy.demoDescription}</p>
           )}
+          <p className="scan-muted">{countSummary(bundle, locale)}</p>
           <p className="scan-muted">
-            {bundle.source.characterCount.toLocaleString()}文字 ·{" "}
-            {bundle.source.sectionCount}章 · {bundle.source.paragraphCount}段落
+            {copy.writingLanguage}: {writingLanguage} ({writingLanguageMethod})
           </p>
         </div>
         <div className="scan-report__actions">
@@ -88,7 +114,7 @@ export function ScanReport({
               onClick={onOpenEditor}
               disabled={editorBusy}
             >
-              {editorBusy ? "Editorを準備中…" : "この作品を編集する"}
+              {editorBusy ? copy.preparingEditor : copy.edit}
             </button>
           )}
           {onPublishPublicReport && !publicReportId && (
@@ -98,7 +124,7 @@ export function ScanReport({
               onClick={onPublishPublicReport}
               disabled={publicReportBusy}
             >
-              {publicReportBusy ? "公開処理中…" : "公開レポートを作成"}
+              {publicReportBusy ? copy.publishing : copy.publish}
             </button>
           )}
           {publicReportId && onUnpublishPublicReport && (
@@ -108,14 +134,14 @@ export function ScanReport({
               onClick={onUnpublishPublicReport}
               disabled={publicReportBusy}
             >
-              {publicReportBusy ? "更新中…" : "公開を停止"}
+              {publicReportBusy ? copy.updating : copy.unpublish}
             </button>
           )}
         </div>
       </header>
       {publicReportId && (
         <p className="scan-muted">
-          公開レポートID: <code>{publicReportId}</code>
+          {copy.publicReportId}: <code>{publicReportId}</code>
         </p>
       )}
 
@@ -123,7 +149,7 @@ export function ScanReport({
         className="scan-card scan-overview"
         aria-labelledby="scan-overview-title"
       >
-        <h2 id="scan-overview-title">概要</h2>
+        <h2 id="scan-overview-title">{copy.overview}</h2>
         {bundle.summary.premise && <p>{bundle.summary.premise}</p>}
         <div className="scan-chip-row">
           {bundle.summary.genreCandidates.map((genre) => (
@@ -136,7 +162,7 @@ export function ScanReport({
 
       <div className="scan-report__grid">
         <section className="scan-card" aria-labelledby="scan-entities-title">
-          <h2 id="scan-entities-title">登場人物・舞台</h2>
+          <h2 id="scan-entities-title">{copy.entities}</h2>
           <div className="scan-entity-list">
             {bundle.entities.map((entity) => (
               <article
@@ -146,11 +172,14 @@ export function ScanReport({
               >
                 <div>
                   <strong>{entity.name}</strong>
-                  <span>{entity.type}</span>
+                  <span>{copy.entityTypes[entity.type] ?? entity.type}</span>
                 </div>
                 {entity.summary && <p>{entity.summary}</p>}
                 {entity.aliases.length > 0 && (
-                  <small>別名: {entity.aliases.join("、")}</small>
+                  <small>
+                    {copy.aliases}:{" "}
+                    {entity.aliases.join(locale === "ja" ? "、" : ", ")}
+                  </small>
                 )}
               </article>
             ))}
@@ -158,7 +187,7 @@ export function ScanReport({
         </section>
 
         <section className="scan-card" aria-labelledby="scan-relations-title">
-          <h2 id="scan-relations-title">関係</h2>
+          <h2 id="scan-relations-title">{copy.relations}</h2>
           <ul className="scan-list" data-testid="scan-relation-list">
             {bundle.relations.map((relation) => {
               const from =
@@ -181,7 +210,7 @@ export function ScanReport({
       </div>
 
       <section className="scan-card" aria-labelledby="scan-phases-title">
-        <h2 id="scan-phases-title">Phase候補</h2>
+        <h2 id="scan-phases-title">{copy.phases}</h2>
         <ol className="scan-phase-list">
           {bundle.phases.map((phase) => (
             <li key={phase.id}>
@@ -190,14 +219,17 @@ export function ScanReport({
                 <span>{Math.round(phase.confidence * 100)}%</span>
               </div>
               {phase.summary && <p>{phase.summary}</p>}
-              <small>根拠段落 {phase.anchors.length}件</small>
+              <small>
+                {copy.evidenceParagraphs} {phase.anchors.length}
+                {locale === "ja" ? "件" : ""}
+              </small>
             </li>
           ))}
         </ol>
       </section>
 
       <section className="scan-card" aria-labelledby="scan-findings-title">
-        <h2 id="scan-findings-title">設定・時系列の指摘</h2>
+        <h2 id="scan-findings-title">{copy.findings}</h2>
         <div className="scan-finding-list">
           {bundle.findings.map((finding) => (
             <article
@@ -215,7 +247,7 @@ export function ScanReport({
                 }
               >
                 <span className="scan-finding__status">
-                  {statusLabel(finding.status)}
+                  {copy.statuses[finding.status]}
                 </span>
                 <strong>{finding.title}</strong>
                 <span aria-hidden="true">
@@ -225,20 +257,20 @@ export function ScanReport({
               {activeFinding === finding.id && (
                 <div className="scan-finding__body">
                   <p>{finding.summary}</p>
-                  <EvidenceList finding={finding} />
+                  <EvidenceList finding={finding} locale={locale} />
                   {finding.status === "candidate" && (
                     <div className="scan-finding__actions">
                       <button
                         type="button"
                         onClick={() => onFeedback?.(finding.id, "intentional")}
                       >
-                        意図的として扱う
+                        {copy.intentional}
                       </button>
                       <button
                         type="button"
                         onClick={() => onFeedback?.(finding.id, "rejected")}
                       >
-                        誤りとして扱う
+                        {copy.rejected}
                       </button>
                     </div>
                   )}

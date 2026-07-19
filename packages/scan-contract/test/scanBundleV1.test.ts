@@ -95,6 +95,51 @@ describe("ScanBundleV1 contract", () => {
     }
   });
 
+  it("rejects chunk evidence excerpts that are not exact source substrings", () => {
+    const result = validateChunkExtraction(
+      {
+        schemaVersion: "grimodex-scan/chunk-extraction/1",
+        chunkId: "chunk:test",
+        sourceFingerprint: "sha256:test",
+        entities: [
+          {
+            type: "character",
+            name: "Alice",
+            aliases: [],
+            evidence: [
+              {
+                sectionId: "section:test",
+                paragraphId: "paragraph:test",
+                excerpt: "アリス",
+              },
+            ],
+            confidence: 0.9,
+          },
+        ],
+        relations: [],
+        events: [],
+      },
+      {
+        paragraphIds: ["paragraph:test"],
+        sectionIds: ["section:test"],
+        paragraphSectionIds: { "paragraph:test": "section:test" },
+        paragraphTexts: {
+          "paragraph:test": "Alice crossed the harbor.",
+        },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({
+          code: "excerpt-mismatch",
+          path: "/entities/0/evidence/0/excerpt",
+        }),
+      );
+    }
+  });
+
   it("rejects a chunk event whose section is outside the chunk", () => {
     const result = validateChunkExtraction(
       {

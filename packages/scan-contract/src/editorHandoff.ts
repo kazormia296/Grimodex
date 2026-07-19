@@ -2,8 +2,11 @@ import type { EditorSeedV1 } from "./scanBundleV1.js";
 import { parseEditorSeed, type ScanValidationError } from "./validate.js";
 
 const EDITOR_HANDOFF_FRAGMENT_KEY = "scan-import";
+const EDITOR_UI_LANGUAGE_FRAGMENT_KEY = "ui-language";
 export const EDITOR_HANDOFF_SCHEMA_VERSION =
   "grimodex/editor-handoff/1" as const;
+
+export type EditorUiLanguage = "ja" | "en";
 
 export interface HostedAiSessionV1 {
   scanId: string;
@@ -164,6 +167,7 @@ export function parseEditorHandoffEnvelope(
 export function buildEditorHandoffUrl(
   editorUrl: string,
   editorToken: string,
+  uiLanguage?: EditorUiLanguage,
 ): string {
   if (editorToken.length === 0) {
     throw new Error("Editor handoff token must not be empty");
@@ -171,8 +175,12 @@ export function buildEditorHandoffUrl(
 
   const url = new URL(editorUrl);
   url.search = "";
-  url.hash = new URLSearchParams({
+  const fragment = new URLSearchParams({
     [EDITOR_HANDOFF_FRAGMENT_KEY]: editorToken,
-  }).toString();
+  });
+  if (uiLanguage) {
+    fragment.set(EDITOR_UI_LANGUAGE_FRAGMENT_KEY, uiLanguage);
+  }
+  url.hash = fragment.toString();
   return url.toString();
 }

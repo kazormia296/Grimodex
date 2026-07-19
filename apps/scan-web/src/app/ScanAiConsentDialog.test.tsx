@@ -62,7 +62,9 @@ describe("ScanAiConsentDialog", () => {
     );
 
     expect(screen.getByText("Uploaded manuscript text")).toBeTruthy();
-    expect(screen.getByText(/Cloudflare Workers AI/)).toBeTruthy();
+    expect(
+      screen.getByText("Cloudflare Workers AI", { selector: "strong" }),
+    ).toBeTruthy();
     expect(screen.getByText(/Cloudflare R2/)).toBeTruthy();
     expect(screen.getByText(/non-content operational metadata/i)).toBeTruthy();
     expect(screen.getByText(/原稿 1日/)).toBeTruthy();
@@ -71,13 +73,17 @@ describe("ScanAiConsentDialog", () => {
     ).toBeTruthy();
     expect(screen.getByText(/not used for model training/i)).toBeTruthy();
     expect(
-      screen.getByRole("link", { name: "Grimodex プライバシー通知" }),
-    ).toHaveAttribute("href", "https://example.com/policy");
+      screen
+        .getByRole("link", { name: "Grimodex プライバシー通知" })
+        .getAttribute("href"),
+    ).toBe("https://example.com/policy");
     expect(
-      screen.getByRole("link", {
-        name: "Cloudflare Workers AI のデータ利用ポリシー",
-      }),
-    ).toHaveAttribute("href", "https://example.com/privacy");
+      screen
+        .getByRole("link", {
+          name: "Cloudflare Workers AI のデータ利用ポリシー",
+        })
+        .getAttribute("href"),
+    ).toBe("https://example.com/privacy");
   });
 
   it("renders the complete dialog chrome and named policy links in English", () => {
@@ -95,13 +101,17 @@ describe("ScanAiConsentDialog", () => {
     ).toBeTruthy();
     expect(screen.getByText("Data sent for processing")).toBeTruthy();
     expect(
-      screen.getByRole("link", { name: "Grimodex Privacy Notice" }),
-    ).toHaveAttribute("href", "https://example.com/policy");
+      screen
+        .getByRole("link", { name: "Grimodex Privacy Notice" })
+        .getAttribute("href"),
+    ).toBe("https://example.com/policy");
     expect(
-      screen.getByRole("link", {
-        name: "Cloudflare Workers AI data usage policy",
-      }),
-    ).toHaveAttribute("href", "https://example.com/privacy");
+      screen
+        .getByRole("link", {
+          name: "Cloudflare Workers AI data usage policy",
+        })
+        .getAttribute("href"),
+    ).toBe("https://example.com/privacy");
   });
 
   it("requires an explicit checkbox before returning the opaque consent id", () => {

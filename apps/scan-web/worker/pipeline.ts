@@ -29,7 +29,7 @@ import {
   ScanProviderError,
   type ChunkExtractionInput,
 } from "@grimodex/scan-prompts";
-import { DEFAULT_SCAN_AI_MODEL, type ScanEnv } from "./env";
+import { DEFAULT_SCAN_AI_MODEL, type R2ObjectLike, type ScanEnv } from "./env";
 import {
   createWorkersAiProvider,
   type ProviderCallHooks,
@@ -41,7 +41,7 @@ import {
 import type { ScanRepository } from "./repository";
 import { assertCurrentAiDataConsentIdentity } from "./ai/aiDataDisclosure";
 
-export const PIPELINE_VERSION = "scan-pipeline/2026-07-16.1";
+export const PIPELINE_VERSION = "scan-pipeline/2026-07-19.2";
 const JSON_CONTENT_TYPE = "application/json";
 const MAX_SOURCE_TEXT_BYTES = 16 * 1024 * 1024;
 const QUICK_CHUNK_CHARACTERS = 6_000;
@@ -78,6 +78,7 @@ export interface StoredExtractions {
 
 export interface MergeOutput {
   sourceFingerprint: string;
+  language?: "ja" | "en";
   entities: ReturnType<typeof mergeEntities>["entities"];
   relations: ReturnType<typeof mergeRelations>["relations"];
   events: ReturnType<typeof mergeEvents>["events"];
@@ -273,7 +274,13 @@ function detectLanguage(text: string): ScanLanguage {
   const latin = (text.match(/[A-Za-z]/g) ?? []).length;
   if (japanese > 0 && japanese >= latin) return "ja";
   if (latin > 0) return "en";
-  return "other";
+  return "ja";
+}
+
+function outputLanguage(
+  language: ScanLanguage | string | undefined,
+): "ja" | "en" {
+  return language === "en" ? "en" : "ja";
 }
 
 function excerpt(text: string, maxLength = 180): string {
@@ -283,14 +290,71 @@ function excerpt(text: string, maxLength = 180): string {
     : `${compact.slice(0, maxLength - 1)}…`;
 }
 
+function evidenceExcerpt(text: string, maxLength = 180): string {
+  return text.trim().slice(0, maxLength);
+}
+
 function evidenceFor(
   paragraph: NormalizedDocument["paragraphs"][number],
 ): EvidenceRef {
   return {
     sectionId: paragraph.sectionId,
     paragraphId: paragraph.id,
-    excerpt: excerpt(paragraph.text),
+    excerpt: evidenceExcerpt(paragraph.text),
   };
+}
+
+const DETERMINISTIC_COPY = {
+  ja: {
+    insufficientEvidence: "候補の証拠だけでは同一人物・同一対象と断定しない",
+    frontierFailed:
+      "フロンティア判定を完了できなかったため、統合を保留しました。",
+    unresolvedRelationTitle: "関係を確定できません",
+    unresolvedRelationSummary:
+      "候補名が一意に解決できなかったため、手動確認が必要です。",
+    unresolvedEventTitle: "イベントを確定できません",
+    unresolvedEventSummary:
+      "登場人物の対応付けが一意でないため、手動確認が必要です。",
+    unresolvedPhaseTitle: "フェーズを確定できません",
+    unresolvedPhaseSummary:
+      "フェーズに対応するエンティティを一意に解決できませんでした。",
+    pendingMergeTitle: "同名候補の統合を保留しました",
+    strengthTitle: "構造化可能な本文",
+    riskTitle: "要確認の候補",
+  },
+  en: {
+    insufficientEvidence:
+      "The candidate evidence is insufficient to conclude that the names refer to the same character or object.",
+    frontierFailed:
+      "Frontier adjudication could not be completed, so the merge remains pending.",
+    unresolvedRelationTitle: "Could not resolve relation",
+    unresolvedRelationSummary:
+      "Candidate names could not be resolved uniquely; manual review is required.",
+    unresolvedEventTitle: "Could not resolve event",
+    unresolvedEventSummary:
+      "The character mapping is ambiguous; manual review is required.",
+    unresolvedPhaseTitle: "Could not resolve story phase",
+    unresolvedPhaseSummary:
+      "Entities for this story phase could not be resolved uniquely.",
+    pendingMergeTitle: "Same-name merge remains pending",
+    strengthTitle: "Structured manuscript",
+    riskTitle: "Candidates requiring review",
+  },
+} as const;
+
+function detectedSectionsSummary(language: "ja" | "en", count: number): string {
+  return language === "en"
+    ? `Detected ${count} section${count === 1 ? "" : "s"}.`
+    : `${count}セクションを検出しました。`;
+}
+
+function pendingCandidatesSummary(
+  language: "ja" | "en",
+  count: number,
+): string {
+  return language === "en"
+    ? `${count} candidate${count === 1 ? "" : "s"} remain${count === 1 ? "s" : ""} pending.`
+    : `${count}件の候補を保留しています。`;
 }
 
 function candidateNames(text: string): string[] {
@@ -530,17 +594,20 @@ function billableProviderHooks(
   };
 }
 
-async function readObjectText(
-  env: ScanEnv,
-  objectKey: string,
-): Promise<string> {
-  const object = await env.SCAN_BUCKET.get(objectKey);
+async function decodeObjectText(object: R2ObjectLike | null): Promise<string> {
   if (!object?.body) throw new Error("required scan artifact is missing");
   const text = await new Response(object.body).text();
   if (new TextEncoder().encode(text).byteLength > MAX_SOURCE_TEXT_BYTES) {
     throw new Error("source artifact exceeds the processing limit");
   }
   return text;
+}
+
+async function readObjectText(
+  env: ScanEnv,
+  objectKey: string,
+): Promise<string> {
+  return decodeObjectText(await env.SCAN_BUCKET.get(objectKey));
 }
 
 async function readJson<T>(env: ScanEnv, objectKey: string): Promise<T> {
@@ -711,11 +778,16 @@ export async function normalizeScanSource(
   const upload = await repository.getUploadIntent(scan.uploadId);
   if (!upload || upload.status !== "consumed")
     throw new Error("source upload is not consumed");
-  const text = await readObjectText(env, upload.sourceKey);
+  const sourceObject = await env.SCAN_BUCKET.get(upload.sourceKey);
+  const text = await decodeObjectText(sourceObject);
+  const sourceLanguage = sourceObject?.customMetadata?.sourceLanguage;
   const input: SourceDocumentInput = {
     title: sourceTitle(upload.filename),
     text,
-    language: detectLanguage(text),
+    language:
+      sourceLanguage === "ja" || sourceLanguage === "en"
+        ? sourceLanguage
+        : detectLanguage(text),
   };
   const document = normalizeDocument(input);
   const objectKey = `artifacts/${scanId}/source-document.json`;
@@ -1005,6 +1077,7 @@ export async function extractScanChunks(
       };
     });
     const input: ChunkExtractionInput = {
+      language: outputLanguage(document.source.language),
       chunkId: chunk.id,
       sourceFingerprint: chunkData.sourceFingerprint,
       text: chunk.text,
@@ -1237,6 +1310,7 @@ export async function mergeScanExtractions(
   );
   const output: MergeOutput = {
     sourceFingerprint: extractions.sourceFingerprint,
+    language: outputLanguage(document.source.language),
     entities: entityResult.entities,
     relations: relationResult.relations,
     events: eventResult.events,
@@ -1272,6 +1346,8 @@ export async function adjudicateScan(
     env,
     `artifacts/${scanId}/merge.json`,
   );
+  const language = outputLanguage(merge.language);
+  const copy = DETERMINISTIC_COPY[language];
   const providerName = configuredFrontierProvider(env);
   const provider =
     env.SCAN_FRONTIER_ENABLED === "true"
@@ -1291,7 +1367,7 @@ export async function adjudicateScan(
         ambiguityId: input.ambiguityId,
         entityIds: merge.ambiguityEntityIds[input.ambiguityId] ?? [],
         decision: "uncertain",
-        rationale: "候補の証拠だけでは同一人物・同一対象と断定しない",
+        rationale: copy.insufficientEvidence,
         provider: "deterministic-fallback",
         model: "deterministic-adjudicator/1",
       });
@@ -1322,6 +1398,7 @@ export async function adjudicateScan(
     let result: AdjudicationOutput;
     try {
       const providerResult = await provider.adjudicate({
+        language,
         sourceFingerprint: merge.sourceFingerprint,
         ambiguityId: input.ambiguityId,
         evidenceParagraphs: input.evidenceParagraphs,
@@ -1340,8 +1417,7 @@ export async function adjudicateScan(
         ambiguityId: input.ambiguityId,
         entityIds: merge.ambiguityEntityIds[input.ambiguityId] ?? [],
         decision: "uncertain",
-        rationale:
-          "フロンティア判定を完了できなかったため、統合を保留しました。",
+        rationale: copy.frontierFailed,
         provider: "deterministic-fallback",
         model: "deterministic-adjudicator/1",
       };
@@ -1390,6 +1466,7 @@ function findingsFor(
   merge: MergeOutput,
   adjudication: readonly AdjudicationOutput[],
 ): ScanFinding[] {
+  const copy = DETERMINISTIC_COPY[outputLanguage(document.source.language)];
   const firstEvidence = document.paragraphs[0]
     ? [evidenceFor(document.paragraphs[0])]
     : [];
@@ -1428,8 +1505,8 @@ function findingsFor(
       ),
       kind: "ambiguity",
       status: "candidate",
-      title: `関係を確定できません: ${candidate.fromName} → ${candidate.toName}`,
-      summary: "候補名が一意に解決できなかったため、手動確認が必要です。",
+      title: `${copy.unresolvedRelationTitle}: ${candidate.fromName} → ${candidate.toName}`,
+      summary: copy.unresolvedRelationSummary,
       evidence: candidate.evidence,
     });
   });
@@ -1438,8 +1515,8 @@ function findingsFor(
       id: findingId("event", `${candidate.title}:${index}`),
       kind: "timeline",
       status: "candidate",
-      title: `イベントを確定できません: ${candidate.title}`,
-      summary: "登場人物の対応付けが一意でないため、手動確認が必要です。",
+      title: `${copy.unresolvedEventTitle}: ${candidate.title}`,
+      summary: copy.unresolvedEventSummary,
       evidence: candidate.evidence,
     });
   });
@@ -1448,8 +1525,8 @@ function findingsFor(
       id: findingId("phase", `${candidate.title}:${index}`),
       kind: "ambiguity",
       status: "candidate",
-      title: `フェーズを確定できません: ${candidate.title}`,
-      summary: "フェーズに対応するエンティティを一意に解決できませんでした。",
+      title: `${copy.unresolvedPhaseTitle}: ${candidate.title}`,
+      summary: copy.unresolvedPhaseSummary,
       evidence: candidate.anchors,
     });
   });
@@ -1459,7 +1536,7 @@ function findingsFor(
       id: findingId("ambiguity", item.ambiguityId),
       kind: "ambiguity",
       status: "candidate",
-      title: "同名候補の統合を保留しました",
+      title: copy.pendingMergeTitle,
       summary: item.rationale,
       evidence: ambiguityEvidence.get(item.ambiguityId) ?? firstEvidence,
     });
@@ -1518,6 +1595,8 @@ export async function buildScanArtifacts(
   );
   const firstParagraph = document.paragraphs[0];
   const firstEvidence = firstParagraph ? [evidenceFor(firstParagraph)] : [];
+  const language = outputLanguage(document.source.language);
+  const copy = DETERMINISTIC_COPY[language];
   const bundle = buildScanBundle({
     document,
     entities: resolved.entities,
@@ -1533,8 +1612,11 @@ export async function buildScanArtifacts(
         document.sections.length > 0
           ? [
               {
-                title: "構造化可能な本文",
-                summary: `${document.sections.length}セクションを検出しました。`,
+                title: copy.strengthTitle,
+                summary: detectedSectionsSummary(
+                  language,
+                  document.sections.length,
+                ),
                 evidence: firstEvidence,
               },
             ]
@@ -1543,8 +1625,8 @@ export async function buildScanArtifacts(
         findings.length > 0
           ? [
               {
-                title: "要確認の候補",
-                summary: `${findings.length}件の候補を保留しています。`,
+                title: copy.riskTitle,
+                summary: pendingCandidatesSummary(language, findings.length),
                 evidence: firstEvidence,
               },
             ]

@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { AiDataDisclosureV1 } from "@grimodex/scan-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScanApiClient } from "../api/scanApiClient";
@@ -166,6 +172,111 @@ describe("ScanWebApp report ownership", () => {
     ).toBeTruthy();
     expect(localStorage.getItem(SCAN_LOCALE_STORAGE_KEY)).toBe("en");
     expect(document.documentElement.lang).toBe("en");
+  });
+
+  it("re-reads browser languages when a manual language returns to automatic", async () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    const languages = vi
+      .spyOn(window.navigator, "languages", "get")
+      .mockReturnValue(["ja-JP"]);
+    render(<ScanWebApp />);
+
+    languages.mockReturnValue(["en-US"]);
+    fireEvent.change(screen.getByRole("combobox", { name: "表示言語" }), {
+      target: { value: "auto" },
+    });
+
+    expect(
+      await screen.findByRole("heading", { name: "Upload your manuscript" }),
+    ).toBeTruthy();
+    expect(localStorage.getItem(SCAN_LOCALE_STORAGE_KEY)).toBe("auto");
+  });
+
+  it("does not mix a stale disclosure into the newly selected UI language", async () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    let resolveJapanese: ((value: AiDataDisclosureV1) => void) | undefined;
+    const japaneseDisclosure = {
+      ...disclosure,
+      usagePolicy: {
+        ...disclosure.usagePolicy,
+        summary: "古い日本語の開示です。",
+      },
+    };
+    const englishDisclosure = {
+      ...disclosure,
+      usagePolicy: {
+        ...disclosure.usagePolicy,
+        summary: "Current English disclosure.",
+      },
+    };
+    const getDisclosure = vi
+      .spyOn(ScanApiClient.prototype, "getAiDisclosure")
+      .mockImplementation((_route, requestedLocale) => {
+        if (requestedLocale === "ja") {
+          return new Promise((resolve) => {
+            resolveJapanese = resolve;
+          });
+        }
+        return Promise.resolve(englishDisclosure);
+      });
+    render(<ScanWebApp />);
+
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [new File(["本文"], "story.txt", { type: "text/plain" })],
+      },
+    });
+    await waitFor(() =>
+      expect(getDisclosure).toHaveBeenCalledWith("scan", "ja"),
+    );
+
+    fireEvent.change(screen.getByRole("combobox", { name: "表示言語" }), {
+      target: { value: "en" },
+    });
+    await screen.findByRole("dialog", { name: "Review before uploading" });
+    expect(screen.getByText("Current English disclosure.")).toBeTruthy();
+
+    resolveJapanese?.(japaneseDisclosure);
+    await Promise.resolve();
+    expect(screen.queryByText("古い日本語の開示です。")).toBeNull();
+    expect(getDisclosure).toHaveBeenCalledWith("scan", "en");
+  });
+
+  it("shows a stable Japanese message instead of a raw network error", async () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    vi.spyOn(ScanApiClient.prototype, "getAiDisclosure").mockRejectedValue(
+      new TypeError("Failed to fetch raw upstream text"),
+    );
+    render(<ScanWebApp />);
+
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [new File(["本文"], "story.txt", { type: "text/plain" })],
+      },
+    });
+
+    expect(
+      await screen.findAllByText(
+        "Scanサービスと通信できませんでした。接続を確認して、もう一度お試しください。",
+      ),
+    ).toHaveLength(2);
+    expect(screen.queryByText(/Failed to fetch raw upstream text/)).toBeNull();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "表示言語" }), {
+      target: { value: "en" },
+    });
+    expect(
+      screen.getAllByText(
+        "Scan could not connect to the service. Check your connection and try again.",
+      ),
+    ).toHaveLength(2);
   });
 
   it("passes a manual manuscript language override into the upload boundary", async () => {

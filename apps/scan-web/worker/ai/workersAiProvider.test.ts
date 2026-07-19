@@ -61,6 +61,39 @@ describe("Workers AI structured provider", () => {
     expect(binding.run).toHaveBeenCalledOnce();
   });
 
+  it("repairs once and then rejects evidence excerpts outside the source paragraph", async () => {
+    const invalidExcerpt = JSON.stringify({
+      ...JSON.parse(output),
+      entities: [
+        {
+          type: "character",
+          name: "葵",
+          aliases: [],
+          evidence: [
+            {
+              sectionId: "section:test",
+              paragraphId: "paragraph:test",
+              excerpt: "Aoi walked to the lighthouse.",
+            },
+          ],
+          confidence: 0.9,
+        },
+      ],
+    });
+    const binding = {
+      run: vi.fn(async () => ({ response: invalidExcerpt })),
+    };
+
+    await expect(provider(binding).extractChunk(input)).rejects.toMatchObject({
+      code: "schema-invalid",
+      retryable: false,
+    });
+    expect(binding.run).toHaveBeenCalledTimes(2);
+    expect(binding.run.mock.calls[1]?.[1].messages[1]?.content).toContain(
+      "excerpt",
+    );
+  });
+
   it("enforces the model limit against structured paragraph text", async () => {
     const binding = { run: vi.fn(async () => ({ response: output })) };
 

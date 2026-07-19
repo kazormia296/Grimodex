@@ -1,9 +1,15 @@
 import {
   parseEditorHandoffEnvelope,
   type EditorHandoffEnvelopeV1,
+  type EditorUiLanguage,
 } from "@grimodex/scan-contract";
 
 const EDITOR_HANDOFF_FRAGMENT_KEY = "scan-import";
+const EDITOR_UI_LANGUAGE_FRAGMENT_KEY = "ui-language";
+
+export type ConsumedEditorSeedHandoff = EditorHandoffEnvelopeV1 & {
+  uiLanguage?: EditorUiLanguage;
+};
 
 export interface ConsumeEditorSeedHandoffOptions {
   href: string;
@@ -23,11 +29,16 @@ export async function consumeEditorSeedHandoff({
   apiBaseUrl,
   fetchImpl,
   replaceHistory,
-}: ConsumeEditorSeedHandoffOptions): Promise<EditorHandoffEnvelopeV1 | null> {
+}: ConsumeEditorSeedHandoffOptions): Promise<ConsumedEditorSeedHandoff | null> {
   const editorUrl = new URL(href);
   const fragment = new URLSearchParams(editorUrl.hash.slice(1));
   const editorToken = fragment.get(EDITOR_HANDOFF_FRAGMENT_KEY);
   if (editorToken === null) return null;
+  const uiLanguageValue = fragment.get(EDITOR_UI_LANGUAGE_FRAGMENT_KEY);
+  const uiLanguage: EditorUiLanguage | undefined =
+    uiLanguageValue === "ja" || uiLanguageValue === "en"
+      ? uiLanguageValue
+      : undefined;
 
   editorUrl.hash = "";
   replaceHistory(editorUrl.toString());
@@ -57,5 +68,5 @@ export async function consumeEditorSeedHandoff({
   if (!parsed.ok) {
     throw new Error("Editor handoff response is invalid");
   }
-  return parsed.value;
+  return uiLanguage ? { ...parsed.value, uiLanguage } : parsed.value;
 }

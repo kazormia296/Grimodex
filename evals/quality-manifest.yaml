@@ -30,6 +30,7 @@ requirements:
       - src-tauri/src/commands/post_effect.rs
     evaluatedBy:
       - eval-prompt-post-effect-json
+      - eval-prompt-scan-language
       - eval-route-search-codex
       - eval-route-search-scenes
       - eval-route-list-chapters
@@ -140,6 +141,7 @@ requirements:
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
       - scripts/quality/run-related-scenes-heavy.mjs
     evaluatedBy:
+      - eval-prompt-scan-language
       - eval-ground-search-events
       - eval-ground-get-scene
       - eval-ground-foreshadow
@@ -167,6 +169,7 @@ requirements:
       - src/features/codex/candidateJudgment.live.test.ts
       - src/features/codex/codexYomi.live.test.ts
     evaluatedBy:
+      - eval-prompt-scan-language
       - eval-artifact-create-event
       - eval-artifact-update-codex
       - eval-policy-create-snippet

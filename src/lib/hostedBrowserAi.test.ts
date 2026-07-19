@@ -88,6 +88,7 @@ describe("hosted browser AI", () => {
     const hosted = createHostedBrowserAi({
       apiBaseUrl: "https://scan.example/",
       session,
+      locale: "ja",
       fetchImpl,
       requestConsent,
       now: () => Date.parse("2026-07-19T00:00:00.000Z"),
@@ -107,6 +108,9 @@ describe("hosted browser AI", () => {
     );
 
     expect(requestConsent).toHaveBeenCalledWith(disclosure);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      "https://scan.example/api/v1/ai-disclosures/hosted-editor?locale=ja",
+    );
     expect(result).toEqual({
       blocks: [{ type: "text", content: "生成結果" }],
       stopReason: "end_turn",
@@ -148,6 +152,41 @@ describe("hosted browser AI", () => {
       }),
     ).rejects.toThrow("Hosted AI session has expired");
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("resolves the disclosure locale at authorization time", async () => {
+    let locale: "ja" | "en" = "ja";
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json(disclosure),
+    );
+    const hosted = createHostedBrowserAi({
+      apiBaseUrl: "https://scan.example",
+      session,
+      locale: "ja",
+      getLocale: async () => locale,
+      fetchImpl,
+      requestConsent: vi.fn().mockResolvedValue(undefined),
+      now: () => Date.parse("2026-07-19T00:00:00.000Z"),
+    });
+
+    await hosted.authorizeAiRequest({
+      operation: "chat",
+      provider: "openrouter",
+      model: "grimodex-hosted",
+      hasApiKey: false,
+    });
+    locale = "en";
+    await hosted.authorizeAiRequest({
+      operation: "chat",
+      provider: "openrouter",
+      model: "grimodex-hosted",
+      hasApiKey: false,
+    });
+
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "https://scan.example/api/v1/ai-disclosures/hosted-editor?locale=ja",
+      "https://scan.example/api/v1/ai-disclosures/hosted-editor?locale=en",
+    ]);
   });
 
   it("rejects an invalid disclosure without opening the consent dialog", async () => {

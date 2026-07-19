@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildEditorHandoffUrl,
   type AiDataDisclosureV1,
@@ -8,6 +8,20 @@ import { ScanReport } from "../report/ScanReport";
 import { ScanApiClient, type ScanHandle } from "../api/scanApiClient";
 import { ScanAiConsentDialog } from "./ScanAiConsentDialog";
 import { TurnstileWidget } from "./TurnstileWidget";
+import { scanMessages } from "../i18n/scanMessages";
+import {
+  classifyScanError,
+  scanErrorMessageForKind,
+  type ScanErrorKind,
+} from "../i18n/scanErrors";
+import {
+  currentBrowserLanguages,
+  readScanLocalePreference,
+  resolveScanLocale,
+  writeScanLocalePreference,
+  type ScanLocalePreference,
+  type ScanWritingLanguagePreference,
+} from "../i18n/scanLocale";
 
 export interface ScanWebAppProps {
   /** Optional short-lived entitlement from the authenticated host. */
@@ -29,6 +43,48 @@ export function rollbackFeedbackOverride(
 
 export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
   const demoBundle = useMemo(() => createMinimalJaBundle(), []);
+  const [localePreference, setLocalePreference] =
+    useState<ScanLocalePreference>(() =>
+      readScanLocalePreference(
+        typeof localStorage === "undefined" ? null : localStorage,
+      ),
+    );
+  const [browserLanguages, setBrowserLanguages] = useState(() =>
+    currentBrowserLanguages(),
+  );
+  const locale = useMemo(
+    () => resolveScanLocale(localePreference, browserLanguages),
+    [browserLanguages, localePreference],
+  );
+  const copy = scanMessages(locale);
+  const [writingLanguage, setWritingLanguage] =
+    useState<ScanWritingLanguagePreference>("auto");
+  const [reportWritingLanguageSource, setReportWritingLanguageSource] =
+    useState<"detected" | "selected">("detected");
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
+  useEffect(() => {
+    if (localePreference !== "auto") return;
+    const handleLanguageChange = () =>
+      setBrowserLanguages(currentBrowserLanguages());
+    window.addEventListener("languagechange", handleLanguageChange);
+    return () =>
+      window.removeEventListener("languagechange", handleLanguageChange);
+  }, [localePreference]);
+
+  const changeLocalePreference = (preference: ScanLocalePreference) => {
+    writeScanLocalePreference(
+      preference,
+      typeof localStorage === "undefined" ? null : localStorage,
+    );
+    if (preference === "auto") {
+      setBrowserLanguages(currentBrowserLanguages());
+    }
+    setLocalePreference(preference);
+  };
   const turnstileSiteKey =
     import.meta.env.VITE_SCAN_TURNSTILE_SITE_KEY?.trim() ?? "";
   const turnstileRequired =
@@ -58,7 +114,9 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
   const [scanState, setScanState] = useState<"idle" | "running" | "error">(
     "idle",
   );
-  const [scanError, setScanError] = useState<string>();
+  const [scanError, setScanError] = useState<
+    ScanErrorKind | "botVerification"
+  >();
   const [publicReportId, setPublicReportId] = useState<string>();
   const [publicReportBusy, setPublicReportBusy] = useState(false);
   const [editorLaunchBusy, setEditorLaunchBusy] = useState(false);
@@ -75,6 +133,11 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
     Boolean(apiClient) &&
     (!turnstileRequired || Boolean(turnstileToken)) &&
     !disclosureBusy;
+  const scanErrorMessage = scanError
+    ? scanError === "botVerification"
+      ? copy.botVerificationRequired
+      : scanErrorMessageForKind(scanError, locale)
+    : undefined;
   const activeBundle = useMemo(() => {
     const source = liveBundle ?? (demoMode ? demoBundle : null);
     if (!source) return null;
@@ -102,37 +165,53 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
         const editorToken = await apiClient.createEditorToken(scanHandle);
         if (generation !== remoteGenerationRef.current) return;
         window.location.assign(
-          buildEditorHandoffUrl(editorBaseUrl, editorToken.token),
+          buildEditorHandoffUrl(editorBaseUrl, editorToken.token, locale),
         );
         return;
       }
       window.location.assign(editorBaseUrl);
     } catch (cause) {
-      setScanError(cause instanceof Error ? cause.message : String(cause));
+      setScanError(classifyScanError(cause));
     } finally {
       setEditorLaunchBusy(false);
     }
   };
-  const requestScanConsent = async (file: File) => {
+  const requestScanConsent = (file: File) => {
     if (!apiClient) return;
     if (turnstileRequired && !turnstileToken) {
       setScanState("error");
-      setScanError("Bot verification is required before scanning.");
+      setScanError("botVerification");
       return;
     }
-    setDisclosureBusy(true);
+    setScanState("idle");
     setScanError(undefined);
-    try {
-      const disclosure = await apiClient.getAiDisclosure("scan");
-      setPendingUpload(file);
-      setScanDisclosure(disclosure);
-    } catch (cause) {
-      setScanState("error");
-      setScanError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setDisclosureBusy(false);
-    }
+    setScanDisclosure(undefined);
+    setPendingUpload(file);
   };
+  useEffect(() => {
+    if (!apiClient || !pendingUpload) return;
+    let active = true;
+    setDisclosureBusy(true);
+    setScanDisclosure(undefined);
+    setScanError(undefined);
+    void apiClient
+      .getAiDisclosure("scan", locale)
+      .then((disclosure) => {
+        if (active) setScanDisclosure(disclosure);
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setPendingUpload(undefined);
+        setScanState("error");
+        setScanError(classifyScanError(cause));
+      })
+      .finally(() => {
+        if (active) setDisclosureBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [apiClient, locale, pendingUpload]);
   const startScan = async (file: File, consentId: string) => {
     if (!apiClient) return;
     const generation = remoteGenerationRef.current + 1;
@@ -151,12 +230,17 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
         file,
         canUseFull ? scanMode : "quick",
         consentId,
+        writingLanguage,
       );
       if (generation !== remoteGenerationRef.current) return;
       const status = await apiClient.waitForCompletion(handle);
       if (generation !== remoteGenerationRef.current) return;
       if (status.status !== "completed")
-        throw new Error(`Scan ended with ${status.status}`);
+        throw new Error(
+          locale === "ja"
+            ? `Scanは ${status.status} で終了しました`
+            : `Scan ended with ${status.status}`,
+        );
       const nextBundle = await apiClient.getReport(handle);
       if (generation !== remoteGenerationRef.current) return;
       // Commit remote ownership as one render state only after every required
@@ -164,21 +248,18 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
       // handle with the prior report (or the demo fixture).
       setLiveBundle(nextBundle);
       setScanHandle(handle);
+      setReportWritingLanguageSource(
+        writingLanguage === "auto" ? "detected" : "selected",
+      );
       setScanState("idle");
     } catch (cause) {
       if (generation !== remoteGenerationRef.current) return;
       setScanState("error");
-      setScanError(cause instanceof Error ? cause.message : String(cause));
+      setScanError(classifyScanError(cause));
     }
   };
   const publishPublicReport = async () => {
-    if (
-      !apiClient ||
-      !scanHandle ||
-      !window.confirm(
-        "本文の根拠と非公開メタデータを除いたレポートを公開しますか？",
-      )
-    )
+    if (!apiClient || !scanHandle || !window.confirm(copy.publishConfirmation))
       return;
     setPublicReportBusy(true);
     const generation = remoteGenerationRef.current;
@@ -188,7 +269,7 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
       setPublicReportId(published.publicReportId);
     } catch (cause) {
       if (generation !== remoteGenerationRef.current) return;
-      setScanError(cause instanceof Error ? cause.message : String(cause));
+      setScanError(classifyScanError(cause));
     } finally {
       if (generation === remoteGenerationRef.current)
         setPublicReportBusy(false);
@@ -204,7 +285,7 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
       setPublicReportId(undefined);
     } catch (cause) {
       if (generation !== remoteGenerationRef.current) return;
-      setScanError(cause instanceof Error ? cause.message : String(cause));
+      setScanError(classifyScanError(cause));
     } finally {
       if (generation === remoteGenerationRef.current)
         setPublicReportBusy(false);
@@ -218,28 +299,56 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
           <span className="scan-brand__wordmark">Grimodex</span>
           <span className="scan-brand__product">Scan</span>
         </a>
-        <nav aria-label="Grimodex products">
+        <nav aria-label={copy.productsNavigation}>
           <a className="scan-editor-link" href={editorBaseUrl}>
-            Editorを単体で開く
+            {copy.openStandaloneEditor}
           </a>
         </nav>
       </header>
-      <section className="scan-toolbar" aria-label="Scan workflow">
+      <section className="scan-toolbar" aria-label={copy.workflow}>
+        <label>
+          {copy.interfaceLanguage}
+          <select
+            value={localePreference}
+            onChange={(event) =>
+              changeLocalePreference(event.target.value as ScanLocalePreference)
+            }
+          >
+            <option value="auto">{copy.interfaceAuto}</option>
+            <option value="ja">{copy.interfaceJapanese}</option>
+            <option value="en">{copy.interfaceEnglish}</option>
+          </select>
+        </label>
+        <label>
+          {copy.writingLanguage}
+          <select
+            value={writingLanguage}
+            onChange={(event) =>
+              setWritingLanguage(
+                event.target.value as ScanWritingLanguagePreference,
+              )
+            }
+            disabled={scanState === "running"}
+          >
+            <option value="auto">{copy.writingAuto}</option>
+            <option value="ja">{copy.writingJapanese}</option>
+            <option value="en">{copy.writingEnglish}</option>
+          </select>
+        </label>
         {apiClient && turnstileSiteKey && (
           <TurnstileWidget
             siteKey={turnstileSiteKey}
             resetKey={turnstileResetKey}
+            locale={locale}
             onToken={handleTurnstileToken}
             onError={handleTurnstileError}
           />
         )}
         {apiClient && turnstileRequired && !turnstileSiteKey && (
-          <span className="scan-error">
-            Turnstile site key is not configured.
-          </span>
+          <span className="scan-error">{copy.turnstileMissing}</span>
         )}
         <label>
-          Scan mode
+          {copy.scanMode}
           <select
             value={canUseFull ? scanMode : "quick"}
             onChange={(event) =>
@@ -247,35 +356,35 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
             }
             disabled={scanState === "running"}
           >
-            <option value="quick">Quick</option>
-            {canUseFull && <option value="full">Full</option>}
+            <option value="quick">{copy.quickMode}</option>
+            {canUseFull && <option value="full">{copy.fullMode}</option>}
           </select>
         </label>
         <label className="scan-upload-control">
-          Upload .txt / .md
+          {copy.upload}
           <input
             type="file"
             accept=".txt,.md,.markdown,text/plain,text/markdown"
             disabled={!canUpload || scanState === "running" || publicReportBusy}
             onChange={(event) => {
               const file = event.currentTarget.files?.[0];
-              if (file) void requestScanConsent(file);
+              if (file) requestScanConsent(file);
               event.currentTarget.value = "";
             }}
           />
         </label>
-        {!apiClient && (
-          <span className="scan-muted">
-            Demo fixture（VITE_SCAN_API_BASE_URL未設定）
-          </span>
+        {!apiClient && <span className="scan-muted">{copy.demoFixture}</span>}
+        {scanState === "running" && <span>{copy.running}</span>}
+        {disclosureBusy && <span>{copy.policyLoading}</span>}
+        {scanErrorMessage && (
+          <span className="scan-error">{scanErrorMessage}</span>
         )}
-        {scanState === "running" && <span>Scan実行中…</span>}
-        {disclosureBusy && <span>AI利用ポリシーを確認中…</span>}
-        {scanError && <span className="scan-error">{scanError}</span>}
       </section>
       {activeBundle ? (
         <ScanReport
           bundle={activeBundle}
+          locale={locale}
+          writingLanguageSource={reportWritingLanguageSource}
           reportMode={demoMode ? "demo" : "private"}
           onOpenEditor={
             scanState === "running" || publicReportBusy
@@ -318,21 +427,22 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
                             previousStatus,
                           ),
                         );
-                        setScanError(
-                          cause instanceof Error
-                            ? cause.message
-                            : String(cause),
-                        );
+                        setScanError(classifyScanError(cause));
                       });
                 }
           }
         />
       ) : (
-        <ScanReportState state={scanState} error={scanError} />
+        <ScanReportState
+          state={scanState}
+          error={scanErrorMessage}
+          locale={locale}
+        />
       )}
       {scanDisclosure && pendingUpload && (
         <ScanAiConsentDialog
           disclosure={scanDisclosure}
+          locale={locale}
           onAccept={(consentId) => {
             const file = pendingUpload;
             setPendingUpload(undefined);
@@ -352,32 +462,22 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
 function ScanReportState({
   state,
   error,
+  locale,
 }: {
   state: "idle" | "running" | "error";
   error?: string;
+  locale: "ja" | "en";
 }) {
+  const copy = scanMessages(locale);
   const content =
     state === "running"
-      ? {
-          label: "解析中",
-          title: "原稿を解析しています…",
-          description:
-            "解析が完了するまで、この画面を開いたままお待ちください。",
-        }
+      ? copy.state.running
       : state === "error"
         ? {
-            label: "エラー",
-            title: "Scanを完了できませんでした",
-            description:
-              error ??
-              "解析結果は作成されていません。内容を確認して、もう一度お試しください。",
+            ...copy.state.error,
+            description: error ?? copy.state.error.description,
           }
-        : {
-            label: "準備完了",
-            title: "原稿をアップロードしてください",
-            description:
-              "まだ解析結果はありません。.txt または .md の原稿を選ぶとScanを開始できます。",
-          };
+        : copy.state.idle;
 
   return (
     <main

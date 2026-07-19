@@ -4,6 +4,7 @@ import {
   parseHostedEditorAiAgentRequest,
   parseHostedEditorAiResponse,
   type AiDataDisclosureV1,
+  type EditorUiLanguage,
   type HostedEditorAiAgentRequest,
   type HostedEditorAiMessage,
   type HostedAiSessionV1,
@@ -28,6 +29,11 @@ const MAX_CONTEXT_CHARS = HOSTED_EDITOR_AI_LIMITS.maxContextChars;
 export interface HostedBrowserAiOptions {
   apiBaseUrl: string;
   session: HostedAiSessionV1;
+  locale?: EditorUiLanguage;
+  getLocale?: () =>
+    | EditorUiLanguage
+    | undefined
+    | Promise<EditorUiLanguage | undefined>;
   fetchImpl?: typeof fetch;
   requestConsent?: (disclosure: AiDataDisclosureView) => Promise<void>;
   now?: () => number;
@@ -226,8 +232,12 @@ export function createHostedBrowserAi(
     _request: BrowserAiAuthorizationRequest,
   ): Promise<void> {
     requireCurrentSession();
+    const locale = (await options.getLocale?.()) ?? options.locale;
+    const disclosureLocale = locale
+      ? `?locale=${encodeURIComponent(locale)}`
+      : "";
     const response = await fetchImpl(
-      `${apiBaseUrl}/api/v1/ai-disclosures/hosted-editor`,
+      `${apiBaseUrl}/api/v1/ai-disclosures/hosted-editor${disclosureLocale}`,
       {
         method: "GET",
         cache: "no-store",

@@ -159,36 +159,39 @@ describe("public AI data disclosures", () => {
     expect(english.sentData[0]?.category).toBe("manuscript");
   });
 
-  it("states that AI-disabled Scan is deterministic and sends no manuscript data to an external AI model", async () => {
-    const response = await handleRequest(
-      new Request("https://scan.example/api/v1/ai-disclosures/scan?locale=en"),
-      env({
-        SCAN_ENVIRONMENT: "development",
-        SCAN_AI_PROVIDER: "workers-ai",
-        SCAN_WORKERS_AI_ENABLED: "false",
-        SCAN_FRONTIER_ENABLED: "false",
-      }),
-    );
-    const body = (await response.json()) as {
-      provider: string;
-      usagePolicy: { summary: string };
-      processingDestinations: Array<{ processor: string; purpose: string }>;
-      trainingUse: { status: string; summary: string };
-    };
+  it.each([undefined, "false"])(
+    "states that Scan with the AI flag %s is deterministic and sends no manuscript data to an external AI model",
+    async (workersAiEnabled) => {
+      const response = await handleRequest(
+        new Request("https://scan.example/api/v1/ai-disclosures/scan?locale=en"),
+        env({
+          SCAN_ENVIRONMENT: "development",
+          SCAN_AI_PROVIDER: "workers-ai",
+          SCAN_WORKERS_AI_ENABLED: workersAiEnabled,
+          SCAN_FRONTIER_ENABLED: "false",
+        }),
+      );
+      const body = (await response.json()) as {
+        provider: string;
+        usagePolicy: { summary: string };
+        processingDestinations: Array<{ processor: string; purpose: string }>;
+        trainingUse: { status: string; summary: string };
+      };
 
-    expect(response.status).toBe(200);
-    expect(body.provider).toMatch(/deterministic/i);
-    expect(body.usagePolicy.summary).toMatch(/no external AI model/i);
-    expect(body.processingDestinations).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ processor: expect.stringMatching(/AI/i) }),
-      ]),
-    );
-    expect(body.trainingUse).toMatchObject({ status: "not-used" });
-    expect(body.trainingUse.summary).toMatch(
-      /not sent to an external AI model/i,
-    );
-  });
+      expect(response.status).toBe(200);
+      expect(body.provider).toMatch(/deterministic/i);
+      expect(body.usagePolicy.summary).toMatch(/no external AI model/i);
+      expect(body.processingDestinations).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ processor: expect.stringMatching(/AI/i) }),
+        ]),
+      );
+      expect(body.trainingUse).toMatchObject({ status: "not-used" });
+      expect(body.trainingUse.summary).toMatch(
+        /not sent to an external AI model/i,
+      );
+    },
+  );
 
   it("does not invent disclosures for unknown processing routes", async () => {
     const response = await handleRequest(

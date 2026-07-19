@@ -51,4 +51,20 @@ describe("ScanReport", () => {
     expect(getByText(/characters · 1 section · 2 paragraphs/)).toBeTruthy();
     expect(getByText("Writing language: Japanese (detected)")).toBeTruthy();
   });
+
+  it("translates every entity type in the Scan contract", () => {
+    const japanese = createMinimalJaBundle();
+    japanese.entities[0]!.type = "object";
+    japanese.entities[1]!.type = "alias";
+    const { getByText, rerender } = render(
+      <ScanReport bundle={japanese} locale="ja" />,
+    );
+
+    expect(getByText("物品")).toBeTruthy();
+    expect(getByText("別名")).toBeTruthy();
+
+    rerender(<ScanReport bundle={japanese} locale="en" />);
+    expect(getByText("Object")).toBeTruthy();
+    expect(getByText("Alias")).toBeTruthy();
+  });
 });

@@ -7,6 +7,7 @@ export interface ChunkParagraphInput {
 }
 
 export interface ChunkExtractionInput {
+  language: "ja" | "en";
   chunkId: string;
   sourceFingerprint: string;
   text: string;
@@ -17,6 +18,7 @@ export interface ChunkExtractionInput {
 }
 
 export interface AdjudicationInput {
+  language: "ja" | "en";
   sourceFingerprint: string;
   ambiguityId: string;
   evidenceParagraphs: Array<{ paragraphId: string; text: string }>;

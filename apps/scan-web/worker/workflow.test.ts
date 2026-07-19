@@ -24,6 +24,7 @@ function consentEnv(overrides: Partial<ScanEnv> = {}): ScanEnv {
     },
     AI: { run: vi.fn(async () => ({ response: "unused" })) },
     SCAN_AI_PROVIDER: "workers-ai",
+    SCAN_WORKERS_AI_ENABLED: "true",
     ...overrides,
   };
 }

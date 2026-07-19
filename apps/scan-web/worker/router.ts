@@ -41,6 +41,7 @@ import {
   assertCurrentAiDataConsentIdentity,
   createAiDataDisclosure,
   currentAiDataConsentIdentity,
+  type AiDataDisclosureLocale,
   type AiDataConsentIdentity,
 } from "./ai/aiDataDisclosure";
 import type { AiDataDisclosureRoute } from "@grimodex/scan-contract";
@@ -153,7 +154,7 @@ function responseHeaders(origin: string | null, env: ScanEnv): Headers {
     headers.set("access-control-allow-origin", origin);
     headers.set(
       "access-control-allow-headers",
-      "content-type, authorization, x-upload-token, x-scan-token, x-editor-session-token, x-scan-full-access, x-idempotency-key, x-ai-consent-id",
+      "content-type, authorization, x-upload-token, x-scan-token, x-editor-session-token, x-scan-full-access, x-scan-source-language, x-idempotency-key, x-ai-consent-id",
     );
     headers.set(
       "access-control-allow-methods",
@@ -191,7 +192,14 @@ async function aiDisclosure(
   route: AiDataDisclosureRoute,
 ): Promise<Response> {
   try {
-    return success(await createAiDataDisclosure(env, route), request, env);
+    const locale = disclosureLocale(request);
+    const response = success(
+      await createAiDataDisclosure(env, route, locale),
+      request,
+      env,
+    );
+    response.headers.set("content-language", locale);
+    return response;
   } catch (cause) {
     if (cause instanceof AiDataDisclosureUnavailableError) {
       throw new HttpError(
@@ -202,6 +210,50 @@ async function aiDisclosure(
     }
     throw cause;
   }
+}
+
+function normalizedDisclosureLocale(
+  value: string | null | undefined,
+): AiDataDisclosureLocale | null {
+  const primary = value?.trim().toLowerCase().split(/[-_]/, 1)[0];
+  return primary === "ja" || primary === "en" ? primary : null;
+}
+
+function acceptedDisclosureLocale(
+  value: string | null,
+): AiDataDisclosureLocale | null {
+  let selected: AiDataDisclosureLocale | null = null;
+  let selectedQuality = -1;
+  for (const candidate of value?.split(",") ?? []) {
+    const [languageTag, ...parameters] = candidate.split(";");
+    const locale = normalizedDisclosureLocale(languageTag);
+    if (!locale) continue;
+    let quality = 1;
+    const qualityParameter = parameters.find((parameter) =>
+      parameter.trim().toLowerCase().startsWith("q="),
+    );
+    if (qualityParameter) {
+      const parsed = Number(qualityParameter.trim().slice(2));
+      quality =
+        Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0;
+    }
+    if (quality > 0 && quality > selectedQuality) {
+      selected = locale;
+      selectedQuality = quality;
+    }
+  }
+  return selected;
+}
+
+function disclosureLocale(request: Request): AiDataDisclosureLocale {
+  const requested = normalizedDisclosureLocale(
+    new URL(request.url).searchParams.get("locale"),
+  );
+  return (
+    requested ??
+    acceptedDisclosureLocale(request.headers.get("accept-language")) ??
+    "en"
+  );
 }
 
 async function requireAiDataConsent(
@@ -376,6 +428,16 @@ function tokenFromRequest(request: Request): string | null {
   const authorization = request.headers.get("authorization");
   if (!authorization?.startsWith("Bearer ")) return null;
   return authorization.slice("Bearer ".length).trim() || null;
+}
+
+function sourceLanguagePreference(request: Request): "auto" | "ja" | "en" {
+  const value = request.headers.get("x-scan-source-language")?.trim() || "auto";
+  if (value === "auto" || value === "ja" || value === "en") return value;
+  throw new HttpError(
+    400,
+    "invalid_source_language",
+    "source language must be auto, ja, or en",
+  );
 }
 
 function scanTokenFromRequest(request: Request): string | null {
@@ -663,6 +725,7 @@ async function uploadSource(
   let uploadCompleted = false;
   try {
     await requireStoredAiDataConsent(env, record.aiConsent, "scan");
+    const sourceLanguage = sourceLanguagePreference(request);
     const requestContentType = (request.headers.get("content-type") ?? "")
       .split(";", 1)[0]!
       .trim()
@@ -688,7 +751,11 @@ async function uploadSource(
     const digest = await sha256HexBytes(body);
     await env.SCAN_BUCKET.put(record.sourceKey, body, {
       httpMetadata: { contentType: record.contentType },
-      customMetadata: { sha256: digest, schemaVersion: "source-text/1" },
+      customMetadata: {
+        sha256: digest,
+        schemaVersion: "source-text/1",
+        sourceLanguage,
+      },
     });
     await repository.markUploadComplete(uploadId, body.byteLength, digest);
     uploadCompleted = true;

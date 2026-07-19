@@ -2,6 +2,7 @@ import {
   parseEditorSeed,
   type HostedAiSessionV1,
   type EditorSeedValidationResult,
+  type EditorUiLanguage,
 } from "@grimodex/scan-contract";
 import { applyScanImportPlan } from "@/features/import/scan/applyScanImportPlan";
 import { createScanImportOperationsForPlan } from "@/features/import/scan/scanImportOperations";
@@ -22,6 +23,8 @@ import {
   type PersistentBrowserMock,
 } from "./browser-mock";
 import { createHostedBrowserAi } from "./hostedBrowserAi";
+import { globalSettingsRepository } from "./globalSettings/repository";
+import i18next from "./i18n";
 import { installBrowserMock } from "./tauri";
 
 export const HOSTED_EDITOR_WORKSPACE_ID = "grimodex-hosted-editor";
@@ -78,6 +81,49 @@ export interface BrowserRuntimeDependencies {
     plan: ScanImportPlan,
     operations: ScanImportOperations,
   ): Promise<ScanImportResult>;
+  applyUiLanguage(language: EditorUiLanguage): Promise<void>;
+  resolveUiLanguage(
+    fallback?: EditorUiLanguage,
+  ): EditorUiLanguage | undefined | Promise<EditorUiLanguage | undefined>;
+}
+
+async function applyBrowserUiLanguage(
+  language: EditorUiLanguage,
+): Promise<void> {
+  await globalSettingsRepository.patch((current) => ({
+    ...current,
+    uiLanguage: language,
+  }));
+  await i18next.changeLanguage(language);
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = language;
+  }
+}
+
+function normalizeEditorUiLanguage(
+  value: string | undefined,
+): EditorUiLanguage | undefined {
+  if (!value) return undefined;
+  if (value === "ja" || value.startsWith("ja-")) return "ja";
+  if (value === "en" || value.startsWith("en-")) return "en";
+  return undefined;
+}
+
+async function resolveBrowserUiLanguage(
+  fallback?: EditorUiLanguage,
+): Promise<EditorUiLanguage | undefined> {
+  try {
+    const settings = await globalSettingsRepository.read();
+    const persisted = normalizeEditorUiLanguage(settings.uiLanguage);
+    if (persisted) return persisted;
+  } catch {
+    // Fall through to the active renderer language while browser storage is
+    // temporarily unavailable during startup or recovery.
+  }
+  return (
+    normalizeEditorUiLanguage(i18next.resolvedLanguage ?? i18next.language) ??
+    fallback
+  );
 }
 
 const DEFAULT_DEPENDENCIES: BrowserRuntimeDependencies = {
@@ -89,6 +135,8 @@ const DEFAULT_DEPENDENCIES: BrowserRuntimeDependencies = {
   buildScanImportPlan,
   createScanImportOperationsForPlan,
   applyScanImportPlan,
+  applyUiLanguage: applyBrowserUiLanguage,
+  resolveUiLanguage: resolveBrowserUiLanguage,
 };
 
 export interface HostedEditorWorkspaceStoreOptions {
@@ -284,7 +332,11 @@ export function browserPersistenceFailureMessage(error: unknown): string {
   return "ブラウザーへの自動保存に失敗しました。未保存の内容を保護するため、このタブでは編集を続けず、ページを再読み込みしてください。";
 }
 
-function isHostedAiSession(value: unknown): value is HostedAiSessionV1 {
+type StoredHostedAiSession = HostedAiSessionV1 & {
+  uiLanguage?: EditorUiLanguage;
+};
+
+function isHostedAiSession(value: unknown): value is StoredHostedAiSession {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const session = value as Record<string, unknown>;
   return (
@@ -293,13 +345,16 @@ function isHostedAiSession(value: unknown): value is HostedAiSessionV1 {
     typeof session.token === "string" &&
     /^[a-f0-9]{64}$/.test(session.token) &&
     typeof session.expiresAt === "string" &&
-    Number.isFinite(Date.parse(session.expiresAt))
+    Number.isFinite(Date.parse(session.expiresAt)) &&
+    (session.uiLanguage === undefined ||
+      session.uiLanguage === "ja" ||
+      session.uiLanguage === "en")
   );
 }
 
 function readHostedAiSession(
   storage: BrowserSessionStorage | null,
-): HostedAiSessionV1 | null {
+): StoredHostedAiSession | null {
   if (!storage) return null;
   try {
     const raw = storage.getItem(HOSTED_AI_SESSION_STORAGE_KEY);
@@ -326,10 +381,14 @@ function readHostedAiSession(
 function persistHostedAiSession(
   storage: BrowserSessionStorage | null,
   session: HostedAiSessionV1,
+  uiLanguage?: EditorUiLanguage,
 ): void {
   if (!storage || Date.parse(session.expiresAt) <= Date.now()) return;
   try {
-    storage.setItem(HOSTED_AI_SESSION_STORAGE_KEY, JSON.stringify(session));
+    storage.setItem(
+      HOSTED_AI_SESSION_STORAGE_KEY,
+      JSON.stringify(uiLanguage ? { ...session, uiLanguage } : session),
+    );
   } catch {
     // A live handoff still works in memory when sessionStorage is unavailable.
   }
@@ -404,15 +463,24 @@ export async function initializeBrowserRuntime(
       options.sessionStorage === undefined
         ? browserSessionStorage()
         : options.sessionStorage;
-    const hostedAiSession =
-      handoff?.hostedAiSession ?? readHostedAiSession(sessionStorage);
+    const storedHostedAiSession = readHostedAiSession(sessionStorage);
+    const hostedAiSession = handoff?.hostedAiSession ?? storedHostedAiSession;
+    const hostedAiLocale = handoff?.hostedAiSession
+      ? handoff.uiLanguage
+      : storedHostedAiSession?.uiLanguage;
     if (handoff?.hostedAiSession) {
-      persistHostedAiSession(sessionStorage, handoff.hostedAiSession);
+      persistHostedAiSession(
+        sessionStorage,
+        handoff.hostedAiSession,
+        handoff.uiLanguage,
+      );
     }
     const hostedAi = hostedAiSession
       ? createHostedBrowserAi({
           apiBaseUrl: options.scanApiBaseUrl ?? configuredScanApiBaseUrl(),
           session: hostedAiSession,
+          locale: hostedAiLocale,
+          getLocale: () => dependencies.resolveUiLanguage(hostedAiLocale),
           fetchImpl: options.fetchImpl ?? browserFetch(),
         })
       : null;
@@ -449,6 +517,9 @@ export async function initializeBrowserRuntime(
         dependencies.createScanImportOperationsForPlan(plan),
       );
       importedProjectId = result.projectId;
+      if (handoff?.uiLanguage) {
+        await dependencies.applyUiLanguage(handoff.uiLanguage);
+      }
       // The import operations normally mark the database dirty themselves.
       // This explicit mark also protects future operation adapters that batch
       // or defer their writes.

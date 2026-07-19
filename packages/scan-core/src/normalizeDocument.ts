@@ -21,7 +21,8 @@ function headingTitle(line: string): string | null {
   const markdown = /^#{1,6}\s+(.+?)\s*$/.exec(line);
   if (markdown?.[1]) return markdown[1].trim();
 
-  const japanese = /^(第[0-9一二三四五六七八九十百千万]+章|序章|終章)\s*(.*)$/.exec(line);
+  const japanese =
+    /^(第[0-9一二三四五六七八九十百千万]+章|序章|終章)\s*(.*)$/.exec(line);
   if (!japanese?.[1]) return null;
   return `${japanese[1]}${japanese[2] ? ` ${japanese[2].trim()}` : ""}`.trim();
 }
@@ -68,13 +69,20 @@ function buildSection(
   };
 }
 
-function detectSectionDrafts(text: string, fallbackTitle: string): SectionDraft[] {
+function detectSectionDrafts(
+  text: string,
+  fallbackTitle: string,
+  continuationTitle: string,
+): SectionDraft[] {
   const drafts: SectionDraft[] = [];
   let current: SectionDraft | null = null;
   let sawHeading = false;
 
   const flush = () => {
-    if (current && (current.isHeading || current.lines.some((line) => line !== ""))) {
+    if (
+      current &&
+      (current.isHeading || current.lines.some((line) => line !== ""))
+    ) {
       drafts.push(current);
     }
     current = null;
@@ -90,11 +98,12 @@ function detectSectionDrafts(text: string, fallbackTitle: string): SectionDraft[
     }
     if (/^[-_=*]{3,}$/.test(line)) {
       if (current?.lines.some((item) => item !== "")) flush();
-      if (sawHeading) current = { title: "次章", lines: [], isHeading: false };
+      if (sawHeading)
+        current = { title: continuationTitle, lines: [], isHeading: false };
       continue;
     }
     current ??= {
-      title: sawHeading ? "次章" : fallbackTitle,
+      title: sawHeading ? continuationTitle : fallbackTitle,
       lines: [],
       isHeading: false,
     };
@@ -103,7 +112,9 @@ function detectSectionDrafts(text: string, fallbackTitle: string): SectionDraft[
   flush();
 
   if (drafts.length === 0) {
-    return [{ title: fallbackTitle, lines: text.split("\n"), isHeading: false }];
+    return [
+      { title: fallbackTitle, lines: text.split("\n"), isHeading: false },
+    ];
   }
   return drafts;
 }
@@ -112,9 +123,14 @@ function countCharacters(value: string): number {
   return Array.from(value).length;
 }
 
-export function normalizeDocument(input: SourceDocumentInput): NormalizedDocument {
+export function normalizeDocument(
+  input: SourceDocumentInput,
+): NormalizedDocument {
   const text = normalizeText(input.text);
-  const drafts = detectSectionDrafts(text, input.title.trim() || "本文");
+  const fallbackTitle =
+    input.title.trim() || (input.language === "en" ? "Manuscript" : "本文");
+  const continuationTitle = input.language === "en" ? "Next section" : "次章";
+  const drafts = detectSectionDrafts(text, fallbackTitle, continuationTitle);
   const sections = drafts.map((draft, ordinal) => buildSection(draft, ordinal));
   const paragraphs = sections.flatMap((section) => section.paragraphs);
 

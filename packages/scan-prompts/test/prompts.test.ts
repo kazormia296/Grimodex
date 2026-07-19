@@ -126,7 +126,7 @@ describe("versioned scan prompts", () => {
     expect(prompt.user).toContain("minimalValidOutput=");
   });
 
-  it("instructs providers to write natural-language values in the manuscript language", () => {
+  it("localizes explanations without translating exact evidence or proper names", () => {
     const japanese = buildChunkExtractionPrompt({
       language: "ja",
       chunkId: "chunk:ja",
@@ -172,12 +172,37 @@ describe("versioned scan prompts", () => {
     });
 
     expect(japanese.system).toContain(
-      "Write all natural-language values in Japanese.",
+      "Write natural-language explanatory fields in Japanese.",
     );
     expect(english.system).toContain(
-      "Write all natural-language values in English.",
+      "Write natural-language explanatory fields in English.",
+    );
+    expect(japanese.system).toContain(
+      "Use Japanese for entities[].summary, relations[].type, relations[].label, events[].title, and events[].summary.",
+    );
+    expect(japanese.system).toContain(
+      "Every evidence[].excerpt value must be copied verbatim as an exact contiguous substring of the referenced source paragraph.",
+    );
+    expect(japanese.system).toContain(
+      "Never translate, paraphrase, normalize, truncate, or add ellipses to evidence[].excerpt values.",
+    );
+    expect(japanese.system).toContain(
+      "Preserve entity names, aliases, and other proper nouns exactly as written in the source; never translate, transliterate, romanize, or normalize them.",
     );
     expect(adjudication.system).toContain(
+      "Write natural-language explanatory fields in Japanese.",
+    );
+    expect(adjudication.system).toContain("Use Japanese for rationale.");
+    expect(adjudication.system).toContain(
+      "Preserve entity names, aliases, and other proper nouns exactly as written in the source; never translate, transliterate, romanize, or normalize them.",
+    );
+    expect(japanese.system).toContain(
+      "These source-preservation rules override the requested output language.",
+    );
+    expect(adjudication.system).toContain(
+      "These source-preservation rules override the requested output language.",
+    );
+    expect(japanese.system).not.toContain(
       "Write all natural-language values in Japanese.",
     );
   });

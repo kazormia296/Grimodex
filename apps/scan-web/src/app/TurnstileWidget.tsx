@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { scanMessages } from "../i18n/scanMessages";
+import type { ScanLocale } from "../i18n/scanLocale";
 
 interface TurnstileRenderOptions {
   sitekey: string;
+  language: ScanLocale;
   callback: (token: string) => void;
   "expired-callback": () => void;
   "error-callback": () => void;
@@ -10,6 +13,7 @@ interface TurnstileRenderOptions {
 interface TurnstileApi {
   render(container: HTMLElement, options: TurnstileRenderOptions): string;
   reset(widgetId?: string): void;
+  remove(widgetId: string): void;
 }
 
 declare global {
@@ -25,11 +29,13 @@ const SCRIPT_SOURCE =
 export function TurnstileWidget({
   siteKey,
   resetKey,
+  locale,
   onToken,
   onError,
 }: {
   siteKey: string;
   resetKey: number;
+  locale: ScanLocale;
   onToken: (token: string) => void;
   onError: () => void;
 }) {
@@ -64,21 +70,22 @@ export function TurnstileWidget({
     container.replaceChildren();
     const widgetId = window.turnstile.render(container, {
       sitekey: siteKey,
+      language: locale,
       callback: onToken,
       "expired-callback": onError,
       "error-callback": onError,
     });
     return () => {
-      window.turnstile?.reset(widgetId);
+      window.turnstile?.remove(widgetId);
       container.replaceChildren();
     };
-  }, [loaded, onError, onToken, resetKey, siteKey]);
+  }, [loaded, locale, onError, onToken, resetKey, siteKey]);
 
   return (
     <div
       ref={containerRef}
       className="scan-turnstile"
-      aria-label="Bot verification"
+      aria-label={scanMessages(locale).turnstileLabel}
       data-testid="scan-turnstile"
     />
   );

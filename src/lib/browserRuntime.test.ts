@@ -79,6 +79,7 @@ function createDependencies(
     createScanImportOperationsForPlan: vi.fn(),
     applyScanImportPlan: vi.fn(),
     applyUiLanguage: vi.fn(async () => undefined),
+    resolveUiLanguage: vi.fn((fallback) => fallback),
     ...overrides,
   };
 }
@@ -228,6 +229,18 @@ describe("hosted Editor browser runtime", () => {
     const operations = { stage: "operations" };
     const applyResult = { projectId: "scan-project" };
     const callOrder: string[] = [];
+    let currentUiLanguage: "ja" | "en" = "en";
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new Error("stop after disclosure URL capture");
+    });
+    let authorizeAiRequest:
+      | NonNullable<
+          Parameters<
+            BrowserRuntimeDependencies["createBrowserMock"]
+          >[0]["authorizeAiRequest"]
+        >
+      | undefined;
+    const sessionStorage = createSessionStorage();
     const dependencies = createDependencies({
       createBrowserMock: vi.fn(async (options) => {
         callOrder.push("create");
@@ -235,6 +248,7 @@ describe("hosted Editor browser runtime", () => {
           model: "grimodex-hosted",
         });
         expect(options.authorizeAiRequest).toBeTypeOf("function");
+        authorizeAiRequest = options.authorizeAiRequest;
         expect(options.aiTransport).toBeDefined();
         expect(options.aiTransportProvidesProviderAccess).toBe(true);
         return mock;
@@ -263,6 +277,7 @@ describe("hosted Editor browser runtime", () => {
       applyUiLanguage: vi.fn(async () => {
         callOrder.push("language");
       }),
+      resolveUiLanguage: vi.fn(() => currentUiLanguage),
     });
     const locks = createExclusiveLockManager();
 
@@ -271,9 +286,9 @@ describe("hosted Editor browser runtime", () => {
       lifecycleTarget: null,
       href: "https://try.grimodex.app/editor#scan-import=one-time-token",
       scanApiBaseUrl: "https://scan.example",
-      fetchImpl: vi.fn() as never,
+      fetchImpl: fetchImpl as never,
       replaceHistory: vi.fn(),
-      sessionStorage: createSessionStorage(),
+      sessionStorage,
       lockManager: locks.lockManager,
       dependencies,
     });
@@ -293,6 +308,35 @@ describe("hosted Editor browser runtime", () => {
       operations,
     );
     expect(dependencies.applyUiLanguage).toHaveBeenCalledWith("en");
+    expect(sessionStorage.setItem).toHaveBeenCalledWith(
+      "grimodex:hosted-ai-session/v1",
+      expect.stringContaining('"uiLanguage":"en"'),
+    );
+    expect(authorizeAiRequest).toBeTypeOf("function");
+    if (!authorizeAiRequest) throw new Error("Hosted AI authorization missing");
+    await expect(
+      authorizeAiRequest({
+        operation: "chat",
+        provider: "openrouter",
+        model: "grimodex-hosted",
+        hasApiKey: false,
+      }),
+    ).rejects.toThrow("stop after disclosure URL capture");
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      "https://scan.example/api/v1/ai-disclosures/hosted-editor?locale=en",
+    );
+    currentUiLanguage = "ja";
+    await expect(
+      authorizeAiRequest({
+        operation: "chat",
+        provider: "openrouter",
+        model: "grimodex-hosted",
+        hasApiKey: false,
+      }),
+    ).rejects.toThrow("stop after disclosure URL capture");
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      "https://scan.example/api/v1/ai-disclosures/hosted-editor?locale=ja",
+    );
     expect(callOrder).toEqual([
       "consume",
       "parse",
@@ -377,9 +421,24 @@ describe("hosted Editor browser runtime", () => {
     const sessionStorage = createSessionStorage();
     sessionStorage.setItem(
       "grimodex:hosted-ai-session/v1",
-      JSON.stringify(hostedAiSession),
+      JSON.stringify({ ...hostedAiSession, uiLanguage: "en" }),
     );
-    const dependencies = createDependencies();
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new Error("stop after restored disclosure URL capture");
+    });
+    let authorizeAiRequest:
+      | NonNullable<
+          Parameters<
+            BrowserRuntimeDependencies["createBrowserMock"]
+          >[0]["authorizeAiRequest"]
+        >
+      | undefined;
+    const dependencies = createDependencies({
+      createBrowserMock: vi.fn(async (options) => {
+        authorizeAiRequest = options.authorizeAiRequest;
+        return createMockDatabase();
+      }),
+    });
     const locks = createExclusiveLockManager();
 
     const runtime = await initializeBrowserRuntime({
@@ -387,7 +446,7 @@ describe("hosted Editor browser runtime", () => {
       lifecycleTarget: null,
       href: "https://try.grimodex.app/editor",
       scanApiBaseUrl: "https://scan.example",
-      fetchImpl: vi.fn() as never,
+      fetchImpl,
       sessionStorage,
       lockManager: locks.lockManager,
       dependencies,
@@ -402,6 +461,19 @@ describe("hosted Editor browser runtime", () => {
         aiTransport: expect.any(Object),
         aiTransportProvidesProviderAccess: true,
       }),
+    );
+    expect(authorizeAiRequest).toBeTypeOf("function");
+    if (!authorizeAiRequest) throw new Error("Hosted AI authorization missing");
+    await expect(
+      authorizeAiRequest({
+        operation: "chat",
+        provider: "openrouter",
+        model: "grimodex-hosted",
+        hasApiKey: false,
+      }),
+    ).rejects.toThrow("stop after restored disclosure URL capture");
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      "https://scan.example/api/v1/ai-disclosures/hosted-editor?locale=en",
     );
     await runtime.dispose();
   });

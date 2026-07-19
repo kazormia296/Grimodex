@@ -6,6 +6,8 @@ import {
 } from "@grimodex/scan-contract";
 
 export type ScanMode = "quick" | "full";
+export type ScanInterfaceLocale = "ja" | "en";
+export type ScanSourceLanguagePreference = "auto" | "ja" | "en";
 export type ScanStatus =
   | "created"
   | "uploading"
@@ -71,10 +73,11 @@ interface ErrorBody {
 
 const SCAN_CREATE_ATTEMPTS = 3;
 
-class ScanApiError extends Error {
+export class ScanApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ScanApiError";
@@ -100,13 +103,15 @@ function assertConsentId(consentId: unknown): asserts consentId is string {
 
 async function responseError(response: Response): Promise<ScanApiError> {
   let message = `Scan request failed (${response.status})`;
+  let code: string | undefined;
   try {
     const body = (await response.json()) as ErrorBody;
     if (body.error?.message) message = body.error.message;
+    if (body.error?.code) code = body.error.code;
   } catch {
     // Keep the status-only message for non-JSON proxy errors.
   }
-  return new ScanApiError(response.status, message);
+  return new ScanApiError(response.status, message, code);
 }
 
 function isRetryablePollingError(cause: unknown): boolean {
@@ -205,9 +210,13 @@ export class ScanApiClient {
 
   async getAiDisclosure(
     route: AiDataDisclosureRoute,
+    locale?: ScanInterfaceLocale,
   ): Promise<AiDataDisclosureV1> {
+    const query = locale
+      ? `?${new URLSearchParams({ locale }).toString()}`
+      : "";
     const disclosure = await this.json<unknown>(
-      `/api/v1/ai-disclosures/${encodeURIComponent(route)}`,
+      `/api/v1/ai-disclosures/${encodeURIComponent(route)}${query}`,
       { cache: "no-store" },
     );
     const parsed = parseAiDataDisclosure(disclosure);
@@ -221,6 +230,7 @@ export class ScanApiClient {
     file: Blob & { name?: string },
     mode: ScanMode,
     consentId: string,
+    sourceLanguage: ScanSourceLanguagePreference = "auto",
   ): Promise<ScanHandle> {
     const filename = file.name ?? "source.txt";
     const contentType = file.type || "application/octet-stream";
@@ -235,6 +245,7 @@ export class ScanApiClient {
       headers: {
         "content-type": contentType,
         "x-upload-token": intent.uploadToken,
+        "x-scan-source-language": sourceLanguage,
       },
       body: file,
     });

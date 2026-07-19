@@ -7,7 +7,7 @@ import {
 import type { ScanEnv } from "../env";
 import { constantTimeEqual, sha256Hex } from "../security";
 
-export const AI_DATA_POLICY_VERSION = "2026-07-19.4";
+export const AI_DATA_POLICY_VERSION = "2026-07-19.5";
 export const WORKERS_AI_DATA_POLICY_URL =
   "https://developers.cloudflare.com/workers-ai/platform/data-usage/";
 export const AI_GATEWAY_LOGGING_POLICY_URL =
@@ -20,8 +20,11 @@ export const OPENROUTER_PROVIDER_POLICY_URL =
   "https://openrouter.ai/docs/guides/privacy/provider-logging/";
 export const GRIMODEX_AI_DATA_POLICY_URL =
   "https://try.grimodex.app/PRIVACY_ja.md";
+export const GRIMODEX_AI_DATA_POLICY_URL_EN =
+  "https://try.grimodex.app/PRIVACY_en.md";
 
 type ConfiguredProvider = "workers-ai" | "ai-gateway" | "openrouter";
+export type AiDataDisclosureLocale = "ja" | "en";
 
 interface ProviderDisclosure {
   id: string;
@@ -67,6 +70,20 @@ function positiveInt(value: string | undefined, fallback: number): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function localized(
+  locale: AiDataDisclosureLocale,
+  english: string,
+  japanese: string,
+): string {
+  return locale === "ja" ? japanese : english;
+}
+
+function grimodexPolicyUrl(locale: AiDataDisclosureLocale): string {
+  return locale === "ja"
+    ? GRIMODEX_AI_DATA_POLICY_URL
+    : GRIMODEX_AI_DATA_POLICY_URL_EN;
+}
+
 function configuredProvider(env: ScanEnv): ConfiguredProvider {
   if (
     env.SCAN_AI_PROVIDER === "workers-ai" ||
@@ -89,7 +106,10 @@ function configuredFrontierProvider(env: ScanEnv): ConfiguredProvider {
   return configuredProvider(env);
 }
 
-function workersAiDisclosure(route: AiDataDisclosureRoute): ProviderDisclosure {
+function workersAiDisclosure(
+  route: AiDataDisclosureRoute,
+  locale: AiDataDisclosureLocale,
+): ProviderDisclosure {
   return {
     id: "workers-ai",
     processingDestinations: [
@@ -97,23 +117,88 @@ function workersAiDisclosure(route: AiDataDisclosureRoute): ProviderDisclosure {
         processor: "Cloudflare Workers AI",
         purpose:
           route === "scan"
-            ? "Analyze the manuscript and produce the requested scan artifacts."
-            : "Generate the requested hosted editor assistance.",
-        location:
+            ? localized(
+                locale,
+                "Analyze the manuscript and produce the requested scan artifacts.",
+                "原稿を解析し、要求されたScan成果物を生成します。",
+              )
+            : localized(
+                locale,
+                "Generate the requested hosted editor assistance.",
+                "要求されたHosted Editor支援を生成します。",
+              ),
+        location: localized(
+          locale,
           "Cloudflare-managed Workers AI infrastructure; no specific processing geography is asserted by this disclosure.",
+          "Cloudflareが管理するWorkers AI基盤で処理されます。この開示では特定の処理地域を保証しません。",
+        ),
         privacyPolicyUrl: WORKERS_AI_DATA_POLICY_URL,
       },
     ],
     policyUrl: WORKERS_AI_DATA_POLICY_URL,
-    providerStorageSummary:
+    providerStorageSummary: localized(
+      locale,
       "Cloudflare documents that Customer Content may be stored when a storage service is used with Workers AI.",
-    providerRetentionSummary:
+      "Cloudflareは、Workers AIとストレージサービスを併用する場合、Customer Contentが保存される可能性があると説明しています。",
+    ),
+    providerRetentionSummary: localized(
+      locale,
       "Provider-side handling follows the linked Cloudflare policy; Grimodex does not assert an additional provider retention duration.",
+      "プロバイダ側の取扱いはリンク先のCloudflareポリシーに従います。Grimodexは追加のプロバイダ保持期間を保証しません。",
+    ),
     trainingUse: {
       status: "not-used",
-      summary:
+      summary: localized(
+        locale,
         "Cloudflare states that Workers AI Customer Content is not used to train AI models or improve services without explicit consent.",
+        "Cloudflareは、明示的な同意なしにWorkers AIのCustomer ContentをAIモデルの学習またはサービス改善へ利用しないと説明しています。",
+      ),
       policyUrl: WORKERS_AI_DATA_POLICY_URL,
+    },
+  };
+}
+
+function deterministicScanDisclosure(
+  locale: AiDataDisclosureLocale,
+): ProviderDisclosure {
+  const policyUrl = grimodexPolicyUrl(locale);
+  return {
+    id: "deterministic",
+    processingDestinations: [
+      {
+        processor: "Grimodex deterministic Scan",
+        purpose: localized(
+          locale,
+          "Build Scan artifacts with deterministic rules without sending manuscript content to an external AI model.",
+          "原稿を外部AIモデルへ送信せず、決定的ルールでScan成果物を生成します。",
+        ),
+        location: localized(
+          locale,
+          "Cloudflare Worker execution and Grimodex-managed R2/D1 storage; no external AI model endpoint is used.",
+          "Cloudflare Worker上で実行し、Grimodex管理のR2／D1へ保存します。外部AIモデルのエンドポイントは使用しません。",
+        ),
+        privacyPolicyUrl: policyUrl,
+      },
+    ],
+    policyUrl,
+    providerStorageSummary: localized(
+      locale,
+      "No AI provider receives or stores the manuscript; only the application storage described in this disclosure applies.",
+      "AIプロバイダは原稿を受信・保存しません。この開示に記載したアプリ側ストレージだけを使用します。",
+    ),
+    providerRetentionSummary: localized(
+      locale,
+      "No AI-provider retention period applies because no external AI model receives the manuscript.",
+      "外部AIモデルへ原稿を送信しないため、AIプロバイダ側の保持期間は適用されません。",
+    ),
+    trainingUse: {
+      status: "not-used",
+      summary: localized(
+        locale,
+        "The manuscript is not sent to an external AI model, so it is not used for model training by an AI provider.",
+        "原稿は外部AIモデルへ送信されないため、AIプロバイダのモデル学習には利用されません。",
+      ),
+      policyUrl,
     },
   };
 }
@@ -147,6 +232,7 @@ function cloudflareGatewayUpstream(env: ScanEnv): "openai" {
 function aiGatewayDisclosure(
   env: ScanEnv,
   route: AiDataDisclosureRoute,
+  locale: AiDataDisclosureLocale,
 ): ProviderDisclosure {
   const upstream = cloudflareGatewayUpstream(env);
   return {
@@ -156,32 +242,63 @@ function aiGatewayDisclosure(
         processor: "Cloudflare AI Gateway",
         purpose:
           route === "scan"
-            ? "Route and observe the configured frontier analysis request."
-            : "Route and observe the hosted editor assistance request.",
-        location:
+            ? localized(
+                locale,
+                "Route and observe the configured frontier analysis request.",
+                "設定されたfrontier解析リクエストを中継し、可観測性を提供します。",
+              )
+            : localized(
+                locale,
+                "Route and observe the hosted editor assistance request.",
+                "Hosted Editor支援リクエストを中継し、可観測性を提供します。",
+              ),
+        location: localized(
+          locale,
           "Cloudflare-managed AI Gateway infrastructure; no specific processing geography is asserted by this disclosure.",
+          "Cloudflareが管理するAI Gateway基盤で処理されます。この開示では特定の処理地域を保証しません。",
+        ),
         privacyPolicyUrl: AI_GATEWAY_LOGGING_POLICY_URL,
       },
       {
         processor: "OpenAI API",
         purpose:
           route === "scan"
-            ? "Run the configured Full Scan frontier analysis."
-            : "Generate the configured hosted editor assistance.",
-        location:
+            ? localized(
+                locale,
+                "Run the configured Full Scan frontier analysis.",
+                "設定されたFull Scanのfrontier解析を実行します。",
+              )
+            : localized(
+                locale,
+                "Generate the configured hosted editor assistance.",
+                "設定されたHosted Editor支援を生成します。",
+              ),
+        location: localized(
+          locale,
           "OpenAI-managed API infrastructure; no specific processing geography is asserted by this disclosure.",
+          "OpenAIが管理するAPI基盤で処理されます。この開示では特定の処理地域を保証しません。",
+        ),
         privacyPolicyUrl: OPENAI_API_DATA_POLICY_URL,
       },
     ],
     policyUrl: AI_GATEWAY_LOGGING_POLICY_URL,
-    providerStorageSummary:
+    providerStorageSummary: localized(
+      locale,
       "Cloudflare AI Gateway can store request and response payload logs according to gateway settings; OpenAI API data controls apply upstream.",
-    providerRetentionSummary:
+      "Cloudflare AI Gatewayはゲートウェイ設定に従いリクエスト／レスポンスのペイロードログを保存する場合があり、上流ではOpenAI APIのデータ管理が適用されます。",
+    ),
+    providerRetentionSummary: localized(
+      locale,
       "Cloudflare AI Gateway log retention depends on the configured gateway settings. OpenAI API abuse-monitoring logs may be retained for up to 30 days by default unless stricter controls apply.",
+      "Cloudflare AI Gatewayのログ保持期間はゲートウェイ設定に依存します。OpenAI APIの不正利用監視ログは、より厳しい管理が適用されない限り、標準で最長30日保持される場合があります。",
+    ),
     trainingUse: {
       status: "depends",
-      summary:
+      summary: localized(
+        locale,
         "OpenAI API data is not used for model training by default, but account opt-in and configured gateway or upstream controls can change handling; verify the linked policies.",
+        "OpenAI APIのデータは標準ではモデル学習に利用されませんが、アカウントのオプトインやゲートウェイ／上流の設定により取扱いが変わる場合があります。リンク先のポリシーを確認してください。",
+      ),
       policyUrl: OPENAI_API_DATA_POLICY_URL,
     },
   };
@@ -190,6 +307,7 @@ function aiGatewayDisclosure(
 function openRouterDisclosure(
   env: ScanEnv,
   route: AiDataDisclosureRoute,
+  locale: AiDataDisclosureLocale,
 ): ProviderDisclosure {
   let endpoint: URL;
   try {
@@ -215,29 +333,56 @@ function openRouterDisclosure(
         processor: "OpenRouter",
         purpose:
           route === "scan"
-            ? "Route the configured scan analysis request."
-            : "Route the hosted editor assistance request.",
-        location:
+            ? localized(
+                locale,
+                "Route the configured scan analysis request.",
+                "設定されたScan解析リクエストを中継します。",
+              )
+            : localized(
+                locale,
+                "Route the hosted editor assistance request.",
+                "Hosted Editor支援リクエストを中継します。",
+              ),
+        location: localized(
+          locale,
           "OpenRouter-managed routing infrastructure; processing geography depends on account and endpoint configuration.",
+          "OpenRouterが管理するルーティング基盤で処理されます。処理地域はアカウントとエンドポイントの設定に依存します。",
+        ),
         privacyPolicyUrl: OPENROUTER_DATA_POLICY_URL,
       },
       {
         processor: "OpenRouter-selected model provider",
-        purpose: "Generate the requested AI result.",
-        location:
+        purpose: localized(
+          locale,
+          "Generate the requested AI result.",
+          "要求されたAI結果を生成します。",
+        ),
+        location: localized(
+          locale,
           "The selected model provider's infrastructure; geography depends on OpenRouter routing and account controls.",
+          "選択されたモデルプロバイダの基盤で処理されます。地域はOpenRouterのルーティングとアカウント設定に依存します。",
+        ),
         privacyPolicyUrl: OPENROUTER_PROVIDER_POLICY_URL,
       },
     ],
     policyUrl: OPENROUTER_DATA_POLICY_URL,
-    providerStorageSummary:
+    providerStorageSummary: localized(
+      locale,
       "OpenRouter prompt logging is account-controlled, while the selected model provider has its own storage policy.",
-    providerRetentionSummary:
+      "OpenRouterのプロンプトログはアカウント設定で管理され、選択されたモデルプロバイダには独自の保存ポリシーがあります。",
+    ),
+    providerRetentionSummary: localized(
+      locale,
       "OpenRouter and the selected model provider apply account-, endpoint-, and provider-specific retention controls; no single duration is asserted.",
+      "OpenRouterと選択されたモデルプロバイダでは、アカウント、エンドポイント、プロバイダごとの保持管理が適用されます。単一の保持期間は保証しません。",
+    ),
     trainingUse: {
       status: "depends",
-      summary:
+      summary: localized(
+        locale,
         "Training use depends on OpenRouter privacy controls and the selected model provider; providers without an established policy must not be represented as no-training.",
+        "モデル学習への利用はOpenRouterのプライバシー設定と選択されたモデルプロバイダに依存します。方針を確認できないプロバイダを「学習に利用しない」とは表示しません。",
+      ),
       policyUrl: OPENROUTER_PROVIDER_POLICY_URL,
     },
   };
@@ -247,24 +392,28 @@ function disclosureForProvider(
   env: ScanEnv,
   route: AiDataDisclosureRoute,
   provider: ConfiguredProvider,
+  locale: AiDataDisclosureLocale,
 ): ProviderDisclosure {
-  if (provider === "workers-ai") return workersAiDisclosure(route);
-  if (provider === "ai-gateway") return aiGatewayDisclosure(env, route);
-  return openRouterDisclosure(env, route);
+  if (provider === "workers-ai") return workersAiDisclosure(route, locale);
+  if (provider === "ai-gateway") return aiGatewayDisclosure(env, route, locale);
+  return openRouterDisclosure(env, route, locale);
 }
 
 function disclosureProfile(
   env: ScanEnv,
   route: AiDataDisclosureRoute,
+  locale: AiDataDisclosureLocale = "en",
 ): DisclosureProfile {
-  const providers = [
-    disclosureForProvider(env, route, configuredProvider(env)),
-  ];
+  const providers =
+    route === "scan" && env.SCAN_WORKERS_AI_ENABLED !== "true"
+      ? [deterministicScanDisclosure(locale)]
+      : [disclosureForProvider(env, route, configuredProvider(env), locale)];
   if (route === "scan" && env.SCAN_FRONTIER_ENABLED === "true") {
     const frontier = disclosureForProvider(
       env,
       route,
       configuredFrontierProvider(env),
+      locale,
     );
     if (!providers.some((provider) => provider.id === frontier.id)) {
       providers.push(frontier);
@@ -291,7 +440,15 @@ function disclosureProfile(
           .join(" "),
         policyUrl: providerWithConditionalTraining.trainingUse.policyUrl,
       }
-    : providers[0]!.trainingUse;
+    : providers.length === 1
+      ? providers[0]!.trainingUse
+      : {
+          status: "not-used" as const,
+          summary: providers
+            .map(({ trainingUse: { summary } }) => summary)
+            .join(" "),
+          policyUrl: providers.at(-1)!.trainingUse.policyUrl,
+        };
   return {
     provider,
     processingDestinations,
@@ -354,40 +511,60 @@ export async function assertCurrentAiDataConsentIdentity(
 
 function sentDataForRoute(
   route: AiDataDisclosureRoute,
+  locale: AiDataDisclosureLocale,
 ): AiDataDisclosureV1["sentData"] {
   if (route === "scan") {
     return [
       {
         category: "manuscript",
-        description:
+        description: localized(
+          locale,
           "The uploaded manuscript text and the metadata required to process the scan.",
+          "アップロードした原稿本文と、Scan処理に必要なメタデータです。",
+        ),
       },
     ];
   }
   return [
     {
       category: "prompt",
-      description: "The instruction entered for hosted editor assistance.",
+      description: localized(
+        locale,
+        "The instruction entered for hosted editor assistance.",
+        "Hosted Editor支援のために入力した指示です。",
+      ),
     },
     {
       category: "system-instructions",
-      description:
+      description: localized(
+        locale,
         "System instructions used to define the requested editor assistance.",
+        "要求されたEditor支援の動作を定義するシステム指示です。",
+      ),
     },
     {
       category: "conversation-history",
-      description:
+      description: localized(
+        locale,
         "Prior visible user and assistant messages, structured tool-call arguments, and explicit tool-result text included in the current conversation context. Hidden reasoning blocks are not sent.",
+        "現在の会話コンテキストに含まれる、表示済みのユーザー／アシスタントメッセージ、構造化されたツール呼び出し引数、明示的なツール結果本文です。非表示の推論ブロックは送信しません。",
+      ),
     },
     {
       category: "tool-definitions",
-      description:
+      description: localized(
+        locale,
         "The names, descriptions, and input JSON schemas of the tools declared for this agent turn.",
+        "このエージェントターンで宣言されたツールの名前、説明、入力JSONスキーマです。",
+      ),
     },
     {
       category: "selected-context",
-      description:
+      description: localized(
+        locale,
         "Only the manuscript context included with the hosted editor request.",
+        "Hosted Editorリクエストに含めた原稿コンテキストだけです。",
+      ),
     },
   ];
 }
@@ -395,9 +572,11 @@ function sentDataForRoute(
 export async function createAiDataDisclosure(
   env: ScanEnv,
   route: AiDataDisclosureRoute,
+  locale: AiDataDisclosureLocale = "en",
 ): Promise<AiDataDisclosureV1> {
-  const profile = disclosureProfile(env, route);
+  const profile = disclosureProfile(env, route, locale);
   const workersOnly = profile.provider === "workers-ai";
+  const deterministicOnly = profile.provider === "deterministic";
   const candidate: AiDataDisclosureV1 = {
     schemaVersion: AI_DATA_DISCLOSURE_SCHEMA_VERSION,
     policyVersion: AI_DATA_POLICY_VERSION,
@@ -405,21 +584,43 @@ export async function createAiDataDisclosure(
     provider: profile.provider,
     consentId: await expectedAiDataConsentId(env, route),
     usagePolicy: {
-      summary: workersOnly
-        ? "Grimodex sends the disclosed data to Cloudflare Workers AI only after explicit consent."
-        : `Grimodex sends the disclosed data through the configured ${profile.provider} processing chain only after explicit consent.`,
-      policyUrl: GRIMODEX_AI_DATA_POLICY_URL,
+      summary: deterministicOnly
+        ? localized(
+            locale,
+            "This Scan configuration uses deterministic Grimodex processing; no external AI model receives the manuscript. Processing starts only after explicit consent.",
+            "このScan構成では、原稿をGrimodexの決定的ルールで処理し、外部AIモデルへ送信しません。処理は明示的な同意後にのみ開始します。",
+          )
+        : workersOnly
+          ? localized(
+              locale,
+              "Grimodex sends the disclosed data to Cloudflare Workers AI only after explicit consent.",
+              "Grimodexは、明示的な同意後にのみ、開示したデータをCloudflare Workers AIへ送信します。",
+            )
+          : localized(
+              locale,
+              `Grimodex sends the disclosed data through the configured ${profile.provider} processing chain only after explicit consent.`,
+              `Grimodexは、明示的な同意後にのみ、開示したデータを設定済みの${profile.provider}処理経路へ送信します。`,
+            ),
+      policyUrl: grimodexPolicyUrl(locale),
     },
-    sentData: sentDataForRoute(route),
+    sentData: sentDataForRoute(route, locale),
     processingDestinations: profile.processingDestinations,
     storage: {
       application: {
-        storesPrompt: true,
+        storesPrompt: !deterministicOnly,
         storesResponse: true,
         location:
           route === "scan"
-            ? "Cloudflare R2 stores the uploaded manuscript and Scan artifacts for the source and artifact retention periods shown below. Cloudflare D1 stores non-content operational metadata, consent identity, token hashes, provider/model details, request and idempotency hashes, usage records, and retention deadlines; those records follow Scan deletion plus applicable operational or legal retention requirements."
-            : "Visible chat history and AI output are stored in this browser workspace's IndexedDB until its workspace/site data is deleted. Cloudflare R2 stores scoped Hosted AI result artifacts for the server retention period shown below. Cloudflare D1 stores non-content operational metadata, session token hashes, consent identity, provider/model details, request and idempotency hashes, usage records, and retention deadlines; those records follow workspace or Scan deletion plus applicable operational or legal retention requirements.",
+            ? localized(
+                locale,
+                "Cloudflare R2 stores the uploaded manuscript and Scan artifacts for the source and artifact retention periods shown below. Cloudflare D1 stores non-content operational metadata, consent identity, token hashes, provider/model details, request and idempotency hashes, usage records, and retention deadlines; those records follow Scan deletion plus applicable operational or legal retention requirements.",
+                "Cloudflare R2は、アップロードした原稿とScan成果物を、以下に示す原稿／成果物の保持期間中保存します。Cloudflare D1は、本文を含まない運用メタデータ、同意識別子、トークンのハッシュ、プロバイダ／モデル情報、リクエスト／冪等性のハッシュ、利用記録、保持期限を保存します。これらの記録は、Scan削除後も適用される運用上または法的な保持要件に従います。",
+              )
+            : localized(
+                locale,
+                "Visible chat history and AI output are stored in this browser workspace's IndexedDB until its workspace/site data is deleted. Cloudflare R2 stores scoped Hosted AI result artifacts for the server retention period shown below. Cloudflare D1 stores non-content operational metadata, session token hashes, consent identity, provider/model details, request and idempotency hashes, usage records, and retention deadlines; those records follow workspace or Scan deletion plus applicable operational or legal retention requirements.",
+                "表示済みのチャット履歴とAI出力は、このブラウザワークスペースのIndexedDBに、ワークスペースまたはサイトデータを削除するまで保存されます。Cloudflare R2は、対象を限定したHosted AI結果成果物を以下のサーバー保持期間中保存します。Cloudflare D1は、本文を含まない運用メタデータ、セッショントークンのハッシュ、同意識別子、プロバイダ／モデル情報、リクエスト／冪等性のハッシュ、利用記録、保持期限を保存します。これらの記録は、ワークスペースまたはScan削除後も適用される運用上または法的な保持要件に従います。",
+              ),
       },
       provider: {
         summary: profile.providerStorageSummary,

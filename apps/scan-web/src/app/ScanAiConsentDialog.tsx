@@ -1,28 +1,55 @@
 import { useState, type ReactNode } from "react";
 import type { AiDataDisclosureV1 } from "@grimodex/scan-contract";
+import { scanMessages, type ScanMessages } from "../i18n/scanMessages";
+import type { ScanLocale } from "../i18n/scanLocale";
 
 interface ScanAiConsentDialogProps {
   disclosure: AiDataDisclosureV1;
+  locale: ScanLocale;
   onAccept: (consentId: string) => void;
   onDecline: () => void;
 }
 
+interface PolicyLink {
+  url: string;
+  label: string;
+}
+
+function buildPolicyLinks(
+  disclosure: AiDataDisclosureV1,
+  copy: ScanMessages["consent"],
+): PolicyLink[] {
+  const links: PolicyLink[] = [];
+  const seen = new Set<string>();
+  const add = (url: string, label: string) => {
+    if (seen.has(url)) return;
+    seen.add(url);
+    links.push({ url, label });
+  };
+
+  add(disclosure.usagePolicy.policyUrl, copy.grimodexPolicy);
+  disclosure.processingDestinations.forEach((destination) => {
+    add(
+      destination.privacyPolicyUrl,
+      copy.destinationPolicy(destination.processor),
+    );
+  });
+  add(disclosure.storage.provider.policyUrl, copy.storagePolicy);
+  add(disclosure.retention.provider.policyUrl, copy.retentionPolicy);
+  add(disclosure.trainingUse.policyUrl, copy.trainingPolicy);
+  return links;
+}
+
 export function ScanAiConsentDialog({
   disclosure,
+  locale,
   onAccept,
   onDecline,
 }: ScanAiConsentDialogProps) {
   const [confirmed, setConfirmed] = useState(false);
   const retention = disclosure.retention.application;
-  const policyLinks = [
-    disclosure.usagePolicy.policyUrl,
-    disclosure.storage.provider.policyUrl,
-    disclosure.retention.provider.policyUrl,
-    disclosure.trainingUse.policyUrl,
-    ...disclosure.processingDestinations.map(
-      (destination) => destination.privacyPolicyUrl,
-    ),
-  ].filter((url, index, urls) => urls.indexOf(url) === index);
+  const copy = scanMessages(locale).consent;
+  const policyLinks = buildPolicyLinks(disclosure, copy);
 
   return (
     <div className="scan-consent-backdrop" role="presentation">
@@ -33,13 +60,13 @@ export function ScanAiConsentDialog({
         aria-labelledby="scan-consent-title"
       >
         <header>
-          <p className="scan-eyebrow">Grimodex Scan · Data policy</p>
-          <h2 id="scan-consent-title">原稿をAIへ送信する前に確認</h2>
+          <p className="scan-eyebrow">{copy.eyebrow}</p>
+          <h2 id="scan-consent-title">{copy.title}</h2>
           <p>{disclosure.usagePolicy.summary}</p>
         </header>
 
         <div className="scan-consent-sections">
-          <DisclosureSection title="送信されるデータ">
+          <DisclosureSection title={copy.sentData}>
             <ul>
               {disclosure.sentData.map((item) => (
                 <li key={`${item.category}:${item.description}`}>
@@ -49,7 +76,7 @@ export function ScanAiConsentDialog({
             </ul>
           </DisclosureSection>
 
-          <DisclosureSection title="処理先と地域">
+          <DisclosureSection title={copy.destinations}>
             {disclosure.processingDestinations.map((destination) => (
               <p key={`${destination.processor}:${destination.purpose}`}>
                 <strong>{destination.processor}</strong>
@@ -58,29 +85,33 @@ export function ScanAiConsentDialog({
             ))}
           </DisclosureSection>
 
-          <DisclosureSection title="保存先と保持期間">
+          <DisclosureSection title={copy.storage}>
             <p>
               <strong>{disclosure.storage.application.location}</strong>
-              {` — アップロード枠 ${retention.uploadMinutes}分 / 原稿 ${retention.sourceDays}日 / 解析結果 ${retention.artifactDays}日`}
+              {` — ${copy.retentionSummary(
+                retention.uploadMinutes,
+                retention.sourceDays,
+                retention.artifactDays,
+              )}`}
             </p>
             <p className="scan-muted">
-              <strong>AIプロバイダ側の保存:</strong>{" "}
+              <strong>{copy.providerStorage}:</strong>{" "}
               {disclosure.storage.provider.summary}
             </p>
             <p className="scan-muted">
-              <strong>AIプロバイダ側の保持期間:</strong>{" "}
+              <strong>{copy.providerRetention}:</strong>{" "}
               {disclosure.retention.provider.summary}
             </p>
           </DisclosureSection>
 
-          <DisclosureSection title="モデル学習への利用">
+          <DisclosureSection title={copy.training}>
             <p>{disclosure.trainingUse.summary}</p>
           </DisclosureSection>
 
           <div className="scan-policy-links">
-            {policyLinks.map((url) => (
+            {policyLinks.map(({ url, label }) => (
               <a key={url} href={url} target="_blank" rel="noreferrer">
-                ポリシーを開く
+                {label}
               </a>
             ))}
           </div>
@@ -92,12 +123,12 @@ export function ScanAiConsentDialog({
             checked={confirmed}
             onChange={(event) => setConfirmed(event.currentTarget.checked)}
           />
-          <span>上記の送信・保存・学習利用方針を確認しました</span>
+          <span>{copy.confirm}</span>
         </label>
 
         <footer className="scan-consent-actions">
           <button type="button" className="scan-secondary" onClick={onDecline}>
-            今はScanしない
+            {copy.decline}
           </button>
           <button
             type="button"
@@ -105,7 +136,7 @@ export function ScanAiConsentDialog({
             disabled={!confirmed}
             onClick={() => onAccept(disclosure.consentId)}
           >
-            同意してScanを開始
+            {copy.accept}
           </button>
         </footer>
       </section>

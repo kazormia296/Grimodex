@@ -21,6 +21,7 @@ export interface ChunkExtractionValidationOptions {
   paragraphIds?: readonly string[];
   sectionIds?: readonly string[];
   paragraphSectionIds?: Readonly<Record<string, string>>;
+  paragraphTexts?: Readonly<Record<string, string>>;
 }
 
 const evidenceSchema = {
@@ -38,7 +39,11 @@ const evidenceSchema = {
       maxLength: SCAN_LIMITS.maxIdLength,
     },
     sentenceIndex: { type: "integer", minimum: 0 },
-    excerpt: { type: "string", maxLength: SCAN_LIMITS.maxExcerptLength },
+    excerpt: {
+      type: "string",
+      minLength: 1,
+      maxLength: SCAN_LIMITS.maxExcerptLength,
+    },
   },
   additionalProperties: false,
 } as const;
@@ -244,8 +249,13 @@ function checkReferences(
     : null;
   const knownSections = options.sectionIds ? new Set(options.sectionIds) : null;
   const paragraphSectionIds = options.paragraphSectionIds;
+  const paragraphTexts = options.paragraphTexts;
   const checkEvidence = (
-    evidence: readonly { sectionId: string; paragraphId: string }[],
+    evidence: readonly {
+      sectionId: string;
+      paragraphId: string;
+      excerpt?: string;
+    }[],
     path: string,
   ) => {
     evidence.forEach((ref, index) => {
@@ -274,6 +284,20 @@ function checkReferences(
             "reference-ownership",
             `${path}/${index}`,
             "evidence paragraph does not belong to the evidence section",
+          ),
+        );
+      }
+      const paragraphText = paragraphTexts?.[ref.paragraphId];
+      if (
+        ref.excerpt !== undefined &&
+        paragraphText !== undefined &&
+        !paragraphText.includes(ref.excerpt)
+      ) {
+        errors.push(
+          error(
+            "excerpt-mismatch",
+            `${path}/${index}/excerpt`,
+            "evidence excerpt is not an exact source paragraph substring",
           ),
         );
       }

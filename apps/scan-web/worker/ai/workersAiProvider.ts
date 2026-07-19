@@ -227,6 +227,12 @@ export function createWorkersAiProvider(
       paragraphIds: input.paragraphIds,
       sectionIds: input.sectionIds,
       paragraphSectionIds: input.paragraphSectionIds,
+      paragraphTexts: Object.fromEntries(
+        input.paragraphs.map((paragraph) => [
+          paragraph.paragraphId,
+          paragraph.text,
+        ]),
+      ),
     });
     if (!validation.ok) {
       if (!repair)
@@ -247,6 +253,7 @@ export function createWorkersAiProvider(
     extractChunk: (input) => invoke(input, false),
     adjudicate: async (input: AdjudicationInput) => {
       const prompt = buildAdjudicationPrompt({
+        language: input.language,
         ambiguityId: input.ambiguityId,
         candidateSummary: input.candidateSummary,
         evidence: input.evidenceParagraphs,
