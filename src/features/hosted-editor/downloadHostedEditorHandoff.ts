@@ -29,7 +29,7 @@ export interface DownloadHostedEditorHandoffDependencies {
   awaitAllPendingSceneWrites: typeof awaitAllPendingSceneWrites;
   getHostedEditorRuntime: () => Pick<
     NonNullable<ReturnType<typeof getHostedEditorRuntime>>,
-    "entryMode" | "exportWorkspace"
+    "exportWorkspace"
   > | null;
   getCurrentProjectId: typeof getCurrentProjectId;
   getProject: (
@@ -94,7 +94,7 @@ export async function downloadHostedEditorHandoff(
   const handoff = buildWebEditorWorkspaceHandoff({
     databaseBytes,
     createdAt: dependencies.now(),
-    sourceMode: runtime.entryMode,
+    sourceMode: "standalone",
     uiLanguage: dependencies.resolveUiLanguage(),
     projectId,
     title: project.title,

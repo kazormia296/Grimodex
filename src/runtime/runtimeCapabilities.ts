@@ -8,7 +8,8 @@ export interface RuntimeCapabilities {
   secureSecretStore: boolean;
   localDatabase: boolean;
   localAi: boolean;
-  hostedAi: boolean;
+  /** Direct browser transport configured by the user (Local LLM / BYOK). */
+  browserDirectAi: boolean;
   externalMount: boolean;
   mcpServer: boolean;
   multiWindow: boolean;
@@ -23,7 +24,7 @@ const ELECTRON_CAPABILITIES: RuntimeCapabilities = {
   secureSecretStore: true,
   localDatabase: true,
   localAi: true,
-  hostedAi: true,
+  browserDirectAi: false,
   externalMount: true,
   mcpServer: true,
   multiWindow: true,
@@ -38,7 +39,7 @@ const WEB_CAPABILITIES: RuntimeCapabilities = {
   secureSecretStore: false,
   localDatabase: true,
   localAi: false,
-  hostedAi: true,
+  browserDirectAi: true,
   externalMount: false,
   mcpServer: false,
   multiWindow: false,
@@ -53,7 +54,7 @@ const MOBILE_NATIVE_CAPABILITIES: RuntimeCapabilities = {
   secureSecretStore: true,
   localDatabase: true,
   localAi: false,
-  hostedAi: true,
+  browserDirectAi: false,
   externalMount: false,
   mcpServer: false,
   multiWindow: false,

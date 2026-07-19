@@ -74,11 +74,22 @@ const isViteDevelopment = import.meta.env.DEV;
 
 export type BrowserAiEndpointResource = "chat" | "models";
 
+function requireBrowserDirectProvider(provider: AiProvider): void {
+  if (
+    provider !== "ollama" &&
+    provider !== "openai" &&
+    provider !== "anthropic"
+  ) {
+    throw new Error(`Provider "${provider}" is not supported in browser mode`);
+  }
+}
+
 export function resolveBrowserAiEndpoint(
   provider: AiProvider,
   resource: BrowserAiEndpointResource,
   options: { development?: boolean; ollamaEndpoint?: string | null } = {},
 ): string | null {
+  requireBrowserDirectProvider(provider);
   const development = options.development ?? isViteDevelopment;
   if (resource === "models" && provider === "anthropic") return null;
 
@@ -92,30 +103,26 @@ export function resolveBrowserAiEndpoint(
       return development
         ? `/api/openai/${suffix}`
         : `https://api.openai.com/v1/${suffix}`;
-    case "openrouter":
-      return development
-        ? `/api/openrouter/${suffix}`
-        : `https://openrouter.ai/api/v1/${suffix}`;
-    case "ollama":
-      if (resource === "models") {
-        return development
-          ? "/api/ollama/api/tags"
-          : `${normalizeOllamaEndpoint(options.ollamaEndpoint)}/api/tags`;
-      }
-      return development
-        ? "/api/ollama/v1/chat/completions"
-        : `${normalizeOllamaEndpoint(options.ollamaEndpoint)}/v1/chat/completions`;
-    case "openai-compatible":
-    case "sakana":
-    case "ai-novelist":
-    case "cli":
-      throw new Error(
-        `Provider "${provider}" is not supported in browser mode (Tauri only)`,
+    case "ollama": {
+      const normalizedOllamaEndpoint = normalizeOllamaEndpoint(
+        options.ollamaEndpoint,
       );
+      const useDevelopmentProxy =
+        development && normalizedOllamaEndpoint === "http://localhost:11434";
+      if (resource === "models") {
+        return useDevelopmentProxy
+          ? "/api/ollama/api/tags"
+          : `${normalizedOllamaEndpoint}/api/tags`;
+      }
+      return useDevelopmentProxy
+        ? "/api/ollama/v1/chat/completions"
+        : `${normalizedOllamaEndpoint}/v1/chat/completions`;
+    }
   }
+  throw new Error(`Provider "${provider}" is not supported in browser mode`);
 }
 
-function normalizeOllamaEndpoint(endpoint?: string | null): string {
+export function normalizeOllamaEndpoint(endpoint?: string | null): string {
   const base = endpoint?.trim() || "http://localhost:11434";
   return base.replace(/\/+$/, "");
 }
@@ -144,6 +151,7 @@ function buildHeaders(
   provider: AiProvider,
   apiKey: string,
 ): Record<string, string> {
+  requireBrowserDirectProvider(provider);
   const headers: Record<string, string> = {
     "content-type": "application/json",
   };
@@ -155,11 +163,6 @@ function buildHeaders(
       // Anthropic requires an explicit opt-in header for credentialed browser
       // requests. The API key remains only in this page's runtime memory.
       headers["anthropic-dangerous-direct-browser-access"] = "true";
-      break;
-    case "openrouter":
-      headers["Authorization"] = `Bearer ${apiKey}`;
-      headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
-      headers["X-Title"] = "Grimodex";
       break;
     case "openai":
       headers["Authorization"] = `Bearer ${apiKey}`;
@@ -239,6 +242,7 @@ function buildChatBody(request: BrowserAiRequest): Record<string, unknown> {
 }
 
 function requireBrowserAiRequest(request: BrowserAiRequest): void {
+  requireBrowserDirectProvider(request.provider);
   if (!request.model.trim()) {
     throw new Error("AIモデルが設定されていません");
   }
@@ -508,7 +512,9 @@ export function createBrowserAiTransport(): BrowserAiTransport {
 export async function fetchModels(
   provider: AiProvider,
   apiKey: string,
+  ollamaEndpoint?: string | null,
 ): Promise<AiModel[]> {
+  requireBrowserDirectProvider(provider);
   // Anthropic: static list
   if (provider === "anthropic") {
     return [
@@ -521,15 +527,11 @@ export async function fetchModels(
     ];
   }
 
-  const url = modelsEndpoint(provider);
+  const url = modelsEndpoint(provider, ollamaEndpoint);
   if (!url) return [];
 
   const headers: Record<string, string> = {};
-  if (provider === "openrouter") {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-    headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
-    headers["X-Title"] = "Grimodex";
-  } else if (provider === "openai") {
+  if (provider === "openai") {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
@@ -550,30 +552,8 @@ export async function fetchModels(
     }));
   }
 
-  // OpenAI / OpenRouter
+  // OpenAI
   const data = body?.data ?? [];
-  if (provider === "openrouter") {
-    return data.map(
-      (m: {
-        id: string;
-        name?: string;
-        context_length?: number;
-        top_provider?: { max_completion_tokens?: number };
-        supported_parameters?: unknown[];
-        pricing?: { prompt?: string; completion?: string };
-      }) => ({
-        id: m.id,
-        name: m.name ?? m.id,
-        contextLength: m.context_length,
-        maxCompletionTokens: m.top_provider?.max_completion_tokens,
-        supportedParameters: (m.supported_parameters ?? []).filter(
-          (p): p is string => typeof p === "string",
-        ),
-        pricingPrompt: m.pricing?.prompt,
-        pricingCompletion: m.pricing?.completion,
-      }),
-    );
-  }
   return data.map((m: { id: string; name?: string }) => ({
     id: m.id,
     name: m.name ?? m.id,
@@ -805,9 +785,10 @@ export async function sendChatWithTools(
   messages: AgentMessagePayload[],
   tools: AgentToolDefinition[],
   toolProtocolMode: ToolProtocolMode = "auto",
+  ollamaEndpoint?: string | null,
 ): Promise<AgentLLMResponse> {
   const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider);
+  const url = chatEndpoint(provider, ollamaEndpoint);
 
   // Rust parity: provider ゲート + auto/native/hermes を一度だけ解決し、
   // 送信側 (tools[] 省略 + <tools> XML) と受信側パースの両方で使う。
@@ -889,9 +870,10 @@ export async function testConnection(
   provider: AiProvider,
   model: string,
   apiKey: string,
+  ollamaEndpoint?: string | null,
 ): Promise<string> {
   const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider);
+  const url = chatEndpoint(provider, ollamaEndpoint);
 
   let body: Record<string, unknown>;
 

@@ -1,24 +1,11 @@
 export * from "./limits.js";
 export * from "./scanBundleV1.js";
-export * from "./editorHandoff.js";
 export * from "./webEditorWorkspaceHandoff.js";
 export { sha256Hex } from "./hash.js";
 export {
   computeSourceFingerprint,
   type SourceFingerprintInput,
 } from "./sourceFingerprint.js";
-export * from "./publicReportV1.js";
-export * from "./aiDataDisclosureV1.js";
-export * from "./hostedEditorAi.js";
-export * from "./cloudContentPolicy.js";
-export * from "./accessSession.js";
-export {
-  chunkExtractionV1Schema,
-  validateChunkExtraction,
-  type ChunkExtractionValidationError,
-  type ChunkExtractionValidationResult,
-  type ChunkExtractionValidationOptions,
-} from "./chunkExtractionV1.js";
 export { scanBundleV1Schema } from "./schema.js";
 export {
   parseEditorSeed,

@@ -1,15 +1,15 @@
-import type { HostedBrowserRuntime } from "@/lib/browserRuntime";
+import type { WebEditorBrowserRuntime } from "@/lib/browserRuntime";
 
-let activeHostedEditorRuntime: HostedBrowserRuntime | null = null;
+let activeHostedEditorRuntime: WebEditorBrowserRuntime | null = null;
 
 /** Installs the browser runtime created before React mounts. */
 export function installHostedEditorRuntime(
-  runtime: HostedBrowserRuntime,
+  runtime: WebEditorBrowserRuntime,
 ): void {
   activeHostedEditorRuntime = runtime;
 }
 
 /** Returns null in native shells and before browser bootstrap completes. */
-export function getHostedEditorRuntime(): HostedBrowserRuntime | null {
+export function getHostedEditorRuntime(): WebEditorBrowserRuntime | null {
   return activeHostedEditorRuntime;
 }

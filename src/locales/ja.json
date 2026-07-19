@@ -518,17 +518,15 @@
   "hostedEditor": {
     "trial": {
       "title": "Web Editor 試用版",
-      "scanDescription": "Scanで読み込んだ文書を編集しています。",
-      "standaloneDescription": "Web Editorを単体で試しています。",
+      "description": "Grimodex本体の実エディターをブラウザで試せます。",
       "storageNotice": "データはこのブラウザに保存され、ローカル版Grimodexへ自動同期されません。",
-      "aiNotice": "AI利用時は送信前に、送信内容・保存先・保持期間・学習利用を確認します。",
-      "contentPolicyLink": "Cloudflareのホスティング方針",
+      "aiNotice": "AIは付属していません。利用する場合はLocal LLM（Ollama）またはご自身のOpenAI／Anthropic APIキーを設定してください。",
+      "apiKeyMemoryNotice": "BYOKのAPIキーはこのページの実行メモリにだけ保持され、再読み込みまたは終了時に消去されます。",
       "continueInGrimodex": "Grimodexで続きを書く"
     },
     "handoff": {
       "title": "Grimodexで続きを書く",
-      "scanDescription": "Scanで読み込んだ文書をローカル版Grimodexへ引き継ぎます。",
-      "standaloneDescription": "Web Editorで作成した文書をローカル版Grimodexへ引き継ぎます。",
+      "description": "Web Editorで作成した文書をローカル版Grimodexへ引き継ぎます。",
       "downloadInstruction": "最初に、編集内容を保持した引き継ぎファイルをダウンロードしてください。",
       "download": "引き継ぎファイルをダウンロード",
       "downloading": "引き継ぎファイルを作成中…",
@@ -546,6 +544,21 @@
       "importing": "取り込み中…",
       "unknownError": "不明なエラー",
       "failed": "引き継ぎファイルを取り込めませんでした: {{error}}"
+    },
+    "settings": {
+      "categories": {
+        "project": "プロジェクト",
+        "ai": "AI",
+        "editor": "エディター",
+        "display": "表示",
+        "about": "情報"
+      }
+    },
+    "ollama": {
+      "browserSetup": "Web EditorのオリジンをOllama側で許可し、Ollamaを再起動してください。ワイルドカードではなく下記のオリジンだけを指定してください。",
+      "localNetworkPermission": "ローカルのOllamaへ接続する場合、ブラウザにローカルネットワークへのアクセス確認が表示されたら許可してください。",
+      "setupLink": "Ollamaのオリジン設定",
+      "browserPermissionLink": "ブラウザのローカルネットワーク許可"
     }
   },
   "app": {
@@ -1841,6 +1854,7 @@
       "on": "Web検索 ON（クリックで OFF）",
       "off": "Web検索を有効にする（クリックで ON）",
       "unavailable": "このプロバイダは Web検索に非対応です（OpenRouter / Anthropic のみ）",
+      "unavailableWebEditor": "Web Editor 試用版では Web検索を提供していません",
       "agentPrivacyNote": "プライベートAgentではプロジェクトデータと分離するため、このターンのWeb検索を無効化します。",
       "searching": "Web を検索中…",
       "egressNote": "検索クエリは第三者の検索プロバイダへ送信されます。",
@@ -5854,10 +5868,46 @@
     "providerStorage": "AIプロバイダ側の保存",
     "providerRetention": "AIプロバイダ側の保持期間",
     "training": "モデル学習への利用",
-    "openPolicy": "ポリシーを開く",
+    "appPolicy": "GrimodexのAIデータ利用方針",
+    "processorPolicy": "{{processor}}のプライバシーポリシー",
+    "providerStoragePolicy": "AI提供者の保存ポリシー",
+    "providerRetentionPolicy": "AI提供者の保持期間ポリシー",
+    "providerTrainingPolicy": "AI提供者の学習利用ポリシー",
     "confirm": "上記の送信・保存・学習利用方針を確認しました",
     "decline": "今は使わない",
-    "accept": "同意してAIを使う"
+    "accept": "同意してAIを使う",
+    "policyVersion": "ポリシーバージョン",
+    "connectionDestination": "実際の接続先",
+    "disclosure": {
+      "usageSummary": "入力した指示、選択された本文や文脈、および必要な認証情報を、表示された接続先へ直接送信します。送信前に内容と接続先を確認してください。",
+      "sentPrompt": "入力した指示、会話履歴、システム指示",
+      "sentContext": "リクエストのために選択された本文、シーン、Codex、プロジェクト設定などの文脈",
+      "sentCredential": "提供者が必要とするユーザー自身のAPIキー（認証ヘッダーで送信し、このページの実行メモリにだけ保持）",
+      "applicationStorage": "このブラウザのローカルワークスペース（IndexedDB）",
+      "provider": {
+        "openai": {
+          "purpose": "選択したAI支援を生成するため",
+          "location": "OpenAI が管理するインフラストラクチャ",
+          "storage": "OpenAI API側では、既定で不正利用監視ログが最大30日保持されます。対象組織は保持期間変更やZero Data Retentionを申請できます。",
+          "retention": "既定の不正利用監視ログは最大30日です。契約、設定、法的例外により異なる場合があります。",
+          "training": "OpenAI APIの入出力は、組織が明示的にオプトインしない限りモデル学習に使用されません。"
+        },
+        "anthropic": {
+          "purpose": "選択したAI支援を生成するため",
+          "location": "Anthropic が管理するインフラストラクチャ",
+          "storage": "Anthropic APIの入出力は通常30日以内に削除されますが、契約、安全対策、法的義務による例外があります。",
+          "retention": "通常は30日以内に削除されます。Zero Data Retention契約や安全、法的例外では条件が異なります。",
+          "training": "Anthropicの商用/APIデータは、明示的なオプトインやフィードバック提供を除きモデル学習に使用されません。"
+        },
+        "ollama": {
+          "processor": "設定されたOllamaサーバー",
+          "purpose": "選択したAI支援をローカルまたは指定先で生成するため",
+          "storage": "保存の有無は、ユーザーが管理するOllamaサーバーと接続先モデルの設定に依存します。Grimodexは追加のサーバー保存を行いません。",
+          "retention": "保持期間は設定されたOllamaサーバーの運用方針に依存します。",
+          "training": "学習への利用は、設定されたOllamaサーバーとモデルの運用方針に依存します。"
+        }
+      }
+    }
   },
   "promptLibrary": {
     "section": {

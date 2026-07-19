@@ -1,9 +1,10 @@
-export type AiDataConsentRoute = "scan" | "hosted-editor" | "byok";
+export type AiDataConsentRoute = "byok";
 
 export interface AiDataConsentIdentity {
   policyVersion: string;
   route: AiDataConsentRoute;
   provider: string;
+  destination: string;
 }
 
 export interface AiDataConsentRecord extends AiDataConsentIdentity {
@@ -19,7 +20,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function isConsentRoute(value: unknown): value is AiDataConsentRoute {
-  return value === "scan" || value === "hosted-editor" || value === "byok";
+  return value === "byok";
 }
 
 function parseConsentIdentity(value: unknown): AiDataConsentIdentity | null {
@@ -27,7 +28,8 @@ function parseConsentIdentity(value: unknown): AiDataConsentIdentity | null {
   if (
     !isNonEmptyString(value.policyVersion) ||
     !isConsentRoute(value.route) ||
-    !isNonEmptyString(value.provider)
+    !isNonEmptyString(value.provider) ||
+    !isNonEmptyString(value.destination)
   ) {
     return null;
   }
@@ -35,6 +37,7 @@ function parseConsentIdentity(value: unknown): AiDataConsentIdentity | null {
     policyVersion: value.policyVersion,
     route: value.route,
     provider: value.provider,
+    destination: value.destination,
   };
 }
 
@@ -67,6 +70,7 @@ export function isAiDataConsentCurrent(
   return (
     stored.policyVersion === expected.policyVersion &&
     stored.route === expected.route &&
-    stored.provider === expected.provider
+    stored.provider === expected.provider &&
+    stored.destination === expected.destination
   );
 }

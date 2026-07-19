@@ -12,7 +12,6 @@ lightSuites:
   - tool-policy
   - prompt-contract
   - retrieval-grounding
-  - scan-contract
 requirements:
   - id: GDX-ROUTE-001
     title: Every production AI route is registered, routed, and assigned a verifier.
@@ -21,27 +20,23 @@ requirements:
       - src/features/ai-verification/aiPathRegistry.ts
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
-      - apps/scan-web/worker/ai/providerConfig.ts
-      - apps/scan-web/worker/ai/openRouterPolicy.ts
+      - src/features/chat/chatStore.ts
     lightTests:
       - src/features/ai-verification/aiPathRegistry.test.ts
-      - src/features/ai-verification/aiPathRegistry.openRouter.test.ts
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
       - src/features/chat/modelRouting.test.ts
       - src/features/chat/turn/resolveTurnRoute.test.ts
-      - apps/scan-web/worker/ai/openRouterRouting.test.ts
-      - apps/scan-web/worker/ai/hostedOpenRouter.test.ts
-      - scripts/cloudflare-scan-openrouter.test.mjs
+      - src/features/chat/chatApi.test.ts
+      - src/features/chat/chatStore.test.ts
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
       - src-tauri/src/commands/post_effect.rs
     evaluatedBy:
       - eval-prompt-post-effect-json
-      - eval-prompt-scan-language
       - eval-route-search-codex
       - eval-route-search-scenes
       - eval-route-list-chapters
       - eval-route-character-timeline
-      - eval-hosted-openrouter-reconsent
   - id: GDX-PRECHECK-001
     title: Missing inputs, policies, confirmation, or tools stop before mutation.
     definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
@@ -49,27 +44,10 @@ requirements:
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/features/chat/context/chatContextPlanner.ts
       - src/features/ai-policy/policyGuard.ts
-      - apps/scan-web/src/app/ScanWebApp.tsx
-      - apps/scan-web/src/app/ScanDeleteDialog.tsx
-      - apps/scan-web/src/app/scanOwnershipStorage.ts
-      - apps/scan-web/worker/auth/accessAuth.ts
-      - apps/scan-web/worker/auth/accessRouting.ts
-      - apps/scan-web/src/api/scanApiClient.ts
     lightTests:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
       - src/features/ai-policy/policyGuard.test.ts
-      - apps/scan-web/src/app/ScanWebApp.render.test.tsx
-      - apps/scan-web/src/app/ScanDeleteDialog.test.tsx
-      - apps/scan-web/src/app/scanOwnershipStorage.test.ts
-      - apps/scan-web/worker/router.test.ts
-      - apps/scan-web/worker/repository.test.ts
-      - packages/scan-contract/test/accessSession.test.ts
-      - apps/scan-web/worker/auth/accessAuth.test.ts
-      - apps/scan-web/worker/auth/accessRouting.test.ts
-      - apps/scan-web/worker/repositoryOwnership.test.ts
-      - apps/scan-web/src/api/scanAccountClient.test.ts
-      - apps/scan-web/src/app/ScanAccountGate.test.tsx
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -83,14 +61,8 @@ requirements:
     title: External AI data use is fully disclosed and explicitly consented before dispatch.
     definedIn: policies/quality/iron-laws.md#GDX-AI-CONSENT-001
     implementedBy:
-      - packages/scan-contract/src/aiDataDisclosureV1.ts
-      - apps/scan-web/worker/ai/aiDataDisclosure.ts
-      - apps/scan-web/worker/ai/openRouterPolicy.ts
-      - apps/scan-web/worker/router.ts
-      - apps/scan-web/src/api/scanApiClient.ts
-      - apps/scan-web/src/api/hostedAiClient.ts
-      - apps/scan-web/src/app/ScanAiConsentDialog.tsx
       - src/features/ai-policy/aiDataConsentBroker.ts
+      - src/features/ai-policy/aiDataConsent.ts
       - src/features/ai-policy/AiDataConsentDialog.tsx
       - src/features/ai-policy/AiDataConsentDetails.tsx
       - src/features/ai-policy/browserAiDisclosure.ts
@@ -98,66 +70,18 @@ requirements:
       - public/PRIVACY_ja.md
       - public/PRIVACY_en.md
     lightTests:
-      - packages/scan-contract/test/aiDataDisclosure.test.ts
-      - apps/scan-web/worker/aiDisclosure.router.test.ts
-      - apps/scan-web/worker/aiDisclosure.openRouter.test.ts
-      - apps/scan-web/worker/ai/openRouterRouting.test.ts
-      - apps/scan-web/worker/ai/hostedOpenRouter.test.ts
-      - apps/scan-web/src/api/scanApiClient.consent.test.ts
-      - apps/scan-web/src/api/hostedAiClient.consent.test.ts
-      - apps/scan-web/src/app/ScanAiConsentDialog.test.tsx
       - src/features/ai-policy/aiDataConsent.test.ts
       - src/features/ai-policy/aiDataConsentBroker.test.ts
       - src/features/ai-policy/AiDataConsentDialog.test.tsx
+      - src/features/ai-policy/browserAiDisclosure.test.ts
+      - src/lib/browser-ai.test.ts
       - src/lib/browser-mock.ai-runtime.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts
-      - src/features/ai-verification/aiPathRegistry.openRouter.test.ts
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
     heavyTests:
-      - apps/scan-web/worker/ai/hostedAi.test.ts
+      - src/features/ai-verification/singleShot.live.test.ts
     evaluatedBy:
       - eval-ai-data-consent-precheck
-      - eval-hosted-openrouter-reconsent
-  - id: GDX-HOSTED-CONTENT-001
-    title: Hosted Scan and Editor routes confirm content rights and expose safe reporting controls.
-    definedIn: policies/quality/iron-laws.md#GDX-HOSTED-CONTENT-001
-    implementedBy:
-      - packages/scan-contract/src/cloudContentPolicy.ts
-      - packages/scan-contract/src/aiDataDisclosureV1.ts
-      - packages/scan-contract/src/publicReportV1.ts
-      - apps/scan-web/worker/ai/aiDataDisclosure.ts
-      - apps/scan-web/worker/router.ts
-      - apps/scan-web/src/app/ScanAiConsentDialog.tsx
-      - apps/scan-web/src/app/ScanWebApp.tsx
-      - apps/scan-web/src/api/scanApiClient.ts
-      - apps/scan-web/src/api/hostedAiClient.ts
-      - apps/scan-web/src/public/PublicReportPage.tsx
-      - apps/scan-web/src/public/PublicReportContent.tsx
-      - apps/scan-web/src/public/PublicReportAbuseForm.tsx
-      - apps/scan-web/src/report/ScanReport.tsx
-      - src/features/ai-policy/AiDataConsentDialog.tsx
-      - src/features/ai-policy/AiDataConsentDetails.tsx
-      - src/features/hosted-editor/HostedEditorTrialBar.tsx
-      - src/lib/hostedBrowserAi.ts
-    lightTests:
-      - packages/scan-contract/test/cloudContentPolicy.test.ts
-      - packages/scan-contract/test/aiDataDisclosure.test.ts
-      - packages/scan-contract/test/publicReportV1.test.ts
-      - apps/scan-web/worker/aiDisclosure.router.test.ts
-      - apps/scan-web/worker/router.test.ts
-      - apps/scan-web/src/app/ScanAiConsentDialog.test.tsx
-      - apps/scan-web/src/app/ScanWebApp.render.test.tsx
-      - apps/scan-web/src/api/scanApiClient.test.ts
-      - apps/scan-web/src/api/scanApiClient.consent.test.ts
-      - apps/scan-web/src/api/hostedAiClient.consent.test.ts
-      - apps/scan-web/src/public/PublicReportPage.test.tsx
-      - apps/scan-web/src/report/ScanReport.test.tsx
-      - src/features/ai-policy/AiDataConsentDialog.test.tsx
-      - src/features/hosted-editor/HostedEditorTrialBar.test.tsx
-      - src/lib/hostedBrowserAi.test.ts
-    heavyTests:
-      - apps/scan-web/worker/ai/hostedAi.test.ts
-    evaluatedBy:
-      - eval-hosted-content-rights-precheck
   - id: GDX-TOOL-001
     title: Agent tool calls must resolve to the canonical manifest and channel.
     definedIn: policies/quality/iron-laws.md#GDX-TOOL-001
@@ -184,17 +108,9 @@ requirements:
       - src/features/ai-policy/policyGuard.ts
       - src/features/chat/agent/toolExecutors.ts
       - agent-tool-manifest.json
-      - apps/scan-web/src/app/ScanWebApp.tsx
-      - apps/scan-web/src/app/ScanDeleteDialog.tsx
-      - apps/scan-web/src/app/scanOwnershipStorage.ts
     lightTests:
       - src/features/ai-policy/policyGuard.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
-      - apps/scan-web/src/app/ScanWebApp.render.test.tsx
-      - apps/scan-web/src/app/ScanDeleteDialog.test.tsx
-      - apps/scan-web/src/app/scanOwnershipStorage.test.ts
-      - apps/scan-web/worker/router.test.ts
-      - apps/scan-web/worker/repository.test.ts
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -225,7 +141,6 @@ requirements:
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
       - scripts/quality/run-related-scenes-heavy.mjs
     evaluatedBy:
-      - eval-prompt-scan-language
       - eval-ground-search-events
       - eval-ground-get-scene
       - eval-ground-foreshadow
@@ -234,16 +149,11 @@ requirements:
     title: Structured and generated outputs pass schema and provenance validation.
     definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
     implementedBy:
-      - packages/scan-contract/src/publicReportV1.ts
-      - packages/scan-prompts/src/evaluation.ts
       - src/features/chat/agent/toolExecutors.ts
       - src/features/chat/agent/chronicleWriteTools.ts
       - src/features/post-effect/api.ts
       - src/features/post-effect/canonicalize.ts
     lightTests:
-      - packages/scan-contract/test/publicReportV1.test.ts
-      - packages/scan-prompts/test/evaluation.test.ts
-      - apps/scan-web/worker/pipeline.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/chronicleWriteTools.test.ts
       - src/features/post-effect/api.test.ts
@@ -253,7 +163,6 @@ requirements:
       - src/features/codex/candidateJudgment.live.test.ts
       - src/features/codex/codexYomi.live.test.ts
     evaluatedBy:
-      - eval-prompt-scan-language
       - eval-artifact-create-event
       - eval-artifact-update-codex
       - eval-policy-create-snippet
@@ -283,8 +192,7 @@ requirements:
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
-      - src/features/ai-verification/aiPathRegistry.openRouter.test.ts
-      - scripts/cloudflare-scan-openrouter.test.mjs
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
     evaluatedBy:
@@ -292,16 +200,15 @@ requirements:
       - eval-artifact-create-event
       - eval-prompt-post-effect-json
       - eval-route-search-scenes
-      - eval-hosted-openrouter-reconsent
 heavyEvaluations:
   - id: heavy-agent-tool-loop
     suiteId: tool-policy
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts
-    reason: Requires billed model access and an isolated workspace.
+    reason: Preserved desktop-route validation; requires billed OpenRouter access and an isolated workspace, and is not a managed Web Editor route.
   - id: heavy-single-shot-surfaces
     suiteId: ai-routing
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/ai-verification/singleShot.live.test.ts
-    reason: Requires billed model access; missing credentials must not become a pass.
+    reason: Preserved desktop-route validation; requires billed OpenRouter access, and missing credentials must not become a pass.
   - id: heavy-related-scenes
     suiteId: retrieval-grounding
     command: EMBED_NODE_MODULES=... EMBED_RES_DIR=... node scripts/quality/run-related-scenes-heavy.mjs
@@ -309,17 +216,13 @@ heavyEvaluations:
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
-    reason: Requires a billed live model and isolated credentials for the Rust post-effect path.
+    reason: Preserved desktop Rust-route validation; requires a billed OpenRouter model and isolated credentials.
   - id: heavy-codex-prompt-surfaces
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
-    reason: Requires a billed live model; wording checks alone are Light evidence.
+    reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
 blockedEvaluations:
-  - id: blocked-scan-hosted
-    suiteId: scan-contract
-    reason: No isolated hosted Scan evaluation runner exists in the repository, so this cannot be represented as runnable Heavy evidence.
-    requiredAction: Add a teardown-capable runner and isolated test-account contract before promoting this gap to heavyEvaluations.
   - id: blocked-web-ai-consent-live
     suiteId: tool-policy
-    reason: No isolated deployed-browser runner proves the consent dialog, refusal-before-provider behavior, processor disclosure, and teardown against a real Hosted or BYOK provider.
-    requiredAction: Add disposable provider credentials and storage, a deployed browser runner, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.
+    reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, processor disclosure, and teardown against a real user-selected Local LLM or BYOK provider.
+    requiredAction: Add disposable user-owned provider credentials or an isolated Local LLM endpoint, a browser runner, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.

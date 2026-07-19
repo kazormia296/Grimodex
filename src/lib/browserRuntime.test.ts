@@ -60,7 +60,9 @@ function createDependencies(
 
 describe("Web Editor browser runtime", () => {
   it("fails closed when IndexedDB is unavailable", () => {
-    expect(() => createWebEditorWorkspaceStore({ indexedDB: null })).toThrowError(
+    expect(() =>
+      createWebEditorWorkspaceStore({ indexedDB: null }),
+    ).toThrowError(
       expect.objectContaining<Partial<BrowserWorkspaceError>>({
         code: "unavailable",
       }),

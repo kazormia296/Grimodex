@@ -13,6 +13,7 @@ const disclosure: AiDataDisclosureView = {
   policyVersion: "2026-07-19.1",
   route: "byok",
   provider: "openai",
+  destination: "https://api.openai.com",
   consentId: "consent_byok_openai_2026_07_19_abcdef",
   usagePolicy: {
     summary: "Selected content is sent only after consent.",

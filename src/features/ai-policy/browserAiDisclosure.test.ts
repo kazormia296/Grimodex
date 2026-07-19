@@ -8,18 +8,18 @@ describe("browser BYOK AI disclosure", () => {
   it.each([
     ["openai", "not-used"],
     ["anthropic", "not-used"],
-    ["openrouter", "depends"],
     ["ollama", "depends"],
   ] as const)(
     "explains sent data, local storage, retention, and training for %s",
     (provider, trainingStatus) => {
-      const disclosure = createByokAiDataDisclosure(provider);
+      const disclosure = createByokAiDataDisclosure(provider, { locale: "en" });
 
       expect(disclosure).toMatchObject({
         schemaVersion: "grimodex/ai-data-disclosure/1",
         policyVersion: BROWSER_AI_DATA_POLICY_VERSION,
         route: "byok",
         provider,
+        destination: expect.stringMatching(/^https?:\/\//),
         consentId: expect.stringMatching(/^consent_byok_.{16,}$/),
         storage: {
           application: {
@@ -35,16 +35,36 @@ describe("browser BYOK AI disclosure", () => {
         },
       });
       expect(disclosure.sentData.map((item) => item.category)).toEqual(
-        expect.arrayContaining(["prompt", "selected-context", "credential"]),
+        expect.arrayContaining(["prompt", "selected-context"]),
       );
+      expect(
+        disclosure.sentData.some((item) => item.category === "credential"),
+      ).toBe(provider !== "ollama");
       expect(disclosure.retention.provider.summary.length).toBeGreaterThan(10);
+      expect(JSON.stringify(disclosure)).not.toMatch(/[ぁ-んァ-ヶ一-龠]/);
     },
   );
 
-  it("does not overclaim a provider policy for an arbitrary compatible endpoint", () => {
-    const disclosure = createByokAiDataDisclosure("openai-compatible");
+  it("binds Ollama consent and disclosure to the exact configured endpoint", () => {
+    const first = createByokAiDataDisclosure("ollama", {
+      locale: "ja",
+      ollamaEndpoint: "http://192.0.2.10:11434/",
+    });
+    const second = createByokAiDataDisclosure("ollama", {
+      locale: "ja",
+      ollamaEndpoint: "http://192.0.2.11:11434",
+    });
 
-    expect(disclosure.trainingUse.status).toBe("depends");
-    expect(disclosure.trainingUse.summary).toMatch(/configured|設定/i);
+    expect(first.destination).toBe("http://192.0.2.10:11434");
+    expect(first.processingDestinations[0]?.location).toBe(
+      "http://192.0.2.10:11434",
+    );
+    expect(first.consentId).not.toBe(second.consentId);
+  });
+
+  it("fails closed for a provider outside the Web Editor allowlist", () => {
+    expect(() =>
+      createByokAiDataDisclosure("openai-compatible", { locale: "en" }),
+    ).toThrow(/not supported/i);
   });
 });

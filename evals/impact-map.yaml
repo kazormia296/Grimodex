@@ -5,7 +5,6 @@ allSuites:
   - tool-policy
   - prompt-contract
   - retrieval-grounding
-  - scan-contract
 rules:
   - id: quality-foundation
     reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
@@ -19,7 +18,6 @@ rules:
       - GDX-ROUTE-001
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001
-      - GDX-HOSTED-CONTENT-001
       - GDX-TOOL-001
       - GDX-POLICY-001
       - GDX-GROUND-001
@@ -65,7 +63,6 @@ rules:
     requirements:
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001
-      - GDX-HOSTED-CONTENT-001
       - GDX-TOOL-001
       - GDX-POLICY-001
     suites:
@@ -108,73 +105,40 @@ rules:
       - GDX-ISOLATION-001
     suites:
       - retrieval-grounding
-  - id: scan-workspace
-    reason: Scan contracts, prompts, processing, and hosted output form one artifact lane.
+  - id: web-editor-ai
+    reason: Web Editor must remain an explicit Local LLM or BYOK route with no application-owned credential or managed provider.
     paths:
-      - packages/scan-contract/**
-      - packages/scan-core/**
-      - packages/scan-prompts/**
-      - apps/scan-web/**
-      - scripts/cloudflare-scan-deploy.mjs
-      - scripts/cloudflare-scan-deploy.test.mjs
-      - scripts/cloudflare-scan-openrouter.test.mjs
-      - docs/SCAN_CLOUDFLARE_DEPLOYMENT.md
-    requirements:
-      - GDX-GROUND-001
-      - GDX-ARTIFACT-001
-      - GDX-AI-CONSENT-001
-      - GDX-HOSTED-CONTENT-001
-      - GDX-TRACE-001
-    suites:
-      - scan-contract
-  - id: hosted-cloud-content
-    reason: Hosted content warnings, rights confirmation, policy versioning, and public abuse controls share one fail-closed boundary.
-    paths:
-      - packages/scan-contract/src/cloudContentPolicy.ts
-      - packages/scan-contract/test/cloudContentPolicy.test.ts
-      - packages/scan-contract/src/aiDataDisclosureV1.ts
-      - packages/scan-contract/test/aiDataDisclosure.test.ts
-      - packages/scan-contract/src/publicReportV1.ts
-      - packages/scan-contract/test/publicReportV1.test.ts
-      - src/features/ai-policy/AiDataConsentDialog.tsx
-      - src/features/ai-policy/AiDataConsentDialog.test.tsx
+      - src/lib/browser-ai.ts
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ts
+      - src/lib/browser-mock.ai-runtime.test.ts
+      - src/lib/browserRuntime.ts
+      - src/lib/browserRuntime.test.ts
+      - src/features/ai-policy/**
       - src/features/hosted-editor/**
-      - apps/scan-web/src/app/ScanAiConsentDialog.tsx
-      - apps/scan-web/src/app/ScanAiConsentDialog.test.tsx
-      - apps/scan-web/src/api/scanApiClient.ts
-      - apps/scan-web/src/api/scanApiClient.consent.test.ts
-      - apps/scan-web/src/api/hostedAiClient.ts
-      - apps/scan-web/src/api/hostedAiClient.consent.test.ts
-      - apps/scan-web/src/public/**
-      - apps/scan-web/src/report/ScanReport.tsx
-      - apps/scan-web/src/report/ScanReport.test.tsx
-      - apps/scan-web/worker/ai/aiDataDisclosure.ts
-      - apps/scan-web/worker/aiDisclosure.router.test.ts
-      - apps/scan-web/worker/router.ts
-      - apps/scan-web/worker/router.test.ts
-      - src/lib/hostedBrowserAi.ts
-      - src/lib/hostedBrowserAi.test.ts
+      - src/features/ab-test/abConfig.ts
+      - src/features/ab-test/abConfig.test.ts
+      - src/features/ab-test/AbSlotCard.tsx
+      - src/features/chat/chatApi.ts
+      - src/features/chat/chatApi.test.ts
+      - src/features/chat/chatStore.ts
+      - src/features/chat/chatStore.test.ts
+      - src/features/settings/categories/AiCategory.tsx
+      - src/features/settings/categories/AiCategory.test.tsx
+      - scripts/cloudflare-editor-deploy.mjs
+      - scripts/cloudflare-editor-deploy.test.mjs
+      - scripts/validate-web-editor-artifact.mjs
+      - scripts/web-editor-artifact.test.mjs
+      - vite.config.ts
+      - vercel.json
     requirements:
+      - GDX-ROUTE-001
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001
-      - GDX-HOSTED-CONTENT-001
-      - GDX-ARTIFACT-001
       - GDX-TRACE-001
     suites:
       - ai-routing
       - tool-policy
-      - scan-contract
-  - id: scan-prompts
-    reason: Scan prompt changes require both prompt and artifact contracts.
-    paths:
-      - packages/scan-prompts/**
-    requirements:
-      - GDX-ROUTE-001
-      - GDX-GROUND-001
-      - GDX-ARTIFACT-001
-    suites:
-      - prompt-contract
-      - scan-contract
   - id: ai-data-legal-notices
     reason: Terms, privacy notices, and EULA versioning must remain aligned with the runtime AI disclosure and consent boundary.
     paths:
@@ -188,5 +152,4 @@ rules:
     suites:
       - ai-routing
       - tool-policy
-      - scan-contract
 default: all

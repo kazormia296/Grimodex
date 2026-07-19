@@ -594,6 +594,39 @@ describe("useChatStore", () => {
       expect(state.activeSessionId).toBe("session-1");
     });
 
+    it("does not inherit the desktop OpenRouter model for a fresh Web session", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      vi.stubGlobal("document", {
+        documentElement: { dataset: { runtimeTarget: "web" } },
+      });
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "ollama",
+          model: "",
+        },
+      });
+      mockCreateSession.mockResolvedValueOnce({ ...session1, model: "" });
+
+      try {
+        await useChatStore
+          .getState()
+          .createNewSession("proj-1", "Web conversation", "scene-1");
+
+        expect(mockCreateSession).toHaveBeenCalledWith(
+          "proj-1",
+          "Web conversation",
+          "scene-1",
+          undefined,
+          undefined,
+          "",
+        );
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
     it("does not replace the active session while a turn is streaming", async () => {
       useChatStore.setState({ isStreaming: true });
 

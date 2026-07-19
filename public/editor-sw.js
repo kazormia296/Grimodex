@@ -1,4 +1,4 @@
-const CACHE_NAME = "grimodex-editor-static-v1";
+const CACHE_NAME = "grimodex-editor-static-v2";
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => {
@@ -25,10 +25,7 @@ self.addEventListener("fetch", (event) => {
   if (
     request.method !== "GET" ||
     request.mode === "navigate" ||
-    url.origin !== self.location.origin ||
-    url.pathname.startsWith("/api/") ||
-    url.pathname.includes("editor-seeds") ||
-    request.headers.has("authorization")
+    url.origin !== self.location.origin
   ) {
     return;
   }

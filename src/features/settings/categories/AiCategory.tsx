@@ -58,6 +58,8 @@ import { ControlledToggle, SettingToggle } from "../components/SettingToggle";
 import { Switch } from "@/components/ui/switch";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 async function archiveActiveCodexThreads(): Promise<void> {
   const projectId = getCurrentProjectId();
@@ -167,6 +169,7 @@ function renderSamplingInput(
 }
 
 export function AiCategory() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const { t } = useTranslation();
 
   const BUDGET_LAYERS = [
@@ -445,7 +448,10 @@ export function AiCategory() {
       {/* Provider */}
       <SettingSection title={t("settings.ai.provider")}>
         <div className="flex flex-wrap gap-2 mb-3">
-          {AI_PROVIDERS.map((p) => (
+          {(runtimeCapabilities.browserDirectAi
+            ? BROWSER_DIRECT_AI_PROVIDERS
+            : AI_PROVIDERS
+          ).map((p) => (
             <button
               key={p}
               type="button"
@@ -491,7 +497,8 @@ export function AiCategory() {
 
         {/* Responses API トグル (OpenAI 直 / OpenRouter beta)。openai-compatible は
             エンドポイント単位の apiVariant で指定するためここでは出さない。 */}
-        {localSettings.provider !== "openai-compatible" &&
+        {!runtimeCapabilities.browserDirectAi &&
+          localSettings.provider !== "openai-compatible" &&
           isResponsesApiCapableProvider(localSettings.provider) && (
             <SettingRow
               label={t("settings.ai.responsesApiLabel")}
@@ -1344,7 +1351,8 @@ export function AiCategory() {
       </SettingSection>
 
       {/* Web 検索 (RAG) ドメイン制御 (global) — RAG 対応プロバイダのみ表示 */}
-      {isRagCapableProvider(localSettings.provider) &&
+      {!runtimeCapabilities.browserDirectAi &&
+        isRagCapableProvider(localSettings.provider) &&
         (() => {
           const mode = settingsStore.get("ai.webSearch.domainMode", "off");
           const domainsJson = settingsStore.get("ai.webSearch.domains", "[]");

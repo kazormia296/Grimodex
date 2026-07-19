@@ -385,7 +385,6 @@ function EditorScreen() {
   const [showTransferDialog, setShowTransferDialog] = useState(false);
   const [showHostedHandoff, setShowHostedHandoff] = useState(false);
   const hostedRuntime = getHostedEditorRuntime();
-  const hostedEntryMode = hostedRuntime?.entryMode ?? "standalone";
   const [transferTab, setTransferTab] = useState<TransferTab>("import");
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
@@ -910,7 +909,6 @@ function EditorScreen() {
       {!runtimeCapabilities.genericProjectTransfer && hostedRuntime && (
         <HostedEditorHandoffDialog
           open={showHostedHandoff}
-          entryMode={hostedEntryMode}
           onClose={() => setShowHostedHandoff(false)}
           downloadHandoff={downloadHostedEditorHandoff}
         />
@@ -921,10 +919,7 @@ function EditorScreen() {
       <UpdateToast />
       <ReloadConflictDialog />
       {!runtimeCapabilities.genericProjectTransfer && hostedRuntime && (
-        <HostedEditorTrialBar
-          entryMode={hostedEntryMode}
-          onContinue={() => setShowHostedHandoff(true)}
-        />
+        <HostedEditorTrialBar onContinue={() => setShowHostedHandoff(true)} />
       )}
       <main
         id="main-content"

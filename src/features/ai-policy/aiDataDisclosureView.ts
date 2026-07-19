@@ -1,8 +1,9 @@
 export interface AiDataDisclosureView {
   schemaVersion: "grimodex/ai-data-disclosure/1";
   policyVersion: string;
-  route: "scan" | "hosted-editor" | "byok";
+  route: "byok";
   provider: string;
+  destination: string;
   consentId: string;
   usagePolicy: { summary: string; policyUrl: string };
   sentData: Array<{ category: string; description: string }>;

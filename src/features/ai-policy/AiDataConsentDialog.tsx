@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { cloudContentPolicy } from "@grimodex/scan-contract";
 import { AiDataConsentDetails } from "./AiDataConsentDetails";
 import type { AiDataDisclosureView } from "./aiDataDisclosureView";
 
@@ -20,17 +19,11 @@ export function AiDataConsentDialog({
   onAccept,
   onDecline,
 }: AiDataConsentDialogProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [confirmed, setConfirmed] = useState(false);
-  const [contentConfirmed, setContentConfirmed] = useState(false);
-  const requiresContentRights = disclosure.route === "hosted-editor";
-  const contentPolicy = cloudContentPolicy(
-    i18n.resolvedLanguage?.startsWith("ja") ? "ja" : "en",
-  );
 
   useEffect(() => {
     setConfirmed(false);
-    setContentConfirmed(false);
   }, [disclosure.consentId]);
   if (!open) return null;
 
@@ -57,11 +50,7 @@ export function AiDataConsentDialog({
           </div>
         </div>
 
-        <AiDataConsentDetails
-          disclosure={disclosure}
-          requiresContentRights={requiresContentRights}
-          contentPolicy={contentPolicy}
-        />
+        <AiDataConsentDetails disclosure={disclosure} />
 
         <label className="mt-6 flex items-start gap-3 rounded-lg border border-border bg-muted/35 p-3 text-sm">
           <input
@@ -78,18 +67,6 @@ export function AiDataConsentDialog({
           </span>
         </label>
 
-        {requiresContentRights && (
-          <label className="mt-3 flex items-start gap-3 rounded-lg border border-border bg-muted/35 p-3 text-sm">
-            <input
-              type="checkbox"
-              checked={contentConfirmed}
-              onChange={(event) => setContentConfirmed(event.target.checked)}
-              className="mt-0.5 h-4 w-4"
-            />
-            <span>{contentPolicy.confirmation}</span>
-          </label>
-        )}
-
         <div className="mt-5 flex justify-end gap-3">
           <button
             type="button"
@@ -100,9 +77,7 @@ export function AiDataConsentDialog({
           </button>
           <button
             type="button"
-            disabled={
-              !confirmed || (requiresContentRights && !contentConfirmed)
-            }
+            disabled={!confirmed}
             onClick={() => onAccept(disclosure.consentId)}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >

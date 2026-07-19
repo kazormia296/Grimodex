@@ -14,7 +14,6 @@ const repositoryRoot = path.resolve(
 
 const environments = {
   staging: {
-    apiBaseUrl: "https://grimodex-scan-staging.kazormia296.workers.dev",
     pagesBranch: "master",
     pagesProject: "grimodex-try-staging",
   },
@@ -32,56 +31,16 @@ function environmentSpec(environment) {
   return spec;
 }
 
-export function createEditorDeployPlan({ action, environment, apiBaseUrl }) {
+export function createEditorDeployPlan({ action, environment }) {
   const spec = environmentSpec(environment);
 
   if (action !== "web-build" && action !== "web-deploy") {
     throw new Error(`unsupported action: ${action}`);
   }
-  if (environment === "production") {
-    throw new Error(
-      action +
-        " production is blocked until a canonical reviewed production Worker origin is recorded in repository config",
-    );
-  }
-
-  const configuredApiBaseUrl = apiBaseUrl ?? spec.apiBaseUrl;
-  if (!configuredApiBaseUrl) {
-    throw new Error(
-      "production Editor build requires an explicit --api-base-url",
-    );
-  }
-  let parsedApiBaseUrl;
-  try {
-    parsedApiBaseUrl = new URL(configuredApiBaseUrl);
-  } catch {
-    throw new Error("api-base-url must be an HTTPS origin");
-  }
-  const normalizedApiBaseUrl = parsedApiBaseUrl.toString().replace(/\/$/, "");
-  if (normalizedApiBaseUrl !== spec.apiBaseUrl) {
-    throw new Error(
-      "api-base-url must exactly match the canonical staging Worker origin: " +
-        spec.apiBaseUrl,
-    );
-  }
-  if (
-    parsedApiBaseUrl.protocol !== "https:" ||
-    parsedApiBaseUrl.username ||
-    parsedApiBaseUrl.password ||
-    parsedApiBaseUrl.pathname !== "/" ||
-    parsedApiBaseUrl.search ||
-    parsedApiBaseUrl.hash
-  ) {
-    throw new Error("api-base-url must be an HTTPS origin");
-  }
-
   const plan = [
     {
       command: "pnpm",
-      args: ["build"],
-      env: {
-        VITE_SCAN_API_BASE_URL: normalizedApiBaseUrl,
-      },
+      args: ["build:web-editor"],
     },
   ];
   if (action === "web-deploy") {
@@ -109,17 +68,8 @@ function parseArgs(argv) {
     return { help: true };
   }
   const [action, environment, ...rest] = normalized;
-  const result = { action, environment };
-  for (let index = 0; index < rest.length; index += 1) {
-    const argument = rest[index];
-    if (argument === "--api-base-url") {
-      result.apiBaseUrl = rest[index + 1];
-      index += 1;
-      continue;
-    }
-    throw new Error(`unknown argument: ${argument}`);
-  }
-  return result;
+  if (rest.length > 0) throw new Error(`unknown argument: ${rest[0]}`);
+  return { action, environment };
 }
 
 function runStep(step) {
@@ -138,10 +88,8 @@ function runStep(step) {
 
 function printHelp() {
   console.log(`Usage:
-  node scripts/cloudflare-editor-deploy.mjs web-build staging [--api-base-url <canonical-staging-origin>]
-  node scripts/cloudflare-editor-deploy.mjs web-deploy staging [--api-base-url <canonical-staging-origin>]
-
-Production web-build and web-deploy are blocked until a reviewed production Worker origin is recorded in repository config.`);
+  node scripts/cloudflare-editor-deploy.mjs web-build <staging|production>
+  node scripts/cloudflare-editor-deploy.mjs web-deploy <staging|production>`);
 }
 
 function main() {

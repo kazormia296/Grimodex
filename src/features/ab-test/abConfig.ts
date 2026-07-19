@@ -1,5 +1,6 @@
 import type { AbConfig } from "./abHarness";
 import { AI_PROVIDERS, type AiProvider } from "@/features/chat/types";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import { overrideApiVariantForProvider } from "@/features/chat/aiNovelist";
 
 /**
@@ -9,6 +10,12 @@ import { overrideApiVariantForProvider } from "@/features/chat/aiNovelist";
 export const AB_PROVIDERS: AiProvider[] = AI_PROVIDERS.filter(
   (p) => p !== "cli",
 );
+
+export function providersForRuntime(
+  browserDirectAi: boolean,
+): readonly AiProvider[] {
+  return browserDirectAi ? BROWSER_DIRECT_AI_PROVIDERS : AB_PROVIDERS;
+}
 
 /** A/B 枠の provider 選択ラベル (Settings の表示と揃える)。 */
 export const AB_PROVIDER_LABELS: Record<AiProvider, string> = {

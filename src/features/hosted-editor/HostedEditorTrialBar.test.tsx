@@ -19,7 +19,9 @@ describe("Web Editor trial notice", () => {
     expect(screen.getByText(/このブラウザに保存/)).toBeInTheDocument();
     expect(screen.getByText(/AI.*付属していません/)).toBeInTheDocument();
     expect(screen.getByText(/Local LLM.*APIキー/)).toBeInTheDocument();
-    expect(container).not.toHaveTextContent(/Scan|アップロード|Hosted AI|OpenRouter|Cloudflare/i);
+    expect(container).not.toHaveTextContent(
+      /Scan|アップロード|Hosted AI|OpenRouter|Cloudflare/i,
+    );
   });
 
   it("states the same editor-only contract in English", async () => {
@@ -32,6 +34,8 @@ describe("Web Editor trial notice", () => {
     expect(screen.getByText(/stored in this browser/i)).toBeInTheDocument();
     expect(screen.getByText(/AI is not included/i)).toBeInTheDocument();
     expect(screen.getByText(/Local LLM.*own API key/i)).toBeInTheDocument();
-    expect(container).not.toHaveTextContent(/Scan|upload|Hosted AI|OpenRouter|Cloudflare/i);
+    expect(container).not.toHaveTextContent(
+      /Scan|upload|Hosted AI|OpenRouter|Cloudflare/i,
+    );
   });
 });

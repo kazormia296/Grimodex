@@ -32,7 +32,9 @@ import { listen } from "@/lib/tauri";
 import { respondToCodexServerRequest } from "./codexAppApi";
 import type { CodexAppEventEnvelope } from "@/../electron/shared/codexAppProtocol";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
+import { openAiPolicySettings } from "@/features/ai-policy/openAiPolicySettings";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -147,6 +149,7 @@ export async function declineCodexApprovals(
 }
 
 export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const reduced = useReducedMotion();
@@ -590,8 +593,11 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     });
   }, [includeMapBoard, resolvedMapBoardId, setIncludeMapBoard]);
 
-  // Web 検索 (RAG): OpenRouter / Anthropic のみ対応。他プロバイダではトグル無効。
-  const ragCapable = isRagCapableProvider(aiSettings?.provider);
+  // Direct browser transports do not expose provider-managed Web search.
+  // Keep the trial on the explicitly disclosed Local LLM/BYOK request only.
+  const ragCapable =
+    !runtimeCapabilities.browserDirectAi &&
+    isRagCapableProvider(aiSettings?.provider);
   const handleToggleRag = useCallback(() => {
     setRagEnabled(!ragEnabled);
   }, [ragEnabled, setRagEnabled]);
@@ -621,6 +627,11 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         ragEnabled={ragEnabled}
         agentMode={agentMode}
         ragDisabled={!ragCapable}
+        ragDisabledReason={
+          runtimeCapabilities.browserDirectAi
+            ? t("chat.webSearch.unavailableWebEditor")
+            : undefined
+        }
         onToggleRag={handleToggleRag}
       />
 
@@ -835,13 +846,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
           {t("chat.aiOffNote")}{" "}
           <button
             type="button"
-            onClick={() =>
-              window.dispatchEvent(
-                new CustomEvent("open-settings", {
-                  detail: { category: "project" },
-                }),
-              )
-            }
+            onClick={openAiPolicySettings}
             className="underline hover:text-foreground"
           >
             {t("chat.aiOffOpenSettings")}

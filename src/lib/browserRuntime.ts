@@ -1,14 +1,4 @@
 import {
-  parseEditorSeed,
-  type HostedAiSessionV1,
-  type EditorSeedValidationResult,
-  type EditorUiLanguage,
-} from "@grimodex/scan-contract";
-import { applyScanImportPlan } from "@/features/import/scan/applyScanImportPlan";
-import { createScanImportOperationsForPlan } from "@/features/import/scan/scanImportOperations";
-import { buildScanImportPlan } from "@/features/import/scan/scanImportPlan";
-import { consumeEditorSeedHandoff } from "@/features/import/scan/webEditorHandoff";
-import {
   BrowserWorkspaceError,
   createIndexedDbWorkspaceStore,
   type BrowserWorkspaceStore,
@@ -22,18 +12,19 @@ import {
   type BrowserMockOptions,
   type PersistentBrowserMock,
 } from "./browser-mock";
-import { createHostedBrowserAi } from "./hostedBrowserAi";
-import { globalSettingsRepository } from "./globalSettings/repository";
-import i18next from "./i18n";
 import { installBrowserMock } from "./tauri";
 
-export const HOSTED_EDITOR_WORKSPACE_ID = "grimodex-hosted-editor";
+// Preserve the existing workspace key so removing Scan never strands or
+// silently deletes manuscripts already saved by a Web Editor trial.
+export const WEB_EDITOR_WORKSPACE_ID = "grimodex-hosted-editor";
+
+// These constants identify state written by removed Scan/Hosted AI builds.
+// Startup only clears them; no value is parsed, restored, or sent anywhere.
 export const HOSTED_AI_SESSION_STORAGE_KEY = "grimodex:hosted-ai-session/v1";
 export const HOSTED_EDITOR_ENTRY_MODE_STORAGE_KEY =
   "grimodex:hosted-editor-entry-mode/v1";
+
 const BROWSER_WORKSPACE_LOCK_PREFIX = "grimodex:browser-workspace:";
-const DEFAULT_SCAN_API_BASE_URL =
-  "https://grimodex-scan-production.kazormia296.workers.dev";
 
 export type BrowserWorkspaceLockErrorCode =
   | "unsupported"
@@ -58,12 +49,6 @@ interface BrowserWorkspaceLockLease {
   release(): Promise<void>;
 }
 
-type ScanImportPlan = ReturnType<typeof buildScanImportPlan>;
-type ScanImportOperations = ReturnType<
-  typeof createScanImportOperationsForPlan
->;
-type ScanImportResult = Awaited<ReturnType<typeof applyScanImportPlan>>;
-
 /** The runtime only needs the persistent surface of BrowserMock. */
 export interface BrowserRuntimeDatabase {
   exportDatabase(): Uint8Array;
@@ -75,79 +60,21 @@ export interface BrowserRuntimeDependencies {
     options: BrowserMockOptions,
   ): Promise<BrowserRuntimeDatabase>;
   installBrowserMock(mock: BrowserRuntimeDatabase): void;
-  consumeEditorSeedHandoff: typeof consumeEditorSeedHandoff;
-  parseEditorSeed(input: unknown): EditorSeedValidationResult;
-  buildScanImportPlan(input: unknown): ScanImportPlan;
-  createScanImportOperationsForPlan(plan: ScanImportPlan): ScanImportOperations;
-  applyScanImportPlan(
-    plan: ScanImportPlan,
-    operations: ScanImportOperations,
-  ): Promise<ScanImportResult>;
-  applyUiLanguage(language: EditorUiLanguage): Promise<void>;
-  resolveUiLanguage(
-    fallback?: EditorUiLanguage,
-  ): EditorUiLanguage | undefined | Promise<EditorUiLanguage | undefined>;
-}
-
-async function applyBrowserUiLanguage(
-  language: EditorUiLanguage,
-): Promise<void> {
-  await globalSettingsRepository.patch((current) => ({
-    ...current,
-    uiLanguage: language,
-  }));
-  await i18next.changeLanguage(language);
-  if (typeof document !== "undefined") {
-    document.documentElement.lang = language;
-  }
-}
-
-function normalizeEditorUiLanguage(
-  value: string | undefined,
-): EditorUiLanguage | undefined {
-  if (!value) return undefined;
-  if (value === "ja" || value.startsWith("ja-")) return "ja";
-  if (value === "en" || value.startsWith("en-")) return "en";
-  return undefined;
-}
-
-async function resolveBrowserUiLanguage(
-  fallback?: EditorUiLanguage,
-): Promise<EditorUiLanguage | undefined> {
-  try {
-    const settings = await globalSettingsRepository.read();
-    const persisted = normalizeEditorUiLanguage(settings.uiLanguage);
-    if (persisted) return persisted;
-  } catch {
-    // Fall through to the active renderer language while browser storage is
-    // temporarily unavailable during startup or recovery.
-  }
-  return (
-    normalizeEditorUiLanguage(i18next.resolvedLanguage ?? i18next.language) ??
-    fallback
-  );
 }
 
 const DEFAULT_DEPENDENCIES: BrowserRuntimeDependencies = {
   createBrowserMock,
   installBrowserMock: (mock) =>
     installBrowserMock(mock as PersistentBrowserMock),
-  consumeEditorSeedHandoff,
-  parseEditorSeed,
-  buildScanImportPlan,
-  createScanImportOperationsForPlan,
-  applyScanImportPlan,
-  applyUiLanguage: applyBrowserUiLanguage,
-  resolveUiLanguage: resolveBrowserUiLanguage,
 };
 
-export interface HostedEditorWorkspaceStoreOptions {
+export interface WebEditorWorkspaceStoreOptions {
   indexedDB?: IDBFactory | null;
   dbName?: string;
 }
 
-export function createHostedEditorWorkspaceStore(
-  options: HostedEditorWorkspaceStoreOptions = {},
+export function createWebEditorWorkspaceStore(
+  options: WebEditorWorkspaceStoreOptions = {},
 ): BrowserWorkspaceStore {
   const indexedDb =
     options.indexedDB === undefined
@@ -156,7 +83,7 @@ export function createHostedEditorWorkspaceStore(
   if (!indexedDb) {
     throw new BrowserWorkspaceError(
       "unavailable",
-      "このブラウザーではIndexedDBを利用できないため、Grimodex Editorを安全に起動できません。",
+      "このブラウザーではIndexedDBを利用できないため、Grimodex Web Editorを安全に起動できません。",
     );
   }
   return createIndexedDbWorkspaceStore({
@@ -165,11 +92,20 @@ export function createHostedEditorWorkspaceStore(
   });
 }
 
+export interface BrowserSessionStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
 export interface InitializeBrowserRuntimeOptions {
   workspaceId?: string;
   store?: BrowserWorkspaceStore;
+  /** Legacy URL is inspected only to remove the retired Scan fragment. */
   href?: string;
+  /** @deprecated Scan endpoints are no longer contacted. */
   scanApiBaseUrl?: string;
+  /** @deprecated Retained as a compatibility seam; never invoked. */
   fetchImpl?: typeof fetch;
   replaceHistory?: (href: string) => void;
   lifecycleTarget?: Window | null;
@@ -180,54 +116,21 @@ export interface InitializeBrowserRuntimeOptions {
   dependencies?: BrowserRuntimeDependencies;
 }
 
-export interface BrowserSessionStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-}
-
-export interface HostedBrowserRuntime {
+export interface WebEditorBrowserRuntime {
   workspaceId: string;
   durability: ReturnType<BrowserWorkspaceStore["getDurability"]>;
   persistence: PersistenceController;
-  entryMode: HostedEditorEntryMode;
-  importedProjectId?: string;
   exportWorkspace(): Promise<Uint8Array>;
   dispose(): Promise<void>;
 }
 
-export type HostedEditorEntryMode = "scan" | "standalone";
-
-function readHostedEditorEntryMode(
-  storage: BrowserSessionStorage | null,
-): HostedEditorEntryMode | undefined {
-  try {
-    const value = storage?.getItem(HOSTED_EDITOR_ENTRY_MODE_STORAGE_KEY);
-    return value === "scan" || value === "standalone" ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function persistHostedEditorEntryMode(
-  storage: BrowserSessionStorage | null,
-  entryMode: HostedEditorEntryMode,
-): void {
-  try {
-    storage?.setItem(HOSTED_EDITOR_ENTRY_MODE_STORAGE_KEY, entryMode);
-  } catch {
-    // A restricted tab can still run safely; only the explanatory label falls
-    // back to standalone after a reload.
-  }
-}
-
-export function assertHostedEditorDurability(
-  durability: HostedBrowserRuntime["durability"],
+export function assertWebEditorDurability(
+  durability: WebEditorBrowserRuntime["durability"],
 ): void {
   if (durability === "persistent") return;
   throw new BrowserWorkspaceError(
     "unavailable",
-    "永続保存を確認できないため、Grimodex Editorを起動できません。ブラウザーのサイトデータ設定を確認してください。",
+    "永続保存を確認できないため、Grimodex Web Editorを起動できません。ブラウザーのサイトデータ設定を確認してください。",
   );
 }
 
@@ -235,10 +138,6 @@ function browserHref(): string {
   return typeof window === "undefined"
     ? "http://localhost/editor"
     : window.location.href;
-}
-
-function browserFetch(): typeof fetch {
-  return globalThis.fetch.bind(globalThis);
 }
 
 function replaceBrowserHistory(href: string): void {
@@ -270,6 +169,28 @@ function browserLockManager(): Pick<LockManager, "request"> | null {
     );
   } catch {
     return null;
+  }
+}
+
+function clearLegacyHostedState(options: {
+  href: string;
+  replaceHistory: (href: string) => void;
+  sessionStorage: BrowserSessionStorage | null;
+}): void {
+  try {
+    options.sessionStorage?.removeItem(HOSTED_AI_SESSION_STORAGE_KEY);
+    options.sessionStorage?.removeItem(HOSTED_EDITOR_ENTRY_MODE_STORAGE_KEY);
+  } catch {
+    // Restricted storage must not block the editor-only startup path.
+  }
+
+  try {
+    const url = new URL(options.href);
+    if (!url.hash.toLowerCase().includes("scan-import")) return;
+    url.hash = "";
+    options.replaceHistory(url.toString());
+  } catch {
+    // A malformed legacy URL is ignored. It is never fetched or persisted.
   }
 }
 
@@ -313,9 +234,7 @@ async function acquireBrowserWorkspaceLock(
     )
     .then(
       () => undefined,
-      (cause) => {
-        rejectAcquired(cause);
-      },
+      (cause) => rejectAcquired(cause),
     );
 
   let lockWasAcquired: boolean;
@@ -361,99 +280,30 @@ export function browserPersistenceFailureMessage(error: unknown): string {
   return "ブラウザーへの自動保存に失敗しました。未保存の内容を保護するため、このタブでは編集を続けず、ページを再読み込みしてください。";
 }
 
-type StoredHostedAiSession = HostedAiSessionV1 & {
-  uiLanguage?: EditorUiLanguage;
-};
-
-function isHostedAiSession(value: unknown): value is StoredHostedAiSession {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const session = value as Record<string, unknown>;
-  return (
-    typeof session.scanId === "string" &&
-    /^[A-Za-z0-9._:-]{1,96}$/.test(session.scanId) &&
-    typeof session.token === "string" &&
-    /^[a-f0-9]{64}$/.test(session.token) &&
-    typeof session.expiresAt === "string" &&
-    Number.isFinite(Date.parse(session.expiresAt)) &&
-    (session.uiLanguage === undefined ||
-      session.uiLanguage === "ja" ||
-      session.uiLanguage === "en")
-  );
-}
-
-function readHostedAiSession(
-  storage: BrowserSessionStorage | null,
-): StoredHostedAiSession | null {
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(HOSTED_AI_SESSION_STORAGE_KEY);
-    if (!raw) return null;
-    const session = JSON.parse(raw) as unknown;
-    if (
-      !isHostedAiSession(session) ||
-      Date.parse(session.expiresAt) <= Date.now()
-    ) {
-      storage.removeItem(HOSTED_AI_SESSION_STORAGE_KEY);
-      return null;
-    }
-    return session;
-  } catch {
-    try {
-      storage.removeItem(HOSTED_AI_SESSION_STORAGE_KEY);
-    } catch {
-      // Storage can be disabled by the browser.
-    }
-    return null;
-  }
-}
-
-function persistHostedAiSession(
-  storage: BrowserSessionStorage | null,
-  session: HostedAiSessionV1,
-  uiLanguage?: EditorUiLanguage,
-): void {
-  if (!storage || Date.parse(session.expiresAt) <= Date.now()) return;
-  try {
-    storage.setItem(
-      HOSTED_AI_SESSION_STORAGE_KEY,
-      JSON.stringify(uiLanguage ? { ...session, uiLanguage } : session),
-    );
-  } catch {
-    // A live handoff still works in memory when sessionStorage is unavailable.
-  }
-}
-
-function configuredScanApiBaseUrl(): string {
-  const configured = (
-    import.meta.env as Record<string, string | boolean | undefined>
-  ).VITE_SCAN_API_BASE_URL;
-  return typeof configured === "string" && configured.trim().length > 0
-    ? configured.trim()
-    : import.meta.env.DEV
-      ? "http://127.0.0.1:8787"
-      : DEFAULT_SCAN_API_BASE_URL;
-}
-
-function invalidSeedMessage(
-  result: Extract<EditorSeedValidationResult, { ok: false }>,
-): string {
-  return `Scan editor seed is invalid: ${result.errors
-    .map((item) => `${item.path} ${item.message}`)
-    .join("; ")}`;
-}
-
 /**
- * Prepares the real hosted Editor before React mounts. Database calls made by
- * App therefore always use the restored SQL.js database, never the lazy demo
- * fallback in the IPC adapter.
+ * Restores and installs the real Web Editor database before React mounts.
+ * This path has no upload, hosted session, provider credential, or network
+ * bootstrap. AI remains disconnected until the user configures Local LLM or
+ * supplies their own provider key in the editor.
  */
 export async function initializeBrowserRuntime(
   options: InitializeBrowserRuntimeOptions = {},
-): Promise<HostedBrowserRuntime> {
+): Promise<WebEditorBrowserRuntime> {
   const dependencies = options.dependencies ?? DEFAULT_DEPENDENCIES;
-  const workspaceId = options.workspaceId ?? HOSTED_EDITOR_WORKSPACE_ID;
-  const store = options.store ?? createHostedEditorWorkspaceStore();
-  if (!options.store) assertHostedEditorDurability(store.getDurability());
+  const workspaceId = options.workspaceId ?? WEB_EDITOR_WORKSPACE_ID;
+  const store = options.store ?? createWebEditorWorkspaceStore();
+  if (!options.store) assertWebEditorDurability(store.getDurability());
+
+  const sessionStorage =
+    options.sessionStorage === undefined
+      ? browserSessionStorage()
+      : options.sessionStorage;
+  clearLegacyHostedState({
+    href: options.href ?? browserHref(),
+    replaceHistory: options.replaceHistory ?? replaceBrowserHistory,
+    sessionStorage,
+  });
+
   const workspaceLock = await acquireBrowserWorkspaceLock(
     workspaceId,
     options.lockManager === undefined
@@ -474,103 +324,28 @@ export async function initializeBrowserRuntime(
       ((error) => console.error("[browser-runtime] persistence failed", error)),
   });
   let detachLifecycle: () => void = () => undefined;
+
   try {
     const restored = await persistence.restore();
-    const handoff = await dependencies.consumeEditorSeedHandoff({
-      href: options.href ?? browserHref(),
-      apiBaseUrl: options.scanApiBaseUrl ?? configuredScanApiBaseUrl(),
-      fetchImpl: options.fetchImpl ?? browserFetch(),
-      replaceHistory: options.replaceHistory ?? replaceBrowserHistory,
-    });
-    let parsedSeed: unknown = null;
-    if (handoff) {
-      const parsed = dependencies.parseEditorSeed(handoff.seed);
-      if (!parsed.ok) throw new Error(invalidSeedMessage(parsed));
-      parsedSeed = parsed.value;
-    }
-    const sessionStorage =
-      options.sessionStorage === undefined
-        ? browserSessionStorage()
-        : options.sessionStorage;
-    const entryMode: HostedEditorEntryMode = handoff
-      ? "scan"
-      : (readHostedEditorEntryMode(sessionStorage) ?? "standalone");
-    persistHostedEditorEntryMode(sessionStorage, entryMode);
-    const storedHostedAiSession = readHostedAiSession(sessionStorage);
-    const hostedAiSession = handoff?.hostedAiSession ?? storedHostedAiSession;
-    const hostedAiLocale = handoff?.hostedAiSession
-      ? handoff.uiLanguage
-      : storedHostedAiSession?.uiLanguage;
-    if (handoff?.hostedAiSession) {
-      persistHostedAiSession(
-        sessionStorage,
-        handoff.hostedAiSession,
-        handoff.uiLanguage,
-      );
-    }
-    const hostedAi = hostedAiSession
-      ? createHostedBrowserAi({
-          apiBaseUrl: options.scanApiBaseUrl ?? configuredScanApiBaseUrl(),
-          session: hostedAiSession,
-          locale: hostedAiLocale,
-          getLocale: () => dependencies.resolveUiLanguage(hostedAiLocale),
-          fetchImpl: options.fetchImpl ?? browserFetch(),
-        })
-      : null;
-
     database = await dependencies.createBrowserMock({
       databaseBytes: restored?.bytes,
       onDatabaseDirty: () => persistence.markDirty(),
-      ...(hostedAi
-        ? {
-            aiSettingsOverride: {
-              provider: "openrouter" as const,
-              model: "grimodex-hosted",
-              thinkingEnabled: false,
-            },
-            authorizeAiRequest: hostedAi.authorizeAiRequest,
-            aiTransport: hostedAi.transport,
-            aiTransportProvidesProviderAccess: true,
-          }
-        : {}),
     });
-
     dependencies.installBrowserMock(database);
+
     const target =
       options.lifecycleTarget === undefined
         ? browserLifecycleTarget()
         : options.lifecycleTarget;
     if (target) detachLifecycle = persistence.attachLifecycle(target);
 
-    let importedProjectId: string | undefined;
-    if (parsedSeed) {
-      const plan = dependencies.buildScanImportPlan(parsedSeed);
-      const result = await dependencies.applyScanImportPlan(
-        plan,
-        dependencies.createScanImportOperationsForPlan(plan),
-      );
-      importedProjectId = result.projectId;
-      if (handoff?.uiLanguage) {
-        await dependencies.applyUiLanguage(handoff.uiLanguage);
-      }
-      // The import operations normally mark the database dirty themselves.
-      // This explicit mark also protects future operation adapters that batch
-      // or defer their writes.
-      persistence.markDirty();
-      await persistence.flush();
-    }
-
     return {
       workspaceId,
       durability: store.getDurability(),
       persistence,
-      entryMode,
-      importedProjectId,
       async exportWorkspace() {
         await persistence.flush();
-        if (!database) {
-          throw new Error("Browser database is not ready");
-        }
+        if (!database) throw new Error("Browser database is not ready");
         return new Uint8Array(database.exportDatabase());
       },
       async dispose() {
@@ -596,3 +371,6 @@ export async function initializeBrowserRuntime(
     throw error;
   }
 }
+
+/** @deprecated Use WebEditorBrowserRuntime. */
+export type HostedBrowserRuntime = WebEditorBrowserRuntime;

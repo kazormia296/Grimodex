@@ -518,17 +518,15 @@
   "hostedEditor": {
     "trial": {
       "title": "Web Editor Trial",
-      "scanDescription": "You are editing a document imported through Scan.",
-      "standaloneDescription": "You are trying the Web Editor on its own.",
+      "description": "Try the real Grimodex editor in your browser.",
       "storageNotice": "Data is stored in this browser and is not automatically synced to the local Grimodex app.",
-      "aiNotice": "Before AI use, we confirm what is sent, storage location, retention, and training use.",
-      "contentPolicyLink": "Cloudflare hosting policy",
+      "aiNotice": "AI is not included. To use AI, configure a Local LLM (Ollama) or your own API key for OpenAI or Anthropic.",
+      "apiKeyMemoryNotice": "A BYOK API key is held only in this page's runtime memory and is cleared when you reload or close the page.",
       "continueInGrimodex": "Continue writing in Grimodex"
     },
     "handoff": {
       "title": "Continue writing in Grimodex",
-      "scanDescription": "Move the document imported through Scan to the local Grimodex app.",
-      "standaloneDescription": "Move the document created in the Web Editor to the local Grimodex app.",
+      "description": "Move the document created in the Web Editor to the local Grimodex app.",
       "downloadInstruction": "First, download the handoff file that preserves your edits.",
       "download": "Download handoff file",
       "downloading": "Creating handoff file…",
@@ -546,6 +544,21 @@
       "importing": "Importing…",
       "unknownError": "Unknown error",
       "failed": "Could not import the handoff file: {{error}}"
+    },
+    "settings": {
+      "categories": {
+        "project": "Project",
+        "ai": "AI",
+        "editor": "Editor",
+        "display": "Display",
+        "about": "About"
+      }
+    },
+    "ollama": {
+      "browserSetup": "Allow the Web Editor origin in Ollama, then restart Ollama. Use only the origin shown below rather than a wildcard.",
+      "localNetworkPermission": "For a local Ollama endpoint, allow local network access if your browser asks for permission.",
+      "setupLink": "Ollama origin setup",
+      "browserPermissionLink": "Browser local-network permission"
     }
   },
   "app": {
@@ -1841,6 +1854,7 @@
       "on": "Web search ON (click to turn off)",
       "off": "Enable web search (click to turn on)",
       "unavailable": "This provider does not support web search (OpenRouter / Anthropic only)",
+      "unavailableWebEditor": "Web search is not included in the Web Editor trial",
       "agentPrivacyNote": "Private Agent mode disables Web search for this turn so project data stays separate.",
       "searching": "Searching the web…",
       "egressNote": "Search queries are sent to a third-party search provider.",
@@ -5869,10 +5883,46 @@
     "providerStorage": "Storage by the AI provider",
     "providerRetention": "Retention by the AI provider",
     "training": "Use for model training",
-    "openPolicy": "Open policy",
+    "appPolicy": "Grimodex AI data-use policy",
+    "processorPolicy": "{{processor}} privacy policy",
+    "providerStoragePolicy": "AI provider storage policy",
+    "providerRetentionPolicy": "AI provider retention policy",
+    "providerTrainingPolicy": "AI provider training-use policy",
     "confirm": "I reviewed the data transfer, storage, and training-use policies",
     "decline": "Not now",
-    "accept": "Accept and use AI"
+    "accept": "Accept and use AI",
+    "policyVersion": "Policy version",
+    "connectionDestination": "Actual connection destination",
+    "disclosure": {
+      "usageSummary": "Your instructions, selected manuscript context, and any required credential are sent directly to the displayed destination. Review both the content and destination before sending.",
+      "sentPrompt": "Your instructions, conversation history, and system instructions",
+      "sentContext": "Manuscript text, scenes, Codex entries, project settings, and other context selected for the request",
+      "sentCredential": "Your own API key required by the provider (sent in an authentication header and held only in this page's runtime memory)",
+      "applicationStorage": "This browser's local workspace (IndexedDB)",
+      "provider": {
+        "openai": {
+          "purpose": "Generate the AI assistance you requested",
+          "location": "Infrastructure managed by OpenAI",
+          "storage": "OpenAI API abuse-monitoring logs are retained for up to 30 days by default. Eligible organizations can apply for modified retention or Zero Data Retention.",
+          "retention": "Default abuse-monitoring logs are retained for up to 30 days. Contracts, settings, and legal exceptions may change this period.",
+          "training": "OpenAI does not use API inputs or outputs to train models unless the organization explicitly opts in."
+        },
+        "anthropic": {
+          "purpose": "Generate the AI assistance you requested",
+          "location": "Infrastructure managed by Anthropic",
+          "storage": "Anthropic normally deletes API inputs and outputs within 30 days, subject to contractual, safety, and legal exceptions.",
+          "retention": "Data is normally deleted within 30 days. Zero Data Retention agreements and safety or legal exceptions have different terms.",
+          "training": "Anthropic does not use commercial or API data for model training unless the customer explicitly opts in or provides feedback."
+        },
+        "ollama": {
+          "processor": "Configured Ollama server",
+          "purpose": "Generate the requested AI assistance locally or at the destination you configured",
+          "storage": "Storage depends on the Ollama server and model configuration you control. Grimodex does not add server-side storage.",
+          "retention": "Retention depends on the operating policy of the configured Ollama server.",
+          "training": "Training use depends on the operating policy of the configured Ollama server and model."
+        }
+      }
+    }
   },
   "promptLibrary": {
     "section": {

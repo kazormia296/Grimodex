@@ -1,38 +1,64 @@
 import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import {
-  CLOUDFLARE_ABUSE_POLICY_URL,
-  CLOUDFLARE_WORKERS_AI_DATA_POLICY_URL,
-  type CloudContentPolicyCopy,
-} from "@grimodex/scan-contract";
 import type { AiDataDisclosureView } from "./aiDataDisclosureView";
 import { DisclosureSection } from "./DisclosureSection";
 
 interface AiDataConsentDetailsProps {
   disclosure: AiDataDisclosureView;
-  requiresContentRights: boolean;
-  contentPolicy: CloudContentPolicyCopy;
 }
 
 export function AiDataConsentDetails({
   disclosure,
-  requiresContentRights,
-  contentPolicy,
 }: AiDataConsentDetailsProps) {
   const { t } = useTranslation();
-  const applicationRetention = disclosure.retention.application;
-  const policyUrls = [
-    disclosure.usagePolicy.policyUrl,
-    ...disclosure.processingDestinations.map(
-      (destination) => destination.privacyPolicyUrl,
-    ),
-    disclosure.storage.provider.policyUrl,
-    disclosure.retention.provider.policyUrl,
-    disclosure.trainingUse.policyUrl,
-  ].filter((url, index, urls) => urls.indexOf(url) === index);
+  const policyLinks = [
+    {
+      url: disclosure.usagePolicy.policyUrl,
+      label: t("aiDataConsent.appPolicy", "GrimodexのAIデータ利用方針"),
+    },
+    ...disclosure.processingDestinations.map((destination) => ({
+      url: destination.privacyPolicyUrl,
+      label: t("aiDataConsent.processorPolicy", {
+        defaultValue: "{{processor}}のプライバシーポリシー",
+        processor: destination.processor,
+      }),
+    })),
+    {
+      url: disclosure.storage.provider.policyUrl,
+      label: t("aiDataConsent.providerStoragePolicy", "AI提供者の保存ポリシー"),
+    },
+    {
+      url: disclosure.retention.provider.policyUrl,
+      label: t(
+        "aiDataConsent.providerRetentionPolicy",
+        "AI提供者の保持期間ポリシー",
+      ),
+    },
+    {
+      url: disclosure.trainingUse.policyUrl,
+      label: t(
+        "aiDataConsent.providerTrainingPolicy",
+        "AI提供者の学習利用ポリシー",
+      ),
+    },
+  ].filter(
+    (link, index, links) =>
+      links.findIndex((candidate) => candidate.url === link.url) === index,
+  );
 
   return (
     <div className="space-y-5 text-sm">
+      <dl className="grid gap-1 rounded-md border border-border bg-muted/25 p-3 text-xs sm:grid-cols-[auto_1fr]">
+        <dt className="font-medium text-muted-foreground">
+          {t("aiDataConsent.policyVersion", "ポリシーバージョン")}
+        </dt>
+        <dd className="font-mono">{disclosure.policyVersion}</dd>
+        <dt className="font-medium text-muted-foreground">
+          {t("aiDataConsent.connectionDestination", "実際の接続先")}
+        </dt>
+        <dd className="break-all font-mono">{disclosure.destination}</dd>
+      </dl>
+
       <DisclosureSection
         title={t("aiDataConsent.sentData", "送信されるデータ")}
       >
@@ -59,18 +85,10 @@ export function AiDataConsentDetails({
           <span className="font-medium">
             {disclosure.storage.application.location}
           </span>
-          {disclosure.route === "byok"
-            ? ` — ${t(
-                "aiDataConsent.browserRetention",
-                "自動削除なし。ワークスペースを削除するまで保存",
-              )}`
-            : ` — ${t("aiDataConsent.sourceRetention", "原稿 {{days}}日", {
-                days: applicationRetention.sourceDays,
-              })} / ${t(
-                "aiDataConsent.artifactRetention",
-                "解析結果・AI応答 {{days}}日",
-                { days: applicationRetention.artifactDays },
-              )}`}
+          {` — ${t(
+            "aiDataConsent.browserRetention",
+            "自動削除なし。ワークスペースを削除するまで保存",
+          )}`}
         </p>
         <p className="mt-1 text-muted-foreground">
           <span className="font-medium text-foreground">
@@ -94,43 +112,8 @@ export function AiDataConsentDetails({
         <p>{disclosure.trainingUse.summary}</p>
       </DisclosureSection>
 
-      {requiresContentRights && (
-        <DisclosureSection title={contentPolicy.heading}>
-          <p>
-            {contentPolicy.adultContentNotice} {contentPolicy.aiRefusalNotice}
-          </p>
-          <p className="mt-2">{contentPolicy.rightsNotice}</p>
-          <p className="mt-3 font-medium">{contentPolicy.prohibitedHeading}</p>
-          <ul className="mt-1 list-disc space-y-1 pl-5">
-            {contentPolicy.prohibitedItems.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-          <div className="mt-3 flex flex-wrap gap-3">
-            <a
-              href={CLOUDFLARE_ABUSE_POLICY_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-primary underline underline-offset-2"
-            >
-              {contentPolicy.hostingPolicyLabel}
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-            <a
-              href={CLOUDFLARE_WORKERS_AI_DATA_POLICY_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-primary underline underline-offset-2"
-            >
-              {contentPolicy.workersAiPolicyLabel}
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          </div>
-        </DisclosureSection>
-      )}
-
       <div className="flex flex-wrap gap-3">
-        {policyUrls.map((url) => (
+        {policyLinks.map(({ url, label }) => (
           <a
             key={url}
             href={url}
@@ -138,7 +121,7 @@ export function AiDataConsentDetails({
             rel="noreferrer"
             className="inline-flex items-center gap-1 text-primary underline underline-offset-2"
           >
-            {t("aiDataConsent.openPolicy", "ポリシーを開く")}
+            {label}
             <ExternalLink className="h-3.5 w-3.5" />
           </a>
         ))}

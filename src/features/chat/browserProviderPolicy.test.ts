@@ -12,9 +12,7 @@ describe("Web Editor AI provider policy", () => {
       "openai",
       "anthropic",
     ]);
-    expect(aiProvidersForRuntime("web")).toEqual(
-      BROWSER_DIRECT_AI_PROVIDERS,
-    );
+    expect(aiProvidersForRuntime("web")).toEqual(BROWSER_DIRECT_AI_PROVIDERS);
   });
 
   it("does not narrow the desktop provider registry", () => {

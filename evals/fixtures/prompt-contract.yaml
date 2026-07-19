@@ -34,38 +34,3 @@ cases:
       freshness: stable
       requiredEvidence: [prompt-contract-test]
       outputValidators: [localized-parity, json-contract]
-
-  - id: eval-prompt-scan-language
-    suiteId: prompt-contract
-    requirementIds: [GDX-ROUTE-001, GDX-GROUND-001, GDX-ARTIFACT-001]
-    fixture:
-      runId: prompt-scan-language
-      locale: ja-JP
-      timeZone: Asia/Tokyo
-      currentTime: "2026-07-19T13:10:00+09:00"
-      channel: native
-      grantedPolicies: []
-      availableTools: []
-      state:
-        {
-          conversationId: prompt-scan-language-conversation,
-          workspaceId: prompt-scan-language-workspace,
-          artifactRoot: prompt-scan-language-artifacts,
-        }
-      teardown: [conversation, workspace, artifacts]
-    input:
-      promptAssets:
-        - packages/scan-prompts/src/prompts.ts
-      attemptedTools: []
-      executedTools: []
-    expected:
-      outcome: allowed
-      blockedBy: null
-      requiredTools: []
-      forbiddenTools: []
-      requiredPolicies: []
-      authorization: not-required
-      failureClass: null
-      freshness: stable
-      requiredEvidence: [prompt-contract-test, scan-contract-test]
-      outputValidators: [localized-parity, json-contract, source-attribution]

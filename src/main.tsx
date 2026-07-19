@@ -192,11 +192,11 @@ function renderBrowserPersistenceFailure(
 }
 
 async function bootstrapRenderer(): Promise<void> {
-  // Native shells keep their existing synchronous bootstrap. Hosted Editor
+  // Native shells keep their existing synchronous bootstrap. Web Editor
   // must restore and install BrowserMock before App can make its first invoke.
   if (!isElectron() && !isTauri()) {
     const {
-      assertHostedEditorDurability,
+      assertWebEditorDurability,
       initializeBrowserRuntime,
       browserPersistenceFailureMessage,
     } = await import("./lib/browserRuntime");
@@ -208,7 +208,7 @@ async function bootstrapRenderer(): Promise<void> {
         ),
     });
     try {
-      assertHostedEditorDurability(browserRuntime.durability);
+      assertWebEditorDurability(browserRuntime.durability);
     } catch (error) {
       await browserRuntime.dispose();
       throw error;

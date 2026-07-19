@@ -5,6 +5,7 @@ import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlValue } from "sql.js";
 import schemaContract from "@/db/generated/schema-contract.json";
 import type { AiProvider, ToolProtocolMode } from "@/features/chat/types";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import {
   createBrowserAiTransport,
   fetchModels,
@@ -155,26 +156,64 @@ const SCHEMA_DDL = buildBrowserSchemaDdl(
   schemaContract as unknown as BrowserSchemaContract,
 );
 const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";
+const ROLE_PROVIDERS_SETTING_KEY = "aiModel.roleProviders";
+const ROLE_MODEL_SETTING_PREFIX = "aiModel.role.";
+const BROWSER_AI_PROVIDERS = new Set<AiProvider>(BROWSER_DIRECT_AI_PROVIDERS);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Old Web Editor builds exposed desktop provider routing. Keep supported BYOK /
+ * local role selections, but remove hidden cross-provider routes that the
+ * editor-only browser runtime cannot execute. The paired model is removed too:
+ * without its provider it could otherwise be sent to the active provider under
+ * a foreign model id.
+ */
+function normalizeBrowserGlobalSettings(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isRecord(value.userPreferences)) return value;
+  const preferences = value.userPreferences;
+  const rawRoleProviders = preferences[ROLE_PROVIDERS_SETTING_KEY];
+  if (typeof rawRoleProviders !== "string") return value;
+
+  let parsedRoleProviders: unknown;
+  try {
+    parsedRoleProviders = JSON.parse(rawRoleProviders);
+  } catch {
+    return value;
+  }
+  if (!isRecord(parsedRoleProviders)) return value;
+
+  const nextRoleProviders = { ...parsedRoleProviders };
+  const nextPreferences = { ...preferences };
+  let changed = false;
+  for (const [role, override] of Object.entries(parsedRoleProviders)) {
+    if (!isRecord(override) || typeof override.provider !== "string") {
+      continue;
+    }
+    const provider = override.provider.trim() as AiProvider;
+    if (!provider || BROWSER_AI_PROVIDERS.has(provider)) continue;
+    delete nextRoleProviders[role];
+    delete nextPreferences[`${ROLE_MODEL_SETTING_PREFIX}${role}`];
+    changed = true;
+  }
+  if (!changed) return value;
+
+  nextPreferences[ROLE_PROVIDERS_SETTING_KEY] =
+    JSON.stringify(nextRoleProviders);
+  return { ...value, userPreferences: nextPreferences };
+}
 
 export interface BrowserMockOptions {
   databaseBytes?: Uint8Array;
   onDatabaseDirty?: () => void;
-  /** Runtime-only defaults used by scoped hosted AI sessions. */
-  aiSettingsOverride?: Partial<{
-    provider: AiProvider;
-    model: string;
-    thinkingEnabled: boolean;
-  }>;
   authorizeAiRequest?: (
     request: BrowserAiAuthorizationRequest,
   ) => Promise<void>;
   aiTransport?: BrowserAiTransport;
-  /**
-   * The injected transport authenticates the active provider itself (for
-   * example, a scoped Hosted Editor session). This is a provider-readiness
-   * signal only: no API key is created or persisted in BrowserMock.
-   */
-  aiTransportProvidesProviderAccess?: boolean;
 }
 
 export interface BrowserAiAuthorizationRequest {
@@ -182,6 +221,7 @@ export interface BrowserAiAuthorizationRequest {
   provider: AiProvider;
   model: string;
   endpointId?: string | null;
+  ollamaEndpoint?: string | null;
   hasApiKey: boolean;
 }
 
@@ -280,13 +320,6 @@ export async function createBrowserMock(
       await authorizeBrowserAiRequest(request);
     });
 
-  const BROWSER_AI_PROVIDERS = new Set<AiProvider>([
-    "anthropic",
-    "openai",
-    "openrouter",
-    "ollama",
-  ]);
-
   function requireBrowserAiProvider(value: unknown): AiProvider {
     const provider = String(value ?? "").trim() as AiProvider;
     if (!BROWSER_AI_PROVIDERS.has(provider)) {
@@ -305,42 +338,62 @@ export async function createBrowserMock(
     return endpointId ? `${provider}:${endpointId}` : provider;
   }
 
+  const defaultBrowserAiSettings = (): Record<string, unknown> => ({
+    provider: "ollama",
+    model: "",
+    ollamaEndpoint: "http://localhost:11434",
+    thinkingEnabled: true,
+  });
+
+  function normalizeBrowserAiSettings(value: unknown): Record<string, unknown> {
+    const parsed =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    const provider = String(parsed.provider ?? "").trim() as AiProvider;
+    if (BROWSER_AI_PROVIDERS.has(provider)) {
+      return { ...defaultBrowserAiSettings(), ...parsed, provider };
+    }
+    // Retired hosted/OpenRouter and native-only selections must never survive
+    // as an apparently connected Web Editor setting.
+    return {
+      ...defaultBrowserAiSettings(),
+      ...parsed,
+      provider: "ollama",
+      model: "",
+      modelApiVariant: null,
+    };
+  }
+
   function handleGetAiSettings(): Record<string, unknown> {
     try {
       const raw = localStorage.getItem(AI_SETTINGS_KEY);
       if (raw) {
-        return {
-          ...(JSON.parse(raw) as Record<string, unknown>),
-          ...options.aiSettingsOverride,
-        };
+        const normalized = normalizeBrowserAiSettings(JSON.parse(raw));
+        if (JSON.stringify(normalized) !== raw) {
+          localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(normalized));
+        }
+        return normalized;
       }
     } catch {
       // noop
     }
-    return {
-      provider: "openrouter",
-      // 撮影ステージでは seedScreenshotWorkspace の chat-scene-1.model と
-      // 揃え、チャットパネルが「モデル未設定」表示にならないようにする。
-      model: isScreenshotStagingActive()
-        ? "openrouter/anthropic/claude-sonnet-4.6"
-        : "",
-      ollamaEndpoint: "http://localhost:11434",
-      thinkingEnabled: true,
-      ...options.aiSettingsOverride,
-    };
+    return defaultBrowserAiSettings();
   }
 
   function handleSaveAiSettings(args: Record<string, unknown>): void {
     const settings = args.settings as Record<string, unknown>;
+    requireBrowserAiProvider(settings?.provider);
+    const normalized = normalizeBrowserAiSettings(settings);
     try {
-      localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(settings));
+      localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(normalized));
     } catch {
       // noop
     }
   }
 
   function handleSaveApiKey(args: Record<string, unknown>): void {
-    const provider = String(args.provider ?? "").trim();
+    const provider = requireBrowserAiProvider(args.provider);
     const key = String(args.key ?? "").trim();
     if (!provider || !key) {
       throw new Error("provider and key are required");
@@ -349,7 +402,7 @@ export async function createBrowserMock(
   }
 
   function handleGetApiKey(args: Record<string, unknown>): string | null {
-    const provider = String(args.provider ?? "").trim();
+    const provider = requireBrowserAiProvider(args.provider);
     const endpointId = optionalString(args.endpointId);
     return (
       apiKeys.get(apiKeySlot(provider, endpointId)) ??
@@ -359,18 +412,12 @@ export async function createBrowserMock(
   }
 
   function hasAiProviderAccess(args: Record<string, unknown>): boolean {
-    if (handleGetApiKey(args) !== null) return true;
-    if (!options.aiTransport || !options.aiTransportProvidesProviderAccess) {
-      return false;
-    }
-
-    const requestedProvider = String(args.provider ?? "").trim();
-    const activeProvider = String(handleGetAiSettings().provider ?? "").trim();
-    return requestedProvider.length > 0 && requestedProvider === activeProvider;
+    const provider = requireBrowserAiProvider(args.provider);
+    return provider === "ollama" || handleGetApiKey(args) !== null;
   }
 
   function handleDeleteApiKey(args: Record<string, unknown>): void {
-    const provider = String(args.provider ?? "").trim();
+    const provider = requireBrowserAiProvider(args.provider);
     const endpointId = optionalString(args.endpointId);
     if (endpointId) {
       apiKeys.delete(apiKeySlot(provider, endpointId));
@@ -393,6 +440,11 @@ export async function createBrowserMock(
     );
     const model =
       optionalString(args.model) ?? optionalString(settings.model) ?? "";
+    if (!model) {
+      throw new Error(
+        "AIモデルを設定してください。AIはWeb Editorに付属していません。",
+      );
+    }
     const endpointId = optionalString(
       args.resolvedEndpointId ?? args.endpointId,
     );
@@ -430,6 +482,7 @@ export async function createBrowserMock(
       provider: request.provider,
       model: request.model,
       endpointId: request.endpointId,
+      ollamaEndpoint: request.ollamaEndpoint,
       hasApiKey: request.provider === "ollama" || Boolean(request.apiKey),
     });
   }
@@ -442,6 +495,7 @@ export async function createBrowserMock(
       args.provider ?? settings.provider,
     );
     const endpointId = optionalString(args.endpointId);
+    const ollamaEndpoint = optionalString(settings.ollamaEndpoint);
     const apiKey = handleGetApiKey({ provider, endpointId }) ?? "";
 
     await authorizeAiRequest({
@@ -449,10 +503,11 @@ export async function createBrowserMock(
       provider,
       model: "",
       endpointId,
+      ollamaEndpoint,
       hasApiKey: provider === "ollama" || Boolean(apiKey),
     });
 
-    return fetchModels(provider, apiKey);
+    return fetchModels(provider, apiKey, ollamaEndpoint);
   }
 
   async function handleTestAiConnection(
@@ -474,6 +529,7 @@ export async function createBrowserMock(
       request.provider,
       request.model,
       request.apiKey ?? "",
+      request.ollamaEndpoint,
     );
   }
 
@@ -506,6 +562,7 @@ export async function createBrowserMock(
       messages,
       tools,
       toolProtocolMode,
+      request.ollamaEndpoint,
     );
   }
 
@@ -813,9 +870,17 @@ export async function createBrowserMock(
       if (raw) {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         const recent = parsed.recentWorkspaces as unknown[];
-        // If stored settings have workspaces, use them as-is
+        // Reuse the workspace while removing legacy desktop-only provider
+        // routes that old Web Editor builds may have persisted.
         if (Array.isArray(recent) && recent.length > 0) {
-          return parsed;
+          const normalized = normalizeBrowserGlobalSettings(parsed);
+          if (normalized !== parsed) {
+            localStorage.setItem(
+              GLOBAL_SETTINGS_KEY,
+              JSON.stringify(normalized),
+            );
+          }
+          return normalized;
         }
       }
     } catch {
@@ -840,7 +905,9 @@ export async function createBrowserMock(
   }
 
   function handleSaveGlobalSettings(args: Record<string, unknown>): void {
-    const settings = args.settings as Record<string, unknown>;
+    const settings = normalizeBrowserGlobalSettings(
+      args.settings as Record<string, unknown>,
+    );
     try {
       localStorage.setItem(GLOBAL_SETTINGS_KEY, JSON.stringify(settings));
     } catch {
@@ -996,9 +1063,8 @@ export async function createBrowserMock(
         handleSaveApiKey(args);
         return undefined as T;
       case "has_api_key":
-        // 本物の IPC と同様、renderer には AI provider を利用できるかだけを返す。
-        // BYOK は runtime-local Map、Hosted Editor は scoped transport の
-        // server-side authentication を使い、どちらもキー本体は公開しない。
+        // 本物の IPC と同様、renderer には利用可否だけを返す。BYOK key
+        // 本体は runtime-local Map から外へ公開しない。
         return hasAiProviderAccess(args) as T;
       case "delete_api_key":
         handleDeleteApiKey(args);
@@ -1161,7 +1227,7 @@ function getScreenshotAnnotations(now: string) {
           confidence: "high",
           llm_reason: compassDry.llmReason,
           dismiss_key: compassDry.dismissKey,
-          detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
+          detected_by_model: "qwen3:30b",
         },
       }),
       createdAt: now,
@@ -1189,7 +1255,7 @@ function getScreenshotAnnotations(now: string) {
         found_context: foreignMemory.foundContext,
         llm_reason: foreignMemory.llmReason,
         dismiss_key: foreignMemory.dismissKey,
-        detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
+        detected_by_model: "qwen3:30b",
       }),
       createdAt: now,
       updatedAt: now,
@@ -1713,7 +1779,7 @@ async function seedScreenshotWorkspace(
     `INSERT OR IGNORE INTO chat_sessions
       (id, project_id, node_id, title, title_manual, model, created_at, updated_at)
      VALUES ('chat-scene-1', 'default-project', 'scene-1', ?, 1,
-       'openrouter/anthropic/claude-sonnet-4.6', ?, ?)`,
+       'qwen3:30b', ?, ?)`,
     [c.chat.sessionTitle, now, now],
   );
   const msgStmt = db.prepare(
@@ -1737,7 +1803,7 @@ async function seedScreenshotWorkspace(
     "chat-message-assistant-1",
     "assistant",
     c.chat.assistantMsg,
-    "openrouter/anthropic/claude-sonnet-4.6",
+    "qwen3:30b",
     820,
     118,
     1320,
@@ -1807,10 +1873,10 @@ async function seedScreenshotWorkspace(
       (id, node_id, codex_entry_id, snippet_id, detail_value_id, from_pos, to_pos, source, model, timestamp, chat_msg_id, phase_id, sticky_id)
      VALUES
       ('shot-auth-s1a', 'scene-1', NULL, NULL, NULL, 0, ?, 'human', NULL, ?, NULL, NULL, NULL),
-      ('shot-auth-s1b', 'scene-1', NULL, NULL, NULL, ?, ?, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL),
+      ('shot-auth-s1b', 'scene-1', NULL, NULL, NULL, ?, ?, 'ai', 'qwen3:30b', ?, NULL, NULL, NULL),
       ('shot-auth-s1c', 'scene-1', NULL, NULL, NULL, ?, ?, 'unknown', NULL, ?, NULL, NULL, NULL),
       ('shot-auth-s2a', 'scene-2', NULL, NULL, NULL, 0, ?, 'human', NULL, ?, NULL, NULL, NULL),
-      ('shot-auth-s3a', 'scene-3', NULL, NULL, NULL, 0, ?, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL)`,
+      ('shot-auth-s3a', 'scene-3', NULL, NULL, NULL, 0, ?, 'ai', 'qwen3:30b', ?, NULL, NULL, NULL)`,
     [
       c.authorship.scene1.humanTo,
       now,

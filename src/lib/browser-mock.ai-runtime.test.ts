@@ -7,6 +7,54 @@ describe("BrowserMock web AI runtime contract", () => {
     localStorage.clear();
   });
 
+  it("removes retired provider role overrides from legacy Web settings", async () => {
+    const legacySettings = {
+      recentWorkspaces: [
+        { path: "/dev/workspace", lastOpened: "2026-07-20T00:00:00.000Z" },
+      ],
+      lastActiveWorkspace: "/dev/workspace",
+      userPreferences: {
+        "editor.fontSize": "18",
+        "aiModel.roleProviders": JSON.stringify({
+          conversation: { provider: "openrouter" },
+          agent: { provider: "openai" },
+          inline: { provider: "ollama" },
+          cheap: {
+            provider: "openai-compatible",
+            endpointId: "legacy-endpoint",
+          },
+        }),
+        "aiModel.role.conversation": "anthropic/claude-sonnet-4.6",
+        "aiModel.role.agent": "gpt-5-mini",
+        "aiModel.role.inline": "qwen3:8b",
+        "aiModel.role.cheap": "legacy-compatible-model",
+      },
+    };
+    localStorage.setItem(
+      "grimodex:global-settings",
+      JSON.stringify(legacySettings),
+    );
+    const mock = await createBrowserMock();
+
+    const normalized = await mock.invoke<typeof legacySettings>(
+      "get_global_settings",
+    );
+
+    expect(normalized.userPreferences).toEqual({
+      "editor.fontSize": "18",
+      "aiModel.roleProviders": JSON.stringify({
+        agent: { provider: "openai" },
+        inline: { provider: "ollama" },
+      }),
+      "aiModel.role.agent": "gpt-5-mini",
+      "aiModel.role.inline": "qwen3:8b",
+    });
+    expect(
+      JSON.parse(localStorage.getItem("grimodex:global-settings") ?? "{}"),
+    ).toEqual(normalized);
+    mock.close();
+  });
+
   it("returns the structured chat payload expected by the real editor", async () => {
     const authorizeAiRequest = vi.fn().mockResolvedValue(undefined);
     const complete = vi.fn().mockResolvedValue({
@@ -61,6 +109,8 @@ describe("BrowserMock web AI runtime contract", () => {
     await expect(
       mock.invoke("send_chat_message", {
         messages: [{ role: "user", content: "private manuscript" }],
+        provider: "openai",
+        model: "gpt-5-mini",
       }),
     ).rejects.toThrow("ai-data-consent-required");
     expect(complete).not.toHaveBeenCalled();
@@ -95,6 +145,51 @@ describe("BrowserMock web AI runtime contract", () => {
         hasApiKey: true,
       }),
     );
+    vi.unstubAllGlobals();
+  });
+
+  it("uses and discloses the configured Ollama endpoint on every AI surface", async () => {
+    const authorizeAiRequest = vi.fn().mockResolvedValue(undefined);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ models: [] }))
+      .mockResolvedValueOnce(
+        Response.json({ choices: [{ message: { content: "Connection OK" } }] }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ choices: [{ message: { content: "Agent OK" } }] }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const mock = await createBrowserMock({ authorizeAiRequest });
+    await mock.invoke("save_ai_settings", {
+      settings: {
+        provider: "ollama",
+        model: "qwen3:8b",
+        ollamaEndpoint: "http://192.0.2.10:11434",
+      },
+    });
+
+    await mock.invoke("list_ai_models", { provider: "ollama" });
+    await mock.invoke("test_ai_connection", { provider: "ollama" });
+    await mock.invoke("send_agent_message", {
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+    });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://192.0.2.10:11434/api/tags",
+      "http://192.0.2.10:11434/v1/chat/completions",
+      "http://192.0.2.10:11434/v1/chat/completions",
+    ]);
+    expect(authorizeAiRequest).toHaveBeenCalledTimes(3);
+    for (const [request] of authorizeAiRequest.mock.calls) {
+      expect(request).toEqual(
+        expect.objectContaining({
+          provider: "ollama",
+          ollamaEndpoint: "http://192.0.2.10:11434",
+        }),
+      );
+    }
     vi.unstubAllGlobals();
   });
 
@@ -135,6 +230,8 @@ describe("BrowserMock web AI runtime contract", () => {
 
     const running = mock.invoke("send_chat_message_stream", {
       messages: [{ role: "user", content: "continue" }],
+      provider: "ollama",
+      model: "local-model",
     });
     await vi.waitFor(() =>
       expect(chunks).toEqual([{ delta: "本物", block_type: "text" }]),
@@ -177,6 +274,8 @@ describe("BrowserMock web AI runtime contract", () => {
 
     await mock.invoke("send_inline_ai_stream", {
       messages: [{ role: "user", content: "continue" }],
+      provider: "ollama",
+      model: "local-model",
     });
 
     expect(chunks).toEqual([{ delta: "続き", block_type: "text" }]);

@@ -5,6 +5,7 @@ import {
   fetchModels,
   resolveBrowserAiEndpoint,
   sendChat,
+  sendChatWithTools,
   testConnection,
 } from "./browser-ai";
 
@@ -125,6 +126,21 @@ describe("browser production endpoints", () => {
     ).toBe("/api/openai/chat/completions");
   });
 
+  it("honors an explicitly configured Ollama endpoint in development", () => {
+    expect(
+      resolveBrowserAiEndpoint("ollama", "models", {
+        development: true,
+        ollamaEndpoint: "http://192.0.2.10:11434/",
+      }),
+    ).toBe("http://192.0.2.10:11434/api/tags");
+    expect(
+      resolveBrowserAiEndpoint("ollama", "chat", {
+        development: true,
+        ollamaEndpoint: "http://192.0.2.10:11434/",
+      }),
+    ).toBe("http://192.0.2.10:11434/v1/chat/completions");
+  });
+
   it("fails explicitly for native-only providers", () => {
     expect(() =>
       resolveBrowserAiEndpoint("cli", "chat", { development: false }),
@@ -236,6 +252,14 @@ describe("fetchModels", () => {
     expect(mockFetch.mock.calls[0][0]).toBe("/api/ollama/api/tags");
   });
 
+  it("fetches models from the configured Ollama endpoint", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ models: [] }));
+
+    await fetchModels("ollama", "", "http://192.0.2.10:11434");
+
+    expect(mockFetch.mock.calls[0][0]).toBe("http://192.0.2.10:11434/api/tags");
+  });
+
   it("rejects OpenRouter model discovery before making a request", async () => {
     await expect(fetchModels("openrouter", "sk-or")).rejects.toThrow(
       "not supported in browser mode",
@@ -271,5 +295,31 @@ describe("testConnection", () => {
       "sk-test",
     );
     expect(result).toBe("Connection OK");
+  });
+
+  it("tests and runs tools against the configured Ollama endpoint", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({ choices: [{ message: { content: "Connection OK" } }] }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ choices: [{ message: { content: "Agent OK" } }] }),
+      );
+
+    await testConnection("ollama", "qwen3:8b", "", "http://192.0.2.10:11434");
+    await sendChatWithTools(
+      "ollama",
+      "qwen3:8b",
+      "",
+      [{ role: "user", content: "hello" }],
+      [],
+      "auto",
+      "http://192.0.2.10:11434",
+    );
+
+    expect(mockFetch.mock.calls.map((call) => call[0])).toEqual([
+      "http://192.0.2.10:11434/v1/chat/completions",
+      "http://192.0.2.10:11434/v1/chat/completions",
+    ]);
   });
 });

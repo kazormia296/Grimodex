@@ -295,11 +295,16 @@ describe("chatApi - session/message persistence", () => {
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       };
-      mockInsertChain([row]);
+      const chain = mockInsertChain([row]);
 
       const result = await createSession("proj-1", "新しい会話", "node-1");
 
       expect(mockDb.insert).toHaveBeenCalled();
+      const values = vi.mocked(chain.values).mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(values).not.toHaveProperty("model");
       expect(result.title).toBe("新しい会話");
       expect(result.nodeId).toBe("node-1");
       expect(result.projectId).toBe("proj-1");
@@ -322,6 +327,37 @@ describe("chatApi - session/message persistence", () => {
 
       const result = await createSession("proj-1", "フリー会話");
       expect(result.nodeId).toBeNull();
+    });
+
+    it("persists an explicit empty model instead of using the database default", async () => {
+      const row = {
+        id: "web-session",
+        projectId: "proj-1",
+        nodeId: null,
+        codexAnchorId: null,
+        snippetAnchorId: null,
+        title: "Web session",
+        titleManual: 0,
+        model: "",
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      };
+      const chain = mockInsertChain([row]);
+
+      await createSession(
+        "proj-1",
+        "Web session",
+        undefined,
+        undefined,
+        undefined,
+        "",
+      );
+
+      const values = vi.mocked(chain.values).mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(values).toHaveProperty("model", "");
     });
 
     it("creates a snippet-anchored session", async () => {

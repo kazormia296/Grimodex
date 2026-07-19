@@ -13,7 +13,7 @@ describe("Cloudflare Web Editor-only deploy CLI", () => {
 
     assert.deepEqual(
       createEditorDeployPlan({ action: "web-build", environment: "staging" }),
-      [{ command: "pnpm", args: ["build"] }],
+      [{ command: "pnpm", args: ["build:web-editor"] }],
     );
   });
 
@@ -22,9 +22,12 @@ describe("Cloudflare Web Editor-only deploy CLI", () => {
       await import("./cloudflare-editor-deploy.mjs");
 
     assert.deepEqual(
-      createEditorDeployPlan({ action: "web-deploy", environment: "production" }),
+      createEditorDeployPlan({
+        action: "web-deploy",
+        environment: "production",
+      }),
       [
-        { command: "pnpm", args: ["build"] },
+        { command: "pnpm", args: ["build:web-editor"] },
         {
           command: "pnpm",
           args: [
@@ -44,12 +47,13 @@ describe("Cloudflare Web Editor-only deploy CLI", () => {
   });
 
   it("ships only the Editor SPA/PWA shell and no provider proxy", async () => {
-    const [redirects, manifest, serviceWorker, vercelConfig] = await Promise.all([
-      readFile(`${publicDir}/_redirects`, "utf8"),
-      readFile(`${publicDir}/editor-manifest.webmanifest`, "utf8"),
-      readFile(`${publicDir}/editor-sw.js`, "utf8"),
-      readFile(`${repositoryRoot}/vercel.json`, "utf8"),
-    ]);
+    const [redirects, manifest, serviceWorker, vercelConfig] =
+      await Promise.all([
+        readFile(`${publicDir}/_redirects`, "utf8"),
+        readFile(`${publicDir}/editor-manifest.webmanifest`, "utf8"),
+        readFile(`${publicDir}/editor-sw.js`, "utf8"),
+        readFile(`${repositoryRoot}/vercel.json`, "utf8"),
+      ]);
 
     assert.match(redirects, /^\/\*\s+\/index\.html\s+200/m);
     assert.equal(JSON.parse(manifest).start_url, "/editor");
@@ -57,8 +61,12 @@ describe("Cloudflare Web Editor-only deploy CLI", () => {
     assert.doesNotMatch(serviceWorker, /scan|editor-seeds/i);
 
     const vercel = JSON.parse(vercelConfig);
+    assert.equal(vercel.buildCommand, "pnpm build:web-editor");
     assert.equal(vercel.rewrites.length, 1);
     assert.equal(vercel.rewrites[0].destination, "/index.html");
-    assert.doesNotMatch(vercelConfig, /openrouter|anthropic\.com|openai\.com|localhost:11434/i);
+    assert.doesNotMatch(
+      vercelConfig,
+      /openrouter|anthropic\.com|openai\.com|localhost:11434/i,
+    );
   });
 });

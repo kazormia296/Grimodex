@@ -392,8 +392,9 @@ describe("createBrowserMock", () => {
       await expect(
         migratedMock.invoke("get_ai_settings", {}),
       ).resolves.toMatchObject({ provider: "ollama", model: "" });
-      expect(JSON.parse(localStorage.getItem("grimodex:ai-settings") ?? "{}"))
-        .toMatchObject({ provider: "ollama", model: "" });
+      expect(
+        JSON.parse(localStorage.getItem("grimodex:ai-settings") ?? "{}"),
+      ).toMatchObject({ provider: "ollama", model: "" });
       migratedMock.close();
     });
   });

@@ -10,11 +10,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { HostedEditorEntryMode } from "./HostedEditorTrialBar";
-
 interface HostedEditorHandoffDialogProps {
   open: boolean;
-  entryMode: HostedEditorEntryMode;
   onClose: () => void;
   downloadHandoff: () => Promise<string>;
 }
@@ -22,7 +19,6 @@ interface HostedEditorHandoffDialogProps {
 type HandoffDialogContentProps = Omit<HostedEditorHandoffDialogProps, "open">;
 
 function HandoffDialogContent({
-  entryMode,
   onClose,
   downloadHandoff,
 }: HandoffDialogContentProps) {
@@ -61,17 +57,12 @@ function HandoffDialogContent({
     }
   }, [downloadHandoff, isDownloading]);
 
-  const entryDescription =
-    entryMode === "scan"
-      ? t("hostedEditor.handoff.scanDescription")
-      : t("hostedEditor.handoff.standaloneDescription");
-
   return (
     <DialogContent showClose={false} className="max-w-xl">
       <DialogHeader>
         <DialogTitle>{t("hostedEditor.handoff.title")}</DialogTitle>
         <DialogDescription className="space-y-1">
-          <span className="block">{entryDescription}</span>
+          <span className="block">{t("hostedEditor.handoff.description")}</span>
           <span className="block">
             {t("hostedEditor.handoff.downloadInstruction")}
           </span>
@@ -143,7 +134,6 @@ function HandoffDialogContent({
 
 export function HostedEditorHandoffDialog({
   open,
-  entryMode,
   onClose,
   downloadHandoff,
 }: HostedEditorHandoffDialogProps) {
@@ -151,8 +141,6 @@ export function HostedEditorHandoffDialog({
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
       {open && (
         <HandoffDialogContent
-          key={entryMode}
-          entryMode={entryMode}
           onClose={onClose}
           downloadHandoff={downloadHandoff}
         />

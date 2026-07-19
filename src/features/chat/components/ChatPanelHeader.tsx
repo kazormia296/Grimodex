@@ -499,7 +499,11 @@ export function ChatPanelHeader({
           }
           // 第三者送信の開示は title (ホバー専用) に頼らず aria-describedby で
           // スクリーンリーダー/タッチにも到達させる（security review F-1）。
-          aria-describedby="rag-egress-note"
+          aria-describedby={
+            effectiveRagDisabled && ragDisabledReason
+              ? "rag-disabled-note"
+              : "rag-egress-note"
+          }
           title={
             effectiveRagDisabled
               ? privacyRagDisabled
@@ -523,13 +527,19 @@ export function ChatPanelHeader({
           <Globe2 className="h-3 w-3 shrink-0" />
           <span>{t("chat.webSearch.label")}</span>
         </button>
-        {/* aria-describedby の参照先。第三者送信(egress)＋取得内容による
-            プロンプトインジェクションの両方を SR/タッチへ開示（security review F-1）。 */}
-        <span id="rag-egress-note" className="sr-only">
-          {`${t("chat.webSearch.egressNote")} ${t(
-            "chat.webSearch.injectionNote",
-          )}${agentMode ? ` ${t("chat.webSearch.agentPrivacyNote")}` : ""}`}
-        </span>
+        {effectiveRagDisabled && ragDisabledReason ? (
+          <span id="rag-disabled-note" className="sr-only">
+            {ragDisabledReason}
+          </span>
+        ) : (
+          /* aria-describedby の参照先。第三者送信(egress)＋取得内容による
+             プロンプトインジェクションの両方を SR/タッチへ開示（security review F-1）。 */
+          <span id="rag-egress-note" className="sr-only">
+            {`${t("chat.webSearch.egressNote")} ${t(
+              "chat.webSearch.injectionNote",
+            )}${agentMode ? ` ${t("chat.webSearch.agentPrivacyNote")}` : ""}`}
+          </span>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-1">

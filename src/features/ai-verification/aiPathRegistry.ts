@@ -72,19 +72,18 @@ export interface AiPathEntry {
  * A deployed runtime route for an existing AI surface.
  *
  * `AI_PATHS` remains the canonical logical surface/model-role registry. These
- * entries separately prove that browser and hosted transports do not disappear
+ * entries separately prove that the browser transport does not disappear
  * behind the Electron/Rust transport names and that each external-data route
  * has a consent verifier. Runtime routes do not create an additional model
- * role; they carry the role selected by the logical surface or a server-owned
- * model configuration.
+ * role; they carry the role selected explicitly by the user.
  */
 export interface AiRuntimeRouteEntry {
   id: string;
   label: string;
   surface: string;
   transport: string;
-  consentRoute: "scan" | "hosted-editor" | "byok";
-  providerAuthority: "server-runtime" | "user-selection";
+  consentRoute: "byok";
+  providerAuthority: "user-selection";
   capabilityGate: string;
   verifier: "contract";
   testRef: string;
@@ -102,10 +101,6 @@ const CANDIDATE_JUDGMENT_TEST =
   "src/features/codex/candidateJudgment.live.test.ts";
 const CODEX_YOMI_TEST = "src/features/codex/codexYomi.live.test.ts";
 const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
-const SCAN_PIPELINE_CONTRACT_TEST = "apps/scan-web/worker/pipeline.test.ts";
-const SCAN_CONSENT_CONTRACT_TEST =
-  "apps/scan-web/src/api/scanApiClient.consent.test.ts";
-const HOSTED_EDITOR_CONTRACT_TEST = "src/lib/hostedBrowserAi.test.ts";
 const BROWSER_BYOK_CONTRACT_TEST = "src/lib/browser-ai.test.ts";
 const BROWSER_BYOK_CONSENT_CONTRACT_TEST =
   "src/lib/browser-mock.ai-runtime.test.ts";
@@ -436,62 +431,23 @@ export const AI_PATHS: AiPathEntry[] = [
   },
 ];
 
-/** Production web/hosted transports and their fail-closed consent contracts. */
+/** Web Editor transports and their fail-closed consent contracts. */
 export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
   {
-    id: "scan_upload_hosted",
-    label: "Grimodex Scan hosted analysis",
-    surface:
-      "ScanWebApp → ScanApiClient upload intent → Cloudflare Scan Workflow",
-    transport:
-      "Cloudflare Worker/Workflow → Workers AI extraction (GLM) → OpenRouter Terra frontier (Microsoft Azure AI only, ZDR required)",
-    consentRoute: "scan",
-    providerAuthority: "server-runtime",
-    capabilityGate:
-      "Cloudflare Access account + current public disclosure + matching consent identity + accepting-jobs/provider capability",
-    verifier: "contract",
-    testRef: SCAN_PIPELINE_CONTRACT_TEST,
-    testName:
-      "runs the deterministic Quick path through source, chunks, extraction, merge and private artifacts",
-    consentTestRef: SCAN_CONSENT_CONTRACT_TEST,
-    consentTestName:
-      "fails closed before the network when an upload has no consent identity",
-    note: "Quick Scan stops after Workers AI extraction. Full Scan adds the server-owned OpenRouter Terra route, pinned to Microsoft Azure AI without provider fallback and requiring ZDR. The contract covers upload-to-provider orchestration and refusal before upload; a credentialed, teardown-capable deployed runner remains blocked Heavy evidence.",
-  },
-  {
-    id: "hosted_editor_web",
-    label: "Hosted Editor AI",
-    surface: "browser Editor → createHostedBrowserAi → Scan editor-ai route",
-    transport:
-      "HTTPS scoped Editor session → Cloudflare Worker → OpenRouter Luna (Microsoft Azure AI only, ZDR required)",
-    consentRoute: "hosted-editor",
-    providerAuthority: "server-runtime",
-    capabilityGate:
-      "Cloudflare Access account + hosted-editor capability/session credential + current disclosure + matching consent identity",
-    verifier: "contract",
-    testRef: HOSTED_EDITOR_CONTRACT_TEST,
-    testName:
-      "requires the current server disclosure before sending manuscript data",
-    consentTestRef: HOSTED_EDITOR_CONTRACT_TEST,
-    consentTestName:
-      "requires the current server disclosure before sending manuscript data",
-    note: "The server-owned OpenRouter Luna route is pinned to Microsoft Azure AI without provider fallback and requires ZDR. The client wire, operation contract, and no-consent network denial are Light evidence; real provider behavior and deployed storage teardown remain blocked Heavy evidence.",
-  },
-  {
     id: "browser_byok_web",
-    label: "Standalone browser Editor BYOK AI",
+    label: "Web Editor Local LLM / BYOK AI",
     surface: "browser Editor → BrowserMock AI transport → browser-ai",
     transport: "browser fetch → user-selected AI provider",
     consentRoute: "byok",
     providerAuthority: "user-selection",
     capabilityGate:
-      "supported provider + session-memory credential when required + current route/provider/policy consent",
+      "explicit user-selected Local LLM endpoint or supported BYOK provider + session-memory credential when required + current route/provider/policy/actual connection destination consent",
     verifier: "contract",
     testRef: BROWSER_BYOK_CONTRACT_TEST,
     testName: "sends OpenAI request with Bearer auth",
     consentTestRef: BROWSER_BYOK_CONSENT_CONTRACT_TEST,
     consentTestName:
       "does not reach the provider when consent authorization fails",
-    note: "The production endpoint/auth shape and refusal-before-provider boundary are deterministic Light contracts. Provider-account retention and training facts are disclosed at runtime and live credentialed execution remains explicit Heavy work.",
+    note: "Web Editor has no app-owned AI credential or managed provider route. Consent identity includes the normalized actual connection destination, so changing an Ollama endpoint invalidates prior consent. The production endpoint/auth shape and refusal-before-provider boundary are deterministic Light contracts; live Local LLM or BYOK execution remains an explicit user action and Heavy evidence.",
   },
 ];

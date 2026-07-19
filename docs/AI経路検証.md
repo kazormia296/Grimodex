@@ -8,10 +8,10 @@
 が機械チェックする（経路を足して検証手段を割り当て忘れると CI が落ちる）。
 
 同ファイルでは、論理 AI サーフェスと model role を `AI_PATHS`、デプロイ先ごとの
-実行トランスポートを `AI_RUNTIME_ROUTES` として分離する。後者には Scan upload、
-Hosted Editor、ブラウザ BYOK を登録し、provider の決定主体、capability gate、通常の
-transport contract、および送信前の同意 contract を必須にする。ランタイム経路を
-追加しても論理サーフェスの model role を重複定義しない。
+実行トランスポートを `AI_RUNTIME_ROUTES` として分離する。Web Editor の実行経路は
+Local LLM またはユーザー所有キーによる BYOK のみとし、provider の決定主体、
+capability gate、通常の transport contract、および送信前の同意 contract を必須にする。
+ランタイム経路を追加しても論理サーフェスの model role を重複定義しない。
 
 ## 設計の核心 — 「JS 経路か Rust 経路か」で検証手段が決まる
 
@@ -32,63 +32,26 @@ usage 台帳 / session_id routing）ではない。
 | **④ CLI**                                         | claude/codex/opencode サブプロセス                                                              | 自動検証不可（stub・実機 smoke のみ）                                  |
 | **➖ 埋め込み/検索**                              | semantic_search / fts_search                                                                    | LLM 生成でない（n/a・決定的 eval で別途）                              |
 
-## Web／Hosted AI の同意境界
+## Web Editor AI の同意境界
 
-`GDX-AI-CONSENT-001` により、次の 3 経路は外部へデータを送信する前に、現在の
-policy version・route・provider に一致する明示同意を必要とする。
+`GDX-AI-CONSENT-001` により、Web Editor は Local LLM または BYOK のみを有効化する。
+アプリ所有の API key、管理型 provider、原稿 upload、サーバー保存は実行経路に含めない。
+ユーザーが provider または Local LLM endpoint と model を明示的に選び、外部送信が
+生じる場合は現在の policy version・route・provider に一致する同意が必要になる。
 
-| runtime route         | provider / model                                       | capability gate                            | Light verifier                                                       | Heavy 境界                                                      |
-| --------------------- | ------------------------------------------------------ | ------------------------------------------ | -------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Quick Scan extraction | Workers AI / `@cf/zai-org/glm-4.7-flash`               | Cloudflare Access account + consent        | upload→workflow contract + consent 無しの upload 拒否                | 実 Cloudflare storage/provider と確実な teardown が必要         |
-| Full Scan frontier    | OpenRouter→Microsoft Azure AI / `openai/gpt-5.6-terra` | Access account + Full capability + consent | OpenRouter routing/privacy body contract                             | 実 provider、課金、保存物 teardown が必要                       |
-| Hosted Editor         | OpenRouter→Microsoft Azure AI / `openai/gpt-5.6-luna`  | Access account + Editor session + consent  | HostedAiClient wire contract + consent 無しの network 拒否           | デプロイ済み Editor/Worker、実 provider、保存物 teardown が必要 |
-| Browser BYOK          | user selection                                         | provider credential + consent              | production endpoint/auth contract + provider 呼出し前の consent 拒否 | 使い捨て provider key とアカウント設定の隔離が必要              |
+| runtime route               | provider / model | capability gate                                                                                   | Light verifier                                                                         | Heavy 境界                                  |
+| --------------------------- | ---------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Web Editor Local LLM / BYOK | user selection   | explicit endpoint or session-memory credential + route/provider/policy/actual destination consent | endpoint/auth contract + provider 呼出し前の consent 拒否 + destination 変更時の再同意 | 実 Local LLM または使い捨て BYOK key が必要 |
 
-Hosted OpenRouter 経路は `provider.order=["azure"]`、
-`provider.only=["azure"]`、
-`allow_fallbacks=false`、`data_collection="deny"`、`zdr=true`、
-`require_parameters=true` を同時に送る。そのため OpenRouter の別 provider
-へフォールバックする経路は production route に含めない。
-Scan・Hosted Editor はサーバー所有の `OPENROUTER_API_KEY` を使い、
-キーを Pages bundle、`VITE_*`、ブラウザ保存領域へ渡さない。
-さらに専用 OpenRouter workspace／key で Input & Output Logging と
-Use of Inputs/Outputs を無効にし、Broadcast を無効化またはすべての
-destination からその key を除外したことを運用確認する。
-現行の `OPENROUTER_ACCOUNT_POLICY_ATTESTATION` がない、または古い場合は
-開示と AI 呼出しの両方を fail closed にする。
-
-開示には送信データ、全 processor、処理目的、アプリ／provider の保存と保持、学習利用、
+開示には送信データ、全 processor、処理目的、provider の保存と保持、学習利用、
 現在の policy link を含める。処理先を完全に開示できない場合や、provider／policy version
 が変わった場合は fail closed とし、過去の同意を流用しない。BYOK の API key は現在の
-ページの実行メモリだけに置き、IndexedDB、Local Storage、R2、D1 へ永続化しない。
-ここでの provider identity は OpenRouter だけでなく、endpoint class、
-モデル、ピン済み Microsoft Azure AI、ZDR 要件まで含む。いずれかの
-変更時は過去の同意 identity を再利用せず、再同意を要求する。
+ページの実行メモリだけに置き、IndexedDB や Local Storage へ永続化しない。
 
-これらの contract test は実 provider の成功を証明しない。現在、資格情報付きかつ
-teardown 可能なデプロイ済み runner は存在しないため、manifest の
-`blocked-scan-hosted` / `blocked-web-ai-consent-live` を `passed` と読み替えてはならない。
-
-`GDX-HOSTED-CONTENT-001` は、このデータ同意とは別に Scan upload と Hosted Editor の
-cloud AI で内容・権利の確認を要求する。正本は
-`packages/scan-contract/src/cloudContentPolicy.ts` で、合法な成人のみの架空作品を
-一律禁止しない一方、処理を保証しないこと、禁止内容、権利・許諾、二次創作ガイドラインを
-日英で提示する。`AI_DATA_POLICY_VERSION` と内容ポリシーの version は別々に管理し、
-処理先／アカウント方針の開示または内容ポリシーのいずれを更新した場合でも、
-過去の Scan／Hosted Editor 同意を再利用しない。ローカルの
-desktop editor と browser BYOK にはこの hosted 固有確認を追加しない。開示契約では
-`contentPolicy.version` と `contentPolicy.acknowledgementHeader` を必須にし、hosted の
-upload／AI dispatch は開示されたヘッダー名で同一 version を返す。旧 parser は追加
-フィールドを、新 parser は欠落フィールドを拒否し、Worker もヘッダー欠落・旧 version を
-428 で拒否するため、混在 bundle でも確認を迂回できない。
-
-公開レポートは current `PublicReportV2` の専用投影だけを表示し、原稿本文・根拠・private
-provenance を再表示しない。所有者の公開停止／削除と、閲覧者の bounded abuse report
-経路を Light contract で検証する。Worker は公開 GET のたびに R2 artifact を
-`parsePublicReport` で検証し、配列上限、ID種別・一意性、relation参照を確認した投影だけを
-再serializeする。既存 `PublicReportV1` は旧publisherが生成したexactなevidence-free形状
-だけを受理し、本文由来のoptional fieldを許さずV2へ正規化する。外部へ保存されたコピーまで
-回収できることや、通報後の対応結果を自動保証するものではない。
+これらの contract test は実 provider の成功を証明しない。資格情報付きかつ
+teardown 可能なブラウザ runner は存在しないため、manifest の
+`blocked-web-ai-consent-live` を `passed` と読み替えてはならない。
+この blocked 評価はユーザー所有の Local LLM／BYOK 経路だけを対象とし、管理型 AI を意味しない。
 
 ドリフト防止: ②③ は**本番のビルダー/パーサを import して使う**（プロンプト文字列を
 テストに再構築しない）。② のビルダー（map/tree の `buildSystemPrompt`/`buildUserPrompt`、
@@ -97,6 +60,8 @@ provenance を再表示しない。所有者の公開停止／削除と、閲覧
 ## 実行方法
 
 すべて既定 SKIP（キー未設定なら skip / 即 return）。実トークン課金あり。
+以下の OpenRouter ライブハーネスはデスクトップ AI 経路の開発・検証用に維持するもので、
+Web Editor の管理型 provider またはアプリ所有キーの経路ではない。
 
 ### JS（① agent loop / ② 単発 / streaming）
 
@@ -134,8 +99,8 @@ pnpm test --run src/features/ai-verification/aiPathRegistry.test.ts
 ```
 
 レジストリの全生成経路に検証手段が割り当たっていること、`js-live`/`rust-live`/
-`covered-by-agent-loop` の参照テストが**実在**することに加え、3 つの Web runtime route
-それぞれについて通常 contract と consent contract のテスト名まで assert する。
+`covered-by-agent-loop` の参照テストが**実在**することに加え、Web Editor の
+Local LLM／BYOK runtime route について通常 contract と consent contract のテスト名まで assert する。
 
 ## 範囲外（意図的な gap）
 
@@ -160,7 +125,9 @@ pnpm test --run src/features/ai-verification/aiPathRegistry.test.ts
    - `stub` → 自動検証不可の理由を note に明示。
 4. `aiPathRegistry.test.ts` が green であることを確認（穴・参照切れを検出）。
 
-Web／Hosted の実行トランスポートを追加または変更する場合は、上記に加えて
+Web Editor の実行トランスポートを追加または変更する場合は、上記に加えて
 `AI_RUNTIME_ROUTES` の `transport`、`providerAuthority`、`capabilityGate`、通常の
 `testRef/testName`、および `consentTestRef/consentTestName` を同時に更新する。新しい
 provider が一つでもデータを処理するなら、実行時開示へ含めるまでその route は有効化しない。
+アプリ所有キーや管理型 provider を追加する場合は、Web Editor の Local LLM／BYOK-only
+製品境界の変更として別途の設計承認と新しい requirement を必要とする。

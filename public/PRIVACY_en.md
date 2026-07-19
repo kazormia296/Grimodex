@@ -1,104 +1,86 @@
 # Grimodex Privacy Notice
 
-Last updated: 2026-07-19
-Version: v1.3
+Last updated: 2026-07-20
+Version: v1.5
 
-This notice explains where each Grimodex surface stores data and what is transmitted when AI is used. The Terms of Use control if this notice conflicts with them. Because the processor, retention, and training status can vary by configuration, also review the route-specific disclosure shown immediately before an actual request.
+This notice explains where the Grimodex desktop application and Web Editor trial store data and what is transmitted when the User configures AI. The Terms of Use control if this notice conflicts with them.
 
-## 1. Storage locations
+## 1. Scope of the service
 
-| Surface                   | Principal data                                                                                                     | Storage                                  | Standard retention                                                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Electron application      | Text, settings, chat history, editing metadata                                                                     | SQLite on the User's device              | Until the User deletes it                                                                                                     |
-| Hosted Editor             | Workspace, text, settings, chat history, AI responses                                                              | IndexedDB in the current browser profile | Until the workspace or site data is deleted                                                                                   |
-| Scan / Hosted AI          | Manuscript source, private reports, Editor seed, AI responses, and related artifacts                               | Cloudflare R2                            | Production defaults: 60 minutes for incomplete uploads, one day for sources, and 30 days for private artifacts / AI responses |
-| Scan operational metadata | Access account subject, job state, token hashes, usage, retention deadlines, idempotency data, and similar records | Cloudflare D1                            | Subject to Scan session retention and deletion processing and applicable operational or legal requirements                    |
+The Web Editor is a trial for experiencing the editor and handing work off to Grimodex. It is not an AI subscription and does not include Developer-funded AI usage, a shared API key, or cloud manuscript analysis. To use AI, the User must expressly configure an Ollama endpoint under their control or a supported API key.
 
-Hosted Editor's IndexedDB is not a cloud backup. Deleting browser site data or a browser profile may make the data unrecoverable. Grimodex does not guarantee a particular country of storage or processing for R2 or D1.
+## 2. Storage locations
 
-Production Scan uploads, Full Scan, and Hosted Editor AI require a Cloudflare Access account. Cloudflare Access manages the authentication session, and Grimodex uses the stable subject in the signed token for ownership and per-account limits. Public-report viewing, abuse reporting, health checks, and AI-disclosure retrieval may remain anonymous as separately described.
+| Surface                                                 | Principal data                                                                          | Storage                                      | Standard retention                          |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------- |
+| Electron application                                    | Text, settings, chat history, editing metadata                                          | SQLite on the User's device                  | Until the User deletes it                   |
+| Web Editor trial                                        | Workspace, text, story-setting materials, chat history, AI responses                    | IndexedDB in the current browser profile     | Until the workspace or site data is deleted |
+| Web Editor UI and AI configuration (excluding API keys) | Display preferences, selected provider and model, Ollama endpoint, and similar settings | Local Storage in the current browser profile | Until site data is deleted                  |
+| AI data consent record                                  | Policy version, route, provider, actual destination, and acceptance time                | Local Storage in the current browser profile | Until site data is deleted                  |
 
-The short-lived session token used when moving from Scan to Editor remains in that tab's Session Storage until it expires and is removed when the tab closes. D1 stores only a verification hash, not the token itself.
+The Web Editor's IndexedDB is not cloud synchronization or a backup. Deleting browser site data or a browser profile may make the data unrecoverable. The Web Editor does not upload or store manuscripts on the Developer's servers.
 
-The Scan deletion capability (Scan ID, access token, and mode) is stored in that tab's Session Storage so the User can still delete the Scan after reloading the same tab. The same record includes the stable Access subject solely to keep capabilities separated for up to eight accounts used in that tab. It contains no manuscript text or analysis result. An account's record is removed when its deletion completes, and all records disappear when the tab closes. The server stores only a verification hash of the access token, not the token itself.
+The handoff file created by “Continue in Grimodex” is generated in the browser and saved to a download location selected by the User. The User controls its storage, sharing, deletion, and backup after download.
 
-A Scan report that the User expressly publishes may remain accessible until the public report or its source Scan is deleted and is not governed in the same way as private artifacts. Staging environments, security records, abuse prevention, backups, and legal preservation obligations may use different periods.
+A BYOK API key entered in the Web Editor is held only in the current page's runtime memory. It is not stored in IndexedDB, Local Storage, or the Developer's servers, and must be entered again after the page reloads or closes.
 
-## 2. Data sent to AI
+## 3. Data sent to AI
 
-Depending on the request, an AI feature sends some or all of the following:
+The Web Editor does not enable AI automatically or send text to AI without a User action. Only after the User configures AI, accepts the pre-request disclosure, and makes a request does the Web Editor send some or all of the following to the selected destination:
 
-- Scan: the complete uploaded manuscript, file information, and metadata needed for analysis;
-- Chat / Inline AI: the User's instruction, conversation history, system instructions, and selected text;
-- Context-aware features: selected scenes, Codex entries, settings, structure, and related text; and
-- BYOK: the data above plus the API key required to authenticate to the selected provider.
+- the User's instruction, conversation history, and system instructions;
+- text, scenes, Codex entries, settings, and other context selected for the request; and
+- when using OpenAI or Anthropic BYOK, the API key required to authenticate that request.
 
 The pre-request disclosure enumerates the categories that will be sent. If the User declines, the applicable AI request is not transmitted.
 
-## 3. Processors, retention, and model training
+## 4. AI processors, retention, and model training
 
-### Hosted Scan / Hosted Editor
+### Ollama
 
-The standard route uses Cloudflare Workers, R2, and D1. Quick Scan extraction uses Workers AI `@cf/zai-org/glm-4.7-flash`; Full Scan frontier review uses `openai/gpt-5.6-terra` through OpenRouter; and Hosted Editor AI uses `openai/gpt-5.6-luna` through OpenRouter. Cloudflare states that Workers AI Customer Content is not used to train AI models or improve its services without explicit consent.
+Requests are sent to the Ollama endpoint configured by the User. A normal local configuration processes them on the User's device or User-managed network, but a remote Ollama endpoint also receives the data at the remote operator. Storage, retention, logging, and model-training use depend on the selected server, model, and operating configuration.
 
-Hosted OpenRouter routes are pinned to Microsoft Azure AI, disable fallback to other providers, and require both `data_collection: deny` and Zero Data Retention. If no processing endpoint satisfies those constraints, Grimodex does not send the request and treats the route as unavailable. The disclosed processors are OpenRouter and Microsoft Azure AI. OpenRouter may retain operational usage or billing metadata, while this route requires an endpoint that does not retain request or response content. Microsoft states that Azure OpenAI prompts and completions are not made available to OpenAI and are not used to improve Microsoft or OpenAI models.
+- [Ollama Privacy Policy](https://ollama.com/privacy)
 
-OpenRouter separately offers account-level **Private Input & Output Logging**, **OpenRouter Use of Inputs/Outputs**, and **Broadcast**. If Logging is enabled, full content is stored in OpenRouter-controlled Google Cloud Storage for at least three months and may be retained longer until deletion is requested. Use of Inputs/Outputs can permit OpenRouter to use content, while Broadcast can forward prompts and responses to configured external destinations.
+### OpenAI / Anthropic BYOK
 
-The service operator sets the corresponding Worker attestation only after confirming that Logging and Use of Inputs/Outputs are disabled for a dedicated API key, and that Broadcast is disabled or that key is excluded from every destination. Grimodex cannot verify the current account settings when making a request, so the in-product disclosure reports training or downstream use as **dependent on account settings**. The per-request ZDR and data-collection controls do not replace this operational review.
+Requests are sent to the provider selected by the User and authenticated with the User's own API key. Grimodex does not pay the AI usage charges; usage, contracts, and billing are governed by the relationship between the User and each provider.
 
-- [Cloudflare Workers AI data usage](https://developers.cloudflare.com/workers-ai/platform/data-usage/)
-- [How Cloudflare R2 works](https://developers.cloudflare.com/r2/how-r2-works/)
-- [Cloudflare D1 API](https://developers.cloudflare.com/api/resources/d1/)
-- [Cloudflare Privacy Policy](https://www.cloudflare.com/privacypolicy/)
-- [OpenRouter provider routing](https://openrouter.ai/docs/guides/routing/provider-selection)
-- [OpenRouter data collection and account settings](https://openrouter.ai/docs/guides/privacy/data-collection)
-- [OpenRouter Zero Data Retention](https://openrouter.ai/docs/guides/features/zdr)
-- [OpenRouter Input & Output Logging](https://openrouter.ai/docs/guides/features/input-output-logging)
-- [OpenRouter Broadcast](https://openrouter.ai/docs/guides/features/broadcast/overview)
-- [Microsoft Azure OpenAI data privacy](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy)
-
-If an upstream AI provider is used, that provider's retention and training policies also apply. If Grimodex cannot disclose every processor used by a route, it should fail closed and treat that route as unavailable.
-
-### Browser BYOK
-
-The production browser Editor sends requests to the AI provider selected by the User. The API key is held only in the current page's runtime memory and is not written to IndexedDB, Local Storage, R2, or D1. It must be entered again after the page reloads or closes.
-
-Provider-side retention and training use vary with the account, contract, settings, model, and routing. When Grimodex cannot determine the status, the disclosure states that it depends on the provider. Representative references include:
+Provider-side storage, retention, and model-training use vary by account, contract, settings, model, and the provider's current policies. Grimodex does not make a universal guarantee about them. Review the pre-request disclosure and the following policies before sending data.
 
 - [OpenAI API data controls](https://platform.openai.com/docs/models/default-usage-policies-by-endpoint)
-- [How OpenAI uses data to improve model performance](https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/)
+- [How OpenAI uses data for model improvement](https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/)
 - [Anthropic model-training policy](https://privacy.anthropic.com/en/articles/7996868-is-my-data-used-for-model-training)
-- [Anthropic retention](https://privacy.anthropic.com/en/articles/7996866-how-long-do-you-store-my-organization-s-data)
-- [OpenRouter data collection](https://openrouter.ai/docs/guides/privacy/data-collection)
-- [OpenRouter Zero Data Retention](https://openrouter.ai/docs/guides/features/zdr)
+- [Anthropic retention periods](https://privacy.anthropic.com/en/articles/7996866-how-long-do-you-store-my-organization-s-data)
 
-## 4. Explicit consent
+## 5. Explicit consent
 
-Under quality requirement `GDX-AI-CONSENT-001`, Grimodex displays the following before transmitting data to an external AI:
+Under quality requirement `GDX-AI-CONSENT-001`, Grimodex displays the following before transmitting data to an external AI provider or a configured Ollama endpoint:
 
 1. the data that will be sent;
-2. the AI provider, processing purpose, and destinations;
-3. application-side and provider-side storage and retention;
+2. the AI provider, processing purpose, and destination;
+3. application-side and destination-side storage and retention;
 4. whether the data is used for model training; and
-5. links to the applicable usage and privacy policies.
+5. links to the relevant usage and privacy policies.
 
-Consent is bound to the combination of policy version, route (Scan, Hosted Editor, or BYOK), and provider. Grimodex asks again if any of them changes. Missing consent or an unavailable disclosure fails before a provider call.
+Consent is bound to the policy version, route, provider, and actual destination (the configured endpoint for Ollama). If any of them changes, the Web Editor asks again. If the User declines, processing stops before the provider call.
 
-The browser may store only the policy version, route, provider, and acceptance timestamp in Local Storage as a consent record. That record contains no manuscript, prompt, AI response, or API key. Scan API requests include an opaque consent identifier representing the current disclosure.
+The browser consent record does not include manuscripts, prompts, AI responses, or API keys. Once data has been sent, the selected destination's retention and deletion policies apply.
 
-## 5. Non-AI communications
+## 6. Non-AI communications
 
-The Electron application may connect to external services for license validation, update checks, and semantic-search model downloads. Those communications do not include the manuscript text, although the destination may log connection information such as IP address, time, and User-Agent.
+When the static Web Editor page is requested, its hosting provider may record standard connection information such as IP address, time, and User-Agent. The Web Editor does not send manuscript text to deliver the page.
 
-## 6. User choices and deletion
+The Electron application may connect to external services for license verification, update checks, and semantic-search model downloads. These communications do not transmit manuscript text, although the destination may record standard connection information.
 
-- Declining an AI disclosure prevents use of that AI route.
-- Hosted Editor data can be removed by deleting the workspace or browser site data.
-- Selecting “Delete manuscript and Scan data” on the Scan results screen stops an in-progress Scan and immediately revokes access. Grimodex starts removing the manuscript, private analysis results, and Editor handoff data stored in R2 and unpublishes any public report. Even if stored-file cleanup continues in the background, the Scan, public report, and new Editor handoffs are inaccessible after the deletion request is accepted.
-- Content-free file and operational metadata, consent and usage records, hashes, backups, security or abuse-prevention records, and data subject to legal obligations may remain under applicable retention requirements. Data already sent to an AI processing provider remains subject to that provider's retention policy.
-- Copies already imported into Hosted Editor or the local Grimodex application are not deleted. Remove those copies separately from each storage location.
+## 7. User choices and deletion
 
-## 7. Contact
+- If the User declines the AI consent dialog, that AI request is not sent.
+- Web Editor data can be erased by deleting the workspace or the browser's site data.
+- A downloaded handoff file must be deleted from the device or storage location where the User saved it.
+- Reloading or closing the page removes a BYOK API key held in the Web Editor's runtime memory.
+- Data already sent to a configured destination is governed by that destination's retention and deletion policy.
 
-For questions about this notice, use an Issue in the [Grimodex GitHub repository](https://github.com/kazormia296/Grimodex). Do not paste manuscripts, API keys, or access tokens into an Issue.
+## 8. Contact
+
+For questions about this notice, use an Issue in the [Grimodex GitHub repository](https://github.com/kazormia296/Grimodex). Do not paste a manuscript or API key into an Issue.
