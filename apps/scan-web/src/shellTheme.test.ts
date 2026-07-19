@@ -17,8 +17,12 @@ function ruleBody(selector: string): string {
   const match = styles.match(
     new RegExp(`${selector}\\s*\\{([\\s\\S]*?)\\n\\}`),
   );
-  expect(match, `${selector} ルールが見つからない`).toBeTruthy();
-  return match![1];
+  const declarations = match?.[1];
+  expect(declarations, `${selector} ルールが見つからない`).toBeDefined();
+  if (declarations === undefined) {
+    throw new Error(`${selector} ルールが見つからない`);
+  }
+  return declarations;
 }
 
 describe("Scan light shell", () => {

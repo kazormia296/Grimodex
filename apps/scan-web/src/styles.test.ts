@@ -13,14 +13,22 @@ const appStyles = readFileSync(
 
 function rootDeclarations(css: string): string {
   const match = css.match(/:root\s*\{([\s\S]*?)\n\}/);
-  expect(match, "CSS に :root が見つからない").toBeTruthy();
-  return match![1];
+  const declarations = match?.[1];
+  expect(declarations, "CSS に :root が見つからない").toBeDefined();
+  if (declarations === undefined) {
+    throw new Error("CSS に :root が見つからない");
+  }
+  return declarations;
 }
 
 function variableValue(declarations: string, name: string): string {
   const match = declarations.match(new RegExp(`${name}:\\s*([^;]+);`));
-  expect(match, `${name} が :root に見つからない`).toBeTruthy();
-  return match![1].replace(/\s+/g, " ").trim();
+  const value = match?.[1];
+  expect(value, `${name} が :root に見つからない`).toBeDefined();
+  if (value === undefined) {
+    throw new Error(`${name} が :root に見つからない`);
+  }
+  return value.replace(/\s+/g, " ").trim();
 }
 
 describe("Scan default light theme", () => {
