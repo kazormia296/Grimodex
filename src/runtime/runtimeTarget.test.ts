@@ -28,4 +28,13 @@ describe("runtime target contract", () => {
     expect(capabilities.multiWindow).toBe(false);
     expect(capabilities.customIme).toBe(false);
   });
+
+  it("only exposes generic project transfer to the Electron application", () => {
+    expect(resolveRuntimeCapabilities("web").genericProjectTransfer).toBe(
+      false,
+    );
+    expect(
+      resolveRuntimeCapabilities("electron").genericProjectTransfer,
+    ).toBe(true);
+  });
 });

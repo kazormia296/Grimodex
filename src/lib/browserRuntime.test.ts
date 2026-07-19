@@ -348,6 +348,7 @@ describe("hosted Editor browser runtime", () => {
       "language",
     ]);
     expect(runtime.importedProjectId).toBe("scan-project");
+    expect(runtime.entryMode).toBe("scan");
     await expect(store.get(HOSTED_EDITOR_WORKSPACE_ID)).resolves.toMatchObject({
       revision: 1,
       bytes: new Uint8Array([7, 8]),
@@ -368,6 +369,37 @@ describe("hosted Editor browser runtime", () => {
     });
 
     expect(dependencies.applyUiLanguage).not.toHaveBeenCalled();
+    expect(runtime.entryMode).toBe("standalone");
+    await runtime.dispose();
+  });
+
+  it("flushes pending edits before exporting a desktop handoff snapshot", async () => {
+    const store = createMemoryWorkspaceStore();
+    const snapshot = new Uint8Array([83, 81, 76, 105, 116, 101]);
+    const mock = createMockDatabase(snapshot);
+    let markDirty: (() => void) | undefined;
+    const dependencies = createDependencies({
+      createBrowserMock: vi.fn(async (options) => {
+        markDirty = options.onDatabaseDirty;
+        return mock;
+      }),
+    });
+    const locks = createExclusiveLockManager();
+    const runtime = await initializeBrowserRuntime({
+      store,
+      lifecycleTarget: null,
+      lockManager: locks.lockManager,
+      dependencies,
+    });
+
+    markDirty?.();
+    await expect(runtime.exportWorkspace()).resolves.toEqual(snapshot);
+    await expect(store.get(HOSTED_EDITOR_WORKSPACE_ID)).resolves.toMatchObject({
+      revision: 1,
+      bytes: snapshot,
+    });
+    expect(mock.exportDatabase).toHaveBeenCalledTimes(2);
+
     await runtime.dispose();
   });
 
