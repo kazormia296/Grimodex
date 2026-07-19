@@ -17,10 +17,7 @@ import {
 import { createMinimalJaBundle } from "../fixtures/minimalJa";
 import { ScanWebApp } from "./ScanWebApp";
 import { SCAN_LOCALE_STORAGE_KEY } from "../i18n/scanLocale";
-import {
-  readScanOwnership,
-  writeScanOwnership,
-} from "./scanOwnershipStorage";
+import { readScanOwnership, writeScanOwnership } from "./scanOwnershipStorage";
 
 const disclosure: AiDataDisclosureV1 = {
   schemaVersion: "grimodex/ai-data-disclosure/1",
@@ -128,6 +125,22 @@ function forceJapaneseUi(): void {
 }
 
 describe("ScanWebApp report ownership", () => {
+  it("uses the canonical Grimodex wordmark in the Scan header", () => {
+    forceJapaneseUi();
+    configureHostedApi();
+
+    render(<ScanWebApp />);
+
+    const brand = screen.getByRole("link", { name: "Grimodex Scan" });
+    const logo = brand.querySelector('svg[aria-label="Grimodex"]');
+    expect(logo).not.toBeNull();
+    expect(logo?.getAttribute("viewBox")).toBe("0 0 47.95644 8.269779");
+    expect(
+      brand.querySelector('img[src="/icons/grimodex-scan.svg"]'),
+    ).toBeNull();
+    expect(within(brand).getByText("Scan")).toBeTruthy();
+  });
+
   it("shows a ready state without presenting the fixture when an API is configured", () => {
     forceJapaneseUi();
     configureHostedApi();
