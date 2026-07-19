@@ -17,6 +17,10 @@ import {
 import { createMinimalJaBundle } from "../fixtures/minimalJa";
 import { ScanWebApp } from "./ScanWebApp";
 import { SCAN_LOCALE_STORAGE_KEY } from "../i18n/scanLocale";
+import {
+  readScanOwnership,
+  writeScanOwnership,
+} from "./scanOwnershipStorage";
 
 const disclosure: AiDataDisclosureV1 = {
   schemaVersion: "grimodex/ai-data-disclosure/1",
@@ -116,6 +120,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 function forceJapaneseUi(): void {
@@ -409,6 +414,47 @@ describe("ScanWebApp report ownership", () => {
     expect(
       screen.queryByRole("button", { name: "原稿とScanデータを削除" }),
     ).toBeNull();
+  });
+
+  it("restores deletion ownership after reload and blocks replacement until deletion", async () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    writeScanOwnership(sessionStorage, ownedScanHandle);
+    const deleteScan = vi
+      .spyOn(ScanApiClient.prototype, "delete")
+      .mockResolvedValue({
+        scanId: ownedScanHandle.scanId,
+        status: "deleted",
+        cleanup: "completed",
+      });
+
+    render(<ScanWebApp />);
+
+    expect(
+      screen.getByRole("heading", { name: "前回のScanデータが残っています" }),
+    ).toBeTruthy();
+    expect(
+      document.querySelector<HTMLInputElement>('input[type="file"]'),
+    ).toBeDisabled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "原稿とScanデータを削除" }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "原稿とScanデータを削除",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(deleteScan).toHaveBeenCalledWith(ownedScanHandle),
+    );
+    await screen.findByRole("heading", {
+      name: "原稿をアップロードしてください",
+    });
+    expect(readScanOwnership(sessionStorage)).toBeNull();
+    expect(
+      document.querySelector<HTMLInputElement>('input[type="file"]'),
+    ).not.toBeDisabled();
   });
 
   it("allows deletion while Scan is running and ignores the stale completion", async () => {
