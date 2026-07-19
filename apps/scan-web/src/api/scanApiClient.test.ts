@@ -9,6 +9,40 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("ScanApiClient", () => {
+  it("binds the browser fetch receiver when no fetch implementation is injected", async () => {
+    const receiverSensitiveFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation");
+      }
+      return Promise.resolve(
+        response({
+          token: "one-time",
+          expiresAt: "2026-07-19T00:05:00.000Z",
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", receiverSensitiveFetch);
+
+    try {
+      const client = new ScanApiClient({
+        baseUrl: "https://scan.example",
+      });
+
+      await expect(
+        client.createEditorToken({
+          scanId: "scan-1",
+          scanToken: "scan-secret",
+        }),
+      ).resolves.toEqual({
+        token: "one-time",
+        expiresAt: "2026-07-19T00:05:00.000Z",
+      });
+      expect(receiverSensitiveFetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("sends the Turnstile token and Full entitlement only in their intended requests", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = vi.fn(

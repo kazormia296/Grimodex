@@ -2,6 +2,41 @@ import { describe, expect, it, vi } from "vitest";
 import { HostedAiClient, HOSTED_AI_COST_WEIGHT } from "./hostedAiClient";
 
 describe("HostedAiClient", () => {
+  it("binds the browser fetch receiver when no fetch implementation is injected", async () => {
+    const receiverSensitiveFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation");
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ response: "ok", costWeight: 1 }), {
+          status: 200,
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", receiverSensitiveFetch);
+
+    try {
+      const client = new HostedAiClient({
+        baseUrl: "https://scan.example",
+      });
+
+      await expect(
+        client.complete(
+          { scanId: "scan-1", scanToken: "secret" },
+          {
+            operation: "chat",
+            prompt: "Continue",
+            idempotencyKey: "request-12345678",
+            consentId: "consent_current_hosted_editor_policy_123456",
+          },
+        ),
+      ).resolves.toEqual({ response: "ok", costWeight: 1 });
+      expect(receiverSensitiveFetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("uses the scan access token header and exposes operation cost weights", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>

@@ -163,7 +163,7 @@ export class ScanApiClient {
 
   constructor(options: ScanApiClientOptions) {
     this.baseUrl = trimBaseUrl(options.baseUrl);
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.sleep =
       options.sleep ??
       ((milliseconds) =>

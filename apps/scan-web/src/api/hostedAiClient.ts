@@ -19,7 +19,7 @@ export class HostedAiClient {
 
   constructor(options: HostedAiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
   async complete(
