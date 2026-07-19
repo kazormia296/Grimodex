@@ -35,6 +35,8 @@ const TABS: { id: TransferTab; labelKey: string; Icon: LucideIcon }[] = [
 export function TransferDialog({ open, tab, onTabChange, onClose }: Props) {
   const { t } = useTranslation();
   const [importBusy, setImportBusy] = useState(false);
+  const [importFailed, setImportFailed] = useState(false);
+  const importInteractionLocked = importBusy || importFailed;
   const handleClose = useCallback(() => {
     if (!(tab === "import" && importBusy)) onClose();
   }, [importBusy, onClose, tab]);
@@ -59,9 +61,11 @@ export function TransferDialog({ open, tab, onTabChange, onClose }: Props) {
             aria-selected={tab === id}
             data-testid={`transfer-tab-${id}`}
             onClick={() => {
-              if (!(tab === "import" && importBusy)) onTabChange(id);
+              if (!(tab === "import" && importInteractionLocked)) {
+                onTabChange(id);
+              }
             }}
-            disabled={tab === "import" && importBusy}
+            disabled={tab === "import" && importInteractionLocked}
             className={cn(
               "flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors",
               tab === id
@@ -93,7 +97,11 @@ export function TransferDialog({ open, tab, onTabChange, onClose }: Props) {
 
         <div role="tabpanel" className="flex min-h-0 flex-1 flex-col">
           {tab === "import" && (
-            <ImportDialogBody onClose={onClose} onBusyChange={setImportBusy} />
+            <ImportDialogBody
+              onClose={onClose}
+              onBusyChange={setImportBusy}
+              onFailureChange={setImportFailed}
+            />
           )}
           {tab === "zip" && <ZipExportBody onClose={onClose} />}
           {tab === "novel" && <NovelExportBody onClose={onClose} />}

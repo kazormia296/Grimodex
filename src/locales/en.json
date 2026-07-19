@@ -397,12 +397,21 @@
     "success": "Import complete: codex {{codex}} / snippets {{snippets}} / chapters {{chapters}} / chats {{chats}}",
     "doneSuccess": "All entries imported successfully.",
     "errorTitle": "Some entries had errors",
+    "failed": "The import could not be completed. Some content may already have been imported; review it before retrying.",
     "cancel": "Cancel",
     "close": "Close",
     "noFile": "No file selected",
     "invalidZip": "Please select a valid ZIP file",
     "invalidKakuyomu": "Please select a valid Kakuyomu backup ZIP",
     "invalidMarkdown": "Please select a valid Markdown file",
+    "limits": {
+      "empty-file": "Empty files cannot be imported",
+      "file-too-large": "File is too large (maximum {{maxMiB}} MiB)",
+      "empty-folder": "No supported manuscript files were found",
+      "too-many-files": "The folder contains too many manuscript files (maximum {{maxFiles}})",
+      "folder-too-large": "The manuscript files in this folder are too large in total (maximum {{maxMiB}} MiB)",
+      "path-too-deep": "The folder hierarchy is too deep (maximum {{maxDepth}} levels)"
+    },
     "scan": {
       "description": "Load a private Scan editor seed (JSON) into a new project using staged apply. Existing projects are unchanged.",
       "tooLarge": "The Scan seed is too large (maximum 32 MB).",
@@ -520,9 +529,13 @@
       "title": "Web Editor Trial",
       "description": "Try the real Grimodex editor in your browser.",
       "storageNotice": "Data is stored in this browser and is not automatically synced to the local Grimodex app.",
+      "importNotice": "Local files you select are processed only in this browser.",
       "aiNotice": "AI is not included. To use AI, configure a Local LLM (Ollama) or your own API key for OpenAI or Anthropic.",
       "apiKeyMemoryNotice": "A BYOK API key is held only in this page's runtime memory and is cleared when you reload or close the page.",
       "continueInGrimodex": "Continue writing in Grimodex"
+    },
+    "import": {
+      "localOnlyNotice": "Selected files are parsed and stored in this browser and are not sent to Grimodex servers."
     },
     "handoff": {
       "title": "Continue writing in Grimodex",

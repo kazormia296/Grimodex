@@ -21,6 +21,19 @@ const FORBIDDEN_NETWORK_PATTERNS = [
   /grimodex-scan[^/"']*\.(?:pages\.dev|workers\.dev)/i,
 ];
 
+const FORBIDDEN_WEB_IMPORT_PATTERNS = [
+  /import-source-scan/i,
+  /grimodex-scan\/import-plan\/1/i,
+];
+
+const FORBIDDEN_WEB_IMPORT_TRANSPORT_PATTERNS = [
+  /\bfetch\s*\(/,
+  /\bXMLHttpRequest\b/,
+  /\bFormData\b/,
+  /\bnavigator\s*\.\s*sendBeacon\s*\(/,
+  /\bnew\s+WebSocket\s*\(/,
+];
+
 async function walkFiles(root) {
   const files = [];
   for (const entry of await readdir(root)) {
@@ -57,6 +70,24 @@ export async function validateWebEditorArtifact(root) {
         `Retired hosted AI/Scan network route entered Web Editor artifact: ${basename}`,
       );
     }
+    const forbiddenImport = FORBIDDEN_WEB_IMPORT_PATTERNS.find((pattern) =>
+      pattern.test(contents),
+    );
+    if (forbiddenImport) {
+      throw new Error(
+        `Retired Scan import entered Web Editor artifact: ${basename}`,
+      );
+    }
+    if (basename.startsWith("WebEditorImportDialog-")) {
+      const forbiddenTransport = FORBIDDEN_WEB_IMPORT_TRANSPORT_PATTERNS.find(
+        (pattern) => pattern.test(contents),
+      );
+      if (forbiddenTransport) {
+        throw new Error(
+          `Web Editor import network transport entered artifact: ${basename}`,
+        );
+      }
+    }
   }
 
   const hasWebSettings = files.some((file) =>
@@ -64,6 +95,12 @@ export async function validateWebEditorArtifact(root) {
   );
   if (!hasWebSettings) {
     throw new Error("Web Editor-specific settings chunk was not emitted");
+  }
+  const hasWebImport = files.some((file) =>
+    path.basename(file).startsWith("WebEditorImportDialog-"),
+  );
+  if (!hasWebImport) {
+    throw new Error("Web Editor browser-local import dialog was not emitted");
   }
 }
 

@@ -29,6 +29,8 @@ import {
   ImportInputSlot,
   ImportAnalyzingPlaceholder,
   ImportFlowFooter,
+  useImportBusyChange,
+  useImportFailureReset,
 } from "../importShared";
 
 import type { MarkdownImportMode } from "../importTypes";
@@ -39,12 +41,22 @@ import {
 } from "../markdownFolderReader";
 import { readDir, readTextFile } from "@/lib/fs";
 import { invoke, isTauri } from "@/lib/tauri";
+import {
+  hasAllowedImportExtension,
+  importFileLimitViolation,
+  importFolderLimitViolation,
+  importLimitMessageValues,
+} from "../importFileLimits";
 
 interface Props {
   importTarget: ImportTarget;
   markdownMode: MarkdownImportMode;
   onMarkdownModeChange: (mode: MarkdownImportMode) => void;
   onClose: () => void;
+  allowNativeFolderPicker?: boolean;
+  enforceBrowserLimits?: boolean;
+  onBusyChange?: (busy: boolean) => void;
+  onFailedChange?: (failed: boolean) => void;
 }
 
 async function readDirRecursive(
@@ -59,6 +71,10 @@ export function MarkdownImportFlow({
   markdownMode,
   onMarkdownModeChange,
   onClose,
+  allowNativeFolderPicker = true,
+  enforceBrowserLimits = false,
+  onBusyChange,
+  onFailedChange,
 }: Props) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<MarkdownImportMode>(markdownMode);
@@ -73,6 +89,9 @@ export function MarkdownImportFlow({
   const [hasExistingOutline, setHasExistingOutline] = useState(false);
 
   const reloadTree = useTreeStore((s) => s.loadTree);
+
+  useImportBusyChange(phase, onBusyChange);
+  useImportFailureReset(onFailedChange);
 
   useEffect(() => {
     setMode(markdownMode);
@@ -95,9 +114,20 @@ export function MarkdownImportFlow({
 
   const handleSingleFile = useCallback(
     async (file: File) => {
-      const name = file.name.toLowerCase();
-      if (!name.endsWith(".md") && !name.endsWith(".markdown")) {
+      if (!hasAllowedImportExtension(file.name, ["md", "markdown"])) {
         toast.error(t("import.invalidMarkdown"));
+        return;
+      }
+      const limitViolation = enforceBrowserLimits
+        ? importFileLimitViolation(file, "text")
+        : null;
+      if (limitViolation) {
+        toast.error(
+          t(
+            `import.limits.${limitViolation}`,
+            importLimitMessageValues(limitViolation, "text"),
+          ),
+        );
         return;
       }
       setPhase("analyzing");
@@ -109,13 +139,28 @@ export function MarkdownImportFlow({
         setPhase("idle");
       }
     },
-    [showPreview, t],
+    [enforceBrowserLimits, showPreview, t],
   );
 
   const handleMultiZip = useCallback(
     async (file: File) => {
-      if (!file.name.endsWith(".zip")) {
+      const validExtension = enforceBrowserLimits
+        ? hasAllowedImportExtension(file.name, ["zip"])
+        : file.name.endsWith(".zip");
+      if (!validExtension) {
         toast.error(t("import.invalidZip"));
+        return;
+      }
+      const limitViolation = enforceBrowserLimits
+        ? importFileLimitViolation(file, "archive")
+        : null;
+      if (limitViolation) {
+        toast.error(
+          t(
+            `import.limits.${limitViolation}`,
+            importLimitMessageValues(limitViolation, "archive"),
+          ),
+        );
         return;
       }
       setPhase("analyzing");
@@ -127,7 +172,7 @@ export function MarkdownImportFlow({
         setPhase("idle");
       }
     },
-    [showPreview, t],
+    [enforceBrowserLimits, showPreview, t],
   );
 
   const handleFolderPick = useCallback(async () => {
@@ -174,20 +219,33 @@ export function MarkdownImportFlow({
 
   const handleWebkitFiles = useCallback(
     async (files: FileList) => {
+      const markdownFiles = Array.from(files).filter((file) =>
+        enforceBrowserLimits
+          ? hasAllowedImportExtension(file.name, ["md", "markdown"])
+          : file.name.endsWith(".md") || file.name.endsWith(".markdown"),
+      );
+      if (!enforceBrowserLimits && markdownFiles.length === 0) {
+        toast.error(t("import.markdown.noFiles"));
+        return;
+      }
+      const limitViolation = enforceBrowserLimits
+        ? importFolderLimitViolation(markdownFiles)
+        : null;
+      if (limitViolation) {
+        toast.error(
+          t(
+            `import.limits.${limitViolation}`,
+            importLimitMessageValues(limitViolation, "folder"),
+          ),
+        );
+        return;
+      }
       setPhase("analyzing");
       try {
         const entries: { relPath: string; content: string }[] = [];
-        for (const file of files) {
-          if (!file.name.endsWith(".md") && !file.name.endsWith(".markdown")) {
-            continue;
-          }
+        for (const file of markdownFiles) {
           const relPath = file.webkitRelativePath || file.name;
           entries.push({ relPath, content: await file.text() });
-        }
-        if (entries.length === 0) {
-          toast.error(t("import.markdown.noFiles"));
-          setPhase("idle");
-          return;
         }
         showPreview(parseMarkdownMulti(entries));
       } catch {
@@ -195,7 +253,7 @@ export function MarkdownImportFlow({
         setPhase("idle");
       }
     },
-    [showPreview, t],
+    [enforceBrowserLimits, showPreview, t],
   );
 
   const runImport = useCallback(async () => {
@@ -214,40 +272,50 @@ export function MarkdownImportFlow({
       return;
     }
 
-    if (importTarget === "currentProject" && applyMetadata) {
-      try {
-        await importProjectMetadata({ title: parsed.projectTitle });
-      } catch (err) {
-        setErrors([String(err)]);
+    const allErrors: string[] = [];
+    try {
+      if (importTarget === "currentProject" && applyMetadata) {
+        try {
+          await importProjectMetadata({ title: parsed.projectTitle });
+        } catch (err) {
+          allErrors.push(String(err));
+        }
       }
+
+      const importResult =
+        parsed.chapters.length > 0
+          ? await importChapters(parsed.chapters, setProgress)
+          : await importTree(parsed.tree, setProgress);
+
+      allErrors.push(...importResult.errors);
+      setErrors(allErrors);
+      await reloadTree(getCurrentProjectId());
+
+      const folders =
+        parsed.chapters.length > 0
+          ? parsed.chapters.length
+          : countFoldersInTree(parsed.tree);
+      const scenes =
+        parsed.chapters.length > 0
+          ? parsed.chapters.reduce((s, c) => s + c.scenes.length, 0)
+          : countScenesInTree(parsed.tree);
+
+      toast.success(
+        t("import.markdown.success", {
+          folders,
+          scenes,
+          imported: importResult.imported,
+        }),
+      );
+      setPhase("done");
+    } catch (error) {
+      setErrors([...allErrors, String(error)]);
+      setProgress(null);
+      toast.error(t("import.failed"));
+      onFailedChange?.(true);
+      setPhase("failed");
     }
-
-    const importResult =
-      parsed.chapters.length > 0
-        ? await importChapters(parsed.chapters, setProgress)
-        : await importTree(parsed.tree, setProgress);
-
-    setErrors(importResult.errors);
-    setPhase("done");
-    await reloadTree(getCurrentProjectId());
-
-    const folders =
-      parsed.chapters.length > 0
-        ? parsed.chapters.length
-        : countFoldersInTree(parsed.tree);
-    const scenes =
-      parsed.chapters.length > 0
-        ? parsed.chapters.reduce((s, c) => s + c.scenes.length, 0)
-        : countScenesInTree(parsed.tree);
-
-    toast.success(
-      t("import.markdown.success", {
-        folders,
-        scenes,
-        imported: importResult.imported,
-      }),
-    );
-  }, [parsed, importTarget, applyMetadata, t, reloadTree]);
+  }, [parsed, importTarget, applyMetadata, t, reloadTree, onFailedChange]);
 
   const clearLocalState = useCallback(() => {
     setPhase("idle");
@@ -350,13 +418,15 @@ export function MarkdownImportFlow({
                     }}
                   />
                 </label>
-                <button
-                  type="button"
-                  onClick={() => void handleFolderPick()}
-                  className="rounded border border-border px-3 py-1.5 text-sm hover:bg-accent"
-                >
-                  {t("import.markdown.pickFolder")}
-                </button>
+                {allowNativeFolderPicker && (
+                  <button
+                    type="button"
+                    onClick={() => void handleFolderPick()}
+                    className="rounded border border-border px-3 py-1.5 text-sm hover:bg-accent"
+                  >
+                    {t("import.markdown.pickFolder")}
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -407,11 +477,13 @@ export function MarkdownImportFlow({
         </div>
       )}
 
-      {phase === "done" && <ImportErrorList errors={errors} />}
+      {(phase === "done" || phase === "failed") && (
+        <ImportErrorList errors={errors} />
+      )}
 
       {phase !== "importing" && (
         <ImportFlowFooter>
-          {phase !== "done" && (
+          {phase !== "done" && phase !== "failed" && (
             <button
               type="button"
               onClick={onClose}
@@ -429,7 +501,7 @@ export function MarkdownImportFlow({
               {t("import.importButton")}
             </button>
           )}
-          {phase === "done" && (
+          {(phase === "done" || phase === "failed") && (
             <button
               type="button"
               onClick={onClose}

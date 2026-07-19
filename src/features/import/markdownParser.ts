@@ -8,6 +8,10 @@ import {
   titleFromFilename,
 } from "@/features/external-mount/sourceUri";
 import type { ImportedNode, ParsedChapter, ParsedScene } from "./importTypes";
+import {
+  MAX_IMPORT_FOLDER_DEPTH,
+  importPathDepthViolation,
+} from "./importFileLimits";
 
 export interface MarkdownParseResult {
   projectTitle: string;
@@ -161,6 +165,11 @@ export function parseMarkdownZip(zipBytes: Uint8Array): MarkdownParseResult {
       const name = f.name;
       if (!name.endsWith(".md") && !name.endsWith(".markdown")) return false;
       if (name.includes("__MACOSX")) return false;
+      if (importPathDepthViolation(name)) {
+        throw new Error(
+          `ZIP 内のフォルダー階層が深すぎます (上限 ${MAX_IMPORT_FOLDER_DEPTH} 階層)`,
+        );
+      }
       mdCount += 1;
       // size は圧縮後サイズ。alloc 量 (inflate の out バッファ) を bound するには
       // 非圧縮サイズ originalSize を合算する必要がある。
@@ -196,6 +205,13 @@ export function parseMarkdownZip(zipBytes: Uint8Array): MarkdownParseResult {
 export function parseMarkdownMulti(
   files: MarkdownFileEntry[],
 ): MarkdownParseResult {
+  for (const file of files) {
+    if (importPathDepthViolation(file.relPath)) {
+      throw new Error(
+        `Markdown のフォルダー階層が深すぎます (上限 ${MAX_IMPORT_FOLDER_DEPTH} 階層)`,
+      );
+    }
+  }
   const sorted = [...files].sort((a, b) =>
     a.relPath.localeCompare(b.relPath, undefined, { numeric: true }),
   );

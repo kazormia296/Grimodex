@@ -799,7 +799,7 @@ function EditorScreen() {
               <WorkspaceMenu />
               <ProjectMenu
                 onOpenImport={
-                  runtimeCapabilities.genericProjectTransfer
+                  runtimeCapabilities.localFileImport
                     ? () => {
                         setTransferTab("import");
                         setShowTransferDialog(true);
@@ -896,7 +896,7 @@ function EditorScreen() {
             onClose={() => setShowSnapshotModal(false)}
           />
         )}
-        {runtimeCapabilities.genericProjectTransfer && showTransferDialog && (
+        {runtimeCapabilities.localFileImport && showTransferDialog && (
           <TransferDialog
             open
             tab={transferTab}

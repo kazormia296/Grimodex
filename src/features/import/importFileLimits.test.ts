@@ -8,6 +8,7 @@ import {
   hasAllowedImportExtension,
   importFileLimitViolation,
   importFolderLimitViolation,
+  importPathDepthViolation,
 } from "./importFileLimits";
 
 describe("browser-safe import input limits", () => {
@@ -53,12 +54,21 @@ describe("browser-safe import input limits", () => {
 
   it("matches supported extensions case-insensitively without accepting other formats", () => {
     expect(hasAllowedImportExtension("MANUSCRIPT.ZIP", ["zip"])).toBe(true);
-    expect(hasAllowedImportExtension("chapter.MarkDown", ["md", "markdown"])).toBe(
-      true,
-    );
+    expect(
+      hasAllowedImportExtension("chapter.MarkDown", ["md", "markdown"]),
+    ).toBe(true);
     expect(hasAllowedImportExtension("scan.json", ["zip"])).toBe(false);
     expect(hasAllowedImportExtension("draft.grimodex-handoff", ["novel"])).toBe(
       false,
     );
+  });
+
+  it("rejects paths deeper than the recursive import boundary", () => {
+    expect(importPathDepthViolation("chapter/scene.md")).toBeNull();
+    expect(
+      importPathDepthViolation(
+        `${"chapter/".repeat(MAX_IMPORT_FOLDER_DEPTH)}scene.md`,
+      ),
+    ).toBe("path-too-deep");
   });
 });

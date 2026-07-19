@@ -29,6 +29,9 @@ export function HostedEditorTrialBar({
           {t("hostedEditor.trial.storageNotice")}
         </span>
         <span className="text-muted-foreground">
+          {t("hostedEditor.trial.importNotice")}
+        </span>
+        <span className="text-muted-foreground">
           {t("hostedEditor.trial.aiNotice")}
         </span>
       </div>

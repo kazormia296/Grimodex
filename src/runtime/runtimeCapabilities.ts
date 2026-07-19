@@ -3,6 +3,8 @@ import type { RuntimeTarget } from "./runtimeTarget";
 export interface RuntimeCapabilities {
   nativeFilesystem: boolean;
   documentPicker: boolean;
+  /** User-selected manuscript files parsed without a managed upload. */
+  localFileImport: boolean;
   genericProjectTransfer: boolean;
   shareSheet: boolean;
   secureSecretStore: boolean;
@@ -19,6 +21,7 @@ export interface RuntimeCapabilities {
 const ELECTRON_CAPABILITIES: RuntimeCapabilities = {
   nativeFilesystem: true,
   documentPicker: true,
+  localFileImport: true,
   genericProjectTransfer: true,
   shareSheet: true,
   secureSecretStore: true,
@@ -34,6 +37,7 @@ const ELECTRON_CAPABILITIES: RuntimeCapabilities = {
 const WEB_CAPABILITIES: RuntimeCapabilities = {
   nativeFilesystem: false,
   documentPicker: true,
+  localFileImport: true,
   genericProjectTransfer: false,
   shareSheet: true,
   secureSecretStore: false,
@@ -49,6 +53,7 @@ const WEB_CAPABILITIES: RuntimeCapabilities = {
 const MOBILE_NATIVE_CAPABILITIES: RuntimeCapabilities = {
   nativeFilesystem: false,
   documentPicker: true,
+  localFileImport: false,
   genericProjectTransfer: false,
   shareSheet: true,
   secureSecretStore: true,

@@ -36,6 +36,10 @@ export default defineConfig(async ({ mode }) => {
     __dirname,
     "./src/features/hosted-editor/WebEditorUnavailableDialogs.tsx",
   );
+  const webEditorImportDialog = path.resolve(
+    __dirname,
+    "./src/features/import/WebEditorImportDialog.tsx",
+  );
 
   return {
     plugins: [
@@ -67,7 +71,7 @@ export default defineConfig(async ({ mode }) => {
               },
               {
                 find: "@/features/transfer/TransferDialog",
-                replacement: webEditorUnavailableDialogs,
+                replacement: webEditorImportDialog,
               },
               {
                 find: "@/features/export/ExportDialog",

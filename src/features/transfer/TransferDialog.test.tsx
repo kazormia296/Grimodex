@@ -21,8 +21,10 @@ vi.mock("@/components/ui/animated-overlay", () => ({
 vi.mock("@/features/import/ImportDialog", () => ({
   ImportDialogBody: ({
     onBusyChange,
+    onFailureChange,
   }: {
     onBusyChange?: (busy: boolean) => void;
+    onFailureChange?: (failed: boolean) => void;
   }) => (
     <div data-testid="body-import">
       <button type="button" onClick={() => onBusyChange?.(true)}>
@@ -30,6 +32,9 @@ vi.mock("@/features/import/ImportDialog", () => ({
       </button>
       <button type="button" onClick={() => onBusyChange?.(false)}>
         mark-import-idle
+      </button>
+      <button type="button" onClick={() => onFailureChange?.(true)}>
+        mark-import-failed
       </button>
     </div>
   ),
@@ -100,6 +105,20 @@ describe("TransferDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "mark-import-idle" }));
     fireEvent.click(screen.getByRole("button", { name: "common.close" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("blocks tab changes after a partial import failure but allows close", () => {
+    const { onClose, onTabChange } = setup("import");
+    fireEvent.click(screen.getByRole("button", { name: "mark-import-failed" }));
+
+    expect(screen.getByTestId("transfer-tab-novel")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("transfer-tab-novel"));
+    expect(onTabChange).not.toHaveBeenCalled();
+
+    const closeButton = screen.getByRole("button", { name: "common.close" });
+    expect(closeButton).not.toBeDisabled();
+    fireEvent.click(closeButton);
     expect(onClose).toHaveBeenCalledOnce();
   });
 });

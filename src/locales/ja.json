@@ -397,12 +397,21 @@
     "success": "インポート完了: Codex {{codex}} / スニペット {{snippets}} / 章 {{chapters}} / チャット {{chats}}",
     "doneSuccess": "すべてのエントリのインポートが完了しました。",
     "errorTitle": "一部のエントリでエラーが発生しました",
+    "failed": "インポートを完了できませんでした。途中まで取り込まれている可能性があるため、内容を確認してから再試行してください。",
     "cancel": "キャンセル",
     "close": "閉じる",
     "noFile": "ファイルが選択されていません",
     "invalidZip": "有効なZIPファイルを選択してください",
     "invalidKakuyomu": "有効なカクヨムバックアップZIPを選択してください",
     "invalidMarkdown": "有効なMarkdownファイルを選択してください",
+    "limits": {
+      "empty-file": "空のファイルはインポートできません",
+      "file-too-large": "ファイルが大きすぎます（上限 {{maxMiB}} MiB）",
+      "empty-folder": "対応する原稿ファイルが見つかりません",
+      "too-many-files": "フォルダー内の原稿ファイルが多すぎます（上限 {{maxFiles}} 件）",
+      "folder-too-large": "フォルダー内の原稿ファイル合計が大きすぎます（上限 {{maxMiB}} MiB）",
+      "path-too-deep": "フォルダー階層が深すぎます（上限 {{maxDepth}} 階層）"
+    },
     "scan": {
       "description": "Scan のプライベート editor seed (JSON) を読み込み、新規プロジェクトへ段階適用します。既存プロジェクトは変更されません。",
       "tooLarge": "Scan seed が大きすぎます（最大32MB）。",
@@ -520,9 +529,13 @@
       "title": "Web Editor 試用版",
       "description": "Grimodex本体の実エディターをブラウザで試せます。",
       "storageNotice": "データはこのブラウザに保存され、ローカル版Grimodexへ自動同期されません。",
+      "importNotice": "選択したローカルファイルはブラウザ内だけで処理されます。",
       "aiNotice": "AIは付属していません。利用する場合はLocal LLM（Ollama）またはご自身のOpenAI／Anthropic APIキーを設定してください。",
       "apiKeyMemoryNotice": "BYOKのAPIキーはこのページの実行メモリにだけ保持され、再読み込みまたは終了時に消去されます。",
       "continueInGrimodex": "Grimodexで続きを書く"
+    },
+    "import": {
+      "localOnlyNotice": "選択したファイルはこのブラウザ内で解析・保存され、Grimodexのサーバーへ送信されません。"
     },
     "handoff": {
       "title": "Grimodexで続きを書く",

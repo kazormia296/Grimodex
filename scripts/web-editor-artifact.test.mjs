@@ -47,6 +47,21 @@ describe("Web Editor artifact boundary", () => {
         /network route/i,
       ],
       ["app-abc.js", "/api/openrouter", /network route/i],
+      [
+        "WebEditorImportDialog-leak.js",
+        "fetch('/api/import-manuscript')",
+        /import network transport/i,
+      ],
+      [
+        "WebEditorImportDialog-beacon.js",
+        "navigator.sendBeacon('/leak', 'draft')",
+        /import network transport/i,
+      ],
+      [
+        "WebEditorImportDialog-form-data.js",
+        "const body = new FormData()",
+        /import network transport/i,
+      ],
     ]) {
       const root = await createArtifact({
         "WebEditorSettingsDialog-ok.js": "Ollama OpenAI Anthropic",
@@ -60,7 +75,8 @@ describe("Web Editor artifact boundary", () => {
   it("rejects a Web artifact that exposes the retired Scan import flow", async () => {
     const root = await createArtifact({
       "WebEditorSettingsDialog-ok.js": "Ollama OpenAI Anthropic",
-      "WebEditorImportDialog-ok.js": 'data-testid="import-source-scan"',
+      "WebEditorImportDialog-ok.js":
+        '"data-testid":"import-source-scan";"grimodex-scan/import-plan/1"',
     });
     await assert.rejects(validateWebEditorArtifact(root), /Scan import/i);
   });

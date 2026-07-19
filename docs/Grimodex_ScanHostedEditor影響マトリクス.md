@@ -53,8 +53,8 @@ Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に�
 | WEB-EDITOR-01  | `GET /editor` / SPA fallback | App mount 前に IndexedDB を復元                              | 本体 `App` / `EditorPane` | Scan 不要、簡易 editor 不可、network bootstrap なし    | 保存なしは新規 workspace                                     | runtime + DOM identity test                          | verified       |
 | WEB-EDITOR-02  | IndexedDB snapshot           | revision / checksum / schema version                         | SQL.js BrowserMock        | commit 後だけ保存                                      | 破損時は明示 recovery                                        | round-trip / reload / conflict test                  | verified       |
 | WEB-HANDOFF-01 | 試用 Editor の CTA           | workspace bytes を handoff schema へ変換                     | local Grimodex import     | 原稿を app backend へ送らない                          | ユーザーが明示 download                                      | handoff unit test                                    | verified       |
-| WEB-IMPORT-01  | Project menu の Import       | Web 専用 source allowlist、既存 parser / ZIP guard           | BrowserMock / IndexedDB   | 選択ファイルをブラウザー内だけで処理、Scan 入口なし    | 不正・未対応形式は preview 前に拒否                           | capability / dialog / parser / artifact test         | planned        |
-| WEB-IMPORT-02  | Markdown folder picker       | browser `FileList` / `webkitRelativePath`                    | BrowserMock / IndexedDB   | native path read なし、Web backend 通信なし             | 非対応時は単一 Markdown または ZIP                            | browser UI / no-network test                         | planned        |
+| WEB-IMPORT-01  | Project menu の Import       | Web 専用 source allowlist、入力 64/32 MiB、ZIP 展開量・深度 guard | BrowserMock / IndexedDB | 選択ファイルをブラウザー内だけで処理、Scan 入口なし    | 不正・未対応・過大入力は read / preview 前に拒否              | capability / dialog / parser / File-to-persistence browser test | verified     |
+| WEB-IMPORT-02  | Markdown folder picker       | browser `FileList`、1万件 / 64 MiB / 64階層、`webkitRelativePath` | BrowserMock / IndexedDB | native path read なし、Web backend 通信なし             | 非対応時は単一 Markdown または ZIP                            | live browser UI / limit / no-transport artifact test | verified       |
 | WEB-AI-01      | Web Editor 起動              | 既定 Ollama、空 model、provider allowlist                    | request なし              | AI は付属・自動有効でない                              | legacy OpenRouter の既定・role routing・session model を除去 | settings / role migration / session persistence test | verified       |
 | WEB-AI-02      | OpenAI / Anthropic BYOK      | key は page-memory、版付き同意、typed transport              | 選択 provider API         | reload 後 key 消失、同意前 fetch ゼロ                  | error を UI に明示                                           | transport spy / revision test                        | verified       |
 | WEB-AI-03      | Local Ollama                 | user endpoint / model、版付き同意、origin / browser 権限案内 | user Local LLM endpoint   | Grimodex backend を経由せず、接続先変更時は再同意      | 未接続は設定案内                                             | route / consent / endpoint propagation test          | verified       |
@@ -62,7 +62,7 @@ Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に�
 | RETIRE-01      | 旧 Scan UI / API             | package・migrations・R2/D1/Workflow・deploy scripts を削除   | 既存リモートは未停止      | リポジトリから新規 upload/scan を配備できない          | 公開停止またはデータを含む完全削除は別途明示選択             | workspace/search audit + remote reachability check   | remote-pending |
 | RETIRE-02      | legacy Scan URL / session    | 値を無視し、consume/fetch しない                             | standalone workspace      | URL token を永続化しない                               | 通常の試用 Editor 起動                                       | fetch spy / runtime test                             | verified       |
 | DESKTOP-01     | Electron                     | typed preload IPC / secure key store                         | native AI runtime         | Desktop provider・保存挙動を維持                       | なし                                                         | existing Electron / frontend tests                   | verified       |
-| DESKTOP-02     | Electron Project Import      | 既存 TransferDialog、native picker / bounded read            | native workspace          | Scan を含む既存 desktop import の外部挙動を維持         | なし                                                         | existing import / transfer tests                     | planned        |
+| DESKTOP-02     | Electron Project Import      | 既存 TransferDialog、native picker、Web 専用入力上限は無効   | native workspace          | Scan を含む既存 desktop import の外部挙動を維持、過深 path は安全拒否 | なし                                                   | existing import / transfer tests + desktop build     | verified       |
 
 ## AI 開示の出力契約
 
@@ -81,6 +81,9 @@ Local Ollama はローカル endpoint を利用すること、OpenAI / Anthropic
 - Light: browser runtime、BrowserMock AI allowlist・legacy role migration、BYOK consent、
   fresh Web session model、trial UI、Web import allowlist、AI path registry、Editor Pages deploy plan、
   workspace/build
+- Web import: 4 source の実ダイアログ、busy 中の close/source/target lock、read 前の入力上限、
+  予期しない部分失敗後の Close-only 状態と source/target/tab lock、Markdown ZIP / folder の深度上限、compiled artifact の
+  Scan / import transport 除外、実 File → parser → import API → BrowserMock → 永続化・復元と通信 API 未使用
 - Heavy: 実 BYOK provider / Local Ollama、Web Editor reload、Desktop 回帰
 - 実 provider credential または隔離された Local LLM がない環境で Heavy を passed にしない。
 - 旧 Scan staging の Pages / Worker は現時点で到達可能なため、公開停止またはデータを含む
