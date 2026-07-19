@@ -22,6 +22,7 @@ describe("Web Editor artifact boundary", () => {
   it("accepts an editor-only static artifact", async () => {
     const root = await createArtifact({
       "WebEditorSettingsDialog-abc.js": "Ollama OpenAI Anthropic",
+      "WebEditorImportDialog-abc.js": "local browser file import",
       "WebEditorUnavailableDialogs-def.js": "export{}",
     });
     await assert.doesNotReject(validateWebEditorArtifact(root));
@@ -49,9 +50,25 @@ describe("Web Editor artifact boundary", () => {
     ]) {
       const root = await createArtifact({
         "WebEditorSettingsDialog-ok.js": "Ollama OpenAI Anthropic",
+        "WebEditorImportDialog-ok.js": "local browser file import",
         [name]: contents,
       });
       await assert.rejects(validateWebEditorArtifact(root), expectedError);
     }
+  });
+
+  it("rejects a Web artifact that exposes the retired Scan import flow", async () => {
+    const root = await createArtifact({
+      "WebEditorSettingsDialog-ok.js": "Ollama OpenAI Anthropic",
+      "WebEditorImportDialog-ok.js": 'data-testid="import-source-scan"',
+    });
+    await assert.rejects(validateWebEditorArtifact(root), /Scan import/i);
+  });
+
+  it("rejects a Web artifact without the browser-local import dialog", async () => {
+    const root = await createArtifact({
+      "WebEditorSettingsDialog-ok.js": "Ollama OpenAI Anthropic",
+    });
+    await assert.rejects(validateWebEditorArtifact(root), /import dialog/i);
   });
 });

@@ -4,7 +4,8 @@
 
 公開 Web 版を「Grimodex 本体エディターの試用」に限定する。Scan、原稿アップロード、
 Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に設定した Local LLM
-または BYOK（OpenAI / Anthropic）だけを利用できる契約にする。
+または BYOK（OpenAI / Anthropic）だけを利用できる契約にする。ユーザーが明示的に
+選んだローカル原稿のインポートはブラウザー内で完結させ、クラウド送信とは分離する。
 
 ## 変更契約
 
@@ -14,6 +15,8 @@ Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に�
 - Web の原稿・ワークスペースはブラウザーの IndexedDB、UI・AI 設定は Local Storage、
   BYOK API key はページの実行メモリにだけ保存する。
 - `.grimodex-handoff` によるローカル Grimodex への引き継ぎを提供する。
+- Web Editor は既存のローカルインポート形式（Novelcrafter ZIP、カクヨム ZIP、
+  Markdown / Markdown ZIP / Markdown フォルダー、`.novel`）をブラウザー内で処理する。
 - BYOK の API key はページの実行メモリにだけ保持し、再読込後は再入力を求める。
 - Desktop Electron の typed preload IPC、secure secret store、既存 AI provider 経路は変更しない。
 - AI のプロジェクト機能許可 (`AiPolicy`) と外部送信への同意証跡は別契約とする。
@@ -30,6 +33,8 @@ Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に�
   Web 版から撤去し、Desktop のユーザー管理経路には影響させない。
 - 試用 UI と利用規約・プライバシー文書で、AI サブスクリプションや付属 AI ではなく
   Local LLM / BYOK が必要であることを明記する。
+- Web のローカルファイルインポート能力を、desktop 専用のエクスポート／handoff import
+  能力から分離する。Web の通常エクスポート制限は維持する。
 
 ### 禁止動作
 
@@ -37,6 +42,8 @@ Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に�
 - Hosted credential、共用 OpenRouter key、provider access override を client bundle へ含めない。
 - AI provider、送信範囲、保存・学習方針への版付き同意なしに AI request を発行しない。
 - Browser で native-only command、Hosted AI、Scan upload を利用可能と表示しない。
+- Web のインポート画面へ Scan bundle / Scan staging の入口や実装 chunk を含めない。
+- ユーザーが選んだインポートファイルを Grimodex の Web backend へ送信しない。
 - legacy Scan fragment や sessionStorage 値を復元・consume しない。
 
 ## 実行経路マトリクス
@@ -46,6 +53,8 @@ Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に�
 | WEB-EDITOR-01  | `GET /editor` / SPA fallback | App mount 前に IndexedDB を復元                              | 本体 `App` / `EditorPane` | Scan 不要、簡易 editor 不可、network bootstrap なし    | 保存なしは新規 workspace                                     | runtime + DOM identity test                          | verified       |
 | WEB-EDITOR-02  | IndexedDB snapshot           | revision / checksum / schema version                         | SQL.js BrowserMock        | commit 後だけ保存                                      | 破損時は明示 recovery                                        | round-trip / reload / conflict test                  | verified       |
 | WEB-HANDOFF-01 | 試用 Editor の CTA           | workspace bytes を handoff schema へ変換                     | local Grimodex import     | 原稿を app backend へ送らない                          | ユーザーが明示 download                                      | handoff unit test                                    | verified       |
+| WEB-IMPORT-01  | Project menu の Import       | Web 専用 source allowlist、既存 parser / ZIP guard           | BrowserMock / IndexedDB   | 選択ファイルをブラウザー内だけで処理、Scan 入口なし    | 不正・未対応形式は preview 前に拒否                           | capability / dialog / parser / artifact test         | planned        |
+| WEB-IMPORT-02  | Markdown folder picker       | browser `FileList` / `webkitRelativePath`                    | BrowserMock / IndexedDB   | native path read なし、Web backend 通信なし             | 非対応時は単一 Markdown または ZIP                            | browser UI / no-network test                         | planned        |
 | WEB-AI-01      | Web Editor 起動              | 既定 Ollama、空 model、provider allowlist                    | request なし              | AI は付属・自動有効でない                              | legacy OpenRouter の既定・role routing・session model を除去 | settings / role migration / session persistence test | verified       |
 | WEB-AI-02      | OpenAI / Anthropic BYOK      | key は page-memory、版付き同意、typed transport              | 選択 provider API         | reload 後 key 消失、同意前 fetch ゼロ                  | error を UI に明示                                           | transport spy / revision test                        | verified       |
 | WEB-AI-03      | Local Ollama                 | user endpoint / model、版付き同意、origin / browser 権限案内 | user Local LLM endpoint   | Grimodex backend を経由せず、接続先変更時は再同意      | 未接続は設定案内                                             | route / consent / endpoint propagation test          | verified       |
@@ -53,6 +62,7 @@ Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に�
 | RETIRE-01      | 旧 Scan UI / API             | package・migrations・R2/D1/Workflow・deploy scripts を削除   | 既存リモートは未停止      | リポジトリから新規 upload/scan を配備できない          | 公開停止またはデータを含む完全削除は別途明示選択             | workspace/search audit + remote reachability check   | remote-pending |
 | RETIRE-02      | legacy Scan URL / session    | 値を無視し、consume/fetch しない                             | standalone workspace      | URL token を永続化しない                               | 通常の試用 Editor 起動                                       | fetch spy / runtime test                             | verified       |
 | DESKTOP-01     | Electron                     | typed preload IPC / secure key store                         | native AI runtime         | Desktop provider・保存挙動を維持                       | なし                                                         | existing Electron / frontend tests                   | verified       |
+| DESKTOP-02     | Electron Project Import      | 既存 TransferDialog、native picker / bounded read            | native workspace          | Scan を含む既存 desktop import の外部挙動を維持         | なし                                                         | existing import / transfer tests                     | planned        |
 
 ## AI 開示の出力契約
 
@@ -69,7 +79,8 @@ Local Ollama はローカル endpoint を利用すること、OpenAI / Anthropic
 - 関連 requirement: `GDX-AI-CONSENT-001`, `GDX-PRECHECK-001`,
   `GDX-POLICY-001`, `GDX-ROUTE-001`, `GDX-TRACE-001`
 - Light: browser runtime、BrowserMock AI allowlist・legacy role migration、BYOK consent、
-  fresh Web session model、trial UI、AI path registry、Editor Pages deploy plan、workspace/build
+  fresh Web session model、trial UI、Web import allowlist、AI path registry、Editor Pages deploy plan、
+  workspace/build
 - Heavy: 実 BYOK provider / Local Ollama、Web Editor reload、Desktop 回帰
 - 実 provider credential または隔離された Local LLM がない環境で Heavy を passed にしない。
 - 旧 Scan staging の Pages / Worker は現時点で到達可能なため、公開停止またはデータを含む

@@ -38,4 +38,15 @@ describe("runtime target contract", () => {
       true,
     );
   });
+
+  it("allows local-file import in Electron and Web without enabling Web export", () => {
+    expect(resolveRuntimeCapabilities("electron").localFileImport).toBe(true);
+    expect(resolveRuntimeCapabilities("web").localFileImport).toBe(true);
+    expect(resolveRuntimeCapabilities("web").genericProjectTransfer).toBe(
+      false,
+    );
+    expect(resolveRuntimeCapabilities("mobile-native").localFileImport).toBe(
+      false,
+    );
+  });
 });
