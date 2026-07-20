@@ -15,6 +15,19 @@ hard failure.
 Load required references and verify inputs, permissions, tool availability, freshness, and output
 shape before mutation. Missing prerequisites are classified as `[precheck]`; they are not guessed.
 
+## GDX-AI-CONSENT-001 — Disclose AI data use and obtain route-scoped consent
+
+Before Web Editor Local LLM or BYOK sends any manuscript, prompt, selected context, conversation,
+credential, or derived content beyond its current browser storage boundary, show the exact data
+categories, every processor and processing purpose, provider storage and retention, model-training
+status, and current policy links. Consent is explicit and bound to policy version, route, provider,
+and actual connection destination; a change to any of those invalidates prior consent. Missing consent, an incomplete
+disclosure, or an unknown processor fails closed before provider dispatch. Consent records never
+contain content or credentials. Web Editor has no application-owned AI credential or managed AI
+provider route. BYOK credentials remain in page session memory only and are never persisted to
+IndexedDB or Local Storage; Local LLM endpoints and BYOK providers are activated only by explicit
+user configuration.
+
 ## GDX-TOOL-001 — Call only manifest-backed tools
 
 Tool name, channel, capability, policy, confirmation requirement, and schema must resolve through

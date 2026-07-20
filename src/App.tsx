@@ -96,6 +96,12 @@ import { useImeExportSync } from "@/features/ime/useImeExportSync";
 import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorkspaceShell";
 import { ConnectedMobileWorkspaceSurface } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
 import { shouldUseAdaptiveWorkspace } from "@/features/layout/adaptive/adaptiveWorkspacePolicy";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import {
+  consumeWebEditorHandoffRequest,
+  requestWebEditorHandoffImport,
+  subscribeWebEditorHandoffRequests,
+} from "@/features/import/webEditorHandoffRequest";
 
 const SettingsDialog = lazy(() =>
   import("@/features/settings/SettingsDialog").then((m) => ({
@@ -120,6 +126,21 @@ const ExportDialog = lazy(() =>
 const SampleTour = lazy(() =>
   import("@/features/onboarding/SampleTour").then((m) => ({
     default: m.SampleTour,
+  })),
+);
+const HostedEditorTrialBar = lazy(() =>
+  import("@/features/hosted-editor/HostedEditorTrialBar").then((m) => ({
+    default: m.HostedEditorTrialBar,
+  })),
+);
+const HostedEditorHandoffDialog = lazy(() =>
+  import("@/features/hosted-editor/HostedEditorHandoffDialog").then((m) => ({
+    default: m.HostedEditorHandoffDialog,
+  })),
+);
+const WebEditorWorkspaceImportDialog = lazy(() =>
+  import("@/features/import/WebEditorWorkspaceImportDialog").then((m) => ({
+    default: m.WebEditorWorkspaceImportDialog,
   })),
 );
 
@@ -160,6 +181,7 @@ function applyTheme(theme: string, colorTheme?: string) {
 }
 
 function App() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
@@ -176,6 +198,17 @@ function App() {
     (s) => s.globalSettings?.uiLanguage ?? "ja",
   );
   const { t } = useTranslation();
+  const [showWebEditorImport, setShowWebEditorImport] = useState(false);
+
+  useEffect(
+    () =>
+      subscribeWebEditorHandoffRequests(() => {
+        if (consumeWebEditorHandoffRequest()) {
+          setShowWebEditorImport(true);
+        }
+      }),
+    [],
+  );
 
   // semantic_reindex_all の進行状況 event を購読 (App 起動中ずっと 1 度だけ)。
   useReindexProgressListener();
@@ -194,6 +227,7 @@ function App() {
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   useEffect(() => {
     if (
+      runtimeCapabilities.localAi &&
       workspaceHydrated &&
       !workspaceSwitchInProgress &&
       currentProjectId &&
@@ -207,6 +241,7 @@ function App() {
     workspaceHydrated,
     workspaceOpenRevision,
     workspaceSwitchInProgress,
+    runtimeCapabilities.localAi,
   ]);
 
   // Sync uiLanguage setting → i18next
@@ -324,12 +359,21 @@ function App() {
       <WorkspaceTrustDialog />
       <EulaConsentDialog />
       <ReleaseNotesDialog />
+      {runtimeCapabilities.genericProjectTransfer && (
+        <Suspense fallback={null}>
+          <WebEditorWorkspaceImportDialog
+            open={showWebEditorImport}
+            onClose={() => setShowWebEditorImport(false)}
+          />
+        </Suspense>
+      )}
       <DebugLogViewer />
     </>
   );
 }
 
 function EditorScreen() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const screenshotPanelId = getScreenshotPanelId();
   const panelWindow = isPanelWindow();
   const adaptiveWorkspaceEnabled = shouldUseAdaptiveWorkspace({
@@ -351,6 +395,7 @@ function EditorScreen() {
   >(undefined);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showTransferDialog, setShowTransferDialog] = useState(false);
+  const [showHostedHandoff, setShowHostedHandoff] = useState(false);
   const [transferTab, setTransferTab] = useState<TransferTab>("import");
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
@@ -404,14 +449,16 @@ function EditorScreen() {
   }, []);
 
   useEffect(() => {
+    if (!runtimeCapabilities.externalMount) return;
     void initializeExternalMounts().catch(() => {});
-  }, []);
+  }, [runtimeCapabilities.externalMount]);
 
   // ライセンス状態の初期化（refresh は内部 catch 済みで reject しない）。
   // 取得まで・失敗時はゲートが fail-open なので執筆は止まらない。
   useEffect(() => {
+    if (!runtimeCapabilities.secureSecretStore) return;
     void useLicenseStore.getState().refresh();
-  }, []);
+  }, [runtimeCapabilities.secureSecretStore]);
 
   useEffect(() => {
     const html = document.documentElement;
@@ -516,16 +563,18 @@ function EditorScreen() {
   // Open export dialog via custom event (e.g. from Settings > Data)
   useEffect(() => {
     function onOpenExport() {
+      if (!runtimeCapabilities.genericProjectTransfer) return;
       setShowExport(true);
     }
     window.addEventListener("open-export-dialog", onOpenExport);
     return () => window.removeEventListener("open-export-dialog", onOpenExport);
-  }, []);
+  }, [runtimeCapabilities.genericProjectTransfer]);
 
   // Open export dialog on the book (Vivliostyle) tab via custom event
   // (command palette)
   useEffect(() => {
     function onOpenVivliostyle() {
+      if (!runtimeCapabilities.genericProjectTransfer) return;
       setExportModeRequest((prev) => ({
         mode: "book",
         seq: (prev?.seq ?? 0) + 1,
@@ -535,13 +584,18 @@ function EditorScreen() {
     window.addEventListener("open-vivliostyle-dialog", onOpenVivliostyle);
     return () =>
       window.removeEventListener("open-vivliostyle-dialog", onOpenVivliostyle);
-  }, []);
+  }, [runtimeCapabilities.genericProjectTransfer]);
 
   // Keyboard shortcuts (Ctrl+Alt+*)
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       // Ctrl+Shift+E: エクスポートダイアログ開閉
-      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "e") {
+      if (
+        runtimeCapabilities.genericProjectTransfer &&
+        matchesMod(e) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "e"
+      ) {
         e.preventDefault();
         setShowExport((v) => !v);
         return;
@@ -611,7 +665,7 @@ function EditorScreen() {
         }
       }
     },
-    [togglePanel],
+    [runtimeCapabilities.genericProjectTransfer, togglePanel],
   );
 
   useEffect(() => {
@@ -755,29 +809,44 @@ function EditorScreen() {
               <GrimodexLogo height={24} className="text-foreground" />
               <WorkspaceMenu />
               <ProjectMenu
-                onOpenImport={() => {
-                  setTransferTab("import");
-                  setShowTransferDialog(true);
-                }}
-                onOpenExport={() => {
-                  setTransferTab("zip");
-                  setShowTransferDialog(true);
-                }}
+                onOpenImport={
+                  runtimeCapabilities.localFileImport
+                    ? () => {
+                        setTransferTab("import");
+                        setShowTransferDialog(true);
+                      }
+                    : undefined
+                }
+                onOpenExport={
+                  runtimeCapabilities.genericProjectTransfer
+                    ? () => {
+                        setTransferTab("zip");
+                        setShowTransferDialog(true);
+                      }
+                    : undefined
+                }
                 onOpenSnapshot={() => setShowSnapshotModal(true)}
+                onOpenWebEditorHandoff={
+                  runtimeCapabilities.genericProjectTransfer
+                    ? requestWebEditorHandoffImport
+                    : undefined
+                }
               />
               <HistoryButtons />
-              <button
-                type="button"
-                aria-label={t("app.exportLabel")}
-                title={t("app.exportTitle")}
-                onClick={() => setShowExport((v) => !v)}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <FileOutput className="h-4 w-4 shrink-0" />
-                <span className="hidden whitespace-nowrap text-sm xl:inline">
-                  {t("app.exportLabel")}
-                </span>
-              </button>
+              {runtimeCapabilities.genericProjectTransfer && (
+                <button
+                  type="button"
+                  aria-label={t("app.exportLabel")}
+                  title={t("app.exportTitle")}
+                  onClick={() => setShowExport((v) => !v)}
+                  className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <FileOutput className="h-4 w-4 shrink-0" />
+                  <span className="hidden whitespace-nowrap text-sm xl:inline">
+                    {t("app.exportLabel")}
+                  </span>
+                </button>
+              )}
             </>
           }
           center={<CommandCenterBar />}
@@ -825,7 +894,7 @@ function EditorScreen() {
             initialCategory={settingsInitialCategory}
           />
         )}
-        {showExport && (
+        {runtimeCapabilities.genericProjectTransfer && showExport && (
           <ExportDialog
             open
             onClose={() => setShowExport(false)}
@@ -838,7 +907,7 @@ function EditorScreen() {
             onClose={() => setShowSnapshotModal(false)}
           />
         )}
-        {showTransferDialog && (
+        {runtimeCapabilities.localFileImport && showTransferDialog && (
           <TransferDialog
             open
             tab={transferTab}
@@ -848,11 +917,33 @@ function EditorScreen() {
         )}
         {showSampleTour && <SampleTour />}
       </Suspense>
+      {!runtimeCapabilities.genericProjectTransfer &&
+        runtimeCapabilities.browserDirectAi && (
+          <Suspense fallback={null}>
+            <HostedEditorHandoffDialog
+              open={showHostedHandoff}
+              onClose={() => setShowHostedHandoff(false)}
+              downloadHandoff={async () => {
+                const { downloadHostedEditorHandoff } =
+                  await import("@/features/hosted-editor/downloadHostedEditorHandoff");
+                return downloadHostedEditorHandoff();
+              }}
+            />
+          </Suspense>
+        )}
       <ReindexProgressToast />
       <ModelDownloadToast />
       <PostEffectProgressToast />
       <UpdateToast />
       <ReloadConflictDialog />
+      {!runtimeCapabilities.genericProjectTransfer &&
+        runtimeCapabilities.browserDirectAi && (
+          <Suspense fallback={null}>
+            <HostedEditorTrialBar
+              onContinue={() => setShowHostedHandoff(true)}
+            />
+          </Suspense>
+        )}
       <main
         id="main-content"
         tabIndex={-1}

@@ -121,7 +121,7 @@ cases:
       outputValidators: [failure-class, no-stale-claim]
 
   - id: eval-artifact-create-event
-    suiteId: scan-contract
+    suiteId: tool-policy
     requirementIds: [GDX-ARTIFACT-001, GDX-POLICY-001, GDX-TRACE-001]
     fixture:
       runId: artifact-create-event
@@ -161,7 +161,7 @@ cases:
       outputValidators: [schema, artifact-link]
 
   - id: eval-artifact-update-codex
-    suiteId: scan-contract
+    suiteId: tool-policy
     requirementIds: [GDX-ARTIFACT-001, GDX-POLICY-001]
     fixture:
       runId: artifact-update-codex

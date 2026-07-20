@@ -279,14 +279,18 @@ describe("ChatPanelHeader — RAG egress disclosure (F-1)", () => {
     expect(note?.textContent).toContain("chat.webSearch.injectionNote");
   });
 
-  it("keeps the privacy disclosure reachable when the provider toggle is disabled", () => {
+  it("announces a supplied disabled reason instead of an inapplicable egress warning", () => {
     render(
       <ChatPanelHeader
         {...baseProps({ ragDisabled: true, ragDisabledReason: "n/a" })}
       />,
     );
     const toggle = screen.getByRole("button", { name: "chat.webSearch.off" });
-    expect(toggle.getAttribute("aria-describedby")).toBe("rag-egress-note");
+    expect(toggle.getAttribute("aria-describedby")).toBe("rag-disabled-note");
+    expect(document.getElementById("rag-disabled-note")?.textContent).toBe(
+      "n/a",
+    );
+    expect(document.getElementById("rag-egress-note")).toBeNull();
   });
 
   it("disables Web search visibly while private Agent mode is active", () => {

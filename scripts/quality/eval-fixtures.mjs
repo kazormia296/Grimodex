@@ -28,6 +28,7 @@ const BLOCK_CONTRACTS = {
   "route-disabled": "routing",
   "policy-missing": "precheck",
   "confirmation-missing": "precheck",
+  "consent-missing": "precheck",
   "unknown-tool": "tool",
   "channel-denied": "policy",
   "stale-evidence": "quality",
@@ -733,6 +734,7 @@ export function evaluateFixtureContracts(model) {
           "route-disabled",
           "policy-missing",
           "confirmation-missing",
+          "consent-missing",
           "unknown-tool",
           "channel-denied",
           "output-invalid",
@@ -760,6 +762,9 @@ export function evaluateFixtureContracts(model) {
             tool.requiresUserConfirmation &&
             evaluationCase.expected.authorization !== "granted",
         ),
+        "consent-missing":
+          evaluationCase.input?.consent === "missing" &&
+          evaluationCase.input?.providerCalls === 0,
         "unknown-tool": attemptedToolNames.some(
           (name) => !manifestTools.has(name),
         ),
@@ -777,6 +782,17 @@ export function evaluateFixtureContracts(model) {
           finding(
             "unproven-block-condition",
             `${blockedBy} is not supported by the fixture input and canonical tool manifest`,
+          ),
+        );
+      }
+      if (
+        blockedBy === "consent-missing" &&
+        evaluationCase.input?.providerCalls !== 0
+      ) {
+        findings.push(
+          finding(
+            "provider-called-before-consent",
+            "consent-missing must record exactly zero provider calls",
           ),
         );
       }

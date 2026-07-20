@@ -5,7 +5,6 @@ allSuites:
   - tool-policy
   - prompt-contract
   - retrieval-grounding
-  - scan-contract
 rules:
   - id: quality-foundation
     reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
@@ -18,6 +17,7 @@ rules:
     requirements:
       - GDX-ROUTE-001
       - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
       - GDX-TOOL-001
       - GDX-POLICY-001
       - GDX-GROUND-001
@@ -40,6 +40,7 @@ rules:
     reason: AI path, role, route, or provider changes must preserve complete routing coverage.
     paths:
       - src/features/ai-verification/**
+      - docs/AI経路検証.md
       - src/features/chat/modelRouting.ts
       - src/features/chat/modelRouting.test.ts
       - src/features/chat/turn/**
@@ -47,6 +48,7 @@ rules:
     requirements:
       - GDX-ROUTE-001
       - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
       - GDX-TRACE-001
     suites:
       - ai-routing
@@ -60,6 +62,7 @@ rules:
       - src-tauri/crates/grimodex-ai/build.rs
     requirements:
       - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
       - GDX-TOOL-001
       - GDX-POLICY-001
     suites:
@@ -102,28 +105,51 @@ rules:
       - GDX-ISOLATION-001
     suites:
       - retrieval-grounding
-  - id: scan-workspace
-    reason: Scan contracts, prompts, processing, and hosted output form one artifact lane.
+  - id: web-editor-ai
+    reason: Web Editor must remain an explicit Local LLM or BYOK route with no application-owned credential or managed provider.
     paths:
-      - packages/scan-contract/**
-      - packages/scan-core/**
-      - packages/scan-prompts/**
-      - apps/scan-web/**
-    requirements:
-      - GDX-GROUND-001
-      - GDX-ARTIFACT-001
-      - GDX-TRACE-001
-    suites:
-      - scan-contract
-  - id: scan-prompts
-    reason: Scan prompt changes require both prompt and artifact contracts.
-    paths:
-      - packages/scan-prompts/**
+      - src/lib/browser-ai.ts
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ts
+      - src/lib/browser-mock.ai-runtime.test.ts
+      - src/lib/browserRuntime.ts
+      - src/lib/browserRuntime.test.ts
+      - src/features/ai-policy/**
+      - src/features/hosted-editor/**
+      - src/features/ab-test/abConfig.ts
+      - src/features/ab-test/abConfig.test.ts
+      - src/features/ab-test/AbSlotCard.tsx
+      - src/features/chat/chatApi.ts
+      - src/features/chat/chatApi.test.ts
+      - src/features/chat/chatStore.ts
+      - src/features/chat/chatStore.test.ts
+      - src/features/settings/categories/AiCategory.tsx
+      - src/features/settings/categories/AiCategory.test.tsx
+      - scripts/cloudflare-editor-deploy.mjs
+      - scripts/cloudflare-editor-deploy.test.mjs
+      - scripts/validate-web-editor-artifact.mjs
+      - scripts/web-editor-artifact.test.mjs
+      - vite.config.ts
+      - vercel.json
     requirements:
       - GDX-ROUTE-001
-      - GDX-GROUND-001
-      - GDX-ARTIFACT-001
+      - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
+      - GDX-TRACE-001
     suites:
-      - prompt-contract
-      - scan-contract
+      - ai-routing
+      - tool-policy
+  - id: ai-data-legal-notices
+    reason: Terms, privacy notices, and EULA versioning must remain aligned with the runtime AI disclosure and consent boundary.
+    paths:
+      - public/TERMS_*.md
+      - public/PRIVACY_*.md
+      - src/features/legal/constants.ts
+      - src/features/legal/constants.test.ts
+    requirements:
+      - GDX-AI-CONSENT-001
+      - GDX-TRACE-001
+    suites:
+      - ai-routing
+      - tool-policy
 default: all

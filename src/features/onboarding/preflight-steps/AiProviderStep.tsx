@@ -9,6 +9,8 @@ import {
   resolveModelApiVariant,
 } from "@/features/chat/aiNovelist";
 import { ModelPicker } from "@/features/chat/ModelPicker";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 const PREFLIGHT_PROVIDERS: AiProvider[] = [
   "openrouter",
@@ -36,6 +38,7 @@ interface AiProviderStepProps {
 
 export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
   const { t } = useTranslation();
+  const runtimeCapabilities = useRuntimeCapabilities();
   const {
     settings,
     hasApiKey,
@@ -140,7 +143,10 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
           {t("preflight.selectProvider")}
         </p>
         <div className="flex flex-wrap gap-1.5">
-          {PREFLIGHT_PROVIDERS.map((p) => (
+          {(runtimeCapabilities.browserDirectAi
+            ? BROWSER_DIRECT_AI_PROVIDERS
+            : PREFLIGHT_PROVIDERS
+          ).map((p) => (
             <button
               key={p}
               type="button"

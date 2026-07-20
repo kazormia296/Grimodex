@@ -28,48 +28,130 @@ interface ChatMessage {
   content: string;
 }
 
-function chatEndpoint(provider: AiProvider): string {
-  switch (provider) {
-    case "anthropic":
-      return "/api/anthropic/messages";
-    case "openai":
-      return "/api/openai/chat/completions";
-    case "openrouter":
-      return "/api/openrouter/chat/completions";
-    case "ollama":
-      return "/api/ollama/v1/chat/completions";
-    case "openai-compatible":
-    case "sakana":
-    case "ai-novelist":
-    case "cli":
-      throw new Error(
-        `Provider "${provider}" is not supported in browser mode (Tauri only)`,
-      );
+export type BrowserAiOperation = "chat" | "inline";
+
+export interface BrowserAiRequest {
+  operation: BrowserAiOperation;
+  provider: AiProvider;
+  model: string;
+  endpointId?: string | null;
+  apiKey?: string;
+  messages: ChatMessage[];
+  maxOutputTokens?: number | null;
+  ollamaEndpoint?: string | null;
+}
+
+export type BrowserAiCompletion = AgentLLMResponse;
+
+export interface BrowserAiStreamDone {
+  stopReason: AgentLLMResponse["stopReason"] | "stopped";
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+export interface BrowserAiStreamSink {
+  text(delta: string, blockType?: "text" | "thinking"): void;
+  done(payload: BrowserAiStreamDone): void;
+}
+
+export interface BrowserAiTransport {
+  complete(request: BrowserAiRequest): Promise<BrowserAiCompletion>;
+  /**
+   * Optional structured agent surface. Hosted runtimes use this to keep the
+   * Editor's normal agent loop on the same scoped transport instead of
+   * bypassing it with a direct provider request.
+   */
+  completeAgent?(
+    request: BrowserAiRequest,
+    messages: AgentMessagePayload[],
+    tools: AgentToolDefinition[],
+  ): Promise<BrowserAiCompletion>;
+  stream?(request: BrowserAiRequest, sink: BrowserAiStreamSink): Promise<void>;
+  abort?(operation: BrowserAiOperation): void;
+}
+
+const isViteDevelopment = import.meta.env.DEV;
+
+export type BrowserAiEndpointResource = "chat" | "models";
+
+function requireBrowserDirectProvider(provider: AiProvider): void {
+  if (
+    provider !== "ollama" &&
+    provider !== "openai" &&
+    provider !== "anthropic"
+  ) {
+    throw new Error(`Provider "${provider}" is not supported in browser mode`);
   }
 }
 
-function modelsEndpoint(provider: AiProvider): string | null {
+export function resolveBrowserAiEndpoint(
+  provider: AiProvider,
+  resource: BrowserAiEndpointResource,
+  options: { development?: boolean; ollamaEndpoint?: string | null } = {},
+): string | null {
+  requireBrowserDirectProvider(provider);
+  const development = options.development ?? isViteDevelopment;
+  if (resource === "models" && provider === "anthropic") return null;
+
+  const suffix = resource === "chat" ? "chat/completions" : "models";
   switch (provider) {
     case "anthropic":
-      return null; // static list
+      return development
+        ? "/api/anthropic/messages"
+        : "https://api.anthropic.com/v1/messages";
     case "openai":
-      return "/api/openai/models";
-    case "openrouter":
-      return "/api/openrouter/models";
-    case "ollama":
-      return "/api/ollama/api/tags";
-    case "openai-compatible":
-    case "sakana":
-    case "ai-novelist":
-    case "cli":
-      return null;
+      return development
+        ? `/api/openai/${suffix}`
+        : `https://api.openai.com/v1/${suffix}`;
+    case "ollama": {
+      const normalizedOllamaEndpoint = normalizeOllamaEndpoint(
+        options.ollamaEndpoint,
+      );
+      const useDevelopmentProxy =
+        development && normalizedOllamaEndpoint === "http://localhost:11434";
+      if (resource === "models") {
+        return useDevelopmentProxy
+          ? "/api/ollama/api/tags"
+          : `${normalizedOllamaEndpoint}/api/tags`;
+      }
+      return useDevelopmentProxy
+        ? "/api/ollama/v1/chat/completions"
+        : `${normalizedOllamaEndpoint}/v1/chat/completions`;
+    }
   }
+  throw new Error(`Provider "${provider}" is not supported in browser mode`);
+}
+
+export function normalizeOllamaEndpoint(endpoint?: string | null): string {
+  const base = endpoint?.trim() || "http://localhost:11434";
+  return base.replace(/\/+$/, "");
+}
+
+function chatEndpoint(
+  provider: AiProvider,
+  ollamaEndpoint?: string | null,
+): string {
+  const endpoint = resolveBrowserAiEndpoint(provider, "chat", {
+    ollamaEndpoint,
+  });
+  if (!endpoint) {
+    throw new Error(`No browser chat endpoint is available for ${provider}`);
+  }
+  return endpoint;
+}
+
+function modelsEndpoint(
+  provider: AiProvider,
+  ollamaEndpoint?: string | null,
+): string | null {
+  return resolveBrowserAiEndpoint(provider, "models", { ollamaEndpoint });
 }
 
 function buildHeaders(
   provider: AiProvider,
   apiKey: string,
 ): Record<string, string> {
+  requireBrowserDirectProvider(provider);
   const headers: Record<string, string> = {
     "content-type": "application/json",
   };
@@ -78,11 +160,9 @@ function buildHeaders(
     case "anthropic":
       headers["x-api-key"] = apiKey;
       headers["anthropic-version"] = "2023-06-01";
-      break;
-    case "openrouter":
-      headers["Authorization"] = `Bearer ${apiKey}`;
-      headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
-      headers["X-Title"] = "Grimodex";
+      // Anthropic requires an explicit opt-in header for credentialed browser
+      // requests. The API key remains only in this page's runtime memory.
+      headers["anthropic-dangerous-direct-browser-access"] = "true";
       break;
     case "openai":
       headers["Authorization"] = `Bearer ${apiKey}`;
@@ -113,10 +193,25 @@ export async function sendChat(
   apiKey: string,
   messages: ChatMessage[],
 ): Promise<string> {
-  const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider);
+  const result = await completeBrowserAiRequest({
+    operation: "chat",
+    provider,
+    model,
+    apiKey,
+    messages,
+  });
+  return result.blocks
+    .filter(
+      (block): block is Extract<ResponseBlock, { type: "text" }> =>
+        block.type === "text",
+    )
+    .map((block) => block.content)
+    .join("\n");
+}
 
-  let body: Record<string, unknown>;
+function buildChatBody(request: BrowserAiRequest): Record<string, unknown> {
+  const { provider, model, messages } = request;
+  const maxTokens = request.maxOutputTokens ?? 4096;
 
   if (provider === "anthropic") {
     const systemContent = messages
@@ -128,22 +223,56 @@ export async function sendChat(
       .filter((m) => m.role !== "system")
       .map((m) => ({ role: m.role, content: m.content }));
 
-    body = { model, max_tokens: 4096, messages: chatMessages };
+    const body: Record<string, unknown> = {
+      model,
+      max_tokens: maxTokens,
+      messages: chatMessages,
+    };
     if (systemContent) {
       body.system = systemContent;
     }
-  } else {
-    const chatMessages = messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
-    body = { model, max_tokens: 4096, messages: chatMessages };
+    return body;
   }
+
+  const chatMessages = messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+  return { model, max_tokens: maxTokens, messages: chatMessages };
+}
+
+function requireBrowserAiRequest(request: BrowserAiRequest): void {
+  requireBrowserDirectProvider(request.provider);
+  if (!request.model.trim()) {
+    throw new Error("AIモデルが設定されていません");
+  }
+  if (request.provider !== "ollama" && !request.apiKey?.trim()) {
+    throw new Error(
+      `AIは未接続です。APIキーを設定してください: ${request.provider}`,
+    );
+  }
+}
+
+function normalizeStopReason(value: unknown): AgentLLMResponse["stopReason"] {
+  if (value === "tool_use" || value === "tool_calls") return "tool_use";
+  if (value === "max_tokens" || value === "length") return "max_tokens";
+  return "end_turn";
+}
+
+export async function completeBrowserAiRequest(
+  request: BrowserAiRequest,
+  signal?: AbortSignal,
+): Promise<BrowserAiCompletion> {
+  requireBrowserAiRequest(request);
+  const headers = buildHeaders(request.provider, request.apiKey ?? "");
+  const url = chatEndpoint(request.provider, request.ollamaEndpoint);
+  const body = buildChatBody(request);
 
   const resp = await fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!resp.ok) {
@@ -151,18 +280,241 @@ export async function sendChat(
     throw new Error(`AI request failed (${resp.status}): ${errMsg}`);
   }
 
-  const result = await resp.json();
+  const result = (await resp.json()) as Record<string, unknown>;
 
-  if (provider === "anthropic") {
-    return result?.content?.[0]?.text ?? "";
+  if (request.provider === "anthropic") {
+    const blocks: ResponseBlock[] = [];
+    for (const rawBlock of (result.content as unknown[]) ?? []) {
+      const block = rawBlock as Record<string, unknown>;
+      if (
+        (block.type === "text" || block.type === undefined) &&
+        typeof block.text === "string"
+      ) {
+        blocks.push({ type: "text", content: block.text });
+      } else if (
+        block.type === "thinking" &&
+        typeof block.thinking === "string"
+      ) {
+        blocks.push({ type: "thinking", content: block.thinking });
+      }
+    }
+    const usage = (result.usage as Record<string, unknown> | undefined) ?? {};
+    return {
+      blocks,
+      stopReason: normalizeStopReason(result.stop_reason),
+      inputTokens:
+        typeof usage.input_tokens === "number" ? usage.input_tokens : undefined,
+      outputTokens:
+        typeof usage.output_tokens === "number"
+          ? usage.output_tokens
+          : undefined,
+    };
   }
-  return result?.choices?.[0]?.message?.content ?? "";
+
+  const choices = (result.choices as Array<Record<string, unknown>>) ?? [];
+  const choice = choices[0] ?? {};
+  const message = (choice.message as Record<string, unknown> | undefined) ?? {};
+  const content = typeof message.content === "string" ? message.content : "";
+  const usage = (result.usage as Record<string, unknown> | undefined) ?? {};
+  return {
+    blocks: content ? [{ type: "text", content }] : [],
+    stopReason: normalizeStopReason(choice.finish_reason),
+    inputTokens:
+      typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : undefined,
+    outputTokens:
+      typeof usage.completion_tokens === "number"
+        ? usage.completion_tokens
+        : undefined,
+  };
+}
+
+async function readSse(
+  response: Response,
+  onData: (data: string) => void,
+): Promise<void> {
+  if (!response.body) {
+    throw new Error("AI streaming response did not include a body");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const consumeEvent = (event: string): void => {
+    const data = event
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (data) onData(data);
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    // Normalize after concatenating so a CRLF pair split across network
+    // chunks still produces the SSE blank-line boundary.
+    buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      consumeEvent(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) consumeEvent(buffer);
+}
+
+async function streamBrowserAiRequest(
+  request: BrowserAiRequest,
+  sink: BrowserAiStreamSink,
+  signal: AbortSignal,
+): Promise<void> {
+  requireBrowserAiRequest(request);
+  const headers = buildHeaders(request.provider, request.apiKey ?? "");
+  const body: Record<string, unknown> = {
+    ...buildChatBody(request),
+    stream: true,
+  };
+  if (request.provider !== "anthropic" && request.provider !== "ollama") {
+    body.stream_options = { include_usage: true };
+  }
+
+  const response = await fetch(
+    chatEndpoint(request.provider, request.ollamaEndpoint),
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    },
+  );
+  if (!response.ok) {
+    const message = await parseErrorResponse(response);
+    throw new Error(`AI request failed (${response.status}): ${message}`);
+  }
+
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let stopReason: BrowserAiStreamDone["stopReason"] = "end_turn";
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    sink.done({ stopReason, inputTokens, outputTokens });
+  };
+
+  await readSse(response, (data) => {
+    if (data === "[DONE]") {
+      finish();
+      return;
+    }
+
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    if (request.provider === "anthropic") {
+      const eventType = event.type;
+      if (eventType === "message_start") {
+        const message =
+          (event.message as Record<string, unknown> | undefined) ?? {};
+        const usage =
+          (message.usage as Record<string, unknown> | undefined) ?? {};
+        if (typeof usage.input_tokens === "number") {
+          inputTokens = usage.input_tokens;
+        }
+      } else if (eventType === "content_block_delta") {
+        const delta =
+          (event.delta as Record<string, unknown> | undefined) ?? {};
+        if (delta.type === "text_delta" && typeof delta.text === "string") {
+          sink.text(delta.text, "text");
+        } else if (
+          delta.type === "thinking_delta" &&
+          typeof delta.thinking === "string"
+        ) {
+          sink.text(delta.thinking, "thinking");
+        }
+      } else if (eventType === "message_delta") {
+        const delta =
+          (event.delta as Record<string, unknown> | undefined) ?? {};
+        const usage =
+          (event.usage as Record<string, unknown> | undefined) ?? {};
+        stopReason = normalizeStopReason(delta.stop_reason);
+        if (typeof usage.output_tokens === "number") {
+          outputTokens = usage.output_tokens;
+        }
+      } else if (eventType === "message_stop") {
+        finish();
+      }
+      return;
+    }
+
+    const choices = (event.choices as Array<Record<string, unknown>>) ?? [];
+    const choice = choices[0];
+    if (choice) {
+      const delta = (choice.delta as Record<string, unknown> | undefined) ?? {};
+      if (typeof delta.content === "string" && delta.content) {
+        sink.text(delta.content, "text");
+      }
+      const thinking = delta.reasoning_content ?? delta.reasoning;
+      if (typeof thinking === "string" && thinking) {
+        sink.text(thinking, "thinking");
+      }
+      if (choice.finish_reason != null) {
+        stopReason = normalizeStopReason(choice.finish_reason);
+      }
+    }
+    const usage = (event.usage as Record<string, unknown> | undefined) ?? {};
+    if (typeof usage.prompt_tokens === "number") {
+      inputTokens = usage.prompt_tokens;
+    }
+    if (typeof usage.completion_tokens === "number") {
+      outputTokens = usage.completion_tokens;
+    }
+  });
+  finish();
+}
+
+export function createBrowserAiTransport(): BrowserAiTransport {
+  const controllers = new Map<BrowserAiOperation, AbortController>();
+
+  return {
+    complete: (request) => completeBrowserAiRequest(request),
+    stream: async (request, sink) => {
+      controllers.get(request.operation)?.abort();
+      const controller = new AbortController();
+      controllers.set(request.operation, controller);
+      try {
+        await streamBrowserAiRequest(request, sink, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted) {
+          sink.done({ stopReason: "stopped" });
+          return;
+        }
+        throw error;
+      } finally {
+        if (controllers.get(request.operation) === controller) {
+          controllers.delete(request.operation);
+        }
+      }
+    },
+    abort: (operation) => {
+      controllers.get(operation)?.abort();
+    },
+  };
 }
 
 export async function fetchModels(
   provider: AiProvider,
   apiKey: string,
+  ollamaEndpoint?: string | null,
 ): Promise<AiModel[]> {
+  requireBrowserDirectProvider(provider);
   // Anthropic: static list
   if (provider === "anthropic") {
     return [
@@ -175,15 +527,11 @@ export async function fetchModels(
     ];
   }
 
-  const url = modelsEndpoint(provider);
+  const url = modelsEndpoint(provider, ollamaEndpoint);
   if (!url) return [];
 
   const headers: Record<string, string> = {};
-  if (provider === "openrouter") {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-    headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
-    headers["X-Title"] = "Grimodex";
-  } else if (provider === "openai") {
+  if (provider === "openai") {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
@@ -204,30 +552,8 @@ export async function fetchModels(
     }));
   }
 
-  // OpenAI / OpenRouter
+  // OpenAI
   const data = body?.data ?? [];
-  if (provider === "openrouter") {
-    return data.map(
-      (m: {
-        id: string;
-        name?: string;
-        context_length?: number;
-        top_provider?: { max_completion_tokens?: number };
-        supported_parameters?: unknown[];
-        pricing?: { prompt?: string; completion?: string };
-      }) => ({
-        id: m.id,
-        name: m.name ?? m.id,
-        contextLength: m.context_length,
-        maxCompletionTokens: m.top_provider?.max_completion_tokens,
-        supportedParameters: (m.supported_parameters ?? []).filter(
-          (p): p is string => typeof p === "string",
-        ),
-        pricingPrompt: m.pricing?.prompt,
-        pricingCompletion: m.pricing?.completion,
-      }),
-    );
-  }
   return data.map((m: { id: string; name?: string }) => ({
     id: m.id,
     name: m.name ?? m.id,
@@ -459,9 +785,10 @@ export async function sendChatWithTools(
   messages: AgentMessagePayload[],
   tools: AgentToolDefinition[],
   toolProtocolMode: ToolProtocolMode = "auto",
+  ollamaEndpoint?: string | null,
 ): Promise<AgentLLMResponse> {
   const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider);
+  const url = chatEndpoint(provider, ollamaEndpoint);
 
   // Rust parity: provider ゲート + auto/native/hermes を一度だけ解決し、
   // 送信側 (tools[] 省略 + <tools> XML) と受信側パースの両方で使う。
@@ -543,9 +870,10 @@ export async function testConnection(
   provider: AiProvider,
   model: string,
   apiKey: string,
+  ollamaEndpoint?: string | null,
 ): Promise<string> {
   const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider);
+  const url = chatEndpoint(provider, ollamaEndpoint);
 
   let body: Record<string, unknown>;
 

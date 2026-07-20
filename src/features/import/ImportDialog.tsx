@@ -34,9 +34,11 @@ const DIALOG_PANEL_CLASS =
 export function ImportDialogBody({
   onClose,
   onBusyChange,
+  onFailureChange,
 }: {
   onClose: () => void;
   onBusyChange?: (busy: boolean) => void;
+  onFailureChange?: (failed: boolean) => void;
 }) {
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -48,6 +50,8 @@ export function ImportDialogBody({
   );
   const [flowKey, setFlowKey] = useState(0);
   const [flowBusy, setFlowBusy] = useState(false);
+  const [flowFailed, setFlowFailed] = useState(false);
+  const interactionLocked = flowBusy || flowFailed;
 
   const handleBusyChange = useCallback(
     (busy: boolean) => {
@@ -59,21 +63,34 @@ export function ImportDialogBody({
 
   const handleClose = useCallback(() => {
     if (flowBusy) return;
+    setFlowFailed(false);
+    onFailureChange?.(false);
     setFlowKey((k) => k + 1);
     onClose();
-  }, [flowBusy, onClose]);
+  }, [flowBusy, onClose, onFailureChange]);
   const handleImportComplete = useCallback(() => {
+    setFlowFailed(false);
+    onFailureChange?.(false);
     setFlowKey((k) => k + 1);
     onClose();
-  }, [onClose]);
+  }, [onClose, onFailureChange]);
+
+  const handleFailureChange = useCallback(
+    (failed: boolean) => {
+      setFlowFailed(failed);
+      onFailureChange?.(failed);
+    },
+    [onFailureChange],
+  );
 
   const handleSourceChange = useCallback(
     (next: ImportSource) => {
-      if (flowBusy) return;
+      if (interactionLocked) return;
+      handleFailureChange(false);
       setSource(next);
       setFlowKey((k) => k + 1);
     },
-    [flowBusy],
+    [handleFailureChange, interactionLocked],
   );
 
   useEffect(() => {
@@ -127,7 +144,7 @@ export function ImportDialogBody({
             aria-selected={source === s}
             data-testid={`import-source-${s}`}
             onClick={() => handleSourceChange(s)}
-            disabled={flowBusy}
+            disabled={interactionLocked}
             className={`rounded px-2 py-1 text-xs ${
               source === s
                 ? "bg-primary text-primary-foreground"
@@ -143,6 +160,7 @@ export function ImportDialogBody({
         <ImportTargetPanel
           importTarget={importTarget}
           onImportTargetChange={setImportTarget}
+          disabled={interactionLocked}
         />
       )}
 
@@ -154,12 +172,16 @@ export function ImportDialogBody({
           <NovelcrafterImportFlow
             importTarget={importTarget}
             onClose={handleClose}
+            onBusyChange={handleBusyChange}
+            onFailedChange={handleFailureChange}
           />
         )}
         {source === "kakuyomu" && (
           <KakuyomuImportFlow
             importTarget={importTarget}
             onClose={handleClose}
+            onBusyChange={handleBusyChange}
+            onFailedChange={handleFailureChange}
           />
         )}
         {source === "markdown" && (
@@ -168,10 +190,17 @@ export function ImportDialogBody({
             markdownMode={markdownMode}
             onMarkdownModeChange={setMarkdownMode}
             onClose={handleClose}
+            onBusyChange={handleBusyChange}
+            onFailedChange={handleFailureChange}
           />
         )}
         {source === "novel" && (
-          <NovelImportFlow importTarget={importTarget} onClose={handleClose} />
+          <NovelImportFlow
+            importTarget={importTarget}
+            onClose={handleClose}
+            onBusyChange={handleBusyChange}
+            onFailedChange={handleFailureChange}
+          />
         )}
         {source === "scan" && (
           <ScanImportFlow

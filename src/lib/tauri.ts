@@ -102,6 +102,7 @@ const SLOW_COMMANDS = new Set([
   "fts_optimize",
   "repair_integrity",
   "seed_sample_workspace",
+  "import_web_editor_workspace",
   "open_workspace",
   "extract_codex_candidates",
   /** バックアップ復元は 復元前の安全退避 (VACUUM INTO) + 接続クローズ待ち +
@@ -113,6 +114,11 @@ const SLOW_COMMANDS = new Set([
 
 let browserMock: BrowserMock | null = null;
 let browserMockReady: Promise<BrowserMock> | null = null;
+
+export function installBrowserMock(mock: BrowserMock): void {
+  browserMock = mock;
+  browserMockReady = Promise.resolve(mock);
+}
 
 function getBrowserMock(): Promise<BrowserMock> {
   if (browserMock) return Promise.resolve(browserMock);

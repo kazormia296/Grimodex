@@ -122,6 +122,12 @@ export declare class Backend {
    */
   seedSampleWorkspace(language: string, aiPolicy: string): Promise<string>
   /**
+   * Hosted Web Editorがローカル保存したversioned handoffを検証し、
+   * AppData配下の新しいworkspace世代として公開する。現在のactive workspaceは
+   * 触らず、rendererが通常のopen_workspace経路で明示的に切り替える。
+   */
+  importWebEditorWorkspace(handoffJson: string): Promise<string>
+  /**
    * 監査チェーン append (commands/timelapse.rs の写像。編集ループ常連の
    * 軽量 DB 書き込み。§4.3)。`events` は camelCase の AppendChangeEvent 配列
    * (Tauri の camelCase→snake_case 自動変換は serde の rename_all が担う)。

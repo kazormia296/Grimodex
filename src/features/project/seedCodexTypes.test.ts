@@ -19,40 +19,43 @@ const TARGET = "seed-target-project";
 
 beforeEach(async () => {
   const now = new Date().toISOString();
+  // This suite intentionally reuses the shared browser database. Clear the
+  // fixture's dependent rows explicitly because canonical foreign keys now
+  // match the desktop database and do not permit deleting referenced projects.
+  await db.delete(codexEntryTags);
+  await db.delete(codexDetailValues);
+  await db.delete(codexDetailDefinitions);
+  await db.delete(codexTags);
+  await db.delete(codexEntries);
+  await db.delete(codexTypes);
   await db.delete(projects);
   await db.insert(projects).values([
     { id: SOURCE, title: "Source", createdAt: now, updatedAt: now },
     { id: TARGET, title: "Target", createdAt: now, updatedAt: now },
   ]);
-  await db.insert(codexTypes).values([
-    {
-      id: "src-type-char",
-      projectId: SOURCE,
-      slug: "character",
-      label: "Characters",
-      color: "#111111",
-      isBuiltin: 1,
-      sortOrder: 0,
-    },
-    {
-      id: "src-type-faction",
-      projectId: SOURCE,
-      slug: "faction",
-      label: "Factions",
-      color: "#222222",
-      isBuiltin: 0,
-      sortOrder: 5,
-    },
-    {
-      id: "tgt-type-char",
-      projectId: TARGET,
-      slug: "character",
-      label: "キャラクター",
-      color: "#333333",
-      isBuiltin: 1,
-      sortOrder: 0,
-    },
-  ]);
+  // Project creation seeds the built-in types through the canonical DB
+  // trigger. Customize those rows instead of inserting duplicate slugs.
+  await db
+    .update(codexTypes)
+    .set({ label: "Characters", color: "#111111" })
+    .where(
+      and(eq(codexTypes.projectId, SOURCE), eq(codexTypes.slug, "character")),
+    );
+  await db
+    .update(codexTypes)
+    .set({ label: "キャラクター", color: "#333333" })
+    .where(
+      and(eq(codexTypes.projectId, TARGET), eq(codexTypes.slug, "character")),
+    );
+  await db.insert(codexTypes).values({
+    id: "src-type-faction",
+    projectId: SOURCE,
+    slug: "faction",
+    label: "Factions",
+    color: "#222222",
+    isBuiltin: 0,
+    sortOrder: 5,
+  });
 });
 
 describe("seedCodexTypesFromProject", () => {

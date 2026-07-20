@@ -56,6 +56,7 @@ use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
 };
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
+use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
 
@@ -727,6 +728,19 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let result = sample_seed::seed_sample_workspace(&state.gs, &language, &ai_policy)?;
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Hosted Web Editorがローカル保存したversioned handoffを検証し、
+    /// AppData配下の新しいworkspace世代として公開する。現在のactive workspaceは
+    /// 触らず、rendererが通常のopen_workspace経路で明示的に切り替える。
+    #[napi]
+    pub async fn import_web_editor_workspace(&self, handoff_json: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let result = web_editor_handoff::import_web_editor_workspace(&state.gs, &handoff_json)?;
             Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
         .await

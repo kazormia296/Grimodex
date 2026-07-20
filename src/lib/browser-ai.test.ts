@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { sendChat, fetchModels, testConnection } from "./browser-ai";
+import {
+  completeBrowserAiRequest,
+  createBrowserAiTransport,
+  fetchModels,
+  resolveBrowserAiEndpoint,
+  sendChat,
+  sendChatWithTools,
+  testConnection,
+} from "./browser-ai";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -35,6 +43,9 @@ describe("sendChat", () => {
     expect(url).toBe("/api/anthropic/messages");
     expect(opts.headers["x-api-key"]).toBe("sk-test");
     expect(opts.headers["anthropic-version"]).toBe("2023-06-01");
+    expect(opts.headers["anthropic-dangerous-direct-browser-access"]).toBe(
+      "true",
+    );
 
     const body = JSON.parse(opts.body);
     expect(body.system).toBe("You are helpful.");
@@ -59,23 +70,13 @@ describe("sendChat", () => {
     expect(opts.headers["Authorization"]).toBe("Bearer sk-openai");
   });
 
-  it("sends OpenRouter request with extra headers", async () => {
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({
-        choices: [{ message: { content: "Response" } }],
-      }),
-    );
-
-    await sendChat("openrouter", "auto", "sk-or", [
-      { role: "user", content: "Test" },
-    ]);
-
-    const [url, opts] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/openrouter/chat/completions");
-    expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/kazormia296/Grimodex",
-    );
-    expect(opts.headers["X-Title"]).toBe("Grimodex");
+  it("rejects OpenRouter before making a browser request", async () => {
+    await expect(
+      sendChat("openrouter", "auto", "sk-or", [
+        { role: "user", content: "Test" },
+      ]),
+    ).rejects.toThrow("not supported in browser mode");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("sends Ollama request without auth", async () => {
@@ -102,6 +103,113 @@ describe("sendChat", () => {
         { role: "user", content: "Hi" },
       ]),
     ).rejects.toThrow("AI request failed (401): Invalid API key");
+  });
+});
+
+describe("browser production endpoints", () => {
+  it("uses provider HTTPS APIs in production while keeping Vite dev proxies", () => {
+    expect(
+      resolveBrowserAiEndpoint("openai", "chat", { development: false }),
+    ).toBe("https://api.openai.com/v1/chat/completions");
+    expect(() =>
+      resolveBrowserAiEndpoint("openrouter", "models", {
+        development: false,
+      }),
+    ).toThrow("not supported in browser mode");
+    expect(
+      resolveBrowserAiEndpoint("anthropic", "chat", {
+        development: false,
+      }),
+    ).toBe("https://api.anthropic.com/v1/messages");
+    expect(
+      resolveBrowserAiEndpoint("openai", "chat", { development: true }),
+    ).toBe("/api/openai/chat/completions");
+  });
+
+  it("honors an explicitly configured Ollama endpoint in development", () => {
+    expect(
+      resolveBrowserAiEndpoint("ollama", "models", {
+        development: true,
+        ollamaEndpoint: "http://192.0.2.10:11434/",
+      }),
+    ).toBe("http://192.0.2.10:11434/api/tags");
+    expect(
+      resolveBrowserAiEndpoint("ollama", "chat", {
+        development: true,
+        ollamaEndpoint: "http://192.0.2.10:11434/",
+      }),
+    ).toBe("http://192.0.2.10:11434/v1/chat/completions");
+  });
+
+  it("fails explicitly for native-only providers", () => {
+    expect(() =>
+      resolveBrowserAiEndpoint("cli", "chat", { development: false }),
+    ).toThrow("not supported in browser mode");
+  });
+});
+
+describe("structured browser AI transport", () => {
+  it("normalizes provider text, stop reason, and usage", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        choices: [
+          { message: { content: "Actual response" }, finish_reason: "stop" },
+        ],
+        usage: { prompt_tokens: 7, completion_tokens: 3 },
+      }),
+    );
+
+    await expect(
+      completeBrowserAiRequest({
+        operation: "chat",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "Hello" }],
+      }),
+    ).resolves.toEqual({
+      blocks: [{ type: "text", content: "Actual response" }],
+      stopReason: "end_turn",
+      inputTokens: 7,
+      outputTokens: 3,
+    });
+  });
+
+  it("parses OpenAI-compatible SSE into the shared stream sink", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        [
+          'data: {"choices":[{"delta":{"content":"本"}}]}',
+          'data: {"choices":[{"delta":{"content":"物"},"finish_reason":"stop"}]}',
+          'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    const transport = createBrowserAiTransport();
+    const text: string[] = [];
+    const done: unknown[] = [];
+
+    await transport.stream?.(
+      {
+        operation: "chat",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "Hello" }],
+      },
+      {
+        text: (delta) => text.push(delta),
+        done: (payload) => done.push(payload),
+      },
+    );
+
+    expect(text).toEqual(["本", "物"]);
+    expect(done).toEqual([
+      { stopReason: "end_turn", inputTokens: 5, outputTokens: 2 },
+    ]);
   });
 });
 
@@ -144,16 +252,19 @@ describe("fetchModels", () => {
     expect(mockFetch.mock.calls[0][0]).toBe("/api/ollama/api/tags");
   });
 
-  it("fetches OpenRouter models with extra headers", async () => {
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({ data: [{ id: "auto", name: "Auto" }] }),
-    );
+  it("fetches models from the configured Ollama endpoint", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ models: [] }));
 
-    await fetchModels("openrouter", "sk-or");
-    const [, opts] = mockFetch.mock.calls[0];
-    expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/kazormia296/Grimodex",
+    await fetchModels("ollama", "", "http://192.0.2.10:11434");
+
+    expect(mockFetch.mock.calls[0][0]).toBe("http://192.0.2.10:11434/api/tags");
+  });
+
+  it("rejects OpenRouter model discovery before making a request", async () => {
+    await expect(fetchModels("openrouter", "sk-or")).rejects.toThrow(
+      "not supported in browser mode",
     );
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
 
@@ -184,5 +295,31 @@ describe("testConnection", () => {
       "sk-test",
     );
     expect(result).toBe("Connection OK");
+  });
+
+  it("tests and runs tools against the configured Ollama endpoint", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({ choices: [{ message: { content: "Connection OK" } }] }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ choices: [{ message: { content: "Agent OK" } }] }),
+      );
+
+    await testConnection("ollama", "qwen3:8b", "", "http://192.0.2.10:11434");
+    await sendChatWithTools(
+      "ollama",
+      "qwen3:8b",
+      "",
+      [{ role: "user", content: "hello" }],
+      [],
+      "auto",
+      "http://192.0.2.10:11434",
+    );
+
+    expect(mockFetch.mock.calls.map((call) => call[0])).toEqual([
+      "http://192.0.2.10:11434/v1/chat/completions",
+      "http://192.0.2.10:11434/v1/chat/completions",
+    ]);
   });
 });

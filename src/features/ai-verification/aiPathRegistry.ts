@@ -68,6 +68,31 @@ export interface AiPathEntry {
   note: string;
 }
 
+/**
+ * A deployed runtime route for an existing AI surface.
+ *
+ * `AI_PATHS` remains the canonical logical surface/model-role registry. These
+ * entries separately prove that the browser transport does not disappear
+ * behind the Electron/Rust transport names and that each external-data route
+ * has a consent verifier. Runtime routes do not create an additional model
+ * role; they carry the role selected explicitly by the user.
+ */
+export interface AiRuntimeRouteEntry {
+  id: string;
+  label: string;
+  surface: string;
+  transport: string;
+  consentRoute: "byok";
+  providerAuthority: "user-selection";
+  capabilityGate: string;
+  verifier: "contract";
+  testRef: string;
+  testName: string;
+  consentTestRef: string;
+  consentTestName: string;
+  note: string;
+}
+
 const AGENT_LOOP_TEST = "src/features/chat/agent/agentToolCall.live.test.ts";
 const SINGLE_SHOT_TEST = "src/features/ai-verification/singleShot.live.test.ts";
 const RELATION_EVAL_TEST =
@@ -76,6 +101,9 @@ const CANDIDATE_JUDGMENT_TEST =
   "src/features/codex/candidateJudgment.live.test.ts";
 const CODEX_YOMI_TEST = "src/features/codex/codexYomi.live.test.ts";
 const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
+const BROWSER_BYOK_CONTRACT_TEST = "src/lib/browser-ai.test.ts";
+const BROWSER_BYOK_CONSENT_CONTRACT_TEST =
+  "src/lib/browser-mock.ai-runtime.test.ts";
 
 /** 生成経路（LLM を実際に叩く層）。n/a が許されない層。 */
 export const GENERATION_LAYERS: AiPathLayer[] = [
@@ -400,5 +428,26 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "n/a",
     testRef: null,
     note: "LLM ではなく BM25 ランキング。semanticRecall.test.ts（決定的）で融合ロジックを検証。",
+  },
+];
+
+/** Web Editor transports and their fail-closed consent contracts. */
+export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
+  {
+    id: "browser_byok_web",
+    label: "Web Editor Local LLM / BYOK AI",
+    surface: "browser Editor → BrowserMock AI transport → browser-ai",
+    transport: "browser fetch → user-selected AI provider",
+    consentRoute: "byok",
+    providerAuthority: "user-selection",
+    capabilityGate:
+      "explicit user-selected Local LLM endpoint or supported BYOK provider + session-memory credential when required + current route/provider/policy/actual connection destination consent",
+    verifier: "contract",
+    testRef: BROWSER_BYOK_CONTRACT_TEST,
+    testName: "sends OpenAI request with Bearer auth",
+    consentTestRef: BROWSER_BYOK_CONSENT_CONTRACT_TEST,
+    consentTestName:
+      "does not reach the provider when consent authorization fails",
+    note: "Web Editor has no app-owned AI credential or managed provider route. Consent identity includes the normalized actual connection destination, so changing an Ollama endpoint invalidates prior consent. The production endpoint/auth shape and refusal-before-provider boundary are deterministic Light contracts; live Local LLM or BYOK execution remains an explicit user action and Heavy evidence.",
   },
 ];

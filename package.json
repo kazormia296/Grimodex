@@ -24,11 +24,12 @@
     }
   },
   "scripts": {
-    "dev": "pnpm build:scan:dependencies && vite",
-    "build": "pnpm build:scan:dependencies && tsc && vite build",
+    "dev": "pnpm build:workspace:dependencies && vite --mode web-editor",
+    "build": "pnpm build:workspace:dependencies && tsc && vite build",
+    "build:web-editor": "pnpm build:workspace:dependencies && tsc && vite build --mode web-editor && pnpm validate:web-editor-artifact",
     "preview": "vite preview",
-    "test": "pnpm build:scan:dependencies && vitest",
-    "test:node": "pnpm build:scan:dependencies && vitest --config vitest.config.ts",
+    "test": "pnpm build:workspace:dependencies && vitest",
+    "test:node": "pnpm build:workspace:dependencies && vitest --config vitest.config.ts",
     "test:browser": "vitest --config vitest.browser.config.ts",
     "test:electron": "vitest --config vitest.electron.config.ts",
     "test:storybook": "vitest --config vitest.storybook.config.ts",
@@ -44,13 +45,13 @@
     "storybook:build": "storybook build",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "verify:frontend": "pnpm build:scan:dependencies && pnpm exec tsc --noEmit && pnpm lint && pnpm validate:architecture && pnpm test:browser-ci && pnpm test:node --run",
-    "build:scan:dependencies": "pnpm --filter @grimodex/scan-contract build && pnpm --filter @grimodex/scan-core build && pnpm --filter @grimodex/scan-prompts build",
-    "build:scan": "pnpm --filter @grimodex/scan-web build",
-    "test:scan": "pnpm build:scan:dependencies && pnpm --filter @grimodex/scan-contract test && pnpm --filter @grimodex/scan-core test && pnpm --filter @grimodex/scan-prompts test && pnpm --filter @grimodex/scan-web test:app",
-    "typecheck:scan": "pnpm build:scan:dependencies && pnpm --filter @grimodex/scan-contract typecheck && pnpm --filter @grimodex/scan-core typecheck && pnpm --filter @grimodex/scan-prompts typecheck && pnpm --filter @grimodex/scan-web typecheck:app && pnpm --filter @grimodex/scan-web worker:typecheck:app",
+    "verify:frontend": "pnpm build:workspace:dependencies && pnpm exec tsc --noEmit && pnpm lint && pnpm validate:architecture && pnpm test:browser-ci && pnpm test:node --run",
+    "build:workspace:dependencies": "pnpm --filter @grimodex/scan-contract build && pnpm --filter @grimodex/scan-core build",
+    "test:cloudflare-editor-deploy": "node --test scripts/cloudflare-editor-deploy.test.mjs scripts/web-editor-artifact.test.mjs",
+    "validate:web-editor-artifact": "node scripts/validate-web-editor-artifact.mjs dist",
+    "editor:cloudflare": "node scripts/cloudflare-editor-deploy.mjs",
     "tauri": "tauri",
-    "electron:dev": "pnpm build:scan:dependencies && node electron/scripts/dev.mjs",
+    "electron:dev": "pnpm build:workspace:dependencies && node electron/scripts/dev.mjs",
     "electron:build": "tsc -p electron/tsconfig.json --noEmit && node electron/scripts/build.mjs && pnpm build",
     "electron:start": "node electron/scripts/start.mjs",
     "electron:smoke": "node electron/scripts/smoke.mjs",
@@ -70,8 +71,6 @@
     "seed:sample-ja": "python3 scripts/seed-sample-ja.py"
   },
   "dependencies": {
-    "@grimodex/scan-contract": "workspace:*",
-    "@grimodex/scan-core": "workspace:*",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -79,6 +78,8 @@
     "@fontsource/literata": "^5.2.8",
     "@fontsource/m-plus-1": "^5.2.9",
     "@fontsource/noto-serif-jp": "^5.2.8",
+    "@grimodex/scan-contract": "workspace:*",
+    "@grimodex/scan-core": "workspace:*",
     "@gsap/react": "^2.1.2",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-context-menu": "^2.2.16",
@@ -192,6 +193,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "happy-dom": "^20.10.6",
     "jsdom": "^29.1.1",
+    "jsonc-parser": "3.3.1",
     "playwright": "^1.60.0",
     "prettier": "^3.8.3",
     "prosemirror-schema-basic": "^1.2.4",
@@ -206,6 +208,7 @@
     "vite": "^8.0.16",
     "vite-imagetools": "^10.0.1",
     "vitest": "^4.1.9",
-    "vitest-axe": "^0.1.0"
+    "vitest-axe": "^0.1.0",
+    "wrangler": "4.112.0"
   }
 }

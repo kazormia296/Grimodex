@@ -2,6 +2,11 @@ appId: com.miyakey.grimodex
 productName: Grimodex
 beforeBuild: ./electron/scripts/beforeBuild.mjs
 
+protocols:
+  - name: Grimodex Web Editor handoff
+    schemes:
+      - grimodex
+
 directories:
   output: release/electron
   buildResources: src-tauri/icons

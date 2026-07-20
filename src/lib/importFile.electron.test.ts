@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { openTextFile } from "./importFile";
+import { openTextFile, openWebEditorHandoffFile } from "./importFile";
 
 afterEach(() => {
   delete (window as unknown as Record<string, unknown>).grimodex;
@@ -39,5 +39,32 @@ describe("openTextFile electron 分岐", () => {
     };
     await expect(openTextFile(FILTER)).resolves.toBeNull();
     expect(fs.readTextFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("openWebEditorHandoffFile electron 分岐", () => {
+  it("専用のbounded mainピッカだけを使い、汎用fs readを経由しない", async () => {
+    const handoff = {
+      name: "draft.grimodex-handoff",
+      content: '{"schemaVersion":"grimodex/web-editor-workspace-handoff/1"}',
+    };
+    const openWebEditorHandoff = vi.fn().mockResolvedValue(handoff);
+    const openFile = vi.fn();
+    const readTextFile = vi.fn();
+    (window as unknown as Record<string, unknown>).grimodex = {
+      shell: "electron",
+      dialog: { openFile, openWebEditorHandoff },
+      fs: { readTextFile },
+    };
+
+    await expect(
+      openWebEditorHandoffFile({
+        name: "Grimodex Web Editor handoff",
+        extensions: ["grimodex-handoff"],
+      }),
+    ).resolves.toEqual(handoff);
+    expect(openWebEditorHandoff).toHaveBeenCalledOnce();
+    expect(openFile).not.toHaveBeenCalled();
+    expect(readTextFile).not.toHaveBeenCalled();
   });
 });

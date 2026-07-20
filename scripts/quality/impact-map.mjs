@@ -24,10 +24,19 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "test:node",
         "--run",
         "src/features/ai-verification/aiPathRegistry.test.ts",
+        "src/features/ai-verification/aiPathRegistry.webEditor.test.ts",
+        "src/lib/browser-ai.test.ts",
+        "src/lib/browser-mock.ai-runtime.test.ts",
+        "src/lib/browserRuntime.test.ts",
+        "src/features/chat/browserProviderPolicy.test.ts",
+        "src/features/chat/chatApi.test.ts",
+        "src/features/chat/chatStore.test.ts",
+        "src/features/ab-test/abConfig.test.ts",
         "src/features/chat/modelRouting.test.ts",
         "src/features/chat/turn/renderAgentPayload.test.ts",
         "src/features/chat/turn/resolveTurnRoute.test.ts",
       ],
+      ["pnpm", "test:cloudflare-editor-deploy"],
     ],
   },
   "tool-policy": {
@@ -93,10 +102,6 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
       ],
       ["node", "scripts/quality/validate-retrieval-fixtures.mjs"],
     ],
-  },
-  "scan-contract": {
-    failureClasses: ["quality", "artifact"],
-    commands: [["pnpm", "test:scan"]],
   },
 });
 

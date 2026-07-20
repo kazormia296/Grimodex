@@ -12,7 +12,7 @@ describe("runtime target contract", () => {
 
   it.each<[RuntimeTarget, keyof RuntimeCapabilities]>([
     ["electron", "nativeFilesystem"],
-    ["web", "hostedAi"],
+    ["web", "browserDirectAi"],
     ["mobile-native", "shareSheet"],
   ])("resolves a capability preset for %s", (target, capability) => {
     expect(resolveRuntimeCapabilities(target)[capability]).toBe(true);
@@ -24,8 +24,29 @@ describe("runtime target contract", () => {
     expect(capabilities.nativeFilesystem).toBe(false);
     expect(capabilities.externalMount).toBe(false);
     expect(capabilities.localAi).toBe(false);
+    expect(capabilities.browserDirectAi).toBe(true);
     expect(capabilities.mcpServer).toBe(false);
     expect(capabilities.multiWindow).toBe(false);
     expect(capabilities.customIme).toBe(false);
+  });
+
+  it("only exposes generic project transfer to the Electron application", () => {
+    expect(resolveRuntimeCapabilities("web").genericProjectTransfer).toBe(
+      false,
+    );
+    expect(resolveRuntimeCapabilities("electron").genericProjectTransfer).toBe(
+      true,
+    );
+  });
+
+  it("allows local-file import in Electron and Web without enabling Web export", () => {
+    expect(resolveRuntimeCapabilities("electron").localFileImport).toBe(true);
+    expect(resolveRuntimeCapabilities("web").localFileImport).toBe(true);
+    expect(resolveRuntimeCapabilities("web").genericProjectTransfer).toBe(
+      false,
+    );
+    expect(resolveRuntimeCapabilities("mobile-native").localFileImport).toBe(
+      false,
+    );
   });
 });

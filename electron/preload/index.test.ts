@@ -41,6 +41,12 @@ interface BridgeUnderTest {
   shell: string;
   listen(channel: string, cb: (payload: unknown) => void): () => void;
   emit(channel: string, payload?: unknown): Promise<void>;
+  dialog: {
+    openWebEditorHandoff(): Promise<{
+      name: string;
+      content: string;
+    } | null>;
+  };
   windowControls: {
     onResized(cb: () => void): () => void;
     onCloseRequested(cb: () => boolean): () => void;
@@ -192,5 +198,21 @@ describe("イベント多重化（§7.2 — grim:event 1 本）", () => {
 
     expect(backendCb).toHaveBeenCalledWith({ messageId: "m1" });
     expect(mainCb).toHaveBeenCalledWith({ downloaded: 1 });
+  });
+});
+
+describe("Web Editor handoff bridge", () => {
+  it("専用のbounded main読込チャネルだけを呼ぶ", async () => {
+    const picked = {
+      name: "draft.grimodex-handoff",
+      content: "{}",
+    };
+    mocks.invoke.mockResolvedValueOnce({ ok: true, value: picked });
+    const bridge = await loadPreload();
+
+    await expect(bridge.dialog.openWebEditorHandoff()).resolves.toEqual(picked);
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith(
+      IPC.dialogOpenWebEditorHandoff,
+    );
   });
 });

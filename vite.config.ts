@@ -30,62 +30,91 @@ function stripWoffFromFontsource() {
 }
 
 // https://vite.dev/config/
-export default defineConfig(async () => ({
-  plugins: [
-    stripWoffFromFontsource(),
-    react(),
-    tailwindcss(),
-    ...(analyze
-      ? [
-          visualizer({
-            filename: "dist/stats.html",
-            template: "treemap",
-            gzipSize: true,
-            brotliSize: true,
-            open: false,
-          }),
-        ]
-      : []),
-  ],
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
+export default defineConfig(async ({ mode }) => {
+  const webEditorOnly = mode === "web-editor";
+  const webEditorUnavailableDialogs = path.resolve(
+    __dirname,
+    "./src/features/hosted-editor/WebEditorUnavailableDialogs.tsx",
+  );
+  const webEditorImportDialog = path.resolve(
+    __dirname,
+    "./src/features/import/WebEditorImportDialog.tsx",
+  );
 
-  // Keep build errors visible and use the same renderer port as electron:dev.
-  clearScreen: false,
-  server: {
-    port: 1430,
-    strictPort: true,
-    watch: {
-      // Native Rust changes are rebuilt by the N-API workflow, not Vite HMR.
-      ignored: ["**/src-tauri/**"],
+  return {
+    plugins: [
+      stripWoffFromFontsource(),
+      react(),
+      tailwindcss(),
+      ...(analyze
+        ? [
+            visualizer({
+              filename: "dist/stats.html",
+              template: "treemap",
+              gzipSize: true,
+              brotliSize: true,
+              open: false,
+            }),
+          ]
+        : []),
+    ],
+    resolve: {
+      alias: [
+        ...(webEditorOnly
+          ? [
+              {
+                find: "@/features/settings/SettingsDialog",
+                replacement: path.resolve(
+                  __dirname,
+                  "./src/features/hosted-editor/WebEditorSettingsDialog.tsx",
+                ),
+              },
+              {
+                find: "@/features/transfer/TransferDialog",
+                replacement: webEditorImportDialog,
+              },
+              {
+                find: "@/features/export/ExportDialog",
+                replacement: webEditorUnavailableDialogs,
+              },
+              {
+                find: "@/features/import/WebEditorWorkspaceImportDialog",
+                replacement: webEditorUnavailableDialogs,
+              },
+            ]
+          : []),
+        { find: "@", replacement: path.resolve(__dirname, "./src") },
+      ],
     },
-    proxy: {
-      "/api/anthropic": {
-        target: "https://api.anthropic.com/v1",
-        changeOrigin: true,
-        rewrite: (p: string) => p.replace(/^\/api\/anthropic/, ""),
-        secure: true,
+
+    // Keep build errors visible and use the same renderer port as electron:dev.
+    clearScreen: false,
+    server: {
+      port: 1430,
+      strictPort: true,
+      watch: {
+        // Native Rust changes are rebuilt by the N-API workflow, not Vite HMR.
+        ignored: ["**/src-tauri/**"],
       },
-      "/api/openai": {
-        target: "https://api.openai.com/v1",
-        changeOrigin: true,
-        rewrite: (p: string) => p.replace(/^\/api\/openai/, ""),
-        secure: true,
-      },
-      "/api/openrouter": {
-        target: "https://openrouter.ai/api/v1",
-        changeOrigin: true,
-        rewrite: (p: string) => p.replace(/^\/api\/openrouter/, ""),
-        secure: true,
-      },
-      "/api/ollama": {
-        target: "http://localhost:11434",
-        changeOrigin: true,
-        rewrite: (p: string) => p.replace(/^\/api\/ollama/, ""),
+      proxy: {
+        "/api/anthropic": {
+          target: "https://api.anthropic.com/v1",
+          changeOrigin: true,
+          rewrite: (p: string) => p.replace(/^\/api\/anthropic/, ""),
+          secure: true,
+        },
+        "/api/openai": {
+          target: "https://api.openai.com/v1",
+          changeOrigin: true,
+          rewrite: (p: string) => p.replace(/^\/api\/openai/, ""),
+          secure: true,
+        },
+        "/api/ollama": {
+          target: "http://localhost:11434",
+          changeOrigin: true,
+          rewrite: (p: string) => p.replace(/^\/api\/ollama/, ""),
+        },
       },
     },
-  },
-}));
+  };
+});

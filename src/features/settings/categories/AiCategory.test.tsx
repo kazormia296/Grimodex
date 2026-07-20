@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { RuntimeCapabilitiesProvider } from "@/runtime/runtimeCapabilitiesContext";
 import { AiCategory } from "./AiCategory";
 
 vi.mock("react-i18next", () => ({
@@ -101,27 +102,35 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+function renderDesktopAiCategory() {
+  return render(
+    <RuntimeCapabilitiesProvider target="electron">
+      <AiCategory />
+    </RuntimeCapabilitiesProvider>,
+  );
+}
+
 describe("AiCategory — Beat セクション", () => {
   it("Beat AI integration セクションが描画される", () => {
-    render(<AiCategory />);
+    renderDesktopAiCategory();
     // The section title key is present.
     expect(screen.getByText("settings.ai.beat.title")).toBeTruthy();
   });
 
   it("injectIntoContext トグルが描画される", () => {
-    render(<AiCategory />);
+    renderDesktopAiCategory();
     expect(
       screen.getByText("settings.ai.beat.injectIntoContext.label"),
     ).toBeTruthy();
   });
 
   it("inferRoles トグルが描画される", () => {
-    render(<AiCategory />);
+    renderDesktopAiCategory();
     expect(screen.getByText("settings.ai.beat.inferRoles.label")).toBeTruthy();
   });
 
   it("confidenceThreshold スライダーが描画される", () => {
-    render(<AiCategory />);
+    renderDesktopAiCategory();
     expect(
       screen.getByText("settings.ai.beat.confidenceThreshold.label"),
     ).toBeTruthy();
@@ -133,18 +142,18 @@ describe("AiCategory — Beat セクション", () => {
 describe("AiCategory — Web 検索 (RAG) セクション", () => {
   // モックの provider は anthropic（RAG 対応）。
   it("RAG 対応プロバイダでドメイン制御セクションが描画される", () => {
-    render(<AiCategory />);
+    renderDesktopAiCategory();
     expect(screen.getByText("settings.ai.webSearch.title")).toBeTruthy();
     expect(screen.getByText("settings.ai.webSearch.domainMode")).toBeTruthy();
   });
 
   it("第三者送信のプライバシー開示注記を常時表示する (F-1)", () => {
-    render(<AiCategory />);
+    renderDesktopAiCategory();
     expect(screen.getByText("settings.ai.webSearch.privacyNote")).toBeTruthy();
   });
 
   it("Anthropic では OpenRouter 専用の content cap / exa 警告を出さない", () => {
-    render(<AiCategory />);
+    renderDesktopAiCategory();
     // content cap 行（OpenRouter(exa) 専用）は非表示。
     expect(
       screen.queryByText("settings.ai.webSearch.maxContentTokens"),
@@ -160,7 +169,7 @@ describe("AiCategory — Tool call protocol", () => {
   // モックの provider は anthropic（native 固定）。HTTP OpenAI 互換のみ表示する
   // ゲートにより、Anthropic ではセレクトを出さない。
   it("Anthropic では Tool call protocol セレクトを表示しない", () => {
-    render(<AiCategory />);
+    renderDesktopAiCategory();
     expect(screen.queryByText("Tool call protocol")).toBeNull();
   });
 });

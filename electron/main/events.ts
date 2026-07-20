@@ -77,6 +77,33 @@ export function broadcastMainEvent(channel: string, payload: unknown): void {
 }
 
 /**
+ * Electron main 専用イベントを特定 renderer のみに配信する。
+ * Deep link のように main window だけが扱う UI signal を、detached panelへ
+ * broadcastしないための経路。
+ */
+export function sendMainEventToWindow(
+  webContentsId: number,
+  channel: string,
+  payload: unknown,
+): void {
+  if (!isAllowedMainEventChannel(channel)) {
+    console.warn(`[main:event] rejected non-main channel: ${String(channel)}`);
+    return;
+  }
+  const target = BrowserWindow.getAllWindows().find(
+    (win) => !win.isDestroyed() && win.webContents.id === webContentsId,
+  );
+  if (!target) return;
+  try {
+    target.webContents.send(IPC.event, channel, payload);
+  } catch (cause) {
+    console.warn(
+      `[main:event] target ${webContentsId} became unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+}
+
+/**
  * napi 発イベント 1 件の検証 + 配信。channel は backend 専用 allowlist
  * を通す（Phase 3 でチャネルを増やす際、ipcContract の allowlist 更新漏れを
  * ここの warn で顕在化させる）。payload は EventSink 契約

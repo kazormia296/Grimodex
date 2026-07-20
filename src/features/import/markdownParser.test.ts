@@ -10,6 +10,7 @@ import {
 import { generateExport } from "@/features/export/exportEngine";
 import { DEFAULT_EXPORT_SETTINGS } from "@/features/export/types";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { MAX_IMPORT_FOLDER_DEPTH } from "./importFileLimits";
 
 function makeZip(files: Record<string, string>): Uint8Array {
   const input: Record<string, Uint8Array> = {};
@@ -156,6 +157,16 @@ describe("parseMarkdownMulti", () => {
     });
     const result = parseMarkdownZip(zip);
     expect(countScenesInTree(result.tree)).toBe(2);
+  });
+
+  it("rejects over-deep paths before building a recursive ZIP tree", () => {
+    const deepPath = `${"folder/".repeat(MAX_IMPORT_FOLDER_DEPTH)}scene.md`;
+    const zip = makeZip({ [deepPath]: "# Scene\n\nText" });
+
+    expect(() => parseMarkdownZip(zip)).toThrow(/階層/);
+    expect(() =>
+      parseMarkdownMulti([{ relPath: deepPath, content: "# Scene\n\nText" }]),
+    ).toThrow(/階層/);
   });
 });
 

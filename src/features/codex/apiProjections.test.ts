@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { db } from "@/db/client";
-import { projects, codexTypes, codexEntries } from "@/db/schema";
+import { projects, codexEntries } from "@/db/schema";
 import {
   listCodexMatchTargets,
   listCodexEntriesForContext,
@@ -27,15 +27,8 @@ beforeAll(async () => {
     await db
       .insert(projects)
       .values({ id, title: id, createdAt: now, updatedAt: now });
-    // codex_entries.type は codex_types(project_id, slug) への複合 FK。
-    for (const slug of ["character", "location"]) {
-      await db.insert(codexTypes).values({
-        id: `${id}-${slug}`,
-        projectId: id,
-        slug,
-        label: slug,
-      });
-    }
+    // The canonical project trigger seeds character/location before entries
+    // are inserted, satisfying the composite foreign key.
   }
   await db.insert(codexEntries).values([
     {

@@ -103,4 +103,25 @@ describe("scan-core deterministic preprocessing", () => {
     ]);
     expect(document.sections[0]?.paragraphIds).toEqual([]);
   });
+
+  it("uses English fallback names for an untitled manuscript and unheaded continuation", () => {
+    const untitled = normalizeDocument({
+      title: "",
+      language: "en",
+      text: "A manuscript without a heading.",
+    });
+    const continued = normalizeDocument({
+      title: "Draft",
+      language: "en",
+      text: "# Chapter One\n\nFirst scene.\n\n---\n\nSecond scene.",
+    });
+
+    expect(untitled.sections.map((section) => section.title)).toEqual([
+      "Manuscript",
+    ]);
+    expect(continued.sections.map((section) => section.title)).toEqual([
+      "Chapter One",
+      "Next section",
+    ]);
+  });
 });

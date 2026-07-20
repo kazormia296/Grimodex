@@ -140,10 +140,47 @@ import {
 } from "./historyRevision";
 import { resolveSendApiVariant } from "./aiNovelist";
 import { createAgentTextBatcher } from "./agent/agentTextBatcher";
+import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
 
 function getChatApiVariant(model: string): string | undefined {
   const { settings, models } = useAiSettingsStore.getState();
   return resolveSendApiVariant(settings, models, model);
+}
+
+/**
+ * Web Editor sessions must not inherit the desktop-only database model
+ * default. An empty string records the truthful "not configured yet" state;
+ * native runtimes keep omitting the column so their established default is
+ * unchanged.
+ */
+function createSessionForCurrentRuntime(
+  projectId: string,
+  title: string,
+  nodeId?: string,
+  codexAnchorId?: string,
+  snippetAnchorId?: string,
+) {
+  const webModel =
+    readDocumentRuntimeTarget() === "web"
+      ? (useAiSettingsStore.getState().settings?.model ?? "")
+      : undefined;
+  if (webModel === undefined) {
+    return chatApi.createSession(
+      projectId,
+      title,
+      nodeId,
+      codexAnchorId,
+      snippetAnchorId,
+    );
+  }
+  return chatApi.createSession(
+    projectId,
+    title,
+    nodeId,
+    codexAnchorId,
+    snippetAnchorId,
+    webModel,
+  );
 }
 
 /**
@@ -2998,7 +3035,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
       const { projectId, scopeKey } = authority;
       try {
-        const session = await chatApi.createSession(
+        const session = await createSessionForCurrentRuntime(
           projectId,
           ref ? `Linked: ${ref.title}` : "New session",
           scopeKey.nodeId === null ? undefined : scopeKey.nodeId,
@@ -3307,7 +3344,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         return;
       }
       try {
-        const session = await chatApi.createSession(
+        const session = await createSessionForCurrentRuntime(
           projectId,
           title,
           nodeId,
@@ -3369,7 +3406,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (capturedSessionId) return capturedSessionId;
       const { projectId, scopeKey } = authority;
       try {
-        const session = await chatApi.createSession(
+        const session = await createSessionForCurrentRuntime(
           projectId,
           "New session",
           scopeKey.nodeId === null ? undefined : scopeKey.nodeId,
@@ -4061,7 +4098,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         scopeAnchorId,
       );
       try {
-        const session = await chatApi.createSession(
+        const session = await createSessionForCurrentRuntime(
           turnProjectId,
           "New session",
           nodeId === null ? undefined : nodeId,

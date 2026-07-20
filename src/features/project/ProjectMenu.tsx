@@ -14,10 +14,12 @@ export function ProjectMenu({
   onOpenImport,
   onOpenExport,
   onOpenSnapshot,
+  onOpenWebEditorHandoff,
 }: {
   onOpenImport?: () => void;
   onOpenExport?: () => void;
   onOpenSnapshot?: () => void;
+  onOpenWebEditorHandoff?: () => void;
 }) {
   const { t } = useTranslation();
   const currentProjectId = useCurrentProjectId();
@@ -215,6 +217,20 @@ export function ProjectMenu({
               >
                 <span className="w-4" />
                 {t("project.snapshot.action")}
+              </button>
+            )}
+            {onOpenWebEditorHandoff && (
+              <button
+                type="button"
+                data-testid="web-editor-handoff-open"
+                onClick={() => {
+                  setIsOpen(false);
+                  onOpenWebEditorHandoff();
+                }}
+                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+              >
+                <span className="w-4" />
+                {t("hostedEditor.desktopImport.action")}
               </button>
             )}
           </div>

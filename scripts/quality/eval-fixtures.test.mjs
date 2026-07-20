@@ -83,6 +83,66 @@ test("a required tool without a declared available schema fails the light contra
   );
 });
 
+test("AI data consent blocks are proven only by missing consent and zero provider calls", async () => {
+  const model = await loadQualityModel({ repoRoot });
+  const target = model.cases.find(
+    (evaluationCase) => evaluationCase.id === "eval-ai-data-consent-precheck",
+  );
+  assert.ok(target);
+  assert.equal(target.expected.blockedBy, "consent-missing");
+  assert.equal(target.input.consent, "missing");
+  assert.equal(target.input.providerCalls, 0);
+
+  const consented = structuredClone(model);
+  const consentedTarget = consented.cases.find(
+    (evaluationCase) => evaluationCase.id === "eval-ai-data-consent-precheck",
+  );
+  assert.ok(consentedTarget);
+  consentedTarget.input.consent = "accepted";
+  const consentedReport = evaluateFixtureContracts(consented);
+  assert.ok(
+    consentedReport.results
+      .find((result) => result.id === "eval-ai-data-consent-precheck")
+      ?.findings.some((finding) => finding.code === "unproven-block-condition"),
+  );
+
+  const leaked = structuredClone(model);
+  const leakedTarget = leaked.cases.find(
+    (evaluationCase) => evaluationCase.id === "eval-ai-data-consent-precheck",
+  );
+  assert.ok(leakedTarget);
+  leakedTarget.input.providerCalls = 1;
+  const leakedReport = evaluateFixtureContracts(leaked);
+  assert.ok(
+    leakedReport.results
+      .find((result) => result.id === "eval-ai-data-consent-precheck")
+      ?.findings.some(
+        (finding) => finding.code === "provider-called-before-consent",
+      ),
+  );
+});
+
+test("the Web Editor fixture exposes only a user-selected BYOK route", async () => {
+  const model = await loadQualityModel({ repoRoot });
+  const target = model.cases.find(
+    (evaluationCase) => evaluationCase.id === "eval-ai-data-consent-precheck",
+  );
+
+  assert.ok(target);
+  assert.equal(target.input.route, "byok");
+  assert.equal(target.input.provider, "openai");
+  assert.equal(target.input.consent, "missing");
+  assert.equal(target.input.providerCalls, 0);
+  assert.ok(
+    model.cases.every(
+      (evaluationCase) =>
+        !/(scan|hosted|managed-openrouter)/i.test(
+          JSON.stringify(evaluationCase),
+        ),
+    ),
+  );
+});
+
 test("heavy evaluations are explicit deferred evidence, never implicit passes", async () => {
   const model = await loadQualityModel({ repoRoot });
   const heavy = buildHeavyEvaluationReport(model);

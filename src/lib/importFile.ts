@@ -66,3 +66,16 @@ export async function openTextFile(
   }
   return openViaInput(filter);
 }
+
+/**
+ * Web Editor handoff専用の読込経路。Electronではmainが選択・サイズ確認・
+ * bounded readまでを完結し、rendererの汎用path readへ戻さない。
+ */
+export async function openWebEditorHandoffFile(
+  filter: SaveFilter,
+): Promise<OpenTextResult | null> {
+  if (isElectron()) {
+    return electronBridge().dialog.openWebEditorHandoff();
+  }
+  return openTextFile(filter);
+}

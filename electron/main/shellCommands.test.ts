@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -50,6 +51,8 @@ vi.mock("electron", () => ({
 }));
 
 const { buildShellCommandHandlers, registerShellBridgeHandlers } =
+  await import("./shellCommands.js");
+const { WEB_EDITOR_HANDOFF_MAX_FILE_BYTES } =
   await import("./shellCommands.js");
 
 async function invokeBridge(
@@ -281,6 +284,67 @@ describe("fs ブリッジ（ダイアログ許可制スコープ — fsScope.ts�
       const listing = await invokeBridge(IPC.fsReadDir, { sender: {} }, dir);
       expect(listing.ok).toBe(false);
       if (!listing.ok) expect(listing.error).toContain("FS_SCOPE_DENIED:");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("Web Editor handoff は専用ピッカで上限確認後に本文を返す", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-handoff-"));
+    try {
+      const file = path.join(dir, "draft.grimodex-handoff");
+      writeFileSync(file, '{"schemaVersion":"test"}', "utf8");
+      fromWebContentsMock.mockReturnValue(null);
+      showOpenDialogMock.mockResolvedValueOnce({
+        canceled: false,
+        filePaths: [file],
+      });
+
+      const picked = await invokeBridge(IPC.dialogOpenWebEditorHandoff, {
+        sender: {},
+      });
+
+      expect(picked).toEqual({
+        ok: true,
+        value: {
+          name: "draft.grimodex-handoff",
+          content: '{"schemaVersion":"test"}',
+        },
+      });
+      expect(showOpenDialogMock).toHaveBeenCalledWith({
+        properties: ["openFile"],
+        filters: [
+          {
+            name: "Grimodex Web Editor handoff",
+            extensions: ["grimodex-handoff"],
+          },
+        ],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("Web Editor handoff はmainで上限超過を拒否しrendererへ本文を返さない", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-handoff-"));
+    try {
+      const file = path.join(dir, "oversize.grimodex-handoff");
+      writeFileSync(file, "{}", "utf8");
+      truncateSync(file, WEB_EDITOR_HANDOFF_MAX_FILE_BYTES + 1);
+      fromWebContentsMock.mockReturnValue(null);
+      showOpenDialogMock.mockResolvedValueOnce({
+        canceled: false,
+        filePaths: [file],
+      });
+
+      const picked = await invokeBridge(IPC.dialogOpenWebEditorHandoff, {
+        sender: {},
+      });
+
+      expect(picked.ok).toBe(false);
+      if (!picked.ok) {
+        expect(picked.error).toContain("WEB_EDITOR_HANDOFF_FILE_TOO_LARGE");
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

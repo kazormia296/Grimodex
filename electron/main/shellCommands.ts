@@ -9,7 +9,7 @@
  *    Promise reject に変換する）
  */
 import { readFileSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -29,6 +29,11 @@ import type {
   ShellCommandHandlers,
 } from "../shared/ipcContract.js";
 import { FsScope } from "./fsScope.js";
+
+// 64 MiB SQLite payloadはbase64で約85.34 MiBになる。最大メタデータを含む
+// version 1 JSONを許容しつつ、main/renderer双方の文字列・JSON parseを固定上限にする。
+export const WEB_EDITOR_HANDOFF_MAX_FILE_BYTES = 86 * 1024 * 1024;
+const BOUNDED_READ_CHUNK_BYTES = 64 * 1024;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Tauri コマンド互換（grim:invoke ルーターから呼ばれる）
@@ -197,6 +202,54 @@ function requireStringArg(value: unknown, name: string): string {
   return value;
 }
 
+async function readUtf8FileWithLimit(
+  filePath: string,
+  maxBytes: number,
+): Promise<string> {
+  const handle = await open(filePath, "r");
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new Error("WEB_EDITOR_HANDOFF_NOT_A_FILE");
+    }
+    if (stats.size > maxBytes) {
+      throw new Error(
+        `WEB_EDITOR_HANDOFF_FILE_TOO_LARGE: selected handoff exceeds ${maxBytes} bytes`,
+      );
+    }
+
+    const decoder = new TextDecoder("utf-8");
+    const chunks: string[] = [];
+    const buffer = Buffer.allocUnsafe(BOUNDED_READ_CHUNK_BYTES);
+    let position = 0;
+    let totalBytes = 0;
+
+    // stat後に同じfdへ追記されても、maxBytes + 1 byteを観測した時点で拒否する。
+    while (true) {
+      const bytesToRead = Math.min(
+        buffer.byteLength,
+        maxBytes - totalBytes + 1,
+      );
+      const { bytesRead } = await handle.read(buffer, 0, bytesToRead, position);
+      if (bytesRead === 0) break;
+      totalBytes += bytesRead;
+      if (totalBytes > maxBytes) {
+        throw new Error(
+          `WEB_EDITOR_HANDOFF_FILE_TOO_LARGE: selected handoff exceeds ${maxBytes} bytes`,
+        );
+      }
+      chunks.push(
+        decoder.decode(buffer.subarray(0, bytesRead), { stream: true }),
+      );
+      position += bytesRead;
+    }
+    chunks.push(decoder.decode());
+    return chunks.join("");
+  } finally {
+    await handle.close();
+  }
+}
+
 let cachedVersion: string | null = null;
 
 /**
@@ -300,6 +353,34 @@ export function registerShellBridgeHandlers(
     const picked = result.canceled ? null : (result.filePaths[0] ?? null);
     if (picked !== null) await fsScope.allowFile(picked);
     return picked;
+  });
+
+  handleWithEnvelope(IPC.dialogOpenWebEditorHandoff, async (event) => {
+    const options = {
+      properties: ["openFile" as const],
+      filters: [
+        {
+          name: "Grimodex Web Editor handoff",
+          extensions: ["grimodex-handoff"],
+        },
+      ],
+    };
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    const picked = result.canceled ? null : (result.filePaths[0] ?? null);
+    if (picked === null) return null;
+    if (path.extname(picked).toLowerCase() !== ".grimodex-handoff") {
+      throw new Error("WEB_EDITOR_HANDOFF_INVALID_EXTENSION");
+    }
+    return {
+      name: path.basename(picked),
+      content: await readUtf8FileWithLimit(
+        picked,
+        WEB_EDITOR_HANDOFF_MAX_FILE_BYTES,
+      ),
+    };
   });
 
   handleWithEnvelope(IPC.fsReadTextFile, async (_event, path) => {

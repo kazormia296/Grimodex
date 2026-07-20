@@ -24,7 +24,7 @@ function allRunCommands(job) {
 function assertMeasuredBrowserJob(job, suite) {
   assert.equal(job["timeout-minutes"], 15);
   const commands = allRunCommands(job);
-  assert.match(commands, /pnpm build:scan:dependencies/);
+  assert.match(commands, /pnpm build:workspace:dependencies/);
   assert.match(commands, /playwright install/);
   assert.match(
     commands,

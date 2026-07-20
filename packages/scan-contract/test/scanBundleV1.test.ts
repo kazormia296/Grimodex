@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import {
   parseEditorSeed,
   parseScanBundle,
-  validateChunkExtraction,
   validateScanBundle,
   type EditorSeedV1,
   type ScanBundleV1,
@@ -57,77 +56,6 @@ describe("ScanBundleV1 contract", () => {
     if (!result.ok) {
       expect(
         result.errors.some((error) => error.code === "missing-reference"),
-      ).toBe(true);
-    }
-  });
-
-  it("rejects chunk events whose paragraph belongs to another section", () => {
-    const result = validateChunkExtraction(
-      {
-        schemaVersion: "grimodex-scan/chunk-extraction/1",
-        chunkId: "chunk:test",
-        sourceFingerprint: "sha256:test",
-        entities: [],
-        relations: [],
-        events: [
-          {
-            title: "移動",
-            sectionId: "section:0",
-            paragraphIds: ["paragraph:0"],
-            entityNames: [],
-            order: 0,
-            evidence: [{ sectionId: "section:0", paragraphId: "paragraph:0" }],
-          },
-        ],
-      },
-      {
-        paragraphIds: ["paragraph:0"],
-        sectionIds: ["section:0", "section:1"],
-        paragraphSectionIds: { "paragraph:0": "section:1" },
-      },
-    );
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(
-        result.errors.some((error) => error.code === "reference-ownership"),
-      ).toBe(true);
-    }
-  });
-
-  it("rejects a chunk event whose section is outside the chunk", () => {
-    const result = validateChunkExtraction(
-      {
-        schemaVersion: "grimodex-scan/chunk-extraction/1",
-        chunkId: "chunk:test",
-        sourceFingerprint: "sha256:test",
-        entities: [],
-        relations: [],
-        events: [
-          {
-            title: "移動",
-            sectionId: "section:outside",
-            paragraphIds: ["paragraph:0"],
-            entityNames: [],
-            order: 0,
-            evidence: [{ sectionId: "section:0", paragraphId: "paragraph:0" }],
-          },
-        ],
-      },
-      {
-        paragraphIds: ["paragraph:0"],
-        sectionIds: ["section:0"],
-      },
-    );
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(
-        result.errors.some(
-          (error) =>
-            error.code === "missing-reference" &&
-            error.path === "/events/0/sectionId",
-        ),
       ).toBe(true);
     }
   });
@@ -378,43 +306,6 @@ describe("ScanBundleV1 contract", () => {
     });
 
     expect(result.ok).toBe(false);
-  });
-
-  it("validates chunk extraction independently before merge", () => {
-    const result = validateChunkExtraction(
-      {
-        schemaVersion: "grimodex-scan/chunk-extraction/1",
-        chunkId: "chunk:fixture",
-        sourceFingerprint: "sha256:fixture-minimal-ja",
-        entities: [],
-        relations: [],
-        events: [],
-      },
-      {
-        expectedChunkId: "chunk:fixture",
-        expectedSourceFingerprint: "sha256:fixture-minimal-ja",
-        paragraphIds: [],
-      },
-    );
-
-    expect(result.ok).toBe(true);
-    expect(
-      validateChunkExtraction(
-        {
-          schemaVersion: "grimodex-scan/chunk-extraction/1",
-          chunkId: "chunk:fixture",
-          sourceFingerprint: "sha256:fixture-minimal-ja",
-          entities: [],
-          relations: [],
-          events: [],
-        },
-        {
-          expectedChunkId: "chunk:other",
-          expectedSourceFingerprint: "sha256:fixture-minimal-ja",
-          paragraphIds: [],
-        },
-      ).ok,
-    ).toBe(false);
   });
 
   it("rejects non-candidate statuses other than an explicitly confirmed finding", async () => {

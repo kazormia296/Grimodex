@@ -632,6 +632,7 @@ export async function createSession(
   nodeId?: string,
   codexAnchorId?: string,
   snippetAnchorId?: string,
+  model?: string,
 ): Promise<ChatSession> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -644,6 +645,7 @@ export async function createSession(
       nodeId: nodeId ? nodeId : null,
       codexAnchorId: codexAnchorId ?? null,
       snippetAnchorId: snippetAnchorId ?? null,
+      ...(model !== undefined ? { model } : {}),
       createdAt: now,
       updatedAt: now,
     })

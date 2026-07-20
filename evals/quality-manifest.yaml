@@ -12,7 +12,6 @@ lightSuites:
   - tool-policy
   - prompt-contract
   - retrieval-grounding
-  - scan-contract
 requirements:
   - id: GDX-ROUTE-001
     title: Every production AI route is registered, routed, and assigned a verifier.
@@ -21,10 +20,14 @@ requirements:
       - src/features/ai-verification/aiPathRegistry.ts
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
+      - src/features/chat/chatStore.ts
     lightTests:
       - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
       - src/features/chat/modelRouting.test.ts
       - src/features/chat/turn/resolveTurnRoute.test.ts
+      - src/features/chat/chatApi.test.ts
+      - src/features/chat/chatStore.test.ts
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
       - src-tauri/src/commands/post_effect.rs
@@ -54,6 +57,31 @@ requirements:
       - eval-route-character-timeline
       - eval-tool-unknown
       - eval-isolation-ask-user
+  - id: GDX-AI-CONSENT-001
+    title: External AI data use is fully disclosed and explicitly consented before dispatch.
+    definedIn: policies/quality/iron-laws.md#GDX-AI-CONSENT-001
+    implementedBy:
+      - src/features/ai-policy/aiDataConsentBroker.ts
+      - src/features/ai-policy/aiDataConsent.ts
+      - src/features/ai-policy/AiDataConsentDialog.tsx
+      - src/features/ai-policy/AiDataConsentDetails.tsx
+      - src/features/ai-policy/browserAiDisclosure.ts
+      - src/lib/browser-mock.ts
+      - public/PRIVACY_ja.md
+      - public/PRIVACY_en.md
+    lightTests:
+      - src/features/ai-policy/aiDataConsent.test.ts
+      - src/features/ai-policy/aiDataConsentBroker.test.ts
+      - src/features/ai-policy/AiDataConsentDialog.test.tsx
+      - src/features/ai-policy/browserAiDisclosure.test.ts
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ai-runtime.test.ts
+      - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+    heavyTests:
+      - src/features/ai-verification/singleShot.live.test.ts
+    evaluatedBy:
+      - eval-ai-data-consent-precheck
   - id: GDX-TOOL-001
     title: Agent tool calls must resolve to the canonical manifest and channel.
     definedIn: policies/quality/iron-laws.md#GDX-TOOL-001
@@ -121,16 +149,11 @@ requirements:
     title: Structured and generated outputs pass schema and provenance validation.
     definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
     implementedBy:
-      - packages/scan-contract/src/publicReportV1.ts
-      - packages/scan-prompts/src/evaluation.ts
       - src/features/chat/agent/toolExecutors.ts
       - src/features/chat/agent/chronicleWriteTools.ts
       - src/features/post-effect/api.ts
       - src/features/post-effect/canonicalize.ts
     lightTests:
-      - packages/scan-contract/test/publicReportV1.test.ts
-      - packages/scan-prompts/test/evaluation.test.ts
-      - apps/scan-web/worker/pipeline.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/chronicleWriteTools.test.ts
       - src/features/post-effect/api.test.ts
@@ -169,6 +192,7 @@ requirements:
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
     evaluatedBy:
@@ -180,11 +204,11 @@ heavyEvaluations:
   - id: heavy-agent-tool-loop
     suiteId: tool-policy
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts
-    reason: Requires billed model access and an isolated workspace.
+    reason: Preserved desktop-route validation; requires billed OpenRouter access and an isolated workspace, and is not a managed Web Editor route.
   - id: heavy-single-shot-surfaces
     suiteId: ai-routing
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/ai-verification/singleShot.live.test.ts
-    reason: Requires billed model access; missing credentials must not become a pass.
+    reason: Preserved desktop-route validation; requires billed OpenRouter access, and missing credentials must not become a pass.
   - id: heavy-related-scenes
     suiteId: retrieval-grounding
     command: EMBED_NODE_MODULES=... EMBED_RES_DIR=... node scripts/quality/run-related-scenes-heavy.mjs
@@ -192,13 +216,13 @@ heavyEvaluations:
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
-    reason: Requires a billed live model and isolated credentials for the Rust post-effect path.
+    reason: Preserved desktop Rust-route validation; requires a billed OpenRouter model and isolated credentials.
   - id: heavy-codex-prompt-surfaces
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
-    reason: Requires a billed live model; wording checks alone are Light evidence.
+    reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
 blockedEvaluations:
-  - id: blocked-scan-hosted
-    suiteId: scan-contract
-    reason: No isolated hosted Scan evaluation runner exists in the repository, so this cannot be represented as runnable Heavy evidence.
-    requiredAction: Add a teardown-capable runner and isolated test-account contract before promoting this gap to heavyEvaluations.
+  - id: blocked-web-ai-consent-live
+    suiteId: tool-policy
+    reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, processor disclosure, and teardown against a real user-selected Local LLM or BYOK provider.
+    requiredAction: Add disposable user-owned provider credentials or an isolated Local LLM endpoint, a browser runner, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.

@@ -7,11 +7,21 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import {
+  LIGHT_SUITE_DEFINITIONS,
   collectChangedPaths,
   formatImpactSummary,
   parseImpactMap,
   selectImpact,
 } from "./impact-map.mjs";
+
+test("the AI routing light suite executes browser transport contracts", () => {
+  const commandText = JSON.stringify(
+    LIGHT_SUITE_DEFINITIONS["ai-routing"].commands,
+  );
+  assert.match(commandText, /src\/lib\/browser-ai\.test\.ts/);
+  assert.match(commandText, /src\/lib\/browser-mock\.ai-runtime\.test\.ts/);
+  assert.match(commandText, /test:cloudflare-editor-deploy/);
+});
 
 const execFileAsync = promisify(execFile);
 const ALLOWED_SUITES = ["quality-workflow", "ai-routing", "tool-policy"];

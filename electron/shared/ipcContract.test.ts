@@ -731,6 +731,95 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({ ok: true, value: { name: "ws", isExisting: true } });
   });
 
+  it("import_web_editor_workspace: {handoffJson} → importWebEditorWorkspace(handoffJson)", async () => {
+    const { backend } = fakeBackend();
+    const importWebEditorWorkspace = vi.fn(async (_handoffJson: string) =>
+      JSON.stringify({
+        path: "/app-data/web-editor-workspace-1",
+        projectId: "project-1",
+      }),
+    );
+    Object.assign(backend, { importWebEditorWorkspace });
+    const handoffJson = JSON.stringify({
+      schemaVersion: "grimodex/web-editor-workspace-handoff/1",
+      workspace: { title: "Web Editor draft" },
+    });
+
+    const env = await dispatchInvoke(
+      "import_web_editor_workspace",
+      { handoffJson },
+      { backend, shell: noShell },
+    );
+
+    expect(importWebEditorWorkspace).toHaveBeenCalledExactlyOnceWith(
+      handoffJson,
+    );
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        path: "/app-data/web-editor-workspace-1",
+        projectId: "project-1",
+      },
+    });
+  });
+
+  it.each([
+    {},
+    { handoffJson: null },
+    { handoffJson: 42 },
+    { handoffJson: {} },
+    { handoffJson: [] },
+  ])(
+    "import_web_editor_workspace: handoffJsonが文字列でなければnative呼出し前に拒否する: %j",
+    async (args) => {
+      const { backend } = fakeBackend();
+      const importWebEditorWorkspace = vi.fn(
+        async (_handoffJson: string) => undefined,
+      );
+      Object.assign(backend, { importWebEditorWorkspace });
+
+      const env = await dispatchInvoke("import_web_editor_workspace", args, {
+        backend,
+        shell: noShell,
+      });
+
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain(
+          "invalid args `handoffJson` for command `import_web_editor_workspace`",
+        );
+      }
+      expect(importWebEditorWorkspace).not.toHaveBeenCalled();
+    },
+  );
+
+  it("import_web_editor_workspace: backend不在はcommand単位の明示エラー", async () => {
+    const env = await dispatchInvoke(
+      "import_web_editor_workspace",
+      { handoffJson: "{}" },
+      { backend: null, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} import_web_editor_workspace`,
+    });
+  });
+
+  it("import_web_editor_workspace: 旧native bindingのmethod欠落も明示エラー", async () => {
+    const { backend } = fakeBackend();
+    const env = await dispatchInvoke(
+      "import_web_editor_workspace",
+      { handoffJson: "{}" },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method importWebEditorWorkspace`,
+    });
+  });
+
   it("validate_workspace_path: boolean は parse せず素通し", async () => {
     const { backend } = fakeBackend();
     const env = await dispatchInvoke(
@@ -1180,6 +1269,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "ime_export_refresh",
       "ime_export_remove_project",
       "ime_export_set_active_project",
+      "import_web_editor_workspace",
       "integrity_check",
       "lint_text",
       "list_ai_models",

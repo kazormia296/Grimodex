@@ -57,7 +57,7 @@ jobs:
   frontend:
     name: Frontend (type-check / lint / test)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -72,8 +72,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build Scan workspace dependencies
-        run: pnpm build:scan:dependencies
+      - name: Build shared workspace dependencies
+        run: pnpm build:workspace:dependencies
 
       - name: 型チェック
         run: pnpm exec tsc --noEmit
@@ -90,34 +90,8 @@ jobs:
       - name: テスト
         run: pnpm test:node --run
 
-  scan:
-    name: Scan (clean build / type-check / test)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10.33.0
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # Scan workspace package exports point at ignored dist directories. Keep
-      # this first so CI proves a fresh checkout can build without stale output.
-      - name: Clean Scan production build
-        run: pnpm build:scan
-
-      - name: Scan type-check
-        run: pnpm typecheck:scan
-
-      - name: Scan tests
-        run: pnpm test:scan
+      - name: Web Editor-only production artifact
+        run: pnpm build:web-editor
 
   browser:
     name: Browser (Vitest browser)
@@ -137,8 +111,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build Scan workspace dependencies
-        run: pnpm build:scan:dependencies
+      - name: Build shared workspace dependencies
+        run: pnpm build:workspace:dependencies
 
       - name: Chromium バイナリキャッシュ
         id: pw-cache
@@ -185,8 +159,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build Scan workspace dependencies
-        run: pnpm build:scan:dependencies
+      - name: Build shared workspace dependencies
+        run: pnpm build:workspace:dependencies
 
       - name: Chromium バイナリキャッシュ
         id: pw-cache

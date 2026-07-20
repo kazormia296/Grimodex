@@ -243,31 +243,33 @@ export function DataCategory() {
       </SettingSection>
 
       {/* Export */}
-      <SettingSection title={t("settings.data.export")}>
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <span className="text-sm">{t("settings.data.exportScenes")}</span>
-            <button
-              type="button"
-              onClick={openExportDialog}
-              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
-            >
-              {t("common.open")}
-            </button>
+      <CapabilityGate capability="genericProjectTransfer">
+        <SettingSection title={t("settings.data.export")}>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm">{t("settings.data.exportScenes")}</span>
+              <button
+                type="button"
+                onClick={openExportDialog}
+                className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+              >
+                {t("common.open")}
+              </button>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">{t("settings.data.exportCodex")}</span>
+              <button
+                type="button"
+                onClick={handleExportCodex}
+                disabled={isExportingCodex}
+                className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
+              >
+                Codex JSON
+              </button>
+            </div>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-sm">{t("settings.data.exportCodex")}</span>
-            <button
-              type="button"
-              onClick={handleExportCodex}
-              disabled={isExportingCodex}
-              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
-            >
-              Codex JSON
-            </button>
-          </div>
-        </div>
-      </SettingSection>
+        </SettingSection>
+      </CapabilityGate>
 
       {/* Data Management */}
       <SettingSection title={t("settings.data.management")}>
