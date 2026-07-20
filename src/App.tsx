@@ -924,9 +924,8 @@ function EditorScreen() {
               open={showHostedHandoff}
               onClose={() => setShowHostedHandoff(false)}
               downloadHandoff={async () => {
-                const { downloadHostedEditorHandoff } = await import(
-                  "@/features/hosted-editor/downloadHostedEditorHandoff"
-                );
+                const { downloadHostedEditorHandoff } =
+                  await import("@/features/hosted-editor/downloadHostedEditorHandoff");
                 return downloadHostedEditorHandoff();
               }}
             />
