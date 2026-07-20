@@ -97,11 +97,6 @@ import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorks
 import { ConnectedMobileWorkspaceSurface } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
 import { shouldUseAdaptiveWorkspace } from "@/features/layout/adaptive/adaptiveWorkspacePolicy";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
-import { HostedEditorTrialBar } from "@/features/hosted-editor/HostedEditorTrialBar";
-import { HostedEditorHandoffDialog } from "@/features/hosted-editor/HostedEditorHandoffDialog";
-import { downloadHostedEditorHandoff } from "@/features/hosted-editor/downloadHostedEditorHandoff";
-import { getHostedEditorRuntime } from "@/features/hosted-editor/hostedEditorRuntime";
-import { WebEditorWorkspaceImportDialog } from "@/features/import/WebEditorWorkspaceImportDialog";
 import {
   consumeWebEditorHandoffRequest,
   requestWebEditorHandoffImport,
@@ -131,6 +126,21 @@ const ExportDialog = lazy(() =>
 const SampleTour = lazy(() =>
   import("@/features/onboarding/SampleTour").then((m) => ({
     default: m.SampleTour,
+  })),
+);
+const HostedEditorTrialBar = lazy(() =>
+  import("@/features/hosted-editor/HostedEditorTrialBar").then((m) => ({
+    default: m.HostedEditorTrialBar,
+  })),
+);
+const HostedEditorHandoffDialog = lazy(() =>
+  import("@/features/hosted-editor/HostedEditorHandoffDialog").then((m) => ({
+    default: m.HostedEditorHandoffDialog,
+  })),
+);
+const WebEditorWorkspaceImportDialog = lazy(() =>
+  import("@/features/import/WebEditorWorkspaceImportDialog").then((m) => ({
+    default: m.WebEditorWorkspaceImportDialog,
   })),
 );
 
@@ -350,10 +360,12 @@ function App() {
       <EulaConsentDialog />
       <ReleaseNotesDialog />
       {runtimeCapabilities.genericProjectTransfer && (
-        <WebEditorWorkspaceImportDialog
-          open={showWebEditorImport}
-          onClose={() => setShowWebEditorImport(false)}
-        />
+        <Suspense fallback={null}>
+          <WebEditorWorkspaceImportDialog
+            open={showWebEditorImport}
+            onClose={() => setShowWebEditorImport(false)}
+          />
+        </Suspense>
       )}
       <DebugLogViewer />
     </>
@@ -384,7 +396,6 @@ function EditorScreen() {
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showTransferDialog, setShowTransferDialog] = useState(false);
   const [showHostedHandoff, setShowHostedHandoff] = useState(false);
-  const hostedRuntime = getHostedEditorRuntime();
   const [transferTab, setTransferTab] = useState<TransferTab>("import");
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
@@ -906,21 +917,34 @@ function EditorScreen() {
         )}
         {showSampleTour && <SampleTour />}
       </Suspense>
-      {!runtimeCapabilities.genericProjectTransfer && hostedRuntime && (
-        <HostedEditorHandoffDialog
-          open={showHostedHandoff}
-          onClose={() => setShowHostedHandoff(false)}
-          downloadHandoff={downloadHostedEditorHandoff}
-        />
-      )}
+      {!runtimeCapabilities.genericProjectTransfer &&
+        runtimeCapabilities.browserDirectAi && (
+          <Suspense fallback={null}>
+            <HostedEditorHandoffDialog
+              open={showHostedHandoff}
+              onClose={() => setShowHostedHandoff(false)}
+              downloadHandoff={async () => {
+                const { downloadHostedEditorHandoff } = await import(
+                  "@/features/hosted-editor/downloadHostedEditorHandoff"
+                );
+                return downloadHostedEditorHandoff();
+              }}
+            />
+          </Suspense>
+        )}
       <ReindexProgressToast />
       <ModelDownloadToast />
       <PostEffectProgressToast />
       <UpdateToast />
       <ReloadConflictDialog />
-      {!runtimeCapabilities.genericProjectTransfer && hostedRuntime && (
-        <HostedEditorTrialBar onContinue={() => setShowHostedHandoff(true)} />
-      )}
+      {!runtimeCapabilities.genericProjectTransfer &&
+        runtimeCapabilities.browserDirectAi && (
+          <Suspense fallback={null}>
+            <HostedEditorTrialBar
+              onContinue={() => setShowHostedHandoff(true)}
+            />
+          </Suspense>
+        )}
       <main
         id="main-content"
         tabIndex={-1}
