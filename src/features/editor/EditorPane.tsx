@@ -1764,6 +1764,7 @@ export function EditorPane({
     sceneId: nodeId,
     canEditCodexSemanticLink:
       canEditCodexSemanticLink && editor?.isEditable === true,
+    zenMode,
     onInlineAiCommand: dbNativeEditor ? handleInlineAiCommand : undefined,
   };
 

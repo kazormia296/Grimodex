@@ -42,6 +42,7 @@ import {
   matchesBinding,
 } from "@/features/settings/keybindings";
 import type { Editor } from "@tiptap/core";
+import { ZenAmbientBackdrop } from "@/features/editor/ZenAmbientBackdrop";
 
 const DEFAULT_HEIGHT = 300;
 const DEBOUNCE_ACTIVE_MS = 100;
@@ -449,10 +450,13 @@ export function LinearEditorView() {
   const scrollContainer = (
     <div
       ref={scrollRef}
-      className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
+      className={`glass-editor-body relative isolate flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
     >
+      <ZenAmbientBackdrop active={zenMode} />
       <div
         ref={editorContainerRef}
+        data-zen-editor-column={zenMode ? "true" : undefined}
+        className="zen-editor-paper"
         style={buildEditorMeasureStyle(editorSettings.maxContentWidth)}
       >
         {scenes.map((scene, i) => (

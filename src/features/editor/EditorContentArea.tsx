@@ -24,6 +24,7 @@ import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings
 import type { FilterSource } from "@/features/attribution/attributionStore";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useCurrentProject } from "@/features/project/projectStore";
+import { ZenAmbientBackdrop } from "@/features/editor/ZenAmbientBackdrop";
 
 export interface EditorContentAreaProps {
   editor: Editor | null;
@@ -52,6 +53,7 @@ export interface EditorContentAreaProps {
   sceneId: string;
   /** DB-backed sceneでのみ、選択範囲からCodex明示リンクを編集できる。 */
   canEditCodexSemanticLink?: boolean;
+  zenMode?: boolean;
   /** バブルメニューの AI サブメニューから起動されるインライン AI コマンドの
    *  ハンドラ。未指定 (file-backed シーン等) のときはバブルに AI ボタンを出さない。 */
   onInlineAiCommand?: (cmd: InlineAiCommand) => void;
@@ -88,6 +90,7 @@ export function EditorContentArea({
   isSceneContentLoading,
   sceneId,
   canEditCodexSemanticLink = false,
+  zenMode = false,
   onInlineAiCommand,
 }: EditorContentAreaProps) {
   const { t } = useTranslation();
@@ -120,7 +123,7 @@ export function EditorContentArea({
         data-focus-hide-beats={
           focusModeHideBeats && focusMode ? "true" : undefined
         }
-        className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        className={`glass-editor-body relative isolate flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
             // 余白クリックは「今見ている位置のままフォーカスだけ」戻す。
@@ -130,8 +133,11 @@ export function EditorContentArea({
           }
         }}
       >
+        <ZenAmbientBackdrop active={zenMode} />
         <div
+          data-zen-editor-column={zenMode ? "true" : undefined}
           className={cn(
+            "zen-editor-paper",
             editorSettings.showLineNumbers && "editor-line-numbers",
             editorSettings.showInvisibles && "editor-show-invisibles",
             gutterReserve && "editor-gutter-reserve",

@@ -364,6 +364,55 @@ button[role="switch"][aria-checked="true"] {
   background: var(--background);
 }
 
+/* Zen keeps the writing paper perfectly still while only the surrounding
+   margin receives two extremely faint, slow-moving theme lights. The ambient
+   layer sits above the scroll surface's solid background but below normal
+   flow content inside its isolated stacking context. */
+.zen-ambient-backdrop {
+  direction: ltr;
+  writing-mode: horizontal-tb;
+  z-index: -1;
+}
+
+.zen-ambient-light {
+  position: absolute;
+  inline-size: min(76vmax, 78rem);
+  aspect-ratio: 1;
+  border-radius: 9999px;
+  filter: blur(clamp(5rem, 11vmax, 10rem));
+  opacity: 0.04;
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
+}
+
+.zen-ambient-light--primary {
+  inset-block-start: -38vmax;
+  inset-inline-start: -30vmax;
+  background: var(--glass-tint-a);
+}
+
+.zen-ambient-light--secondary {
+  inset-block-end: -42vmax;
+  inset-inline-end: -32vmax;
+  background: var(--glass-tint-b);
+  opacity: 0.035;
+}
+
+.zen-ambient-backdrop[data-motion="static"] .zen-ambient-light {
+  will-change: auto;
+}
+
+/* The paper is an opaque guard above the ambient layer. Its dimensions and
+   text never animate. Only Zen applies the minimum size, so normal editor
+   scrolling keeps its existing layout. */
+.zen-editor-paper {
+  background: var(--content-background);
+}
+
+.zen-editor-paper[data-zen-editor-column="true"] {
+  min-block-size: 100%;
+}
+
 /* App-shell backdrop: flat translucent base. Its alpha scales with the
    user's transparency slider so cranking the slider up actually shows
    more of the desktop through the window. */
@@ -1658,12 +1707,13 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
     "vrt2" 1,
     "vpal" 1;
 }
-/* 縦書きの実体はスクローラ直下の子から（両エディタとも直下は content wrapper
- * 1 つ。direction は rtl をスクロール軸にだけ借りたので ltr へ戻す）。
+/* 縦書きの実体はスクローラ直下の content wrapper から（Zen の ambient layer は
+ * viewport 固定の背景なので除外する。direction は rtl をスクロール軸にだけ借りたので
+ * ltr へ戻す）。
  * inline-size (物理高さ) はスクロールポートに固定する — orthogonal flow の
  * 自動解決は content ベースに転ぶことがあり、行が折り返さず列化しなくなる。
  * block-size (物理幅) は従来どおり列の増加に合わせて content 成長に任せる。 */
-.editor-vertical > * {
+.editor-vertical > :not(.zen-ambient-backdrop) {
   writing-mode: vertical-rl;
   direction: ltr;
   text-orientation: mixed;
