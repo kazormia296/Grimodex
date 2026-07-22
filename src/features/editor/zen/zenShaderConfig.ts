@@ -16,12 +16,14 @@ export interface ZenResolvedPalette {
 }
 
 export interface ZenShaderConfig {
+  enabled: boolean;
   shader: ZenShaderId;
   paletteMode: ZenPaletteMode;
   opacity: number;
   /** Normalized user-facing percentage. Paper receives speed / 100. */
   speed: number;
   paperOpacity: number;
+  paperEdgeFade: number;
   scale: number;
   rotation: number;
   offsetX: number;
@@ -47,11 +49,13 @@ export interface ZenShaderConfig {
 }
 
 export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
+  enabled: true,
   shader: "mesh-gradient",
   paletteMode: "theme",
   opacity: 10,
   speed: 8,
   paperOpacity: 100,
+  paperEdgeFade: 8,
   scale: 1.15,
   rotation: 0,
   offsetX: 0,
@@ -231,6 +235,7 @@ export function parseZenShaderConfig(
     finiteNumber(value(values, suffix), fallback, 0, 1);
 
   return {
+    enabled: booleanValue(value(values, "enabled"), d.enabled),
     shader: enumValue(value(values, "shader"), ZEN_SHADER_IDS, d.shader),
     paletteMode: enumValue(
       value(values, "paletteMode"),
@@ -244,6 +249,12 @@ export function parseZenShaderConfig(
       d.paperOpacity,
       0,
       100,
+    ),
+    paperEdgeFade: finiteNumber(
+      value(values, "paperEdgeFade"),
+      d.paperEdgeFade,
+      0,
+      30,
     ),
     scale: finiteNumber(value(values, "scale"), d.scale, 0.25, 4),
     rotation: finiteNumber(value(values, "rotation"), d.rotation, 0, 360),

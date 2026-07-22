@@ -616,6 +616,10 @@
       "layout": "レイアウト",
       "cardLayout": "カードレイアウト",
       "cardLayoutDesc": "パネルをギャップで区切った角丸カードとして浮かせます。OFF にすると 1px の境界線で隙間なく並びます。ガラス効果とは排他です。",
+      "editorBackground": "エディター背景",
+      "backgroundStudio": "背景スタジオ",
+      "backgroundStudioDesc": "通常表示とZenで共通の背景を、実際のエディターを見ながら調整します。",
+      "openBackgroundStudio": "ライブ調整を開く",
       "codexHighlight": "Codex ハイライト",
       "enableHighlight": "Codex ハイライトを有効化",
       "highlightStyle": "ハイライトスタイル",
@@ -3664,12 +3668,16 @@
       "title": "背景スタジオ",
       "open": "背景をライブ調整",
       "close": "背景スタジオを閉じる",
+      "enabled": "背景を表示",
+      "enabledDescription": "OFFにするとシェーダーを停止し、通常のエディター背景へ戻します。設定値は保持されます。",
       "commonSection": "背景と本文",
       "propsSection": "シェーダーProps",
       "filtersSection": "追加フィルター",
       "shaderDescription": "通常表示とZenで共通。変更は背後の実画面へ即時反映されます。",
       "paperOpacity": "本文背景の不透明度",
-      "paperOpacityDescription": "本文の紙面色だけを透過します。文字は常に100%不透明です。"
+      "paperOpacityDescription": "本文の紙面色だけを透過します。文字は常に100%不透明です。",
+      "paperEdgeFade": "本文背景の縁フェード",
+      "paperEdgeFadeDescription": "本文の中央は保ったまま、紙面の周囲だけを滑らかに背景へ溶かします。"
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",

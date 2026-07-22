@@ -146,7 +146,11 @@ export function EditorContentArea({
           )}
           style={{
             ...buildEditorContentStyle(editorSettings),
-            ...buildEditorPaperStyle(backgroundConfig.paperOpacity),
+            ...buildEditorPaperStyle({
+              enabled: backgroundConfig.enabled,
+              opacity: backgroundConfig.paperOpacity,
+              edgeFade: backgroundConfig.paperEdgeFade,
+            }),
             ...(gutterReserve
               ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
               : {}),

@@ -45,7 +45,9 @@ describe("editor background shader settings", () => {
       "water",
       "waves",
     ]);
+    expect(ZEN_SHADER_DEFAULTS.enabled).toBe(true);
     expect(ZEN_SHADER_DEFAULTS.shader).toBe("mesh-gradient");
+    expect(ZEN_SHADER_DEFAULTS.paperEdgeFade).toBe(8);
   });
 
   it("uses complete 0-100 percent domains for intensity, speed and paper opacity", () => {
@@ -70,8 +72,10 @@ describe("editor background shader settings", () => {
 
   it("normalizes malformed persisted values into safe shader ranges", () => {
     const config = parseZenShaderConfig({
+      "editor.zenBackground.enabled": "false",
       "editor.zenBackground.shader": "unknown",
       "editor.zenBackground.paletteMode": "invalid",
+      "editor.zenBackground.paperEdgeFade": "99",
       "editor.zenBackground.scale": "NaN",
       "editor.zenBackground.rotation": "721",
       "editor.zenBackground.offsetX": "-9",
@@ -81,8 +85,10 @@ describe("editor background shader settings", () => {
       "editor.zenBackground.halftone.size": "100",
     });
 
+    expect(config.enabled).toBe(false);
     expect(config.shader).toBe("mesh-gradient");
     expect(config.paletteMode).toBe("theme");
+    expect(config.paperEdgeFade).toBe(30);
     expect(config.scale).toBe(ZEN_SHADER_DEFAULTS.scale);
     expect(config.rotation).toBe(360);
     expect(config.offsetX).toBe(-1);

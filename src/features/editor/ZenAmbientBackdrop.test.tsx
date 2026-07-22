@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const zenState = vi.hoisted(() => ({
   reduced: false,
   config: {
+    enabled: true,
     shader: "mesh-gradient",
     speed: 8,
     dither: { enabled: true },
@@ -60,6 +61,7 @@ import { ZenAmbientBackdrop } from "./ZenAmbientBackdrop";
 describe("ZenAmbientBackdrop", () => {
   beforeEach(() => {
     zenState.reduced = false;
+    zenState.config.enabled = true;
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
   });
 
@@ -71,6 +73,7 @@ describe("ZenAmbientBackdrop", () => {
     expect(backdrop).toHaveAttribute("aria-hidden", "true");
     expect(backdrop).toHaveAttribute("data-motion", "drifting");
     expect(backdrop).toHaveAttribute("data-window-active", "true");
+    expect(backdrop).toHaveAttribute("data-background-enabled", "true");
     expect(backdrop).toHaveAttribute("data-background-shader", "mesh-gradient");
     expect(backdrop).toHaveAttribute("data-background-dither", "true");
     expect(backdrop).toHaveAttribute("data-background-halftone", "true");
@@ -79,6 +82,18 @@ describe("ZenAmbientBackdrop", () => {
     expect(
       container.querySelector("[data-zen-shader-surface]"),
     ).toHaveAttribute("data-playing", "true");
+  });
+
+  it("unmounts the WebGL surface when the background is disabled", () => {
+    zenState.config.enabled = false;
+
+    const { container } = render(<ZenAmbientBackdrop active={false} />);
+
+    expect(container.querySelector("[data-editor-ambient]")).toHaveAttribute(
+      "data-background-enabled",
+      "false",
+    );
+    expect(container.querySelector("[data-zen-shader-surface]")).toBeNull();
   });
 
   it("stops the WebGL animation when the window becomes inactive", () => {

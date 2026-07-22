@@ -43,12 +43,14 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
   const reduced = useReducedMotion();
   const windowActive = useWindowActive();
   const config = useZenShaderConfig();
-  const playing = !reduced && windowActive && config.speed > 0;
+  const playing =
+    config.enabled && !reduced && windowActive && config.speed > 0;
 
   return (
     <motion.div
       data-editor-ambient
       data-zen-mode={active ? "true" : "false"}
+      data-background-enabled={config.enabled ? "true" : "false"}
       data-motion={playing ? "drifting" : "static"}
       data-window-active={windowActive ? "true" : "false"}
       data-background-shader={config.shader}
@@ -63,7 +65,7 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
         ease: EASINGS.easeOut,
       }}
     >
-      <ZenShaderSurface config={config} playing={playing} />
+      {config.enabled && <ZenShaderSurface config={config} playing={playing} />}
     </motion.div>
   );
 }

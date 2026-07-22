@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Palette } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { SettingSection } from "../components/SettingSection";
@@ -23,7 +24,13 @@ const LANGUAGE_OPTIONS = [
   { value: "en", label: "English" },
 ];
 
-export function DisplayCategory() {
+interface DisplayCategoryProps {
+  onOpenBackgroundStudio?: () => void;
+}
+
+export function DisplayCategory({
+  onOpenBackgroundStudio,
+}: DisplayCategoryProps = {}) {
   const { t } = useTranslation();
 
   const LIGHT_DARK_OPTIONS = [
@@ -245,6 +252,25 @@ export function DisplayCategory() {
           />
         </SettingRow>
       </SettingSection>
+
+      {onOpenBackgroundStudio && (
+        <SettingSection title={t("settings.display.editorBackground")}>
+          <SettingRow
+            label={t("settings.display.backgroundStudio")}
+            description={t("settings.display.backgroundStudioDesc")}
+          >
+            <button
+              type="button"
+              aria-label={t("editor.background.open")}
+              onClick={onOpenBackgroundStudio}
+              className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-sm text-foreground transition-colors hover:bg-accent"
+            >
+              <Palette className="h-4 w-4" aria-hidden />
+              {t("settings.display.openBackgroundStudio")}
+            </button>
+          </SettingRow>
+        </SettingSection>
+      )}
 
       <SettingSection title={t("settings.display.glass", "Glass")}>
         <SettingRow

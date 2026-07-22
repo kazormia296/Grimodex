@@ -44,7 +44,7 @@ function Chip({
   onClick: () => void;
   title?: string;
   expanded?: boolean;
-  /** あらすじチップだけ枠付き白背景 (デザイン 1h)。 */
+  /** あらすじチップだけ枠付き背景 (デザイン 1h)。 */
   outlined?: boolean;
   children: ReactNode;
 }) {
@@ -58,7 +58,7 @@ function Chip({
       className={cn(
         "flex max-w-60 flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-[2px] text-[10px] transition-colors",
         outlined
-          ? "border border-border bg-background hover:bg-accent"
+          ? "editor-background-glass border border-border hover:bg-accent/70"
           : "bg-muted/60 text-foreground hover:bg-accent",
       )}
     >

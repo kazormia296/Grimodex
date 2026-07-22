@@ -616,6 +616,10 @@
       "layout": "Layout",
       "cardLayout": "Card layout",
       "cardLayoutDesc": "Float panels as soft rounded cards separated by gaps. When off, panels abut with 1px splitter lines. Mutually exclusive with the glass effect.",
+      "editorBackground": "Editor background",
+      "backgroundStudio": "Background Studio",
+      "backgroundStudioDesc": "Adjust the background shared by normal and Zen views while watching the real editor.",
+      "openBackgroundStudio": "Open live adjustment",
       "codexHighlight": "Codex Highlight",
       "enableHighlight": "Enable Codex highlight",
       "highlightStyle": "Highlight style",
@@ -3669,12 +3673,16 @@
       "title": "Background Studio",
       "open": "Adjust background live",
       "close": "Close Background Studio",
+      "enabled": "Show background",
+      "enabledDescription": "Turn this off to stop the shader and restore the standard editor surface. Your settings are preserved.",
       "commonSection": "Background and paper",
       "propsSection": "Shader props",
       "filtersSection": "Post filters",
       "shaderDescription": "Shared by normal and Zen views. Changes appear immediately on the real canvas behind this panel.",
       "paperOpacity": "Paper background opacity",
-      "paperOpacityDescription": "Changes only the paper fill. Text always stays 100% opaque."
+      "paperOpacityDescription": "Changes only the paper fill. Text always stays 100% opaque.",
+      "paperEdgeFade": "Paper edge fade",
+      "paperEdgeFadeDescription": "Keeps the center readable while smoothly dissolving only the paper edges into the background."
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",

@@ -53,6 +53,36 @@ describe("BackgroundStudio", () => {
     }
   });
 
+  it("can disable the ambient background without losing its configuration", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    const enabled = screen.getByRole("switch", {
+      name: "editor.background.enabled",
+    });
+    expect(enabled).toBeChecked();
+
+    fireEvent.click(enabled);
+
+    expect(
+      useSettingsStore.getState().cache["editor.zenBackground.enabled"],
+    ).toBe("false");
+    expect(
+      screen.getByLabelText("settings.editor.zenBackgroundShader"),
+    ).toHaveValue("mesh-gradient");
+  });
+
+  it("exposes a smooth paper edge fade without blur or halftone controls", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    expect(
+      screen.getByLabelText("editor.background.paperEdgeFade"),
+    ).toHaveAttribute("max", "30");
+    expect(screen.queryByLabelText("editor.background.paperBlur")).toBeNull();
+    expect(
+      screen.queryByLabelText("editor.background.paperHalftoneStrength"),
+    ).toBeNull();
+  });
+
   it("applies intensity, speed and paper opacity changes immediately", () => {
     render(<BackgroundStudio open onClose={vi.fn()} />);
 

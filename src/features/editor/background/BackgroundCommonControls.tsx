@@ -3,6 +3,7 @@ import { SettingColorInput } from "@/features/settings/components/SettingColorIn
 import { SettingDropdown } from "@/features/settings/components/SettingDropdown";
 import { SettingRow } from "@/features/settings/components/SettingRow";
 import { SettingSlider } from "@/features/settings/components/SettingSlider";
+import { SettingToggle } from "@/features/settings/components/SettingToggle";
 import {
   PAPER_SHADER_DEFINITIONS,
   getPaperShaderDefinition,
@@ -27,6 +28,12 @@ export function BackgroundCommonControls() {
 
   return (
     <>
+      <SettingRow
+        label={t("editor.background.enabled")}
+        description={t("editor.background.enabledDescription")}
+      >
+        <SettingToggle settingKey="editor.zenBackground.enabled" defaultValue />
+      </SettingRow>
       <SettingRow
         label={t("settings.editor.zenBackgroundShader")}
         description={t("editor.background.shaderDescription")}
@@ -69,6 +76,18 @@ export function BackgroundCommonControls() {
           min={0}
           max={100}
           defaultValue={100}
+          format={percent}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t("editor.background.paperEdgeFade")}
+        description={t("editor.background.paperEdgeFadeDescription")}
+      >
+        <SettingSlider
+          settingKey="editor.zenBackground.paperEdgeFade"
+          min={0}
+          max={30}
+          defaultValue={8}
           format={percent}
         />
       </SettingRow>

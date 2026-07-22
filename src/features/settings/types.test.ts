@@ -77,12 +77,14 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Codex 読み登録確認", () => {
 
 describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
   const zenShaderKeys = [
+    "editor.zenBackground.enabled",
     "editor.zenBackground.shader",
     "editor.zenBackground.paletteMode",
     "editor.zenBackground.opacity",
     "editor.zenBackground.speed",
     "editor.zenBackground.speedPercent",
     "editor.zenBackground.paperOpacity",
+    "editor.zenBackground.paperEdgeFade",
     "editor.zenBackground.shaderProps",
     "editor.zenBackground.scale",
     "editor.zenBackground.rotation",
@@ -139,6 +141,7 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
   });
 
   it("defaults to a subtle moving Mesh Gradient with both filters opt-in", () => {
+    expect(DEFAULT_SETTINGS["editor.zenBackground.enabled"]).toBe("true");
     expect(DEFAULT_SETTINGS["editor.zenBackground.shader"]).toBe(
       "mesh-gradient",
     );
@@ -146,6 +149,7 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     expect(DEFAULT_SETTINGS["editor.zenBackground.opacity"]).toBe("10");
     expect(DEFAULT_SETTINGS["editor.zenBackground.speedPercent"]).toBe("8");
     expect(DEFAULT_SETTINGS["editor.zenBackground.paperOpacity"]).toBe("100");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.paperEdgeFade"]).toBe("8");
     expect(DEFAULT_SETTINGS["editor.zenBackground.shaderProps"]).toBe("{}");
     expect(DEFAULT_SETTINGS["editor.zenBackground.dither.enabled"]).toBe(
       "false",

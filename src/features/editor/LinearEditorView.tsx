@@ -460,7 +460,11 @@ export function LinearEditorView() {
         className="zen-editor-paper"
         style={{
           ...buildEditorMeasureStyle(editorSettings.maxContentWidth),
-          ...buildEditorPaperStyle(backgroundConfig.paperOpacity),
+          ...buildEditorPaperStyle({
+            enabled: backgroundConfig.enabled,
+            opacity: backgroundConfig.paperOpacity,
+            edgeFade: backgroundConfig.paperEdgeFade,
+          }),
         }}
       >
         {scenes.map((scene, i) => (

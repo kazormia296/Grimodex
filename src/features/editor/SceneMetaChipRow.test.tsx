@@ -96,6 +96,13 @@ describe("SceneMetaChipRow の表示条件", () => {
     expect(screen.getByText("千早が帰還する。")).toBeTruthy();
   });
 
+  it("あらすじピルは背景を透過するクローム面を使う", () => {
+    render(<SceneMetaChipRow />);
+    expect(screen.getByText("千早が帰還する。").closest("button")).toHaveClass(
+      "editor-background-glass",
+    );
+  });
+
   it("パネルが開いていると出ない", () => {
     stubPanelOpen(true);
     render(<SceneMetaChipRow />);
