@@ -1,40 +1,32 @@
 // @vitest-environment happy-dom
-import React, { useLayoutEffect } from "react";
+import React from "react";
 import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const motionState = vi.hoisted(() => ({
+const zenState = vi.hoisted(() => ({
   reduced: false,
-  pause: vi.fn(),
-  createDrift: vi.fn(),
+  config: {
+    shader: "mesh-gradient",
+    speed: 0.08,
+    dither: { enabled: true },
+    halftone: { enabled: true },
+  },
 }));
 
 vi.mock("@/lib/animation", () => ({
-  DURATIONS: { fast: 0.15, normal: 0.2, slow: 0.3, dialog: 0.25 },
   EASINGS: { easeOut: [0.16, 1, 0.3, 1] },
-  ZEN_AMBIENT_DURATIONS: {
-    enter: 0.8,
-    exit: 0.45,
-    primaryDrift: 72,
-    secondaryDrift: 88,
-  },
-  useReducedMotion: () => motionState.reduced,
+  ZEN_AMBIENT_DURATIONS: { enter: 0.8, exit: 0.45 },
+  useReducedMotion: () => zenState.reduced,
 }));
 
-vi.mock("@/lib/gsap", () => ({
-  createZenAmbientDrift: (...args: unknown[]) =>
-    motionState.createDrift(...args),
+vi.mock("./zen/useZenShaderConfig", () => ({
+  useZenShaderConfig: () => zenState.config,
 }));
 
-vi.mock("@gsap/react", () => ({
-  useGSAP: (
-    callback: () => void | (() => void),
-    config?: { dependencies?: unknown[] },
-  ) => {
-    // Test-only hook shim: the real useGSAP owns dependency tracking.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    return useLayoutEffect(callback, config?.dependencies ?? []);
-  },
+vi.mock("./zen/ZenShaderSurface", () => ({
+  ZenShaderSurface: ({ playing }: { playing: boolean }) => (
+    <div data-zen-shader-surface data-playing={String(playing)} />
+  ),
 }));
 
 vi.mock("motion/react", () => ({
@@ -67,15 +59,11 @@ import { ZenAmbientBackdrop } from "./ZenAmbientBackdrop";
 
 describe("ZenAmbientBackdrop", () => {
   beforeEach(() => {
-    motionState.reduced = false;
-    motionState.pause.mockReset();
-    motionState.createDrift.mockReset().mockReturnValue({
-      paused: motionState.pause,
-    });
+    zenState.reduced = false;
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
   });
 
-  it("renders exactly two non-interactive drifting lights while Zen is active", () => {
+  it("renders the selected Paper shader and both post filters behind the Zen paper", () => {
     const { container } = render(<ZenAmbientBackdrop active />);
 
     const backdrop = container.querySelector("[data-zen-ambient]");
@@ -83,14 +71,15 @@ describe("ZenAmbientBackdrop", () => {
     expect(backdrop).toHaveAttribute("aria-hidden", "true");
     expect(backdrop).toHaveAttribute("data-motion", "drifting");
     expect(backdrop).toHaveAttribute("data-window-active", "true");
-    expect(container.querySelectorAll("[data-zen-ambient-light]")).toHaveLength(
-      2,
-    );
-    expect(motionState.createDrift).toHaveBeenCalledOnce();
-    expect(motionState.pause).toHaveBeenLastCalledWith(false);
+    expect(backdrop).toHaveAttribute("data-zen-shader", "mesh-gradient");
+    expect(backdrop).toHaveAttribute("data-zen-dither", "true");
+    expect(backdrop).toHaveAttribute("data-zen-halftone", "true");
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-playing", "true");
   });
 
-  it("pauses drift when the window becomes inactive", () => {
+  it("stops the WebGL animation when the window becomes inactive", () => {
     const { container } = render(<ZenAmbientBackdrop active />);
 
     act(() => window.dispatchEvent(new Event("blur")));
@@ -99,11 +88,13 @@ describe("ZenAmbientBackdrop", () => {
       "data-window-active",
       "false",
     );
-    expect(motionState.pause).toHaveBeenLastCalledWith(true);
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-playing", "false");
   });
 
-  it("uses a static gradient and starts no drift under Reduced Motion", () => {
-    motionState.reduced = true;
+  it("renders a static shader frame under Reduced Motion", () => {
+    zenState.reduced = true;
 
     const { container } = render(<ZenAmbientBackdrop active />);
 
@@ -111,12 +102,15 @@ describe("ZenAmbientBackdrop", () => {
       "data-motion",
       "static",
     );
-    expect(motionState.createDrift).not.toHaveBeenCalled();
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-playing", "false");
   });
 
-  it("renders no ambient layer outside Zen", () => {
+  it("renders no ambient layer or WebGL canvas outside Zen", () => {
     const { container } = render(<ZenAmbientBackdrop active={false} />);
 
     expect(container.querySelector("[data-zen-ambient]")).toBeNull();
+    expect(container.querySelector("[data-zen-shader-surface]")).toBeNull();
   });
 });
