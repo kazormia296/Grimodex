@@ -12,7 +12,6 @@ import { SettingNumberInput } from "../components/SettingNumberInput";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { FontFamilySelect } from "../components/FontFamilySelect";
 import { useSettingBoolean } from "../useSettingControl";
-import { ZenBackgroundSettings } from "../components/ZenBackgroundSettings";
 
 export function EditorCategory() {
   const { t } = useTranslation();
@@ -346,10 +345,6 @@ export function EditorCategory() {
             disabled={disableAll}
           />
         </SettingRow>
-      </SettingSection>
-
-      <SettingSection title={t("settings.editor.zenBackground")}>
-        <ZenBackgroundSettings />
       </SettingSection>
 
       <SettingSection title={t("settings.editor.writingGoal")}>

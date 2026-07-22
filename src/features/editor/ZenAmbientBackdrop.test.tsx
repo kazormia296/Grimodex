@@ -7,7 +7,7 @@ const zenState = vi.hoisted(() => ({
   reduced: false,
   config: {
     shader: "mesh-gradient",
-    speed: 0.08,
+    speed: 8,
     dither: { enabled: true },
     halftone: { enabled: true },
   },
@@ -63,17 +63,19 @@ describe("ZenAmbientBackdrop", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
   });
 
-  it("renders the selected Paper shader and both post filters behind the Zen paper", () => {
+  it("renders the selected Paper shader and both post filters behind the editor paper", () => {
     const { container } = render(<ZenAmbientBackdrop active />);
 
-    const backdrop = container.querySelector("[data-zen-ambient]");
+    const backdrop = container.querySelector("[data-editor-ambient]");
     expect(backdrop).not.toBeNull();
     expect(backdrop).toHaveAttribute("aria-hidden", "true");
     expect(backdrop).toHaveAttribute("data-motion", "drifting");
     expect(backdrop).toHaveAttribute("data-window-active", "true");
-    expect(backdrop).toHaveAttribute("data-zen-shader", "mesh-gradient");
-    expect(backdrop).toHaveAttribute("data-zen-dither", "true");
-    expect(backdrop).toHaveAttribute("data-zen-halftone", "true");
+    expect(backdrop).toHaveAttribute("data-background-shader", "mesh-gradient");
+    expect(backdrop).toHaveAttribute("data-background-dither", "true");
+    expect(backdrop).toHaveAttribute("data-background-halftone", "true");
+    expect(backdrop).toHaveClass("absolute");
+    expect(backdrop).not.toHaveClass("fixed");
     expect(
       container.querySelector("[data-zen-shader-surface]"),
     ).toHaveAttribute("data-playing", "true");
@@ -84,7 +86,7 @@ describe("ZenAmbientBackdrop", () => {
 
     act(() => window.dispatchEvent(new Event("blur")));
 
-    expect(container.querySelector("[data-zen-ambient]")).toHaveAttribute(
+    expect(container.querySelector("[data-editor-ambient]")).toHaveAttribute(
       "data-window-active",
       "false",
     );
@@ -98,7 +100,7 @@ describe("ZenAmbientBackdrop", () => {
 
     const { container } = render(<ZenAmbientBackdrop active />);
 
-    expect(container.querySelector("[data-zen-ambient]")).toHaveAttribute(
+    expect(container.querySelector("[data-editor-ambient]")).toHaveAttribute(
       "data-motion",
       "static",
     );
@@ -107,10 +109,15 @@ describe("ZenAmbientBackdrop", () => {
     ).toHaveAttribute("data-playing", "false");
   });
 
-  it("renders no ambient layer or WebGL canvas outside Zen", () => {
+  it("keeps the ambient layer and WebGL canvas active outside Zen", () => {
     const { container } = render(<ZenAmbientBackdrop active={false} />);
 
-    expect(container.querySelector("[data-zen-ambient]")).toBeNull();
-    expect(container.querySelector("[data-zen-shader-surface]")).toBeNull();
+    expect(container.querySelector("[data-editor-ambient]")).toHaveAttribute(
+      "data-zen-mode",
+      "false",
+    );
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-playing", "true");
   });
 });

@@ -24,7 +24,8 @@ import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings
 import type { FilterSource } from "@/features/attribution/attributionStore";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useCurrentProject } from "@/features/project/projectStore";
-import { ZenAmbientBackdrop } from "@/features/editor/ZenAmbientBackdrop";
+import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
+import { useZenShaderConfig } from "@/features/editor/zen/useZenShaderConfig";
 
 export interface EditorContentAreaProps {
   editor: Editor | null;
@@ -93,6 +94,7 @@ export function EditorContentArea({
   zenMode = false,
   onInlineAiCommand,
 }: EditorContentAreaProps) {
+  const backgroundConfig = useZenShaderConfig();
   const { t } = useTranslation();
   // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
   // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
@@ -123,7 +125,7 @@ export function EditorContentArea({
         data-focus-hide-beats={
           focusModeHideBeats && focusMode ? "true" : undefined
         }
-        className={`glass-editor-body relative isolate flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        className={`glass-editor-body relative isolate flex-1 overflow-auto bg-transparent text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
             // 余白クリックは「今見ている位置のままフォーカスだけ」戻す。
@@ -133,7 +135,6 @@ export function EditorContentArea({
           }
         }}
       >
-        <ZenAmbientBackdrop active={zenMode} />
         <div
           data-zen-editor-column={zenMode ? "true" : undefined}
           className={cn(
@@ -145,6 +146,7 @@ export function EditorContentArea({
           )}
           style={{
             ...buildEditorContentStyle(editorSettings),
+            ...buildEditorPaperStyle(backgroundConfig.paperOpacity),
             ...(gutterReserve
               ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
               : {}),

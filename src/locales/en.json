@@ -3665,6 +3665,17 @@
       "entryHint": "Zen · {{title}} · Esc to exit",
       "entryHintNoTitle": "Zen · Esc to exit"
     },
+    "background": {
+      "title": "Background Studio",
+      "open": "Adjust background live",
+      "close": "Close Background Studio",
+      "commonSection": "Background and paper",
+      "propsSection": "Shader props",
+      "filtersSection": "Post filters",
+      "shaderDescription": "Shared by normal and Zen views. Changes appear immediately on the real canvas behind this panel.",
+      "paperOpacity": "Paper background opacity",
+      "paperOpacityDescription": "Changes only the paper fill. Text always stays 100% opaque."
+    },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
       "italic": "Italic (Ctrl+I)",

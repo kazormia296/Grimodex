@@ -12,129 +12,115 @@ const palette: ZenResolvedPalette = {
   colors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
 };
 
-describe("Zen shader settings", () => {
-  it("offers a focused set of five Paper shader backgrounds", () => {
+describe("editor background shader settings", () => {
+  it("offers every Paper shader background", () => {
     expect(ZEN_SHADER_IDS).toEqual([
-      "mesh-gradient",
+      "color-panels",
+      "dithering",
+      "dot-grid",
+      "dot-orbit",
+      "fluted-glass",
+      "gem-smoke",
+      "god-rays",
       "grain-gradient",
+      "halftone-cmyk",
+      "halftone-dots",
+      "heatmap",
+      "image-dithering",
+      "liquid-metal",
+      "mesh-gradient",
+      "metaballs",
       "neuro-noise",
-      "warp",
+      "paper-texture",
+      "perlin-noise",
+      "pulsing-border",
+      "simplex-noise",
+      "smoke-ring",
+      "spiral",
       "static-mesh-gradient",
+      "static-radial-gradient",
+      "swirl",
+      "voronoi",
+      "warp",
+      "water",
+      "waves",
     ]);
     expect(ZEN_SHADER_DEFAULTS.shader).toBe("mesh-gradient");
-    expect(ZEN_SHADER_DEFAULTS.paletteMode).toBe("theme");
+  });
+
+  it("uses complete 0-100 percent domains for intensity, speed and paper opacity", () => {
+    const config = parseZenShaderConfig({
+      "editor.zenBackground.opacity": "300",
+      "editor.zenBackground.speedPercent": "300",
+      "editor.zenBackground.paperOpacity": "-5",
+    });
+
+    expect(config.opacity).toBe(100);
+    expect(config.speed).toBe(100);
+    expect(config.paperOpacity).toBe(0);
+  });
+
+  it("migrates the old fractional speed setting to a percentage", () => {
+    const config = parseZenShaderConfig({
+      "editor.zenBackground.speed": "0.08",
+    });
+
+    expect(config.speed).toBe(8);
   });
 
   it("normalizes malformed persisted values into safe shader ranges", () => {
     const config = parseZenShaderConfig({
       "editor.zenBackground.shader": "unknown",
       "editor.zenBackground.paletteMode": "invalid",
-      "editor.zenBackground.opacity": "300",
-      "editor.zenBackground.speed": "-2",
       "editor.zenBackground.scale": "NaN",
       "editor.zenBackground.rotation": "721",
       "editor.zenBackground.offsetX": "-9",
       "editor.zenBackground.offsetY": "9",
-      "editor.zenBackground.grain.shape": "bad-shape",
-      "editor.zenBackground.warp.shape": "bad-shape",
-      "editor.zenBackground.warp.swirlIterations": "99",
+      "editor.zenBackground.shaderProps": "not-json",
       "editor.zenBackground.dither.levels": "1",
-      "editor.zenBackground.dither.size": "99",
-      "editor.zenBackground.halftone.angle": "-20",
       "editor.zenBackground.halftone.size": "100",
     });
 
     expect(config.shader).toBe("mesh-gradient");
     expect(config.paletteMode).toBe("theme");
-    expect(config.opacity).toBe(40);
-    expect(config.speed).toBe(0);
     expect(config.scale).toBe(ZEN_SHADER_DEFAULTS.scale);
     expect(config.rotation).toBe(360);
     expect(config.offsetX).toBe(-1);
     expect(config.offsetY).toBe(1);
-    expect(config.grain.shape).toBe("corners");
-    expect(config.warp.shape).toBe("edge");
-    expect(config.warp.swirlIterations).toBe(20);
+    expect(config.shaderProps).toEqual({});
     expect(config.dither.levels).toBe(2);
-    expect(config.dither.size).toBe(8);
-    expect(config.halftone.angle).toBe(0);
     expect(config.halftone.size).toBe(24);
   });
 
-  it("maps common and shader-specific Paper props without leaking other variants", () => {
-    const base = parseZenShaderConfig({
-      "editor.zenBackground.speed": "0.12",
+  it("maps common and selected shader props to the official Paper prop names", () => {
+    const config = parseZenShaderConfig({
+      "editor.zenBackground.shader": "dot-grid",
+      "editor.zenBackground.speedPercent": "37",
       "editor.zenBackground.scale": "1.4",
-      "editor.zenBackground.rotation": "20",
-      "editor.zenBackground.offsetX": "0.2",
-      "editor.zenBackground.offsetY": "-0.3",
-      "editor.zenBackground.mesh.distortion": "0.65",
-      "editor.zenBackground.mesh.swirl": "0.25",
+      "editor.zenBackground.shaderProps": JSON.stringify({
+        "dot-grid": {
+          size: 42,
+          gapX: 80,
+          shape: "triangle",
+          sizeRange: 0.25,
+        },
+      }),
     });
 
-    expect(buildZenShaderProps(base, palette)).toMatchObject({
-      speed: 0.12,
-      scale: 1.4,
-      rotation: 20,
-      offsetX: 0.2,
-      offsetY: -0.3,
-      colors: palette.colors,
-      distortion: 0.65,
-      swirl: 0.25,
+    expect(buildZenShaderProps(config, palette)).toMatchObject({
+      speed: 0.37,
       fit: "cover",
-      minPixelRatio: 1,
-    });
-    expect(buildZenShaderProps(base, palette)).not.toHaveProperty("shape");
-
-    const grain = parseZenShaderConfig({
-      "editor.zenBackground.shader": "grain-gradient",
-      "editor.zenBackground.grain.shape": "ripple",
-      "editor.zenBackground.grain.softness": "0.8",
-      "editor.zenBackground.grain.intensity": "0.45",
-      "editor.zenBackground.grain.noise": "0.15",
-    });
-    expect(buildZenShaderProps(grain, palette)).toMatchObject({
+      scale: 1.4,
       colorBack: palette.background,
-      shape: "ripple",
-      softness: 0.8,
-      intensity: 0.45,
-      noise: 0.15,
+      colorFill: palette.colors[0],
+      size: 42,
+      gapX: 80,
+      shape: "triangle",
+      sizeRange: 0.25,
     });
-
-    const neuro = parseZenShaderConfig({
-      "editor.zenBackground.shader": "neuro-noise",
-      "editor.zenBackground.neuro.brightness": "0.22",
-      "editor.zenBackground.neuro.contrast": "0.4",
-    });
-    expect(buildZenShaderProps(neuro, palette)).toMatchObject({
-      colorBack: palette.background,
-      colorMid: palette.colors[0],
-      colorFront: palette.colors[1],
-      brightness: 0.22,
-      contrast: 0.4,
-    });
-
-    const warp = parseZenShaderConfig({
-      "editor.zenBackground.shader": "warp",
-      "editor.zenBackground.warp.shape": "stripes",
-      "editor.zenBackground.warp.swirlIterations": "7",
-    });
-    expect(buildZenShaderProps(warp, palette)).toMatchObject({
-      shape: "stripes",
-      swirlIterations: 7,
-    });
-
-    const staticMesh = parseZenShaderConfig({
-      "editor.zenBackground.shader": "static-mesh-gradient",
-      "editor.zenBackground.staticMesh.positions": "40",
-      "editor.zenBackground.staticMesh.waveX": "0.6",
-    });
-    const staticProps = buildZenShaderProps(staticMesh, palette);
-    expect(staticProps).toMatchObject({ positions: 40, waveX: 0.6 });
-    expect(staticProps).not.toHaveProperty("speed");
   });
 
-  it("uses custom colors only when custom palette mode is selected", () => {
+  it("uses custom colors only in custom palette mode", () => {
     const custom = parseZenShaderConfig({
       "editor.zenBackground.paletteMode": "custom",
       "editor.zenBackground.color1": "#112233",

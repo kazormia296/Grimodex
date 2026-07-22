@@ -81,6 +81,9 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     "editor.zenBackground.paletteMode",
     "editor.zenBackground.opacity",
     "editor.zenBackground.speed",
+    "editor.zenBackground.speedPercent",
+    "editor.zenBackground.paperOpacity",
+    "editor.zenBackground.shaderProps",
     "editor.zenBackground.scale",
     "editor.zenBackground.rotation",
     "editor.zenBackground.offsetX",
@@ -141,6 +144,9 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     );
     expect(DEFAULT_SETTINGS["editor.zenBackground.paletteMode"]).toBe("theme");
     expect(DEFAULT_SETTINGS["editor.zenBackground.opacity"]).toBe("10");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.speedPercent"]).toBe("8");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.paperOpacity"]).toBe("100");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.shaderProps"]).toBe("{}");
     expect(DEFAULT_SETTINGS["editor.zenBackground.dither.enabled"]).toBe(
       "false",
     );

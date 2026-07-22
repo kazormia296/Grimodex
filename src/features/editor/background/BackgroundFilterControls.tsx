@@ -1,10 +1,12 @@
 import { useTranslation } from "react-i18next";
-import { useSettingBoolean } from "../useSettingControl";
-import { SettingRow } from "./SettingRow";
-import { SettingSlider } from "./SettingSlider";
-import { SettingToggle } from "./SettingToggle";
+import { SettingRow } from "@/features/settings/components/SettingRow";
+import { SettingSlider } from "@/features/settings/components/SettingSlider";
+import { SettingToggle } from "@/features/settings/components/SettingToggle";
+import { useSettingBoolean } from "@/features/settings/useSettingControl";
 
-export function ZenPostFilterSettings() {
+const percent = (value: number) => `${Math.round(value * 100)}%`;
+
+export function BackgroundFilterControls() {
   const { t } = useTranslation();
   const dither = useSettingBoolean(
     "editor.zenBackground.dither.enabled",
@@ -14,7 +16,6 @@ export function ZenPostFilterSettings() {
     "editor.zenBackground.halftone.enabled",
     false,
   ).value;
-  const percent = (value: number) => `${Math.round(value * 100)}%`;
 
   return (
     <>
@@ -24,7 +25,10 @@ export function ZenPostFilterSettings() {
       >
         <SettingToggle settingKey="editor.zenBackground.dither.enabled" />
       </SettingRow>
-      <SettingRow label={t("settings.editor.zenDitherStrength")}>
+      <SettingRow
+        label={t("settings.editor.zenDitherStrength")}
+        disabled={!dither}
+      >
         <SettingSlider
           settingKey="editor.zenBackground.dither.strength"
           min={0}
@@ -35,7 +39,7 @@ export function ZenPostFilterSettings() {
           disabled={!dither}
         />
       </SettingRow>
-      <SettingRow label={t("settings.editor.zenDitherSize")}>
+      <SettingRow label={t("settings.editor.zenDitherSize")} disabled={!dither}>
         <SettingSlider
           settingKey="editor.zenBackground.dither.size"
           min={1}
@@ -45,7 +49,10 @@ export function ZenPostFilterSettings() {
           disabled={!dither}
         />
       </SettingRow>
-      <SettingRow label={t("settings.editor.zenDitherLevels")}>
+      <SettingRow
+        label={t("settings.editor.zenDitherLevels")}
+        disabled={!dither}
+      >
         <SettingSlider
           settingKey="editor.zenBackground.dither.levels"
           min={2}
@@ -60,7 +67,10 @@ export function ZenPostFilterSettings() {
       >
         <SettingToggle settingKey="editor.zenBackground.halftone.enabled" />
       </SettingRow>
-      <SettingRow label={t("settings.editor.zenHalftoneStrength")}>
+      <SettingRow
+        label={t("settings.editor.zenHalftoneStrength")}
+        disabled={!halftone}
+      >
         <SettingSlider
           settingKey="editor.zenBackground.halftone.strength"
           min={0}
@@ -71,7 +81,10 @@ export function ZenPostFilterSettings() {
           disabled={!halftone}
         />
       </SettingRow>
-      <SettingRow label={t("settings.editor.zenHalftoneSize")}>
+      <SettingRow
+        label={t("settings.editor.zenHalftoneSize")}
+        disabled={!halftone}
+      >
         <SettingSlider
           settingKey="editor.zenBackground.halftone.size"
           min={3}
@@ -81,7 +94,10 @@ export function ZenPostFilterSettings() {
           disabled={!halftone}
         />
       </SettingRow>
-      <SettingRow label={t("settings.editor.zenHalftoneAngle")}>
+      <SettingRow
+        label={t("settings.editor.zenHalftoneAngle")}
+        disabled={!halftone}
+      >
         <SettingSlider
           settingKey="editor.zenBackground.halftone.angle"
           min={0}
@@ -91,7 +107,10 @@ export function ZenPostFilterSettings() {
           disabled={!halftone}
         />
       </SettingRow>
-      <SettingRow label={t("settings.editor.zenHalftoneSoftness")}>
+      <SettingRow
+        label={t("settings.editor.zenHalftoneSoftness")}
+        disabled={!halftone}
+      >
         <SettingSlider
           settingKey="editor.zenBackground.halftone.softness"
           min={0}

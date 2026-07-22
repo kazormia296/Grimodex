@@ -42,13 +42,15 @@ import {
   matchesBinding,
 } from "@/features/settings/keybindings";
 import type { Editor } from "@tiptap/core";
-import { ZenAmbientBackdrop } from "@/features/editor/ZenAmbientBackdrop";
+import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
+import { useZenShaderConfig } from "@/features/editor/zen/useZenShaderConfig";
 
 const DEFAULT_HEIGHT = 300;
 const DEBOUNCE_ACTIVE_MS = 100;
 
 export function LinearEditorView() {
   const editorSettings = useEditorSettings();
+  const backgroundConfig = useZenShaderConfig();
   const verticalMode = editorSettings.verticalMode;
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
@@ -450,14 +452,16 @@ export function LinearEditorView() {
   const scrollContainer = (
     <div
       ref={scrollRef}
-      className={`glass-editor-body relative isolate flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
+      className={`glass-editor-body relative isolate flex-1 overflow-auto bg-transparent text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
     >
-      <ZenAmbientBackdrop active={zenMode} />
       <div
         ref={editorContainerRef}
         data-zen-editor-column={zenMode ? "true" : undefined}
         className="zen-editor-paper"
-        style={buildEditorMeasureStyle(editorSettings.maxContentWidth)}
+        style={{
+          ...buildEditorMeasureStyle(editorSettings.maxContentWidth),
+          ...buildEditorPaperStyle(backgroundConfig.paperOpacity),
+        }}
       >
         {scenes.map((scene, i) => (
           <div key={scene.id}>

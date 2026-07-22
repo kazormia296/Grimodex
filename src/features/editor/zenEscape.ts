@@ -1,5 +1,6 @@
 import type { EditorView } from "@tiptap/pm/view";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
+import { useBackgroundStudioStore } from "./background/backgroundStudioStore";
 
 const forwardedEscapeEvents = new WeakSet<KeyboardEvent>();
 
@@ -29,6 +30,11 @@ export function handleZenEscapeKeyDown(
 
   forwardedEscapeEvents.add(event);
   try {
+    if (useBackgroundStudioStore.getState().open) {
+      event.preventDefault();
+      useBackgroundStudioStore.getState().setOpen(false);
+      return true;
+    }
     const handledByEditor = view.someProp("handleKeyDown", (handler) =>
       handler(view, event),
     );

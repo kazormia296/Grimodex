@@ -3660,6 +3660,17 @@
       "entryHint": "Zen · {{title}} · Escで終了",
       "entryHintNoTitle": "Zen · Escで終了"
     },
+    "background": {
+      "title": "背景スタジオ",
+      "open": "背景をライブ調整",
+      "close": "背景スタジオを閉じる",
+      "commonSection": "背景と本文",
+      "propsSection": "シェーダーProps",
+      "filtersSection": "追加フィルター",
+      "shaderDescription": "通常表示とZenで共通。変更は背後の実画面へ即時反映されます。",
+      "paperOpacity": "本文背景の不透明度",
+      "paperOpacityDescription": "本文の紙面色だけを透過します。文字は常に100%不透明です。"
+    },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",
       "italic": "斜体 (Ctrl+I)",

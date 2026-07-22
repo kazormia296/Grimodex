@@ -11,6 +11,7 @@ import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Toolbar } from "./Toolbar";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
+import { useBackgroundStudioStore } from "./background/backgroundStudioStore";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (k: string) => k }),
@@ -31,7 +32,10 @@ function openOverflow() {
 }
 
 afterEach(() => cleanup());
-beforeEach(() => useCursorSettingsStore.setState({ zenMode: false }));
+beforeEach(() => {
+  useCursorSettingsStore.setState({ zenMode: false });
+  useBackgroundStudioStore.setState({ open: false });
+});
 
 describe("Toolbar container semantics", () => {
   it("exposes role=toolbar with an accessible name", () => {
@@ -57,6 +61,18 @@ describe("Toolbar container semantics", () => {
     useCursorSettingsStore.setState({ zenMode: true });
     renderToolbar(editor);
     expect(screen.queryByRole("toolbar")).toBeNull();
+    editor.destroy();
+  });
+
+  it("opens the live background studio from the normal editor toolbar", () => {
+    const editor = createTestEditor();
+    renderToolbar(editor);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "editor.background.open" }),
+    );
+
+    expect(useBackgroundStudioStore.getState().open).toBe(true);
     editor.destroy();
   });
 });

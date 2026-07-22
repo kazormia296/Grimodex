@@ -28,8 +28,10 @@ vi.mock("@/features/editor/EditorContextMenu", () => ({
   EditorContextMenu: () => null,
 }));
 vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
-  ZenAmbientBackdrop: ({ active }: { active: boolean }) =>
-    active ? <div data-zen-ambient aria-hidden="true" /> : null,
+  ZenAmbientBackdrop: () => <div data-zen-ambient aria-hidden="true" />,
+}));
+vi.mock("@/features/editor/zen/useZenShaderConfig", () => ({
+  useZenShaderConfig: () => ({ paperOpacity: 35 }),
 }));
 const settingsOverride = vi.hoisted(
   () => ({ current: {} }) as { current: Record<string, unknown> },
@@ -120,8 +122,8 @@ beforeEach(() => {
   settingsOverride.current = {};
 });
 
-describe("LinearEditorView — Zen ambient boundary", () => {
-  it("keeps the ambient layer outside the fixed editor paper column", () => {
+describe("LinearEditorView — background boundary", () => {
+  it("uses the App-level backdrop and changes only the local paper alpha", () => {
     useCursorSettingsStore.setState({ zenMode: true });
     useTreeStore.setState({
       nodes: [makeNode({ id: "S1" })],
@@ -130,11 +132,14 @@ describe("LinearEditorView — Zen ambient boundary", () => {
 
     const { container } = render(<LinearEditorView />);
 
-    const ambient = container.querySelector("[data-zen-ambient]");
     const paper = container.querySelector('[data-zen-editor-column="true"]');
-    expect(ambient).not.toBeNull();
     expect(paper).not.toBeNull();
-    expect(ambient?.nextElementSibling).toBe(paper);
+    expect(container.querySelector("[data-zen-ambient]")).toBeNull();
+    expect(paper).toHaveStyle({
+      background:
+        "color-mix(in oklch, var(--content-background) 35%, transparent)",
+    });
+    expect((paper as HTMLElement).style.opacity).toBe("");
   });
 });
 

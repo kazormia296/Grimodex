@@ -62,6 +62,8 @@ import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { ZenModeController } from "@/features/editor/ZenModeController";
+import { ZenAmbientBackdrop } from "@/features/editor/ZenAmbientBackdrop";
+import { BackgroundStudioHost } from "@/features/editor/background/BackgroundStudioHost";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { HistoryButtons } from "@/features/history/HistoryButtons";
@@ -955,8 +957,9 @@ function EditorScreen() {
       <main
         id="main-content"
         tabIndex={-1}
-        className="flex min-h-0 flex-1 overflow-hidden outline-none"
+        className="relative isolate flex min-h-0 flex-1 overflow-hidden outline-none"
       >
+        <ZenAmbientBackdrop active={editorZenMode} />
         {adaptiveWorkspaceEnabled ? (
           <AdaptiveWorkspaceShell
             zenMode={editorZenMode}
@@ -982,6 +985,7 @@ function EditorScreen() {
         )}
       </main>
       <ZenModeController />
+      <BackgroundStudioHost zenMode={editorZenMode} />
     </div>
   );
 }

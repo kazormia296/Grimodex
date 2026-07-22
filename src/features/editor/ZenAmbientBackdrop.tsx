@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import {
   EASINGS,
   ZEN_AMBIENT_DURATIONS,
@@ -38,43 +38,32 @@ interface ZenAmbientBackdropProps {
   active: boolean;
 }
 
-/** Configurable Paper shader behind the fixed, opaque Zen writing column. */
+/** One configurable Paper shader shared by the normal and Zen editor layouts. */
 export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
   const reduced = useReducedMotion();
   const windowActive = useWindowActive();
   const config = useZenShaderConfig();
-  const playing = active && !reduced && windowActive && config.speed > 0;
+  const playing = !reduced && windowActive && config.speed > 0;
 
   return (
-    <AnimatePresence initial={false}>
-      {active && (
-        <motion.div
-          key="zen-ambient"
-          data-zen-ambient
-          data-motion={playing ? "drifting" : "static"}
-          data-window-active={windowActive ? "true" : "false"}
-          data-zen-shader={config.shader}
-          data-zen-dither={config.dither.enabled ? "true" : "false"}
-          data-zen-halftone={config.halftone.enabled ? "true" : "false"}
-          aria-hidden="true"
-          className="zen-ambient-backdrop pointer-events-none fixed inset-0 overflow-hidden"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{
-            opacity: 0,
-            transition: {
-              duration: reduced ? 0 : ZEN_AMBIENT_DURATIONS.exit,
-              ease: EASINGS.easeOut,
-            },
-          }}
-          transition={{
-            duration: reduced ? 0 : ZEN_AMBIENT_DURATIONS.enter,
-            ease: EASINGS.easeOut,
-          }}
-        >
-          <ZenShaderSurface config={config} playing={playing} />
-        </motion.div>
-      )}
-    </AnimatePresence>
+    <motion.div
+      data-editor-ambient
+      data-zen-mode={active ? "true" : "false"}
+      data-motion={playing ? "drifting" : "static"}
+      data-window-active={windowActive ? "true" : "false"}
+      data-background-shader={config.shader}
+      data-background-dither={config.dither.enabled ? "true" : "false"}
+      data-background-halftone={config.halftone.enabled ? "true" : "false"}
+      aria-hidden="true"
+      className="editor-ambient-backdrop pointer-events-none absolute inset-0 overflow-hidden"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{
+        duration: reduced ? 0 : ZEN_AMBIENT_DURATIONS.enter,
+        ease: EASINGS.easeOut,
+      }}
+    >
+      <ZenShaderSurface config={config} playing={playing} />
+    </motion.div>
   );
 }

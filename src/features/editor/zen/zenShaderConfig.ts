@@ -1,22 +1,14 @@
-export const ZEN_SHADER_IDS = [
-  "mesh-gradient",
-  "grain-gradient",
-  "neuro-noise",
-  "warp",
-  "static-mesh-gradient",
-] as const;
+import {
+  PAPER_SHADER_DEFINITIONS,
+  PAPER_SHADER_IDS,
+  getPaperShaderDefinition,
+  type PaperShaderId,
+  type PaperShaderProperty,
+} from "./paperShaderCatalog";
 
-export type ZenShaderId = (typeof ZEN_SHADER_IDS)[number];
+export const ZEN_SHADER_IDS = PAPER_SHADER_IDS;
+export type ZenShaderId = PaperShaderId;
 export type ZenPaletteMode = "theme" | "custom";
-export type ZenGrainShape =
-  | "wave"
-  | "dots"
-  | "truchet"
-  | "corners"
-  | "ripple"
-  | "blob"
-  | "sphere";
-export type ZenWarpShape = "checks" | "stripes" | "edge";
 
 export interface ZenResolvedPalette {
   background: string;
@@ -27,48 +19,18 @@ export interface ZenShaderConfig {
   shader: ZenShaderId;
   paletteMode: ZenPaletteMode;
   opacity: number;
+  /** Normalized user-facing percentage. Paper receives speed / 100. */
   speed: number;
+  paperOpacity: number;
   scale: number;
   rotation: number;
   offsetX: number;
   offsetY: number;
   customColors: [string, string, string, string];
   customColorBack: string;
-  mesh: {
-    distortion: number;
-    swirl: number;
-    grainMixer: number;
-    grainOverlay: number;
-  };
-  grain: {
-    softness: number;
-    intensity: number;
-    noise: number;
-    shape: ZenGrainShape;
-  };
-  neuro: {
-    brightness: number;
-    contrast: number;
-  };
-  warp: {
-    proportion: number;
-    softness: number;
-    distortion: number;
-    swirl: number;
-    swirlIterations: number;
-    shape: ZenWarpShape;
-    shapeScale: number;
-  };
-  staticMesh: {
-    positions: number;
-    waveX: number;
-    waveXShift: number;
-    waveY: number;
-    waveYShift: number;
-    mixing: number;
-    grainMixer: number;
-    grainOverlay: number;
-  };
+  shaderProps: Partial<
+    Record<ZenShaderId, Record<string, PaperShaderProperty>>
+  >;
   dither: {
     enabled: boolean;
     strength: number;
@@ -88,45 +50,15 @@ export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
   shader: "mesh-gradient",
   paletteMode: "theme",
   opacity: 10,
-  speed: 0.08,
+  speed: 8,
+  paperOpacity: 100,
   scale: 1.15,
   rotation: 0,
   offsetX: 0,
   offsetY: 0,
   customColors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
   customColorBack: "#101318",
-  mesh: {
-    distortion: 0.7,
-    swirl: 0.25,
-    grainMixer: 0,
-    grainOverlay: 0,
-  },
-  grain: {
-    softness: 0.75,
-    intensity: 0.35,
-    noise: 0.12,
-    shape: "corners",
-  },
-  neuro: { brightness: 0.1, contrast: 0.35 },
-  warp: {
-    proportion: 0.5,
-    softness: 0.8,
-    distortion: 0.2,
-    swirl: 0.5,
-    swirlIterations: 6,
-    shape: "edge",
-    shapeScale: 0.4,
-  },
-  staticMesh: {
-    positions: 35,
-    waveX: 0.5,
-    waveXShift: 0.25,
-    waveY: 0.55,
-    waveYShift: 0.65,
-    mixing: 0.65,
-    grainMixer: 0,
-    grainOverlay: 0,
-  },
+  shaderProps: {},
   dither: { enabled: false, strength: 0.35, size: 2, levels: 6 },
   halftone: {
     enabled: false,
@@ -137,19 +69,8 @@ export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
   },
 };
 
-const GRAIN_SHAPES: readonly ZenGrainShape[] = [
-  "wave",
-  "dots",
-  "truchet",
-  "corners",
-  "ripple",
-  "blob",
-  "sphere",
-];
-const WARP_SHAPES: readonly ZenWarpShape[] = ["checks", "stripes", "edge"];
-
 function finiteNumber(
-  raw: string | undefined,
+  raw: unknown,
   fallback: number,
   min: number,
   max: number,
@@ -162,16 +83,16 @@ function finiteNumber(
 }
 
 function enumValue<T extends string>(
-  raw: string | undefined,
+  raw: unknown,
   values: readonly T[],
   fallback: T,
 ): T {
   return values.includes(raw as T) ? (raw as T) : fallback;
 }
 
-function booleanValue(raw: string | undefined, fallback: boolean): boolean {
-  if (raw === "true") return true;
-  if (raw === "false") return false;
+function booleanValue(raw: unknown, fallback: boolean): boolean {
+  if (raw === true || raw === "true") return true;
+  if (raw === false || raw === "false") return false;
   return fallback;
 }
 
@@ -180,6 +101,126 @@ function value(
   suffix: string,
 ): string | undefined {
   return values[`editor.zenBackground.${suffix}`];
+}
+
+function parseJsonRecord(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+const LEGACY_PROPS: Partial<Record<ZenShaderId, Record<string, string>>> = {
+  "mesh-gradient": {
+    distortion: "mesh.distortion",
+    swirl: "mesh.swirl",
+    grainMixer: "mesh.grainMixer",
+    grainOverlay: "mesh.grainOverlay",
+  },
+  "grain-gradient": {
+    softness: "grain.softness",
+    intensity: "grain.intensity",
+    noise: "grain.noise",
+    shape: "grain.shape",
+  },
+  "neuro-noise": {
+    brightness: "neuro.brightness",
+    contrast: "neuro.contrast",
+  },
+  warp: {
+    proportion: "warp.proportion",
+    softness: "warp.softness",
+    distortion: "warp.distortion",
+    swirl: "warp.swirl",
+    swirlIterations: "warp.swirlIterations",
+    shape: "warp.shape",
+    shapeScale: "warp.shapeScale",
+  },
+  "static-mesh-gradient": {
+    positions: "staticMesh.positions",
+    waveX: "staticMesh.waveX",
+    waveXShift: "staticMesh.waveXShift",
+    waveY: "staticMesh.waveY",
+    waveYShift: "staticMesh.waveYShift",
+    mixing: "staticMesh.mixing",
+    grainMixer: "staticMesh.grainMixer",
+    grainOverlay: "staticMesh.grainOverlay",
+  },
+};
+
+function legacyShaderProps(
+  values: Record<string, string | undefined>,
+  id: ZenShaderId,
+): Record<string, unknown> {
+  const mapping = LEGACY_PROPS[id];
+  if (!mapping) return {};
+  return Object.fromEntries(
+    Object.entries(mapping).flatMap(([key, suffix]) => {
+      const raw = value(values, suffix);
+      return raw === undefined ? [] : [[key, raw]];
+    }),
+  );
+}
+
+function sanitizeShaderProps(
+  values: Record<string, string | undefined>,
+): ZenShaderConfig["shaderProps"] {
+  const persisted = parseJsonRecord(value(values, "shaderProps"));
+  const result: ZenShaderConfig["shaderProps"] = {};
+
+  for (const definition of PAPER_SHADER_DEFINITIONS) {
+    const fromJson = persisted[definition.id];
+    const raw = {
+      ...legacyShaderProps(values, definition.id),
+      ...(fromJson && typeof fromJson === "object" && !Array.isArray(fromJson)
+        ? (fromJson as Record<string, unknown>)
+        : {}),
+    };
+    const sanitized: Record<string, PaperShaderProperty> = {};
+
+    for (const control of definition.controls) {
+      if (!(control.key in raw)) continue;
+      const fallback = definition.defaults[control.key];
+      if (control.type === "slider") {
+        sanitized[control.key] = finiteNumber(
+          raw[control.key],
+          typeof fallback === "number" ? fallback : control.min,
+          control.min,
+          control.max,
+          Number.isInteger(control.step),
+        );
+      } else if (control.type === "toggle") {
+        sanitized[control.key] = booleanValue(
+          raw[control.key],
+          typeof fallback === "boolean" ? fallback : false,
+        );
+      } else {
+        sanitized[control.key] = enumValue(
+          raw[control.key],
+          control.options,
+          typeof fallback === "string" ? fallback : control.options[0]!,
+        );
+      }
+    }
+
+    if (Object.keys(sanitized).length > 0) result[definition.id] = sanitized;
+  }
+  return result;
+}
+
+function parseSpeedPercent(values: Record<string, string | undefined>): number {
+  const current = value(values, "speedPercent");
+  if (current !== undefined) {
+    return finiteNumber(current, ZEN_SHADER_DEFAULTS.speed, 0, 100);
+  }
+  const legacy = value(values, "speed");
+  if (legacy === undefined) return ZEN_SHADER_DEFAULTS.speed;
+  return finiteNumber(Number(legacy) * 100, ZEN_SHADER_DEFAULTS.speed, 0, 100);
 }
 
 export function parseZenShaderConfig(
@@ -196,8 +237,14 @@ export function parseZenShaderConfig(
       ["theme", "custom"],
       d.paletteMode,
     ),
-    opacity: finiteNumber(value(values, "opacity"), d.opacity, 0, 40),
-    speed: finiteNumber(value(values, "speed"), d.speed, 0, 1),
+    opacity: finiteNumber(value(values, "opacity"), d.opacity, 0, 100),
+    speed: parseSpeedPercent(values),
+    paperOpacity: finiteNumber(
+      value(values, "paperOpacity"),
+      d.paperOpacity,
+      0,
+      100,
+    ),
     scale: finiteNumber(value(values, "scale"), d.scale, 0.25, 4),
     rotation: finiteNumber(value(values, "rotation"), d.rotation, 0, 360),
     offsetX: finiteNumber(value(values, "offsetX"), d.offsetX, -1, 1),
@@ -208,59 +255,8 @@ export function parseZenShaderConfig(
       value(values, "color3") ?? d.customColors[2],
       value(values, "color4") ?? d.customColors[3],
     ],
-    customColorBack:
-      value(values, "colorBack") ?? ZEN_SHADER_DEFAULTS.customColorBack,
-    mesh: {
-      distortion: unit("mesh.distortion", d.mesh.distortion),
-      swirl: unit("mesh.swirl", d.mesh.swirl),
-      grainMixer: unit("mesh.grainMixer", d.mesh.grainMixer),
-      grainOverlay: unit("mesh.grainOverlay", d.mesh.grainOverlay),
-    },
-    grain: {
-      softness: unit("grain.softness", d.grain.softness),
-      intensity: unit("grain.intensity", d.grain.intensity),
-      noise: unit("grain.noise", d.grain.noise),
-      shape: enumValue(
-        value(values, "grain.shape"),
-        GRAIN_SHAPES,
-        d.grain.shape,
-      ),
-    },
-    neuro: {
-      brightness: unit("neuro.brightness", d.neuro.brightness),
-      contrast: unit("neuro.contrast", d.neuro.contrast),
-    },
-    warp: {
-      proportion: unit("warp.proportion", d.warp.proportion),
-      softness: unit("warp.softness", d.warp.softness),
-      distortion: unit("warp.distortion", d.warp.distortion),
-      swirl: unit("warp.swirl", d.warp.swirl),
-      swirlIterations: finiteNumber(
-        value(values, "warp.swirlIterations"),
-        d.warp.swirlIterations,
-        0,
-        20,
-        true,
-      ),
-      shape: enumValue(value(values, "warp.shape"), WARP_SHAPES, d.warp.shape),
-      shapeScale: unit("warp.shapeScale", d.warp.shapeScale),
-    },
-    staticMesh: {
-      positions: finiteNumber(
-        value(values, "staticMesh.positions"),
-        d.staticMesh.positions,
-        0,
-        100,
-        true,
-      ),
-      waveX: unit("staticMesh.waveX", d.staticMesh.waveX),
-      waveXShift: unit("staticMesh.waveXShift", d.staticMesh.waveXShift),
-      waveY: unit("staticMesh.waveY", d.staticMesh.waveY),
-      waveYShift: unit("staticMesh.waveYShift", d.staticMesh.waveYShift),
-      mixing: unit("staticMesh.mixing", d.staticMesh.mixing),
-      grainMixer: unit("staticMesh.grainMixer", d.staticMesh.grainMixer),
-      grainOverlay: unit("staticMesh.grainOverlay", d.staticMesh.grainOverlay),
-    },
+    customColorBack: value(values, "colorBack") ?? d.customColorBack,
+    shaderProps: sanitizeShaderProps(values),
     dither: {
       enabled: booleanValue(value(values, "dither.enabled"), d.dither.enabled),
       strength: unit("dither.strength", d.dither.strength),
@@ -314,7 +310,46 @@ function supportedColor(color: string, fallback: string): string {
   return fallback;
 }
 
-/** Maps the persisted controls to the public Paper component prop names. */
+function paletteImageDataUrl(palette: ZenResolvedPalette): string {
+  const colors = [palette.background, ...palette.colors].map((color) =>
+    color.replaceAll("&", "&amp;").replaceAll('"', "&quot;"),
+  );
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><radialGradient id="a" cx="20%" cy="15%" r="90%"><stop stop-color="${colors[1]}"/><stop offset="1" stop-color="${colors[0]}"/></radialGradient><radialGradient id="b" cx="80%" cy="85%" r="75%"><stop stop-color="${colors[2]}"/><stop offset="1" stop-color="${colors[3]}" stop-opacity="0"/></radialGradient></defs><rect width="512" height="512" fill="url(#a)"/><rect width="512" height="512" fill="url(#b)"/><circle cx="256" cy="256" r="132" fill="${colors[4]}" fill-opacity=".55"/></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+function colorProps(
+  defaults: Record<string, unknown>,
+  palette: ZenResolvedPalette,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const colors = palette.colors;
+  const assignments: Record<string, string> = {
+    colorBack: palette.background,
+    colorFront: colors[0],
+    colorFill: colors[0],
+    colorStroke: colors[1],
+    colorMid: colors[1],
+    colorHighlight: colors[1],
+    colorShadow: colors[2],
+    colorBloom: colors[1],
+    colorInner: colors[0],
+    colorTint: colors[0],
+    colorGlow: colors[0],
+    colorGap: palette.background,
+    colorC: colors[0],
+    colorM: colors[1],
+    colorY: colors[2],
+    colorK: colors[3],
+  };
+  if ("colors" in defaults) result.colors = [...colors];
+  for (const [key, color] of Object.entries(assignments)) {
+    if (key in defaults) result[key] = color;
+  }
+  return result;
+}
+
+/** Maps persisted controls to the complete public Paper component prop set. */
 export function buildZenShaderProps(
   config: ZenShaderConfig,
   themePalette: ZenResolvedPalette,
@@ -325,14 +360,26 @@ export function buildZenShaderProps(
           supportedColor(color, themePalette.colors[index]!),
         )
       : [...themePalette.colors];
-  const colorBack =
+  const background =
     config.paletteMode === "custom"
       ? supportedColor(config.customColorBack, themePalette.background)
       : themePalette.background;
-  const common: Record<string, unknown> = {
+  const palette = {
+    background,
+    colors: colors as ZenResolvedPalette["colors"],
+  };
+  const definition = getPaperShaderDefinition(config.shader);
+
+  return {
+    ...definition.defaults,
+    ...colorProps(definition.defaults, palette),
+    ...(definition.imageSource ? { image: paletteImageDataUrl(palette) } : {}),
+    ...config.shaderProps[config.shader],
     width: "100%",
     height: "100%",
     fit: "cover",
+    speed: config.speed / 100,
+    frame: 0,
     scale: config.scale,
     rotation: config.rotation,
     offsetX: config.offsetX,
@@ -340,32 +387,4 @@ export function buildZenShaderProps(
     minPixelRatio: 1,
     maxPixelCount: 1_500_000,
   };
-  const motion = { speed: config.speed, frame: 0 };
-
-  switch (config.shader) {
-    case "grain-gradient":
-      return {
-        ...common,
-        ...motion,
-        colors,
-        colorBack,
-        ...config.grain,
-      };
-    case "neuro-noise":
-      return {
-        ...common,
-        ...motion,
-        colorBack,
-        colorMid: colors[0],
-        colorFront: colors[1],
-        ...config.neuro,
-      };
-    case "warp":
-      return { ...common, ...motion, colors, ...config.warp };
-    case "static-mesh-gradient":
-      return { ...common, colors, ...config.staticMesh };
-    case "mesh-gradient":
-    default:
-      return { ...common, ...motion, colors, ...config.mesh };
-  }
 }

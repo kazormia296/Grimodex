@@ -15,6 +15,7 @@ import {
   List,
   ListOrdered,
   Minus,
+  Palette,
   PanelRight,
   Pilcrow,
   Quote,
@@ -50,6 +51,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { resolveReadingForSurface } from "@/features/codex/reading";
 import { useCodexReadingRegistrationPrompt } from "@/features/editor/useCodexReadingRegistrationPrompt";
 import { onWindowResized } from "@/lib/windowControls";
+import { useBackgroundStudioStore } from "@/features/editor/background/backgroundStudioStore";
 
 function ToolbarButton({
   active,
@@ -159,6 +161,10 @@ export function Toolbar({
   const [fontSizeOpen, setFontSizeOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const { t } = useTranslation();
+  const backgroundStudioOpen = useBackgroundStudioStore((state) => state.open);
+  const toggleBackgroundStudio = useBackgroundStudioStore(
+    (state) => state.toggle,
+  );
   const promptCodexReadingRegistration = useCodexReadingRegistrationPrompt();
   const overflowBtnRef = useRef<HTMLDivElement>(null);
   const overflowDropdownRef = useRef<HTMLDivElement>(null);
@@ -732,6 +738,13 @@ export function Toolbar({
               Aa
             </ToolbarButton>
           </div>
+          <ToolbarButton
+            label={t("editor.background.open")}
+            active={backgroundStudioOpen}
+            onClick={toggleBackgroundStudio}
+          >
+            <Palette size={13} />
+          </ToolbarButton>
           {/* 表示モードセグメント: 集中 / タイプライター / 縦書き */}
           <div className="flex items-center gap-px rounded-md border border-border bg-muted/30 p-0.5">
             <ToolbarButton

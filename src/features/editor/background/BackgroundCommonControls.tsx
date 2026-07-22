@@ -1,45 +1,35 @@
 import { useTranslation } from "react-i18next";
-import { ZenShaderSurface } from "@/features/editor/zen/ZenShaderSurface";
-import { useZenShaderConfig } from "@/features/editor/zen/useZenShaderConfig";
-import { SettingColorInput } from "./SettingColorInput";
-import { SettingDropdown } from "./SettingDropdown";
-import { SettingRow } from "./SettingRow";
-import { SettingSlider } from "./SettingSlider";
-import { ZenPostFilterSettings } from "./ZenPostFilterSettings";
-import { ZenShaderPropertyControls } from "./ZenShaderPropertyControls";
+import { SettingColorInput } from "@/features/settings/components/SettingColorInput";
+import { SettingDropdown } from "@/features/settings/components/SettingDropdown";
+import { SettingRow } from "@/features/settings/components/SettingRow";
+import { SettingSlider } from "@/features/settings/components/SettingSlider";
+import {
+  PAPER_SHADER_DEFINITIONS,
+  getPaperShaderDefinition,
+} from "../zen/paperShaderCatalog";
+import { useZenShaderConfig } from "../zen/useZenShaderConfig";
 
-export function ZenBackgroundSettings() {
+const percent = (value: number) => `${Math.round(value)}%`;
+const signedPercent = (value: number) => `${Math.round(value * 100)}%`;
+
+export function BackgroundCommonControls() {
   const { t } = useTranslation();
   const config = useZenShaderConfig();
-  const shaderOptions = [
-    "mesh-gradient",
-    "grain-gradient",
-    "neuro-noise",
-    "warp",
-    "static-mesh-gradient",
-  ].map((value) => ({
-    value,
-    label: t(`settings.editor.zenShader_${value}`),
+  const definition = getPaperShaderDefinition(config.shader);
+  const shaderOptions = PAPER_SHADER_DEFINITIONS.map(({ id, name }) => ({
+    value: id,
+    label: name,
   }));
-  const paletteOptions = ["theme", "custom"].map((value) => ({
-    value,
-    label: t(`settings.editor.zenPalette_${value}`),
+  const paletteOptions = ["theme", "custom"].map((mode) => ({
+    value: mode,
+    label: t(`settings.editor.zenPalette_${mode}`),
   }));
-  const percent = (value: number) => `${Math.round(value * 100)}%`;
 
   return (
     <>
-      <div
-        data-testid="zen-background-preview"
-        className="relative mb-3 h-36 overflow-hidden rounded-lg border border-border bg-background"
-        aria-label={t("settings.editor.zenBackgroundPreview")}
-      >
-        <ZenShaderSurface config={config} playing={false} preview />
-        <div className="zen-settings-preview-paper absolute inset-y-3 left-1/2 w-[42%] -translate-x-1/2 rounded-sm" />
-      </div>
       <SettingRow
         label={t("settings.editor.zenBackgroundShader")}
-        description={t("settings.editor.zenBackgroundShaderDesc")}
+        description={t("editor.background.shaderDescription")}
       >
         <SettingDropdown
           settingKey="editor.zenBackground.shader"
@@ -51,23 +41,35 @@ export function ZenBackgroundSettings() {
         <SettingSlider
           settingKey="editor.zenBackground.opacity"
           min={0}
-          max={40}
+          max={100}
           defaultValue={10}
-          format={(value) => `${value}%`}
+          format={percent}
         />
       </SettingRow>
       <SettingRow
         label={t("settings.editor.zenSpeed")}
         description={t("settings.editor.zenSpeedDesc")}
+        disabled={!definition.animated}
       >
         <SettingSlider
-          settingKey="editor.zenBackground.speed"
+          settingKey="editor.zenBackground.speedPercent"
           min={0}
-          max={1}
-          step={0.01}
-          defaultValue={0.08}
-          format={(value) => `${value.toFixed(2)}×`}
-          disabled={config.shader === "static-mesh-gradient"}
+          max={100}
+          defaultValue={8}
+          format={percent}
+          disabled={!definition.animated}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t("editor.background.paperOpacity")}
+        description={t("editor.background.paperOpacityDescription")}
+      >
+        <SettingSlider
+          settingKey="editor.zenBackground.paperOpacity"
+          min={0}
+          max={100}
+          defaultValue={100}
+          format={percent}
         />
       </SettingRow>
       <SettingRow label={t("settings.editor.zenScale")}>
@@ -97,7 +99,7 @@ export function ZenBackgroundSettings() {
           max={1}
           step={0.05}
           defaultValue={0}
-          format={percent}
+          format={signedPercent}
         />
       </SettingRow>
       <SettingRow label={t("settings.editor.zenOffsetY")}>
@@ -107,7 +109,7 @@ export function ZenBackgroundSettings() {
           max={1}
           step={0.05}
           defaultValue={0}
-          format={percent}
+          format={signedPercent}
         />
       </SettingRow>
       <SettingRow label={t("settings.editor.zenPalette")}>
@@ -138,8 +140,6 @@ export function ZenBackgroundSettings() {
           </SettingRow>
         </>
       )}
-      <ZenShaderPropertyControls shader={config.shader} />
-      <ZenPostFilterSettings />
     </>
   );
 }

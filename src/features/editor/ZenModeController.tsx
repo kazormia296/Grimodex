@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
+import { useBackgroundStudioStore } from "./background/backgroundStudioStore";
 
 const ZEN_ENTRY_HINT_MSEC = 2_000;
 
@@ -45,6 +46,10 @@ export function ZenModeController() {
         return;
       }
       event.preventDefault();
+      if (useBackgroundStudioStore.getState().open) {
+        useBackgroundStudioStore.getState().setOpen(false);
+        return;
+      }
       setZenMode(false);
     };
     window.addEventListener("keydown", onKeyDown);

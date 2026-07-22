@@ -62,9 +62,11 @@ vi.mock("@/features/editor/EditorDropDiv", () => ({
 vi.mock("@/features/editor/useVerticalWheelScroll", () => ({
   useVerticalWheelScroll: () => {},
 }));
+vi.mock("@/features/editor/zen/useZenShaderConfig", () => ({
+  useZenShaderConfig: () => ({ paperOpacity: 35 }),
+}));
 vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
-  ZenAmbientBackdrop: ({ active }: { active: boolean }) =>
-    active ? <div data-zen-ambient aria-hidden="true" /> : null,
+  ZenAmbientBackdrop: () => <div data-zen-ambient aria-hidden="true" />,
 }));
 
 import { EditorContentArea } from "./EditorContentArea";
@@ -170,21 +172,17 @@ describe("EditorContentArea attribution filter live region", () => {
   });
 });
 
-describe("EditorContentArea Zen ambient boundary", () => {
-  it("places ambient light outside a fixed editor paper column in Zen", () => {
+describe("EditorContentArea background boundary", () => {
+  it("leaves the shared background at App level and applies alpha only to the paper", () => {
     const { container } = renderArea(false, null, true);
 
-    const ambient = container.querySelector("[data-zen-ambient]");
     const paper = container.querySelector('[data-zen-editor-column="true"]');
-    expect(ambient).not.toBeNull();
     expect(paper).not.toBeNull();
-    expect(ambient?.nextElementSibling).toBe(paper);
-  });
-
-  it("does not render the ambient layer outside Zen", () => {
-    const { container } = renderArea(false);
-
     expect(container.querySelector("[data-zen-ambient]")).toBeNull();
-    expect(container.querySelector("[data-zen-editor-column]")).toBeNull();
+    expect(paper).toHaveStyle({
+      background:
+        "color-mix(in oklch, var(--content-background) 35%, transparent)",
+    });
+    expect((paper as HTMLElement).style.opacity).toBe("");
   });
 });

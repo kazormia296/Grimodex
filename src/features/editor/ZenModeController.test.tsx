@@ -3,6 +3,7 @@ import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useBackgroundStudioStore } from "./background/backgroundStudioStore";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -38,6 +39,7 @@ describe("ZenModeController", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     useCursorSettingsStore.setState({ zenMode: false });
+    useBackgroundStudioStore.setState({ open: false });
     useTreeStore.setState({
       activeSceneId: "scene-1",
       nodes: [{ id: "scene-1", title: "雨の駅", nodeType: "scene" }],
@@ -68,6 +70,17 @@ describe("ZenModeController", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(useCursorSettingsStore.getState().zenMode).toBe(false);
+  });
+
+  it("closes the live background studio before leaving Zen", () => {
+    useCursorSettingsStore.setState({ zenMode: true });
+    useBackgroundStudioStore.setState({ open: true });
+    render(<ZenModeController />);
+
+    dispatchEscape();
+
+    expect(useBackgroundStudioStore.getState().open).toBe(false);
+    expect(useCursorSettingsStore.getState().zenMode).toBe(true);
   });
 
   it.each([

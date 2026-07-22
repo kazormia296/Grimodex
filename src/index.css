@@ -361,16 +361,29 @@ button[role="switch"][aria-checked="true"] {
    Doubled selector raises specificity (0-2-0) to beat the <style> tag
    that dockview-core injects at runtime via styleInject(). */
 .app-shell {
+  position: relative;
+  isolation: isolate;
   background: var(--background);
 }
 
-/* Zen keeps the writing paper perfectly still while a low-opacity Paper
-   shader occupies only the surrounding margin. The ambient layer sits above
-   the scroll surface's solid background but below normal flow content. */
-.zen-ambient-backdrop {
+/* A single main-surface Paper canvas is shared by normal and Zen layouts. The
+   isolated negative layer paints above the shell background and below every
+   interactive surface, so it never intercepts editor input. */
+.editor-ambient-backdrop {
   direction: ltr;
   writing-mode: horizontal-tb;
   z-index: -1;
+}
+
+/* The shader lives below the interactive layout. Its two full-size opaque
+   paints must pass it through: the layout canvas exposes it between panels,
+   and the editor panel exposes it around/through the independently tinted
+   writing paper. Tool panels keep their own opaque surfaces, and text opacity
+   is never changed. The id scope also keeps the header entirely outside this
+   background system. */
+#main-content [data-layout-shell],
+#main-content [data-editor-area] {
+  background: transparent;
 }
 
 .zen-shader-surface > [data-paper-shader],
@@ -382,11 +395,10 @@ button[role="switch"][aria-checked="true"] {
   block-size: 100%;
 }
 
-/* The paper is an opaque guard above the ambient layer. Its dimensions and
-   text never animate. Only Zen applies the minimum size, so normal editor
-   scrolling keeps its existing layout. */
+/* Only the background paint is translucent. The element itself (including
+   every glyph and decoration) remains at opacity:1 and never animates. */
 .zen-editor-paper {
-  background: var(--content-background);
+  background: color-mix(in oklch, var(--content-background) 100%, transparent);
 }
 
 .zen-editor-paper[data-zen-editor-column="true"] {
