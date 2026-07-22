@@ -364,42 +364,22 @@ button[role="switch"][aria-checked="true"] {
   background: var(--background);
 }
 
-/* Zen keeps the writing paper perfectly still while only the surrounding
-   margin receives two extremely faint, slow-moving theme lights. The ambient
-   layer sits above the scroll surface's solid background but below normal
-   flow content inside its isolated stacking context. */
+/* Zen keeps the writing paper perfectly still while a low-opacity Paper
+   shader occupies only the surrounding margin. The ambient layer sits above
+   the scroll surface's solid background but below normal flow content. */
 .zen-ambient-backdrop {
   direction: ltr;
   writing-mode: horizontal-tb;
   z-index: -1;
 }
 
-.zen-ambient-light {
+.zen-shader-surface > [data-paper-shader],
+.zen-shader-surface canvas {
   position: absolute;
-  inline-size: min(76vmax, 78rem);
-  aspect-ratio: 1;
-  border-radius: 9999px;
-  filter: blur(clamp(5rem, 11vmax, 10rem));
-  opacity: 0.04;
-  will-change: transform;
-  transform: translate3d(0, 0, 0);
-}
-
-.zen-ambient-light--primary {
-  inset-block-start: -38vmax;
-  inset-inline-start: -30vmax;
-  background: var(--glass-tint-a);
-}
-
-.zen-ambient-light--secondary {
-  inset-block-end: -42vmax;
-  inset-inline-end: -32vmax;
-  background: var(--glass-tint-b);
-  opacity: 0.035;
-}
-
-.zen-ambient-backdrop[data-motion="static"] .zen-ambient-light {
-  will-change: auto;
+  inset: 0;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
 }
 
 /* The paper is an opaque guard above the ambient layer. Its dimensions and
@@ -411,6 +391,12 @@ button[role="switch"][aria-checked="true"] {
 
 .zen-editor-paper[data-zen-editor-column="true"] {
   min-block-size: 100%;
+}
+
+.zen-settings-preview-paper {
+  z-index: 1;
+  background: var(--content-background);
+  box-shadow: 0 0 0 1px var(--content-border);
 }
 
 /* App-shell backdrop: flat translucent base. Its alpha scales with the

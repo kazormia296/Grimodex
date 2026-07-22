@@ -30,8 +30,12 @@ describe("ZenBackgroundSettings", () => {
     expect(
       screen.getByLabelText("settings.editor.zenBackgroundShader"),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("settings.editor.zenSpeed")).toBeInTheDocument();
-    expect(screen.getByLabelText("settings.editor.zenScale")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("settings.editor.zenSpeed"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("settings.editor.zenScale"),
+    ).toBeInTheDocument();
     expect(
       screen.getByLabelText("settings.editor.zenMeshDistortion"),
     ).toBeInTheDocument();

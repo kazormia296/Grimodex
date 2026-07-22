@@ -139,9 +139,7 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     expect(DEFAULT_SETTINGS["editor.zenBackground.shader"]).toBe(
       "mesh-gradient",
     );
-    expect(DEFAULT_SETTINGS["editor.zenBackground.paletteMode"]).toBe(
-      "theme",
-    );
+    expect(DEFAULT_SETTINGS["editor.zenBackground.paletteMode"]).toBe("theme");
     expect(DEFAULT_SETTINGS["editor.zenBackground.opacity"]).toBe("10");
     expect(DEFAULT_SETTINGS["editor.zenBackground.dither.enabled"]).toBe(
       "false",
