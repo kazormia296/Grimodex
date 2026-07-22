@@ -27,6 +27,10 @@ vi.mock("@/features/editor/CodexPopover", () => ({
 vi.mock("@/features/editor/EditorContextMenu", () => ({
   EditorContextMenu: () => null,
 }));
+vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
+  ZenAmbientBackdrop: ({ active }: { active: boolean }) =>
+    active ? <div data-zen-ambient aria-hidden="true" /> : null,
+}));
 const settingsOverride = vi.hoisted(
   () => ({ current: {} }) as { current: Record<string, unknown> },
 );
@@ -73,6 +77,7 @@ vi.stubGlobal("ResizeObserver", StubResizeObserver);
 import { LinearEditorView } from "./LinearEditorView";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useSlashCommandStore } from "./inlineAi/slashCommandStore";
+import { useCursorSettingsStore } from "./cursorSettingsStore";
 import type { Editor } from "@tiptap/core";
 
 const NODE_DEFAULTS = {
@@ -105,6 +110,7 @@ function makeNode(
 
 beforeEach(() => {
   useTreeStore.setState({ nodes: [], activeSceneId: "" });
+  useCursorSettingsStore.setState({ zenMode: false });
   useLinearEditorStore.setState({
     focusedEditor: null,
     focusedSceneId: null,
@@ -112,6 +118,24 @@ beforeEach(() => {
     editorsById: {},
   });
   settingsOverride.current = {};
+});
+
+describe("LinearEditorView — Zen ambient boundary", () => {
+  it("keeps the ambient layer outside the fixed editor paper column", () => {
+    useCursorSettingsStore.setState({ zenMode: true });
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+
+    const { container } = render(<LinearEditorView />);
+
+    const ambient = container.querySelector("[data-zen-ambient]");
+    const paper = container.querySelector('[data-zen-editor-column="true"]');
+    expect(ambient).not.toBeNull();
+    expect(paper).not.toBeNull();
+    expect(ambient?.nextElementSibling).toBe(paper);
+  });
 });
 
 describe("LinearEditorView — scene ordering", () => {

@@ -62,6 +62,10 @@ vi.mock("@/features/editor/EditorDropDiv", () => ({
 vi.mock("@/features/editor/useVerticalWheelScroll", () => ({
   useVerticalWheelScroll: () => {},
 }));
+vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
+  ZenAmbientBackdrop: ({ active }: { active: boolean }) =>
+    active ? <div data-zen-ambient aria-hidden="true" /> : null,
+}));
 
 import { EditorContentArea } from "./EditorContentArea";
 
@@ -103,6 +107,7 @@ function makeSettings(spellCheck: boolean): EditorSettings {
 function renderArea(
   spellCheck: boolean,
   filterSource: "human" | "ai" | "unknown" | null = null,
+  zenMode = false,
 ) {
   return render(
     <EditorContentArea
@@ -129,6 +134,7 @@ function renderArea(
       handleTitleEditStart={() => {}}
       isSceneContentLoading={false}
       sceneId="scene-1"
+      zenMode={zenMode}
     />,
   );
 }
@@ -161,5 +167,24 @@ describe("EditorContentArea attribution filter live region", () => {
   it("keeps the live region mounted but empty without a filter", () => {
     const { getByRole } = renderArea(false, null);
     expect(getByRole("status").textContent).toBe("");
+  });
+});
+
+describe("EditorContentArea Zen ambient boundary", () => {
+  it("places ambient light outside a fixed editor paper column in Zen", () => {
+    const { container } = renderArea(false, null, true);
+
+    const ambient = container.querySelector("[data-zen-ambient]");
+    const paper = container.querySelector('[data-zen-editor-column="true"]');
+    expect(ambient).not.toBeNull();
+    expect(paper).not.toBeNull();
+    expect(ambient?.nextElementSibling).toBe(paper);
+  });
+
+  it("does not render the ambient layer outside Zen", () => {
+    const { container } = renderArea(false);
+
+    expect(container.querySelector("[data-zen-ambient]")).toBeNull();
+    expect(container.querySelector("[data-zen-editor-column]")).toBeNull();
   });
 });
