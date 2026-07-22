@@ -36,6 +36,7 @@ import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
 import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
 import { useCodexCompletion } from "@/features/editor/codexCompletion/useCodexCompletion";
+import { handleZenEscapeKeyDown } from "@/features/editor/zenEscape";
 import {
   loadAuthorshipSpans,
   spansToMarkData,
@@ -228,7 +229,8 @@ function MountedSceneBlock({
             isFileBacked ? { sanitize: sanitizePastedMarkdown } : {},
           );
         },
-        handleKeyDown(_view, event) {
+        handleKeyDown(view, event) {
+          if (handleZenEscapeKeyDown(view, event)) return true;
           notePlainPasteKeyDown(event);
           return false;
         },

@@ -39,7 +39,8 @@ export function ZenModeController() {
       if (
         event.key !== "Escape" ||
         event.defaultPrevented ||
-        event.isComposing
+        event.isComposing ||
+        event.keyCode === 229
       ) {
         return;
       }

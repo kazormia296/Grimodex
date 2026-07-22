@@ -16,6 +16,7 @@ import { ZenModeController } from "./ZenModeController";
 function dispatchEscape(options?: {
   defaultPrevented?: boolean;
   isComposing?: boolean;
+  keyCode?: number;
 }) {
   const event = new KeyboardEvent("keydown", {
     key: "Escape",
@@ -25,6 +26,9 @@ function dispatchEscape(options?: {
   if (options?.defaultPrevented) event.preventDefault();
   if (options?.isComposing) {
     Object.defineProperty(event, "isComposing", { value: true });
+  }
+  if (options?.keyCode !== undefined) {
+    Object.defineProperty(event, "keyCode", { value: options.keyCode });
   }
   act(() => window.dispatchEvent(event));
   return event;
@@ -69,6 +73,7 @@ describe("ZenModeController", () => {
   it.each([
     ["an already handled Escape", { defaultPrevented: true }],
     ["an IME composition Escape", { isComposing: true }],
+    ["an IME process Escape", { keyCode: 229 }],
   ])("does not exit for %s", (_label, options) => {
     useCursorSettingsStore.setState({ zenMode: true });
     render(<ZenModeController />);
