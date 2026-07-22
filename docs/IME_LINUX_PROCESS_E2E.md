@@ -5,7 +5,7 @@ Linux受け入れ条件44（IME起動でconsumerがGrimodexに検出される）
 
 テストは指定された実IME serverを一時的な
 `GRIMODEX_IME_ROOT`とXDGディレクトリ群で起動し、`get_status(root, Auto)`をpollする。
-実装側が宣言したconsumer ID、Linux platform、Phase 3の能力フラグ4種、
+Mozkey IbGが宣言する `fcitx5-mozkey-ibg` consumer、Linux platform、Phase 3の能力フラグ4種、
 `effective_enabled`を確認後、サーバーと一時ディレクトリを終了・削除する。
 
 通常の`cargo test`では実行されない。実行するときは、サーバーの絶対パスを指定する。
@@ -16,7 +16,7 @@ GRIMODEX_LINUX_IME_SERVER=/absolute/path/to/ime-server \
   -p grimodex-db --test linux_ime_server_e2e -- --ignored --nocapture
 ```
 
-CIでforkと結合する場合は、対応IMEのリポジトリを先にcheckoutしてIME serverをbuildし、
+CIでforkと結合する場合は、Mozkey IbGのリポジトリを先にcheckoutしてIME serverをbuildし、
 その実行ファイルを`GRIMODEX_LINUX_IME_SERVER`へ渡してから上記コマンドを実行する。
 fork側PRのcommitとGrimodex側のE2E基準branch/commitを明示的にpinする。
 

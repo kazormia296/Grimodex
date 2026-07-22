@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "consumer_id": "azookey-grimodex",
-  "name": "Grimodex IME for macOS",
+  "consumer_id": "imkit-mozkey-ibg",
+  "name": "Mozkey IbG for Grimodex on macOS",
   "version": "0.1.0",
   "platform": "macos",
   "capabilities": {

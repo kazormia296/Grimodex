@@ -131,13 +131,13 @@ describe("ImeIntegrationSection", () => {
     );
   });
 
-  it("identifies a Linux consumer and its negotiated capabilities", async () => {
+  it("identifies the current Mozkey IbG Linux consumer and its capabilities", async () => {
     getImeExportStatusMock.mockResolvedValueOnce({
       rootPath: "/tmp/ime",
       consumers: [
         {
-          consumerId: "implementation-defined-ime",
-          name: "Compatible Linux IME",
+          consumerId: "fcitx5-mozkey-ibg",
+          name: "Mozkey IbG for Grimodex on Linux",
           version: "0.1.0",
           platform: "linux",
           lastSeen: "2026-07-11T00:00:00.000Z",
@@ -156,7 +156,9 @@ describe("ImeIntegrationSection", () => {
 
     render(<ImeIntegrationSection />);
 
-    expect(await screen.findByText("Compatible Linux IME")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Mozkey IbG for Grimodex on Linux"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Linux")).toBeInTheDocument();
     expect(screen.getByText("動的辞書")).toBeInTheDocument();
     expect(screen.getByText("Zenzai v3")).toBeInTheDocument();
@@ -196,8 +198,8 @@ describe("ImeIntegrationSection", () => {
       rootPath: "/tmp/ime",
       consumers: [
         {
-          consumerId: "implementation-defined-ime",
-          name: "Compatible Linux IME",
+          consumerId: "other-compatible-linux-ime",
+          name: "Other Compatible Linux IME",
           version: "0.1.0",
           platform: "linux",
           lastSeen: "2026-07-11T00:00:00.000Z",
@@ -216,7 +218,9 @@ describe("ImeIntegrationSection", () => {
 
     render(<ImeIntegrationSection />);
 
-    expect(await screen.findByText("Compatible Linux IME")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Other Compatible Linux IME"),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText("対応する Linux IME が見つかりません"),
     ).not.toBeInTheDocument();

@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "consumer_id": "implementation-defined-ime",
-  "name": "Compatible IME for Linux",
+  "consumer_id": "fcitx5-mozkey-ibg",
+  "name": "Mozkey IbG for Grimodex on Linux",
   "version": "0.1.0",
   "platform": "linux",
   "capabilities": {

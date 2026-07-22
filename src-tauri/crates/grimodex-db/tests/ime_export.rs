@@ -828,8 +828,8 @@ fn consumer_status_supports_legacy_and_linux_phase3_capabilities() -> TestResult
     )?;
     write_consumer_handshake(
         &fixture.ime_root,
-        "implementation-defined-ime",
-        "Compatible IME for Linux",
+        "fcitx5-mozkey-ibg",
+        "Mozkey IbG for Grimodex on Linux",
         Some("linux"),
         json!({
             "profile": true,
@@ -848,7 +848,7 @@ fn consumer_status_supports_legacy_and_linux_phase3_capabilities() -> TestResult
         .iter()
         .find(|consumer| {
             json_field(consumer, &["consumerId", "consumer_id"]).ok()
-                == Some(&Value::String("implementation-defined-ime".to_owned()))
+                == Some(&Value::String("fcitx5-mozkey-ibg".to_owned()))
         })
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Linux consumer missing"))?;
     assert_eq!(json_field(linux, &["platform"])?, "linux");
@@ -885,8 +885,8 @@ fn consumer_status_supports_macos_phase5_capabilities() -> TestResult {
     let fixture = Fixture::new()?;
     write_consumer_handshake(
         &fixture.ime_root,
-        "azookey-grimodex",
-        "Grimodex IME for macOS",
+        "imkit-mozkey-ibg",
+        "Mozkey IbG for Grimodex on macOS",
         Some("macos"),
         json!({
             "profile": true,
@@ -902,7 +902,7 @@ fn consumer_status_supports_macos_phase5_capabilities() -> TestResult {
     let consumer = status
         .consumers
         .iter()
-        .find(|consumer| consumer.consumer_id == "azookey-grimodex")
+        .find(|consumer| consumer.consumer_id == "imkit-mozkey-ibg")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "macOS consumer missing"))?;
     assert!(matches!(
         consumer.platform,

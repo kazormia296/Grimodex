@@ -152,8 +152,8 @@ IME側がインストール時・起動時に作成/touchし、アンインス�
 ```json
 {
   "format_version": 1,
-  "consumer_id": "implementation-defined-ime",
-  "name": "Compatible IME for Linux",
+  "consumer_id": "fcitx5-mozkey-ibg",
+  "name": "Mozkey IbG for Grimodex on Linux",
   "version": "0.1.0",
   "platform": "linux",
   "capabilities": {
@@ -165,6 +165,10 @@ IME側がインストール時・起動時に作成/touchし、アンインス�
   "last_seen": "2026-07-10T12:00:00.000Z"
 }
 ```
+
+`consumer_id` と `name` は IME 側が宣言する値であり、Grimodex は特定の ID を
+ハードコードせず、期限内の有効な consumer を列挙して扱う。上記は現行 Mozkey IbG
+Linux アダプタの例で、別の Fcitx 5 / IBus アダプタは自身の識別子を使用する。
 
 - IMEは起動時と15分ごとに`last_seen`をatomic更新する。Grimodexは45分以内のheartbeatだけを「IMEインストール済み」として検出し、連携を自動ONにする（§8）。時計ずれは5分先まで許容する。古いファイルは削除せずconsumer不在として扱い、OS別のインストール痕跡探索はしない。
 - `platform`はoptionalな`linux` / `windows` / `macos`。旧consumerでは省略できる。
