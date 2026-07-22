@@ -4,12 +4,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import en from "@/locales/en.json";
 import ja from "@/locales/ja.json";
 
-const { clipboardWriteTextMock, openExternalUrlMock, platformRuntime } =
-  vi.hoisted(() => ({
-    clipboardWriteTextMock: vi.fn(),
-    openExternalUrlMock: vi.fn(),
-    platformRuntime: { linux: false },
-  }));
+const { openExternalUrlMock, platformRuntime } = vi.hoisted(() => ({
+  openExternalUrlMock: vi.fn(),
+  platformRuntime: { linux: false },
+}));
 
 const modeSetMock = vi.fn();
 const excludeHiddenSetMock = vi.fn();
@@ -72,13 +70,8 @@ describe("ImeIntegrationSection", () => {
     refreshImeExportMock.mockReset().mockResolvedValue({});
     setActiveImeProjectMock.mockReset().mockResolvedValue({});
     clearImeExportsMock.mockReset().mockResolvedValue(undefined);
-    clipboardWriteTextMock.mockReset().mockResolvedValue(undefined);
     openExternalUrlMock.mockReset();
     platformRuntime.linux = false;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: clipboardWriteTextMock },
-    });
     getImeExportStatusMock.mockReset().mockResolvedValue({
       rootPath: "/tmp/ime",
       consumers: [],
@@ -138,13 +131,13 @@ describe("ImeIntegrationSection", () => {
     );
   });
 
-  it("identifies a Linux Phase 3 consumer and its negotiated capabilities", async () => {
+  it("identifies a Linux consumer and its negotiated capabilities", async () => {
     getImeExportStatusMock.mockResolvedValueOnce({
       rootPath: "/tmp/ime",
       consumers: [
         {
-          consumerId: "fcitx5-grimodex",
-          name: "Grimodex IME",
+          consumerId: "implementation-defined-ime",
+          name: "Compatible Linux IME",
           version: "0.1.0",
           platform: "linux",
           lastSeen: "2026-07-11T00:00:00.000Z",
@@ -163,28 +156,28 @@ describe("ImeIntegrationSection", () => {
 
     render(<ImeIntegrationSection />);
 
-    expect(await screen.findByText("Grimodex IME")).toBeInTheDocument();
+    expect(await screen.findByText("Compatible Linux IME")).toBeInTheDocument();
     expect(screen.getByText("Linux")).toBeInTheDocument();
     expect(screen.getByText("動的辞書")).toBeInTheDocument();
     expect(screen.getByText("Zenzai v3")).toBeInTheDocument();
     expect(screen.getByText("アプリ限定")).toBeInTheDocument();
   });
 
-  it("shows Linux install and enable guidance when fcitx5-grimodex is absent", async () => {
+  it("shows generic Linux IME guidance when no consumer is present", async () => {
     platformRuntime.linux = true;
 
     render(<ImeIntegrationSection />);
 
     expect(
-      await screen.findByText("Linux 用 Grimodex IME が見つかりません"),
+      await screen.findByText("対応する Linux IME が見つかりません"),
     ).toBeInTheDocument();
-    expect(screen.getByText("fcitx5-grimodex")).toBeInTheDocument();
     expect(screen.getByText(/Fcitx 5/)).toBeInTheDocument();
+    expect(screen.getByText(/IBus/)).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "パッケージ名をコピー" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /パッケージ/ }),
+    ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "インストール手順を開く" }),
+      screen.getByRole("button", { name: "IME の配布元を開く" }),
     ).toBeInTheDocument();
   });
 
@@ -193,18 +186,18 @@ describe("ImeIntegrationSection", () => {
 
     await waitFor(() => expect(getImeExportStatusMock).toHaveBeenCalled());
     expect(
-      screen.queryByText("Linux 用 Grimodex IME が見つかりません"),
+      screen.queryByText("対応する Linux IME が見つかりません"),
     ).not.toBeInTheDocument();
   });
 
-  it("hides Linux guidance when the fresh fcitx5-grimodex consumer is present", async () => {
+  it("hides Linux guidance when any fresh consumer is present", async () => {
     platformRuntime.linux = true;
     getImeExportStatusMock.mockResolvedValueOnce({
       rootPath: "/tmp/ime",
       consumers: [
         {
-          consumerId: "fcitx5-grimodex",
-          name: "Grimodex IME",
+          consumerId: "implementation-defined-ime",
+          name: "Compatible Linux IME",
           version: "0.1.0",
           platform: "linux",
           lastSeen: "2026-07-11T00:00:00.000Z",
@@ -223,35 +216,30 @@ describe("ImeIntegrationSection", () => {
 
     render(<ImeIntegrationSection />);
 
-    expect(await screen.findByText("Grimodex IME")).toBeInTheDocument();
+    expect(await screen.findByText("Compatible Linux IME")).toBeInTheDocument();
     expect(
-      screen.queryByText("Linux 用 Grimodex IME が見つかりません"),
+      screen.queryByText("対応する Linux IME が見つかりません"),
     ).not.toBeInTheDocument();
   });
 
-  it("copies only the package name and opens the HTTPS installation guide", async () => {
+  it("opens the IME distribution page without assuming a package name", async () => {
     platformRuntime.linux = true;
     render(<ImeIntegrationSection />);
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "パッケージ名をコピー" }),
-    );
-    await waitFor(() =>
-      expect(clipboardWriteTextMock).toHaveBeenCalledWith("fcitx5-grimodex"),
-    );
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "インストール手順を開く" }),
+      await screen.findByRole("button", { name: "IME の配布元を開く" }),
     );
     expect(openExternalUrlMock).toHaveBeenCalledWith(
-      "https://github.com/kazormia296/hazkey#source-build-and-install",
+      "https://github.com/kazormia296/mozkey-ibg",
     );
   });
 
   it("ships the Linux guidance in Japanese and English", () => {
     expect(ja.settings.codex.imeLinuxInstallTitle).toContain("Linux");
     expect(ja.settings.codex.imeLinuxInstallDescription).toContain("Fcitx 5");
+    expect(ja.settings.codex.imeLinuxInstallDescription).toContain("IBus");
     expect(en.settings.codex.imeLinuxInstallTitle).toContain("Linux");
     expect(en.settings.codex.imeLinuxInstallDescription).toContain("Fcitx 5");
+    expect(en.settings.codex.imeLinuxInstallDescription).toContain("IBus");
   });
 });

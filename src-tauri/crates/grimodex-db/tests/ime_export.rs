@@ -828,8 +828,8 @@ fn consumer_status_supports_legacy_and_linux_phase3_capabilities() -> TestResult
     )?;
     write_consumer_handshake(
         &fixture.ime_root,
-        "fcitx5-grimodex",
-        "Grimodex IME for Linux",
+        "implementation-defined-ime",
+        "Compatible IME for Linux",
         Some("linux"),
         json!({
             "profile": true,
@@ -848,7 +848,7 @@ fn consumer_status_supports_legacy_and_linux_phase3_capabilities() -> TestResult
         .iter()
         .find(|consumer| {
             json_field(consumer, &["consumerId", "consumer_id"]).ok()
-                == Some(&Value::String("fcitx5-grimodex".to_owned()))
+                == Some(&Value::String("implementation-defined-ime".to_owned()))
         })
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Linux consumer missing"))?;
     assert_eq!(json_field(linux, &["platform"])?, "linux");
