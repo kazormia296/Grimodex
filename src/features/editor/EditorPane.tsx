@@ -1080,6 +1080,7 @@ export function EditorPane({
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
   const focusMode = useCursorSettingsStore((s) => s.focusMode);
+  const zenMode = useCursorSettingsStore((s) => s.zenMode);
   const showForeshadowMarks = useCursorSettingsStore(
     (s) => s.showForeshadowMarks,
   );
@@ -1105,7 +1106,7 @@ export function EditorPane({
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
   // フォーカスモードでも詳細ペインは隠さない（本文の減光は FocusModePlugin 側）
-  const isPanelVisible = sceneMetaPanelOpen && !isEntryMode;
+  const isPanelVisible = sceneMetaPanelOpen && !isEntryMode && !zenMode;
   const handleTogglePanel = useCallback(() => {
     useSettingsStore
       .getState()

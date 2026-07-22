@@ -27,7 +27,13 @@ function centerSegmentVisible(
   return segment.activePanel !== null;
 }
 
-export const CenterContent = memo(function CenterContent() {
+interface CenterContentProps {
+  zenMode?: boolean;
+}
+
+export const CenterContent = memo(function CenterContent({
+  zenMode = false,
+}: CenterContentProps) {
   const center = useLayoutStore((s) => s.layout.center);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -41,10 +47,11 @@ export const CenterContent = memo(function CenterContent() {
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const showDropZones = useDragDropZonesReady(
-    Boolean(draggingPanel && !layoutLocked),
+    Boolean(draggingPanel && !layoutLocked && !zenMode),
   );
 
   const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
+  const effectiveMaximizedPanelId = zenMode ? "editor" : maximizedPanelId;
 
   const visibleSegments = center.segments.filter((segment) =>
     centerSegmentVisible(segment, center.editorOpen),
@@ -58,14 +65,15 @@ export const CenterContent = memo(function CenterContent() {
   // 対象 segment を全面化し、非対象 segment / splitter を 0 サイズ +
   // 不可視にする（unmount はしない — visibleSegments のフィルタ条件は
   // 変えない。editor unmount 回避の要）。
-  const zoomActive = maximizedPanelId !== null;
+  const zoomActive = effectiveMaximizedPanelId !== null;
   const zoomedSegmentId =
-    maximizedPanelId === null
+    effectiveMaximizedPanelId === null
       ? null
-      : maximizedPanelId === "editor"
+      : effectiveMaximizedPanelId === "editor"
         ? (visibleSegments.find((s) => s.kind === "editor")?.id ?? null)
         : (visibleSegments.find(
-            (s) => s.kind === "tool" && s.activePanel === maximizedPanelId,
+            (s) =>
+              s.kind === "tool" && s.activePanel === effectiveMaximizedPanelId,
           )?.id ?? null);
 
   const getLayoutBudgetPx = useCallback(() => {

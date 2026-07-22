@@ -4,6 +4,7 @@ import type { WorkspaceViewportProfile } from "@/runtime/viewportProfile";
 interface Props {
   profile: WorkspaceViewportProfile;
   editor: ReactNode;
+  zenMode?: boolean;
   panel?: ReactNode;
   panelOpen: boolean;
   mobileSurface?: ReactNode;
@@ -16,18 +17,21 @@ function hiddenProps(hidden: boolean): Record<string, unknown> {
 export function WorkspaceSurfaceRoot({
   profile,
   editor,
+  zenMode = false,
   panel,
   panelOpen,
   mobileSurface,
 }: Props) {
   const editorHidden =
-    profile === "phone" && (panelOpen || mobileSurface != null);
+    !zenMode && profile === "phone" && (panelOpen || mobileSurface != null);
   const editorStyle: CSSProperties = editorHidden
     ? { visibility: "hidden", pointerEvents: "none" }
     : { visibility: "visible" };
-  const panelStyle: CSSProperties = panelOpen
+  const panelVisible = panelOpen && !zenMode;
+  const panelStyle: CSSProperties = panelVisible
     ? { visibility: "visible" }
     : { visibility: "hidden", pointerEvents: "none" };
+  const mobileSurfaceVisible = profile === "phone" && !zenMode;
 
   return (
     <div data-workspace-surface-root data-profile={profile}>
@@ -42,7 +46,7 @@ export function WorkspaceSurfaceRoot({
         <div
           data-active-panel-surface
           style={panelStyle}
-          {...hiddenProps(!panelOpen)}
+          {...hiddenProps(!panelVisible)}
         >
           {panel}
         </div>
@@ -51,10 +55,10 @@ export function WorkspaceSurfaceRoot({
         <div
           data-mobile-surface
           style={{
-            visibility: profile === "phone" ? "visible" : "hidden",
-            pointerEvents: profile === "phone" ? "auto" : "none",
+            visibility: mobileSurfaceVisible ? "visible" : "hidden",
+            pointerEvents: mobileSurfaceVisible ? "auto" : "none",
           }}
-          {...hiddenProps(profile !== "phone")}
+          {...hiddenProps(!mobileSurfaceVisible)}
         >
           {mobileSurface}
         </div>

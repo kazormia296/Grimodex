@@ -56,9 +56,7 @@ describe("SceneEditor Zen projection", () => {
       ],
     } as never);
     useTabStore.setState({
-      tabs: [
-        { nodeId: "scene-1", contentType: "scene", isPreview: false },
-      ],
+      tabs: [{ nodeId: "scene-1", contentType: "scene", isPreview: false }],
       activeTabId: "scene-1",
       secondaryTabs: [
         { nodeId: "scene-2", contentType: "scene", isPreview: false },

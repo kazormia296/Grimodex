@@ -60,6 +60,8 @@ import { useTranslation } from "react-i18next";
 import { WindowControls } from "@/components/WindowControls";
 import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { ZenModeController } from "@/features/editor/ZenModeController";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { HistoryButtons } from "@/features/history/HistoryButtons";
@@ -376,6 +378,8 @@ function EditorScreen() {
   const runtimeCapabilities = useRuntimeCapabilities();
   const screenshotPanelId = getScreenshotPanelId();
   const panelWindow = isPanelWindow();
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
+  const editorZenMode = zenMode && !panelWindow && !screenshotPanelId;
   const adaptiveWorkspaceEnabled = shouldUseAdaptiveWorkspace({
     featureEnabled: import.meta.env.VITE_ADAPTIVE_WORKSPACE !== "false",
     panelWindow,
@@ -781,111 +785,115 @@ function EditorScreen() {
       data-glass-editor-chrome={glassSurfaceEditorChrome ? "true" : undefined}
       data-glass-gradient={glassBackdropGradient ? "true" : undefined}
       data-platform-mac={mac ? "true" : undefined}
+      data-zen-mode={editorZenMode ? "true" : undefined}
     >
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow focus:outline-none focus:ring-2 focus:ring-ring"
-      >
-        {t("a11y.skipToContent")}
-      </a>
-      {isPanelWindow() ? (
-        // 別フローティング窓: ヘッダはドラッグ領域 + ウィンドウ操作のみに簡素化
-        // (ロゴ/エクスポート/設定/プロジェクト切替はメイン窓の領分で、別窓に
-        // 出すとややこしいため)。WindowControls は getCurrentWindow() で自窓を
-        // 操作する。mac は decorations 側の扱いが別途必要(現状 Windows 前提)。
-        <header
-          data-header-bar
-          className="flex h-9 shrink-0 items-center border-b border-border"
+      {!editorZenMode && (
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow focus:outline-none focus:ring-2 focus:ring-ring"
         >
-          <div data-tauri-drag-region className="h-full flex-1" />
-          {!mac && <WindowControls />}
-        </header>
-      ) : (
-        <HeaderBarLayout
-          mac={mac}
-          className={cn(getScreenshotPanelId() && "no-screenshot")}
-          left={
-            <>
-              <GrimodexLogo height={24} className="text-foreground" />
-              <WorkspaceMenu />
-              <ProjectMenu
-                onOpenImport={
-                  runtimeCapabilities.localFileImport
-                    ? () => {
-                        setTransferTab("import");
-                        setShowTransferDialog(true);
-                      }
-                    : undefined
-                }
-                onOpenExport={
-                  runtimeCapabilities.genericProjectTransfer
-                    ? () => {
-                        setTransferTab("zip");
-                        setShowTransferDialog(true);
-                      }
-                    : undefined
-                }
-                onOpenSnapshot={() => setShowSnapshotModal(true)}
-                onOpenWebEditorHandoff={
-                  runtimeCapabilities.genericProjectTransfer
-                    ? requestWebEditorHandoffImport
-                    : undefined
-                }
-              />
-              <HistoryButtons />
-              {runtimeCapabilities.genericProjectTransfer && (
+          {t("a11y.skipToContent")}
+        </a>
+      )}
+      {!editorZenMode &&
+        (panelWindow ? (
+          // 別フローティング窓: ヘッダはドラッグ領域 + ウィンドウ操作のみに簡素化
+          // (ロゴ/エクスポート/設定/プロジェクト切替はメイン窓の領分で、別窓に
+          // 出すとややこしいため)。WindowControls は getCurrentWindow() で自窓を
+          // 操作する。mac は decorations 側の扱いが別途必要(現状 Windows 前提)。
+          <header
+            data-header-bar
+            className="flex h-9 shrink-0 items-center border-b border-border"
+          >
+            <div data-tauri-drag-region className="h-full flex-1" />
+            {!mac && <WindowControls />}
+          </header>
+        ) : (
+          <HeaderBarLayout
+            mac={mac}
+            className={cn(getScreenshotPanelId() && "no-screenshot")}
+            left={
+              <>
+                <GrimodexLogo height={24} className="text-foreground" />
+                <WorkspaceMenu />
+                <ProjectMenu
+                  onOpenImport={
+                    runtimeCapabilities.localFileImport
+                      ? () => {
+                          setTransferTab("import");
+                          setShowTransferDialog(true);
+                        }
+                      : undefined
+                  }
+                  onOpenExport={
+                    runtimeCapabilities.genericProjectTransfer
+                      ? () => {
+                          setTransferTab("zip");
+                          setShowTransferDialog(true);
+                        }
+                      : undefined
+                  }
+                  onOpenSnapshot={() => setShowSnapshotModal(true)}
+                  onOpenWebEditorHandoff={
+                    runtimeCapabilities.genericProjectTransfer
+                      ? requestWebEditorHandoffImport
+                      : undefined
+                  }
+                />
+                <HistoryButtons />
+                {runtimeCapabilities.genericProjectTransfer && (
+                  <button
+                    type="button"
+                    aria-label={t("app.exportLabel")}
+                    title={t("app.exportTitle")}
+                    onClick={() => setShowExport((v) => !v)}
+                    className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <FileOutput className="h-4 w-4 shrink-0" />
+                    <span className="hidden whitespace-nowrap text-sm xl:inline">
+                      {t("app.exportLabel")}
+                    </span>
+                  </button>
+                )}
+              </>
+            }
+            center={<CommandCenterBar />}
+            right={
+              <>
+                <LayoutPresetDropdown />
+                <PanelToggleDropdown />
                 <button
                   type="button"
-                  aria-label={t("app.exportLabel")}
-                  title={t("app.exportTitle")}
-                  onClick={() => setShowExport((v) => !v)}
-                  className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label={
+                    updatePending
+                      ? t("app.settingsLabelUpdateAvailable", {
+                          defaultValue: "設定（更新があります）",
+                        })
+                      : t("app.settingsLabel")
+                  }
+                  title={t("app.settingsTitle")}
+                  onClick={() => {
+                    setSettingsInitialCategory("project");
+                    setShowSettings(true);
+                  }}
+                  className="relative flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
-                  <FileOutput className="h-4 w-4 shrink-0" />
+                  <Settings className="h-4 w-4 shrink-0" />
                   <span className="hidden whitespace-nowrap text-sm xl:inline">
-                    {t("app.exportLabel")}
+                    {t("app.settingsLabel")}
                   </span>
+                  <UpdateDot className="absolute right-1 top-1" />
                 </button>
-              )}
-            </>
-          }
-          center={<CommandCenterBar />}
-          right={
-            <>
-              <LayoutPresetDropdown />
-              <PanelToggleDropdown />
-              <button
-                type="button"
-                aria-label={
-                  updatePending
-                    ? t("app.settingsLabelUpdateAvailable", {
-                        defaultValue: "設定（更新があります）",
-                      })
-                    : t("app.settingsLabel")
-                }
-                title={t("app.settingsTitle")}
-                onClick={() => {
-                  setSettingsInitialCategory("project");
-                  setShowSettings(true);
-                }}
-                className="relative flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <Settings className="h-4 w-4 shrink-0" />
-                <span className="hidden whitespace-nowrap text-sm xl:inline">
-                  {t("app.settingsLabel")}
-                </span>
-                <UpdateDot className="absolute right-1 top-1" />
-              </button>
-              {!mac && (
-                <>
-                  <div className="h-4 w-px bg-border" />
-                  <WindowControls />
-                </>
-              )}
-            </>
-          }
-        />
-      )}
+                {!mac && (
+                  <>
+                    <div className="h-4 w-px bg-border" />
+                    <WindowControls />
+                  </>
+                )}
+              </>
+            }
+          />
+        ))}
       <Suspense fallback={null}>
         {showSettings && (
           <SettingsDialog
@@ -951,7 +959,14 @@ function EditorScreen() {
       >
         {adaptiveWorkspaceEnabled ? (
           <AdaptiveWorkspaceShell
-            editor={<LayoutShell hidden={false} soloPanelId={null} />}
+            zenMode={editorZenMode}
+            editor={
+              <LayoutShell
+                hidden={false}
+                soloPanelId={null}
+                zenMode={editorZenMode}
+              />
+            }
             sceneTitle={t("app.title")}
             saveState=""
             renderMobileSurface={(surface) => (
@@ -962,9 +977,11 @@ function EditorScreen() {
           <LayoutShell
             hidden={Boolean(screenshotPanelId) || panelWindow}
             soloPanelId={screenshotPanelId ?? getPanelWindowTarget()}
+            zenMode={editorZenMode}
           />
         )}
       </main>
+      <ZenModeController />
     </div>
   );
 }

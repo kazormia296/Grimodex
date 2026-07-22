@@ -14,6 +14,7 @@ import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore
 import { countPlacedBeats } from "@/features/editor/beat/beatDocQueries";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import {
   CodexRefPickerPopover,
   type CodexRefEntry,
@@ -78,6 +79,7 @@ function Chip({
  */
 export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
   const { t, i18n } = useTranslation();
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
   const [openPopover, setOpenPopover] = useState<ChipPopover | null>(null);
   const povChipRef = useRef<HTMLSpanElement>(null);
   const locChipRef = useRef<HTMLSpanElement>(null);
@@ -124,7 +126,7 @@ export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
   }, [editor, sceneId, primaryTabId]);
 
   // フォーカスモードでも隠さない（本文の減光は FocusModePlugin 側で完結する）
-  if (!node || !sceneId || panelOpen) return null;
+  if (zenMode || !node || !sceneId || panelOpen) return null;
 
   if (groupIndex !== undefined) {
     const groupTabId = groupIndex === 0 ? primaryTabId : secondaryTabId;

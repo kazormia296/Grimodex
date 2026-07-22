@@ -87,4 +87,45 @@ describe("AdaptiveWorkspaceShell", () => {
     expect(renderMobileSurface).toHaveBeenCalledOnce();
     expect(renderMobileSurface).toHaveBeenCalledWith("scenes");
   });
+
+  it("projects the mounted editor over phone chrome without changing mobile navigation state", () => {
+    useCompactNavigationStore.getState().openSurface("scenes");
+    const { container, rerender } = render(
+      <AdaptiveWorkspaceShell
+        profile="phone"
+        editor={<textarea data-testid="editor" />}
+        zenMode
+        renderMobileSurface={() => <div data-testid="scenes">Scenes</div>}
+      />,
+    );
+    const editor = container.querySelector("[data-testid=editor]");
+    const editorSurface = container.querySelector<HTMLElement>(
+      "[data-editor-surface]",
+    );
+    const mobileSurface = container.querySelector<HTMLElement>(
+      "[data-mobile-surface]",
+    );
+
+    expect(
+      container.querySelector('[data-adaptive-chrome="phone"]'),
+    ).toHaveAttribute("data-active", "false");
+    expect(editorSurface).toHaveStyle({ visibility: "visible" });
+    expect(editorSurface).not.toHaveAttribute("aria-hidden");
+    expect(mobileSurface).toHaveStyle({ visibility: "hidden" });
+    expect(mobileSurface).toHaveAttribute("inert");
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("scenes");
+
+    rerender(
+      <AdaptiveWorkspaceShell
+        profile="phone"
+        editor={<textarea data-testid="editor" />}
+        renderMobileSurface={() => <div data-testid="scenes">Scenes</div>}
+      />,
+    );
+
+    expect(container.querySelector("[data-testid=editor]")).toBe(editor);
+    expect(editorSurface).toHaveAttribute("aria-hidden", "true");
+    expect(mobileSurface).toHaveStyle({ visibility: "visible" });
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("scenes");
+  });
 });

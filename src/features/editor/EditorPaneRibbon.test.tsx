@@ -13,12 +13,9 @@ vi.mock("@/features/license/LicenseRestrictionBanner", () => ({
 vi.mock("@/features/editor/ExternalEditConflictBanner", () => ({
   ExternalEditConflictBanner: () => <div data-testid="conflict-warning" />,
 }));
-vi.mock(
-  "@/features/external-mount/components/FileBackedSceneBanner",
-  () => ({
-    FileBackedSceneBanner: () => <div data-testid="file-backed-banner" />,
-  }),
-);
+vi.mock("@/features/external-mount/components/FileBackedSceneBanner", () => ({
+  FileBackedSceneBanner: () => <div data-testid="file-backed-banner" />,
+}));
 vi.mock("@/features/editor/NoteContextControls", () => ({
   NoteContextControls: () => <div data-testid="note-controls" />,
 }));
@@ -58,6 +55,8 @@ describe("EditorPaneRibbon Zen visibility", () => {
     expect(screen.queryByTestId("note-controls")).toBeNull();
     expect(screen.queryByText("editor.ribbon.codexEditing")).toBeNull();
     expect(screen.queryByText("editor.ribbon.snippetEditing")).toBeNull();
-    expect(screen.queryByText("editor.ribbon.chronicleEventEditing")).toBeNull();
+    expect(
+      screen.queryByText("editor.ribbon.chronicleEventEditing"),
+    ).toBeNull();
   });
 });

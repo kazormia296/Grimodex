@@ -3591,6 +3591,10 @@
       "deletedEntry": "削除済みのCodexエントリ",
       "danglingHelp": "リンク先は削除されています。文字列を選択して再割り当てするか、リンクを解除してください。"
     },
+    "zen": {
+      "entryHint": "Zen · {{title}} · Escで終了",
+      "entryHintNoTitle": "Zen · Escで終了"
+    },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",
       "italic": "斜体 (Ctrl+I)",
@@ -3633,7 +3637,7 @@
       "codexReadingPromptDisable": "今後は確認しない",
       "urlPlaceholder": "https://...",
       "label": "エディタツールバー",
-      "zenMode": "Zenモード（集中+タイプライター）",
+      "zenMode": "Zenモード",
       "fullscreenMode": "フルスクリーン"
     },
     "reorder": {

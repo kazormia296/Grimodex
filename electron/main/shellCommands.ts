@@ -320,6 +320,13 @@ export function registerShellBridgeHandlers(
         return null;
       case "isMaximized":
         return win.isMaximized();
+      case "toggleFullscreen": {
+        const next = !win.isFullScreen();
+        win.setFullScreen(next);
+        return next;
+      }
+      case "isFullscreen":
+        return win.isFullScreen();
       default:
         throw new Error(`unknown window control op: ${String(op)}`);
     }

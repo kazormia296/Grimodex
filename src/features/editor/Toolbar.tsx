@@ -49,6 +49,7 @@ import { primaryCountUnit } from "@/features/editor/charCountStats";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { resolveReadingForSurface } from "@/features/codex/reading";
 import { useCodexReadingRegistrationPrompt } from "@/features/editor/useCodexReadingRegistrationPrompt";
+import { onWindowResized } from "@/lib/windowControls";
 
 function ToolbarButton({
   active,
@@ -238,7 +239,7 @@ export function Toolbar({
     zenMode,
     toggleZenMode,
     fullscreenMode,
-    setFullscreenMode,
+    syncFullscreenMode,
     toggleFullscreenMode,
     showComments,
     showForeshadowMarks,
@@ -248,14 +249,27 @@ export function Toolbar({
   const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
 
   useEffect(() => {
-    const onFullscreenChange = () => {
-      setFullscreenMode(Boolean(document.fullscreenElement));
+    let disposed = false;
+    let unlistenNative: (() => void) | undefined;
+    const sync = () => {
+      void syncFullscreenMode();
     };
-    onFullscreenChange();
-    document.addEventListener("fullscreenchange", onFullscreenChange);
-    return () =>
-      document.removeEventListener("fullscreenchange", onFullscreenChange);
-  }, [setFullscreenMode]);
+    sync();
+    document.addEventListener("fullscreenchange", sync);
+    void onWindowResized(sync)
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unlistenNative = unlisten;
+      })
+      .catch(() => {
+        // Web Editor has no native window bridge; fullscreenchange covers it.
+      });
+    return () => {
+      disposed = true;
+      document.removeEventListener("fullscreenchange", sync);
+      unlistenNative?.();
+    };
+  }, [syncFullscreenMode]);
 
   // パネル連動 (Auto) モード: layerAutoFollow ON の間、パネル可視状態に
   // レイヤー表示を追従させる。Toolbar はエディタごとに1つなので、split view
@@ -525,6 +539,8 @@ export function Toolbar({
   // 校閲の指摘 (校閲+Lint 統合レイヤー) は1ドット
   if ((sceneId && nodeType === "scene" && showAnnotations) || showLint)
     layerDots.push("var(--deco-issue-warning)");
+
+  if (zenMode) return null;
 
   return (
     <div

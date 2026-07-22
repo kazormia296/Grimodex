@@ -35,6 +35,7 @@ import {
 } from "@/features/editor/editorLayout";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { isMac } from "@/lib/platform";
 import {
   getMergedBindings,
@@ -388,7 +389,8 @@ export function LinearEditorView() {
   // --- Scene meta panel (EditorPane と同じ設定キー・レイアウト永続化) ---
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
-  const isPanelVisible = sceneMetaPanelOpen && activeId != null;
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
+  const isPanelVisible = sceneMetaPanelOpen && activeId != null && !zenMode;
   const handleTogglePanel = useCallback(() => {
     useSettingsStore
       .getState()

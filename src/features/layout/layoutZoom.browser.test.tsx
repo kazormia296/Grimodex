@@ -80,8 +80,8 @@ function setSlots(
   }));
 }
 
-function renderShell() {
-  return render(
+function shellView(zenMode = false) {
+  return (
     <div
       className="app-shell"
       data-card="true"
@@ -94,9 +94,13 @@ function renderShell() {
         height: SHELL_SIZE.height,
       }}
     >
-      <LayoutShell />
-    </div>,
+      <LayoutShell zenMode={zenMode} />
+    </div>
   );
+}
+
+function renderShell() {
+  return render(shellView());
 }
 
 async function settleFrames() {
@@ -261,6 +265,60 @@ describe("panel zoom geometry invariants (real Chromium)", () => {
     const restored = editorSegment.getBoundingClientRect();
     expect(Math.abs(restored.left - baseline.left)).toBeLessThan(2);
     expect(Math.abs(restored.width - baseline.width)).toBeLessThan(2);
+    expect(container.querySelector("[data-editor-area]")).toBe(editorNode);
+  });
+
+  it("Zen projection: editor が chrome なしで shell 全域を占め、解除後に同じ DOM と配置へ戻る", async () => {
+    setLayout((layout) => {
+      setSlots(layout, "left", [
+        { id: "l0", panels: ["scenes"], activePanel: "scenes" },
+      ]);
+      setSlots(layout, "bottom", [
+        { id: "b0", panels: ["timeline"], activePanel: "timeline" },
+      ]);
+    });
+    const { container, rerender } = renderShell();
+    await settleFrames();
+
+    const shell = container.querySelector<HTMLElement>("[data-layout-shell]")!;
+    const editorSegment = container.querySelector<HTMLElement>(
+      '[data-center-segment-kind="editor"]',
+    )!;
+    const editorNode =
+      container.querySelector<HTMLElement>("[data-editor-area]")!;
+    const leftCell = container.querySelector<HTMLElement>(
+      '[data-zoom-cell="left"]',
+    )!;
+    const bottomCell = container.querySelector<HTMLElement>(
+      '[data-zoom-cell="bottom"]',
+    )!;
+    const baseline = editorSegment.getBoundingClientRect();
+
+    rerender(shellView(true));
+    await settleFrames();
+
+    const shellRect = shell.getBoundingClientRect();
+    const zenRect = editorSegment.getBoundingClientRect();
+    expect(Math.abs(zenRect.left - shellRect.left)).toBeLessThan(1);
+    expect(Math.abs(zenRect.top - shellRect.top)).toBeLessThan(1);
+    expect(Math.abs(zenRect.width - shellRect.width)).toBeLessThan(1);
+    expect(Math.abs(zenRect.height - shellRect.height)).toBeLessThan(1);
+    expect(getComputedStyle(leftCell).visibility).toBe("hidden");
+    expect(getComputedStyle(bottomCell).visibility).toBe("hidden");
+    expect(container.querySelector("[data-editor-area]")).toBe(editorNode);
+    expect(container.querySelector("[data-zoom-restore-bar]")).toBeNull();
+    expect(useLayoutStore.getState().maximizedPanelId).toBeNull();
+
+    rerender(shellView(false));
+    await settleFrames();
+
+    const restored = editorSegment.getBoundingClientRect();
+    expect(Math.abs(restored.left - baseline.left)).toBeLessThan(2);
+    expect(Math.abs(restored.top - baseline.top)).toBeLessThan(2);
+    expect(Math.abs(restored.width - baseline.width)).toBeLessThan(2);
+    expect(Math.abs(restored.height - baseline.height)).toBeLessThan(2);
+    expect(getComputedStyle(leftCell).visibility).toBe("visible");
+    expect(getComputedStyle(bottomCell).visibility).toBe("visible");
     expect(container.querySelector("[data-editor-area]")).toBe(editorNode);
   });
 

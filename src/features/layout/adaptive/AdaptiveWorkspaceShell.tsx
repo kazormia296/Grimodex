@@ -16,6 +16,7 @@ export type MobileWorkspaceSurfaceId = keyof MobileWorkspaceSurfaces;
 interface Props {
   profile?: WorkspaceViewportProfile;
   editor: ReactNode;
+  zenMode?: boolean;
   panel?: ReactNode;
   panelOpen?: boolean;
   sceneTitle?: string;
@@ -28,6 +29,7 @@ interface Props {
 export function AdaptiveWorkspaceShell({
   profile: requestedProfile,
   editor,
+  zenMode = false,
   panel,
   panelOpen = Boolean(panel),
   sceneTitle,
@@ -64,11 +66,12 @@ export function AdaptiveWorkspaceShell({
       ref={requestedProfile === undefined ? viewport.ref : undefined}
       data-adaptive-workspace-shell
       data-profile={profile}
+      data-zen-mode={zenMode ? "true" : undefined}
     >
-      <WideWorkspaceChrome active={profile === "wide"} />
-      <CompactWorkspaceChrome active={profile === "compact"} />
+      <WideWorkspaceChrome active={!zenMode && profile === "wide"} />
+      <CompactWorkspaceChrome active={!zenMode && profile === "compact"} />
       <PhoneWorkspaceChrome
-        active={profile === "phone"}
+        active={!zenMode && profile === "phone"}
         sceneTitle={sceneTitle}
         saveState={saveState}
         onBack={onBack}
@@ -76,6 +79,7 @@ export function AdaptiveWorkspaceShell({
       <WorkspaceSurfaceRoot
         profile={profile}
         editor={editor}
+        zenMode={zenMode}
         panel={panel}
         panelOpen={panelOpen}
         mobileSurface={mobileSurface}

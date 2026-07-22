@@ -87,7 +87,7 @@ export const IPC = {
   event: "grim:event",
   /** renderer 発 emit（ipcMain.on、main が allowlist 検証 → 全窓 broadcast）。 */
   emit: "grim:emit",
-  /** windowControls（minimize / toggleMaximize / close / isMaximized）。 */
+  /** windowControls（min/max/close/fullscreen と状態取得）。 */
   windowControl: "grim:window-control",
   /** main → renderer: resize / maximize 状態変化の通知（main 側配線は S6）。 */
   windowResized: "grim:window-resized",

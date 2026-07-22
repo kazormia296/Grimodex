@@ -3596,6 +3596,10 @@
       "deletedEntry": "Deleted Codex entry",
       "danglingHelp": "The linked entry was deleted. Select the text to reassign or remove the link."
     },
+    "zen": {
+      "entryHint": "Zen · {{title}} · Esc to exit",
+      "entryHintNoTitle": "Zen · Esc to exit"
+    },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
       "italic": "Italic (Ctrl+I)",
@@ -3638,7 +3642,7 @@
       "codexReadingPromptDisable": "Don't ask again",
       "urlPlaceholder": "https://...",
       "label": "Editor toolbar",
-      "zenMode": "Zen mode (Focus + Typewriter)",
+      "zenMode": "Zen mode",
       "fullscreenMode": "Fullscreen"
     },
     "reorder": {
