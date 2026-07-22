@@ -6,14 +6,14 @@ mod ime_consumer_process;
 use grimodex_db::ime_export::ImeConsumerPlatform;
 
 const LINUX_CONSUMER_ID: &str = "fcitx5-mozkey-ibg";
-const LINUX_SERVER_ENV: &str = "GRIMODEX_LINUX_IME_SERVER";
+const LINUX_LAUNCHER_ENV: &str = "GRIMODEX_LINUX_MOZKEY_LAUNCHER";
 
 #[test]
-#[ignore = "requires GRIMODEX_LINUX_IME_SERVER pointing to the Mozkey IbG IME server"]
-fn linux_server_process_registers_a_fresh_mozkey_ibg_consumer() -> anyhow::Result<()> {
+#[ignore = "requires GRIMODEX_LINUX_MOZKEY_LAUNCHER pointing to launch_fcitx5_mozkey_e2e"]
+fn linux_fcitx5_launcher_registers_a_fresh_mozkey_ibg_consumer() -> anyhow::Result<()> {
     let status = ime_consumer_process::spawn_and_wait_for_consumer(
-        LINUX_SERVER_ENV,
-        "Mozkey IbG Linux IME server",
+        LINUX_LAUNCHER_ENV,
+        "Mozkey IbG Fcitx5 launcher",
         LINUX_CONSUMER_ID,
     )?;
 
@@ -25,7 +25,7 @@ fn linux_server_process_registers_a_fresh_mozkey_ibg_consumer() -> anyhow::Resul
         .consumers
         .iter()
         .find(|consumer| consumer.consumer_id == LINUX_CONSUMER_ID)
-        .expect("the running Mozkey IbG server must register its canonical consumer ID");
+        .expect("the running Mozkey IbG Fcitx5 addon must register its canonical consumer ID");
     assert!(matches!(
         consumer.platform,
         Some(ImeConsumerPlatform::Linux)

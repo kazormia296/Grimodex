@@ -6,11 +6,11 @@ mock server や handshake fixture だけでは代用しない。
 
 ## CI で保証する範囲
 
-- Mozkey IbG fork の Core protocol / scope / generation tests
+- azooKey-Desktop fork の Core protocol / scope / generation tests
 - Release 構成の実 `ConverterServer` build
 - `GRIMODEX_IME_ROOT` を共有した writer-to-reader process E2E
 - 初期 snapshot の parse/mapping と atomic project replace 後の watcher reload
-- `imkit-mozkey-ibg` handshake、macOS platform、4 capabilities
+- `azookey-grimodex` handshake、macOS platform、4 capabilities
 - network entitlement を持たない sandboxed app/helper
 - unsigned `.app` と `.pkg` の構造、bundle ID、LaunchAgent
 - release workflow 上の Developer ID 署名、公証、staple、Gatekeeper 検証
