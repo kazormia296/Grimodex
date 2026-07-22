@@ -71,7 +71,7 @@ function seedScene(overrides: Partial<TreeNodeData> = {}) {
 beforeEach(() => {
   settingsSetSpy.mockClear();
   stubPanelOpen(false);
-  useCursorSettingsStore.setState({ focusMode: false });
+  useCursorSettingsStore.setState({ focusMode: false, zenMode: false });
   useEditorStore.setState({ editor: null } as never);
   useTabStore.setState({
     activeTabId: "s1",
@@ -106,6 +106,12 @@ describe("SceneMetaChipRow の表示条件", () => {
     useCursorSettingsStore.setState({ focusMode: true });
     render(<SceneMetaChipRow />);
     expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
+  });
+
+  it("Zenモード中は本文専用表示のため出ない", () => {
+    useCursorSettingsStore.setState({ zenMode: true });
+    render(<SceneMetaChipRow />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
   });
 
   it("scene 以外のノードでは出ない", () => {

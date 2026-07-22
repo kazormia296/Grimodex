@@ -7,10 +7,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   closeWindow,
+  isWindowFullscreen,
   isWindowMaximized,
   minimizeWindow,
   onWindowCloseRequested,
   onWindowResized,
+  toggleFullscreenWindow,
   toggleMaximizeWindow,
 } from "./windowControls";
 
@@ -24,6 +26,8 @@ function installBridge() {
     toggleMaximize: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
     isMaximized: vi.fn().mockResolvedValue(true),
+    toggleFullscreen: vi.fn().mockResolvedValue(true),
+    isFullscreen: vi.fn().mockResolvedValue(false),
     onResized: vi.fn((cb: () => void) => {
       resizeCbs.push(cb);
       return unlistenResized;
@@ -55,6 +59,16 @@ describe("windowControls electron 分岐", () => {
     expect(windowControls.toggleMaximize).toHaveBeenCalledOnce();
     expect(windowControls.close).toHaveBeenCalledOnce();
     expect(windowControls.isMaximized).toHaveBeenCalledOnce();
+  });
+
+  it("toggleFullscreen / isFullscreen を native window bridge へ写像する", async () => {
+    const { windowControls } = installBridge();
+
+    await expect(toggleFullscreenWindow()).resolves.toBe(true);
+    await expect(isWindowFullscreen()).resolves.toBe(false);
+
+    expect(windowControls.toggleFullscreen).toHaveBeenCalledOnce();
+    expect(windowControls.isFullscreen).toHaveBeenCalledOnce();
   });
 
   it("onWindowResized は handler をそのまま購読し、bridge の unlisten を返す", async () => {

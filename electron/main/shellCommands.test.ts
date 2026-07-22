@@ -418,6 +418,35 @@ describe("windowControl", () => {
     expect(maximize).not.toHaveBeenCalled();
   });
 
+  it("toggleFullscreen は送信元窓を切り替え、確定した状態を返す", async () => {
+    const setFullScreen = vi.fn();
+    fromWebContentsMock.mockReturnValue({
+      isFullScreen: () => false,
+      setFullScreen,
+    });
+
+    const env = await invokeBridge(
+      IPC.windowControl,
+      { sender: {} },
+      "toggleFullscreen",
+    );
+
+    expect(env).toEqual({ ok: true, value: true });
+    expect(setFullScreen).toHaveBeenCalledWith(true);
+  });
+
+  it("isFullscreen は送信元窓の状態を返す", async () => {
+    fromWebContentsMock.mockReturnValue({ isFullScreen: () => true });
+
+    const env = await invokeBridge(
+      IPC.windowControl,
+      { sender: {} },
+      "isFullscreen",
+    );
+
+    expect(env).toEqual({ ok: true, value: true });
+  });
+
   it("窓が見つからない webContents は envelope エラー", async () => {
     fromWebContentsMock.mockReturnValue(null);
     const env = await invokeBridge(

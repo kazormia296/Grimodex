@@ -5,11 +5,12 @@
  * - Overflow メニューの menu/menuitem 化とキーボード・フォーカス管理
  *   (開時に最初の項目へ focus / Esc で閉じて trigger へ復元 / ArrowDown 移動)
  */
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Toolbar } from "./Toolbar";
+import { useCursorSettingsStore } from "./cursorSettingsStore";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (k: string) => k }),
@@ -30,6 +31,7 @@ function openOverflow() {
 }
 
 afterEach(() => cleanup());
+beforeEach(() => useCursorSettingsStore.setState({ zenMode: false }));
 
 describe("Toolbar container semantics", () => {
   it("exposes role=toolbar with an accessible name", () => {
@@ -47,6 +49,14 @@ describe("Toolbar container semantics", () => {
       .getByRole("toolbar")
       .querySelectorAll("div.w-px[aria-hidden]");
     expect(seps.length).toBeGreaterThan(0);
+    editor.destroy();
+  });
+
+  it("does not render persistent editor chrome in Zen mode", () => {
+    const editor = createTestEditor();
+    useCursorSettingsStore.setState({ zenMode: true });
+    renderToolbar(editor);
+    expect(screen.queryByRole("toolbar")).toBeNull();
     editor.destroy();
   });
 });
