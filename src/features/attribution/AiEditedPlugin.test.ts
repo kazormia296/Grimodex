@@ -191,6 +191,32 @@ describe("AiEditedPlugin", () => {
     editor.destroy();
   });
 
+  it("makes replacement text human at an unmarked-to-AI boundary", () => {
+    editor.destroy();
+    editor = createTestEditor("<p></p>");
+    editor.chain().insertContent("H").run();
+    insertAiText(editor, "ABCDE");
+
+    editor
+      .chain()
+      .focus()
+      .setTextSelection({ from: 2, to: 7 })
+      .insertContent("X")
+      .run();
+
+    const nodes: { text: string; source: string | null }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      nodes.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(nodes).toEqual([{ text: "HX", source: null }]);
+    editor.destroy();
+  });
+
   // --- Adjacent node isolation ---
 
   it("editing one node does NOT affect adjacent nodes", () => {

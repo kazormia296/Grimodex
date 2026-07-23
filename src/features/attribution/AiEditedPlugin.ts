@@ -1,6 +1,6 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
-import type { Mark, ResolvedPos } from "@tiptap/pm/model";
+import type { Mark, ResolvedPos, Slice } from "@tiptap/pm/model";
 import { ReplaceStep } from "@tiptap/pm/transform";
 import { isHistoryTransaction } from "@tiptap/pm/history";
 import { markStart, markEnd } from "@/lib/perfLog";
@@ -9,7 +9,7 @@ interface PendingComposition {
   from: number;
   to: number;
   compositionId: number | null;
-  hasCompositionChange: boolean;
+  originalSlice: Slice;
 }
 
 interface AiEditedPluginState {
@@ -40,26 +40,31 @@ function isSplittableAuthorshipMark(mark: Mark): boolean {
   );
 }
 
-function startsInSplittableAuthorship(state: EditorState): boolean {
-  const { from, to, $from } = state.selection;
-  if ($from.marks().some(isSplittableAuthorshipMark)) return true;
-  if (from === to) return false;
-
-  let found = false;
-  state.doc.nodesBetween(from, to, (node) => {
-    if (found || !node.isText) return !found;
-    found = node.marks.some(isSplittableAuthorshipMark);
-    return !found;
-  });
-  return found;
-}
-
 function isInsideMarkedRun($pos: ResolvedPos, mark: Mark): boolean {
   const hasMarkBefore =
     $pos.nodeBefore?.marks.some((candidate) => candidate.eq(mark)) ?? false;
   const hasMarkAfter =
     $pos.nodeAfter?.marks.some((candidate) => candidate.eq(mark)) ?? false;
   return hasMarkBefore && hasMarkAfter;
+}
+
+function inheritedAuthorshipMark(state: EditorState): Mark | undefined {
+  const { selection, storedMarks } = state;
+  const marks =
+    storedMarks ??
+    (selection.empty
+      ? selection.$from.marks()
+      : (selection.$from.marksAcross(selection.$to) ?? []));
+  return marks.find((mark) => mark.type.name === "authorship");
+}
+
+function shouldTrackComposition(state: EditorState): boolean {
+  const mark = inheritedAuthorshipMark(state);
+  if (!mark) return false;
+  if (mark.attrs.manualOverride) {
+    return !isInsideMarkedRun(state.selection.$from, mark);
+  }
+  return isSplittableAuthorshipMark(mark);
 }
 
 function mapPendingComposition(
@@ -78,8 +83,7 @@ function mapPendingComposition(
       typeof compositionMeta === "number"
         ? compositionMeta
         : pending.compositionId,
-    hasCompositionChange:
-      pending.hasCompositionChange || typeof compositionMeta === "number",
+    originalSlice: pending.originalSlice,
   };
 }
 
@@ -165,12 +169,12 @@ export function createAiEditedPlugin(): Plugin {
             compositionEndTimer = null;
           }
           const { from, to } = view.state.selection;
-          const pendingComposition = startsInSplittableAuthorship(view.state)
+          const pendingComposition = shouldTrackComposition(view.state)
             ? {
                 from,
                 to,
                 compositionId: null,
-                hasCompositionChange: false,
+                originalSlice: view.state.doc.slice(from, to),
               }
             : null;
           view.dispatch(
@@ -228,7 +232,11 @@ export function createAiEditedPlugin(): Plugin {
         const transaction = newState.tr.setMeta(aiEditedKey, {
           type: "compositionFlushed",
         } satisfies AiEditedPluginMeta);
-        if (pending.hasCompositionChange && from < to) {
+        const finalSlice = newState.doc.slice(from, to);
+        const hasCommittedChange =
+          pending.compositionId != null &&
+          !finalSlice.eq(pending.originalSlice);
+        if (hasCommittedChange && from < to) {
           transaction.removeMark(from, to, authorshipType);
         }
         if (pending.compositionId != null) {
@@ -269,16 +277,21 @@ export function createAiEditedPlugin(): Plugin {
             const step = steps[i];
             if (!(step instanceof ReplaceStep)) continue;
 
-            const { from } = step as { from: number };
+            const { from, to } = step;
             const insertedSize = step.slice.size;
             if (insertedSize === 0) continue;
 
-            // Check if the insertion/replacement position is inside a splittable span
-            // Use oldState positions (step coordinates are in pre-step document)
+            // Resolve the marks that ProseMirror actually inherits for this
+            // insertion/replacement in the document immediately before the step.
             let mark = null;
-            if (from < oldState.doc.content.size) {
-              const $pos = oldState.doc.resolve(from);
-              mark = $pos.marks().find((m) => {
+            const stepDoc = transaction.docs[i] ?? oldState.doc;
+            if (from < stepDoc.content.size) {
+              const $pos = stepDoc.resolve(from);
+              const inheritedMarks =
+                from === to
+                  ? $pos.marks()
+                  : ($pos.marksAcross(stepDoc.resolve(to)) ?? []);
+              mark = inheritedMarks.find((m) => {
                 if (m.type !== authorshipType) return false;
                 if (!m.attrs.manualOverride) {
                   return SPLITTABLE_SOURCES.has(m.attrs.source as string);
