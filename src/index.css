@@ -453,7 +453,10 @@ button[role="switch"][aria-checked="true"] {
 
 #main-content:has(> [data-editor-ambient][data-background-enabled="true"])
   [data-editor-fluid-glass="true"]
-  .glass-editor-body {
+  .glass-editor-body,
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-fluid-glass="true"]
+  .glass-editor-chrome {
   background-color: transparent;
   background-image:
     radial-gradient(

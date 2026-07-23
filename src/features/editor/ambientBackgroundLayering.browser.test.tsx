@@ -16,8 +16,20 @@ function renderLayering(enabled: boolean) {
             data-editor-fluid-glass="true"
             className="gx-panel gx-panel--flat"
           >
-            <div data-editor-chrome className="editor-background-glass">
+            <div
+              data-editor-chrome
+              className="editor-background-glass glass-editor-chrome"
+            >
               <span data-editor-text>Opaque text</span>
+            </div>
+            <div data-editor-toolbar className="glass-editor-chrome">
+              Toolbar
+            </div>
+            <div
+              data-testid="scene-meta-chip-row"
+              className="glass-editor-chrome"
+            >
+              Metadata
             </div>
             <div data-editor-body className="glass-editor-body">
               <div
@@ -34,6 +46,9 @@ function renderLayering(enabled: boolean) {
                 <span data-paper-text>Paper text</span>
               </div>
             </div>
+            <div data-editor-footer className="glass-editor-chrome">
+              Footer
+            </div>
           </section>
         </div>
       </main>
@@ -48,6 +63,15 @@ describe("editor ambient background layering (real Chromium)", () => {
     const layout = container.querySelector<HTMLElement>("[data-layout-shell]");
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
     const chrome = container.querySelector<HTMLElement>("[data-editor-chrome]");
+    const toolbar = container.querySelector<HTMLElement>(
+      "[data-editor-toolbar]",
+    );
+    const metadata = container.querySelector<HTMLElement>(
+      '[data-testid="scene-meta-chip-row"]',
+    );
+    const footer = container.querySelector<HTMLElement>(
+      "[data-editor-footer]",
+    );
     const body = container.querySelector<HTMLElement>("[data-editor-body]");
     const text = container.querySelector<HTMLElement>("[data-editor-text]");
     const paper = container.querySelector<HTMLElement>("[data-editor-paper]");
@@ -66,7 +90,10 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(glass.backgroundImage).not.toBe("none");
     expect(glass.boxShadow).not.toBe("none");
     expect(glass.filter).toBe("none");
-    expect(getComputedStyle(chrome!).backdropFilter).not.toBe("none");
+    expect(getComputedStyle(chrome!).backdropFilter).toContain("blur(14px)");
+    expect(getComputedStyle(toolbar!).backdropFilter).toContain("blur(14px)");
+    expect(getComputedStyle(metadata!).backdropFilter).toContain("blur(14px)");
+    expect(getComputedStyle(footer!).backdropFilter).toContain("blur(14px)");
     expect(getComputedStyle(body!).backdropFilter).not.toBe("none");
     expect(getComputedStyle(body!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     expect(getComputedStyle(text!).opacity).toBe("1");
@@ -85,6 +112,15 @@ describe("editor ambient background layering (real Chromium)", () => {
     const layout = container.querySelector<HTMLElement>("[data-layout-shell]");
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
     const chrome = container.querySelector<HTMLElement>("[data-editor-chrome]");
+    const toolbar = container.querySelector<HTMLElement>(
+      "[data-editor-toolbar]",
+    );
+    const metadata = container.querySelector<HTMLElement>(
+      '[data-testid="scene-meta-chip-row"]',
+    );
+    const footer = container.querySelector<HTMLElement>(
+      "[data-editor-footer]",
+    );
     const body = container.querySelector<HTMLElement>("[data-editor-body]");
     const paper = container.querySelector<HTMLElement>("[data-editor-paper]");
 
@@ -95,6 +131,9 @@ describe("editor ambient background layering (real Chromium)", () => {
       "rgba(0, 0, 0, 0)",
     );
     expect(getComputedStyle(chrome!).backdropFilter).toBe("none");
+    expect(getComputedStyle(toolbar!).backdropFilter).toBe("none");
+    expect(getComputedStyle(metadata!).backdropFilter).toBe("none");
+    expect(getComputedStyle(footer!).backdropFilter).toBe("none");
     expect(getComputedStyle(body!).backdropFilter).toBe("none");
     expect(getComputedStyle(editor!, "::before").filter).toBe("none");
     expect(getComputedStyle(paper!, "::before").backgroundImage).toBe("none");

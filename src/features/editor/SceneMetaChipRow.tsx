@@ -168,7 +168,7 @@ export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
   return (
     <div
       data-testid="scene-meta-chip-row"
-      className="flex h-7 flex-shrink-0 items-center gap-1.5 overflow-hidden border-b border-border bg-muted/10 px-3"
+      className="glass-editor-chrome flex h-7 flex-shrink-0 items-center gap-1.5 overflow-hidden border-b border-border bg-muted/10 px-3"
     >
       <span ref={povChipRef} className="inline-flex min-w-0">
         <Chip
