@@ -189,16 +189,16 @@ describe("removeRetiredDisplaySettings", () => {
   });
 
   it("leaves active preferences unchanged when no retired key is present", async () => {
-    globalSettingsHarness.setSettings({
+    const current = {
       userPreferences: { "editor.fontSize": "16" },
-    });
+    };
+    globalSettingsHarness.setSettings(current);
 
     const { removeRetiredDisplaySettings } = await import("./migration");
     await removeRetiredDisplaySettings();
 
-    expect(globalSettingsHarness.getSettings()).toEqual({
-      userPreferences: { "editor.fontSize": "16" },
-    });
+    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
+    expect(globalSettingsHarness.getSettings()).toBe(current);
   });
 });
 
@@ -282,15 +282,49 @@ describe("migrateModelRoleKeys", () => {
     });
   });
 
-  it("旧キーが無ければ no-op", async () => {
-    globalSettingsHarness.setSettings({
+  it("旧キーが無ければ同じ設定を返して no-op にする", async () => {
+    const current = {
       userPreferences: { "aiModel.role.inline": "gpt-4o" },
+    };
+    globalSettingsHarness.setSettings(current);
+
+    const { migrateModelRoleKeys } = await import("./migration");
+    await migrateModelRoleKeys();
+
+    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
+    expect(globalSettingsHarness.getSettings()).toBe(current);
+  });
+
+  it("patch 実行直前までに書かれた設定を保持する", async () => {
+    globalSettingsHarness.setSettings({
+      userPreferences: {
+        "ai.inlineModel": "gpt-4o",
+        "editor.fontSize": "16",
+      },
+    });
+    globalSettingsHarness.patch.mockImplementationOnce(async (updater) => {
+      globalSettingsHarness.setSettings({
+        userPreferences: {
+          "ai.inlineModel": "gpt-4o",
+          "editor.fontSize": "16",
+          "editor.fontFamily": "serif",
+        },
+      });
+      const next = updater(globalSettingsHarness.getSettings());
+      globalSettingsHarness.setSettings(next);
+      return next;
     });
 
     const { migrateModelRoleKeys } = await import("./migration");
     await migrateModelRoleKeys();
 
-    expect(globalSettingsHarness.patch).not.toHaveBeenCalled();
+    expect(globalSettingsHarness.getSettings()).toEqual({
+      userPreferences: {
+        "editor.fontSize": "16",
+        "editor.fontFamily": "serif",
+        "aiModel.role.inline": "gpt-4o",
+      },
+    });
   });
 
   it("ロール値が既にあれば上書きしない（旧キーはクリーンアップする）", async () => {

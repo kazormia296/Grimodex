@@ -34,6 +34,11 @@ test("Cloudflare Pages deploy waits for successful master CI", async () => {
     false,
     "a stale completion must not cancel a current deployment before its SHA guard runs",
   );
+  assert.equal(
+    workflow.concurrency.queue,
+    "max",
+    "a late stale completion must not replace a newer pending deployment",
+  );
   assert.match(job.if, /workflow_run\.conclusion == 'success'/);
   assert.match(job.if, /workflow_run\.event == 'push'/);
   assert.match(job.if, /workflow_run\.head_branch == 'master'/);
@@ -141,4 +146,32 @@ test("a stale CI completion cannot deploy after master advances", async () => {
   const deploy = steps[deployIndex];
   assert.match(deploy.if, /github\.event_name == 'workflow_dispatch'/);
   assert.match(deploy.if, /steps\.current_master\.outputs\.deploy == 'true'/);
+});
+
+test("reverse CI completion order preserves the newest pending deployment", async () => {
+  const workflow = load(
+    await read(".github/workflows/cloudflare-editor-deploy.yml"),
+  );
+  const deployedSha = "b".repeat(40);
+  const currentPendingSha = "c".repeat(40);
+  const lateStaleSha = "a".repeat(40);
+
+  assert.equal(workflow.concurrency["cancel-in-progress"], false);
+  assert.equal(
+    workflow.concurrency.queue,
+    "max",
+    "C must remain queued when the delayed CI for A completes",
+  );
+
+  const queuedAfterDeployedSha = [currentPendingSha, lateStaleSha];
+  assert.deepEqual(
+    queuedAfterDeployedSha.filter((sha) =>
+      isCurrentMasterDeployment(sha, currentPendingSha),
+    ),
+    [currentPendingSha],
+  );
+  assert.equal(
+    isCurrentMasterDeployment(deployedSha, currentPendingSha),
+    false,
+  );
 });

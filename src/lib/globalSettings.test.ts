@@ -76,4 +76,15 @@ describe("patchGlobalSettings", () => {
       },
     });
   });
+
+  it("updater が current を返した場合は保存しない", async () => {
+    const current = disk.current;
+
+    const result = await patch((value) => value);
+
+    expect(result).toEqual(current);
+    expect(
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "save_global_settings"),
+    ).toHaveLength(0);
+  });
 });
