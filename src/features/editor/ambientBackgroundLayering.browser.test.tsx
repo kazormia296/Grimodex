@@ -1,9 +1,17 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { COLOR_THEMES, type ThemePalette } from "@/lib/colorThemes";
 
-function renderLayering(enabled: boolean, glassEnabled = true) {
+function renderLayering(
+  enabled: boolean,
+  glassEnabled = true,
+  palette?: ThemePalette,
+) {
   return render(
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      style={palette as React.CSSProperties | undefined}
+    >
       <header data-header-bar>Header</header>
       <main id="main-content">
         <div
@@ -96,6 +104,13 @@ function renderLayering(enabled: boolean, glassEnabled = true) {
     </div>,
   );
 }
+
+const THEME_CASES = COLOR_THEMES.flatMap((theme) =>
+  (["light", "dark"] as const).map((mode) => ({
+    name: `${theme.id}/${mode}`,
+    palette: theme[mode],
+  })),
+);
 
 describe("editor ambient background layering (real Chromium)", () => {
   it("reveals the enabled shader through the layout, editor and translucent chrome", () => {
@@ -260,4 +275,29 @@ describe("editor ambient background layering (real Chromium)", () => {
       expect(getComputedStyle(surface).backdropFilter).toBe("none");
     }
   });
+
+  it.each(THEME_CASES)(
+    "keeps the tool panel transparent and blurred for $name",
+    ({ palette }) => {
+      const { container } = renderLayering(true, true, palette);
+      const toolPanel = container.querySelector<HTMLElement>(
+        '[data-ambient-glass-surface="panel"]',
+      );
+      const toolPanelRoot = container.querySelector<HTMLElement>(
+        "[data-tool-panel-root]",
+      );
+
+      expect(toolPanel).not.toBeNull();
+      expect(toolPanelRoot).not.toBeNull();
+      expect(getComputedStyle(toolPanel!).backgroundColor).toBe(
+        "rgba(0, 0, 0, 0)",
+      );
+      expect(getComputedStyle(toolPanel!).backdropFilter).toContain(
+        "blur(22px)",
+      );
+      expect(getComputedStyle(toolPanelRoot!).backgroundColor).toBe(
+        "rgba(0, 0, 0, 0)",
+      );
+    },
+  );
 });
