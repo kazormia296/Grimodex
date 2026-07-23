@@ -785,7 +785,7 @@
       "zenContrastGuardStrength": "保護強度",
       "zenContrastGuardStrengthDesc": "0%で4.5:1、100%で7:1を目標にします。文字色は変更しません。",
       "zenContrastGuardToolMix": "ツール補正強度",
-      "zenContrastGuardToolMixDesc": "ツール面に合成する補正の強さです。本文の保護強度とは別に、0〜30%の低い範囲で調整します。",
+      "zenContrastGuardToolMixDesc": "ツール面に合成する補正の強さです。本文の保護強度とは別に、0〜50%の範囲で調整します（既定30%）。",
       "zenGlassEnabled": "Glass効果",
       "zenGlassEnabledDesc": "背景表示時に、本文エディターへFluid Glassを適用します。文字と編集DOMにはフィルターを掛けません。",
       "zenGlassBlur": "背景ぼかし",
