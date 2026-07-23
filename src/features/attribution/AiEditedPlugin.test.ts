@@ -191,6 +191,116 @@ describe("AiEditedPlugin", () => {
     editor.destroy();
   });
 
+  it("does not preserve manualOverride across an unmarked replacement range", () => {
+    editor.destroy();
+    editor = createTestEditor("<p></p>");
+    editor
+      .chain()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContent([
+        {
+          type: "text",
+          text: "ABCDE",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+                traceId: "manual-1",
+              },
+            },
+          ],
+        },
+        { type: "text", text: "FG" },
+      ])
+      .run();
+
+    editor
+      .chain()
+      .setTextSelection({ from: 4, to: 8 })
+      .insertContent("X")
+      .run();
+
+    const nodes: { text: string; source: string | null }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      nodes.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(nodes).toEqual([
+      { text: "ABC", source: "ai" },
+      { text: "X", source: null },
+    ]);
+    editor.destroy();
+  });
+
+  it("does not preserve manualOverride across different authorship attrs", () => {
+    editor.destroy();
+    editor = createTestEditor("<p></p>");
+    editor
+      .chain()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContent([
+        {
+          type: "text",
+          text: "A",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+                traceId: "manual-1",
+              },
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "B",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+                traceId: "manual-2",
+              },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    editor
+      .chain()
+      .setTextSelection({ from: 1, to: 3 })
+      .insertContent("X")
+      .run();
+
+    const nodes: { text: string; source: string | null }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      nodes.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(nodes).toEqual([{ text: "X", source: null }]);
+    editor.destroy();
+  });
+
   it("makes replacement text human at an unmarked-to-AI boundary", () => {
     editor.destroy();
     editor = createTestEditor("<p></p>");

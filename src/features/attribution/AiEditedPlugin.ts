@@ -1,14 +1,22 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
-import type { Mark, ResolvedPos, Slice } from "@tiptap/pm/model";
+import type {
+  Mark,
+  Node as ProseMirrorNode,
+  ResolvedPos,
+  Slice,
+} from "@tiptap/pm/model";
 import { ReplaceStep } from "@tiptap/pm/transform";
 import { isHistoryTransaction } from "@tiptap/pm/history";
+import type { EditorView } from "@tiptap/pm/view";
 import { markStart, markEnd } from "@/lib/perfLog";
+
+type CompositionTerminalIntent = "commit" | "cancel" | "unknown";
 
 interface PendingComposition {
   from: number;
   to: number;
-  compositionId: number | null;
+  compositionId: number;
   originalSlice: Slice;
 }
 
@@ -19,10 +27,9 @@ interface AiEditedPluginState {
 
 type AiEditedPluginMeta =
   | {
-      type: "compositionStart";
-      pendingComposition: PendingComposition | null;
+      type: "compositionEnd";
+      terminalIntent: CompositionTerminalIntent;
     }
-  | { type: "compositionEnd" }
   | { type: "compositionFlushed" };
 
 export const aiEditedKey = new PluginKey<AiEditedPluginState>("aiEdited");
@@ -48,6 +55,30 @@ function isInsideMarkedRun($pos: ResolvedPos, mark: Mark): boolean {
   return hasMarkBefore && hasMarkAfter;
 }
 
+function isRangeFullyCoveredByExactMark(
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+  mark: Mark,
+): boolean {
+  if (from >= to) return false;
+
+  const $from = doc.resolve(from);
+  const $to = doc.resolve(to);
+  if (!$from.sameParent($to) || !$from.parent.inlineContent) return false;
+
+  let coveredInlineContent = false;
+  let hasOnlyExactMark = true;
+  $from.parent.nodesBetween($from.parentOffset, $to.parentOffset, (node) => {
+    if (!node.isInline) return;
+    coveredInlineContent = true;
+    if (!node.marks.some((candidate) => candidate.eq(mark))) {
+      hasOnlyExactMark = false;
+    }
+  });
+  return coveredInlineContent && hasOnlyExactMark;
+}
+
 function inheritedAuthorshipMark(state: EditorState): Mark | undefined {
   const { selection, storedMarks } = state;
   const marks =
@@ -62,9 +93,31 @@ function shouldTrackComposition(state: EditorState): boolean {
   const mark = inheritedAuthorshipMark(state);
   if (!mark) return false;
   if (mark.attrs.manualOverride) {
-    return !isInsideMarkedRun(state.selection.$from, mark);
+    const { selection } = state;
+    return selection.empty
+      ? !isInsideMarkedRun(selection.$from, mark)
+      : !isRangeFullyCoveredByExactMark(
+          state.doc,
+          selection.from,
+          selection.to,
+          mark,
+        );
   }
   return isSplittableAuthorshipMark(mark);
+}
+
+function createPendingComposition(
+  state: EditorState,
+  compositionId: number,
+): PendingComposition | null {
+  if (!shouldTrackComposition(state)) return null;
+  const { from, to } = state.selection;
+  return {
+    from,
+    to,
+    compositionId,
+    originalSlice: state.doc.slice(from, to),
+  };
 }
 
 function mapPendingComposition(
@@ -106,7 +159,53 @@ function mapPendingComposition(
  * after ProseMirror has flushed compositionend.
  */
 export function createAiEditedPlugin(): Plugin {
-  let compositionEndTimer: ReturnType<typeof setTimeout> | null = null;
+  let compositionSessionArmed = false;
+  let lastCompositionData: string | null = null;
+  let scheduledCompositionEnd: {
+    token: number;
+    terminalIntent: CompositionTerminalIntent;
+  } | null = null;
+  let compositionEndToken = 0;
+
+  function eventData(event: Event): string | null {
+    const data = (event as CompositionEvent | InputEvent).data;
+    return typeof data === "string" ? data : null;
+  }
+
+  function terminalIntentFor(event: Event): CompositionTerminalIntent {
+    const finalData = eventData(event);
+    if (finalData !== null && finalData.length > 0) return "commit";
+    // UI Events requires a canceled session to emit an empty
+    // compositionupdate immediately before compositionend. An empty
+    // compositionend alone is ambiguous with committing a deletion.
+    if (lastCompositionData === "") return "cancel";
+    return "unknown";
+  }
+
+  function flushCompositionEnd(
+    view: EditorView,
+    terminalIntent: CompositionTerminalIntent,
+  ) {
+    scheduledCompositionEnd = null;
+    compositionSessionArmed = false;
+    lastCompositionData = null;
+    if (view.isDestroyed) return;
+
+    const pluginState = aiEditedKey.getState(view.state);
+    if (!pluginState?.composing && !pluginState?.pendingComposition) return;
+
+    const transaction = view.state.tr.setMeta(aiEditedKey, {
+      type: "compositionEnd",
+      terminalIntent,
+    } satisfies AiEditedPluginMeta);
+    if (pluginState.pendingComposition) {
+      transaction.setMeta(
+        "composition",
+        pluginState.pendingComposition.compositionId,
+      );
+    }
+    view.dispatch(transaction);
+  }
 
   return new Plugin({
     key: aiEditedKey,
@@ -117,21 +216,28 @@ export function createAiEditedPlugin(): Plugin {
           pendingComposition: null,
         };
       },
-      apply(transaction, pluginState): AiEditedPluginState {
+      apply(transaction, pluginState, oldState): AiEditedPluginState {
         const meta = transaction.getMeta(aiEditedKey) as
           | AiEditedPluginMeta
           | undefined;
 
-        if (meta?.type === "compositionStart") {
-          return {
-            composing: true,
-            pendingComposition: meta.pendingComposition,
-          };
-        }
         if (meta?.type === "compositionFlushed") {
           return {
             composing: false,
             pendingComposition: null,
+          };
+        }
+
+        const compositionMeta = transaction.getMeta("composition");
+        if (
+          compositionSessionArmed &&
+          typeof compositionMeta === "number" &&
+          !pluginState.composing
+        ) {
+          const captured = createPendingComposition(oldState, compositionMeta);
+          return {
+            composing: true,
+            pendingComposition: mapPendingComposition(captured, transaction),
           };
         }
 
@@ -154,77 +260,76 @@ export function createAiEditedPlugin(): Plugin {
     view() {
       return {
         destroy() {
-          if (compositionEndTimer !== null) {
-            clearTimeout(compositionEndTimer);
-            compositionEndTimer = null;
-          }
+          compositionEndToken++;
+          scheduledCompositionEnd = null;
+          compositionSessionArmed = false;
+          lastCompositionData = null;
         },
       };
     },
     props: {
       handleDOMEvents: {
         compositionstart(view) {
-          if (compositionEndTimer !== null) {
-            clearTimeout(compositionEndTimer);
-            compositionEndTimer = null;
+          if (scheduledCompositionEnd) {
+            const { terminalIntent } = scheduledCompositionEnd;
+            compositionEndToken++;
+            flushCompositionEnd(view, terminalIntent);
           }
-          const { from, to } = view.state.selection;
-          const pendingComposition = shouldTrackComposition(view.state)
-            ? {
-                from,
-                to,
-                compositionId: null,
-                originalSlice: view.state.doc.slice(from, to),
-              }
-            : null;
-          view.dispatch(
-            view.state.tr.setMeta(aiEditedKey, {
-              type: "compositionStart",
-              pendingComposition,
-            } satisfies AiEditedPluginMeta),
-          );
+          // ProseMirror's built-in compositionstart handler flushes the DOM
+          // observer after custom handlers run. Arm the session here, then
+          // capture oldState from the first transaction carrying its
+          // composition ID so the snapshot is post-flush.
+          compositionSessionArmed = true;
+          lastCompositionData = null;
           return false;
         },
-        compositionend(view) {
-          if (compositionEndTimer !== null) {
-            clearTimeout(compositionEndTimer);
+        compositionupdate(_view, event) {
+          if (compositionSessionArmed) {
+            lastCompositionData = eventData(event);
           }
-          // ProseMirror may flush the final DOM mutation in a microtask after
-          // compositionend. Use a macrotask so the tracked range includes it.
-          compositionEndTimer = setTimeout(() => {
-            compositionEndTimer = null;
-            if (view.isDestroyed) return;
-            const pluginState = aiEditedKey.getState(view.state);
-            const transaction = view.state.tr.setMeta(aiEditedKey, {
-              type: "compositionEnd",
-            } satisfies AiEditedPluginMeta);
-            if (pluginState?.pendingComposition?.compositionId != null) {
-              transaction.setMeta(
-                "composition",
-                pluginState.pendingComposition.compositionId,
-              );
-            }
-            view.dispatch(transaction);
-          }, 0);
+          return false;
+        },
+        beforeinput(_view, event) {
+          const inputEvent = event as InputEvent;
+          if (
+            compositionSessionArmed &&
+            inputEvent.inputType === "insertCompositionText"
+          ) {
+            lastCompositionData = eventData(event);
+          }
+          return false;
+        },
+        compositionend(view, event) {
+          const terminalIntent = terminalIntentFor(event);
+          const token = ++compositionEndToken;
+          scheduledCompositionEnd = { token, terminalIntent };
+
+          // Custom handlers run before ProseMirror's built-in handler. The
+          // first microtask lets that handler enqueue its pending DOM flush;
+          // the second runs after the flush transaction has been dispatched.
+          queueMicrotask(() => {
+            queueMicrotask(() => {
+              if (scheduledCompositionEnd?.token !== token) return;
+              flushCompositionEnd(view, terminalIntent);
+            });
+          });
           return false;
         },
       },
     },
     appendTransaction(transactions, oldState, newState) {
       const pluginState = aiEditedKey.getState(newState);
-      const compositionEnded = transactions.some((transaction) => {
-        const meta = transaction.getMeta(aiEditedKey) as
-          | AiEditedPluginMeta
-          | undefined;
-        return meta?.type === "compositionEnd";
-      });
+      const compositionEndMeta = transactions
+        .map((transaction) => {
+          return transaction.getMeta(aiEditedKey) as
+            | AiEditedPluginMeta
+            | undefined;
+        })
+        .find((meta) => meta?.type === "compositionEnd");
 
-      if (compositionEnded) {
+      if (compositionEndMeta?.type === "compositionEnd") {
         const pending = pluginState?.pendingComposition;
         if (!pending) return null;
-
-        const authorshipType = newState.schema.marks["authorship"];
-        if (!authorshipType) return null;
 
         const docEnd = newState.doc.content.size;
         const from = Math.max(0, Math.min(pending.from, docEnd));
@@ -233,15 +338,16 @@ export function createAiEditedPlugin(): Plugin {
           type: "compositionFlushed",
         } satisfies AiEditedPluginMeta);
         const finalSlice = newState.doc.slice(from, to);
-        const hasCommittedChange =
-          pending.compositionId != null &&
-          !finalSlice.eq(pending.originalSlice);
-        if (hasCommittedChange && from < to) {
+        const shouldCleanup =
+          compositionEndMeta.terminalIntent === "commit" ||
+          (compositionEndMeta.terminalIntent === "unknown" &&
+            !finalSlice.eq(pending.originalSlice));
+
+        const authorshipType = newState.schema.marks["authorship"];
+        if (shouldCleanup && authorshipType && from < to) {
           transaction.removeMark(from, to, authorshipType);
         }
-        if (pending.compositionId != null) {
-          transaction.setMeta("composition", pending.compositionId);
-        }
+        transaction.setMeta("composition", pending.compositionId);
         return transaction;
       }
 
@@ -296,7 +402,9 @@ export function createAiEditedPlugin(): Plugin {
                 if (!m.attrs.manualOverride) {
                   return SPLITTABLE_SOURCES.has(m.attrs.source as string);
                 }
-                return !isInsideMarkedRun($pos, m);
+                return from === to
+                  ? !isInsideMarkedRun($pos, m)
+                  : !isRangeFullyCoveredByExactMark(stepDoc, from, to, m);
               });
             }
 

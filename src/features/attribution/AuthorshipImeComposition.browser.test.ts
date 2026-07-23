@@ -10,9 +10,15 @@ const ORIGINAL =
 interface EditorAuthorship {
   source?: "ai" | "unknown";
   manualOverride?: boolean;
+  traceId?: string;
 }
 
-function createEditor(authorship: EditorAuthorship = {}): Editor {
+interface EditorTextRun {
+  text: string;
+  authorship?: EditorAuthorship;
+}
+
+function createEditorFromRuns(runs: EditorTextRun[]): Editor {
   const element = document.createElement("div");
   document.body.appendChild(element);
   const editor = new Editor({
@@ -23,28 +29,47 @@ function createEditor(authorship: EditorAuthorship = {}): Editor {
       content: [
         {
           type: "paragraph",
-          content: [
-            {
-              type: "text",
-              text: ORIGINAL,
-              marks: [
-                {
-                  type: "authorship",
-                  attrs: {
-                    source: authorship.source ?? "unknown",
-                    manualOverride: authorship.manualOverride ?? false,
+          content: runs.map((run) => {
+            const marks = run.authorship
+              ? [
+                  {
+                    type: "authorship",
+                    attrs: {
+                      source: run.authorship.source ?? "unknown",
+                      manualOverride: run.authorship.manualOverride ?? false,
+                      traceId: run.authorship.traceId ?? null,
+                    },
                   },
-                },
-              ],
-            },
-          ],
+                ]
+              : undefined;
+            return {
+              type: "text",
+              text: run.text,
+              marks,
+            };
+          }),
         },
       ],
     },
   });
   editor.registerPlugin(createAiEditedPlugin());
-  editor.commands.setTextSelection(ORIGINAL.length + 1);
+  editor.commands.setTextSelection(
+    runs.reduce((length, run) => length + run.text.length, 1),
+  );
   return editor;
+}
+
+function createEditor(authorship: EditorAuthorship = {}): Editor {
+  return createEditorFromRuns([
+    {
+      text: ORIGINAL,
+      authorship: {
+        source: authorship.source ?? "unknown",
+        manualOverride: authorship.manualOverride ?? false,
+        traceId: authorship.traceId,
+      },
+    },
+  ]);
 }
 
 function sources(editor: Editor): Array<string | null> {
@@ -115,11 +140,43 @@ describe("authorship IME composition in Chromium", () => {
         .insertText(originalSelection, 2, 4)
         .setMeta("composition", 1),
     );
-    editor.view.dom.dispatchEvent(new CompositionEvent("compositionend"));
+    editor.view.dom.dispatchEvent(
+      new CompositionEvent("compositionupdate", { data: "" }),
+    );
+    editor.view.dom.dispatchEvent(
+      new CompositionEvent("compositionend", { data: "" }),
+    );
     await vi.runAllTimersAsync();
 
     expect(editor.state.doc.textContent).toBe(ORIGINAL);
     expect(sources(editor)).toEqual(["unknown"]);
+    editor.destroy();
+  });
+
+  it("makes identical selected AI text human when the IME commits it", async () => {
+    vi.useFakeTimers();
+    const editor = createEditor({ source: "ai" });
+    const originalSelection = ORIGINAL.slice(1, 4);
+    editor.commands.setTextSelection({ from: 2, to: 5 });
+
+    editor.view.dom.dispatchEvent(
+      new CompositionEvent("compositionstart", { data: originalSelection }),
+    );
+    editor.view.dispatch(
+      editor.state.tr.insertText("かな", 2, 5).setMeta("composition", 1),
+    );
+    editor.view.dispatch(
+      editor.state.tr
+        .insertText(originalSelection, 2, 4)
+        .setMeta("composition", 1),
+    );
+    editor.view.dom.dispatchEvent(
+      new CompositionEvent("compositionend", { data: originalSelection }),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(editor.state.doc.textContent).toBe(ORIGINAL);
+    expect(sources(editor)).toEqual(["ai", null, "ai"]);
     editor.destroy();
   });
 
@@ -136,6 +193,35 @@ describe("authorship IME composition in Chromium", () => {
     await vi.runAllTimersAsync();
 
     expect(editor.state.doc.textContent).toBe(`${ORIGINAL}あ`);
+    expect(sources(editor)).toEqual(["ai", null]);
+    editor.destroy();
+  });
+
+  it("does not preserve manualOverride across an unmarked replacement boundary", async () => {
+    vi.useFakeTimers();
+    const editor = createEditorFromRuns([
+      {
+        text: "ABCDE",
+        authorship: {
+          source: "ai",
+          manualOverride: true,
+          traceId: "manual-1",
+        },
+      },
+      { text: "FG" },
+    ]);
+    editor.commands.setTextSelection({ from: 4, to: 8 });
+
+    editor.view.dom.dispatchEvent(new CompositionEvent("compositionstart"));
+    editor.view.dispatch(
+      editor.state.tr.insertText("あ", 4, 8).setMeta("composition", 1),
+    );
+    editor.view.dom.dispatchEvent(
+      new CompositionEvent("compositionend", { data: "あ" }),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(editor.state.doc.textContent).toBe("ABCあ");
     expect(sources(editor)).toEqual(["ai", null]);
     editor.destroy();
   });
