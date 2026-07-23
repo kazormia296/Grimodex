@@ -103,17 +103,17 @@ describe("BackgroundStudio", () => {
       "settings.editor.zenContrastGuardToolMix",
     );
     expect(toolMix).toHaveAttribute("min", "0");
-    expect(toolMix).toHaveAttribute("max", "0.3");
+    expect(toolMix).toHaveAttribute("max", "0.5");
     expect(toolMix).toHaveAttribute("step", "0.01");
-    expect(toolMix).toHaveValue("0.15");
+    expect(toolMix).toHaveValue("0.3");
     expect(toolMix).not.toBeDisabled();
 
-    fireEvent.change(toolMix, { target: { value: "0.23" } });
+    fireEvent.change(toolMix, { target: { value: "0.43" } });
     expect(
       useSettingsStore.getState().cache[
         "editor.zenBackground.contrastGuard.toolMix"
       ],
-    ).toBe("0.23");
+    ).toBe("0.43");
 
     fireEvent.change(mode, { target: { value: "none" } });
 

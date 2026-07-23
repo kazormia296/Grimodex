@@ -176,7 +176,7 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
       DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.strength"],
     ).toBe("1");
     expect(DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.toolMix"]).toBe(
-      "0.15",
+      "0.3",
     );
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.enabled"]).toBe("true");
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.blur"]).toBe("14");

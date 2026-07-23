@@ -61,7 +61,7 @@ function RefractionProbe({
   const config = {
     ...ZEN_SHADER_DEFAULTS,
     opacity: 100,
-    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.15 },
+    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.3 },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
       enabled: refraction > 0,
@@ -120,7 +120,7 @@ function UiContrastProbe({
   enabled,
   uiTextColor,
   backdropColor,
-  toolMix = 0.15,
+  toolMix = 0.3,
 }: {
   name: string;
   enabled: boolean;
@@ -187,7 +187,7 @@ function LowOpacityContrastProbe({
     contrastGuard: {
       mode: enabled ? ("auto" as const) : ("none" as const),
       strength: 1,
-      toolMix: 0.15,
+      toolMix: 0.3,
     },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
@@ -250,7 +250,7 @@ function PaperCompileProbe({ shader }: { shader: PaperShaderId }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
     shader,
-    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.15 },
+    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.3 },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
       enabled: true,
@@ -527,7 +527,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
           enabled
           uiTextColor={[1, 1, 1]}
           backdropColor={[0.4, 0.4, 0.4]}
-          toolMix={0.3}
+          toolMix={0.5}
         />
         <UiContrastProbe
           name="light-unguarded"
@@ -577,7 +577,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
 
       expect(Math.sign(uiDelta)).toBe(testCase.direction);
       expect(Math.abs(uiDelta)).toBeGreaterThan(5);
-      expect(Math.abs(uiDelta)).toBeLessThan(30);
+      expect(Math.abs(uiDelta)).toBeLessThan(50);
       expect(
         Math.abs(
           pixelAt(guarded, 0.38, 0.5)[0] - pixelAt(unguarded, 0.38, 0.5)[0],
@@ -601,9 +601,12 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     expect(
       Math.abs(pixelAt(darkToolOff, 0.2, 0.5)[0] - darkBasePixel),
     ).toBeLessThanOrEqual(1);
+    const darkGuardedDelta = Math.abs(
+      pixelAt(darkGuarded, 0.2, 0.5)[0] - darkBasePixel,
+    );
     expect(
       Math.abs(pixelAt(darkToolMax, 0.2, 0.5)[0] - darkBasePixel),
-    ).toBeGreaterThan(30);
+    ).toBeGreaterThan(darkGuardedDelta + 15);
     expect(
       Math.abs(
         pixelAt(darkGuarded, 0.5, 0.5)[0] - pixelAt(darkUnguarded, 0.5, 0.5)[0],
