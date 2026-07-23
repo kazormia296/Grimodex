@@ -166,7 +166,8 @@ export function Breadcrumb() {
     // ジェスチャ対象はパンくず行に限定する。
     <div
       data-panel-header
-      className="flex h-8 min-w-0 items-center border-b border-border px-3 text-xs text-muted-foreground"
+      data-editor-breadcrumb
+      className="glass-editor-chrome flex h-8 min-w-0 items-center border-b border-border px-3 text-xs text-muted-foreground"
     >
       <FileText className="mr-1.5 size-3.5 shrink-0 opacity-70" aria-hidden />
       {path.map((segment, i) => {

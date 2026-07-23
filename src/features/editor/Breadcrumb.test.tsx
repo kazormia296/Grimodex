@@ -166,6 +166,17 @@ describe("computeBreadcrumbPath", () => {
 });
 
 describe("Breadcrumb Zen visibility", () => {
+  it("uses the shared Editor Chrome surface outside Zen mode", () => {
+    useTreeStore.setState({ nodes: NODES, activeSceneId: "scene-1" } as never);
+    useCursorSettingsStore.setState({ zenMode: false });
+
+    const { container } = render(<Breadcrumb />);
+
+    expect(
+      container.querySelector<HTMLElement>("[data-editor-breadcrumb]"),
+    ).toHaveClass("glass-editor-chrome");
+  });
+
   it("does not render persistent navigation chrome in Zen mode", () => {
     useTreeStore.setState({ nodes: NODES, activeSceneId: "scene-1" } as never);
     useCursorSettingsStore.setState({ zenMode: true });

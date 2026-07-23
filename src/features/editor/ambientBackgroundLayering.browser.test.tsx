@@ -16,6 +16,9 @@ function renderLayering(enabled: boolean) {
             data-editor-fluid-glass="true"
             className="gx-panel gx-panel--flat"
           >
+            <div data-editor-breadcrumb className="glass-editor-chrome">
+              Breadcrumb
+            </div>
             <div
               data-editor-chrome
               className="editor-background-glass glass-editor-chrome"
@@ -62,6 +65,9 @@ describe("editor ambient background layering (real Chromium)", () => {
 
     const layout = container.querySelector<HTMLElement>("[data-layout-shell]");
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
+    const breadcrumb = container.querySelector<HTMLElement>(
+      "[data-editor-breadcrumb]",
+    );
     const chrome = container.querySelector<HTMLElement>("[data-editor-chrome]");
     const toolbar = container.querySelector<HTMLElement>(
       "[data-editor-toolbar]",
@@ -90,6 +96,9 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(glass.backgroundImage).not.toBe("none");
     expect(glass.boxShadow).not.toBe("none");
     expect(glass.filter).toBe("none");
+    expect(getComputedStyle(breadcrumb!).backdropFilter).toContain(
+      "blur(14px)",
+    );
     expect(getComputedStyle(chrome!).backdropFilter).toContain("blur(14px)");
     expect(getComputedStyle(toolbar!).backdropFilter).toContain("blur(14px)");
     expect(getComputedStyle(metadata!).backdropFilter).toContain("blur(14px)");
@@ -111,6 +120,9 @@ describe("editor ambient background layering (real Chromium)", () => {
 
     const layout = container.querySelector<HTMLElement>("[data-layout-shell]");
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
+    const breadcrumb = container.querySelector<HTMLElement>(
+      "[data-editor-breadcrumb]",
+    );
     const chrome = container.querySelector<HTMLElement>("[data-editor-chrome]");
     const toolbar = container.querySelector<HTMLElement>(
       "[data-editor-toolbar]",
@@ -131,6 +143,7 @@ describe("editor ambient background layering (real Chromium)", () => {
       "rgba(0, 0, 0, 0)",
     );
     expect(getComputedStyle(chrome!).backdropFilter).toBe("none");
+    expect(getComputedStyle(breadcrumb!).backdropFilter).toBe("none");
     expect(getComputedStyle(toolbar!).backdropFilter).toBe("none");
     expect(getComputedStyle(metadata!).backdropFilter).toBe("none");
     expect(getComputedStyle(footer!).backdropFilter).toBe("none");
