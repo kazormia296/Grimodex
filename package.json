@@ -15,14 +15,6 @@
   "main": "dist-electron/main.cjs",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
-  "pnpm": {
-    "overrides": {
-      "esbuild": "^0.28.1",
-      "markdown-it": "^14.2.0",
-      "@babel/core": "^7.29.7",
-      "undici": "^7.28.0"
-    }
-  },
   "scripts": {
     "dev": "pnpm build:workspace:dependencies && vite --mode web-editor",
     "build": "pnpm build:workspace:dependencies && tsc && vite build",
@@ -137,7 +129,7 @@
     "gsap": "^3.15.0",
     "i18next": "^26.3.1",
     "jotai": "^2.20.0",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^4.3.0",
     "lucide-react": "^1.18.0",
     "lunar-typescript": "^1.8.6",
     "matter-js": "^0.20.0",
@@ -181,8 +173,8 @@
     "@types/sql.js": "^1.4.11",
     "@types/three": "^0.185.0",
     "@vitejs/plugin-react": "^6.0.2",
-    "@vitest/browser": "4.1.9",
-    "@vitest/browser-playwright": "4.1.9",
+    "@vitest/browser": "4.1.10",
+    "@vitest/browser-playwright": "4.1.10",
     "ajv": "8.20.0",
     "chokidar": "^5.0.0",
     "electron": "43.1.0",
@@ -209,7 +201,7 @@
     "typescript-eslint": "^8.59.4",
     "vite": "^8.0.16",
     "vite-imagetools": "^10.0.1",
-    "vitest": "^4.1.9",
+    "vitest": "^4.1.10",
     "vitest-axe": "^0.1.0",
     "wrangler": "4.112.0"
   }
