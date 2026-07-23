@@ -63,7 +63,7 @@ vi.mock("@/features/editor/useVerticalWheelScroll", () => ({
   useVerticalWheelScroll: () => {},
 }));
 vi.mock("@/features/editor/zen/useZenShaderConfig", () => ({
-  useZenShaderConfig: () => ({ paperOpacity: 35 }),
+  useZenShaderConfig: () => ({ enabled: true }),
 }));
 vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
   ZenAmbientBackdrop: () => <div data-zen-ambient aria-hidden="true" />,

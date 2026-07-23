@@ -83,8 +83,6 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     "editor.zenBackground.opacity",
     "editor.zenBackground.speed",
     "editor.zenBackground.speedPercent",
-    "editor.zenBackground.paperOpacity",
-    "editor.zenBackground.paperEdgeFade",
     "editor.zenBackground.shaderProps",
     "editor.zenBackground.scale",
     "editor.zenBackground.rotation",
@@ -129,6 +127,13 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     "editor.zenBackground.halftone.size",
     "editor.zenBackground.halftone.angle",
     "editor.zenBackground.halftone.softness",
+    "editor.zenBackground.contrastGuard.mode",
+    "editor.zenBackground.contrastGuard.strength",
+    "editor.zenBackground.glass.enabled",
+    "editor.zenBackground.glass.blur",
+    "editor.zenBackground.glass.refraction",
+    "editor.zenBackground.glass.saturation",
+    "editor.zenBackground.glass.shine",
   ];
 
   it("persists every shader and post-filter control as a global preference", () => {
@@ -148,8 +153,14 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     expect(DEFAULT_SETTINGS["editor.zenBackground.paletteMode"]).toBe("theme");
     expect(DEFAULT_SETTINGS["editor.zenBackground.opacity"]).toBe("10");
     expect(DEFAULT_SETTINGS["editor.zenBackground.speedPercent"]).toBe("8");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.paperOpacity"]).toBe("100");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.paperEdgeFade"]).toBe("8");
+    expect(KEY_SCOPE).not.toHaveProperty("editor.zenBackground.paperOpacity");
+    expect(KEY_SCOPE).not.toHaveProperty("editor.zenBackground.paperEdgeFade");
+    expect(DEFAULT_SETTINGS).not.toHaveProperty(
+      "editor.zenBackground.paperOpacity",
+    );
+    expect(DEFAULT_SETTINGS).not.toHaveProperty(
+      "editor.zenBackground.paperEdgeFade",
+    );
     expect(DEFAULT_SETTINGS["editor.zenBackground.shaderProps"]).toBe("{}");
     expect(DEFAULT_SETTINGS["editor.zenBackground.dither.enabled"]).toBe(
       "false",
@@ -157,5 +168,18 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.enabled"]).toBe(
       "false",
     );
+    expect(DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.mode"]).toBe(
+      "auto",
+    );
+    expect(
+      DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.strength"],
+    ).toBe("1");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.enabled"]).toBe("true");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.blur"]).toBe("14");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.refraction"]).toBe("7");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.saturation"]).toBe(
+      "1.16",
+    );
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.shine"]).toBe("1");
   });
 });

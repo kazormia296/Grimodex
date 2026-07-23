@@ -11,6 +11,7 @@ const zenState = vi.hoisted(() => ({
     speed: 8,
     dither: { enabled: true },
     halftone: { enabled: true },
+    contrastGuard: { mode: "auto", strength: 1 },
   },
 }));
 
@@ -77,6 +78,7 @@ describe("ZenAmbientBackdrop", () => {
     expect(backdrop).toHaveAttribute("data-background-shader", "mesh-gradient");
     expect(backdrop).toHaveAttribute("data-background-dither", "true");
     expect(backdrop).toHaveAttribute("data-background-halftone", "true");
+    expect(backdrop).toHaveAttribute("data-background-contrast-guard", "auto");
     expect(backdrop).toHaveClass("absolute");
     expect(backdrop).not.toHaveClass("fixed");
     expect(

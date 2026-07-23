@@ -39,13 +39,12 @@ describe("BackgroundStudio", () => {
     expect(within(shader).getAllByRole("option")).toHaveLength(29);
   });
 
-  it("exposes full 0-100 ranges for intensity, speed and paper opacity", () => {
+  it("exposes full 0-100 ranges for intensity and speed", () => {
     render(<BackgroundStudio open onClose={vi.fn()} />);
 
     for (const label of [
       "settings.editor.zenOpacity",
       "settings.editor.zenSpeed",
-      "editor.background.paperOpacity",
     ]) {
       const slider = screen.getByLabelText(label);
       expect(slider).toHaveAttribute("min", "0");
@@ -71,25 +70,88 @@ describe("BackgroundStudio", () => {
     ).toHaveValue("mesh-gradient");
   });
 
-  it("exposes a smooth paper edge fade without blur or halftone controls", () => {
+  it("does not expose paper paint, blur or halftone controls", () => {
     render(<BackgroundStudio open onClose={vi.fn()} />);
 
     expect(
-      screen.getByLabelText("editor.background.paperEdgeFade"),
-    ).toHaveAttribute("max", "30");
+      screen.queryByLabelText("editor.background.paperOpacity"),
+    ).toBeNull();
+    expect(
+      screen.queryByLabelText("editor.background.paperEdgeFade"),
+    ).toBeNull();
     expect(screen.queryByLabelText("editor.background.paperBlur")).toBeNull();
     expect(
       screen.queryByLabelText("editor.background.paperHalftoneStrength"),
     ).toBeNull();
   });
 
-  it("applies intensity, speed and paper opacity changes immediately", () => {
+  it("offers automatic readability protection with a 4.5-to-7 contrast range", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    const mode = screen.getByLabelText("settings.editor.zenContrastGuard");
+    expect(within(mode).getAllByRole("option")).toHaveLength(2);
+    expect(mode).toHaveValue("auto");
+
+    const strength = screen.getByLabelText(
+      "settings.editor.zenContrastGuardStrength",
+    );
+    expect(strength).toHaveAttribute("min", "0");
+    expect(strength).toHaveAttribute("max", "1");
+    expect(strength).not.toBeDisabled();
+
+    fireEvent.change(mode, { target: { value: "none" } });
+
+    expect(
+      useSettingsStore.getState().cache[
+        "editor.zenBackground.contrastGuard.mode"
+      ],
+    ).toBe("none");
+    expect(strength).toBeDisabled();
+  });
+
+  it("adjusts the shared Fluid Glass effect from the live studio", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    const enabled = screen.getByRole("switch", {
+      name: "settings.editor.zenGlassEnabled",
+    });
+    expect(enabled).toBeChecked();
+
+    const controls = [
+      ["settings.editor.zenGlassBlur", "0", "40"],
+      ["settings.editor.zenGlassRefraction", "0", "24"],
+      ["settings.editor.zenGlassSaturation", "0", "2"],
+      ["settings.editor.zenGlassShine", "0", "1"],
+    ] as const;
+    for (const [label, min, max] of controls) {
+      const slider = screen.getByLabelText(label);
+      expect(slider).toHaveAttribute("min", min);
+      expect(slider).toHaveAttribute("max", max);
+      expect(slider).not.toBeDisabled();
+    }
+
+    fireEvent.change(screen.getByLabelText("settings.editor.zenGlassBlur"), {
+      target: { value: "32" },
+    });
+    expect(
+      useSettingsStore.getState().cache["editor.zenBackground.glass.blur"],
+    ).toBe("32");
+
+    fireEvent.click(enabled);
+    expect(
+      useSettingsStore.getState().cache["editor.zenBackground.glass.enabled"],
+    ).toBe("false");
+    for (const [label] of controls) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+  });
+
+  it("applies intensity and speed changes immediately", () => {
     render(<BackgroundStudio open onClose={vi.fn()} />);
 
     const changes = [
       ["settings.editor.zenOpacity", "editor.zenBackground.opacity"],
       ["settings.editor.zenSpeed", "editor.zenBackground.speedPercent"],
-      ["editor.background.paperOpacity", "editor.zenBackground.paperOpacity"],
     ] as const;
 
     for (const [label, settingKey] of changes) {

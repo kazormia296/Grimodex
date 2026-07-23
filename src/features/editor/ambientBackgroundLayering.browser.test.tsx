@@ -11,21 +11,28 @@ function renderLayering(enabled: boolean) {
           data-background-enabled={enabled ? "true" : "false"}
         />
         <div data-layout-shell>
-          <section data-editor-area className="gx-panel gx-panel--flat">
+          <section
+            data-editor-area
+            data-editor-fluid-glass="true"
+            className="gx-panel gx-panel--flat"
+          >
             <div data-editor-chrome className="editor-background-glass">
               <span data-editor-text>Opaque text</span>
             </div>
-            <div
-              data-editor-paper
-              className="zen-editor-paper"
-              style={
-                {
-                  "--editor-paper-fill": "rgb(20 30 40 / 80%)",
-                  "--editor-paper-edge-fade": enabled ? "8%" : "0%",
-                } as React.CSSProperties
-              }
-            >
-              <span data-paper-text>Paper text</span>
+            <div data-editor-body className="glass-editor-body">
+              <div
+                data-editor-paper
+                className="zen-editor-paper"
+                style={
+                  {
+                    "--editor-paper-fill": enabled
+                      ? "transparent"
+                      : "rgb(20 30 40)",
+                  } as React.CSSProperties
+                }
+              >
+                <span data-paper-text>Paper text</span>
+              </div>
             </div>
           </section>
         </div>
@@ -41,6 +48,7 @@ describe("editor ambient background layering (real Chromium)", () => {
     const layout = container.querySelector<HTMLElement>("[data-layout-shell]");
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
     const chrome = container.querySelector<HTMLElement>("[data-editor-chrome]");
+    const body = container.querySelector<HTMLElement>("[data-editor-body]");
     const text = container.querySelector<HTMLElement>("[data-editor-text]");
     const paper = container.querySelector<HTMLElement>("[data-editor-paper]");
     const paperText = container.querySelector<HTMLElement>("[data-paper-text]");
@@ -48,14 +56,25 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(layout).not.toBeNull();
     expect(editor).not.toBeNull();
     expect(chrome).not.toBeNull();
+    expect(body).not.toBeNull();
     expect(text).not.toBeNull();
     expect(paper).not.toBeNull();
     expect(paperText).not.toBeNull();
     expect(getComputedStyle(layout!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     expect(getComputedStyle(editor!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    const glass = getComputedStyle(editor!, "::before");
+    expect(glass.backgroundImage).not.toBe("none");
+    expect(glass.boxShadow).not.toBe("none");
+    expect(glass.filter).toBe("none");
     expect(getComputedStyle(chrome!).backdropFilter).not.toBe("none");
+    expect(getComputedStyle(body!).backdropFilter).not.toBe("none");
+    expect(getComputedStyle(body!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     expect(getComputedStyle(text!).opacity).toBe("1");
-    expect(getComputedStyle(paper!, "::before").maskImage).not.toBe("none");
+    const paperPaint = getComputedStyle(paper!, "::before");
+    expect(paperPaint.backgroundImage).toBe("none");
+    expect(paperPaint.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(paperPaint.boxShadow).toBe("none");
+    expect(paperPaint.maskImage).toBe("none");
     expect(getComputedStyle(paperText!).opacity).toBe("1");
     expect(getComputedStyle(paperText!).filter).toBe("none");
   });
@@ -66,6 +85,8 @@ describe("editor ambient background layering (real Chromium)", () => {
     const layout = container.querySelector<HTMLElement>("[data-layout-shell]");
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
     const chrome = container.querySelector<HTMLElement>("[data-editor-chrome]");
+    const body = container.querySelector<HTMLElement>("[data-editor-body]");
+    const paper = container.querySelector<HTMLElement>("[data-editor-paper]");
 
     expect(getComputedStyle(layout!).backgroundColor).not.toBe(
       "rgba(0, 0, 0, 0)",
@@ -74,5 +95,11 @@ describe("editor ambient background layering (real Chromium)", () => {
       "rgba(0, 0, 0, 0)",
     );
     expect(getComputedStyle(chrome!).backdropFilter).toBe("none");
+    expect(getComputedStyle(body!).backdropFilter).toBe("none");
+    expect(getComputedStyle(editor!, "::before").filter).toBe("none");
+    expect(getComputedStyle(paper!, "::before").backgroundImage).toBe("none");
+    expect(getComputedStyle(paper!, "::before").backgroundColor).not.toBe(
+      "rgba(0, 0, 0, 0)",
+    );
   });
 });

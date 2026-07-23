@@ -56,6 +56,7 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
       data-background-shader={config.shader}
       data-background-dither={config.dither.enabled ? "true" : "false"}
       data-background-halftone={config.halftone.enabled ? "true" : "false"}
+      data-background-contrast-guard={config.contrastGuard.mode}
       aria-hidden="true"
       className="editor-ambient-backdrop pointer-events-none absolute inset-0 overflow-hidden"
       initial={{ opacity: 0 }}

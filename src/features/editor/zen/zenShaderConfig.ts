@@ -9,6 +9,7 @@ import {
 export const ZEN_SHADER_IDS = PAPER_SHADER_IDS;
 export type ZenShaderId = PaperShaderId;
 export type ZenPaletteMode = "theme" | "custom";
+export type ZenContrastGuardMode = "none" | "auto";
 
 export interface ZenResolvedPalette {
   background: string;
@@ -22,8 +23,6 @@ export interface ZenShaderConfig {
   opacity: number;
   /** Normalized user-facing percentage. Paper receives speed / 100. */
   speed: number;
-  paperOpacity: number;
-  paperEdgeFade: number;
   scale: number;
   rotation: number;
   offsetX: number;
@@ -46,6 +45,17 @@ export interface ZenShaderConfig {
     angle: number;
     softness: number;
   };
+  contrastGuard: {
+    mode: ZenContrastGuardMode;
+    strength: number;
+  };
+  glass: {
+    enabled: boolean;
+    blur: number;
+    refraction: number;
+    saturation: number;
+    shine: number;
+  };
 }
 
 export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
@@ -54,8 +64,6 @@ export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
   paletteMode: "theme",
   opacity: 10,
   speed: 8,
-  paperOpacity: 100,
-  paperEdgeFade: 8,
   scale: 1.15,
   rotation: 0,
   offsetX: 0,
@@ -70,6 +78,14 @@ export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
     size: 8,
     angle: 15,
     softness: 0.15,
+  },
+  contrastGuard: { mode: "auto", strength: 1 },
+  glass: {
+    enabled: true,
+    blur: 14,
+    refraction: 7,
+    saturation: 1.16,
+    shine: 1,
   },
 };
 
@@ -244,18 +260,6 @@ export function parseZenShaderConfig(
     ),
     opacity: finiteNumber(value(values, "opacity"), d.opacity, 0, 100),
     speed: parseSpeedPercent(values),
-    paperOpacity: finiteNumber(
-      value(values, "paperOpacity"),
-      d.paperOpacity,
-      0,
-      100,
-    ),
-    paperEdgeFade: finiteNumber(
-      value(values, "paperEdgeFade"),
-      d.paperEdgeFade,
-      0,
-      30,
-    ),
     scale: finiteNumber(value(values, "scale"), d.scale, 0.25, 4),
     rotation: finiteNumber(value(values, "rotation"), d.rotation, 0, 360),
     offsetX: finiteNumber(value(values, "offsetX"), d.offsetX, -1, 1),
@@ -305,6 +309,31 @@ export function parseZenShaderConfig(
         90,
       ),
       softness: unit("halftone.softness", d.halftone.softness),
+    },
+    contrastGuard: {
+      mode: enumValue(
+        value(values, "contrastGuard.mode"),
+        ["none", "auto"],
+        d.contrastGuard.mode,
+      ),
+      strength: unit("contrastGuard.strength", d.contrastGuard.strength),
+    },
+    glass: {
+      enabled: booleanValue(value(values, "glass.enabled"), d.glass.enabled),
+      blur: finiteNumber(value(values, "glass.blur"), d.glass.blur, 0, 40),
+      refraction: finiteNumber(
+        value(values, "glass.refraction"),
+        d.glass.refraction,
+        0,
+        24,
+      ),
+      saturation: finiteNumber(
+        value(values, "glass.saturation"),
+        d.glass.saturation,
+        0,
+        2,
+      ),
+      shine: unit("glass.shine", d.glass.shine),
     },
   };
 }

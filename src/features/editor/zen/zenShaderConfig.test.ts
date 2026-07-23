@@ -47,19 +47,36 @@ describe("editor background shader settings", () => {
     ]);
     expect(ZEN_SHADER_DEFAULTS.enabled).toBe(true);
     expect(ZEN_SHADER_DEFAULTS.shader).toBe("mesh-gradient");
-    expect(ZEN_SHADER_DEFAULTS.paperEdgeFade).toBe(8);
+    expect(ZEN_SHADER_DEFAULTS).not.toHaveProperty("paperOpacity");
+    expect(ZEN_SHADER_DEFAULTS).not.toHaveProperty("paperEdgeFade");
+    expect(ZEN_SHADER_DEFAULTS.contrastGuard).toEqual({
+      mode: "auto",
+      strength: 1,
+    });
+    expect(ZEN_SHADER_DEFAULTS.glass).toEqual({
+      enabled: true,
+      blur: 14,
+      refraction: 7,
+      saturation: 1.16,
+      shine: 1,
+    });
   });
 
-  it("uses complete 0-100 percent domains for intensity, speed and paper opacity", () => {
+  it("uses complete 0-100 percent domains for intensity and speed", () => {
     const config = parseZenShaderConfig({
       "editor.zenBackground.opacity": "300",
       "editor.zenBackground.speedPercent": "300",
       "editor.zenBackground.paperOpacity": "-5",
+      "editor.zenBackground.paperEdgeFade": "30",
+      "editor.zenBackground.contrastGuard.mode": "invalid",
+      "editor.zenBackground.contrastGuard.strength": "3",
     });
 
     expect(config.opacity).toBe(100);
     expect(config.speed).toBe(100);
-    expect(config.paperOpacity).toBe(0);
+    expect(config).not.toHaveProperty("paperOpacity");
+    expect(config).not.toHaveProperty("paperEdgeFade");
+    expect(config.contrastGuard).toEqual({ mode: "auto", strength: 1 });
   });
 
   it("migrates the old fractional speed setting to a percentage", () => {
@@ -75,7 +92,6 @@ describe("editor background shader settings", () => {
       "editor.zenBackground.enabled": "false",
       "editor.zenBackground.shader": "unknown",
       "editor.zenBackground.paletteMode": "invalid",
-      "editor.zenBackground.paperEdgeFade": "99",
       "editor.zenBackground.scale": "NaN",
       "editor.zenBackground.rotation": "721",
       "editor.zenBackground.offsetX": "-9",
@@ -83,12 +99,16 @@ describe("editor background shader settings", () => {
       "editor.zenBackground.shaderProps": "not-json",
       "editor.zenBackground.dither.levels": "1",
       "editor.zenBackground.halftone.size": "100",
+      "editor.zenBackground.glass.enabled": "invalid",
+      "editor.zenBackground.glass.blur": "100",
+      "editor.zenBackground.glass.refraction": "-5",
+      "editor.zenBackground.glass.saturation": "3",
+      "editor.zenBackground.glass.shine": "-1",
     });
 
     expect(config.enabled).toBe(false);
     expect(config.shader).toBe("mesh-gradient");
     expect(config.paletteMode).toBe("theme");
-    expect(config.paperEdgeFade).toBe(30);
     expect(config.scale).toBe(ZEN_SHADER_DEFAULTS.scale);
     expect(config.rotation).toBe(360);
     expect(config.offsetX).toBe(-1);
@@ -96,6 +116,13 @@ describe("editor background shader settings", () => {
     expect(config.shaderProps).toEqual({});
     expect(config.dither.levels).toBe(2);
     expect(config.halftone.size).toBe(24);
+    expect(config.glass).toEqual({
+      enabled: true,
+      blur: 40,
+      refraction: 0,
+      saturation: 2,
+      shine: 0,
+    });
   });
 
   it("maps common and selected shader props to the official Paper prop names", () => {

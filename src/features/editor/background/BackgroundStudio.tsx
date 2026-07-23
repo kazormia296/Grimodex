@@ -11,6 +11,7 @@ import {
 } from "@/lib/animation";
 import { BackgroundCommonControls } from "./BackgroundCommonControls";
 import { BackgroundFilterControls } from "./BackgroundFilterControls";
+import { BackgroundGlassControls } from "./BackgroundGlassControls";
 import { BackgroundShaderControls } from "./BackgroundShaderControls";
 
 interface BackgroundStudioProps {
@@ -89,6 +90,9 @@ export function BackgroundStudio({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <Section title={t("editor.background.commonSection")}>
               <BackgroundCommonControls />
+            </Section>
+            <Section title={t("editor.background.glassSection")}>
+              <BackgroundGlassControls />
             </Section>
             <Section title={t("editor.background.propsSection")}>
               <BackgroundShaderControls />

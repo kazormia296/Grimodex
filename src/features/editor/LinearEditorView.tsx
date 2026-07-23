@@ -462,8 +462,6 @@ export function LinearEditorView() {
           ...buildEditorMeasureStyle(editorSettings.maxContentWidth),
           ...buildEditorPaperStyle({
             enabled: backgroundConfig.enabled,
-            opacity: backgroundConfig.paperOpacity,
-            edgeFade: backgroundConfig.paperEdgeFade,
           }),
         }}
       >

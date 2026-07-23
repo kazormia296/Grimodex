@@ -63,4 +63,31 @@ describe("ZenShaderSurface", () => {
     expect(shaderLifecycle.mounted).toEqual(["mesh-gradient", "warp"]);
     expect(shaderLifecycle.unmounted).toEqual(["mesh-gradient"]);
   });
+
+  it("exposes the effective GPU refraction for live diagnostics", () => {
+    const { container, rerender } = render(
+      <ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />,
+    );
+
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-glass-refraction", "7");
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-glass-rect");
+
+    rerender(
+      <ZenShaderSurface
+        config={{
+          ...ZEN_SHADER_DEFAULTS,
+          glass: { ...ZEN_SHADER_DEFAULTS.glass, enabled: false },
+        }}
+        playing
+      />,
+    );
+
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-glass-refraction", "0");
+  });
 });

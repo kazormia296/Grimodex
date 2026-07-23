@@ -67,30 +67,6 @@ export function BackgroundCommonControls() {
           disabled={!definition.animated}
         />
       </SettingRow>
-      <SettingRow
-        label={t("editor.background.paperOpacity")}
-        description={t("editor.background.paperOpacityDescription")}
-      >
-        <SettingSlider
-          settingKey="editor.zenBackground.paperOpacity"
-          min={0}
-          max={100}
-          defaultValue={100}
-          format={percent}
-        />
-      </SettingRow>
-      <SettingRow
-        label={t("editor.background.paperEdgeFade")}
-        description={t("editor.background.paperEdgeFadeDescription")}
-      >
-        <SettingSlider
-          settingKey="editor.zenBackground.paperEdgeFade"
-          min={0}
-          max={30}
-          defaultValue={8}
-          format={percent}
-        />
-      </SettingRow>
       <SettingRow label={t("settings.editor.zenScale")}>
         <SettingSlider
           settingKey="editor.zenBackground.scale"
