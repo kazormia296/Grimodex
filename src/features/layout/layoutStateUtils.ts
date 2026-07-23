@@ -17,7 +17,6 @@ import {
   STRIPE_SIZE,
   type RegionSizeClampContext,
 } from "./layoutConstants";
-import { isCardLayout } from "./cardLayout";
 import {
   applyAdjacentItemPixelSizes,
   getOpenItemPixelSizes,
@@ -289,13 +288,12 @@ export function getCenterContentWidthPx(
   state: LayoutState,
   viewport: { width: number },
 ): number {
-  const cardLayout = isCardLayout();
-  const splitterPx = regionSplitterPx(cardLayout);
-  const stripeChrome = STRIPE_SIZE + (cardLayout ? STRIPE_GAP_PX : 0);
+  const splitterPx = regionSplitterPx();
+  const stripeChrome = STRIPE_SIZE + STRIPE_GAP_PX;
   const leftOpen = isRegionOpen(state.regions.left);
   const rightOpen = isRegionOpen(state.regions.right);
   const sideChrome =
-    (cardLayout ? OUTER_PAD_PX * 2 : 0) +
+    OUTER_PAD_PX * 2 +
     (regionHasRegisteredPanels(state.regions.left) ? stripeChrome : 0) +
     (regionHasRegisteredPanels(state.regions.right) ? stripeChrome : 0) +
     (leftOpen ? splitterPx + state.regions.left.size : 0) +
@@ -556,11 +554,10 @@ export function redistributeSpaceOnEditorClose(
   const rightOpen = isRegionOpen(next.regions.right);
   if (!leftOpen && !rightOpen) return next;
 
-  const cardLayout = isCardLayout();
-  const splitterPx = regionSplitterPx(cardLayout);
-  const stripeChrome = STRIPE_SIZE + (cardLayout ? STRIPE_GAP_PX : 0);
+  const splitterPx = regionSplitterPx();
+  const stripeChrome = STRIPE_SIZE + STRIPE_GAP_PX;
   const fixedHorizontal =
-    (cardLayout ? OUTER_PAD_PX * 2 : 0) +
+    OUTER_PAD_PX * 2 +
     (regionHasRegisteredPanels(next.regions.left) ? stripeChrome : 0) +
     (regionHasRegisteredPanels(next.regions.right) ? stripeChrome : 0) +
     (leftOpen ? splitterPx : 0) +
@@ -660,11 +657,10 @@ export function clampLayoutStateForViewport(
   const horizontalTotal = leftSize + rightSize;
   const leftOpen = clampContext.leftOpen;
   const rightOpen = clampContext.rightOpen;
-  const cardLayout = isCardLayout();
-  const splitterPx = regionSplitterPx(cardLayout);
-  const stripeChrome = STRIPE_SIZE + (cardLayout ? STRIPE_GAP_PX : 0);
+  const splitterPx = regionSplitterPx();
+  const stripeChrome = STRIPE_SIZE + STRIPE_GAP_PX;
   const fixedHorizontal =
-    (cardLayout ? OUTER_PAD_PX * 2 : 0) +
+    OUTER_PAD_PX * 2 +
     (regionHasRegisteredPanels(next.regions.left) ? stripeChrome : 0) +
     (regionHasRegisteredPanels(next.regions.right) ? stripeChrome : 0) +
     (leftOpen ? splitterPx : 0) +
@@ -748,7 +744,6 @@ export function buildRegionSizeClampContext(
     leftSize: state.regions.left.size,
     rightSize: state.regions.right.size,
     centerReserve: getCenterHorizontalReserve(state),
-    cardLayout: isCardLayout(),
   };
 }
 

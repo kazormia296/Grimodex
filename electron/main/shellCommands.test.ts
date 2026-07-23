@@ -1,7 +1,6 @@
 /**
  * shellCommands の単体テスト（vitest node 環境 + electron モジュールモック）。
- * vibrancy 分岐 / openExternal スキーム再検証 /
- * fs・zoom・windowControl の envelope 化を検証する。
+ * openExternal スキーム再検証 / fs・zoom・windowControl の envelope 化を検証する。
  */
 import {
   existsSync,
@@ -73,24 +72,6 @@ beforeAll(() => {
 // Tauri コマンド互換ハンドラ
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("buildShellCommandHandlers", () => {
-  it("set_window_vibrancy: darwin では setVibrancy を呼ぶ（Rust 実装と同分岐）", async () => {
-    const setVibrancy = vi.fn();
-    const h = buildShellCommandHandlers({ setVibrancy }, "darwin");
-    await h.set_window_vibrancy({ enabled: true });
-    expect(setVibrancy).toHaveBeenLastCalledWith("under-window");
-    await h.set_window_vibrancy({ enabled: false });
-    expect(setVibrancy).toHaveBeenLastCalledWith(null);
-  });
-
-  it("set_window_vibrancy: 非 darwin は no-op で成功する", async () => {
-    const setVibrancy = vi.fn();
-    const h = buildShellCommandHandlers({ setVibrancy }, "linux");
-    await expect(h.set_window_vibrancy({ enabled: true })).resolves.toBeNull();
-    expect(setVibrancy).not.toHaveBeenCalled();
-  });
-});
-
 describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / logs.rs の写像）", () => {
   const filterArgs = {
     suggestedName: "out.txt",
@@ -106,7 +87,7 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
         canceled: false,
         filePath: dest,
       });
-      const h = buildShellCommandHandlers(null, "linux");
+      const h = buildShellCommandHandlers(null);
       await expect(
         h.export_save_text({ ...filterArgs, contents: "本文テキスト" }),
       ).resolves.toBe(dest);
@@ -125,7 +106,7 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
 
   it("export_save_text: キャンセル時は null を返し何も書かない", async () => {
     showSaveDialogMock.mockResolvedValueOnce({ canceled: true });
-    const h = buildShellCommandHandlers(null, "linux");
+    const h = buildShellCommandHandlers(null);
     await expect(
       h.export_save_text({ ...filterArgs, contents: "x" }),
     ).resolves.toBeNull();
@@ -139,7 +120,7 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
         canceled: false,
         filePath: dest,
       });
-      const h = buildShellCommandHandlers(null, "linux");
+      const h = buildShellCommandHandlers(null);
       await expect(
         h.export_save_bytes({ ...filterArgs, contentsBase64: "aGVsbG8=" }),
       ).resolves.toBe(dest);
@@ -151,7 +132,7 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
 
   it("export_save_bytes: 不正 base64 はダイアログを開く前に拒否（Rust base64 crate と同挙動）", async () => {
     showSaveDialogMock.mockClear();
-    const h = buildShellCommandHandlers(null, "linux");
+    const h = buildShellCommandHandlers(null);
     await expect(
       h.export_save_bytes({ ...filterArgs, contentsBase64: "%%%invalid%%%" }),
     ).rejects.toThrow("invalid base64 export payload");
@@ -163,7 +144,7 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
     try {
       const logDir = path.join(dir, ".grimodex", "logs");
       openPathMock.mockResolvedValueOnce("");
-      const h = buildShellCommandHandlers(null, "linux", logDir);
+      const h = buildShellCommandHandlers(null, logDir);
       await expect(h.open_log_dir({})).resolves.toBeNull();
       expect(existsSync(logDir)).toBe(true);
       expect(openPathMock).toHaveBeenCalledWith(logDir);
@@ -178,7 +159,6 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
       openPathMock.mockResolvedValueOnce("no file manager");
       const h = buildShellCommandHandlers(
         null,
-        "linux",
         path.join(dir, "logs"),
       );
       await expect(h.open_log_dir({})).rejects.toThrow(
@@ -416,6 +396,35 @@ describe("windowControl", () => {
     expect(env).toEqual({ ok: true, value: null });
     expect(unmaximize).toHaveBeenCalled();
     expect(maximize).not.toHaveBeenCalled();
+  });
+
+  it("toggleFullscreen は送信元窓を切り替え、確定した状態を返す", async () => {
+    const setFullScreen = vi.fn();
+    fromWebContentsMock.mockReturnValue({
+      isFullScreen: () => false,
+      setFullScreen,
+    });
+
+    const env = await invokeBridge(
+      IPC.windowControl,
+      { sender: {} },
+      "toggleFullscreen",
+    );
+
+    expect(env).toEqual({ ok: true, value: true });
+    expect(setFullScreen).toHaveBeenCalledWith(true);
+  });
+
+  it("isFullscreen は送信元窓の状態を返す", async () => {
+    fromWebContentsMock.mockReturnValue({ isFullScreen: () => true });
+
+    const env = await invokeBridge(
+      IPC.windowControl,
+      { sender: {} },
+      "isFullscreen",
+    );
+
+    expect(env).toEqual({ ok: true, value: true });
   });
 
   it("窓が見つからない webContents は envelope エラー", async () => {

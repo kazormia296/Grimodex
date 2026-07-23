@@ -47,7 +47,7 @@ export function HeaderBarLayout({
         // py-2: ボタン上下に最低 8px の Tauri drag region 帯を確保する。
         // py-1 (4px) では狭すぎて掴みづらく、CommandCenterBar の opt-out と
         // 相まってウィンドウ移動できない事象が出ていた。
-        "glass-shell flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2",
+        "flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2",
         className,
       )}
       data-tauri-drag-region

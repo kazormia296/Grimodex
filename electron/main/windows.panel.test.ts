@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { IPC } from "../shared/ipcContract.js";
 
 // ── electron モック ──────────────────────────────────────────────────────────
 
@@ -220,6 +221,23 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
     expect(win.focus).toHaveBeenCalledTimes(1);
     expect(focusPanelWindow("panel-missing")).toBe(false);
     expect(focusPanelWindow("not-a-panel")).toBe(false);
+  });
+
+  it("native fullscreen の出入りも renderer へ状態再取得通知を送る", () => {
+    const win = FakeBrowserWindow.instances[0];
+    win.webContents.send.mockClear();
+
+    win.emit("enter-full-screen");
+    win.emit("leave-full-screen");
+
+    expect(win.webContents.send).toHaveBeenNthCalledWith(
+      1,
+      IPC.windowResized,
+    );
+    expect(win.webContents.send).toHaveBeenNthCalledWith(
+      2,
+      IPC.windowResized,
+    );
   });
 
   it("メイン窓 closed で全パネル窓へ close が伝播し、registry から消える", () => {

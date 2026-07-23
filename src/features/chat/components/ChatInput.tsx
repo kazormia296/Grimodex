@@ -279,8 +279,8 @@ export function ChatInput({
     projectId: string;
   } | null>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
-  // モデルメニューは入力欄上部に開く。.glass-chat の backdrop-filter が作る
-  // stacking context に埋もれないよう document.body へ portal する。
+  // モデルメニューは入力欄上部に開く。チャットパネル内の stacking context に
+  // 埋もれないよう document.body へ portal する。
   const modelPopover = useAnchoredPopover(
     modelTriggerRef,
     modelOpen,

@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { useSettingsStore } from "./settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { useBackgroundStudioStore } from "@/features/editor/background/backgroundStudioStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { CategoryNav } from "./CategoryNav";
@@ -27,7 +28,13 @@ interface SettingsDialogProps {
   initialCategory?: SettingsCategory;
 }
 
-function CategoryContent({ category }: { category: SettingsCategory }) {
+function CategoryContent({
+  category,
+  onOpenBackgroundStudio,
+}: {
+  category: SettingsCategory;
+  onOpenBackgroundStudio: () => void;
+}) {
   switch (category) {
     case "project":
       return <ProjectCategory />;
@@ -36,7 +43,9 @@ function CategoryContent({ category }: { category: SettingsCategory }) {
     case "editor":
       return <EditorCategory />;
     case "display":
-      return <DisplayCategory />;
+      return (
+        <DisplayCategory onOpenBackgroundStudio={onOpenBackgroundStudio} />
+      );
     case "keys":
       return <KeysCategory />;
     case "data":
@@ -87,6 +96,11 @@ export function SettingsDialog({
     onClose();
   }, [flushPending, onClose]);
 
+  const handleOpenBackgroundStudio = useCallback(async () => {
+    await handleClose();
+    useBackgroundStudioStore.getState().setOpen(true);
+  }, [handleClose]);
+
   return (
     <AnimatedOverlay
       open={open}
@@ -110,7 +124,12 @@ export function SettingsDialog({
         <div className="flex flex-1 overflow-hidden">
           <CategoryNav active={activeCategory} onChange={setActiveCategory} />
           <div className="flex-1 overflow-y-auto">
-            <CategoryContent category={activeCategory} />
+            <CategoryContent
+              category={activeCategory}
+              onOpenBackgroundStudio={() => {
+                void handleOpenBackgroundStudio();
+              }}
+            />
           </div>
         </div>
       </div>

@@ -11,7 +11,6 @@ import {
 import { useTranslation } from "react-i18next";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
-import { useCardLayout } from "@/features/layout/cardLayout";
 import { computeAxisLabels, type FolderGroup } from "./timelineLabels";
 import {
   STEP_BASE,
@@ -199,10 +198,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const zoom = useTimelineStore((s) => s.zoom);
     const scrollOffset = useTimelineStore((s) => s.scrollOffset);
     const setScrollOffset = useTimelineStore((s) => s.setScrollOffset);
-    // カードレイアウトでは .gx-panel の 18px 角丸 + overflow-hidden が水平
-    // スクロールバーの左右端を切る。card 時だけ下方向に少し逃がす（角丸を
-    // クリアする。値は実機 QA で微調整可）。
-    const cardLayout = useCardLayout();
+    // .gx-panel の角丸 + overflow-hidden が水平スクロールバーの左右端を
+    // 切るため、下方向に少し逃がして角丸をクリアする。
     const svgRef = useRef<SVGSVGElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const isRestoringRef = useRef(false);
@@ -1427,7 +1424,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         <div
           ref={setContainerRef}
           data-testid="timeline-scroll-container"
-          className={`flex-1 overflow-x-auto overflow-y-auto${cardLayout ? " pb-2" : ""}${
+          className={`flex-1 overflow-x-auto overflow-y-auto pb-2${
             isPanning ? " cursor-grabbing [&_*]:!cursor-grabbing" : ""
           }`}
           onScroll={handleScroll}

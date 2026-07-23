@@ -62,6 +62,11 @@
   z-index: 2;
 }
 
+[data-adaptive-workspace-shell][data-profile="phone"][data-zen-mode="true"]
+  [data-editor-surface] {
+  padding-bottom: 0;
+}
+
 .phone-workspace-chrome__header {
   position: sticky;
   top: 0;

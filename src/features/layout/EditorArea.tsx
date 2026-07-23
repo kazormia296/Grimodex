@@ -1,6 +1,7 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, type CSSProperties } from "react";
 import { motion } from "motion/react";
 import { SceneEditor } from "@/features/tree/SceneEditor";
+import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { PanelChromeMenu } from "./PanelChromeMenu";
 import { registerEditorFocusHandler, useLayoutStore } from "./layoutStore";
@@ -12,6 +13,12 @@ export const EditorArea = memo(function EditorArea() {
   const initialized = useLayoutStore((s) => s.initialized);
   const prevOpenRef = useRef(editorOpen);
   const reduced = useReducedMotion();
+  const glass = useZenGlassConfig();
+  const glassStyle = {
+    "--editor-fluid-glass-blur": `${glass.blur}px`,
+    "--editor-fluid-glass-saturate": glass.saturation,
+    "--editor-fluid-glass-shine": glass.shine,
+  } as CSSProperties;
 
   useEffect(() => {
     registerEditorFocusHandler(() => {
@@ -44,7 +51,13 @@ export const EditorArea = memo(function EditorArea() {
       <motion.div
         ref={containerRef}
         data-editor-area
+        data-editor-fluid-glass={glass.enabled ? "true" : "false"}
+        data-editor-fluid-glass-blur={glass.blur}
+        data-editor-fluid-glass-refraction={glass.refraction}
+        data-editor-fluid-glass-saturation={glass.saturation}
+        data-editor-fluid-glass-shine={glass.shine}
         tabIndex={-1}
+        style={glassStyle}
         // 起動 hydration 中の mount はユーザー操作ではないため静的に表示する。
         // 初期化後に editor を開き直した mount では従来どおり enter を残す。
         initial={reduced || !initialized ? false : { opacity: 0 }}
@@ -54,7 +67,7 @@ export const EditorArea = memo(function EditorArea() {
             ? { duration: 0 }
             : { duration: DURATIONS.normal, ease: EASINGS.easeOut }
         }
-        className="gx-panel gx-panel--flat glass-region-panel h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
+        className="editor-fluid-glass gx-panel gx-panel--flat h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
       >
         <SceneEditor />
       </motion.div>

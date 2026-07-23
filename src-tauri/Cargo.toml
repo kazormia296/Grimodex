@@ -56,7 +56,6 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # 校閲 run 完了/失敗のデスクトップ通知 (ウィンドウ非フォーカス時のみ FE が送る)
 tauri-plugin-notification = "2"
-window-vibrancy = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"

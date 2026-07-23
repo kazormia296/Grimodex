@@ -106,7 +106,8 @@ function attachWindowChrome(
   const webContentsId = win.webContents.id;
 
   // §6.3: 既存の「onResized → isMaximized 再取得」（WindowControls.tsx）を
-  // 無改修で動かす通知。maximize/unmaximize も Tauri の onResized と同様に流す。
+  // 無改修で動かす通知。maximize/unmaximize/fullscreen も Tauri の
+  // onResized と同様に流し、renderer が native state を再取得できるようにする。
   const notifyResized = (): void => {
     if (!win.isDestroyed()) win.webContents.send(IPC.windowResized);
   };
@@ -134,6 +135,8 @@ function attachWindowChrome(
     notifyResized();
     saveState();
   });
+  win.on("enter-full-screen", notifyResized);
+  win.on("leave-full-screen", notifyResized);
 
   // §6.4: close veto 非同期プロトコル
   const controller = createCloseVetoController({

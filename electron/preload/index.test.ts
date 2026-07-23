@@ -48,10 +48,35 @@ interface BridgeUnderTest {
     } | null>;
   };
   windowControls: {
+    toggleFullscreen(): Promise<boolean>;
+    isFullscreen(): Promise<boolean>;
     onResized(cb: () => void): () => void;
     onCloseRequested(cb: () => boolean): () => void;
   };
 }
+
+describe("window fullscreen bridge", () => {
+  it("maps fullscreen operations onto the allowlisted window-control channel", async () => {
+    const bridge = await loadPreload();
+    mocks.invoke
+      .mockResolvedValueOnce({ ok: true, value: true })
+      .mockResolvedValueOnce({ ok: true, value: false });
+
+    await expect(bridge.windowControls.toggleFullscreen()).resolves.toBe(true);
+    await expect(bridge.windowControls.isFullscreen()).resolves.toBe(false);
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(
+      1,
+      IPC.windowControl,
+      "toggleFullscreen",
+    );
+    expect(mocks.invoke).toHaveBeenNthCalledWith(
+      2,
+      IPC.windowControl,
+      "isFullscreen",
+    );
+  });
+});
 
 async function loadPreload(): Promise<BridgeUnderTest> {
   await import("./index.js");
@@ -69,7 +94,7 @@ beforeEach(() => {
   vi.resetModules();
   mocks.onHandlers.clear();
   mocks.send.mockClear();
-  mocks.invoke.mockClear();
+  mocks.invoke.mockReset();
   mocks.exposed.name = "";
   mocks.exposed.bridge = undefined;
 });

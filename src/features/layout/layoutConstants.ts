@@ -23,23 +23,17 @@ export const STRIPE_GAP_PX = 12;
 /** 同一 stripe 内のパネル間ギャップ (px) */
 export const PANEL_GAP_PX = 10;
 
-/**
- * region 境界 Splitter（resize ハンドル）の厚み (px) — カードレイアウト ON 時。
- * D案ではこの帯が stripe 間ギャップそのものになる（線は描かない）。
- */
+/** region 境界 Splitter（resize ハンドル）の厚み (px)。 */
 export const SPLITTER_GUTTER_PX = STRIPE_GAP_PX;
 
-/** 旧レイアウト（カードレイアウト OFF）の Splitter 実線の厚み (px)。 */
-export const LEGACY_SPLITTER_PX = 6;
-
-/** カードレイアウト ON/OFF に応じた region 境界 Splitter 帯の幅。 */
-export function regionSplitterPx(cardLayout: boolean): number {
-  return cardLayout ? SPLITTER_GUTTER_PX : LEGACY_SPLITTER_PX;
+/** region 境界のカード間ギャップ。 */
+export function regionSplitterPx(): number {
+  return SPLITTER_GUTTER_PX;
 }
 
-/** カードレイアウト ON/OFF に応じた同一 region 内スロット間 Splitter 帯の幅。 */
-export function slotSplitterPx(cardLayout: boolean): number {
-  return cardLayout ? PANEL_GAP_PX : LEGACY_SPLITTER_PX;
+/** 同一 region 内スロット間のカード間ギャップ。 */
+export function slotSplitterPx(): number {
+  return PANEL_GAP_PX;
 }
 
 /** DnD: content 端への新 slot 挿入ヒット領域 (px)。absolute 配置のためレイアウトに影響しない */
@@ -78,8 +72,6 @@ export interface RegionSizeClampContext {
   rightSize: number;
   /** center band 表示時に side region から確保する最小幅合計 */
   centerReserve: number;
-  /** カードレイアウト ON/OFF。未指定時は ON 扱い。 */
-  cardLayout?: boolean;
 }
 
 /**
@@ -101,11 +93,9 @@ function horizontalResizeChromePx(
   context: RegionSizeClampContext,
   fillerRegion: "left" | "right" | null,
 ): number {
-  const cardLayout = context.cardLayout ?? true;
-  const splitterPx = regionSplitterPx(cardLayout);
-  const gapPx = cardLayout ? STRIPE_GAP_PX : 0;
-  // 外周パディング (左右) — カードレイアウト時のみレイアウト幅を消費する。
-  let chrome = cardLayout ? OUTER_PAD_PX * 2 : 0;
+  const splitterPx = regionSplitterPx();
+  const gapPx = STRIPE_GAP_PX;
+  let chrome = OUTER_PAD_PX * 2;
   // stripe 本体 + その stripe ↔ content 間ギャップ列。
   if (context.hasLeft) chrome += STRIPE_SIZE + gapPx;
   if (context.hasRight) chrome += STRIPE_SIZE + gapPx;

@@ -52,16 +52,6 @@ describe("KEY_SCOPE routing invariants", () => {
       "editor.cursorBlink",
       "display.showWordCount",
       "display.reduceMotion",
-      "display.glassEffectEnabled",
-      "display.glassTransparency",
-      "display.glassBackdropGradient",
-      "display.glassNativeVibrancy",
-      "display.glassSurfaceShell",
-      "display.glassSurfaceDock",
-      "display.glassSurfacePanels",
-      "display.glassSurfaceChat",
-      "display.glassSurfacePopovers",
-      "display.glassSurfaceEditorChrome",
       "keys.bindings",
       "data.autoBackup",
       "revision.autoInterval",
@@ -94,20 +84,26 @@ describe("KEY_SCOPE routing invariants", () => {
     }
   });
 
-  it("card layout is the default; the glass effect defaults off (mutually exclusive)", () => {
-    expect(DEFAULT_SETTINGS["display.cardLayout"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassEffectEnabled"]).toBe("false");
-    // Glass surface sub-settings still default ON so the effect is complete
-    // once the master toggle is enabled.
-    expect(DEFAULT_SETTINGS["display.glassTransparency"]).toBe("30");
-    expect(DEFAULT_SETTINGS["display.glassBackdropGradient"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassNativeVibrancy"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfaceShell"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfaceDock"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfacePanels"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfaceChat"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfacePopovers"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfaceEditorChrome"]).toBe("true");
+  it("does not expose retired layout or app-wide glass settings", () => {
+    const retiredKeys = [
+      "display.mochiLayout",
+      "display.cardLayout",
+      "display.glassEffectEnabled",
+      "display.glassTransparency",
+      "display.glassEffectIntensity",
+      "display.glassBackdropGradient",
+      "display.glassNativeVibrancy",
+      "display.glassSurfaceShell",
+      "display.glassSurfaceDock",
+      "display.glassSurfacePanels",
+      "display.glassSurfaceChat",
+      "display.glassSurfacePopovers",
+      "display.glassSurfaceEditorChrome",
+    ];
+    for (const key of retiredKeys) {
+      expect(KEY_SCOPE).not.toHaveProperty(key);
+      expect(DEFAULT_SETTINGS).not.toHaveProperty(key);
+    }
   });
 });
 

@@ -25,7 +25,11 @@ export interface AuthorshipAttributes {
 
 export const AuthorshipMark = Mark.create({
   name: "authorship",
-  inclusive: false,
+  // Keep native IME preedit text in the same DOM span as the text before the
+  // caret. Chromium can otherwise expand insertCompositionText's target range
+  // back across an inclusive:false mark boundary and replace the paragraph.
+  // AiEditedPlugin removes inherited ai/unknown attribution after composition.
+  inclusive: true,
 
   addAttributes() {
     return {

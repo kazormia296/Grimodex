@@ -164,6 +164,10 @@ const bridge = {
       call(IPC.windowControl, "toggleMaximize"),
     close: (): Promise<void> => call(IPC.windowControl, "close"),
     isMaximized: (): Promise<boolean> => call(IPC.windowControl, "isMaximized"),
+    toggleFullscreen: (): Promise<boolean> =>
+      call(IPC.windowControl, "toggleFullscreen"),
+    isFullscreen: (): Promise<boolean> =>
+      call(IPC.windowControl, "isFullscreen"),
     onResized(cb: () => void): () => void {
       resizeHandlers.add(cb);
       return () => {

@@ -9,6 +9,7 @@ import { LicenseBadge } from "@/features/license/LicenseBadge";
 import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { EditorStatsFooter } from "@/features/editor/EditorStatsFooter";
 import type { SceneStatus } from "@/features/tree/treeStore";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 
 const STATUS_COLORS: Record<SceneStatus, string> = {
   outline: "text-muted-foreground",
@@ -58,6 +59,7 @@ export function EditorPaneStatusBar({
   onOpenAttribution,
   onOpenRevisionHistory,
 }: EditorPaneStatusBarProps) {
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
   const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
   const statusPopoverRef = useRef<HTMLDivElement>(null);
   const statusBadgeRef = useRef<HTMLButtonElement>(null);
@@ -76,6 +78,8 @@ export function EditorPaneStatusBar({
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [statusPopoverOpen]);
+
+  if (zenMode) return null;
 
   return (
     <div className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">

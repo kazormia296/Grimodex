@@ -13,6 +13,11 @@ const settings = vi.hoisted(() => {
   };
 });
 
+const fullscreen = vi.hoisted(() => ({
+  toggleFullscreenWindow: vi.fn<() => Promise<boolean>>(),
+  isWindowFullscreen: vi.fn<() => Promise<boolean>>(),
+}));
+
 // Mock settingsStore to avoid Tauri dependency
 vi.mock("@/features/settings/settingsStore", () => ({
   useSettingsStore: {
@@ -20,11 +25,20 @@ vi.mock("@/features/settings/settingsStore", () => ({
   },
 }));
 
+vi.mock("@/lib/windowControls", () => ({
+  toggleFullscreenWindow: fullscreen.toggleFullscreenWindow,
+  isWindowFullscreen: fullscreen.isWindowFullscreen,
+}));
+
 describe("useCursorSettingsStore", () => {
   beforeEach(() => {
     settings.values.clear();
     settings.set.mockClear();
     settings.getBoolean.mockClear();
+    fullscreen.toggleFullscreenWindow.mockReset();
+    fullscreen.toggleFullscreenWindow.mockResolvedValue(false);
+    fullscreen.isWindowFullscreen.mockReset();
+    fullscreen.isWindowFullscreen.mockResolvedValue(false);
     useCursorSettingsStore.setState({
       cursorAnimation: true,
       focusMode: false,
@@ -84,87 +98,105 @@ describe("useCursorSettingsStore", () => {
     expect(useCursorSettingsStore.getState().typewriterMode).toBe(true);
   });
 
-  it("keeps Zen, focus, and typewriter state synchronized on toggle", () => {
+  it("toggles Zen without changing or persisting focus and typewriter state", () => {
+    useCursorSettingsStore.setState({
+      focusMode: true,
+      typewriterMode: false,
+    });
+
     useCursorSettingsStore.getState().toggleZenMode();
     expect(useCursorSettingsStore.getState()).toMatchObject({
       zenMode: true,
       focusMode: true,
-      typewriterMode: true,
+      typewriterMode: false,
     });
-    expect(settings.values.get("editor.zenMode")).toBe("true");
-    expect(settings.values.get("editor.focusMode")).toBe("true");
-    expect(settings.values.get("editor.typewriterMode")).toBe("true");
+    expect(settings.set).not.toHaveBeenCalledWith(
+      "editor.zenMode",
+      expect.any(String),
+    );
+    expect(settings.set).not.toHaveBeenCalledWith(
+      "editor.focusMode",
+      expect.any(String),
+    );
+    expect(settings.set).not.toHaveBeenCalledWith(
+      "editor.typewriterMode",
+      expect.any(String),
+    );
 
     useCursorSettingsStore.getState().toggleZenMode();
     expect(useCursorSettingsStore.getState()).toMatchObject({
       zenMode: false,
-      focusMode: false,
+      focusMode: true,
       typewriterMode: false,
     });
-    expect(settings.values.get("editor.zenMode")).toBe("false");
-    expect(settings.values.get("editor.focusMode")).toBe("false");
-    expect(settings.values.get("editor.typewriterMode")).toBe("false");
   });
 
-  it("restores Zen as an active composite mode from settings", () => {
+  it("starts each session outside Zen while restoring focus and typewriter independently", () => {
     settings.values.set("editor.zenMode", "true");
-    settings.values.set("editor.focusMode", "false");
+    settings.values.set("editor.focusMode", "true");
     settings.values.set("editor.typewriterMode", "false");
 
     useCursorSettingsStore.getState().initFromSettings();
 
     expect(useCursorSettingsStore.getState()).toMatchObject({
-      zenMode: true,
+      zenMode: false,
       focusMode: true,
-      typewriterMode: true,
+      typewriterMode: false,
     });
   });
 
-  it("exits Zen when either component mode is changed directly", () => {
+  it("keeps Zen active when focus or typewriter is changed directly", () => {
     useCursorSettingsStore.setState({
       zenMode: true,
       focusMode: true,
-      typewriterMode: true,
+      typewriterMode: false,
     });
 
     useCursorSettingsStore.getState().toggleFocusMode();
+    useCursorSettingsStore.getState().toggleTypewriterMode();
 
     expect(useCursorSettingsStore.getState()).toMatchObject({
-      zenMode: false,
+      zenMode: true,
       focusMode: false,
       typewriterMode: true,
     });
-    expect(settings.values.get("editor.zenMode")).toBe("false");
+    expect(settings.set).not.toHaveBeenCalledWith(
+      "editor.zenMode",
+      expect.any(String),
+    );
   });
 
-  it("leaves fullscreen state unchanged until the browser confirms it", () => {
-    const requestFullscreen = vi.fn(() => Promise.resolve());
-    vi.stubGlobal("document", {
-      fullscreenElement: null,
-      documentElement: { requestFullscreen },
-    });
+  it("updates fullscreen state from the native window result", async () => {
+    fullscreen.toggleFullscreenWindow.mockResolvedValue(true);
 
     useCursorSettingsStore.getState().toggleFullscreenMode();
 
-    expect(requestFullscreen).toHaveBeenCalledOnce();
-    expect(useCursorSettingsStore.getState().fullscreenMode).toBe(false);
+    await vi.waitFor(() => {
+      expect(useCursorSettingsStore.getState().fullscreenMode).toBe(true);
+    });
+    expect(fullscreen.toggleFullscreenWindow).toHaveBeenCalledOnce();
   });
 
-  it("keeps fullscreen active when exitFullscreen is rejected", async () => {
-    const rejected = Promise.reject(new Error("fullscreen exit denied"));
-    void rejected.catch(() => undefined);
-    const exitFullscreen = vi.fn(() => rejected);
-    vi.stubGlobal("document", {
-      fullscreenElement: {},
-      exitFullscreen,
-      documentElement: {},
-    });
+  it("resynchronizes fullscreen state after an OS-level change", async () => {
+    fullscreen.isWindowFullscreen.mockResolvedValue(true);
+
+    await useCursorSettingsStore.getState().syncFullscreenMode();
+
+    expect(useCursorSettingsStore.getState().fullscreenMode).toBe(true);
+    expect(fullscreen.isWindowFullscreen).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the last confirmed fullscreen state when switching is rejected", async () => {
+    fullscreen.toggleFullscreenWindow.mockRejectedValue(
+      new Error("fullscreen denied"),
+    );
     useCursorSettingsStore.setState({ fullscreenMode: true });
 
     useCursorSettingsStore.getState().toggleFullscreenMode();
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(fullscreen.toggleFullscreenWindow).toHaveBeenCalledOnce();
+    });
 
-    expect(exitFullscreen).toHaveBeenCalledOnce();
     expect(useCursorSettingsStore.getState().fullscreenMode).toBe(true);
   });
 });

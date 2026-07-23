@@ -4,6 +4,7 @@ import { FileBackedSceneBanner } from "@/features/external-mount/components/File
 import { NoteContextControls } from "@/features/editor/NoteContextControls";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { LicenseRestrictionBanner } from "@/features/license/LicenseRestrictionBanner";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 
 interface CodexRibbonEntry {
   name: string;
@@ -42,6 +43,16 @@ export function EditorPaneRibbon({
   chronicleEventTitle,
 }: EditorPaneRibbonProps) {
   const { t } = useTranslation();
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
+
+  if (zenMode) {
+    return (
+      <>
+        <LicenseRestrictionBanner />
+        <ExternalEditConflictBanner nodeId={nodeId} />
+      </>
+    );
+  }
 
   return (
     <>

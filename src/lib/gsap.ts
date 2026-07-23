@@ -1,5 +1,6 @@
 import { gsap } from "gsap";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { ZEN_AMBIENT_DURATIONS } from "@/lib/animation";
 
 export function isReducedMotion(): boolean {
   const osReduced =
@@ -85,4 +86,44 @@ export function pulseHighlight(
       duration: dur / 2,
       ease: "power2.in",
     });
+}
+
+/**
+ * Zen の本文外に置く2つのぼかし光を、互いに異なる長周期で漂わせる。
+ * 本文DOMには触れず、transform だけを動かす。
+ */
+export function createZenAmbientDrift(
+  primary: HTMLElement,
+  secondary: HTMLElement,
+): gsap.core.Timeline | null {
+  if (isReducedMotion()) return null;
+
+  return gsap
+    .timeline({ paused: true })
+    .to(
+      primary,
+      {
+        xPercent: 18,
+        yPercent: -12,
+        scale: 1.04,
+        duration: ZEN_AMBIENT_DURATIONS.primaryDrift,
+        ease: "sine.inOut",
+        repeat: -1,
+        yoyo: true,
+      },
+      0,
+    )
+    .to(
+      secondary,
+      {
+        xPercent: -14,
+        yPercent: 10,
+        scale: 1.06,
+        duration: ZEN_AMBIENT_DURATIONS.secondaryDrift,
+        ease: "sine.inOut",
+        repeat: -1,
+        yoyo: true,
+      },
+      0,
+    );
 }

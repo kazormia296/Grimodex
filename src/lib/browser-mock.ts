@@ -974,8 +974,6 @@ export async function createBrowserMock(
         return handleOpenWorkspace(args) as T;
       case "get_mcp_config":
         return handleGetMcpConfig() as T;
-      case "set_window_vibrancy":
-        return undefined as T;
       case "db_execute":
         return handleDbExecute(args) as T;
       case "db_execute_batch":
@@ -1824,7 +1822,6 @@ async function seedScreenshotWorkspace(
 
   db.run(
     `INSERT OR REPLACE INTO app_settings (key, value) VALUES
-      ('display.glassEffectEnabled', 'false'),
       ('display.reduceMotion', 'true')`,
   );
 

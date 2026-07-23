@@ -7,6 +7,7 @@ import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import type { TreeNodeData, NodeType } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { useCursorSettingsStore } from "./cursorSettingsStore";
 
 export interface BreadcrumbSegment {
   id: string;
@@ -103,6 +104,7 @@ function SegmentDropdown({
 }
 
 export function Breadcrumb() {
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const nodes = useTreeStore((s) => s.nodes);
   const [openSegmentId, setOpenSegmentId] = useState<string | null>(null);
@@ -152,7 +154,7 @@ export function Breadcrumb() {
     }
   }
 
-  if (path.length === 0) return null;
+  if (zenMode || path.length === 0) return null;
 
   // Narrow-width strategy: when path has 4+ segments and the bar overflows,
   // we collapse the middle segments into a single "…" trigger that opens a
@@ -164,7 +166,8 @@ export function Breadcrumb() {
     // ジェスチャ対象はパンくず行に限定する。
     <div
       data-panel-header
-      className="flex h-8 min-w-0 items-center border-b border-border px-3 text-xs text-muted-foreground"
+      data-editor-breadcrumb
+      className="glass-editor-chrome flex h-8 min-w-0 items-center border-b border-border px-3 text-xs text-muted-foreground"
     >
       <FileText className="mr-1.5 size-3.5 shrink-0 opacity-70" aria-hidden />
       {path.map((segment, i) => {

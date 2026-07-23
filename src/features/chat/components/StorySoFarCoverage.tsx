@@ -25,8 +25,8 @@ export function StorySoFarCoverage() {
 
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  // .glass-chat の backdrop-filter stacking context に埋もれないよう
-  // document.body へ portal する。外側クリック/Escape は hook が閉じる。
+  // チャットパネル内の stacking context に埋もれないよう document.body へ
+  // portal する。外側クリック/Escape は hook が閉じる。
   const { popoverRef, style } = useAnchoredPopover(
     triggerRef,
     open,

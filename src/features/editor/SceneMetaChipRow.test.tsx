@@ -71,7 +71,7 @@ function seedScene(overrides: Partial<TreeNodeData> = {}) {
 beforeEach(() => {
   settingsSetSpy.mockClear();
   stubPanelOpen(false);
-  useCursorSettingsStore.setState({ focusMode: false });
+  useCursorSettingsStore.setState({ focusMode: false, zenMode: false });
   useEditorStore.setState({ editor: null } as never);
   useTabStore.setState({
     activeTabId: "s1",
@@ -90,10 +90,19 @@ beforeEach(() => {
 describe("SceneMetaChipRow の表示条件", () => {
   it("パネルが閉じているシーンで表示される", () => {
     render(<SceneMetaChipRow />);
-    expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
+    expect(screen.getByTestId("scene-meta-chip-row")).toHaveClass(
+      "glass-editor-chrome",
+    );
     expect(screen.getByText("千早")).toBeTruthy();
     expect(screen.getByText("廃社")).toBeTruthy();
     expect(screen.getByText("千早が帰還する。")).toBeTruthy();
+  });
+
+  it("あらすじピルは背景を透過するクローム面を使う", () => {
+    render(<SceneMetaChipRow />);
+    expect(screen.getByText("千早が帰還する。").closest("button")).toHaveClass(
+      "editor-background-glass",
+    );
   });
 
   it("パネルが開いていると出ない", () => {
@@ -106,6 +115,12 @@ describe("SceneMetaChipRow の表示条件", () => {
     useCursorSettingsStore.setState({ focusMode: true });
     render(<SceneMetaChipRow />);
     expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
+  });
+
+  it("Zenモード中は本文専用表示のため出ない", () => {
+    useCursorSettingsStore.setState({ zenMode: true });
+    render(<SceneMetaChipRow />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
   });
 
   it("scene 以外のノードでは出ない", () => {

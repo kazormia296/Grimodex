@@ -10,7 +10,13 @@ vi.mock("@/features/settings/settingsStore", () => ({
   useSettingsStore: vi.fn(),
 }));
 
-import { useReducedMotion, cubicBezier, easeOutFn, EASINGS } from "./animation";
+import {
+  useReducedMotion,
+  cubicBezier,
+  easeOutFn,
+  EASINGS,
+  ZEN_AMBIENT_DURATIONS,
+} from "./animation";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useReducedMotion as useOsReducedMotion } from "motion/react";
 
@@ -45,6 +51,21 @@ describe("cubicBezier / easeOutFn", () => {
   it("easeOutFn は EASINGS.easeOut と同一曲線", () => {
     const fn = cubicBezier(...EASINGS.easeOut);
     expect(easeOutFn(0.3)).toBeCloseTo(fn(0.3), 6);
+  });
+});
+
+describe("ZEN_AMBIENT_DURATIONS", () => {
+  it("keeps both drift cycles subtle, long, and non-synchronous", () => {
+    expect(ZEN_AMBIENT_DURATIONS.primaryDrift).toBeGreaterThanOrEqual(60);
+    expect(ZEN_AMBIENT_DURATIONS.primaryDrift).toBeLessThanOrEqual(90);
+    expect(ZEN_AMBIENT_DURATIONS.secondaryDrift).toBeGreaterThanOrEqual(60);
+    expect(ZEN_AMBIENT_DURATIONS.secondaryDrift).toBeLessThanOrEqual(90);
+    expect(ZEN_AMBIENT_DURATIONS.primaryDrift).not.toBe(
+      ZEN_AMBIENT_DURATIONS.secondaryDrift,
+    );
+    expect(ZEN_AMBIENT_DURATIONS.exit).toBeLessThan(
+      ZEN_AMBIENT_DURATIONS.enter,
+    );
   });
 });
 

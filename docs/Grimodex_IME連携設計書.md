@@ -21,9 +21,9 @@
 └───────────────────────────────────────────────────────┘
                        │ ファイル watch（OS別API）
 ┌─────────────── IME側アダプタ（OS別） ────────────┐
-│ macOS: azooKey-Desktop fork (IMKit)             │
-│ Linux: fcitx5-hazkey fork (fcitx5)              │
-│ Windows: mozkey fork / TSF (要選定)             │
+│ macOS: 対応 IME アダプタ（IMKit）               │
+│ Linux: 対応 IME アダプタ（Fcitx 5 / IBus）      │
+│ Windows: 対応 IME アダプタ（TSF）               │
 │   └→ 動的ユーザ辞書へ差替 + zenzプロフィール注入 │
 └─────────────────────────────────────────────────┘
 ```
@@ -152,8 +152,8 @@ IME側がインストール時・起動時に作成/touchし、アンインス�
 ```json
 {
   "format_version": 1,
-  "consumer_id": "fcitx5-grimodex",
-  "name": "Grimodex IME for Linux",
+  "consumer_id": "fcitx5-mozkey-ibg",
+  "name": "Mozkey IbG for Grimodex on Linux",
   "version": "0.1.0",
   "platform": "linux",
   "capabilities": {
@@ -165,6 +165,10 @@ IME側がインストール時・起動時に作成/touchし、アンインス�
   "last_seen": "2026-07-10T12:00:00.000Z"
 }
 ```
+
+`consumer_id` と `name` は IME 側が宣言する値であり、Grimodex は特定の ID を
+ハードコードせず、期限内の有効な consumer を列挙して扱う。上記は現行 Mozkey IbG
+Linux アダプタの例で、別の Fcitx 5 / IBus アダプタは自身の識別子を使用する。
 
 - IMEは起動時と15分ごとに`last_seen`をatomic更新する。Grimodexは45分以内のheartbeatだけを「IMEインストール済み」として検出し、連携を自動ONにする（§8）。時計ずれは5分先まで許容する。古いファイルは削除せずconsumer不在として扱い、OS別のインストール痕跡探索はしない。
 - `platform`はoptionalな`linux` / `windows` / `macos`。旧consumerでは省略できる。
@@ -215,14 +219,14 @@ OS別の注意点:
 
 | OS | ベース | 備考 |
 |---|---|---|
-| macOS | azooKey-Desktop フォーク | AzooKeyKanaKanjiConverterに動的ユーザ辞書追加機構あり。IMKitクライアントの bundleIdentifier でスコープ判定可能 |
-| Linux | fcitx5-hazkey フォーク | 参照実装。Wayland等でprogram判定不能ならfail-closedで無効。全アプリ適用は明示設定のみ |
-| Windows | azooKey-Windows フォーク | Linuxと同じ変換エンジンと契約を移植。監視handleは`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`でGrimodexのatomic replaceを妨げない |
+| macOS | 対応 IME アダプタ | IMKitクライアントの bundleIdentifier でスコープ判定可能 |
+| Linux | 対応 IME アダプタ（Fcitx 5 / IBus） | Wayland等でprogram判定不能ならfail-closedで無効。全アプリ適用は明示設定のみ |
+| Windows | 対応 IME アダプタ（TSF） | 監視handleは`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`でGrimodexのatomic replaceを妨げない |
 
 ## 8. セキュリティ・プライバシー
 
 - 通信は発生しない。すべてローカルファイル。
-- 連携モードの既定は `auto`: 同梱IMEのインストールをハンドシェイク（§5.4）で検出したときのみ書き出しが始まる。IME不在の環境ではファイルを一切作らない。設定で `off` に固定可能（常に最優先）。
+- 連携モードの既定は `auto`: 別途インストールされたIMEがハンドシェイク（§5.4）で検出されたときのみ書き出しが始まる。IME不在の環境ではファイルを一切作らない。設定で `off` に固定可能（常に最優先）。
 - Codexにはネタバレ・未公開設定が含まれ、辞書ファイルは**平文**で書かれる。設定画面に書き出し先パスと書き出される内容の説明を明示する。
 - 除外オプション: `hidden` / `suppress` エントリの除外、`profile` の書き出し停止（語彙リストのみ）を設定で選べるようにする。
 
@@ -236,13 +240,13 @@ IME側実装のセキュリティ要件（フォーク側リポジトリへの�
 
 ## 9. 配布・インストール
 
-Grimodexのインストール時にIMEを同時インストールし、インストール済み環境では連携が自動で有効になる（§8）。「IMEなしでもGrimodexは完全動作する」を不変条件とし、IMEは追加コンポーネントの位置づけとする。
+GrimodexとIMEは別々に配布・インストールする。Grimodexのインストーラーは言語中立の本体だけを扱い、IMEはユーザーがOSと入力言語に合うものを選んで導入する。IMEがインストール済みの環境では、ハンドシェイク（§5.4）によって連携が自動で有効になる。「IMEなしでもGrimodexは完全動作する」を不変条件とする。
 
-| OS | 同梱方法 | 備考 |
+| OS | IMEの配布方法 | 備考 |
 |---|---|---|
-| macOS | Phase 5 の独立配布は署名・公証済みpkgで `/Library/Input Methods/` へ配置（管理者承認あり）。Grimodex同梱時は初回起動アシスタントが `.app` を `~/Library/Input Methods/` へ配置する管理者不要経路を別途担う | pkg/ユーザ配置のどちらも、入力ソースの有効化はOS仕様上ユーザ操作が必要になり得るためシステム設定へ誘導する |
-| Windows | Grimodexインストーラ（NSIS）のオプションコンポーネントとしてIMEインストーラをチェーン実行 | TSFのDLL登録に管理者権限が必要なため初回起動アシスタント方式は不可 |
-| Linux | IMEはパッケージ（deb/rpm/AUR）として別途提供。Grimodexのdebは `Recommends` 指定 | fcitx5アドオンはシステムパス配置が必要でアプリからの直接インストール不可。初回起動時に fcitx5/ibus 環境を検出して導線を表示 |
+| macOS | 署名・公証済みpkgなどでIMEを独立配布 | 入力ソースの有効化はOS仕様上ユーザー操作が必要になり得るため、設定画面へ誘導する |
+| Windows | IMEを独立したMSIとして配布 | TSFのDLL登録と管理者権限がGrimodex本体と異なるため、同一インストーラーからチェーン実行しない |
+| Linux | IMEをdeb/rpm/AURなどで独立配布 | Fcitx 5 / IBusのシステムパス配置が必要なため、Grimodexは検出後に外部配布元を案内する |
 
 Grimodex本体とIMEの更新サイクルは独立とし、バージョンずれは§5.3の互換性ポリシーで吸収する。
 

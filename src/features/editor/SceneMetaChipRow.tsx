@@ -14,6 +14,7 @@ import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore
 import { countPlacedBeats } from "@/features/editor/beat/beatDocQueries";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import {
   CodexRefPickerPopover,
   type CodexRefEntry,
@@ -43,7 +44,7 @@ function Chip({
   onClick: () => void;
   title?: string;
   expanded?: boolean;
-  /** あらすじチップだけ枠付き白背景 (デザイン 1h)。 */
+  /** あらすじチップだけ枠付き背景 (デザイン 1h)。 */
   outlined?: boolean;
   children: ReactNode;
 }) {
@@ -57,7 +58,7 @@ function Chip({
       className={cn(
         "flex max-w-60 flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-[2px] text-[10px] transition-colors",
         outlined
-          ? "border border-border bg-background hover:bg-accent"
+          ? "editor-background-glass border border-border hover:bg-accent/70"
           : "bg-muted/60 text-foreground hover:bg-accent",
       )}
     >
@@ -78,6 +79,7 @@ function Chip({
  */
 export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
   const { t, i18n } = useTranslation();
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
   const [openPopover, setOpenPopover] = useState<ChipPopover | null>(null);
   const povChipRef = useRef<HTMLSpanElement>(null);
   const locChipRef = useRef<HTMLSpanElement>(null);
@@ -124,7 +126,7 @@ export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
   }, [editor, sceneId, primaryTabId]);
 
   // フォーカスモードでも隠さない（本文の減光は FocusModePlugin 側で完結する）
-  if (!node || !sceneId || panelOpen) return null;
+  if (zenMode || !node || !sceneId || panelOpen) return null;
 
   if (groupIndex !== undefined) {
     const groupTabId = groupIndex === 0 ? primaryTabId : secondaryTabId;
@@ -166,7 +168,7 @@ export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
   return (
     <div
       data-testid="scene-meta-chip-row"
-      className="flex h-7 flex-shrink-0 items-center gap-1.5 overflow-hidden border-b border-border bg-muted/10 px-3"
+      className="glass-editor-chrome flex h-7 flex-shrink-0 items-center gap-1.5 overflow-hidden border-b border-border bg-muted/10 px-3"
     >
       <span ref={povChipRef} className="inline-flex min-w-0">
         <Chip

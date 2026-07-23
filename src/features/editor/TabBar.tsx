@@ -357,7 +357,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   }
 
   return (
-    <div className="glass-editor-chrome flex items-center border-b border-border bg-background">
+    <div className="editor-background-glass glass-editor-chrome flex items-center border-b border-border">
       {/* Scrollable tab list */}
       <div
         ref={scrollRef}
@@ -438,7 +438,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     "border-r border-border px-3 py-1.5 text-xs",
                     "hover:bg-accent/50",
                     isActive
-                      ? "bg-background font-medium text-foreground"
+                      ? "bg-background/10 font-medium text-foreground"
                       : "text-muted-foreground",
                     isActive &&
                       "after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-primary",

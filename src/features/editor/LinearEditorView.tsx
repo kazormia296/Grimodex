@@ -35,18 +35,22 @@ import {
 } from "@/features/editor/editorLayout";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { isMac } from "@/lib/platform";
 import {
   getMergedBindings,
   matchesBinding,
 } from "@/features/settings/keybindings";
 import type { Editor } from "@tiptap/core";
+import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
+import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 const DEFAULT_HEIGHT = 300;
 const DEBOUNCE_ACTIVE_MS = 100;
 
 export function LinearEditorView() {
   const editorSettings = useEditorSettings();
+  const backgroundEnabled = useZenBackgroundEnabled();
   const verticalMode = editorSettings.verticalMode;
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
@@ -388,7 +392,8 @@ export function LinearEditorView() {
   // --- Scene meta panel (EditorPane と同じ設定キー・レイアウト永続化) ---
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
-  const isPanelVisible = sceneMetaPanelOpen && activeId != null;
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
+  const isPanelVisible = sceneMetaPanelOpen && activeId != null && !zenMode;
   const handleTogglePanel = useCallback(() => {
     useSettingsStore
       .getState()
@@ -447,11 +452,18 @@ export function LinearEditorView() {
   const scrollContainer = (
     <div
       ref={scrollRef}
-      className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
+      className={`glass-editor-body relative isolate flex-1 overflow-auto bg-transparent text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
     >
       <div
         ref={editorContainerRef}
-        style={buildEditorMeasureStyle(editorSettings.maxContentWidth)}
+        data-zen-editor-column={zenMode ? "true" : undefined}
+        className="zen-editor-paper"
+        style={{
+          ...buildEditorMeasureStyle(editorSettings.maxContentWidth),
+          ...buildEditorPaperStyle({
+            enabled: backgroundEnabled,
+          }),
+        }}
       >
         {scenes.map((scene, i) => (
           <div key={scene.id}>

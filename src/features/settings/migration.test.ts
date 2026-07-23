@@ -127,120 +127,43 @@ describe("migrateAppSettingsToScopedStores", () => {
   });
 });
 
-describe("migrateCardLayoutKey", () => {
+describe("removeRetiredDisplaySettings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     globalSettingsHarness.setSettings({ userPreferences: {} });
     mockGlobalSettingsRepository();
   });
 
-  it("copies the legacy display.mochiLayout value to display.cardLayout", async () => {
+  it("removes retired layout and app-wide glass keys while preserving active preferences", async () => {
     globalSettingsHarness.setSettings({
       userPreferences: {
         "display.mochiLayout": "false",
+        "display.cardLayout": "true",
+        "display.glassEffectEnabled": "true",
+        "display.glassTransparency": "30",
+        "display.glassSurfacePanels": "true",
         "editor.fontSize": "16",
       },
     });
 
-    const { migrateCardLayoutKey } = await import("./migration");
-    await migrateCardLayoutKey();
+    const { removeRetiredDisplaySettings } = await import("./migration");
+    await removeRetiredDisplaySettings();
 
     expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
     expect(globalSettingsHarness.getSettings()).toEqual({
       userPreferences: {
         "editor.fontSize": "16",
-        "display.cardLayout": "false",
       },
     });
   });
 
-  it("is a no-op when the legacy key is absent", async () => {
+  it("does not patch preferences when no retired key is present", async () => {
     globalSettingsHarness.setSettings({
-      userPreferences: { "display.cardLayout": "true" },
+      userPreferences: { "editor.fontSize": "16" },
     });
 
-    const { migrateCardLayoutKey } = await import("./migration");
-    await migrateCardLayoutKey();
-
-    expect(globalSettingsHarness.patch).not.toHaveBeenCalled();
-  });
-
-  it("does not overwrite an existing display.cardLayout value", async () => {
-    globalSettingsHarness.setSettings({
-      userPreferences: {
-        "display.mochiLayout": "false",
-        "display.cardLayout": "true",
-      },
-    });
-
-    const { migrateCardLayoutKey } = await import("./migration");
-    await migrateCardLayoutKey();
-
-    expect(globalSettingsHarness.patch).not.toHaveBeenCalled();
-  });
-});
-
-describe("resolveCardLayoutGlassConflict", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    globalSettingsHarness.setSettings({ userPreferences: {} });
-    mockGlobalSettingsRepository();
-  });
-
-  it("turns the glass effect off when both are persisted on", async () => {
-    globalSettingsHarness.setSettings({
-      userPreferences: {
-        "display.cardLayout": "true",
-        "display.glassEffectEnabled": "true",
-      },
-    });
-
-    const { resolveCardLayoutGlassConflict } = await import("./migration");
-    await resolveCardLayoutGlassConflict();
-
-    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
-    expect(globalSettingsHarness.getSettings()).toEqual({
-      userPreferences: {
-        "display.cardLayout": "true",
-        "display.glassEffectEnabled": "false",
-      },
-    });
-  });
-
-  it("resolves the conflict when the card layout relies on its default", async () => {
-    globalSettingsHarness.setSettings({
-      userPreferences: { "display.glassEffectEnabled": "true" },
-    });
-
-    const { resolveCardLayoutGlassConflict } = await import("./migration");
-    await resolveCardLayoutGlassConflict();
-
-    expect(globalSettingsHarness.getSettings()).toEqual({
-      userPreferences: { "display.glassEffectEnabled": "false" },
-    });
-  });
-
-  it("is a no-op when the card layout is off", async () => {
-    globalSettingsHarness.setSettings({
-      userPreferences: {
-        "display.cardLayout": "false",
-        "display.glassEffectEnabled": "true",
-      },
-    });
-
-    const { resolveCardLayoutGlassConflict } = await import("./migration");
-    await resolveCardLayoutGlassConflict();
-
-    expect(globalSettingsHarness.patch).not.toHaveBeenCalled();
-  });
-
-  it("is a no-op when the glass effect is off by default", async () => {
-    globalSettingsHarness.setSettings({
-      userPreferences: { "display.cardLayout": "true" },
-    });
-
-    const { resolveCardLayoutGlassConflict } = await import("./migration");
-    await resolveCardLayoutGlassConflict();
+    const { removeRetiredDisplaySettings } = await import("./migration");
+    await removeRetiredDisplaySettings();
 
     expect(globalSettingsHarness.patch).not.toHaveBeenCalled();
   });

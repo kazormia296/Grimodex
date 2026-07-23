@@ -170,8 +170,8 @@ export function ChatPanelHeader({
   const [scopeHint, setScopeHint] = useState(false);
   const activePresetId = useLayoutStore((s) => s.activePresetId);
 
-  // ドロップダウン / 時限ヒントは .glass-chat の backdrop-filter が作る stacking
-  // context に埋もれないよう document.body へ portal する。位置計算と外側クリック
+  // ドロップダウン / 時限ヒントはチャットパネル内の stacking context に埋もれない
+  // よう document.body へ portal する。位置計算と外側クリック
   // /Escape での閉じ処理は useAnchoredPopover に委譲（同一トリガに 2 つぶら下げ）。
   const dropdownPopover = useAnchoredPopover(
     triggerRef,

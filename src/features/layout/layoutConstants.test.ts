@@ -3,7 +3,6 @@ import {
   clampRegionSize,
   computeFillerRegion,
   getMaxRegionSize,
-  LEGACY_SPLITTER_PX,
   MIN_REGION_SIZE,
   OUTER_PAD_PX,
   SPLITTER_GUTTER_PX,
@@ -71,17 +70,6 @@ describe("clampRegionSize with filler layout", () => {
     expect(
       clampRegionSize("left", maxLeft + 500, LAPTOP, PLAN_FILLER_CONTEXT),
     ).toBe(maxLeft);
-  });
-
-  it("uses legacy chrome (no outer pad / gaps, 6px splitter) when cardLayout is off", () => {
-    const ctx: RegionSizeClampContext = {
-      ...PLAN_FILLER_CONTEXT,
-      cardLayout: false,
-    };
-    const maxLeft = getMaxRegionSize("left", LAPTOP, ctx);
-    expect(maxLeft).toBe(
-      LAPTOP.width - STRIPE_SIZE * 2 - LEGACY_SPLITTER_PX - MIN_REGION_SIZE,
-    );
   });
 
   it("allows side region beyond 50% viewport when center band is visible", () => {

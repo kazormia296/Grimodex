@@ -2,6 +2,10 @@ import { create } from "zustand";
 import type { Editor } from "@tiptap/core";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { LayerSetOptions } from "@/features/post-effect/annotationStore";
+import {
+  isWindowFullscreen,
+  toggleFullscreenWindow,
+} from "@/lib/windowControls";
 
 interface CursorSettingsState {
   cursorAnimation: boolean;
@@ -13,9 +17,11 @@ interface CursorSettingsState {
   typewriterMode: boolean;
   toggleTypewriterMode: () => void;
   zenMode: boolean;
+  setZenMode: (active: boolean) => void;
   toggleZenMode: () => void;
   fullscreenMode: boolean;
   setFullscreenMode: (active: boolean) => void;
+  syncFullscreenMode: () => Promise<void>;
   toggleFullscreenMode: () => void;
   showComments: boolean;
   setShowComments: (visible: boolean, opts?: LayerSetOptions) => void;
@@ -81,10 +87,7 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
       set((s) => {
         const next = !s.focusMode;
         useSettingsStore.getState().set("editor.focusMode", String(next));
-        if (s.zenMode) {
-          useSettingsStore.getState().set("editor.zenMode", "false");
-        }
-        return { focusMode: next, zenMode: false };
+        return { focusMode: next };
       }),
 
     typewriterMode: false,
@@ -92,47 +95,29 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
       set((s) => {
         const next = !s.typewriterMode;
         useSettingsStore.getState().set("editor.typewriterMode", String(next));
-        if (s.zenMode) {
-          useSettingsStore.getState().set("editor.zenMode", "false");
-        }
-        return { typewriterMode: next, zenMode: false };
+        return { typewriterMode: next };
       }),
 
     zenMode: false,
-    toggleZenMode: () =>
-      set((s) => {
-        const next = !s.zenMode;
-        const settings = useSettingsStore.getState();
-        settings.set("editor.zenMode", String(next));
-        settings.set("editor.focusMode", String(next));
-        settings.set("editor.typewriterMode", String(next));
-        return {
-          zenMode: next,
-          focusMode: next,
-          typewriterMode: next,
-        };
-      }),
+    setZenMode: (active) => set({ zenMode: active }),
+    toggleZenMode: () => set((s) => ({ zenMode: !s.zenMode })),
 
     fullscreenMode: false,
     setFullscreenMode: (active) => set({ fullscreenMode: active }),
-    toggleFullscreenMode: () => {
-      if (typeof document === "undefined") return;
-      const doc = document;
-      const syncFromDocument = () => {
-        set({ fullscreenMode: Boolean(doc.fullscreenElement) });
-      };
+    syncFullscreenMode: async () => {
       try {
-        const transition = doc.fullscreenElement
-          ? doc.exitFullscreen?.()
-          : doc.documentElement.requestFullscreen?.();
-        if (transition) {
-          void transition.catch(syncFromDocument);
-        } else {
-          syncFromDocument();
-        }
+        set({ fullscreenMode: await isWindowFullscreen() });
       } catch {
-        syncFromDocument();
+        // Keep the last state confirmed by the runtime. A transient native
+        // query failure must not flip the toolbar indicator optimistically.
       }
+    },
+    toggleFullscreenMode: () => {
+      void toggleFullscreenWindow()
+        .then((active) => set({ fullscreenMode: active }))
+        .catch(() => {
+          // Preserve the last confirmed state when the OS rejects a transition.
+        });
     },
 
     showComments: false,
@@ -204,17 +189,15 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
 
     initFromSettings: () => {
       const s = useSettingsStore.getState();
-      const zenMode = s.getBoolean("editor.zenMode", false);
       set({
         cursorAnimation: s.getBoolean("editor.smoothCaret", true),
         cursorBlink: s.getBoolean("editor.cursorBlink", true),
-        focusMode: zenMode || s.getBoolean("editor.focusMode", false),
-        typewriterMode: zenMode || s.getBoolean("editor.typewriterMode", false),
-        zenMode,
-        fullscreenMode:
-          typeof document === "undefined"
-            ? false
-            : Boolean(document.fullscreenElement),
+        focusMode: s.getBoolean("editor.focusMode", false),
+        typewriterMode: s.getBoolean("editor.typewriterMode", false),
+        // Zen is a transient view projection. Never reopen an application
+        // session with all navigation chrome hidden.
+        zenMode: false,
+        fullscreenMode: false,
         showComments: s.getBoolean("display.layerComments", false),
         showForeshadowMarks: s.getBoolean("display.layerForeshadow", false),
         showLint: s.getBoolean("display.layerLint", true),

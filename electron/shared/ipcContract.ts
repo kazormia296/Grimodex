@@ -87,7 +87,7 @@ export const IPC = {
   event: "grim:event",
   /** renderer 発 emit（ipcMain.on、main が allowlist 検証 → 全窓 broadcast）。 */
   emit: "grim:emit",
-  /** windowControls（minimize / toggleMaximize / close / isMaximized）。 */
+  /** windowControls（min/max/close/fullscreen と状態取得）。 */
   windowControl: "grim:window-control",
   /** main → renderer: resize / maximize 状態変化の通知（main 側配線は S6）。 */
   windowResized: "grim:window-resized",
@@ -2336,7 +2336,6 @@ export type ShellCommandHandlers = Readonly<
  * 到達不能だった旧 external_mount_list は両ランタイムから撤去済み。
  */
 export const SHELL_COMMAND_NAMES: readonly string[] = [
-  "set_window_vibrancy",
   "export_save_text",
   "export_save_bytes",
   "open_log_dir",

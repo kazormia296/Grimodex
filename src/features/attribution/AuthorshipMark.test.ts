@@ -19,6 +19,13 @@ describe("AuthorshipMark", () => {
     editor.destroy();
   });
 
+  it("inherits at the cursor boundary so IME composition stays in one DOM span", () => {
+    const editor = createTestEditor();
+    const mark = editor.schema.marks["authorship"];
+    expect(mark.spec.inclusive).toBe(true);
+    editor.destroy();
+  });
+
   it("has all Agent Trace attributes", () => {
     const editor = createTestEditor();
     const markType = editor.schema.marks["authorship"];

@@ -1,5 +1,5 @@
 import * as api from "./api";
-import { DEFAULT_SETTINGS, KEY_SCOPE } from "./types";
+import { KEY_SCOPE } from "./types";
 import { PROJECT_ID } from "@/features/project/constants";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 
@@ -59,23 +59,45 @@ export async function migrateAppSettingsToScopedStores(): Promise<void> {
   await api.setSetting(SCHEMA_VERSION_KEY, String(CURRENT_VERSION));
 }
 
-const LEGACY_CARD_LAYOUT_KEY = "display.mochiLayout";
-const CARD_LAYOUT_KEY = "display.cardLayout";
+const RETIRED_DISPLAY_KEYS = [
+  "display.mochiLayout",
+  "display.cardLayout",
+  "display.glassEffectEnabled",
+  "display.glassTransparency",
+  "display.glassEffectIntensity",
+  "display.glassBackdropGradient",
+  "display.glassNativeVibrancy",
+  "display.glassSurfaceShell",
+  "display.glassSurfaceDock",
+  "display.glassSurfacePanels",
+  "display.glassSurfaceChat",
+  "display.glassSurfacePopovers",
+  "display.glassSurfaceEditorChrome",
+] as const;
 
-/**
- * One-time key rename: the card-layout toggle was originally persisted under
- * `display.mochiLayout`. Carry any saved value over to `display.cardLayout`.
- * Idempotent — acts only while the legacy key is present and the new one absent.
- */
-export async function migrateCardLayoutKey(): Promise<void> {
+/** Remove settings owned by the retired splitter-line layout and app-wide glass UI. */
+export async function removeRetiredDisplaySettings(): Promise<void> {
   const prefs = (await globalSettingsRepository.read()).userPreferences;
-  if (!prefs || !(LEGACY_CARD_LAYOUT_KEY in prefs)) return;
-  if (CARD_LAYOUT_KEY in prefs) return;
-  const { [LEGACY_CARD_LAYOUT_KEY]: legacyValue, ...rest } = prefs;
-  await globalSettingsRepository.patch((current) => ({
-    ...current,
-    userPreferences: { ...rest, [CARD_LAYOUT_KEY]: legacyValue },
-  }));
+  if (prefs) {
+    const next = { ...prefs };
+    let changed = false;
+    for (const key of RETIRED_DISPLAY_KEYS) {
+      if (!(key in next)) continue;
+      delete next[key];
+      changed = true;
+    }
+    if (changed) {
+      await globalSettingsRepository.patch((current) => ({
+        ...current,
+        userPreferences: next,
+      }));
+    }
+  }
+
+  // Older workspaces can still contain these keys in the pre-split app_settings table.
+  for (const key of RETIRED_DISPLAY_KEYS) {
+    await api.deleteSetting(key);
+  }
 }
 
 // 旧「死に設定」モデルキー → 機能別ロールキーの吸収マッピング。
@@ -93,10 +115,9 @@ const LEGACY_ROLE_MODEL_KEYS: ReadonlyArray<readonly [string, string]> = [
  * 読まれない死に設定だった。Phase 2 でロール UI を露出するにあたり、既存ユーザーが
  * 設定していた値を失わせずロールキーへ移送して初めて実効化する。
  *
- * `migrateCardLayoutKey` と同型の冪等な一回限りリネーム:
  * 旧キーが存在するとき、対応ロールキーが未設定（空/欠如）なら非空の旧値を移送し、
- * いずれの場合も旧キーを除去する。旧 UI ピッカーは Phase 2 で撤去するため旧キーが
- * 再生産されることはなく、二度目以降の呼び出しは旧キー不在で no-op になる。
+ * いずれの場合も旧キーを除去する。旧 UI ピッカーは撤去済みのため旧キーが再生産
+ * されることはなく、二度目以降の呼び出しは旧キー不在で no-op になる。
  */
 export async function migrateModelRoleKeys(): Promise<void> {
   const prefs = (await globalSettingsRepository.read()).userPreferences;
@@ -118,25 +139,6 @@ export async function migrateModelRoleKeys(): Promise<void> {
   await globalSettingsRepository.patch((current) => ({
     ...current,
     userPreferences: next,
-  }));
-}
-
-/**
- * Card layout and the glass effect are mutually exclusive. Legacy installs may
- * have both persisted ON — resolve in favour of the card layout by turning the
- * glass effect off. Idempotent: acts only while both are effectively enabled.
- */
-export async function resolveCardLayoutGlassConflict(): Promise<void> {
-  const prefs = (await globalSettingsRepository.read()).userPreferences;
-  if (!prefs) return;
-  const isEnabled = (key: string) =>
-    (prefs[key] ?? DEFAULT_SETTINGS[key]) === "true";
-  if (!isEnabled(CARD_LAYOUT_KEY) || !isEnabled("display.glassEffectEnabled")) {
-    return;
-  }
-  await globalSettingsRepository.patch((current) => ({
-    ...current,
-    userPreferences: { ...prefs, "display.glassEffectEnabled": "false" },
   }));
 }
 

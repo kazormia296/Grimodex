@@ -27,6 +27,12 @@ vi.mock("@/features/editor/CodexPopover", () => ({
 vi.mock("@/features/editor/EditorContextMenu", () => ({
   EditorContextMenu: () => null,
 }));
+vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
+  ZenAmbientBackdrop: () => <div data-zen-ambient aria-hidden="true" />,
+}));
+vi.mock("@/features/editor/zen/useZenBackgroundAppearance", () => ({
+  useZenBackgroundEnabled: () => true,
+}));
 const settingsOverride = vi.hoisted(
   () => ({ current: {} }) as { current: Record<string, unknown> },
 );
@@ -73,6 +79,7 @@ vi.stubGlobal("ResizeObserver", StubResizeObserver);
 import { LinearEditorView } from "./LinearEditorView";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useSlashCommandStore } from "./inlineAi/slashCommandStore";
+import { useCursorSettingsStore } from "./cursorSettingsStore";
 import type { Editor } from "@tiptap/core";
 
 const NODE_DEFAULTS = {
@@ -105,6 +112,7 @@ function makeNode(
 
 beforeEach(() => {
   useTreeStore.setState({ nodes: [], activeSceneId: "" });
+  useCursorSettingsStore.setState({ zenMode: false });
   useLinearEditorStore.setState({
     focusedEditor: null,
     focusedSceneId: null,
@@ -112,6 +120,27 @@ beforeEach(() => {
     editorsById: {},
   });
   settingsOverride.current = {};
+});
+
+describe("LinearEditorView — background boundary", () => {
+  it("uses the App-level backdrop and changes only the local paper alpha", () => {
+    useCursorSettingsStore.setState({ zenMode: true });
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+
+    const { container } = render(<LinearEditorView />);
+
+    const paper = container.querySelector('[data-zen-editor-column="true"]');
+    expect(paper).not.toBeNull();
+    expect(container.querySelector("[data-zen-ambient]")).toBeNull();
+    expect(paper).toHaveStyle({
+      background:
+        "color-mix(in oklch, var(--content-background) 35%, transparent)",
+    });
+    expect((paper as HTMLElement).style.opacity).toBe("");
+  });
 });
 
 describe("LinearEditorView — scene ordering", () => {

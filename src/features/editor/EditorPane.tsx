@@ -69,6 +69,7 @@ import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
 import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
 import { useCodexCompletion } from "@/features/editor/codexCompletion/useCodexCompletion";
+import { handleZenEscapeKeyDown } from "@/features/editor/zenEscape";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import {
@@ -559,7 +560,8 @@ export function EditorPane({
           }
           return false;
         },
-        handleKeyDown(_view, event) {
+        handleKeyDown(view, event) {
+          if (handleZenEscapeKeyDown(view, event)) return true;
           // Ctrl/Cmd+Shift+V を「書式設定なし」ペーストとして arm する。
           // native paste は止めず、handlePaste 側で Markdown 記法を除去する。
           // 他キーでは arm を解除する (paste が来なかった場合の stale 防止)。
@@ -1080,6 +1082,7 @@ export function EditorPane({
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
   const focusMode = useCursorSettingsStore((s) => s.focusMode);
+  const zenMode = useCursorSettingsStore((s) => s.zenMode);
   const showForeshadowMarks = useCursorSettingsStore(
     (s) => s.showForeshadowMarks,
   );
@@ -1105,7 +1108,7 @@ export function EditorPane({
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
   // フォーカスモードでも詳細ペインは隠さない（本文の減光は FocusModePlugin 側）
-  const isPanelVisible = sceneMetaPanelOpen && !isEntryMode;
+  const isPanelVisible = sceneMetaPanelOpen && !isEntryMode && !zenMode;
   const handleTogglePanel = useCallback(() => {
     useSettingsStore
       .getState()
@@ -1761,6 +1764,7 @@ export function EditorPane({
     sceneId: nodeId,
     canEditCodexSemanticLink:
       canEditCodexSemanticLink && editor?.isEditable === true,
+    zenMode,
     onInlineAiCommand: dbNativeEditor ? handleInlineAiCommand : undefined,
   };
 

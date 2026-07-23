@@ -48,6 +48,8 @@ export interface GrimodexBridge {
     toggleMaximize(): Promise<void>;
     close(): Promise<void>;
     isMaximized(): Promise<boolean>;
+    toggleFullscreen(): Promise<boolean>;
+    isFullscreen(): Promise<boolean>;
     onResized(cb: () => void): () => void;
     /** cb が true を返したら veto（閉じない）。 */
     onCloseRequested(cb: () => boolean): () => void;

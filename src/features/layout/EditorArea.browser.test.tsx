@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
+import { DEFAULT_SETTINGS } from "@/features/settings/types";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
 import { useLayoutStore } from "./layoutStore";
 
@@ -18,6 +20,15 @@ describe("EditorArea startup motion", () => {
     useLayoutStore.setState({
       layout: buildDefaultLayoutState({ editorOpen: true }),
       initialized: true,
+    });
+    useSettingsStore.setState({
+      cache: {
+        ...DEFAULT_SETTINGS,
+        "editor.zenBackground.glass.blur": "22",
+        "editor.zenBackground.glass.refraction": "13",
+        "editor.zenBackground.glass.saturation": "1.4",
+        "editor.zenBackground.glass.shine": "0.65",
+      },
     });
   });
 
@@ -39,5 +50,26 @@ describe("EditorArea startup motion", () => {
     await waitFor(() => {
       expect(getComputedStyle(editor!).opacity).toBe("1");
     });
+  });
+
+  it("provides adjustable glass styling without filtering the editor DOM", () => {
+    const { container } = render(<EditorArea />);
+    const editor = container.querySelector<HTMLElement>("[data-editor-area]");
+
+    expect(editor).toHaveAttribute("data-editor-fluid-glass", "true");
+    expect(editor).toHaveAttribute("data-editor-fluid-glass-refraction", "13");
+    expect(
+      container.querySelector("[data-editor-fluid-glass-filter]"),
+    ).toBeNull();
+    expect(editor?.style.getPropertyValue("--editor-fluid-glass-blur")).toBe(
+      "22px",
+    );
+    expect(
+      editor?.style.getPropertyValue("--editor-fluid-glass-saturate"),
+    ).toBe("1.4");
+    expect(editor?.style.getPropertyValue("--editor-fluid-glass-shine")).toBe(
+      "0.65",
+    );
+    expect(container.querySelector("[data-scene-editor]")).not.toBeNull();
   });
 });

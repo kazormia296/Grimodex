@@ -140,4 +140,55 @@ describe("insertTrashItemIntoEditor — structure items", () => {
     expect(text).toContain("シーン1");
     expect(text).toContain("本文だ");
   });
+
+  it("keeps structure text human when inserted after an AI span", () => {
+    editor
+      .chain()
+      .insertContent([
+        {
+          type: "text",
+          text: "AI本文",
+          marks: [{ type: "authorship", attrs: { source: "ai" } }],
+        },
+      ])
+      .setTextSelection(5)
+      .run();
+
+    const item: TrashItemData = {
+      id: "chapter-1",
+      projectId: "p",
+      kind: "structure-item",
+      subKind: "grid-chapter",
+      originSceneId: null,
+      originCodexId: null,
+      previewText: "人間章",
+      previewMeta: null,
+      payload: {
+        originalId: "old-chapter-1",
+        title: "人間章",
+        parentId: null,
+        sortOrder: "1",
+        metadata: {},
+      },
+      charCount: 3,
+      isInteresting: false,
+      deletedAt: new Date().toISOString(),
+    };
+
+    insertTrashItemIntoEditor(editor, item);
+
+    const runs: Array<{ text: string; source: string | null }> = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      runs.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(runs).toEqual([
+      { text: "AI本文", source: "ai" },
+      { text: "人間章", source: "human" },
+    ]);
+  });
 });

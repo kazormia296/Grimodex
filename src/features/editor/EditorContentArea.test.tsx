@@ -62,6 +62,12 @@ vi.mock("@/features/editor/EditorDropDiv", () => ({
 vi.mock("@/features/editor/useVerticalWheelScroll", () => ({
   useVerticalWheelScroll: () => {},
 }));
+vi.mock("@/features/editor/zen/useZenBackgroundAppearance", () => ({
+  useZenBackgroundEnabled: () => true,
+}));
+vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
+  ZenAmbientBackdrop: () => <div data-zen-ambient aria-hidden="true" />,
+}));
 
 import { EditorContentArea } from "./EditorContentArea";
 
@@ -103,6 +109,7 @@ function makeSettings(spellCheck: boolean): EditorSettings {
 function renderArea(
   spellCheck: boolean,
   filterSource: "human" | "ai" | "unknown" | null = null,
+  zenMode = false,
 ) {
   return render(
     <EditorContentArea
@@ -129,6 +136,7 @@ function renderArea(
       handleTitleEditStart={() => {}}
       isSceneContentLoading={false}
       sceneId="scene-1"
+      zenMode={zenMode}
     />,
   );
 }
@@ -161,5 +169,20 @@ describe("EditorContentArea attribution filter live region", () => {
   it("keeps the live region mounted but empty without a filter", () => {
     const { getByRole } = renderArea(false, null);
     expect(getByRole("status").textContent).toBe("");
+  });
+});
+
+describe("EditorContentArea background boundary", () => {
+  it("leaves the shared background at App level and applies alpha only to the paper", () => {
+    const { container } = renderArea(false, null, true);
+
+    const paper = container.querySelector('[data-zen-editor-column="true"]');
+    expect(paper).not.toBeNull();
+    expect(container.querySelector("[data-zen-ambient]")).toBeNull();
+    expect(paper).toHaveStyle({
+      background:
+        "color-mix(in oklch, var(--content-background) 35%, transparent)",
+    });
+    expect((paper as HTMLElement).style.opacity).toBe("");
   });
 });

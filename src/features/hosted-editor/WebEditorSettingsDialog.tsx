@@ -5,6 +5,7 @@ import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { useBackgroundStudioStore } from "@/features/editor/background/backgroundStudioStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { AboutCategory } from "@/features/settings/categories/AboutCategory";
 import { DisplayCategory } from "@/features/settings/categories/DisplayCategory";
@@ -49,7 +50,13 @@ function initialWebCategory(category: SettingsCategory): WebSettingsCategory {
     : "project";
 }
 
-function CategoryContent({ category }: { category: WebSettingsCategory }) {
+function CategoryContent({
+  category,
+  onOpenBackgroundStudio,
+}: {
+  category: WebSettingsCategory;
+  onOpenBackgroundStudio: () => void;
+}) {
   switch (category) {
     case "project":
       return <ProjectCategory />;
@@ -58,7 +65,9 @@ function CategoryContent({ category }: { category: WebSettingsCategory }) {
     case "editor":
       return <EditorCategory />;
     case "display":
-      return <DisplayCategory />;
+      return (
+        <DisplayCategory onOpenBackgroundStudio={onOpenBackgroundStudio} />
+      );
     case "about":
       return <AboutCategory />;
   }
@@ -94,6 +103,11 @@ export function SettingsDialog({
     useCursorSettingsStore.getState().requestLayerAutoFollowSync();
     onClose();
   }, [flushPending, onClose]);
+
+  const handleOpenBackgroundStudio = useCallback(async () => {
+    await handleClose();
+    useBackgroundStudioStore.getState().setOpen(true);
+  }, [handleClose]);
 
   return (
     <AnimatedOverlay
@@ -135,7 +149,12 @@ export function SettingsDialog({
             ))}
           </nav>
           <div className="flex-1 overflow-y-auto">
-            <CategoryContent category={activeCategory} />
+            <CategoryContent
+              category={activeCategory}
+              onOpenBackgroundStudio={() => {
+                void handleOpenBackgroundStudio();
+              }}
+            />
           </div>
         </div>
       </div>

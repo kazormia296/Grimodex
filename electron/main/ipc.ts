@@ -4,7 +4,7 @@
  * `ipcMain.handle("grim:invoke")` 1 本に集約し、ルーティングの実体は
  * 純関数 `dispatchInvoke`（electron/shared/ipcContract.ts — node 環境で
  * 単体テスト済み）へ委譲する。ここは electron グルーのみ:
- * - 送信元窓の解決（set_window_vibrancy の対象束縛）
+ * - 送信元窓の解決（保存ダイアログなど窓単位コマンドへの束縛）
  * - IPC_UNIMPLEMENTED の main 側ログ（A6 fail-soft 監査の集計ポイント）
  */
 import { BrowserWindow, ipcMain } from "electron";

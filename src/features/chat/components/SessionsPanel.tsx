@@ -42,8 +42,8 @@ function SessionItem({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  // セッションメニューは .glass-chat 内のセッションドロワーにあり、inline absolute
-  // だと祖先 stacking context に埋もれる。document.body へ portal して脱出する。
+  // セッションメニューはチャットパネル内のドロワーにあり、inline absolute だと
+  // 祖先 stacking context に埋もれる。document.body へ portal して脱出する。
   const { popoverRef, style } = useAnchoredPopover(
     menuTriggerRef,
     menuOpen,

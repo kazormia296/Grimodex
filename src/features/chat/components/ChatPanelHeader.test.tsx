@@ -239,9 +239,9 @@ describe("ChatPanelHeader — scope dropdown tabs (Spotlight 形式)", () => {
     expect(onToggle).not.toHaveBeenCalled();
   });
 
-  it("portals the dropdown out of the component subtree (escapes .glass-chat)", () => {
-    // 退行ガード: inline absolute に戻すと .glass-chat の backdrop-filter が作る
-    // stacking context に閉じ込められ、他パネルに埋もれる。document.body へ
+  it("portals the dropdown out of the component subtree (escapes the chat surface)", () => {
+    // 退行ガード: inline absolute に戻すとチャットパネルの stacking context に
+    // 閉じ込められ、他パネルに埋もれる。document.body へ
     // portal して祖先 stacking context を脱出していることを assert する。
     const { container } = render(
       <ChatPanelHeader {...baseProps({ chatScope: "scene" })} />,
