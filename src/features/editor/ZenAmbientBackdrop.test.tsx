@@ -11,7 +11,7 @@ const zenState = vi.hoisted(() => ({
     speed: 8,
     dither: { enabled: true },
     halftone: { enabled: true },
-    contrastGuard: { mode: "auto", strength: 1, toolMix: 0.3 },
+    contrastGuard: { mode: "auto", strength: 1, toolMix: 0.5 },
   },
 }));
 

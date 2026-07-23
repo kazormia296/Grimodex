@@ -61,7 +61,7 @@ function RefractionProbe({
   const config = {
     ...ZEN_SHADER_DEFAULTS,
     opacity: 100,
-    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.3 },
+    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.5 },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
       enabled: refraction > 0,
@@ -120,7 +120,7 @@ function UiContrastProbe({
   enabled,
   uiTextColor,
   backdropColor,
-  toolMix = 0.3,
+  toolMix = 0.5,
 }: {
   name: string;
   enabled: boolean;
@@ -187,7 +187,7 @@ function LowOpacityContrastProbe({
     contrastGuard: {
       mode: enabled ? ("auto" as const) : ("none" as const),
       strength: 1,
-      toolMix: 0.3,
+      toolMix: 0.5,
     },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
@@ -250,7 +250,7 @@ function PaperCompileProbe({ shader }: { shader: PaperShaderId }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
     shader,
-    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.3 },
+    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.5 },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
       enabled: true,
@@ -527,7 +527,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
           enabled
           uiTextColor={[1, 1, 1]}
           backdropColor={[0.4, 0.4, 0.4]}
-          toolMix={0.5}
+          toolMix={0.75}
         />
         <UiContrastProbe
           name="light-unguarded"
@@ -576,8 +576,8 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
         pixelAt(guarded, 0.2, 0.5)[0] - pixelAt(unguarded, 0.2, 0.5)[0];
 
       expect(Math.sign(uiDelta)).toBe(testCase.direction);
-      expect(Math.abs(uiDelta)).toBeGreaterThan(5);
-      expect(Math.abs(uiDelta)).toBeLessThan(50);
+      expect(Math.abs(uiDelta)).toBeGreaterThan(20);
+      expect(Math.abs(uiDelta)).toBeLessThan(100);
       expect(
         Math.abs(
           pixelAt(guarded, 0.38, 0.5)[0] - pixelAt(unguarded, 0.38, 0.5)[0],
@@ -606,7 +606,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
     expect(
       Math.abs(pixelAt(darkToolMax, 0.2, 0.5)[0] - darkBasePixel),
-    ).toBeGreaterThan(darkGuardedDelta + 15);
+    ).toBeGreaterThan(darkGuardedDelta + 20);
     expect(
       Math.abs(
         pixelAt(darkGuarded, 0.5, 0.5)[0] - pixelAt(darkUnguarded, 0.5, 0.5)[0],
