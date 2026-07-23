@@ -39,6 +39,21 @@ pub const MODEL_ID_RURI_V3_30M: &str = "cl-nagoya/ruri-v3-30m";
 /// ruri-v3-30m の出力次元 (モデルカード確認済み)。
 pub const EMBEDDING_DIM_RURI_V3_30M: usize = 256;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionMemoryPolicy {
+    memory_pattern: bool,
+    cpu_arena: bool,
+}
+
+/// Semantic inputs vary by chunk and query length. Reusing ONNX Runtime's
+/// shape-sensitive memory pattern and CPU BFCArena across those runs can retain
+/// successively larger regions; in Electron, the arena eventually attempted an
+/// aligned 2 GiB extension and PartitionAlloc terminated the main process.
+const SEMANTIC_SESSION_MEMORY_POLICY: SessionMemoryPolicy = SessionMemoryPolicy {
+    memory_pattern: false,
+    cpu_arena: false,
+};
+
 /// ruri-v3 ONNX inference を保持する struct。Tauri 起動時に 1 度だけ
 /// `load()` して以後使い回す前提 (Session の再構築はコストが大きい)。
 pub struct Embedder {
@@ -72,8 +87,16 @@ impl Embedder {
                 ..Default::default()
             }))
             .map_err(|e| anyhow!("failed to configure tokenizer truncation: {e}"))?;
+        let memory_policy = SEMANTIC_SESSION_MEMORY_POLICY;
         let session = Session::builder()
             .context("failed to create ort SessionBuilder")?
+            .with_memory_pattern(memory_policy.memory_pattern)
+            .map_err(|e| anyhow!("failed to configure ort memory pattern: {e}"))?
+            .with_execution_providers([ort::ep::CPU::default()
+                .with_arena_allocator(memory_policy.cpu_arena)
+                .build()
+                .error_on_failure()])
+            .map_err(|e| anyhow!("failed to configure ort CPU allocator: {e}"))?
             .commit_from_file(model_path)
             .with_context(|| format!("failed to load ONNX model at {:?}", model_path))?;
         Ok(Self {
@@ -287,6 +310,17 @@ mod tests {
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn dynamic_sequence_session_disables_shape_sensitive_allocation_reuse() {
+        assert_eq!(
+            SEMANTIC_SESSION_MEMORY_POLICY,
+            SessionMemoryPolicy {
+                memory_pattern: false,
+                cpu_arena: false,
+            }
+        );
     }
 
     // ── mean_pool_with_mask ──────────────────────────────────────────────
@@ -518,6 +552,20 @@ mod golden {
         found
     }
 
+    fn resident_set_bytes() -> Option<u64> {
+        #[cfg(target_os = "linux")]
+        {
+            let status = fs::read_to_string("/proc/self/status").ok()?;
+            let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+            let kib = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+            Some(kib * 1024)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
     /// 1 spec 分の fixture + ONNX を検証する。fixture/model が無ければ skip して
     /// 失敗 0 件で返す (CI/サンドボックスでは silent skip)。
     fn verify_spec(spec: &'static EmbeddingModelSpec) -> Vec<String> {
@@ -640,6 +688,78 @@ mod golden {
                 pooled.len(),
                 SPEC_EN.embedding_dim,
                 "bge dim mismatch for {model_path:?}"
+            );
+        }
+    }
+
+    /// Regression for the Electron main-process crash caused by retaining the
+    /// CPU BFCArena across mixed-length ruri inference. Set
+    /// `GRIMODEX_SEMANTIC_MODEL_DIR` to either the installed models root or the
+    /// `ruri-v3-30m` directory to run this locally; CI without the downloaded
+    /// model skips it.
+    #[test]
+    fn variable_length_ruri_sequence_has_bounded_resident_memory() {
+        let Some(configured_dir) = std::env::var_os("GRIMODEX_SEMANTIC_MODEL_DIR") else {
+            eprintln!("[arena regression] skipped (GRIMODEX_SEMANTIC_MODEL_DIR unset)");
+            return;
+        };
+        let configured_dir = PathBuf::from(configured_dir);
+        let dir = if configured_dir.join("model_int8.onnx").is_file() {
+            configured_dir
+        } else {
+            configured_dir.join(SPEC_JA.dir_name)
+        };
+        let model = dir.join("model_int8.onnx");
+        let tokenizer = dir.join("tokenizer.json");
+        if !model.is_file() || !tokenizer.is_file() {
+            eprintln!(
+                "[arena regression] skipped (model={} tokenizer={})",
+                model.is_file(),
+                tokenizer.is_file()
+            );
+            return;
+        }
+
+        let mut embedder = Embedder::load(&model, &tokenizer, &SPEC_JA)
+            .unwrap_or_else(|e| panic!("load ruri embedder {model:?}: {e}"));
+        let baseline_rss = resident_set_bytes();
+        let mut peak_rss = baseline_rss;
+        let document_lengths = [
+            12, 28, 47, 96, 8, 64, // six small Codex entries
+            500, 462, 421, 389, 354, 317, 281, 248, 214, 181, 149, 500, 437, 373, 309, 245, 182,
+            140, 500, 456, 412, 368, 324, 280, // 24 scene chunks
+        ];
+
+        for chars in document_lengths {
+            let embedding = embedder
+                .embed_document(&"国".repeat(chars))
+                .unwrap_or_else(|e| panic!("embed {chars}-char document: {e}"));
+            assert_eq!(embedding.len(), SPEC_JA.embedding_dim);
+            if let Some(rss) = resident_set_bytes() {
+                peak_rss = Some(peak_rss.unwrap_or(rss).max(rss));
+            }
+        }
+
+        let query = embedder
+            .embed_query(&"国".repeat(500))
+            .unwrap_or_else(|e| panic!("embed 500-char related-scenes query: {e}"));
+        assert_eq!(query.len(), SPEC_JA.embedding_dim);
+
+        if let (Some(baseline), Some(peak)) = (baseline_rss, peak_rss) {
+            const MAX_RSS_GROWTH_BYTES: u64 = 1024 * 1024 * 1024;
+            let growth = peak.saturating_sub(baseline);
+            assert!(
+                growth < MAX_RSS_GROWTH_BYTES,
+                "variable-length inference grew RSS by {} MiB (baseline={} MiB peak={} MiB)",
+                growth / (1024 * 1024),
+                baseline / (1024 * 1024),
+                peak / (1024 * 1024)
+            );
+            eprintln!(
+                "[arena regression] RSS growth={} MiB baseline={} MiB peak={} MiB",
+                growth / (1024 * 1024),
+                baseline / (1024 * 1024),
+                peak / (1024 * 1024)
             );
         }
     }
