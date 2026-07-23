@@ -62,8 +62,8 @@ vi.mock("@/features/editor/EditorDropDiv", () => ({
 vi.mock("@/features/editor/useVerticalWheelScroll", () => ({
   useVerticalWheelScroll: () => {},
 }));
-vi.mock("@/features/editor/zen/useZenShaderConfig", () => ({
-  useZenShaderConfig: () => ({ enabled: true }),
+vi.mock("@/features/editor/zen/useZenBackgroundAppearance", () => ({
+  useZenBackgroundEnabled: () => true,
 }));
 vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
   ZenAmbientBackdrop: () => <div data-zen-ambient aria-hidden="true" />,

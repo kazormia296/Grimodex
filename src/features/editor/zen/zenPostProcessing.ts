@@ -61,6 +61,7 @@ float zenBayer4(vec2 pixel) {
 }
 
 vec3 applyZenDither(vec3 color) {
+  if (u_zenDitherStrength <= 0.00001) return color;
   float levels = max(2.0, u_zenDitherLevels);
   float threshold = zenBayer4(gl_FragCoord.xy / max(1.0, u_zenDitherSize)) - 0.5;
   vec3 quantized = floor(color * (levels - 1.0) + threshold + 0.5) / (levels - 1.0);
@@ -86,6 +87,7 @@ float zenHalftoneInk(float amount, float angle) {
 }
 
 vec3 applyZenColorHalftone(vec3 color) {
+  if (u_zenHalftoneStrength <= 0.00001) return color;
   float key = 1.0 - max(max(color.r, color.g), color.b);
   vec3 cmy = (vec3(1.0) - color - key) / max(1.0 - key, 0.001);
   float cyan = zenHalftoneInk(cmy.r, u_zenHalftoneAngle + 15.0);

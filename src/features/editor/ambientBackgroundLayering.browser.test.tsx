@@ -75,9 +75,7 @@ describe("editor ambient background layering (real Chromium)", () => {
     const metadata = container.querySelector<HTMLElement>(
       '[data-testid="scene-meta-chip-row"]',
     );
-    const footer = container.querySelector<HTMLElement>(
-      "[data-editor-footer]",
-    );
+    const footer = container.querySelector<HTMLElement>("[data-editor-footer]");
     const body = container.querySelector<HTMLElement>("[data-editor-body]");
     const text = container.querySelector<HTMLElement>("[data-editor-text]");
     const paper = container.querySelector<HTMLElement>("[data-editor-paper]");
@@ -91,19 +89,22 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(paper).not.toBeNull();
     expect(paperText).not.toBeNull();
     expect(getComputedStyle(layout!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
-    expect(getComputedStyle(editor!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    const editorStyle = getComputedStyle(editor!);
+    expect(editorStyle.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(editorStyle.backgroundImage).not.toBe("none");
+    expect(editorStyle.backdropFilter).toContain("blur(14px)");
+    expect(editorStyle.backdropFilter).toContain("saturate(1.16)");
+    expect(editorStyle.backdropFilter).toContain("contrast(1.03)");
     const glass = getComputedStyle(editor!, "::before");
     expect(glass.backgroundImage).not.toBe("none");
     expect(glass.boxShadow).not.toBe("none");
     expect(glass.filter).toBe("none");
-    expect(getComputedStyle(breadcrumb!).backdropFilter).toContain(
-      "blur(14px)",
-    );
-    expect(getComputedStyle(chrome!).backdropFilter).toContain("blur(14px)");
-    expect(getComputedStyle(toolbar!).backdropFilter).toContain("blur(14px)");
-    expect(getComputedStyle(metadata!).backdropFilter).toContain("blur(14px)");
-    expect(getComputedStyle(footer!).backdropFilter).toContain("blur(14px)");
-    expect(getComputedStyle(body!).backdropFilter).not.toBe("none");
+    expect(getComputedStyle(breadcrumb!).backdropFilter).toBe("none");
+    expect(getComputedStyle(chrome!).backdropFilter).toBe("none");
+    expect(getComputedStyle(toolbar!).backdropFilter).toBe("none");
+    expect(getComputedStyle(metadata!).backdropFilter).toBe("none");
+    expect(getComputedStyle(footer!).backdropFilter).toBe("none");
+    expect(getComputedStyle(body!).backdropFilter).toBe("none");
     expect(getComputedStyle(body!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     expect(getComputedStyle(text!).opacity).toBe("1");
     const paperPaint = getComputedStyle(paper!, "::before");
@@ -130,9 +131,7 @@ describe("editor ambient background layering (real Chromium)", () => {
     const metadata = container.querySelector<HTMLElement>(
       '[data-testid="scene-meta-chip-row"]',
     );
-    const footer = container.querySelector<HTMLElement>(
-      "[data-editor-footer]",
-    );
+    const footer = container.querySelector<HTMLElement>("[data-editor-footer]");
     const body = container.querySelector<HTMLElement>("[data-editor-body]");
     const paper = container.querySelector<HTMLElement>("[data-editor-paper]");
 
@@ -142,6 +141,7 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(getComputedStyle(editor!).backgroundColor).not.toBe(
       "rgba(0, 0, 0, 0)",
     );
+    expect(getComputedStyle(editor!).backdropFilter).toBe("none");
     expect(getComputedStyle(chrome!).backdropFilter).toBe("none");
     expect(getComputedStyle(breadcrumb!).backdropFilter).toBe("none");
     expect(getComputedStyle(toolbar!).backdropFilter).toBe("none");
@@ -153,5 +153,64 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(getComputedStyle(paper!, "::before").backgroundColor).not.toBe(
       "rgba(0, 0, 0, 0)",
     );
+  });
+
+  it("paints one app aurora behind nested glass surfaces and portaled popovers", () => {
+    const html = document.documentElement;
+    html.dataset.glassEnabled = "true";
+    html.dataset.glassPopovers = "true";
+
+    try {
+      const { container } = render(
+        <>
+          <div
+            className="app-shell"
+            data-glass-enabled="true"
+            data-glass-gradient="true"
+            data-glass-panels="true"
+            data-glass-chat="true"
+          >
+            <div data-slot-panel="tool">
+              <div data-nested-card className="bg-card">
+                Card
+              </div>
+            </div>
+            <div data-chat-root className="glass-chat">
+              <div data-chat-field className="bg-background">
+                Field
+              </div>
+            </div>
+          </div>
+          <div data-portaled-popover className="bg-popover">
+            Popover
+          </div>
+        </>,
+      );
+
+      const shell = container.querySelector<HTMLElement>(".app-shell");
+      const card = container.querySelector<HTMLElement>("[data-nested-card]");
+      const chat = container.querySelector<HTMLElement>("[data-chat-root]");
+      const field = container.querySelector<HTMLElement>("[data-chat-field]");
+      const popover = container.querySelector<HTMLElement>(
+        "[data-portaled-popover]",
+      );
+
+      const aurora = getComputedStyle(shell!, "::before");
+      expect(aurora.backgroundImage).not.toBe("none");
+      expect(aurora.zIndex).toBe("-1");
+      expect(aurora.pointerEvents).toBe("none");
+      expect(getComputedStyle(card!).backgroundImage).toBe("none");
+      expect(getComputedStyle(chat!).backgroundImage).toBe("none");
+      expect(getComputedStyle(field!).backgroundImage).toBe("none");
+      expect(getComputedStyle(card!).backgroundAttachment).toBe("scroll");
+      expect(getComputedStyle(field!).backgroundAttachment).toBe("scroll");
+      expect(getComputedStyle(popover!).backgroundColor).not.toBe(
+        "rgba(0, 0, 0, 0)",
+      );
+      expect(getComputedStyle(popover!).backdropFilter).not.toBe("none");
+    } finally {
+      delete html.dataset.glassEnabled;
+      delete html.dataset.glassPopovers;
+    }
   });
 });

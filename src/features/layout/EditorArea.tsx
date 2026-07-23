@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, type CSSProperties } from "react";
 import { motion } from "motion/react";
 import { SceneEditor } from "@/features/tree/SceneEditor";
-import { useZenShaderConfig } from "@/features/editor/zen/useZenShaderConfig";
+import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { PanelChromeMenu } from "./PanelChromeMenu";
 import { registerEditorFocusHandler, useLayoutStore } from "./layoutStore";
@@ -13,7 +13,7 @@ export const EditorArea = memo(function EditorArea() {
   const initialized = useLayoutStore((s) => s.initialized);
   const prevOpenRef = useRef(editorOpen);
   const reduced = useReducedMotion();
-  const glass = useZenShaderConfig().glass;
+  const glass = useZenGlassConfig();
   const glassStyle = {
     "--editor-fluid-glass-blur": `${glass.blur}px`,
     "--editor-fluid-glass-saturate": glass.saturation,

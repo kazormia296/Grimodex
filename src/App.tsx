@@ -62,7 +62,6 @@ import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { ZenModeController } from "@/features/editor/ZenModeController";
-import { ZenAmbientBackdrop } from "@/features/editor/ZenAmbientBackdrop";
 import { BackgroundStudioHost } from "@/features/editor/background/BackgroundStudioHost";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -110,6 +109,11 @@ import {
 const SettingsDialog = lazy(() =>
   import("@/features/settings/SettingsDialog").then((m) => ({
     default: m.SettingsDialog,
+  })),
+);
+const ZenAmbientBackdrop = lazy(() =>
+  import("@/features/editor/ZenAmbientBackdrop").then((module) => ({
+    default: module.ZenAmbientBackdrop,
   })),
 );
 const ProjectSnapshotModal = lazy(() =>
@@ -959,7 +963,9 @@ function EditorScreen() {
         tabIndex={-1}
         className="relative isolate flex min-h-0 flex-1 overflow-hidden outline-none"
       >
-        <ZenAmbientBackdrop active={editorZenMode} />
+        <Suspense fallback={null}>
+          <ZenAmbientBackdrop active={editorZenMode} />
+        </Suspense>
         {adaptiveWorkspaceEnabled ? (
           <AdaptiveWorkspaceShell
             zenMode={editorZenMode}

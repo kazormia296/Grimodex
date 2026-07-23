@@ -43,14 +43,14 @@ import {
 } from "@/features/settings/keybindings";
 import type { Editor } from "@tiptap/core";
 import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
-import { useZenShaderConfig } from "@/features/editor/zen/useZenShaderConfig";
+import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 const DEFAULT_HEIGHT = 300;
 const DEBOUNCE_ACTIVE_MS = 100;
 
 export function LinearEditorView() {
   const editorSettings = useEditorSettings();
-  const backgroundConfig = useZenShaderConfig();
+  const backgroundEnabled = useZenBackgroundEnabled();
   const verticalMode = editorSettings.verticalMode;
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
@@ -461,7 +461,7 @@ export function LinearEditorView() {
         style={{
           ...buildEditorMeasureStyle(editorSettings.maxContentWidth),
           ...buildEditorPaperStyle({
-            enabled: backgroundConfig.enabled,
+            enabled: backgroundEnabled,
           }),
         }}
       >

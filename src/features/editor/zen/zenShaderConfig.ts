@@ -5,6 +5,11 @@ import {
   type PaperShaderId,
   type PaperShaderProperty,
 } from "./paperShaderCatalog";
+import {
+  parseZenBackgroundEnabled,
+  parseZenGlassConfig,
+  ZEN_GLASS_DEFAULTS,
+} from "./zenBackgroundAppearanceConfig";
 
 export const ZEN_SHADER_IDS = PAPER_SHADER_IDS;
 export type ZenShaderId = PaperShaderId;
@@ -80,13 +85,7 @@ export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
     softness: 0.15,
   },
   contrastGuard: { mode: "auto", strength: 1 },
-  glass: {
-    enabled: true,
-    blur: 14,
-    refraction: 7,
-    saturation: 1.16,
-    shine: 1,
-  },
+  glass: { ...ZEN_GLASS_DEFAULTS },
 };
 
 function finiteNumber(
@@ -251,7 +250,7 @@ export function parseZenShaderConfig(
     finiteNumber(value(values, suffix), fallback, 0, 1);
 
   return {
-    enabled: booleanValue(value(values, "enabled"), d.enabled),
+    enabled: parseZenBackgroundEnabled(values),
     shader: enumValue(value(values, "shader"), ZEN_SHADER_IDS, d.shader),
     paletteMode: enumValue(
       value(values, "paletteMode"),
@@ -318,23 +317,7 @@ export function parseZenShaderConfig(
       ),
       strength: unit("contrastGuard.strength", d.contrastGuard.strength),
     },
-    glass: {
-      enabled: booleanValue(value(values, "glass.enabled"), d.glass.enabled),
-      blur: finiteNumber(value(values, "glass.blur"), d.glass.blur, 0, 40),
-      refraction: finiteNumber(
-        value(values, "glass.refraction"),
-        d.glass.refraction,
-        0,
-        24,
-      ),
-      saturation: finiteNumber(
-        value(values, "glass.saturation"),
-        d.glass.saturation,
-        0,
-        2,
-      ),
-      shine: unit("glass.shine", d.glass.shine),
-    },
+    glass: parseZenGlassConfig(values),
   };
 }
 

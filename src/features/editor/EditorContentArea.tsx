@@ -25,7 +25,7 @@ import type { FilterSource } from "@/features/attribution/attributionStore";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useCurrentProject } from "@/features/project/projectStore";
 import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
-import { useZenShaderConfig } from "@/features/editor/zen/useZenShaderConfig";
+import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 export interface EditorContentAreaProps {
   editor: Editor | null;
@@ -94,7 +94,7 @@ export function EditorContentArea({
   zenMode = false,
   onInlineAiCommand,
 }: EditorContentAreaProps) {
-  const backgroundConfig = useZenShaderConfig();
+  const backgroundEnabled = useZenBackgroundEnabled();
   const { t } = useTranslation();
   // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
   // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
@@ -147,7 +147,7 @@ export function EditorContentArea({
           style={{
             ...buildEditorContentStyle(editorSettings),
             ...buildEditorPaperStyle({
-              enabled: backgroundConfig.enabled,
+              enabled: backgroundEnabled,
             }),
             ...(gutterReserve
               ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)

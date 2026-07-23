@@ -30,8 +30,8 @@ vi.mock("@/features/editor/EditorContextMenu", () => ({
 vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
   ZenAmbientBackdrop: () => <div data-zen-ambient aria-hidden="true" />,
 }));
-vi.mock("@/features/editor/zen/useZenShaderConfig", () => ({
-  useZenShaderConfig: () => ({ enabled: true }),
+vi.mock("@/features/editor/zen/useZenBackgroundAppearance", () => ({
+  useZenBackgroundEnabled: () => true,
 }));
 const settingsOverride = vi.hoisted(
   () => ({ current: {} }) as { current: Record<string, unknown> },

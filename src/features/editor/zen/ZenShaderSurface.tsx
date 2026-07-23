@@ -1,4 +1,5 @@
 import { useMemo, useRef } from "react";
+import type { PaperShaderElement } from "@paper-design/shaders";
 import { ShaderMount } from "@paper-design/shaders-react";
 import {
   getPaperShaderDefinition,
@@ -11,7 +12,13 @@ import {
 } from "./zenPostProcessing";
 import { contrastTargetRatio } from "./zenContrastGuard";
 import { useZenShaderLayouts } from "./useZenShaderLayouts";
+import { useZenShaderAnimation } from "./zenShaderAnimation";
+import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
+
+const PREVIEW_PIXEL_BUDGET = 300_000;
+const ANIMATED_PIXEL_BUDGET = 1_000_000;
+const STATIC_PIXEL_BUDGET = 1_500_000;
 
 interface ZenShaderSurfaceProps {
   config: ZenShaderConfig;
@@ -25,6 +32,7 @@ export function ZenShaderSurface({
   preview = false,
 }: ZenShaderSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const paperMountRef = useRef<PaperShaderElement>(null);
   const palette = useZenThemePalette();
   const layouts = useZenShaderLayouts(surfaceRef);
   const resolved = useMemo(
@@ -52,8 +60,19 @@ export function ZenShaderSurface({
     }),
     [config, layouts, palette, resolved.uniforms],
   );
+  const preparedUniforms = usePreparedZenShaderUniforms(uniforms);
   const definition = getPaperShaderDefinition(config.shader);
-  const speed = playing && definition.animated ? config.speed / 100 : 0;
+  const animationSpeed = config.speed / 100;
+  const shouldAnimate =
+    preparedUniforms !== null &&
+    playing &&
+    definition.animated &&
+    animationSpeed > 0;
+  useZenShaderAnimation(paperMountRef, {
+    playing: shouldAnimate,
+    speed: animationSpeed,
+    resetKey: config.shader,
+  });
   const {
     fragmentShader: _fragmentShader,
     uniforms: _uniforms,
@@ -63,12 +82,19 @@ export function ZenShaderSurface({
     webGlContextAttributes: _context,
     ...mountProps
   } = resolved;
+  const maxPixelCount = preview
+    ? PREVIEW_PIXEL_BUDGET
+    : Math.min(
+        resolvedMaxPixelCount ?? STATIC_PIXEL_BUDGET,
+        definition.animated ? ANIMATED_PIXEL_BUDGET : STATIC_PIXEL_BUDGET,
+      );
 
   return (
     <div
       ref={surfaceRef}
       data-zen-shader-surface
       data-zen-shader-preview={preview ? "true" : "false"}
+      data-zen-shader-ready={preparedUniforms ? "true" : "false"}
       data-contrast-guard={config.contrastGuard.mode}
       data-contrast-target={
         config.contrastGuard.mode === "auto"
@@ -87,25 +113,28 @@ export function ZenShaderSurface({
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >
-      <ShaderMount
-        key={config.shader}
-        {...mountProps}
-        data-paper-shader={config.shader}
-        fragmentShader={fragmentShader}
-        uniforms={uniforms}
-        speed={speed}
-        frame={0}
-        width="100%"
-        height="100%"
-        minPixelRatio={1}
-        maxPixelCount={preview ? 300_000 : (resolvedMaxPixelCount ?? 1_500_000)}
-        webGlContextAttributes={{
-          alpha: true,
-          antialias: false,
-          powerPreference: "low-power",
-          premultipliedAlpha: true,
-        }}
-      />
+      {preparedUniforms && (
+        <ShaderMount
+          key={config.shader}
+          {...mountProps}
+          ref={paperMountRef}
+          data-paper-shader={config.shader}
+          fragmentShader={fragmentShader}
+          uniforms={preparedUniforms}
+          speed={0}
+          frame={0}
+          width="100%"
+          height="100%"
+          minPixelRatio={1}
+          maxPixelCount={maxPixelCount}
+          webGlContextAttributes={{
+            alpha: true,
+            antialias: false,
+            powerPreference: "low-power",
+            premultipliedAlpha: true,
+          }}
+        />
+      )}
     </div>
   );
 }

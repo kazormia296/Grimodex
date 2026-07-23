@@ -1,6 +1,11 @@
-import { useEffect } from "react";
-import { BackgroundStudio } from "./BackgroundStudio";
+import { lazy, Suspense, useEffect } from "react";
 import { useBackgroundStudioStore } from "./backgroundStudioStore";
+
+const BackgroundStudio = lazy(() =>
+  import("./BackgroundStudio").then((module) => ({
+    default: module.BackgroundStudio,
+  })),
+);
 
 export function BackgroundStudioHost({ zenMode }: { zenMode: boolean }) {
   const open = useBackgroundStudioStore((state) => state.open);
@@ -10,11 +15,11 @@ export function BackgroundStudioHost({ zenMode }: { zenMode: boolean }) {
     if (zenMode) setOpen(false);
   }, [setOpen, zenMode]);
 
+  if (!open || zenMode) return null;
+
   return (
-    <BackgroundStudio
-      open={open && !zenMode}
-      onClose={() => setOpen(false)}
-      zenMode={zenMode}
-    />
+    <Suspense fallback={null}>
+      <BackgroundStudio open onClose={() => setOpen(false)} zenMode={zenMode} />
+    </Suspense>
   );
 }

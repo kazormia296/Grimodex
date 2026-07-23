@@ -25,6 +25,27 @@ const EMPTY_LAYOUTS: ZenShaderLayouts = {
   },
 };
 
+const LAYOUT_TARGET_SELECTOR = ".zen-editor-paper, [data-editor-area]";
+
+function nodeContainsLayoutTarget(node: Node) {
+  return (
+    node instanceof Element &&
+    (node.matches(LAYOUT_TARGET_SELECTOR) ||
+      node.querySelector(LAYOUT_TARGET_SELECTOR) !== null)
+  );
+}
+
+export function mutationAffectsZenShaderLayout(
+  records: readonly MutationRecord[],
+) {
+  return records.some(
+    (record) =>
+      record.type === "attributes" ||
+      Array.from(record.addedNodes).some(nodeContainsLayoutTarget) ||
+      Array.from(record.removedNodes).some(nodeContainsLayoutTarget),
+  );
+}
+
 function sameRegion(
   current: ZenContrastGuardLayout,
   next: ZenContrastGuardLayout,
@@ -43,19 +64,23 @@ function sameLayouts(current: ZenShaderLayouts, next: ZenShaderLayouts) {
   );
 }
 
-function visibleElement(selector: string): HTMLElement | null {
-  const elements = document.querySelectorAll<HTMLElement>(selector);
-  return (
-    Array.from(elements).find((element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    }) ?? null
-  );
+interface VisibleElement {
+  element: HTMLElement;
+  rect: DOMRect;
 }
 
-function editorCornerRadius(element: HTMLElement | null) {
+function visibleElement(selector: string): VisibleElement | null {
+  const elements = document.querySelectorAll<HTMLElement>(selector);
+  for (const element of elements) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) return { element, rect };
+  }
+  return null;
+}
+
+function editorCornerRadius(element: HTMLElement | null, rect: DOMRect | null) {
   if (!element) return 0;
-  const rect = element.getBoundingClientRect();
+  if (!rect) return 0;
   const maximum = Math.min(rect.width, rect.height) * 0.5;
   if (maximum <= 0) return 0;
 
@@ -80,6 +105,7 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
     let frame = 0;
     let paper: HTMLElement | null = null;
     let editor: HTMLElement | null = null;
+    let scrollTarget: HTMLElement | null = null;
     let mutationObserver: MutationObserver | null = null;
     const resizeObserver =
       typeof ResizeObserver === "undefined"
@@ -95,32 +121,47 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       if (next) resizeObserver?.observe(next);
       return next;
     };
+    const observeScrollTarget = (
+      current: HTMLElement | null,
+      next: HTMLElement | null,
+    ) => {
+      if (current === next) return next;
+      current?.removeEventListener("scroll", schedule);
+      next?.addEventListener("scroll", schedule, { passive: true });
+      return next;
+    };
 
-    const layoutFor = (element: HTMLElement | null) =>
-      element
-        ? calculateZenContrastGuardLayout(
-            surface.getBoundingClientRect(),
-            element.getBoundingClientRect(),
-          )
+    const layoutFor = (surfaceRect: DOMRect, elementRect: DOMRect | null) =>
+      elementRect
+        ? calculateZenContrastGuardLayout(surfaceRect, elementRect)
         : EMPTY_ZEN_CONTRAST_GUARD_LAYOUT;
-    const glassLayoutFor = (element: HTMLElement | null): ZenGlassLayout => ({
-      ...layoutFor(element),
-      cornerRadius: editorCornerRadius(element),
-    });
 
     const update = () => {
       frame = 0;
-      paper = observeTarget(paper, visibleElement(".zen-editor-paper"));
-      editor = observeTarget(editor, visibleElement("[data-editor-area]"));
+      const visiblePaper = visibleElement(".zen-editor-paper");
+      const visibleEditor = visibleElement("[data-editor-area]");
+      paper = observeTarget(paper, visiblePaper?.element ?? null);
+      editor = observeTarget(editor, visibleEditor?.element ?? null);
+      scrollTarget = observeScrollTarget(
+        scrollTarget,
+        paper?.closest<HTMLElement>(".glass-editor-body") ?? null,
+      );
       if (editor) {
         mutationObserver?.observe(editor, {
           attributes: true,
           attributeFilter: ["class", "style"],
         });
       }
+      const surfaceRect = surface.getBoundingClientRect();
       const next = {
-        contrast: layoutFor(paper),
-        glass: glassLayoutFor(editor),
+        contrast: layoutFor(surfaceRect, visiblePaper?.rect ?? null),
+        glass: {
+          ...layoutFor(surfaceRect, visibleEditor?.rect ?? null),
+          cornerRadius: editorCornerRadius(
+            visibleEditor?.element ?? null,
+            visibleEditor?.rect ?? null,
+          ),
+        },
       };
       setLayouts((current) => (sameLayouts(current, next) ? current : next));
     };
@@ -136,7 +177,9 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
     mutationObserver =
       typeof MutationObserver === "undefined"
         ? null
-        : new MutationObserver(schedule);
+        : new MutationObserver((records) => {
+            if (mutationAffectsZenShaderLayout(records)) schedule();
+          });
     mutationObserver?.observe(mutationRoot, { childList: true, subtree: true });
     // Card mode changes the Editor's computed radius without resizing it.
     // The app shell sits above #main-content, so observe it separately.
@@ -147,7 +190,6 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
         attributeFilter: ["data-card"],
       });
     }
-    document.addEventListener("scroll", schedule, true);
     window.addEventListener("resize", schedule);
     update();
 
@@ -155,7 +197,7 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       if (frame !== 0) cancelAnimationFrame(frame);
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
-      document.removeEventListener("scroll", schedule, true);
+      scrollTarget?.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
     };
   }, [surfaceRef]);

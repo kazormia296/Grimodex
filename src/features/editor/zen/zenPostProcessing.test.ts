@@ -38,8 +38,19 @@ describe("Zen shader post-processing", () => {
     expect(combined).toContain("applyZenDither");
     expect(combined).toContain("applyZenColorHalftone");
     expect(combined).toContain("applyZenContrastGuard");
+    expect(combined).toContain(
+      "if (u_zenDitherStrength <= 0.00001) return color;",
+    );
+    expect(combined).toContain(
+      "if (u_zenHalftoneStrength <= 0.00001) return color;",
+    );
     expect(combined).toContain("zenGlassOffsetPixels");
     expect(combined).toContain("zenRoundedRectSignedDistance");
+    expect(combined).toContain("any(lessThan(gl_FragCoord.xy, glassMinPx))");
+    expect(combined).toContain("any(greaterThan(gl_FragCoord.xy, glassMaxPx))");
+    expect(combined).toContain(
+      "if (-signedDistance >= refractionDepthPx) return vec2(0.0);",
+    );
     expect(combined).toContain("smoothstep(edge - feather, edge, value)");
     expect(combined).toContain("smoothstep(edge, edge + feather, value)");
     expect(combined.match(/void main\s*\(\s*\)/g)).toHaveLength(1);

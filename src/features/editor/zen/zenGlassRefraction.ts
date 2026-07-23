@@ -52,6 +52,12 @@ vec2 zenGlassOffsetPixels() {
   float pixelRatio = max(u_pixelRatio, 1.0);
   vec2 glassMinPx = u_zenGlassRect.xy * resolution;
   vec2 glassMaxPx = u_zenGlassRect.zw * resolution;
+  if (
+    any(lessThan(gl_FragCoord.xy, glassMinPx)) ||
+    any(greaterThan(gl_FragCoord.xy, glassMaxPx))
+  ) {
+    return vec2(0.0);
+  }
   vec2 glassSizePx = glassMaxPx - glassMinPx;
   vec2 glassCenterPx = (glassMinPx + glassMaxPx) * 0.5;
   float cornerRadiusPx = min(
@@ -69,6 +75,7 @@ vec2 zenGlassOffsetPixels() {
     48.0 * pixelRatio,
     max(glassSizePx.x, glassSizePx.y) * 0.25
   );
+  if (-signedDistance >= refractionDepthPx) return vec2(0.0);
   float distortion = zenGlassEdgeDistortion(
     -signedDistance,
     refractionDepthPx
