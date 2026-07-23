@@ -5,11 +5,9 @@ export interface ZenAmbientBackdropContext {
   screenshotPanelId: PanelId | null;
 }
 
-/** WebGL is useful only when this window actually renders the Editor surface. */
-export function shouldMountZenAmbientBackdrop({
-  panelWindowTarget,
-  screenshotPanelId,
-}: ZenAmbientBackdropContext): boolean {
-  const soloPanelId = screenshotPanelId ?? panelWindowTarget;
-  return soloPanelId === null || soloPanelId === "editor";
+/** Every workspace window can expose Editor or tool-panel Glass surfaces. */
+export function shouldMountZenAmbientBackdrop(
+  _context: ZenAmbientBackdropContext,
+): boolean {
+  return true;
 }

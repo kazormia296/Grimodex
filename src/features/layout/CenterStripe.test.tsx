@@ -44,6 +44,7 @@ describe("CenterStripe", () => {
     const stripe = container.querySelector<HTMLElement>("[data-center-stripe]");
     expect(stripe?.className).toContain("grid");
     expect(stripe?.style.gridTemplateColumns).toContain("minmax(0, 1fr)");
+    expect(stripe).toHaveAttribute("data-ambient-glass-surface", "stripe");
   });
 
   it("distributes flex-grow among open segments including editor", () => {

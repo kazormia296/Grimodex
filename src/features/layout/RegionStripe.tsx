@@ -391,6 +391,7 @@ export function RegionStripe({
     <div
       data-stripe-root
       data-stripe-region={region}
+      data-ambient-glass-surface={region !== "center" ? "stripe" : undefined}
       className={cn(
         "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
         // D案: stripe/rail も他パネルと同じ「カード」。境界線は引かず、

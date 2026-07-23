@@ -90,6 +90,7 @@ export function CenterStripe() {
   return (
     <div
       data-center-stripe
+      data-ambient-glass-surface="stripe"
       className="gx-panel relative grid h-full w-full min-w-0 overflow-hidden"
       style={{ gridTemplateColumns: stripeColumns }}
     >

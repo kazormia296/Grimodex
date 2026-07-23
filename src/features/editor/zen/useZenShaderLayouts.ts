@@ -10,6 +10,8 @@ export interface ZenShaderLayouts {
   contrast: ZenContrastGuardLayout;
   /** Glass refraction follows the complete Editor panel boundary. */
   glass: ZenGlassLayout;
+  /** Disjoint non-Editor panels and Stripes share Glass without covering gaps. */
+  uiSurfaces: readonly ZenGlassLayout[];
 }
 
 export interface ZenGlassLayout extends ZenContrastGuardLayout {
@@ -23,9 +25,14 @@ const EMPTY_LAYOUTS: ZenShaderLayouts = {
     ...EMPTY_ZEN_CONTRAST_GUARD_LAYOUT,
     cornerRadius: 0,
   },
+  uiSurfaces: [],
 };
 
-const LAYOUT_TARGET_SELECTOR = ".zen-editor-paper, [data-editor-area]";
+const LAYOUT_TARGET_SELECTOR =
+  ".zen-editor-paper, [data-editor-area], [data-workspace-glass-root], [data-ambient-glass-surface]";
+const UI_SURFACE_SELECTOR =
+  '[data-workspace-glass-root][data-workspace-fluid-glass="true"] [data-ambient-glass-surface]';
+const FULLY_VISIBLE_OPACITY = 0.999;
 
 function nodeContainsLayoutTarget(node: Node) {
   return (
@@ -60,7 +67,13 @@ function sameLayouts(current: ZenShaderLayouts, next: ZenShaderLayouts) {
   return (
     sameRegion(current.contrast, next.contrast) &&
     sameRegion(current.glass, next.glass) &&
-    current.glass.cornerRadius === next.glass.cornerRadius
+    current.glass.cornerRadius === next.glass.cornerRadius &&
+    current.uiSurfaces.length === next.uiSurfaces.length &&
+    current.uiSurfaces.every(
+      (surface, index) =>
+        sameRegion(surface, next.uiSurfaces[index]) &&
+        surface.cornerRadius === next.uiSurfaces[index].cornerRadius,
+    )
   );
 }
 
@@ -69,10 +82,29 @@ interface VisibleElement {
   rect: DOMRect;
 }
 
+function elementIsFullyVisible(element: HTMLElement) {
+  let current: HTMLElement | null = element;
+  while (current) {
+    const style = getComputedStyle(current);
+    const opacity = Number.parseFloat(style.opacity);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      current.getAttribute("aria-hidden") === "true" ||
+      (Number.isFinite(opacity) && opacity < FULLY_VISIBLE_OPACITY)
+    ) {
+      return false;
+    }
+    current = current.parentElement;
+  }
+  return true;
+}
+
 function visibleElements(selector: string): VisibleElement[] {
   const elements = document.querySelectorAll<HTMLElement>(selector);
   const visible: VisibleElement[] = [];
   for (const element of elements) {
+    if (!elementIsFullyVisible(element)) continue;
     const rect = element.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       visible.push({ element, rect });
@@ -91,7 +123,10 @@ function unionRect(elements: readonly VisibleElement[]): DOMRect | null {
   return new DOMRect(left, top, right - left, bottom - top);
 }
 
-function editorCornerRadius(element: HTMLElement | null, rect: DOMRect | null) {
+function surfaceCornerRadius(
+  element: HTMLElement | null,
+  rect: DOMRect | null,
+) {
   if (!element) return 0;
   if (!rect) return 0;
   const maximum = Math.min(rect.width, rect.height) * 0.5;
@@ -150,29 +185,53 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       scrollTargets = next;
     };
 
-    const syncMutationTargets = (editors: readonly VisibleElement[]) => {
+    const syncMutationTargets = (targets: readonly HTMLElement[]) => {
       mutationObserver?.disconnect();
       mutationObserver?.observe(mutationRoot, {
         childList: true,
         subtree: true,
       });
-      for (const { element } of editors) {
-        mutationObserver?.observe(element, {
+      for (const target of targets) {
+        mutationObserver?.observe(target, {
           attributes: true,
-          attributeFilter: ["class", "style"],
+          attributeFilter: [
+            "aria-hidden",
+            "class",
+            "data-workspace-fluid-glass",
+            "style",
+          ],
         });
       }
     };
 
-    const layoutFor = (surfaceRect: DOMRect, elementRect: DOMRect | null) =>
+    const layoutFor = (
+      surfaceRect: DOMRect,
+      elementRect: DOMRect | null,
+      featherPx = 48,
+    ) =>
       elementRect
-        ? calculateZenContrastGuardLayout(surfaceRect, elementRect)
+        ? calculateZenContrastGuardLayout(surfaceRect, elementRect, featherPx)
         : EMPTY_ZEN_CONTRAST_GUARD_LAYOUT;
 
     const update = () => {
       frame = 0;
+      const uiSurfaceCandidates = Array.from(
+        document.querySelectorAll<HTMLElement>(UI_SURFACE_SELECTOR),
+      );
       const visiblePapers = visibleElements(".zen-editor-paper");
       const visibleEditors = visibleElements("[data-editor-area]");
+      const visibleUiSurfaces = visibleElements(UI_SURFACE_SELECTOR);
+      const glassRoots = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-workspace-glass-root]"),
+      );
+      const uiVisibilityTargets = new Set<HTMLElement>();
+      for (const candidate of uiSurfaceCandidates) {
+        let target: HTMLElement | null = candidate;
+        while (target && target !== mutationRoot) {
+          uiVisibilityTargets.add(target);
+          target = target.parentElement;
+        }
+      }
       const nextScrollTargets = new Set(
         visiblePapers.flatMap(({ element }) => {
           const target = element.closest<HTMLElement>(".glass-editor-body");
@@ -184,11 +243,16 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
           surface,
           ...visiblePapers.map(({ element }) => element),
           ...visibleEditors.map(({ element }) => element),
+          ...uiSurfaceCandidates,
           ...nextScrollTargets,
         ]),
       );
       syncScrollTargets(nextScrollTargets);
-      syncMutationTargets(visibleEditors);
+      syncMutationTargets([
+        ...glassRoots,
+        ...visibleEditors.map(({ element }) => element),
+        ...uiVisibilityTargets,
+      ]);
 
       const surfaceRect = surface.getBoundingClientRect();
       const paperRect = unionRect(visiblePapers);
@@ -202,10 +266,14 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
               ? 0
               : Math.min(
                   ...visibleEditors.map(({ element, rect }) =>
-                    editorCornerRadius(element, rect),
+                    surfaceCornerRadius(element, rect),
                   ),
                 ),
         },
+        uiSurfaces: visibleUiSurfaces.map(({ element, rect }) => ({
+          ...layoutFor(surfaceRect, rect, 0),
+          cornerRadius: surfaceCornerRadius(element, rect),
+        })),
       };
       setLayouts((current) => (sameLayouts(current, next) ? current : next));
     };

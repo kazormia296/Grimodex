@@ -1,12 +1,10 @@
 import { memo, Suspense, useRef } from "react";
 import { motion } from "motion/react";
-import { cn } from "@/lib/utils";
 import { useReducedMotion } from "@/lib/animation";
 import type { ToolWindowPanelId } from "./layoutTypes";
 import { chromeEnterTransition, chromeExitTransition } from "./layoutAnimation";
 import { PANEL_COMPONENT_MAP } from "./panelComponents";
 import { PanelChromeMenu } from "./PanelChromeMenu";
-import { useLayoutStore } from "./layoutStore";
 
 interface AnimatedSlotPanelProps {
   panelId: ToolWindowPanelId | null;
@@ -29,19 +27,16 @@ interface AnimatedSlotPanelProps {
  * visible panel exists — toggling that attribute on/off is what triggers
  * onboarding re-measure now that nodes don't enter/leave the DOM.
  *
- * Transform (translate/scale) is intentionally avoided: it leaves a residual
- * inline transform that promotes `.gx-panel` to a composited layer and breaks
- * how its box-shadow blends into inter-panel gaps. That invariant is gated by
- * layoutInvariants.browser.test.tsx.
+ * Transform (translate/scale) is intentionally avoided: the stable parent slot
+ * owns the Glass/card compositing layer, while these keepalive children only
+ * crossfade opacity. This prevents panel swaps from rebuilding the backdrop
+ * filter or flashing an opaque outgoing surface.
  */
 export const AnimatedSlotPanel = memo(function AnimatedSlotPanel({
   panelId,
   slotPanels,
 }: AnimatedSlotPanelProps) {
   const reduced = useReducedMotion();
-  const isDragging = useLayoutStore((s) =>
-    panelId ? s.draggingPanel === panelId : false,
-  );
 
   const seenRef = useRef<Set<ToolWindowPanelId>>(new Set());
   // Drop entries that are no longer in this slot — happens when the user
@@ -71,10 +66,7 @@ export const AnimatedSlotPanel = memo(function AnimatedSlotPanel({
               data-animated-slot-panel={id}
               aria-hidden={!isActive}
               inert={!isActive}
-              className={cn(
-                "gx-panel absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden",
-                isDragging && isActive && "gx-panel--dragging",
-              )}
+              className="absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden"
               initial={false}
               animate={{ opacity: isActive ? 1 : 0 }}
               transition={

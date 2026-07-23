@@ -35,6 +35,10 @@ describe("Zen shader post-processing", () => {
     expect(combined).toContain("uniform float u_zenGlassRefraction");
     expect(combined).toContain("uniform vec4 u_zenGlassRect");
     expect(combined).toContain("uniform float u_zenGlassCornerRadius");
+    expect(combined).toContain("uniform float u_zenUiSurfaceCount");
+    expect(combined).toContain("uniform vec4 u_zenUiSurfaceRects[32]");
+    expect(combined).toContain("uniform vec4 u_zenUiSurfaceParams[32]");
+    expect(combined).toContain("uniform vec3 u_zenUiContrastTextColor");
     expect(combined).toContain("applyZenDither");
     expect(combined).toContain("applyZenColorHalftone");
     expect(combined).toContain("applyZenContrastGuard");
@@ -125,16 +129,28 @@ describe("Zen shader post-processing", () => {
       "editor.zenBackground.contrastGuard.strength": "1",
     });
 
-    expect(
-      buildZenPostProcessUniforms(enabled, {
-        rect: [0.2, 0.1, 0.8, 0.9],
-        feather: [0.03, 0.04, 0.03, 0.04],
-        glassRect: [0.1, 0.05, 0.9, 0.95],
-        glassCornerRadius: 18,
-        textColor: [0.9, 0.92, 0.95],
-        backdropColor: [0.04, 0.05, 0.07],
-      }),
-    ).toEqual({
+    const uniforms = buildZenPostProcessUniforms(enabled, {
+      rect: [0.2, 0.1, 0.8, 0.9],
+      feather: [0.03, 0.04, 0.03, 0.04],
+      glassRect: [0.1, 0.05, 0.9, 0.95],
+      glassCornerRadius: 18,
+      uiSurfaces: [
+        {
+          rect: [0, 0.2, 0.15, 0.8],
+          feather: [0, 0, 0, 0],
+          cornerRadius: 12,
+        },
+        {
+          rect: [0.85, 0.2, 1, 0.8],
+          feather: [0, 0, 0, 0],
+          cornerRadius: 12,
+        },
+      ],
+      textColor: [0.9, 0.92, 0.95],
+      uiTextColor: [0.8, 0.82, 0.85],
+      backdropColor: [0.04, 0.05, 0.07],
+    });
+    expect(uniforms).toMatchObject({
       u_zenDitherStrength: 0.45,
       u_zenDitherSize: 3,
       u_zenDitherLevels: 5,
@@ -152,7 +168,18 @@ describe("Zen shader post-processing", () => {
       u_zenGlassRefraction: 7,
       u_zenGlassRect: [0.1, 0.05, 0.9, 0.95],
       u_zenGlassCornerRadius: 18,
+      u_zenUiSurfaceCount: 2,
+      u_zenUiContrastTextColor: [0.8, 0.82, 0.85],
     });
+    expect(uniforms["u_zenUiSurfaceRects[0]"]).toHaveLength(32);
+    expect(uniforms["u_zenUiSurfaceRects[0]"].slice(0, 2)).toEqual([
+      [0, 0.2, 0.15, 0.8],
+      [0.85, 0.2, 1, 0.8],
+    ]);
+    expect(uniforms["u_zenUiSurfaceParams[0]"].slice(0, 2)).toEqual([
+      [12, 0, 0, 0],
+      [12, 0, 0, 0],
+    ]);
 
     const disabled = parseZenShaderConfig({
       "editor.zenBackground.contrastGuard.mode": "none",
