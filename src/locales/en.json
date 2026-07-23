@@ -785,7 +785,7 @@
       "zenContrastGuardStrength": "Protection strength",
       "zenContrastGuardStrengthDesc": "Targets 4.5:1 at 0% and 7:1 at 100%. The text color never changes.",
       "zenContrastGuardToolMix": "Tool correction strength",
-      "zenContrastGuardToolMixDesc": "Adjusts the correction blended into tool surfaces separately from the writing column, from 0–50% (30% by default).",
+      "zenContrastGuardToolMixDesc": "Adjusts the correction blended into tool surfaces separately from the writing column, from 0–75% (50% by default).",
       "zenGlassEnabled": "Glass effect",
       "zenGlassEnabledDesc": "Applies Fluid Glass to the writing editor while the background is visible. Text and the editable DOM are never filtered.",
       "zenGlassBlur": "Backdrop blur",

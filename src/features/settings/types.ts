@@ -356,7 +356,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.zenBackground.halftone.softness": "0.15",
   "editor.zenBackground.contrastGuard.mode": "auto",
   "editor.zenBackground.contrastGuard.strength": "1",
-  "editor.zenBackground.contrastGuard.toolMix": "0.3",
+  "editor.zenBackground.contrastGuard.toolMix": "0.5",
   "editor.zenBackground.glass.enabled": "true",
   "editor.zenBackground.glass.blur": "14",
   "editor.zenBackground.glass.refraction": "7",

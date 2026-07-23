@@ -174,9 +174,9 @@ export function BackgroundFilterControls() {
         <SettingSlider
           settingKey="editor.zenBackground.contrastGuard.toolMix"
           min={0}
-          max={0.5}
+          max={0.75}
           step={0.01}
-          defaultValue={0.3}
+          defaultValue={0.5}
           format={percent}
           disabled={contrastGuardMode !== "auto"}
         />
