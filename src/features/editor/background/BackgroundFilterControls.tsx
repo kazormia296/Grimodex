@@ -166,6 +166,21 @@ export function BackgroundFilterControls() {
           disabled={contrastGuardMode !== "auto"}
         />
       </SettingRow>
+      <SettingRow
+        label={t("settings.editor.zenContrastGuardToolMix")}
+        description={t("settings.editor.zenContrastGuardToolMixDesc")}
+        disabled={contrastGuardMode !== "auto"}
+      >
+        <SettingSlider
+          settingKey="editor.zenBackground.contrastGuard.toolMix"
+          min={0}
+          max={0.3}
+          step={0.01}
+          defaultValue={0.15}
+          format={percent}
+          disabled={contrastGuardMode !== "auto"}
+        />
+      </SettingRow>
     </>
   );
 }

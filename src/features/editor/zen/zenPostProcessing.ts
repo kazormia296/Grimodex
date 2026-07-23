@@ -11,7 +11,6 @@ import {
 import type { ZenGlassLayout } from "./useZenShaderLayouts";
 
 export const ZEN_UI_SURFACE_MAX = 32;
-export const ZEN_UI_CONTRAST_MIX = 0.15;
 
 export interface ZenPostProcessRuntime extends ZenContrastGuardLayout {
   glassRect: ZenContrastGuardRect;
@@ -372,7 +371,7 @@ export function buildZenPostProcessUniforms(
     u_zenContrastFeather: runtime.feather,
     u_zenContrastTextColor: runtime.textColor,
     u_zenUiContrastTextColor: runtime.uiTextColor ?? runtime.textColor,
-    u_zenUiContrastMix: ZEN_UI_CONTRAST_MIX,
+    u_zenUiContrastMix: config.contrastGuard.toolMix,
     u_zenContrastBackdropColor: runtime.backdropColor,
     u_zenContrastSurfaceOpacity: config.opacity / 100,
     u_zenGlassRefraction: config.glass.enabled ? config.glass.refraction : 0,
