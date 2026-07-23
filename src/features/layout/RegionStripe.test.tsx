@@ -46,6 +46,28 @@ describe("RegionStripe", () => {
     });
   });
 
+  it("marks side and bottom roots as shared Stripe Glass surfaces", () => {
+    for (const [region, orientation] of [
+      ["left", "vertical"],
+      ["right", "vertical"],
+      ["bottom", "horizontal"],
+    ] as const) {
+      const { container, unmount } = render(
+        <RegionStripe
+          region={region}
+          orientation={orientation}
+          segments={segments}
+        />,
+      );
+      expect(
+        container.querySelector(
+          `[data-stripe-region="${region}"][data-ambient-glass-surface="stripe"]`,
+        ),
+      ).not.toBeNull();
+      unmount();
+    }
+  });
+
   it("distributes flex-grow among open segments and gives collapsed ones zero", () => {
     // Regression: collapsed slots carry stale sizeRatio; using it for the
     // stripe makes a collapsed slot dominate. Only open slots get proportion.

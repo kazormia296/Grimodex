@@ -43,6 +43,11 @@ describe("SlotView", () => {
   it("renders the mapped panel synchronously for eager components", () => {
     const { container } = render(<SlotView panelId="chat" />);
     expect(container.querySelector('[data-stub-panel="chat"]')).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-slot-panel="chat"][data-ambient-glass-surface="panel"]',
+      ),
+    ).not.toBeNull();
   });
 
   it("renders lazy panels through the Suspense boundary (fallback → 本体)", async () => {

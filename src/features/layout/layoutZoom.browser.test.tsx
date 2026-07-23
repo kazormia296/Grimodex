@@ -199,6 +199,11 @@ describe("panel zoom geometry invariants (real Chromium)", () => {
     expect(restoreBar).not.toBeNull();
     expect(getComputedStyle(restoreBar).visibility).toBe("visible");
     expect(restoreBar.getBoundingClientRect().height).toBeGreaterThan(4);
+    expect(restoreBar).toHaveAttribute(
+      "data-ambient-glass-surface",
+      "stripe",
+    );
+    expect(restoreBar.classList.contains("gx-panel")).toBe(true);
 
     // 3. 復帰ボタンのクリックで解除し、元の幾何へ復帰（±2px）
     const restoreButton = container.querySelector<HTMLElement>(
