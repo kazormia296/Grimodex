@@ -49,12 +49,14 @@ function RefractionProbe({
   glassRect = [0.2, 0.2, 0.8, 0.8],
   glassCornerRadius = 0,
   uiSurfaces = [],
+  maxPixelCount = 24_000,
 }: {
   name: string;
   refraction: number;
   glassRect?: ZenContrastGuardRect;
   glassCornerRadius?: number;
   uiSurfaces?: readonly ZenGlassLayout[];
+  maxPixelCount?: number;
 }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
@@ -88,7 +90,7 @@ function RefractionProbe({
       width={200}
       height={120}
       minPixelRatio={1}
-      maxPixelCount={24_000}
+      maxPixelCount={maxPixelCount}
       speed={0}
       frame={0}
       webGlContextAttributes={{
@@ -116,13 +118,17 @@ const DISJOINT_UI_SURFACES = [
 function UiContrastProbe({
   name,
   enabled,
+  uiTextColor,
+  backdropColor,
 }: {
   name: string;
   enabled: boolean;
+  uiTextColor: [number, number, number];
+  backdropColor: [number, number, number];
 }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
-    opacity: 100,
+    opacity: 10,
     contrastGuard: {
       mode: enabled ? ("auto" as const) : ("none" as const),
       strength: 1,
@@ -146,8 +152,8 @@ function UiContrastProbe({
           glassCornerRadius: 0,
           uiSurfaces: DISJOINT_UI_SURFACES,
           textColor: [0, 0, 0],
-          uiTextColor: [1, 1, 1],
-          backdropColor: [0, 0, 0],
+          uiTextColor,
+          backdropColor,
         }),
       }}
       width={200}
@@ -438,46 +444,140 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     ).toBeLessThanOrEqual(1);
   });
 
-  it("guards UI surfaces and Editor paper independently without filling the gap", async () => {
+  it("keeps CSS-sized UI corners aligned when the canvas is pixel-capped", async () => {
+    const emptyEditorRect: ZenContrastGuardRect = [0, 0, 0, 0];
+    const leftSurface = [DISJOINT_UI_SURFACES[0]];
     const { container } = render(
       <div>
-        <UiContrastProbe name="unguarded" enabled={false} />
-        <UiContrastProbe name="guarded" enabled />
+        <RefractionProbe
+          name="capped-flat"
+          refraction={0}
+          glassRect={emptyEditorRect}
+          uiSurfaces={leftSurface}
+          maxPixelCount={6_000}
+        />
+        <RefractionProbe
+          name="capped-bent"
+          refraction={24}
+          glassRect={emptyEditorRect}
+          uiSurfaces={leftSurface}
+          maxPixelCount={6_000}
+        />
       </div>,
     );
 
     await waitFor(() => {
       expect(
         container.querySelector<HTMLCanvasElement>(
-          '[data-ui-contrast-probe="guarded"] canvas',
+          '[data-refraction-probe="capped-bent"] canvas',
+        )?.width,
+      ).toBe(100);
+    });
+
+    const flat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="capped-flat"] canvas',
+    )!;
+    const bent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="capped-bent"] canvas',
+    )!;
+    const outsideCorner = [0.105, 0.11] as const;
+    const insideCssRadius = [0.115, 0.14] as const;
+
+    expect(
+      Math.abs(
+        pixelAt(bent, ...outsideCorner)[0] - pixelAt(flat, ...outsideCorner)[0],
+      ),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(
+        pixelAt(bent, ...insideCssRadius)[0] -
+          pixelAt(flat, ...insideCssRadius)[0],
+      ),
+    ).toBeGreaterThan(4);
+  });
+
+  it("softly guards dark and light UI surfaces without weakening the Editor guard", async () => {
+    const { container } = render(
+      <div>
+        <UiContrastProbe
+          name="dark-unguarded"
+          enabled={false}
+          uiTextColor={[1, 1, 1]}
+          backdropColor={[0.4, 0.4, 0.4]}
+        />
+        <UiContrastProbe
+          name="dark-guarded"
+          enabled
+          uiTextColor={[1, 1, 1]}
+          backdropColor={[0.4, 0.4, 0.4]}
+        />
+        <UiContrastProbe
+          name="light-unguarded"
+          enabled={false}
+          uiTextColor={[0, 0, 0]}
+          backdropColor={[0.45, 0.45, 0.45]}
+        />
+        <UiContrastProbe
+          name="light-guarded"
+          enabled
+          uiTextColor={[0, 0, 0]}
+          backdropColor={[0.45, 0.45, 0.45]}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(
+        container.querySelector<HTMLCanvasElement>(
+          '[data-ui-contrast-probe="dark-guarded"] canvas',
         )?.width,
       ).toBeGreaterThan(0);
     });
 
-    const unguarded = container.querySelector<HTMLCanvasElement>(
-      '[data-ui-contrast-probe="unguarded"] canvas',
-    )!;
-    const guarded = container.querySelector<HTMLCanvasElement>(
-      '[data-ui-contrast-probe="guarded"] canvas',
-    )!;
+    const cases = [
+      {
+        guarded: "dark-guarded",
+        unguarded: "dark-unguarded",
+        direction: -1,
+      },
+      {
+        guarded: "light-guarded",
+        unguarded: "light-unguarded",
+        direction: 1,
+      },
+    ] as const;
 
-    expect(
-      Math.abs(pixelAt(guarded, 0.2, 0.5)[0] - pixelAt(unguarded, 0.2, 0.5)[0]),
-    ).toBeGreaterThan(20);
-    expect(
-      Math.abs(pixelAt(guarded, 0.5, 0.5)[0] - pixelAt(unguarded, 0.5, 0.5)[0]),
-    ).toBeGreaterThan(20);
+    for (const testCase of cases) {
+      const unguarded = container.querySelector<HTMLCanvasElement>(
+        `[data-ui-contrast-probe="${testCase.unguarded}"] canvas`,
+      )!;
+      const guarded = container.querySelector<HTMLCanvasElement>(
+        `[data-ui-contrast-probe="${testCase.guarded}"] canvas`,
+      )!;
+      const uiDelta =
+        pixelAt(guarded, 0.2, 0.5)[0] - pixelAt(unguarded, 0.2, 0.5)[0];
+
+      expect(Math.sign(uiDelta)).toBe(testCase.direction);
+      expect(Math.abs(uiDelta)).toBeGreaterThan(5);
+      expect(Math.abs(uiDelta)).toBeLessThan(30);
+      expect(
+        Math.abs(
+          pixelAt(guarded, 0.38, 0.5)[0] - pixelAt(unguarded, 0.38, 0.5)[0],
+        ),
+      ).toBeLessThanOrEqual(1);
+    }
+
+    const darkUnguarded = container.querySelector<HTMLCanvasElement>(
+      '[data-ui-contrast-probe="dark-unguarded"] canvas',
+    )!;
+    const darkGuarded = container.querySelector<HTMLCanvasElement>(
+      '[data-ui-contrast-probe="dark-guarded"] canvas',
+    )!;
     expect(
       Math.abs(
-        pixelAt(guarded, 0.38, 0.5)[0] - pixelAt(unguarded, 0.38, 0.5)[0],
+        pixelAt(darkGuarded, 0.5, 0.5)[0] - pixelAt(darkUnguarded, 0.5, 0.5)[0],
       ),
-    ).toBeLessThanOrEqual(1);
-    expect(pixelAt(guarded, 0.2, 0.5)[0]).toBeLessThan(
-      pixelAt(unguarded, 0.2, 0.5)[0] - 20,
-    );
-    expect(pixelAt(guarded, 0.5, 0.5)[0]).toBeGreaterThan(
-      pixelAt(unguarded, 0.5, 0.5)[0] + 20,
-    );
+    ).toBeGreaterThan(80);
   });
 
   it("keeps the Editor feather gradual at low shader opacity", async () => {

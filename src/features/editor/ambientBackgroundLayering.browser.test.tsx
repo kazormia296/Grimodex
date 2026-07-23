@@ -195,13 +195,14 @@ describe("editor ambient background layering (real Chromium)", () => {
     for (const surface of [toolPanel!, stripe!, zoomRestore!]) {
       const surfaceStyle = getComputedStyle(surface);
       expect(surfaceStyle.backgroundColor).toBe("rgba(0, 0, 0, 0)");
-      expect(surfaceStyle.backgroundImage).not.toBe("none");
+      expect(surfaceStyle.backgroundImage).toBe("none");
       expect(surfaceStyle.backdropFilter).toContain("blur(22px)");
       expect(surfaceStyle.backdropFilter).toContain("saturate(1.4)");
       expect(surfaceStyle.backdropFilter).toContain("contrast(1.03)");
-      expect(getComputedStyle(surface, "::before").backgroundImage).not.toBe(
-        "none",
-      );
+      const highlight = getComputedStyle(surface, "::before");
+      expect(highlight.opacity).toBe("0");
+      expect(highlight.backgroundImage).toBe("none");
+      expect(highlight.boxShadow).toBe("none");
     }
     expect(getComputedStyle(toolPanelRoot!).backgroundColor).toBe(
       "rgba(0, 0, 0, 0)",
@@ -295,6 +296,9 @@ describe("editor ambient background layering (real Chromium)", () => {
       expect(getComputedStyle(toolPanel!).backdropFilter).toContain(
         "blur(22px)",
       );
+      expect(getComputedStyle(toolPanel!).backgroundImage).toBe("none");
+      expect(getComputedStyle(toolPanel!).borderTopLeftRadius).toBe("18px");
+      expect(getComputedStyle(toolPanel!, "::before").opacity).toBe("0");
       expect(getComputedStyle(toolPanelRoot!).backgroundColor).toBe(
         "rgba(0, 0, 0, 0)",
       );

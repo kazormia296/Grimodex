@@ -39,6 +39,7 @@ describe("Zen shader post-processing", () => {
     expect(combined).toContain("uniform vec4 u_zenUiSurfaceRects[32]");
     expect(combined).toContain("uniform vec4 u_zenUiSurfaceParams[32]");
     expect(combined).toContain("uniform vec3 u_zenUiContrastTextColor");
+    expect(combined).toContain("uniform float u_zenUiContrastMix");
     expect(combined).toContain("applyZenDither");
     expect(combined).toContain("applyZenColorHalftone");
     expect(combined).toContain("applyZenContrastGuard");
@@ -50,6 +51,7 @@ describe("Zen shader post-processing", () => {
     );
     expect(combined).toContain("zenGlassOffsetPixels");
     expect(combined).toContain("zenRoundedRectSignedDistance");
+    expect(combined).toContain("max(u_pixelRatio, 0.0001)");
     expect(combined).toContain("any(lessThan(gl_FragCoord.xy, glassMinPx))");
     expect(combined).toContain("any(greaterThan(gl_FragCoord.xy, glassMaxPx))");
     expect(combined).toContain(
@@ -170,6 +172,7 @@ describe("Zen shader post-processing", () => {
       u_zenGlassCornerRadius: 18,
       u_zenUiSurfaceCount: 2,
       u_zenUiContrastTextColor: [0.8, 0.82, 0.85],
+      u_zenUiContrastMix: 0.15,
     });
     expect(uniforms["u_zenUiSurfaceRects[0]"]).toHaveLength(32);
     expect(uniforms["u_zenUiSurfaceRects[0]"].slice(0, 2)).toEqual([

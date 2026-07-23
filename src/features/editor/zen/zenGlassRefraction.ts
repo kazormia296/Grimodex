@@ -58,7 +58,10 @@ vec2 zenGlassRegionOffsetPixels(
   }
 
   vec2 resolution = max(u_resolution, vec2(1.0));
-  float pixelRatio = max(u_pixelRatio, 1.0);
+  // ShaderMount lowers u_pixelRatio below 1 when the pixel budget caps the
+  // framebuffer. Preserve that effective CSS-to-framebuffer scale so rounded
+  // Glass geometry stays aligned with the DOM surface.
+  float pixelRatio = max(u_pixelRatio, 0.0001);
   vec2 glassMinPx = glassRect.xy * resolution;
   vec2 glassMaxPx = glassRect.zw * resolution;
   if (
