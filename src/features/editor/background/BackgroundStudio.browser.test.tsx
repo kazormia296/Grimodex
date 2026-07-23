@@ -10,7 +10,7 @@ import { DEFAULT_SETTINGS } from "@/features/settings/types";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { BackgroundStudio } from "./BackgroundStudio";
 
-describe("BackgroundStudio custom color palette (real Chromium)", () => {
+describe("BackgroundStudio (real Chromium)", () => {
   beforeEach(() => {
     const state = useSettingsStore.getState();
     for (const timer of state._timers.values()) clearTimeout(timer);
@@ -64,4 +64,48 @@ describe("BackgroundStudio custom color palette (real Chromium)", () => {
       expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight - 12);
     });
   });
+
+  it.each([
+    { label: "normal", zenMode: false, expectedTop: 48 },
+    { label: "Zen", zenMode: true, expectedTop: 12 },
+  ])(
+    "keeps the $label studio and its final section inside the viewport",
+    async ({ zenMode, expectedTop }) => {
+      const { container } = render(
+        <BackgroundStudio open onClose={vi.fn()} zenMode={zenMode} />,
+      );
+      const studio = container.querySelector<HTMLElement>(
+        "[data-background-studio]",
+      );
+      const scrollRegion =
+        studio?.querySelector<HTMLElement>(".overflow-y-auto");
+      const sections = studio?.querySelectorAll<HTMLElement>("details");
+      const finalSection = sections?.item((sections?.length ?? 1) - 1);
+
+      expect(studio).not.toBeNull();
+      expect(scrollRegion).not.toBeNull();
+      expect(finalSection).not.toBeNull();
+
+      await waitFor(() => {
+        const bounds = studio!.getBoundingClientRect();
+        expect(bounds.height).toBeGreaterThan(0);
+        expect(bounds.top).toBeCloseTo(expectedTop, 0);
+        expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight - 12);
+      });
+
+      expect(scrollRegion!.scrollHeight).toBeGreaterThan(
+        scrollRegion!.clientHeight,
+      );
+      scrollRegion!.scrollTop = scrollRegion!.scrollHeight;
+      fireEvent.scroll(scrollRegion!);
+
+      await waitFor(() => {
+        const scrollBounds = scrollRegion!.getBoundingClientRect();
+        const finalBounds = finalSection!.getBoundingClientRect();
+        expect(scrollRegion!.scrollTop).toBeGreaterThan(0);
+        expect(finalBounds.bottom).toBeLessThanOrEqual(scrollBounds.bottom + 1);
+        expect(finalBounds.bottom).toBeGreaterThan(scrollBounds.top);
+      });
+    },
+  );
 });
