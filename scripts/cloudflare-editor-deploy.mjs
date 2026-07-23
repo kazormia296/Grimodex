@@ -34,16 +34,21 @@ function environmentSpec(environment) {
 export function createEditorDeployPlan({ action, environment }) {
   const spec = environmentSpec(environment);
 
-  if (action !== "web-build" && action !== "web-deploy") {
+  if (
+    action !== "web-build" &&
+    action !== "web-deploy" &&
+    action !== "web-deploy-artifact"
+  ) {
     throw new Error(`unsupported action: ${action}`);
   }
-  const plan = [
-    {
+  const plan = [];
+  if (action !== "web-deploy-artifact") {
+    plan.push({
       command: "pnpm",
       args: ["build:web-editor"],
-    },
-  ];
-  if (action === "web-deploy") {
+    });
+  }
+  if (action !== "web-build") {
     plan.push({
       command: "pnpm",
       args: [
@@ -89,7 +94,8 @@ function runStep(step) {
 function printHelp() {
   console.log(`Usage:
   node scripts/cloudflare-editor-deploy.mjs web-build <staging|production>
-  node scripts/cloudflare-editor-deploy.mjs web-deploy <staging|production>`);
+  node scripts/cloudflare-editor-deploy.mjs web-deploy <staging|production>
+  node scripts/cloudflare-editor-deploy.mjs web-deploy-artifact <staging|production>`);
 }
 
 function main() {

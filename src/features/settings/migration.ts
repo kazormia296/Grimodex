@@ -77,22 +77,16 @@ const RETIRED_DISPLAY_KEYS = [
 
 /** Remove settings owned by the retired splitter-line layout and app-wide glass UI. */
 export async function removeRetiredDisplaySettings(): Promise<void> {
-  const prefs = (await globalSettingsRepository.read()).userPreferences;
-  if (prefs) {
-    const next = { ...prefs };
-    let changed = false;
+  await globalSettingsRepository.patch((current) => {
+    const next = { ...(current.userPreferences ?? {}) };
     for (const key of RETIRED_DISPLAY_KEYS) {
-      if (!(key in next)) continue;
       delete next[key];
-      changed = true;
     }
-    if (changed) {
-      await globalSettingsRepository.patch((current) => ({
-        ...current,
-        userPreferences: next,
-      }));
-    }
-  }
+    return {
+      ...current,
+      userPreferences: next,
+    };
+  });
 
   // Older workspaces can still contain these keys in the pre-split app_settings table.
   for (const key of RETIRED_DISPLAY_KEYS) {

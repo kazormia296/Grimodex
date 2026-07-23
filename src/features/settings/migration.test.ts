@@ -157,7 +157,38 @@ describe("removeRetiredDisplaySettings", () => {
     });
   });
 
-  it("does not patch preferences when no retired key is present", async () => {
+  it("preserves preferences written before the queued patch runs", async () => {
+    globalSettingsHarness.setSettings({
+      userPreferences: {
+        "display.mochiLayout": "false",
+        "editor.fontSize": "16",
+      },
+    });
+    globalSettingsHarness.patch.mockImplementationOnce(async (updater) => {
+      globalSettingsHarness.setSettings({
+        userPreferences: {
+          "display.mochiLayout": "false",
+          "editor.fontSize": "16",
+          "editor.fontFamily": "serif",
+        },
+      });
+      const next = updater(globalSettingsHarness.getSettings());
+      globalSettingsHarness.setSettings(next);
+      return next;
+    });
+
+    const { removeRetiredDisplaySettings } = await import("./migration");
+    await removeRetiredDisplaySettings();
+
+    expect(globalSettingsHarness.getSettings()).toEqual({
+      userPreferences: {
+        "editor.fontSize": "16",
+        "editor.fontFamily": "serif",
+      },
+    });
+  });
+
+  it("leaves active preferences unchanged when no retired key is present", async () => {
     globalSettingsHarness.setSettings({
       userPreferences: { "editor.fontSize": "16" },
     });
@@ -165,7 +196,9 @@ describe("removeRetiredDisplaySettings", () => {
     const { removeRetiredDisplaySettings } = await import("./migration");
     await removeRetiredDisplaySettings();
 
-    expect(globalSettingsHarness.patch).not.toHaveBeenCalled();
+    expect(globalSettingsHarness.getSettings()).toEqual({
+      userPreferences: { "editor.fontSize": "16" },
+    });
   });
 });
 

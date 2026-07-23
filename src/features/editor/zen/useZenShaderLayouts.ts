@@ -69,13 +69,26 @@ interface VisibleElement {
   rect: DOMRect;
 }
 
-function visibleElement(selector: string): VisibleElement | null {
+function visibleElements(selector: string): VisibleElement[] {
   const elements = document.querySelectorAll<HTMLElement>(selector);
+  const visible: VisibleElement[] = [];
   for (const element of elements) {
     const rect = element.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) return { element, rect };
+    if (rect.width > 0 && rect.height > 0) {
+      visible.push({ element, rect });
+    }
   }
-  return null;
+  return visible;
+}
+
+function unionRect(elements: readonly VisibleElement[]): DOMRect | null {
+  if (elements.length === 0) return null;
+
+  const left = Math.min(...elements.map(({ rect }) => rect.left));
+  const top = Math.min(...elements.map(({ rect }) => rect.top));
+  const right = Math.max(...elements.map(({ rect }) => rect.right));
+  const bottom = Math.max(...elements.map(({ rect }) => rect.bottom));
+  return new DOMRect(left, top, right - left, bottom - top);
 }
 
 function editorCornerRadius(element: HTMLElement | null, rect: DOMRect | null) {
@@ -103,32 +116,52 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
     if (!surface || typeof document === "undefined") return undefined;
 
     let frame = 0;
-    let paper: HTMLElement | null = null;
-    let editor: HTMLElement | null = null;
-    let scrollTarget: HTMLElement | null = null;
+    let resizeTargets = new Set<HTMLElement>();
+    let scrollTargets = new Set<HTMLElement>();
     let mutationObserver: MutationObserver | null = null;
     const resizeObserver =
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(() => schedule());
+    const mutationRoot =
+      document.getElementById("main-content") ?? document.body;
 
-    const observeTarget = (
-      current: HTMLElement | null,
-      next: HTMLElement | null,
-    ) => {
-      if (current === next) return next;
-      if (current) resizeObserver?.unobserve(current);
-      if (next) resizeObserver?.observe(next);
-      return next;
+    const syncResizeTargets = (next: Set<HTMLElement>) => {
+      for (const target of resizeTargets) {
+        if (!next.has(target)) resizeObserver?.unobserve(target);
+      }
+      for (const target of next) {
+        if (!resizeTargets.has(target)) resizeObserver?.observe(target);
+      }
+      resizeTargets = next;
     };
-    const observeScrollTarget = (
-      current: HTMLElement | null,
-      next: HTMLElement | null,
-    ) => {
-      if (current === next) return next;
-      current?.removeEventListener("scroll", schedule);
-      next?.addEventListener("scroll", schedule, { passive: true });
-      return next;
+
+    const syncScrollTargets = (next: Set<HTMLElement>) => {
+      for (const target of scrollTargets) {
+        if (!next.has(target)) {
+          target.removeEventListener("scroll", schedule);
+        }
+      }
+      for (const target of next) {
+        if (!scrollTargets.has(target)) {
+          target.addEventListener("scroll", schedule, { passive: true });
+        }
+      }
+      scrollTargets = next;
+    };
+
+    const syncMutationTargets = (editors: readonly VisibleElement[]) => {
+      mutationObserver?.disconnect();
+      mutationObserver?.observe(mutationRoot, {
+        childList: true,
+        subtree: true,
+      });
+      for (const { element } of editors) {
+        mutationObserver?.observe(element, {
+          attributes: true,
+          attributeFilter: ["class", "style"],
+        });
+      }
     };
 
     const layoutFor = (surfaceRect: DOMRect, elementRect: DOMRect | null) =>
@@ -138,29 +171,40 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
 
     const update = () => {
       frame = 0;
-      const visiblePaper = visibleElement(".zen-editor-paper");
-      const visibleEditor = visibleElement("[data-editor-area]");
-      paper = observeTarget(paper, visiblePaper?.element ?? null);
-      editor = observeTarget(editor, visibleEditor?.element ?? null);
-      scrollTarget = observeScrollTarget(
-        scrollTarget,
-        paper?.closest<HTMLElement>(".glass-editor-body") ?? null,
+      const visiblePapers = visibleElements(".zen-editor-paper");
+      const visibleEditors = visibleElements("[data-editor-area]");
+      const nextScrollTargets = new Set(
+        visiblePapers.flatMap(({ element }) => {
+          const target = element.closest<HTMLElement>(".glass-editor-body");
+          return target ? [target] : [];
+        }),
       );
-      if (editor) {
-        mutationObserver?.observe(editor, {
-          attributes: true,
-          attributeFilter: ["class", "style"],
-        });
-      }
+      syncResizeTargets(
+        new Set([
+          surface,
+          ...visiblePapers.map(({ element }) => element),
+          ...visibleEditors.map(({ element }) => element),
+          ...nextScrollTargets,
+        ]),
+      );
+      syncScrollTargets(nextScrollTargets);
+      syncMutationTargets(visibleEditors);
+
       const surfaceRect = surface.getBoundingClientRect();
+      const paperRect = unionRect(visiblePapers);
+      const editorRect = unionRect(visibleEditors);
       const next = {
-        contrast: layoutFor(surfaceRect, visiblePaper?.rect ?? null),
+        contrast: layoutFor(surfaceRect, paperRect),
         glass: {
-          ...layoutFor(surfaceRect, visibleEditor?.rect ?? null),
-          cornerRadius: editorCornerRadius(
-            visibleEditor?.element ?? null,
-            visibleEditor?.rect ?? null,
-          ),
+          ...layoutFor(surfaceRect, editorRect),
+          cornerRadius:
+            visibleEditors.length === 0
+              ? 0
+              : Math.min(
+                  ...visibleEditors.map(({ element, rect }) =>
+                    editorCornerRadius(element, rect),
+                  ),
+                ),
         },
       };
       setLayouts((current) => (sameLayouts(current, next) ? current : next));
@@ -171,9 +215,6 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       frame = requestAnimationFrame(update);
     }
 
-    resizeObserver?.observe(surface);
-    const mutationRoot =
-      document.getElementById("main-content") ?? document.body;
     mutationObserver =
       typeof MutationObserver === "undefined"
         ? null
@@ -188,7 +229,9 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       if (frame !== 0) cancelAnimationFrame(frame);
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
-      scrollTarget?.removeEventListener("scroll", schedule);
+      for (const target of scrollTargets) {
+        target.removeEventListener("scroll", schedule);
+      }
       window.removeEventListener("resize", schedule);
     };
   }, [surfaceRef]);

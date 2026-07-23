@@ -61,6 +61,58 @@ function EmptyLayoutProbe() {
   );
 }
 
+function SplitLayoutProbe({ direction }: { direction: "right" | "below" }) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const layouts = useZenShaderLayouts(surfaceRef);
+  const splitRight = direction === "right";
+
+  return (
+    <div
+      ref={surfaceRef}
+      data-testid={`split-${direction}-shader-layout`}
+      data-contrast-rect={layouts.contrast.rect.join(" ")}
+      style={{ position: "relative", width: 1_000, height: 600 }}
+    >
+      <section
+        data-editor-area
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: 1_000,
+          height: 600,
+        }}
+      >
+        {(["primary", "secondary"] as const).map((pane, index) => (
+          <div
+            key={pane}
+            className="glass-editor-body"
+            data-split-pane={pane}
+            style={{
+              position: "absolute",
+              left: splitRight ? index * 500 : 0,
+              top: splitRight ? 0 : index * 300,
+              width: splitRight ? 500 : 1_000,
+              height: splitRight ? 600 : 300,
+              overflow: "auto",
+            }}
+          >
+            <article
+              className="zen-editor-paper"
+              style={{
+                position: "absolute",
+                left: splitRight ? "20%" : 200,
+                top: splitRight ? 100 : 50,
+                width: splitRight ? 300 : 600,
+                height: splitRight ? 400 : 200,
+              }}
+            />
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+
 const parseRect = (value: string | null) => value?.split(" ").map(Number) ?? [];
 
 const parseNumber = (value: string | null) => Number(value);
@@ -117,5 +169,102 @@ describe("Zen shader geometry (real Chromium)", () => {
       0.8,
       14 / 15,
     ]);
+  });
+});
+
+describe("Zen shader split-editor geometry (real Chromium)", () => {
+  it("protects both writing columns in a left/right split", async () => {
+    const view = render(<SplitLayoutProbe direction="right" />);
+    const probe = view.getByTestId("split-right-shader-layout");
+
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.1,
+        1 / 6,
+        0.9,
+        5 / 6,
+      ]);
+    });
+  });
+
+  it("protects both writing columns in a top/bottom split", async () => {
+    const view = render(<SplitLayoutProbe direction="below" />);
+    const probe = view.getByTestId("split-below-shader-layout");
+
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.2,
+        1 / 12,
+        0.8,
+        11 / 12,
+      ]);
+    });
+  });
+
+  it("remeasures when the secondary editor scrolls", async () => {
+    const view = render(<SplitLayoutProbe direction="below" />);
+    const probe = view.getByTestId("split-below-shader-layout");
+
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.2,
+        1 / 12,
+        0.8,
+        11 / 12,
+      ]);
+    });
+
+    const secondaryBody = view.container.querySelector<HTMLElement>(
+      '[data-split-pane="secondary"]',
+    );
+    const secondaryPaper =
+      secondaryBody?.querySelector<HTMLElement>(".zen-editor-paper");
+    if (!secondaryBody || !secondaryPaper) {
+      throw new Error("secondary editor was not rendered");
+    }
+    secondaryPaper.style.transform = "translateY(-100px)";
+    secondaryBody.dispatchEvent(new Event("scroll"));
+
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.2,
+        0.25,
+        0.8,
+        11 / 12,
+      ]);
+    });
+  });
+
+  it("observes secondary paper and scroll-container resizes", async () => {
+    const view = render(<SplitLayoutProbe direction="right" />);
+    const probe = view.getByTestId("split-right-shader-layout");
+    const secondaryBody = view.container.querySelector<HTMLElement>(
+      '[data-split-pane="secondary"]',
+    );
+    const secondaryPaper =
+      secondaryBody?.querySelector<HTMLElement>(".zen-editor-paper");
+    if (!secondaryBody || !secondaryPaper) {
+      throw new Error("secondary editor was not rendered");
+    }
+
+    secondaryPaper.style.width = "350px";
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.1,
+        1 / 6,
+        0.95,
+        5 / 6,
+      ]);
+    });
+
+    secondaryBody.style.width = "400px";
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.1,
+        1 / 6,
+        0.93,
+        5 / 6,
+      ]);
+    });
   });
 });

@@ -87,12 +87,10 @@ import {
   markScreenshotStageReady,
   clearScreenshotStageReady,
 } from "@/screenshot-scenes/screenshotBootstrap";
-import {
-  isPanelWindow,
-  getPanelWindowTarget,
-} from "@/features/layout/multiwindow/panelWindow";
+import { getPanelWindowTarget } from "@/features/layout/multiwindow/panelWindow";
 import { useCodexSelectionSync } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { startCodexLockListener } from "@/features/codex/multiwindow/codexEditLockStore";
+import { shouldMountZenAmbientBackdrop } from "@/features/editor/zen/zenAmbientBackdropPolicy";
 import { cn } from "@/lib/utils";
 import { useImeExportSync } from "@/features/ime/useImeExportSync";
 import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorkspaceShell";
@@ -382,7 +380,13 @@ function App() {
 function EditorScreen() {
   const runtimeCapabilities = useRuntimeCapabilities();
   const screenshotPanelId = getScreenshotPanelId();
-  const panelWindow = isPanelWindow();
+  const panelWindowTarget = getPanelWindowTarget();
+  const panelWindow = panelWindowTarget !== null;
+  const soloPanelId = screenshotPanelId ?? panelWindowTarget;
+  const mountZenAmbientBackdrop = shouldMountZenAmbientBackdrop({
+    panelWindowTarget,
+    screenshotPanelId,
+  });
   const zenMode = useCursorSettingsStore((state) => state.zenMode);
   const editorZenMode = zenMode && !panelWindow && !screenshotPanelId;
   const adaptiveWorkspaceEnabled = shouldUseAdaptiveWorkspace({
@@ -892,9 +896,11 @@ function EditorScreen() {
         tabIndex={-1}
         className="relative isolate flex min-h-0 flex-1 overflow-hidden outline-none"
       >
-        <Suspense fallback={null}>
-          <ZenAmbientBackdrop active={editorZenMode} />
-        </Suspense>
+        {mountZenAmbientBackdrop && (
+          <Suspense fallback={null}>
+            <ZenAmbientBackdrop active={editorZenMode} />
+          </Suspense>
+        )}
         {adaptiveWorkspaceEnabled ? (
           <AdaptiveWorkspaceShell
             zenMode={editorZenMode}
@@ -914,7 +920,7 @@ function EditorScreen() {
         ) : (
           <LayoutShell
             hidden={Boolean(screenshotPanelId) || panelWindow}
-            soloPanelId={screenshotPanelId ?? getPanelWindowTarget()}
+            soloPanelId={soloPanelId}
             zenMode={editorZenMode}
           />
         )}

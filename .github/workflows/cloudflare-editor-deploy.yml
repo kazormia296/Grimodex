@@ -60,7 +60,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
@@ -79,5 +79,25 @@ jobs:
             exit 1
           fi
 
-      - name: Build and deploy Web Editor
-        run: pnpm editor:cloudflare web-deploy "$CF_PAGES_ENVIRONMENT"
+      - name: Build Web Editor
+        run: pnpm editor:cloudflare web-build "$CF_PAGES_ENVIRONMENT"
+
+      - name: Verify deployed revision is current master
+        id: current_master
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+          current_master_sha="$(git rev-parse refs/remotes/origin/master)"
+          node scripts/cloudflare-editor-deploy-guard.mjs \
+            "$WORKFLOW_RUN_HEAD_SHA" \
+            "$current_master_sha"
+
+      - name: Deploy Web Editor
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.current_master.outputs.deploy == 'true'
+        run: pnpm editor:cloudflare web-deploy-artifact "$CF_PAGES_ENVIRONMENT"
