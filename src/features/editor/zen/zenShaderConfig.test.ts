@@ -52,6 +52,7 @@ describe("editor background shader settings", () => {
     expect(ZEN_SHADER_DEFAULTS.contrastGuard).toEqual({
       mode: "auto",
       strength: 1,
+      toolMix: 0.15,
     });
     expect(ZEN_SHADER_DEFAULTS.glass).toEqual({
       enabled: true,
@@ -70,13 +71,18 @@ describe("editor background shader settings", () => {
       "editor.zenBackground.paperEdgeFade": "30",
       "editor.zenBackground.contrastGuard.mode": "invalid",
       "editor.zenBackground.contrastGuard.strength": "3",
+      "editor.zenBackground.contrastGuard.toolMix": "0.24",
     });
 
     expect(config.opacity).toBe(100);
     expect(config.speed).toBe(100);
     expect(config).not.toHaveProperty("paperOpacity");
     expect(config).not.toHaveProperty("paperEdgeFade");
-    expect(config.contrastGuard).toEqual({ mode: "auto", strength: 1 });
+    expect(config.contrastGuard).toEqual({
+      mode: "auto",
+      strength: 1,
+      toolMix: 0.24,
+    });
   });
 
   it("migrates the old fractional speed setting to a percentage", () => {
@@ -99,6 +105,7 @@ describe("editor background shader settings", () => {
       "editor.zenBackground.shaderProps": "not-json",
       "editor.zenBackground.dither.levels": "1",
       "editor.zenBackground.halftone.size": "100",
+      "editor.zenBackground.contrastGuard.toolMix": "9",
       "editor.zenBackground.glass.enabled": "invalid",
       "editor.zenBackground.glass.blur": "100",
       "editor.zenBackground.glass.refraction": "-5",
@@ -116,6 +123,7 @@ describe("editor background shader settings", () => {
     expect(config.shaderProps).toEqual({});
     expect(config.dither.levels).toBe(2);
     expect(config.halftone.size).toBe(24);
+    expect(config.contrastGuard.toolMix).toBe(0.3);
     expect(config.glass).toEqual({
       enabled: true,
       blur: 40,
@@ -123,6 +131,25 @@ describe("editor background shader settings", () => {
       saturation: 2,
       shine: 0,
     });
+  });
+
+  it("keeps the tool contrast mix in its subtle adjustable range", () => {
+    expect(parseZenShaderConfig({}).contrastGuard.toolMix).toBe(0.15);
+    expect(
+      parseZenShaderConfig({
+        "editor.zenBackground.contrastGuard.toolMix": "-1",
+      }).contrastGuard.toolMix,
+    ).toBe(0);
+    expect(
+      parseZenShaderConfig({
+        "editor.zenBackground.contrastGuard.toolMix": "0.27",
+      }).contrastGuard.toolMix,
+    ).toBe(0.27);
+    expect(
+      parseZenShaderConfig({
+        "editor.zenBackground.contrastGuard.toolMix": "invalid",
+      }).contrastGuard.toolMix,
+    ).toBe(0.15);
   });
 
   it("maps common and selected shader props to the official Paper prop names", () => {

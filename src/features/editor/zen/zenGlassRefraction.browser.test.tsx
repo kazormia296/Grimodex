@@ -61,7 +61,7 @@ function RefractionProbe({
   const config = {
     ...ZEN_SHADER_DEFAULTS,
     opacity: 100,
-    contrastGuard: { mode: "none" as const, strength: 1 },
+    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.15 },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
       enabled: refraction > 0,
@@ -120,11 +120,13 @@ function UiContrastProbe({
   enabled,
   uiTextColor,
   backdropColor,
+  toolMix = 0.15,
 }: {
   name: string;
   enabled: boolean;
   uiTextColor: [number, number, number];
   backdropColor: [number, number, number];
+  toolMix?: number;
 }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
@@ -132,6 +134,7 @@ function UiContrastProbe({
     contrastGuard: {
       mode: enabled ? ("auto" as const) : ("none" as const),
       strength: 1,
+      toolMix,
     },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
@@ -184,6 +187,7 @@ function LowOpacityContrastProbe({
     contrastGuard: {
       mode: enabled ? ("auto" as const) : ("none" as const),
       strength: 1,
+      toolMix: 0.15,
     },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
@@ -246,7 +250,7 @@ function PaperCompileProbe({ shader }: { shader: PaperShaderId }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
     shader,
-    contrastGuard: { mode: "none" as const, strength: 1 },
+    contrastGuard: { mode: "none" as const, strength: 1, toolMix: 0.15 },
     glass: {
       ...ZEN_SHADER_DEFAULTS.glass,
       enabled: true,
@@ -512,6 +516,20 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
           backdropColor={[0.4, 0.4, 0.4]}
         />
         <UiContrastProbe
+          name="dark-tool-off"
+          enabled
+          uiTextColor={[1, 1, 1]}
+          backdropColor={[0.4, 0.4, 0.4]}
+          toolMix={0}
+        />
+        <UiContrastProbe
+          name="dark-tool-max"
+          enabled
+          uiTextColor={[1, 1, 1]}
+          backdropColor={[0.4, 0.4, 0.4]}
+          toolMix={0.3}
+        />
+        <UiContrastProbe
           name="light-unguarded"
           enabled={false}
           uiTextColor={[0, 0, 0]}
@@ -573,6 +591,19 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     const darkGuarded = container.querySelector<HTMLCanvasElement>(
       '[data-ui-contrast-probe="dark-guarded"] canvas',
     )!;
+    const darkToolOff = container.querySelector<HTMLCanvasElement>(
+      '[data-ui-contrast-probe="dark-tool-off"] canvas',
+    )!;
+    const darkToolMax = container.querySelector<HTMLCanvasElement>(
+      '[data-ui-contrast-probe="dark-tool-max"] canvas',
+    )!;
+    const darkBasePixel = pixelAt(darkUnguarded, 0.2, 0.5)[0];
+    expect(
+      Math.abs(pixelAt(darkToolOff, 0.2, 0.5)[0] - darkBasePixel),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(pixelAt(darkToolMax, 0.2, 0.5)[0] - darkBasePixel),
+    ).toBeGreaterThan(30);
     expect(
       Math.abs(
         pixelAt(darkGuarded, 0.5, 0.5)[0] - pixelAt(darkUnguarded, 0.5, 0.5)[0],
