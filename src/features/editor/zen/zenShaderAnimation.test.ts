@@ -23,7 +23,7 @@ class FakeAnimationFrames {
 }
 
 describe("Zen shader animation scheduler", () => {
-  it("caps Paper frame updates at 30fps", () => {
+  it("caps Paper frame updates at 60fps", () => {
     const frames = new FakeAnimationFrames();
     const setFrame = vi.fn();
     const scheduler = createZenShaderAnimationScheduler(
@@ -36,11 +36,11 @@ describe("Zen shader animation scheduler", () => {
       frames.step(timestamp);
     }
 
-    expect(setFrame.mock.calls.length).toBeGreaterThanOrEqual(28);
-    expect(setFrame.mock.calls.length).toBeLessThanOrEqual(30);
+    expect(setFrame.mock.calls.length).toBeGreaterThanOrEqual(58);
+    expect(setFrame.mock.calls.length).toBeLessThanOrEqual(60);
   });
 
-  it("carries 60Hz timing remainder instead of falling toward 20fps", () => {
+  it("keeps 60Hz motion at display cadence", () => {
     const frames = new FakeAnimationFrames();
     const setFrame = vi.fn();
     const scheduler = createZenShaderAnimationScheduler(
@@ -53,8 +53,8 @@ describe("Zen shader animation scheduler", () => {
       frames.step(timestamp);
     }
 
-    expect(setFrame.mock.calls.length).toBeGreaterThanOrEqual(28);
-    expect(setFrame.mock.calls.length).toBeLessThanOrEqual(30);
+    expect(setFrame.mock.calls.length).toBeGreaterThanOrEqual(58);
+    expect(setFrame.mock.calls.length).toBeLessThanOrEqual(60);
     expect(scheduler.getFrame()).toBeCloseTo(80, 5);
   });
 

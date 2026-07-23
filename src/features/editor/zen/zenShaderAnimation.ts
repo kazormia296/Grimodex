@@ -1,8 +1,10 @@
 import { useEffect, useRef, type RefObject } from "react";
 import type { PaperShaderElement, ShaderMount } from "@paper-design/shaders";
 
-export const ZEN_SHADER_MAX_FPS = 30;
+export const ZEN_SHADER_MAX_FPS = 60;
 const FRAME_INTERVAL_MS = 1_000 / ZEN_SHADER_MAX_FPS;
+// rAF timestamps can undershoot an exact refresh interval by a tiny amount.
+const FRAME_INTERVAL_TOLERANCE_MS = 0.1;
 
 type ShaderFrameTarget = Pick<ShaderMount, "setFrame">;
 
@@ -47,10 +49,13 @@ export function createZenShaderAnimationScheduler(
       pendingElapsed += elapsed;
       shaderFrame += elapsed * speed;
       lastTimestamp = timestamp;
-      if (pendingElapsed >= FRAME_INTERVAL_MS) {
+      if (pendingElapsed + FRAME_INTERVAL_TOLERANCE_MS >= FRAME_INTERVAL_MS) {
         const target = getTarget();
         if (target) target.setFrame(shaderFrame);
-        pendingElapsed %= FRAME_INTERVAL_MS;
+        pendingElapsed =
+          pendingElapsed >= FRAME_INTERVAL_MS
+            ? pendingElapsed % FRAME_INTERVAL_MS
+            : 0;
       }
     }
 
