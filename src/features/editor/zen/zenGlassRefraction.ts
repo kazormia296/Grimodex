@@ -12,6 +12,11 @@ export const ZEN_GLASS_REFRACTION_FRAGMENT = String.raw`
 uniform float u_zenGlassRefraction;
 uniform vec4 u_zenGlassRect;
 uniform float u_zenGlassCornerRadius;
+uniform float u_zenUiSurfaceCount;
+uniform vec4 u_zenUiSurfaceRects[32];
+uniform vec4 u_zenUiSurfaceParams[32];
+
+float zenUiSurfaceMaskCache = 0.0;
 
 float zenRoundedRectSignedDistance(
   vec2 point,
@@ -39,19 +44,23 @@ float zenGlassEdgeDistortion(float insideDistancePx, float depthPx) {
   return 1.0 - sqrt(max(1.0 - edgeProximity * edgeProximity, 0.0));
 }
 
-vec2 zenGlassOffsetPixels() {
+vec2 zenGlassRegionOffsetPixels(
+  vec4 glassRect,
+  float glassCornerRadius,
+  out float surfaceMask
+) {
+  surfaceMask = 0.0;
   if (
-    u_zenGlassRefraction <= 0.00001 ||
-    u_zenGlassRect.z <= u_zenGlassRect.x ||
-    u_zenGlassRect.w <= u_zenGlassRect.y
+    glassRect.z <= glassRect.x ||
+    glassRect.w <= glassRect.y
   ) {
     return vec2(0.0);
   }
 
   vec2 resolution = max(u_resolution, vec2(1.0));
   float pixelRatio = max(u_pixelRatio, 1.0);
-  vec2 glassMinPx = u_zenGlassRect.xy * resolution;
-  vec2 glassMaxPx = u_zenGlassRect.zw * resolution;
+  vec2 glassMinPx = glassRect.xy * resolution;
+  vec2 glassMaxPx = glassRect.zw * resolution;
   if (
     any(lessThan(gl_FragCoord.xy, glassMinPx)) ||
     any(greaterThan(gl_FragCoord.xy, glassMaxPx))
@@ -61,7 +70,7 @@ vec2 zenGlassOffsetPixels() {
   vec2 glassSizePx = glassMaxPx - glassMinPx;
   vec2 glassCenterPx = (glassMinPx + glassMaxPx) * 0.5;
   float cornerRadiusPx = min(
-    max(0.0, u_zenGlassCornerRadius * pixelRatio),
+    max(0.0, glassCornerRadius * pixelRatio),
     min(glassSizePx.x, glassSizePx.y) * 0.5
   );
   float signedDistance = zenRoundedRectSignedDistance(
@@ -69,7 +78,15 @@ vec2 zenGlassOffsetPixels() {
     glassSizePx * 0.5,
     cornerRadiusPx
   );
-  if (signedDistance > 0.0) return vec2(0.0);
+  float antialias = max(fwidth(signedDistance), 0.75);
+  surfaceMask =
+    1.0 - smoothstep(-antialias, antialias, signedDistance);
+  if (
+    signedDistance > 0.0 ||
+    u_zenGlassRefraction <= 0.00001
+  ) {
+    return vec2(0.0);
+  }
 
   float refractionDepthPx = min(
     48.0 * pixelRatio,
@@ -82,13 +99,46 @@ vec2 zenGlassOffsetPixels() {
   );
   if (distortion <= 0.00001) return vec2(0.0);
 
-  // Shift the sample toward the Editor centre. This keeps the apparent bend
-  // inside the glass and lets the rounded SDF, rather than four straight
-  // edge masks, define where refraction is visible.
+  // Shift the sample toward this surface's centre. This keeps the apparent
+  // bend inside each independent Glass card.
   return -zenSafeNormalize(gl_FragCoord.xy - glassCenterPx) *
     distortion *
     u_zenGlassRefraction *
     pixelRatio;
+}
+
+vec2 zenGlassOffsetPixels() {
+  zenUiSurfaceMaskCache = 0.0;
+  if (
+    u_zenGlassRefraction <= 0.00001 &&
+    u_zenContrastGuardEnabled < 0.5
+  ) {
+    return vec2(0.0);
+  }
+
+  float editorMask;
+  vec2 strongestOffset = zenGlassRegionOffsetPixels(
+    u_zenGlassRect,
+    u_zenGlassCornerRadius,
+    editorMask
+  );
+  float strongestLength = dot(strongestOffset, strongestOffset);
+  for (int index = 0; index < 32; index += 1) {
+    if (float(index) >= u_zenUiSurfaceCount) break;
+    float candidateMask;
+    vec2 candidate = zenGlassRegionOffsetPixels(
+      u_zenUiSurfaceRects[index],
+      u_zenUiSurfaceParams[index].x,
+      candidateMask
+    );
+    zenUiSurfaceMaskCache = max(zenUiSurfaceMaskCache, candidateMask);
+    float candidateLength = dot(candidate, candidate);
+    if (candidateLength > strongestLength) {
+      strongestOffset = candidate;
+      strongestLength = candidateLength;
+    }
+  }
+  return strongestOffset;
 }
 `;
 

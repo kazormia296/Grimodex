@@ -11,6 +11,7 @@ function renderLayering(enabled: boolean, glassEnabled = true) {
           data-background-enabled={enabled ? "true" : "false"}
         />
         <div
+          data-workspace-glass-root
           data-layout-shell
           data-workspace-fluid-glass={glassEnabled ? "true" : "false"}
           style={
@@ -26,8 +27,10 @@ function renderLayering(enabled: boolean, glassEnabled = true) {
             data-slot-panel="chat"
             className="gx-panel"
           >
-            <div data-tool-panel-root className="bg-background">
-              <span data-tool-panel-text>Tool panel text</span>
+            <div data-animated-slot-panel>
+              <div data-tool-panel-root className="bg-background">
+                <span data-tool-panel-text>Tool panel text</span>
+              </div>
             </div>
           </aside>
           <nav
@@ -37,6 +40,7 @@ function renderLayering(enabled: boolean, glassEnabled = true) {
             className="gx-panel"
           >
             <span data-stripe-text>Stripe text</span>
+            <span data-stripe-drop-overlay className="absolute inset-0 z-40" />
           </nav>
           <div
             data-ambient-glass-surface="stripe"
@@ -117,17 +121,23 @@ describe("editor ambient background layering (real Chromium)", () => {
     const toolPanel = container.querySelector<HTMLElement>(
       '[data-ambient-glass-surface="panel"]',
     );
-    const toolPanelRoot =
-      container.querySelector<HTMLElement>("[data-tool-panel-root]");
-    const toolPanelText =
-      container.querySelector<HTMLElement>("[data-tool-panel-text]");
+    const toolPanelRoot = container.querySelector<HTMLElement>(
+      "[data-tool-panel-root]",
+    );
+    const toolPanelText = container.querySelector<HTMLElement>(
+      "[data-tool-panel-text]",
+    );
     const stripe = container.querySelector<HTMLElement>(
       '[data-ambient-glass-surface="stripe"][data-stripe-root]',
     );
     const stripeText =
       container.querySelector<HTMLElement>("[data-stripe-text]");
-    const zoomRestore =
-      container.querySelector<HTMLElement>("[data-zoom-restore-bar]");
+    const stripeDropOverlay = container.querySelector<HTMLElement>(
+      "[data-stripe-drop-overlay]",
+    );
+    const zoomRestore = container.querySelector<HTMLElement>(
+      "[data-zoom-restore-bar]",
+    );
 
     expect(layout).not.toBeNull();
     expect(editor).not.toBeNull();
@@ -138,6 +148,7 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(paperText).not.toBeNull();
     expect(toolPanel).not.toBeNull();
     expect(stripe).not.toBeNull();
+    expect(stripeDropOverlay).not.toBeNull();
     expect(zoomRestore).not.toBeNull();
     expect(getComputedStyle(layout!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     const editorStyle = getComputedStyle(editor!);
@@ -184,6 +195,7 @@ describe("editor ambient background layering (real Chromium)", () => {
       expect(getComputedStyle(label).opacity).toBe("1");
       expect(getComputedStyle(label).filter).toBe("none");
     }
+    expect(getComputedStyle(stripeDropOverlay!).zIndex).toBe("40");
   });
 
   it("restores solid layout and chrome surfaces when the background is off", () => {

@@ -130,26 +130,26 @@ describe("Zen shader post-processing", () => {
     });
 
     const uniforms = buildZenPostProcessUniforms(enabled, {
-        rect: [0.2, 0.1, 0.8, 0.9],
-        feather: [0.03, 0.04, 0.03, 0.04],
-        glassRect: [0.1, 0.05, 0.9, 0.95],
-        glassCornerRadius: 18,
-        uiSurfaces: [
-          {
-            rect: [0, 0.2, 0.15, 0.8],
-            feather: [0, 0, 0, 0],
-            cornerRadius: 12,
-          },
-          {
-            rect: [0.85, 0.2, 1, 0.8],
-            feather: [0, 0, 0, 0],
-            cornerRadius: 12,
-          },
-        ],
-        textColor: [0.9, 0.92, 0.95],
-        uiTextColor: [0.8, 0.82, 0.85],
-        backdropColor: [0.04, 0.05, 0.07],
-      });
+      rect: [0.2, 0.1, 0.8, 0.9],
+      feather: [0.03, 0.04, 0.03, 0.04],
+      glassRect: [0.1, 0.05, 0.9, 0.95],
+      glassCornerRadius: 18,
+      uiSurfaces: [
+        {
+          rect: [0, 0.2, 0.15, 0.8],
+          feather: [0, 0, 0, 0],
+          cornerRadius: 12,
+        },
+        {
+          rect: [0.85, 0.2, 1, 0.8],
+          feather: [0, 0, 0, 0],
+          cornerRadius: 12,
+        },
+      ],
+      textColor: [0.9, 0.92, 0.95],
+      uiTextColor: [0.8, 0.82, 0.85],
+      backdropColor: [0.04, 0.05, 0.07],
+    });
     expect(uniforms).toMatchObject({
       u_zenDitherStrength: 0.45,
       u_zenDitherSize: 3,

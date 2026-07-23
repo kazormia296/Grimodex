@@ -128,6 +128,7 @@ function WorkspaceSurfaceProbe({ glass = true }: { glass?: boolean }) {
       style={{ position: "relative", width: 1_000, height: 600 }}
     >
       <div
+        data-workspace-glass-root
         data-layout-shell
         data-workspace-fluid-glass={glass ? "true" : "false"}
         style={{ position: "absolute", inset: 0 }}
@@ -192,12 +193,71 @@ function WorkspaceSurfaceProbe({ glass = true }: { glass?: boolean }) {
   );
 }
 
+function TransientWorkspaceSurfaceProbe({
+  visible,
+  ancestorVisible = true,
+}: {
+  visible: boolean;
+  ancestorVisible?: boolean;
+}) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const layouts = useZenShaderLayouts(surfaceRef);
+
+  return (
+    <div
+      ref={surfaceRef}
+      data-testid="transient-workspace-surface-layout"
+      data-ui-surface-rects={JSON.stringify(
+        layouts.uiSurfaces.map((surface) => surface.rect),
+      )}
+      style={{ position: "relative", width: 1_000, height: 600 }}
+    >
+      <div
+        data-workspace-glass-root
+        data-workspace-fluid-glass="true"
+        style={{ position: "absolute", inset: 0 }}
+      >
+        <div
+          data-transient-surface-ancestor
+          style={{
+            position: "absolute",
+            inset: 0,
+            opacity: ancestorVisible ? 1 : 0,
+          }}
+        >
+          <div
+            data-ambient-glass-surface="stripe"
+            style={{
+              position: "absolute",
+              opacity: visible ? 1 : 0,
+              left: 100,
+              top: 40,
+              width: 800,
+              height: 40,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const parseRect = (value: string | null) => value?.split(" ").map(Number) ?? [];
 
 const parseNumber = (value: string | null) => Number(value);
 
 const parseRects = (value: string | null): number[][] =>
   value ? (JSON.parse(value) as number[][]) : [];
+
+function expectRects(actual: number[][], expected: number[][]) {
+  expect(actual).toHaveLength(expected.length);
+  expected.forEach((rect, rectIndex) => {
+    expect(actual[rectIndex]).toHaveLength(rect.length);
+    rect.forEach((coordinate, coordinateIndex) => {
+      expect(actual[rectIndex][coordinateIndex]).toBeCloseTo(coordinate);
+    });
+  });
+}
 
 function expectRect(value: string | null, expected: number[]) {
   const actual = parseRect(value);
@@ -357,7 +417,7 @@ describe("Zen shader non-editor Glass geometry (real Chromium)", () => {
     const probe = view.getByTestId("workspace-surface-layout");
 
     await waitFor(() => {
-      expect(parseRects(probe.getAttribute("data-ui-surface-rects"))).toEqual([
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
         [0, 1 / 3, 0.2, 5 / 6],
         [0, 14 / 15, 1, 1],
       ]);
@@ -371,9 +431,7 @@ describe("Zen shader non-editor Glass geometry (real Chromium)", () => {
 
     view.rerender(<WorkspaceSurfaceProbe glass={false} />);
     await waitFor(() => {
-      expect(parseRects(probe.getAttribute("data-ui-surface-rects"))).toEqual(
-        [],
-      );
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), []);
     });
     expectRect(probe.getAttribute("data-contrast-rect"), [
       0.4,
@@ -381,5 +439,41 @@ describe("Zen shader non-editor Glass geometry (real Chromium)", () => {
       0.6,
       11 / 15,
     ]);
+  });
+
+  it("starts tracking a Glass surface after its enter animation becomes visible", async () => {
+    const view = render(<TransientWorkspaceSurfaceProbe visible={false} />);
+    const probe = view.getByTestId("transient-workspace-surface-layout");
+
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), []);
+    });
+
+    view.rerender(<TransientWorkspaceSurfaceProbe visible />);
+
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
+        [0.1, 13 / 15, 0.9, 14 / 15],
+      ]);
+    });
+  });
+
+  it("does not leak a Glass surface through a hidden animation ancestor", async () => {
+    const view = render(
+      <TransientWorkspaceSurfaceProbe visible ancestorVisible={false} />,
+    );
+    const probe = view.getByTestId("transient-workspace-surface-layout");
+
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), []);
+    });
+
+    view.rerender(<TransientWorkspaceSurfaceProbe visible ancestorVisible />);
+
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
+        [0.1, 13 / 15, 0.9, 14 / 15],
+      ]);
+    });
   });
 });

@@ -27,7 +27,7 @@ const CONTRAST_FRAGMENT = `#version 300 es
 precision highp float;
 out vec4 fragColor;
 void main() {
-  fragColor = vec4(0.7, 0.7, 0.7, 1.0);
+  fragColor = vec4(0.45, 0.45, 0.45, 1.0);
 }`;
 
 const SIZING_UNIFORMS = {
@@ -145,8 +145,59 @@ function UiContrastProbe({
           glassRect: [0, 0, 0, 0],
           glassCornerRadius: 0,
           uiSurfaces: DISJOINT_UI_SURFACES,
-          textColor: [1, 1, 1],
+          textColor: [0, 0, 0],
           uiTextColor: [1, 1, 1],
+          backdropColor: [0, 0, 0],
+        }),
+      }}
+      width={200}
+      height={120}
+      minPixelRatio={1}
+      maxPixelCount={24_000}
+      speed={0}
+      frame={0}
+      webGlContextAttributes={{
+        alpha: false,
+        antialias: false,
+        preserveDrawingBuffer: true,
+      }}
+    />
+  );
+}
+
+function LowOpacityContrastProbe({
+  name,
+  enabled,
+}: {
+  name: string;
+  enabled: boolean;
+}) {
+  const config = {
+    ...ZEN_SHADER_DEFAULTS,
+    opacity: 10,
+    contrastGuard: {
+      mode: enabled ? ("auto" as const) : ("none" as const),
+      strength: 1,
+    },
+    glass: {
+      ...ZEN_SHADER_DEFAULTS.glass,
+      enabled: false,
+      refraction: 0,
+    },
+  };
+
+  return (
+    <ShaderMount
+      data-low-opacity-contrast-probe={name}
+      fragmentShader={buildZenPostProcessedFragment(CONTRAST_FRAGMENT)}
+      uniforms={{
+        ...SIZING_UNIFORMS,
+        ...buildZenPostProcessUniforms(config, {
+          rect: [0.4, 0.4, 0.6, 0.6],
+          feather: [0.1, 0, 0.1, 0],
+          glassRect: [0, 0, 0, 0],
+          glassCornerRadius: 0,
+          textColor: [0, 0, 0],
           backdropColor: [0, 0, 0],
         }),
       }}
@@ -411,20 +462,49 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     )!;
 
     expect(
-      Math.abs(
-        pixelAt(guarded, 0.2, 0.5)[0] - pixelAt(unguarded, 0.2, 0.5)[0],
-      ),
+      Math.abs(pixelAt(guarded, 0.2, 0.5)[0] - pixelAt(unguarded, 0.2, 0.5)[0]),
     ).toBeGreaterThan(20);
     expect(
-      Math.abs(
-        pixelAt(guarded, 0.5, 0.5)[0] - pixelAt(unguarded, 0.5, 0.5)[0],
-      ),
+      Math.abs(pixelAt(guarded, 0.5, 0.5)[0] - pixelAt(unguarded, 0.5, 0.5)[0]),
     ).toBeGreaterThan(20);
     expect(
       Math.abs(
         pixelAt(guarded, 0.38, 0.5)[0] - pixelAt(unguarded, 0.38, 0.5)[0],
       ),
     ).toBeLessThanOrEqual(1);
+    expect(pixelAt(guarded, 0.2, 0.5)[0]).toBeLessThan(
+      pixelAt(unguarded, 0.2, 0.5)[0] - 20,
+    );
+    expect(pixelAt(guarded, 0.5, 0.5)[0]).toBeGreaterThan(
+      pixelAt(unguarded, 0.5, 0.5)[0] + 20,
+    );
+  });
+
+  it("keeps the Editor feather gradual at low shader opacity", async () => {
+    const { container } = render(
+      <div>
+        <LowOpacityContrastProbe name="unguarded" enabled={false} />
+        <LowOpacityContrastProbe name="guarded" enabled />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(
+        container.querySelector<HTMLCanvasElement>(
+          '[data-low-opacity-contrast-probe="guarded"] canvas',
+        )?.width,
+      ).toBeGreaterThan(0);
+    });
+
+    const guarded = container.querySelector<HTMLCanvasElement>(
+      '[data-low-opacity-contrast-probe="guarded"] canvas',
+    )!;
+    const outside = pixelAt(guarded, 0.25, 0.5)[0];
+    const feather = pixelAt(guarded, 0.35, 0.5)[0];
+    const center = pixelAt(guarded, 0.5, 0.5)[0];
+
+    expect(feather).toBeGreaterThan(outside + 20);
+    expect(feather).toBeLessThan(center - 20);
   });
 
   it("compiles the refraction pass for every Paper background", async () => {

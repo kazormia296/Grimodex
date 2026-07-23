@@ -10,6 +10,7 @@ import type { ZenResolvedPalette } from "./zenShaderConfig";
 
 export interface ZenThemePalette extends ZenResolvedPalette {
   textColor: [number, number, number];
+  uiTextColor: [number, number, number];
   backdropColor: [number, number, number];
 }
 
@@ -17,6 +18,7 @@ const FALLBACK_PALETTE: ZenThemePalette = {
   background: "#101318",
   colors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
   textColor: [0.85, 0.85, 0.85],
+  uiTextColor: [0.85, 0.85, 0.85],
   backdropColor: [0.063, 0.075, 0.094],
 };
 
@@ -101,6 +103,10 @@ function paletteFromTheme(theme: ThemePalette): ZenThemePalette {
     theme["--content-foreground-secondary"],
     "#d9d9d9",
   );
+  // Muted labels/icons are the lowest-contrast UI ink. Protecting against
+  // this token also keeps the stronger foreground token readable in the
+  // bundled light and dark palettes.
+  const uiText = normalizeZenThemeColor(theme["--muted-foreground"], "#d9d9d9");
   return {
     background,
     colors: [
@@ -119,6 +125,7 @@ function paletteFromTheme(theme: ThemePalette): ZenThemePalette {
       normalizeZenThemeColor(theme["--primary"], FALLBACK_PALETTE.colors[3]),
     ],
     textColor: rgb(text),
+    uiTextColor: rgb(uiText),
     backdropColor: rgb(backdrop),
   };
 }

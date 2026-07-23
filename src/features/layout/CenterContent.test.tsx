@@ -62,9 +62,7 @@ describe("CenterContent", () => {
     useLayoutStore.setState({ layout });
 
     const { container } = render(<CenterContent />);
-    const tool = container.querySelector(
-      '[data-center-segment-kind="tool"]',
-    );
+    const tool = container.querySelector('[data-center-segment-kind="tool"]');
     const editor = container.querySelector(
       '[data-center-segment-kind="editor"]',
     );

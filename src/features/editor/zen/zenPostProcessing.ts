@@ -8,11 +8,16 @@ import {
   makePaperFragmentRefractable,
   ZEN_GLASS_REFRACTION_FRAGMENT,
 } from "./zenGlassRefraction";
+import type { ZenGlassLayout } from "./useZenShaderLayouts";
+
+export const ZEN_UI_SURFACE_MAX = 32;
 
 export interface ZenPostProcessRuntime extends ZenContrastGuardLayout {
   glassRect: ZenContrastGuardRect;
   glassCornerRadius: number;
+  uiSurfaces?: readonly ZenGlassLayout[];
   textColor: [number, number, number];
+  uiTextColor?: [number, number, number];
   backdropColor: [number, number, number];
 }
 
@@ -40,6 +45,7 @@ uniform float u_zenContrastTarget;
 uniform vec4 u_zenContrastRect;
 uniform vec4 u_zenContrastFeather;
 uniform vec3 u_zenContrastTextColor;
+uniform vec3 u_zenUiContrastTextColor;
 uniform vec3 u_zenContrastBackdropColor;
 uniform float u_zenContrastSurfaceOpacity;
 
@@ -180,8 +186,12 @@ float zenContrastColumnMask() {
   return left * bottom * right * top;
 }
 
-vec3 zenGuardVisibleColor(vec3 visibleColor) {
-  float textLuminance = zenRelativeLuminance(u_zenContrastTextColor);
+float zenUiSurfaceMask() {
+  return zenUiSurfaceMaskCache;
+}
+
+vec3 zenGuardVisibleColor(vec3 visibleColor, vec3 textColor) {
+  float textLuminance = zenRelativeLuminance(textColor);
   float backgroundLuminance = zenRelativeLuminance(visibleColor);
   float currentContrast =
     (max(textLuminance, backgroundLuminance) + 0.05) /
@@ -230,8 +240,9 @@ vec3 zenGuardVisibleColor(vec3 visibleColor) {
 
 vec3 applyZenContrastGuard(vec3 shaderColor) {
   if (u_zenContrastGuardEnabled < 0.5) return shaderColor;
-  float mask = zenContrastColumnMask();
-  if (mask <= 0.0) return shaderColor;
+  float paperMask = zenContrastColumnMask();
+  float uiMask = zenUiSurfaceMask();
+  if (paperMask <= 0.0 && uiMask <= 0.0) return shaderColor;
 
   float surfaceOpacity = clamp(u_zenContrastSurfaceOpacity, 0.0, 1.0);
   vec3 visibleColor = mix(
@@ -239,14 +250,44 @@ vec3 applyZenContrastGuard(vec3 shaderColor) {
     clamp(shaderColor, 0.0, 1.0),
     surfaceOpacity
   );
-  vec3 guardedVisibleColor = zenGuardVisibleColor(visibleColor);
   vec3 guardedShaderColor = shaderColor;
-  if (surfaceOpacity > 0.00001) {
-    guardedShaderColor =
-      (guardedVisibleColor - u_zenContrastBackdropColor * (1.0 - surfaceOpacity)) /
-      surfaceOpacity;
+  if (paperMask > 0.0) {
+    vec3 paperGuardedVisibleColor = zenGuardVisibleColor(
+      visibleColor,
+      u_zenContrastTextColor
+    );
+    vec3 paperGuardedShaderColor = shaderColor;
+    if (surfaceOpacity > 0.00001) {
+      paperGuardedShaderColor =
+        (paperGuardedVisibleColor -
+          u_zenContrastBackdropColor * (1.0 - surfaceOpacity)) /
+        surfaceOpacity;
+    }
+    guardedShaderColor = mix(
+      guardedShaderColor,
+      clamp(paperGuardedShaderColor, 0.0, 1.0),
+      paperMask
+    );
   }
-  return mix(shaderColor, clamp(guardedShaderColor, 0.0, 1.0), mask);
+  if (uiMask > 0.0) {
+    vec3 uiGuardedVisibleColor = zenGuardVisibleColor(
+      visibleColor,
+      u_zenUiContrastTextColor
+    );
+    vec3 uiGuardedShaderColor = shaderColor;
+    if (surfaceOpacity > 0.00001) {
+      uiGuardedShaderColor =
+        (uiGuardedVisibleColor -
+          u_zenContrastBackdropColor * (1.0 - surfaceOpacity)) /
+        surfaceOpacity;
+    }
+    guardedShaderColor = mix(
+      guardedShaderColor,
+      clamp(uiGuardedShaderColor, 0.0, 1.0),
+      uiMask
+    );
+  }
+  return guardedShaderColor;
 }
 
 void main() {
@@ -299,6 +340,20 @@ export function buildZenPostProcessUniforms(
   config: ZenShaderConfig,
   runtime: ZenPostProcessRuntime = DEFAULT_RUNTIME,
 ) {
+  const uiSurfaces = (runtime.uiSurfaces ?? []).slice(0, ZEN_UI_SURFACE_MAX);
+  const uiSurfaceRects = Array.from(
+    { length: ZEN_UI_SURFACE_MAX },
+    (_, index) =>
+      index < uiSurfaces.length ? [...uiSurfaces[index].rect] : [0, 0, 0, 0],
+  );
+  const uiSurfaceParams = Array.from(
+    { length: ZEN_UI_SURFACE_MAX },
+    (_, index) =>
+      index < uiSurfaces.length
+        ? [uiSurfaces[index].cornerRadius, 0, 0, 0]
+        : [0, 0, 0, 0],
+  );
+
   return {
     u_zenDitherStrength: config.dither.enabled ? config.dither.strength : 0,
     u_zenDitherSize: config.dither.size,
@@ -314,10 +369,14 @@ export function buildZenPostProcessUniforms(
     u_zenContrastRect: runtime.rect,
     u_zenContrastFeather: runtime.feather,
     u_zenContrastTextColor: runtime.textColor,
+    u_zenUiContrastTextColor: runtime.uiTextColor ?? runtime.textColor,
     u_zenContrastBackdropColor: runtime.backdropColor,
     u_zenContrastSurfaceOpacity: config.opacity / 100,
     u_zenGlassRefraction: config.glass.enabled ? config.glass.refraction : 0,
     u_zenGlassRect: runtime.glassRect,
     u_zenGlassCornerRadius: runtime.glassCornerRadius,
+    u_zenUiSurfaceCount: uiSurfaces.length,
+    "u_zenUiSurfaceRects[0]": uiSurfaceRects,
+    "u_zenUiSurfaceParams[0]": uiSurfaceParams,
   };
 }

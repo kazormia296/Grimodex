@@ -300,10 +300,14 @@ export const RegionContent = memo(function RegionContent({
             <div
               data-drop-slot={slot.id}
               data-drop-region={region}
+              data-ambient-glass-surface="panel"
               style={sizeStyle}
               aria-hidden={slotZoomHidden || undefined}
               inert={slotZoomHidden || undefined}
-              className="relative flex min-h-0 min-w-0 flex-col"
+              className={cn(
+                "gx-panel relative flex min-h-0 min-w-0 flex-col overflow-hidden",
+                draggingPanel === slot.activePanel && "gx-panel--dragging",
+              )}
               onDragOver={(e) => handleSlotDragOver(slot.id, e)}
               onDragLeave={handleSlotDragLeave}
               onDrop={(e) => handleSlotDrop(slot.id, e)}

@@ -18,23 +18,23 @@ describe("shouldMountZenAmbientBackdrop", () => {
   });
 
   it.each(["chat", "timeline", "codex"] as const)(
-    "does not mount WebGL in a detached %s panel window",
+    "mounts WebGL behind a detached %s panel window",
     (panelWindowTarget) => {
       expect(
         shouldMountZenAmbientBackdrop({
           panelWindowTarget,
           screenshotPanelId: null,
         }),
-      ).toBe(false);
+      ).toBe(true);
     },
   );
 
-  it("does not mount WebGL for a non-editor solo screenshot panel", () => {
+  it("mounts WebGL behind a non-editor solo screenshot panel", () => {
     expect(
       shouldMountZenAmbientBackdrop({
         panelWindowTarget: null,
         screenshotPanelId: "chat",
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 });

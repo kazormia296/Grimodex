@@ -280,10 +280,14 @@ export const CenterContent = memo(function CenterContent({
                 data-drop-region="center"
                 data-center-segment={segment.id}
                 data-center-segment-kind="tool"
+                data-ambient-glass-surface="panel"
                 style={sizeStyle}
                 aria-hidden={segmentZoomHidden || undefined}
                 inert={segmentZoomHidden || undefined}
-                className="relative flex min-h-0 min-w-0 flex-col"
+                className={cn(
+                  "gx-panel relative flex min-h-0 min-w-0 flex-col overflow-hidden",
+                  draggingPanel === segment.activePanel && "gx-panel--dragging",
+                )}
                 onDragOver={(e) => handleSlotDragOver(segment.id, e)}
                 onDragLeave={handleSlotDragLeave}
                 onDrop={(e) => handleSlotDrop(segment.id, e)}
