@@ -35,8 +35,8 @@ interface AnimatedDropdownProps {
   containerRef?: React.RefObject<HTMLElement | null>;
   /**
    * トリガ要素の ref。指定すると `document.body` へ portal して `position: fixed` で
-   * アンカー配置する。`backdrop-filter` を持つ祖先（`.glass-editor-body` /
-   * `.glass-chat` 等）が作る stacking context / containing block に埋もれ、さらに
+   * アンカー配置する。`backdrop-filter` を持つ祖先（`.glass-editor-body` 等）が
+   * 作る stacking context / containing block に埋もれ、さらに
    * 祖先の `overflow` でクリップされる問題を回避する。
    * 指定時は外側クリック / Escape は `useAnchoredPopover` が担うため `containerRef` は不要。
    */

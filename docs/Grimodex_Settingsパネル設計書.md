@@ -399,26 +399,8 @@ UIの外観全般を設定する。
 | UI font | `FontFamilySelect` | `"M PLUS 1"`（同梱） | UI 表示書体。`display.uiFontFamily`（global）。同梱フォント + システムフォント列挙 + カスタム指定 |
 | UI scale | スライダー | 100% | 80% - 上限（実機の Hi-DPI に応じて `getUiScaleMaxPercent()` で算出、最大 150% 程度）。5% 刻み。ポインタドラッグ中は IPC を抑制し、リリース時にのみコミットする。`uiScale` はグローバル設定 |
 | Reduce motion | トグル | OFF | アニメーションを抑制し Framer Motion / GSAP の遷移を最小化。OS の `prefers-reduced-motion` とも連動。キー: `display.reduceMotion` |
-| Card layout | トグル | ON | カードレイアウト表示。キー: `display.cardLayout` |
 | Show word count in Scenes | トグル | ON | Scenesパネルのツリーに文字数を表示（`display.showWordCount`） |
 | Show AI badge in Scenes | トグル | OFF | ScenesパネルのツリーにAI帰属バッジを表示（`display.showAiBadge`） |
-
-### Glass エフェクト
-
-ウィンドウ全体のガラス調表現と、各サーフェスへの個別適用を制御する。マスタートグルが OFF のとき下位のコントロールは disabled になる（値は保持）。
-
-| フィールド | UI 要素 | デフォルト | キー |
-|-----------|---------|-----------|------|
-| Enable glass effect | トグル | OFF | `display.glassEffectEnabled` |
-| Transparency | スライダー（0 - 90%） | 30% | `display.glassTransparency` |
-| Tinted backdrop gradient | トグル | ON | `display.glassBackdropGradient` |
-| macOS native vibrancy | トグル | ON | `display.glassNativeVibrancy` |
-| Window and header | トグル | ON | `display.glassSurfaceShell` |
-| Dock and tabs | トグル | ON | `display.glassSurfaceDock` |
-| Panels | トグル | ON | `display.glassSurfacePanels` |
-| Chat | トグル | ON | `display.glassSurfaceChat` |
-| Popovers and dialogs | トグル | ON | `display.glassSurfacePopovers` |
-| Editor chrome | トグル | ON | `display.glassSurfaceEditorChrome` |
 
 ### Codex ハイライト / Attribution
 
@@ -777,8 +759,8 @@ UI の外観など「どのプロジェクトを開いても同じであって�
 | AI (プロンプト追記 `aiPrompt.custom.*`) | `project_settings` テーブル | プロジェクト固有 |
 | Editor (フォント / 行間 / アニメーション / インライン AI / Beat 表示 / `goal.dailyDefaultChars` 等のユーザー嗜好) | `global-settings.json` | グローバル |
 | Editor (`wordBreak` / `lineBreak` / `paragraphIndent` / `textAutospace` / `verticalMode` / `tateChuYoko` / `targetCharCount` / `goal.dailyChars`) | `project_settings` テーブル | プロジェクト固有（作品ごとに変えうる） |
-| Display (theme / colorTheme / uiLanguage / uiScale / `display.uiFontFamily` / `display.cardLayout`) | `global-settings.json` | グローバル |
-| Display (reduceMotion / Glass / Codex highlight / Attribution opacity 等) | `global-settings.json`（`KEY_SCOPE` 上は `global`） | グローバル |
+| Display (theme / colorTheme / uiLanguage / uiScale / `display.uiFontFamily`) | `global-settings.json` | グローバル |
+| Display (reduceMotion / Codex highlight / Attribution opacity 等) | `global-settings.json`（`KEY_SCOPE` 上は `global`） | グローバル |
 | Keys (`keys.bindings`) | `global-settings.json` | グローバル |
 | Data (バックアップ / リビジョン) | `global-settings.json` | グローバル |
 | Map (`map.defaultStickyPaletteId` / `map.defaultStickyColorSlot` / `map.defaultEdgeStyle`) | `global-settings.json` | グローバル |

@@ -78,7 +78,6 @@ import {
   getMergedBindings,
   matchesBinding,
 } from "@/features/settings/keybindings";
-import { invoke } from "@/lib/tauri";
 import { onWindowCloseRequested } from "@/lib/windowControls";
 import {
   getScreenshotPanelId,
@@ -409,39 +408,6 @@ function EditorScreen() {
   const [transferTab, setTransferTab] = useState<TransferTab>("import");
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
-  const glassEnabled = useSettingsStore((s) =>
-    s.getBoolean("display.glassEffectEnabled", false),
-  );
-  const cardLayout = useSettingsStore((s) =>
-    s.getBoolean("display.cardLayout", true),
-  );
-  const glassTransparency = useSettingsStore((s) =>
-    s.getNumber("display.glassTransparency", 30),
-  );
-  const glassBackdropGradient = useSettingsStore((s) =>
-    s.getBoolean("display.glassBackdropGradient", true),
-  );
-  const glassNativeVibrancy = useSettingsStore((s) =>
-    s.getBoolean("display.glassNativeVibrancy", true),
-  );
-  const glassSurfaceShell = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfaceShell", true),
-  );
-  const glassSurfaceDock = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfaceDock", true),
-  );
-  const glassSurfacePanels = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfacePanels", true),
-  );
-  const glassSurfaceChat = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfaceChat", true),
-  );
-  const glassSurfacePopovers = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfacePopovers", true),
-  );
-  const glassSurfaceEditorChrome = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfaceEditorChrome", true),
-  );
   const mac = isMac();
 
   // IME dictionary snapshot + active-project pointer (Tauri/Electron/browser-safe).
@@ -469,34 +435,6 @@ function EditorScreen() {
     if (!runtimeCapabilities.secureSecretStore) return;
     void useLicenseStore.getState().refresh();
   }, [runtimeCapabilities.secureSecretStore]);
-
-  useEffect(() => {
-    const html = document.documentElement;
-    if (glassEnabled) {
-      html.dataset.glassEnabled = "true";
-    } else {
-      delete html.dataset.glassEnabled;
-    }
-    html.dataset.glassPopovers =
-      glassEnabled && glassSurfacePopovers ? "true" : "false";
-    const clamped = Math.max(0, Math.min(90, glassTransparency));
-    html.style.setProperty("--glass-transparency-pct", `${clamped}%`);
-
-    return () => {
-      delete html.dataset.glassEnabled;
-      delete html.dataset.glassPopovers;
-      html.style.removeProperty("--glass-transparency-pct");
-    };
-  }, [glassEnabled, glassSurfacePopovers, glassTransparency]);
-
-  useEffect(() => {
-    invoke("set_window_vibrancy", {
-      enabled: glassEnabled && glassNativeVibrancy,
-    }).catch(() => {});
-    return () => {
-      invoke("set_window_vibrancy", { enabled: false }).catch(() => {});
-    };
-  }, [glassEnabled, glassNativeVibrancy]);
 
   // Re-run SampleTour: open/re-seed sample workspace then start tour
   useEffect(() => {
@@ -781,15 +719,6 @@ function EditorScreen() {
   return (
     <div
       className="app-shell flex h-screen flex-col"
-      data-card={cardLayout ? "true" : undefined}
-      data-glass-enabled={glassEnabled ? "true" : undefined}
-      data-glass-shell={glassSurfaceShell ? "true" : undefined}
-      data-glass-dock={glassSurfaceDock ? "true" : undefined}
-      data-glass-panels={glassSurfacePanels ? "true" : undefined}
-      data-glass-chat={glassSurfaceChat ? "true" : undefined}
-      data-glass-popovers={glassSurfacePopovers ? "true" : undefined}
-      data-glass-editor-chrome={glassSurfaceEditorChrome ? "true" : undefined}
-      data-glass-gradient={glassBackdropGradient ? "true" : undefined}
       data-platform-mac={mac ? "true" : undefined}
       data-zen-mode={editorZenMode ? "true" : undefined}
     >

@@ -224,7 +224,6 @@ border:     下辺に border-b border-border
 flex:       items-center gap-3（3 レール: left / center / right、各レール内も gap-3）
 shrink:     flex-shrink-0（ドックゾーンの高さに押しつぶされない）
 drag:       data-tauri-drag-region（ヘッダー全体・各レールに付与。中央 CommandCenterBar は自前で opt-out）
-glass:      glass-shell クラスで背景ぼかし/グラスエフェクトを継承
 ```
 
 `py-2`（上下 8px）は、ボタンの上下に Tauri のドラッグ領域帯を確保するため。`py-1`（4px）では掴みづらく、中央 `CommandCenterBar` の drag opt-out と相まってウィンドウ移動できない事象が出ていた。中央スロットが真の中心であることは `HeaderBarLayout.browser.test.tsx` が実寸 assert でゲートしている。

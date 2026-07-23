@@ -72,7 +72,7 @@ export const AnimatedSlotPanel = memo(function AnimatedSlotPanel({
               aria-hidden={!isActive}
               inert={!isActive}
               className={cn(
-                "gx-panel glass-region-panel absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden",
+                "gx-panel absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden",
                 isDragging && isActive && "gx-panel--dragging",
               )}
               initial={false}

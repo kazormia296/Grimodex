@@ -33,7 +33,7 @@ interface UseAnchoredPopoverResult {
  * トリガ基準で `document.body` に portal する固定配置ポップオーバーのための
  * 位置計算 + 外側クリック/Escape での閉じ処理をまとめる hook。
  *
- * `.glass-chat`（チャットパネル）など `backdrop-filter` を持つ祖先は CSS 仕様上
+ * `backdrop-filter` を持つ祖先は CSS 仕様上
  * stacking context と containing block を作るため、その内側の inline
  * `position: absolute` ポップオーバーは z-index をいくら上げても兄弟パネルの
  * 下に埋もれ、さらに祖先の `overflow: hidden` でクリップされる。対策は

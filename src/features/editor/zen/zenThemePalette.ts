@@ -105,11 +105,11 @@ function paletteFromTheme(theme: ThemePalette): ZenThemePalette {
     background,
     colors: [
       normalizeZenThemeColor(
-        theme["--glass-tint-a"],
+        theme["--ambient-tint-a"],
         FALLBACK_PALETTE.colors[0],
       ),
       normalizeZenThemeColor(
-        theme["--glass-tint-b"],
+        theme["--ambient-tint-b"],
         FALLBACK_PALETTE.colors[1],
       ),
       normalizeZenThemeColor(

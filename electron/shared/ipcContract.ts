@@ -2336,7 +2336,6 @@ export type ShellCommandHandlers = Readonly<
  * 到達不能だった旧 external_mount_list は両ランタイムから撤去済み。
  */
 export const SHELL_COMMAND_NAMES: readonly string[] = [
-  "set_window_vibrancy",
   "export_save_text",
   "export_save_bytes",
   "open_log_dir",

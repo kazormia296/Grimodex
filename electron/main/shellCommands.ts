@@ -3,7 +3,7 @@
  *
  * 2 系統ある:
  * 1. **Tauri コマンド互換**（grim:invoke ルーター経由、Envelope は ipcContract の
- *    dispatchInvoke が畳む）: set_window_vibrancy / export / logs
+ *    dispatchInvoke が畳む）: export / logs
  * 2. **ブリッジ native API**（dialog / fs / openExternal / getVersion / zoom /
  *    windowControls — 専用チャネル + Envelope。preload 側で解封して
  *    Promise reject に変換する）
@@ -39,11 +39,6 @@ const BOUNDED_READ_CHUNK_BYTES = 64 * 1024;
 // 1. Tauri コマンド互換（grim:invoke ルーターから呼ばれる）
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** テスト用の最小窓インターフェース（BrowserWindow は構造的に満たす）。 */
-export interface VibrancyWindowLike {
-  setVibrancy(type: "under-window" | null): void;
-}
-
 /** export / Vivliostyle が共有する、renderer非指定のnative保存dialog入力。 */
 export interface SavePathDialogOptions {
   suggestedName: string;
@@ -78,24 +73,21 @@ function requireArgString(args: CommandArgs, key: string, cmd: string): string {
  * キャンセル時は null。
  */
 export async function showSavePathDialog(
-  win: VibrancyWindowLike | null,
+  win: BrowserWindow | null,
   options: SavePathDialogOptions,
 ): Promise<string | null> {
   const dialogOptions = {
     defaultPath: options.suggestedName,
     filters: [{ name: options.filterName, extensions: options.extensions }],
   };
-  // ipc.ts が渡す実体は BrowserWindow（VibrancyWindowLike は単体テスト向けの
-  // 構造的部分型）。保存ダイアログの親付けにのみ実型が要るためここで戻す。
-  const parent = win as unknown as BrowserWindow | null;
-  const result = parent
-    ? await dialog.showSaveDialog(parent, dialogOptions)
+  const result = win
+    ? await dialog.showSaveDialog(win, dialogOptions)
     : await dialog.showSaveDialog(dialogOptions);
   return result.canceled || !result.filePath ? null : result.filePath;
 }
 
 async function promptSavePath(
-  win: VibrancyWindowLike | null,
+  win: BrowserWindow | null,
   cmd: string,
   args: CommandArgs,
 ): Promise<string | null> {
@@ -121,23 +113,14 @@ function decodeBase64Strict(b64: string): Buffer {
 
 /**
  * invoke 1 件ぶんの main-TS コマンドハンドラを組み立てる。
- * `win` は送信元窓（set_window_vibrancy の対象と保存ダイアログの親。
- * vibrancy は Rust 実装と同じく macOS 以外は no-op — §6.6）。
+ * `win` は保存ダイアログの親となる送信元窓。
  * `logDir` はテスト注入点（既定は Rust と同一の `~/.grimodex/logs`）。
  */
 export function buildShellCommandHandlers(
-  win: VibrancyWindowLike | null,
-  platform: NodeJS.Platform = process.platform,
+  win: BrowserWindow | null,
   logDir: string = defaultLogDir(),
 ): ShellCommandHandlers {
   return {
-    set_window_vibrancy: (args: CommandArgs) => {
-      const enabled = args.enabled === true;
-      if (platform === "darwin" && win) {
-        win.setVibrancy(enabled ? "under-window" : null);
-      }
-      return Promise.resolve(null);
-    },
     // export 系（commands/export.rs の写像）: 保存できたら絶対パス、
     // キャンセル時は null（Tauri ワイヤと同形）。
     export_save_text: async (args: CommandArgs) => {

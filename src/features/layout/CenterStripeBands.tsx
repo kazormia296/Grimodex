@@ -8,7 +8,6 @@ import {
   MIN_SLOT_SIZE,
   slotSplitterPx,
 } from "./layoutConstants";
-import { useCardLayout } from "./cardLayout";
 import { useLayoutStore } from "./layoutStore";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import type { CenterStripeSegment } from "./useCenterSegments";
@@ -188,8 +187,7 @@ interface CenterStripeBandsProps {
 export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
-  const cardLayout = useCardLayout();
-  const dividerGapPx = slotSplitterPx(cardLayout);
+  const dividerGapPx = slotSplitterPx();
   const showDropZones = useDragDropZonesReady(
     Boolean(draggingPanel && !layoutLocked),
   );

@@ -47,7 +47,7 @@
     "lint:fix": "eslint src --fix",
     "verify:frontend": "pnpm build:workspace:dependencies && pnpm exec tsc --noEmit && pnpm lint && pnpm validate:architecture && pnpm test:browser-ci && pnpm test:node --run",
     "build:workspace:dependencies": "pnpm --filter @grimodex/scan-contract build && pnpm --filter @grimodex/scan-core build",
-    "test:cloudflare-editor-deploy": "node --test scripts/cloudflare-editor-deploy.test.mjs scripts/web-editor-artifact.test.mjs",
+    "test:cloudflare-editor-deploy": "node --test scripts/cloudflare-editor-deploy.test.mjs scripts/cloudflare-editor-workflow.test.mjs scripts/web-editor-artifact.test.mjs",
     "validate:web-editor-artifact": "node scripts/validate-web-editor-artifact.mjs dist",
     "editor:cloudflare": "node scripts/cloudflare-editor-deploy.mjs",
     "tauri": "tauri",

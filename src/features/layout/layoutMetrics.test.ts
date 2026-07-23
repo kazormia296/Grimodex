@@ -4,7 +4,6 @@ import {
   buildCenterStripeGridTemplateColumns,
   buildLayoutGridTemplateAreas,
   buildLayoutGridTemplateColumns,
-  buildLayoutGridTemplateRows,
   buildZoomGridTemplateColumns,
   buildZoomGridTemplateRows,
   computeLayoutGridMetrics,
@@ -13,7 +12,6 @@ import {
   sideLayoutChromePx,
 } from "./layoutMetrics";
 import {
-  LEGACY_SPLITTER_PX,
   SPLITTER_GUTTER_PX,
   STRIPE_GAP_PX,
   STRIPE_SIZE,
@@ -32,13 +30,10 @@ describe("layoutMetrics", () => {
   });
 
   it("bottomDockPx includes stripe, content, and the content↔stripe gap", () => {
-    // カードレイアウト ON: content↔icon-stripe 間の stripe-gap を含む。
     expect(bottomDockPx(true, true, 220)).toBe(
       STRIPE_SIZE + 220 + STRIPE_GAP_PX,
     );
     expect(bottomDockPx(true, false, 220)).toBe(STRIPE_SIZE);
-    // カードレイアウト OFF: ギャップなし。
-    expect(bottomDockPx(true, true, 220, false)).toBe(STRIPE_SIZE + 220);
   });
 
   it("computeLayoutGridMetrics splits stripe, content, and splitter columns", () => {
@@ -86,35 +81,6 @@ describe("layoutMetrics", () => {
     );
     expect(sideLayoutChromePx(m)).toBe(
       STRIPE_SIZE * 2 + 260 + 340 + SPLITTER_GUTTER_PX * 2 + STRIPE_GAP_PX * 2,
-    );
-  });
-
-  it("omits gap tracks and uses thin splitters when cardLayout is off", () => {
-    const m = computeLayoutGridMetrics({
-      hasLeft: true,
-      hasRight: true,
-      hasBottom: true,
-      leftOpen: true,
-      rightOpen: true,
-      bottomOpen: true,
-      centerBandVisible: true,
-      leftSize: 260,
-      rightSize: 340,
-      bottomSize: 220,
-      cardLayout: false,
-    });
-
-    expect(m.gapLeftPx).toBe(0);
-    expect(m.gapRightPx).toBe(0);
-    expect(m.gapRowPx).toBe(0);
-    expect(m.leftSplitterPx).toBe(LEGACY_SPLITTER_PX);
-    expect(m.rightSplitterPx).toBe(LEGACY_SPLITTER_PX);
-    expect(m.bottomCellPx).toBe(m.bottomDockPx + LEGACY_SPLITTER_PX);
-    expect(buildLayoutGridTemplateColumns(m)).toBe(
-      `${STRIPE_SIZE}px 0px 260px ${LEGACY_SPLITTER_PX}px minmax(0, 1fr) ${LEGACY_SPLITTER_PX}px 340px 0px ${STRIPE_SIZE}px`,
-    );
-    expect(buildLayoutGridTemplateRows(m, true)).toBe(
-      `${STRIPE_SIZE}px 0px 1fr ${m.bottomCellPx}px`,
     );
   });
 
@@ -201,22 +167,6 @@ describe("layoutMetrics", () => {
     expect(m.rightStripePx).toBe(STRIPE_SIZE);
     // content を閉じていても bottom stripe を浮かせる stripe-gap は残る。
     expect(m.bottomCellPx).toBe(STRIPE_SIZE + STRIPE_GAP_PX);
-
-    // カードレイアウト OFF: 閉じた bottom には gap を入れない（旧レイアウト）。
-    const legacy = computeLayoutGridMetrics({
-      hasLeft: true,
-      hasRight: true,
-      hasBottom: true,
-      leftOpen: false,
-      rightOpen: false,
-      bottomOpen: false,
-      centerBandVisible: false,
-      leftSize: 260,
-      rightSize: 340,
-      bottomSize: 220,
-      cardLayout: false,
-    });
-    expect(legacy.bottomCellPx).toBe(STRIPE_SIZE);
   });
 
   it("buildCenterStripeGridTemplateColumns spans the full 9-column grid", () => {

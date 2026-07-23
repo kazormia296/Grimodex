@@ -603,7 +603,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   }, [ragEnabled, setRagEnabled]);
 
   const __renderResult = (
-    <div className="glass-chat relative flex h-full flex-col bg-background">
+    <div className="chat-panel-surface relative flex h-full flex-col bg-background">
       {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
       <CodexPopover containerEl={messagesContainerEl} />
 

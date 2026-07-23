@@ -4,11 +4,11 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
-import { SettingToggle, ControlledToggle } from "../components/SettingToggle";
+import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { FontFamilySelect } from "../components/FontFamilySelect";
-import { useSettingBoolean, useSettingControl } from "../useSettingControl";
+import { useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "@/lib/colorThemes";
@@ -90,30 +90,6 @@ export function DisplayCategory({
     "true",
   );
   const setCodexHighlightEnabled = useCodexHighlightStore((s) => s.setEnabled);
-
-  // Card layout and the glass effect are mutually exclusive — enabling one
-  // turns the other off (both may be off: the legacy splitter-line layout).
-  // The master glass toggle additionally renders every glass-related control
-  // below inert (disabled + dimmed) while OFF; their stored values are
-  // preserved across the toggle.
-  const { value: cardLayout, setValue: setCardLayout } = useSettingBoolean(
-    "display.cardLayout",
-    true,
-  );
-  const { value: glassEnabled, setValue: setGlassEnabled } = useSettingBoolean(
-    "display.glassEffectEnabled",
-    false,
-  );
-  const glassChildrenDisabled = !glassEnabled;
-
-  const handleCardLayoutChange = (next: boolean) => {
-    setCardLayout(next);
-    if (next) setGlassEnabled(false);
-  };
-  const handleGlassChange = (next: boolean) => {
-    setGlassEnabled(next);
-    if (next) setCardLayout(false);
-  };
 
   // Sync codex highlight to store
   useEffect(() => {
@@ -238,21 +214,6 @@ export function DisplayCategory({
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title={t("settings.display.layout", "Layout")}>
-        <SettingRow
-          label={t("settings.display.cardLayout", "Card layout")}
-          description={t(
-            "settings.display.cardLayoutDesc",
-            "Float panels as soft rounded cards separated by gaps. When off, panels abut with 1px splitter lines. Mutually exclusive with the glass effect.",
-          )}
-        >
-          <ControlledToggle
-            value={cardLayout}
-            onChange={handleCardLayoutChange}
-          />
-        </SettingRow>
-      </SettingSection>
-
       {onOpenBackgroundStudio && (
         <SettingSection title={t("settings.display.editorBackground")}>
           <SettingRow
@@ -271,139 +232,6 @@ export function DisplayCategory({
           </SettingRow>
         </SettingSection>
       )}
-
-      <SettingSection title={t("settings.display.glass", "Glass")}>
-        <SettingRow
-          label={t(
-            "settings.display.glassEffectEnabled",
-            "Enable glass effect",
-          )}
-          description={t(
-            "settings.display.glassEffectEnabledDesc",
-            "Applies translucent glass surfaces across the app chrome. Mutually exclusive with the card layout.",
-          )}
-        >
-          <ControlledToggle value={glassEnabled} onChange={handleGlassChange} />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.display.glassTransparency", "Transparency")}
-          description={t(
-            "settings.display.glassTransparencyDesc",
-            "Higher values let more of what's behind the window show through, uniformly across all glass surfaces.",
-          )}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingSlider
-            settingKey="display.glassTransparency"
-            min={0}
-            max={90}
-            step={5}
-            defaultValue={30}
-            format={(v) => `${v}%`}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t(
-            "settings.display.glassBackdropGradient",
-            "Tinted backdrop gradient",
-          )}
-          description={t(
-            "settings.display.glassBackdropGradientDesc",
-            "Adds a soft tinted highlight at the top corners using the active color theme. Turn off for a flat translucent backdrop.",
-          )}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingToggle
-            settingKey="display.glassBackdropGradient"
-            defaultValue={true}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t(
-            "settings.display.glassNativeVibrancy",
-            "macOS native vibrancy",
-          )}
-          description={t(
-            "settings.display.glassNativeVibrancyDesc",
-            "Uses the native macOS window material when available.",
-          )}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingToggle
-            settingKey="display.glassNativeVibrancy"
-            defaultValue={true}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.display.glassSurfaceShell", "Window and header")}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingToggle
-            settingKey="display.glassSurfaceShell"
-            defaultValue={true}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.display.glassSurfaceDock", "Dock and tabs")}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingToggle
-            settingKey="display.glassSurfaceDock"
-            defaultValue={true}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.display.glassSurfacePanels", "Panels")}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingToggle
-            settingKey="display.glassSurfacePanels"
-            defaultValue={true}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.display.glassSurfaceChat", "Chat")}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingToggle
-            settingKey="display.glassSurfaceChat"
-            defaultValue={true}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t(
-            "settings.display.glassSurfacePopovers",
-            "Popovers and dialogs",
-          )}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingToggle
-            settingKey="display.glassSurfacePopovers"
-            defaultValue={true}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t(
-            "settings.display.glassSurfaceEditorChrome",
-            "Editor chrome",
-          )}
-          disabled={glassChildrenDisabled}
-        >
-          <SettingToggle
-            settingKey="display.glassSurfaceEditorChrome"
-            defaultValue={true}
-            disabled={glassChildrenDisabled}
-          />
-        </SettingRow>
-      </SettingSection>
 
       <SettingSection title={t("settings.display.codexHighlight")}>
         <SettingRow label={t("settings.display.enableHighlight")}>

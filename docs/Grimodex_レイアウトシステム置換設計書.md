@@ -305,7 +305,7 @@ Phase 1 で実装。Dockview 専用の `layoutValidation.ts` に替わる軽量�
   アンマウントされる。
 - `EditorArea` は `<SceneEditor/>` を 1 つ持ち、`registerEditorFocusHandler` 経由で
   `requestEditorFocus()`（`layoutStore`）を公開する。
-- glass テーマ: `SlotView` / `EditorArea` は `glass-region-panel` クラスで描画する。
+- カードテーマ: `SlotView` / `EditorArea` は `gx-panel` クラスで描画する。
 - `Splitter` は `splitter/SplitterHandle`（pointer ドラッグ）+ `splitter/SplitterChrome`
   （見た目）+ `splitter/useSplitterKeyboard`（キーボードリサイズ）の合成。region splitter は
   `keyboardResize` を有効化し、`role="separator"` を focusable（`tabIndex=0`、`layoutLocked`

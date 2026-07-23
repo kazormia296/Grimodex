@@ -107,43 +107,6 @@
      stickyPalettes.ts. See `.sticky-paper` rule below for the consumer. */
   /* Subtle paper noise texture (fractalNoise, ~5% opacity) */
   --sticky-noise: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.08 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  /* Glass transparency: 0% = fully solid, 90% = nearly see-through.
-     Set globally from display.glassTransparency via JS (see App.tsx). */
-  --glass-transparency-pct: 30%;
-  /* All glass surfaces share the same alpha so panels/chat/header look
-     consistently translucent. `-strong` is a slightly more opaque variant
-     used for popovers/dialogs and dockview tab strips. */
-  --glass-bg: color-mix(
-    in oklch,
-    var(--background) calc(100% - var(--glass-transparency-pct)),
-    transparent
-  );
-  --glass-bg-strong: color-mix(
-    in oklch,
-    var(--background) calc(100% - var(--glass-transparency-pct) * 0.55),
-    transparent
-  );
-  /* Editor body uses the theme's `--content-background` (paper / sepia /
-     cool-white etc., overridden per color theme) so the writing surface
-     keeps its distinctive tint even when glass is on. */
-  --glass-content-bg: color-mix(
-    in oklch,
-    var(--content-background) calc(100% - var(--glass-transparency-pct)),
-    transparent
-  );
-  --glass-border: color-mix(in oklch, white 42%, var(--border));
-  /* Glass intensity is fixed to "lightweight" — these tuned values used to
-     live under `[data-glass-intensity="lightweight"]` selectors. The user
-     facing intensity dropdown was removed, so the defaults below ARE the
-     intensity. Bump them directly here if you want a heavier feel. */
-  --glass-blur: 6px;
-  --glass-saturate: 1.08;
-  --glass-shadow: 0 8px 18px rgb(0 0 0 / 0.1);
-  /* Backdrop gradient tints. Overridden per color theme via THEME_CSS_VARS;
-     these values are the fallback when no theme is applied. */
-  --glass-tint-a: var(--primary);
-  --glass-tint-b: var(--content-accent);
-
   /* トグルスイッチ専用トークン。 */
   --switch-track-off: var(--muted);
   --switch-track-on: var(--primary);
@@ -245,8 +208,6 @@
   --kouetsu-mark-mid: #453722;
   --kouetsu-mark-low: #2e2a4a;
   --kouetsu-ok: #5dbd88;
-  --glass-border: color-mix(in oklch, white 16%, var(--border));
-  --glass-shadow: 0 18px 48px rgb(0 0 0 / 0.36);
   /* Sticky paper bg in dark mode is computed from the inline --sticky-bg-light
      variable via color-mix in the .sticky-paper rule (8% black mixed in). */
 
@@ -480,7 +441,7 @@ button[role="switch"][aria-checked="true"] {
 
 /* Background-aware editor chrome. It is solid when the ambient background is
    disabled, and only becomes a lightly blurred pane while a shader is actually
-   present. This stays independent from the app-wide glass appearance setting. */
+   present. */
 .editor-background-glass {
   background-color: var(--background);
   backdrop-filter: none;
@@ -539,233 +500,14 @@ button[role="switch"][aria-checked="true"] {
   box-shadow: 0 0 0 1px var(--content-border);
 }
 
-/* App-shell backdrop: flat translucent base. Its alpha scales with the
-   user's transparency slider so cranking the slider up actually shows
-   more of the desktop through the window. */
-.app-shell[data-glass-enabled="true"] {
-  background: color-mix(
-    in oklch,
-    var(--background) calc(100% - var(--glass-transparency-pct) * 0.8),
-    transparent
-  );
-}
-
-/* The app-wide aurora is painted once behind every interactive surface.
-   `.app-shell` is an isolated stacking context, so its negative layer sits
-   above the shell background but below headers, panels and portaled content.
-   This keeps one continuous tint without viewport-fixed backgrounds on every
-   nested glass surface. Colours come from
-   `--glass-tint-a` (top-left) and `--glass-tint-b` (bottom-right),
-   overridden per color theme in colorThemes.ts. */
-.app-shell[data-glass-enabled="true"][data-glass-gradient="true"] {
-  --glass-aurora:
-    radial-gradient(
-      120% 70% at 8% 0%,
-      color-mix(in oklch, var(--glass-tint-a) 12%, transparent),
-      transparent 54%
-    ),
-    radial-gradient(
-      100% 80% at 100% 20%,
-      color-mix(in oklch, var(--glass-tint-b) 10%, transparent),
-      transparent 58%
-    );
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-gradient="true"]::before {
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  content: "";
-  pointer-events: none;
-  background-image: var(--glass-aurora);
-}
-
-html[data-glass-enabled="true"],
-html[data-glass-enabled="true"] body {
-  background: transparent;
-}
-
-/* When the glass effect is enabled but a surface's toggle is OFF, that
-   surface must stay SOLID so toggling more surfaces ON intuitively means
-   "more transparency", not less. Without these defaults, `.glass-shell`
-   and `.glass-editor-chrome` (which have no `bg-*` Tailwind class on
-   their JSX) would fall through to the translucent app-shell gradient
-   and look MORE transparent than when their toggle is ON. */
-.app-shell[data-glass-enabled="true"] .glass-shell,
-.app-shell[data-glass-enabled="true"] .glass-editor-chrome {
-  background-color: var(--background);
-}
-
-.app-shell[data-glass-enabled="true"] .glass-surface,
-.app-shell[data-glass-enabled="true"][data-glass-shell="true"] .glass-shell,
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"] .glass-chat,
-.app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
-  .glass-editor-chrome {
-  background-color: var(--glass-bg);
-  border-color: var(--glass-border);
-  box-shadow: var(--glass-shadow);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
-}
-
-/* `.glass-shell` (the top-level header) sits ABOVE the DockView container
-   in DOM order, but `backdrop-filter` traps its absolutely-positioned
-   children (dropdown menus extending below the bar) inside its own
-   stacking context. Without an explicit z-index here, the header's whole
-   stacking context renders at z:auto, and the later-painted DockView
-   wrapper covers any dropdowns that overflow downward — making the menus
-   look "invisible". `position: relative; z-index: 30` lifts the entire
-   header context above the dock so dropdowns paint over panel content
-   normally, while staying under Tailwind's z-50 modals/dialogs. */
-.app-shell[data-glass-enabled="true"][data-glass-shell="true"] .glass-shell {
-  position: relative;
-  z-index: 30;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  .glass-region-panel,
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  [data-region-content] {
-  background: var(--glass-bg);
-  border-color: var(--glass-border);
-}
-
-/* v2 layout: panel surfaces inside region slots (replaces Dockview .dv-content-container) */
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  [data-slot-panel] {
-  background: transparent;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  [data-slot-panel]
-  .bg-background:not(.tiptap):not(.ProseMirror),
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  [data-slot-panel]
-  .bg-card {
-  background-color: var(--glass-bg);
-}
-
-/* Tab strip + active sash retain the stronger glass fill while the shared
-   shell layer supplies their continuous aurora. The DockView content
-   container remains a pass-through stacking parent. */
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  .dv-tabs-and-actions-container,
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"] .dv-active-sash {
-  background-color: var(--glass-bg-strong);
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  .dv-tabs-and-actions-container,
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"] .dv-active-sash,
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .dv-content-container {
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"] .dv-groupview {
-  background: transparent;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .dv-content-container
-  > * {
-  background: transparent;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .dv-content-container
-  .bg-background:not(.tiptap):not(.ProseMirror),
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .dv-content-container
-  .bg-card {
-  background-color: var(--glass-bg);
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .glass-editor-body {
-  background-color: var(--glass-content-bg);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
-}
-
-/* Chat panel uses the same `--glass-bg` as other panels so its opacity is
-   consistent. The slider (`display.glassTransparency`) is the single source
-   of truth — previously chat had hardcoded 48% / 42% rules that fought with
-   the panels rule and made chat look noticeably more translucent than the
-   surrounding surfaces depending on which toggles were on. */
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"] .glass-chat,
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"]
-  .glass-chat
-  .bg-background {
-  background-color: var(--glass-bg);
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"]
-  .glass-chat
-  .bg-accent\/30 {
-  background-color: color-mix(in oklch, var(--accent) 30%, transparent);
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"]
-  .glass-chat
-  input.bg-background {
-  background-color: transparent;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-popovers="true"] .bg-popover,
-.app-shell[data-glass-enabled="true"][data-glass-popovers="true"]
-  [role="dialog"],
-.app-shell[data-glass-enabled="true"][data-glass-popovers="true"]
-  [data-radix-popper-content-wrapper]
-  > *,
-html[data-glass-enabled="true"][data-glass-popovers="true"] .bg-popover,
-html[data-glass-enabled="true"][data-glass-popovers="true"] [role="dialog"],
-html[data-glass-enabled="true"][data-glass-popovers="true"]
-  [data-radix-popper-content-wrapper]
-  > * {
-  background-color: var(--glass-bg-strong);
-  border-color: var(--glass-border);
-  box-shadow: var(--glass-shadow);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
-  .border-b.border-border,
-.app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
-  .border-t.border-border {
-  border-color: var(--glass-border);
-}
-
-@supports not (
-  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
-) {
-  .app-shell[data-glass-enabled="true"] .glass-surface,
-  .app-shell[data-glass-enabled="true"][data-glass-shell="true"] .glass-shell,
-  .app-shell[data-glass-enabled="true"][data-glass-chat="true"] .glass-chat,
-  .app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
-    .glass-editor-chrome {
-    background-color: var(--glass-bg-strong);
-    box-shadow: 0 8px 20px rgb(0 0 0 / 0.12);
-  }
-}
-
 /* ───────────────────────────────────────────────────────────
    Card layout system (D案)
 
    `.gx-panel` is applied to every top-level panel surface (tool
-   panels, stripes/rails, the editor). The entire card treatment —
-   radius, dome gradient, rim shadow, canvas — is gated to
-   `[data-card="true"]`, a toggle (display.cardLayout) that is mutually
-   exclusive with the glass effect. When OFF, the legacy splitter-line
-   layout is restored (see the `:not([data-card="true"])` block).
+   panels, stripes/rails, the editor). The card treatment is always active:
+   radius, dome gradient, rim shadow and canvas are part of the base layout.
    ─────────────────────────────────────────────────────────── */
-.app-shell[data-card="true"] .gx-panel {
+.app-shell .gx-panel {
   border-radius: var(--gx-panel-radius);
   background: var(--gx-panel-bg);
   border: var(--gx-panel-border);
@@ -778,16 +520,16 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
    gradient bleeds through the transparent ones and leaves the opaque
    ones reading as black boxes. A flat surface keeps all chrome bands
    tonally uniform. Must follow the `.gx-panel` rule to win on order. */
-.app-shell[data-card="true"] .gx-panel--flat {
+.app-shell .gx-panel--flat {
   background: var(--background);
 }
 
 /* Animation wrappers must not clip card shadows into inter-panel gaps. */
-.app-shell[data-card="true"] [data-animated-region] {
+.app-shell [data-animated-region] {
   overflow: visible;
 }
 
-.app-shell[data-card="true"] [data-region-content] {
+.app-shell [data-region-content] {
   overflow: visible;
 }
 
@@ -795,12 +537,12 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
    あると stripe 内側の flex 配分域が両端 1px ずつ縮み、content 側の Slot
    Splitter 位置と divider 位置がズレる（content には border が無い）。
    center stripe は .gx-panel を付けていないため対象外。 */
-.app-shell[data-card="true"] [data-stripe-region].gx-panel {
+.app-shell [data-stripe-region].gx-panel {
   border: none;
 }
 
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
-.app-shell[data-card="true"] [data-layout-shell] {
+.app-shell [data-layout-shell] {
   background: var(--gx-canvas-bg);
 }
 
@@ -808,16 +550,16 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
    so the `.gx-panel` background shows. Direct-child scope only — the
    editor's paper surface and nested inputs keep their fill. tiptap /
    ProseMirror writing surfaces are always excluded. */
-.app-shell[data-card="true"]
+.app-shell
   [data-slot-panel].gx-panel
   > .bg-background:not(.tiptap):not(.ProseMirror),
-.app-shell[data-card="true"] [data-slot-panel].gx-panel > .bg-card {
+.app-shell [data-slot-panel].gx-panel > .bg-card {
   background-color: transparent;
 }
 
 /* Dragging a panel lifts the card — a touch more shadow + scale.
    Hover is intentionally left alone (the user rejected hover motion). */
-.app-shell[data-card="true"] .gx-panel--dragging {
+.app-shell .gx-panel--dragging {
   box-shadow:
     0 48px 96px rgba(0, 0, 0, 0.66),
     0 20px 40px rgba(0, 0, 0, 0.5),
@@ -828,27 +570,6 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   z-index: 10;
 }
 
-/* Card layout OFF — restore the legacy splitter-line chrome. The JSX no
-   longer carries these borders / fills, so they live here, gated to
-   the absence of the card flag. Stripe/center-stripe panels abut
-   the editor with hairline dividers; gaps and radius are all 0. */
-.app-shell:not([data-card="true"])
-  [data-stripe-root]:not([data-stripe-region="center"]),
-.app-shell:not([data-card="true"]) [data-center-stripe] {
-  background-color: color-mix(in oklch, var(--background) 40%, transparent);
-}
-.app-shell:not([data-card="true"]) [data-stripe-region="left"] {
-  border-right: 1px solid var(--border);
-}
-.app-shell:not([data-card="true"]) [data-stripe-region="right"] {
-  border-left: 1px solid var(--border);
-}
-.app-shell:not([data-card="true"]) [data-stripe-region="bottom"] {
-  border-top: 1px solid var(--border);
-}
-.app-shell:not([data-card="true"]) [data-center-stripe] {
-  border-bottom: 1px solid var(--border);
-}
 
 .dockview-theme-dark.dockview-theme-dark {
   --dv-group-view-background-color: var(--background);

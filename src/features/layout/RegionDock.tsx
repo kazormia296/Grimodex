@@ -4,7 +4,6 @@ import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { RegionStripe } from "./RegionStripe";
 import { RegionContent } from "./RegionContent";
 import { useLayoutStore } from "./layoutStore";
-import { useCardLayout } from "./cardLayout";
 import type { RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
 
@@ -77,8 +76,6 @@ function BottomRegionDock({
       (slot) => slot.activePanel === id,
     );
   });
-  const cardLayout = useCardLayout();
-
   return (
     <div
       data-region-dock="bottom"
@@ -86,7 +83,7 @@ function BottomRegionDock({
       // content と icon stripe の間の stripe-gap。bottomDockPx が同じ
       // 値をドック高さに加算しているので overflow しない。
       style={{
-        gap: cardLayout && !bottomZoomed ? "var(--gx-stripe-gap)" : undefined,
+        gap: !bottomZoomed ? "var(--gx-stripe-gap)" : undefined,
       }}
     >
       <AnimatedRegionChrome

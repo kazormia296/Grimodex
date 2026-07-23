@@ -47,7 +47,7 @@ import { buildDefaultLayoutState } from "./layoutStateUtils";
 import type { LayoutState, ToolWindowPanelId } from "./layoutTypes";
 
 const SHELL_SIZE = { width: 1200, height: 800 };
-// cardLayout の外周 padding + パネル間ギャップぶんの許容差。
+// カードレイアウトの外周 padding + パネル間ギャップぶんの許容差。
 const CHROME_TOLERANCE_PX = 48;
 // zoom 中は上端に復帰バー行（STRIPE_SIZE）+ gap 行が残るため、高さ方向は
 // その分を追加で許容する。
@@ -84,7 +84,6 @@ function shellView(zenMode = false) {
   return (
     <div
       className="app-shell"
-      data-card="true"
       data-shell-host
       style={{
         position: "fixed",

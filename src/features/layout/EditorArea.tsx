@@ -67,7 +67,7 @@ export const EditorArea = memo(function EditorArea() {
             ? { duration: 0 }
             : { duration: DURATIONS.normal, ease: EASINGS.easeOut }
         }
-        className="editor-fluid-glass gx-panel gx-panel--flat glass-region-panel h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
+        className="editor-fluid-glass gx-panel gx-panel--flat h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
       >
         <SceneEditor />
       </motion.div>

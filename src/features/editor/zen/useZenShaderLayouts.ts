@@ -181,15 +181,6 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
             if (mutationAffectsZenShaderLayout(records)) schedule();
           });
     mutationObserver?.observe(mutationRoot, { childList: true, subtree: true });
-    // Card mode changes the Editor's computed radius without resizing it.
-    // The app shell sits above #main-content, so observe it separately.
-    const appShell = document.querySelector<HTMLElement>(".app-shell");
-    if (appShell && appShell !== mutationRoot) {
-      mutationObserver?.observe(appShell, {
-        attributes: true,
-        attributeFilter: ["data-card"],
-      });
-    }
     window.addEventListener("resize", schedule);
     update();
 

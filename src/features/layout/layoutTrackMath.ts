@@ -1,5 +1,4 @@
 import { slotSplitterPx } from "./layoutConstants";
-import { isCardLayout } from "./cardLayout";
 
 /**
  * 主軸方向の比率を持つリサイズ可能なレイアウト要素。
@@ -19,12 +18,12 @@ function withSizeRatio<T extends RatioItem>(item: T, sizeRatio: number): T {
 
 /**
  * open 要素が占有できる実効サイズ(px)。要素間の splitter / gap を差し引く。
- * gutterPx 既定は同一 region 内スロット間の幅（カードレイアウト ON/OFF 追従）。
+ * gutterPx 既定は同一 region 内カード間の幅。
  */
 export function getSlotLayoutBudget(
   openItemCount: number,
   layoutBudgetPx: number,
-  gutterPx: number = slotSplitterPx(isCardLayout()),
+  gutterPx: number = slotSplitterPx(),
 ): number {
   if (openItemCount <= 0) return 0;
   const gutterTotal = Math.max(0, openItemCount - 1) * gutterPx;

@@ -30,7 +30,6 @@ import {
 import { useLayoutStore } from "./layoutStore";
 import { useZoomReveal } from "./useZoomReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
-import { useCardLayout } from "./cardLayout";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
@@ -86,7 +85,6 @@ export const LayoutShell = memo(function LayoutShell({
   const hasBottom = segments.bottom.some((s) => s.panels.length > 0);
 
   const centerBandVisible = isCenterContentVisible(layout);
-  const cardLayout = useCardLayout();
   const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
   const clearMaximize = useLayoutStore((s) => s.clearMaximize);
 
@@ -125,15 +123,6 @@ export const LayoutShell = memo(function LayoutShell({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [zoomRegion, zenMode, clearMaximize]);
 
-  // カードレイアウト ON/OFF 切替で chrome 量が変わるため、切替時に保存済みの
-  // region サイズを即座に再クランプする（初回マウントでは何もしない）。
-  const cardLayoutRef = useRef(cardLayout);
-  useEffect(() => {
-    if (cardLayoutRef.current === cardLayout) return;
-    cardLayoutRef.current = cardLayout;
-    useLayoutStore.getState().reclampForViewport();
-  }, [cardLayout]);
-
   const metrics = useMemo(
     () =>
       computeLayoutGridMetrics({
@@ -147,7 +136,6 @@ export const LayoutShell = memo(function LayoutShell({
         leftSize: layout.regions.left.size,
         rightSize: layout.regions.right.size,
         bottomSize: layout.regions.bottom.size,
-        cardLayout,
       }),
     [
       bottomOpen,
@@ -160,7 +148,6 @@ export const LayoutShell = memo(function LayoutShell({
       layout.regions.right.size,
       leftOpen,
       rightOpen,
-      cardLayout,
     ],
   );
 
@@ -263,7 +250,7 @@ export const LayoutShell = memo(function LayoutShell({
           gridTemplateColumns,
           gridTemplateRows,
           gridTemplateAreas,
-          padding: zenMode ? 0 : cardLayout ? "var(--gx-outer-pad)" : undefined,
+          padding: zenMode ? 0 : "var(--gx-outer-pad)",
         }}
       >
         <div
@@ -395,14 +382,14 @@ export const LayoutShell = memo(function LayoutShell({
           >
             {effectiveZoomRegion !== null ? null : bottomOpen ? (
               <RegionResizeSplitter region="bottom" />
-            ) : cardLayout ? (
+            ) : (
               // content を閉じていても bottom stripe を浮かせるギャップ。
               <div
                 aria-hidden
                 className="shrink-0"
                 style={{ height: "var(--gx-stripe-gap)" }}
               />
-            ) : null}
+            )}
             <RegionDock
               region="bottom"
               stripeOrientation="horizontal"
