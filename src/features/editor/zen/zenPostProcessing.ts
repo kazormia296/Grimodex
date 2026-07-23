@@ -11,6 +11,7 @@ import {
 
 export interface ZenPostProcessRuntime extends ZenContrastGuardLayout {
   glassRect: ZenContrastGuardRect;
+  glassCornerRadius: number;
   textColor: [number, number, number];
   backdropColor: [number, number, number];
 }
@@ -19,6 +20,7 @@ const DEFAULT_RUNTIME: ZenPostProcessRuntime = {
   rect: [0, 0, 0, 0],
   feather: [0, 0, 0, 0],
   glassRect: [0, 0, 0, 0],
+  glassCornerRadius: 0,
   textColor: [0.85, 0.85, 0.85],
   backdropColor: [0.063, 0.075, 0.094],
 };
@@ -314,5 +316,6 @@ export function buildZenPostProcessUniforms(
     u_zenContrastSurfaceOpacity: config.opacity / 100,
     u_zenGlassRefraction: config.glass.enabled ? config.glass.refraction : 0,
     u_zenGlassRect: runtime.glassRect,
+    u_zenGlassCornerRadius: runtime.glassCornerRadius,
   };
 }

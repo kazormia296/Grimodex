@@ -11,10 +11,32 @@ const FLOAT_PRECISION_PATTERN =
 export const ZEN_GLASS_REFRACTION_FRAGMENT = String.raw`
 uniform float u_zenGlassRefraction;
 uniform vec4 u_zenGlassRect;
+uniform float u_zenGlassCornerRadius;
 
-float zenGlassEdgeProfile(float distancePx, float bandPx) {
-  if (distancePx < 0.0) return 0.0;
-  return 1.0 - smoothstep(0.0, max(1.0, bandPx), distancePx);
+float zenRoundedRectSignedDistance(
+  vec2 point,
+  vec2 halfSize,
+  float cornerRadius
+) {
+  vec2 distanceFromStraightEdges =
+    abs(point) - max(halfSize - vec2(cornerRadius), vec2(0.0));
+  return
+    length(max(distanceFromStraightEdges, vec2(0.0))) +
+    min(max(distanceFromStraightEdges.x, distanceFromStraightEdges.y), 0.0) -
+    cornerRadius;
+}
+
+vec2 zenSafeNormalize(vec2 value) {
+  float lengthSquared = dot(value, value);
+  return lengthSquared > 0.00001
+    ? value * inversesqrt(lengthSquared)
+    : vec2(0.0);
+}
+
+float zenGlassEdgeDistortion(float insideDistancePx, float depthPx) {
+  float edgeProximity =
+    1.0 - clamp(insideDistancePx / max(depthPx, 1.0), 0.0, 1.0);
+  return 1.0 - sqrt(max(1.0 - edgeProximity * edgeProximity, 0.0));
 }
 
 vec2 zenGlassOffsetPixels() {
@@ -27,42 +49,37 @@ vec2 zenGlassOffsetPixels() {
   }
 
   vec2 resolution = max(u_resolution, vec2(1.0));
-  vec2 uv = gl_FragCoord.xy / resolution;
-  float inside =
-    step(u_zenGlassRect.x, uv.x) *
-    step(u_zenGlassRect.y, uv.y) *
-    step(uv.x, u_zenGlassRect.z) *
-    step(uv.y, u_zenGlassRect.w);
-  if (inside < 0.5) return vec2(0.0);
-
   float pixelRatio = max(u_pixelRatio, 1.0);
-  float glassWidthPx = (u_zenGlassRect.z - u_zenGlassRect.x) * resolution.x;
-  float glassHeightPx = (u_zenGlassRect.w - u_zenGlassRect.y) * resolution.y;
-  float horizontalBandPx = min(48.0 * pixelRatio, glassWidthPx * 0.25);
-  float verticalBandPx = min(48.0 * pixelRatio, glassHeightPx * 0.25);
+  vec2 glassMinPx = u_zenGlassRect.xy * resolution;
+  vec2 glassMaxPx = u_zenGlassRect.zw * resolution;
+  vec2 glassSizePx = glassMaxPx - glassMinPx;
+  vec2 glassCenterPx = (glassMinPx + glassMaxPx) * 0.5;
+  float cornerRadiusPx = min(
+    max(0.0, u_zenGlassCornerRadius * pixelRatio),
+    min(glassSizePx.x, glassSizePx.y) * 0.5
+  );
+  float signedDistance = zenRoundedRectSignedDistance(
+    gl_FragCoord.xy - glassCenterPx,
+    glassSizePx * 0.5,
+    cornerRadiusPx
+  );
+  if (signedDistance > 0.0) return vec2(0.0);
 
-  float left = zenGlassEdgeProfile(
-    (uv.x - u_zenGlassRect.x) * resolution.x,
-    horizontalBandPx
+  float refractionDepthPx = min(
+    48.0 * pixelRatio,
+    max(glassSizePx.x, glassSizePx.y) * 0.25
   );
-  float bottom = zenGlassEdgeProfile(
-    (uv.y - u_zenGlassRect.y) * resolution.y,
-    verticalBandPx
+  float distortion = zenGlassEdgeDistortion(
+    -signedDistance,
+    refractionDepthPx
   );
-  float right = zenGlassEdgeProfile(
-    (u_zenGlassRect.z - uv.x) * resolution.x,
-    horizontalBandPx
-  );
-  float top = zenGlassEdgeProfile(
-    (u_zenGlassRect.w - uv.y) * resolution.y,
-    verticalBandPx
-  );
+  if (distortion <= 0.00001) return vec2(0.0);
 
-  vec2 outward = vec2(right - left, top - bottom);
-  float edgeAmount = min(length(outward), 1.0);
-  if (edgeAmount <= 0.00001) return vec2(0.0);
-  return normalize(outward) *
-    edgeAmount *
+  // Shift the sample toward the Editor centre. This keeps the apparent bend
+  // inside the glass and lets the rounded SDF, rather than four straight
+  // edge masks, define where refraction is visible.
+  return -zenSafeNormalize(gl_FragCoord.xy - glassCenterPx) *
+    distortion *
     u_zenGlassRefraction *
     pixelRatio;
 }

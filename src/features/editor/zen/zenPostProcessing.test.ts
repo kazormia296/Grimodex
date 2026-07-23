@@ -34,10 +34,12 @@ describe("Zen shader post-processing", () => {
     expect(combined).toContain("uniform float u_zenContrastTarget");
     expect(combined).toContain("uniform float u_zenGlassRefraction");
     expect(combined).toContain("uniform vec4 u_zenGlassRect");
+    expect(combined).toContain("uniform float u_zenGlassCornerRadius");
     expect(combined).toContain("applyZenDither");
     expect(combined).toContain("applyZenColorHalftone");
     expect(combined).toContain("applyZenContrastGuard");
     expect(combined).toContain("zenGlassOffsetPixels");
+    expect(combined).toContain("zenRoundedRectSignedDistance");
     expect(combined).toContain("smoothstep(edge - feather, edge, value)");
     expect(combined).toContain("smoothstep(edge, edge + feather, value)");
     expect(combined.match(/void main\s*\(\s*\)/g)).toHaveLength(1);
@@ -117,6 +119,7 @@ describe("Zen shader post-processing", () => {
         rect: [0.2, 0.1, 0.8, 0.9],
         feather: [0.03, 0.04, 0.03, 0.04],
         glassRect: [0.1, 0.05, 0.9, 0.95],
+        glassCornerRadius: 18,
         textColor: [0.9, 0.92, 0.95],
         backdropColor: [0.04, 0.05, 0.07],
       }),
@@ -137,6 +140,7 @@ describe("Zen shader post-processing", () => {
       u_zenContrastSurfaceOpacity: 0.1,
       u_zenGlassRefraction: 7,
       u_zenGlassRect: [0.1, 0.05, 0.9, 0.95],
+      u_zenGlassCornerRadius: 18,
     });
 
     const disabled = parseZenShaderConfig({

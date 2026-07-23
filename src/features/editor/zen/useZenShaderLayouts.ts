@@ -9,12 +9,20 @@ export interface ZenShaderLayouts {
   /** Text readability remains scoped to the actual writing column. */
   contrast: ZenContrastGuardLayout;
   /** Glass refraction follows the complete Editor panel boundary. */
-  glass: ZenContrastGuardLayout;
+  glass: ZenGlassLayout;
+}
+
+export interface ZenGlassLayout extends ZenContrastGuardLayout {
+  /** CSS pixels; converted to the shader's framebuffer scale on the GPU. */
+  cornerRadius: number;
 }
 
 const EMPTY_LAYOUTS: ZenShaderLayouts = {
   contrast: EMPTY_ZEN_CONTRAST_GUARD_LAYOUT,
-  glass: EMPTY_ZEN_CONTRAST_GUARD_LAYOUT,
+  glass: {
+    ...EMPTY_ZEN_CONTRAST_GUARD_LAYOUT,
+    cornerRadius: 0,
+  },
 };
 
 function sameRegion(
@@ -30,7 +38,8 @@ function sameRegion(
 function sameLayouts(current: ZenShaderLayouts, next: ZenShaderLayouts) {
   return (
     sameRegion(current.contrast, next.contrast) &&
-    sameRegion(current.glass, next.glass)
+    sameRegion(current.glass, next.glass) &&
+    current.glass.cornerRadius === next.glass.cornerRadius
   );
 }
 
@@ -44,6 +53,22 @@ function visibleElement(selector: string): HTMLElement | null {
   );
 }
 
+function editorCornerRadius(element: HTMLElement | null) {
+  if (!element) return 0;
+  const rect = element.getBoundingClientRect();
+  const maximum = Math.min(rect.width, rect.height) * 0.5;
+  if (maximum <= 0) return 0;
+
+  const value = getComputedStyle(element).borderTopLeftRadius.trim();
+  const match = /^(\d+(?:\.\d+)?)(px|%)\b/.exec(value);
+  if (!match) return 0;
+
+  const radius = Number(match[1]);
+  if (!Number.isFinite(radius)) return 0;
+  const pixels = match[2] === "%" ? (radius / 100) * maximum : radius;
+  return Math.min(Math.max(pixels, 0), maximum);
+}
+
 /** Tracks geometry only; shader pixels never leave the GPU. */
 export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
   const [layouts, setLayouts] = useState<ZenShaderLayouts>(EMPTY_LAYOUTS);
@@ -55,6 +80,7 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
     let frame = 0;
     let paper: HTMLElement | null = null;
     let editor: HTMLElement | null = null;
+    let mutationObserver: MutationObserver | null = null;
     const resizeObserver =
       typeof ResizeObserver === "undefined"
         ? null
@@ -77,14 +103,24 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
             element.getBoundingClientRect(),
           )
         : EMPTY_ZEN_CONTRAST_GUARD_LAYOUT;
+    const glassLayoutFor = (element: HTMLElement | null): ZenGlassLayout => ({
+      ...layoutFor(element),
+      cornerRadius: editorCornerRadius(element),
+    });
 
     const update = () => {
       frame = 0;
       paper = observeTarget(paper, visibleElement(".zen-editor-paper"));
       editor = observeTarget(editor, visibleElement("[data-editor-area]"));
+      if (editor) {
+        mutationObserver?.observe(editor, {
+          attributes: true,
+          attributeFilter: ["class", "style"],
+        });
+      }
       const next = {
         contrast: layoutFor(paper),
-        glass: layoutFor(editor),
+        glass: glassLayoutFor(editor),
       };
       setLayouts((current) => (sameLayouts(current, next) ? current : next));
     };
@@ -97,11 +133,20 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
     resizeObserver?.observe(surface);
     const mutationRoot =
       document.getElementById("main-content") ?? document.body;
-    const mutationObserver =
+    mutationObserver =
       typeof MutationObserver === "undefined"
         ? null
         : new MutationObserver(schedule);
     mutationObserver?.observe(mutationRoot, { childList: true, subtree: true });
+    // Card mode changes the Editor's computed radius without resizing it.
+    // The app shell sits above #main-content, so observe it separately.
+    const appShell = document.querySelector<HTMLElement>(".app-shell");
+    if (appShell && appShell !== mutationRoot) {
+      mutationObserver?.observe(appShell, {
+        attributes: true,
+        attributeFilter: ["data-card"],
+      });
+    }
     document.addEventListener("scroll", schedule, true);
     window.addEventListener("resize", schedule);
     update();

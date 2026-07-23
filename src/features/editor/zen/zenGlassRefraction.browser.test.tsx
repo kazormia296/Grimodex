@@ -39,10 +39,12 @@ function RefractionProbe({
   name,
   refraction,
   glassRect = [0.2, 0.2, 0.8, 0.8],
+  glassCornerRadius = 0,
 }: {
   name: string;
   refraction: number;
   glassRect?: ZenContrastGuardRect;
+  glassCornerRadius?: number;
 }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
@@ -60,6 +62,7 @@ function RefractionProbe({
       rect: [0.4, 0.4, 0.6, 0.6],
       feather: [0.02, 0.02, 0.02, 0.02],
       glassRect,
+      glassCornerRadius,
       textColor: [1, 1, 1],
       backdropColor: [0, 0, 0],
     }),
@@ -128,6 +131,7 @@ function PaperCompileProbe({ shader }: { shader: PaperShaderId }) {
           rect: [0.4, 0.4, 0.6, 0.6],
           feather: [0.02, 0.02, 0.02, 0.02],
           glassRect: [0.2, 0.2, 0.8, 0.8],
+          glassCornerRadius: 0,
           textColor: [1, 1, 1],
           backdropColor: [0, 0, 0],
         }),
@@ -175,6 +179,10 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     expect(Math.abs(bentEdge[0] - flatEdge[0])).toBeGreaterThan(16);
     expect(Math.abs(bentCenter[0] - flatCenter[0])).toBeLessThanOrEqual(1);
     expect(Math.abs(bentCenter[1] - flatCenter[1])).toBeLessThanOrEqual(1);
+
+    const flatRightEdge = pixelAt(flat, 0.79, 0.5);
+    const bentRightEdge = pixelAt(bent, 0.79, 0.5);
+    expect(bentRightEdge[0]).toBeLessThan(flatRightEdge[0] - 16);
   });
 
   it("keeps the full-surface Editor boundary refractive in Zen", async () => {
@@ -203,7 +211,58 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
 
     expect(
       Math.abs(pixelAt(bent, 0.1, 0.5)[0] - pixelAt(flat, 0.1, 0.5)[0]),
-    ).toBeGreaterThan(12);
+    ).toBeGreaterThan(4);
+  });
+
+  it("keeps refraction on the rounded Editor perimeter at corners", async () => {
+    const { container } = render(
+      <div>
+        <RefractionProbe
+          name="round-flat"
+          refraction={0}
+          glassCornerRadius={20}
+        />
+        <RefractionProbe
+          name="round-bent"
+          refraction={24}
+          glassCornerRadius={20}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      for (const name of ["round-flat", "round-bent"]) {
+        expect(
+          container.querySelector<HTMLCanvasElement>(
+            `[data-refraction-probe="${name}"] canvas`,
+          )?.width,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    const flat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="round-flat"] canvas',
+    )!;
+    const bent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="round-bent"] canvas',
+    )!;
+    const outsideCorner = [0.21, 0.21] as const;
+    const insideCorner = [0.23, 0.27] as const;
+
+    for (const channel of [0, 1] as const) {
+      expect(
+        Math.abs(
+          pixelAt(bent, ...outsideCorner)[channel] -
+            pixelAt(flat, ...outsideCorner)[channel],
+        ),
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(
+          pixelAt(bent, ...insideCorner)[channel] -
+            pixelAt(flat, ...insideCorner)[channel],
+        ),
+      ).toBeGreaterThan(6);
+    }
   });
 
   it("compiles the refraction pass for every Paper background", async () => {

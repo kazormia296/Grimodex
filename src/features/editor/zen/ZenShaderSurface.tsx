@@ -45,6 +45,7 @@ export function ZenShaderSurface({
       ...buildZenPostProcessUniforms(config, {
         ...layouts.contrast,
         glassRect: layouts.glass.rect,
+        glassCornerRadius: layouts.glass.cornerRadius,
         textColor: palette.textColor ?? [0.85, 0.85, 0.85],
         backdropColor: palette.backdropColor ?? [0.063, 0.075, 0.094],
       }),
@@ -78,6 +79,7 @@ export function ZenShaderSurface({
       data-contrast-feather={layouts.contrast.feather.join(" ")}
       data-glass-rect={layouts.glass.rect.join(" ")}
       data-glass-feather={layouts.glass.feather.join(" ")}
+      data-glass-corner-radius={layouts.glass.cornerRadius}
       data-glass-refraction={config.glass.enabled ? config.glass.refraction : 0}
       className="zen-shader-surface absolute inset-0 overflow-hidden"
       style={{
