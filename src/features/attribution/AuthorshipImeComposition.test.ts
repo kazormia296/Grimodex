@@ -119,4 +119,17 @@ describe("authorship mark during IME composition", () => {
 
     editor.destroy();
   });
+
+  it("keeps the selected attribution when composition is canceled", async () => {
+    vi.useFakeTimers();
+    const editor = createEditor();
+    editor.commands.setTextSelection({ from: 2, to: 5 });
+
+    editor.view.dom.dispatchEvent(new Event("compositionstart"));
+    editor.view.dom.dispatchEvent(new Event("compositionend"));
+    await vi.runAllTimersAsync();
+
+    expect(textRuns(editor)).toEqual([{ text: ORIGINAL, source: "unknown" }]);
+    editor.destroy();
+  });
 });

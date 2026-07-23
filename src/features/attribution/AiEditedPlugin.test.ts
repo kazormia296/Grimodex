@@ -147,6 +147,50 @@ describe("AiEditedPlugin", () => {
     editor.destroy();
   });
 
+  it("does not extend manualOverride past its boundary", () => {
+    editor.destroy();
+    editor = createTestEditor("<p></p>");
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContent([
+        {
+          type: "text",
+          text: "ABCDE",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+              },
+            },
+          ],
+        },
+      ])
+      .run();
+    editor.chain().focus().setTextSelection(6).insertContent("X").run();
+
+    const nodes: { text: string; source: string | null }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      nodes.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(nodes).toEqual([
+      { text: "ABCDE", source: "ai" },
+      { text: "X", source: null },
+    ]);
+    editor.destroy();
+  });
+
   // --- Adjacent node isolation ---
 
   it("editing one node does NOT affect adjacent nodes", () => {

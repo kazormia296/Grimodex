@@ -53,6 +53,25 @@ function spansToContent(spans: TrashSpan[]): InsertContent[] {
     }));
 }
 
+function humanContent(text: string): InsertContent {
+  return {
+    type: "text",
+    text,
+    marks: [
+      {
+        type: "authorship",
+        attrs: {
+          source: "human",
+          timestamp: null,
+          model: null,
+          chatMessageId: null,
+          traceId: null,
+        },
+      },
+    ],
+  };
+}
+
 /**
  * 構造アイテム → 挿入用テキスト。各 subKind の payload からプレーンテキストを抽出。
  */
@@ -109,22 +128,7 @@ export function insertTrashItemIntoEditor(
       // spans が空 (純テキスト保持のみ) → previewText を fallback で挿入
       const text = payload.text ?? item.previewText;
       if (!text) return 0;
-      content.push({
-        type: "text",
-        text,
-        marks: [
-          {
-            type: "authorship",
-            attrs: {
-              source: "human",
-              timestamp: null,
-              model: null,
-              chatMessageId: null,
-              traceId: null,
-            },
-          },
-        ],
-      });
+      content.push(humanContent(text));
     }
     editor
       .chain()
@@ -150,7 +154,7 @@ export function insertTrashItemIntoEditor(
       tr.setMeta("trashBin.skip", true);
       return true;
     })
-    .insertContent(text)
+    .insertContent([humanContent(text)])
     .run();
   return [...text].length;
 }

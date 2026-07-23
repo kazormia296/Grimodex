@@ -1,5 +1,6 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
+import type { Mark, ResolvedPos } from "@tiptap/pm/model";
 import { ReplaceStep } from "@tiptap/pm/transform";
 import { isHistoryTransaction } from "@tiptap/pm/history";
 import { markStart, markEnd } from "@/lib/perfLog";
@@ -8,6 +9,7 @@ interface PendingComposition {
   from: number;
   to: number;
   compositionId: number | null;
+  hasCompositionChange: boolean;
 }
 
 interface AiEditedPluginState {
@@ -30,10 +32,7 @@ export const aiEditedKey = new PluginKey<AiEditedPluginState>("aiEdited");
  */
 const SPLITTABLE_SOURCES = new Set(["ai", "unknown"]);
 
-function isSplittableAuthorshipMark(mark: {
-  type: { name: string };
-  attrs: Record<string, unknown>;
-}): boolean {
+function isSplittableAuthorshipMark(mark: Mark): boolean {
   return (
     mark.type.name === "authorship" &&
     SPLITTABLE_SOURCES.has(mark.attrs.source as string) &&
@@ -55,6 +54,14 @@ function startsInSplittableAuthorship(state: EditorState): boolean {
   return found;
 }
 
+function isInsideMarkedRun($pos: ResolvedPos, mark: Mark): boolean {
+  const hasMarkBefore =
+    $pos.nodeBefore?.marks.some((candidate) => candidate.eq(mark)) ?? false;
+  const hasMarkAfter =
+    $pos.nodeAfter?.marks.some((candidate) => candidate.eq(mark)) ?? false;
+  return hasMarkBefore && hasMarkAfter;
+}
+
 function mapPendingComposition(
   pending: PendingComposition | null,
   transaction: Transaction,
@@ -71,6 +78,8 @@ function mapPendingComposition(
       typeof compositionMeta === "number"
         ? compositionMeta
         : pending.compositionId,
+    hasCompositionChange:
+      pending.hasCompositionChange || typeof compositionMeta === "number",
   };
 }
 
@@ -157,7 +166,12 @@ export function createAiEditedPlugin(): Plugin {
           }
           const { from, to } = view.state.selection;
           const pendingComposition = startsInSplittableAuthorship(view.state)
-            ? { from, to, compositionId: null }
+            ? {
+                from,
+                to,
+                compositionId: null,
+                hasCompositionChange: false,
+              }
             : null;
           view.dispatch(
             view.state.tr.setMeta(aiEditedKey, {
@@ -214,7 +228,7 @@ export function createAiEditedPlugin(): Plugin {
         const transaction = newState.tr.setMeta(aiEditedKey, {
           type: "compositionFlushed",
         } satisfies AiEditedPluginMeta);
-        if (from < to) {
+        if (pending.hasCompositionChange && from < to) {
           transaction.removeMark(from, to, authorshipType);
         }
         if (pending.compositionId != null) {
@@ -264,14 +278,13 @@ export function createAiEditedPlugin(): Plugin {
             let mark = null;
             if (from < oldState.doc.content.size) {
               const $pos = oldState.doc.resolve(from);
-              mark = $pos
-                .marks()
-                .find(
-                  (m) =>
-                    m.type === authorshipType &&
-                    SPLITTABLE_SOURCES.has(m.attrs.source as string) &&
-                    !m.attrs.manualOverride,
-                );
+              mark = $pos.marks().find((m) => {
+                if (m.type !== authorshipType) return false;
+                if (!m.attrs.manualOverride) {
+                  return SPLITTABLE_SOURCES.has(m.attrs.source as string);
+                }
+                return !isInsideMarkedRun($pos, m);
+              });
             }
 
             if (mark) {
