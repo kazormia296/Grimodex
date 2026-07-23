@@ -11,7 +11,7 @@ import { isHistoryTransaction } from "@tiptap/pm/history";
 import type { EditorView } from "@tiptap/pm/view";
 import { markStart, markEnd } from "@/lib/perfLog";
 
-type CompositionTerminalIntent = "commit" | "cancel" | "unknown";
+type CompositionTerminalIntent = "commit" | "unknown";
 
 interface PendingComposition {
   from: number;
@@ -175,10 +175,17 @@ export function createAiEditedPlugin(): Plugin {
   function terminalIntentFor(event: Event): CompositionTerminalIntent {
     const finalData = eventData(event);
     if (finalData !== null && finalData.length > 0) return "commit";
-    // UI Events requires a canceled session to emit an empty
-    // compositionupdate immediately before compositionend. An empty
-    // compositionend alone is ambiguous with committing a deletion.
-    if (lastCompositionData === "") return "cancel";
+    // Empty data is ambiguous: it can represent cancellation, a committed
+    // deletion, or an IME that does not disclose its committed text. Fall back
+    // to the last non-empty payload only when the terminal event exposes no
+    // data property at all, then let the final Slice resolve the other cases.
+    if (
+      finalData === null &&
+      lastCompositionData !== null &&
+      lastCompositionData.length > 0
+    ) {
+      return "commit";
+    }
     return "unknown";
   }
 
@@ -338,10 +345,12 @@ export function createAiEditedPlugin(): Plugin {
           type: "compositionFlushed",
         } satisfies AiEditedPluginMeta);
         const finalSlice = newState.doc.slice(from, to);
+        // Empty composition data is only a cancellation hint. Some IMEs expose
+        // empty data even though they committed a replacement, so an actual
+        // range change must still be treated as human-authored content.
         const shouldCleanup =
           compositionEndMeta.terminalIntent === "commit" ||
-          (compositionEndMeta.terminalIntent === "unknown" &&
-            !finalSlice.eq(pending.originalSlice));
+          !finalSlice.eq(pending.originalSlice);
 
         const authorshipType = newState.schema.marks["authorship"];
         if (shouldCleanup && authorshipType && from < to) {

@@ -194,6 +194,54 @@ describe("authorship mark during IME composition", () => {
     editor.destroy();
   });
 
+  it("makes changed text human when composition events expose empty data", async () => {
+    vi.useFakeTimers();
+    const editor = createEditor({ source: "ai" });
+    editor.commands.setTextSelection({ from: 2, to: 5 });
+
+    editor.view.dom.dispatchEvent(compositionEvent("compositionstart"));
+    replaceComposition(editor, 2, 5, "かな");
+    editor.view.dom.dispatchEvent(compositionEvent("compositionupdate"));
+    editor.view.dom.dispatchEvent(compositionEvent("compositionend"));
+    await vi.runAllTimersAsync();
+
+    expect(textRuns(editor)).toEqual([
+      { text: ORIGINAL.slice(0, 1), source: "ai" },
+      { text: "かな", source: null },
+      { text: ORIGINAL.slice(4), source: "ai" },
+    ]);
+    editor.destroy();
+  });
+
+  it("preserves non-authorship marks on committed composition text", async () => {
+    vi.useFakeTimers();
+    const editor = createEditor({ source: "ai" });
+    const boldType = editor.schema.marks["bold"];
+    editor.view.dispatch(
+      editor.state.tr.addMark(1, ORIGINAL.length + 1, boldType.create()),
+    );
+    editor.commands.setTextSelection({ from: 2, to: 5 });
+
+    editor.view.dom.dispatchEvent(compositionEvent("compositionstart"));
+    replaceComposition(editor, 2, 5, "かな");
+    editor.view.dom.dispatchEvent(compositionEvent("compositionend", "かな"));
+    await vi.runAllTimersAsync();
+
+    let committedMarkNames: string[] | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.text === "かな") {
+        committedMarkNames = node.marks.map((mark) => mark.type.name);
+      }
+    });
+    expect(committedMarkNames).toEqual(["bold"]);
+    expect(textRuns(editor)).toEqual([
+      { text: ORIGINAL.slice(0, 1), source: "ai" },
+      { text: "かな", source: null },
+      { text: ORIGINAL.slice(4), source: "ai" },
+    ]);
+    editor.destroy();
+  });
+
   it("makes retyped identical selected AI text human", async () => {
     vi.useFakeTimers();
     const editor = createEditor({ source: "ai" });

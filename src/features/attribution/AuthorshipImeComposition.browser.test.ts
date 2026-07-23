@@ -153,6 +153,30 @@ describe("authorship IME composition in Chromium", () => {
     editor.destroy();
   });
 
+  it("makes changed text human when composition events expose empty data", async () => {
+    vi.useFakeTimers();
+    const editor = createEditor({ source: "ai" });
+    editor.commands.setTextSelection({ from: 2, to: 5 });
+
+    editor.view.dom.dispatchEvent(new CompositionEvent("compositionstart"));
+    editor.view.dispatch(
+      editor.state.tr.insertText("かな", 2, 5).setMeta("composition", 1),
+    );
+    editor.view.dom.dispatchEvent(
+      new CompositionEvent("compositionupdate", { data: "" }),
+    );
+    editor.view.dom.dispatchEvent(
+      new CompositionEvent("compositionend", { data: "" }),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(editor.state.doc.textContent).toBe(
+      `${ORIGINAL.slice(0, 1)}かな${ORIGINAL.slice(4)}`,
+    );
+    expect(sources(editor)).toEqual(["ai", null, "ai"]);
+    editor.destroy();
+  });
+
   it("makes identical selected AI text human when the IME commits it", async () => {
     vi.useFakeTimers();
     const editor = createEditor({ source: "ai" });
