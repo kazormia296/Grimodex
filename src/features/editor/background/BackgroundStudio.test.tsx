@@ -162,6 +162,46 @@ describe("BackgroundStudio", () => {
     }
   });
 
+  it("opens custom color palettes in a viewport-aware portal", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("settings.editor.zenPalette"), {
+      target: { value: "custom" },
+    });
+
+    const [trigger] = screen.getAllByTestId("setting-color-input-trigger");
+    fireEvent.click(trigger);
+
+    const palette = screen.getByTestId("setting-color-input-palette");
+    expect(palette.closest("[data-background-studio]")).toBeNull();
+    expect(document.querySelector('input[type="color"]')).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "#F43F5E" }));
+    expect(
+      useSettingsStore.getState().cache["editor.zenBackground.color1"],
+    ).toBe("#F43F5E");
+    expect(screen.queryByTestId("setting-color-input-palette")).toBeNull();
+  });
+
+  it("accepts arbitrary custom colors as HEX values", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("settings.editor.zenPalette"), {
+      target: { value: "custom" },
+    });
+    fireEvent.click(screen.getAllByTestId("setting-color-input-trigger")[0]);
+
+    const hex = screen.getByLabelText("HEX");
+    fireEvent.change(hex, { target: { value: "#12ab34" } });
+
+    expect(
+      useSettingsStore.getState().cache["editor.zenBackground.color1"],
+    ).toBe("#12AB34");
+
+    fireEvent.keyDown(hex, { key: "Enter" });
+    expect(screen.queryByTestId("setting-color-input-palette")).toBeNull();
+  });
+
   it("does not render when closed", () => {
     render(<BackgroundStudio open={false} onClose={vi.fn()} />);
 
