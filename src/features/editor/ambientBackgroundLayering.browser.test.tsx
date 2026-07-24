@@ -62,6 +62,7 @@ function renderLayering(
             data-editor-fluid-glass="true"
             className="gx-panel gx-panel--flat"
           >
+            <div data-editor-fluid-glass-filter aria-hidden="true" />
             <div data-editor-breadcrumb className="glass-editor-chrome">
               Breadcrumb
             </div>
@@ -118,6 +119,9 @@ describe("editor ambient background layering (real Chromium)", () => {
 
     const layout = container.querySelector<HTMLElement>("[data-layout-shell]");
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
+    const editorGlassFilter = container.querySelector<HTMLElement>(
+      "[data-editor-fluid-glass-filter]",
+    );
     const breadcrumb = container.querySelector<HTMLElement>(
       "[data-editor-breadcrumb]",
     );
@@ -156,6 +160,7 @@ describe("editor ambient background layering (real Chromium)", () => {
 
     expect(layout).not.toBeNull();
     expect(editor).not.toBeNull();
+    expect(editorGlassFilter).not.toBeNull();
     expect(chrome).not.toBeNull();
     expect(body).not.toBeNull();
     expect(text).not.toBeNull();
@@ -169,9 +174,14 @@ describe("editor ambient background layering (real Chromium)", () => {
     const editorStyle = getComputedStyle(editor!);
     expect(editorStyle.backgroundColor).toBe("rgba(0, 0, 0, 0)");
     expect(editorStyle.backgroundImage).not.toBe("none");
-    expect(editorStyle.backdropFilter).toContain("blur(14px)");
-    expect(editorStyle.backdropFilter).toContain("saturate(1.16)");
-    expect(editorStyle.backdropFilter).toContain("contrast(1.03)");
+    expect(editorStyle.backdropFilter).toBe("none");
+    expect(editorStyle.isolation).toBe("auto");
+    const editorFilterStyle = getComputedStyle(editorGlassFilter!);
+    expect(editorFilterStyle.position).toBe("absolute");
+    expect(editorFilterStyle.pointerEvents).toBe("none");
+    expect(editorFilterStyle.backdropFilter).toContain("blur(14px)");
+    expect(editorFilterStyle.backdropFilter).toContain("saturate(1.16)");
+    expect(editorFilterStyle.backdropFilter).toContain("contrast(1.03)");
     const glass = getComputedStyle(editor!, "::before");
     expect(glass.backgroundImage).not.toBe("none");
     expect(glass.boxShadow).not.toBe("none");
@@ -219,6 +229,9 @@ describe("editor ambient background layering (real Chromium)", () => {
 
     const layout = container.querySelector<HTMLElement>("[data-layout-shell]");
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
+    const editorGlassFilter = container.querySelector<HTMLElement>(
+      "[data-editor-fluid-glass-filter]",
+    );
     const breadcrumb = container.querySelector<HTMLElement>(
       "[data-editor-breadcrumb]",
     );
@@ -243,6 +256,7 @@ describe("editor ambient background layering (real Chromium)", () => {
       "rgba(0, 0, 0, 0)",
     );
     expect(getComputedStyle(editor!).backdropFilter).toBe("none");
+    expect(getComputedStyle(editorGlassFilter!).backdropFilter).toBe("none");
     expect(getComputedStyle(chrome!).backdropFilter).toBe("none");
     expect(getComputedStyle(breadcrumb!).backdropFilter).toBe("none");
     expect(getComputedStyle(toolbar!).backdropFilter).toBe("none");

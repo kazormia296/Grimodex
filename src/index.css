@@ -354,12 +354,11 @@ button[role="switch"][aria-checked="true"] {
   --editor-fluid-glass-saturate: 1.16;
   --editor-fluid-glass-shine: 1;
   position: relative;
-  isolation: isolate;
 }
 
 [data-editor-fluid-glass="true"]::before {
   position: absolute;
-  z-index: 0;
+  z-index: 1;
   inset: -6px;
   content: "";
   pointer-events: none;
@@ -369,9 +368,22 @@ button[role="switch"][aria-checked="true"] {
   filter: none;
 }
 
+/* Chromium does not reliably sample the sibling WebGL canvas when the same
+   element owns both the editor stacking context and backdrop-filter. Keep the
+   filter on this paint-only child so the editable DOM remains untouched. */
+[data-editor-fluid-glass-filter] {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 [data-editor-fluid-glass="true"] > :not([data-editor-fluid-glass-filter]) {
   position: relative;
-  z-index: 1;
+  z-index: 2;
 }
 
 #main-content:has(> [data-editor-ambient][data-background-enabled="true"])
@@ -393,6 +405,11 @@ button[role="switch"][aria-checked="true"] {
     inset 1px 0 0 color-mix(in oklch, #67e8f9 7%, transparent),
     inset -1px 0 0 color-mix(in oklch, #f0abfc 6%, transparent),
     0 16px 42px rgb(0 0 0 / 0.1);
+}
+
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-fluid-glass="true"]
+  > [data-editor-fluid-glass-filter] {
   backdrop-filter: blur(var(--editor-fluid-glass-blur))
     saturate(var(--editor-fluid-glass-saturate)) contrast(1.03);
   -webkit-backdrop-filter: blur(var(--editor-fluid-glass-blur))
