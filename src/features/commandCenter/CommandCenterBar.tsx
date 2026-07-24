@@ -12,7 +12,9 @@ import { BAR_FETCH_LIMIT } from "./lib/constants";
  * ヘッダー中央に常駐する検索 / Command Center バー。
  *
  * 設計メモ:
- * - `data-tauri-drag-region="false"` を最外 div に明示して header 全体の drag を子要素で除外
+ * - 最外 div と検索フィールドのフレームを drag region にする
+ * - 入力欄は `no-drag` にして文字入力を保ち、外周の余白を実際の掴み領域として残す
+ * - 検索結果 popover は `no-drag` にして、結果の操作がウィンドウ移動を奪わないようにする
  * - input フォーカスは store の `focusRequest` カウンタを watch して制御 (Ctrl+Shift+P 用)
  * - popover の click-outside / Escape は containerRef 経由で AnimatedPopover に委ねる
  *
@@ -55,10 +57,15 @@ export function CommandCenterBar() {
   return (
     <div
       ref={containerRef}
-      data-tauri-drag-region="false"
+      data-testid="command-center-bar"
+      data-tauri-drag-region
       className="relative w-full max-w-2xl"
     >
-      <div className="relative">
+      <div
+        data-testid="command-center-drag-region"
+        data-tauri-drag-region
+        className="relative px-1.5"
+      >
         <Icon
           className={cn(
             "pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2",
@@ -67,6 +74,7 @@ export function CommandCenterBar() {
         />
         <input
           ref={inputRef}
+          data-tauri-drag-region="false"
           type="text"
           value={query}
           onChange={(e) => {
@@ -84,7 +92,9 @@ export function CommandCenterBar() {
           )}
         />
       </div>
-      <CommandCenterPopover containerRef={containerRef} />
+      <div data-tauri-drag-region="false">
+        <CommandCenterPopover containerRef={containerRef} />
+      </div>
     </div>
   );
 }
