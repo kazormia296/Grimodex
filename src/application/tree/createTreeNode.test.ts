@@ -36,6 +36,7 @@ function ports(nodes: TreeNodeData[]): CreateTreeNodePorts & {
     ensureWritable: vi.fn(),
     getProjectId: () => "project-a",
     getNodes: () => state.nodes,
+    isCurrentAuthority: () => true,
     getSetting: (_key, fallback) => fallback,
     createPersisted: vi.fn(async (record) => makeNode(record.id, record.title)),
     deletePersisted: vi.fn().mockResolvedValue(undefined),

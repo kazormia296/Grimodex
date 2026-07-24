@@ -184,6 +184,20 @@ interface EditorPaneProps {
  * Supports both scene/note content (Markdown via Tauri) and codex entry content (ProseMirror JSON via DB).
  */
 
+export function useClosePhoneReorderOverlay({
+  phoneWorkspace,
+  open,
+  closeOverlay,
+}: {
+  phoneWorkspace: boolean;
+  open: boolean;
+  closeOverlay: () => void;
+}) {
+  useEffect(() => {
+    if (phoneWorkspace && open) closeOverlay();
+  }, [closeOverlay, open, phoneWorkspace]);
+}
+
 export function EditorPane({
   nodeId,
   contentType,
@@ -910,6 +924,11 @@ export function EditorPane({
     dbNativeEditor,
     readOnly || isEntryMode,
   );
+  useClosePhoneReorderOverlay({
+    phoneWorkspace,
+    open: paragraphReorder.open,
+    closeOverlay: paragraphReorder.closeOverlay,
+  });
   const projectLanguage = getCurrentProjectLanguage();
   const bunsetsuAvailable = !(projectLanguage ?? "ja")
     .toLowerCase()
@@ -1128,20 +1147,35 @@ export function EditorPane({
     // Snippet / Chronicle-event は補助コンテンツなので Codex ハイライトは見せるが
     // matchedEntryIds（シーン単位の CodexQuick が参照するグローバル集合）は更新しない。
     isSnippetMode || isChronicleEventMode
-      ? { skipMatchedIds: true }
+      ? {
+          skipMatchedIds: true,
+          enabledOverride: phoneWorkspace ? true : undefined,
+        }
       : isCodexMode
-        ? { excludeEntryIds: [nodeId], skipMatchedIds: !isActiveGroup }
+        ? {
+            excludeEntryIds: [nodeId],
+            skipMatchedIds: !isActiveGroup,
+            enabledOverride: phoneWorkspace ? true : undefined,
+          }
         : !isActiveGroup
-          ? { skipMatchedIds: true }
-          : undefined,
+          ? {
+              skipMatchedIds: true,
+              enabledOverride: phoneWorkspace ? true : undefined,
+            }
+          : phoneWorkspace
+            ? { enabledOverride: true }
+            : undefined,
   );
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
   const focusMode = useCursorSettingsStore((s) => s.focusMode);
   const zenMode = useCursorSettingsStore((s) => s.zenMode);
-  const showForeshadowMarks = useCursorSettingsStore(
+  const storedShowForeshadowMarks = useCursorSettingsStore(
     (s) => s.showForeshadowMarks,
   );
+  const showForeshadowMarks = phoneWorkspace
+    ? false
+    : storedShowForeshadowMarks;
   // ガター生成レイヤーのON数から本文 inline-start の予約幅を算出する
   // （オーバーレイ表示中はアイコンが必ず見えるよう領域を確保する）。
   const showCommentsLayer = useCursorSettingsStore((s) => s.showComments);
@@ -1150,16 +1184,18 @@ export function EditorPane({
   const showReaderCommentsLayer = useAnnotationStore(
     (s) => s.showReaderComments,
   );
-  const gutterReserve = gutterReserveInlineSize(
-    [
-      showCommentsLayer,
-      showReaderCommentsLayer,
-      showForeshadowMarks,
-      // review チャネルは 校閲アノテーション ∨ Lint のどちらでも出るので、
-      // showLint のみ ON でもガター記号分の幅を予約する (GutterMarksPlugin と同義)。
-      showAnnotationsLayer || showLintLayer,
-    ].filter(Boolean).length,
-  );
+  const gutterReserve = phoneWorkspace
+    ? null
+    : gutterReserveInlineSize(
+        [
+          showCommentsLayer,
+          showReaderCommentsLayer,
+          showForeshadowMarks,
+          // review チャネルは 校閲アノテーション ∨ Lint のどちらでも出るので、
+          // showLint のみ ON でもガター記号分の幅を予約する (GutterMarksPlugin と同義)。
+          showAnnotationsLayer || showLintLayer,
+        ].filter(Boolean).length,
+      );
   const focusModeHideBeats = editorSettings.focusModeHideBeats;
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;

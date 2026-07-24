@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
@@ -7,6 +7,7 @@ import type { Editor } from "@tiptap/react";
 import { NodeSelection } from "@tiptap/pm/state";
 import {
   Bold,
+  BookOpen,
   Flag,
   Heading1,
   Heading2,
@@ -22,9 +23,13 @@ import {
   Underline,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import { useSettingBoolean } from "@/features/settings/useSettingControl";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { DURATIONS, VARIANTS, useReducedMotion } from "@/lib/animation";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import type { ToolbarActions } from "./Toolbar";
 import type { InlineAiCommand } from "./inlineAi/inlineAiTypes";
 import { BubbleAiMenu } from "./BubbleAiMenu";
@@ -106,16 +111,21 @@ export function BubbleButton({
   active,
   onClick,
   children,
+  phone = false,
+  disabled = false,
 }: {
   testId: string;
   label: string;
   active?: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  phone?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       data-testid={testId}
       aria-label={label}
       title={label}
@@ -124,8 +134,10 @@ export function BubbleButton({
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       className={cn(
-        "flex h-7 min-w-[28px] items-center justify-center rounded px-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+        "flex items-center justify-center rounded text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+        phone ? "min-h-11 min-w-11 px-2" : "h-7 min-w-[28px] px-1",
         active && "bg-accent text-foreground",
+        disabled && "cursor-not-allowed opacity-50",
       )}
     >
       {children}
@@ -150,9 +162,15 @@ export function EditorBubbleMenu({
   onInlineAiCommand,
 }: EditorBubbleMenuProps) {
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
+  const activeCompactSurface = useCompactNavigationStore(
+    (state) => state.activeSurface,
+  );
   const { value: enabled } = useSettingBoolean("editor.bubbleMenu", true);
   const reduced = useReducedMotion();
   const [menuWidth, setMenuWidth] = useState(0);
+  const addToCodexInFlightRef = useRef(false);
+  const [addToCodexPending, setAddToCodexPending] = useState(false);
   const [, forceTick] = useState(0);
   // マウント時に実測幅を取り、横クランプに使う (callback ref なので無限更新しない)。
   const measureRef = useCallback((node: HTMLDivElement | null) => {
@@ -206,7 +224,8 @@ export function EditorBubbleMenu({
 
   const visible =
     !!editor &&
-    enabled &&
+    (phoneWorkspace || enabled) &&
+    (!phoneWorkspace || activeCompactSurface === "editor") &&
     !!state &&
     state.editable &&
     !state.empty &&
@@ -232,6 +251,30 @@ export function EditorBubbleMenu({
   const { top, left, placeBelow } = computeBubblePosition(rect, menuWidth, vw);
 
   const chain = () => editor.chain().focus();
+  const addSelectionToCodex = async (): Promise<void> => {
+    const selectedText = editor.state.doc
+      .textBetween(state.from, state.to)
+      .trim();
+    if (!selectedText || addToCodexInFlightRef.current) return;
+    addToCodexInFlightRef.current = true;
+    setAddToCodexPending(true);
+    try {
+      const entry = await useCodexStore.getState().create({
+        type: BUILTIN_CODEX_TYPES[0],
+        name: selectedText.slice(0, 60),
+        summary: "",
+      });
+      const codex = useCodexStore.getState();
+      codex.setSelectedEntry(entry);
+      codex.clearPendingEntry();
+      useCompactNavigationStore.getState().openSurface("codex");
+    } catch {
+      // codexStore owns the user-facing error toast.
+    } finally {
+      addToCodexInFlightRef.current = false;
+      setAddToCodexPending(false);
+    }
+  };
 
   return createPortal(
     <div
@@ -252,162 +295,198 @@ export function EditorBubbleMenu({
         transition={{ duration: reduced ? 0 : DURATIONS.fast }}
         className="flex items-center gap-0.5 rounded-md border border-border bg-popover p-1 shadow-lg"
       >
-        <BubbleButton
-          testId="bubble-bold"
-          label={t("editor.toolbar.bold")}
-          active={state.bold}
-          onClick={() => chain().toggleBold().run()}
-        >
-          <Bold className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-italic"
-          label={t("editor.toolbar.italic")}
-          active={state.italic}
-          onClick={() => chain().toggleItalic().run()}
-        >
-          <Italic className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-underline"
-          label={t("editor.toolbar.underline")}
-          active={state.underline}
-          onClick={() => chain().toggleUnderline().run()}
-        >
-          <Underline className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-strike"
-          label={t("editor.toolbar.strikethrough")}
-          active={state.strike}
-          onClick={() => chain().toggleStrike().run()}
-        >
-          <Strikethrough className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-emphasis"
-          label={t("editor.toolbar.emphasisDots")}
-          active={state.emphasisDots}
-          onClick={() => chain().toggleMark("emphasisDots").run()}
-        >
-          <span className="text-sm leading-none">﹅</span>
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-tcy"
-          label={t("editor.toolbar.tateChuYoko")}
-          active={state.tcy}
-          onClick={() => chain().toggleMark("tcy").run()}
-        >
-          <span className="text-[10px] font-bold leading-none">12</span>
-        </BubbleButton>
+        {phoneWorkspace ? (
+          <>
+            <BubbleButton
+              phone
+              testId="bubble-ruby"
+              label={t("editor.toolbar.ruby")}
+              active={state.ruby}
+              onClick={() => toolbarActionsRef.current?.openRuby()}
+            >
+              <Type className="h-4 w-4" />
+            </BubbleButton>
+            <BubbleButton
+              phone
+              testId="bubble-emphasis"
+              label={t("editor.toolbar.emphasisDots")}
+              active={state.emphasisDots}
+              onClick={() => chain().toggleMark("emphasisDots").run()}
+            >
+              <span className="text-base leading-none">﹅</span>
+            </BubbleButton>
+            <BubbleButton
+              phone
+              testId="bubble-add-to-codex"
+              label={t("editor.contextMenu.addToCodex")}
+              disabled={addToCodexPending}
+              onClick={() => void addSelectionToCodex()}
+            >
+              <BookOpen className="h-4 w-4" />
+            </BubbleButton>
+          </>
+        ) : (
+          <>
+            <BubbleButton
+              testId="bubble-bold"
+              label={t("editor.toolbar.bold")}
+              active={state.bold}
+              onClick={() => chain().toggleBold().run()}
+            >
+              <Bold className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-italic"
+              label={t("editor.toolbar.italic")}
+              active={state.italic}
+              onClick={() => chain().toggleItalic().run()}
+            >
+              <Italic className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-underline"
+              label={t("editor.toolbar.underline")}
+              active={state.underline}
+              onClick={() => chain().toggleUnderline().run()}
+            >
+              <Underline className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-strike"
+              label={t("editor.toolbar.strikethrough")}
+              active={state.strike}
+              onClick={() => chain().toggleStrike().run()}
+            >
+              <Strikethrough className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-emphasis"
+              label={t("editor.toolbar.emphasisDots")}
+              active={state.emphasisDots}
+              onClick={() => chain().toggleMark("emphasisDots").run()}
+            >
+              <span className="text-sm leading-none">﹅</span>
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-tcy"
+              label={t("editor.toolbar.tateChuYoko")}
+              active={state.tcy}
+              onClick={() => chain().toggleMark("tcy").run()}
+            >
+              <span className="text-[10px] font-bold leading-none">12</span>
+            </BubbleButton>
 
-        <Sep />
-        <BubbleButton
-          testId="bubble-h1"
-          label={t("editor.toolbar.heading1")}
-          active={state.h1}
-          onClick={() => chain().toggleHeading({ level: 1 }).run()}
-        >
-          <Heading1 className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-h2"
-          label={t("editor.toolbar.heading2")}
-          active={state.h2}
-          onClick={() => chain().toggleHeading({ level: 2 }).run()}
-        >
-          <Heading2 className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-h3"
-          label={t("editor.toolbar.heading3")}
-          active={state.h3}
-          onClick={() => chain().toggleHeading({ level: 3 }).run()}
-        >
-          <Heading3 className="h-3.5 w-3.5" />
-        </BubbleButton>
+            <Sep />
+            <BubbleButton
+              testId="bubble-h1"
+              label={t("editor.toolbar.heading1")}
+              active={state.h1}
+              onClick={() => chain().toggleHeading({ level: 1 }).run()}
+            >
+              <Heading1 className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-h2"
+              label={t("editor.toolbar.heading2")}
+              active={state.h2}
+              onClick={() => chain().toggleHeading({ level: 2 }).run()}
+            >
+              <Heading2 className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-h3"
+              label={t("editor.toolbar.heading3")}
+              active={state.h3}
+              onClick={() => chain().toggleHeading({ level: 3 }).run()}
+            >
+              <Heading3 className="h-3.5 w-3.5" />
+            </BubbleButton>
 
-        <Sep />
-        <BubbleButton
-          testId="bubble-bullet"
-          label={t("editor.toolbar.bulletList")}
-          active={state.bullet}
-          onClick={() => chain().toggleBulletList().run()}
-        >
-          <List className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-ordered"
-          label={t("editor.toolbar.orderedList")}
-          active={state.ordered}
-          onClick={() => chain().toggleOrderedList().run()}
-        >
-          <ListOrdered className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-quote"
-          label={t("editor.toolbar.blockquote")}
-          active={state.quote}
-          onClick={() => chain().toggleBlockquote().run()}
-        >
-          <Quote className="h-3.5 w-3.5" />
-        </BubbleButton>
+            <Sep />
+            <BubbleButton
+              testId="bubble-bullet"
+              label={t("editor.toolbar.bulletList")}
+              active={state.bullet}
+              onClick={() => chain().toggleBulletList().run()}
+            >
+              <List className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-ordered"
+              label={t("editor.toolbar.orderedList")}
+              active={state.ordered}
+              onClick={() => chain().toggleOrderedList().run()}
+            >
+              <ListOrdered className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-quote"
+              label={t("editor.toolbar.blockquote")}
+              active={state.quote}
+              onClick={() => chain().toggleBlockquote().run()}
+            >
+              <Quote className="h-3.5 w-3.5" />
+            </BubbleButton>
 
-        <Sep />
-        <BubbleButton
-          testId="bubble-ruby"
-          label={t("editor.toolbar.ruby")}
-          active={state.ruby}
-          onClick={() => toolbarActionsRef.current?.openRuby()}
-        >
-          <Type className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-link"
-          label={t("editor.toolbar.link")}
-          active={state.link}
-          onClick={() => toolbarActionsRef.current?.openLink()}
-        >
-          <Link2 className="h-3.5 w-3.5" />
-        </BubbleButton>
-        {canEditCodexSemanticLink && (
-          <BubbleButton
-            testId="bubble-semantic-link"
-            label={t(
-              "editor.bubbleMenu.semanticLink",
-              "Codex エントリにリンク",
+            <Sep />
+            <BubbleButton
+              testId="bubble-ruby"
+              label={t("editor.toolbar.ruby")}
+              active={state.ruby}
+              onClick={() => toolbarActionsRef.current?.openRuby()}
+            >
+              <Type className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-link"
+              label={t("editor.toolbar.link")}
+              active={state.link}
+              onClick={() => toolbarActionsRef.current?.openLink()}
+            >
+              <Link2 className="h-3.5 w-3.5" />
+            </BubbleButton>
+            {canEditCodexSemanticLink && (
+              <BubbleButton
+                testId="bubble-semantic-link"
+                label={t(
+                  "editor.bubbleMenu.semanticLink",
+                  "Codex エントリにリンク",
+                )}
+                onClick={() =>
+                  useCursorSettingsStore
+                    .getState()
+                    .setSemanticLinkPickerOpen(true, editor)
+                }
+              >
+                <Link2 className="h-3.5 w-3.5 text-primary" />
+              </BubbleButton>
             )}
-            onClick={() =>
-              useCursorSettingsStore
-                .getState()
-                .setSemanticLinkPickerOpen(true, editor)
-            }
-          >
-            <Link2 className="h-3.5 w-3.5 text-primary" />
-          </BubbleButton>
+
+            <Sep />
+            <BubbleButton
+              testId="bubble-comment"
+              label={t("editor.bubbleMenu.comment")}
+              onClick={() =>
+                useCursorSettingsStore.getState().setCommentPickerOpen(true)
+              }
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+            </BubbleButton>
+            <BubbleButton
+              testId="bubble-foreshadow"
+              label={t("editor.bubbleMenu.foreshadow")}
+              onClick={() =>
+                useCursorSettingsStore.getState().setForeshadowPickerOpen(true)
+              }
+            >
+              <Flag className="h-3.5 w-3.5" />
+            </BubbleButton>
+
+            {onInlineAiCommand && (
+              <BubbleAiMenu onCommand={onInlineAiCommand} />
+            )}
+          </>
         )}
-
-        <Sep />
-        <BubbleButton
-          testId="bubble-comment"
-          label={t("editor.bubbleMenu.comment")}
-          onClick={() =>
-            useCursorSettingsStore.getState().setCommentPickerOpen(true)
-          }
-        >
-          <MessageSquarePlus className="h-3.5 w-3.5" />
-        </BubbleButton>
-        <BubbleButton
-          testId="bubble-foreshadow"
-          label={t("editor.bubbleMenu.foreshadow")}
-          onClick={() =>
-            useCursorSettingsStore.getState().setForeshadowPickerOpen(true)
-          }
-        >
-          <Flag className="h-3.5 w-3.5" />
-        </BubbleButton>
-
-        {onInlineAiCommand && <BubbleAiMenu onCommand={onInlineAiCommand} />}
       </motion.div>
     </div>,
     document.body,

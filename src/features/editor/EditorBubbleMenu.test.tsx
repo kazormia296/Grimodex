@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
+  act,
   render,
   screen,
   fireEvent,
@@ -68,6 +69,7 @@ describe("EditorBubbleMenu", () => {
     useCodexStore.setState({
       create: originalCodexCreate,
       pendingEntryId: null,
+      selectedEntry: null,
     });
   });
   afterEach(() => {
@@ -75,6 +77,7 @@ describe("EditorBubbleMenu", () => {
     useCodexStore.setState({
       create: originalCodexCreate,
       pendingEntryId: null,
+      selectedEntry: null,
     });
   });
 
@@ -269,6 +272,64 @@ describe("EditorBubbleMenu", () => {
     editor.destroy();
   });
 
+  it("keeps the three phone actions available when the desktop bubble setting is off", () => {
+    setBubble(false);
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <EditorBubbleMenu editor={editor} toolbarActionsRef={actionsRef()} />
+      </WorkspaceViewportProvider>,
+    );
+
+    const toolbar = screen.getByRole("toolbar");
+    expect(toolbar.querySelectorAll("button")).toHaveLength(3);
+    expect(screen.getByTestId("bubble-ruby")).toBeInTheDocument();
+    expect(screen.getByTestId("bubble-emphasis")).toBeInTheDocument();
+    expect(screen.getByTestId("bubble-add-to-codex")).toBeInTheDocument();
+
+    editor.destroy();
+  });
+
+  it("unmounts the phone selection bubble after leaving the editor surface", () => {
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <EditorBubbleMenu editor={editor} toolbarActionsRef={actionsRef()} />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(screen.getByRole("toolbar")).toBeInTheDocument();
+
+    act(() => {
+      useCompactNavigationStore.getState().openSurface("codex");
+    });
+
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(editor.state.selection).toMatchObject({ from: 1, to: 6 });
+
+    editor.destroy();
+  });
+
+  it("does not apply the compact-surface gate to the wide selection bubble", () => {
+    useCompactNavigationStore.getState().openSurface("codex");
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+
+    render(
+      <WorkspaceViewportProvider profile="wide">
+        <EditorBubbleMenu editor={editor} toolbarActionsRef={actionsRef()} />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(screen.getByRole("toolbar")).toBeInTheDocument();
+
+    editor.destroy();
+  });
+
   it("creates a Codex entry from the phone selection and opens it", async () => {
     const editor = makeEditor("<p>hello world</p>");
     editor.commands.setTextSelection({ from: 1, to: 6 });
@@ -282,10 +343,7 @@ describe("EditorBubbleMenu", () => {
 
     render(
       <WorkspaceViewportProvider profile="phone">
-        <EditorBubbleMenu
-          editor={editor}
-          toolbarActionsRef={actionsRef()}
-        />
+        <EditorBubbleMenu editor={editor} toolbarActionsRef={actionsRef()} />
       </WorkspaceViewportProvider>,
     );
 
@@ -298,7 +356,76 @@ describe("EditorBubbleMenu", () => {
         summary: "",
       });
     });
-    expect(useCodexStore.getState().pendingEntryId).toBe("codex-created");
+    expect(useCodexStore.getState().pendingEntryId).toBeNull();
+    expect(useCodexStore.getState().selectedEntry).toMatchObject({
+      id: "codex-created",
+      name: "hello",
+    });
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("codex");
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+
+    editor.destroy();
+  });
+
+  it("synchronously guards Add to Codex while creation is pending", async () => {
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    let resolveCreate:
+      | ((entry: {
+          id: string;
+          type: string;
+          name: string;
+          summary: string;
+        }) => void)
+      | undefined;
+    const create = vi.fn(
+      () =>
+        new Promise<{
+          id: string;
+          type: string;
+          name: string;
+          summary: string;
+        }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    useCodexStore.setState({ create } as never);
+
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <EditorBubbleMenu editor={editor} toolbarActionsRef={actionsRef()} />
+      </WorkspaceViewportProvider>,
+    );
+
+    const addButton = screen.getByTestId("bubble-add-to-codex");
+    act(() => {
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(addButton).toBeDisabled();
+
+    await act(async () => {
+      resolveCreate?.({
+        id: "codex-created",
+        type: "character",
+        name: "hello",
+        summary: "",
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("bubble-add-to-codex"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(useCodexStore.getState().pendingEntryId).toBeNull();
+    expect(useCodexStore.getState().selectedEntry).toMatchObject({
+      id: "codex-created",
+      name: "hello",
+    });
     expect(useCompactNavigationStore.getState().activeSurface).toBe("codex");
 
     editor.destroy();

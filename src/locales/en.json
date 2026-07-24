@@ -335,9 +335,12 @@
       },
       "codex": {
         "back": "Back to Codex",
-        "phases": "Phases",
-        "openAnchor": "Open anchor scene",
-        "empty": "No Codex entries yet"
+        "empty": "No Codex entries yet",
+        "type": "Type",
+        "summary": "Summary",
+        "save": "Save",
+        "saving": "Saving…",
+        "saveFailed": "Could not save. Try again."
       },
       "ai": {
         "label": "AI chat",
@@ -345,7 +348,13 @@
         "send": "Send",
         "openSettings": "Open AI settings",
         "streaming": "Streaming…",
-        "empty": "Start a conversation with AI here"
+        "empty": "Start a conversation with AI here",
+        "history": "Past chats",
+        "selectHistory": "Select a past chat",
+        "loadingHistory": "Loading chats…",
+        "noHistory": "No past chats",
+        "untitledHistory": "Untitled chat",
+        "newChat": "New chat"
       },
       "more": {
         "description": "Search, settings, export, and other workspace actions.",

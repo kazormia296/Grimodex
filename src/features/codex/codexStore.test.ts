@@ -1,6 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useCodexStore } from "./codexStore";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setCodexEditConflictHandler, useCodexStore } from "./codexStore";
 import type { CodexEntry, CodexMatchRow } from "./api";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { useProjectStore } from "@/features/project/projectStore";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 const mockEntry: CodexEntry = {
   id: "codex-1",
@@ -141,6 +144,10 @@ describe("codexStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockBlockIfUnlicensed.mockReturnValue(false);
+    setCodexEditConflictHandler(() => {});
+    useProjectStore.setState({ currentProjectId: null });
+    setCurrentWorkspaceIdentity(null);
+    useGlobalHistoryStore.getState().clear();
     useCodexStore.setState({
       entries: [],
       completionTargets: [],
@@ -151,6 +158,11 @@ describe("codexStore", () => {
       sortOrder: "name-asc",
     });
     mockListCodexMatchTargets.mockResolvedValue(allCompletionTargets);
+  });
+
+  afterEach(() => {
+    useProjectStore.setState({ currentProjectId: null });
+    setCurrentWorkspaceIdentity(null);
   });
 
   describe("loadEntries", () => {
@@ -368,6 +380,62 @@ describe("codexStore", () => {
 
       expect(useCodexStore.getState().entries).toContainEqual(mockEntry2);
     });
+
+    it("遅延作成中にproject/workspace authorityが変われば新scopeを汚染せずstaleを通知する", async () => {
+      const currentScopeEntry = {
+        ...mockEntry2,
+        projectId: "project-b",
+        summary: "新 scope の entry",
+      };
+      let resolveCreate: ((entry: CodexEntry) => void) | undefined;
+      setCurrentWorkspaceIdentity({
+        path: "/workspace/a.sqlite",
+        openRevision: 1,
+      });
+      mockCreateCodexEntry.mockImplementationOnce(
+        () =>
+          new Promise<CodexEntry>((resolve) => {
+            resolveCreate = resolve;
+          }),
+      );
+
+      const creation = useCodexStore.getState().create({
+        type: "character",
+        name: "旧 scope の entry",
+      });
+      await vi.waitFor(() =>
+        expect(mockCreateCodexEntry).toHaveBeenCalledOnce(),
+      );
+
+      useProjectStore.setState({ currentProjectId: "project-b" });
+      setCurrentWorkspaceIdentity({
+        path: "/workspace/b.sqlite",
+        openRevision: 2,
+      });
+      useCodexStore.setState({
+        entries: [currentScopeEntry],
+        selectedEntry: currentScopeEntry,
+        completionTargets: [completionTarget(currentScopeEntry)],
+      });
+      resolveCreate?.({
+        ...mockEntry,
+        projectId: "default-project",
+        name: "旧 scope の entry",
+      });
+
+      await expect(creation).rejects.toThrow("codex create authority changed");
+      expect(useCodexStore.getState().entries).toEqual([currentScopeEntry]);
+      expect(useCodexStore.getState().selectedEntry).toEqual(currentScopeEntry);
+      expect(useCodexStore.getState().completionTargets).toEqual([
+        completionTarget(currentScopeEntry),
+      ]);
+      expect(useGlobalHistoryStore.getState().past).toEqual([]);
+      expect(
+        mockRecord.mock.calls.some(
+          ([event]) => event.opType === "entry.create",
+        ),
+      ).toBe(false);
+    });
   });
 
   describe("update", () => {
@@ -411,9 +479,7 @@ describe("codexStore", () => {
       const updated = { ...mockEntry, type: "location" };
       mockUpdateCodexEntry.mockResolvedValue(updated);
 
-      await useCodexStore
-        .getState()
-        .update("codex-1", { type: "location" });
+      await useCodexStore.getState().update("codex-1", { type: "location" });
 
       expect(useCodexStore.getState().entries).toEqual([]);
       expect(useCodexStore.getState().selectedEntry).toEqual(updated);
@@ -483,6 +549,361 @@ describe("codexStore", () => {
           aliases: '["エララ","the apprentice"]',
         },
       );
+    });
+  });
+
+  describe("saveTypeAndSummary", () => {
+    it("type と summary を単一 OCC 更新し、全キャッシュ・履歴・summary diff を同期する", async () => {
+      const before = { ...mockEntry, version: 7, summary: "古い要約" };
+      const updated = {
+        ...before,
+        type: "location" as const,
+        summary: "新しい要約",
+        version: 8,
+      };
+      useCodexStore.setState({
+        entries: [before],
+        selectedEntry: before,
+        completionTargets: [completionTarget(before)],
+      });
+      mockUpdateCodexEntry.mockResolvedValueOnce(updated);
+
+      await expect(
+        useCodexStore.getState().saveTypeAndSummary("codex-1", {
+          type: "location",
+          summary: "新しい要約",
+        }),
+      ).resolves.toBe(true);
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledTimes(1);
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        { type: "location", summary: "新しい要約" },
+        { baseVersion: 7 },
+      );
+      expect(useCodexStore.getState().entries[0]).toEqual(updated);
+      expect(useCodexStore.getState().selectedEntry).toEqual(updated);
+      expect(useCodexStore.getState().completionTargets[0].type).toBe(
+        "location",
+      );
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+
+      const event = findCodexUpdateEvent();
+      expect(event).toBeTruthy();
+      const payload = event![0].payload as {
+        fields: string[];
+        diffs: Record<string, { segments: [number, string][] }>;
+      };
+      expect(payload.fields).toEqual(["type", "summary"]);
+      const summarySegments = payload.diffs.summary.segments;
+      expect(
+        summarySegments
+          .filter(([operation]) => operation !== 1)
+          .map(([, text]) => text)
+          .join(""),
+      ).toBe("古い要約");
+      expect(
+        summarySegments
+          .filter(([operation]) => operation !== -1)
+          .map(([, text]) => text)
+          .join(""),
+      ).toBe("新しい要約");
+    });
+
+    it("undo と redo でも entries・selectedEntry・completionTargets を同期する", async () => {
+      const before = { ...mockEntry, version: 3, summary: "古い要約" };
+      const updated = {
+        ...before,
+        type: "location" as const,
+        summary: "新しい要約",
+        version: 4,
+      };
+      const restored = { ...before, version: 5 };
+      const reapplied = { ...updated, version: 6 };
+      useCodexStore.setState({
+        entries: [before],
+        selectedEntry: before,
+        completionTargets: [completionTarget(before)],
+      });
+      mockUpdateCodexEntry
+        .mockResolvedValueOnce(updated)
+        .mockResolvedValueOnce(restored)
+        .mockResolvedValueOnce(reapplied);
+
+      await useCodexStore.getState().saveTypeAndSummary("codex-1", {
+        type: "location",
+        summary: "新しい要約",
+      });
+      await useGlobalHistoryStore.getState().undo();
+
+      expect(useCodexStore.getState().entries[0]).toEqual(restored);
+      expect(useCodexStore.getState().selectedEntry).toEqual(restored);
+      expect(useCodexStore.getState().completionTargets[0].type).toBe(
+        "character",
+      );
+
+      await useGlobalHistoryStore.getState().redo();
+
+      expect(useCodexStore.getState().entries[0]).toEqual(reapplied);
+      expect(useCodexStore.getState().selectedEntry).toEqual(reapplied);
+      expect(useCodexStore.getState().completionTargets[0].type).toBe(
+        "location",
+      );
+    });
+
+    it("遅延保存中に project が切り替わっても新 project の store・履歴・timelapse を汚染しない", async () => {
+      const before = {
+        ...mockEntry,
+        projectId: "default-project",
+        version: 7,
+        summary: "旧 project の要約",
+      };
+      const updated = {
+        ...before,
+        type: "location" as const,
+        summary: "保存済みの要約",
+        version: 8,
+      };
+      const currentProjectEntry = {
+        ...mockEntry,
+        projectId: "project-b",
+        summary: "新 project の要約",
+      };
+      let resolveWrite: ((entry: CodexEntry | undefined) => void) | undefined;
+      mockUpdateCodexEntry.mockImplementationOnce(
+        () =>
+          new Promise<CodexEntry | undefined>((resolve) => {
+            resolveWrite = resolve;
+          }),
+      );
+      useCodexStore.setState({
+        entries: [before],
+        selectedEntry: before,
+        completionTargets: [completionTarget(before)],
+      });
+
+      const save = useCodexStore.getState().saveTypeAndSummary("codex-1", {
+        type: "location",
+        summary: "保存済みの要約",
+      });
+      await vi.waitFor(() =>
+        expect(mockUpdateCodexEntry).toHaveBeenCalledOnce(),
+      );
+
+      useProjectStore.setState({ currentProjectId: "project-b" });
+      useCodexStore.setState({
+        entries: [currentProjectEntry],
+        selectedEntry: currentProjectEntry,
+        completionTargets: [completionTarget(currentProjectEntry)],
+      });
+      resolveWrite?.(updated);
+
+      await expect(save).resolves.toBe(true);
+      expect(useCodexStore.getState().entries).toEqual([currentProjectEntry]);
+      expect(useCodexStore.getState().selectedEntry).toEqual(
+        currentProjectEntry,
+      );
+      expect(useCodexStore.getState().completionTargets).toEqual([
+        completionTarget(currentProjectEntry),
+      ]);
+      expect(useGlobalHistoryStore.getState().past).toEqual([]);
+      expect(findCodexUpdateEvent()).toBeFalsy();
+    });
+
+    it("captured project の undo・redo は永続化しても別 project の renderer を同期しない", async () => {
+      const before = {
+        ...mockEntry,
+        projectId: "project-a",
+        version: 3,
+        summary: "旧要約",
+      };
+      const updated = {
+        ...before,
+        type: "location" as const,
+        summary: "新要約",
+        version: 4,
+      };
+      const restored = { ...before, version: 5 };
+      const reapplied = { ...updated, version: 6 };
+      const currentProjectEntry = {
+        ...mockEntry,
+        projectId: "project-b",
+        summary: "project-b の要約",
+      };
+      useProjectStore.setState({ currentProjectId: "project-a" });
+      useCodexStore.setState({
+        entries: [before],
+        selectedEntry: before,
+        completionTargets: [completionTarget(before)],
+      });
+      mockUpdateCodexEntry
+        .mockResolvedValueOnce(updated)
+        .mockResolvedValueOnce(restored)
+        .mockResolvedValueOnce(reapplied);
+
+      await useCodexStore.getState().saveTypeAndSummary("codex-1", {
+        type: "location",
+        summary: "新要約",
+      });
+      const command = useGlobalHistoryStore.getState().past.at(-1);
+      expect(command).toBeDefined();
+
+      useProjectStore.setState({ currentProjectId: "project-b" });
+      useCodexStore.setState({
+        entries: [currentProjectEntry],
+        selectedEntry: currentProjectEntry,
+        completionTargets: [completionTarget(currentProjectEntry)],
+      });
+
+      await command!.undo();
+      await command!.redo();
+
+      expect(mockUpdateCodexEntry).toHaveBeenNthCalledWith(
+        2,
+        "project-a",
+        "codex-1",
+        { type: "character", summary: "旧要約" },
+        { baseVersion: 4 },
+      );
+      expect(mockUpdateCodexEntry).toHaveBeenNthCalledWith(
+        3,
+        "project-a",
+        "codex-1",
+        { type: "location", summary: "新要約" },
+        { baseVersion: 5 },
+      );
+      expect(useCodexStore.getState().entries).toEqual([currentProjectEntry]);
+      expect(useCodexStore.getState().selectedEntry).toEqual(
+        currentProjectEntry,
+      );
+      expect(useCodexStore.getState().completionTargets).toEqual([
+        completionTarget(currentProjectEntry),
+      ]);
+    });
+
+    it("同一 project id でも遅延保存中に workspace が切り替われば新 workspace を汚染しない", async () => {
+      const before = {
+        ...mockEntry,
+        projectId: "default-project",
+        version: 7,
+        summary: "旧 workspace の要約",
+      };
+      const updated = {
+        ...before,
+        summary: "旧 workspace へ保存済み",
+        version: 8,
+      };
+      const currentWorkspaceEntry = {
+        ...mockEntry,
+        projectId: "default-project",
+        summary: "新 workspace の要約",
+      };
+      let resolveWrite: ((entry: CodexEntry | undefined) => void) | undefined;
+      setCurrentWorkspaceIdentity({
+        path: "/workspace/a.sqlite",
+        openRevision: 1,
+      });
+      mockUpdateCodexEntry.mockImplementationOnce(
+        () =>
+          new Promise<CodexEntry | undefined>((resolve) => {
+            resolveWrite = resolve;
+          }),
+      );
+      useCodexStore.setState({
+        entries: [before],
+        selectedEntry: before,
+        completionTargets: [completionTarget(before)],
+      });
+
+      const save = useCodexStore.getState().saveTypeAndSummary("codex-1", {
+        type: "character",
+        summary: "旧 workspace へ保存済み",
+      });
+      await vi.waitFor(() =>
+        expect(mockUpdateCodexEntry).toHaveBeenCalledOnce(),
+      );
+
+      setCurrentWorkspaceIdentity({
+        path: "/workspace/b.sqlite",
+        openRevision: 2,
+      });
+      useCodexStore.setState({
+        entries: [currentWorkspaceEntry],
+        selectedEntry: currentWorkspaceEntry,
+        completionTargets: [completionTarget(currentWorkspaceEntry)],
+      });
+      resolveWrite?.(updated);
+
+      await expect(save).resolves.toBe(true);
+      expect(useCodexStore.getState().entries).toEqual([currentWorkspaceEntry]);
+      expect(useCodexStore.getState().selectedEntry).toEqual(
+        currentWorkspaceEntry,
+      );
+      expect(useCodexStore.getState().completionTargets).toEqual([
+        completionTarget(currentWorkspaceEntry),
+      ]);
+      expect(useGlobalHistoryStore.getState().past).toEqual([]);
+      expect(findCodexUpdateEvent()).toBeFalsy();
+    });
+
+    it("OCC 競合時は false を返し、store・履歴・timelapse を変更しない", async () => {
+      const before = { ...mockEntry, version: 5 };
+      const conflictHandler = vi.fn();
+      setCodexEditConflictHandler(conflictHandler);
+      useCodexStore.setState({
+        entries: [before],
+        selectedEntry: before,
+        completionTargets: [completionTarget(before)],
+      });
+      const { CodexVersionConflictError } = await import("./occ");
+      mockUpdateCodexEntry.mockRejectedValueOnce(
+        new CodexVersionConflictError("codex-1"),
+      );
+
+      await expect(
+        useCodexStore.getState().saveTypeAndSummary("codex-1", {
+          type: "location",
+          summary: "競合する要約",
+        }),
+      ).resolves.toBe(false);
+
+      expect(conflictHandler).toHaveBeenCalledWith("codex-1");
+      expect(useCodexStore.getState().entries).toEqual([before]);
+      expect(useCodexStore.getState().selectedEntry).toEqual(before);
+      expect(useCodexStore.getState().completionTargets).toEqual([
+        completionTarget(before),
+      ]);
+      expect(useGlobalHistoryStore.getState().past).toEqual([]);
+      expect(findCodexUpdateEvent()).toBeFalsy();
+    });
+
+    it("通常エラーと行不在は false を返し、副作用を記録しない", async () => {
+      useCodexStore.setState({
+        entries: [mockEntry],
+        selectedEntry: mockEntry,
+      });
+      mockUpdateCodexEntry.mockRejectedValueOnce(new Error("write failed"));
+
+      await expect(
+        useCodexStore.getState().saveTypeAndSummary("codex-1", {
+          type: "location",
+          summary: "保存されない要約",
+        }),
+      ).resolves.toBe(false);
+      expect(useGlobalHistoryStore.getState().past).toEqual([]);
+      expect(findCodexUpdateEvent()).toBeFalsy();
+
+      vi.clearAllMocks();
+      mockUpdateCodexEntry.mockResolvedValueOnce(undefined);
+      await expect(
+        useCodexStore.getState().saveTypeAndSummary("codex-1", {
+          type: "location",
+          summary: "保存されない要約",
+        }),
+      ).resolves.toBe(false);
+      expect(useGlobalHistoryStore.getState().past).toEqual([]);
+      expect(findCodexUpdateEvent()).toBeFalsy();
     });
   });
 

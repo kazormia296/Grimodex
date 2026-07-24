@@ -44,4 +44,13 @@ describe("phone editor layer projection CSS", () => {
       '[data-editor-layer-projection="codex-only"] .codex-semantic-link',
     );
   });
+
+  it("keeps the full phone editor canvas transparent", () => {
+    expect(css).toMatch(
+      /\[data-adaptive-workspace-shell\]\[data-profile="phone"\]\s+\[data-editor-surface\]\s*\{[^}]*background:\s*transparent;/s,
+    );
+    expect(css).toMatch(
+      /\.editor-fluid-glass\.gx-panel--flat\s*\{[^}]*background:\s*transparent;[^}]*background-color:\s*transparent;/s,
+    );
+  });
 });

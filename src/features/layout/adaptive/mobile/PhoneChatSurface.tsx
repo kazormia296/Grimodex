@@ -8,8 +8,20 @@ export interface PhoneChatMessage {
   streaming?: boolean;
 }
 
+export interface PhoneChatSession {
+  id: string;
+  title: string;
+}
+
 interface Props {
   messages: readonly PhoneChatMessage[];
+  sessions?: readonly PhoneChatSession[];
+  activeSessionId?: string | null;
+  isLoadingSessions?: boolean;
+  isLoadingMessages?: boolean;
+  isCreatingSession?: boolean;
+  onSelectSession?: (sessionId: string) => void;
+  onCreateSession?: () => void;
   onSend: (text: string) => void;
   disabled?: boolean;
   sendDisabled?: boolean;
@@ -20,6 +32,13 @@ interface Props {
 
 export function PhoneChatSurface({
   messages,
+  sessions = [],
+  activeSessionId = null,
+  isLoadingSessions = false,
+  isLoadingMessages = false,
+  isCreatingSession = false,
+  onSelectSession,
+  onCreateSession,
   onSend,
   disabled = false,
   sendDisabled = false,
@@ -30,12 +49,54 @@ export function PhoneChatSurface({
   const { t } = useTranslation();
   const [draft, setDraft] = useState("");
   const disabledHintId = useId();
+  const showSessionControls =
+    sessions.length > 0 ||
+    isLoadingSessions ||
+    !!onSelectSession ||
+    !!onCreateSession;
+  const interactionDisabled =
+    disabled || isLoadingSessions || isLoadingMessages || isCreatingSession;
+  const sessionMutationsDisabled = interactionDisabled;
   return (
     <section
       aria-label={t("mobileWorkspace.surfaces.ai.label")}
       data-phone-chat-surface
       className="flex min-h-full flex-col"
     >
+      {showSessionControls && (
+        <div className="flex items-center gap-2 border-b border-border p-3">
+          <select
+            aria-label={t("mobileWorkspace.surfaces.ai.history")}
+            value={activeSessionId ?? ""}
+            disabled={sessionMutationsDisabled || !onSelectSession}
+            onChange={(event) => {
+              if (event.target.value) onSelectSession?.(event.target.value);
+            }}
+            className="min-h-11 min-w-0 flex-1 rounded border bg-background px-3"
+          >
+            <option value="">
+              {isLoadingSessions
+                ? t("mobileWorkspace.surfaces.ai.loadingHistory")
+                : sessions.length === 0
+                  ? t("mobileWorkspace.surfaces.ai.noHistory")
+                  : t("mobileWorkspace.surfaces.ai.selectHistory")}
+            </option>
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>
+                {session.title}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="min-h-11 shrink-0 rounded border px-3 font-medium disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={sessionMutationsDisabled || !onCreateSession}
+            onClick={() => onCreateSession?.()}
+          >
+            {t("mobileWorkspace.surfaces.ai.newChat")}
+          </button>
+        </div>
+      )}
       <div
         className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3"
         aria-live="polite"
@@ -84,7 +145,7 @@ export function PhoneChatSurface({
           onSubmit={(event) => {
             event.preventDefault();
             const text = draft.trim();
-            if (!text || disabled || sendDisabled) return;
+            if (!text || interactionDisabled || sendDisabled) return;
             onSend(text);
             setDraft("");
           }}
@@ -94,14 +155,14 @@ export function PhoneChatSurface({
             aria-describedby={disabledHint ? disabledHintId : undefined}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            disabled={disabled}
+            disabled={interactionDisabled}
             rows={2}
             className="min-h-11 min-w-0 flex-1 resize-none rounded border p-2"
           />
           <button
             type="submit"
             className="min-h-11 min-w-11 rounded bg-primary px-3 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={disabled || sendDisabled || !draft.trim()}
+            disabled={interactionDisabled || sendDisabled || !draft.trim()}
             aria-describedby={disabledHint ? disabledHintId : undefined}
           >
             {t("mobileWorkspace.surfaces.ai.send")}

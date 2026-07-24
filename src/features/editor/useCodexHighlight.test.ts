@@ -156,10 +156,7 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
     mockEnabled = false;
 
     renderHook(() =>
-      useCodexHighlight(
-        editor,
-        { enabledOverride: true } as never,
-      ),
+      useCodexHighlight(editor, { enabledOverride: true } as never),
     );
 
     expect(mockRebuildAndSchedule).toHaveBeenCalledWith(

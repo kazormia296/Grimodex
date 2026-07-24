@@ -22,7 +22,7 @@ export interface ChatSessionLifecycleOptions {
     nodeId: string | null | undefined,
     codexAnchorId: string | null | undefined,
     snippetAnchorId: string | null | undefined,
-  ): Promise<void>;
+  ): Promise<boolean>;
   selectSession(sessionId: string | null): Promise<void>;
   refreshContextLayers(): Promise<unknown>;
 }
@@ -71,12 +71,17 @@ export function useChatSessionLifecycle({
     } = resolveScopeSessionKey(chatScope, treeActiveSceneId, scopeAnchorId);
     (async () => {
       markStart("chatPanel.loadSessions");
+      let loaded: boolean;
       try {
-        await loadSessions(effectiveNodeId, codexAnchorId, snippetAnchorId);
+        loaded = await loadSessions(
+          effectiveNodeId,
+          codexAnchorId,
+          snippetAnchorId,
+        );
       } finally {
         markEnd("chatPanel.loadSessions");
       }
-      if (stale) return;
+      if (stale || !loaded) return;
       const { sessions } = useChatStore.getState();
       markStart("chatPanel.selectSessionAfterLoad");
       try {

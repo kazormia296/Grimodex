@@ -81,63 +81,7 @@ export function EditorPaneStatusBar({
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [statusPopoverOpen]);
 
-  if (zenMode) return null;
-
-  if (phoneWorkspace) {
-    return (
-      <div
-        data-phone-editor-status
-        className="glass-editor-chrome flex min-h-11 flex-shrink-0 items-center justify-between gap-2 overflow-hidden border-t border-border px-2 text-xs text-muted-foreground"
-      >
-        {activeStatus ? (
-          <select
-            aria-label={i18next.t("editor.status.changeStatus")}
-            title={i18next.t("editor.status.changeStatus")}
-            value={activeStatus}
-            onChange={(event) =>
-              onStatusChange(event.target.value as SceneStatus)
-            }
-            className={`min-h-11 min-w-0 max-w-28 truncate rounded border-0 bg-transparent px-2 font-medium ${STATUS_COLORS[activeStatus]}`}
-          >
-            {(Object.entries(getStatusLabels()) as [SceneStatus, string][]).map(
-              ([status, label]) => (
-                <option key={status} value={status}>
-                  {label}
-                </option>
-              ),
-            )}
-          </select>
-        ) : (
-          <span />
-        )}
-        <div className="flex min-w-0 items-center gap-2">
-          <EditorStatsFooter
-            compact
-            editor={editor}
-            getSyncSceneId={getStatsSceneId}
-            syncToTree={!isEntryMode}
-            isLoading={isSceneContentLoading}
-          />
-          <span className="max-w-16 truncate">
-            {isSaving
-              ? i18next.t("editor.status.saving")
-              : isDirty
-                ? i18next.t("editor.status.unsaved")
-                : i18next.t("editor.status.saved")}
-          </span>
-          <button
-            type="button"
-            aria-label={i18next.t("editor.status.revisionHistory")}
-            title={i18next.t("editor.status.revisionHistory")}
-            onClick={onOpenRevisionHistory}
-            className="flex min-h-11 min-w-11 items-center justify-center rounded hover:bg-accent hover:text-foreground"
-          >
-            <Clock className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    );
-  }
+  if (zenMode || phoneWorkspace) return null;
 
   return (
     <div className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">

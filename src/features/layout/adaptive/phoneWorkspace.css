@@ -77,6 +77,20 @@
 
 [data-adaptive-workspace-shell][data-profile="phone"] [data-editor-surface] {
   overflow: hidden;
+  background: transparent;
+}
+
+/*
+ * The desktop editor card normally owns a solid `--background` fill through
+ * `.gx-panel--flat`. On phone the editor is the full workspace canvas, so that
+ * fill would mask the app/ambient backdrop even though the paper and body are
+ * already transparent.
+ */
+[data-adaptive-workspace-shell][data-profile="phone"]
+  [data-editor-surface]
+  .editor-fluid-glass.gx-panel--flat {
+  background: transparent;
+  background-color: transparent;
 }
 
 [data-adaptive-workspace-shell][data-profile="phone"][data-zen-mode="true"]
@@ -280,6 +294,53 @@
   width: 100%;
   min-width: 0;
   min-height: 100%;
+}
+
+/*
+ * Phone editor projection: keep only Codex marks visible. These rules are
+ * deliberately scoped to a render-only data attribute so desktop layer
+ * preferences remain persisted and are restored unchanged.
+ */
+[data-editor-layer-projection="codex-only"] .gutter-marks,
+[data-editor-layer-projection="codex-only"] .lint-disable-gutter,
+[data-editor-layer-projection="codex-only"] .reorder-block-handle {
+  display: none !important;
+}
+
+[data-editor-layer-projection="codex-only"] .attribution-ai,
+[data-editor-layer-projection="codex-only"] .attribution-unknown {
+  border-radius: 0 !important;
+  background-color: transparent !important;
+}
+
+[data-editor-layer-projection="codex-only"] .attribution-manual-override {
+  outline: none !important;
+}
+
+[data-editor-layer-projection="codex-only"] .attribution-dimmed {
+  opacity: 1 !important;
+}
+
+[data-editor-layer-projection="codex-only"] .comment-deco,
+[data-editor-layer-projection="codex-only"] .pe-annotation,
+[data-editor-layer-projection="codex-only"] .lint-deco,
+[data-editor-layer-projection="codex-only"] [data-foreshadow-setup],
+[data-editor-layer-projection="codex-only"] [data-foreshadow-payoff],
+[data-editor-layer-projection="codex-only"] .lint-disable {
+  text-decoration: none !important;
+  cursor: text !important;
+}
+
+[data-editor-layer-projection="codex-only"] .tiptap [data-lint-disabled] {
+  border-inline-start: 0 !important;
+  padding-inline-start: 0 !important;
+}
+
+[data-editor-layer-projection="codex-only"] .reorder-unit {
+  outline: none !important;
+  background: none !important;
+  box-shadow: none !important;
+  cursor: text !important;
 }
 
 @media (max-width: 359px) {

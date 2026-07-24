@@ -10,7 +10,6 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -28,8 +27,7 @@ const getCodexEntry = vi.hoisted(() => vi.fn());
 const originalCreateNode = useTreeStore.getState().createNode;
 const originalDeleteNode = useTreeStore.getState().deleteNode;
 const originalMoveNode = useTreeStore.getState().moveNode;
-const originalCodexUpdate = useCodexStore.getState().update;
-const originalCodexUpdateText = useCodexStore.getState().updateText;
+const originalSaveTypeAndSummary = useCodexStore.getState().saveTypeAndSummary;
 const searchResult = vi.hoisted(
   (): {
     id: string;
@@ -128,11 +126,9 @@ beforeEach(async () => {
     pendingEntryId: null,
     selectedEntry: null,
     filterType: null,
-    update: originalCodexUpdate,
-    updateText: originalCodexUpdateText,
+    saveTypeAndSummary: originalSaveTypeAndSummary,
     ensureEntriesLoaded: vi.fn().mockResolvedValue(undefined),
   } as never);
-  usePhaseStore.setState({ phasesByEntry: {} } as never);
   useProjectStore.setState({ currentProjectId: "project-mobile" } as never);
   useChatStore.setState({
     activeSceneId: "scene-0",
@@ -374,9 +370,6 @@ describe("ConnectedMobileWorkspaceSurface", () => {
       name: "新しい選択",
     };
     useCodexStore.setState({ entries: [newerEntry] } as never);
-    usePhaseStore.setState({
-      phasesByEntry: { "codex-newer": [] },
-    } as never);
     searchResult.id = "lexical-codex:codex-late";
     searchResult.kind = "lexical-codex";
     const { rerender } = render(
@@ -424,9 +417,6 @@ describe("ConnectedMobileWorkspaceSurface", () => {
       name: "新しい選択",
     };
     useCodexStore.setState({ entries: [newerEntry] } as never);
-    usePhaseStore.setState({
-      phasesByEntry: { "codex-newer": [] },
-    } as never);
     searchResult.id = "lexical-codex:codex-late";
     searchResult.kind = "lexical-codex";
     const { rerender } = render(
@@ -470,9 +460,6 @@ describe("ConnectedMobileWorkspaceSurface", () => {
       filterType: "location",
       ensureEntriesLoaded: vi.fn().mockResolvedValue(undefined),
     } as never);
-    usePhaseStore.setState({
-      phasesByEntry: { "codex-filtered": [] },
-    } as never);
     searchResult.id = "lexical-codex:codex-filtered";
     searchResult.kind = "lexical-codex";
     const { rerender } = render(
@@ -499,12 +486,11 @@ describe("ConnectedMobileWorkspaceSurface", () => {
     expect(
       await screen.findByRole("heading", { name: "葵" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("主人公")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "要約" })).toHaveValue("主人公");
   });
 
-  it("persists phone Codex type and summary edits through their canonical store paths", async () => {
-    const update = vi.fn().mockResolvedValue(undefined);
-    const updateText = vi.fn().mockResolvedValue(undefined);
+  it("persists phone Codex type and summary edits atomically through the canonical store path", async () => {
+    const saveTypeAndSummary = vi.fn().mockResolvedValue(true);
     const entry = {
       id: "codex-edit",
       projectId: "project-mobile",
@@ -519,11 +505,7 @@ describe("ConnectedMobileWorkspaceSurface", () => {
         { slug: "character", label: "キャラクター" },
         { slug: "location", label: "場所" },
       ],
-      update,
-      updateText,
-    } as never);
-    usePhaseStore.setState({
-      phasesByEntry: { "codex-edit": [] },
+      saveTypeAndSummary,
     } as never);
 
     render(
@@ -533,7 +515,6 @@ describe("ConnectedMobileWorkspaceSurface", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "編集" }));
     fireEvent.change(screen.getByRole("combobox", { name: "種別" }), {
       target: { value: "location" },
     });
@@ -543,10 +524,8 @@ describe("ConnectedMobileWorkspaceSurface", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => {
-      expect(update).toHaveBeenCalledWith("codex-edit", {
+      expect(saveTypeAndSummary).toHaveBeenCalledWith("codex-edit", {
         type: "location",
-      });
-      expect(updateText).toHaveBeenCalledWith("codex-edit", {
         summary: "新しい要約",
       });
     });

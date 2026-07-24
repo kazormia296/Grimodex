@@ -749,7 +749,7 @@ interface ChatState {
     nodeId?: string | null,
     codexAnchorId?: string | null,
     snippetAnchorId?: string | null,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   selectSession: (sessionId: string | null) => Promise<void>;
   createNewSession: (
     projectId: string,
@@ -3179,7 +3179,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   ) => {
     const generation = ++_sessionListGeneration;
     const projectId = get().activeProjectId ?? getCurrentProjectId();
-    set({ isLoadingSessions: true });
+    set({ sessions: [], isLoadingSessions: true });
     try {
       const sessions = await chatApi.listSessions(
         projectId,
@@ -3191,22 +3191,24 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         generation !== _sessionListGeneration ||
         (get().activeProjectId ?? getCurrentProjectId()) !== projectId
       ) {
-        return;
+        return false;
       }
       if (sessions.some((session) => session.projectId !== projectId)) {
         throw new Error("chat session project mismatch");
       }
       set({ sessions, isLoadingSessions: false });
+      return true;
     } catch (e) {
       if (
         generation !== _sessionListGeneration ||
         (get().activeProjectId ?? getCurrentProjectId()) !== projectId
       ) {
-        return;
+        return false;
       }
       set({ isLoadingSessions: false });
       toast.error(i18next.t("chat.loadSessionsFailed"));
       debugLog.error("ChatStore", "loadSessions", errorDetail(e));
+      return false;
     }
   },
 
@@ -6669,23 +6671,47 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   setActiveSceneId: (id: string) => {
     markStart("chatStore.setActiveSceneId");
     try {
-      const { activeSceneId, chatScope } = get();
+      const { activeSceneId, activeSessionId, chatScope, sessions } = get();
+      const activeSession = sessions.find(
+        (session) => session.id === activeSessionId,
+      );
+      const activeSessionTargetsScene =
+        !activeSession ||
+        (activeSession.nodeId === id &&
+          !activeSession.codexAnchorId &&
+          !activeSession.snippetAnchorId);
       // tree の active scene が変わったときは activeSceneId を更新。
       // scope === "scene" のときは anchor が active scene を追従するため、
-      // セッションを切り替えるべく activeSessionId / messages をリセット。
+      // セッション一覧を含む scene-scoped state と遅延読込をリセット。
       // scope === "folder" / "project" のときは scope axis が sticky で、
       // anchor は user 選択を維持する（=セッションも維持）。
-      if (id !== activeSceneId) {
-        if (chatScope === "scene") {
-          if (get().isStreaming) get().stopGeneration();
-          set({
-            activeSceneId: id,
-            activeSessionId: null,
-            messages: [],
-          });
-        } else {
-          set({ activeSceneId: id });
-        }
+      const resetSceneScope =
+        chatScope === "scene" &&
+        (id !== activeSceneId || !activeSessionTargetsScene);
+      if (resetSceneScope) {
+        _sessionListGeneration += 1;
+        _sessionSelectionGeneration += 1;
+        if (get().isStreaming) get().stopGeneration();
+        get()._cancelPendingUserQuestion();
+        resetRecallPromote(recallPromoteTracker);
+        set({
+          activeSceneId: id,
+          sessions: [],
+          activeSessionId: null,
+          messages: [],
+          isLoadingSessions: false,
+          isLoadingMessages: false,
+          summaryCount: 0,
+          maxSummaryGeneration: 0,
+          sessionStableCodexIds: [],
+          sessionStableContextInitialized: false,
+          sessionAgentToolsSnapshot: null,
+          excludedAutoEntryIds: [],
+          threadFocusOverride: null,
+          chatRecallPromoteSuggestion: null,
+          agentContinuation: null,
+          subAgentProgress: null,
+        });
       } else {
         set({ activeSceneId: id });
       }

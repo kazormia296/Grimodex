@@ -268,6 +268,7 @@ function resetStore() {
     sessions: [],
     activeSessionId: null,
     isLoadingSessions: false,
+    isLoadingMessages: false,
     messages: [],
     isStreaming: false,
     error: null,
@@ -394,9 +395,10 @@ describe("useChatStore", () => {
     it("loads sessions for a scene", async () => {
       mockListSessions.mockResolvedValueOnce([session1, session2]);
 
-      await useChatStore.getState().loadSessions("scene-1");
+      const loaded = await useChatStore.getState().loadSessions("scene-1");
 
       const state = useChatStore.getState();
+      expect(loaded).toBe(true);
       expect(state.sessions).toHaveLength(2);
       expect(mockListSessions).toHaveBeenCalledWith(
         "proj-1",
@@ -432,6 +434,39 @@ describe("useChatStore", () => {
       resolvePromise!([session1]);
       await loadPromise;
 
+      expect(useChatStore.getState().isLoadingSessions).toBe(false);
+    });
+
+    it("discards an in-flight scene history load after the active scene changes", async () => {
+      let resolvePromise: (value: ChatSession[]) => void;
+      const promise = new Promise<ChatSession[]>((resolve) => {
+        resolvePromise = resolve;
+      });
+      mockListSessions.mockReturnValueOnce(promise);
+
+      const loadPromise = useChatStore.getState().loadSessions("scene-1");
+      useChatStore.getState().setActiveSceneId("scene-2");
+      resolvePromise!([session1]);
+      await expect(loadPromise).resolves.toBe(false);
+
+      const state = useChatStore.getState();
+      expect(state.activeSceneId).toBe("scene-2");
+      expect(state.sessions).toEqual([]);
+      expect(state.activeSessionId).toBeNull();
+      expect(state.messages).toEqual([]);
+      expect(state.isLoadingSessions).toBe(false);
+      expect(state.isLoadingMessages).toBe(false);
+    });
+
+    it("reports a failed history load without treating stale sessions as fresh", async () => {
+      useChatStore.setState({ sessions: [session1] });
+      mockListSessions.mockRejectedValueOnce(new Error("load failed"));
+
+      await expect(
+        useChatStore.getState().loadSessions("scene-1"),
+      ).resolves.toBe(false);
+
+      expect(useChatStore.getState().sessions).toEqual([]);
       expect(useChatStore.getState().isLoadingSessions).toBe(false);
     });
   });

@@ -415,6 +415,19 @@ export function Toolbar({
   }, [activeCompactSurface, phoneWorkspace]);
 
   useEffect(() => {
+    if (!phoneWorkspace) return;
+    // The toolbar root becomes hidden in the phone projection, but its
+    // body-portalled surfaces are outside that DOM subtree. Close every
+    // non-essential toolbar surface when entering phone mode so a desktop
+    // popover cannot remain interactive over the mobile editor. Ruby stays
+    // open because it is the phone selection bubble's editing surface.
+    setOverflowOpen(false);
+    setFontSizeOpen(false);
+    setLayersOpen(false);
+    setLinkOpen(false);
+  }, [phoneWorkspace]);
+
+  useEffect(() => {
     if (!phoneWorkspace || !overflowOpen) return;
     const syncPosition = () => {
       const triggerBottom =
@@ -593,6 +606,10 @@ export function Toolbar({
       role="toolbar"
       aria-label={t("editor.toolbar.label")}
       data-phone-toolbar={phoneWorkspace ? "true" : undefined}
+      data-phone-toolbar-headless={phoneWorkspace ? "true" : undefined}
+      hidden={phoneWorkspace}
+      aria-hidden={phoneWorkspace ? true : undefined}
+      inert={phoneWorkspace ? true : undefined}
       className="glass-editor-chrome relative flex-shrink-0 border-b border-border"
     >
       {/* Toolbar content area — overflow-hidden clips at panel width */}

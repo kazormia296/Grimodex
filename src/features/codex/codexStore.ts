@@ -42,6 +42,7 @@ import {
   resolveUnsetReadingTargetForSurface,
   serializeReadings,
 } from "./reading";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 export type CodexSortOrder =
   | "category"
@@ -66,6 +67,38 @@ export function setCodexEditConflictHandler(
   handler: (entryId: string) => void,
 ): void {
   codexEditConflictHandler = handler;
+}
+
+interface RendererAuthority {
+  projectId: string;
+  workspacePath: string | null;
+  workspaceOpenRevision: number | null;
+}
+
+function captureRendererAuthority(): RendererAuthority {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  return {
+    projectId: getCurrentProjectId(),
+    workspacePath: workspaceIdentity?.path ?? null,
+    workspaceOpenRevision: workspaceIdentity?.openRevision ?? null,
+  };
+}
+
+function isCurrentRendererAuthority(authority: RendererAuthority): boolean {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  return (
+    getCurrentProjectId() === authority.projectId &&
+    (workspaceIdentity?.path ?? null) === authority.workspacePath &&
+    (workspaceIdentity?.openRevision ?? null) ===
+      authority.workspaceOpenRevision
+  );
+}
+
+class CodexCreateAuthorityChangedError extends Error {
+  constructor() {
+    super("codex create authority changed");
+    this.name = "CodexCreateAuthorityChangedError";
+  }
 }
 
 type StructuralPatch = Partial<
@@ -169,6 +202,14 @@ interface CodexState {
    * Structural / deliberate user edits. Pushes a history entry.
    */
   update: (id: string, data: StructuralPatch) => Promise<void>;
+  /**
+   * Type + summary detail form save. Persists both fields in one OCC-protected
+   * write and reports whether the complete save was committed.
+   */
+  saveTypeAndSummary: (
+    id: string,
+    data: { type: CodexEntryType; summary: string },
+  ) => Promise<boolean>;
   /**
    * 手動ルビを未設定の Codex 読みへ登録する。DB の最新行へ非破壊マージし、
    * version OCC で別窓/MCPとの競合を弾く。
@@ -337,13 +378,18 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
   create: async (data) => {
     if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
+    const authority = captureRendererAuthority();
+    const { projectId } = authority;
     try {
       const id = crypto.randomUUID();
       const entry = await createCodexEntry({
         id,
-        projectId: getCurrentProjectId(),
+        projectId,
         ...data,
       });
+      if (!isCurrentRendererAuthority(authority)) {
+        throw new CodexCreateAuthorityChangedError();
+      }
       const { filterType } = get();
       set((state) => ({
         entries:
@@ -364,6 +410,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           entityId: captured.id,
           async undo() {
             await deleteCodexEntry(captured.projectId, captured.id);
+            if (!isCurrentRendererAuthority(authority)) return;
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
               completionTargets: removeCompletionTarget(
@@ -394,6 +441,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               childrenBudget: captured.childrenBudget ?? undefined,
               notes: captured.notes ?? undefined,
             });
+            if (!isCurrentRendererAuthority(authority)) return;
             const { filterType } = get();
             set((state) => ({
               entries:
@@ -411,6 +459,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       recordChangeEvent({
         domain: "codex",
         opType: "entry.create",
+        projectId,
         entityType: "codex_entry",
         entityId: entry.id,
         payload: {
@@ -421,6 +470,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       });
       return entry;
     } catch (e) {
+      if (
+        e instanceof CodexCreateAuthorityChangedError ||
+        !isCurrentRendererAuthority(authority)
+      ) {
+        throw e instanceof CodexCreateAuthorityChangedError
+          ? e
+          : new CodexCreateAuthorityChangedError();
+      }
       toast.error(i18next.t("codex.store.createFailed"));
       debugLog.error("CodexStore", `create: ${rootCause(e)}`, errorDetail(e));
       throw e;
@@ -428,7 +485,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   },
 
   update: async (id, data) => {
-    const before = get().entries.find((e) => e.id === id);
+    const snapshot = get();
+    const before =
+      snapshot.entries.find((e) => e.id === id) ??
+      (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
 
     try {
       const updated = await updateCodexEntry(getCurrentProjectId(), id, data);
@@ -439,6 +499,8 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
             state.completionTargets,
             updated,
           ),
+          selectedEntry:
+            state.selectedEntry?.id === id ? updated : state.selectedEntry,
         }));
       }
     } catch (e) {
@@ -488,6 +550,8 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               state.completionTargets,
               restored,
             ),
+            selectedEntry:
+              state.selectedEntry?.id === id ? restored : state.selectedEntry,
           }));
         }
       },
@@ -504,10 +568,135 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               state.completionTargets,
               reapplied,
             ),
+            selectedEntry:
+              state.selectedEntry?.id === id ? reapplied : state.selectedEntry,
           }));
         }
       },
     });
+  },
+
+  saveTypeAndSummary: async (id, data) => {
+    if (blockIfUnlicensed()) return false;
+    const snapshot = get();
+    const before =
+      snapshot.entries.find((entry) => entry.id === id) ??
+      (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
+    if (!before) return false;
+
+    const changedFields: Array<"type" | "summary"> = [];
+    if (data.type !== before.type) changedFields.push("type");
+    if (data.summary !== (before.summary ?? "")) changedFields.push("summary");
+    if (changedFields.length === 0) return true;
+
+    const authority = captureRendererAuthority();
+    const { projectId } = authority;
+    let updated: CodexEntry | undefined;
+    try {
+      updated = await updateCodexEntry(
+        projectId,
+        id,
+        { type: data.type, summary: data.summary },
+        { baseVersion: before.version },
+      );
+      if (!updated) return false;
+    } catch (error) {
+      if (error instanceof CodexVersionConflictError) {
+        codexEditConflictHandler(id);
+        return false;
+      }
+      toast.error(i18next.t("codex.store.updateFailed"));
+      debugLog.error(
+        "CodexStore",
+        `saveTypeAndSummary: ${rootCause(error)}`,
+        errorDetail(error),
+      );
+      return false;
+    }
+
+    const syncUpdatedEntry = (entry: CodexEntry): void => {
+      if (!isCurrentRendererAuthority(authority)) return;
+      set((state) => ({
+        entries: state.entries.map((candidate) =>
+          candidate.id === id ? entry : candidate,
+        ),
+        completionTargets: upsertCompletionTarget(
+          state.completionTargets,
+          entry,
+        ),
+        selectedEntry:
+          state.selectedEntry?.id === id ? entry : state.selectedEntry,
+      }));
+    };
+    // Persistence is scoped to the project/workspace captured before the
+    // await. If renderer authority changed while that write was in flight, the
+    // write is still successful but none of its renderer/history/timelapse
+    // side effects belong to the newly active scope.
+    if (!isCurrentRendererAuthority(authority)) return true;
+    syncUpdatedEntry(updated);
+
+    const changedPatch: StructuralPatch = {};
+    const undoPatch: StructuralPatch = {};
+    if (changedFields.includes("type")) {
+      changedPatch.type = data.type;
+      undoPatch.type = before.type;
+    }
+    if (changedFields.includes("summary")) {
+      changedPatch.summary = data.summary;
+      undoPatch.summary = before.summary;
+    }
+
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      const redoPatch = { ...changedPatch };
+      let undoBaseVersion = updated.version;
+      let redoBaseVersion: number | undefined;
+      useGlobalHistoryStore.getState().push({
+        kind: "codex",
+        label: labelForPatch(changedPatch),
+        entityId: id,
+        async undo() {
+          const restored = await updateCodexEntry(projectId, id, undoPatch, {
+            baseVersion: undoBaseVersion,
+          });
+          if (!restored) return;
+          redoBaseVersion = restored.version;
+          syncUpdatedEntry(restored);
+        },
+        async redo() {
+          const reapplied = await updateCodexEntry(
+            projectId,
+            id,
+            redoPatch,
+            redoBaseVersion === undefined
+              ? undefined
+              : { baseVersion: redoBaseVersion },
+          );
+          if (!reapplied) return;
+          undoBaseVersion = reapplied.version;
+          syncUpdatedEntry(reapplied);
+        },
+      });
+    }
+
+    const diffs: Record<string, BodyDiff> = {};
+    if (changedFields.includes("summary")) {
+      const summaryDiff = computeBodyDiff(
+        before.summary ?? "",
+        updated.summary ?? "",
+      );
+      if (summaryDiff) diffs.summary = summaryDiff;
+    }
+    recordChangeEvent({
+      domain: "codex",
+      opType: "entry.update",
+      entityType: "codex_entry",
+      entityId: id,
+      payload: {
+        fields: changedFields,
+        ...(Object.keys(diffs).length > 0 ? { diffs } : {}),
+      },
+    });
+    return true;
   },
 
   registerRubyReading: async (expectedEntryId, surface, rawReading) => {
@@ -634,7 +823,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   },
 
   updateText: async (id, data) => {
-    const before = get().entries.find((e) => e.id === id);
+    const snapshot = get();
+    const before =
+      snapshot.entries.find((e) => e.id === id) ??
+      (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
     try {
       // OCC: 読み込み時点の version を base_version として渡す。別窓 / 別プロセスが
       // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
@@ -644,6 +836,8 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       if (updated) {
         set((state) => ({
           entries: state.entries.map((e) => (e.id === id ? updated : e)),
+          selectedEntry:
+            state.selectedEntry?.id === id ? updated : state.selectedEntry,
         }));
       }
     } catch (e) {

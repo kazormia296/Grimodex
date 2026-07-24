@@ -773,6 +773,19 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     title,
     interaction = "interactive",
   }) {
+    const projectId = get().projectId;
+    const activeProjectId = getCurrentProjectId();
+    const workspaceIdentity = getCurrentWorkspaceIdentity();
+    const isCurrentAuthority = (): boolean => {
+      const currentWorkspaceIdentity = getCurrentWorkspaceIdentity();
+      return (
+        get().projectId === projectId &&
+        getCurrentProjectId() === activeProjectId &&
+        currentWorkspaceIdentity?.path === workspaceIdentity?.path &&
+        currentWorkspaceIdentity?.openRevision ===
+          workspaceIdentity?.openRevision
+      );
+    };
     return createTreeNode(
       { nodeType, parentId, afterId, title, interaction },
       {
@@ -781,8 +794,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
           }
         },
-        getProjectId: () => get().projectId,
+        getProjectId: () => projectId,
         getNodes: () => get().nodes,
+        isCurrentAuthority,
         getSetting: (key, fallback) =>
           useSettingsStore.getState().get(key, fallback),
         createPersisted: async (record) => {

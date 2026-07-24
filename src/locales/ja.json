@@ -335,9 +335,12 @@
       },
       "codex": {
         "back": "Codexへ戻る",
-        "phases": "フェーズ",
-        "openAnchor": "該当シーンを開く",
-        "empty": "Codex項目がありません"
+        "empty": "Codex項目がありません",
+        "type": "種別",
+        "summary": "要約",
+        "save": "保存",
+        "saving": "保存中…",
+        "saveFailed": "保存できませんでした。もう一度お試しください。"
       },
       "ai": {
         "label": "AIチャット",
@@ -345,7 +348,13 @@
         "send": "送信",
         "openSettings": "AI設定を開く",
         "streaming": "生成中…",
-        "empty": "AIとの会話をここから始められます"
+        "empty": "AIとの会話をここから始められます",
+        "history": "過去の会話",
+        "selectHistory": "過去の会話を選択",
+        "loadingHistory": "会話を読み込み中…",
+        "noHistory": "過去の会話はありません",
+        "untitledHistory": "無題の会話",
+        "newChat": "新しい会話"
       },
       "more": {
         "description": "検索、設定、書き出しなどのワークスペース操作です。",

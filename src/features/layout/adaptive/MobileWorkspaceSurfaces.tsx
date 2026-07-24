@@ -1,12 +1,27 @@
-import { lazy, Suspense, useEffect, useMemo, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { useChatStore } from "@/features/chat/chatStore";
+import {
+  resolveScopeSessionKey,
+  type ScopeSessionKey,
+} from "@/features/chat/chatScope";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { getCodexEntry } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { usePhaseStore } from "@/features/codex/phaseStore";
+import {
+  canEditEntry,
+  useCodexEditLock,
+} from "@/features/codex/multiwindow/codexEditLockStore";
 import type { CommandCenterItem } from "@/features/commandCenter/providers/types";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { resolvePhoneEditorGroup } from "@/features/editor/phoneEditorGroup";
@@ -35,24 +50,6 @@ const CommandCenterResultsPanel = lazy(async () => {
     await import("@/features/commandCenter/CommandCenterResultsPanel");
   return { default: module.CommandCenterResultsPanel };
 });
-
-const phaseLoadsInFlight = new Map<string, Promise<void>>();
-
-function requestPhaseLoadOnce(
-  projectId: string,
-  entryId: string,
-  loadPhasesForEntry: (entryId: string) => Promise<void>,
-): void {
-  const key = `${projectId}:${entryId}`;
-  if (phaseLoadsInFlight.has(key)) return;
-  const operation = loadPhasesForEntry(entryId)
-    .catch(() => undefined)
-    .finally(() => {
-      if (phaseLoadsInFlight.get(key) === operation)
-        phaseLoadsInFlight.delete(key);
-    });
-  phaseLoadsInFlight.set(key, operation);
-}
 
 function editorProjectionGroup(documentId: string): 0 | 1 {
   const tabs = useTabStore.getState();
@@ -87,6 +84,21 @@ function runPhoneSceneMutation(operation: Promise<unknown>): void {
   void operation.catch(() => {
     toast.error(i18next.t("mobileWorkspace.scenes.actionFailed"));
   });
+}
+
+function sessionMatchesScopeKey(
+  session: {
+    nodeId: string | null;
+    codexAnchorId: string | null;
+    snippetAnchorId: string | null;
+  },
+  key: ScopeSessionKey,
+): boolean {
+  return (
+    session.nodeId === (key.nodeId ?? null) &&
+    session.codexAnchorId === (key.codexAnchorId ?? null) &&
+    session.snippetAnchorId === (key.snippetAnchorId ?? null)
+  );
 }
 
 function parseSemanticResultId(id: string): { sceneId: string } | null {
@@ -255,7 +267,11 @@ function ConnectedSceneSurface() {
 
 function ConnectedCodexSurface() {
   const projectId = useProjectStore((state) => state.currentProjectId);
+  const active = useCompactNavigationStore(
+    (state) => state.activeSurface === "codex",
+  );
   const entries = useCodexStore((state) => state.entries);
+  const entryTypes = useCodexStore((state) => state.types);
   const pendingEntryId = useCodexStore((state) => state.pendingEntryId);
   const selectedEntry = useCodexStore((state) => state.selectedEntry);
   const setSelectedEntry = useCodexStore((state) => state.setSelectedEntry);
@@ -263,12 +279,14 @@ function ConnectedCodexSurface() {
   const ensureEntriesLoaded = useCodexStore(
     (state) => state.ensureEntriesLoaded,
   );
-  const phasesByEntry = usePhaseStore((state) => state.phasesByEntry);
-  const loadPhasesForEntry = usePhaseStore((state) => state.loadPhasesForEntry);
+  const saveTypeAndSummary = useCodexStore((state) => state.saveTypeAndSummary);
+  const canEditSelected = useCodexEditLock(
+    active ? (selectedEntry?.id ?? null) : null,
+  );
 
   useEffect(() => {
-    if (projectId) void ensureEntriesLoaded();
-  }, [ensureEntriesLoaded, projectId]);
+    if (active && projectId) void ensureEntriesLoaded();
+  }, [active, ensureEntriesLoaded, projectId]);
 
   useEffect(() => {
     if (!pendingEntryId) return;
@@ -277,11 +295,6 @@ function ConnectedCodexSurface() {
     setSelectedEntry(entry);
     clearPendingEntry();
   }, [clearPendingEntry, entries, pendingEntryId, setSelectedEntry]);
-
-  useEffect(() => {
-    if (!projectId || !selectedEntry || phasesByEntry[selectedEntry.id]) return;
-    requestPhaseLoadOnce(projectId, selectedEntry.id, loadPhasesForEntry);
-  }, [loadPhasesForEntry, phasesByEntry, projectId, selectedEntry]);
 
   const visibleEntries = useMemo(
     () =>
@@ -297,21 +310,18 @@ function ConnectedCodexSurface() {
         name: entry.name,
         type: entry.type,
         summary: entry.summary ?? undefined,
-        phases: (phasesByEntry[entry.id] ?? []).map((phase) => ({
-          id: phase.id,
-          label: phase.label,
-          summary: phase.summaryOverride ?? undefined,
-          anchorSceneId: phase.anchorNodeId ?? undefined,
-        })),
       })),
-    [phasesByEntry, visibleEntries],
+    [visibleEntries],
   );
 
   return (
     <PhoneCodexNavigator
       entries={codex}
+      entryTypes={entryTypes.map((entryType) => ({
+        value: entryType.slug,
+        label: entryType.label,
+      }))}
       selectedEntryId={selectedEntry?.id ?? null}
-      onOpenAnchor={openDocument}
       onSelectEntry={(entryId) => {
         const entry = entries.find((candidate) => candidate.id === entryId);
         if (entry) {
@@ -323,6 +333,11 @@ function ConnectedCodexSurface() {
         clearPendingEntry();
         setSelectedEntry(null);
       }}
+      onSaveEntry={async (entryId, edits) => {
+        if (!canEditEntry(entryId)) return false;
+        return saveTypeAndSummary(entryId, edits);
+      }}
+      readOnly={!canEditSelected}
     />
   );
 }
@@ -337,8 +352,101 @@ function ConnectedAiSurface({
   const aiSettings = useAiSettingsStore((state) => state.settings);
   const loadAiSettings = useAiSettingsStore((state) => state.loadSettings);
   const messages = useChatStore((state) => state.messages);
+  const sessions = useChatStore((state) => state.sessions);
+  const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const isLoadingSessions = useChatStore((state) => state.isLoadingSessions);
+  const isLoadingMessages = useChatStore((state) => state.isLoadingMessages);
   const isStreaming = useChatStore((state) => state.isStreaming);
   const sendMessage = useChatStore((state) => state.sendMessage);
+  const loadSessions = useChatStore((state) => state.loadSessions);
+  const selectSession = useChatStore((state) => state.selectSession);
+  const createNewSession = useChatStore((state) => state.createNewSession);
+  const setChatActiveSceneId = useChatStore((state) => state.setActiveSceneId);
+  const chatScope = useChatStore((state) => state.chatScope);
+  const scopeAnchorId = useChatStore((state) => state.scopeAnchorId);
+  const activeSceneId = useTreeStore((state) => state.activeSceneId);
+  const createSessionInFlight = useRef(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const aiSurfaceActive = useCompactNavigationStore(
+    (state) => state.activeSurface === "ai",
+  );
+  const sceneScopeWithoutScene = chatScope === "scene" && !activeSceneId;
+  const sessionKey = useMemo(
+    () => resolveScopeSessionKey(chatScope, activeSceneId, scopeAnchorId),
+    [activeSceneId, chatScope, scopeAnchorId],
+  );
+
+  useEffect(() => {
+    const nextSceneId = activeSceneId ?? "";
+    setChatActiveSceneId(nextSceneId);
+  }, [activeSceneId, setChatActiveSceneId]);
+
+  useEffect(() => {
+    let stale = false;
+    if (!aiSurfaceActive || sceneScopeWithoutScene) return undefined;
+
+    const requestedKey = sessionKey;
+    void (async () => {
+      const loaded = await loadSessions(
+        requestedKey.nodeId,
+        requestedKey.codexAnchorId,
+        requestedKey.snippetAnchorId,
+      );
+
+      const currentTreeSceneId = useTreeStore.getState().activeSceneId;
+      const currentChat = useChatStore.getState();
+      if (currentChat.chatScope === "scene" && !currentTreeSceneId) {
+        setChatActiveSceneId("");
+        return;
+      }
+      if (stale) return;
+
+      const currentKey = resolveScopeSessionKey(
+        currentChat.chatScope,
+        currentTreeSceneId,
+        currentChat.scopeAnchorId,
+      );
+      if (
+        currentKey.nodeId !== requestedKey.nodeId ||
+        currentKey.codexAnchorId !== requestedKey.codexAnchorId ||
+        currentKey.snippetAnchorId !== requestedKey.snippetAnchorId
+      ) {
+        return;
+      }
+
+      if (!loaded) return;
+
+      const loadedSessionsMatchScope = currentChat.sessions.every((session) =>
+        sessionMatchesScopeKey(session, requestedKey),
+      );
+      if (!loadedSessionsMatchScope) {
+        await selectSession(null);
+        return;
+      }
+
+      const currentActiveSessionId = currentChat.activeSessionId;
+      const activeSessionIsAvailable =
+        currentActiveSessionId !== null &&
+        currentChat.sessions.some(
+          (session) => session.id === currentActiveSessionId,
+        );
+      if (!activeSessionIsAvailable) {
+        await selectSession(currentChat.sessions[0]?.id ?? null);
+      }
+    })();
+
+    return () => {
+      stale = true;
+    };
+  }, [
+    aiSurfaceActive,
+    loadSessions,
+    sceneScopeWithoutScene,
+    selectSession,
+    setChatActiveSceneId,
+    sessionKey,
+  ]);
+
   useEffect(() => {
     if (!aiSettings) void loadAiSettings();
   }, [aiSettings, loadAiSettings]);
@@ -361,10 +469,56 @@ function ConnectedAiSurface({
     [isStreaming, messages],
   );
 
+  const scopedSessions = useMemo(
+    () =>
+      sessions.filter((session) => sessionMatchesScopeKey(session, sessionKey)),
+    [sessionKey, sessions],
+  );
+  const scopedActiveSessionId = scopedSessions.some(
+    (session) => session.id === activeSessionId,
+  )
+    ? activeSessionId
+    : null;
+
+  const handleCreateSession = () => {
+    if (sceneScopeWithoutScene || createSessionInFlight.current) return;
+
+    createSessionInFlight.current = true;
+    setIsCreatingSession(true);
+    const finish = () => {
+      createSessionInFlight.current = false;
+      setIsCreatingSession(false);
+    };
+    try {
+      void createNewSession(
+        getCurrentProjectId(),
+        t("mobileWorkspace.surfaces.ai.newChat"),
+        sessionKey.nodeId ?? undefined,
+        sessionKey.codexAnchorId,
+        sessionKey.snippetAnchorId,
+      ).then(finish, finish);
+    } catch {
+      finish();
+    }
+  };
+
   return (
     <PhoneChatSurface
-      messages={chat}
-      disabled={isStreaming}
+      messages={sceneScopeWithoutScene ? [] : chat}
+      sessions={(sceneScopeWithoutScene ? [] : scopedSessions).map(
+        (session) => ({
+          id: session.id,
+          title:
+            session.title || t("mobileWorkspace.surfaces.ai.untitledHistory"),
+        }),
+      )}
+      activeSessionId={sceneScopeWithoutScene ? null : scopedActiveSessionId}
+      isLoadingSessions={sceneScopeWithoutScene ? false : isLoadingSessions}
+      isLoadingMessages={isLoadingMessages}
+      isCreatingSession={isCreatingSession}
+      onSelectSession={(sessionId) => void selectSession(sessionId)}
+      onCreateSession={handleCreateSession}
+      disabled={isStreaming || sceneScopeWithoutScene}
       sendDisabled={chatGate.presentation !== "enabled"}
       disabledHint={
         chatGate.tooltip ??

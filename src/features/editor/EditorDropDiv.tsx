@@ -18,6 +18,7 @@ export function EditorDropDiv({
   className?: string;
   onClick?: React.MouseEventHandler<HTMLDivElement>;
   children: React.ReactNode;
+  "data-editor-layer-projection"?: string;
   "data-show-foreshadow-marks"?: string;
   "data-focus-hide-beats"?: string;
 }) {

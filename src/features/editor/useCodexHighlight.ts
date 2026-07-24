@@ -19,6 +19,9 @@ interface CodexHighlightOptions {
   /** When true, skip updating the global matchedEntryIds (CodexQuick) store.
    *  Visual decorations still apply. Use this for mini-editors in side panels. */
   skipMatchedIds?: boolean;
+  /** View-local projection. When supplied, it overrides visual enablement
+   * without mutating the persisted Codex layer setting. */
+  enabledOverride?: boolean;
 }
 
 export function useCodexHighlight(
@@ -43,7 +46,8 @@ export function useCodexHighlight(
     (s) => s.setMatchedEntryIds,
   );
   const setTypeColorMap = useCodexHighlightStore((s) => s.setTypeColorMap);
-  const enabled = useCodexHighlightStore((s) => s.enabled);
+  const persistedEnabled = useCodexHighlightStore((s) => s.enabled);
+  const enabled = resolvedOptions.enabledOverride ?? persistedEnabled;
   const highlightStyle = useSettingsStore((s) =>
     s.get("display.codexHighlightStyle", "color-text"),
   );
