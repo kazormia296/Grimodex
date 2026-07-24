@@ -134,7 +134,7 @@ export function DataCategory() {
     if (isVacuuming) return;
     setIsVacuuming(true);
     try {
-      await db.run("VACUUM" as never);
+      await invoke("vacuum_database");
       toast.success(t("settings.data.vacuumSuccess"));
     } catch {
       toast.error(t("settings.data.vacuumFail"));

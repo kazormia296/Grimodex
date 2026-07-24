@@ -17,11 +17,13 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
+import { gunzipSync } from "node:zlib";
+import initSqlJs from "sql.js/dist/sql-asm.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
+const SQL = await initSqlJs();
 
 function makeFixture(label) {
   const root = mkdtempSync(join(tmpdir(), `grimodex-backup-${label}-`));
@@ -41,12 +43,26 @@ async function rows(backend, sql, params = [], method = "all") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;
 }
 
-function quoteSqlString(value) {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-async function writePlainBackup(backend, path) {
-  await rows(backend, `VACUUM INTO ${quoteSqlString(path)}`, [], "run");
+async function writeBackupViaTrustedOpen(backend, workspace, path) {
+  const before = new Set(
+    JSON.parse(await backend.listBackups()).map(({ fileName }) => fileName),
+  );
+  await rows(
+    backend,
+    "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('data.backupInterval', '0')",
+    [],
+    "run",
+  );
+  await backend.openWorkspace(workspace);
+  const created = JSON.parse(await backend.listBackups()).find(
+    ({ fileName }) => !before.has(fileName),
+  );
+  assert.ok(created, "openWorkspace must create a trusted automatic backup");
+  const compressed = readFileSync(join(workspace, "backups", created.fileName));
+  writeFileSync(
+    path,
+    path.endsWith(".gz") ? compressed : gunzipSync(compressed),
+  );
 }
 
 async function seedVersion(backend, version) {
@@ -134,7 +150,11 @@ test("restoreBackupは.dbをroundtripし復元直前の安全退避を残す", a
 
   await seedVersion(fixture.backend, "v1");
   const backupName = "grimodex-20260711-120000.db";
-  await writePlainBackup(fixture.backend, join(fixture.backups, backupName));
+  await writeBackupViaTrustedOpen(
+    fixture.backend,
+    fixture.workspace,
+    join(fixture.backups, backupName),
+  );
   await seedVersion(fixture.backend, "v2");
 
   await fixture.backend.codexRebuildMatcher([
@@ -181,12 +201,11 @@ test("restoreBackupは.db.gzを展開してroundtripする", async (t) => {
   mkdirSync(fixture.backups, { recursive: true });
 
   await seedVersion(fixture.backend, "gz-v1");
-  const plain = join(fixture.root, "source.db");
-  await writePlainBackup(fixture.backend, plain);
   const backupName = "grimodex-20260711-120000.db.gz";
-  writeFileSync(
+  await writeBackupViaTrustedOpen(
+    fixture.backend,
+    fixture.workspace,
     join(fixture.backups, backupName),
-    gzipSync(readFileSync(plain)),
   );
   await seedVersion(fixture.backend, "gz-v2");
 
@@ -232,14 +251,14 @@ test("migration非互換backupは適用前に拒否して現行DBを維持する
   mkdirSync(fixture.backups, { recursive: true });
   await seedVersion(fixture.backend, "live");
 
-  const badWorkspace = join(fixture.root, "bad-workspace");
-  const badBackend = new Backend(join(fixture.root, "bad-app-data"));
-  await badBackend.openWorkspace(badWorkspace);
-  await rows(badBackend, "PRAGMA foreign_keys = OFF", [], "run");
-  await rows(badBackend, "DROP TABLE projects", [], "run");
-  await rows(badBackend, "CREATE TABLE projects (x INTEGER)", [], "run");
   const backupName = "grimodex-20260711-130000.db";
-  await writePlainBackup(badBackend, join(fixture.backups, backupName));
+  const incompatible = new SQL.Database();
+  incompatible.run("CREATE TABLE projects (x INTEGER)");
+  writeFileSync(
+    join(fixture.backups, backupName),
+    Buffer.from(incompatible.export()),
+  );
+  incompatible.close();
 
   await assert.rejects(
     fixture.backend.restoreBackup(backupName),

@@ -18,7 +18,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,27 +114,112 @@ test("dbExecute の INSERT/SELECT roundtrip (パラメータ変換 + null + 日�
 
 test("dbExecuteBatch は途中失敗で全文 rollback する (トランザクション性)", async () => {
   await backend.dbExecuteBatch([
-    { sql: "CREATE TABLE smoke_tx (v INTEGER NOT NULL)", params: [], method: "run" },
-    { sql: "INSERT INTO smoke_tx (v) VALUES (?)", params: [1], method: "run" },
+    {
+      sql: "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+      params: ["smoke-tx-1", "1"],
+      method: "run",
+    },
   ]);
-  const [{ n: before }] = await exec("SELECT count(*) AS n FROM smoke_tx", [], "get");
+  const [{ n: before }] = await exec(
+    "SELECT count(*) AS n FROM app_settings WHERE key LIKE 'smoke-tx-%'",
+    [],
+    "get",
+  );
   assert.equal(before, 1);
 
   // 3 文目が失敗 → 先行 2 文の INSERT も残らないこと (BEGIN IMMEDIATE +
   // 全 ROLLBACK)。エラーメッセージには失敗原因が透過する。
   await assert.rejects(
     backend.dbExecuteBatch([
-      { sql: "INSERT INTO smoke_tx (v) VALUES (?)", params: [2], method: "run" },
-      { sql: "INSERT INTO smoke_tx (v) VALUES (?)", params: [3], method: "run" },
-      { sql: "INSERT INTO no_such_table (v) VALUES (1)", params: [], method: "run" },
+      {
+        sql: "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        params: ["smoke-tx-2", "2"],
+        method: "run",
+      },
+      {
+        sql: "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        params: ["smoke-tx-3", "3"],
+        method: "run",
+      },
+      {
+        sql: "INSERT INTO no_such_table (v) VALUES (1)",
+        params: [],
+        method: "run",
+      },
     ]),
     (err) => {
       assert.match(String(err.message), /no_such_table/);
       return true;
     },
   );
-  const [{ n: after }] = await exec("SELECT count(*) AS n FROM smoke_tx", [], "get");
+  const [{ n: after }] = await exec(
+    "SELECT count(*) AS n FROM app_settings WHERE key LIKE 'smoke-tx-%'",
+    [],
+    "get",
+  );
   assert.equal(after, 1, "途中失敗 batch は全文 rollback される");
+});
+
+test("renderer SQL policy は外部DB・VACUUM INTO・schema操作を明示拒否する", async () => {
+  const attachPath = join(root, "renderer-attach.db");
+  const vacuumPath = join(root, "renderer-vacuum.db");
+
+  await assert.rejects(
+    backend.dbExecute("ATTACH DATABASE ?1 AS audit", [attachPath], "run"),
+    /RENDERER_SQL_SECURITY: denied ATTACH or VACUUM/,
+  );
+  assert.equal(existsSync(attachPath), false);
+
+  await assert.rejects(
+    backend.dbExecute("VACUUM INTO ?1", [vacuumPath], "run"),
+    /RENDERER_SQL_SECURITY: denied ATTACH or VACUUM/,
+  );
+  assert.equal(existsSync(vacuumPath), false);
+
+  await assert.rejects(
+    backend.dbExecute(
+      "CREATE TABLE renderer_schema_escape (v TEXT)",
+      [],
+      "run",
+    ),
+    /RENDERER_SQL_SECURITY: denied schema operation/,
+  );
+});
+
+test("dbExecuteBatch の security rejection は先行書き込みも rollback する", async () => {
+  const attachPath = join(root, "renderer-batch-attach.db");
+  await assert.rejects(
+    backend.dbExecuteBatch([
+      {
+        sql: "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        params: ["renderer-security-batch", "must-roll-back"],
+        method: "run",
+      },
+      {
+        sql: "ATTACH DATABASE ?1 AS audit",
+        params: [attachPath],
+        method: "run",
+      },
+    ]),
+    /RENDERER_SQL_SECURITY: denied ATTACH or VACUUM/,
+  );
+  const [{ n }] = await exec(
+    "SELECT count(*) AS n FROM app_settings WHERE key = ?",
+    ["renderer-security-batch"],
+    "get",
+  );
+  assert.equal(n, 0);
+  assert.equal(existsSync(attachPath), false);
+});
+
+test("vacuumDatabase は path 引数なしで通常の workspace DB を compact する", async () => {
+  await backend.vacuumDatabase();
+  const [{ title }] = await exec(
+    "SELECT title FROM projects WHERE id = ?",
+    ["p1"],
+    "get",
+  );
+  assert.equal(title, "スモーク作品");
 });
 
 test("timelapseAppendBatch が監査チェーンへ append し冪等再送をスキップする", async () => {

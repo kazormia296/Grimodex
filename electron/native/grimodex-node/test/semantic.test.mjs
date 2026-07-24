@@ -5,10 +5,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -49,8 +56,23 @@ async function exec(backend, sql, params = [], method = "all") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;
 }
 
-function quoteSqlString(value) {
-  return `'${value.replaceAll("'", "''")}'`;
+async function writeTrustedPlainBackup(backend, workspace, path) {
+  const before = new Set(
+    JSON.parse(await backend.listBackups()).map(({ fileName }) => fileName),
+  );
+  await exec(
+    backend,
+    "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('data.backupInterval', '0')",
+    [],
+    "run",
+  );
+  await backend.openWorkspace(workspace);
+  const created = JSON.parse(await backend.listBackups()).find(
+    ({ fileName }) => !before.has(fileName),
+  );
+  assert.ok(created, "openWorkspace must create a trusted automatic backup");
+  const compressed = readFileSync(join(workspace, "backups", created.fileName));
+  writeFileSync(path, gunzipSync(compressed));
 }
 
 function tiptapDoc(text) {
@@ -243,11 +265,10 @@ test("restoreBackup再活性化後は復元DBだけを読みsemantic commandsを
   await seedScene(fixture.backend, "restore-scene", "Before", "saved state");
   mkdirSync(backups, { recursive: true });
   const backupName = "grimodex-20260711-130000.db";
-  await exec(
+  await writeTrustedPlainBackup(
     fixture.backend,
-    `VACUUM INTO ${quoteSqlString(join(backups, backupName))}`,
-    [],
-    "run",
+    workspace,
+    join(backups, backupName),
   );
   await exec(
     fixture.backend,

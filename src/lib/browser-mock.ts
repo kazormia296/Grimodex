@@ -1324,6 +1324,10 @@ export async function createBrowserMock(
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "vacuum_database":
+        db.run("VACUUM");
+        options.onDatabaseDirty?.();
+        return undefined as T;
       case "fts_search":
         return handleFtsSearch(args) as T;
       case "semantic_search":
