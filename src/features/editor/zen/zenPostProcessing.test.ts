@@ -3,7 +3,8 @@ import {
   buildZenPostProcessUniforms,
   buildZenPostProcessedFragment,
 } from "./zenPostProcessing";
-import { parseZenShaderConfig } from "./zenShaderConfig";
+import { parseZenShaderConfig, ZEN_SHADER_DEFAULTS } from "./zenShaderConfig";
+import { contrastTargetRatio } from "./zenContrastGuard";
 
 const PAPER_FRAGMENT = `#version 300 es
 precision mediump float;
@@ -167,8 +168,8 @@ describe("Zen shader post-processing", () => {
       u_zenContrastFeather: [0.03, 0.04, 0.03, 0.04],
       u_zenContrastTextColor: [0.9, 0.92, 0.95],
       u_zenContrastBackdropColor: [0.04, 0.05, 0.07],
-      u_zenContrastSurfaceOpacity: 0.1,
-      u_zenGlassRefraction: 7,
+      u_zenContrastSurfaceOpacity: ZEN_SHADER_DEFAULTS.opacity / 100,
+      u_zenGlassRefraction: ZEN_SHADER_DEFAULTS.glass.refraction,
       u_zenGlassRect: [0.1, 0.05, 0.9, 0.95],
       u_zenGlassCornerRadius: 18,
       u_zenUiSurfaceCount: 2,
@@ -193,7 +194,9 @@ describe("Zen shader post-processing", () => {
       u_zenDitherStrength: 0,
       u_zenHalftoneStrength: 0,
       u_zenContrastGuardEnabled: 0,
-      u_zenContrastTarget: 7,
+      u_zenContrastTarget: contrastTargetRatio(
+        ZEN_SHADER_DEFAULTS.contrastGuard.strength,
+      ),
       u_zenGlassRefraction: 0,
     });
   });

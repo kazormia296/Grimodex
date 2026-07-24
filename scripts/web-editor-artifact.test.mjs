@@ -21,22 +21,19 @@ async function createArtifact(files) {
 describe("Web Editor artifact boundary", () => {
   it("accepts an editor-only static artifact", async () => {
     const root = await createArtifact({
-      "WebEditorSettingsDialog-abc.js": "Ollama OpenAI Anthropic",
+      "WebEditorSettingsDialog-abc.js":
+        "Ollama OpenAI Anthropic OpenRouter OpenAI-compatible Sakana AI Novelist",
+      "app-abc.js": "https://openrouter.ai/api/v1/chat/completions",
       "WebEditorImportDialog-abc.js": "local browser file import",
       "WebEditorUnavailableDialogs-def.js": "export{}",
     });
     await assert.doesNotReject(validateWebEditorArtifact(root));
   });
 
-  it("rejects desktop transfer, hosted AI, and OpenRouter network artifacts", async () => {
+  it("rejects desktop transfer, hosted AI proxies, and Scan network artifacts", async () => {
     for (const [name, contents, expectedError] of [
       ["TransferDialog-abc.js", "legacy import", /desktop-only chunk/i],
       ["ExportDialog-abc.js", "legacy export", /desktop-only chunk/i],
-      [
-        "app-abc.js",
-        "https://openrouter.ai/api/v1/chat/completions",
-        /network route/i,
-      ],
       ["app-abc.js", "/api/v1/upload-intents", /network route/i],
       ["app-abc.js", "/api/v1/scans", /network route/i],
       ["app-abc.js", "/api/v1/editor-seeds", /network route/i],

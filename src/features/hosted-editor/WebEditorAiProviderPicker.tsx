@@ -1,14 +1,7 @@
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import type { AiProvider } from "@/features/chat/types";
-
-const PROVIDER_LABELS: Record<
-  (typeof BROWSER_DIRECT_AI_PROVIDERS)[number],
-  string
-> = {
-  ollama: "Ollama (Local LLM)",
-  openai: "OpenAI (BYOK)",
-  anthropic: "Anthropic (BYOK)",
-};
+import { getProviderLabel } from "@/features/chat/providerLabels";
+import { useTranslation } from "react-i18next";
 
 export function WebEditorAiProviderPicker({
   provider,
@@ -17,6 +10,7 @@ export function WebEditorAiProviderPicker({
   provider: AiProvider;
   onSelect: (provider: AiProvider) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="mb-3 flex flex-wrap gap-2">
       {BROWSER_DIRECT_AI_PROVIDERS.map((candidate) => (
@@ -30,7 +24,7 @@ export function WebEditorAiProviderPicker({
               : "border-border hover:bg-accent"
           }`}
         >
-          {PROVIDER_LABELS[candidate]}
+          {getProviderLabel(candidate, t)}
         </button>
       ))}
     </div>

@@ -9,7 +9,7 @@ afterEach(async () => {
 });
 
 describe("Web Editor trial notice", () => {
-  it("states in Japanese that AI is not included and requires Local LLM or BYOK", async () => {
+  it("states in Japanese that AI is not included and requires a user-owned HTTP route", async () => {
     await i18n.changeLanguage("ja");
 
     const { container } = render(<HostedEditorTrialBar />);
@@ -21,9 +21,11 @@ describe("Web Editor trial notice", () => {
       screen.getByText(/ローカルファイル.*ブラウザ内/),
     ).toBeInTheDocument();
     expect(screen.getByText(/AI.*付属していません/)).toBeInTheDocument();
-    expect(screen.getByText(/Local LLM.*APIキー/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/対応するHTTPプロバイダー.*APIキー.*接続先/),
+    ).toBeInTheDocument();
     expect(container).not.toHaveTextContent(
-      /Scan|アップロード|Hosted AI|OpenRouter|Cloudflare/i,
+      /Scan|アップロード|Hosted AI|Cloudflare/i,
     );
   });
 
@@ -39,9 +41,11 @@ describe("Web Editor trial notice", () => {
       screen.getByText(/Local files.*only in this browser/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/AI is not included/i)).toBeInTheDocument();
-    expect(screen.getByText(/Local LLM.*own API key/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/supported HTTP provider.*own API key or endpoint/i),
+    ).toBeInTheDocument();
     expect(container).not.toHaveTextContent(
-      /Scan|upload|Hosted AI|OpenRouter|Cloudflare/i,
+      /Scan|upload|Hosted AI|Cloudflare/i,
     );
   });
 });

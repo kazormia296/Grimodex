@@ -69,6 +69,7 @@ export const EditorArea = memo(function EditorArea() {
         }
         className="editor-fluid-glass gx-panel gx-panel--flat h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
       >
+        <div data-editor-fluid-glass-filter aria-hidden="true" />
         <SceneEditor />
       </motion.div>
     </PanelChromeMenu>

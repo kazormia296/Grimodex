@@ -599,7 +599,7 @@
       "mobileSummary": "Your edits are stored in this browser and are not automatically synced to the local app.",
       "storageNotice": "Data is stored in this browser and is not automatically synced to the local Grimodex app.",
       "importNotice": "Local files you select are processed only in this browser.",
-      "aiNotice": "AI is not included. To use AI, configure a Local LLM (Ollama) or your own API key for OpenAI or Anthropic.",
+      "aiNotice": "AI is not included. To use AI, configure a supported HTTP provider with your own API key or endpoint.",
       "apiKeyMemoryNotice": "A BYOK API key is held only in this page's runtime memory and is cleared when you reload or close the page.",
       "continueInGrimodex": "Continue writing in Grimodex"
     },
@@ -4969,6 +4969,18 @@
     "restartTutorial": "Restart Tutorial",
     "createWorkspace": "Create a new workspace",
     "steps": {
+      "workspace": {
+        "slides": {
+          "workspace": {
+            "title": "Workspace",
+            "body": "A workspace is the place where you manage multiple projects and their settings together. Use the menu at the top left to open another folder or create a new workspace."
+          },
+          "project": {
+            "title": "Project",
+            "body": "A project is a single work inside a workspace. Its manuscript, scenes, Codex, and chat history stay organized by project, and you can switch projects from the menu above."
+          }
+        }
+      },
       "scenes": {
         "slides": {
           "overview": {
@@ -5114,6 +5126,14 @@
           "zoom": {
             "title": "Zoom and reorder",
             "body": "Scroll-wheel to zoom the time axis. Drag to reposition scenes when the order needs adjusting."
+          }
+        }
+      },
+      "export": {
+        "slides": {
+          "overview": {
+            "title": "Export",
+            "body": "When your manuscript is ready, use the Export button above to save it as text or a book. Choose the scenes to include, then adjust the format and site-specific options before saving."
           }
         }
       },
@@ -6071,6 +6091,20 @@
           "storage": "Storage depends on the Ollama server and model configuration you control. Grimodex does not add server-side storage.",
           "retention": "Retention depends on the operating policy of the configured Ollama server.",
           "training": "Training use depends on the operating policy of the configured Ollama server and model."
+        },
+        "configured": {
+          "processor": "Operator of the configured OpenAI-compatible endpoint",
+          "purpose": "Generate the requested AI assistance at the endpoint you configured",
+          "storage": "Storage depends on the configured endpoint operator. Grimodex does not add server-side storage.",
+          "retention": "Retention depends on the configured endpoint operator. Review that operator's policy before sending.",
+          "training": "Training use depends on the configured endpoint operator and model."
+        },
+        "external": {
+          "purpose": "Generate the requested AI assistance through {{provider}}",
+          "location": "Infrastructure and downstream inference providers selected under your {{provider}} account or API key settings",
+          "storage": "{{provider}} and any downstream inference provider may store request data according to your account settings and their current policies.",
+          "retention": "Retention depends on your {{provider}} account settings, routing choice, downstream provider, and legal or safety exceptions.",
+          "training": "Training use depends on your {{provider}} account settings and any downstream provider selected for the request."
         }
       }
     }

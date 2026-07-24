@@ -69,6 +69,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "dbExecuteBatch",
       Promise.resolve('{"rows":[]}'),
     ) as never,
+    vacuumDatabase: record(
+      "vacuumDatabase",
+      Promise.resolve(undefined),
+    ) as never,
     openWorkspace: record(
       "openWorkspace",
       Promise.resolve('{"name":"ws","isExisting":true}'),
@@ -720,6 +724,17 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({ ok: true, value: { rows: [] } });
   });
 
+  it("vacuum_database: renderer 引数を native へ渡さず null を返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "vacuum_database",
+      { path: "/tmp/must-not-cross-the-boundary.db" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([{ method: "vacuumDatabase", args: [] }]);
+    expect(env).toEqual({ ok: true, value: null });
+  });
+
   it("open_workspace: {path} → openWorkspace(path)", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -1318,6 +1333,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "trash_bin_list",
       "trash_bin_prune",
       "update_annotation_status",
+      "vacuum_database",
       "validate_workspace_path",
     ]);
   });

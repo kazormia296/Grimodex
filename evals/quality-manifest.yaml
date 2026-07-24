@@ -66,6 +66,8 @@ requirements:
       - src/features/ai-policy/AiDataConsentDialog.tsx
       - src/features/ai-policy/AiDataConsentDetails.tsx
       - src/features/ai-policy/browserAiDisclosure.ts
+      - src/features/chat/browserProviderPolicy.ts
+      - src/features/hosted-editor/WebEditorAiCategory.tsx
       - src/lib/browser-mock.ts
       - public/PRIVACY_ja.md
       - public/PRIVACY_en.md
@@ -74,6 +76,9 @@ requirements:
       - src/features/ai-policy/aiDataConsentBroker.test.ts
       - src/features/ai-policy/AiDataConsentDialog.test.tsx
       - src/features/ai-policy/browserAiDisclosure.test.ts
+      - src/features/chat/browserProviderPolicy.test.ts
+      - src/features/hosted-editor/WebEditorAiCategory.test.tsx
+      - src/features/legal/constants.test.ts
       - src/lib/browser-ai.test.ts
       - src/lib/browser-mock.ai-runtime.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts

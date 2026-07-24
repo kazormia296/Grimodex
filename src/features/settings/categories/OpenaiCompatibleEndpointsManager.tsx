@@ -15,6 +15,7 @@ import {
   updateEndpoint,
   removeEndpoint,
 } from "./openaiCompatibleEndpointsHelpers";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 const PROVIDER = "openai-compatible" as const;
 
@@ -43,6 +44,7 @@ export function OpenaiCompatibleEndpointsManager({
   onChange,
 }: ManagerProps) {
   const { t } = useTranslation();
+  const { browserDirectAi } = useRuntimeCapabilities();
   // endpoint.id -> キー有無 / キー入力欄 / テスト状態（ローカル UI 状態）。
   const [keyPresent, setKeyPresent] = useState<Record<string, boolean>>({});
   const [keyInput, setKeyInput] = useState<Record<string, string>>({});
@@ -319,7 +321,11 @@ export function OpenaiCompatibleEndpointsManager({
                       {t("settings.ai.endpoints.apiVariant")}
                     </div>
                     <select
-                      value={endpoint.apiVariant ?? ""}
+                      value={
+                        browserDirectAi && endpoint.apiVariant === "responses"
+                          ? ""
+                          : (endpoint.apiVariant ?? "")
+                      }
                       onChange={(e) =>
                         patch(endpoint.id, {
                           apiVariant:
@@ -334,7 +340,9 @@ export function OpenaiCompatibleEndpointsManager({
                         {t("settings.ai.endpoints.apiVariantAuto")}
                       </option>
                       <option value="v1">v1</option>
-                      <option value="responses">responses</option>
+                      {!browserDirectAi && (
+                        <option value="responses">responses</option>
+                      )}
                     </select>
                   </div>
                 </div>

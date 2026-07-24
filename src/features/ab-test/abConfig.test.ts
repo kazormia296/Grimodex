@@ -12,13 +12,17 @@ import {
 } from "./abConfig";
 
 describe("providersForRuntime", () => {
-  it("limits the Web Editor to user-owned browser AI routes", () => {
+  it("exposes every HTTP provider in the Web Editor", () => {
     expect(providersForRuntime(true)).toEqual([
-      "ollama",
+      "openrouter",
       "openai",
       "anthropic",
+      "ollama",
+      "openai-compatible",
+      "sakana",
+      "ai-novelist",
     ]);
-    expect(providersForRuntime(true)).not.toContain("openrouter");
+    expect(providersForRuntime(true)).not.toContain("cli");
   });
 
   it("preserves the desktop provider catalog", () => {

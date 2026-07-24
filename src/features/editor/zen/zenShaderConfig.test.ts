@@ -46,19 +46,42 @@ describe("editor background shader settings", () => {
       "waves",
     ]);
     expect(ZEN_SHADER_DEFAULTS.enabled).toBe(true);
-    expect(ZEN_SHADER_DEFAULTS.shader).toBe("mesh-gradient");
+    expect(ZEN_SHADER_DEFAULTS.shader).toBe("liquid-metal");
+    expect(ZEN_SHADER_DEFAULTS.opacity).toBe(100);
+    expect(ZEN_SHADER_DEFAULTS.speed).toBe(3);
+    expect(ZEN_SHADER_DEFAULTS.scale).toBe(1.7);
+    expect(ZEN_SHADER_DEFAULTS.rotation).toBe(170);
+    expect(ZEN_SHADER_DEFAULTS.offsetX).toBe(0.25);
+    expect(ZEN_SHADER_DEFAULTS.offsetY).toBe(0.05);
+    expect(ZEN_SHADER_DEFAULTS.customColors).toEqual([
+      "#111827",
+      "#111827",
+      "#111827",
+      "#111827",
+    ]);
+    expect(ZEN_SHADER_DEFAULTS.customColorBack).toBe("#111827");
+    expect(ZEN_SHADER_DEFAULTS.shaderProps).toMatchObject({
+      "liquid-metal": {
+        shiftRed: 0.79,
+        repetition: 2,
+        contour: 0.6,
+        softness: 0,
+        shape: "circle",
+        shiftBlue: 0.52,
+      },
+    });
     expect(ZEN_SHADER_DEFAULTS).not.toHaveProperty("paperOpacity");
     expect(ZEN_SHADER_DEFAULTS).not.toHaveProperty("paperEdgeFade");
     expect(ZEN_SHADER_DEFAULTS.contrastGuard).toEqual({
       mode: "auto",
-      strength: 1,
-      toolMix: 0.5,
+      strength: 0.1,
+      toolMix: 0.75,
     });
     expect(ZEN_SHADER_DEFAULTS.glass).toEqual({
       enabled: true,
-      blur: 14,
-      refraction: 7,
-      saturation: 1.16,
+      blur: 22,
+      refraction: 24,
+      saturation: 1,
       shine: 1,
     });
   });
@@ -114,7 +137,7 @@ describe("editor background shader settings", () => {
     });
 
     expect(config.enabled).toBe(false);
-    expect(config.shader).toBe("mesh-gradient");
+    expect(config.shader).toBe("liquid-metal");
     expect(config.paletteMode).toBe("theme");
     expect(config.scale).toBe(ZEN_SHADER_DEFAULTS.scale);
     expect(config.rotation).toBe(360);
@@ -134,7 +157,7 @@ describe("editor background shader settings", () => {
   });
 
   it("keeps the tool contrast mix in its bounded adjustable range", () => {
-    expect(parseZenShaderConfig({}).contrastGuard.toolMix).toBe(0.5);
+    expect(parseZenShaderConfig({}).contrastGuard.toolMix).toBe(0.75);
     expect(
       parseZenShaderConfig({
         "editor.zenBackground.contrastGuard.toolMix": "-1",
@@ -149,7 +172,7 @@ describe("editor background shader settings", () => {
       parseZenShaderConfig({
         "editor.zenBackground.contrastGuard.toolMix": "invalid",
       }).contrastGuard.toolMix,
-    ).toBe(0.5);
+    ).toBe(0.75);
   });
 
   it("maps common and selected shader props to the official Paper prop names", () => {
@@ -182,6 +205,7 @@ describe("editor background shader settings", () => {
 
   it("uses custom colors only in custom palette mode", () => {
     const custom = parseZenShaderConfig({
+      "editor.zenBackground.shader": "mesh-gradient",
       "editor.zenBackground.paletteMode": "custom",
       "editor.zenBackground.color1": "#112233",
       "editor.zenBackground.color2": "#445566",

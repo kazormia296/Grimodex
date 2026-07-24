@@ -203,7 +203,7 @@ if (!gotSingleInstanceLock) {
             "自分で設定した信頼できるCLIであることを確認してください。",
             "",
             executable,
-            `SHA-256: ${identity.sha256 ?? "取得できませんでした"}`,
+            `SHA-256: ${identity.sha256}`,
           ].join("\n"),
           buttons: ["許可", "キャンセル"],
           defaultId: 1,

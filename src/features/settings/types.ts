@@ -13,6 +13,10 @@ import {
   Activity,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import {
+  ZEN_BACKGROUND_DEFAULTS,
+  ZEN_BACKGROUND_DEFAULT_SHADER_PROPS,
+} from "@/features/editor/zen/zenBackgroundDefaults";
 
 export type SettingsCategory =
   | "project"
@@ -304,22 +308,26 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.typewriterMode": "false",
   "editor.zenMode": "false",
   // 通常/Zenで共有するPaper shader。背景表示中は本文面を全面Glassにする。
-  "editor.zenBackground.enabled": "true",
-  "editor.zenBackground.shader": "mesh-gradient",
-  "editor.zenBackground.paletteMode": "theme",
-  "editor.zenBackground.opacity": "10",
-  "editor.zenBackground.speed": "0.08",
-  "editor.zenBackground.speedPercent": "8",
-  "editor.zenBackground.shaderProps": "{}",
-  "editor.zenBackground.scale": "1.15",
-  "editor.zenBackground.rotation": "0",
-  "editor.zenBackground.offsetX": "0",
-  "editor.zenBackground.offsetY": "0",
-  "editor.zenBackground.color1": "#8fb4d6",
-  "editor.zenBackground.color2": "#d6b5a5",
-  "editor.zenBackground.color3": "#786fa6",
-  "editor.zenBackground.color4": "#d8c47c",
-  "editor.zenBackground.colorBack": "#101318",
+  "editor.zenBackground.enabled": String(ZEN_BACKGROUND_DEFAULTS.enabled),
+  "editor.zenBackground.shader": ZEN_BACKGROUND_DEFAULTS.shader,
+  "editor.zenBackground.paletteMode": ZEN_BACKGROUND_DEFAULTS.paletteMode,
+  "editor.zenBackground.opacity": String(ZEN_BACKGROUND_DEFAULTS.opacity),
+  "editor.zenBackground.speed": String(ZEN_BACKGROUND_DEFAULTS.legacySpeed),
+  "editor.zenBackground.speedPercent": String(
+    ZEN_BACKGROUND_DEFAULTS.speedPercent,
+  ),
+  "editor.zenBackground.shaderProps": JSON.stringify(
+    ZEN_BACKGROUND_DEFAULT_SHADER_PROPS,
+  ),
+  "editor.zenBackground.scale": String(ZEN_BACKGROUND_DEFAULTS.scale),
+  "editor.zenBackground.rotation": String(ZEN_BACKGROUND_DEFAULTS.rotation),
+  "editor.zenBackground.offsetX": String(ZEN_BACKGROUND_DEFAULTS.offsetX),
+  "editor.zenBackground.offsetY": String(ZEN_BACKGROUND_DEFAULTS.offsetY),
+  "editor.zenBackground.color1": ZEN_BACKGROUND_DEFAULTS.colors[0],
+  "editor.zenBackground.color2": ZEN_BACKGROUND_DEFAULTS.colors[1],
+  "editor.zenBackground.color3": ZEN_BACKGROUND_DEFAULTS.colors[2],
+  "editor.zenBackground.color4": ZEN_BACKGROUND_DEFAULTS.colors[3],
+  "editor.zenBackground.colorBack": ZEN_BACKGROUND_DEFAULTS.colorBack,
   "editor.zenBackground.mesh.distortion": "0.7",
   "editor.zenBackground.mesh.swirl": "0.25",
   "editor.zenBackground.mesh.grainMixer": "0",
@@ -327,7 +335,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.zenBackground.grain.softness": "0.75",
   "editor.zenBackground.grain.intensity": "0.35",
   "editor.zenBackground.grain.noise": "0.12",
-  "editor.zenBackground.grain.shape": "corners",
+  "editor.zenBackground.grain.shape": ZEN_BACKGROUND_DEFAULTS.grainShape,
   "editor.zenBackground.neuro.brightness": "0.1",
   "editor.zenBackground.neuro.contrast": "0.35",
   "editor.zenBackground.warp.proportion": "0.5",
@@ -345,23 +353,54 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.zenBackground.staticMesh.mixing": "0.65",
   "editor.zenBackground.staticMesh.grainMixer": "0",
   "editor.zenBackground.staticMesh.grainOverlay": "0",
-  "editor.zenBackground.dither.enabled": "false",
-  "editor.zenBackground.dither.strength": "0.35",
-  "editor.zenBackground.dither.size": "2",
-  "editor.zenBackground.dither.levels": "6",
-  "editor.zenBackground.halftone.enabled": "false",
-  "editor.zenBackground.halftone.strength": "0.3",
-  "editor.zenBackground.halftone.size": "8",
-  "editor.zenBackground.halftone.angle": "15",
-  "editor.zenBackground.halftone.softness": "0.15",
-  "editor.zenBackground.contrastGuard.mode": "auto",
-  "editor.zenBackground.contrastGuard.strength": "1",
-  "editor.zenBackground.contrastGuard.toolMix": "0.5",
-  "editor.zenBackground.glass.enabled": "true",
-  "editor.zenBackground.glass.blur": "14",
-  "editor.zenBackground.glass.refraction": "7",
-  "editor.zenBackground.glass.saturation": "1.16",
-  "editor.zenBackground.glass.shine": "1",
+  "editor.zenBackground.dither.enabled": String(
+    ZEN_BACKGROUND_DEFAULTS.dither.enabled,
+  ),
+  "editor.zenBackground.dither.strength": String(
+    ZEN_BACKGROUND_DEFAULTS.dither.strength,
+  ),
+  "editor.zenBackground.dither.size": String(
+    ZEN_BACKGROUND_DEFAULTS.dither.size,
+  ),
+  "editor.zenBackground.dither.levels": String(
+    ZEN_BACKGROUND_DEFAULTS.dither.levels,
+  ),
+  "editor.zenBackground.halftone.enabled": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.enabled,
+  ),
+  "editor.zenBackground.halftone.strength": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.strength,
+  ),
+  "editor.zenBackground.halftone.size": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.size,
+  ),
+  "editor.zenBackground.halftone.angle": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.angle,
+  ),
+  "editor.zenBackground.halftone.softness": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.softness,
+  ),
+  "editor.zenBackground.contrastGuard.mode":
+    ZEN_BACKGROUND_DEFAULTS.contrastGuard.mode,
+  "editor.zenBackground.contrastGuard.strength": String(
+    ZEN_BACKGROUND_DEFAULTS.contrastGuard.strength,
+  ),
+  "editor.zenBackground.contrastGuard.toolMix": String(
+    ZEN_BACKGROUND_DEFAULTS.contrastGuard.toolMix,
+  ),
+  "editor.zenBackground.glass.enabled": String(
+    ZEN_BACKGROUND_DEFAULTS.glass.enabled,
+  ),
+  "editor.zenBackground.glass.blur": String(ZEN_BACKGROUND_DEFAULTS.glass.blur),
+  "editor.zenBackground.glass.refraction": String(
+    ZEN_BACKGROUND_DEFAULTS.glass.refraction,
+  ),
+  "editor.zenBackground.glass.saturation": String(
+    ZEN_BACKGROUND_DEFAULTS.glass.saturation,
+  ),
+  "editor.zenBackground.glass.shine": String(
+    ZEN_BACKGROUND_DEFAULTS.glass.shine,
+  ),
   "editor.focusMode": "false",
   "editor.autoSaveDelay": "2000",
   "editor.spellCheck": "false",

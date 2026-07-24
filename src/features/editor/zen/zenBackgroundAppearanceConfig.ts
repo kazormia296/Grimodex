@@ -1,3 +1,5 @@
+import { ZEN_BACKGROUND_DEFAULTS } from "./zenBackgroundDefaults";
+
 export interface ZenGlassConfig {
   enabled: boolean;
   blur: number;
@@ -6,14 +8,10 @@ export interface ZenGlassConfig {
   shine: number;
 }
 
-export const ZEN_BACKGROUND_ENABLED_DEFAULT = true;
+export const ZEN_BACKGROUND_ENABLED_DEFAULT = ZEN_BACKGROUND_DEFAULTS.enabled;
 
 export const ZEN_GLASS_DEFAULTS: ZenGlassConfig = {
-  enabled: true,
-  blur: 14,
-  refraction: 7,
-  saturation: 1.16,
-  shine: 1,
+  ...ZEN_BACKGROUND_DEFAULTS.glass,
 };
 
 type SettingsValues = Record<string, string | undefined>;

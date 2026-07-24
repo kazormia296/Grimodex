@@ -110,6 +110,10 @@ describe("createBrowserMock", () => {
       );
       expect(result.rows).toHaveLength(0);
     });
+
+    it("supports the argument-free vacuum_database maintenance command", async () => {
+      await expect(mock.invoke("vacuum_database")).resolves.toBeUndefined();
+    });
   });
 
   describe("timelapse_append_batch", () => {
@@ -223,13 +227,14 @@ describe("createBrowserMock", () => {
       expect(present).toBe(false);
     });
 
-    it("rejects Web OpenRouter credentials before storing them", async () => {
+    it("keeps Web OpenRouter credentials in session memory", async () => {
+      await mock.invoke("save_api_key", {
+        provider: "openrouter",
+        key: "sk-or-test",
+      });
       await expect(
-        mock.invoke("save_api_key", {
-          provider: "openrouter",
-          key: "sk-or-test",
-        }),
-      ).rejects.toThrow(/not supported in browser mode/i);
+        mock.invoke<boolean>("has_api_key", { provider: "openrouter" }),
+      ).resolves.toBe(true);
       expect(localStorage.getItem("grimodex:api-key:openrouter")).toBeNull();
     });
   });
@@ -382,7 +387,7 @@ describe("createBrowserMock", () => {
       expect(settings).toMatchObject({ provider: "ollama", model: "" });
     });
 
-    it("migrates a legacy Web OpenRouter setting to disconnected Ollama", async () => {
+    it("preserves a Web OpenRouter setting now that the provider is supported", async () => {
       localStorage.setItem(
         "grimodex:ai-settings",
         JSON.stringify({ provider: "openrouter", model: "vendor/model" }),
@@ -391,10 +396,16 @@ describe("createBrowserMock", () => {
 
       await expect(
         migratedMock.invoke("get_ai_settings", {}),
-      ).resolves.toMatchObject({ provider: "ollama", model: "" });
+      ).resolves.toMatchObject({
+        provider: "openrouter",
+        model: "vendor/model",
+      });
       expect(
         JSON.parse(localStorage.getItem("grimodex:ai-settings") ?? "{}"),
-      ).toMatchObject({ provider: "ollama", model: "" });
+      ).toMatchObject({
+        provider: "openrouter",
+        model: "vendor/model",
+      });
       migratedMock.close();
     });
   });

@@ -13,6 +13,8 @@
  *   - CLI サブプロセスは外部バイナリ依存のため自動検証不可（stub として明示）。
  *   - 埋め込み/全文検索は LLM 生成ではない（n/a）。
  */
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
+import type { AiProvider } from "@/features/chat/types";
 
 /** 経路の到達トランスポート層。 */
 export type AiPathLayer =
@@ -84,6 +86,7 @@ export interface AiRuntimeRouteEntry {
   transport: string;
   consentRoute: "byok";
   providerAuthority: "user-selection";
+  providers: readonly AiProvider[];
   capabilityGate: string;
   verifier: "contract";
   testRef: string;
@@ -440,14 +443,15 @@ export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
     transport: "browser fetch → user-selected AI provider",
     consentRoute: "byok",
     providerAuthority: "user-selection",
+    providers: BROWSER_DIRECT_AI_PROVIDERS,
     capabilityGate:
-      "explicit user-selected Local LLM endpoint or supported BYOK provider + session-memory credential when required + current route/provider/policy/actual connection destination consent",
+      "explicit user-selected HTTP provider + configured endpoint where required + session-memory credential when required + current route/provider/policy/actual connection destination consent",
     verifier: "contract",
     testRef: BROWSER_BYOK_CONTRACT_TEST,
-    testName: "sends OpenAI request with Bearer auth",
+    testName: "resolves every Web Editor provider endpoint",
     consentTestRef: BROWSER_BYOK_CONSENT_CONTRACT_TEST,
     consentTestName:
       "does not reach the provider when consent authorization fails",
-    note: "Web Editor has no app-owned AI credential or managed provider route. Consent identity includes the normalized actual connection destination, so changing an Ollama endpoint invalidates prior consent. The production endpoint/auth shape and refusal-before-provider boundary are deterministic Light contracts; live Local LLM or BYOK execution remains an explicit user action and Heavy evidence.",
+    note: "Web Editor exposes every HTTP provider (OpenRouter, OpenAI, Anthropic, Ollama, OpenAI-compatible, Sakana, and AI Novelist) with user-owned credentials or a user-configured endpoint; native CLI remains desktop-only. Web Editor has no app-owned credential or managed provider route. Consent identity includes the normalized actual connection destination, so changing an Ollama or OpenAI-compatible endpoint invalidates prior consent. The production endpoint/auth shape and refusal-before-provider boundary are deterministic Light contracts; live execution remains an explicit user action and Heavy evidence.",
   },
 ];

@@ -12,7 +12,8 @@ const FORBIDDEN_CHUNK_PREFIXES = [
 ];
 
 const FORBIDDEN_NETWORK_PATTERNS = [
-  /https:\/\/openrouter\.ai\/api\//i,
+  // A same-origin OpenRouter route would imply a managed credential/proxy.
+  // Direct https://openrouter.ai requests are valid user-owned BYOK traffic.
   /\/api\/openrouter\b/i,
   /\/api\/(?:uploads|scans)\b/i,
   /\/api\/v1\/(?:editor-seeds|scans|session|upload-intents)\b/i,

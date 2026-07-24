@@ -100,6 +100,7 @@ const SLOW_COMMANDS = new Set([
   "fts_rebuild",
   "fts_rebuild_en",
   "fts_optimize",
+  "vacuum_database",
   "repair_integrity",
   "seed_sample_workspace",
   "import_web_editor_workspace",

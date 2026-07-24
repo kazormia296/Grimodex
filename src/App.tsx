@@ -797,6 +797,7 @@ function EditorScreen() {
                   {runtimeCapabilities.genericProjectTransfer && (
                     <button
                       type="button"
+                      data-tour-target="export-button"
                       aria-label={t("app.exportLabel")}
                       title={t("app.exportTitle")}
                       onClick={() => setShowExport((v) => !v)}
@@ -877,7 +878,9 @@ function EditorScreen() {
               onClose={() => setShowTransferDialog(false)}
             />
           )}
-          {showSampleTour && <SampleTour />}
+          {/* The current tour targets desktop-only panels such as Timeline.
+              Do not mount its blocking spotlight in the phone projection. */}
+          {showSampleTour && !phoneWorkspace && <SampleTour />}
         </Suspense>
         {!runtimeCapabilities.genericProjectTransfer &&
           runtimeCapabilities.browserDirectAi && (

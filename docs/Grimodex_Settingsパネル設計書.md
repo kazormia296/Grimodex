@@ -42,7 +42,7 @@ Settingsパネルはプロジェクト設定、AI設定、エディタ設定、�
 | カテゴリ | 内容 |
 |---------|------|
 | Project | プロジェクトのメタ情報、Phase 解決モード、ネーミングルール、ゴミ箱、執筆タイムラプス記録、デフォルト雛形保存 |
-| AI | APIキー管理、プロバイダ設定（OpenRouter / OpenAI / Anthropic / Ollama / OpenAI 互換 / AI のべりすと / CLI エージェント）、ツールプロトコル、モデル選択、モデルホワイトリスト、拡張思考、Web 検索 (RAG) ドメイン制御、AI 使用ポリシー・AI 作品設定（Outline / 対象読者 / Style guide / AI instructions）、関連シーン自動注入（意味/ハイブリッド検索）、コンテキスト予算配分、Beat AI 統合、AI プロンプト追記カスタマイズ、MCP 連携 |
+| AI | APIキー管理、プロバイダ設定（OpenRouter / OpenAI / Anthropic / Ollama / OpenAI 互換 / Sakana / AI のべりすと / CLI エージェント）、ツールプロトコル、モデル選択、モデルホワイトリスト、拡張思考、Web 検索 (RAG) ドメイン制御、AI 使用ポリシー・AI 作品設定（Outline / 対象読者 / Style guide / AI instructions）、関連シーン自動注入（意味/ハイブリッド検索）、コンテキスト予算配分、Beat AI 統合、AI プロンプト追記カスタマイズ、MCP 連携 |
 | Editor | フォント、行間、タイプライターモード、執筆目標（日次文字数）、縦書き・縦中横、和欧スペーシング、単語・行頭禁則、段落字下げ、インライン AI、Beat 表示モード等 |
 | Display | カラーテーマ、ライト／ダーク、UI 言語、UI フォント、UI スケール、reduceMotion、Glass エフェクト、Attribution 表示、Codex ハイライト |
 | Keys | キーボードショートカットのカスタマイズ |
@@ -170,6 +170,7 @@ BYOKのAPIキー管理とモデル設定。Chatパネル設計書で定義され
 | Anthropic | `anthropic` | API キー必須 |
 | Ollama | `ollama` | API キー不要。`Endpoint`（既定 `http://localhost:11434`）を指定し `GET /api/tags` でモデル取得 |
 | OpenAI 互換 | `openai-compatible` | llama.cpp / LM Studio / vLLM / 自前ホストの GPU 推論サーバ等。`Base URL` / `コンテキスト窓` / `最大出力` / `構造化出力許可` を入力。API キーは任意 |
+| Sakana | `sakana` | API キー必須。fugu 系モデルを利用する HTTP プロバイダ |
 | AI のべりすと | `ai-novelist` | 日本語小説特化プロバイダ。Base URL 二系統（legacy `/api` + v1 `/v1`）。`GET /v1/models` で v1 モデル動的取得 + レガシー静的リストをマージ。API キー必須。legacy モデル選択時のみ KoboldAI サンプリングパラメータ編集可。`multilingualMode` チェックボックスあり。構造化出力（Codex 自動抽出 / Synopsis 自動生成）はデフォルト無効 |
 | CLI エージェント | `cli` | API キーではなく**ローカル CLI バイナリ**経由で呼び出す。`Claude Code` (`claude`) / `Codex CLI` (`codex`) / `OpenCode` (`opencode`) を選択し、バイナリパスを「自動検出」または手動指定。事前に CLI 側で `claude login` 等の認証が必要。ツール（ファイル R/W / shell）は全て無効化された状態で起動する |
 
@@ -177,7 +178,7 @@ BYOKのAPIキー管理とモデル設定。Chatパネル設計書で定義され
 ┌──────────────────────────────────────────────┐
 │ プロバイダ                                    │
 │ [OpenRouter] [OpenAI] [Anthropic] [Ollama]   │
-│ [OpenAI 互換] [AI のべりすと] [CLI エージェント] │
+│ [OpenAI 互換] [Sakana] [AI のべりすと] [CLI] │
 │                                              │
 │ ─ 選択中のプロバイダ固有設定 ─                  │
 │ API Key: [••••••••••]  [Show] [Save] [Delete]│

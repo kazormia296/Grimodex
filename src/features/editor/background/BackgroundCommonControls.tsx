@@ -9,6 +9,7 @@ import {
   getPaperShaderDefinition,
 } from "../zen/paperShaderCatalog";
 import { useZenShaderConfig } from "../zen/useZenShaderConfig";
+import { ZEN_BACKGROUND_DEFAULTS } from "../zen/zenBackgroundDefaults";
 
 const percent = (value: number) => `${Math.round(value)}%`;
 const signedPercent = (value: number) => `${Math.round(value * 100)}%`;
@@ -41,7 +42,7 @@ export function BackgroundCommonControls() {
         <SettingDropdown
           settingKey="editor.zenBackground.shader"
           options={shaderOptions}
-          defaultValue="mesh-gradient"
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.shader}
         />
       </SettingRow>
       <SettingRow label={t("settings.editor.zenOpacity")}>
@@ -49,7 +50,7 @@ export function BackgroundCommonControls() {
           settingKey="editor.zenBackground.opacity"
           min={0}
           max={100}
-          defaultValue={10}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.opacity}
           format={percent}
         />
       </SettingRow>
@@ -62,7 +63,7 @@ export function BackgroundCommonControls() {
           settingKey="editor.zenBackground.speedPercent"
           min={0}
           max={100}
-          defaultValue={8}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.speedPercent}
           format={percent}
           disabled={!definition.animated}
         />
@@ -73,7 +74,7 @@ export function BackgroundCommonControls() {
           min={0.25}
           max={4}
           step={0.05}
-          defaultValue={1.15}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.scale}
           format={(value) => `${value.toFixed(2)}×`}
         />
       </SettingRow>
@@ -83,7 +84,7 @@ export function BackgroundCommonControls() {
           min={0}
           max={360}
           step={5}
-          defaultValue={0}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.rotation}
           format={(value) => `${value}°`}
         />
       </SettingRow>
@@ -93,7 +94,7 @@ export function BackgroundCommonControls() {
           min={-1}
           max={1}
           step={0.05}
-          defaultValue={0}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.offsetX}
           format={signedPercent}
         />
       </SettingRow>
@@ -103,7 +104,7 @@ export function BackgroundCommonControls() {
           min={-1}
           max={1}
           step={0.05}
-          defaultValue={0}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.offsetY}
           format={signedPercent}
         />
       </SettingRow>
@@ -111,7 +112,7 @@ export function BackgroundCommonControls() {
         <SettingDropdown
           settingKey="editor.zenBackground.paletteMode"
           options={paletteOptions}
-          defaultValue="theme"
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.paletteMode}
         />
       </SettingRow>
       {config.paletteMode === "custom" && (

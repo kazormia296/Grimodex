@@ -83,6 +83,8 @@ interface EmittedEvent {
   payload: unknown;
 }
 
+const stableHashFile = async (): Promise<string> => "stable-sha256";
+
 function createHarness() {
   const events: EmittedEvent[] = [];
   const runner = new FakeRunner();
@@ -94,6 +96,7 @@ function createHarness() {
       platform: "linux",
       isFile: async () => true,
       realPath: async (candidate) => candidate,
+      hashFile: stableHashFile,
       authorizeExecutable: async () => true,
       detectBinary,
       forceKillAfterMs: 20,
@@ -228,6 +231,7 @@ describe("CliAiManager", () => {
       platform: "linux",
       isFile: async () => true,
       realPath: async (candidate) => candidate,
+      hashFile: stableHashFile,
     });
     await expect(
       denied.handlers.test_cli_connection({
@@ -283,6 +287,180 @@ describe("CliAiManager", () => {
     expect(runner.runCalls).toHaveLength(0);
   });
 
+  it("許可済み identity も実行直前に再hashし、同一なら再確認しない", async () => {
+    const runner = new FakeRunner();
+    runner.runResult.stdout = "claude 1.2.3\n";
+    const hashFile = vi.fn(stableHashFile);
+    const authorizeExecutable = vi.fn(async () => true);
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      hashFile,
+      authorizeExecutable,
+    });
+
+    await manager.handlers.test_cli_connection({
+      binaryPath: "/opt/claude",
+    });
+    await manager.handlers.test_cli_connection({
+      binaryPath: "/opt/claude",
+    });
+
+    expect(hashFile).toHaveBeenCalledTimes(3);
+    expect(authorizeExecutable).toHaveBeenCalledOnce();
+    expect(runner.runCalls).toHaveLength(2);
+  });
+
+  it("SHA-256 を取得できない実行ファイルは許可確認前に fail-closed する", async () => {
+    const runner = new FakeRunner();
+    const authorizeExecutable = vi.fn(async () => true);
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      hashFile: async () => null,
+      authorizeExecutable,
+    });
+
+    await expect(
+      manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      }),
+    ).rejects.toThrow("CLI executable could not be fingerprinted");
+    expect(authorizeExecutable).not.toHaveBeenCalled();
+    expect(runner.runCalls).toHaveLength(0);
+  });
+
+  it("同じ requested path の canonical target が変われば旧 cache を破棄する", async () => {
+    const runner = new FakeRunner();
+    runner.runResult.stdout = "claude 1.2.3\n";
+    const canonicalPaths = [
+      "/opt/v1/claude",
+      "/opt/v1/claude",
+      "/opt/v2/claude",
+      "/opt/v2/claude",
+    ];
+    const authorizeExecutable = vi.fn(async () => true);
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async () => canonicalPaths.shift() ?? "/opt/v2/claude",
+      hashFile: stableHashFile,
+      authorizeExecutable,
+    });
+
+    await manager.handlers.test_cli_connection({
+      binaryPath: "/opt/claude",
+    });
+    await manager.handlers.test_cli_connection({
+      binaryPath: "/opt/claude",
+    });
+
+    expect(authorizeExecutable).toHaveBeenNthCalledWith(
+      1,
+      "claude",
+      "/opt/v1/claude",
+      { sha256: "stable-sha256" },
+    );
+    expect(authorizeExecutable).toHaveBeenNthCalledWith(
+      2,
+      "claude",
+      "/opt/v2/claude",
+      { sha256: "stable-sha256" },
+    );
+    expect(runner.runCalls.map(({ spec }) => spec.executable)).toEqual([
+      "/opt/v1/claude",
+      "/opt/v2/claude",
+    ]);
+  });
+
+  it("許可後に内容が変われば cache を無効化し、stream spawn 前に再確認する", async () => {
+    const runner = new FakeRunner();
+    runner.runResult.stdout = "claude 1.2.3\n";
+    const hashes = [
+      "approved-sha",
+      "approved-sha",
+      "replacement-sha",
+      "replacement-sha",
+    ];
+    const hashFile = vi.fn(async () => hashes.shift() ?? "replacement-sha");
+    const authorizeExecutable = vi.fn(async () => true);
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      hashFile,
+      authorizeExecutable,
+      forceKillAfterMs: 20,
+    });
+
+    await manager.handlers.test_cli_connection({
+      binaryPath: "/opt/claude",
+    });
+    const send = manager.handlers.send_cli_chat_stream({
+      payload: {
+        cli: "claude",
+        binaryPath: "/opt/claude",
+        prompt: "hello",
+      },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+    runner.nextRunning.finish();
+    await expect(send).resolves.toBeNull();
+
+    expect(authorizeExecutable).toHaveBeenNthCalledWith(
+      1,
+      "claude",
+      "/opt/claude",
+      { sha256: "approved-sha" },
+    );
+    expect(authorizeExecutable).toHaveBeenNthCalledWith(
+      2,
+      "claude",
+      "/opt/claude",
+      { sha256: "replacement-sha" },
+    );
+    expect(hashFile).toHaveBeenCalledTimes(4);
+  });
+
+  it("再確認ダイアログ中に再び内容が変われば spawn しない", async () => {
+    const runner = new FakeRunner();
+    runner.runResult.stdout = "claude 1.2.3\n";
+    const hashes = [
+      "approved-sha",
+      "approved-sha",
+      "replacement-sha",
+      "second-replacement-sha",
+    ];
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      hashFile: async () => hashes.shift() ?? "second-replacement-sha",
+      authorizeExecutable: async () => true,
+    });
+
+    await manager.handlers.test_cli_connection({
+      binaryPath: "/opt/claude",
+    });
+    await expect(
+      manager.handlers.send_cli_chat_stream({
+        payload: {
+          cli: "claude",
+          binaryPath: "/opt/claude",
+          prompt: "hello",
+        },
+      }),
+    ).rejects.toThrow("CLI executable changed after authorization");
+    expect(runner.startCalls).toHaveLength(0);
+  });
+
   it("Windowsのforward-slash UNC pathはrealpath前に拒否する", async () => {
     const runner = new FakeRunner();
     const resolveRealPath = vi.fn(async (candidate: string) => candidate);
@@ -311,6 +489,7 @@ describe("CliAiManager", () => {
       platform: "win32",
       isFile: async () => true,
       realPath: async (candidate) => candidate,
+      hashFile: stableHashFile,
       authorizeExecutable,
     });
 
@@ -336,6 +515,7 @@ describe("CliAiManager", () => {
       platform: "linux",
       isFile: async () => true,
       realPath: async (candidate) => candidate,
+      hashFile: stableHashFile,
       authorizeExecutable: async () => true,
       detectBinary,
     });
@@ -543,6 +723,7 @@ describe("CliAiManager", () => {
         platform: "linux",
         isFile,
         realPath: async (candidate) => candidate,
+        hashFile: stableHashFile,
         authorizeExecutable: async () => true,
         forceKillAfterMs: 20,
       },
@@ -628,6 +809,7 @@ describe("CliAiManager", () => {
         isFile: async () => true,
         realPath: async (candidate) => candidate,
         detectBinary: async (kind) => `/usr/local/bin/${kind}`,
+        hashFile: stableHashFile,
         authorizeExecutable: async () => true,
         maxStreamBytes: 64,
         maxStreamLines: 100,
@@ -653,6 +835,7 @@ describe("CliAiManager", () => {
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       detectBinary: async (kind) => `/usr/local/bin/${kind}`,
+      hashFile: stableHashFile,
       authorizeExecutable: async () => true,
       maxStreamBytes: 1024,
       maxStreamLines: 2,
@@ -676,6 +859,7 @@ describe("CliAiManager", () => {
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       detectBinary: async (kind) => `/usr/local/bin/${kind}`,
+      hashFile: stableHashFile,
       authorizeExecutable: async () => true,
       streamTimeoutMs: 20,
       forceKillAfterMs: 20,
@@ -702,6 +886,7 @@ describe("CliAiManager", () => {
         new Promise<string>((resolve) => {
           resolveRealPath = resolve;
         }),
+      hashFile: stableHashFile,
       authorizeExecutable: async () => true,
       streamTimeoutMs: 20,
       forceKillAfterMs: 20,
