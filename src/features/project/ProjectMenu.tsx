@@ -112,7 +112,7 @@ export function ProjectMenu({
 
   return (
     <>
-      <div ref={menuRef} className="relative">
+      <div ref={menuRef} className="relative" data-tour-target="project-menu">
         <button
           type="button"
           data-testid="project-menu-trigger"

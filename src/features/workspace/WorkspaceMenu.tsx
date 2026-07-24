@@ -51,7 +51,7 @@ export function WorkspaceMenu() {
   }
 
   return (
-    <div ref={menuRef} className="relative">
+    <div ref={menuRef} className="relative" data-tour-target="workspace-menu">
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
