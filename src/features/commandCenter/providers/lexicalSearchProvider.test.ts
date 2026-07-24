@@ -39,7 +39,6 @@ function makeContext(
     query: "邂逅",
     signal: new AbortController().signal,
     limit: 10,
-    mode: "search",
     generation: 1,
     descriptionMode: false,
     ...overrides,
@@ -49,11 +48,6 @@ function makeContext(
 describe("lexicalSearchProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  it("supports only search mode", () => {
-    expect(lexicalSearchProvider.supportsMode("search")).toBe(true);
-    expect(lexicalSearchProvider.supportsMode("command")).toBe(false);
   });
 
   it("returns an empty section without invoking fts_search when query is whitespace-only", async () => {

@@ -653,7 +653,7 @@ Settings の Data カテゴリにあった「Export as Markdown」「Export as p
 - **EPUB出力**: 電子書籍形式での出力。章構造をEPUBのセクションにマッピング
 - **縦書きPDF出力**: 日本語小説の入稿用。外部ライブラリまたはTauri側での生成を要検討
 - **Synopsis付きエクスポート**: アウトライン確認用に各シーンのSynopsisをシーン先頭に挿入するオプション
-- **一括コマンドパレット対応**: `Ctrl+Shift+P` →「Export all scenes as Markdown」等で設定ダイアログを経由せず即時エクスポート
+- **一括アクションランチャー対応**: 将来、一時表示のアクション UI を設計する場合は「Export all scenes as Markdown」等を設定ダイアログ経由なしで実行できるようにする
 - **カスタムプリセットのリネーム / 並べ替え**: 現状は追加・削除のみ。リネームと並べ替え UI は未実装
 - **Tauri 保存先スコープの拡張**: 現状の `$HOME/**` 制約を緩めるか、書込先プリセット（Documents/Downloads など）を別途用意するか
 

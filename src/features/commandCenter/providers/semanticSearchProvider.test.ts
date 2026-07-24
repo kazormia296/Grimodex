@@ -30,7 +30,6 @@ function makeContext(
     query: "邂逅",
     signal: new AbortController().signal,
     limit: 10,
-    mode: "search",
     generation: 1,
     descriptionMode: false,
     ...overrides,
@@ -50,11 +49,6 @@ const sampleHit = {
 describe("semanticSearchProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  it("supports only search mode", () => {
-    expect(semanticSearchProvider.supportsMode("search")).toBe(true);
-    expect(semanticSearchProvider.supportsMode("command")).toBe(false);
   });
 
   it("returns empty section without invoking when query is shorter than 2 chars", async () => {

@@ -99,6 +99,22 @@ describe("BackgroundStudio", () => {
     expect(strength).toHaveAttribute("max", "1");
     expect(strength).not.toBeDisabled();
 
+    const toolMix = screen.getByLabelText(
+      "settings.editor.zenContrastGuardToolMix",
+    );
+    expect(toolMix).toHaveAttribute("min", "0");
+    expect(toolMix).toHaveAttribute("max", "0.75");
+    expect(toolMix).toHaveAttribute("step", "0.01");
+    expect(toolMix).toHaveValue("0.5");
+    expect(toolMix).not.toBeDisabled();
+
+    fireEvent.change(toolMix, { target: { value: "0.68" } });
+    expect(
+      useSettingsStore.getState().cache[
+        "editor.zenBackground.contrastGuard.toolMix"
+      ],
+    ).toBe("0.68");
+
     fireEvent.change(mode, { target: { value: "none" } });
 
     expect(
@@ -107,6 +123,7 @@ describe("BackgroundStudio", () => {
       ],
     ).toBe("none");
     expect(strength).toBeDisabled();
+    expect(toolMix).toBeDisabled();
   });
 
   it("adjusts the shared Fluid Glass effect from the live studio", () => {

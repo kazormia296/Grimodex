@@ -171,7 +171,7 @@ function buildWebPreferences(): BrowserWindowConstructorOptions["webPreferences"
 
 /**
  * ready-to-show または did-finish-load の早い方で表示し、復元位置を再適用
- * （メイン窓 / パネル窓共通）。transparent + show:false の窓では環境によって
+ * （メイン窓 / パネル窓共通）。show:false の窓では環境によって
  * ready-to-show が発火せず、非表示 renderer の rAF も停止して永久に表示不能に
  * なるため、document load 完了を安全な fallback とする。
  * maximize() は非表示窓を表示させる副作用があるため show の直前に行う。

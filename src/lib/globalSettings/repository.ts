@@ -25,6 +25,9 @@ export const globalSettingsRepository: GlobalSettingsRepository = {
     return enqueue(async () => {
       const current = await globalSettingsRepository.read();
       const next = updater(current);
+      if (next === current) {
+        return current;
+      }
       await invoke("save_global_settings", { settings: next });
       return next;
     });

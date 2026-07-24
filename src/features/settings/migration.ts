@@ -77,22 +77,22 @@ const RETIRED_DISPLAY_KEYS = [
 
 /** Remove settings owned by the retired splitter-line layout and app-wide glass UI. */
 export async function removeRetiredDisplaySettings(): Promise<void> {
-  const prefs = (await globalSettingsRepository.read()).userPreferences;
-  if (prefs) {
-    const next = { ...prefs };
+  await globalSettingsRepository.patch((current) => {
+    const next = { ...(current.userPreferences ?? {}) };
     let changed = false;
     for (const key of RETIRED_DISPLAY_KEYS) {
       if (!(key in next)) continue;
       delete next[key];
       changed = true;
     }
-    if (changed) {
-      await globalSettingsRepository.patch((current) => ({
-        ...current,
-        userPreferences: next,
-      }));
+    if (!changed) {
+      return current;
     }
-  }
+    return {
+      ...current,
+      userPreferences: next,
+    };
+  });
 
   // Older workspaces can still contain these keys in the pre-split app_settings table.
   for (const key of RETIRED_DISPLAY_KEYS) {
@@ -120,26 +120,29 @@ const LEGACY_ROLE_MODEL_KEYS: ReadonlyArray<readonly [string, string]> = [
  * されることはなく、二度目以降の呼び出しは旧キー不在で no-op になる。
  */
 export async function migrateModelRoleKeys(): Promise<void> {
-  const prefs = (await globalSettingsRepository.read()).userPreferences;
-  if (!prefs) return;
-
-  const next: Record<string, string> = { ...prefs };
-  let changed = false;
-  for (const [legacyKey, roleKey] of LEGACY_ROLE_MODEL_KEYS) {
-    if (!(legacyKey in next)) continue;
-    // 非空の旧値があり、ロールキーが未設定のときだけ移送する（既存ロール値優先）。
-    if (next[legacyKey] && !next[roleKey]) {
-      next[roleKey] = next[legacyKey];
+  await globalSettingsRepository.patch((current) => {
+    const next: Record<string, string> = {
+      ...(current.userPreferences ?? {}),
+    };
+    let changed = false;
+    for (const [legacyKey, roleKey] of LEGACY_ROLE_MODEL_KEYS) {
+      if (!(legacyKey in next)) continue;
+      // 非空の旧値があり、ロールキーが未設定のときだけ移送する（既存ロール値優先）。
+      if (next[legacyKey] && !next[roleKey]) {
+        next[roleKey] = next[legacyKey];
+      }
+      // 旧キーは Phase 2 で UI から撤去されるため常にクリーンアップする。
+      delete next[legacyKey];
+      changed = true;
     }
-    // 旧キーは Phase 2 で UI から撤去されるため常にクリーンアップする。
-    delete next[legacyKey];
-    changed = true;
-  }
-  if (!changed) return;
-  await globalSettingsRepository.patch((current) => ({
-    ...current,
-    userPreferences: next,
-  }));
+    if (!changed) {
+      return current;
+    }
+    return {
+      ...current,
+      userPreferences: next,
+    };
+  });
 }
 
 /**

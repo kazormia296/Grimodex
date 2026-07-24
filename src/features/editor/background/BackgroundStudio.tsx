@@ -53,7 +53,7 @@ export function BackgroundStudio({
           aria-modal="false"
           aria-label={t("editor.background.title")}
           data-background-studio
-          className={`fixed right-3 z-[90] flex max-h-[calc(100vh-1.5rem)] w-[min(360px,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-xl border border-border/70 bg-popover/95 text-popover-foreground shadow-2xl backdrop-blur-xl ${zenMode ? "top-3" : "top-12"}`}
+          className={`fixed right-3 z-[90] flex w-[min(360px,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-xl border border-border/70 bg-popover/95 text-popover-foreground shadow-2xl backdrop-blur-xl ${zenMode ? "top-3 max-h-[calc(100vh-1.5rem)]" : "top-12 max-h-[calc(100vh-3.75rem)]"}`}
           initial={reduced ? false : VARIANTS.popover.initial}
           animate={VARIANTS.popover.animate}
           exit={reduced ? VARIANTS.fadeIn.exit : VARIANTS.popover.exit}

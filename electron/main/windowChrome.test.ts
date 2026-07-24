@@ -20,7 +20,7 @@ import type { WindowBounds } from "./windowState.js";
 const PRIMARY: WindowBounds = { x: 0, y: 0, width: 1920, height: 1080 };
 
 describe("buildMainWindowOptions (§6.1 パリティ表)", () => {
-  it("linux: frame:false + tauri.conf.json と同値のサイズ / transparent", () => {
+  it("linux: frameless でも native resize が有効な opaque window を作る", () => {
     const { options, startMaximized } = buildMainWindowOptions({
       platform: "linux",
       savedState: undefined,
@@ -33,8 +33,9 @@ describe("buildMainWindowOptions (§6.1 パリティ表)", () => {
     expect(options.height).toBe(600);
     expect(options.minWidth).toBe(600);
     expect(options.minHeight).toBe(400);
-    expect(options.transparent).toBe(true);
-    expect(options.backgroundColor).toBe("#00000000");
+    expect(options.resizable).toBe(true);
+    expect(options.transparent).toBe(false);
+    expect(options.backgroundColor).toBe("#000000");
     expect(options.show).toBe(false);
     expect(startMaximized).toBe(false);
   });

@@ -14,7 +14,7 @@ Phase 2 は「**Electron シェルで Grimodex が起動し、実 SQLite ワー�
 2. napi ネイティブモジュール `grimodex-node`（Backend クラス + async 垂直スライス）
 3. Electron main / preload / typed IPC ブリッジ（contextIsolation + sandbox、envelope 方式）
 4. `src/lib/` ラッパー群の 3 分岐化（isTauri / isElectron / browser-mock）
-5. ウィンドウクローム（frameless + transparent + drag region + close veto + パネル別窓 + window-state + vibrancy）
+5. ウィンドウクローム（frameless + opaque/resizable + drag region + close veto + パネル別窓 + window-state + vibrancy）
 6. イベントバス（renderer 間 broadcast + napi ThreadsafeFunction 配線の実証）
 7. 本番ロード（`app://` プロトコル + CSP）と Playwright スモーク
 
@@ -24,7 +24,7 @@ Phase 2 は「**Electron シェルで Grimodex が起動し、実 SQLite ワー�
 
 | # | 条件 | 検証方法 |
 |---|---|---|
-| A1 | `pnpm electron:dev` で frameless + transparent の窓が起動し、ヘッダドラッグ・最小化/最大化/閉じるが動く | 手動 + スモークスクリプト |
+| A1 | `pnpm electron:dev` で frameless + resizable の窓が起動し、ヘッダドラッグ・端リサイズ・最小化/最大化/閉じるが動く | 手動 + スモークスクリプト |
 | A2 | フォルダピッカ → `open_workspace`（migrate + VACUUM INTO バックアップ）→ シーンツリー表示 → エディタで執筆 → オートセーブ（db_execute_batch）→ **アプリ再起動後も内容が残る** | `pnpm electron:smoke`（Playwright `_electron`） |
 | A3 | Electron で書いた workspace を **Tauri ビルドで開ける**（同一スキーマ・同一 migrate 経路の相互運用） | 手動: 同じフォルダを `pnpm tauri dev` で開く |
 | A4 | close veto: 未確定 inline-AI diff 相当のガードが立っている間、closeで窓が閉じない（veto 解除で閉じる） | 単体テスト + dev console からのガード注入で手動確認 |
@@ -267,7 +267,7 @@ interface GrimodexBridge {
 |---|---|
 | width 800 / height 600 / min 600×400 | 同値（window-state 復元が優先） |
 | `decorations: false` | `frame: false`（win/linux）。**macOS は `titleBarStyle: "hidden"` + trafficLightPosition** — 現行 Tauri mac は WindowControls 非表示かつ decorations:false で操作系が空白のため、ネイティブ信号機を残す方が改善。実機確認を S6 検証に含め、NG なら `frame:false` へ後退 |
-| `transparent: true` | `transparent: true` + `backgroundColor: "#00000000"` |
+| `transparent: true` | `transparent: false` + `resizable: true` + opaque fallback。Electron の transparent window は native resize 非対応のため、renderer が全面を描画する現行 UI では透明窓を使わない |
 | `dragDropEnabled: false` | `will-navigate` 拒否で航行だけ防ぐ（HTML5 DnD はそのまま生きる） |
 | `zoomHotkeysEnabled: false` | メニューに zoom ロールを載せない。macOS のみ `editMenu`/`windowMenu` ロールの最小メニュー（Cmd+C/V が死ぬため必須）。win/linux は `Menu.setApplicationMenu(null)` |
 | `macOSPrivateApi` (vibrancy) | `vibrancy: "under-window"` 相当（§6.6） |
@@ -284,7 +284,7 @@ html[data-shell="electron"] [data-tauri-drag-region] :where(button, a, input, se
 html[data-shell="electron"] [data-tauri-drag-region="false"] { -webkit-app-region: no-drag; }
 ```
 
-セマンティクス差に注意: Tauri の属性は「その要素自身への mousedown」だけでドラッグするが、CSS app-region は**子孫まで drag 化**する。2 行目の子孫 no-drag がその差分吸収で、`PanelToggleDropdown` / `CommandCenterBar` 等の既存 `="false"` 明示箇所は 3 行目が拾う。ダブルクリック最大化は Chromium が OS 規約どおり処理する（Tauri 属性と同挙動）。S6 でヘッダ上の全インタラクティブ要素を実クリック検証する。
+セマンティクス差に注意: Tauri の属性は「その要素自身への mousedown」だけでドラッグするが、CSS app-region は**子孫まで drag 化**する。2 行目の子孫 no-drag がその差分を吸収し、`PanelToggleDropdown` 等の `="false"` 明示箇所は 3 行目が拾う。常駐検索バー撤去後は空の中央レールを主要 drag region とする。ダブルクリック最大化は Chromium が OS 規約どおり処理する。S6 でヘッダ上の全インタラクティブ要素を実クリック検証する。
 
 ### 6.3 WindowControls / onResized
 
@@ -304,7 +304,7 @@ Tauri は renderer 内で `event.preventDefault()` する同期 veto。Electron 
 ### 6.5 パネル別窓（WebviewWindow → BrowserWindow）
 
 - main の `windows.ts` が `Map<label, BrowserWindow>` を保持。`panelWindow.open(label, opts)` は label を `/^panel-[a-z0-9-]+$/` で検証し、**URL は main が label から組み立てる**（dev: `${ELECTRON_RENDERER_URL}/?window=panel&panel=<id>`、prod: `app://bundle/index.html?window=panel&panel=<id>`）。renderer 供給 URL は受け取らない — Tauri capability（windows scope `panel-*`）の代替となる侵害時ガード。
-- 窓オプション: transparent / frame:false / 480×900 / label 別 window-state 復元。親子関係は付けない（現行はフローティング独立窓）。メイン窓 `closed` で全パネル窓を閉じ、`window-all-closed` で `app.quit()`（macOS 含む — 単一アプリ窓の現行挙動に合わせる）。
+- 窓オプション: opaque / resizable:true / frame:false / 480×900 / label 別 window-state 復元。親子関係は付けない（現行はフローティング独立窓）。メイン窓 `closed` で全パネル窓を閉じ、`window-all-closed` で `app.quit()`（macOS 含む — 単一アプリ窓の現行挙動に合わせる）。
 - `src/lib/webviewWindows.ts` の Electron 分岐: `getWebviewWindowByLabel` → `focusByLabel` の存在確認、`createWebviewWindow` → `panelWindow.open`。`panelWindow.ts`（feature 層）は無改修。**【最終レビューで改訂】** 無改修のままだと feature 層の `isTauri()` ゲート 4 箇所（panelWindow.ts×2 / PanelChromeMenu.tsx / ToolWindowIcon.tsx）により Electron では UI から別窓へ到達不能で A5 と両立しない（confirmed 指摘）。例外として `supportsPanelWindows()`（= isTauri ‖ isElectron、正本は panelWindow.ts）を新設し、4 ゲートをこれに差し替えた。
 - 既知の意味差として記録: Tauri の「生成失敗は `tauri://error` に流れ reject しない」契約は「open が reject しうる」に変わるが、呼び出し元 `openPanelWindow` は既に await + 無通知許容なので影響なし。
 

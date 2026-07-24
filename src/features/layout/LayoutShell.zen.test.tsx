@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_SETTINGS } from "@/features/settings/types";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { PanelId } from "./panelIds";
 
 vi.mock("@/lib/tauri", () => ({
@@ -48,6 +50,52 @@ describe("LayoutShell Zen projection", () => {
       initialized: true,
       maximizedPanelId: null,
     });
+    useSettingsStore.setState({
+      cache: {
+        ...DEFAULT_SETTINGS,
+        "editor.zenBackground.glass.blur": "22",
+        "editor.zenBackground.glass.refraction": "13",
+        "editor.zenBackground.glass.saturation": "1.4",
+        "editor.zenBackground.glass.shine": "0.65",
+      },
+    });
+  });
+
+  it("publishes the shared Glass contract on the normal workspace root", () => {
+    const { container } = render(<LayoutShell />);
+    const shell = container.querySelector<HTMLElement>(
+      "[data-workspace-glass-root]",
+    );
+
+    expect(shell).toHaveAttribute("data-layout-shell");
+    expect(shell).toHaveAttribute("data-workspace-fluid-glass", "true");
+    expect(shell).toHaveAttribute(
+      "data-workspace-fluid-glass-refraction",
+      "13",
+    );
+    expect(shell?.style.getPropertyValue("--workspace-fluid-glass-blur")).toBe(
+      "22px",
+    );
+    expect(
+      shell?.style.getPropertyValue("--workspace-fluid-glass-saturate"),
+    ).toBe("1.4");
+    expect(shell?.style.getPropertyValue("--workspace-fluid-glass-shine")).toBe(
+      "0.65",
+    );
+  });
+
+  it("publishes the same Glass root around a solo non-Editor panel", () => {
+    const { container } = render(<LayoutShell hidden soloPanelId="chat" />);
+    const root = container.querySelector<HTMLElement>(
+      "[data-workspace-glass-root]",
+    );
+
+    expect(root).not.toHaveAttribute("data-layout-shell");
+    expect(root).toHaveAttribute("data-workspace-fluid-glass", "true");
+    expect(root).toHaveAttribute("data-workspace-fluid-glass-refraction", "13");
+    expect(
+      root?.querySelector('[data-ambient-glass-surface="panel"]'),
+    ).not.toBeNull();
   });
 
   it("projects the existing editor to the full layout without remounting or mutating layout state", () => {

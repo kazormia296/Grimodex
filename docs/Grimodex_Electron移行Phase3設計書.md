@@ -262,7 +262,7 @@ Electron 側のキー保管基盤を keyring から safeStorage へ切り替え�
   absolute deadline・disposed manager / runner・FE slow timeout の 5 回帰を別コミットで固定し、
   Windows grant の case と auto-detect refresh cache の 2 回帰、並行 refresh race の 1 回帰も
   追加した（計 15）。
-- **起動スモーク hardening**: transparent + `show:false` の窓で `ready-to-show` が来ない環境も
+- **起動スモーク hardening**: `show:false` の窓で `ready-to-show` が来ない環境も
   `did-finish-load` を冪等 fallback にして確実に表示する。startup hydration 中だけ layout
   crossfade / region chrome / editor の enter animation を抑止して最終 opacity=1 を即時表示し、
   初期化後のユーザー操作では従来の motion が復帰することをテストで固定した。

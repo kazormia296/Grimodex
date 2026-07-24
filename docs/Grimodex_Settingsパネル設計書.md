@@ -431,7 +431,6 @@ Focus Attribution panel          Ctrl+Alt+A
 Focus Chat History panel         Ctrl+Alt+H
 Focus Map panel                  Ctrl+Alt+M
 Open Settings                    Ctrl+Alt+,
-Command palette                  Ctrl+Shift+P
 Toggle Left Dock                 Ctrl+Alt+B
 Toggle Right Dock                Ctrl+Alt+R
 Toggle Bottom Dock               Ctrl+Alt+J

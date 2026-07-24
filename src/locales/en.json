@@ -784,6 +784,8 @@
       "zenContrastGuardAuto": "Automatic",
       "zenContrastGuardStrength": "Protection strength",
       "zenContrastGuardStrengthDesc": "Targets 4.5:1 at 0% and 7:1 at 100%. The text color never changes.",
+      "zenContrastGuardToolMix": "Tool correction strength",
+      "zenContrastGuardToolMixDesc": "Adjusts the correction blended into tool surfaces separately from the writing column, from 0–75% (50% by default).",
       "zenGlassEnabled": "Glass effect",
       "zenGlassEnabledDesc": "Applies Fluid Glass to the writing editor while the background is visible. Text and the editable DOM are never filtered.",
       "zenGlassBlur": "Backdrop blur",
@@ -3511,14 +3513,11 @@
     "noActiveScene": "No active scene"
   },
   "commandCenter": {
-    "placeholderSearch": "Search… (> for command mode)",
-    "placeholderCommand": "Command…",
+    "placeholderSearch": "Search…",
     "sectionLexical": "Lexical",
     "sectionSemantic": "Semantic",
-    "sectionCommand": "Commands",
     "loading": "Searching…",
     "noResults": "No results",
-    "emptyHint": "Type to search (> for command mode)",
     "untitled": "(Untitled)",
     "filter": {
       "sourceLabel": "Source",
@@ -3537,16 +3536,7 @@
       "off": "OFF"
     },
     "panel": {
-      "emptyHint": "Type to search (> for command mode)"
-    },
-    "sectionCommands": "Commands",
-    "sectionQuickOpen": "Jump to",
-    "command": {
-      "openSettings": "Open Settings",
-      "export": "Export",
-      "vivliostyle": "Book Export (Vivliostyle)",
-      "restartTour": "Restart Tour",
-      "togglePanel": "Toggle Panel: {{panel}}"
+      "emptyHint": "Type to search"
     }
   },
   "chatCommands": {

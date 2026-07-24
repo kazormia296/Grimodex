@@ -129,6 +129,7 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     "editor.zenBackground.halftone.softness",
     "editor.zenBackground.contrastGuard.mode",
     "editor.zenBackground.contrastGuard.strength",
+    "editor.zenBackground.contrastGuard.toolMix",
     "editor.zenBackground.glass.enabled",
     "editor.zenBackground.glass.blur",
     "editor.zenBackground.glass.refraction",
@@ -174,6 +175,9 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     expect(
       DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.strength"],
     ).toBe("1");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.toolMix"]).toBe(
+      "0.5",
+    );
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.enabled"]).toBe("true");
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.blur"]).toBe("14");
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.refraction"]).toBe("7");

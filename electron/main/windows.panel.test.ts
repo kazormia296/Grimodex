@@ -174,7 +174,8 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
       "http://localhost:1430/?window=panel&panel=codex",
     );
     expect(win.options.frame).toBe(false);
-    expect(win.options.transparent).toBe(true);
+    expect(win.options.resizable).toBe(true);
+    expect(win.options.transparent).toBe(false);
     expect(win.options.width).toBe(500);
     expect(win.options.height).toBe(700);
     const webPreferences = win.options.webPreferences as Record<

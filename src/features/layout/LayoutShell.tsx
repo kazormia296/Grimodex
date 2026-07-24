@@ -34,6 +34,7 @@ import { useRegionSegments } from "./useRegionSegments";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
+import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 // gsap(+@gsap/react)を static import する drop-zone ハイライトを遅延化。常時 mount
 // だと D&D が一度も起きなくても起動時に gsap(~22KB gzip)が parse される（所見#11）。
@@ -75,6 +76,12 @@ export const LayoutShell = memo(function LayoutShell({
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const { crossfadeControls } = useLayoutPresetCrossfade();
   const shellRef = useRef<HTMLDivElement>(null);
+  const glass = useZenGlassConfig();
+  const workspaceGlassStyle = {
+    "--workspace-fluid-glass-blur": `${glass.blur}px`,
+    "--workspace-fluid-glass-saturate": glass.saturation,
+    "--workspace-fluid-glass-shine": glass.shine,
+  } as React.CSSProperties;
 
   const leftOpen = regionIsOpen(layout.regions.left.slots);
   const rightOpen = regionIsOpen(layout.regions.right.slots);
@@ -177,13 +184,25 @@ export const LayoutShell = memo(function LayoutShell({
   if (hidden && soloPanelId) {
     if (soloPanelId === "editor") {
       return (
-        <div className="h-full w-full overflow-hidden">
+        <div
+          data-workspace-glass-root
+          data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+          data-workspace-fluid-glass-refraction={glass.refraction}
+          className="h-full w-full overflow-hidden"
+          style={workspaceGlassStyle}
+        >
           <EditorArea />
         </div>
       );
     }
     return (
-      <div className="h-full w-full overflow-hidden">
+      <div
+        data-workspace-glass-root
+        data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+        data-workspace-fluid-glass-refraction={glass.refraction}
+        className="h-full w-full overflow-hidden"
+        style={workspaceGlassStyle}
+      >
         <SlotView panelId={soloPanelId} />
       </div>
     );
@@ -191,7 +210,13 @@ export const LayoutShell = memo(function LayoutShell({
 
   if (hidden) {
     return (
-      <div className="h-full w-full overflow-hidden">
+      <div
+        data-workspace-glass-root
+        data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+        data-workspace-fluid-glass-refraction={glass.refraction}
+        className="h-full w-full overflow-hidden"
+        style={workspaceGlassStyle}
+      >
         <EditorArea />
       </div>
     );
@@ -237,7 +262,10 @@ export const LayoutShell = memo(function LayoutShell({
           実現する（useLayoutPresetCrossfade 参照）。 */}
       <motion.div
         ref={shellRef}
+        data-workspace-glass-root
         data-layout-shell
+        data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+        data-workspace-fluid-glass-refraction={glass.refraction}
         data-zen-mode={zenMode ? "true" : undefined}
         // overflow-clip（hidden ではなく）: hidden はスクロールコンテナになり、最大化中に
         // パネル内要素がフォーカスされるとブラウザが shell を自動スクロールして上端の
@@ -247,6 +275,7 @@ export const LayoutShell = memo(function LayoutShell({
         initial={false}
         animate={crossfadeControls}
         style={{
+          ...workspaceGlassStyle,
           gridTemplateColumns,
           gridTemplateRows,
           gridTemplateAreas,

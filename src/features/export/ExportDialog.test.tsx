@@ -196,7 +196,7 @@ describe("ExportDialog", () => {
     const { rerender } = render(<ExportDialog open onClose={vi.fn()} />);
     expect(screen.getByTestId("export-settings-panel")).toBeInTheDocument();
 
-    // 開いたまま「本の書き出し」要求（コマンドパレット相当）
+    // 開いたまま「本の書き出し」要求
     rerender(
       <ExportDialog
         open

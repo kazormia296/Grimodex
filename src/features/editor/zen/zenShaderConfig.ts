@@ -53,6 +53,7 @@ export interface ZenShaderConfig {
   contrastGuard: {
     mode: ZenContrastGuardMode;
     strength: number;
+    toolMix: number;
   };
   glass: {
     enabled: boolean;
@@ -84,7 +85,7 @@ export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
     angle: 15,
     softness: 0.15,
   },
-  contrastGuard: { mode: "auto", strength: 1 },
+  contrastGuard: { mode: "auto", strength: 1, toolMix: 0.5 },
   glass: { ...ZEN_GLASS_DEFAULTS },
 };
 
@@ -316,6 +317,12 @@ export function parseZenShaderConfig(
         d.contrastGuard.mode,
       ),
       strength: unit("contrastGuard.strength", d.contrastGuard.strength),
+      toolMix: finiteNumber(
+        value(values, "contrastGuard.toolMix"),
+        d.contrastGuard.toolMix,
+        0,
+        0.75,
+      ),
     },
     glass: parseZenGlassConfig(values),
   };

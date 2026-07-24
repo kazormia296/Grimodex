@@ -1,12 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { selectPopoverOpen, useCommandCenterStore } from "./commandCenterStore";
+import { beforeEach, describe, expect, it } from "vitest";
+import { usePanelStore } from "./commandCenterStore";
 import type {
   CommandCenterItem,
   CommandCenterSection,
 } from "../providers/types";
 
-function item(id: string, onSelect = () => {}): CommandCenterItem {
-  return { id, kind: "lexical-scene", title: id, onSelect };
+function item(id: string): CommandCenterItem {
+  return { id, kind: "lexical-scene", title: id, onSelect: () => {} };
 }
 
 function lexicalSection(items: CommandCenterItem[]): CommandCenterSection {
@@ -17,211 +17,113 @@ function semanticSection(items: CommandCenterItem[]): CommandCenterSection {
   return { id: "semantic", title: "Semantic", order: 2, items };
 }
 
-describe("useCommandCenterStore", () => {
+describe("usePanelStore", () => {
   beforeEach(() => {
-    useCommandCenterStore.setState({
-      open: false,
-      mode: "search",
-      query: "",
-      parsedQuery: "",
-      sections: [],
-      selectedIndex: 0,
-      focusRequest: 0,
+    usePanelStore.getState().reset();
+    usePanelStore.getState().setDescriptionMode(false);
+  });
+
+  it("updates the search query, parsed query, excludes, and description mode", () => {
+    const state = usePanelStore.getState();
+    state.setQuery("chapter -rain");
+    state.setParsedQuery("chapter");
+    state.setExcludes(["rain"]);
+    state.setDescriptionMode(true);
+
+    expect(usePanelStore.getState()).toMatchObject({
+      query: "chapter -rain",
+      parsedQuery: "chapter",
+      excludes: ["rain"],
+      descriptionMode: true,
     });
   });
 
-  it("setOpen / setQuery / setMode / setParsedQuery を更新する", () => {
-    const s = useCommandCenterStore.getState();
-    s.setOpen(true);
-    s.setQuery(">cmd");
-    s.setMode("command");
-    s.setParsedQuery("cmd");
-    const next = useCommandCenterStore.getState();
-    expect(next.open).toBe(true);
-    expect(next.query).toBe(">cmd");
-    expect(next.mode).toBe("command");
-    expect(next.parsedQuery).toBe("cmd");
-  });
-
-  it("upsertSection: 同じ id の section を置換し order でソートする", () => {
-    const { upsertSection } = useCommandCenterStore.getState();
+  it("upsertSection replaces by id and sorts by provider order", () => {
+    const { upsertSection } = usePanelStore.getState();
     upsertSection(semanticSection([item("s1")]), true);
     upsertSection(lexicalSection([item("l1")]), true);
-    const sections = useCommandCenterStore.getState().sections;
-    expect(sections.map((s) => s.id)).toEqual(["lexical", "semantic"]);
+
+    expect(usePanelStore.getState().sections.map((s) => s.id)).toEqual([
+      "lexical",
+      "semantic",
+    ]);
   });
 
-  it("upsertSection: hideWhenEmpty=true で空 section は除外される", () => {
-    const { upsertSection } = useCommandCenterStore.getState();
+  it("removes an empty section when hideWhenEmpty is true", () => {
+    const { upsertSection } = usePanelStore.getState();
     upsertSection(lexicalSection([item("l1")]), true);
     upsertSection(lexicalSection([]), true);
-    expect(useCommandCenterStore.getState().sections).toEqual([]);
+
+    expect(usePanelStore.getState().sections).toEqual([]);
   });
 
-  it("upsertSection: hideWhenEmpty=false なら 0 件でも残す", () => {
-    const { upsertSection } = useCommandCenterStore.getState();
-    upsertSection(lexicalSection([]), false);
-    const sections = useCommandCenterStore.getState().sections;
-    expect(sections).toHaveLength(1);
-    expect(sections[0].items).toEqual([]);
+  it("keeps an empty section when hideWhenEmpty is false", () => {
+    usePanelStore.getState().upsertSection(lexicalSection([]), false);
+
+    expect(usePanelStore.getState().sections).toHaveLength(1);
+    expect(usePanelStore.getState().sections[0].items).toEqual([]);
   });
 
-  it("upsertSection: hideWhenEmpty=true でも loading/error の section は残す", () => {
-    const { upsertSection } = useCommandCenterStore.getState();
+  it("keeps loading and error states even when hideWhenEmpty is true", () => {
+    const { upsertSection } = usePanelStore.getState();
     upsertSection(
       {
-        id: "lexical",
-        title: "L",
-        order: 1,
-        items: [],
+        ...lexicalSection([]),
         state: { kind: "loading" },
       },
       true,
     );
-    expect(useCommandCenterStore.getState().sections).toHaveLength(1);
+    expect(usePanelStore.getState().sections).toHaveLength(1);
+
     upsertSection(
       {
-        id: "lexical",
-        title: "L",
-        order: 1,
-        items: [],
+        ...lexicalSection([]),
         state: { kind: "error", message: "boom" },
       },
       true,
     );
-    expect(useCommandCenterStore.getState().sections).toHaveLength(1);
+    expect(usePanelStore.getState().sections).toHaveLength(1);
   });
 
-  it("upsertSection: 既存 selectedIndex は flat 長を超えたら clamp する", () => {
-    const { upsertSection } = useCommandCenterStore.getState();
-    upsertSection(lexicalSection([item("a"), item("b"), item("c")]), true);
-    useCommandCenterStore.setState({ selectedIndex: 2 });
-    upsertSection(lexicalSection([item("a")]), true);
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(0);
+  it("removeSection removes only the requested provider section", () => {
+    const state = usePanelStore.getState();
+    state.upsertSection(lexicalSection([item("l1")]), true);
+    state.upsertSection(semanticSection([item("s1")]), true);
+    state.removeSection("lexical");
+
+    expect(usePanelStore.getState().sections.map((s) => s.id)).toEqual([
+      "semantic",
+    ]);
   });
 
-  it("moveSelection: ↓ で次の item に、↑ で前に戻る (clamp あり)", () => {
-    const { upsertSection, moveSelection } = useCommandCenterStore.getState();
-    upsertSection(lexicalSection([item("a"), item("b")]), true);
-    upsertSection(semanticSection([item("c")]), true);
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(0);
-    moveSelection("down");
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(1);
-    moveSelection("down");
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(2);
-    moveSelection("down");
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(2);
-    moveSelection("up");
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(1);
-  });
+  it("reset clears query parsing and results while preserving the preference", () => {
+    const state = usePanelStore.getState();
+    state.setQuery("chapter -rain");
+    state.setParsedQuery("chapter");
+    state.setExcludes(["rain"]);
+    state.setDescriptionMode(true);
+    state.upsertSection(lexicalSection([item("l1")]), true);
+    state.reset();
 
-  it("moveSelection: items が 0 件のとき index は変化しない", () => {
-    useCommandCenterStore.setState({ selectedIndex: 0 });
-    useCommandCenterStore.getState().moveSelection("down");
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(0);
-  });
-
-  it("moveSelection: store に 50 件入っていても selectedIndex は BAR_VISIBLE_LIMIT_PER_SECTION 上限で止まる", () => {
-    // パネル展開で store には 50 件入る想定。バー側は per-section 10 件しか表示しない。
-    const many = Array.from({ length: 50 }, (_, i) => item(`x${i}`));
-    useCommandCenterStore.getState().upsertSection(lexicalSection(many), true);
-    useCommandCenterStore.setState({ selectedIndex: 0 });
-    // ↓ を 12 回押しても 9 (= 10 - 1) で止まる (1 section × 10 visible items)
-    for (let i = 0; i < 12; i++) {
-      useCommandCenterStore.getState().moveSelection("down");
-    }
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(9);
-  });
-
-  it("moveSelection: 2 sections × 50 items でも selectedIndex は 0..19 に収まる", () => {
-    const lexicalMany = Array.from({ length: 50 }, (_, i) =>
-      item(`l${i}`, () => {}),
-    );
-    const semanticMany = Array.from({ length: 50 }, (_, i) =>
-      item(`s${i}`, () => {}),
-    );
-    const { upsertSection, moveSelection } = useCommandCenterStore.getState();
-    upsertSection(lexicalSection(lexicalMany), true);
-    upsertSection(semanticSection(semanticMany), true);
-    useCommandCenterStore.setState({ selectedIndex: 0 });
-    for (let i = 0; i < 100; i++) moveSelection("down");
-    expect(useCommandCenterStore.getState().selectedIndex).toBe(19);
-  });
-
-  it("executeSelected: bar-visible 範囲の item.onSelect を呼ぶ (10 件超えのインデックスは clamp)", () => {
-    const onSelectVisible = vi.fn();
-    const items = Array.from({ length: 50 }, (_, i) =>
-      item(`x${i}`, i === 9 ? onSelectVisible : () => {}),
-    );
-    useCommandCenterStore.getState().upsertSection(lexicalSection(items), true);
-    // 9 (= bar-visible 末尾) を選択 → onSelectVisible が呼ばれる
-    useCommandCenterStore.setState({ selectedIndex: 9 });
-    useCommandCenterStore.getState().executeSelected();
-    expect(onSelectVisible).toHaveBeenCalled();
-  });
-
-  it("executeSelected: 選択中 item の onSelect を呼ぶ", () => {
-    const onSelect = vi.fn();
-    useCommandCenterStore
-      .getState()
-      .upsertSection(lexicalSection([item("a"), item("b", onSelect)]), true);
-    useCommandCenterStore.setState({ selectedIndex: 1 });
-    useCommandCenterStore.getState().executeSelected();
-    expect(onSelect).toHaveBeenCalledTimes(1);
-  });
-
-  it("executeSelected: 該当 item がなければ何もしない", () => {
-    expect(() =>
-      useCommandCenterStore.getState().executeSelected(),
-    ).not.toThrow();
-  });
-
-  it("requestFocus: counter が増える", () => {
-    const before = useCommandCenterStore.getState().focusRequest;
-    useCommandCenterStore.getState().requestFocus();
-    expect(useCommandCenterStore.getState().focusRequest).toBe(before + 1);
-  });
-
-  it("reset: query/sections/selectedIndex をクリアし open/mode は残す", () => {
-    useCommandCenterStore.setState({
-      open: true,
-      mode: "command",
-      query: "x",
-      parsedQuery: "x",
-      sections: [lexicalSection([item("a")])],
-      selectedIndex: 0,
+    expect(usePanelStore.getState()).toMatchObject({
+      query: "",
+      parsedQuery: "",
+      excludes: [],
+      descriptionMode: true,
+      sections: [],
     });
-    useCommandCenterStore.getState().reset();
-    const s = useCommandCenterStore.getState();
-    expect(s.open).toBe(true);
-    expect(s.mode).toBe("command");
-    expect(s.query).toBe("");
-    expect(s.parsedQuery).toBe("");
-    expect(s.sections).toEqual([]);
-    expect(s.selectedIndex).toBe(0);
   });
 
-  it("selectPopoverOpen: search mode は parsedQuery 空なら false", () => {
-    expect(
-      selectPopoverOpen({ open: true, parsedQuery: "", mode: "search" }),
-    ).toBe(false);
-    expect(
-      selectPopoverOpen({ open: true, parsedQuery: "   ", mode: "search" }),
-    ).toBe(false);
-    expect(
-      selectPopoverOpen({ open: true, parsedQuery: "x", mode: "search" }),
-    ).toBe(true);
-    expect(
-      selectPopoverOpen({ open: false, parsedQuery: "x", mode: "search" }),
-    ).toBe(false);
-  });
-
-  it("selectPopoverOpen: command mode は parsedQuery 空でも open なら true", () => {
-    expect(
-      selectPopoverOpen({ open: true, parsedQuery: "", mode: "command" }),
-    ).toBe(true);
-    expect(
-      selectPopoverOpen({ open: false, parsedQuery: "", mode: "command" }),
-    ).toBe(false);
+  it("does not expose header-bar navigation or popover state", () => {
+    const state = usePanelStore.getState() as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(state).not.toHaveProperty("open");
+    expect(state).not.toHaveProperty("mode");
+    expect(state).not.toHaveProperty("selectedIndex");
+    expect(state).not.toHaveProperty("focusRequest");
+    expect(state).not.toHaveProperty("moveSelection");
+    expect(state).not.toHaveProperty("executeSelected");
   });
 });

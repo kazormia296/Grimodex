@@ -53,6 +53,22 @@ describe("mutationAffectsZenShaderLayout", () => {
     expect(mutationAffectsZenShaderLayout(unmounted)).toBe(true);
   });
 
+  it("remeasures when a non-editor Glass surface mounts or unmounts", () => {
+    const root = document.createElement("main");
+    const surface = document.createElement("aside");
+    surface.dataset.ambientGlassSurface = "panel";
+
+    const mounted = mutationRecords(root, () => {
+      root.append(surface);
+    });
+    const unmounted = mutationRecords(root, () => {
+      surface.remove();
+    });
+
+    expect(mutationAffectsZenShaderLayout(mounted)).toBe(true);
+    expect(mutationAffectsZenShaderLayout(unmounted)).toBe(true);
+  });
+
   it("remeasures observed layout attributes", () => {
     const editor = document.createElement("section");
     const records = mutationRecords(

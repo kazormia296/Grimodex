@@ -784,6 +784,8 @@
       "zenContrastGuardAuto": "自動",
       "zenContrastGuardStrength": "保護強度",
       "zenContrastGuardStrengthDesc": "0%で4.5:1、100%で7:1を目標にします。文字色は変更しません。",
+      "zenContrastGuardToolMix": "ツール補正強度",
+      "zenContrastGuardToolMixDesc": "ツール面に合成する補正の強さです。本文の保護強度とは別に、0〜75%の範囲で調整します（既定50%）。",
       "zenGlassEnabled": "Glass効果",
       "zenGlassEnabledDesc": "背景表示時に、本文エディターへFluid Glassを適用します。文字と編集DOMにはフィルターを掛けません。",
       "zenGlassBlur": "背景ぼかし",
@@ -3506,14 +3508,11 @@
     "noActiveScene": "アクティブなシーンがありません"
   },
   "commandCenter": {
-    "placeholderSearch": "検索… (> でコマンドモード)",
-    "placeholderCommand": "コマンド…",
+    "placeholderSearch": "検索…",
     "sectionLexical": "字句検索",
     "sectionSemantic": "意味検索",
-    "sectionCommand": "コマンド",
     "loading": "検索中…",
     "noResults": "結果なし",
-    "emptyHint": "キーワードを入力 (> でコマンドモード)",
     "untitled": "(無題)",
     "filter": {
       "sourceLabel": "ソース",
@@ -3532,16 +3531,7 @@
       "off": "OFF"
     },
     "panel": {
-      "emptyHint": "キーワードを入力して検索 (> でコマンドモード)"
-    },
-    "sectionCommands": "コマンド",
-    "sectionQuickOpen": "ジャンプ",
-    "command": {
-      "openSettings": "設定を開く",
-      "export": "エクスポート",
-      "vivliostyle": "本の書き出し（Vivliostyle）",
-      "restartTour": "ツアー再開",
-      "togglePanel": "パネル切替: {{panel}}"
+      "emptyHint": "キーワードを入力して検索"
     }
   },
   "chatCommands": {

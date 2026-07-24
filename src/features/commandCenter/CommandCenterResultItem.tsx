@@ -17,7 +17,6 @@ const BADGE_CLASSES: Record<BadgeTone, string> = {
   snippet:
     "text-[var(--badge-snippet-fg,#D97706)] bg-[var(--badge-snippet-bg,#D9770618)] border-[var(--badge-snippet-fg,#D9770640)]",
   score: "text-foreground/80 bg-accent/40 border-border",
-  command: "text-primary bg-primary/10 border-primary/30",
 };
 
 export function CommandCenterResultItem({

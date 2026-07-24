@@ -197,7 +197,6 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 
 - ステータスドットをクリック → ポップオーバーで5つの選択肢を表示
 - コンテキストメニュー →「Set status」サブメニュー
-- コマンドパレット（`Ctrl+Shift+P`）→「Set scene status」
 
 ### ステータスの自動遷移
 

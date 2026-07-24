@@ -336,13 +336,11 @@ button[role="switch"][aria-checked="true"] {
   z-index: -1;
 }
 
-/* The shader lives below the interactive layout. Its two full-size opaque
-   paints must pass it through so the layout canvas and complete Editor expose
-   the same live surface. Tool panels keep their own opaque surfaces, and text
-   opacity is never changed. The id scope also keeps the header entirely
-   outside this background system. */
+/* The shader lives below the interactive layout. Its full-size canvas paint
+   must pass it through so every opted-in Glass surface can sample the same
+   live background. The id scope keeps the header outside this system. */
 #main-content:has(> [data-editor-ambient][data-background-enabled="true"])
-  [data-layout-shell],
+  [data-workspace-glass-root],
 #main-content:has(> [data-editor-ambient][data-background-enabled="true"])
   [data-editor-area] {
   background: transparent;
@@ -510,8 +508,42 @@ button[role="switch"][aria-checked="true"] {
 .app-shell .gx-panel {
   border-radius: var(--gx-panel-radius);
   background: var(--gx-panel-bg);
+  background-color: var(--card);
   border: var(--gx-panel-border);
   box-shadow: var(--gx-panel-shadow);
+}
+
+/* Non-Editor Glass hosts are stable slot/Stripe wrappers. Keeping the Glass
+   on the wrapper (rather than AnimatedSlotPanel's crossfading keepalive
+   layers) prevents an opaque flash and avoids hidden backdrop-filter layers. */
+.app-shell [data-ambient-glass-surface] {
+  position: relative;
+  isolation: isolate;
+}
+
+.app-shell [data-ambient-glass-surface]::before {
+  position: absolute;
+  z-index: -1;
+  inset: -6px;
+  content: "";
+  pointer-events: none;
+  opacity: 0;
+  background-image: none;
+  box-shadow: none;
+  filter: none;
+}
+
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-workspace-glass-root][data-workspace-fluid-glass="true"]
+  [data-ambient-glass-surface] {
+  background-color: transparent;
+  background-image: none;
+  border-color: color-mix(in oklch, var(--border) 55%, transparent);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 0.1);
+  backdrop-filter: blur(var(--workspace-fluid-glass-blur, 14px))
+    saturate(var(--workspace-fluid-glass-saturate, 1.16)) contrast(1.03);
+  -webkit-backdrop-filter: blur(var(--workspace-fluid-glass-blur, 14px))
+    saturate(var(--workspace-fluid-glass-saturate, 1.16)) contrast(1.03);
 }
 
 /* `--flat` variant: a card with a uniform fill instead of the dome
@@ -536,7 +568,7 @@ button[role="switch"][aria-checked="true"] {
 /* Stripe (side/bottom) は .gx-panel の 1px border をオフにする。border が
    あると stripe 内側の flex 配分域が両端 1px ずつ縮み、content 側の Slot
    Splitter 位置と divider 位置がズレる（content には border が無い）。
-   center stripe は .gx-panel を付けていないため対象外。 */
+   center stripe は data-stripe-region を持たないため対象外。 */
 .app-shell [data-stripe-region].gx-panel {
   border: none;
 }
@@ -546,14 +578,21 @@ button[role="switch"][aria-checked="true"] {
   background: var(--gx-canvas-bg);
 }
 
-/* Reveal the dome gradient: a tool panel's own root fill is dropped
-   so the `.gx-panel` background shows. Direct-child scope only — the
-   editor's paper surface and nested inputs keep their fill. tiptap /
-   ProseMirror writing surfaces are always excluded. */
+/* Reveal the stable panel host: a tool panel's own root fill is dropped so
+   the host's solid dome or live Glass shows. Direct-child scope only — nested
+   cards and inputs keep their fills. */
 .app-shell
-  [data-slot-panel].gx-panel
+  [data-ambient-glass-surface="panel"]
   > .bg-background:not(.tiptap):not(.ProseMirror),
-.app-shell [data-slot-panel].gx-panel > .bg-card {
+.app-shell [data-ambient-glass-surface="panel"] > .bg-card,
+.app-shell
+  [data-ambient-glass-surface="panel"]
+  > [data-animated-slot-panel]
+  > .bg-background:not(.tiptap):not(.ProseMirror),
+.app-shell
+  [data-ambient-glass-surface="panel"]
+  > [data-animated-slot-panel]
+  > .bg-card {
   background-color: transparent;
 }
 
@@ -569,7 +608,6 @@ button[role="switch"][aria-checked="true"] {
   transform: scale(1.01);
   z-index: 10;
 }
-
 
 .dockview-theme-dark.dockview-theme-dark {
   --dv-group-view-background-color: var(--background);

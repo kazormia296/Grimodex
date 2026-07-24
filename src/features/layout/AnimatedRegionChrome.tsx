@@ -55,7 +55,14 @@ export const AnimatedRegionChrome = memo(function AnimatedRegionChrome({
             ...style,
           }}
           initial={animateEntry ? { opacity: 0, clipPath: clip.closed } : false}
-          animate={{ opacity: 1, clipPath: clip.open }}
+          animate={{
+            opacity: 1,
+            clipPath: clip.open,
+            // `inset(...)` 同士で enter を補間した後だけ clip を外す。
+            // settled 状態に clip-path を残すと Backdrop Root が常設され、
+            // 配下の Glass が ambient shader まで blur できなくなる。
+            transitionEnd: { clipPath: "none" },
+          }}
           exit={
             reduced
               ? undefined

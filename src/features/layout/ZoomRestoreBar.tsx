@@ -31,7 +31,8 @@ export function ZoomRestoreBar({ panelId }: ZoomRestoreBarProps) {
   return (
     <motion.div
       data-zoom-restore-bar
-      className="flex h-full min-w-0 items-center justify-between px-2"
+      data-ambient-glass-surface="stripe"
+      className="gx-panel flex h-full min-w-0 items-center justify-between overflow-hidden px-2"
       onDoubleClick={clearMaximize}
       initial={reduced ? false : VARIANTS.fadeIn.initial}
       animate={VARIANTS.fadeIn.animate}

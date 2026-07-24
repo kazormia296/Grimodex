@@ -46,6 +46,34 @@ describe("Cloudflare Web Editor-only deploy CLI", () => {
     );
   });
 
+  it("deploys a prebuilt artifact without rebuilding after the master guard", async () => {
+    const { createEditorDeployPlan } =
+      await import("./cloudflare-editor-deploy.mjs");
+
+    assert.deepEqual(
+      createEditorDeployPlan({
+        action: "web-deploy-artifact",
+        environment: "production",
+      }),
+      [
+        {
+          command: "pnpm",
+          args: [
+            "exec",
+            "wrangler",
+            "pages",
+            "deploy",
+            "dist",
+            "--project-name",
+            "grimodex-try",
+            "--branch",
+            "master",
+          ],
+        },
+      ],
+    );
+  });
+
   it("ships only the Editor SPA/PWA shell and no provider proxy", async () => {
     const [redirects, manifest, serviceWorker, vercelConfig] =
       await Promise.all([
