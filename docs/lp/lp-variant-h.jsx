@@ -3339,8 +3339,66 @@ function LPVariantH() {
             FREE (BETA) · LOCAL-FIRST · BRING YOUR OWN AI KEY
           </p>
           <div
-            style={{ display: "flex", justifyContent: "center", marginTop: 44 }}
+            className="hz-cta-actions"
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              justifyContent: "center",
+              alignItems: "stretch",
+              gap: 18,
+              marginTop: 44,
+            }}
           >
+            <a
+              href="https://try.grimodex.app/editor"
+              target="_blank"
+              rel="noreferrer"
+              className="hz-shadow"
+              style={{
+                background: HZ_BG,
+                color: HZ_INK,
+                border: `2px solid ${HZ_INK}`,
+                padding: "22px 30px",
+                textAlign: "left",
+                cursor: "pointer",
+                display: "inline-flex",
+                flex: "1 1 320px",
+                flexDirection: "column",
+                gap: 5,
+                maxWidth: 360,
+                minWidth: 0,
+                textDecoration: "none",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  textTransform: "uppercase",
+                  letterSpacing: ".1em",
+                  opacity: 0.65,
+                }}
+              >
+                ↗ WEB EDITOR
+              </div>
+              <div
+                style={{ fontWeight: 800, fontSize: 26, letterSpacing: -0.5 }}
+              >
+                {lang === "en" ? "Try in your browser" : "ブラウザで試す"}
+              </div>
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 10,
+                  textTransform: "uppercase",
+                  opacity: 0.6,
+                }}
+              >
+                {lang === "en"
+                  ? "No install · Browser-local trial"
+                  : "インストール不要 · ブラウザ内に保存"}
+              </div>
+            </a>
             <a
               href="https://github.com/kazormia296/Grimodex/releases/latest"
               className="hz-shadow"
@@ -3352,9 +3410,11 @@ function LPVariantH() {
                 textAlign: "left",
                 cursor: "pointer",
                 display: "inline-flex",
+                flex: "1 1 320px",
                 flexDirection: "column",
                 gap: 5,
-                minWidth: 360,
+                maxWidth: 360,
+                minWidth: 0,
                 textDecoration: "none",
               }}
             >
