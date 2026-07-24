@@ -208,7 +208,6 @@ Drizzle 側ミラー（`src/db/schema.ts:236-247`）:
 | toolWindowDefaults | `src/features/layout/toolWindowDefaults.ts:45` | `DEFAULT_SLOT_MAP["codex-quick"] = "LB"`（region left / index 1） |
 | layoutPresets | `src/features/layout/layoutPresets.ts:91-92,173,268,354-355,445` | 全 5 ビルトインプリセットの左 l1 スロットに `codex-quick` |
 | keybindings | `src/features/settings/keybindings.ts:71-73` | `focusCodexQuick` = `Mod+Alt+Q` 維持。`focusRelatedScenes` 削除 |
-| commandProvider | `src/features/commandCenter/providers/commandProvider.ts:40` | `{ panelId: "codex-quick", keywords: "scene context codex quick" }` |
 | locale (表示名) | `src/locales/ja.json:1225` / `src/locales/en.json:1225` | `layout.panel.codex-quick = "Scene Context"`（ja/en 共通） |
 | locale (節見出し) | `src/locales/ja.json:3495-3496` / `src/locales/en.json:3500-3501` | `sceneContext.codexSection` = `"Codex"`、`sceneContext.scenesSection` = ja「関連する過去シーン」/ en「Related Scenes」 |
 
@@ -252,10 +251,8 @@ strip しつつ codex-quick のカスタム配置を保持する」）。古い 
 | `Mod+Alt+Q` | Scene Context パネルの表示トグル＋フォーカス（id `codex-quick`、`focusCodexQuick`） | `src/features/settings/keybindings.ts:71-73`、`KEYBOARD_SHORTCUT_MAP["codex-quick"]="Ctrl+Alt+Q"`（`src/features/layout/panelRegions.ts:37`） |
 | `Mod+Alt+P` | **解放**（旧 `focusRelatedScenes`。related-scenes 廃止に伴い削除） | 旧 keybindings から除去（現状 keybindings.ts に該当なし） |
 
-`Mod` はプラットフォーム依存（Win/Linux = Ctrl）。Command Center からは
-`keywords: "scene context codex quick"` で発見でき、パネル切替コマンド生成時に
-`panelLabel()` が `layout.panel.codex-quick` を i18n 解決して "Scene Context" として
-表示する（`src/features/commandCenter/providers/commandProvider.ts:40`）。
+`Mod` はプラットフォーム依存（Win/Linux = Ctrl）。常駐コマンドパレットは
+撤去済みのため、Scene Context にはショートカットまたはパネルトグルから到達する。
 
 ---
 
@@ -276,7 +273,6 @@ strip しつつ codex-quick のカスタム配置を保持する」）。古い 
 | `src/features/layout/layoutStateUtils.ts:87-88,148-` | `stripUnknownPanels`（related-scenes 自動除去） |
 | `src/features/layout/layoutStateUtils.test.ts:655-693` | related-scenes 削除の回帰ガード |
 | `src/features/settings/keybindings.ts:71-73` | `focusCodexQuick = Mod+Alt+Q` |
-| `src/features/commandCenter/providers/commandProvider.ts:40` | keywords `"scene context codex quick"` |
 | `src/db/schema.ts:236-247` | `codexQuickPins` Drizzle 定義（migrate.rs のミラー） |
 | `src-tauri/crates/grimodex-db/src/migrate.rs:118-123` | `codex_quick_pins` SQL 正本 |
 | `src/locales/ja.json:1225,3495-3496` / `src/locales/en.json:1225,3500-3501` | 表示名・節見出しの i18n |

@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 interface HeaderBarLayoutProps {
   /** 左レールの中身（ロゴ・メニュー・履歴・エクスポートなど）。 */
   left: ReactNode;
-  /** 中央スロット（Command Center バー）。ウィンドウ幾何中心に固定される。 */
+  /** 中央スロット。空の場合は広いウィンドウドラッグ領域になる。 */
   center: ReactNode;
   /** 右レールの中身（各種ドロップダウン・設定・ウィンドウ操作など）。 */
   right: ReactNode;
@@ -18,6 +18,7 @@ interface HeaderBarLayoutProps {
  * ヘッダーバーの 3 レール配置。
  *
  * 中央スロット (center) を **ウィンドウ幾何中心**に固定するための土台。
+ * 現在は中央を空け、そのレール全体をウィンドウのドラッグ領域として使う。
  *
  * 設計の肝:
  * - 左右レールを共に `flex-1 basis-0` にすると、中身の幅に関係なく両レールの
@@ -44,9 +45,7 @@ export function HeaderBarLayout({
     <header
       data-header-bar
       className={cn(
-        // py-2: ボタン上下に最低 8px の Tauri drag region 帯を確保する。
-        // py-1 (4px) では狭すぎて掴みづらく、CommandCenterBar の opt-out と
-        // 相まってウィンドウ移動できない事象が出ていた。
+        // py-2: ボタン上下にも最低 8px の drag region 帯を確保する。
         "flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2",
         className,
       )}
@@ -54,8 +53,7 @@ export function HeaderBarLayout({
     >
       {/* Tauri v2 の data-tauri-drag-region は親→子で必ずしも継承されない
           ため、各レール自身にも明示的に付与する。各レール内の interactive な
-          要素 (button/menu) は属性を持たないので通常クリックになり、
-          CommandCenterBar は自前で "false" opt-out している。 */}
+          要素 (button/menu) は属性を持たないので通常クリックになる。 */}
       <div
         data-tauri-drag-region
         data-header-rail="left"

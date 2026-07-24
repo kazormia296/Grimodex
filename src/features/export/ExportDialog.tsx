@@ -59,7 +59,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   /**
-   * タブ指定つきで開く要求（コマンドパレットの「本の書き出し」など）。
+   * タブ指定つきで開く外部要求。
    * ダイアログが既に開いている間の再要求でもタブを切り替えられるよう、
    * seq（nonce）の変化で適用する。未指定なら前回のタブを維持する。
    */
@@ -100,8 +100,7 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // タブ指定つきの open 要求を適用する。seq の変化で発火するため、
-  // ダイアログが既に開いているときの再要求（コマンドパレット再実行）でも
-  // タブが切り替わる。
+  // ダイアログが既に開いているときの再要求でもタブが切り替わる。
   useEffect(() => {
     if (modeRequest) setMode(modeRequest.mode);
     // intentionally keyed on seq: same-mode re-requests must re-apply

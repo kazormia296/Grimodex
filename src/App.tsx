@@ -17,11 +17,7 @@ import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { LayoutShell } from "@/features/layout/LayoutShell";
-import {
-  CommandCenterBar,
-  useBarStore,
-  useResultsPanelStore,
-} from "@/features/commandCenter";
+import { useResultsPanelStore } from "@/features/commandCenter";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { PostEffectProgressToast } from "@/features/post-effect/PostEffectProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
@@ -522,8 +518,7 @@ function EditorScreen() {
     return () => window.removeEventListener("open-export-dialog", onOpenExport);
   }, [runtimeCapabilities.genericProjectTransfer]);
 
-  // Open export dialog on the book (Vivliostyle) tab via custom event
-  // (command palette)
+  // Open export dialog on the book (Vivliostyle) tab via a custom event.
   useEffect(() => {
     function onOpenVivliostyle() {
       if (!runtimeCapabilities.genericProjectTransfer) return;
@@ -561,17 +556,6 @@ function EditorScreen() {
         e.preventDefault();
         useLayoutStore.getState().showPanel("command-center-results");
         useResultsPanelStore.getState().requestFocus();
-        return;
-      }
-
-      // Ctrl+Shift+P: VSCode コマンドパレット相当。CommandCenter バーに
-      // focus を渡し、`> ` prefix で command mode に切替えて起動する。
-      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        const cc = useBarStore.getState();
-        cc.setQuery("> ");
-        cc.setOpen(true);
-        cc.requestFocus();
         return;
       }
 
@@ -796,7 +780,7 @@ function EditorScreen() {
                 )}
               </>
             }
-            center={<CommandCenterBar />}
+            center={null}
             right={
               <>
                 <LayoutPresetDropdown />

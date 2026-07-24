@@ -561,12 +561,12 @@ const WS_PANELS = {
   CommandCenter: {
     jp: "Command Center",
     cat: {
-      ja: "探す、開く、動くを、一箇所から。",
-      en: "Search, open, and act from one place.",
+      ja: "横断検索を、一箇所から。",
+      en: "Search across your project in one place.",
     },
     desc: {
-      ja: "Scene・Codex・Snippet を字句検索し、Scene 本文には意味検索も重ねて、その場で目的地へジャンプする検索パネル。コマンドモードへ切り替えれば、設定やパネル操作も同じ入口から実行できる。",
-      en: "Search Scenes, Codex, and Snippets lexically, with semantic search layered over scene prose, then jump straight to the result. Switch to command mode to run settings and panel actions from the same entry point.",
+      ja: "Scene・Codex・Snippet を字句検索し、Scene 本文には意味検索も重ねて、その場で目的地へジャンプする専用検索パネル。",
+      en: "Search Scenes, Codex, and Snippets lexically, with semantic search layered over scene prose, then jump straight to the result from a dedicated search panel.",
     },
     img: { ja: pCommandCenter, en: pCommandCenterEn },
   },

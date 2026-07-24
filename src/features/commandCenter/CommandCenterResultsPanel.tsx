@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { Loader2, Search, Terminal } from "lucide-react";
+import { Loader2, Search } from "lucide-react";
 import { usePanelStore } from "./store/commandCenterStore";
 import { useResultsPanelStore } from "./store/resultsPanelStore";
 import { useCommandCenterSearch } from "./hooks/useCommandCenterSearch";
@@ -13,12 +13,9 @@ import { CommandCenterPreviewPopover } from "./CommandCenterPreviewPopover";
 import { CommandCenterResultItem } from "./CommandCenterResultItem";
 
 /**
- * 検索パネル (Dockview)。`usePanelStore` を独自に持ち、バー (`useBarStore`) とは
- * クエリ・結果が完全分離される。
- *
- * - クエリ + provider 実行は自前で `useCommandCenterSearch(usePanelStore, ...)`
- *   を起動する。バーが `useBarStore` で並行に駆動するが、store が別なので race しない。
- * - panel UI 状態 (フィルタ・hover・selected・focus signal) は `resultsPanelStore`。
+ * Dockview の全文検索パネル。
+ * 検索条件と provider 結果は `usePanelStore`、フィルタや focus signal などの
+ * 表示状態は `resultsPanelStore` が所有する。
  */
 
 export function CommandCenterResultsPanel() {
@@ -31,12 +28,10 @@ export function CommandCenterResultsPanel() {
   const focusRequest = useResultsPanelStore((s) => s.focusRequest);
   const query = usePanelStore((s) => s.query);
   const setQuery = usePanelStore((s) => s.setQuery);
-  const mode = usePanelStore((s) => s.mode);
   const parsedQuery = usePanelStore((s) => s.parsedQuery);
 
   useCommandCenterSearch(usePanelStore, {
     limit: PANEL_FETCH_LIMIT,
-    surface: "panel",
   });
 
   const sections = useFilteredSections();
@@ -54,11 +49,9 @@ export function CommandCenterResultsPanel() {
     previewCache.clear();
   }, [parsedQuery]);
 
-  const Icon = mode === "command" ? Terminal : Search;
-  const placeholder =
-    mode === "command"
-      ? t("commandCenter.placeholderCommand", { defaultValue: "コマンド…" })
-      : t("commandCenter.placeholderSearch", { defaultValue: "検索…" });
+  const placeholder = t("commandCenter.placeholderSearch", {
+    defaultValue: "検索…",
+  });
 
   return (
     <div className="flex h-full flex-col">
@@ -67,12 +60,7 @@ export function CommandCenterResultsPanel() {
         className="border-b border-border bg-background/40 px-3 py-2"
       >
         <div className="relative">
-          <Icon
-            className={cn(
-              "pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2",
-              mode === "command" ? "text-primary" : "text-muted-foreground",
-            )}
-          />
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             ref={inputRef}
             type="text"
@@ -96,7 +84,7 @@ export function CommandCenterResultsPanel() {
         {parsedQuery.trim().length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
             {t("commandCenter.panel.emptyHint", {
-              defaultValue: "キーワードを入力して検索 (> でコマンドモード)",
+              defaultValue: "キーワードを入力して検索",
             })}
           </div>
         ) : sections.length === 0 ? (

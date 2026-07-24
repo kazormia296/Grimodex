@@ -33,9 +33,7 @@ describe("CommandCenterResultsPanel", () => {
   it("is search-only and no longer advertises a command mode", () => {
     render(<CommandCenterResultsPanel />);
 
-    expect(
-      screen.getByRole("textbox", { name: "検索…" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "検索…" })).toBeInTheDocument();
     expect(screen.getByText("キーワードを入力して検索")).toBeInTheDocument();
     expect(screen.queryByText(/コマンドモード/)).not.toBeInTheDocument();
   });

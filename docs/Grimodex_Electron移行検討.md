@@ -129,8 +129,8 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
 
 ```
 ┌────────────── Electron main ──────────────┐
-│ window/chrome (frameless+transparent+     │
-│  vibrancy'under-window'=現行と一対一対応)   │
+│ window/chrome (frameless+opaque/resizable │
+│  + optional vibrancy)                     │
 │ dialog / fs / notification / shell /      │
 │  window-state / electron-updater          │
 │ chokidar (external_mount監視)              │
@@ -159,7 +159,7 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
   1. Wayland/X11 × fcitx5/ibus の日本語IME（素の Electron + contenteditable 縦書きで確認）← **唯一の NO-GO 候補**
   2. napi-rs で grimodex-core + rusqlite を .node 化して db_execute 相当を疎通
   3. ort 経路: napi-rs 温存 or onnxruntime-node で golden fixture（ruri/bge）一致確認
-  4. frameless + transparent + vibrancy の3OS見た目パリティ
+  4. frameless window + drag region + vibrancy の3OS見た目パリティ
 - **Phase 1 — 抽象層の仕上げ（現行 Tauri のまま出荷可能な純リファクタ）**
   - 直 import 19ファイルを `src/lib/tauri.ts` 系ラッパーへ吸収（listen/Window/dialog/notification/opener の抽象化）
   - typed なコマンド/イベント契約を1ファイルに集約（145コマンド+19イベント）
@@ -192,7 +192,7 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
 | ① Wayland IME        | **GO**         | GNOME Wayland + fcitx5 実機で x11 / wayland / wayland+ime の3モードすべて composition フルサイクル成功（Electron 43.1.0 / Chromium 150）。フラグなしネイティブWaylandでも動作 = 懸念だったフラグ運用すら不要。傍点 text-emphasis・縦書き button も素で描画                                                                                                                                                                                   |
 | ② napi-rs            | **GO**         | grimodex-core(path依存) + rusqlite(bundled) の .node 化成立。WAL+FTS5(trigram)+日本語MATCH 全通過。クリーンビルド57秒・約2.7MiB・glibc問題なし・Electronリビルド不要。本移行の要点: 同期 `#[napi]` は Node メインスレッドをブロック（重コマンドは AsyncTask/tokio_rt で async 化）、`State<T>` 118箇所は init+OnceCell か napi クラスで再設計、ort 系は glibc 問題隔離のため別モジュール/サイドカーに分離                                    |
 | ③ ONNX 純Node        | **条件付きGO** | onnxruntime-node **1.24.3 固定**（Rust ort 同梱の ONNX Runtime 1.24.2 とカーネル一致、cos=1.0）なら golden 比較 0.9944〜0.9983 で int8 ゲート帯域内・近傍順位 6/6 保存。**1.27 は int8 カーネル変更で 0.999 割れあり**。transformers.js は Unigram byte_fallback 未実装で希少字（例:「滲」）が UNK 化し cos 0.9568 まで劣化 → JS シム or Rust tokenizers 温存が必要。実効ペイロード約37.4MB（CUDA provider・他OS bin 除外後）、要 asarUnpack |
-| ④ ウィンドウクローム | **GO**         | frameless + transparent + `-webkit-app-region: drag` が mutter 上で成立                                                                                                                                                                                                                                                                                                                                                                      |
+| ④ ウィンドウクローム | **GO（後日修正）** | frameless + transparent + `-webkit-app-region: drag` が mutter 上で成立。ただし Electron の transparent window は native resize 非対応だったため、現行実装は opaque + `resizable:true` へ変更                                                                                                                                                                                                                                                 |
 
 **アーキテクチャへの帰結**: ③の2条件（ORTバージョン固定・byte_fallback シム）は**セマンティック経路を Rust のまま温存すれば両方消える**。②で温存経路が実証されたため、第一候補は「semantic も含めて Rust 温存（ort 系は別 .node またはサイドカーに隔離）」、純Node 経路は文書化されたフォールバックとする。
 

@@ -478,7 +478,6 @@ CREATE INDEX idx_event_chunks_model ON event_chunks(model_id);
 | toolWindowDefaults | `src/features/layout/toolWindowDefaults.ts:51` | `chronicle: "BL"`（初期スロット 左下） |
 | layoutPresets | `src/features/layout/layoutPresets.ts:152, 217, 326, 418, 509` | 各プリセットへ登録。新規パネルは curated プリセットへ自動補充（同 :522 コメント） |
 | keybindings（command） | `src/features/settings/keybindings.ts:83-87` | `id:"focusChronicle"` / `defaultBinding:"Mod+Alt+K"` / `panel:"chronicle"` |
-| commandProvider | `src/features/commandCenter/providers/commandProvider.ts` | keybindings の `panel` 付きコマンド（focusChronicle）をコマンドパレットへ surface |
 
 `Mod` は `matchesMod` で macOS=`⌘`、その他=`Ctrl` に解決される。
 

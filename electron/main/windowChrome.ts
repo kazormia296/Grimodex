@@ -50,6 +50,8 @@ export interface MainWindowChrome {
  * - win/linux: `frame:false`（decorations:false 相当）
  * - macOS: `titleBarStyle:"hidden"` + trafficLightPosition
  *   （現行 Tauri mac は操作系が空白のため、ネイティブ信号機を残す方が改善）
+ * - 全 OS: `transparent:false` + `resizable:true`
+ *   （Electron の transparent window は native resize 非対応）
  * - 保存済み bounds はディスプレイ交差判定を通った場合のみ復元
  *   （画面外はデフォルト位置へ。デフォルトサイズより優先 — §6.1）
  */
@@ -71,8 +73,9 @@ export function buildMainWindowOptions(input: {
   const options: BrowserWindowConstructorOptions = {
     ...MAIN_WINDOW_DEFAULTS,
     ...frameOptions,
-    transparent: true,
-    backgroundColor: "#00000000",
+    resizable: true,
+    transparent: false,
+    backgroundColor: "#000000",
     show: false,
   };
 
@@ -141,8 +144,9 @@ function sanePanelSize(value: unknown, fallback: number): number {
 }
 
 /**
- * §6.5: transparent / frame:false（全 OS — Tauri パネル窓の decorations:false
- * と同挙動）/ requested サイズ / label 別 window-state 復元（requested より優先）。
+ * §6.5: opaque + resizable / frame:false / requested サイズ /
+ * label 別 window-state 復元（requested より優先）。
+ * Electron の transparent window は native resize 非対応なので使用しない。
  * 親子関係は付けない（現行はフローティング独立窓）。
  */
 export function buildPanelWindowOptions(input: {
@@ -157,8 +161,9 @@ export function buildPanelWindowOptions(input: {
     height: sanePanelSize(requested.height, PANEL_WINDOW_DEFAULTS.height),
     title: typeof requested.title === "string" ? requested.title : "Grimodex",
     frame: false,
-    transparent: true,
-    backgroundColor: "#00000000",
+    resizable: true,
+    transparent: false,
+    backgroundColor: "#000000",
     show: false,
   };
 

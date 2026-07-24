@@ -909,7 +909,6 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 
 **検索:**
 - `Mod+Shift+F`: Command Center Results（検索結果パネルを開いてフォーカス）
-- `Mod+Shift+P`: Command Center バー（コマンドモード起動）
 
 **グローバル:**
 - `Mod+Alt+,`: Settings

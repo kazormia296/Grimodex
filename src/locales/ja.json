@@ -3508,14 +3508,11 @@
     "noActiveScene": "アクティブなシーンがありません"
   },
   "commandCenter": {
-    "placeholderSearch": "検索… (> でコマンドモード)",
-    "placeholderCommand": "コマンド…",
+    "placeholderSearch": "検索…",
     "sectionLexical": "字句検索",
     "sectionSemantic": "意味検索",
-    "sectionCommand": "コマンド",
     "loading": "検索中…",
     "noResults": "結果なし",
-    "emptyHint": "キーワードを入力 (> でコマンドモード)",
     "untitled": "(無題)",
     "filter": {
       "sourceLabel": "ソース",
@@ -3534,16 +3531,7 @@
       "off": "OFF"
     },
     "panel": {
-      "emptyHint": "キーワードを入力して検索 (> でコマンドモード)"
-    },
-    "sectionCommands": "コマンド",
-    "sectionQuickOpen": "ジャンプ",
-    "command": {
-      "openSettings": "設定を開く",
-      "export": "エクスポート",
-      "vivliostyle": "本の書き出し（Vivliostyle）",
-      "restartTour": "ツアー再開",
-      "togglePanel": "パネル切替: {{panel}}"
+      "emptyHint": "キーワードを入力して検索"
     }
   },
   "chatCommands": {

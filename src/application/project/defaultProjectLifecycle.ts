@@ -19,10 +19,7 @@ import { useMapStore } from "@/features/map/mapStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
-import {
-  useBarStore,
-  usePanelStore,
-} from "@/features/commandCenter/store/commandCenterStore";
+import { usePanelStore } from "@/features/commandCenter/store/commandCenterStore";
 import { useResultsPanelStore } from "@/features/commandCenter/store/resultsPanelStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
@@ -96,7 +93,6 @@ const participants: readonly ProjectLifecycleParticipant[] = [
     id: "scene-content",
     reset: () => useSceneContentStore.getState().resetForProject(),
   },
-  { id: "command-bar", reset: () => useBarStore.getState().reset() },
   { id: "command-panel", reset: () => usePanelStore.getState().reset() },
   { id: "results-panel", reset: () => useResultsPanelStore.getState().reset() },
   { id: "lint", reset: () => useLintStore.getState().clear() },
