@@ -21,11 +21,14 @@ import { UsageCategory } from "./categories/UsageCategory";
 import { LicenseCategory } from "./categories/LicenseCategory";
 import { AboutCategory } from "./categories/AboutCategory";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
   initialCategory?: SettingsCategory;
+  phoneWorkspace?: boolean;
 }
 
 function CategoryContent({
@@ -69,7 +72,9 @@ export function SettingsDialog({
   open,
   onClose,
   initialCategory = "project",
+  phoneWorkspace = false,
 }: SettingsDialogProps) {
+  const { t } = useTranslation();
   const [activeCategory, setActiveCategory] =
     useState<SettingsCategory>(initialCategory);
   const { loadAll, flushPending } = useSettingsStore();
@@ -105,25 +110,46 @@ export function SettingsDialog({
     <AnimatedOverlay
       open={open}
       onClose={handleClose}
-      className="flex h-[600px] w-[780px] min-h-[400px] min-w-[480px] max-h-[90vh] max-w-[90vw] resize overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+      testId="settings-dialog"
+      className={cn(
+        "flex min-h-0 min-w-0 overflow-hidden border border-border bg-background shadow-xl",
+        phoneWorkspace
+          ? "h-[var(--visual-viewport-height,100dvh)] w-screen max-h-none max-w-none resize-none rounded-none border-0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
+          : "h-[600px] w-[780px] min-h-[400px] min-w-[480px] max-h-[90vh] max-w-[90vw] resize rounded-lg",
+      )}
     >
       {/* Header */}
-      <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-2">
-          <h2 className="text-sm font-semibold text-foreground">Settings</h2>
+          <h2 className="text-sm font-semibold text-foreground">
+            {t("app.settingsLabel")}
+          </h2>
           <button
             type="button"
             onClick={handleClose}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            aria-label={t("common.close")}
+            className="flex min-h-11 min-w-11 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
         {/* Body: nav + content */}
-        <div className="flex flex-1 overflow-hidden">
-          <CategoryNav active={activeCategory} onChange={setActiveCategory} />
-          <div className="flex-1 overflow-y-auto">
+        <div
+          className={cn(
+            "flex min-h-0 min-w-0 flex-1 overflow-hidden",
+            phoneWorkspace && "flex-col",
+          )}
+        >
+          <CategoryNav
+            active={activeCategory}
+            onChange={setActiveCategory}
+            phoneWorkspace={phoneWorkspace}
+          />
+          <div
+            data-testid="settings-content"
+            className="@container min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
+          >
             <CategoryContent
               category={activeCategory}
               onOpenBackgroundStudio={() => {

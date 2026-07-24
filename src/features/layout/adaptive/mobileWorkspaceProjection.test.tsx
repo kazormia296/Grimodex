@@ -54,9 +54,7 @@ describe("phone editor projection", () => {
   });
 
   it("projects only the mounted editor without enabling Zen or mutating the saved layout", () => {
-    const { container, rerender } = render(
-      <LayoutShell editorOnly={false} />,
-    );
+    const { container, rerender } = render(<LayoutShell editorOnly={false} />);
     const editor = container.querySelector("[data-editor-area]");
     const centerTool = container.querySelector<HTMLElement>(
       '[data-center-segment="phone-tool"]',
@@ -83,5 +81,30 @@ describe("phone editor projection", () => {
     expect(container.querySelector("[data-editor-area]")).toBe(editor);
     expect(centerTool).not.toHaveStyle({ visibility: "hidden" });
     expect(left).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("marks zero-sized side regions dormant so slot splitters stay unmounted", () => {
+    const layout = buildDefaultLayoutState({ editorOpen: true });
+    for (const slot of layout.regions.left.slots.slice(0, 2)) {
+      slot.activePanel = slot.panels[0] ?? null;
+    }
+    useLayoutStore.setState({ layout });
+
+    const { container, rerender } = render(<LayoutShell editorOnly={false} />);
+    expect(
+      container.querySelector(
+        '[data-region-content="left"] [data-splitter-handle]',
+      ),
+    ).not.toBeNull();
+
+    act(() => rerender(<LayoutShell editorOnly />));
+
+    const leftRegion = container.querySelector('[data-region-content="left"]');
+    expect(leftRegion).toHaveAttribute("data-dormant", "true");
+    expect(leftRegion?.querySelector("[data-splitter-handle]")).toBeNull();
+
+    act(() => rerender(<LayoutShell editorOnly={false} />));
+    expect(leftRegion).not.toHaveAttribute("data-dormant");
+    expect(leftRegion?.querySelector("[data-splitter-handle]")).not.toBeNull();
   });
 });

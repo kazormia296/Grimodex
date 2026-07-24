@@ -16,8 +16,8 @@ describe("PhoneWorkspaceChrome", () => {
     useCompactNavigationStore.getState().reset();
   });
 
-  it("uses localized navigation, a real scene title, and a meaningful back stack", () => {
-    render(<PhoneWorkspaceChrome active sceneTitle="導入" />);
+  it("uses localized navigation, omits duplicate editor chrome, and keeps a meaningful back stack", () => {
+    const { container } = render(<PhoneWorkspaceChrome active />);
 
     expect(
       screen.getByRole("navigation", { name: "ワークスペース" }),
@@ -26,7 +26,7 @@ describe("PhoneWorkspaceChrome", () => {
       "aria-current",
       "page",
     );
-    expect(screen.getByText("導入")).toBeInTheDocument();
+    expect(container.querySelector("header")).toBeNull();
     expect(screen.queryByRole("button", { name: "戻る" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "シーン" }));
@@ -36,12 +36,13 @@ describe("PhoneWorkspaceChrome", () => {
       "page",
     );
     expect(screen.getByRole("heading", { name: "シーン" })).toBeInTheDocument();
+    expect(container.querySelector("header")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "戻る" }));
 
     expect(screen.getByRole("button", { name: "執筆" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(screen.getByText("導入")).toBeInTheDocument();
+    expect(container.querySelector("header")).toBeNull();
   });
 });

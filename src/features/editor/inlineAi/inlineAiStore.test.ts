@@ -27,6 +27,22 @@ describe("useInlineAiStore", () => {
     expect(useInlineAiStore.getState().insertPos).toBe(5);
   });
 
+  it("tracks and clears the split-pane owner", () => {
+    useInlineAiStore.getState().startGeneration({
+      commandId: "continue",
+      mode: "insert",
+      originalRange: null,
+      originalText: "",
+      insertPos: 5,
+      abortController: new AbortController(),
+      activeEditorGroup: 1,
+    });
+    expect(useInlineAiStore.getState().activeEditorGroup).toBe(1);
+
+    useInlineAiStore.getState().reset();
+    expect(useInlineAiStore.getState().activeEditorGroup).toBeNull();
+  });
+
   it("accumulates chunks during generation", () => {
     useInlineAiStore.getState().startGeneration({
       commandId: "continue",

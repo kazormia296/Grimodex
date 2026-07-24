@@ -2,6 +2,9 @@
 import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+
+const openEditorDocument = vi.hoisted(() => vi.fn());
 
 vi.mock("@/features/editor/Breadcrumb", () => ({
   Breadcrumb: () => <div data-breadcrumb />,
@@ -19,9 +22,13 @@ vi.mock("@/features/editor/SceneMetaChipRow", () => ({
   ),
 }));
 vi.mock("@/features/editor/EditorPane", () => ({
-  EditorPane: ({ groupIndex }: { groupIndex: number }) => (
-    <div data-editor-pane={groupIndex} />
-  ),
+  EditorPane: ({
+    groupIndex,
+    nodeId,
+  }: {
+    groupIndex: number;
+    nodeId: string;
+  }) => <div data-editor-pane={groupIndex} data-node-id={nodeId} />,
 }));
 vi.mock("@/features/editor/LinearEditorView", () => ({
   LinearEditorView: () => <div data-linear-editor />,
@@ -32,8 +39,11 @@ vi.mock("@/features/revision/RevisionHistoryModal", () => ({
 vi.mock("@/features/editor/AsciiSplash", () => ({
   AsciiSplash: () => <div data-ascii-splash />,
 }));
+vi.mock("./PhoneEmptySceneBootstrap", () => ({
+  PhoneEmptySceneBootstrap: () => <div data-phone-empty-bootstrap />,
+}));
 vi.mock("@/application/editor/openEditorDocument", () => ({
-  openEditorDocument: vi.fn(),
+  openEditorDocument,
 }));
 vi.mock("@/features/editor/editorNavigationPorts", () => ({
   defaultEditorNavigationPorts: {},
@@ -47,6 +57,8 @@ import { useTreeStore } from "./treeStore";
 
 describe("SceneEditor phone projection", () => {
   beforeEach(() => {
+    openEditorDocument.mockReset();
+    useInlineAiStore.getState().reset();
     useCursorSettingsStore.setState({ zenMode: false });
     useSceneStore.setState({ activeSceneId: "scene-2" } as never);
     useTreeStore.setState({
@@ -71,7 +83,7 @@ describe("SceneEditor phone projection", () => {
     } as never);
   });
 
-  it("keeps both split panes mounted while showing only the active pane on a phone", () => {
+  it("projects one active scene without tabs while preserving both desktop editors", () => {
     const { container, rerender } = render(
       <WorkspaceViewportProvider profile="phone">
         <SceneEditor />
@@ -84,10 +96,13 @@ describe("SceneEditor phone projection", () => {
 
     expect(container.querySelector("[data-breadcrumb]")).toBeNull();
     expect(primaryPane).not.toBeNull();
+    expect(primaryPane).toHaveAttribute("data-node-id", "scene-1");
     expect(secondaryPane).not.toBeNull();
+    expect(secondaryPane).toHaveAttribute("data-node-id", "scene-2");
     expect(primaryGroup).toHaveAttribute("aria-hidden", "true");
     expect(primaryGroup).toHaveAttribute("inert");
     expect(secondaryGroup).not.toHaveAttribute("aria-hidden");
+    expect(container.querySelector("[data-tab-bar]")).toBeNull();
 
     act(() =>
       rerender(
@@ -98,10 +113,230 @@ describe("SceneEditor phone projection", () => {
     );
 
     expect(container.querySelector('[data-editor-pane="0"]')).toBe(primaryPane);
+    expect(primaryPane).toHaveAttribute("data-node-id", "scene-1");
     expect(container.querySelector('[data-editor-pane="1"]')).toBe(
       secondaryPane,
     );
+    expect(container.querySelectorAll("[data-tab-bar]")).toHaveLength(2);
     expect(primaryGroup).not.toHaveAttribute("aria-hidden");
+    expect(primaryGroup).not.toHaveAttribute("inert");
+    expect(secondaryGroup).not.toHaveAttribute("aria-hidden");
     expect(container.querySelector("[data-breadcrumb]")).not.toBeNull();
+    expect(useTabStore.getState().activeGroupIndex).toBe(1);
+  });
+
+  it("ignores persisted linear mode and keeps a single editor on a phone", () => {
+    useTabStore.setState({ isLinearMode: true });
+    const { container } = render(
+      <WorkspaceViewportProvider profile="phone">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(container.querySelector("[data-linear-editor]")).toBeNull();
+    expect(container.querySelector("[data-tab-bar]")).toBeNull();
+    expect(container.querySelectorAll("[data-editor-pane]")).toHaveLength(2);
+    expect(container.querySelector('[data-editor-pane="1"]')).toHaveAttribute(
+      "data-node-id",
+      "scene-2",
+    );
+    expect(container.querySelector('[data-editor-group="0"]')).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+    expect(
+      container.querySelector('[data-editor-group="1"]'),
+    ).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("shows the group that already owns the selected phone document", () => {
+    useTabStore.setState({ activeGroupIndex: 0 });
+    const { container } = render(
+      <WorkspaceViewportProvider profile="phone">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(container.querySelector('[data-editor-pane="0"]')).toHaveAttribute(
+      "data-node-id",
+      "scene-1",
+    );
+    expect(container.querySelector('[data-editor-pane="1"]')).toHaveAttribute(
+      "data-node-id",
+      "scene-2",
+    );
+    expect(container.querySelector('[data-editor-group="0"]')).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+    expect(
+      container.querySelector('[data-editor-group="1"]'),
+    ).not.toHaveAttribute("aria-hidden");
+    expect(useTabStore.getState().activeGroupIndex).toBe(0);
+  });
+
+  it("keeps the inline-AI owner visible when a document is duplicated", () => {
+    useTabStore.setState({
+      tabs: [{ nodeId: "scene-2", contentType: "scene", isPreview: false }],
+      activeTabId: "scene-2",
+      secondaryTabs: [
+        { nodeId: "scene-2", contentType: "scene", isPreview: false },
+      ],
+      secondaryActiveTabId: "scene-2",
+      secondaryGroupOpen: true,
+      activeGroupIndex: 1,
+    } as never);
+    useInlineAiStore.setState({
+      status: "diffShown",
+      activeEditorGroup: 0,
+    });
+
+    const { container } = render(
+      <WorkspaceViewportProvider profile="phone">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(
+      container.querySelector('[data-editor-group="0"]'),
+    ).not.toHaveAttribute("aria-hidden");
+    expect(container.querySelector('[data-editor-group="1"]')).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+  });
+
+  it("restores desktop scene context without adding a mobile-only tab", () => {
+    useTreeStore.setState({ activeSceneId: "scene-1" } as never);
+    useTabStore.setState({
+      secondaryTabs: [],
+      secondaryActiveTabId: null,
+      secondaryGroupOpen: false,
+      activeGroupIndex: 0,
+    } as never);
+    const tabsBefore = useTabStore.getState().tabs;
+    const { rerender } = render(
+      <WorkspaceViewportProvider profile="wide">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    rerender(
+      <WorkspaceViewportProvider profile="phone">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+    act(() => useTreeStore.getState().setActiveScene("scene-2"));
+    expect(useTreeStore.getState().activeSceneId).toBe("scene-2");
+
+    rerender(
+      <WorkspaceViewportProvider profile="wide">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(useTreeStore.getState().activeSceneId).toBe("scene-1");
+    expect(useTabStore.getState().tabs).toBe(tabsBefore);
+    expect(openEditorDocument).not.toHaveBeenCalled();
+  });
+
+  it("keeps a mobile-only document mounted across resize until inline AI is resolved", () => {
+    useTreeStore.setState({ activeSceneId: "scene-1" } as never);
+    useTabStore.setState({
+      secondaryTabs: [],
+      secondaryActiveTabId: null,
+      secondaryGroupOpen: false,
+      activeGroupIndex: 0,
+    } as never);
+    const tabsBefore = useTabStore.getState().tabs;
+    const { container, rerender } = render(
+      <WorkspaceViewportProvider profile="wide">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+    rerender(
+      <WorkspaceViewportProvider profile="phone">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+    act(() => {
+      useTreeStore.getState().setActiveScene("scene-2");
+      useInlineAiStore.setState({
+        status: "diffShown",
+        activeEditorGroup: 0,
+      });
+    });
+
+    rerender(
+      <WorkspaceViewportProvider profile="wide">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+    expect(container.querySelector('[data-editor-pane="0"]')).toHaveAttribute(
+      "data-node-id",
+      "scene-2",
+    );
+    expect(container.querySelector("[data-tab-bar]")).toBeNull();
+    expect(useInlineAiStore.getState().status).toBe("diffShown");
+
+    act(() => useInlineAiStore.getState().reset());
+    expect(container.querySelector('[data-editor-pane="0"]')).toHaveAttribute(
+      "data-node-id",
+      "scene-1",
+    );
+    expect(container.querySelector("[data-tab-bar]")).not.toBeNull();
+    expect(useTabStore.getState().tabs).toBe(tabsBefore);
+    expect(openEditorDocument).not.toHaveBeenCalled();
+  });
+
+  it("adopts the phone document as the first desktop tab when no desktop projection exists", () => {
+    useTreeStore.setState({ activeSceneId: "scene-2" } as never);
+    useTabStore.setState({
+      tabs: [],
+      activeTabId: null,
+      secondaryTabs: [],
+      secondaryActiveTabId: null,
+      secondaryGroupOpen: false,
+      activeGroupIndex: 0,
+    } as never);
+    const { rerender } = render(
+      <WorkspaceViewportProvider profile="phone">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    rerender(
+      <WorkspaceViewportProvider profile="wide">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(openEditorDocument).toHaveBeenCalledOnce();
+    expect(openEditorDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { kind: "scene", documentId: "scene-2" },
+        mode: "preview",
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("never projects a folder id into the phone editor", () => {
+    useSceneStore.setState({ activeSceneId: "folder-1" } as never);
+    useTreeStore.setState({
+      activeSceneId: "folder-1",
+      nodes: [{ id: "folder-1", nodeType: "folder", title: "Folder" }],
+    } as never);
+
+    const { container } = render(
+      <WorkspaceViewportProvider profile="phone">
+        <SceneEditor />
+      </WorkspaceViewportProvider>,
+    );
+
+    expect(container.querySelector('[data-node-id="folder-1"]')).toBeNull();
+    expect(container.querySelector('[data-editor-group="1"]')).toContainElement(
+      container.querySelector("[data-phone-empty-bootstrap]"),
+    );
   });
 });

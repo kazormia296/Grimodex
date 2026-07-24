@@ -44,6 +44,8 @@ import {
   loadSettingsFromStore,
   saveFile,
 } from "./exportDataService";
+import { cn } from "@/lib/utils";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 // ────────────────────────────────────────────────────────────────────
 // 設定のロード/セーブ
@@ -68,6 +70,7 @@ interface Props {
 
 export function ExportDialog({ open, onClose, modeRequest }: Props) {
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const nodes = useTreeStore((s) => s.nodes);
   const expandedIds = useTreeStore((s) => s.expandedIds);
   const settingsStore = useSettingsStore();
@@ -343,17 +346,33 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
     <AnimatedOverlay
       open={open}
       onClose={onClose}
-      className="flex h-[780px] w-[1000px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+      testId="export-dialog"
+      className={cn(
+        "flex min-h-0 min-w-0 flex-col overflow-hidden border border-border bg-background shadow-xl",
+        phoneWorkspace
+          ? "h-[var(--visual-viewport-height,100dvh)] w-screen max-h-none max-w-none resize-none rounded-none border-0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
+          : "h-[780px] w-[1000px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize rounded-lg",
+      )}
     >
       {/* ヘッダー */}
-      <div className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2">
-        <h2 className="text-sm font-semibold text-foreground">
+      <div
+        className={cn(
+          "flex flex-shrink-0 items-center gap-3 border-b border-border",
+          phoneWorkspace ? "flex-wrap px-3 py-2" : "px-4 py-2",
+        )}
+      >
+        <h2 className="min-w-0 text-sm font-semibold text-foreground">
           {t("export.dialog.title")}
         </h2>
         {/* モード切替: テキスト / 開示 / タイムラプス動画 / 本の書き出し */}
         <div
           role="tablist"
-          className="inline-flex rounded-md border border-border p-0.5"
+          data-testid="export-mode-tabs"
+          className={cn(
+            "inline-flex rounded-md border border-border p-0.5",
+            phoneWorkspace &&
+              "order-3 w-full overscroll-x-contain overflow-x-auto",
+          )}
         >
           {(["text", "authorship", "timelapse", "book"] as const).map((m) => (
             <button
@@ -362,11 +381,13 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
               role="tab"
               aria-selected={mode === m}
               onClick={() => setMode(m)}
-              className={`rounded px-2.5 py-1 text-xs transition-colors ${
+              className={cn(
+                "shrink-0 rounded px-2.5 py-1 text-xs transition-colors",
+                phoneWorkspace && "min-h-10",
                 mode === m
                   ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent"
-              }`}
+                  : "text-muted-foreground hover:bg-accent",
+              )}
             >
               {t(
                 m === "text"
@@ -384,7 +405,11 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
         <button
           type="button"
           onClick={onClose}
-          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          aria-label={t("common.close")}
+          className={cn(
+            "flex items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            phoneWorkspace ? "min-h-11 min-w-11" : "p-1",
+          )}
         >
           <X className="h-4 w-4" />
         </button>
@@ -392,9 +417,23 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
 
       {/* ボディ: テキスト出力 / AI 使用開示 / 動画 */}
       {mode === "text" ? (
-        <div className="flex flex-1 overflow-hidden">
+        <div
+          data-testid="export-text-layout"
+          data-layout={phoneWorkspace ? "stacked" : "split"}
+          className={cn(
+            "flex min-h-0 min-w-0 flex-1 overflow-hidden",
+            phoneWorkspace && "flex-col",
+          )}
+        >
           {/* 左: シーン選択ツリー */}
-          <div className="w-1/2 min-w-[240px] overflow-hidden border-r border-border">
+          <div
+            className={cn(
+              "overflow-hidden border-border",
+              phoneWorkspace
+                ? "h-[34%] min-h-36 w-full min-w-0 shrink-0 border-b"
+                : "w-1/2 min-w-[240px] border-r",
+            )}
+          >
             <ExportTree
               nodes={nodes}
               state={treeState}
@@ -403,7 +442,12 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
           </div>
 
           {/* 右: エクスポート設定 */}
-          <div className="min-w-[280px] flex-1 overflow-hidden">
+          <div
+            className={cn(
+              "min-h-0 min-w-0 flex-1 overflow-hidden",
+              !phoneWorkspace && "min-w-[280px]",
+            )}
+          >
             <ExportSettingsPanel
               settings={exportSettings}
               onChange={handleSettingsChange}
@@ -425,9 +469,10 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
           onIncludePromptsChange={setIncludePrompts}
           includeFullSystemPrompt={includeFullSystemPrompt}
           onIncludeFullSystemPromptChange={setIncludeFullSystemPrompt}
+          phoneWorkspace={phoneWorkspace}
         />
       ) : mode === "timelapse" ? (
-        <div className="flex-1 overflow-auto">
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto">
           <TimelapseExportSection projectTitle={projectTitle} />
         </div>
       ) : (
@@ -438,7 +483,13 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
 
       {/* フッター (動画/本の書き出しは各セクションが自前のフッターを持つ) */}
       {mode !== "timelapse" && mode !== "book" && (
-        <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
+        <div
+          data-testid="export-dialog-footer"
+          className={cn(
+            "flex flex-shrink-0 items-center gap-3 border-t border-border",
+            phoneWorkspace ? "flex-wrap gap-2 px-3 py-2" : "px-4 py-2",
+          )}
+        >
           {mode === "text" ? (
             <>
               <span className="text-xs text-muted-foreground">
@@ -460,7 +511,7 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
               })}
             </span>
           )}
-          <div className="flex-1" />
+          <div className={cn("flex-1", phoneWorkspace && "hidden")} />
           {/* コピーボタン */}
           <button
             type="button"
@@ -470,7 +521,10 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
                 ? sceneCount === 0
                 : !authorshipReport || isLoadingAuthorship
             }
-            className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+            className={cn(
+              "flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40",
+              phoneWorkspace && "min-h-11 flex-1 justify-center",
+            )}
           >
             {isCopied ? (
               <>
@@ -493,7 +547,10 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
                 ? sceneCount === 0 || isExporting
                 : !authorshipReport || isLoadingAuthorship || isExporting
             }
-            className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+            className={cn(
+              "flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40",
+              phoneWorkspace && "min-h-11 flex-1 justify-center",
+            )}
           >
             <Download className="h-3.5 w-3.5" />
             {isExporting
@@ -515,6 +572,7 @@ function AuthorshipDisclosureSection({
   onIncludePromptsChange,
   includeFullSystemPrompt,
   onIncludeFullSystemPromptChange,
+  phoneWorkspace,
 }: {
   report: ProvenanceDisclosureReport | null;
   loading: boolean;
@@ -524,6 +582,7 @@ function AuthorshipDisclosureSection({
   onIncludePromptsChange: (value: boolean) => void;
   includeFullSystemPrompt: boolean;
   onIncludeFullSystemPromptChange: (value: boolean) => void;
+  phoneWorkspace: boolean;
 }) {
   const { t } = useTranslation();
   const total = report?.totals.total ?? 0;
@@ -532,10 +591,20 @@ function AuthorshipDisclosureSection({
   const breakdown = report?.breakdown;
 
   return (
-    <div className="flex-1 overflow-auto p-4">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
+    <div
+      className={cn(
+        "min-h-0 min-w-0 flex-1 overflow-auto",
+        phoneWorkspace ? "p-3" : "p-4",
+      )}
+    >
+      <div className="mx-auto flex min-w-0 max-w-3xl flex-col gap-4">
+        <div
+          className={cn(
+            "flex justify-between gap-3",
+            phoneWorkspace ? "flex-col items-stretch" : "items-center",
+          )}
+        >
+          <div className="min-w-0">
             <h3 className="text-sm font-semibold">
               {t("export.disclosure.title")}
             </h3>
@@ -543,7 +612,12 @@ function AuthorshipDisclosureSection({
               {t("export.disclosure.subtitle")}
             </p>
           </div>
-          <div className="flex flex-col items-end gap-1.5 text-xs text-muted-foreground">
+          <div
+            className={cn(
+              "flex min-w-0 flex-col gap-1.5 text-xs text-muted-foreground",
+              phoneWorkspace ? "items-start" : "items-end",
+            )}
+          >
             <label className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -595,7 +669,12 @@ function AuthorshipDisclosureSection({
           </p>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-3">
+            <div
+              className={cn(
+                "grid gap-3",
+                phoneWorkspace ? "grid-cols-1" : "grid-cols-3",
+              )}
+            >
               <Metric
                 label={t("export.disclosure.metricTotal")}
                 value={total.toLocaleString()}

@@ -108,4 +108,38 @@ describe("RegionContent flex-grow", () => {
       expect(surface.classList.contains("gx-panel")).toBe(true);
     }
   });
+
+  it("keeps panel hosts mounted but removes slot splitters while dormant", () => {
+    setLeftSlots([
+      {
+        id: "l0",
+        sizeRatio: 0.5,
+        panels: ["scenes"],
+        activePanel: "scenes",
+      },
+      { id: "l1", sizeRatio: 0.5, panels: ["codex"], activePanel: "codex" },
+    ]);
+
+    const { container, rerender } = render(
+      <RegionContent region="left" orientation="vertical" dormant />,
+    );
+    const region = container.querySelector('[data-region-content="left"]');
+    const scenes = container.querySelector(
+      '[data-mock-animated-slot-panel="scenes"]',
+    );
+
+    expect(region).toHaveAttribute("data-dormant", "true");
+    expect(container.querySelector("[data-splitter-handle]")).toBeNull();
+    expect(container.querySelector("[data-drop-between]")).toBeNull();
+    expect(container.querySelector("[data-drop-new-slot]")).toBeNull();
+
+    rerender(
+      <RegionContent region="left" orientation="vertical" dormant={false} />,
+    );
+
+    expect(
+      container.querySelector('[data-mock-animated-slot-panel="scenes"]'),
+    ).toBe(scenes);
+    expect(container.querySelector("[data-splitter-handle]")).not.toBeNull();
+  });
 });

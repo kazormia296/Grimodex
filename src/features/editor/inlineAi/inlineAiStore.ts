@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Editor } from "@tiptap/core";
 import type { InlineAiState, InlineAiMode } from "./inlineAiTypes";
+import type { GroupIndex } from "../tabStore";
 
 interface InlineAiStoreState extends InlineAiState {
   /**
@@ -16,6 +17,8 @@ interface InlineAiStoreState extends InlineAiState {
    * 永続化対象外。
    */
   activeEditor: Editor | null;
+  /** Split-pane owner of activeEditor. Null for linear/legacy editors. */
+  activeEditorGroup: GroupIndex | null;
   /**
    * ペンディング中 (生成中/diff表示中) に離脱系操作がブロックされたとき増える
    * ワンショットの注意喚起カウンタ。InlineAIToolbar が購読して shake する。
@@ -33,6 +36,7 @@ interface InlineAiStoreState extends InlineAiState {
     abortController: AbortController;
     /** 生成を所有するエディタ。省略時は null = ゲート無効 (旧挙動)。 */
     activeEditor?: Editor | null;
+    activeEditorGroup?: GroupIndex | null;
   }) => void;
   appendChunk: (chunk: string) => void;
   finishGeneration: (model: string) => void;
@@ -64,6 +68,7 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
   ...INITIAL_STATE,
   abortController: null,
   activeEditor: null,
+  activeEditorGroup: null,
   attentionNonce: 0,
 
   requestAttention() {
@@ -78,6 +83,7 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
     insertPos,
     abortController,
     activeEditor = null,
+    activeEditorGroup = null,
   }) {
     set({
       status: "generating",
@@ -93,6 +99,7 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
       stagingId: null,
       abortController,
       activeEditor,
+      activeEditorGroup,
     });
   },
 
@@ -123,6 +130,11 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
   reset() {
     const ac = get().abortController;
     ac?.abort();
-    set({ ...INITIAL_STATE, abortController: null, activeEditor: null });
+    set({
+      ...INITIAL_STATE,
+      abortController: null,
+      activeEditor: null,
+      activeEditorGroup: null,
+    });
   },
 }));

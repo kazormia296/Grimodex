@@ -14,6 +14,7 @@ import { getProject } from "@/features/project/api";
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
+import type { GroupIndex } from "@/features/editor/tabStore";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -23,7 +24,10 @@ const DEFAULT_MODEL = "claude-sonnet-4-6";
  * - Streaming text generation + chunk insertion (history-less)
  * - Accept / Reject / Retry / Abort
  */
-export function useInlineAiDiff(editor: Editor | null) {
+export function useInlineAiDiff(
+  editor: Editor | null,
+  activeEditorGroup: GroupIndex | null = null,
+) {
   const lastCallRef = useRef<{
     command: InlineAiCommand;
     context: InlineAiContext;
@@ -100,6 +104,7 @@ export function useInlineAiDiff(editor: Editor | null) {
         insertPos,
         abortController,
         activeEditor: editor,
+        activeEditorGroup,
       });
 
       try {
@@ -168,7 +173,7 @@ export function useInlineAiDiff(editor: Editor | null) {
         useInlineAiStore.getState().setError(msg);
       }
     },
-    [editor, dispatchDiffUpdate, insertChunkHistoryLess],
+    [activeEditorGroup, editor, dispatchDiffUpdate, insertChunkHistoryLess],
   );
 
   const accept = useCallback(() => {
@@ -329,6 +334,7 @@ export function useInlineAiDiff(editor: Editor | null) {
         insertPos,
         abortController: new AbortController(),
         activeEditor: editor,
+        activeEditorGroup,
       });
       if (opts.stagingId) {
         useInlineAiStore.setState({ stagingId: opts.stagingId });
@@ -351,7 +357,7 @@ export function useInlineAiDiff(editor: Editor | null) {
       useInlineAiStore.getState().finishGeneration(opts.model ?? DEFAULT_MODEL);
       dispatchDiffUpdate(editor);
     },
-    [editor, dispatchDiffUpdate, insertChunkHistoryLess],
+    [activeEditorGroup, editor, dispatchDiffUpdate, insertChunkHistoryLess],
   );
 
   const getActiveStagingId = useCallback(

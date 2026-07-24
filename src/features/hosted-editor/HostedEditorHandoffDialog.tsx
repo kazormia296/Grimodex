@@ -10,6 +10,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 interface HostedEditorHandoffDialogProps {
   open: boolean;
   onClose: () => void;
@@ -23,6 +25,7 @@ function HandoffDialogContent({
   downloadHandoff,
 }: HandoffDialogContentProps) {
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadedFilename, setDownloadedFilename] = useState<string | null>(
     null,
@@ -58,7 +61,14 @@ function HandoffDialogContent({
   }, [downloadHandoff, isDownloading]);
 
   return (
-    <DialogContent showClose={false} className="max-w-xl">
+    <DialogContent
+      showClose={false}
+      className={cn(
+        "max-w-xl",
+        phoneWorkspace &&
+          "h-[var(--visual-viewport-height,100dvh)] w-screen max-h-none max-w-none content-start overflow-y-auto rounded-none border-0 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]",
+      )}
+    >
       <DialogHeader>
         <DialogTitle>{t("hostedEditor.handoff.title")}</DialogTitle>
         <DialogDescription className="space-y-1">
@@ -97,7 +107,10 @@ function HandoffDialogContent({
               </span>
             </div>
 
-            <Button asChild className="w-full">
+            <Button
+              asChild
+              className={cn("w-full", phoneWorkspace && "min-h-11")}
+            >
               <a href="grimodex://handoff">
                 <ExternalLink aria-hidden="true" />
                 {t("hostedEditor.handoff.openGrimodex")}
@@ -111,8 +124,15 @@ function HandoffDialogContent({
         )}
       </div>
 
-      <DialogFooter className="flex-wrap">
-        <Button type="button" variant="ghost" onClick={onClose}>
+      <DialogFooter
+        className={cn("flex-wrap", phoneWorkspace && "grid grid-cols-1")}
+      >
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onClose}
+          className={cn(phoneWorkspace && "min-h-11 w-full")}
+        >
           {t("common.close")}
         </Button>
         <Button
@@ -121,6 +141,7 @@ function HandoffDialogContent({
           disabled={isDownloading}
           aria-busy={isDownloading}
           onClick={() => void handleDownload()}
+          className={cn(phoneWorkspace && "min-h-11 w-full")}
         >
           <Download aria-hidden="true" />
           {isDownloading

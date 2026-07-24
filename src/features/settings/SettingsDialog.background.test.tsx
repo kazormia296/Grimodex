@@ -44,12 +44,28 @@ vi.mock("@/components/ui/animated-overlay", () => ({
   AnimatedOverlay: ({
     open,
     children,
+    className,
+    testId,
   }: {
     open: boolean;
     children: React.ReactNode;
-  }) => (open ? <div>{children}</div> : null),
+    className?: string;
+    testId?: string;
+  }) =>
+    open ? (
+      <div className={className} data-testid={testId}>
+        {children}
+      </div>
+    ) : null,
 }));
-vi.mock("./CategoryNav", () => ({ CategoryNav: () => null }));
+vi.mock("./CategoryNav", () => ({
+  CategoryNav: ({ phoneWorkspace }: { phoneWorkspace?: boolean }) => (
+    <nav
+      data-testid="settings-category-nav"
+      data-phone-workspace={phoneWorkspace ? "true" : "false"}
+    />
+  ),
+}));
 vi.mock("./categories/DisplayCategory", () => ({
   DisplayCategory: ({
     onOpenBackgroundStudio,
@@ -82,5 +98,44 @@ describe("SettingsDialog Background Studio handoff", () => {
       expect(onClose).toHaveBeenCalledOnce();
       expect(useBackgroundStudioStore.getState().open).toBe(true);
     });
+  });
+
+  it("uses a full-viewport, single-column shell for phone settings", () => {
+    render(
+      <SettingsDialog
+        open
+        onClose={vi.fn()}
+        initialCategory="display"
+        phoneWorkspace
+      />,
+    );
+
+    const dialog = screen.getByTestId("settings-dialog");
+    expect(dialog.className).toContain(
+      "h-[var(--visual-viewport-height,100dvh)]",
+    );
+    expect(dialog.className).toContain("w-screen");
+    expect(dialog.className).toContain("min-w-0");
+    expect(dialog.className).not.toContain("min-w-[480px]");
+    expect(dialog.className).toContain("pt-[env(safe-area-inset-top)]");
+    expect(dialog.className).toContain("pr-[env(safe-area-inset-right)]");
+    expect(dialog.className).toContain("pb-[env(safe-area-inset-bottom)]");
+    expect(dialog.className).toContain("pl-[env(safe-area-inset-left)]");
+    expect(screen.getByTestId("settings-category-nav")).toHaveAttribute(
+      "data-phone-workspace",
+      "true",
+    );
+    expect(screen.getByTestId("settings-content").className).toContain(
+      "overflow-x-hidden",
+    );
+  });
+
+  it("keeps the desktop settings bounds without phone safe-area padding", () => {
+    render(<SettingsDialog open onClose={vi.fn()} initialCategory="display" />);
+
+    const dialog = screen.getByTestId("settings-dialog");
+    expect(dialog.className).toContain("h-[600px]");
+    expect(dialog.className).toContain("min-w-[480px]");
+    expect(dialog.className).not.toContain("safe-area-inset");
   });
 });

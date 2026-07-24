@@ -3,7 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@/lib/tauri";
 import { useLayoutStore } from "./layoutStore";
-import { buildDefaultLayoutState } from "./layoutStateUtils";
+import {
+  buildDefaultLayoutState,
+  cloneLayoutState,
+  validateLayoutState,
+} from "./layoutStateUtils";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
@@ -32,6 +36,7 @@ describe("mobile layout persistence", () => {
       builtinPresetOverrides: {},
       initialized: false,
       hiddenStripePanels: new Set(),
+      maximizedPanelId: null,
     });
   });
 
@@ -73,5 +78,49 @@ describe("mobile layout persistence", () => {
       ([command]) => command === "save_global_settings",
     );
     expect(saveCalls).toHaveLength(0);
+  });
+
+  it("clamps the desktop baseline when a phone widens to compact", async () => {
+    mockInvoke.mockResolvedValue({
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      showLauncherOnStartup: false,
+      layoutPresets: [],
+    });
+
+    await useLayoutStore.getState().initializeLayout();
+    const phoneBaseline = {
+      layout: cloneLayoutState(useLayoutStore.getState().layout),
+      activePresetId: useLayoutStore.getState().activePresetId,
+      hiddenStripePanels: new Set(useLayoutStore.getState().hiddenStripePanels),
+      maximizedPanelId: "editor" as const,
+    };
+    const compactViewport = { width: 720, height: 844 };
+
+    expect(
+      validateLayoutState(phoneBaseline.layout, {
+        viewport: compactViewport,
+      }).valid,
+    ).toBe(false);
+
+    vi.stubGlobal("innerWidth", compactViewport.width);
+    vi.stubGlobal("innerHeight", compactViewport.height);
+    useLayoutStore.getState().restoreViewportBaseline(phoneBaseline);
+
+    const restored = useLayoutStore.getState();
+    expect(
+      validateLayoutState(restored.layout, {
+        viewport: compactViewport,
+      }).valid,
+    ).toBe(true);
+    expect(restored.layout.regions.left.size).toBeLessThan(
+      phoneBaseline.layout.regions.left.size,
+    );
+    expect(restored.layout.regions.right.size).toBeLessThan(
+      phoneBaseline.layout.regions.right.size,
+    );
+    expect(restored.activePresetId).toBe(phoneBaseline.activePresetId);
+    expect(restored.maximizedPanelId).toBe("editor");
   });
 });

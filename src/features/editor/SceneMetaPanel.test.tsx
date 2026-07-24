@@ -40,6 +40,20 @@ describe("SceneMetaPanel (B-10)", () => {
       />,
     );
     expect(screen.getByTestId("scene-meta-panel")).toBeTruthy();
+    expect(screen.getByTestId("scene-meta-panel-close")).toBeTruthy();
+  });
+
+  it("suppresses its desktop close control inside the phone sheet", () => {
+    render(
+      <SceneMetaPanel
+        sceneId="scene-1"
+        editor={mockEditor}
+        setMentionPopup={() => {}}
+        embeddedInPhoneSheet
+      />,
+    );
+
+    expect(screen.queryByTestId("scene-meta-panel-close")).toBeNull();
   });
 
   it("renders SynopsisHeader with correct sceneId", () => {

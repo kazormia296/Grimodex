@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
+import type { ToolWindowPanelId } from "./layoutTypes";
 
 const patchGlobalSettings = vi.hoisted(() => vi.fn());
 const recordLayoutSnapshot = vi.hoisted(() => vi.fn());
@@ -22,7 +23,7 @@ function snapshot() {
     activePresetId: "builtin:default",
     customPresets: [],
     builtinPresetOverrides: {},
-    hiddenStripePanels: new Set(),
+    hiddenStripePanels: new Set<ToolWindowPanelId>(),
   };
 }
 

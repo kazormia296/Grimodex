@@ -102,8 +102,10 @@ import {
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
+import { resolvePhoneEditorGroup } from "@/features/editor/phoneEditorGroup";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { useRequestedEditorFocus } from "@/features/editor/useRequestedEditorFocus";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
@@ -122,6 +124,7 @@ import { useLinter } from "@/features/lint/useLinter";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
 import { findChunkInDoc } from "@/features/semantic-search/findChunkInDoc";
+import { usePendingSemanticJump } from "@/features/semantic-search/usePendingSemanticJump";
 import { toast } from "sonner";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
@@ -140,10 +143,14 @@ import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSyn
 import { EditorPaneRibbon } from "@/features/editor/EditorPaneRibbon";
 import { EditorPaneViewport } from "@/features/editor/EditorPaneViewport";
 import { EditorPaneStatusBar } from "@/features/editor/EditorPaneStatusBar";
+import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
+import { PhoneSceneMetaSheet } from "@/features/editor/PhoneSceneMetaSheet";
 import {
   EditorPaneOverlays,
   type AbInlineState,
 } from "@/features/editor/EditorPaneOverlays";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 
 /** Read the vertical-mode flag at call time — scroll save/restore runs inside
  *  async effects and editor callbacks where a captured value could be stale. */
@@ -221,6 +228,33 @@ export function EditorPane({
     (s) => s.reloadNonce[nodeId] ?? 0,
   );
   const [isSceneContentLoading, setIsSceneContentLoading] = useState(true);
+  const workspaceViewportProfile = useWorkspaceViewportProfile();
+  const phoneWorkspace = workspaceViewportProfile === "phone";
+  const inlineAiProjectionStatus = useInlineAiStore((state) => state.status);
+  const inlineAiProjectionOwnerGroup = useInlineAiStore(
+    (state) => state.activeEditorGroup,
+  );
+  const inlineAiProjectionPending =
+    inlineAiProjectionStatus === "generating" ||
+    inlineAiProjectionStatus === "diffShown" ||
+    inlineAiProjectionStatus === "error";
+  const activeGroupIndex = useTabStore((state) => state.activeGroupIndex);
+  const primaryActiveTabId = useTabStore((state) => state.activeTabId);
+  const secondaryActiveTabId = useTabStore(
+    (state) => state.secondaryActiveTabId,
+  );
+  const secondaryGroupOpen = useTabStore((state) => state.secondaryGroupOpen);
+  const treeActiveSceneId = useTreeStore((state) => state.activeSceneId);
+  const phoneEditorOwnerGroup = resolvePhoneEditorGroup(
+    {
+      activeTabId: primaryActiveTabId,
+      secondaryActiveTabId,
+      secondaryGroupOpen,
+      activeGroupIndex,
+    },
+    treeActiveSceneId,
+    inlineAiProjectionPending ? inlineAiProjectionOwnerGroup : null,
+  );
 
   const activeNode = useTreeStore((s) =>
     isEntryMode ? null : s.nodes.find((n) => n.id === nodeId),
@@ -948,6 +982,13 @@ export function EditorPane({
   // Linter — scene-only, primary group only.
   const lintSceneId = groupIndex === 0 && !isEntryMode ? nodeId : null;
   useLinter(mountedEditor, lintSceneId);
+  const navigationSceneId =
+    !isEntryMode &&
+    (phoneWorkspace
+      ? treeActiveSceneId === nodeId && phoneEditorOwnerGroup === groupIndex
+      : groupIndex === 0)
+      ? nodeId
+      : null;
 
   // ゴミ箱キャプチャ。Snippet / Chronicle event タブは origin = null で skip、
   // Scene/Codex は対応する種別で記録する。
@@ -962,18 +1003,15 @@ export function EditorPane({
   // 同シーン内の伏線ジャンプ要求を処理する。
   // クロスシーンは switchScene の consumeJump に任せる（タイミング統一のため）。
   useEffect(() => {
-    if (!editor || !lintSceneId) return;
-    const unsubscribe = useForeshadowNavStore.subscribe((state, prev) => {
-      const jump = state.pendingJump;
-      if (!jump || jump === prev.pendingJump) return;
-      if (jump.sceneId !== lintSceneId) return;
-      // シーンが未ロードの間は無視（switchScene が後で消費する）。
-      if (prevSceneIdRef.current !== lintSceneId) return;
+    if (!editor || !navigationSceneId || isSceneContentLoading) return;
+    const consumePendingJump = () => {
+      const jump = useForeshadowNavStore.getState().pendingJump;
+      if (!jump || jump.sceneId !== navigationSceneId) return;
+      if (prevSceneIdRef.current !== navigationSceneId) return;
       const consumed = useForeshadowNavStore
         .getState()
-        .consumeJump(lintSceneId);
+        .consumeJump(navigationSceneId);
       if (!consumed) return;
-      // saved cursor の遅延復元が残っているとフォーカス時に上書きされるためクリア。
       pendingCursorRestoreRef.current = null;
       const docSize = editor.state.doc.content.size;
       if (consumed.toPos > docSize) {
@@ -986,26 +1024,24 @@ export function EditorPane({
         .setTextSelection({ from: consumed.fromPos, to: consumed.toPos })
         .scrollIntoView()
         .run();
-    });
-    return unsubscribe;
-  }, [editor, lintSceneId]);
-
-  // 同シーン内のセマンティック検索結果ジャンプ要求を処理する (Step 9 TODO)。
-  // 構造は foreshadow と同じ。chunk_text を findChunkInDoc で PM position に
-  // 変換して setTextSelection + scrollIntoView。
-  useEffect(() => {
-    if (!editor || !lintSceneId) return;
-    const unsubscribe = useSemanticNavStore.subscribe((state, prev) => {
+    };
+    consumePendingJump();
+    const unsubscribe = useForeshadowNavStore.subscribe((state, prev) => {
       const jump = state.pendingJump;
       if (!jump || jump === prev.pendingJump) return;
-      if (jump.sceneId !== lintSceneId) return;
-      if (prevSceneIdRef.current !== lintSceneId) return;
-      const consumed = useSemanticNavStore.getState().consumeJump(lintSceneId);
-      if (!consumed) return;
+      consumePendingJump();
+    });
+    return unsubscribe;
+  }, [editor, isSceneContentLoading, navigationSceneId]);
+
+  // 同シーン内のセマンティック検索結果ジャンプ要求を処理する。phone では
+  // hidden 済みの secondary が owner になった時も、既存 pending を拾う。
+  const applySemanticJump = useCallback(
+    (consumed: { chunkText: string }) => {
+      if (!editor) return;
       pendingCursorRestoreRef.current = null;
       const range = findChunkInDoc(editor.state.doc, consumed.chunkText);
       if (!range) {
-        // 一致無しならスクロールだけ (シーン先頭に戻すのは過剰なのでフォーカスのみ)。
         editor.chain().focus().run();
         return;
       }
@@ -1018,9 +1054,30 @@ export function EditorPane({
         .setTextSelection({ from, to })
         .scrollIntoView()
         .run();
-    });
-    return unsubscribe;
-  }, [editor, lintSceneId]);
+    },
+    [editor],
+  );
+  usePendingSemanticJump({
+    sceneId: navigationSceneId,
+    ready:
+      Boolean(editor) &&
+      !isSceneContentLoading &&
+      prevSceneIdRef.current === navigationSceneId,
+    applyJump: applySemanticJump,
+  });
+
+  const focusLoadedEditor = useCallback(() => {
+    editorRef.current?.chain().focus().run();
+  }, []);
+  useRequestedEditorFocus({
+    groupIndex,
+    ready:
+      !isSceneContentLoading &&
+      prevSceneIdRef.current === nodeId &&
+      (!phoneWorkspace ||
+        (treeActiveSceneId === nodeId && phoneEditorOwnerGroup === groupIndex)),
+    focus: focusLoadedEditor,
+  });
 
   // Scroll editor to annotation mark when panel item is focused
   useEffect(() => {
@@ -1062,7 +1119,6 @@ export function EditorPane({
     setPaletteOpen,
   });
 
-  const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
   const isActiveGroup = groupIndex === activeGroupIndex;
 
   useInsertHighlight(editor);
@@ -1107,13 +1163,50 @@ export function EditorPane({
   const focusModeHideBeats = editorSettings.focusModeHideBeats;
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
+  const activeMobileSurface = useCompactNavigationStore(
+    (state) => state.activeSurface,
+  );
+  const [phoneMetaPanelOpen, setPhoneMetaPanelOpen] = useState(false);
+  const phoneMetaCloseRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    setPhoneMetaPanelOpen(false);
+  }, [nodeId, phoneWorkspace]);
+  useEffect(() => {
+    if (activeMobileSurface !== "editor") setPhoneMetaPanelOpen(false);
+  }, [activeMobileSurface]);
+  useEffect(() => {
+    if (!phoneWorkspace || !phoneMetaPanelOpen) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const focusFrame = requestAnimationFrame(() =>
+      phoneMetaCloseRef.current?.focus(),
+    );
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      if (
+        previouslyFocused?.isConnected &&
+        useCompactNavigationStore.getState().activeSurface === "editor"
+      ) {
+        requestAnimationFrame(() => previouslyFocused.focus());
+      }
+    };
+  }, [phoneMetaPanelOpen, phoneWorkspace]);
   // フォーカスモードでも詳細ペインは隠さない（本文の減光は FocusModePlugin 側）
-  const isPanelVisible = sceneMetaPanelOpen && !isEntryMode && !zenMode;
+  const isPanelVisible =
+    (phoneWorkspace ? phoneMetaPanelOpen : sceneMetaPanelOpen) &&
+    !isEntryMode &&
+    !zenMode;
   const handleTogglePanel = useCallback(() => {
+    if (phoneWorkspace) {
+      setPhoneMetaPanelOpen((open) => !open);
+      return;
+    }
     useSettingsStore
       .getState()
       .set("editor.sceneMetaPanelOpen", String(!sceneMetaPanelOpen));
-  }, [sceneMetaPanelOpen]);
+  }, [phoneWorkspace, sceneMetaPanelOpen]);
   const handlePanelLayoutChanged = useCallback(
     (layout: Record<string, number>) => {
       const w = layout["scene-meta"];
@@ -1192,7 +1285,7 @@ export function EditorPane({
       };
     }
   }, [verticalMode]);
-  const inlineAiDiff = useInlineAiDiff(dbNativeEditor);
+  const inlineAiDiff = useInlineAiDiff(dbNativeEditor, groupIndex);
   const { generate, retry, showProvidedText } = inlineAiDiff;
   // 分割ビューで両ペインが同じツールバーを二重表示しないよう、pending セッションを
   // 所有するペイン (activeEditor === このペインの editor) でだけ Toolbar を出す。
@@ -1585,6 +1678,14 @@ export function EditorPane({
                 scrollOffset: saved.scrollOffset,
               };
             }
+          } else if (focusNow && !cancelled) {
+            // A freshly created scene has no saved cursor state yet. Mobile
+            // bootstrap/navigation still requested explicit editing focus, so
+            // focus the loaded editor instead of leaving the bottom navigation
+            // (or the temporary preparing state) as the keyboard target.
+            requestAnimationFrame(() => {
+              if (!cancelled) editorRef.current?.chain().focus().run();
+            });
           }
         }
       } catch (err) {
@@ -1877,99 +1978,120 @@ export function EditorPane({
     <div
       ref={setPaneRef}
       data-droptarget-id={editorDropId}
-      className="flex flex-1 flex-col overflow-hidden data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
+      className="relative flex flex-1 flex-col overflow-hidden data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
     >
-      <Toolbar
-        editor={editor}
-        onFindReplace={() => {
-          setFindOpen(true);
-          setFindShowReplace(true);
-        }}
-        actionsRef={toolbarActionsRef}
-        panelOpen={sceneMetaPanelOpen}
-        onTogglePanel={handleTogglePanel}
-        sceneId={isEntryMode ? undefined : nodeId}
-        nodeType={activeNode?.nodeType}
-        reorderOpen={paragraphReorder.open}
-        onToggleReorder={
-          dbNativeEditor ? paragraphReorder.toggleOverlay : undefined
-        }
-        reorderDisabled={!dbNativeEditor || readOnly}
-      />
-      <EditorPaneRibbon
-        nodeId={nodeId}
-        isEntryMode={isEntryMode}
-        isFileBacked={isFileBacked}
-        isNote={isNote}
-        isCodexMode={isCodexMode}
-        isSnippetMode={isSnippetMode}
-        isChronicleEventMode={isChronicleEventMode}
-        activeCodexEntry={activeCodexEntry}
-        activeSnippetEntry={activeSnippetEntry}
-        loadedPhaseLabel={loadedPhaseLabel}
-        chronicleEventTitle={chronicleEventTitle}
-      />
-      <EditorPaneViewport
-        isPanelVisible={isPanelVisible}
-        sceneMetaPanelWidth={sceneMetaPanelWidth}
-        onPanelLayoutChanged={handlePanelLayoutChanged}
-        contentAreaProps={editorContentAreaProps}
-        sceneId={nodeId}
-        editor={editor}
-        setMentionPopup={setMentionPopupState}
-        beatDragDrop={beatDragDrop}
-      />
-      <EditorPaneStatusBar
-        activeStatus={activeStatus}
-        editor={editor}
-        getStatsSceneId={getStatsSceneId}
-        isEntryMode={isEntryMode}
-        isSceneContentLoading={isSceneContentLoading}
-        showAttribution={showAttribution}
-        aiRatio={aiRatio}
-        isSaving={isSaving}
-        isDirty={isDirty}
-        onStatusChange={handleStatusChange}
-        onOpenAttribution={() => togglePanel("attribution")}
-        onOpenRevisionHistory={handleOpenRevisionHistory}
-      />
-      <EditorPaneOverlays
-        editor={editor}
-        paletteOpen={paletteOpen}
-        palettePreselect={palettePreselect}
-        onClosePalette={() => setPaletteOpen(false)}
-        onSubmitPalette={handlePaletteSubmit}
-        onSubmitPaletteAb={handlePaletteSubmitAb}
-        abInline={abInline}
-        onCloseAb={() => setAbInline(null)}
-        onAdoptAb={handleAdoptAb}
-        onAccept={acceptWithStaging}
-        onReject={rejectWithStaging}
-        onRetry={retry}
-        anchorRef={editorContainerRef}
-        isInlineAiOwner={isInlineAiOwner}
-        mentionPopup={mentionPopup}
-        mentionIndex={mentionIndex}
-        onMentionSelect={handleMentionSelect}
-        onMentionIndexChange={setMentionIndex}
-        onMentionSelectWithRole={handleMentionSelectWithRole}
-        paragraphReorder={{
-          open: paragraphReorder.open,
-          units: paragraphReorder.units,
-          order: paragraphReorder.order,
-          onOrderChange: paragraphReorder.setOrder,
-          granularity: paragraphReorder.granularity,
-          onGranularityChange: paragraphReorder.setGranularity,
-          loading: paragraphReorder.loading,
-          errorMessage: paragraphReorder.errorMessage,
-          canConfirm: paragraphReorder.canConfirm,
-          onConfirm: paragraphReorder.confirm,
-          onCancel: paragraphReorder.closeOverlay,
-        }}
-        bunsetsuAvailable={bunsetsuAvailable}
-        phraseAvailable={phraseAvailable}
-        wordAvailable={wordAvailable}
-      />
+      <div
+        className="contents"
+        aria-hidden={phoneWorkspace && phoneMetaPanelOpen ? true : undefined}
+        inert={phoneWorkspace && phoneMetaPanelOpen ? true : undefined}
+      >
+        <Toolbar
+          editor={editor}
+          onFindReplace={() => {
+            setFindOpen(true);
+            setFindShowReplace(true);
+          }}
+          actionsRef={toolbarActionsRef}
+          panelOpen={phoneWorkspace ? phoneMetaPanelOpen : sceneMetaPanelOpen}
+          onTogglePanel={handleTogglePanel}
+          sceneId={isEntryMode ? undefined : nodeId}
+          nodeType={activeNode?.nodeType}
+          reorderOpen={paragraphReorder.open}
+          onToggleReorder={
+            dbNativeEditor ? paragraphReorder.toggleOverlay : undefined
+          }
+          reorderDisabled={!dbNativeEditor || readOnly}
+        />
+        <EditorPaneRibbon
+          nodeId={nodeId}
+          isEntryMode={isEntryMode}
+          isFileBacked={isFileBacked}
+          isNote={isNote}
+          isCodexMode={isCodexMode}
+          isSnippetMode={isSnippetMode}
+          isChronicleEventMode={isChronicleEventMode}
+          activeCodexEntry={activeCodexEntry}
+          activeSnippetEntry={activeSnippetEntry}
+          loadedPhaseLabel={loadedPhaseLabel}
+          chronicleEventTitle={chronicleEventTitle}
+        />
+        <EditorPaneViewport
+          isPanelVisible={!phoneWorkspace && isPanelVisible}
+          sceneMetaPanelWidth={sceneMetaPanelWidth}
+          onPanelLayoutChanged={handlePanelLayoutChanged}
+          contentAreaProps={editorContentAreaProps}
+          sceneId={nodeId}
+          editor={editor}
+          setMentionPopup={setMentionPopupState}
+          beatDragDrop={beatDragDrop}
+        />
+        <EditorPaneStatusBar
+          activeStatus={activeStatus}
+          editor={editor}
+          getStatsSceneId={getStatsSceneId}
+          isEntryMode={isEntryMode}
+          isSceneContentLoading={isSceneContentLoading}
+          showAttribution={showAttribution}
+          aiRatio={aiRatio}
+          isSaving={isSaving}
+          isDirty={isDirty}
+          onStatusChange={handleStatusChange}
+          onOpenAttribution={() => togglePanel("attribution")}
+          onOpenRevisionHistory={handleOpenRevisionHistory}
+        />
+        <EditorPaneOverlays
+          editor={editor}
+          paletteOpen={paletteOpen}
+          palettePreselect={palettePreselect}
+          onClosePalette={() => setPaletteOpen(false)}
+          onSubmitPalette={handlePaletteSubmit}
+          onSubmitPaletteAb={handlePaletteSubmitAb}
+          abInline={abInline}
+          onCloseAb={() => setAbInline(null)}
+          onAdoptAb={handleAdoptAb}
+          onAccept={acceptWithStaging}
+          onReject={rejectWithStaging}
+          onRetry={retry}
+          anchorRef={editorContainerRef}
+          isInlineAiOwner={isInlineAiOwner}
+          mentionPopup={mentionPopup}
+          mentionIndex={mentionIndex}
+          onMentionSelect={handleMentionSelect}
+          onMentionIndexChange={setMentionIndex}
+          onMentionSelectWithRole={handleMentionSelectWithRole}
+          paragraphReorder={{
+            open: paragraphReorder.open,
+            units: paragraphReorder.units,
+            order: paragraphReorder.order,
+            onOrderChange: paragraphReorder.setOrder,
+            granularity: paragraphReorder.granularity,
+            onGranularityChange: paragraphReorder.setGranularity,
+            loading: paragraphReorder.loading,
+            errorMessage: paragraphReorder.errorMessage,
+            canConfirm: paragraphReorder.canConfirm,
+            onConfirm: paragraphReorder.confirm,
+            onCancel: paragraphReorder.closeOverlay,
+          }}
+          bunsetsuAvailable={bunsetsuAvailable}
+          phraseAvailable={phraseAvailable}
+          wordAvailable={wordAvailable}
+        />
+      </div>
+      <PhoneSceneMetaSheet
+        phoneWorkspace={phoneWorkspace}
+        open={isPanelVisible}
+        title={t("editor.toolbar.sceneMetaPanel")}
+        closeLabel={t("common.close")}
+        onClose={() => setPhoneMetaPanelOpen(false)}
+        closeButtonRef={phoneMetaCloseRef}
+      >
+        <SceneMetaPanel
+          sceneId={nodeId}
+          editor={editor}
+          setMentionPopup={setMentionPopupState}
+          embeddedInPhoneSheet
+        />
+      </PhoneSceneMetaSheet>
     </div>
   );
   recordMark("editorPane.render", performance.now() - __perfStart, __perfStart);

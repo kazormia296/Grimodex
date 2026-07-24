@@ -1,4 +1,9 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { resolvePhoneEditorGroup } from "@/features/editor/phoneEditorGroup";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import type { WorkspaceViewportProfile } from "@/runtime/viewportProfile";
 import { useViewportProfile } from "@/runtime/useViewportProfile";
 import { installMobileViewportVars } from "@/runtime/mobileViewport";
@@ -8,10 +13,19 @@ import { WideWorkspaceChrome } from "./WideWorkspaceChrome";
 import { WorkspaceSurfaceRoot } from "./WorkspaceSurfaceRoot";
 import { useCompactNavigationStore } from "./compactNavigationStore";
 
+const MOBILE_WORKSPACE_SURFACE_IDS = [
+  "scenes",
+  "codex",
+  "ai",
+  "more",
+  "search",
+] as const;
+
+export type MobileWorkspaceSurfaceId =
+  (typeof MOBILE_WORKSPACE_SURFACE_IDS)[number];
 export type MobileWorkspaceSurfaces = Partial<
-  Record<"scenes" | "codex" | "ai" | "more", ReactNode>
+  Record<MobileWorkspaceSurfaceId, ReactNode>
 >;
-export type MobileWorkspaceSurfaceId = keyof MobileWorkspaceSurfaces;
 
 interface Props {
   profile?: WorkspaceViewportProfile;
@@ -19,8 +33,6 @@ interface Props {
   zenMode?: boolean;
   panel?: ReactNode;
   panelOpen?: boolean;
-  sceneTitle?: string;
-  saveState?: string;
   onBack?: () => void;
   mobileSurfaces?: MobileWorkspaceSurfaces;
   renderMobileSurface?: (surface: MobileWorkspaceSurfaceId) => ReactNode;
@@ -32,8 +44,6 @@ export function AdaptiveWorkspaceShell({
   zenMode = false,
   panel,
   panelOpen = Boolean(panel),
-  sceneTitle,
-  saveState,
   onBack,
   mobileSurfaces,
   renderMobileSurface,
@@ -42,15 +52,18 @@ export function AdaptiveWorkspaceShell({
   const activeSurface = useCompactNavigationStore(
     (state) => state.activeSurface,
   );
+  const previousSurfaceRef = useRef(activeSurface);
   const profile = requestedProfile ?? viewport.profile;
-  const mobileSurfaceId =
-    profile === "phone" && activeSurface !== "editor"
-      ? (activeSurface as MobileWorkspaceSurfaceId)
-      : null;
-  const mobileSurface = mobileSurfaceId
-    ? (mobileSurfaces?.[mobileSurfaceId] ??
-      renderMobileSurface?.(mobileSurfaceId))
-    : undefined;
+  const mountedMobileSurfaces =
+    profile === "phone"
+      ? MOBILE_WORKSPACE_SURFACE_IDS.flatMap((surface) => {
+          const content =
+            mobileSurfaces?.[surface] ?? renderMobileSurface?.(surface);
+          return content == null
+            ? []
+            : [{ id: surface, content, active: activeSurface === surface }];
+        })
+      : [];
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined")
       return undefined;
@@ -61,6 +74,32 @@ export function AdaptiveWorkspaceShell({
       >[1],
     );
   }, []);
+  useEffect(() => {
+    const previousSurface = previousSurfaceRef.current;
+    previousSurfaceRef.current = activeSurface;
+    if (
+      profile === "phone" &&
+      activeSurface === "editor" &&
+      previousSurface !== "editor"
+    ) {
+      const tabs = useTabStore.getState();
+      const documentId = useTreeStore.getState().activeSceneId;
+      const inlineAi = useInlineAiStore.getState();
+      const inlineAiPending =
+        inlineAi.status === "generating" ||
+        inlineAi.status === "diffShown" ||
+        inlineAi.status === "error";
+      useEditorSessionStore
+        .getState()
+        .requestEditorFocus(
+          resolvePhoneEditorGroup(
+            tabs,
+            documentId,
+            inlineAiPending ? inlineAi.activeEditorGroup : null,
+          ),
+        );
+    }
+  }, [activeSurface, profile]);
   return (
     <div
       ref={requestedProfile === undefined ? viewport.ref : undefined}
@@ -72,8 +111,6 @@ export function AdaptiveWorkspaceShell({
       <CompactWorkspaceChrome active={!zenMode && profile === "compact"} />
       <PhoneWorkspaceChrome
         active={!zenMode && profile === "phone"}
-        sceneTitle={sceneTitle}
-        saveState={saveState}
         onBack={onBack}
       />
       <WorkspaceSurfaceRoot
@@ -82,7 +119,7 @@ export function AdaptiveWorkspaceShell({
         zenMode={zenMode}
         panel={panel}
         panelOpen={panelOpen}
-        mobileSurface={mobileSurface}
+        mountedMobileSurfaces={mountedMobileSurfaces}
       />
     </div>
   );

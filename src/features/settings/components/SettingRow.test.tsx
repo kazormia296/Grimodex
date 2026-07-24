@@ -122,6 +122,25 @@ describe("SettingRow label ↔ control 結合", () => {
     expect(toggle.hasAttribute("aria-labelledby")).toBe(false);
   });
 
+  it("narrow settings containers stack labels and constrain controls", () => {
+    const { container } = render(
+      <div className="@container">
+        <SettingRow label="長い設定ラベル" description="長い補足説明">
+          <SettingTextInput settingKey="test.mobile" />
+        </SettingRow>
+      </div>,
+    );
+
+    const row = container.querySelector("[data-setting-row]");
+    const control = container.querySelector("[data-setting-row-control]");
+    expect(row?.className).toContain("@max-[420px]:flex-col");
+    expect(row?.className).toContain("@max-[420px]:items-stretch");
+    expect(control?.className).toContain("min-w-0");
+    expect(control?.className).toContain("max-w-full");
+    expect(control?.className).toContain("@max-[420px]:w-full");
+    expect(control?.className).toContain("[&_input]:max-w-full");
+  });
+
   it("axe 違反がない", async () => {
     const { container } = render(
       <>

@@ -1,6 +1,7 @@
 import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 import { recordLayoutSnapshot } from "@/features/timelapse/captureLayout";
+import { resolveViewportProfile } from "@/runtime/viewportProfile";
 import { cloneLayoutState, validateLayoutState } from "./layoutStateUtils";
 import {
   type BuiltinPresetOverride,
@@ -46,8 +47,21 @@ export function scheduleSave(
   get: () => LayoutPersistenceSnapshot,
   getViewport: () => { width: number; height: number },
 ): void {
+  const scheduledViewport = getViewport();
+  if (resolveViewportProfile(scheduledViewport.width) === "phone") {
+    if (saveTimer !== null) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    return;
+  }
+
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
+    saveTimer = null;
+    const currentViewport = getViewport();
+    if (resolveViewportProfile(currentViewport.width) === "phone") return;
+
     try {
       const {
         layout,
@@ -56,7 +70,7 @@ export function scheduleSave(
         builtinPresetOverrides,
         hiddenStripePanels,
       } = get();
-      if (!validateLayoutState(layout, { viewport: getViewport() }).valid)
+      if (!validateLayoutState(layout, { viewport: currentViewport }).valid)
         return;
 
       recordLayoutSnapshot({

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useTreeStore } from "./treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { useTabStore } from "@/features/editor/tabStore";
 
 const { mockRecomputeSceneOrder } = vi.hoisted(() => ({
   mockRecomputeSceneOrder: vi.fn(),
@@ -46,7 +47,16 @@ beforeEach(() => {
     selectedIds: [],
     activeSceneId: "",
     expandedIds: [],
+    pendingRenameId: null,
     pendingRevealId: null,
+  });
+  useTabStore.setState({
+    tabs: [],
+    activeTabId: null,
+    secondaryTabs: [],
+    secondaryActiveTabId: null,
+    secondaryGroupOpen: false,
+    activeGroupIndex: 0,
   });
 });
 
@@ -85,6 +95,49 @@ describe("createNode Phase scene-time invalidation", () => {
     expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
       useTreeStore.getState().nodes,
     );
+  });
+});
+
+describe("createNode interaction intent", () => {
+  it("keeps the default interactive history and rename behavior", async () => {
+    const created = await useTreeStore
+      .getState()
+      .createNode({ nodeType: "scene", parentId: null });
+
+    expect(useTreeStore.getState().pendingRenameId).toBe(created.id);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+  });
+
+  it("suppresses history and pending rename for an implicit bootstrap scene", async () => {
+    const created = await useTreeStore.getState().createNode({
+      nodeType: "scene",
+      parentId: null,
+      interaction: "implicit",
+    });
+
+    expect(useTreeStore.getState().activeSceneId).toBe(created.id);
+    expect(useTreeStore.getState().pendingRenameId).toBeNull();
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+  });
+
+  it("keeps mobile creation undoable without rename or hidden desktop tabs", async () => {
+    const created = await useTreeStore.getState().createNode({
+      nodeType: "scene",
+      parentId: null,
+      interaction: "mobile",
+    });
+    const command = useGlobalHistoryStore.getState().past.at(-1);
+
+    expect(command).toBeDefined();
+    expect(useTreeStore.getState().pendingRenameId).toBeNull();
+    expect(useTabStore.getState().tabs).toEqual([]);
+
+    await command!.undo();
+    await command!.redo();
+
+    expect(useTreeStore.getState().activeSceneId).toBe(created.id);
+    expect(useTabStore.getState().tabs).toEqual([]);
+    expect(useTabStore.getState().secondaryTabs).toEqual([]);
   });
 });
 

@@ -11,20 +11,21 @@ describe("PhoneSceneNavigator mobile actions", () => {
 
   afterEach(cleanup);
 
-  it("creates scenes and confirms destructive actions before dispatching them", () => {
-    const onCreateScene = vi.fn();
+  it("creates documents and confirms destructive actions before dispatching them", () => {
+    const onCreateNode = vi.fn();
     const onSceneAction = vi.fn();
     render(
       <PhoneSceneNavigator
         scenes={[{ id: "s1", title: "導入" }]}
         onOpenScene={vi.fn()}
-        onCreateScene={onCreateScene}
+        onCreateNode={onCreateNode}
         onSceneAction={onSceneAction}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "シーンを追加" }));
-    expect(onCreateScene).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "追加" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "シーンを追加" }));
+    expect(onCreateNode).toHaveBeenCalledWith("scene");
 
     fireEvent.click(screen.getByRole("button", { name: "導入の操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "削除" }));

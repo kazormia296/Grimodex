@@ -31,6 +31,7 @@ import { moveTreeNode } from "@/application/tree/moveTreeNode";
 import { createTreeNode } from "@/application/tree/createTreeNode";
 import { deleteTreeSubtree } from "@/application/tree/deleteTreeSubtree";
 import { requestOpenEditorDocument } from "@/application/editor/editorNavigationRegistry";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -291,6 +292,10 @@ interface TreeState {
   selectedIds: string[]; // multi-selection
   isLoading: boolean;
   projectId: string;
+  /** Project whose tree rows completed a successful hydration. */
+  hydratedProjectId: string | null;
+  /** Workspace DB generation whose tree rows completed a successful hydration. */
+  hydratedWorkspaceOpenRevision: number | null;
   expandedIds: string[];
   filterQuery: string;
   viewMode: ViewMode;
@@ -329,9 +334,15 @@ interface TreeState {
   revealInTree: (id: string) => void;
 
   // Load full tree for a project
-  loadTree: (projectId?: string) => Promise<void>;
+  loadTree: (
+    projectId?: string,
+    workspaceOpenRevision?: number,
+  ) => Promise<void>;
   /** loadTree と同じ再同期だが、失敗を握りつぶさず throw する版(AI batch executor 用)。 */
-  reloadTreeOrThrow: (projectId?: string) => Promise<void>;
+  reloadTreeOrThrow: (
+    projectId?: string,
+    workspaceOpenRevision?: number,
+  ) => Promise<void>;
 
   // Backward-compat API (used by ChatPanel, ExportAgentTraceButton, SceneEditor)
   loadScenes: (projectId: string, chapterId: string) => Promise<void>;
@@ -418,6 +429,21 @@ export interface CreateNodeOpts {
   parentId: string | null;
   afterId?: string | null; // insert after this sibling
   title?: string;
+  /**
+   * Implicit creation is a system bootstrap, not a user edit: it selects the
+   * created document but does not open rename UI or add an undo command.
+   * Mobile creation remains undoable, but auto-names the document and keeps
+   * redo inside the single-document phone projection instead of desktop tabs.
+   */
+  interaction?: "interactive" | "implicit" | "mobile";
+}
+
+function resolveWorkspaceOpenRevision(
+  explicitRevision?: number,
+): number | null {
+  return (
+    explicitRevision ?? getCurrentWorkspaceIdentity()?.openRevision ?? null
+  );
 }
 
 function isValidOrderKey(key: string): boolean {
@@ -467,6 +493,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   selectedIds: [],
   isLoading: false,
   projectId: getCurrentProjectId(),
+  hydratedProjectId: null,
+  hydratedWorkspaceOpenRevision: null,
   expandedIds: [],
   filterQuery: "",
   viewMode: "tree",
@@ -486,12 +514,23 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   pinnedCodexIds: [],
   pendingRenameId: null,
 
-  async reloadTreeOrThrow(projectId = getCurrentProjectId()) {
+  async reloadTreeOrThrow(
+    projectId = getCurrentProjectId(),
+    workspaceOpenRevision,
+  ) {
     // reload 失敗を throw する版。AI バッチ executor のように「DB commit 後の
     // 再同期失敗を成功扱いにできない」呼び出し元が使う。loadTree はこれを
     // try/catch で包んで従来どおり握りつぶす。
-    set({ isLoading: true, projectId });
+    set({
+      isLoading: true,
+      projectId,
+      hydratedProjectId: null,
+      hydratedWorkspaceOpenRevision: null,
+    });
     try {
+      const hydrationWorkspaceOpenRevision = resolveWorkspaceOpenRevision(
+        workspaceOpenRevision,
+      );
       // listNodes は content / unplacedBeatsDoc を引かない軽量 projection (H4)。
       // note 本文だけ 2 段目クエリで取り、note ノードにマージする
       // (scene 本文は store 外に保つ不変条件は toNodeData 側で維持)。
@@ -535,6 +574,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         scenes: sc,
         activeSceneId: activeStillExists ? prevActive : (sc[0]?.id ?? ""),
         isLoading: false,
+        hydratedProjectId: projectId,
+        hydratedWorkspaceOpenRevision: hydrationWorkspaceOpenRevision,
         expandedIds: chapters.map((c) => c.id),
         charCounts,
         nodePreviews,
@@ -560,9 +601,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
-  async loadTree(projectId = getCurrentProjectId()) {
+  async loadTree(projectId = getCurrentProjectId(), workspaceOpenRevision) {
     try {
-      await get().reloadTreeOrThrow(projectId);
+      await get().reloadTreeOrThrow(projectId, workspaceOpenRevision);
     } catch {
       set({ isLoading: false });
     }
@@ -725,9 +766,15 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   // --- New tree operations ---
-  async createNode({ nodeType, parentId, afterId, title }) {
+  async createNode({
+    nodeType,
+    parentId,
+    afterId,
+    title,
+    interaction = "interactive",
+  }) {
     return createTreeNode(
-      { nodeType, parentId, afterId, title },
+      { nodeType, parentId, afterId, title, interaction },
       {
         ensureWritable: () => {
           if (blockIfUnlicensed()) {
@@ -780,7 +827,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
                   : state.activeSceneId,
               expandedIds,
               pendingRenameId:
-                mode === "create" ? node.id : state.pendingRenameId,
+                mode === "create" && interaction === "interactive"
+                  ? node.id
+                  : state.pendingRenameId,
               pendingRevealId:
                 mode === "create" &&
                 node.nodeType === "folder" &&

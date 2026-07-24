@@ -220,7 +220,7 @@ export async function createTreeNode(
     },
   });
 
-  if (!ports.isReplaying()) {
+  if (opts.interaction !== "implicit" && !ports.isReplaying()) {
     const captured = { ...created };
     const label =
       created.nodeType === "scene"
@@ -241,7 +241,10 @@ export async function createTreeNode(
         const recreated = await ports.recreatePersisted(captured);
         ports.applyCreated(recreated, "redo");
         ports.recomputeSceneOrder(ports.getNodes());
-        if (recreated.nodeType === "scene" || recreated.nodeType === "note") {
+        if (
+          opts.interaction !== "mobile" &&
+          (recreated.nodeType === "scene" || recreated.nodeType === "note")
+        ) {
           ports.revealEditorDocument(recreated.id);
         }
       },

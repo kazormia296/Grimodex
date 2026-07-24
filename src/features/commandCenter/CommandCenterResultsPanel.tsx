@@ -11,6 +11,7 @@ import { PANEL_FETCH_LIMIT } from "./lib/constants";
 import { CommandCenterFilterBar } from "./CommandCenterFilterBar";
 import { CommandCenterPreviewPopover } from "./CommandCenterPreviewPopover";
 import { CommandCenterResultItem } from "./CommandCenterResultItem";
+import type { CommandCenterItem } from "./providers/types";
 
 /**
  * Dockview の全文検索パネル。
@@ -18,7 +19,17 @@ import { CommandCenterResultItem } from "./CommandCenterResultItem";
  * 表示状態は `resultsPanelStore` が所有する。
  */
 
-export function CommandCenterResultsPanel() {
+export function CommandCenterResultsPanel({
+  onItemSelect,
+}: {
+  /**
+   * Return true when the embedding surface handled navigation itself.
+   * This avoids running a desktop provider action before a phone-specific one.
+   */
+  onItemSelect?: (item: CommandCenterItem) => boolean | void;
+  /** SlotPanel compatibility; the mobile surface omits it. */
+  isActive?: boolean;
+} = {}) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const hoveredItemId = useResultsPanelStore((s) => s.hoveredItemId);
@@ -131,7 +142,9 @@ export function CommandCenterResultsPanel() {
                       selected={false}
                       onMouseEnter={() => {}}
                       onClick={() => {
-                        item.onSelect();
+                        if (onItemSelect?.(item) !== true) {
+                          item.onSelect();
+                        }
                       }}
                     />
                   </div>

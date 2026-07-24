@@ -294,6 +294,65 @@
     "unitScenes": "シーン",
     "unitCodex": "Codex"
   },
+  "mobileWorkspace": {
+    "navigation": {
+      "label": "ワークスペース",
+      "editor": "執筆",
+      "scenes": "シーン",
+      "codex": "Codex",
+      "ai": "AI",
+      "more": "その他"
+    },
+    "header": {
+      "back": "戻る"
+    },
+    "editor": {
+      "preparing": "最初のシーンを準備しています…",
+      "createFailed": "最初のシーンを作成できませんでした。",
+      "retry": "もう一度試す"
+    },
+    "scenes": {
+      "title": "シーン",
+      "searchLabel": "シーンとノートを検索",
+      "searchPlaceholder": "検索",
+      "add": "追加",
+      "actions": "{{title}}の操作",
+      "moveUp": "上へ移動",
+      "moveDown": "下へ移動",
+      "delete": "削除",
+      "actionFailed": "操作を完了できませんでした。もう一度お試しください。",
+      "deleteTitle": "シーンを削除",
+      "deleteDescription": "「{{title}}」を削除しますか？",
+      "deleteNoteTitle": "ノートを削除",
+      "deleteNoteDescription": "「{{title}}」を削除しますか？"
+    },
+    "surfaces": {
+      "search": {
+        "title": "検索",
+        "snippetUnavailable": "スニペットの詳細はデスクトップ表示で開けます。",
+        "resultUnavailable": "検索結果は既に削除されたため開けません。",
+        "loadFailed": "検索結果を開けませんでした。もう一度お試しください。"
+      },
+      "codex": {
+        "back": "Codexへ戻る",
+        "phases": "フェーズ",
+        "openAnchor": "該当シーンを開く",
+        "empty": "Codex項目がありません"
+      },
+      "ai": {
+        "label": "AIチャット",
+        "message": "メッセージ",
+        "send": "送信",
+        "openSettings": "AI設定を開く",
+        "streaming": "生成中…",
+        "empty": "AIとの会話をここから始められます"
+      },
+      "more": {
+        "description": "検索、設定、書き出しなどのワークスペース操作です。",
+        "search": "作品内を検索"
+      }
+    }
+  },
   "welcome": {
     "description": "原稿の保存先フォルダを選んでください。",
     "descriptionSub": "このフォルダにデータベースと原稿ファイルが保存されます。",
@@ -528,6 +587,7 @@
     "trial": {
       "title": "Web Editor 試用版",
       "description": "Grimodex本体の実エディターをブラウザで試せます。",
+      "mobileSummary": "編集内容はこのブラウザに保存され、ローカル版へ自動同期されません。",
       "storageNotice": "データはこのブラウザに保存され、ローカル版Grimodexへ自動同期されません。",
       "importNotice": "選択したローカルファイルはブラウザ内だけで処理されます。",
       "aiNotice": "AIは付属していません。利用する場合はLocal LLM（Ollama）またはご自身のOpenAI／Anthropic APIキーを設定してください。",
