@@ -250,6 +250,7 @@ export function clampZoomFactor(factor: unknown): number {
 export interface NapiBackendLike {
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
+  vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
   validateWorkspacePath(path: string): boolean;
   /** Main-only one-shot bridge; intentionally absent from NAPI_COMMANDS. */
@@ -964,6 +965,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requirePresent(a, "statements", "db_execute_batch"),
         ),
       ),
+  },
+  vacuum_database: {
+    run: async (b) => {
+      await b.vacuumDatabase();
+      return null;
+    },
   },
   open_workspace: {
     run: async (b, a) =>

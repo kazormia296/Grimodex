@@ -460,7 +460,7 @@ impl Backend {
         run_blocking(move || {
             let params = params_array(params)?;
             with_db_state(&state.ws, |db| {
-                let rows = db.execute(&sql, &params, &method)?;
+                let rows = db.execute_renderer(&sql, &params, &method)?;
                 Ok(serde_json::to_string(&QueryResult { rows })?)
             })
         })
@@ -477,11 +477,19 @@ impl Backend {
         run_blocking(move || {
             let statements: Vec<BatchStatement> = from_wire("statements", statements)?;
             with_db_state(&state.ws, |db| {
-                let rows = db.execute_batch_tx(&statements)?;
+                let rows = db.execute_batch_tx_renderer(&statements)?;
                 Ok(serde_json::to_string(&QueryResult { rows })?)
             })
         })
         .await
+    }
+
+    /// Compact the active workspace in place. Unlike raw renderer SQL, this
+    /// command accepts no destination path and cannot become `VACUUM INTO`.
+    #[napi]
+    pub async fn vacuum_database(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| db.vacuum())).await
     }
 
     /// workspace を開く: backup → migrate → swap → RAII SwitchingGuard →

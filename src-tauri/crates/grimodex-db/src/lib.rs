@@ -7,7 +7,7 @@
 //! `commands/mod.rs` の互換シム経由で従来のパス (`crate::database::…` /
 //! `crate::workspace::…` / `crate::commands::AppError` 等) のまま利用する。
 
-use rusqlite::Connection;
+use rusqlite::{config::DbConfig, Connection};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -149,6 +149,14 @@ fn slim_backup_copy(path: &Path) -> anyhow::Result<()> {
 impl Database {
     pub fn new(path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
+        // Connection-wide defense in depth. Renderer SQL receives the
+        // stricter, temporary authorizer/limit policy in execute.rs; these
+        // settings are safe for trusted migration/backup code as well.
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DQS_DDL, false)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DQS_DML, false)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_WRITABLE_SCHEMA, false)?;
         // synchronous=NORMAL is safe with WAL (committed txns survive crash;
         // only the very last group commit can be lost on power loss). The
         // SQLite default `FULL` issues an extra fsync per write — on WSL2 and
@@ -200,6 +208,14 @@ impl Database {
     pub fn optimize(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         conn.execute_batch("PRAGMA optimize;")?;
+        Ok(())
+    }
+
+    /// Compact the active workspace in place. This trusted, argument-free API
+    /// is the only renderer-reachable replacement for raw `VACUUM` SQL.
+    pub fn vacuum(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute_batch("VACUUM")?;
         Ok(())
     }
 

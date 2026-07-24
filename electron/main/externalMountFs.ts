@@ -28,6 +28,8 @@ import {
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 
+import { readUtf8FileWithLimit } from "./boundedFileRead.js";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 上限定数（Rust と一致）
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,19 +228,16 @@ export async function readTextFile(absPath: string): Promise<string> {
   // symlink target after resolveUnderRoot() has canonicalized the path.
   const noFollow =
     process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
-  const fh = await open(absPath, constants.O_RDONLY | noFollow);
-  try {
-    const meta = await fh.stat();
-    if (meta.size > MAX_TEXT_FILE_BYTES) {
-      throw new Error(
-        `file too large to read (${meta.size} bytes, limit ${MAX_TEXT_FILE_BYTES} bytes): ${absPath}`,
-      );
-    }
-    const raw = await fh.readFile("utf8");
-    return raw.replace(/\r\n/g, "\n");
-  } finally {
-    await fh.close();
-  }
+  const raw = await readUtf8FileWithLimit(absPath, {
+    maxBytes: MAX_TEXT_FILE_BYTES,
+    flags: constants.O_RDONLY | noFollow,
+    notFileError: () => new Error(`path is not a regular file: ${absPath}`),
+    tooLargeError: (observedBytes) =>
+      new Error(
+        `file too large to read (${observedBytes} bytes, limit ${MAX_TEXT_FILE_BYTES} bytes): ${absPath}`,
+      ),
+  });
+  return normalizeContent(raw);
 }
 
 export interface AtomicWriteTextOptions {

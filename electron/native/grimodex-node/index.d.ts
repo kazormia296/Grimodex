@@ -55,6 +55,11 @@ export declare class Backend {
    */
   dbExecuteBatch(statements: any): Promise<string>
   /**
+   * Compact the active workspace in place. Unlike raw renderer SQL, this
+   * command accepts no destination path and cannot become `VACUUM INTO`.
+   */
+  vacuumDatabase(): Promise<void>
+  /**
    * workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
    * recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
    * Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで

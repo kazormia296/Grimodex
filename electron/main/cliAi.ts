@@ -107,7 +107,7 @@ export interface CliProcessRunner {
 }
 
 export interface CliExecutableIdentity {
-  sha256: string | null;
+  sha256: string;
 }
 
 export interface CliDetectDependencies {
@@ -665,6 +665,11 @@ interface ValidatedCliExecutable {
   requestedPath: string;
   /** symlinkを解決した、実際にspawn・authorizationするpath。 */
   executable: string;
+}
+
+interface AuthorizedCliExecutable extends ValidatedCliExecutable {
+  /** SHA-256 approved by the user for this exact canonical executable. */
+  sha256: string;
 }
 
 async function validateCliExecutable(
@@ -1349,26 +1354,103 @@ export function createCliAiManager(
   };
 
   // rendererは任意pathを信頼済みにできない。mainが検出したpathか、Electronの
-  // native確認を通ったpathだけを、このmanagerのlifetime中allowlistする。
-  const authorizedExecutables = new Map<CliKind, Set<string>>();
-  const detectedExecutables = new Map<CliKind, ValidatedCliExecutable>();
+  // native確認を通った canonical path + SHA-256 だけを保持する。
+  // cache hit 時も spawn 直前に同じ identity か再検証する。
+  const authorizedExecutables = new Map<
+    CliKind,
+    Map<string, AuthorizedCliExecutable>
+  >();
+  const detectedExecutables = new Map<CliKind, AuthorizedCliExecutable>();
   const detectionGenerations = new Map<CliKind, number>();
   const trustAuthorizedExecutable = (
     kind: CliKind,
-    executable: string,
+    executable: AuthorizedCliExecutable,
   ): void => {
-    const trusted = authorizedExecutables.get(kind) ?? new Set<string>();
+    const trusted =
+      authorizedExecutables.get(kind) ??
+      new Map<string, AuthorizedCliExecutable>();
     // Windowsでもcase-sensitive directoryを有効化できるためlowercaseしない。
-    trusted.add(executable);
+    trusted.set(executable.executable, executable);
     authorizedExecutables.set(kind, trusted);
   };
-  const isTrustedExecutable = (kind: CliKind, executable: string): boolean =>
-    detectedExecutables.get(kind)?.executable === executable ||
-    (authorizedExecutables.get(kind)?.has(executable) ?? false);
+  const trustedExecutable = (
+    kind: CliKind,
+    executable: string,
+  ): AuthorizedCliExecutable | null => {
+    const detected = detectedExecutables.get(kind);
+    if (detected?.executable === executable) return detected;
+    return authorizedExecutables.get(kind)?.get(executable) ?? null;
+  };
+  const invalidateChangedRequestedPath = (
+    kind: CliKind,
+    validated: ValidatedCliExecutable,
+  ): void => {
+    const detected = detectedExecutables.get(kind);
+    if (
+      detected?.requestedPath === validated.requestedPath &&
+      detected.executable !== validated.executable
+    ) {
+      detectedExecutables.delete(kind);
+    }
+    const trusted = authorizedExecutables.get(kind);
+    if (!trusted) return;
+    for (const [canonical, executable] of trusted) {
+      if (
+        executable.requestedPath === validated.requestedPath &&
+        executable.executable !== validated.executable
+      ) {
+        trusted.delete(canonical);
+      }
+    }
+    if (trusted.size === 0) authorizedExecutables.delete(kind);
+  };
+  const fingerprintExecutable = async (
+    validated: ValidatedCliExecutable,
+  ): Promise<AuthorizedCliExecutable> => {
+    const sha256 = await hashFile(validated.executable);
+    if (!sha256) {
+      throw new Error(
+        `CLI executable could not be fingerprinted: ${validated.executable}`,
+      );
+    }
+    return { ...validated, sha256 };
+  };
+  const authorizeValidatedExecutable = async (
+    kind: CliKind,
+    validated: ValidatedCliExecutable,
+  ): Promise<AuthorizedCliExecutable> => {
+    const executable = await fingerprintExecutable(validated);
+    ensureNotDisposed();
+    if (
+      !(await authorizeExecutable(kind, executable.executable, {
+        sha256: executable.sha256,
+      }))
+    ) {
+      throw new Error(
+        `CLI executable was not authorized: ${executable.executable}`,
+      );
+    }
+    return executable;
+  };
+  const refreshExecutableIdentity = async (
+    executable: AuthorizedCliExecutable,
+  ): Promise<AuthorizedCliExecutable> => {
+    const canonical = await resolveRealPath(executable.executable);
+    if (platform === "win32" && isWindowsNetworkPath(canonical)) {
+      throw new Error("CLI executable cannot resolve to a network path");
+    }
+    if (!(await isFile(canonical))) {
+      throw new Error(`CLI executable is not a regular file: ${canonical}`);
+    }
+    return fingerprintExecutable({
+      requestedPath: executable.requestedPath,
+      executable: canonical,
+    });
+  };
   const detectAndTrust = async (
     kind: CliKind,
     refresh = false,
-  ): Promise<ValidatedCliExecutable | null> => {
+  ): Promise<AuthorizedCliExecutable | null> => {
     ensureNotDisposed();
     if (!refresh) {
       const cached = detectedExecutables.get(kind);
@@ -1377,7 +1459,7 @@ export function createCliAiManager(
     const generation = (detectionGenerations.get(kind) ?? 0) + 1;
     detectionGenerations.set(kind, generation);
     if (refresh) detectedExecutables.delete(kind);
-    const latestResult = (): ValidatedCliExecutable | null =>
+    const latestResult = (): AuthorizedCliExecutable | null =>
       detectedExecutables.get(kind) ?? null;
     const isLatest = (): boolean =>
       detectionGenerations.get(kind) === generation;
@@ -1398,23 +1480,16 @@ export function createCliAiManager(
     );
     ensureNotDisposed();
     if (!isLatest()) return latestResult();
-    const identity: CliExecutableIdentity = {
-      sha256: await hashFile(validated.executable),
-    };
-    if (!(await authorizeExecutable(kind, validated.executable, identity))) {
-      throw new Error(
-        `CLI executable was not authorized: ${validated.executable}`,
-      );
-    }
+    const authorized = await authorizeValidatedExecutable(kind, validated);
     ensureNotDisposed();
     if (!isLatest()) return latestResult();
-    detectedExecutables.set(kind, validated);
-    return validated;
+    detectedExecutables.set(kind, authorized);
+    return authorized;
   };
   const resolveExecutable = async (
     kind: CliKind,
     raw: unknown,
-  ): Promise<string> => {
+  ): Promise<AuthorizedCliExecutable> => {
     ensureNotDisposed();
     const candidate = requireString(raw, "binaryPath", false).trim();
     const containsSeparator =
@@ -1427,7 +1502,7 @@ export function createCliAiManager(
       const detected = await detectAndTrust(kind);
       ensureNotDisposed();
       if (!detected) throw new Error(`CLI executable not found: ${kind}`);
-      return detected.executable;
+      return detected;
     }
 
     const validated = await validateCliExecutable(
@@ -1438,20 +1513,81 @@ export function createCliAiManager(
       resolveRealPath,
     );
     ensureNotDisposed();
-    if (isTrustedExecutable(kind, validated.executable)) {
-      return validated.executable;
-    }
-    const identity: CliExecutableIdentity = {
-      sha256: await hashFile(validated.executable),
+    invalidateChangedRequestedPath(kind, validated);
+    const trusted = trustedExecutable(kind, validated.executable);
+    if (trusted) return trusted;
+    const authorized = await authorizeValidatedExecutable(kind, validated);
+    ensureNotDisposed();
+    trustAuthorizedExecutable(kind, authorized);
+    return authorized;
+  };
+  const prepareExecutableForSpawn = async (
+    kind: CliKind,
+    authorized: AuthorizedCliExecutable,
+  ): Promise<string> => {
+    const wasDetected = detectedExecutables.get(kind) === authorized;
+    const wasExplicit =
+      authorizedExecutables.get(kind)?.get(authorized.executable) ===
+      authorized;
+    const invalidate = (): void => {
+      if (detectedExecutables.get(kind) === authorized) {
+        detectedExecutables.delete(kind);
+      }
+      const trusted = authorizedExecutables.get(kind);
+      if (trusted?.get(authorized.executable) === authorized) {
+        trusted.delete(authorized.executable);
+        if (trusted.size === 0) authorizedExecutables.delete(kind);
+      }
     };
-    if (!(await authorizeExecutable(kind, validated.executable, identity))) {
+
+    let current: AuthorizedCliExecutable;
+    try {
+      current = await refreshExecutableIdentity(authorized);
+    } catch (cause) {
+      invalidate();
+      throw new Error("CLI executable changed after authorization", { cause });
+    }
+    ensureNotDisposed();
+
+    if (
+      current.executable === authorized.executable &&
+      current.sha256 === authorized.sha256
+    ) {
+      return current.executable;
+    }
+
+    // A path or content change invalidates the old consent. Re-confirm the new
+    // canonical identity, then check it once more after the dialog and
+    // immediately before spawn.
+    invalidate();
+    if (
+      !(await authorizeExecutable(kind, current.executable, {
+        sha256: current.sha256,
+      }))
+    ) {
       throw new Error(
-        `CLI executable was not authorized: ${validated.executable}`,
+        `CLI executable was not authorized: ${current.executable}`,
       );
     }
     ensureNotDisposed();
-    trustAuthorizedExecutable(kind, validated.executable);
-    return validated.executable;
+
+    let confirmed: AuthorizedCliExecutable;
+    try {
+      confirmed = await refreshExecutableIdentity(current);
+    } catch (cause) {
+      throw new Error("CLI executable changed after authorization", { cause });
+    }
+    if (
+      confirmed.executable !== current.executable ||
+      confirmed.sha256 !== current.sha256
+    ) {
+      throw new Error("CLI executable changed after authorization");
+    }
+    ensureNotDisposed();
+
+    if (wasDetected) detectedExecutables.set(kind, confirmed);
+    if (wasExplicit) trustAuthorizedExecutable(kind, confirmed);
+    return confirmed.executable;
   };
 
   let active: ActiveRun | null = null;
@@ -1526,7 +1662,20 @@ export function createCliAiManager(
       const model = optionalString(payload.model, "payload.model");
       const rawBinary =
         optionalString(payload.binaryPath, "payload.binaryPath") ?? kind;
-      const executable = await resolveExecutable(kind, rawBinary);
+      const authorized = await resolveExecutable(kind, rawBinary);
+      if (disposed) throw new Error("CLI manager is disposed");
+      if (deadlineExpired) {
+        throw new Error(`CLI stream timed out after ${streamTimeoutMs}ms`);
+      }
+      if (abortBeforeSpawn) {
+        broadcast("cli:stream-done", {
+          stop_reason: "stopped",
+          input_tokens: null,
+          output_tokens: null,
+        });
+        return null;
+      }
+      const executable = await prepareExecutableForSpawn(kind, authorized);
       if (disposed) throw new Error("CLI manager is disposed");
       if (deadlineExpired) {
         throw new Error(`CLI stream timed out after ${streamTimeoutMs}ms`);
@@ -1686,7 +1835,8 @@ export function createCliAiManager(
     test_cli_connection: async (args) => {
       ensureNotDisposed();
       const kind = cliKindFromExecutable(args.binaryPath, platform);
-      const executable = await resolveExecutable(kind, args.binaryPath);
+      const authorized = await resolveExecutable(kind, args.binaryPath);
+      const executable = await prepareExecutableForSpawn(kind, authorized);
       const result = await runCapturedChecked(runner, {
         executable,
         args: ["--version"],
@@ -1701,7 +1851,8 @@ export function createCliAiManager(
         return CLAUDE_MODELS.map((model) => ({ ...model }));
       }
       const rawBinary = optionalString(args.binaryPath, "binaryPath") ?? kind;
-      const executable = await resolveExecutable(kind, rawBinary);
+      const authorized = await resolveExecutable(kind, rawBinary);
+      const executable = await prepareExecutableForSpawn(kind, authorized);
       const spec: CliCommandSpec = {
         executable,
         kind,

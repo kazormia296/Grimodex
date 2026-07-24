@@ -110,6 +110,10 @@ describe("createBrowserMock", () => {
       );
       expect(result.rows).toHaveLength(0);
     });
+
+    it("supports the argument-free vacuum_database maintenance command", async () => {
+      await expect(mock.invoke("vacuum_database")).resolves.toBeUndefined();
+    });
   });
 
   describe("timelapse_append_batch", () => {
