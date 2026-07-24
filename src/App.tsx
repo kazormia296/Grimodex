@@ -765,6 +765,7 @@ function EditorScreen() {
                 {runtimeCapabilities.genericProjectTransfer && (
                   <button
                     type="button"
+                    data-tour-target="export-button"
                     aria-label={t("app.exportLabel")}
                     title={t("app.exportTitle")}
                     onClick={() => setShowExport((v) => !v)}
