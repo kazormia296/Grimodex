@@ -1,10 +1,11 @@
 /**
- * 行番号 × Alt ドラッグハンドルの排他表示 invariant（実 Chromium）。
+ * 行番号・段落ガター種別アイコン × Alt ドラッグハンドルの排他表示
+ * invariant（実 Chromium）。
  *
  * 契約: Alt 押下中（= ReorderInteractionExtension が最上位ブロックへ
- * `.reorder-block-anchor` を付けている間）は行番号 ::before を隠す。
- * 両者は同じ inline-start ガター領域（行番号 -2.5em / ハンドル -28px）を
- * 使うため、同時に描くと重なる（index.css の排他規則が gate 対象）。
+ * `.reorder-block-anchor` を付けている間）は行番号 ::before と
+ * `.gutter-marks__row` を隠す。いずれもハンドルと同じ inline-start ガター
+ * 領域を使うため、同時に描くと重なる（index.css の排他規則が gate 対象）。
  *
  * happy-dom は擬似要素の computed style を解決しないため実 Chromium で検証。
  */
@@ -53,5 +54,42 @@ describe("行番号と reorder ハンドルの排他表示", () => {
     expect(getComputedStyle(p2).counterIncrement).toContain("editor-line");
     // ::before の content 自体も消さない（visibility 方式の確認）
     expect(getComputedStyle(p1, "::before").content).toContain("counter");
+  });
+});
+
+describe("段落ガター種別アイコンと reorder ハンドルの排他表示", () => {
+  it("Alt 押下中のブロックだけ種別アイコンを隠す", () => {
+    render(
+      <div className="tiptap">
+        <p className="reorder-block-anchor">
+          <span className="reorder-block-handle" aria-hidden="true" />
+          <span className="gutter-marks">
+            <span className="gutter-marks__row" data-testid="anchor-gutter-row">
+              <span className="gutter-mark gutter-mark--comment" />
+            </span>
+          </span>
+          並べ替え対象の段落
+        </p>
+        <p>
+          <span className="gutter-marks">
+            <span className="gutter-marks__row" data-testid="plain-gutter-row">
+              <span className="gutter-mark gutter-mark--comment" />
+            </span>
+          </span>
+          通常の段落
+        </p>
+      </div>,
+    );
+
+    expect(
+      getComputedStyle(
+        document.querySelector("[data-testid='anchor-gutter-row']")!,
+      ).visibility,
+    ).toBe("hidden");
+    expect(
+      getComputedStyle(
+        document.querySelector("[data-testid='plain-gutter-row']")!,
+      ).visibility,
+    ).toBe("visible");
   });
 });
