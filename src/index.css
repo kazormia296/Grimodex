@@ -757,14 +757,16 @@ button[role="switch"][aria-checked="true"] {
   user-select: none;
   pointer-events: none;
 }
-/* Alt 押下中（reorder ハンドル表示中）は行番号を隠す — ハンドル
-   (.reorder-block-handle, inset-inline-start:-28px) と行番号 ::before は同じ
-   inline-start ガター領域を使うため、同時に描くと重なる。.reorder-block-anchor
-   は ReorderInteractionExtension が mode=alt の間だけ最上位ブロックへ付ける
+/* Alt 押下中（reorder ハンドル表示中）は、同じ inline-start ガターを使う
+   行番号と段落ガター種別アイコンを隠す。.reorder-block-anchor は
+   ReorderInteractionExtension が mode=alt の間だけ最上位ブロックへ付ける
    node decoration クラスなので、この規則だけで排他が成立し、Alt を離せば
-   即座に行番号が戻る。display/content ではなく visibility にするのは
+   即座に両方が戻る。display/content ではなく visibility にするのは
    カウンタと幾何を一切動かさずリフローゼロで消すため。 */
 .editor-line-numbers .tiptap > .reorder-block-anchor::before {
+  visibility: hidden;
+}
+.tiptap > .reorder-block-anchor .gutter-marks__row {
   visibility: hidden;
 }
 
