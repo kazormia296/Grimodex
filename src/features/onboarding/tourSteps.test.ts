@@ -4,7 +4,7 @@ import { getTourSteps } from "./tourSteps";
 
 describe("SampleTour step order", () => {
   it("starts with workspace/project guidance and ends with export before completion", () => {
-    const steps = getTourSteps(expandPreset("full"));
+    const steps = getTourSteps(expandPreset("full"), { includeExport: true });
 
     expect(steps[0]).toMatchObject({
       key: "workspace",
@@ -25,13 +25,21 @@ describe("SampleTour step order", () => {
   });
 
   it("keeps workspace and export guidance when AI steps are filtered out", () => {
-    const steps = getTourSteps(expandPreset("off"));
+    const steps = getTourSteps(expandPreset("off"), { includeExport: true });
     const keys = steps.map((step) => step.key);
 
     expect(keys[0]).toBe("workspace");
     expect(keys).toContain("export");
     expect(keys).not.toContain("chat");
     expect(keys).toContain("codex");
+    expect(keys.at(-1)).toBe("end");
+  });
+
+  it("omits export guidance when the runtime cannot export projects", () => {
+    const steps = getTourSteps(expandPreset("full"), { includeExport: false });
+    const keys = steps.map((step) => step.key);
+
+    expect(keys).not.toContain("export");
     expect(keys.at(-1)).toBe("end");
   });
 });
