@@ -7,7 +7,7 @@ describe("BrowserMock web AI runtime contract", () => {
     localStorage.clear();
   });
 
-  it("removes retired provider role overrides from legacy Web settings", async () => {
+  it("preserves every HTTP provider role override and removes only CLI", async () => {
     const legacySettings = {
       recentWorkspaces: [
         { path: "/dev/workspace", lastOpened: "2026-07-20T00:00:00.000Z" },
@@ -23,11 +23,13 @@ describe("BrowserMock web AI runtime contract", () => {
             provider: "openai-compatible",
             endpointId: "legacy-endpoint",
           },
+          title: { provider: "cli" },
         }),
         "aiModel.role.conversation": "anthropic/claude-sonnet-4.6",
         "aiModel.role.agent": "gpt-5-mini",
         "aiModel.role.inline": "qwen3:8b",
         "aiModel.role.cheap": "legacy-compatible-model",
+        "aiModel.role.title": "codex",
       },
     };
     localStorage.setItem(
@@ -43,15 +45,71 @@ describe("BrowserMock web AI runtime contract", () => {
     expect(normalized.userPreferences).toEqual({
       "editor.fontSize": "18",
       "aiModel.roleProviders": JSON.stringify({
+        conversation: { provider: "openrouter" },
         agent: { provider: "openai" },
         inline: { provider: "ollama" },
+        cheap: {
+          provider: "openai-compatible",
+          endpointId: "legacy-endpoint",
+        },
       }),
+      "aiModel.role.conversation": "anthropic/claude-sonnet-4.6",
       "aiModel.role.agent": "gpt-5-mini",
       "aiModel.role.inline": "qwen3:8b",
+      "aiModel.role.cheap": "legacy-compatible-model",
     });
     expect(
       JSON.parse(localStorage.getItem("grimodex:global-settings") ?? "{}"),
     ).toEqual(normalized);
+    mock.close();
+  });
+
+  it("resolves the selected OpenAI-compatible endpoint for browser requests", async () => {
+    const authorizeAiRequest = vi.fn().mockResolvedValue(undefined);
+    const complete = vi.fn().mockResolvedValue({
+      blocks: [{ type: "text", content: "local response" }],
+      stopReason: "end_turn",
+    });
+    const mock = await createBrowserMock({
+      authorizeAiRequest,
+      aiTransport: { complete },
+    });
+    await mock.invoke("save_ai_settings", {
+      settings: {
+        provider: "openai-compatible",
+        model: "local-model",
+        ollamaEndpoint: "http://localhost:11434",
+        openaiCompatible: { baseUrl: "http://legacy.invalid/v1" },
+        openaiCompatibleEndpoints: [
+          {
+            id: "lan",
+            label: "LAN",
+            baseUrl: "http://192.0.2.20:8080/v1/",
+            apiVariant: null,
+          },
+        ],
+        activeOpenaiCompatibleEndpointId: "lan",
+      },
+    });
+
+    await mock.invoke("send_chat_message", {
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai-compatible",
+        endpointId: "lan",
+        baseUrl: "http://192.0.2.20:8080/v1",
+      }),
+    );
+    expect(authorizeAiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai-compatible",
+        baseUrl: "http://192.0.2.20:8080/v1",
+        hasApiKey: false,
+      }),
+    );
     mock.close();
   });
 

@@ -8,6 +8,13 @@ import {
 describe("Zen background appearance config", () => {
   it("keeps lightweight defaults aligned with the live background", () => {
     expect(parseZenBackgroundEnabled({})).toBe(true);
+    expect(parseZenGlassConfig({})).toEqual({
+      enabled: true,
+      blur: 22,
+      refraction: 24,
+      saturation: 1,
+      shine: 1,
+    });
     expect(parseZenGlassConfig({})).toEqual(ZEN_GLASS_DEFAULTS);
   });
 

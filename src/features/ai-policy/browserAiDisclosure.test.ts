@@ -6,9 +6,13 @@ import {
 
 describe("browser BYOK AI disclosure", () => {
   it.each([
+    ["openrouter", "depends"],
     ["openai", "not-used"],
     ["anthropic", "not-used"],
     ["ollama", "depends"],
+    ["openai-compatible", "depends"],
+    ["sakana", "depends"],
+    ["ai-novelist", "depends"],
   ] as const)(
     "explains sent data, local storage, retention, and training for %s",
     (provider, trainingStatus) => {
@@ -37,9 +41,11 @@ describe("browser BYOK AI disclosure", () => {
       expect(disclosure.sentData.map((item) => item.category)).toEqual(
         expect.arrayContaining(["prompt", "selected-context"]),
       );
+      const providerRequiresCredential =
+        provider !== "ollama" && provider !== "openai-compatible";
       expect(
         disclosure.sentData.some((item) => item.category === "credential"),
-      ).toBe(provider !== "ollama");
+      ).toBe(providerRequiresCredential);
       expect(disclosure.retention.provider.summary.length).toBeGreaterThan(10);
       expect(JSON.stringify(disclosure)).not.toMatch(/[ぁ-んァ-ヶ一-龠]/);
     },
@@ -62,9 +68,29 @@ describe("browser BYOK AI disclosure", () => {
     expect(first.consentId).not.toBe(second.consentId);
   });
 
-  it("fails closed for a provider outside the Web Editor allowlist", () => {
+  it("binds custom endpoint consent to the normalized actual destination", () => {
+    const first = createByokAiDataDisclosure("openai-compatible", {
+      locale: "en",
+      baseUrl: "https://gateway.example/v1/",
+    });
+    const second = createByokAiDataDisclosure("openai-compatible", {
+      locale: "en",
+      baseUrl: "https://other.example/v1",
+    });
+
+    expect(first.destination).toBe("https://gateway.example/v1");
+    expect(first.processingDestinations[0]?.location).toBe(
+      "https://gateway.example/v1",
+    );
+    expect(first.consentId).not.toBe(second.consentId);
+    expect(
+      first.sentData.some((item) => item.category === "credential"),
+    ).toBe(false);
+  });
+
+  it("fails closed for native CLI", () => {
     expect(() =>
-      createByokAiDataDisclosure("openai-compatible", { locale: "en" }),
+      createByokAiDataDisclosure("cli", { locale: "en" }),
     ).toThrow(/not supported/i);
   });
 });

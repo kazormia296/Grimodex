@@ -146,14 +146,25 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     ).toBe(true);
   });
 
-  it("defaults to a subtle moving Mesh Gradient with both filters opt-in", () => {
+  it("defaults to the current local Liquid Metal background", () => {
     expect(DEFAULT_SETTINGS["editor.zenBackground.enabled"]).toBe("true");
     expect(DEFAULT_SETTINGS["editor.zenBackground.shader"]).toBe(
-      "mesh-gradient",
+      "liquid-metal",
     );
     expect(DEFAULT_SETTINGS["editor.zenBackground.paletteMode"]).toBe("theme");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.opacity"]).toBe("10");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.speedPercent"]).toBe("8");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.opacity"]).toBe("100");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.speed"]).toBe("0.42");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.speedPercent"]).toBe("3");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.scale"]).toBe("1.7");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.rotation"]).toBe("170");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.offsetX"]).toBe("0.25");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.offsetY"]).toBe("0.05");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.color1"]).toBe("#111827");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.color2"]).toBe("#111827");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.color3"]).toBe("#111827");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.color4"]).toBe("#111827");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.colorBack"]).toBe("#111827");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.grain.shape"]).toBe("wave");
     expect(KEY_SCOPE).not.toHaveProperty("editor.zenBackground.paperOpacity");
     expect(KEY_SCOPE).not.toHaveProperty("editor.zenBackground.paperEdgeFade");
     expect(DEFAULT_SETTINGS).not.toHaveProperty(
@@ -162,28 +173,55 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     expect(DEFAULT_SETTINGS).not.toHaveProperty(
       "editor.zenBackground.paperEdgeFade",
     );
-    expect(DEFAULT_SETTINGS["editor.zenBackground.shaderProps"]).toBe("{}");
+    expect(
+      JSON.parse(DEFAULT_SETTINGS["editor.zenBackground.shaderProps"]),
+    ).toMatchObject({
+      dithering: { size: 6.5 },
+      "grain-gradient": { softness: 0.3 },
+      "dot-orbit": {
+        size: 0.29,
+        stepsPerColor: 1,
+        spreading: 0.73,
+        sizeRange: 0.61,
+      },
+      "liquid-metal": {
+        shiftRed: 0.79,
+        repetition: 2,
+        contour: 0.6,
+        softness: 0,
+        shape: "circle",
+        shiftBlue: 0.52,
+      },
+      "fluted-glass": { shadows: 1 },
+    });
     expect(DEFAULT_SETTINGS["editor.zenBackground.dither.enabled"]).toBe(
       "false",
     );
+    expect(DEFAULT_SETTINGS["editor.zenBackground.dither.strength"]).toBe("0");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.dither.size"]).toBe("3");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.dither.levels"]).toBe("4");
     expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.enabled"]).toBe(
       "false",
     );
+    expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.strength"]).toBe(
+      "0.1",
+    );
+    expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.size"]).toBe("18");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.angle"]).toBe("27");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.softness"]).toBe("1");
     expect(DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.mode"]).toBe(
       "auto",
     );
     expect(
       DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.strength"],
-    ).toBe("1");
+    ).toBe("0.1");
     expect(DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.toolMix"]).toBe(
-      "0.5",
+      "0.75",
     );
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.enabled"]).toBe("true");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.blur"]).toBe("14");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.refraction"]).toBe("7");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.saturation"]).toBe(
-      "1.16",
-    );
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.blur"]).toBe("22");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.refraction"]).toBe("24");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.saturation"]).toBe("1");
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.shine"]).toBe("1");
   });
 });

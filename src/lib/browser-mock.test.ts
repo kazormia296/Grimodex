@@ -223,13 +223,14 @@ describe("createBrowserMock", () => {
       expect(present).toBe(false);
     });
 
-    it("rejects Web OpenRouter credentials before storing them", async () => {
+    it("keeps Web OpenRouter credentials in session memory", async () => {
+      await mock.invoke("save_api_key", {
+        provider: "openrouter",
+        key: "sk-or-test",
+      });
       await expect(
-        mock.invoke("save_api_key", {
-          provider: "openrouter",
-          key: "sk-or-test",
-        }),
-      ).rejects.toThrow(/not supported in browser mode/i);
+        mock.invoke<boolean>("has_api_key", { provider: "openrouter" }),
+      ).resolves.toBe(true);
       expect(localStorage.getItem("grimodex:api-key:openrouter")).toBeNull();
     });
   });
