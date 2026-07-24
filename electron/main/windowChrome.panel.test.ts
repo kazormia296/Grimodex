@@ -74,22 +74,23 @@ describe("buildPanelUrl", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// buildPanelWindowOptions（§6.5: transparent / frame:false / 480×900 /
+// buildPanelWindowOptions（§6.5: opaque / resizable / frame:false / 480×900 /
 // label 別 window-state 復元）
 // ─────────────────────────────────────────────────────────────────────────────
 
 const WORK_AREA = { x: 0, y: 0, width: 1920, height: 1080 };
 
 describe("buildPanelWindowOptions", () => {
-  it("既定は frame:false + transparent + show:false（全 OS — Tauri の decorations:false 相当）", () => {
+  it("既定は frame:false + opaque + resizable + show:false", () => {
     const { options, startMaximized } = buildPanelWindowOptions({
       savedState: undefined,
       displayWorkAreas: [WORK_AREA],
       requested: { width: 480, height: 900, title: "Codex" },
     });
     expect(options.frame).toBe(false);
-    expect(options.transparent).toBe(true);
-    expect(options.backgroundColor).toBe("#00000000");
+    expect(options.resizable).toBe(true);
+    expect(options.transparent).toBe(false);
+    expect(options.backgroundColor).toBe("#000000");
     expect(options.show).toBe(false);
     expect(options.title).toBe("Codex");
     expect(options.width).toBe(480);

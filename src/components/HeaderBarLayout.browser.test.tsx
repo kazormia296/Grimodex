@@ -21,7 +21,7 @@ const HOST_HEIGHT = 48;
  * 旧実装ではこの非対称ぶんだけ中央がズレた。新実装 (左右レール flex-1 basis-0)
  * では中身の幅に関係なく中央がウィンドウ中心に来るはず。
  */
-function renderHeader(opts: { mac?: boolean } = {}) {
+function renderHeader(opts: { mac?: boolean; emptyCenter?: boolean } = {}) {
   return render(
     <div
       style={{
@@ -41,7 +41,11 @@ function renderHeader(opts: { mac?: boolean } = {}) {
             style={{ flex: "0 0 auto", width: 480, height: 24 }}
           />
         }
-        center={<div data-test-center style={{ width: 200, height: 24 }} />}
+        center={
+          opts.emptyCenter ? null : (
+            <div data-test-center style={{ width: 200, height: 24 }} />
+          )
+        }
         right={
           // 狭い右群 (160px, 縮まない)。
           <div
@@ -111,5 +115,23 @@ describe("HeaderBarLayout geometry invariants (real Chromium)", () => {
     // mac の pl-20 を左レールだけに入れると中央が +40px ズレる。右レールの
     // pr-20 で対称化しているので、ここでも中心は一致しているはず。
     expect(Math.abs(centerX(center!) - centerX(header!))).toBeLessThan(1);
+  });
+
+  it("uses the vacant center rail as an Electron window drag region", async () => {
+    document.documentElement.dataset.shell = "electron";
+    const { container, unmount } = renderHeader({ emptyCenter: true });
+    await nextFrame();
+
+    const centerRail = container.querySelector<HTMLElement>(
+      "[data-header-center]",
+    );
+    expect(centerRail).not.toBeNull();
+    expect(centerRail).toBeEmptyDOMElement();
+    expect(
+      getComputedStyle(centerRail!).getPropertyValue("-webkit-app-region"),
+    ).toBe("drag");
+
+    unmount();
+    delete document.documentElement.dataset.shell;
   });
 });
