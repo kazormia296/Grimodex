@@ -151,6 +151,26 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
     );
   });
 
+  it("can force the visual Codex layer on without changing the persisted store value", () => {
+    const editor = makeEditor();
+    mockEnabled = false;
+
+    renderHook(() =>
+      useCodexHighlight(
+        editor,
+        { enabledOverride: true } as never,
+      ),
+    );
+
+    expect(mockRebuildAndSchedule).toHaveBeenCalledWith(
+      editor,
+      expect.any(Array),
+      [],
+      false,
+    );
+    expect(mockEnabled).toBe(false);
+  });
+
   it("re-runs rebuild when skipMatchedIds changes from true to false (focus switch)", async () => {
     const editor = makeEditor();
     let skipMatchedIds = true;

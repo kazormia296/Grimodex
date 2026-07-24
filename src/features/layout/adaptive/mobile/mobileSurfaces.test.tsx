@@ -1,5 +1,11 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/lib/i18n";
 import { PhoneChatSurface } from "./PhoneChatSurface";
@@ -91,6 +97,47 @@ describe("phone surfaces", () => {
     expect(onClearSelection).toHaveBeenCalledOnce();
   });
 
+  it("edits the minimum safe Codex fields and saves them explicitly", async () => {
+    const onSaveEntry = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PhoneCodexNavigator
+        {...({
+          entries: [
+            {
+              id: "e1",
+              name: "葵",
+              type: "character",
+              summary: "主人公",
+            },
+          ],
+          entryTypes: [
+            { value: "character", label: "Character" },
+            { value: "location", label: "Location" },
+          ],
+          selectedEntryId: "e1",
+          onSaveEntry,
+        } as never)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Type" }), {
+      target: { value: "location" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Summary" }), {
+      target: { value: "  New summary  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(onSaveEntry).toHaveBeenCalledWith("e1", {
+        type: "location",
+        summary: "New summary",
+      });
+    });
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
   it("keeps the composer visible and sends a trimmed message", () => {
     const onSend = vi.fn();
     const { container } = render(
@@ -132,6 +179,55 @@ describe("phone surfaces", () => {
     expect(input).toHaveValue("  keep this draft  ");
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(onSend).toHaveBeenCalledWith("keep this draft");
+  });
+
+  it("lists past chats, switches sessions, and starts a new chat", () => {
+    const onSelectSession = vi.fn();
+    const onCreateSession = vi.fn();
+    render(
+      <PhoneChatSurface
+        {...({
+          messages: [],
+          sessions: [
+            { id: "chat-1", title: "Opening ideas" },
+            { id: "chat-2", title: "Climax review" },
+          ],
+          activeSessionId: "chat-1",
+          onSelectSession,
+          onCreateSession,
+          onSend: vi.fn(),
+        } as never)}
+      />,
+    );
+
+    const history = screen.getByRole("combobox", { name: "Past chats" });
+    expect(screen.getByRole("option", { name: "Opening ideas" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Climax review" })).toBeTruthy();
+    fireEvent.change(history, { target: { value: "chat-2" } });
+    expect(onSelectSession).toHaveBeenCalledWith("chat-2");
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+    expect(onCreateSession).toHaveBeenCalledOnce();
+  });
+
+  it("locks chat-session mutations while AI is generating", () => {
+    render(
+      <PhoneChatSurface
+        {...({
+          messages: [],
+          sessions: [{ id: "chat-1", title: "Opening ideas" }],
+          activeSessionId: "chat-1",
+          onSelectSession: vi.fn(),
+          onCreateSession: vi.fn(),
+          onSend: vi.fn(),
+          disabled: true,
+        } as never)}
+      />,
+    );
+
+    expect(
+      screen.getByRole("combobox", { name: "Past chats" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "New chat" })).toBeDisabled();
   });
 
   it("exposes project actions that move out of the hidden desktop header", () => {

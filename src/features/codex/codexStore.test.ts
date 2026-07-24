@@ -144,6 +144,7 @@ describe("codexStore", () => {
     useCodexStore.setState({
       entries: [],
       completionTargets: [],
+      selectedEntry: null,
       searchQuery: "",
       filterType: null,
       isLoading: false,
@@ -400,6 +401,22 @@ describe("codexStore", () => {
         "アリス改",
       );
       expect(mockListCodexEntries).not.toHaveBeenCalled();
+    });
+
+    it("keeps a filtered-out selected entry current after a structural edit", async () => {
+      useCodexStore.setState({
+        entries: [],
+        selectedEntry: mockEntry,
+      });
+      const updated = { ...mockEntry, type: "location" };
+      mockUpdateCodexEntry.mockResolvedValue(updated);
+
+      await useCodexStore
+        .getState()
+        .update("codex-1", { type: "location" });
+
+      expect(useCodexStore.getState().entries).toEqual([]);
+      expect(useCodexStore.getState().selectedEntry).toEqual(updated);
     });
 
     it("読みの更新を全プロジェクト用の照合 target に反映する", async () => {

@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
-import { Toolbar } from "./Toolbar";
+import { Toolbar, type ToolbarActions } from "./Toolbar";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -20,14 +20,15 @@ function createTestEditor() {
 
 function renderPhoneToolbar(
   editor: Editor,
-  onTogglePanel: () => void = () => {},
+  actionsRef: React.RefObject<ToolbarActions | null>,
 ) {
   return render(
     <WorkspaceViewportProvider profile="phone">
       <Toolbar
         editor={editor as never}
         onFindReplace={() => {}}
-        onTogglePanel={onTogglePanel}
+        onTogglePanel={() => {}}
+        actionsRef={actionsRef}
       />
     </WorkspaceViewportProvider>,
   );
@@ -39,58 +40,20 @@ beforeEach(() => {
   useCursorSettingsStore.setState({ zenMode: false });
 });
 
-describe("Toolbar phone controls", () => {
-  it("keeps the direct 44px touch controls within a 320px action budget", () => {
+describe("Toolbar phone projection", () => {
+  it("hides persistent editor chrome while keeping bubble-menu dialog actions registered", () => {
     const editor = createTestEditor();
-    renderPhoneToolbar(editor);
+    const actionsRef: React.RefObject<ToolbarActions | null> = {
+      current: null,
+    };
+    const { container } = renderPhoneToolbar(editor, actionsRef);
 
-    const toolbar = screen.getByRole("toolbar");
-    expect(toolbar.querySelectorAll("button")).toHaveLength(6);
+    expect(screen.queryByRole("toolbar")).toBeNull();
     expect(
-      screen.queryByRole("button", {
-        name: "editor.toolbar.sceneMetaPanel",
-      }),
-    ).toBeNull();
-
-    editor.destroy();
-  });
-
-  it("keeps the scene information action reachable from More", () => {
-    const editor = createTestEditor();
-    const onTogglePanel = vi.fn();
-    renderPhoneToolbar(editor, onTogglePanel);
-
-    const moreButton = screen.getByRole("button", {
-      name: "editor.toolbar.moreOptions",
-    });
-    fireEvent.click(moreButton);
-    fireEvent.click(
-      screen.getByRole("menuitem", {
-        name: "editor.toolbar.sceneMetaPanel",
-      }),
-    );
-
-    expect(onTogglePanel).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("menu")).toBeNull();
-    expect(moreButton).toHaveFocus();
-    editor.destroy();
-  });
-
-  it("renders More as a viewport-safe scroll region outside clipped editor chrome", () => {
-    const editor = createTestEditor();
-    renderPhoneToolbar(editor);
-    const toolbar = screen.getByRole("toolbar");
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "editor.toolbar.moreOptions",
-      }),
-    );
-
-    const menu = screen.getByRole("menu");
-    expect(menu).toHaveAttribute("data-phone-toolbar-overflow");
-    expect(menu).toHaveClass("overflow-y-auto");
-    expect(toolbar.contains(menu)).toBe(false);
+      container.querySelector("[data-phone-toolbar-headless]"),
+    ).toBeInTheDocument();
+    expect(actionsRef.current?.openRuby).toEqual(expect.any(Function));
+    expect(actionsRef.current?.openLink).toEqual(expect.any(Function));
 
     editor.destroy();
   });

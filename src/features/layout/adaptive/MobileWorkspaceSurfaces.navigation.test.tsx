@@ -28,6 +28,8 @@ const getCodexEntry = vi.hoisted(() => vi.fn());
 const originalCreateNode = useTreeStore.getState().createNode;
 const originalDeleteNode = useTreeStore.getState().deleteNode;
 const originalMoveNode = useTreeStore.getState().moveNode;
+const originalCodexUpdate = useCodexStore.getState().update;
+const originalCodexUpdateText = useCodexStore.getState().updateText;
 const searchResult = vi.hoisted(
   (): {
     id: string;
@@ -126,6 +128,8 @@ beforeEach(async () => {
     pendingEntryId: null,
     selectedEntry: null,
     filterType: null,
+    update: originalCodexUpdate,
+    updateText: originalCodexUpdateText,
     ensureEntriesLoaded: vi.fn().mockResolvedValue(undefined),
   } as never);
   usePhaseStore.setState({ phasesByEntry: {} } as never);
@@ -496,6 +500,56 @@ describe("ConnectedMobileWorkspaceSurface", () => {
       await screen.findByRole("heading", { name: "葵" }),
     ).toBeInTheDocument();
     expect(screen.getByText("主人公")).toBeInTheDocument();
+  });
+
+  it("persists phone Codex type and summary edits through their canonical store paths", async () => {
+    const update = vi.fn().mockResolvedValue(undefined);
+    const updateText = vi.fn().mockResolvedValue(undefined);
+    const entry = {
+      id: "codex-edit",
+      projectId: "project-mobile",
+      type: "character",
+      name: "葵",
+      summary: "主人公",
+    };
+    useCodexStore.setState({
+      entries: [entry],
+      selectedEntry: entry,
+      types: [
+        { slug: "character", label: "キャラクター" },
+        { slug: "location", label: "場所" },
+      ],
+      update,
+      updateText,
+    } as never);
+    usePhaseStore.setState({
+      phasesByEntry: { "codex-edit": [] },
+    } as never);
+
+    render(
+      <ConnectedMobileWorkspaceSurface
+        surface="codex"
+        onOpenSettings={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "編集" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "種別" }), {
+      target: { value: "location" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "要約" }), {
+      target: { value: "新しい要約" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(update).toHaveBeenCalledWith("codex-edit", {
+        type: "location",
+      });
+      expect(updateText).toHaveBeenCalledWith("codex-edit", {
+        summary: "新しい要約",
+      });
+    });
   });
 
   it("clears a Codex request when the search result no longer exists", async () => {

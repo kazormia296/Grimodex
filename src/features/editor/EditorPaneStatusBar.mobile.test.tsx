@@ -50,26 +50,18 @@ beforeEach(() => {
 });
 
 describe("EditorPaneStatusBar phone status control", () => {
-  it("uses a native status selector that cannot be clipped by editor chrome", () => {
+  it("removes the persistent status chrome from the phone editor", () => {
     const onStatusChange = vi.fn();
-    render(
+    const { container } = render(
       <WorkspaceViewportProvider profile="phone">
         <EditorPaneStatusBar {...baseProps} onStatusChange={onStatusChange} />
       </WorkspaceViewportProvider>,
     );
 
-    const selector = screen.getByRole("combobox", {
-      name: i18next.t("editor.status.changeStatus"),
-    });
-    expect(selector).toHaveValue("draft");
-    expect(screen.getAllByRole("option")).toHaveLength(5);
-    expect(screen.getByTestId("editor-stats")).toHaveAttribute(
-      "data-compact",
-      "true",
-    );
-
-    fireEvent.change(selector, { target: { value: "complete" } });
-    expect(onStatusChange).toHaveBeenCalledWith("complete");
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByTestId("editor-stats")).toBeNull();
+    expect(onStatusChange).not.toHaveBeenCalled();
   });
 
   it("preserves the desktop status button and popover", () => {

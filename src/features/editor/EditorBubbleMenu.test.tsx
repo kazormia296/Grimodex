@@ -1,10 +1,19 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  cleanup,
+  waitFor,
+} from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { EditorBubbleMenu } from "./EditorBubbleMenu";
 import type { ToolbarActions } from "./Toolbar";
 
@@ -46,14 +55,28 @@ function isSemanticLinkPickerOpen(): boolean {
   );
 }
 
+const originalCodexCreate = useCodexStore.getState().create;
+
 describe("EditorBubbleMenu", () => {
   beforeEach(() => {
     setBubble(true);
     useCursorSettingsStore.getState().setCommentPickerOpen(false);
     useCursorSettingsStore.getState().setForeshadowPickerOpen(false);
     setSemanticLinkPickerOpen(false);
+    useCompactNavigationStore.getState().reset();
+    useCompactNavigationStore.getState().openSurface("editor");
+    useCodexStore.setState({
+      create: originalCodexCreate,
+      pendingEntryId: null,
+    });
   });
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    useCodexStore.setState({
+      create: originalCodexCreate,
+      pendingEntryId: null,
+    });
+  });
 
   it("is hidden when the selection is collapsed", () => {
     const editor = makeEditor("<p>hello world</p>");
@@ -211,6 +234,73 @@ describe("EditorBubbleMenu", () => {
       />,
     );
     expect(screen.getByTestId("bubble-ai")).toBeInTheDocument();
+    editor.destroy();
+  });
+
+  it("limits the phone selection bubble to Ruby, emphasis dots, and Add to Codex", () => {
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <EditorBubbleMenu
+          editor={editor}
+          toolbarActionsRef={actionsRef()}
+          canEditCodexSemanticLink
+          onInlineAiCommand={vi.fn()}
+        />
+      </WorkspaceViewportProvider>,
+    );
+
+    const toolbar = screen.getByRole("toolbar");
+    expect(toolbar.querySelectorAll("button")).toHaveLength(3);
+    for (const testId of [
+      "bubble-ruby",
+      "bubble-emphasis",
+      "bubble-add-to-codex",
+    ]) {
+      expect(screen.getByTestId(testId)).toHaveClass("min-h-11", "min-w-11");
+    }
+    expect(screen.queryByTestId("bubble-bold")).toBeNull();
+    expect(screen.queryByTestId("bubble-semantic-link")).toBeNull();
+    expect(screen.queryByTestId("bubble-comment")).toBeNull();
+    expect(screen.queryByTestId("bubble-ai")).toBeNull();
+
+    editor.destroy();
+  });
+
+  it("creates a Codex entry from the phone selection and opens it", async () => {
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    const create = vi.fn().mockResolvedValue({
+      id: "codex-created",
+      type: "character",
+      name: "hello",
+      summary: "",
+    });
+    useCodexStore.setState({ create } as never);
+
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <EditorBubbleMenu
+          editor={editor}
+          toolbarActionsRef={actionsRef()}
+        />
+      </WorkspaceViewportProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("bubble-add-to-codex"));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith({
+        type: "character",
+        name: "hello",
+        summary: "",
+      });
+    });
+    expect(useCodexStore.getState().pendingEntryId).toBe("codex-created");
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("codex");
+
     editor.destroy();
   });
 });
