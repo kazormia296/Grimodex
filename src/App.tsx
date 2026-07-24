@@ -406,7 +406,7 @@ function EditorScreen() {
   const [showTransferDialog, setShowTransferDialog] = useState(false);
   const [showHostedHandoff, setShowHostedHandoff] = useState(false);
   const [transferTab, setTransferTab] = useState<TransferTab>("import");
-  const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
+  const seedAndOpenSample = useWorkspaceStore((s) => s.seedAndOpenSample);
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
   const mac = isMac();
 
@@ -448,14 +448,12 @@ function EditorScreen() {
           preset: "off",
           toggles: { chat: false, bodyWrite: false, analysis: false },
         });
-      void seedAndOpenSample(lang, policy).then(() => {
-        setShowSampleTour(true);
-      });
+      void seedAndOpenSample(lang, policy);
     }
     window.addEventListener("restart-sample-tour", onRestartTutorial);
     return () =>
       window.removeEventListener("restart-sample-tour", onRestartTutorial);
-  }, [seedAndOpenSample, setShowSampleTour]);
+  }, [seedAndOpenSample]);
 
   // Project メタデータ（執筆言語・Phase resolution mode）を適用し、
   // screenshot キャプチャ用のステージを初期化する
