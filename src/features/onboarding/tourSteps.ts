@@ -34,6 +34,11 @@ export interface TourStepDef {
   passive?: boolean;
 }
 
+export interface TourStepOptions {
+  /** Whether the current runtime exposes the project export workflow. */
+  includeExport?: boolean;
+}
+
 export const ALL_STEPS: TourStepDef[] = [
   {
     key: "workspace",
@@ -151,6 +156,14 @@ export const ALL_STEPS: TourStepDef[] = [
   },
 ];
 
-export function getTourSteps(toggles: AiPolicyToggles): TourStepDef[] {
-  return ALL_STEPS.filter((step) => !step.requires || toggles[step.requires]);
+export function getTourSteps(
+  toggles: AiPolicyToggles,
+  options: TourStepOptions = {},
+): TourStepDef[] {
+  const includeExport = options.includeExport ?? true;
+
+  return ALL_STEPS.filter((step) => {
+    if (step.key === "export" && !includeExport) return false;
+    return !step.requires || toggles[step.requires];
+  });
 }

@@ -12,6 +12,7 @@ import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
 import { parseAiPolicy } from "@/features/ai-policy/parse";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { SpotlightOverlay, useFocusRects, type FocusRect } from "./spotlight";
 import { computeCardStyle, CARD_WIDTH } from "./cardPlacement";
 import { getTourSteps, type TourStepKey } from "./tourSteps";
@@ -220,6 +221,7 @@ function TourCard({
  * mounted conditionally so all useState/useRef/gate state resets between runs.
  */
 export function SampleTour() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const setShowSampleTour = useWorkspaceStore((s) => s.setShowSampleTour);
   const updateGlobalSettings = useWorkspaceStore((s) => s.updateGlobalSettings);
   const showLauncher = useWorkspaceStore((s) => s.showLauncher);
@@ -235,7 +237,13 @@ export function SampleTour() {
   );
 
   // Build filtered step list
-  const steps = useMemo(() => getTourSteps(toggles), [toggles]);
+  const steps = useMemo(
+    () =>
+      getTourSteps(toggles, {
+        includeExport: runtimeCapabilities.genericProjectTransfer,
+      }),
+    [toggles, runtimeCapabilities.genericProjectTransfer],
+  );
 
   const [stepIndex, setStepIndex] = useState(0);
   const [slideIndex, setSlideIndex] = useState(0);
