@@ -1,22 +1,22 @@
 # Grimodex Privacy Notice
 
-Last updated: 2026-07-20
-Version: v1.5
+Last updated: 2026-07-24
+Version: v1.6
 
 This notice explains where the Grimodex desktop application and Web Editor trial store data and what is transmitted when the User configures AI. The Terms of Use control if this notice conflicts with them.
 
 ## 1. Scope of the service
 
-The Web Editor is a trial for experiencing the editor and handing work off to Grimodex. It is not an AI subscription and does not include Developer-funded AI usage, a shared API key, or cloud manuscript analysis. To use AI, the User must expressly configure an Ollama endpoint under their control or a supported API key.
+The Web Editor is a trial for experiencing the editor and handing work off to Grimodex. It is not an AI subscription and does not include Developer-funded AI usage, a shared API key, or cloud manuscript analysis. To use AI, the User must expressly configure an API key or endpoint under their control for a supported HTTP provider. CLI providers that require a native subprocess are not available in the Web Editor.
 
 ## 2. Storage locations
 
-| Surface                                                 | Principal data                                                                          | Storage                                      | Standard retention                          |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------- |
-| Electron application                                    | Text, settings, chat history, editing metadata                                          | SQLite on the User's device                  | Until the User deletes it                   |
-| Web Editor trial                                        | Workspace, text, story-setting materials, chat history, AI responses                    | IndexedDB in the current browser profile     | Until the workspace or site data is deleted |
-| Web Editor UI and AI configuration (excluding API keys) | Display preferences, selected provider and model, Ollama endpoint, and similar settings | Local Storage in the current browser profile | Until site data is deleted                  |
-| AI data consent record                                  | Policy version, route, provider, actual destination, and acceptance time                | Local Storage in the current browser profile | Until site data is deleted                  |
+| Surface                                                 | Principal data                                                                                               | Storage                                      | Standard retention                          |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | ------------------------------------------- |
+| Electron application                                    | Text, settings, chat history, editing metadata                                                               | SQLite on the User's device                  | Until the User deletes it                   |
+| Web Editor trial                                        | Workspace, text, story-setting materials, chat history, AI responses                                         | IndexedDB in the current browser profile     | Until the workspace or site data is deleted |
+| Web Editor UI and AI configuration (excluding API keys) | Display preferences, selected provider and model, Ollama or OpenAI-compatible endpoint, and similar settings | Local Storage in the current browser profile | Until site data is deleted                  |
+| AI data consent record                                  | Policy version, route, provider, actual destination, and acceptance time                                     | Local Storage in the current browser profile | Until site data is deleted                  |
 
 The Web Editor's IndexedDB is not cloud synchronization or a backup. Deleting browser site data or a browser profile may make the data unrecoverable. The Web Editor does not upload or store manuscripts on the Developer's servers.
 
@@ -30,7 +30,7 @@ The Web Editor does not enable AI automatically or send text to AI without a Use
 
 - the User's instruction, conversation history, and system instructions;
 - text, scenes, Codex entries, settings, and other context selected for the request; and
-- when using OpenAI or Anthropic BYOK, the API key required to authenticate that request.
+- when the selected provider requires authentication, the User's own API key required to authenticate that request.
 
 The pre-request disclosure enumerates the categories that will be sent. If the User declines, the applicable AI request is not transmitted.
 
@@ -41,6 +41,10 @@ The pre-request disclosure enumerates the categories that will be sent. If the U
 Requests are sent to the Ollama endpoint configured by the User. A normal local configuration processes them on the User's device or User-managed network, but a remote Ollama endpoint also receives the data at the remote operator. Storage, retention, logging, and model-training use depend on the selected server, model, and operating configuration.
 
 - [Ollama Privacy Policy](https://ollama.com/privacy)
+
+### OpenAI-compatible endpoints
+
+Requests are sent to the actual Base URL configured by the User. If an API key is required, it is held only in the current page's runtime memory. Storage, retention, logging, model-training use, processing location, and CORS support depend on the endpoint operator and model. Before transmitting data, Grimodex displays the normalized Base URL and asks again for consent if the destination changes.
 
 ### OpenAI / Anthropic BYOK
 
@@ -53,6 +57,25 @@ Provider-side storage, retention, and model-training use vary by account, contra
 - [Anthropic model-training policy](https://privacy.anthropic.com/en/articles/7996868-is-my-data-used-for-model-training)
 - [Anthropic retention periods](https://privacy.anthropic.com/en/articles/7996866-how-long-do-you-store-my-organization-s-data)
 
+### OpenRouter BYOK
+
+Requests are sent to OpenRouter using the User's own API key and may then be processed by downstream inference providers selected by the model and the User's routing settings. Storage, retention, and model-training use depend on OpenRouter and the selected downstream provider's settings and current policies.
+
+- [OpenRouter data collection and privacy](https://openrouter.ai/docs/guides/privacy/data-collection)
+
+### Sakana BYOK
+
+Requests are sent to the Sakana AI API using the User's own API key. Available models, downstream processors, storage, retention, and model-training use depend on the account settings and Sakana AI's current policies. Grimodex does not provide a production relay server that receives the manuscript or API key.
+
+- [Sakana AI Privacy Policy](https://console.sakana.ai/privacy-policy)
+
+### AI Novelist BYOK
+
+Requests are sent to the AI Novelist (Bit192) API using the User's own API key. Request formats and capabilities differ between its legacy and v1 APIs and by model. Storage, retention, and model-training use depend on the service's current policies.
+
+- [AI Novelist API documentation](https://ai-novel.com/account_api_help.php)
+- [AI Novelist Terms of Use](https://ai-novel.com/terms_of_use.html)
+
 ## 5. Explicit consent
 
 Under quality requirement `GDX-AI-CONSENT-001`, Grimodex displays the following before transmitting data to an external AI provider or a configured Ollama endpoint:
@@ -63,7 +86,7 @@ Under quality requirement `GDX-AI-CONSENT-001`, Grimodex displays the following 
 4. whether the data is used for model training; and
 5. links to the relevant usage and privacy policies.
 
-Consent is bound to the policy version, route, provider, and actual destination (the configured endpoint for Ollama). If any of them changes, the Web Editor asks again. If the User declines, processing stops before the provider call.
+Consent is bound to the policy version, route, provider, and actual destination (the configured endpoint for Ollama or an OpenAI-compatible provider). If any of them changes, the Web Editor asks again. If the User declines, processing stops before the provider call.
 
 The browser consent record does not include manuscripts, prompts, AI responses, or API keys. Once data has been sent, the selected destination's retention and deletion policies apply.
 

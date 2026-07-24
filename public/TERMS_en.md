@@ -1,7 +1,7 @@
 # Grimodex Terms of Use
 
-Last updated: 2026-07-20
-Version: v1.5
+Last updated: 2026-07-24
+Version: v1.6
 
 **Authoritative language notice.** The authoritative, legally binding text of these Terms of Use is the Japanese version (`TERMS_ja.md`). This English version is a reference translation provided for convenience only. In the event of any discrepancy or inconsistency between this English translation and the Japanese version, the Japanese version shall prevail.
 
@@ -59,13 +59,13 @@ By installing, launching, or using the Software, the user (the "User") is deemed
 - **Web Editor trial:** Workspace data, text, story-setting materials, chat history, and AI responses are stored in IndexedDB in the current browser profile. UI and AI configuration (excluding API keys) is stored in Local Storage. This is not cloud synchronization or backup. Data may be lost if the User deletes the workspace, site data, or browser profile. The Web Editor does not upload or store manuscripts on the Developer's servers.
 - **Handoff file:** A file used to continue work in Grimodex is generated in the browser and saved to a download location selected by the User. The User controls its storage, sharing, deletion, and backup after download.
 
-  4.2. To use AI in the Web Editor, the User must expressly configure Ollama, the OpenAI API, or the Anthropic API. No Developer-funded AI usage is included. A BYOK API key is held only in the current page's runtime memory and is not stored in IndexedDB, Local Storage, or the Developer's servers. It must be entered again after the page reloads or closes.
+  4.2. To use AI in the Web Editor, the User must expressly configure an API key or endpoint for a supported HTTP provider (OpenRouter, OpenAI, Anthropic, Ollama, an OpenAI-compatible endpoint, Sakana, or AI Novelist). CLI providers that require a native subprocess are not available in the Web Editor. No Developer-funded AI usage is included. A BYOK API key is held only in the current page's runtime memory and is not stored in IndexedDB, Local Storage, or the Developer's servers. It must be entered again after the page reloads or closes.
 
   4.3. Before transmitting data to AI, the Software displays route-specific information and asks for the User's explicit confirmation, including at least: (a) prompts, conversation history, selected text, or other data to be sent; (b) the AI provider, processing purpose, and actual destination; (c) application-side and destination-side storage and retention; (d) whether the data is used for model training; and (e) links to the relevant policies. Consent is bound to the route, provider, actual destination, and policy version. If any of them changes, the Software asks again. If the User declines, the applicable AI request is not sent.
 
   4.4. An AI request may include the User's instruction, conversation history, system instructions, and the text, scenes, Codex entries, settings, or other context selected to fulfill the request. The User is responsible for confirming that they are authorized to transmit third-party personal data, trade secrets, or other confidential information.
 
-  4.5. Ollama processing, retention, and training use depend on the endpoint, model, and operating policy configured by the User. OpenAI / Anthropic BYOK retention and training use depend on the selected provider, the User's contract and account settings, and the model; Grimodex does not make a universal guarantee about them. The User should review the disclosure and linked current policies before sending data.
+  4.5. Processing, retention, and training use for Ollama and OpenAI-compatible endpoints depend on the endpoint, model, and operating policy configured by the User. For BYOK providers with fixed APIs, they depend on the selected provider, any downstream inference provider, the User's contract and account settings, and the model; Grimodex does not make a universal guarantee about them. The User should review the disclosure and linked current policies before sending data.
 
   4.6. The browser may store only the policy version, route, provider, actual destination, and acceptance timestamp for an AI data consent record in Local Storage. That consent record does not contain manuscripts, prompts, AI responses, or API keys.
 

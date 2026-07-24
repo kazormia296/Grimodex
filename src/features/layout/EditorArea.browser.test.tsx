@@ -55,12 +55,14 @@ describe("EditorArea startup motion", () => {
   it("provides adjustable glass styling without filtering the editor DOM", () => {
     const { container } = render(<EditorArea />);
     const editor = container.querySelector<HTMLElement>("[data-editor-area]");
+    const glassFilter = container.querySelector<HTMLElement>(
+      "[data-editor-fluid-glass-filter]",
+    );
 
     expect(editor).toHaveAttribute("data-editor-fluid-glass", "true");
     expect(editor).toHaveAttribute("data-editor-fluid-glass-refraction", "13");
-    expect(
-      container.querySelector("[data-editor-fluid-glass-filter]"),
-    ).toBeNull();
+    expect(glassFilter).not.toBeNull();
+    expect(glassFilter).toHaveAttribute("aria-hidden", "true");
     expect(editor?.style.getPropertyValue("--editor-fluid-glass-blur")).toBe(
       "22px",
     );

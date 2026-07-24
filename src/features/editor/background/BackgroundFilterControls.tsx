@@ -8,6 +8,7 @@ import {
   useSettingControl,
 } from "@/features/settings/useSettingControl";
 import { contrastTargetRatio } from "../zen/zenContrastGuard";
+import { ZEN_BACKGROUND_DEFAULTS } from "../zen/zenBackgroundDefaults";
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
@@ -43,7 +44,7 @@ export function BackgroundFilterControls() {
           min={0}
           max={1}
           step={0.05}
-          defaultValue={0.35}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.dither.strength}
           format={percent}
           disabled={!dither}
         />
@@ -53,7 +54,7 @@ export function BackgroundFilterControls() {
           settingKey="editor.zenBackground.dither.size"
           min={1}
           max={8}
-          defaultValue={2}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.dither.size}
           format={(value) => `${value}px`}
           disabled={!dither}
         />
@@ -66,7 +67,7 @@ export function BackgroundFilterControls() {
           settingKey="editor.zenBackground.dither.levels"
           min={2}
           max={12}
-          defaultValue={6}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.dither.levels}
           disabled={!dither}
         />
       </SettingRow>
@@ -85,7 +86,7 @@ export function BackgroundFilterControls() {
           min={0}
           max={1}
           step={0.05}
-          defaultValue={0.3}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.halftone.strength}
           format={percent}
           disabled={!halftone}
         />
@@ -98,7 +99,7 @@ export function BackgroundFilterControls() {
           settingKey="editor.zenBackground.halftone.size"
           min={3}
           max={24}
-          defaultValue={8}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.halftone.size}
           format={(value) => `${value}px`}
           disabled={!halftone}
         />
@@ -111,7 +112,7 @@ export function BackgroundFilterControls() {
           settingKey="editor.zenBackground.halftone.angle"
           min={0}
           max={90}
-          defaultValue={15}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.halftone.angle}
           format={(value) => `${value}°`}
           disabled={!halftone}
         />
@@ -125,7 +126,7 @@ export function BackgroundFilterControls() {
           min={0}
           max={1}
           step={0.05}
-          defaultValue={0.15}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.halftone.softness}
           format={percent}
           disabled={!halftone}
         />
@@ -136,7 +137,7 @@ export function BackgroundFilterControls() {
       >
         <SettingDropdown
           settingKey="editor.zenBackground.contrastGuard.mode"
-          defaultValue="auto"
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.contrastGuard.mode}
           options={[
             {
               value: "none",
@@ -159,7 +160,7 @@ export function BackgroundFilterControls() {
           min={0}
           max={1}
           step={0.05}
-          defaultValue={1}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.contrastGuard.strength}
           format={(value) =>
             `${Math.round(value * 100)}% · ${contrastTargetRatio(value).toFixed(value === 0 || value === 1 ? 1 : 2)}:1`
           }
@@ -176,7 +177,7 @@ export function BackgroundFilterControls() {
           min={0}
           max={0.75}
           step={0.01}
-          defaultValue={0.5}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.contrastGuard.toolMix}
           format={percent}
           disabled={contrastGuardMode !== "auto"}
         />

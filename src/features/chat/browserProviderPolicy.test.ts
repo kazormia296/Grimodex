@@ -6,12 +6,19 @@ import {
 import { AI_PROVIDERS } from "./types";
 
 describe("Web Editor AI provider policy", () => {
-  it("offers only Local LLM and direct BYOK providers on the web", () => {
+  it("offers every HTTP provider on the web and excludes only native CLI", () => {
     expect(BROWSER_DIRECT_AI_PROVIDERS).toEqual([
-      "ollama",
+      "openrouter",
       "openai",
       "anthropic",
+      "ollama",
+      "openai-compatible",
+      "sakana",
+      "ai-novelist",
     ]);
+    expect(BROWSER_DIRECT_AI_PROVIDERS).toEqual(
+      AI_PROVIDERS.filter((provider) => provider !== "cli"),
+    );
     expect(aiProvidersForRuntime("web")).toEqual(BROWSER_DIRECT_AI_PROVIDERS);
   });
 

@@ -78,8 +78,11 @@ describe("ZenShaderSurface", () => {
       />,
     );
 
-    expect(shaderLifecycle.mounted).toEqual(["mesh-gradient", "warp"]);
-    expect(shaderLifecycle.unmounted).toEqual(["mesh-gradient"]);
+    expect(shaderLifecycle.mounted).toEqual([
+      ZEN_SHADER_DEFAULTS.shader,
+      "warp",
+    ]);
+    expect(shaderLifecycle.unmounted).toEqual([ZEN_SHADER_DEFAULTS.shader]);
   });
 
   it("exposes the effective GPU refraction for live diagnostics", () => {
@@ -89,7 +92,10 @@ describe("ZenShaderSurface", () => {
 
     expect(
       container.querySelector("[data-zen-shader-surface]"),
-    ).toHaveAttribute("data-glass-refraction", "7");
+    ).toHaveAttribute(
+      "data-glass-refraction",
+      String(ZEN_SHADER_DEFAULTS.glass.refraction),
+    );
     expect(
       container.querySelector("[data-zen-shader-surface]"),
     ).toHaveAttribute("data-glass-rect");
@@ -120,7 +126,7 @@ describe("ZenShaderSurface", () => {
     });
     expect(shaderLifecycle.animation.at(-1)).toMatchObject({
       playing: true,
-      speed: 0.08,
+      speed: ZEN_SHADER_DEFAULTS.speed / 100,
     });
 
     rerender(

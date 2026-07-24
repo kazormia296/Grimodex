@@ -28,6 +28,10 @@ describe("EULA_VERSION", () => {
         "実際の接続先",
         "Ollama",
         "OpenAI／Anthropic BYOK",
+        "OpenRouter BYOK",
+        "Sakana BYOK",
+        "AI のべりすと BYOK",
+        "OpenAI 互換エンドポイント",
         "handoff ファイル",
       ],
       en: [
@@ -39,6 +43,10 @@ describe("EULA_VERSION", () => {
         "actual destination",
         "Ollama",
         "OpenAI / Anthropic BYOK",
+        "OpenRouter BYOK",
+        "Sakana BYOK",
+        "AI Novelist BYOK",
+        "OpenAI-compatible endpoints",
         "handoff file",
       ],
     } as const;
@@ -48,7 +56,6 @@ describe("EULA_VERSION", () => {
       "Cloudflare R2",
       "Cloudflare D1",
       "Cloudflare Access",
-      "OpenRouter",
       "public report",
       "公開レポート",
     ];
@@ -82,7 +89,6 @@ describe("EULA_VERSION", () => {
         "Cloudflare R2",
         "Cloudflare D1",
         "Cloudflare Access",
-        "OpenRouter",
         "public report",
         "公開レポート",
       ]) {

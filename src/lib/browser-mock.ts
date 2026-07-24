@@ -4,10 +4,17 @@
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlValue } from "sql.js";
 import schemaContract from "@/db/generated/schema-contract.json";
-import type { AiProvider, ToolProtocolMode } from "@/features/chat/types";
+import {
+  resolveActiveOpenaiCompatibleEndpoint,
+  type AiProvider,
+  type AiSettings,
+  type ToolProtocolMode,
+} from "@/features/chat/types";
+import { isAinoveristV1Model } from "@/features/chat/aiNovelist";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import {
   createBrowserAiTransport,
+  browserProviderRequiresApiKey,
   fetchModels,
   testConnection,
   sendChatWithTools,
@@ -545,6 +552,8 @@ export interface BrowserAiAuthorizationRequest {
   model: string;
   endpointId?: string | null;
   ollamaEndpoint?: string | null;
+  baseUrl?: string | null;
+  apiVariant?: string | null;
   hasApiKey: boolean;
 }
 
@@ -629,7 +638,10 @@ export async function createBrowserMock(
   const authorizeAiRequest =
     options.authorizeAiRequest ??
     (async (request: BrowserAiAuthorizationRequest): Promise<void> => {
-      if (request.provider !== "ollama" && !request.hasApiKey) {
+      if (
+        browserProviderRequiresApiKey(request.provider) &&
+        !request.hasApiKey
+      ) {
         throw new Error(
           `AIは未接続です。APIキーを設定してください: ${request.provider}`,
         );
@@ -677,8 +689,8 @@ export async function createBrowserMock(
     if (BROWSER_AI_PROVIDERS.has(provider)) {
       return { ...defaultBrowserAiSettings(), ...parsed, provider };
     }
-    // Retired hosted/OpenRouter and native-only selections must never survive
-    // as an apparently connected Web Editor setting.
+    // Native-only selections must never survive as an apparently connected
+    // Web Editor setting.
     return {
       ...defaultBrowserAiSettings(),
       ...parsed,
@@ -736,7 +748,9 @@ export async function createBrowserMock(
 
   function hasAiProviderAccess(args: Record<string, unknown>): boolean {
     const provider = requireBrowserAiProvider(args.provider);
-    return provider === "ollama" || handleGetApiKey(args) !== null;
+    return (
+      !browserProviderRequiresApiKey(provider) || handleGetApiKey(args) !== null
+    );
   }
 
   function handleDeleteApiKey(args: Record<string, unknown>): void {
@@ -768,9 +782,45 @@ export async function createBrowserMock(
         "AIモデルを設定してください。AIはWeb Editorに付属していません。",
       );
     }
-    const endpointId = optionalString(
+    const requestedEndpointId = optionalString(
       args.resolvedEndpointId ?? args.endpointId,
     );
+    const compatibleEndpoint =
+      provider === "openai-compatible"
+        ? resolveActiveOpenaiCompatibleEndpoint(
+            settings as unknown as AiSettings,
+            requestedEndpointId,
+          )
+        : undefined;
+    const endpointId =
+      provider === "openai-compatible"
+        ? (compatibleEndpoint?.id ?? requestedEndpointId)
+        : requestedEndpointId;
+    const baseUrl = compatibleEndpoint?.baseUrl?.trim().replace(/\/+$/, "");
+    const explicitApiVariant = optionalString(args.apiVariant);
+    const persistedApiVariant =
+      provider === settings.provider
+        ? optionalString(settings.modelApiVariant)
+        : null;
+    const requestedApiVariant =
+      explicitApiVariant ??
+      (provider === "openai-compatible"
+        ? (compatibleEndpoint?.apiVariant ?? null)
+        : provider === "ai-novelist"
+          ? (persistedApiVariant ??
+            (isAinoveristV1Model(model) ? "v1" : "legacy"))
+          : persistedApiVariant);
+    // Web Editor currently implements chat-style HTTP transports, not the
+    // desktop Responses API path. Fall back explicitly instead of silently
+    // attaching a stale desktop "responses" variant to a chat request.
+    const apiVariant =
+      requestedApiVariant === "responses"
+        ? provider === "ai-novelist"
+          ? isAinoveristV1Model(model)
+            ? "v1"
+            : "legacy"
+          : null
+        : requestedApiVariant;
     const messages = Array.isArray(args.messages)
       ? args.messages.map((message) => {
           const value = message as Record<string, unknown>;
@@ -793,6 +843,8 @@ export async function createBrowserMock(
           ? requestMaxOutputTokens
           : null,
       ollamaEndpoint: optionalString(settings.ollamaEndpoint),
+      baseUrl: baseUrl || null,
+      apiVariant,
     };
   }
 
@@ -806,7 +858,9 @@ export async function createBrowserMock(
       model: request.model,
       endpointId: request.endpointId,
       ollamaEndpoint: request.ollamaEndpoint,
-      hasApiKey: request.provider === "ollama" || Boolean(request.apiKey),
+      baseUrl: request.baseUrl,
+      apiVariant: request.apiVariant,
+      hasApiKey: Boolean(request.apiKey),
     });
   }
 
@@ -819,18 +873,38 @@ export async function createBrowserMock(
     );
     const endpointId = optionalString(args.endpointId);
     const ollamaEndpoint = optionalString(settings.ollamaEndpoint);
-    const apiKey = handleGetApiKey({ provider, endpointId }) ?? "";
+    const compatibleEndpoint =
+      provider === "openai-compatible"
+        ? resolveActiveOpenaiCompatibleEndpoint(
+            settings as unknown as AiSettings,
+            endpointId,
+          )
+        : undefined;
+    const resolvedEndpointId =
+      provider === "openai-compatible"
+        ? (compatibleEndpoint?.id ?? endpointId)
+        : endpointId;
+    const baseUrl =
+      compatibleEndpoint?.baseUrl?.trim().replace(/\/+$/, "") ?? null;
+    const apiKey =
+      handleGetApiKey({ provider, endpointId: resolvedEndpointId }) ?? "";
 
     await authorizeAiRequest({
       operation: "connection",
       provider,
       model: "",
-      endpointId,
+      endpointId: resolvedEndpointId,
       ollamaEndpoint,
-      hasApiKey: provider === "ollama" || Boolean(apiKey),
+      baseUrl,
+      apiVariant: compatibleEndpoint?.apiVariant ?? null,
+      hasApiKey: Boolean(apiKey),
     });
 
-    return fetchModels(provider, apiKey, ollamaEndpoint);
+    return fetchModels(provider, apiKey, {
+      ollamaEndpoint,
+      baseUrl,
+      apiVariant: compatibleEndpoint?.apiVariant ?? null,
+    });
   }
 
   async function handleTestAiConnection(
@@ -852,7 +926,11 @@ export async function createBrowserMock(
       request.provider,
       request.model,
       request.apiKey ?? "",
-      request.ollamaEndpoint,
+      {
+        ollamaEndpoint: request.ollamaEndpoint,
+        baseUrl: request.baseUrl,
+        apiVariant: request.apiVariant,
+      },
     );
   }
 
@@ -885,7 +963,11 @@ export async function createBrowserMock(
       messages,
       tools,
       toolProtocolMode,
-      request.ollamaEndpoint,
+      {
+        ollamaEndpoint: request.ollamaEndpoint,
+        baseUrl: request.baseUrl,
+        apiVariant: request.apiVariant,
+      },
     );
   }
 
