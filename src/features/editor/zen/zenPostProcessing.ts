@@ -144,6 +144,15 @@ float zenRelativeLuminance(vec3 color) {
   );
 }
 
+// Keep tool surfaces on their theme's side of the luminance range. A muted
+// mid-tone ink must not invert a light surface while chasing its target ratio.
+float zenSurfaceCorrectionDirection(vec3 surfaceColor) {
+  float surfaceLuminance = zenRelativeLuminance(surfaceColor);
+  float contrastAgainstBlack = (surfaceLuminance + 0.05) / 0.05;
+  float contrastAgainstWhite = 1.05 / (surfaceLuminance + 0.05);
+  return contrastAgainstBlack >= contrastAgainstWhite ? 1.0 : -1.0;
+}
+
 float zenFadeFromStart(float value, float edge, float feather) {
   return feather <= 0.00001
     ? step(edge, value)
@@ -191,7 +200,11 @@ float zenUiSurfaceMask() {
   return zenUiSurfaceMaskCache;
 }
 
-vec3 zenGuardVisibleColor(vec3 visibleColor, vec3 textColor) {
+vec3 zenGuardVisibleColor(
+  vec3 visibleColor,
+  vec3 textColor,
+  float correctionDirection
+) {
   float textLuminance = zenRelativeLuminance(textColor);
   float backgroundLuminance = zenRelativeLuminance(visibleColor);
   float currentContrast =
@@ -203,7 +216,13 @@ vec3 zenGuardVisibleColor(vec3 visibleColor, vec3 textColor) {
   vec3 correctedLinear;
   float contrastAgainstBlack = (textLuminance + 0.05) / 0.05;
   float contrastAgainstWhite = 1.05 / (textLuminance + 0.05);
-  if (contrastAgainstBlack >= contrastAgainstWhite) {
+  bool shouldDarken =
+    correctionDirection < -0.5 ||
+    (
+      abs(correctionDirection) <= 0.5 &&
+      contrastAgainstBlack >= contrastAgainstWhite
+    );
+  if (shouldDarken) {
     float maximumBackground = clamp(
       (textLuminance + 0.05) / u_zenContrastTarget - 0.05,
       0.0,
@@ -255,7 +274,8 @@ vec3 applyZenContrastGuard(vec3 shaderColor) {
   if (paperMask > 0.0) {
     vec3 paperGuardedVisibleColor = zenGuardVisibleColor(
       visibleColor,
-      u_zenContrastTextColor
+      u_zenContrastTextColor,
+      0.0
     );
     vec3 paperGuardedShaderColor = shaderColor;
     if (surfaceOpacity > 0.00001) {
@@ -273,7 +293,8 @@ vec3 applyZenContrastGuard(vec3 shaderColor) {
   if (uiMask > 0.0) {
     vec3 uiGuardedVisibleColor = zenGuardVisibleColor(
       visibleColor,
-      u_zenUiContrastTextColor
+      u_zenUiContrastTextColor,
+      zenSurfaceCorrectionDirection(u_zenContrastBackdropColor)
     );
     vec3 uiGuardedShaderColor = shaderColor;
     if (surfaceOpacity > 0.00001) {

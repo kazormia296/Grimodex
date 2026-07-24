@@ -242,6 +242,14 @@ function pixelAt(canvas: HTMLCanvasElement, u: number, v: number) {
   return pixel;
 }
 
+function shaderRgb(
+  red: number,
+  green: number,
+  blue: number,
+): [number, number, number] {
+  return [red / 0xff, green / 0xff, blue / 0xff];
+}
+
 function PaperCompileProbe({ shader }: { shader: PaperShaderId }) {
   const resolved = resolvePaperShaderMount(shader, {
     width: 64,
@@ -532,14 +540,14 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
         <UiContrastProbe
           name="light-unguarded"
           enabled={false}
-          uiTextColor={[0, 0, 0]}
-          backdropColor={[0.45, 0.45, 0.45]}
+          uiTextColor={[0.35, 0.35, 0.35]}
+          backdropColor={[0.9, 0.9, 0.9]}
         />
         <UiContrastProbe
           name="light-guarded"
           enabled
-          uiTextColor={[0, 0, 0]}
-          backdropColor={[0.45, 0.45, 0.45]}
+          uiTextColor={[0.35, 0.35, 0.35]}
+          backdropColor={[0.9, 0.9, 0.9]}
         />
       </div>,
     );
@@ -612,6 +620,67 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
         pixelAt(darkGuarded, 0.5, 0.5)[0] - pixelAt(darkUnguarded, 0.5, 0.5)[0],
       ),
     ).toBeGreaterThan(80);
+  });
+
+  it("keeps every non-Simple light theme on the bright correction branch", async () => {
+    const mutedForeground = shaderRgb(0x88, 0x88, 0x88);
+    const lightThemes = [
+      {
+        name: "dark-academia",
+        backdropColor: shaderRgb(0xf0, 0xed, 0xe6),
+      },
+      {
+        name: "modern-mystic",
+        backdropColor: shaderRgb(0xea, 0xee, 0xf2),
+      },
+      {
+        name: "warm-craft",
+        backdropColor: shaderRgb(0xf0, 0xeb, 0xe0),
+      },
+    ];
+    const { container } = render(
+      <div>
+        {lightThemes.map(({ name, backdropColor }) => (
+          <div key={name}>
+            <UiContrastProbe
+              name={`${name}-unguarded`}
+              enabled={false}
+              uiTextColor={mutedForeground}
+              backdropColor={backdropColor}
+            />
+            <UiContrastProbe
+              name={`${name}-guarded`}
+              enabled
+              uiTextColor={mutedForeground}
+              backdropColor={backdropColor}
+            />
+          </div>
+        ))}
+      </div>,
+    );
+
+    await waitFor(() => {
+      for (const { name } of lightThemes) {
+        expect(
+          container.querySelector<HTMLCanvasElement>(
+            `[data-ui-contrast-probe="${name}-guarded"] canvas`,
+          )?.width,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    for (const { name } of lightThemes) {
+      const unguarded = container.querySelector<HTMLCanvasElement>(
+        `[data-ui-contrast-probe="${name}-unguarded"] canvas`,
+      )!;
+      const guarded = container.querySelector<HTMLCanvasElement>(
+        `[data-ui-contrast-probe="${name}-guarded"] canvas`,
+      )!;
+
+      expect(pixelAt(guarded, 0.2, 0.5)[0]).toBeGreaterThan(
+        pixelAt(unguarded, 0.2, 0.5)[0] + 20,
+      );
+    }
   });
 
   it("keeps the Editor feather gradual at low shader opacity", async () => {
