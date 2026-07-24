@@ -294,6 +294,74 @@
     "unitScenes": "scenes",
     "unitCodex": "codex"
   },
+  "mobileWorkspace": {
+    "navigation": {
+      "label": "Workspace",
+      "editor": "Write",
+      "scenes": "Scenes",
+      "codex": "Codex",
+      "ai": "AI",
+      "more": "More"
+    },
+    "header": {
+      "back": "Back"
+    },
+    "editor": {
+      "preparing": "Preparing your first scene…",
+      "createFailed": "The first scene could not be created.",
+      "retry": "Try again"
+    },
+    "scenes": {
+      "title": "Scenes",
+      "searchLabel": "Search scenes and notes",
+      "searchPlaceholder": "Search",
+      "add": "Add",
+      "actions": "{{title}} actions",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "delete": "Delete",
+      "actionFailed": "Could not complete the action. Try again.",
+      "deleteTitle": "Delete scene",
+      "deleteDescription": "Delete “{{title}}”?",
+      "deleteNoteTitle": "Delete note",
+      "deleteNoteDescription": "Delete “{{title}}”?"
+    },
+    "surfaces": {
+      "search": {
+        "title": "Search",
+        "snippetUnavailable": "Snippet details are available in the desktop layout.",
+        "resultUnavailable": "This search result is no longer available.",
+        "loadFailed": "Could not open this search result. Try again."
+      },
+      "codex": {
+        "back": "Back to Codex",
+        "empty": "No Codex entries yet",
+        "type": "Type",
+        "summary": "Summary",
+        "save": "Save",
+        "saving": "Saving…",
+        "saveFailed": "Could not save. Try again."
+      },
+      "ai": {
+        "label": "AI chat",
+        "message": "Message",
+        "send": "Send",
+        "openSettings": "Open AI settings",
+        "streaming": "Streaming…",
+        "empty": "Start a conversation with AI here",
+        "history": "Past chats",
+        "selectHistory": "Select a past chat",
+        "loadingHistory": "Loading chats…",
+        "noHistory": "No past chats",
+        "untitledHistory": "Untitled chat",
+        "newChat": "New chat"
+      },
+      "more": {
+        "description": "Search, settings, export, and other workspace actions.",
+        "search": "Search this project"
+      }
+    }
+  },
   "welcome": {
     "description": "Choose a folder to save your manuscript.",
     "descriptionSub": "The database and manuscript files will be stored in this folder.",
@@ -528,6 +596,7 @@
     "trial": {
       "title": "Web Editor Trial",
       "description": "Try the real Grimodex editor in your browser.",
+      "mobileSummary": "Your edits are stored in this browser and are not automatically synced to the local app.",
       "storageNotice": "Data is stored in this browser and is not automatically synced to the local Grimodex app.",
       "importNotice": "Local files you select are processed only in this browser.",
       "aiNotice": "AI is not included. To use AI, configure a supported HTTP provider with your own API key or endpoint.",

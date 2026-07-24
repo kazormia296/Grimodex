@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { TransferDialog, type TransferTab } from "./TransferDialog";
 
 vi.mock("react-i18next", () => ({
@@ -12,10 +13,19 @@ vi.mock("@/components/ui/animated-overlay", () => ({
   AnimatedOverlay: ({
     open,
     children,
+    className,
+    testId,
   }: {
     open: boolean;
     children: ReactNode;
-  }) => (open ? <div data-testid="overlay">{children}</div> : null),
+    className?: string;
+    testId?: string;
+  }) =>
+    open ? (
+      <div className={className} data-testid={testId ?? "overlay"}>
+        {children}
+      </div>
+    ) : null,
 }));
 
 vi.mock("@/features/import/ImportDialog", () => ({
@@ -46,21 +56,92 @@ vi.mock("@/features/export/NovelExportDialog", () => ({
   NovelExportBody: () => <div data-testid="body-novel" />,
 }));
 
-function setup(tab: TransferTab = "import") {
+function setup(
+  tab: TransferTab = "import",
+  profile: "wide" | "phone" = "wide",
+) {
   const onTabChange = vi.fn();
   const onClose = vi.fn();
   render(
-    <TransferDialog
-      open
-      tab={tab}
-      onTabChange={onTabChange}
-      onClose={onClose}
-    />,
+    <WorkspaceViewportProvider profile={profile}>
+      <TransferDialog
+        open
+        tab={tab}
+        onTabChange={onTabChange}
+        onClose={onClose}
+      />
+    </WorkspaceViewportProvider>,
   );
   return { onTabChange, onClose };
 }
 
 describe("TransferDialog", () => {
+  it("uses the visual viewport, four safe areas, and horizontal scrolling tabs on phone", () => {
+    setup("import", "phone");
+
+    const overlay = screen.getByTestId("transfer-dialog");
+    expect(overlay.className).toContain(
+      "h-[var(--visual-viewport-height,100dvh)]",
+    );
+    expect(overlay.className).toContain("w-screen");
+    expect(overlay.className).toContain("flex-col");
+    expect(overlay.className).toContain("pt-[env(safe-area-inset-top)]");
+    expect(overlay.className).toContain("pr-[env(safe-area-inset-right)]");
+    expect(overlay.className).toContain("pb-[env(safe-area-inset-bottom)]");
+    expect(overlay.className).toContain("pl-[env(safe-area-inset-left)]");
+    expect(overlay.className).not.toContain("w-[760px]");
+
+    const tabs = screen.getByRole("tablist", {
+      name: "transfer.tablistLabel",
+    });
+    expect(tabs).toHaveAttribute("aria-orientation", "horizontal");
+    expect(tabs.className).toContain("overflow-x-auto");
+    expect(tabs.className).toContain("w-full");
+    expect(tabs.className).not.toContain("w-[150px]");
+
+    const activeTab = screen.getByTestId("transfer-tab-import");
+    expect(activeTab.className).toContain("min-h-11");
+    expect(activeTab.className).toContain("shrink-0");
+
+    const closeButton = screen.getByRole("button", { name: "common.close" });
+    expect(closeButton.className).toContain("min-h-11");
+    expect(closeButton.className).toContain("min-w-11");
+
+    const panel = screen.getByTestId("transfer-dialog-panel");
+    expect(panel.className).toContain("overflow-y-auto");
+    expect(panel.className).toContain("overflow-x-hidden");
+    expect(panel.className).toContain("[&_button]:min-h-11");
+  });
+
+  it("retains the bounded desktop dialog and vertical tabs on wide", () => {
+    setup("import", "wide");
+
+    const overlay = screen.getByTestId("transfer-dialog");
+    expect(overlay.className).toContain("h-[min(600px,85vh)]");
+    expect(overlay.className).toContain("w-[760px]");
+    expect(overlay.className).toContain("max-w-[92vw]");
+    expect(overlay.className).not.toContain("w-screen");
+    expect(overlay.className).not.toContain("safe-area-inset");
+
+    const tabs = screen.getByRole("tablist", {
+      name: "transfer.tablistLabel",
+    });
+    expect(tabs).toHaveAttribute("aria-orientation", "vertical");
+    expect(tabs.className).toContain("w-[150px]");
+    expect(tabs.className).toContain("flex-col");
+    expect(tabs.className).not.toContain("overflow-x-auto");
+
+    expect(
+      screen.getByRole("button", { name: "common.close" }).className,
+    ).toContain("p-1");
+    expect(
+      screen.getByRole("button", { name: "common.close" }).className,
+    ).not.toContain("min-h-11");
+    expect(screen.getByTestId("transfer-dialog-panel").className).not.toContain(
+      "[&_button]:min-h-11",
+    );
+  });
+
   it("renders three tabs and only the active tab's body", () => {
     setup("import");
     expect(screen.getByTestId("transfer-tab-import")).toBeInTheDocument();

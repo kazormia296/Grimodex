@@ -9,6 +9,8 @@ import { NovelcrafterImportFlow } from "./flows/NovelcrafterImportFlow";
 import { KakuyomuImportFlow } from "./flows/KakuyomuImportFlow";
 import { MarkdownImportFlow } from "./flows/MarkdownImportFlow";
 import { NovelImportFlow } from "./flows/NovelImportFlow";
+import { cn } from "@/lib/utils";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 type WebEditorImportSource = Exclude<ImportSource, "scan">;
 
@@ -29,6 +31,7 @@ export function WebEditorImportDialog({
   onClose,
 }: WebEditorImportDialogProps) {
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const rootRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useState<WebEditorImportSource>("novelcrafter");
   const [markdownMode, setMarkdownMode] =
@@ -75,7 +78,13 @@ export function WebEditorImportDialog({
     <AnimatedOverlay
       open={open}
       onClose={handleClose}
-      className="flex h-[min(560px,85vh)] w-[680px] max-w-[92vw] flex-col gap-4 overflow-hidden rounded-lg border border-border bg-background p-6 shadow-xl outline-none"
+      testId="web-editor-import-dialog"
+      className={cn(
+        "flex min-h-0 min-w-0 flex-col overflow-hidden border border-border bg-background shadow-xl outline-none",
+        phoneWorkspace
+          ? "h-[var(--visual-viewport-height,100dvh)] w-screen max-h-none max-w-none gap-3 rounded-none border-0 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]"
+          : "h-[min(560px,85vh)] w-[680px] max-w-[92vw] gap-4 rounded-lg p-6",
+      )}
     >
       <div
         ref={rootRef}
@@ -83,20 +92,30 @@ export function WebEditorImportDialog({
         aria-modal="true"
         aria-label={t("import.dialogTitleUnified")}
         tabIndex={-1}
-        className="relative flex min-h-0 flex-1 flex-col gap-4 outline-none"
+        className={cn(
+          "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none",
+          phoneWorkspace ? "gap-3" : "gap-4",
+        )}
       >
         <button
           type="button"
           onClick={handleClose}
           disabled={flowBusy}
           aria-label={t("common.close")}
-          className="absolute right-0 top-0 rounded p-1 text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          className={cn(
+            "absolute right-0 top-0 z-10 rounded text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50",
+            phoneWorkspace
+              ? "flex min-h-11 min-w-11 items-center justify-center"
+              : "p-1",
+          )}
         >
           <X className="h-4 w-4" aria-hidden="true" />
         </button>
 
-        <div className="shrink-0 pr-8">
-          <h2 className="text-base font-semibold">
+        <div
+          className={cn("min-w-0 shrink-0", phoneWorkspace ? "pr-12" : "pr-8")}
+        >
+          <h2 className="break-words text-base font-semibold">
             {t("import.dialogTitleUnified")}
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -105,7 +124,7 @@ export function WebEditorImportDialog({
         </div>
 
         <div
-          className="flex shrink-0 flex-wrap gap-1"
+          className="flex min-w-0 max-w-full shrink-0 flex-wrap gap-1 overflow-x-hidden"
           role="tablist"
           aria-label={t("import.sourceLabel")}
         >
@@ -118,11 +137,13 @@ export function WebEditorImportDialog({
               data-testid={`import-source-${item}`}
               onClick={() => selectSource(item)}
               disabled={interactionLocked}
-              className={`rounded px-2 py-1 text-xs ${
+              className={cn(
+                "max-w-full rounded px-2 py-1 text-xs",
+                phoneWorkspace && "min-h-11 break-words",
                 source === item
                   ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground hover:bg-accent"
-              }`}
+                  : "bg-muted text-muted-foreground hover:bg-accent",
+              )}
             >
               {t(`import.source.${item}`)}
             </button>
@@ -137,7 +158,8 @@ export function WebEditorImportDialog({
 
         <div
           key={flowKey}
-          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
+          data-testid="web-editor-import-flow"
+          className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto overscroll-contain"
         >
           {source === "novelcrafter" && (
             <NovelcrafterImportFlow

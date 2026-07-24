@@ -36,6 +36,7 @@ function ports(nodes: TreeNodeData[]): CreateTreeNodePorts & {
     ensureWritable: vi.fn(),
     getProjectId: () => "project-a",
     getNodes: () => state.nodes,
+    isCurrentAuthority: () => true,
     getSetting: (_key, fallback) => fallback,
     createPersisted: vi.fn(async (record) => makeNode(record.id, record.title)),
     deletePersisted: vi.fn().mockResolvedValue(undefined),
@@ -69,5 +70,26 @@ describe("createTreeNode", () => {
     expect(testPorts.closeTabs).toHaveBeenCalledWith(created.id);
     await testPorts.history[0]!.redo();
     expect(testPorts.revealEditorDocument).toHaveBeenCalledWith(created.id);
+  });
+
+  it("keeps mobile creation undoable without revealing a desktop tab on redo", async () => {
+    const testPorts = ports([]);
+    const created = await createTreeNode(
+      {
+        nodeType: "scene",
+        parentId: null,
+        interaction: "mobile",
+      },
+      testPorts,
+    );
+
+    expect(testPorts.history).toHaveLength(1);
+    await testPorts.history[0]!.undo();
+    await testPorts.history[0]!.redo();
+
+    expect(testPorts.recreatePersisted).toHaveBeenCalledWith(
+      expect.objectContaining({ id: created.id }),
+    );
+    expect(testPorts.revealEditorDocument).not.toHaveBeenCalled();
   });
 });

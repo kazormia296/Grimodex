@@ -9,6 +9,10 @@ import {
 } from "./projectStore";
 import { CreateProjectDialog } from "./CreateProjectDialog";
 import { isLicenseRestrictedError } from "@/features/license/gate";
+import { ResponsiveAlertDialog } from "@/components/ui/responsive-alert-dialog";
+import { DialogFooter } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 export function ProjectMenu({
   onOpenImport,
@@ -29,11 +33,13 @@ export function ProjectMenu({
   const createNewProject = useProjectStore((s) => s.createNewProject);
   const deleteProjectById = useProjectStore((s) => s.deleteProjectById);
   const refreshProjects = useProjectStore((s) => s.refreshProjects);
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
 
   const [isOpen, setIsOpen] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     void refreshProjects();
@@ -114,6 +120,7 @@ export function ProjectMenu({
     <>
       <div ref={menuRef} className="relative" data-tour-target="project-menu">
         <button
+          ref={triggerRef}
           type="button"
           data-testid="project-menu-trigger"
           onClick={() => setIsOpen(!isOpen)}
@@ -245,41 +252,43 @@ export function ProjectMenu({
         onCreate={handleCreate}
       />
 
-      {pendingDeleteId && (
-        <div
-          data-testid="project-delete-confirm"
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50"
-        >
-          <div className="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-lg">
-            <h3 className="mb-2 text-sm font-semibold">
-              {t("project.delete.confirmTitle")}
-            </h3>
-            <p className="mb-4 text-sm text-muted-foreground">
-              {t("project.delete.confirmBody", {
-                title:
-                  projects.find((p) => p.id === pendingDeleteId)?.title ?? "",
-              })}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setPendingDeleteId(null)}
-                className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                type="button"
-                data-testid="project-delete-confirm-btn"
-                onClick={() => void handleConfirmDelete()}
-                className="rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
-              >
-                {t("common.deleteConfirm")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ResponsiveAlertDialog
+        open={pendingDeleteId !== null}
+        onClose={() => setPendingDeleteId(null)}
+        title={t("project.delete.confirmTitle")}
+        description={t("project.delete.confirmBody", {
+          title:
+            projects.find((project) => project.id === pendingDeleteId)?.title ??
+            "",
+        })}
+        className="max-w-sm"
+        testId="project-delete-confirm"
+        restoreFocusRef={triggerRef}
+      >
+        <DialogFooter className={cn(phoneWorkspace && "grid grid-cols-1")}>
+          <button
+            type="button"
+            onClick={() => setPendingDeleteId(null)}
+            className={cn(
+              "rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent",
+              phoneWorkspace && "min-h-11 w-full",
+            )}
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            type="button"
+            data-testid="project-delete-confirm-btn"
+            onClick={() => void handleConfirmDelete()}
+            className={cn(
+              "rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground",
+              phoneWorkspace && "min-h-11 w-full",
+            )}
+          >
+            {t("common.deleteConfirm")}
+          </button>
+        </DialogFooter>
+      </ResponsiveAlertDialog>
     </>
   );
 }

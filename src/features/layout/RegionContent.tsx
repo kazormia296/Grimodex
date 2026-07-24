@@ -19,6 +19,8 @@ import type { RegionId } from "./layoutTypes";
 interface RegionContentProps {
   region: RegionId;
   orientation: "vertical" | "horizontal";
+  /** Keep panel hosts mounted while disabling chrome/interactions in a hidden 0-size cell. */
+  dormant?: boolean;
 }
 
 function regionHasOpenSlots(slots: { activePanel: string | null }[]): boolean {
@@ -41,6 +43,7 @@ function insertIndexAfterSlot(slots: { id: string }[], slotId: string): number {
 export const RegionContent = memo(function RegionContent({
   region,
   orientation,
+  dormant = false,
 }: RegionContentProps) {
   const slots = useLayoutStore((s) => s.layout.regions[region].slots);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
@@ -54,9 +57,10 @@ export const RegionContent = memo(function RegionContent({
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
-  const showDropZones = useDragDropZonesReady(
-    Boolean(draggingPanel && !layoutLocked),
+  const dropZonesReady = useDragDropZonesReady(
+    Boolean(draggingPanel && !layoutLocked && !dormant),
   );
+  const showDropZones = !dormant && dropZonesReady;
 
   const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
 
@@ -112,7 +116,7 @@ export const RegionContent = memo(function RegionContent({
       e.dataTransfer.dropEffect = "move";
       setDragOverTarget({ type: "slot", region, slotId });
     },
-    [layoutLocked, region, setDragOverTarget],
+    [draggingPanel, layoutLocked, region, setDragOverTarget],
   );
 
   const handleSlotDragLeave = useCallback(
@@ -190,6 +194,7 @@ export const RegionContent = memo(function RegionContent({
     <div
       ref={containerRef}
       data-region-content={region}
+      data-dormant={dormant ? "true" : undefined}
       className={cn(
         // overflow visible: each slot's card draws its shadow into the gap.
         "relative flex h-full min-h-0 w-full min-w-0",
@@ -239,24 +244,26 @@ export const RegionContent = memo(function RegionContent({
                       : { height: PANEL_GAP_PX }
                 }
               >
-                <Splitter
-                  orientation={orientation}
-                  thickness={PANEL_GAP_PX}
-                  disabled={layoutLocked || zoomActive}
-                  onDrag={(delta) => {
-                    const prevSlot = openSlots[index - 1];
-                    const layoutBudgetPx = getLayoutBudgetPx();
-                    if (layoutBudgetPx <= 0) return;
-                    nudgeAdjacentSlotSizes(
-                      region,
-                      prevSlot.id,
-                      slot.id,
-                      delta,
-                      layoutBudgetPx,
-                    );
-                  }}
-                  onDragEnd={finalizeLayoutResize}
-                />
+                {!dormant && (
+                  <Splitter
+                    orientation={orientation}
+                    thickness={PANEL_GAP_PX}
+                    disabled={layoutLocked || zoomActive}
+                    onDrag={(delta) => {
+                      const prevSlot = openSlots[index - 1];
+                      const layoutBudgetPx = getLayoutBudgetPx();
+                      if (layoutBudgetPx <= 0) return;
+                      nudgeAdjacentSlotSizes(
+                        region,
+                        prevSlot.id,
+                        slot.id,
+                        delta,
+                        layoutBudgetPx,
+                      );
+                    }}
+                    onDragEnd={finalizeLayoutResize}
+                  />
+                )}
                 {showDropZones && (
                   <div
                     data-drop-between
@@ -306,11 +313,15 @@ export const RegionContent = memo(function RegionContent({
               inert={slotZoomHidden || undefined}
               className={cn(
                 "gx-panel relative flex min-h-0 min-w-0 flex-col overflow-hidden",
-                draggingPanel === slot.activePanel && "gx-panel--dragging",
+                !dormant &&
+                  draggingPanel === slot.activePanel &&
+                  "gx-panel--dragging",
               )}
-              onDragOver={(e) => handleSlotDragOver(slot.id, e)}
-              onDragLeave={handleSlotDragLeave}
-              onDrop={(e) => handleSlotDrop(slot.id, e)}
+              onDragOver={
+                dormant ? undefined : (e) => handleSlotDragOver(slot.id, e)
+              }
+              onDragLeave={dormant ? undefined : handleSlotDragLeave}
+              onDrop={dormant ? undefined : (e) => handleSlotDrop(slot.id, e)}
             >
               {slot.activePanel && (
                 <AnimatedSlotPanel

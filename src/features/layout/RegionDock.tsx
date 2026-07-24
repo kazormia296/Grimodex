@@ -48,6 +48,7 @@ interface RegionDockProps {
   stripeOrientation: "vertical" | "horizontal";
   contentOrientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
+  dormant?: boolean;
   /** bottom stripe の左右端に確保するコーナートグル用の余白(px)。
    *  content には適用しない（alignment 維持のため）。 */
   stripeReserveStartPx?: number;
@@ -58,6 +59,7 @@ function BottomRegionDock({
   segments,
   stripeOrientation,
   contentOrientation,
+  dormant = false,
   stripeReserveStartPx = 0,
   stripeReserveEndPx = 0,
 }: Omit<RegionDockProps, "region">) {
@@ -96,7 +98,11 @@ function BottomRegionDock({
         }
         className="flex min-h-0 w-full min-w-0 flex-col"
       >
-        <RegionContent region="bottom" orientation={contentOrientation} />
+        <RegionContent
+          region="bottom"
+          orientation={contentOrientation}
+          dormant={dormant}
+        />
       </AnimatedRegionChrome>
 
       <div
@@ -126,6 +132,7 @@ export const RegionDock = memo(function RegionDock({
   stripeOrientation,
   contentOrientation,
   segments,
+  dormant = false,
   stripeReserveStartPx = 0,
   stripeReserveEndPx = 0,
 }: RegionDockProps) {
@@ -137,6 +144,7 @@ export const RegionDock = memo(function RegionDock({
       stripeOrientation={stripeOrientation}
       contentOrientation={contentOrientation}
       segments={segments}
+      dormant={dormant}
       stripeReserveStartPx={stripeReserveStartPx}
       stripeReserveEndPx={stripeReserveEndPx}
     />

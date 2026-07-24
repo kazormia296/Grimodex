@@ -50,6 +50,8 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { resolveReadingForSurface } from "@/features/codex/reading";
 import { useCodexReadingRegistrationPrompt } from "@/features/editor/useCodexReadingRegistrationPrompt";
 import { onWindowResized } from "@/lib/windowControls";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 
 function ToolbarButton({
   active,
@@ -94,6 +96,16 @@ function ToolbarButton({
 
 function Sep() {
   return <div aria-hidden className="mx-0.5 h-4 w-px bg-border" />;
+}
+
+function ToolbarOverflowPortal({
+  enabled,
+  children,
+}: {
+  enabled: boolean;
+  children: React.ReactNode;
+}) {
+  return enabled ? createPortal(children, document.body) : children;
 }
 
 export interface ToolbarActions {
@@ -156,9 +168,14 @@ export function Toolbar({
   const [linkUrl, setLinkUrl] = useState("");
   const [linkPos, setLinkPos] = useState<{ x: number; y: number } | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [phoneOverflowTop, setPhoneOverflowTop] = useState(0);
   const [fontSizeOpen, setFontSizeOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
+  const activeCompactSurface = useCompactNavigationStore(
+    (state) => state.activeSurface,
+  );
   const promptCodexReadingRegistration = useCodexReadingRegistrationPrompt();
   const overflowBtnRef = useRef<HTMLDivElement>(null);
   const overflowDropdownRef = useRef<HTMLDivElement>(null);
@@ -386,6 +403,47 @@ export function Toolbar({
   }, [overflowOpen]);
 
   useEffect(() => {
+    if (!phoneWorkspace || activeCompactSurface === "editor") return;
+    // Phone popovers are portalled to body. Close them before their editor
+    // surface becomes inert so they cannot remain interactive above another
+    // mobile surface or restore focus into hidden content.
+    setOverflowOpen(false);
+    setFontSizeOpen(false);
+    setLayersOpen(false);
+    setRubyOpen(false);
+    setLinkOpen(false);
+  }, [activeCompactSurface, phoneWorkspace]);
+
+  useEffect(() => {
+    if (!phoneWorkspace) return;
+    // The toolbar root becomes hidden in the phone projection, but its
+    // body-portalled surfaces are outside that DOM subtree. Close every
+    // non-essential toolbar surface when entering phone mode so a desktop
+    // popover cannot remain interactive over the mobile editor. Ruby stays
+    // open because it is the phone selection bubble's editing surface.
+    setOverflowOpen(false);
+    setFontSizeOpen(false);
+    setLayersOpen(false);
+    setLinkOpen(false);
+  }, [phoneWorkspace]);
+
+  useEffect(() => {
+    if (!phoneWorkspace || !overflowOpen) return;
+    const syncPosition = () => {
+      const triggerBottom =
+        overflowBtnRef.current?.getBoundingClientRect().bottom ?? 0;
+      setPhoneOverflowTop(Math.ceil(triggerBottom) + 4);
+    };
+    syncPosition();
+    window.addEventListener("resize", syncPosition);
+    window.visualViewport?.addEventListener("resize", syncPosition);
+    return () => {
+      window.removeEventListener("resize", syncPosition);
+      window.visualViewport?.removeEventListener("resize", syncPosition);
+    };
+  }, [overflowOpen, phoneWorkspace]);
+
+  useEffect(() => {
     if (!fontSizeOpen) return;
     function close(e: MouseEvent) {
       const target = e.target as Node;
@@ -526,7 +584,8 @@ export function Toolbar({
     editor.chain().focus().setHorizontalRule().run();
   }
 
-  const hasOverflowedButtons = visibleUnitCount < 4;
+  const effectiveVisibleUnitCount = phoneWorkspace ? 1 : visibleUnitCount;
+  const hasOverflowedButtons = effectiveVisibleUnitCount < 4;
 
   // レイヤーボタンの状態ドット: ON のレイヤーのチャネル色を並べる
   // (Codex は常時系なのでドットに含めない)。順序はポップオーバーの行順に揃える。
@@ -546,6 +605,11 @@ export function Toolbar({
     <div
       role="toolbar"
       aria-label={t("editor.toolbar.label")}
+      data-phone-toolbar={phoneWorkspace ? "true" : undefined}
+      data-phone-toolbar-headless={phoneWorkspace ? "true" : undefined}
+      hidden={phoneWorkspace}
+      aria-hidden={phoneWorkspace ? true : undefined}
+      inert={phoneWorkspace ? true : undefined}
       className="glass-editor-chrome relative flex-shrink-0 border-b border-border"
     >
       {/* Toolbar content area — overflow-hidden clips at panel width */}
@@ -574,26 +638,30 @@ export function Toolbar({
             >
               <Underline size={14} />
             </ToolbarButton>
-            <ToolbarButton
-              label={t("editor.toolbar.strikethrough")}
-              active={active?.strike}
-              onClick={() => editor.chain().focus().toggleStrike().run()}
-            >
-              <Strikethrough size={14} />
-            </ToolbarButton>
-            <ToolbarButton
-              label={t("editor.toolbar.emphasisDots")}
-              active={active?.emphasisDots}
-              onClick={() =>
-                editor.chain().focus().toggleMark("emphasisDots").run()
-              }
-            >
-              ﹅
-            </ToolbarButton>
+            {!phoneWorkspace && (
+              <>
+                <ToolbarButton
+                  label={t("editor.toolbar.strikethrough")}
+                  active={active?.strike}
+                  onClick={() => editor.chain().focus().toggleStrike().run()}
+                >
+                  <Strikethrough size={14} />
+                </ToolbarButton>
+                <ToolbarButton
+                  label={t("editor.toolbar.emphasisDots")}
+                  active={active?.emphasisDots}
+                  onClick={() =>
+                    editor.chain().focus().toggleMark("emphasisDots").run()
+                  }
+                >
+                  ﹅
+                </ToolbarButton>
+              </>
+            )}
           </div>
 
           {/* Unit 2: ブロックフォーマット */}
-          {visibleUnitCount >= 2 && (
+          {effectiveVisibleUnitCount >= 2 && (
             <div ref={unit2Ref} className="flex items-center gap-0.5">
               <Sep />
               <ToolbarButton
@@ -627,7 +695,7 @@ export function Toolbar({
           )}
 
           {/* Unit 3: リスト・引用 */}
-          {visibleUnitCount >= 3 && (
+          {effectiveVisibleUnitCount >= 3 && (
             <div ref={unit3Ref} className="flex items-center gap-0.5">
               <Sep />
               <ToolbarButton
@@ -661,7 +729,7 @@ export function Toolbar({
           )}
 
           {/* Unit 4: 小説固有 */}
-          {visibleUnitCount >= 4 && (
+          {effectiveVisibleUnitCount >= 4 && (
             <div ref={unit4Ref} className="flex items-center gap-0.5">
               <Sep />
               <ToolbarButton
@@ -733,45 +801,47 @@ export function Toolbar({
             </ToolbarButton>
           </div>
           {/* 表示モードセグメント: 集中 / タイプライター / 縦書き */}
-          <div className="flex items-center gap-px rounded-md border border-border bg-muted/30 p-0.5">
-            <ToolbarButton
-              label={t("editor.toolbar.zenMode")}
-              active={zenMode}
-              onClick={toggleZenMode}
-            >
-              Zen
-            </ToolbarButton>
-            <ToolbarButton
-              label={t("editor.toolbar.fullscreenMode")}
-              active={fullscreenMode}
-              onClick={toggleFullscreenMode}
-            >
-              <Maximize2 size={13} />
-            </ToolbarButton>
-            <ToolbarButton
-              label={t("editor.toolbar.focusMode")}
-              active={focusMode}
-              onClick={toggleFocusMode}
-            >
-              <Focus size={13} />
-            </ToolbarButton>
-            <ToolbarButton
-              label={t("editor.toolbar.typewriterMode")}
-              active={typewriterMode}
-              onClick={toggleTypewriterMode}
-              disabled={verticalMode}
-            >
-              <Keyboard size={13} />
-            </ToolbarButton>
-            <ToolbarButton
-              label={t("editor.toolbar.verticalMode")}
-              active={verticalMode}
-              onClick={() => setVerticalMode(!verticalMode)}
-            >
-              縦
-            </ToolbarButton>
-          </div>
-          {onToggleReorder !== undefined && (
+          {!phoneWorkspace && (
+            <div className="flex items-center gap-px rounded-md border border-border bg-muted/30 p-0.5">
+              <ToolbarButton
+                label={t("editor.toolbar.zenMode")}
+                active={zenMode}
+                onClick={toggleZenMode}
+              >
+                Zen
+              </ToolbarButton>
+              <ToolbarButton
+                label={t("editor.toolbar.fullscreenMode")}
+                active={fullscreenMode}
+                onClick={toggleFullscreenMode}
+              >
+                <Maximize2 size={13} />
+              </ToolbarButton>
+              <ToolbarButton
+                label={t("editor.toolbar.focusMode")}
+                active={focusMode}
+                onClick={toggleFocusMode}
+              >
+                <Focus size={13} />
+              </ToolbarButton>
+              <ToolbarButton
+                label={t("editor.toolbar.typewriterMode")}
+                active={typewriterMode}
+                onClick={toggleTypewriterMode}
+                disabled={verticalMode}
+              >
+                <Keyboard size={13} />
+              </ToolbarButton>
+              <ToolbarButton
+                label={t("editor.toolbar.verticalMode")}
+                active={verticalMode}
+                onClick={() => setVerticalMode(!verticalMode)}
+              >
+                縦
+              </ToolbarButton>
+            </div>
+          )}
+          {!phoneWorkspace && onToggleReorder !== undefined && (
             <ToolbarButton
               label={t("editor.toolbar.reorderMode")}
               active={reorderOpen ?? false}
@@ -808,7 +878,7 @@ export function Toolbar({
               </span>
             </ToolbarButton>
           </div>
-          {onTogglePanel !== undefined && (
+          {!phoneWorkspace && onTogglePanel !== undefined && (
             <ToolbarButton
               label={t("editor.toolbar.sceneMetaPanel")}
               active={panelOpen ?? false}
@@ -824,7 +894,14 @@ export function Toolbar({
               active={overflowOpen}
               ariaHasPopup="menu"
               ariaExpanded={overflowOpen}
-              onClick={() => setOverflowOpen((v) => !v)}
+              onClick={() => {
+                if (!overflowOpen && phoneWorkspace) {
+                  const triggerBottom =
+                    overflowBtnRef.current?.getBoundingClientRect().bottom ?? 0;
+                  setPhoneOverflowTop(Math.ceil(triggerBottom) + 4);
+                }
+                setOverflowOpen((v) => !v);
+              }}
             >
               <EllipsisVertical size={14} />
             </ToolbarButton>
@@ -891,203 +968,222 @@ export function Toolbar({
 
       {/* オーバーフロードロップダウン */}
       {overflowOpen && (
-        <div
-          ref={overflowDropdownRef}
-          role="menu"
-          tabIndex={-1}
-          aria-label={t("editor.toolbar.moreOptions")}
-          onKeyDown={handleOverflowMenuKeyDown}
-          className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded border border-border bg-popover py-1 shadow-md"
-        >
-          {/* ツールバーに収まらないボタン群 */}
-          {visibleUnitCount < 2 && (
-            <>
+        <ToolbarOverflowPortal enabled={phoneWorkspace}>
+          <div
+            ref={overflowDropdownRef}
+            role="menu"
+            tabIndex={-1}
+            aria-label={t("editor.toolbar.moreOptions")}
+            data-phone-toolbar-overflow={phoneWorkspace ? "true" : undefined}
+            onKeyDown={handleOverflowMenuKeyDown}
+            style={phoneWorkspace ? { top: phoneOverflowTop } : undefined}
+            className={cn(
+              "z-50 min-w-[200px] rounded border border-border bg-popover py-1 shadow-md",
+              phoneWorkspace
+                ? "overflow-y-auto overscroll-contain"
+                : "absolute right-0 top-full mt-1",
+            )}
+          >
+            {/* ツールバーに収まらないボタン群 */}
+            {effectiveVisibleUnitCount < 2 && (
+              <>
+                <OverflowItem
+                  label={t("editor.toolbar.heading1Short")}
+                  shortcut="Ctrl+1"
+                  onClick={() => {
+                    editor.chain().focus().toggleHeading({ level: 1 }).run();
+                    setOverflowOpen(false);
+                  }}
+                />
+                <OverflowItem
+                  label={t("editor.toolbar.heading2Short")}
+                  shortcut="Ctrl+2"
+                  onClick={() => {
+                    editor.chain().focus().toggleHeading({ level: 2 }).run();
+                    setOverflowOpen(false);
+                  }}
+                />
+                <OverflowItem
+                  label={t("editor.toolbar.heading3Short")}
+                  shortcut="Ctrl+3"
+                  onClick={() => {
+                    editor.chain().focus().toggleHeading({ level: 3 }).run();
+                    setOverflowOpen(false);
+                  }}
+                />
+              </>
+            )}
+            {effectiveVisibleUnitCount < 3 && (
+              <>
+                <OverflowItem
+                  label={t("editor.toolbar.bulletList")}
+                  onClick={() => {
+                    editor.chain().focus().toggleBulletList().run();
+                    setOverflowOpen(false);
+                  }}
+                />
+                <OverflowItem
+                  label={t("editor.toolbar.orderedList")}
+                  onClick={() => {
+                    editor.chain().focus().toggleOrderedList().run();
+                    setOverflowOpen(false);
+                  }}
+                />
+                <OverflowItem
+                  label={t("editor.toolbar.blockquote")}
+                  onClick={() => {
+                    editor.chain().focus().toggleBlockquote().run();
+                    setOverflowOpen(false);
+                  }}
+                />
+                <OverflowItem
+                  label={t("editor.toolbar.horizontalRule")}
+                  onClick={() => {
+                    insertHorizontalRule();
+                    setOverflowOpen(false);
+                  }}
+                />
+              </>
+            )}
+            {effectiveVisibleUnitCount < 4 && (
+              <>
+                <OverflowItem
+                  label={t("editor.toolbar.rubyShort")}
+                  onClick={() => {
+                    openRuby();
+                    setOverflowOpen(false);
+                  }}
+                />
+                <OverflowItem
+                  label={t("editor.toolbar.linkShort")}
+                  shortcut="Ctrl+K"
+                  onClick={() => {
+                    openLink();
+                    setOverflowOpen(false);
+                  }}
+                />
+                <OverflowItem
+                  label={t("editor.toolbar.sceneBreak")}
+                  onClick={() => {
+                    editor.chain().focus().insertSceneBreak().run();
+                    setOverflowOpen(false);
+                  }}
+                />
+              </>
+            )}
+            {hasOverflowedButtons && (
+              <div aria-hidden className="my-1 border-t border-border" />
+            )}
+            {phoneWorkspace && onTogglePanel !== undefined && (
               <OverflowItem
-                label={t("editor.toolbar.heading1Short")}
-                shortcut="Ctrl+1"
+                label={t("editor.toolbar.sceneMetaPanel")}
+                icon={PanelRight}
                 onClick={() => {
-                  editor.chain().focus().toggleHeading({ level: 1 }).run();
-                  setOverflowOpen(false);
+                  closeOverflowAndRestoreFocus();
+                  onTogglePanel();
                 }}
               />
-              <OverflowItem
-                label={t("editor.toolbar.heading2Short")}
-                shortcut="Ctrl+2"
-                onClick={() => {
-                  editor.chain().focus().toggleHeading({ level: 2 }).run();
-                  setOverflowOpen(false);
-                }}
-              />
-              <OverflowItem
-                label={t("editor.toolbar.heading3Short")}
-                shortcut="Ctrl+3"
-                onClick={() => {
-                  editor.chain().focus().toggleHeading({ level: 3 }).run();
-                  setOverflowOpen(false);
-                }}
-              />
-            </>
-          )}
-          {visibleUnitCount < 3 && (
-            <>
-              <OverflowItem
-                label={t("editor.toolbar.bulletList")}
-                onClick={() => {
-                  editor.chain().focus().toggleBulletList().run();
-                  setOverflowOpen(false);
-                }}
-              />
-              <OverflowItem
-                label={t("editor.toolbar.orderedList")}
-                onClick={() => {
-                  editor.chain().focus().toggleOrderedList().run();
-                  setOverflowOpen(false);
-                }}
-              />
-              <OverflowItem
-                label={t("editor.toolbar.blockquote")}
-                onClick={() => {
-                  editor.chain().focus().toggleBlockquote().run();
-                  setOverflowOpen(false);
-                }}
-              />
-              <OverflowItem
-                label={t("editor.toolbar.horizontalRule")}
-                onClick={() => {
-                  insertHorizontalRule();
-                  setOverflowOpen(false);
-                }}
-              />
-            </>
-          )}
-          {visibleUnitCount < 4 && (
-            <>
-              <OverflowItem
-                label={t("editor.toolbar.rubyShort")}
-                onClick={() => {
-                  openRuby();
-                  setOverflowOpen(false);
-                }}
-              />
-              <OverflowItem
-                label={t("editor.toolbar.linkShort")}
-                shortcut="Ctrl+K"
-                onClick={() => {
-                  openLink();
-                  setOverflowOpen(false);
-                }}
-              />
-              <OverflowItem
-                label={t("editor.toolbar.sceneBreak")}
-                onClick={() => {
-                  editor.chain().focus().insertSceneBreak().run();
-                  setOverflowOpen(false);
-                }}
-              />
-            </>
-          )}
-          {hasOverflowedButtons && (
-            <div aria-hidden className="my-1 border-t border-border" />
-          )}
-          <OverflowItem
-            label={t("editor.toolbar.findReplace")}
-            icon={Search}
-            // Ctrl+H is Windows/Linux only — ⌘H is macOS "Hide", so no Mac hint.
-            shortcut={isMac() ? undefined : "Ctrl+H"}
-            onClick={() => {
-              onFindReplace();
-              setOverflowOpen(false);
-            }}
-          />
-          <div className="flex items-center justify-between px-3 py-1 text-xs text-foreground">
-            <span>
-              {t(
-                targetUnit === "word"
-                  ? "editor.toolbar.targetWordCount"
-                  : "editor.toolbar.targetCharCount",
-              )}
-            </span>
-            <input
-              type="number"
-              min={0}
-              aria-label={t(
-                targetUnit === "word"
-                  ? "editor.toolbar.targetWordCount"
-                  : "editor.toolbar.targetCharCount",
-              )}
-              value={targetCharCount === 0 ? "" : targetCharCount}
-              placeholder="0"
-              onMouseDown={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                const v = parseInt(e.target.value, 10);
-                setTargetCharCount(isNaN(v) || v < 0 ? 0 : v);
+            )}
+            <OverflowItem
+              label={t("editor.toolbar.findReplace")}
+              icon={Search}
+              // Ctrl+H is Windows/Linux only — ⌘H is macOS "Hide", so no Mac hint.
+              shortcut={isMac() ? undefined : "Ctrl+H"}
+              onClick={() => {
+                onFindReplace();
+                setOverflowOpen(false);
               }}
-              className="ml-2 w-20 rounded border border-input bg-background px-1.5 py-0.5 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <div className="flex items-center justify-between px-3 py-1 text-xs text-foreground">
+              <span>
+                {t(
+                  targetUnit === "word"
+                    ? "editor.toolbar.targetWordCount"
+                    : "editor.toolbar.targetCharCount",
+                )}
+              </span>
+              <input
+                type="number"
+                min={0}
+                aria-label={t(
+                  targetUnit === "word"
+                    ? "editor.toolbar.targetWordCount"
+                    : "editor.toolbar.targetCharCount",
+                )}
+                value={targetCharCount === 0 ? "" : targetCharCount}
+                placeholder="0"
+                onMouseDown={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  setTargetCharCount(isNaN(v) || v < 0 ? 0 : v);
+                }}
+                className="ml-2 w-20 rounded border border-input bg-background px-1.5 py-0.5 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+            <div aria-hidden className="my-1 border-t border-border" />
+            <OverflowItem
+              label={t("editor.toolbar.showLineNumbers")}
+              icon={Hash}
+              checked={showLineNumbers}
+              onClick={() => setShowLineNumbers(!showLineNumbers)}
+            />
+            <div aria-hidden className="my-1 border-t border-border" />
+            <div
+              role="presentation"
+              className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+            >
+              {t("settings.editor.experience")}
+            </div>
+            <OverflowItem
+              label={t("settings.editor.spellCheck")}
+              icon={SpellCheck}
+              checked={spellCheck}
+              onClick={() => setSpellCheck(!spellCheck)}
+            />
+            <OverflowItem
+              label={t("settings.editor.smartQuotes")}
+              icon={Quote}
+              checked={smartQuotes}
+              onClick={() => setSmartQuotes(!smartQuotes)}
+            />
+            <OverflowItem
+              label={t("settings.editor.smartDashes")}
+              icon={Minus}
+              checked={smartDashes}
+              onClick={() => setSmartDashes(!smartDashes)}
+            />
+            <OverflowItem
+              label={t("settings.editor.bubbleMenu")}
+              icon={TextSelect}
+              checked={bubbleMenu}
+              onClick={() => setBubbleMenu(!bubbleMenu)}
+            />
+            <OverflowItem
+              label={t("settings.editor.aozoraInput")}
+              icon={BookOpen}
+              checked={aozoraInput}
+              onClick={() => setAozoraInput(!aozoraInput)}
+            />
+            <OverflowItem
+              label={t("settings.editor.autoPairBrackets")}
+              icon={Brackets}
+              checked={autoPairBrackets}
+              onClick={() => setAutoPairBrackets(!autoPairBrackets)}
+            />
+            <OverflowItem
+              label={t("settings.editor.showInvisibles")}
+              icon={Pilcrow}
+              checked={showInvisibles}
+              onClick={() => setShowInvisibles(!showInvisibles)}
+            />
+            <OverflowItem
+              label={t("settings.editor.slashCommand")}
+              icon={Sparkles}
+              checked={inlineAiCommand}
+              onClick={() => setInlineAiCommand(!inlineAiCommand)}
             />
           </div>
-          <div aria-hidden className="my-1 border-t border-border" />
-          <OverflowItem
-            label={t("editor.toolbar.showLineNumbers")}
-            icon={Hash}
-            checked={showLineNumbers}
-            onClick={() => setShowLineNumbers(!showLineNumbers)}
-          />
-          <div aria-hidden className="my-1 border-t border-border" />
-          <div
-            role="presentation"
-            className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
-          >
-            {t("settings.editor.experience")}
-          </div>
-          <OverflowItem
-            label={t("settings.editor.spellCheck")}
-            icon={SpellCheck}
-            checked={spellCheck}
-            onClick={() => setSpellCheck(!spellCheck)}
-          />
-          <OverflowItem
-            label={t("settings.editor.smartQuotes")}
-            icon={Quote}
-            checked={smartQuotes}
-            onClick={() => setSmartQuotes(!smartQuotes)}
-          />
-          <OverflowItem
-            label={t("settings.editor.smartDashes")}
-            icon={Minus}
-            checked={smartDashes}
-            onClick={() => setSmartDashes(!smartDashes)}
-          />
-          <OverflowItem
-            label={t("settings.editor.bubbleMenu")}
-            icon={TextSelect}
-            checked={bubbleMenu}
-            onClick={() => setBubbleMenu(!bubbleMenu)}
-          />
-          <OverflowItem
-            label={t("settings.editor.aozoraInput")}
-            icon={BookOpen}
-            checked={aozoraInput}
-            onClick={() => setAozoraInput(!aozoraInput)}
-          />
-          <OverflowItem
-            label={t("settings.editor.autoPairBrackets")}
-            icon={Brackets}
-            checked={autoPairBrackets}
-            onClick={() => setAutoPairBrackets(!autoPairBrackets)}
-          />
-          <OverflowItem
-            label={t("settings.editor.showInvisibles")}
-            icon={Pilcrow}
-            checked={showInvisibles}
-            onClick={() => setShowInvisibles(!showInvisibles)}
-          />
-          <OverflowItem
-            label={t("settings.editor.slashCommand")}
-            icon={Sparkles}
-            checked={inlineAiCommand}
-            onClick={() => setInlineAiCommand(!inlineAiCommand)}
-          />
-        </div>
+        </ToolbarOverflowPortal>
       )}
 
       {/* Ruby入力ダイアログ — 選択テキスト位置に表示 */}

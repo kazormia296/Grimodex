@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -16,10 +17,19 @@ vi.mock("@/components/ui/animated-overlay", () => ({
   AnimatedOverlay: ({
     open,
     children,
+    className,
+    testId,
   }: {
     open: boolean;
     children: ReactNode;
-  }) => (open ? <div>{children}</div> : null),
+    className?: string;
+    testId?: string;
+  }) =>
+    open ? (
+      <div className={className} data-testid={testId}>
+        {children}
+      </div>
+    ) : null,
 }));
 vi.mock("./importShared", () => ({
   ImportTargetPanel: ({
@@ -87,6 +97,54 @@ import { WebEditorImportDialog } from "./WebEditorImportDialog";
 afterEach(cleanup);
 
 describe("WebEditorImportDialog", () => {
+  it("uses the visual viewport, safe padding, and bounded scrolling on phone", () => {
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <WebEditorImportDialog open onClose={vi.fn()} />
+      </WorkspaceViewportProvider>,
+    );
+
+    const overlay = screen.getByTestId("web-editor-import-dialog");
+    expect(overlay.className).toContain(
+      "h-[var(--visual-viewport-height,100dvh)]",
+    );
+    expect(overlay.className).toContain("w-screen");
+    expect(overlay.className).toContain("min-w-0");
+    expect(overlay.className).toContain(
+      "pl-[max(1rem,env(safe-area-inset-left))]",
+    );
+    expect(overlay.className).not.toContain("w-[680px]");
+
+    const dialog = screen.getByRole("dialog", {
+      name: "import.dialogTitleUnified",
+    });
+    expect(dialog.className).toContain("overflow-hidden");
+    expect(dialog.className).toContain("min-w-0");
+
+    const closeButton = screen.getByRole("button", { name: "common.close" });
+    expect(closeButton.className).toContain("min-h-11");
+    expect(closeButton.className).toContain("min-w-11");
+
+    const flow = screen.getByTestId("web-editor-import-flow");
+    expect(flow.className).toContain("overflow-y-auto");
+    expect(flow.className).toContain("overflow-x-hidden");
+  });
+
+  it("retains the bounded desktop dialog contract", () => {
+    render(<WebEditorImportDialog open onClose={vi.fn()} />);
+
+    const overlay = screen.getByTestId("web-editor-import-dialog");
+    expect(overlay.className).toContain("h-[min(560px,85vh)]");
+    expect(overlay.className).toContain("w-[680px]");
+    expect(overlay.className).toContain("max-w-[92vw]");
+    expect(overlay.className).toContain("p-6");
+    expect(overlay.className).not.toContain("w-screen");
+
+    const closeButton = screen.getByRole("button", { name: "common.close" });
+    expect(closeButton.className).toContain("p-1");
+    expect(closeButton.className).not.toContain("min-h-11");
+  });
+
   it("offers only browser-local manuscript formats and never exposes Scan or export", () => {
     render(<WebEditorImportDialog open onClose={vi.fn()} />);
 

@@ -44,41 +44,37 @@ export function EditorPaneViewport({
       onDragStart={beatDragDrop.onDragStart}
       onDragEnd={beatDragDrop.onDragEnd}
     >
-      {isPanelVisible ? (
-        <ResizablePanelGroup
-          orientation="horizontal"
-          className="min-h-0 flex-1"
-          onLayoutChanged={onPanelLayoutChanged}
+      <ResizablePanelGroup
+        orientation="horizontal"
+        className="min-h-0 flex-1"
+        onLayoutChanged={onPanelLayoutChanged}
+      >
+        <ResizablePanel
+          id="editor-main"
+          minSize="40%"
+          className="flex flex-col overflow-hidden"
         >
-          <ResizablePanel
-            id="editor-main"
-            minSize="40%"
-            className="flex flex-col overflow-hidden"
-          >
-            {content}
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel
-            id="scene-meta"
-            minSize="15%"
-            maxSize="50%"
-            defaultSize={`${sceneMetaPanelWidth}%`}
-            className="flex flex-col overflow-hidden"
-          >
-            <SceneMetaPanel
-              sceneId={sceneId}
-              editor={editor}
-              setMentionPopup={setMentionPopup}
-            />
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      ) : (
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            {content}
-          </div>
-        </div>
-      )}
+          {content}
+        </ResizablePanel>
+        {isPanelVisible && (
+          <>
+            <ResizableHandle withHandle />
+            <ResizablePanel
+              id="scene-meta"
+              minSize="15%"
+              maxSize="50%"
+              defaultSize={`${sceneMetaPanelWidth}%`}
+              className="flex flex-col overflow-hidden"
+            >
+              <SceneMetaPanel
+                sceneId={sceneId}
+                editor={editor}
+                setMentionPopup={setMentionPopup}
+              />
+            </ResizablePanel>
+          </>
+        )}
+      </ResizablePanelGroup>
       <DragOverlay dropAnimation={null}>
         {beatDragDrop.draggingBeat && (
           <div

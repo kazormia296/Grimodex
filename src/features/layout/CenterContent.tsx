@@ -29,10 +29,12 @@ function centerSegmentVisible(
 
 interface CenterContentProps {
   zenMode?: boolean;
+  editorOnly?: boolean;
 }
 
 export const CenterContent = memo(function CenterContent({
   zenMode = false,
+  editorOnly = false,
 }: CenterContentProps) {
   const center = useLayoutStore((s) => s.layout.center);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
@@ -47,15 +49,17 @@ export const CenterContent = memo(function CenterContent({
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const showDropZones = useDragDropZonesReady(
-    Boolean(draggingPanel && !layoutLocked && !zenMode),
+    Boolean(draggingPanel && !layoutLocked && !zenMode && !editorOnly),
   );
 
   const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
-  const effectiveMaximizedPanelId = zenMode ? "editor" : maximizedPanelId;
+  const effectiveMaximizedPanelId =
+    zenMode || editorOnly ? "editor" : maximizedPanelId;
 
-  const visibleSegments = center.segments.filter((segment) =>
-    centerSegmentVisible(segment, center.editorOpen),
-  );
+  const visibleSegments = center.segments.filter((segment) => {
+    if (editorOnly && segment.kind === "editor") return true;
+    return centerSegmentVisible(segment, center.editorOpen);
+  });
 
   const segmentFlexGrow = normalizeFlexGrow(
     visibleSegments.map((s) => s.sizeRatio),
@@ -269,7 +273,7 @@ export const CenterContent = memo(function CenterContent({
                 inert={segmentZoomHidden || undefined}
                 className={cn(
                   "relative flex min-h-0 min-w-0 flex-col",
-                  !center.editorOpen && "hidden",
+                  !center.editorOpen && !editorOnly && "hidden",
                 )}
               >
                 <EditorArea />

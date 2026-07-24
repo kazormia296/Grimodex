@@ -1,10 +1,14 @@
 import { Star, X } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { DialogFooter } from "@/components/ui/dialog";
+import { ResponsiveAlertDialog } from "@/components/ui/responsive-alert-dialog";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { cn } from "@/lib/utils";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import {
   createProjectSnapshot,
   listProjectSnapshots,
@@ -61,6 +65,7 @@ export function ProjectSnapshotModal({
   onClose,
 }: ProjectSnapshotModalProps) {
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const [snapshots, setSnapshots] = useState<ProjectSnapshotMeta[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -79,6 +84,8 @@ export function ProjectSnapshotModal({
   const [restoreScopes, setRestoreScopes] = useState<Set<RestoreScope>>(() =>
     fullRestoreScopeSet(),
   );
+  const restoreActionRef = useRef<HTMLButtonElement>(null);
+  const deleteActionRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) {
@@ -218,122 +225,138 @@ export function ProjectSnapshotModal({
 
   return (
     <>
-      {open && !!confirmRestoreId && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
-          <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[480px] max-w-[95vw] max-h-[90vh] overflow-y-auto">
-            <h2 className="text-base font-semibold mb-3">
-              {t("snapshot.restoreTitle")}
-            </h2>
-            <p className="text-sm text-muted-foreground mb-4">
-              {t("snapshot.restoreDesc", { name: confirmRestoreSnap?.name })}
-              <br />
-              {t("snapshot.restoreDescSub")}
-            </p>
-
-            {confirmRestoreSnap?.isStructural === false ? (
-              <p className="text-xs text-muted-foreground mb-4 px-3 py-2 rounded border border-border bg-muted/30">
-                {t("snapshot.restoreScopeLegacyNote")}
+      <ResponsiveAlertDialog
+        open={open && confirmRestoreId !== null}
+        onClose={() => {
+          if (!isRestoring) setConfirmRestoreId(null);
+        }}
+        title={t("snapshot.restoreTitle")}
+        description={
+          <>
+            {t("snapshot.restoreDesc", { name: confirmRestoreSnap?.name })}
+            <br />
+            {t("snapshot.restoreDescSub")}
+          </>
+        }
+        className="w-[480px] max-w-[95vw] max-h-[90vh] overflow-y-auto"
+        restoreFocusRef={restoreActionRef}
+      >
+        {confirmRestoreSnap?.isStructural === false ? (
+          <p className="mb-4 rounded border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            {t("snapshot.restoreScopeLegacyNote")}
+          </p>
+        ) : (
+          <div className="mb-4">
+            <h3 className="mb-2 text-sm font-medium">
+              {t("snapshot.restoreScopeHeading")}
+            </h3>
+            <div className="space-y-1.5">
+              {RESTORE_SCOPES.map((scope) => (
+                <label
+                  key={scope}
+                  aria-label={t(
+                    `snapshot.scope${scope.charAt(0).toUpperCase() + scope.slice(1)}`,
+                  )}
+                  className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 hover:bg-muted"
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={restoreScopes.has(scope)}
+                    onChange={() => toggleScope(scope)}
+                    disabled={isRestoring}
+                  />
+                  <span className="flex-1">
+                    <span className="block text-sm">
+                      {t(
+                        `snapshot.scope${scope.charAt(0).toUpperCase() + scope.slice(1)}`,
+                      )}
+                    </span>
+                    <span className="block text-xs text-muted-foreground">
+                      {t(
+                        `snapshot.scope${scope.charAt(0).toUpperCase() + scope.slice(1)}Desc`,
+                      )}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {!restoreScopes.has("body") && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                ℹ {t("snapshot.restoreScopeHint")}
               </p>
-            ) : (
-              <div className="mb-4">
-                <h3 className="text-sm font-medium mb-2">
-                  {t("snapshot.restoreScopeHeading")}
-                </h3>
-                <div className="space-y-1.5">
-                  {RESTORE_SCOPES.map((scope) => (
-                    <label
-                      key={scope}
-                      className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={restoreScopes.has(scope)}
-                        onChange={() => toggleScope(scope)}
-                        disabled={isRestoring}
-                      />
-                      <span className="flex-1">
-                        <span className="block text-sm">
-                          {t(
-                            `snapshot.scope${scope.charAt(0).toUpperCase() + scope.slice(1)}`,
-                          )}
-                        </span>
-                        <span className="block text-xs text-muted-foreground">
-                          {t(
-                            `snapshot.scope${scope.charAt(0).toUpperCase() + scope.slice(1)}Desc`,
-                          )}
-                        </span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-                {!restoreScopes.has("body") && (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    ℹ {t("snapshot.restoreScopeHint")}
-                  </p>
-                )}
-              </div>
             )}
+          </div>
+        )}
 
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
-                onClick={() => setConfirmRestoreId(null)}
-                disabled={isRestoring}
-              >
-                {t("snapshot.cancel")}
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
-                onClick={handleRestoreConfirm}
-                disabled={
-                  isRestoring ||
-                  (confirmRestoreSnap?.isStructural === true &&
-                    restoreScopes.size === 0)
-                }
-              >
-                {isRestoring
-                  ? t("snapshot.restoring")
-                  : t("snapshot.restoreConfirm")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {open && !!confirmDeleteId && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
-          <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
-            <h2 className="text-base font-semibold mb-3">
-              {t("snapshot.deleteTitle")}
-            </h2>
-            <p className="text-sm text-muted-foreground mb-6">
-              {t("snapshot.deleteDesc", { name: confirmDeleteSnap?.name })}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                className="px-3 py-1.5 text-sm rounded border border-border hover:bg-muted transition-colors"
-                onClick={() => setConfirmDeleteId(null)}
-                disabled={isDeleting}
-              >
-                {t("snapshot.cancel")}
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 text-sm rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors disabled:opacity-50"
-                onClick={handleDeleteConfirm}
-                disabled={isDeleting}
-              >
-                {isDeleting
-                  ? t("snapshot.deleting")
-                  : t("snapshot.deleteConfirm")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+        <DialogFooter className={cn(phoneWorkspace && "grid grid-cols-1")}>
+          <button
+            type="button"
+            className={cn(
+              "rounded border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted",
+              phoneWorkspace && "min-h-11 w-full",
+            )}
+            onClick={() => setConfirmRestoreId(null)}
+            disabled={isRestoring}
+          >
+            {t("snapshot.cancel")}
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50",
+              phoneWorkspace && "min-h-11 w-full",
+            )}
+            onClick={handleRestoreConfirm}
+            disabled={
+              isRestoring ||
+              (confirmRestoreSnap?.isStructural === true &&
+                restoreScopes.size === 0)
+            }
+          >
+            {isRestoring
+              ? t("snapshot.restoring")
+              : t("snapshot.restoreConfirm")}
+          </button>
+        </DialogFooter>
+      </ResponsiveAlertDialog>
+      <ResponsiveAlertDialog
+        open={open && confirmDeleteId !== null}
+        onClose={() => {
+          if (!isDeleting) setConfirmDeleteId(null);
+        }}
+        title={t("snapshot.deleteTitle")}
+        description={t("snapshot.deleteDesc", {
+          name: confirmDeleteSnap?.name,
+        })}
+        className="w-[440px] max-w-[95vw]"
+        restoreFocusRef={deleteActionRef}
+      >
+        <DialogFooter className={cn(phoneWorkspace && "grid grid-cols-1")}>
+          <button
+            type="button"
+            className={cn(
+              "rounded border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted",
+              phoneWorkspace && "min-h-11 w-full",
+            )}
+            onClick={() => setConfirmDeleteId(null)}
+            disabled={isDeleting}
+          >
+            {t("snapshot.cancel")}
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "rounded bg-destructive px-3 py-1.5 text-sm text-destructive-foreground transition-colors hover:bg-destructive/90 disabled:opacity-50",
+              phoneWorkspace && "min-h-11 w-full",
+            )}
+            onClick={handleDeleteConfirm}
+            disabled={isDeleting}
+          >
+            {isDeleting ? t("snapshot.deleting") : t("snapshot.deleteConfirm")}
+          </button>
+        </DialogFooter>
+      </ResponsiveAlertDialog>
       <AnimatedOverlay
         open={open && !confirmRestoreId && !confirmDeleteId}
         onClose={onClose}
@@ -461,6 +484,7 @@ export function ProjectSnapshotModal({
         {/* Footer */}
         <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-border flex-shrink-0">
           <button
+            ref={deleteActionRef}
             type="button"
             className="px-3 py-1.5 text-sm rounded border border-destructive text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={() => selectedId && setConfirmDeleteId(selectedId)}
@@ -477,6 +501,7 @@ export function ProjectSnapshotModal({
               {t("snapshot.close")}
             </button>
             <button
+              ref={restoreActionRef}
               type="button"
               className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => selectedId && setConfirmRestoreId(selectedId)}

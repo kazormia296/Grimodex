@@ -12,6 +12,7 @@ interface SceneMetaPanelProps {
   sceneId: string;
   editor: Editor | null;
   setMentionPopup: (state: CodexMentionPopupState | null) => void;
+  embeddedInPhoneSheet?: boolean;
 }
 
 /**
@@ -25,6 +26,7 @@ export function SceneMetaPanel({
   sceneId,
   editor,
   setMentionPopup,
+  embeddedInPhoneSheet = false,
 }: SceneMetaPanelProps) {
   const { t } = useTranslation();
   const node = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
@@ -43,19 +45,22 @@ export function SceneMetaPanel({
             {t(`editor.status.${node.status}`)}
           </span>
         )}
-        <button
-          type="button"
-          aria-label={t("common.close")}
-          title={t("common.close")}
-          onClick={() =>
-            useSettingsStore
-              .getState()
-              .set("editor.sceneMetaPanelOpen", "false")
-          }
-          className="ms-auto flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <X size={12} />
-        </button>
+        {!embeddedInPhoneSheet && (
+          <button
+            type="button"
+            data-testid="scene-meta-panel-close"
+            aria-label={t("common.close")}
+            title={t("common.close")}
+            onClick={() =>
+              useSettingsStore
+                .getState()
+                .set("editor.sceneMetaPanelOpen", "false")
+            }
+            className="ms-auto flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X size={12} />
+          </button>
+        )}
       </div>
       {isScene && node && <ScenePropertyGrid node={node} />}
       <SynopsisHeader sceneId={sceneId} editor={editor} />

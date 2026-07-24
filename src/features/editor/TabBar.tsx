@@ -31,6 +31,7 @@ import type {
 } from "@/features/codex/context/sceneTimeIndex";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 export const DRAG_DATA_KEY = "application/grimodex-tab";
 /** Per-group marker so drop zones can detect source group during dragover. */
@@ -78,6 +79,7 @@ interface TabBarProps {
 }
 
 export function TabBar({ groupIndex = 0 }: TabBarProps) {
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const { t } = useTranslation();
   const primaryTabs = useTabStore((s) => s.tabs);
   const primaryActiveTabId = useTabStore((s) => s.activeTabId);
@@ -357,7 +359,10 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   }
 
   return (
-    <div className="editor-background-glass glass-editor-chrome flex items-center border-b border-border">
+    <div
+      data-phone-tab-bar={phoneWorkspace ? "true" : undefined}
+      className="editor-background-glass glass-editor-chrome flex items-center border-b border-border"
+    >
       {/* Scrollable tab list */}
       <div
         ref={scrollRef}
@@ -525,7 +530,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     title={t("common.close")}
                     className={cn(
                       "ml-1 rounded p-0.5 hover:bg-accent active:scale-[0.97] transition-transform duration-75",
-                      isDirty
+                      phoneWorkspace || isDirty
                         ? "opacity-100"
                         : "opacity-0 group-hover:opacity-100",
                     )}
@@ -550,7 +555,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       {/* Linear mode toggle: primary group only。title は hover 可能な span 側に持たせる:
           disabled(+pointer-events-none)なボタンは hover を受けず native tooltip が出ない
           ため、なぜ無効かの説明を span のツールチップで担保する。 */}
-      {isPrimary && (
+      {isPrimary && !phoneWorkspace && (
         <span
           className="flex h-full flex-shrink-0"
           title={
@@ -578,7 +583,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       )}
 
       {/* Split dropdown button: primary group only, when no secondary group and not in linear mode */}
-      {isPrimary && !hasSecondaryGroup && !isLinearMode && (
+      {isPrimary && !phoneWorkspace && !hasSecondaryGroup && !isLinearMode && (
         <div
           ref={splitMenuRef}
           className="relative flex-shrink-0 border-l border-border"

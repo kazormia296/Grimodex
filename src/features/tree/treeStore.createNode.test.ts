@@ -1,9 +1,16 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTreeStore } from "./treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useProjectStore } from "@/features/project/projectStore";
+import {
+  setCurrentWorkspaceIdentity,
+  type WorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
 
-const { mockRecomputeSceneOrder } = vi.hoisted(() => ({
+const { mockRecomputeSceneOrder, mockRecordChangeEvent } = vi.hoisted(() => ({
   mockRecomputeSceneOrder: vi.fn(),
+  mockRecordChangeEvent: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
@@ -23,6 +30,14 @@ vi.mock("@/features/codex/phaseStore", () => ({
   },
 }));
 
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: mockRecordChangeEvent,
+}));
+
+import { createNode as createPersistedNode } from "./api";
+
+const mockCreatePersistedNode = vi.mocked(createPersistedNode);
+
 const DEFAULTS = {
   synopsis: null,
 
@@ -40,14 +55,33 @@ const DEFAULTS = {
 beforeEach(() => {
   vi.clearAllMocks();
   useGlobalHistoryStore.getState().clear();
+  useProjectStore.setState({ currentProjectId: "proj-1" });
+  setCurrentWorkspaceIdentity({
+    path: "/workspace/project-a.sqlite",
+    openRevision: 1,
+  });
   useTreeStore.setState({
     nodes: [],
     projectId: "proj-1",
     selectedIds: [],
     activeSceneId: "",
     expandedIds: [],
+    pendingRenameId: null,
     pendingRevealId: null,
   });
+  useTabStore.setState({
+    tabs: [],
+    activeTabId: null,
+    secondaryTabs: [],
+    secondaryActiveTabId: null,
+    secondaryGroupOpen: false,
+    activeGroupIndex: 0,
+  });
+});
+
+afterEach(() => {
+  useProjectStore.setState({ currentProjectId: null });
+  setCurrentWorkspaceIdentity(null);
 });
 
 describe("createNode Phase scene-time invalidation", () => {
@@ -85,6 +119,107 @@ describe("createNode Phase scene-time invalidation", () => {
     expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
       useTreeStore.getState().nodes,
     );
+  });
+});
+
+describe("createNode interaction intent", () => {
+  it("keeps the default interactive history and rename behavior", async () => {
+    const created = await useTreeStore
+      .getState()
+      .createNode({ nodeType: "scene", parentId: null });
+
+    expect(useTreeStore.getState().pendingRenameId).toBe(created.id);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+  });
+
+  it("suppresses history and pending rename for an implicit bootstrap scene", async () => {
+    const created = await useTreeStore.getState().createNode({
+      nodeType: "scene",
+      parentId: null,
+      interaction: "implicit",
+    });
+
+    expect(useTreeStore.getState().activeSceneId).toBe(created.id);
+    expect(useTreeStore.getState().pendingRenameId).toBeNull();
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+  });
+
+  it("does not apply a delayed implicit scene after project/workspace authority switches", async () => {
+    let resolveCreate:
+      | ((node: Awaited<ReturnType<typeof createPersistedNode>>) => void)
+      | undefined;
+    mockCreatePersistedNode.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    const creation = useTreeStore.getState().createNode({
+      nodeType: "scene",
+      parentId: null,
+      interaction: "implicit",
+    });
+    await vi.waitFor(() =>
+      expect(mockCreatePersistedNode).toHaveBeenCalledOnce(),
+    );
+    const persistedInput = mockCreatePersistedNode.mock.calls[0]![0];
+    const projectBScene = {
+      id: "project-b-scene",
+      projectId: "proj-2",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: "Project B Scene",
+      sortOrder: "a0",
+      ...DEFAULTS,
+    };
+
+    useProjectStore.setState({ currentProjectId: "proj-2" });
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/project-b.sqlite",
+      openRevision: 2,
+    } satisfies WorkspaceIdentity);
+    useTreeStore.setState({
+      projectId: "proj-2",
+      nodes: [projectBScene],
+      scenes: [projectBScene],
+      activeSceneId: projectBScene.id,
+    });
+    resolveCreate?.({
+      ...persistedInput,
+      parentId: persistedInput.parentId ?? null,
+      ...DEFAULTS,
+    } as Awaited<ReturnType<typeof createPersistedNode>>);
+
+    await expect(creation).resolves.toEqual(
+      expect.objectContaining({ projectId: "proj-1" }),
+    );
+    expect(useTreeStore.getState().nodes).toEqual([projectBScene]);
+    expect(useTreeStore.getState().scenes).toEqual([projectBScene]);
+    expect(useTreeStore.getState().activeSceneId).toBe(projectBScene.id);
+    expect(mockRecomputeSceneOrder).not.toHaveBeenCalled();
+    expect(mockRecordChangeEvent).not.toHaveBeenCalled();
+    expect(useGlobalHistoryStore.getState().past).toEqual([]);
+  });
+
+  it("keeps mobile creation undoable without rename or hidden desktop tabs", async () => {
+    const created = await useTreeStore.getState().createNode({
+      nodeType: "scene",
+      parentId: null,
+      interaction: "mobile",
+    });
+    const command = useGlobalHistoryStore.getState().past.at(-1);
+
+    expect(command).toBeDefined();
+    expect(useTreeStore.getState().pendingRenameId).toBeNull();
+    expect(useTabStore.getState().tabs).toEqual([]);
+
+    await command!.undo();
+    await command!.redo();
+
+    expect(useTreeStore.getState().activeSceneId).toBe(created.id);
+    expect(useTabStore.getState().tabs).toEqual([]);
+    expect(useTabStore.getState().secondaryTabs).toEqual([]);
   });
 });
 

@@ -3,6 +3,7 @@ import i18next from "@/lib/i18n";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import { resolveViewportProfile } from "@/runtime/viewportProfile";
 import {
   getScreenshotCaptureId,
   getScreenshotPanelId,
@@ -78,6 +79,7 @@ export { PANEL_DRAG_TYPE } from "./panelIds";
 export { dragTargetsEqual, TOOL_WINDOW_REASSIGN_TYPE } from "./layoutDnD";
 
 let editorFocusHandler: (() => void) | null = null;
+const CANONICAL_DESKTOP_VIEWPORT = { width: 1440, height: 900 } as const;
 
 export function registerEditorFocusHandler(handler: (() => void) | null) {
   editorFocusHandler = handler;
@@ -88,8 +90,11 @@ export function getPanelTitle(id: PanelId): string {
 }
 
 function getViewport(): { width: number; height: number } {
-  if (typeof window === "undefined") return { width: 1200, height: 800 };
-  return { width: window.innerWidth, height: window.innerHeight };
+  const { innerWidth, innerHeight } = globalThis;
+  if (!Number.isFinite(innerWidth) || !Number.isFinite(innerHeight)) {
+    return { width: 1200, height: 800 };
+  }
+  return { width: innerWidth, height: innerHeight };
 }
 
 function scheduleSave(get: () => LayoutStoreState): void {
@@ -115,6 +120,17 @@ export function applyValidatedLayout(
   const result = validateLayoutState(clamped, { viewport: vp });
   if (result.valid) return clamped;
   return fallback;
+}
+
+function hydratePersistedLayout(
+  layout: LayoutState,
+  fallback: LayoutState,
+  viewport: { width: number; height: number },
+): LayoutState {
+  if (resolveViewportProfile(viewport.width) !== "phone") {
+    return applyValidatedLayout(layout, fallback, viewport);
+  }
+  return validateLayoutState(layout).valid ? layout : fallback;
 }
 
 function scheduleEditorFocus() {
@@ -400,6 +416,13 @@ export async function clearSavedLayout() {
   }
 }
 
+export interface LayoutViewportBaseline {
+  layout: LayoutState;
+  activePresetId: string | null;
+  hiddenStripePanels: ReadonlySet<ToolWindowPanelId>;
+  maximizedPanelId: PanelId | null;
+}
+
 export interface LayoutStoreState {
   layout: LayoutState;
   layoutLocked: boolean;
@@ -510,6 +533,11 @@ export interface LayoutStoreState {
   finalizeLayoutResize: () => void;
   /** 現在のビューポート＋カードレイアウトモードで region サイズを再クランプする。 */
   reclampForViewport: () => void;
+  /** presentation 用に退避した desktop layout を現在の viewport へ安全に復元する。 */
+  restoreViewportBaseline: (
+    baseline: LayoutViewportBaseline,
+    viewport?: { width: number; height: number },
+  ) => void;
   /** ボトム指定側の角を side stripe ↔ bottom region で切り替える。 */
   toggleBottomCorner: (side: "left" | "right") => void;
 
@@ -1156,6 +1184,20 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     scheduleSave(get);
   },
 
+  restoreViewportBaseline: (baseline, viewport) => {
+    const vp = viewport ?? getViewport();
+    set((state) => ({
+      layout: applyValidatedLayout(baseline.layout, state.layout, vp),
+      activePresetId: baseline.activePresetId,
+      hiddenStripePanels: new Set(baseline.hiddenStripePanels),
+      // The layout-change subscriber clears a non-null maximize target. Restore
+      // the transient target only after the baseline layout is in place.
+      maximizedPanelId: null,
+    }));
+    set({ maximizedPanelId: baseline.maximizedPanelId });
+    scheduleSave(get);
+  },
+
   toggleBottomCorner: (side) => {
     if (get().layoutLocked) return;
     set((state) => {
@@ -1261,9 +1303,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         // (applyPreset / parseBuiltinOverrides / loadPresets) と同じく、ここでも
         // ensureLayoutStateV3 を通して新パネルを既定スロットへ自己修復注入して
         // から validate する。
-        const validated = applyValidatedLayout(
+        const viewport = getViewport();
+        const validated = hydratePersistedLayout(
           ensureLayoutStateV3(rawLayout.state),
           resetLayoutStateToDefault(),
+          viewport,
         );
         set({
           layout: validated,
@@ -1272,7 +1316,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           hiddenStripePanels: new Set(rawLayout.hiddenStripePanels ?? []),
           initialized: true,
         });
-        if (validateLayoutState(rawLayout.state).valid) {
+        if (
+          resolveViewportProfile(viewport.width) !== "phone" &&
+          validateLayoutState(rawLayout.state).valid
+        ) {
           scheduleSave(get);
         }
         return;
@@ -1290,9 +1337,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         // 行うため、active な v2→v3 アップグレード経路でも chronicle が
         // 注入され validate に弾かれない。
         const migrated = ensureLayoutStateV3(v2Persisted.state);
-        const validated = applyValidatedLayout(
+        const viewport = getViewport();
+        const validated = hydratePersistedLayout(
           migrated,
           resetLayoutStateToDefault(),
+          viewport,
         );
         set({
           layout: validated,
@@ -1301,26 +1350,34 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           hiddenStripePanels: new Set(v2Persisted.hiddenStripePanels ?? []),
           initialized: true,
         });
-        scheduleSave(get);
+        if (resolveViewportProfile(viewport.width) !== "phone") {
+          scheduleSave(get);
+        }
         return;
       }
     } catch {
       /* fall through to default */
     }
 
+    const viewport = getViewport();
+    const isPhone = resolveViewportProfile(viewport.width) === "phone";
+    const initializationViewport = isPhone
+      ? CANONICAL_DESKTOP_VIEWPORT
+      : viewport;
     const presetLayout = getBuiltinPresetState(
       "builtin:default",
-      getViewport(),
+      initializationViewport,
     );
     set({
       layout: applyValidatedLayout(
         presetLayout ?? buildDefaultLayoutState({ allInactive: true }),
         resetLayoutStateToDefault(),
+        initializationViewport,
       ),
       activePresetId: presetLayout ? "builtin:default" : null,
       initialized: true,
     });
-    scheduleSave(get);
+    if (!isPhone) scheduleSave(get);
   },
 
   saveLayout: () => scheduleSave(get),

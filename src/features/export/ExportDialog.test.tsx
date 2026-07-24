@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ExportDialog } from "./ExportDialog";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 
 // ---------------------------------------------------------------------------
 // mocks
@@ -21,10 +22,19 @@ vi.mock("@/components/ui/animated-overlay", () => ({
   AnimatedOverlay: ({
     open,
     children,
+    className,
+    testId,
   }: {
     open: boolean;
     children: React.ReactNode;
-  }) => (open ? <div data-testid="overlay">{children}</div> : null),
+    className?: string;
+    testId?: string;
+  }) =>
+    open ? (
+      <div className={className} data-testid={testId ?? "overlay"}>
+        {children}
+      </div>
+    ) : null,
 }));
 
 const NODES = [
@@ -134,6 +144,51 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("ExportDialog", () => {
+  it("phone profile uses a bounded, stacked text-export layout", () => {
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <ExportDialog open onClose={vi.fn()} />
+      </WorkspaceViewportProvider>,
+    );
+
+    const dialog = screen.getByTestId("export-dialog");
+    expect(dialog.className).toContain(
+      "h-[var(--visual-viewport-height,100dvh)]",
+    );
+    expect(dialog.className).toContain("w-screen");
+    expect(dialog.className).toContain("min-w-0");
+    expect(dialog.className).not.toContain("min-w-[560px]");
+    expect(dialog.className).toContain("pt-[env(safe-area-inset-top)]");
+    expect(dialog.className).toContain("pr-[env(safe-area-inset-right)]");
+    expect(dialog.className).toContain("pb-[env(safe-area-inset-bottom)]");
+    expect(dialog.className).toContain("pl-[env(safe-area-inset-left)]");
+
+    const textLayout = screen.getByTestId("export-text-layout");
+    expect(textLayout).toHaveAttribute("data-layout", "stacked");
+    expect(textLayout.className).toContain("flex-col");
+    expect(screen.getByTestId("export-mode-tabs").className).toContain(
+      "overflow-x-auto",
+    );
+    expect(screen.getByTestId("export-dialog-footer").className).toContain(
+      "flex-wrap",
+    );
+  });
+
+  it("wide profile preserves the split desktop export layout", () => {
+    render(<ExportDialog open onClose={vi.fn()} />);
+
+    expect(screen.getByTestId("export-dialog").className).toContain(
+      "min-w-[560px]",
+    );
+    expect(screen.getByTestId("export-dialog").className).not.toContain(
+      "safe-area-inset",
+    );
+    expect(screen.getByTestId("export-text-layout")).toHaveAttribute(
+      "data-layout",
+      "split",
+    );
+  });
+
   it("タブが 4 つ（テキスト/開示/動画/本の書き出し）表示される", () => {
     render(<ExportDialog open onClose={vi.fn()} />);
 

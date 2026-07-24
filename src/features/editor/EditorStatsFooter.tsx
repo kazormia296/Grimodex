@@ -19,6 +19,8 @@ import { markStart, markEnd } from "@/lib/perfLog";
 import { cn } from "@/lib/utils";
 
 interface EditorStatsFooterProps {
+  /** Narrow editor chrome: show the live primary count without opening a popup. */
+  compact?: boolean;
   editor: Editor | null;
   /** 現在エディタにロード済みのコンテンツ id。switch 中の取り違えを避ける
    *  ため fire 時に読む（親の saveSceneIdRef を返す stable callback）。 */
@@ -45,6 +47,7 @@ interface EditorStatsFooterProps {
  * update イベントを出さないため、ここでの扱いは旧実装と同一。
  */
 export function EditorStatsFooter({
+  compact = false,
   editor,
   getSyncSceneId,
   syncToTree,
@@ -57,6 +60,7 @@ export function EditorStatsFooter({
   const [popoverOpen, setPopoverOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const charCountRef = useRef<HTMLButtonElement>(null);
+  const compactCountRef = useRef<HTMLSpanElement>(null);
   const timerRef = useRef<number | null>(null);
   // 一次メトリクスは PROJECT 言語で決める (en=語数 / それ以外=文字数)。
   // tree へ同期する charCount は常に文字数のまま (永続列の意味を変えない)。
@@ -66,7 +70,11 @@ export function EditorStatsFooter({
   const unitLabel = i18next.t(countUnitLabelKey(unit));
   const { value: targetCount } = useSettingNumber("editor.targetCharCount", 0);
   // 目標値は project スコープ設定なので、単位は一次メトリクスに従って解釈する。
-  useCharCountMilestone(primaryCount, targetCount, charCountRef);
+  useCharCountMilestone(
+    primaryCount,
+    targetCount,
+    compact ? compactCountRef : charCountRef,
+  );
 
   // props を ref に逃がし、毎レンダーの identity 変化で update 購読が
   // 再構築されないようにする。
@@ -121,6 +129,19 @@ export function EditorStatsFooter({
     if (!editor || editor.isDestroyed || isLoading) return;
     recompute(editor);
   }, [editor, isLoading, recompute]);
+
+  if (compact) {
+    return (
+      <span
+        ref={compactCountRef}
+        role="status"
+        data-testid="char-count"
+        className="whitespace-nowrap tabular-nums"
+      >
+        {primaryCount.toLocaleString()} {unitLabel}
+      </span>
+    );
+  }
 
   return (
     <>

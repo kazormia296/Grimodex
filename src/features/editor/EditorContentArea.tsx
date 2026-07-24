@@ -26,6 +26,7 @@ import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useCurrentProject } from "@/features/project/projectStore";
 import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
 import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 export interface EditorContentAreaProps {
   editor: Editor | null;
@@ -96,6 +97,7 @@ export function EditorContentArea({
 }: EditorContentAreaProps) {
   const backgroundEnabled = useZenBackgroundEnabled();
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
   // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
   const isEnglish = useCurrentProject()?.language === "en";
@@ -121,11 +123,20 @@ export function EditorContentArea({
       </div>
       <EditorDropDiv
         outerRef={editorContainerRef}
-        data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}
+        data-editor-layer-projection={phoneWorkspace ? "codex-only" : undefined}
+        data-show-foreshadow-marks={
+          !phoneWorkspace && showForeshadowMarks ? "true" : "false"
+        }
         data-focus-hide-beats={
           focusModeHideBeats && focusMode ? "true" : undefined
         }
-        className={`glass-editor-body relative isolate flex-1 overflow-auto bg-transparent text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        className={cn(
+          "glass-editor-body relative isolate flex-1 overflow-auto bg-transparent text-content-foreground-secondary",
+          phoneWorkspace ? "px-2 py-4" : "p-4",
+          editorSettings.verticalMode && "editor-vertical",
+          typewriterMode && "typewriter-padding",
+          filterSource && `attribution-filter-${filterSource}`,
+        )}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
             // 余白クリックは「今見ている位置のままフォーカスだけ」戻す。
@@ -139,9 +150,11 @@ export function EditorContentArea({
           data-zen-editor-column={zenMode ? "true" : undefined}
           className={cn(
             "zen-editor-paper",
-            editorSettings.showLineNumbers && "editor-line-numbers",
+            !phoneWorkspace &&
+              editorSettings.showLineNumbers &&
+              "editor-line-numbers",
             editorSettings.showInvisibles && "editor-show-invisibles",
-            gutterReserve && "editor-gutter-reserve",
+            !phoneWorkspace && gutterReserve && "editor-gutter-reserve",
             isEnglish && "editor-en-typography",
           )}
           style={{
@@ -149,7 +162,7 @@ export function EditorContentArea({
             ...buildEditorPaperStyle({
               enabled: backgroundEnabled,
             }),
-            ...(gutterReserve
+            ...(!phoneWorkspace && gutterReserve
               ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
               : {}),
           }}
@@ -218,35 +231,39 @@ export function EditorContentArea({
               canEditCodexSemanticLink={canEditCodexSemanticLink}
               onInlineAiCommand={onInlineAiCommand}
             />
-            <CommentAddPopover editor={editor} />
             {canEditCodexSemanticLink && (
               <CodexSemanticLinkPopover editor={editor} />
             )}
-            <ForeshadowMarkPopover editor={editor} />
-            <ForeshadowMarkHoverPopover
-              editor={editor}
-              containerRef={editorContainerRef}
-            />
-            <CommentHoverPopover
-              editor={editor}
-              containerRef={editorContainerRef}
-            />
-            <PseudoCommentBubble
-              editor={editor}
-              containerRef={editorContainerRef}
-            />
-            <AnnotationHoverPopover containerRef={editorContainerRef} />
-            <LintHoverPopover
-              editor={editor}
-              containerRef={editorContainerRef}
-              sceneId={sceneId}
-            />
-            <EditorContextMenu
-              editor={editor}
-              containerRef={editorContainerRef}
-              toolbarActionsRef={toolbarActionsRef}
-              canEditCodexSemanticLink={canEditCodexSemanticLink}
-            />
+            {!phoneWorkspace && (
+              <>
+                <CommentAddPopover editor={editor} />
+                <ForeshadowMarkPopover editor={editor} />
+                <ForeshadowMarkHoverPopover
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                />
+                <CommentHoverPopover
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                />
+                <PseudoCommentBubble
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                />
+                <AnnotationHoverPopover containerRef={editorContainerRef} />
+                <LintHoverPopover
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                  sceneId={sceneId}
+                />
+                <EditorContextMenu
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                  toolbarActionsRef={toolbarActionsRef}
+                  canEditCodexSemanticLink={canEditCodexSemanticLink}
+                />
+              </>
+            )}
           </EditorBodyWithLoading>
         </div>
       </EditorDropDiv>

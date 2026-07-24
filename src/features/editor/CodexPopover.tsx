@@ -3,13 +3,17 @@ import { createPortal } from "react-dom";
 import type { Editor, EditorEvents } from "@tiptap/core";
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { getCodexEntry } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
+import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { useResolvedCodexStates } from "@/features/codex/useResolvedCodexStates";
 import { useUnrevealedSecretForeshadows } from "@/features/codex/codexSpoilerFlags";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 const FALLBACK_TYPE_COLORS: Record<string, string> = {
   character: "#6B7ADB",
@@ -53,7 +57,37 @@ function isInsideCodexTarget(target: EventTarget | null): boolean {
   return !!(base?.closest(".codex-popover") || resolveCodexTarget(target));
 }
 
+async function openCompletionTargetInPhoneCodex(entryId: string) {
+  const projectId = getCurrentProjectId();
+  const codex = useCodexStore.getState();
+  codex.setSelectedEntry(null);
+  codex.requestSelectEntry(entryId);
+  useCompactNavigationStore.getState().openSurface("codex");
+
+  try {
+    const entry = await getCodexEntry(projectId, entryId);
+    const current = useCodexStore.getState();
+    if (
+      getCurrentProjectId() !== projectId ||
+      current.pendingEntryId !== entryId
+    ) {
+      return;
+    }
+    if (entry) current.setSelectedEntry(entry);
+    current.clearPendingEntry();
+  } catch {
+    const current = useCodexStore.getState();
+    if (
+      getCurrentProjectId() === projectId &&
+      current.pendingEntryId === entryId
+    ) {
+      current.clearPendingEntry();
+    }
+  }
+}
+
 export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const entries = useCodexStore((s) => s.entries);
   const completionTargets = useCodexStore((s) => s.completionTargets);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
@@ -281,6 +315,17 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
     typeColorMap[entryType]?.fg ?? FALLBACK_TYPE_COLORS[entryType] ?? "#888888";
   function handleOpenInCodex() {
     setPopover((s) => ({ ...s, visible: false }));
+    if (phoneWorkspace) {
+      if (fullEntry) {
+        const codex = useCodexStore.getState();
+        codex.setSelectedEntry(fullEntry);
+        codex.clearPendingEntry();
+        useCompactNavigationStore.getState().openSurface("codex");
+      } else {
+        void openCompletionTargetInPhoneCodex(entryId);
+      }
+      return;
+    }
     void requestOpenInCodex(entryId);
   }
 

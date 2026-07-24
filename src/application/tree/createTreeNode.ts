@@ -20,6 +20,7 @@ export interface CreateTreeNodePorts {
   ensureWritable(): void;
   getProjectId(): string;
   getNodes(): readonly TreeNodeData[];
+  isCurrentAuthority(): boolean;
   getSetting(key: string, fallback: string): string;
   createPersisted(record: CreateTreeNodeRecord): Promise<TreeNodeData>;
   deletePersisted(id: string): Promise<void>;
@@ -206,6 +207,7 @@ export async function createTreeNode(
     ),
   };
   const created = await ports.createPersisted(record);
+  if (!ports.isCurrentAuthority()) return created;
   ports.applyCreated(created, "create");
   ports.recomputeSceneOrder(ports.getNodes());
   ports.recordChange({
@@ -220,7 +222,7 @@ export async function createTreeNode(
     },
   });
 
-  if (!ports.isReplaying()) {
+  if (opts.interaction !== "implicit" && !ports.isReplaying()) {
     const captured = { ...created };
     const label =
       created.nodeType === "scene"
@@ -233,15 +235,20 @@ export async function createTreeNode(
       label,
       async undo() {
         await ports.deletePersisted(captured.id);
+        if (!ports.isCurrentAuthority()) return;
         ports.applyRemoved(captured.id);
         ports.recomputeSceneOrder(ports.getNodes());
         ports.closeTabs(captured.id);
       },
       async redo() {
         const recreated = await ports.recreatePersisted(captured);
+        if (!ports.isCurrentAuthority()) return;
         ports.applyCreated(recreated, "redo");
         ports.recomputeSceneOrder(ports.getNodes());
-        if (recreated.nodeType === "scene" || recreated.nodeType === "note") {
+        if (
+          opts.interaction !== "mobile" &&
+          (recreated.nodeType === "scene" || recreated.nodeType === "note")
+        ) {
           ports.revealEditorDocument(recreated.id);
         }
       },

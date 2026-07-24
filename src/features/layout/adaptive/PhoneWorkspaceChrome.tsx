@@ -1,27 +1,45 @@
+import {
+  Bot,
+  BookOpenText,
+  Library,
+  MoreHorizontal,
+  PenLine,
+} from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useCompactNavigationStore } from "./compactNavigationStore";
 import "./phoneWorkspace.css";
 
 interface Props {
   active: boolean;
-  sceneTitle?: string;
-  saveState?: string;
   onBack?: () => void;
 }
 
 const NAV_ITEMS = [
-  { id: "editor", label: "Write" },
-  { id: "scenes", label: "Scenes" },
-  { id: "codex", label: "Codex" },
-  { id: "ai", label: "AI" },
-  { id: "more", label: "More" },
+  {
+    id: "editor",
+    labelKey: "mobileWorkspace.navigation.editor",
+    Icon: PenLine,
+  },
+  {
+    id: "scenes",
+    labelKey: "mobileWorkspace.navigation.scenes",
+    Icon: BookOpenText,
+  },
+  {
+    id: "codex",
+    labelKey: "mobileWorkspace.navigation.codex",
+    Icon: Library,
+  },
+  { id: "ai", labelKey: "mobileWorkspace.navigation.ai", Icon: Bot },
+  {
+    id: "more",
+    labelKey: "mobileWorkspace.navigation.more",
+    Icon: MoreHorizontal,
+  },
 ] as const;
 
-export function PhoneWorkspaceChrome({
-  active,
-  sceneTitle = "Editor",
-  saveState = "Saved",
-  onBack,
-}: Props) {
+export function PhoneWorkspaceChrome({ active, onBack }: Props) {
+  const { t } = useTranslation();
   const navigation = useCompactNavigationStore();
   if (!active) {
     return (
@@ -33,27 +51,49 @@ export function PhoneWorkspaceChrome({
       />
     );
   }
+  const activeItem = NAV_ITEMS.find(
+    (item) => item.id === navigation.activeSurface,
+  );
+  const heading =
+    navigation.activeSurface === "search"
+      ? t("mobileWorkspace.surfaces.search.title")
+      : activeItem
+        ? t(activeItem.labelKey)
+        : navigation.activeSurface;
+  const canGoBack = navigation.backStack.length > 0 || onBack !== undefined;
+  const showHeader = navigation.activeSurface !== "editor";
+
   return (
     <div
       data-adaptive-chrome="phone"
       data-active="true"
       className="phone-workspace-chrome"
     >
-      <header className="phone-workspace-chrome__header">
-        <button
-          type="button"
-          className="phone-workspace-chrome__back"
-          aria-label="Back"
-          onClick={() => {
-            if (!navigation.goBack()) onBack?.();
-          }}
-        >
-          ‹
-        </button>
-        <strong>{sceneTitle}</strong>
-        <span aria-live="polite">{saveState}</span>
-      </header>
-      <nav className="phone-workspace-chrome__nav" aria-label="Workspace">
+      {showHeader && (
+        <header className="phone-workspace-chrome__header">
+          {canGoBack ? (
+            <button
+              type="button"
+              className="phone-workspace-chrome__back"
+              aria-label={t("mobileWorkspace.header.back")}
+              onClick={() => {
+                if (!navigation.goBack()) onBack?.();
+              }}
+            >
+              ‹
+            </button>
+          ) : (
+            <span aria-hidden="true" className="block min-h-11 min-w-11" />
+          )}
+          <h1 className="m-0 min-w-0 truncate text-base font-semibold">
+            {heading}
+          </h1>
+        </header>
+      )}
+      <nav
+        className="phone-workspace-chrome__nav"
+        aria-label={t("mobileWorkspace.navigation.label")}
+      >
         {NAV_ITEMS.map((item) => (
           <button
             type="button"
@@ -63,7 +103,8 @@ export function PhoneWorkspaceChrome({
             }
             onClick={() => navigation.openSurface(item.id)}
           >
-            {item.label}
+            <item.Icon className="h-5 w-5" aria-hidden />
+            {t(item.labelKey)}
           </button>
         ))}
       </nav>

@@ -1,6 +1,7 @@
 [data-adaptive-workspace-shell] {
   display: flex;
   flex: 1;
+  width: 100%;
   min-width: 0;
   min-height: 0;
 }
@@ -32,17 +33,23 @@
 }
 
 [data-adaptive-workspace-shell][data-profile="phone"] {
+  --phone-workspace-header-height: 56px;
+  --phone-workspace-nav-height: 68px;
   position: relative;
   flex-direction: column;
   width: 100%;
-  height: var(--visual-viewport-height, 100dvh);
+  height: 100%;
+  max-width: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
 }
 
 [data-adaptive-workspace-shell][data-profile="phone"]
   [data-workspace-surface-root] {
   position: relative;
-  display: block;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -52,14 +59,38 @@
 [data-adaptive-workspace-shell][data-profile="phone"] [data-mobile-surface] {
   position: absolute;
   inset: 0;
-  display: block;
+  display: flex;
+  width: 100%;
+  min-width: 0;
   overflow: auto;
-  padding-bottom: calc(76px + env(safe-area-inset-bottom));
-  background: Canvas;
+  padding-bottom: calc(
+    var(--phone-workspace-nav-height) + env(safe-area-inset-bottom)
+  );
+  background: var(--background);
+  color: var(--foreground);
+  overscroll-behavior: contain;
 }
 
 [data-adaptive-workspace-shell][data-profile="phone"] [data-mobile-surface] {
   z-index: 2;
+}
+
+[data-adaptive-workspace-shell][data-profile="phone"] [data-editor-surface] {
+  overflow: hidden;
+  background: transparent;
+}
+
+/*
+ * The desktop editor card normally owns a solid `--background` fill through
+ * `.gx-panel--flat`. On phone the editor is the full workspace canvas, so that
+ * fill would mask the app/ambient backdrop even though the paper and body are
+ * already transparent.
+ */
+[data-adaptive-workspace-shell][data-profile="phone"]
+  [data-editor-surface]
+  .editor-fluid-glass.gx-panel--flat {
+  background: transparent;
+  background-color: transparent;
 }
 
 [data-adaptive-workspace-shell][data-profile="phone"][data-zen-mode="true"]
@@ -67,22 +98,49 @@
   padding-bottom: 0;
 }
 
+.app-shell[data-viewport-profile="phone"] {
+  width: 100%;
+  height: var(--visual-viewport-height, 100dvh);
+  min-height: 0;
+  max-height: var(--visual-viewport-height, 100dvh);
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.app-shell[data-viewport-profile="phone"] > main {
+  width: 100%;
+  min-width: 0;
+}
+
 .phone-workspace-chrome__header {
-  position: sticky;
+  position: relative;
   top: 0;
   z-index: 10;
   display: grid;
   grid-template-columns: 44px 1fr auto;
   align-items: center;
   gap: 8px;
-  min-height: 52px;
-  padding: env(safe-area-inset-top) 12px 8px;
-  background: Canvas;
+  min-height: var(--phone-workspace-header-height);
+  padding: max(6px, env(safe-area-inset-top)) 12px 6px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--background) 94%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.phone-workspace-chrome__header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .phone-workspace-chrome__header span {
-  color: GrayText;
+  max-width: 7rem;
+  overflow: hidden;
+  color: var(--muted-foreground);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .phone-workspace-chrome__back,
@@ -93,20 +151,207 @@
 
 .phone-workspace-chrome__back {
   border: 0;
+  border-radius: 0.5rem;
   background: transparent;
   font-size: 28px;
 }
 
 .phone-workspace-chrome__nav {
-  position: fixed;
+  position: absolute;
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: 10;
+  z-index: 20;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 2px;
-  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
-  background: Canvas;
-  border-top: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+  min-height: calc(
+    var(--phone-workspace-nav-height) + env(safe-area-inset-bottom)
+  );
+  padding: 5px 6px calc(5px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: color-mix(in oklab, var(--background) 94%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.phone-workspace-chrome__nav button {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-workspace-chrome__nav button[aria-current="page"] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+[data-phone-workspace-controls] > div,
+[data-phone-workspace-controls] [data-testid="workspace-menu-trigger"],
+[data-phone-workspace-controls] [data-testid="project-menu-trigger"] {
+  width: 100%;
+  max-width: none;
+}
+
+[data-phone-workspace-controls] [data-testid="workspace-menu-trigger"],
+[data-phone-workspace-controls] [data-testid="project-menu-trigger"] {
+  min-height: 48px;
+  justify-content: space-between;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+  padding-inline: 1rem;
+}
+
+[data-phone-workspace-controls] [data-testid="workspace-menu-dropdown"],
+[data-phone-workspace-controls] [data-testid="project-menu-dropdown"] {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: 100%;
+  min-width: 0;
+  margin-top: 0.5rem;
+}
+
+[data-phone-workspace-controls] [data-testid="workspace-menu-dropdown"] button,
+[data-phone-workspace-controls] [data-testid="project-menu-dropdown"] button {
+  min-height: 44px;
+}
+
+[data-phone-workspace-controls] [data-testid^="project-delete-"] {
+  display: inline-flex;
+  min-width: 44px;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-adaptive-workspace-shell][data-profile="phone"]
+  [data-layout-shell][data-editor-only="true"] {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+
+[data-adaptive-workspace-shell][data-profile="phone"]
+  [data-center-segment-kind="editor"] {
+  width: 100%;
+  min-width: 0;
+}
+
+[data-adaptive-workspace-shell][data-profile="phone"] [role="toolbar"] {
+  min-height: 46px;
+}
+
+[data-adaptive-workspace-shell][data-profile="phone"] [role="toolbar"] button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+[data-phone-toolbar-overflow="true"] {
+  position: fixed;
+  right: 8px;
+  bottom: calc(120px + env(safe-area-inset-bottom));
+  width: min(18rem, calc(100vw - 16px));
+  max-height: none;
+  scroll-padding-block: 8px;
+}
+
+[data-phone-toolbar-overflow="true"] button {
+  min-height: 44px;
+}
+
+[data-adaptive-workspace-shell][data-profile="phone"]
+  [data-phone-tab-bar="true"] {
+  min-height: 44px;
+  overflow: hidden;
+}
+
+[data-adaptive-workspace-shell][data-profile="phone"]
+  [data-phone-tab-bar="true"]
+  button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+[data-phone-scene-navigator],
+[data-phone-codex-navigator],
+[data-phone-chat-surface],
+[data-phone-more-surface],
+[data-phone-search-surface] {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+}
+
+/*
+ * Phone editor projection: keep only Codex marks visible. These rules are
+ * deliberately scoped to a render-only data attribute so desktop layer
+ * preferences remain persisted and are restored unchanged.
+ */
+[data-editor-layer-projection="codex-only"] .gutter-marks,
+[data-editor-layer-projection="codex-only"] .lint-disable-gutter,
+[data-editor-layer-projection="codex-only"] .reorder-block-handle {
+  display: none !important;
+}
+
+[data-editor-layer-projection="codex-only"] .attribution-ai,
+[data-editor-layer-projection="codex-only"] .attribution-unknown {
+  border-radius: 0 !important;
+  background-color: transparent !important;
+}
+
+[data-editor-layer-projection="codex-only"] .attribution-manual-override {
+  outline: none !important;
+}
+
+[data-editor-layer-projection="codex-only"] .attribution-dimmed {
+  opacity: 1 !important;
+}
+
+[data-editor-layer-projection="codex-only"] .comment-deco,
+[data-editor-layer-projection="codex-only"] .pe-annotation,
+[data-editor-layer-projection="codex-only"] .lint-deco,
+[data-editor-layer-projection="codex-only"] [data-foreshadow-setup],
+[data-editor-layer-projection="codex-only"] [data-foreshadow-payoff],
+[data-editor-layer-projection="codex-only"] .lint-disable {
+  text-decoration: none !important;
+  cursor: text !important;
+}
+
+[data-editor-layer-projection="codex-only"] .tiptap [data-lint-disabled] {
+  border-inline-start: 0 !important;
+  padding-inline-start: 0 !important;
+}
+
+[data-editor-layer-projection="codex-only"] .reorder-unit {
+  outline: none !important;
+  background: none !important;
+  box-shadow: none !important;
+  cursor: text !important;
+}
+
+@media (max-width: 359px) {
+  .phone-workspace-chrome__nav button {
+    font-size: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phone-workspace-chrome *,
+  [data-mobile-surface] * {
+    scroll-behavior: auto !important;
+  }
 }

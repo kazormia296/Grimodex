@@ -121,7 +121,7 @@ describe("ChatPanel virtualization (real Chromium)", () => {
       activeSessionId: "s1",
       inputPinnedEntryIds: [],
       // DB へ向かう store action はテストでは何もしない
-      loadSessions: async () => {},
+      loadSessions: async () => false,
       selectSession: async () => {},
       refreshContextLayers: async () => null,
     });

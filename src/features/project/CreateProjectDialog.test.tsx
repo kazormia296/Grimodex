@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { CreateProjectDialog } from "./CreateProjectDialog";
 
 vi.mock("react-i18next", () => ({
@@ -47,6 +48,80 @@ describe("CreateProjectDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ws.uiLanguage = "ja";
+  });
+
+  it("keeps the form scrollable and actions reachable inside all four safe areas on phone", () => {
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <CreateProjectDialog
+          open
+          onClose={() => {}}
+          projects={sampleProjects}
+          defaultSourceProjectId="proj-a"
+          onCreate={vi.fn()}
+        />
+      </WorkspaceViewportProvider>,
+    );
+
+    const dialog = screen.getByTestId("create-project-dialog");
+    expect(dialog.className).toContain(
+      "h-[var(--visual-viewport-height,100dvh)]",
+    );
+    expect(dialog.className).toContain("w-screen");
+    expect(dialog.className).toContain("overflow-hidden");
+    expect(dialog.className).toContain("pt-[env(safe-area-inset-top)]");
+    expect(dialog.className).toContain("pr-[env(safe-area-inset-right)]");
+    expect(dialog.className).toContain("pb-[env(safe-area-inset-bottom)]");
+    expect(dialog.className).toContain("pl-[env(safe-area-inset-left)]");
+    expect(dialog.className).not.toContain("max-w-md");
+
+    const scrollRegion = screen.getByTestId("create-project-scroll-region");
+    expect(scrollRegion.className).toContain("overflow-y-auto");
+    expect(scrollRegion.className).toContain("overflow-x-hidden");
+    expect(scrollRegion.className).toContain("flex-1");
+
+    const actions = screen.getByTestId("create-project-actions");
+    expect(actions.className).toContain("shrink-0");
+    expect(actions.className).toContain("border-t");
+    expect(
+      screen.getByRole("button", { name: "common.cancel" }).className,
+    ).toContain("min-h-11");
+    expect(screen.getByTestId("project-create-submit").className).toContain(
+      "min-h-11",
+    );
+    expect(screen.getByTestId("project-title-input").className).toContain(
+      "min-h-11",
+    );
+  });
+
+  it("retains the bounded non-scrolling desktop dialog on wide", () => {
+    render(
+      <WorkspaceViewportProvider profile="wide">
+        <CreateProjectDialog
+          open
+          onClose={() => {}}
+          projects={sampleProjects}
+          defaultSourceProjectId="proj-a"
+          onCreate={vi.fn()}
+        />
+      </WorkspaceViewportProvider>,
+    );
+
+    const dialog = screen.getByTestId("create-project-dialog");
+    expect(dialog.className).toContain("max-w-md");
+    expect(dialog.className).toContain("rounded-lg");
+    expect(dialog.className).toContain("p-6");
+    expect(dialog.className).not.toContain("w-screen");
+    expect(dialog.className).not.toContain("safe-area-inset");
+    expect(
+      screen.getByTestId("create-project-scroll-region").className,
+    ).not.toContain("overflow-y-auto");
+    expect(screen.getByTestId("create-project-actions").className).toContain(
+      "mt-3",
+    );
+    expect(
+      screen.getByRole("button", { name: "common.cancel" }).className,
+    ).not.toContain("min-h-11");
   });
 
   it("defaults writing language to the UI language (en UI → en)", async () => {

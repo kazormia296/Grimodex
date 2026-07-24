@@ -5,6 +5,8 @@ import type { Project } from "./api";
 import { GENRE_VALUES } from "./genreOptions";
 import { listCodexTypes, type CodexType } from "@/features/codex/typeApi";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { cn } from "@/lib/utils";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 export interface CreateProjectFormData {
   title: string;
@@ -59,6 +61,7 @@ export function CreateProjectDialog({
   onCreate,
 }: CreateProjectDialogProps) {
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const [title, setTitle] = useState("");
   const [genre, setGenre] = useState("");
   const [language, setLanguage] = useState(() =>
@@ -141,145 +144,198 @@ export function CreateProjectDialog({
     <AnimatedOverlay
       open={open}
       onClose={onClose}
-      className="w-full max-w-md rounded-lg border border-border bg-background p-6 shadow-lg"
+      className={cn(
+        "border border-border bg-background shadow-lg",
+        phoneWorkspace
+          ? "flex h-[var(--visual-viewport-height,100dvh)] w-screen min-h-0 min-w-0 max-h-none max-w-none flex-col overflow-hidden rounded-none border-0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
+          : "w-full max-w-md rounded-lg p-6",
+      )}
       testId="create-project-dialog"
     >
-      <h3 className="mb-4 text-sm font-semibold text-foreground">
+      <h3
+        className={cn(
+          "text-sm font-semibold text-foreground",
+          phoneWorkspace ? "shrink-0 border-b border-border px-4 py-4" : "mb-4",
+        )}
+      >
         {t("project.create.heading")}
       </h3>
 
-      <div className="space-y-3" onKeyDown={handleKeyDown}>
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">
-            {t("project.create.titleLabel")}
-          </label>
-          <input
-            data-testid="project-title-input"
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder={t("project.create.titlePlaceholder")}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">
-            {t("project.create.genreLabel")}
-          </label>
-          <select
-            data-testid="project-genre-select"
-            value={genre}
-            onChange={(e) => setGenre(e.target.value)}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            {GENRE_OPTIONS.map((value) => (
-              <option key={value || "unset"} value={value}>
-                {value || t("settings.project.unselected")}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">
-            {t("project.create.languageLabel")}
-          </label>
-          <select
-            data-testid="project-language-select"
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            {LANGUAGE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <label className="flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            data-testid="project-timelapse-checkbox"
-            checked={timelapseEnabled}
-            onChange={(e) => setTimelapseEnabled(e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>
-            <span className="text-foreground">
-              {t("project.create.timelapseLabel")}
-            </span>
-            <br />
-            {t("project.create.timelapseHint")}
-          </span>
-        </label>
-
-        {projects.length > 0 && (
-          <div className="rounded-md border border-border p-3">
-            <p className="mb-2 text-xs font-medium text-foreground">
-              {t("project.create.seedHeading")}
-            </p>
-            <p className="mb-3 text-xs text-muted-foreground">
-              {t("project.create.seedDescription")}
-            </p>
-
+      <div
+        className={cn(phoneWorkspace && "flex min-h-0 flex-1 flex-col")}
+        onKeyDown={handleKeyDown}
+      >
+        <div
+          data-testid="create-project-scroll-region"
+          className={cn(
+            "space-y-3",
+            phoneWorkspace &&
+              "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 py-4",
+          )}
+        >
+          <div>
             <label className="mb-1 block text-xs text-muted-foreground">
-              {t("project.create.seedSourceLabel")}
+              {t("project.create.titleLabel")}
+            </label>
+            <input
+              data-testid="project-title-input"
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder={t("project.create.titlePlaceholder")}
+              className={cn(
+                "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring",
+                phoneWorkspace && "min-h-11",
+              )}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              {t("project.create.genreLabel")}
             </label>
             <select
-              data-testid="project-seed-source-select"
-              value={seedFromProjectId}
-              onChange={(e) => {
-                setSeedFromProjectId(e.target.value);
-                setSelectedTypeSlugs(new Set());
-              }}
-              className="mb-3 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              data-testid="project-genre-select"
+              value={genre}
+              onChange={(e) => setGenre(e.target.value)}
+              className={cn(
+                "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring",
+                phoneWorkspace && "min-h-11",
+              )}
             >
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.title}
+              {GENRE_OPTIONS.map((value) => (
+                <option key={value || "unset"} value={value}>
+                  {value || t("settings.project.unselected")}
                 </option>
               ))}
             </select>
-
-            {availableTypes.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                {t("project.create.seedNoTypes")}
-              </p>
-            ) : (
-              <div
-                data-testid="project-seed-type-list"
-                className="max-h-36 space-y-1 overflow-y-auto"
-              >
-                {availableTypes.map((type) => (
-                  <label
-                    key={type.id}
-                    className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-accent/50"
-                  >
-                    <input
-                      type="checkbox"
-                      data-testid={`project-seed-type-${type.slug}`}
-                      checked={selectedTypeSlugs.has(type.slug)}
-                      onChange={() => toggleTypeSlug(type.slug)}
-                    />
-                    <span>{type.label}</span>
-                    <span className="text-xs text-muted-foreground">
-                      ({type.slug})
-                    </span>
-                  </label>
-                ))}
-              </div>
-            )}
           </div>
-        )}
 
-        <div className="flex justify-end gap-2 pt-2">
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              {t("project.create.languageLabel")}
+            </label>
+            <select
+              data-testid="project-language-select"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className={cn(
+                "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring",
+                phoneWorkspace && "min-h-11",
+              )}
+            >
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <label
+            className={cn(
+              "flex cursor-pointer items-start gap-2 text-xs text-muted-foreground",
+              phoneWorkspace && "min-h-11",
+            )}
+          >
+            <input
+              type="checkbox"
+              data-testid="project-timelapse-checkbox"
+              checked={timelapseEnabled}
+              onChange={(e) => setTimelapseEnabled(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="text-foreground">
+                {t("project.create.timelapseLabel")}
+              </span>
+              <br />
+              {t("project.create.timelapseHint")}
+            </span>
+          </label>
+
+          {projects.length > 0 && (
+            <div className="rounded-md border border-border p-3">
+              <p className="mb-2 text-xs font-medium text-foreground">
+                {t("project.create.seedHeading")}
+              </p>
+              <p className="mb-3 text-xs text-muted-foreground">
+                {t("project.create.seedDescription")}
+              </p>
+
+              <label className="mb-1 block text-xs text-muted-foreground">
+                {t("project.create.seedSourceLabel")}
+              </label>
+              <select
+                data-testid="project-seed-source-select"
+                value={seedFromProjectId}
+                onChange={(e) => {
+                  setSeedFromProjectId(e.target.value);
+                  setSelectedTypeSlugs(new Set());
+                }}
+                className={cn(
+                  "mb-3 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring",
+                  phoneWorkspace && "min-h-11",
+                )}
+              >
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.title}
+                  </option>
+                ))}
+              </select>
+
+              {availableTypes.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {t("project.create.seedNoTypes")}
+                </p>
+              ) : (
+                <div
+                  data-testid="project-seed-type-list"
+                  className="max-h-36 space-y-1 overflow-y-auto"
+                >
+                  {availableTypes.map((type) => (
+                    <label
+                      key={type.id}
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-accent/50",
+                        phoneWorkspace && "min-h-11",
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        data-testid={`project-seed-type-${type.slug}`}
+                        checked={selectedTypeSlugs.has(type.slug)}
+                        onChange={() => toggleTypeSlug(type.slug)}
+                      />
+                      <span>{type.label}</span>
+                      <span className="text-xs text-muted-foreground">
+                        ({type.slug})
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div
+          data-testid="create-project-actions"
+          className={cn(
+            "flex justify-end gap-2",
+            phoneWorkspace
+              ? "shrink-0 border-t border-border px-4 py-3"
+              : "mt-3 pt-2",
+          )}
+        >
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            className={cn(
+              "rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              phoneWorkspace && "min-h-11",
+            )}
           >
             {t("common.cancel")}
           </button>
@@ -288,7 +344,10 @@ export function CreateProjectDialog({
             data-testid="project-create-submit"
             disabled={!canSave}
             onClick={() => void handleSave()}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            className={cn(
+              "rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50",
+              phoneWorkspace && "min-h-11",
+            )}
           >
             {isSaving ? t("common.loading") : t("common.create")}
           </button>

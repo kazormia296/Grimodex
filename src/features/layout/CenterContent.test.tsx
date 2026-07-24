@@ -50,6 +50,17 @@ describe("CenterContent", () => {
     ).toBeNull();
   });
 
+  it("projects the editor for phone presentation even when desktop saved it closed", () => {
+    useLayoutStore.getState().setEditorOpen(false);
+    const { getByTestId, container } = render(<CenterContent editorOnly />);
+
+    expect(getByTestId("editor-area")).toBeTruthy();
+    expect(
+      container.querySelector('[data-center-segment-kind="editor"]'),
+    ).not.toHaveClass("hidden");
+    expect(useLayoutStore.getState().layout.center.editorOpen).toBe(false);
+  });
+
   it("marks tool segments as Glass hosts while leaving the Editor on its own surface", () => {
     const layout = buildDefaultLayoutState({ editorOpen: true });
     layout.center.segments.push({
