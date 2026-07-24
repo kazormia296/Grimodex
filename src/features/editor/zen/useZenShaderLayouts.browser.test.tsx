@@ -113,6 +113,56 @@ function SplitLayoutProbe({ direction }: { direction: "right" | "below" }) {
   );
 }
 
+function OverflowingPaperProbe({
+  writingMode,
+}: {
+  writingMode: "horizontal" | "vertical";
+}) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const layouts = useZenShaderLayouts(surfaceRef);
+  const vertical = writingMode === "vertical";
+
+  return (
+    <div
+      ref={surfaceRef}
+      data-testid={`${writingMode}-overflow-shader-layout`}
+      data-contrast-rect={layouts.contrast.rect.join(" ")}
+      data-contrast-feather={layouts.contrast.feather.join(" ")}
+      style={{ position: "relative", width: 1_000, height: 600 }}
+    >
+      <section
+        data-editor-area
+        style={{ position: "absolute", inset: 0, width: 1_000, height: 600 }}
+      >
+        <div
+          className="glass-editor-body"
+          data-overflow-scrollport={writingMode}
+          style={{
+            position: "absolute",
+            left: 100,
+            top: 100,
+            width: 800,
+            height: 400,
+            overflow: "auto",
+          }}
+        >
+          <article
+            className="zen-editor-paper"
+            style={{
+              position: "absolute",
+              left: vertical ? 0 : 200,
+              top: vertical ? 50 : 0,
+              width: vertical ? 1_200 : 400,
+              height: vertical ? 300 : 900,
+              writingMode: vertical ? "vertical-rl" : "horizontal-tb",
+            }}
+          />
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function WorkspaceSurfaceProbe({ glass = true }: { glass?: boolean }) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const layouts = useZenShaderLayouts(surfaceRef);
@@ -404,10 +454,87 @@ describe("Zen shader split-editor geometry (real Chromium)", () => {
       expectRect(probe.getAttribute("data-contrast-rect"), [
         0.1,
         1 / 6,
-        0.93,
+        0.9,
         5 / 6,
       ]);
     });
+  });
+});
+
+describe("Zen shader scrollport clipping (real Chromium)", () => {
+  it("clips horizontal writing protection before and after vertical scrolling", async () => {
+    const view = render(<OverflowingPaperProbe writingMode="horizontal" />);
+    const probe = view.getByTestId("horizontal-overflow-shader-layout");
+
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.3,
+        1 / 6,
+        0.7,
+        5 / 6,
+      ]);
+    });
+    expectRect(
+      probe.getAttribute("data-contrast-feather"),
+      [0.048, 0, 0.048, 0],
+    );
+
+    const scrollport = view.container.querySelector<HTMLElement>(
+      '[data-overflow-scrollport="horizontal"]',
+    );
+    const paper = scrollport?.querySelector<HTMLElement>(".zen-editor-paper");
+    if (!scrollport || !paper) {
+      throw new Error("horizontal overflow editor was not rendered");
+    }
+    paper.style.transform = "translateY(-700px)";
+    scrollport.dispatchEvent(new Event("scroll"));
+
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.3,
+        0.5,
+        0.7,
+        5 / 6,
+      ]);
+    });
+    expectRect(
+      probe.getAttribute("data-contrast-feather"),
+      [0.048, 0.08, 0.048, 0],
+    );
+  });
+
+  it("clips vertical writing protection before and after horizontal scrolling", async () => {
+    const view = render(<OverflowingPaperProbe writingMode="vertical" />);
+    const probe = view.getByTestId("vertical-overflow-shader-layout");
+
+    await waitFor(() => {
+      expectRect(
+        probe.getAttribute("data-contrast-rect"),
+        [0.1, 0.25, 0.9, 0.75],
+      );
+    });
+    expectRect(probe.getAttribute("data-contrast-feather"), [0, 0.08, 0, 0.08]);
+
+    const scrollport = view.container.querySelector<HTMLElement>(
+      '[data-overflow-scrollport="vertical"]',
+    );
+    const paper = scrollport?.querySelector<HTMLElement>(".zen-editor-paper");
+    if (!scrollport || !paper) {
+      throw new Error("vertical overflow editor was not rendered");
+    }
+    paper.style.transform = "translateX(-700px)";
+    scrollport.dispatchEvent(new Event("scroll"));
+
+    await waitFor(() => {
+      expectRect(
+        probe.getAttribute("data-contrast-rect"),
+        [0.1, 0.25, 0.6, 0.75],
+      );
+    });
+    expectRect(
+      probe.getAttribute("data-contrast-feather"),
+      [0, 0.08, 0.048, 0.08],
+    );
   });
 });
 

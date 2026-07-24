@@ -113,6 +113,51 @@ function visibleElements(selector: string): VisibleElement[] {
   return visible;
 }
 
+function intersectionRect(first: DOMRect, second: DOMRect): DOMRect | null {
+  const left = Math.max(first.left, second.left);
+  const top = Math.max(first.top, second.top);
+  const right = Math.min(first.right, second.right);
+  const bottom = Math.min(first.bottom, second.bottom);
+  if (right <= left || bottom <= top) return null;
+  return new DOMRect(left, top, right - left, bottom - top);
+}
+
+function clipPapersToScrollports(
+  papers: readonly VisibleElement[],
+): VisibleElement[] {
+  return papers.flatMap(({ element, rect }) => {
+    const scrollport =
+      element.closest<HTMLElement>(".glass-editor-body") ?? null;
+    if (!scrollport) return [{ element, rect }];
+
+    const clippedRect = intersectionRect(
+      rect,
+      scrollport.getBoundingClientRect(),
+    );
+    return clippedRect ? [{ element, rect: clippedRect }] : [];
+  });
+}
+
+function unionPaperScrollportRect(
+  papers: readonly VisibleElement[],
+): DOMRect | null {
+  if (papers.length === 0) return null;
+  const scrollports = new Set<HTMLElement>();
+  for (const { element } of papers) {
+    const scrollport =
+      element.closest<HTMLElement>(".glass-editor-body") ?? null;
+    if (!scrollport) return null;
+    scrollports.add(scrollport);
+  }
+
+  return unionRect(
+    Array.from(scrollports, (element) => ({
+      element,
+      rect: element.getBoundingClientRect(),
+    })),
+  );
+}
+
 function unionRect(elements: readonly VisibleElement[]): DOMRect | null {
   if (elements.length === 0) return null;
 
@@ -121,6 +166,37 @@ function unionRect(elements: readonly VisibleElement[]): DOMRect | null {
   const right = Math.max(...elements.map(({ rect }) => rect.right));
   const bottom = Math.max(...elements.map(({ rect }) => rect.bottom));
   return new DOMRect(left, top, right - left, bottom - top);
+}
+
+function constrainFeatherToBounds(
+  layout: ZenContrastGuardLayout,
+  surface: DOMRect,
+  target: DOMRect,
+  bounds: DOMRect,
+): ZenContrastGuardLayout {
+  if (surface.width <= 0 || surface.height <= 0) return layout;
+
+  return {
+    ...layout,
+    feather: [
+      Math.min(
+        layout.feather[0],
+        Math.max(0, target.left - bounds.left) / surface.width,
+      ),
+      Math.min(
+        layout.feather[1],
+        Math.max(0, bounds.bottom - target.bottom) / surface.height,
+      ),
+      Math.min(
+        layout.feather[2],
+        Math.max(0, bounds.right - target.right) / surface.width,
+      ),
+      Math.min(
+        layout.feather[3],
+        Math.max(0, target.top - bounds.top) / surface.height,
+      ),
+    ],
+  };
 }
 
 function surfaceCornerRadius(
@@ -208,17 +284,31 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       surfaceRect: DOMRect,
       elementRect: DOMRect | null,
       featherPx = 48,
-    ) =>
-      elementRect
-        ? calculateZenContrastGuardLayout(surfaceRect, elementRect, featherPx)
-        : EMPTY_ZEN_CONTRAST_GUARD_LAYOUT;
+      featherBounds?: DOMRect | null,
+    ) => {
+      if (!elementRect) return EMPTY_ZEN_CONTRAST_GUARD_LAYOUT;
+      const layout = calculateZenContrastGuardLayout(
+        surfaceRect,
+        elementRect,
+        featherPx,
+      );
+      return featherBounds
+        ? constrainFeatherToBounds(
+            layout,
+            surfaceRect,
+            elementRect,
+            featherBounds,
+          )
+        : layout;
+    };
 
     const update = () => {
       frame = 0;
       const uiSurfaceCandidates = Array.from(
         document.querySelectorAll<HTMLElement>(UI_SURFACE_SELECTOR),
       );
-      const visiblePapers = visibleElements(".zen-editor-paper");
+      const paperCandidates = visibleElements(".zen-editor-paper");
+      const visiblePapers = clipPapersToScrollports(paperCandidates);
       const visibleEditors = visibleElements("[data-editor-area]");
       const visibleUiSurfaces = visibleElements(UI_SURFACE_SELECTOR);
       const glassRoots = Array.from(
@@ -233,7 +323,7 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
         }
       }
       const nextScrollTargets = new Set(
-        visiblePapers.flatMap(({ element }) => {
+        paperCandidates.flatMap(({ element }) => {
           const target = element.closest<HTMLElement>(".glass-editor-body");
           return target ? [target] : [];
         }),
@@ -241,7 +331,7 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       syncResizeTargets(
         new Set([
           surface,
-          ...visiblePapers.map(({ element }) => element),
+          ...paperCandidates.map(({ element }) => element),
           ...visibleEditors.map(({ element }) => element),
           ...uiSurfaceCandidates,
           ...nextScrollTargets,
@@ -256,9 +346,10 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
 
       const surfaceRect = surface.getBoundingClientRect();
       const paperRect = unionRect(visiblePapers);
+      const paperScrollportRect = unionPaperScrollportRect(paperCandidates);
       const editorRect = unionRect(visibleEditors);
       const next = {
-        contrast: layoutFor(surfaceRect, paperRect),
+        contrast: layoutFor(surfaceRect, paperRect, 48, paperScrollportRect),
         glass: {
           ...layoutFor(surfaceRect, editorRect),
           cornerRadius:
