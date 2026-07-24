@@ -1,17 +1,23 @@
 import type { TFunction } from "i18next";
 import i18next from "@/lib/i18n";
-import { normalizeOllamaEndpoint } from "@/lib/browser-ai";
+import {
+  browserProviderRequiresApiKey,
+  normalizeOllamaEndpoint,
+} from "@/lib/browser-ai";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import type { AiDataDisclosureView } from "./AiDataConsentDialog";
 import { requestAiDataConsent } from "./aiDataConsentBroker";
 
-export const BROWSER_AI_DATA_POLICY_VERSION = "2026-07-20.2";
+export const BROWSER_AI_DATA_POLICY_VERSION = "2026-07-24.1";
 
 export type BrowserAiDisclosureLocale = "ja" | "en";
-type BrowserAiDisclosureProvider = "openai" | "anthropic" | "ollama";
+type BrowserAiDisclosureProvider = (typeof BROWSER_DIRECT_AI_PROVIDERS)[number];
 
 export interface BrowserAiDisclosureOptions {
   locale?: BrowserAiDisclosureLocale;
   ollamaEndpoint?: string | null;
+  baseUrl?: string | null;
+  hasApiKey?: boolean;
 }
 
 type ProviderFacts = Pick<
@@ -33,16 +39,31 @@ function resolveLocale(
 
 function requireProvider(value: string): BrowserAiDisclosureProvider {
   const provider = value.trim().toLowerCase();
-  if (
-    provider === "openai" ||
-    provider === "anthropic" ||
-    provider === "ollama"
-  ) {
-    return provider;
+  if ((BROWSER_DIRECT_AI_PROVIDERS as readonly string[]).includes(provider)) {
+    return provider as BrowserAiDisclosureProvider;
   }
   throw new Error(
     `Provider "${provider || "unknown"}" is not supported in browser mode`,
   );
+}
+
+function normalizeConfiguredDestination(
+  value: string | null | undefined,
+): string {
+  const destination = value?.trim().replace(/\/+$/, "") ?? "";
+  if (!destination) {
+    throw new Error("OpenAI-compatible base URL is not configured");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(destination);
+  } catch {
+    throw new Error("OpenAI-compatible base URL is invalid");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("OpenAI-compatible base URL must use http or https");
+  }
+  return destination;
 }
 
 function grimodexPrivacyUrl(locale: BrowserAiDisclosureLocale): string {
@@ -125,6 +146,105 @@ function providerFacts(
     };
   }
 
+  if (provider === "openai-compatible") {
+    const destination = normalizeConfiguredDestination(options.baseUrl);
+    return {
+      destination,
+      processingDestinations: [
+        {
+          processor: t(
+            "aiDataConsent.disclosure.provider.configured.processor",
+          ),
+          purpose: t("aiDataConsent.disclosure.provider.configured.purpose"),
+          location: destination,
+          privacyPolicyUrl: destination,
+        },
+      ],
+      providerStorage: {
+        summary: t("aiDataConsent.disclosure.provider.configured.storage"),
+        policyUrl: destination,
+      },
+      providerRetention: {
+        summary: t("aiDataConsent.disclosure.provider.configured.retention"),
+        policyUrl: destination,
+      },
+      trainingUse: {
+        status: "depends",
+        summary: t("aiDataConsent.disclosure.provider.configured.training"),
+        policyUrl: destination,
+      },
+    };
+  }
+
+  const externalProviders: Partial<
+    Record<
+      BrowserAiDisclosureProvider,
+      {
+        destination: string;
+        label: string;
+        processor: string;
+        policyUrl: string;
+      }
+    >
+  > = {
+    openrouter: {
+      destination: "https://openrouter.ai/api/v1",
+      label: "OpenRouter",
+      processor: "OpenRouter and its selected inference provider(s)",
+      policyUrl: "https://openrouter.ai/docs/guides/privacy/data-collection",
+    },
+    sakana: {
+      destination: "https://api.sakana.ai/v1",
+      label: "Sakana AI",
+      processor: "Sakana AI API and the providers enabled for your API key",
+      policyUrl: "https://console.sakana.ai/privacy-policy",
+    },
+    "ai-novelist": {
+      destination: "https://api.tringpt.com",
+      label: "AI Novelist",
+      processor: "AI Novelist / Bit192",
+      policyUrl: "https://ai-novel.com/terms_of_use.html",
+    },
+  };
+  const external = externalProviders[provider];
+  if (external) {
+    const label = external.label;
+    return {
+      destination: external.destination,
+      processingDestinations: [
+        {
+          processor: external.processor,
+          purpose: t("aiDataConsent.disclosure.provider.external.purpose", {
+            provider: label,
+          }),
+          location: t("aiDataConsent.disclosure.provider.external.location", {
+            provider: label,
+          }),
+          privacyPolicyUrl: external.policyUrl,
+        },
+      ],
+      providerStorage: {
+        summary: t("aiDataConsent.disclosure.provider.external.storage", {
+          provider: label,
+        }),
+        policyUrl: external.policyUrl,
+      },
+      providerRetention: {
+        summary: t("aiDataConsent.disclosure.provider.external.retention", {
+          provider: label,
+        }),
+        policyUrl: external.policyUrl,
+      },
+      trainingUse: {
+        status: "depends",
+        summary: t("aiDataConsent.disclosure.provider.external.training", {
+          provider: label,
+        }),
+        policyUrl: external.policyUrl,
+      },
+    };
+  }
+
   const destination = normalizeOllamaEndpoint(options.ollamaEndpoint);
   const policyUrl = "https://ollama.com/privacy";
   return {
@@ -162,6 +282,8 @@ export function createByokAiDataDisclosure(
   const t = i18next.getFixedT(locale);
   const facts = providerFacts(provider, options, t);
   const privacyUrl = grimodexPrivacyUrl(locale);
+  const sendsCredential =
+    options.hasApiKey ?? browserProviderRequiresApiKey(provider);
   return {
     schemaVersion: "grimodex/ai-data-disclosure/1",
     policyVersion: BROWSER_AI_DATA_POLICY_VERSION,
@@ -182,7 +304,7 @@ export function createByokAiDataDisclosure(
         category: "selected-context",
         description: t("aiDataConsent.disclosure.sentContext"),
       },
-      ...(provider === "ollama"
+      ...(!sendsCredential
         ? []
         : [
             {
@@ -215,10 +337,14 @@ export function createByokAiDataDisclosure(
 export function authorizeBrowserAiRequest(input: {
   provider?: string;
   ollamaEndpoint?: string | null;
+  baseUrl?: string | null;
+  hasApiKey?: boolean;
 }): Promise<void> {
   return requestAiDataConsent(
     createByokAiDataDisclosure(input.provider ?? "unknown", {
       ollamaEndpoint: input.ollamaEndpoint,
+      baseUrl: input.baseUrl,
+      hasApiKey: input.hasApiKey,
     }),
   );
 }

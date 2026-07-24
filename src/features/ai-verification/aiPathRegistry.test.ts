@@ -215,6 +215,10 @@ describe("AI runtime route registry — Web Editor direct transports", () => {
 
   it("assigns every runtime route a capability decision and executable contract verifier", () => {
     for (const route of AI_RUNTIME_ROUTES) {
+      expect(route.providers.length, `${route.id} providers`).toBeGreaterThan(
+        0,
+      );
+      expect(route.providers).not.toContain("cli");
       expect(route.surface.length, `${route.id} surface`).toBeGreaterThan(0);
       expect(route.transport.length, `${route.id} transport`).toBeGreaterThan(
         0,

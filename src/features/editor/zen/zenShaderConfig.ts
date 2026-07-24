@@ -10,6 +10,10 @@ import {
   parseZenGlassConfig,
   ZEN_GLASS_DEFAULTS,
 } from "./zenBackgroundAppearanceConfig";
+import {
+  ZEN_BACKGROUND_DEFAULTS,
+  ZEN_BACKGROUND_DEFAULT_SHADER_PROPS,
+} from "./zenBackgroundDefaults";
 
 export const ZEN_SHADER_IDS = PAPER_SHADER_IDS;
 export type ZenShaderId = PaperShaderId;
@@ -65,27 +69,21 @@ export interface ZenShaderConfig {
 }
 
 export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
-  enabled: true,
-  shader: "mesh-gradient",
-  paletteMode: "theme",
-  opacity: 10,
-  speed: 8,
-  scale: 1.15,
-  rotation: 0,
-  offsetX: 0,
-  offsetY: 0,
-  customColors: ["#8fb4d6", "#d6b5a5", "#786fa6", "#d8c47c"],
-  customColorBack: "#101318",
-  shaderProps: {},
-  dither: { enabled: false, strength: 0.35, size: 2, levels: 6 },
-  halftone: {
-    enabled: false,
-    strength: 0.3,
-    size: 8,
-    angle: 15,
-    softness: 0.15,
-  },
-  contrastGuard: { mode: "auto", strength: 1, toolMix: 0.5 },
+  enabled: ZEN_BACKGROUND_DEFAULTS.enabled,
+  shader: ZEN_BACKGROUND_DEFAULTS.shader,
+  paletteMode: ZEN_BACKGROUND_DEFAULTS.paletteMode,
+  opacity: ZEN_BACKGROUND_DEFAULTS.opacity,
+  speed: ZEN_BACKGROUND_DEFAULTS.speedPercent,
+  scale: ZEN_BACKGROUND_DEFAULTS.scale,
+  rotation: ZEN_BACKGROUND_DEFAULTS.rotation,
+  offsetX: ZEN_BACKGROUND_DEFAULTS.offsetX,
+  offsetY: ZEN_BACKGROUND_DEFAULTS.offsetY,
+  customColors: [...ZEN_BACKGROUND_DEFAULTS.colors],
+  customColorBack: ZEN_BACKGROUND_DEFAULTS.colorBack,
+  shaderProps: ZEN_BACKGROUND_DEFAULT_SHADER_PROPS,
+  dither: { ...ZEN_BACKGROUND_DEFAULTS.dither },
+  halftone: { ...ZEN_BACKGROUND_DEFAULTS.halftone },
+  contrastGuard: { ...ZEN_BACKGROUND_DEFAULTS.contrastGuard },
   glass: { ...ZEN_GLASS_DEFAULTS },
 };
 

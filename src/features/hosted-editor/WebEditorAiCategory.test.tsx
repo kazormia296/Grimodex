@@ -1,10 +1,16 @@
 // @vitest-environment jsdom
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WebEditorAiCategory } from "./WebEditorAiCategory";
 
 const mocks = vi.hoisted(() => ({
+  settings: {
+    provider: "ollama" as const,
+    model: "",
+    ollamaEndpoint: "http://localhost:11434",
+    modelApiVariant: null,
+  },
   loadSettings: vi.fn(async () => undefined),
   saveSettings: vi.fn(async () => undefined),
   saveApiKey: vi.fn(async () => undefined),
@@ -15,18 +21,13 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/features/chat/store", () => ({
   useAiSettingsStore: () => ({
-    settings: {
-      provider: "ollama",
-      model: "",
-      ollamaEndpoint: "http://localhost:11434",
-      modelApiVariant: null,
-    },
+    ...mocks,
+    settings: mocks.settings,
     hasApiKey: false,
     isTestingConnection: false,
     connectionTestResult: null,
     models: [],
     isLoadingModels: false,
-    ...mocks,
   }),
 }));
 
@@ -62,6 +63,33 @@ describe("WebEditorAiCategory", () => {
   it("keeps project AI policy controls reachable", () => {
     render(<WebEditorAiCategory />);
     expect(screen.getByText("AI policy controls")).toBeTruthy();
+  });
+
+  it("offers every HTTP provider and exposes custom endpoint setup", async () => {
+    render(<WebEditorAiCategory />);
+
+    for (const name of [
+      /^OpenRouter$/,
+      /^OpenAI$/,
+      /^Anthropic$/,
+      /Ollama/,
+      /OpenAI.*(?:互換|compatible)/,
+      /Sakana/,
+      /AI のべりすと/,
+    ]) {
+      expect(screen.getByRole("button", { name })).toBeTruthy();
+    }
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /OpenAI.*(?:互換|compatible)/,
+      }),
+    );
+    expect(
+      await screen.findByRole("button", {
+        name: /エンドポイントを追加|Add endpoint/,
+      }),
+    ).toBeTruthy();
   });
 
   it("explains the browser-to-Ollama origin and local-network requirements", () => {

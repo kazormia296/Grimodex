@@ -8,6 +8,14 @@ import type {
   AiProvider,
   ToolProtocolMode,
 } from "@/features/chat/types";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
+import {
+  AINOVERIST_BASE_URL,
+  AINOVERIST_MODEL_CAPS,
+  AINOVERIST_V1_BASE_URL,
+  AINOVERIST_V1_KNOWN_MODELS,
+  isAinoveristV1Model,
+} from "@/features/chat/aiNovelist";
 import type {
   AgentMessagePayload,
   AgentLLMResponse,
@@ -30,6 +38,13 @@ interface ChatMessage {
 
 export type BrowserAiOperation = "chat" | "inline";
 
+export interface BrowserAiConnectionOptions {
+  ollamaEndpoint?: string | null;
+  /** OpenAI-compatible only. This is the user-selected endpoint base URL. */
+  baseUrl?: string | null;
+  apiVariant?: string | null;
+}
+
 export interface BrowserAiRequest {
   operation: BrowserAiOperation;
   provider: AiProvider;
@@ -39,6 +54,8 @@ export interface BrowserAiRequest {
   messages: ChatMessage[];
   maxOutputTokens?: number | null;
   ollamaEndpoint?: string | null;
+  baseUrl?: string | null;
+  apiVariant?: string | null;
 }
 
 export type BrowserAiCompletion = AgentLLMResponse;
@@ -76,18 +93,49 @@ export type BrowserAiEndpointResource = "chat" | "models";
 
 function requireBrowserDirectProvider(provider: AiProvider): void {
   if (
-    provider !== "ollama" &&
-    provider !== "openai" &&
-    provider !== "anthropic"
+    !(BROWSER_DIRECT_AI_PROVIDERS as readonly AiProvider[]).includes(provider)
   ) {
     throw new Error(`Provider "${provider}" is not supported in browser mode`);
   }
 }
 
+const BROWSER_PROVIDERS_REQUIRING_KEY = new Set<AiProvider>([
+  "openrouter",
+  "openai",
+  "anthropic",
+  "sakana",
+  "ai-novelist",
+]);
+
+export function browserProviderRequiresApiKey(provider: AiProvider): boolean {
+  requireBrowserDirectProvider(provider);
+  return BROWSER_PROVIDERS_REQUIRING_KEY.has(provider);
+}
+
+function normalizeBaseUrl(
+  value: string | null | undefined,
+  label: string,
+): string {
+  const normalized = value?.trim().replace(/\/+$/, "") ?? "";
+  if (!normalized) {
+    throw new Error(`${label} base URL is not configured`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error(`${label} base URL is invalid`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${label} base URL must use http or https`);
+  }
+  return normalized;
+}
+
 export function resolveBrowserAiEndpoint(
   provider: AiProvider,
   resource: BrowserAiEndpointResource,
-  options: { development?: boolean; ollamaEndpoint?: string | null } = {},
+  options: BrowserAiConnectionOptions & { development?: boolean } = {},
 ): string | null {
   requireBrowserDirectProvider(provider);
   const development = options.development ?? isViteDevelopment;
@@ -103,6 +151,8 @@ export function resolveBrowserAiEndpoint(
       return development
         ? `/api/openai/${suffix}`
         : `https://api.openai.com/v1/${suffix}`;
+    case "openrouter":
+      return `https://openrouter.ai/api/v1/${suffix}`;
     case "ollama": {
       const normalizedOllamaEndpoint = normalizeOllamaEndpoint(
         options.ollamaEndpoint,
@@ -118,6 +168,26 @@ export function resolveBrowserAiEndpoint(
         ? "/api/ollama/v1/chat/completions"
         : `${normalizedOllamaEndpoint}/v1/chat/completions`;
     }
+    case "openai-compatible": {
+      const baseUrl = normalizeBaseUrl(
+        options.baseUrl,
+        "OpenAI-compatible endpoint",
+      );
+      return `${baseUrl}/${suffix}`;
+    }
+    case "sakana":
+      return development
+        ? `/api/sakana/${suffix}`
+        : `https://api.sakana.ai/v1/${suffix}`;
+    case "ai-novelist": {
+      if (resource === "models") {
+        return `${AINOVERIST_V1_BASE_URL}/models`;
+      }
+      const useV1 = options.apiVariant === "v1";
+      return useV1
+        ? `${AINOVERIST_V1_BASE_URL}/chat/completions`
+        : AINOVERIST_BASE_URL;
+    }
   }
   throw new Error(`Provider "${provider}" is not supported in browser mode`);
 }
@@ -129,10 +199,10 @@ export function normalizeOllamaEndpoint(endpoint?: string | null): string {
 
 function chatEndpoint(
   provider: AiProvider,
-  ollamaEndpoint?: string | null,
+  options: BrowserAiConnectionOptions = {},
 ): string {
   const endpoint = resolveBrowserAiEndpoint(provider, "chat", {
-    ollamaEndpoint,
+    ...options,
   });
   if (!endpoint) {
     throw new Error(`No browser chat endpoint is available for ${provider}`);
@@ -142,9 +212,9 @@ function chatEndpoint(
 
 function modelsEndpoint(
   provider: AiProvider,
-  ollamaEndpoint?: string | null,
+  options: BrowserAiConnectionOptions = {},
 ): string | null {
-  return resolveBrowserAiEndpoint(provider, "models", { ollamaEndpoint });
+  return resolveBrowserAiEndpoint(provider, "models", options);
 }
 
 function buildHeaders(
@@ -165,7 +235,17 @@ function buildHeaders(
       headers["anthropic-dangerous-direct-browser-access"] = "true";
       break;
     case "openai":
+    case "sakana":
+    case "ai-novelist":
       headers["Authorization"] = `Bearer ${apiKey}`;
+      break;
+    case "openrouter":
+      headers["Authorization"] = `Bearer ${apiKey}`;
+      headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
+      headers["X-Title"] = "Grimodex";
+      break;
+    case "openai-compatible":
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
       break;
     case "ollama":
       // No auth
@@ -192,6 +272,7 @@ export async function sendChat(
   model: string,
   apiKey: string,
   messages: ChatMessage[],
+  options: BrowserAiConnectionOptions = {},
 ): Promise<string> {
   const result = await completeBrowserAiRequest({
     operation: "chat",
@@ -199,6 +280,7 @@ export async function sendChat(
     model,
     apiKey,
     messages,
+    ...options,
   });
   return result.blocks
     .filter(
@@ -212,6 +294,48 @@ export async function sendChat(
 function buildChatBody(request: BrowserAiRequest): Record<string, unknown> {
   const { provider, model, messages } = request;
   const maxTokens = request.maxOutputTokens ?? 4096;
+
+  if (isAiNovelistLegacy(request)) {
+    const legacyMaxTokens =
+      request.maxOutputTokens ??
+      AINOVERIST_MODEL_CAPS[model]?.maxOutputTokens ??
+      4096;
+    if (request.operation === "inline") {
+      return {
+        text: messages
+          .map(({ role, content }) => `[${role}]\n${content}`)
+          .join("\n\n"),
+        model,
+        length: legacyMaxTokens,
+      };
+    }
+
+    const systemMessages: string[] = [];
+    const chatMessages: ChatMessage[] = [];
+    for (const message of messages) {
+      if (message.role === "system") {
+        systemMessages.push(message.content);
+        continue;
+      }
+      const content =
+        systemMessages.length > 0 && chatMessages.length === 0
+          ? `${systemMessages.join("\n\n")}\n\n${message.content}`
+          : message.content;
+      if (chatMessages.length === 0) systemMessages.length = 0;
+      chatMessages.push({ role: message.role, content });
+    }
+    if (systemMessages.length > 0) {
+      chatMessages.push({
+        role: "user",
+        content: systemMessages.join("\n\n"),
+      });
+    }
+    return {
+      messages: chatMessages,
+      model,
+      max_tokens: legacyMaxTokens,
+    };
+  }
 
   if (provider === "anthropic") {
     const systemContent = messages
@@ -241,12 +365,72 @@ function buildChatBody(request: BrowserAiRequest): Record<string, unknown> {
   return { model, max_tokens: maxTokens, messages: chatMessages };
 }
 
+function isAiNovelistLegacy(request: {
+  provider: AiProvider;
+  model: string;
+  apiVariant?: string | null;
+}): boolean {
+  return (
+    request.provider === "ai-novelist" &&
+    !isAinoveristV1Model(request.model, request.apiVariant)
+  );
+}
+
+function parseAiNovelistLegacyResponse(
+  result: Record<string, unknown>,
+): BrowserAiCompletion {
+  const data = result.data;
+  let content = "";
+  let usage: Record<string, unknown> = {};
+  let stopReason: AgentLLMResponse["stopReason"] = "end_turn";
+  if (Array.isArray(data)) {
+    content = typeof data[0] === "string" ? data[0] : "";
+  } else if (typeof data === "string") {
+    content = data;
+  } else if (data && typeof data === "object") {
+    const object = data as Record<string, unknown>;
+    const choices = Array.isArray(object.choices)
+      ? (object.choices as Array<Record<string, unknown>>)
+      : [];
+    const first = choices[0] ?? {};
+    const choiceText = typeof first.text === "string" ? first.text : "";
+    content =
+      choiceText ||
+      (typeof object["0"] === "string" ? (object["0"] as string) : "");
+    stopReason = normalizeStopReason(first.finish_reason);
+    usage =
+      object.usage && typeof object.usage === "object"
+        ? (object.usage as Record<string, unknown>)
+        : {};
+  }
+  if (
+    !Object.keys(usage).length &&
+    result.usage &&
+    typeof result.usage === "object"
+  ) {
+    usage = result.usage as Record<string, unknown>;
+  }
+  content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "").trim();
+  const input = usage.input_tokens ?? usage.prompt_tokens;
+  const output = usage.output_tokens ?? usage.completion_tokens;
+  return {
+    blocks: content ? [{ type: "text", content }] : [],
+    stopReason,
+    inputTokens: typeof input === "number" && input >= 0 ? input : undefined,
+    outputTokens:
+      typeof output === "number" && output >= 0 ? output : undefined,
+  };
+}
+
 function requireBrowserAiRequest(request: BrowserAiRequest): void {
   requireBrowserDirectProvider(request.provider);
   if (!request.model.trim()) {
     throw new Error("AIモデルが設定されていません");
   }
-  if (request.provider !== "ollama" && !request.apiKey?.trim()) {
+  if (
+    browserProviderRequiresApiKey(request.provider) &&
+    !request.apiKey?.trim()
+  ) {
     throw new Error(
       `AIは未接続です。APIキーを設定してください: ${request.provider}`,
     );
@@ -265,7 +449,7 @@ export async function completeBrowserAiRequest(
 ): Promise<BrowserAiCompletion> {
   requireBrowserAiRequest(request);
   const headers = buildHeaders(request.provider, request.apiKey ?? "");
-  const url = chatEndpoint(request.provider, request.ollamaEndpoint);
+  const url = chatEndpoint(request.provider, request);
   const body = buildChatBody(request);
 
   const resp = await fetch(url, {
@@ -281,6 +465,10 @@ export async function completeBrowserAiRequest(
   }
 
   const result = (await resp.json()) as Record<string, unknown>;
+
+  if (isAiNovelistLegacy(request)) {
+    return parseAiNovelistLegacyResponse(result);
+  }
 
   if (request.provider === "anthropic") {
     const blocks: ResponseBlock[] = [];
@@ -372,6 +560,20 @@ async function streamBrowserAiRequest(
   signal: AbortSignal,
 ): Promise<void> {
   requireBrowserAiRequest(request);
+  if (isAiNovelistLegacy(request)) {
+    const response = await completeBrowserAiRequest(request, signal);
+    for (const block of response.blocks) {
+      if (block.type === "text" || block.type === "thinking") {
+        sink.text(block.content, block.type);
+      }
+    }
+    sink.done({
+      stopReason: response.stopReason,
+      inputTokens: response.inputTokens,
+      outputTokens: response.outputTokens,
+    });
+    return;
+  }
   const headers = buildHeaders(request.provider, request.apiKey ?? "");
   const body: Record<string, unknown> = {
     ...buildChatBody(request),
@@ -381,15 +583,12 @@ async function streamBrowserAiRequest(
     body.stream_options = { include_usage: true };
   }
 
-  const response = await fetch(
-    chatEndpoint(request.provider, request.ollamaEndpoint),
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    },
-  );
+  const response = await fetch(chatEndpoint(request.provider, request), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
   if (!response.ok) {
     const message = await parseErrorResponse(response);
     throw new Error(`AI request failed (${response.status}): ${message}`);
@@ -512,7 +711,7 @@ export function createBrowserAiTransport(): BrowserAiTransport {
 export async function fetchModels(
   provider: AiProvider,
   apiKey: string,
-  ollamaEndpoint?: string | null,
+  options: BrowserAiConnectionOptions = {},
 ): Promise<AiModel[]> {
   requireBrowserDirectProvider(provider);
   // Anthropic: static list
@@ -527,17 +726,54 @@ export async function fetchModels(
     ];
   }
 
-  const url = modelsEndpoint(provider, ollamaEndpoint);
+  const legacyAiNovelistModels: AiModel[] =
+    provider === "ai-novelist"
+      ? Object.keys(AINOVERIST_MODEL_CAPS).map((id) => ({
+          id,
+          name:
+            id === "supertrin"
+              ? "supertrin (legacy)"
+              : id === "damsel"
+                ? "damsel (legacy)"
+                : id,
+          apiVariant: "legacy" as const,
+        }))
+      : [];
+
+  const url = modelsEndpoint(provider, options);
   if (!url) return [];
 
-  const headers: Record<string, string> = {};
-  if (provider === "openai") {
-    headers["Authorization"] = `Bearer ${apiKey}`;
+  const headers = buildHeaders(provider, apiKey);
+  delete headers["content-type"];
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, { headers });
+  } catch (error) {
+    if (provider === "ai-novelist") {
+      return [
+        ...legacyAiNovelistModels,
+        ...AINOVERIST_V1_KNOWN_MODELS.map((id) => ({
+          id,
+          name: id === "spiko_ultra" ? "Spiko Ultra" : id,
+          apiVariant: "v1" as const,
+        })),
+      ];
+    }
+    throw error;
   }
 
-  const resp = await fetch(url, { headers });
-
   if (!resp.ok) {
+    if (provider === "ai-novelist") {
+      return [
+        ...legacyAiNovelistModels,
+        ...AINOVERIST_V1_KNOWN_MODELS.map((id) => ({
+          id,
+          name: id === "spiko_ultra" ? "Spiko Ultra" : id,
+          apiVariant: "v1" as const,
+        })),
+      ];
+    }
     const errMsg = await parseErrorResponse(resp);
     throw new Error(`Failed to fetch models (${resp.status}): ${errMsg}`);
   }
@@ -552,12 +788,42 @@ export async function fetchModels(
     }));
   }
 
-  // OpenAI
   const data = body?.data ?? [];
-  return data.map((m: { id: string; name?: string }) => ({
+  if (provider === "openrouter") {
+    return data.map(
+      (m: {
+        id: string;
+        name?: string;
+        context_length?: number;
+        top_provider?: { max_completion_tokens?: number };
+        supported_parameters?: string[];
+        pricing?: { prompt?: string; completion?: string };
+      }) => ({
+        id: m.id,
+        name: m.name ?? m.id,
+        contextLength: m.context_length,
+        maxCompletionTokens: m.top_provider?.max_completion_tokens,
+        supportedParameters: m.supported_parameters,
+        pricingPrompt: m.pricing?.prompt,
+        pricingCompletion: m.pricing?.completion,
+      }),
+    );
+  }
+  const openAiModels = data.map((m: { id: string; name?: string }) => ({
     id: m.id,
     name: m.name ?? m.id,
+    ...(provider === "ai-novelist" ? { apiVariant: "v1" as const } : undefined),
   }));
+  if (provider === "ai-novelist") {
+    const byId = new Map<string, AiModel>();
+    for (const model of [...legacyAiNovelistModels, ...openAiModels]) {
+      byId.set(model.id, model);
+    }
+    return [...byId.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+  }
+  return openAiModels;
 }
 
 // ---------------------------------------------------------------------------
@@ -785,10 +1051,19 @@ export async function sendChatWithTools(
   messages: AgentMessagePayload[],
   tools: AgentToolDefinition[],
   toolProtocolMode: ToolProtocolMode = "auto",
-  ollamaEndpoint?: string | null,
+  options: BrowserAiConnectionOptions = {},
 ): Promise<AgentLLMResponse> {
+  if (
+    isAiNovelistLegacy({
+      provider,
+      model,
+      apiVariant: options.apiVariant,
+    })
+  ) {
+    throw new Error("AI のべりすと (legacy) は Tool Use に対応していません");
+  }
   const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider, ollamaEndpoint);
+  const url = chatEndpoint(provider, options);
 
   // Rust parity: provider ゲート + auto/native/hermes を一度だけ解決し、
   // 送信側 (tools[] 省略 + <tools> XML) と受信側パースの両方で使う。
@@ -870,14 +1145,25 @@ export async function testConnection(
   provider: AiProvider,
   model: string,
   apiKey: string,
-  ollamaEndpoint?: string | null,
+  options: BrowserAiConnectionOptions = {},
 ): Promise<string> {
   const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider, ollamaEndpoint);
+  const request = {
+    provider,
+    model,
+    apiVariant: options.apiVariant,
+  };
+  const url = chatEndpoint(provider, options);
 
   let body: Record<string, unknown>;
 
-  if (provider === "anthropic") {
+  if (isAiNovelistLegacy(request)) {
+    body = {
+      text: "Reply with exactly: Connection OK",
+      model,
+      length: 32,
+    };
+  } else if (provider === "anthropic") {
     body = {
       model,
       max_tokens: 32,
@@ -908,6 +1194,18 @@ export async function testConnection(
 
   const result = await resp.json();
 
+  if (isAiNovelistLegacy(request)) {
+    const parsed = parseAiNovelistLegacyResponse(
+      result as Record<string, unknown>,
+    );
+    return parsed.blocks
+      .filter(
+        (block): block is Extract<ResponseBlock, { type: "text" }> =>
+          block.type === "text",
+      )
+      .map((block) => block.content)
+      .join("\n");
+  }
   if (provider === "anthropic") {
     return result?.content?.[0]?.text ?? "Connection successful";
   }

@@ -67,7 +67,7 @@ describe("BackgroundStudio", () => {
     ).toBe("false");
     expect(
       screen.getByLabelText("settings.editor.zenBackgroundShader"),
-    ).toHaveValue("mesh-gradient");
+    ).toHaveValue("liquid-metal");
   });
 
   it("does not expose paper paint, blur or halftone controls", () => {
@@ -105,7 +105,7 @@ describe("BackgroundStudio", () => {
     expect(toolMix).toHaveAttribute("min", "0");
     expect(toolMix).toHaveAttribute("max", "0.75");
     expect(toolMix).toHaveAttribute("step", "0.01");
-    expect(toolMix).toHaveValue("0.5");
+    expect(toolMix).toHaveValue("0.75");
     expect(toolMix).not.toBeDisabled();
 
     fireEvent.change(toolMix, { target: { value: "0.68" } });

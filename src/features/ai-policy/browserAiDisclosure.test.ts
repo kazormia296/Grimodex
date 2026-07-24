@@ -16,7 +16,12 @@ describe("browser BYOK AI disclosure", () => {
   ] as const)(
     "explains sent data, local storage, retention, and training for %s",
     (provider, trainingStatus) => {
-      const disclosure = createByokAiDataDisclosure(provider, { locale: "en" });
+      const disclosure = createByokAiDataDisclosure(provider, {
+        locale: "en",
+        ...(provider === "openai-compatible"
+          ? { baseUrl: "https://gateway.example/v1" }
+          : {}),
+      });
 
       expect(disclosure).toMatchObject({
         schemaVersion: "grimodex/ai-data-disclosure/1",
@@ -83,14 +88,14 @@ describe("browser BYOK AI disclosure", () => {
       "https://gateway.example/v1",
     );
     expect(first.consentId).not.toBe(second.consentId);
-    expect(
-      first.sentData.some((item) => item.category === "credential"),
-    ).toBe(false);
+    expect(first.sentData.some((item) => item.category === "credential")).toBe(
+      false,
+    );
   });
 
   it("fails closed for native CLI", () => {
-    expect(() =>
-      createByokAiDataDisclosure("cli", { locale: "en" }),
-    ).toThrow(/not supported/i);
+    expect(() => createByokAiDataDisclosure("cli", { locale: "en" })).toThrow(
+      /not supported/i,
+    );
   });
 });

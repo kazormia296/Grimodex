@@ -3,18 +3,29 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 import { useAiSettingsStore } from "@/features/chat/store";
-import type { AiProvider, AiSettings } from "@/features/chat/types";
+import {
+  resolveActiveOpenaiCompatibleEndpoint,
+  type AiProvider,
+  type AiSettings,
+  type OpenaiCompatibleEndpoint,
+} from "@/features/chat/types";
+import { applyEndpointsToSettings } from "@/features/settings/categories/openaiCompatibleEndpointsHelpers";
+import { resolveModelApiVariant } from "@/features/chat/aiNovelist";
+import { browserProviderRequiresApiKey } from "@/lib/browser-ai";
 import { SettingRow } from "@/features/settings/components/SettingRow";
 import { SettingSection } from "@/features/settings/components/SettingSection";
 import { AiProjectSettings } from "@/features/settings/categories/AiProjectSettings";
+import { OpenaiCompatibleEndpointsManager } from "@/features/settings/categories/OpenaiCompatibleEndpointsManager";
 import { WebEditorAiProviderPicker } from "./WebEditorAiProviderPicker";
 import { WebEditorApiKeySettings } from "./WebEditorApiKeySettings";
 import { WebEditorOllamaSetup } from "./WebEditorOllamaSetup";
 
 function canConnect(settings: AiSettings, hasApiKey: boolean): boolean {
-  return Boolean(
-    settings.model && (settings.provider === "ollama" || hasApiKey),
-  );
+  if (!settings.model) return false;
+  if (settings.provider === "openai-compatible") {
+    return Boolean(resolveActiveOpenaiCompatibleEndpoint(settings)?.baseUrl);
+  }
+  return !browserProviderRequiresApiKey(settings.provider) || hasApiKey;
 }
 
 export function WebEditorAiCategory() {
@@ -48,7 +59,9 @@ export function WebEditorAiCategory() {
 
   useEffect(() => {
     if (!settings) return;
-    if (settings.provider === "ollama" || hasApiKey) void loadModels();
+    if (!browserProviderRequiresApiKey(settings.provider) || hasApiKey) {
+      void loadModels();
+    }
   }, [hasApiKey, loadModels, settings]);
 
   if (!localSettings) {
@@ -60,7 +73,7 @@ export function WebEditorAiCategory() {
   }
 
   const provider = localSettings.provider as AiProvider;
-  const needsKey = provider !== "ollama";
+  const needsKey = browserProviderRequiresApiKey(provider);
   async function persist(next: AiSettings) {
     setLocalSettings(next);
     await saveSettings(next);
@@ -82,6 +95,34 @@ export function WebEditorAiCategory() {
     await saveApiKey(key);
     setApiKeyInput("");
     await loadModels();
+  }
+
+  async function changeCompatibleEndpoints(
+    endpoints: OpenaiCompatibleEndpoint[],
+    activeId: string | null,
+  ) {
+    const browserEndpoints = endpoints.map((endpoint) =>
+      endpoint.apiVariant === "responses"
+        ? { ...endpoint, apiVariant: null }
+        : endpoint,
+    );
+    await persist(
+      applyEndpointsToSettings(localSettings!, browserEndpoints, activeId),
+    );
+  }
+
+  async function selectModel(model: string) {
+    await persist({
+      ...localSettings!,
+      model,
+      modelApiVariant:
+        resolveModelApiVariant(
+          provider,
+          model,
+          models,
+          localSettings!.modelApiVariant,
+        ) ?? null,
+    });
   }
 
   return (
@@ -121,6 +162,16 @@ export function WebEditorAiCategory() {
           </>
         )}
 
+        {provider === "openai-compatible" && (
+          <OpenaiCompatibleEndpointsManager
+            endpoints={localSettings.openaiCompatibleEndpoints ?? []}
+            activeId={localSettings.activeOpenaiCompatibleEndpointId ?? null}
+            onChange={(endpoints, activeId) =>
+              void changeCompatibleEndpoints(endpoints, activeId)
+            }
+          />
+        )}
+
         {needsKey && (
           <WebEditorApiKeySettings
             hasApiKey={hasApiKey}
@@ -138,7 +189,7 @@ export function WebEditorAiCategory() {
             <ModelPicker
               models={models}
               value={localSettings.model}
-              onChange={(model) => void persist({ ...localSettings, model })}
+              onChange={(model) => void selectModel(model)}
               isLoading={isLoadingModels}
             />
             <button

@@ -69,11 +69,8 @@ export function useChatModelCatalog(open: boolean): {
 
   // OpenAI 互換エンドポイント一覧。設定が変わったら再フェッチさせる(依存に id 列を畳む)。
   const compatEndpoints = useMemo(
-    () =>
-      settings && !runtimeCapabilities.browserDirectAi
-        ? getOpenaiCompatibleEndpoints(settings)
-        : [],
-    [runtimeCapabilities.browserDirectAi, settings],
+    () => (settings ? getOpenaiCompatibleEndpoints(settings) : []),
+    [settings],
   );
   // baseUrl / apiVariant が変わったら(同一 id でも)再フェッチさせるためキーに含める。
   // id だけだとエンドポイントの URL 差し替え後に旧サーバのモデル一覧が残る。

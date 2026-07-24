@@ -3,6 +3,7 @@ import { SettingRow } from "@/features/settings/components/SettingRow";
 import { SettingSlider } from "@/features/settings/components/SettingSlider";
 import { SettingToggle } from "@/features/settings/components/SettingToggle";
 import { useSettingBoolean } from "@/features/settings/useSettingControl";
+import { ZEN_BACKGROUND_DEFAULTS } from "../zen/zenBackgroundDefaults";
 
 const pixels = (value: number) => `${Math.round(value)}px`;
 const percent = (value: number) => `${Math.round(value * 100)}%`;
@@ -34,7 +35,7 @@ export function BackgroundGlassControls() {
           settingKey="editor.zenBackground.glass.blur"
           min={0}
           max={40}
-          defaultValue={14}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.glass.blur}
           format={pixels}
           disabled={!enabled}
         />
@@ -48,7 +49,7 @@ export function BackgroundGlassControls() {
           settingKey="editor.zenBackground.glass.refraction"
           min={0}
           max={24}
-          defaultValue={7}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.glass.refraction}
           format={pixels}
           disabled={!enabled}
         />
@@ -62,7 +63,7 @@ export function BackgroundGlassControls() {
           min={0}
           max={2}
           step={0.01}
-          defaultValue={1.16}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.glass.saturation}
           format={percent}
           disabled={!enabled}
         />
@@ -77,7 +78,7 @@ export function BackgroundGlassControls() {
           min={0}
           max={1}
           step={0.05}
-          defaultValue={1}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.glass.shine}
           format={percent}
           disabled={!enabled}
         />

@@ -113,6 +113,41 @@ describe("BrowserMock web AI runtime contract", () => {
     mock.close();
   });
 
+  it("falls back from a desktop Responses preference to Web chat transport", async () => {
+    const complete = vi.fn().mockResolvedValue({
+      blocks: [{ type: "text", content: "sakana response" }],
+      stopReason: "end_turn",
+    });
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete },
+    });
+    await mock.invoke("save_api_key", {
+      provider: "sakana",
+      key: "sakana-key",
+    });
+    await mock.invoke("save_ai_settings", {
+      settings: {
+        provider: "sakana",
+        model: "fugu",
+        modelApiVariant: "responses",
+        ollamaEndpoint: "http://localhost:11434",
+      },
+    });
+
+    await mock.invoke("send_chat_message", {
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "sakana",
+        apiVariant: null,
+      }),
+    );
+    mock.close();
+  });
+
   it("returns the structured chat payload expected by the real editor", async () => {
     const authorizeAiRequest = vi.fn().mockResolvedValue(undefined);
     const complete = vi.fn().mockResolvedValue({

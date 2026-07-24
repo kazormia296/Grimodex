@@ -208,7 +208,9 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     );
     expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.size"]).toBe("18");
     expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.angle"]).toBe("27");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.softness"]).toBe("1");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.halftone.softness"]).toBe(
+      "1",
+    );
     expect(DEFAULT_SETTINGS["editor.zenBackground.contrastGuard.mode"]).toBe(
       "auto",
     );
@@ -220,7 +222,9 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     );
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.enabled"]).toBe("true");
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.blur"]).toBe("22");
-    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.refraction"]).toBe("24");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.glass.refraction"]).toBe(
+      "24",
+    );
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.saturation"]).toBe("1");
     expect(DEFAULT_SETTINGS["editor.zenBackground.glass.shine"]).toBe("1");
   });

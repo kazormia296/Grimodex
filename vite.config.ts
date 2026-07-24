@@ -109,6 +109,12 @@ export default defineConfig(async ({ mode }) => {
           rewrite: (p: string) => p.replace(/^\/api\/openai/, ""),
           secure: true,
         },
+        "/api/sakana": {
+          target: "https://api.sakana.ai/v1",
+          changeOrigin: true,
+          rewrite: (p: string) => p.replace(/^\/api\/sakana/, ""),
+          secure: true,
+        },
         "/api/ollama": {
           target: "http://localhost:11434",
           changeOrigin: true,

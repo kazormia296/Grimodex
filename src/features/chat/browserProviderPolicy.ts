@@ -7,9 +7,13 @@ import { AI_PROVIDERS, type AiProvider } from "./types";
  * Local LLM or the provider attached to their own API key.
  */
 export const BROWSER_DIRECT_AI_PROVIDERS = [
-  "ollama",
+  "openrouter",
   "openai",
   "anthropic",
+  "ollama",
+  "openai-compatible",
+  "sakana",
+  "ai-novelist",
 ] as const satisfies readonly AiProvider[];
 
 export function aiProvidersForRuntime(

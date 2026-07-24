@@ -205,6 +205,7 @@ describe("editor background shader settings", () => {
 
   it("uses custom colors only in custom palette mode", () => {
     const custom = parseZenShaderConfig({
+      "editor.zenBackground.shader": "mesh-gradient",
       "editor.zenBackground.paletteMode": "custom",
       "editor.zenBackground.color1": "#112233",
       "editor.zenBackground.color2": "#445566",

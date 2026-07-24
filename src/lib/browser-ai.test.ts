@@ -120,7 +120,7 @@ describe("sendChat", () => {
 });
 
 describe("browser production endpoints", () => {
-  it("uses provider HTTPS APIs in production while keeping Vite dev proxies", () => {
+  it("resolves every Web Editor provider endpoint", () => {
     expect(
       resolveBrowserAiEndpoint("openai", "chat", { development: false }),
     ).toBe("https://api.openai.com/v1/chat/completions");
@@ -151,6 +151,12 @@ describe("browser production endpoints", () => {
         development: false,
       }),
     ).toBe("https://api.anthropic.com/v1/messages");
+    expect(
+      resolveBrowserAiEndpoint("ollama", "chat", {
+        development: false,
+        ollamaEndpoint: "http://localhost:11434",
+      }),
+    ).toBe("http://localhost:11434/v1/chat/completions");
     expect(
       resolveBrowserAiEndpoint("openai", "chat", { development: true }),
     ).toBe("/api/openai/chat/completions");
@@ -249,6 +255,65 @@ describe("structured browser AI transport", () => {
       { stopReason: "end_turn", inputTokens: 5, outputTokens: 2 },
     ]);
   });
+
+  it("uses the AI Novelist legacy chat contract", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: ["返答"] }));
+
+    await expect(
+      completeBrowserAiRequest({
+        operation: "chat",
+        provider: "ai-novelist",
+        model: "spiko",
+        apiKey: "novelist-key",
+        apiVariant: "legacy",
+        messages: [
+          { role: "system", content: "小説家として回答する" },
+          { role: "user", content: "続きを考えて" },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      blocks: [{ type: "text", content: "返答" }],
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body).toEqual({
+      messages: [
+        {
+          role: "user",
+          content: "小説家として回答する\n\n続きを考えて",
+        },
+      ],
+      model: "spiko",
+      max_tokens: 4096,
+    });
+  });
+
+  it("uses the AI Novelist legacy completion contract for inline AI", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: ["続き"] }));
+
+    await expect(
+      completeBrowserAiRequest({
+        operation: "inline",
+        provider: "ai-novelist",
+        model: "damsel",
+        apiKey: "novelist-key",
+        apiVariant: "legacy",
+        messages: [
+          { role: "system", content: "続きを書く" },
+          { role: "user", content: "雨が降り始めた。" },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      blocks: [{ type: "text", content: "続き" }],
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body).toEqual({
+      text: "[system]\n続きを書く\n\n[user]\n雨が降り始めた。",
+      model: "damsel",
+      length: 400,
+    });
+  });
 });
 
 describe("fetchModels", () => {
@@ -293,7 +358,9 @@ describe("fetchModels", () => {
   it("fetches models from the configured Ollama endpoint", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ models: [] }));
 
-    await fetchModels("ollama", "", "http://192.0.2.10:11434");
+    await fetchModels("ollama", "", {
+      ollamaEndpoint: "http://192.0.2.10:11434",
+    });
 
     expect(mockFetch.mock.calls[0][0]).toBe("http://192.0.2.10:11434/api/tags");
   });
@@ -416,9 +483,7 @@ describe("testConnection", () => {
   });
 
   it("parses the AI Novelist legacy response shape", async () => {
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({ data: ["Connection OK"] }),
-    );
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: ["Connection OK"] }));
 
     await expect(
       testConnection("ai-novelist", "spiko", "novelist-key", {

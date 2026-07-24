@@ -383,7 +383,7 @@ describe("createBrowserMock", () => {
       expect(settings).toMatchObject({ provider: "ollama", model: "" });
     });
 
-    it("migrates a legacy Web OpenRouter setting to disconnected Ollama", async () => {
+    it("preserves a Web OpenRouter setting now that the provider is supported", async () => {
       localStorage.setItem(
         "grimodex:ai-settings",
         JSON.stringify({ provider: "openrouter", model: "vendor/model" }),
@@ -392,10 +392,16 @@ describe("createBrowserMock", () => {
 
       await expect(
         migratedMock.invoke("get_ai_settings", {}),
-      ).resolves.toMatchObject({ provider: "ollama", model: "" });
+      ).resolves.toMatchObject({
+        provider: "openrouter",
+        model: "vendor/model",
+      });
       expect(
         JSON.parse(localStorage.getItem("grimodex:ai-settings") ?? "{}"),
-      ).toMatchObject({ provider: "ollama", model: "" });
+      ).toMatchObject({
+        provider: "openrouter",
+        model: "vendor/model",
+      });
       migratedMock.close();
     });
   });
