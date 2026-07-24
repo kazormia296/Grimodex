@@ -210,7 +210,20 @@ vec3 zenGuardVisibleColor(
   float currentContrast =
     (max(textLuminance, backgroundLuminance) + 0.05) /
     (min(textLuminance, backgroundLuminance) + 0.05);
-  if (currentContrast >= u_zenContrastTarget) return visibleColor;
+  // A forced UI direction is also a polarity constraint: readable dark-on-dark
+  // contrast must not preserve a black patch inside a light-theme surface.
+  bool followsCorrectionDirection = true;
+  if (correctionDirection > 0.5) {
+    followsCorrectionDirection = backgroundLuminance >= textLuminance;
+  } else if (correctionDirection < -0.5) {
+    followsCorrectionDirection = backgroundLuminance <= textLuminance;
+  }
+  if (
+    currentContrast >= u_zenContrastTarget &&
+    followsCorrectionDirection
+  ) {
+    return visibleColor;
+  }
 
   vec3 linearColor = zenSrgbToLinear(clamp(visibleColor, 0.0, 1.0));
   vec3 correctedLinear;

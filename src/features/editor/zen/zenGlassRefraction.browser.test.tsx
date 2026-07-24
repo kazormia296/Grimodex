@@ -30,6 +30,13 @@ void main() {
   fragColor = vec4(0.45, 0.45, 0.45, 1.0);
 }`;
 
+const BLACK_CONTRAST_FRAGMENT = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+}`;
+
 const SIZING_UNIFORMS = {
   u_fit: 2,
   u_scale: 1,
@@ -121,19 +128,25 @@ function UiContrastProbe({
   uiTextColor,
   backdropColor,
   toolMix = 0.5,
+  strength = 1,
+  opacity = 10,
+  fragmentShader = CONTRAST_FRAGMENT,
 }: {
   name: string;
   enabled: boolean;
   uiTextColor: [number, number, number];
   backdropColor: [number, number, number];
   toolMix?: number;
+  strength?: number;
+  opacity?: number;
+  fragmentShader?: string;
 }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
-    opacity: 10,
+    opacity,
     contrastGuard: {
       mode: enabled ? ("auto" as const) : ("none" as const),
-      strength: 1,
+      strength,
       toolMix,
     },
     glass: {
@@ -145,7 +158,7 @@ function UiContrastProbe({
   return (
     <ShaderMount
       data-ui-contrast-probe={name}
-      fragmentShader={buildZenPostProcessedFragment(CONTRAST_FRAGMENT)}
+      fragmentShader={buildZenPostProcessedFragment(fragmentShader)}
       uniforms={{
         ...SIZING_UNIFORMS,
         ...buildZenPostProcessUniforms(config, {
@@ -681,6 +694,54 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
         pixelAt(unguarded, 0.2, 0.5)[0] + 20,
       );
     }
+  });
+
+  it("lifts black tool backgrounds even when their raw muted-text contrast passes", async () => {
+    const mutedForeground = shaderRgb(0x88, 0x88, 0x88);
+    const backdropColor = shaderRgb(0xf0, 0xed, 0xe6);
+    const { container } = render(
+      <div>
+        <UiContrastProbe
+          name="black-light-unguarded"
+          enabled={false}
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+        <UiContrastProbe
+          name="black-light-guarded"
+          enabled
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(
+        container.querySelector<HTMLCanvasElement>(
+          '[data-ui-contrast-probe="black-light-guarded"] canvas',
+        )?.width,
+      ).toBeGreaterThan(0);
+    });
+
+    const unguarded = container.querySelector<HTMLCanvasElement>(
+      '[data-ui-contrast-probe="black-light-unguarded"] canvas',
+    )!;
+    const guarded = container.querySelector<HTMLCanvasElement>(
+      '[data-ui-contrast-probe="black-light-guarded"] canvas',
+    )!;
+
+    expect(pixelAt(guarded, 0.2, 0.5)[0]).toBeGreaterThan(
+      pixelAt(unguarded, 0.2, 0.5)[0] + 20,
+    );
   });
 
   it("keeps the Editor feather gradual at low shader opacity", async () => {
