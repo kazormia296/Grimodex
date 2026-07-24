@@ -32,6 +32,9 @@ import {
   GENESIS_HASH,
   hexToBytes,
 } from "@/features/timelapse/hashChain";
+import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
+import sampleProjectJa from "../../src-tauri/resources/sample_project/v1.json";
+import sampleProjectEn from "../../src-tauri/resources/sample_project/v1_en.json";
 
 type BrowserSchemaTable = {
   kind: string;
@@ -159,6 +162,85 @@ const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";
 const ROLE_PROVIDERS_SETTING_KEY = "aiModel.roleProviders";
 const ROLE_MODEL_SETTING_PREFIX = "aiModel.role.";
 const BROWSER_AI_PROVIDERS = new Set<AiProvider>(BROWSER_DIRECT_AI_PROVIDERS);
+const BROWSER_WORKSPACE_PATH = "/dev/workspace";
+const TUTORIAL_PROJECT_ID = "grimodex-tutorial-project";
+
+interface BrowserSampleSeed {
+  project: {
+    title: string;
+    genre?: string | null;
+    ai_instructions?: string | null;
+  };
+  tree_nodes: Array<{
+    id: string;
+    parent_id?: string | null;
+    node_type: string;
+    title: string;
+    synopsis?: string | null;
+    sort_order: string;
+    status?: string | null;
+    content?: string | null;
+    story_time_order?: string | null;
+    story_time_label?: string | null;
+  }>;
+  codex_entries: Array<{
+    id: string;
+    type: string;
+    name: string;
+    aliases?: string | null;
+    summary?: string | null;
+    content?: string | null;
+    notes?: string | null;
+    context_mode?: string | null;
+  }>;
+  chat_sessions: Array<{
+    id: string;
+    node_id?: string | null;
+    title: string;
+    model: string;
+  }>;
+  chat_messages: Array<{
+    id: string;
+    session_id: string;
+    role: string;
+    content: string;
+  }>;
+  foreshadows: Array<{
+    id: string;
+    title: string;
+    intent?: string | null;
+    notes?: string | null;
+    payoff_scene_id?: string | null;
+  }>;
+  snippets: Array<{
+    id: string;
+    title: string;
+    content: string;
+    content_source?: string | null;
+  }>;
+  foreshadow_setups: Array<{
+    id: string;
+    foreshadow_id: string;
+    scene_id: string;
+    from_pos: number;
+    to_pos: number;
+    kind: string;
+    strength?: string | null;
+    attribution: string;
+  }>;
+  authorship_spans: Array<{
+    id: string;
+    node_id: string;
+    from_pos: number;
+    to_pos: number;
+    source: string;
+    model?: string | null;
+    timestamp?: string | null;
+  }>;
+}
+
+const SAMPLE_PROJECT_JA = sampleProjectJa as BrowserSampleSeed;
+const SAMPLE_PROJECT_EN = sampleProjectEn as BrowserSampleSeed;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -205,6 +287,247 @@ function normalizeBrowserGlobalSettings(
   nextPreferences[ROLE_PROVIDERS_SETTING_KEY] =
     JSON.stringify(nextRoleProviders);
   return { ...value, userPreferences: nextPreferences };
+}
+
+function defaultBrowserGlobalSettings(): Record<string, unknown> {
+  const settings: Record<string, unknown> = {
+    recentWorkspaces: [],
+    lastActiveWorkspace: null,
+    theme: "system",
+    uiLanguage: "ja",
+    uiScale: 100,
+    showLauncherOnStartup: false,
+    trustedWorkspaces: [],
+    hasSeenWelcome: false,
+  };
+  if (!isScreenshotStagingActive()) return settings;
+
+  return {
+    ...settings,
+    recentWorkspaces: [
+      {
+        path: BROWSER_WORKSPACE_PATH,
+        lastOpened: new Date().toISOString(),
+      },
+    ],
+    lastActiveWorkspace: BROWSER_WORKSPACE_PATH,
+  };
+}
+
+function seedBrowserTutorialProject(
+  db: Database,
+  language: string,
+  aiPolicy: string,
+): void {
+  const isEnglish = language === "en";
+  const seed = isEnglish ? SAMPLE_PROJECT_EN : SAMPLE_PROJECT_JA;
+  const sampleLanguage = isEnglish ? "en" : "ja";
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const emptyDoc = '{"type":"doc","content":[]}';
+  // A project switch can leave a pending renderer write that republishes an
+  // old tutorial entity under the user's active Project. Never delete that
+  // user-owned row or reuse its global primary key: each tutorial restart gets
+  // a fresh entity generation instead.
+  const entityPrefix = `${TUTORIAL_PROJECT_ID}:${crypto.randomUUID()}`;
+  const entityId = (seedId: string) => `${entityPrefix}:${seedId}`;
+
+  db.run("BEGIN IMMEDIATE");
+  try {
+    // The browser runtime owns one persistent database. Recreate only its
+    // dedicated tutorial Project so existing manuscripts remain untouched.
+    // codex entries/field definitions have RESTRICT composite FKs to
+    // codex_types, while all three tables cascade from projects. Remove both
+    // dependants first so SQLite never has to choose an unsafe cascade order
+    // during a tutorial restart.
+    db.run("DELETE FROM codex_detail_definitions WHERE project_id = ?", [
+      TUTORIAL_PROJECT_ID,
+    ]);
+    db.run("DELETE FROM codex_entries WHERE project_id = ?", [
+      TUTORIAL_PROJECT_ID,
+    ]);
+    db.run("DELETE FROM projects WHERE id = ?", [TUTORIAL_PROJECT_ID]);
+    db.run(
+      `INSERT INTO projects
+        (id, title, genre, language, ai_instructions, ai_policy, is_sample, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        TUTORIAL_PROJECT_ID,
+        seed.project.title,
+        seed.project.genre ?? null,
+        sampleLanguage,
+        seed.project.ai_instructions ?? null,
+        aiPolicy,
+        now,
+        now,
+      ],
+    );
+
+    for (const node of seed.tree_nodes) {
+      const content = node.content ?? emptyDoc;
+      db.run(
+        `INSERT INTO tree_nodes
+          (id, project_id, parent_id, node_type, title, synopsis, sort_order,
+           status, content, char_count, story_time_order, story_time_label,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(node.id),
+          TUTORIAL_PROJECT_ID,
+          node.parent_id ? entityId(node.parent_id) : null,
+          node.node_type,
+          node.title,
+          node.synopsis ?? null,
+          node.sort_order,
+          node.status ?? null,
+          content,
+          countSceneBodyCharsFromJson(content),
+          node.story_time_order ?? null,
+          node.story_time_label ?? null,
+          now,
+          now,
+        ],
+      );
+    }
+
+    for (const entry of seed.codex_entries) {
+      db.run(
+        `INSERT INTO codex_entries
+          (id, project_id, type, name, aliases, summary, content, notes,
+           context_mode, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(entry.id),
+          TUTORIAL_PROJECT_ID,
+          entry.type,
+          entry.name,
+          entry.aliases ?? null,
+          entry.summary ?? null,
+          entry.content ?? emptyDoc,
+          entry.notes ?? null,
+          entry.context_mode ?? "mentioned",
+          now,
+          now,
+        ],
+      );
+    }
+
+    for (const session of seed.chat_sessions) {
+      db.run(
+        `INSERT INTO chat_sessions
+          (id, project_id, node_id, title, model, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(session.id),
+          TUTORIAL_PROJECT_ID,
+          session.node_id ? entityId(session.node_id) : null,
+          session.title,
+          session.model,
+          now,
+          now,
+        ],
+      );
+    }
+
+    for (const message of seed.chat_messages) {
+      db.run(
+        `INSERT INTO chat_messages
+          (id, session_id, role, content, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          entityId(message.id),
+          entityId(message.session_id),
+          message.role,
+          message.content,
+          now,
+        ],
+      );
+    }
+
+    for (const foreshadow of seed.foreshadows) {
+      db.run(
+        `INSERT INTO foreshadows
+          (id, project_id, title, intent, notes, payoff_scene_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(foreshadow.id),
+          TUTORIAL_PROJECT_ID,
+          foreshadow.title,
+          foreshadow.intent ?? null,
+          foreshadow.notes ?? null,
+          foreshadow.payoff_scene_id
+            ? entityId(foreshadow.payoff_scene_id)
+            : null,
+          nowMs,
+          nowMs,
+        ],
+      );
+    }
+
+    for (const snippet of seed.snippets) {
+      db.run(
+        `INSERT INTO snippets
+          (id, project_id, title, content, content_source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(snippet.id),
+          TUTORIAL_PROJECT_ID,
+          snippet.title,
+          snippet.content,
+          snippet.content_source ?? null,
+          now,
+          now,
+        ],
+      );
+    }
+
+    for (const setup of seed.foreshadow_setups) {
+      db.run(
+        `INSERT INTO foreshadow_setups
+          (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
+           attribution, is_orphan, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [
+          entityId(setup.id),
+          entityId(setup.foreshadow_id),
+          entityId(setup.scene_id),
+          setup.from_pos,
+          setup.to_pos,
+          setup.kind,
+          setup.strength ?? null,
+          setup.attribution,
+          nowMs,
+          nowMs,
+        ],
+      );
+    }
+
+    for (const span of seed.authorship_spans) {
+      db.run(
+        `INSERT INTO authorship_spans
+          (id, node_id, from_pos, to_pos, source, model, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(span.id),
+          entityId(span.node_id),
+          span.from_pos,
+          span.to_pos,
+          span.source,
+          span.model ?? null,
+          span.timestamp ?? null,
+        ],
+      );
+    }
+
+    db.run("COMMIT");
+  } catch (error) {
+    try {
+      db.run("ROLLBACK");
+    } catch {
+      // Preserve the original seeding error.
+    }
+    throw error;
+  }
 }
 
 export interface BrowserMockOptions {
@@ -872,7 +1195,7 @@ export async function createBrowserMock(
         const recent = parsed.recentWorkspaces as unknown[];
         // Reuse the workspace while removing legacy desktop-only provider
         // routes that old Web Editor builds may have persisted.
-        if (Array.isArray(recent) && recent.length > 0) {
+        if (Array.isArray(recent)) {
           const normalized = normalizeBrowserGlobalSettings(parsed);
           if (normalized !== parsed) {
             localStorage.setItem(
@@ -886,22 +1209,19 @@ export async function createBrowserMock(
     } catch {
       // noop
     }
-    // Auto-seed a dev workspace so browser preview skips folder selection
-    const devWorkspace = "/dev/workspace";
-    const devSettings: Record<string, unknown> = {
-      recentWorkspaces: [
-        { path: devWorkspace, lastOpened: new Date().toISOString() },
-      ],
-      lastActiveWorkspace: devWorkspace,
-      theme: "system",
-      showLauncherOnStartup: false,
-    };
+    // Normal Web Editor launches mirror native first-run settings so the
+    // preflight/tutorial is reachable. Screenshot staging intentionally keeps
+    // its automatic workspace bootstrap for deterministic captures.
+    const defaultSettings = defaultBrowserGlobalSettings();
     try {
-      localStorage.setItem(GLOBAL_SETTINGS_KEY, JSON.stringify(devSettings));
+      localStorage.setItem(
+        GLOBAL_SETTINGS_KEY,
+        JSON.stringify(defaultSettings),
+      );
     } catch {
       // noop
     }
-    return devSettings;
+    return defaultSettings;
   }
 
   function handleSaveGlobalSettings(args: Record<string, unknown>): void {
@@ -958,6 +1278,30 @@ export async function createBrowserMock(
     return { name, isExisting: false };
   }
 
+  function handleSeedSampleWorkspace(args: Record<string, unknown>): {
+    path: string;
+    projectId: string;
+  } {
+    const language = args.language === "en" ? "en" : "ja";
+    const aiPolicy =
+      typeof args.aiPolicy === "string" ? args.aiPolicy : '{"preset":"off"}';
+    seedBrowserTutorialProject(db, language, aiPolicy);
+    options.onDatabaseDirty?.();
+
+    const settings = handleGetGlobalSettings();
+    const path =
+      typeof settings.lastActiveWorkspace === "string"
+        ? settings.lastActiveWorkspace
+        : BROWSER_WORKSPACE_PATH;
+    handleSaveGlobalSettings({
+      settings: {
+        ...settings,
+        sampleWorkspacePath: path,
+      },
+    });
+    return { path, projectId: TUTORIAL_PROJECT_ID };
+  }
+
   async function invoke<T = unknown>(
     cmd: string,
     args: Record<string, unknown> = {},
@@ -972,6 +1316,8 @@ export async function createBrowserMock(
         return handleValidateWorkspacePath() as T;
       case "open_workspace":
         return handleOpenWorkspace(args) as T;
+      case "seed_sample_workspace":
+        return handleSeedSampleWorkspace(args) as T;
       case "get_mcp_config":
         return handleGetMcpConfig() as T;
       case "db_execute":

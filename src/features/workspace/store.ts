@@ -523,9 +523,21 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         });
       }
       await get().openWorkspace(result.path);
+      if (useProjectStore.getState().currentProjectId !== result.projectId) {
+        await useProjectStore.getState().loadProject(result.projectId);
+      }
+      if (useProjectStore.getState().currentProjectId !== result.projectId) {
+        throw new Error("Tutorial project did not become active");
+      }
       set({ showSampleTour: true });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      const message = e instanceof Error ? e.message : String(e);
+      debugLog.error(
+        "workspaceStore",
+        "sample tutorial setup failed",
+        errorDetail(e),
+      );
+      set({ error: message });
     }
   },
 }));

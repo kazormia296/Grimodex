@@ -354,7 +354,11 @@ describe("useWorkspaceStore", () => {
         "/data/sample-workspace-22222222-2222-2222-2222-222222222222";
       const userWorkspace = "/novels/main";
       const originalOpenWorkspace = useWorkspaceStore.getState().openWorkspace;
+      const originalLoadProject = useProjectStore.getState().loadProject;
       const openWorkspace = vi.fn().mockResolvedValue(undefined);
+      const loadProject = vi.fn(async (projectId: string) => {
+        useProjectStore.setState({ currentProjectId: projectId });
+      });
       useWorkspaceStore.setState({
         openWorkspace,
         globalSettings: {
@@ -368,10 +372,14 @@ describe("useWorkspaceStore", () => {
           sampleWorkspacePath: oldSample,
         },
       });
+      useProjectStore.setState({
+        currentProjectId: "user-project",
+        loadProject,
+      });
       mockInvoke
         .mockResolvedValueOnce({
           path: newSample,
-          projectId: "default-project",
+          projectId: "grimodex-tutorial-project",
         })
         .mockResolvedValueOnce({
           ...useWorkspaceStore.getState().globalSettings,
@@ -391,9 +399,66 @@ describe("useWorkspaceStore", () => {
           }),
         });
         expect(openWorkspace).toHaveBeenCalledWith(newSample);
+        expect(loadProject).toHaveBeenCalledWith("grimodex-tutorial-project");
         expect(useWorkspaceStore.getState().showSampleTour).toBe(true);
       } finally {
         useWorkspaceStore.setState({ openWorkspace: originalOpenWorkspace });
+        useProjectStore.setState({ loadProject: originalLoadProject });
+      }
+    });
+
+    it("does not show the tour when sample seeding fails", async () => {
+      mockInvoke.mockRejectedValueOnce(new Error("sample seed failed"));
+
+      await useWorkspaceStore
+        .getState()
+        .seedAndOpenSample("ja", '{"preset":"full"}');
+
+      expect(useWorkspaceStore.getState().showSampleTour).toBe(false);
+      expect(useWorkspaceStore.getState().error).toBe("sample seed failed");
+    });
+
+    it("does not show the tour when the seeded project cannot become active", async () => {
+      const samplePath = "/data/sample-workspace";
+      const originalOpenWorkspace = useWorkspaceStore.getState().openWorkspace;
+      const originalLoadProject = useProjectStore.getState().loadProject;
+      const openWorkspace = vi.fn().mockResolvedValue(undefined);
+      const loadProject = vi.fn().mockResolvedValue(undefined);
+      useWorkspaceStore.setState({
+        openWorkspace,
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: samplePath,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 100,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [samplePath],
+          sampleWorkspacePath: samplePath,
+        },
+      });
+      useProjectStore.setState({
+        currentProjectId: "user-project",
+        loadProject,
+      });
+      mockInvoke.mockResolvedValueOnce({
+        path: samplePath,
+        projectId: "grimodex-tutorial-project",
+      });
+
+      try {
+        await useWorkspaceStore
+          .getState()
+          .seedAndOpenSample("ja", '{"preset":"full"}');
+
+        expect(loadProject).toHaveBeenCalledWith("grimodex-tutorial-project");
+        expect(useWorkspaceStore.getState().showSampleTour).toBe(false);
+        expect(useWorkspaceStore.getState().error).toBe(
+          "Tutorial project did not become active",
+        );
+      } finally {
+        useWorkspaceStore.setState({ openWorkspace: originalOpenWorkspace });
+        useProjectStore.setState({ loadProject: originalLoadProject });
       }
     });
   });

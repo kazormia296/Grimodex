@@ -16,12 +16,24 @@ Web Editor は、GitHub Actions から既存の Cloudflare Pages Direct Upload �
 
 リポジトリの `Settings → Secrets and variables → Actions` に次の Repository secrets を登録します。
 
-| Secret | 内容 |
-| --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare の Account ID |
-| `CLOUDFLARE_API_TOKEN` | Pages の Edit 権限を持つ API Token |
+| Secret                  | 内容                               |
+| ----------------------- | ---------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare の Account ID           |
+| `CLOUDFLARE_API_TOKEN`  | Pages の Edit 権限を持つ API Token |
 
 API Token は Cloudflare の Custom Token で Account スコープの `Cloudflare Pages: Edit` を付与します。Token の値はリポジトリへコミットしません。
+
+## Pages プロジェクトの初回作成
+
+Direct Upload の workflow は Pages プロジェクト自体を作成しません。初回デプロイより前に、認証済みのローカル環境から対象プロジェクトを一度だけ作成します。
+
+```sh
+pnpm exec wrangler pages project create grimodex-try --production-branch master
+pnpm exec wrangler pages project create grimodex-try-staging --production-branch master
+pnpm exec wrangler pages project list --json
+```
+
+一覧に `grimodex-try` と `grimodex-try-staging` の両方が表示されることを確認してください。存在しない場合、デプロイジョブは `The Pages project "<project-name>" does not exist.` で失敗します。
 
 ## 重要な運用上の注意
 
