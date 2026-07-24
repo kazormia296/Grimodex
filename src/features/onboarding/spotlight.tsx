@@ -179,6 +179,7 @@ export function SpotlightOverlay({ panelId, targets }: SpotlightOverlayProps) {
 
   return createPortal(
     <div
+      data-testid="tour-spotlight-overlay"
       style={{
         position: "fixed",
         inset: 0,

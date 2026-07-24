@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { useGSAP } from "@gsap/react";
@@ -481,30 +482,35 @@ export function SampleTour() {
         panelId={currentStep.panelId}
         targets={currentSlide.targets}
       />
-      <AnimatePresence mode="wait">
-        <TourCard
-          key={`${currentStep.key}:${currentSlide.id}`}
-          stepKey={currentStep.key}
-          slideId={currentSlide.id}
-          stepIndex={stepIndex}
-          totalSteps={steps.length}
-          slideIndex={slideIndex}
-          slideCount={currentStep.slides.length}
-          isLastStep={isLastStep}
-          isLastSlide={isLastSlide}
-          showActionHint={showActionHint}
-          canAdvance={canAdvance}
-          highlightNext={highlightNext}
-          focusRects={focusRects}
-          viewport={{ vw, vh }}
-          onNext={() => void handleNext()}
-          onSkip={() => void completeTour()}
-          onCreateWorkspace={() => {
-            void completeTour();
-            showLauncher();
-          }}
-        />
-      </AnimatePresence>
+      {/* `.app-shell` is an isolated stacking context. Portal the card beside
+          the body-level spotlight so its z-index can stay above the blur. */}
+      {createPortal(
+        <AnimatePresence mode="wait">
+          <TourCard
+            key={`${currentStep.key}:${currentSlide.id}`}
+            stepKey={currentStep.key}
+            slideId={currentSlide.id}
+            stepIndex={stepIndex}
+            totalSteps={steps.length}
+            slideIndex={slideIndex}
+            slideCount={currentStep.slides.length}
+            isLastStep={isLastStep}
+            isLastSlide={isLastSlide}
+            showActionHint={showActionHint}
+            canAdvance={canAdvance}
+            highlightNext={highlightNext}
+            focusRects={focusRects}
+            viewport={{ vw, vh }}
+            onNext={() => void handleNext()}
+            onSkip={() => void completeTour()}
+            onCreateWorkspace={() => {
+              void completeTour();
+              showLauncher();
+            }}
+          />
+        </AnimatePresence>,
+        document.body,
+      )}
     </>
   );
 }
