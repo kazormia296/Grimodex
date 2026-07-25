@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -99,13 +100,19 @@ afterEach(() => {
 
 describe("resolveElectronUpdaterAvailability", () => {
   it("enables packaged electron-builder artifacts without a channel marker", () => {
+    const resourcesPath = path.join(
+      path.parse(process.cwd()).root,
+      "opt",
+      "Grimodex",
+      "resources",
+    );
     expect(
       resolveElectronUpdaterAvailability({
         isPackaged: true,
-        resourcesPath: "/opt/Grimodex/resources",
+        resourcesPath,
         readMarker: (markerPath) => {
           expect(markerPath).toBe(
-            `/opt/Grimodex/resources/${PACKAGE_CHANNEL_MARKER}`,
+            path.join(resourcesPath, PACKAGE_CHANNEL_MARKER),
           );
           throw Object.assign(new Error("missing"), { code: "ENOENT" });
         },
@@ -128,6 +135,11 @@ describe("resolveElectronUpdaterAvailability", () => {
   });
 
   it("fails closed for an unknown or unreadable package marker", () => {
+    const lockedResources = path.join(
+      path.parse(process.cwd()).root,
+      "locked",
+      "resources",
+    );
     expect(
       resolveElectronUpdaterAvailability({
         isPackaged: true,
@@ -141,14 +153,14 @@ describe("resolveElectronUpdaterAvailability", () => {
     expect(
       resolveElectronUpdaterAvailability({
         isPackaged: true,
-        resourcesPath: "/locked/resources",
+        resourcesPath: lockedResources,
         readMarker: () => {
           throw Object.assign(new Error("denied"), { code: "EACCES" });
         },
       }),
     ).toEqual({
       enabled: false,
-      reason: `Electron updater package marker cannot be read: /locked/resources/${PACKAGE_CHANNEL_MARKER}`,
+      reason: `Electron updater package marker cannot be read: ${path.join(lockedResources, PACKAGE_CHANNEL_MARKER)}`,
     });
   });
 });
