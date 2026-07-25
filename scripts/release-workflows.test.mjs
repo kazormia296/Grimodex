@@ -63,7 +63,6 @@ describe("release workflow boundary", () => {
       .filter(Boolean)
       .join("\n");
     assert.match(publishCommands, /generate-tauri-bridge-manifest\.mjs/);
-    assert.match(publishCommands, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD/);
     assert.match(publishCommands, /minisign -Vm/);
     assert.match(publishCommands, /plugins\.updater\.pubkey/);
     assert.match(
@@ -120,6 +119,25 @@ describe("release workflow boundary", () => {
     );
     assert.match(commands, /echo "CSC_NAME=\$CERT_NAME"/);
     assert.doesNotMatch(commands, /CSC_NAME=\$CERT_ID/);
+  });
+
+  it("allows the frozen Tauri updater key to be passwordless", async () => {
+    const workflow = await readWorkflow("release.yml");
+    const signBridge = workflow.jobs.publish.steps.find(
+      (step) =>
+        step.name === "Sign Electron installers for the final Tauri v1 bridge",
+    );
+    const commands = signBridge?.run ?? "";
+
+    assert.equal(
+      signBridge?.env?.TAURI_SIGNING_PRIVATE_KEY_PASSWORD,
+      "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
+    );
+    assert.match(commands, /TAURI_SIGNING_PRIVATE_KEY is required/);
+    assert.doesNotMatch(
+      commands,
+      /TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required/,
+    );
   });
 
   it("resolves updater metadata without shell-specific environment variable syntax", async () => {
