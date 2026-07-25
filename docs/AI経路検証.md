@@ -8,13 +8,15 @@
 が機械チェックする（経路を足して検証手段を割り当て忘れると CI が落ちる）。
 
 同ファイルでは、論理 AI サーフェスと model role を `AI_PATHS`、デプロイ先ごとの
-実行トランスポートを `AI_RUNTIME_ROUTES` として分離する。Web Editor の実行経路は
-ブラウザーから利用できる全 HTTP provider（OpenRouter、OpenAI、Anthropic、Ollama、
-OpenAI 互換、Sakana、AI のべりすと）を対象とし、認証情報はユーザー所有の BYOK、
-接続先は固定の公式 API またはユーザー設定 endpoint に限定する。provider の決定主体、
-capability gate、通常の transport contract、および送信前の同意 contract を必須にする。
-ネイティブ subprocess が必要な CLI provider は Web では提供しない。ランタイム経路を
-追加しても論理サーフェスの model role を重複定義しない。
+実行トランスポートを `AI_RUNTIME_ROUTES` として分離する。Web Editor は、ブラウザー
+から利用できる全 HTTP provider（OpenRouter、OpenAI、Anthropic、Ollama、OpenAI 互換、
+Sakana、AI のべりすと）と、現在のブラウザー内だけで推論する WebGPU／WebLLM を別の
+runtime route として登録する。HTTP 経路の認証情報はユーザー所有の BYOK、接続先は固定の
+公式 API またはユーザー設定 endpoint に限定する。ブラウザー内経路は API key や推論
+endpoint を持たず、ユーザーが明示的に選択したモデルだけを使う。各経路に provider の
+決定主体、capability gate、通常の transport contract、および処理前の同意 contract を
+必須にする。ネイティブ subprocess が必要な CLI provider は Web では提供しない。
+ランタイム経路を追加しても論理サーフェスの model role を重複定義しない。
 
 ## 設計の核心 — 「JS 経路か Rust 経路か」で検証手段が決まる
 
@@ -37,15 +39,18 @@ usage 台帳 / session_id routing）ではない。
 
 ## Web Editor AI の同意境界
 
-`GDX-AI-CONSENT-001` により、Web Editor はユーザーが選択した HTTP provider と
-Local LLM／BYOK だけを有効化する。アプリ所有の API key、管理型 provider、原稿 upload、
-サーバー保存は実行経路に含めない。ユーザーが provider、必要な API key、または
-Ollama／OpenAI 互換 endpoint と model を明示的に選び、外部送信が生じる場合は現在の
-policy version・route・provider・実際の接続先に一致する同意が必要になる。
+`GDX-AI-CONSENT-001` により、Web Editor はユーザーが選択した HTTP provider の
+Local LLM／BYOK、またはブラウザー内 WebGPU だけを有効化する。アプリ所有の API key、
+管理型 provider、原稿 upload、サーバー保存は実行経路に含めない。HTTP 経路では provider、
+必要な API key、または Ollama／OpenAI 互換 endpoint と model を明示的に選び、外部送信前に
+現在の policy version・route・provider・実際の接続先に一致する同意が必要になる。
+WebGPU 経路では model を明示的に選び、`browser-local` route と `browser://local`
+destination に一致する同意を BYOK と分離して保持する。
 
-| runtime route               | provider / model | capability gate                                                                                                              | Light verifier                                                                         | Heavy 境界                                  |
-| --------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------- |
-| Web Editor Local LLM / BYOK | user selection   | supported HTTP provider + configured endpoint where required + session-memory credential when required + destination consent | endpoint/auth contract + provider 呼出し前の consent 拒否 + destination 変更時の再同意 | 実 Local LLM または使い捨て BYOK key が必要 |
+| runtime route                      | provider / model | capability gate                                                                                                              | Light verifier                                                                         | Heavy 境界                                   |
+| ---------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Web Editor HTTP Local LLM / BYOK   | user selection   | supported HTTP provider + configured endpoint where required + session-memory credential when required + destination consent | endpoint/auth contract + provider 呼出し前の consent 拒否 + destination 変更時の再同意 | 実 Local LLM または使い捨て BYOK key が必要  |
+| Web Editor browser-local WebGPU AI | user selection   | WebGPU support + explicit local mode + selected model + browser-local consent                                                | WebLLM transport contract + local processor／storage／training disclosure              | 実 WebGPU ブラウザーとモデル download が必要 |
 
 開示には送信データ、全 processor、処理目的、provider の保存と保持、学習利用、
 現在の policy link を含める。処理先を完全に開示できない場合や、provider／policy version
@@ -55,7 +60,8 @@ policy version・route・provider・実際の接続先に一致する同意が�
 これらの contract test は実 provider の成功を証明しない。資格情報付きかつ
 teardown 可能なブラウザ runner は存在しないため、manifest の
 `blocked-web-ai-consent-live` を `passed` と読み替えてはならない。
-この blocked 評価はユーザー所有の Local LLM／BYOK 経路だけを対象とし、管理型 AI を意味しない。
+この blocked 評価はユーザー所有の HTTP Local LLM／BYOK とブラウザー内 WebGPU 経路だけを
+対象とし、管理型 AI を意味しない。
 また Sakana の公式 API は 2026-07-24 時点で公開 Web origin の preflight に応答しないため、
 Vite 開発 proxy では検証できるが静的な本番 Web Editor からの直接実行は Heavy 未達とする。
 原稿と BYOK key を受け取る Grimodex relay は現行の「開発者サーバーへ原稿を送らない」
@@ -136,6 +142,7 @@ Local LLM／BYOK runtime route について通常 contract と consent contract 
 Web Editor の実行トランスポートを追加または変更する場合は、上記に加えて
 `AI_RUNTIME_ROUTES` の `transport`、`providerAuthority`、`providers`、`capabilityGate`、通常の
 `testRef/testName`、および `consentTestRef/consentTestName` を同時に更新する。新しい
-provider が一つでもデータを処理するなら、実行時開示へ含めるまでその route は有効化しない。
+provider またはブラウザー内 processor が一つでもデータを処理するなら、実行時開示へ
+含めるまでその route は有効化しない。
 アプリ所有キーや管理型 provider を追加する場合は、Web Editor の Local LLM／BYOK-only
 製品境界の変更として別途の設計承認と新しい requirement を必要とする。

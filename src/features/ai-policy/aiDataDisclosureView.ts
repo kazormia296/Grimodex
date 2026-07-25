@@ -1,7 +1,9 @@
+import type { AiDataConsentRoute } from "./aiDataConsent";
+
 export interface AiDataDisclosureView {
   schemaVersion: "grimodex/ai-data-disclosure/1";
   policyVersion: string;
-  route: "byok";
+  route: AiDataConsentRoute;
   provider: string;
   destination: string;
   consentId: string;

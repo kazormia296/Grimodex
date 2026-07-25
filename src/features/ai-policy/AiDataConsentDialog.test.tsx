@@ -97,7 +97,7 @@ describe("AiDataConsentDialog", () => {
 
     fireEvent.click(
       screen.getByRole("checkbox", {
-        name: "上記の送信・保存・学習利用方針を確認しました",
+        name: "上記の処理・送信・保存・学習利用方針を確認しました",
       }),
     );
     expect(accept).toBeEnabled();

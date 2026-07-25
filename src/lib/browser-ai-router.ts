@@ -56,7 +56,7 @@ export function createBrowserAiRouterTransport(
         request.apiKey ?? "",
         messages,
         tools,
-        "auto",
+        request.toolProtocolMode ?? "auto",
         httpOptions(request),
       );
     },

@@ -1,6 +1,7 @@
 import type { AiModel, BrowserAiMode } from "@/features/chat/types";
 import {
   BrowserAiConnectionError,
+  type BrowserAiOperation,
   type BrowserAiRequest,
   type BrowserAiStreamSink,
   type BrowserAiTransport,
@@ -151,6 +152,7 @@ function requestBody(
     messages: requestMessages(request),
     max_tokens: request.maxOutputTokens ?? 4096,
     stream,
+    ...(stream ? { stream_options: { include_usage: true } } : {}),
   };
 }
 
@@ -175,8 +177,35 @@ export function createWebGpuBrowserAiTransport(
   let worker: Worker | null = null;
   let loadingModel = "";
   let loading: Promise<WebLlmEngineLike> | null = null;
-  let aborted = false;
-  let activeEngine: WebLlmEngineLike | null = null;
+  let disposed = false;
+  let activeRequest: {
+    operation: BrowserAiOperation;
+    aborted: boolean;
+    engine: WebLlmEngineLike | null;
+  } | null = null;
+
+  const beginRequest = (operation: BrowserAiOperation) => {
+    if (activeRequest) {
+      throw new BrowserAiConnectionError(
+        "webgpu-busy",
+        "ブラウザー内AIは別の生成を処理中です。完了または停止してから再試行してください。",
+        { url: "browser://webgpu" },
+      );
+    }
+    const requestState = {
+      operation,
+      aborted: false,
+      engine: null as WebLlmEngineLike | null,
+    };
+    activeRequest = requestState;
+    return requestState;
+  };
+
+  const finishRequest = (
+    requestState: NonNullable<typeof activeRequest>,
+  ): void => {
+    if (activeRequest === requestState) activeRequest = null;
+  };
 
   const getModule = (): Promise<WebLlmModuleLike> => {
     modulePromise ??= loadModule();
@@ -195,6 +224,11 @@ export function createWebGpuBrowserAiTransport(
   };
 
   const ensureEngine = async (model: string): Promise<WebLlmEngineLike> => {
+    if (disposed) {
+      throw webGpuError(
+        "ブラウザー内AIは終了済みです。ページを再読み込みして再試行してください。",
+      );
+    }
     assertWebGpuAvailable(hasWebGpu);
     if (engine && loadedModel === model) return engine;
     if (loading && loadingModel === model) return loading;
@@ -209,7 +243,13 @@ export function createWebGpuBrowserAiTransport(
           initProgressCallback: () => undefined,
         }),
       )
-      .then((nextEngine) => {
+      .then(async (nextEngine) => {
+        if (disposed || worker !== nextWorker) {
+          if (nextEngine.unload) {
+            await nextEngine.unload().catch(() => undefined);
+          }
+          throw new Error("WebGPU transport was disposed while loading");
+        }
         engine = nextEngine;
         loadedModel = model;
         return nextEngine;
@@ -233,14 +273,17 @@ export function createWebGpuBrowserAiTransport(
   };
 
   const complete = async (request: BrowserAiRequest) => {
-    const current = await ensureEngine(request.model);
-    activeEngine = current;
-    aborted = false;
+    const requestState = beginRequest(request.operation);
     try {
+      const current = await ensureEngine(request.model);
+      requestState.engine = current;
+      if (requestState.aborted) {
+        return { blocks: [], stopReason: "end_turn" as const };
+      }
       const response = await current.chat.completions.create(
         requestBody(request, false),
       );
-      if (aborted) {
+      if (requestState.aborted) {
         return { blocks: [], stopReason: "end_turn" as const };
       }
       const result = response as {
@@ -258,8 +301,13 @@ export function createWebGpuBrowserAiTransport(
         inputTokens: finiteNonNegativeNumber(result.usage?.prompt_tokens),
         outputTokens: finiteNonNegativeNumber(result.usage?.completion_tokens),
       };
+    } catch (error) {
+      if (requestState.aborted) {
+        return { blocks: [], stopReason: "end_turn" as const };
+      }
+      throw error;
     } finally {
-      if (activeEngine === current) activeEngine = null;
+      finishRequest(requestState);
     }
   };
 
@@ -267,9 +315,7 @@ export function createWebGpuBrowserAiTransport(
     request: BrowserAiRequest,
     sink: BrowserAiStreamSink,
   ): Promise<void> => {
-    const current = await ensureEngine(request.model);
-    activeEngine = current;
-    aborted = false;
+    const requestState = beginRequest(request.operation);
     let stopReason: "end_turn" | "max_tokens" | "tool_use" | "stopped" =
       "end_turn";
     let inputTokens: number | undefined;
@@ -281,6 +327,13 @@ export function createWebGpuBrowserAiTransport(
       sink.done({ stopReason, inputTokens, outputTokens });
     };
     try {
+      const current = await ensureEngine(request.model);
+      requestState.engine = current;
+      if (requestState.aborted) {
+        stopReason = "stopped";
+        finish();
+        return;
+      }
       const response = await current.chat.completions.create(
         requestBody(request, true),
       );
@@ -288,7 +341,7 @@ export function createWebGpuBrowserAiTransport(
         throw new Error("WebLLM returned a non-streaming response");
       }
       for await (const rawChunk of response) {
-        if (aborted) {
+        if (requestState.aborted) {
           stopReason = "stopped";
           finish();
           return;
@@ -311,16 +364,17 @@ export function createWebGpuBrowserAiTransport(
           finiteNonNegativeNumber(chunk.usage?.completion_tokens) ??
           outputTokens;
       }
+      if (requestState.aborted) stopReason = "stopped";
       finish();
     } catch (error) {
-      if (aborted) {
+      if (requestState.aborted) {
         stopReason = "stopped";
         finish();
         return;
       }
       throw error;
     } finally {
-      if (activeEngine === current) activeEngine = null;
+      finishRequest(requestState);
     }
   };
 
@@ -331,13 +385,17 @@ export function createWebGpuBrowserAiTransport(
       assertWebGpuAvailable(hasWebGpu);
       return modelListFromModule(await getModule());
     },
-    abort: () => {
-      aborted = true;
-      activeEngine?.interruptGenerate?.();
+    abort: (operation) => {
+      if (activeRequest?.operation !== operation) return;
+      activeRequest.aborted = true;
+      activeRequest.engine?.interruptGenerate?.();
     },
     dispose: () => {
-      aborted = true;
-      activeEngine?.interruptGenerate?.();
+      disposed = true;
+      if (activeRequest) {
+        activeRequest.aborted = true;
+        activeRequest.engine?.interruptGenerate?.();
+      }
       const current = engine;
       engine = null;
       loadedModel = "";

@@ -14,6 +14,7 @@ import {
 import { isAinoveristV1Model } from "@/features/chat/aiNovelist";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import {
+  createBrowserAiTransport,
   browserProviderRequiresApiKey,
   fetchModels,
   testConnection,
@@ -23,7 +24,6 @@ import {
   type BrowserAiStreamSink,
   type BrowserAiTransport,
 } from "@/lib/browser-ai";
-import { createBrowserAiRouterTransport } from "@/lib/browser-ai-router";
 import { lintTextBrowser } from "@/lib/browser-lint";
 import type {
   AgentMessagePayload,
@@ -636,7 +636,7 @@ export async function createBrowserMock(
   } catch {
     // Storage can be unavailable in privacy-restricted browser contexts.
   }
-  const aiTransport = options.aiTransport ?? createBrowserAiRouterTransport();
+  const aiTransport = options.aiTransport ?? createBrowserAiTransport();
   const authorizeAiRequest =
     options.authorizeAiRequest ??
     (async (request: BrowserAiAuthorizationRequest): Promise<void> => {
@@ -859,6 +859,8 @@ export async function createBrowserMock(
       baseUrl: baseUrl || null,
       apiVariant,
       browserAiMode: settings.browserAiMode === "webgpu" ? "webgpu" : "http",
+      toolProtocolMode:
+        (settings.toolProtocolMode as ToolProtocolMode | undefined) ?? "auto",
     };
   }
 
@@ -992,16 +994,13 @@ export async function createBrowserMock(
     if (aiTransport.completeAgent) {
       return aiTransport.completeAgent(request, messages, tools);
     }
-    const settings = handleGetAiSettings();
-    const toolProtocolMode =
-      (settings.toolProtocolMode as ToolProtocolMode | undefined) ?? "auto";
     return sendChatWithTools(
       request.provider,
       request.model,
       request.apiKey ?? "",
       messages,
       tools,
-      toolProtocolMode,
+      request.toolProtocolMode ?? "auto",
       {
         ollamaEndpoint: request.ollamaEndpoint,
         baseUrl: request.baseUrl,

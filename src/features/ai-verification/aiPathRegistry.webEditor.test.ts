@@ -3,8 +3,11 @@ import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPoli
 import { AI_RUNTIME_ROUTES } from "./aiPathRegistry";
 
 describe("Web Editor AI runtime route registry", () => {
-  it("registers one user-selected route for every HTTP provider", () => {
-    expect(AI_RUNTIME_ROUTES.map(({ id }) => id)).toEqual(["browser_byok_web"]);
+  it("registers separate HTTP and browser-local WebGPU routes", () => {
+    expect(AI_RUNTIME_ROUTES.map(({ id }) => id)).toEqual([
+      "browser_byok_web",
+      "browser_local_webgpu",
+    ]);
     expect(AI_RUNTIME_ROUTES[0]).toMatchObject({
       consentRoute: "byok",
       providerAuthority: "user-selection",
@@ -15,5 +18,11 @@ describe("Web Editor AI runtime route registry", () => {
     );
     expect(AI_RUNTIME_ROUTES[0].providers).not.toContain("cli");
     expect(AI_RUNTIME_ROUTES[0].note).toMatch(/no app-owned credential/i);
+    expect(AI_RUNTIME_ROUTES[1]).toMatchObject({
+      consentRoute: "browser-local",
+      providerAuthority: "user-selection",
+      providers: ["browser-local"],
+    });
+    expect(AI_RUNTIME_ROUTES[1].capabilityGate).toMatch(/WebGPU/i);
   });
 });

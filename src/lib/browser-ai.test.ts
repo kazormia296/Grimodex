@@ -36,7 +36,10 @@ describe("browser local-network request policy", () => {
     ["http://[::1]:11434", "loopback"],
     ["http://192.168.1.50:1234/v1", "local"],
     ["http://172.20.0.4:8080", "local"],
+    ["http://[fd12:3456::1]:8080", "local"],
+    ["http://[fe90::1]:8080", "local"],
     ["http://printer.local:8080", "local"],
+    ["https://fd.example.com/v1", undefined],
     ["https://api.example.com/v1", undefined],
   ] as const)("classifies %s as %s", (url, expected) => {
     expect(classifyBrowserAiAddressSpace(url)).toBe(expected);
@@ -54,6 +57,27 @@ describe("browser local-network request policy", () => {
     await browserAiFetch("http://192.168.1.20:1234/v1/models", {
       headers: { accept: "application/json" },
     });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://192.168.1.20:1234/v1/models",
+      expect.objectContaining({ targetAddressSpace: "local" }),
+    );
+  });
+
+  it("lets an HTTPS page use the browser LNA permission flow for an HTTP LAN endpoint", async () => {
+    vi.stubGlobal("window", {
+      location: {
+        href: "https://try.grimodex.app/editor",
+        protocol: "https:",
+      },
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    try {
+      await browserAiFetch("http://192.168.1.20:1234/v1/models");
+    } finally {
+      vi.stubGlobal("window", undefined);
+    }
 
     expect(mockFetch).toHaveBeenCalledWith(
       "http://192.168.1.20:1234/v1/models",

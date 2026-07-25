@@ -9,7 +9,7 @@ import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPoli
 import type { AiDataDisclosureView } from "./AiDataConsentDialog";
 import { requestAiDataConsent } from "./aiDataConsentBroker";
 
-export const BROWSER_AI_DATA_POLICY_VERSION = "2026-07-25.1";
+export const BROWSER_AI_DATA_POLICY_VERSION = "2026-07-25.2";
 
 export type BrowserAiDisclosureLocale = "ja" | "en";
 type BrowserAiDisclosureProvider = (typeof BROWSER_DIRECT_AI_PROVIDERS)[number];
@@ -315,17 +315,23 @@ export function createByokAiDataDisclosure(
     options.browserAiMode === "webgpu"
       ? false
       : (options.hasApiKey ?? browserProviderRequiresApiKey(provider));
-  const disclosureProvider =
-    options.browserAiMode === "webgpu" ? "browser-local" : provider;
+  const isBrowserLocal = options.browserAiMode === "webgpu";
+  const disclosureProvider = isBrowserLocal ? "browser-local" : provider;
+  const consentRoute = isBrowserLocal ? "browser-local" : "byok";
+  const consentRouteId = consentRoute.replace(/-/gu, "_");
   return {
     schemaVersion: "grimodex/ai-data-disclosure/1",
     policyVersion: BROWSER_AI_DATA_POLICY_VERSION,
-    route: "byok",
+    route: consentRoute,
     provider: disclosureProvider,
     destination: facts.destination,
-    consentId: `consent_byok_${disclosureProvider}_${destinationFingerprint(facts.destination)}_${BROWSER_AI_DATA_POLICY_VERSION.replace(/[^0-9a-z]/gi, "_")}_v2`,
+    consentId: `consent_${consentRouteId}_${disclosureProvider}_${destinationFingerprint(facts.destination)}_${BROWSER_AI_DATA_POLICY_VERSION.replace(/[^0-9a-z]/gi, "_")}_v2`,
     usagePolicy: {
-      summary: t("aiDataConsent.disclosure.usageSummary"),
+      summary: t(
+        isBrowserLocal
+          ? "aiDataConsent.disclosure.local.usageSummary"
+          : "aiDataConsent.disclosure.usageSummary",
+      ),
       policyUrl: privacyUrl,
     },
     sentData: [

@@ -443,6 +443,7 @@ describe("BrowserMock web AI runtime contract", () => {
         provider: "openai",
         model: "gpt-5-mini",
         ollamaEndpoint: "http://localhost:11434",
+        toolProtocolMode: "hermes",
       },
     });
     await mock.invoke("save_api_key", {
@@ -467,6 +468,7 @@ describe("BrowserMock web AI runtime contract", () => {
       expect.objectContaining({
         provider: "openai",
         model: "gpt-5-mini",
+        toolProtocolMode: "hermes",
       }),
       messages,
       tools,

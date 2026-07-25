@@ -1,4 +1,4 @@
-export type AiDataConsentRoute = "byok";
+export type AiDataConsentRoute = "byok" | "browser-local";
 
 export interface AiDataConsentIdentity {
   policyVersion: string;
@@ -20,7 +20,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function isConsentRoute(value: unknown): value is AiDataConsentRoute {
-  return value === "byok";
+  return value === "byok" || value === "browser-local";
 }
 
 function parseConsentIdentity(value: unknown): AiDataConsentIdentity | null {

@@ -44,11 +44,11 @@ export type BrowserAiAddressSpace = "local" | "loopback";
 export type BrowserAiErrorCode =
   | "local-network-permission"
   | "cors"
-  | "mixed-content"
   | "server-unavailable"
   | "endpoint-format"
   | "models-unsupported"
   | "webgpu-unsupported"
+  | "webgpu-busy"
   | "http"
   | "network";
 
@@ -98,6 +98,7 @@ export interface BrowserAiRequest {
   apiVariant?: string | null;
   /** Web Editor-only transport selection. Native runtimes ignore this field. */
   browserAiMode?: BrowserAiMode;
+  toolProtocolMode?: ToolProtocolMode;
 }
 
 export type BrowserAiCompletion = AgentLLMResponse;
@@ -165,6 +166,14 @@ function parseIpv4(hostname: string): number[] | null {
   return numbers.every((part) => part >= 0 && part <= 255) ? numbers : null;
 }
 
+function isLocalIpv6Literal(hostname: string): boolean {
+  if (!hostname.includes(":")) return false;
+  const firstHextet = hostname.split(":", 1)[0];
+  if (!firstHextet || !/^[\da-f]{1,4}$/u.test(firstHextet)) return false;
+  const first = Number.parseInt(firstHextet, 16);
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+}
+
 /**
  * Classifies an absolute AI endpoint for the browser Local Network Access
  * request hint. Public endpoints intentionally return undefined.
@@ -194,12 +203,7 @@ export function classifyBrowserAiAddressSpace(
     return undefined;
   }
 
-  if (
-    hostname.endsWith(".local") ||
-    hostname.startsWith("fc") ||
-    hostname.startsWith("fd") ||
-    hostname.startsWith("fe80:")
-  ) {
+  if (hostname.endsWith(".local") || isLocalIpv6Literal(hostname)) {
     return "local";
   }
   return undefined;
@@ -207,20 +211,6 @@ export function classifyBrowserAiAddressSpace(
 
 export function isBrowserLocalEndpoint(value?: string | null): boolean {
   return classifyBrowserAiAddressSpace(value?.trim() ?? "") !== undefined;
-}
-
-function isMixedContentEndpoint(
-  url: string,
-  addressSpace: BrowserAiAddressSpace | undefined,
-): boolean {
-  if (addressSpace !== "local" || typeof window === "undefined") return false;
-  if (window.location.protocol !== "https:") return false;
-  try {
-    const parsed = new URL(url, window.location.href);
-    return parsed.protocol === "http:";
-  } catch {
-    return false;
-  }
 }
 
 function createFetchFailure(
@@ -262,13 +252,6 @@ export async function browserAiFetch(
   resource: BrowserAiEndpointResource = "chat",
 ): Promise<Response> {
   const addressSpace = classifyBrowserAiAddressSpace(url);
-  if (isMixedContentEndpoint(url, addressSpace)) {
-    throw new BrowserAiConnectionError(
-      "mixed-content",
-      "HTTPSのWeb EditorからHTTPのLANエンドポイントへ接続するには、ブラウザーがLocal Network Accessをサポートしている必要があります。HTTPSのAIサーバーまたは同一端末のloopbackを使用してください。",
-      { resource, url },
-    );
-  }
   const requestInit: BrowserAiFetchInit = {
     ...init,
     ...(addressSpace ? { targetAddressSpace: addressSpace } : {}),

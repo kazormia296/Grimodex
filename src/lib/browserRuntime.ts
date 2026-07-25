@@ -62,8 +62,24 @@ export interface BrowserRuntimeDependencies {
   installBrowserMock(mock: BrowserRuntimeDatabase): void;
 }
 
+const loadWebEditorAiRouter =
+  import.meta.env.MODE === "web-editor"
+    ? () => import("./browser-ai-router")
+    : null;
+
+async function createRuntimeBrowserMock(
+  options: BrowserMockOptions,
+): Promise<PersistentBrowserMock> {
+  if (!loadWebEditorAiRouter) return createBrowserMock(options);
+  const { createBrowserAiRouterTransport } = await loadWebEditorAiRouter();
+  return createBrowserMock({
+    ...options,
+    aiTransport: createBrowserAiRouterTransport(),
+  });
+}
+
 const DEFAULT_DEPENDENCIES: BrowserRuntimeDependencies = {
-  createBrowserMock,
+  createBrowserMock: createRuntimeBrowserMock,
   installBrowserMock: (mock) =>
     installBrowserMock(mock as PersistentBrowserMock),
 };

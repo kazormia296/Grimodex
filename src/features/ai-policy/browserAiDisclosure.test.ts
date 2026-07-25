@@ -106,8 +106,10 @@ describe("browser BYOK AI disclosure", () => {
     });
 
     expect(disclosure).toMatchObject({
+      route: "browser-local",
       provider: "browser-local",
       destination: "browser://local",
+      consentId: expect.stringMatching(/^consent_browser_local_/),
       trainingUse: { status: "not-used" },
     });
     expect(disclosure.sentData).not.toEqual(

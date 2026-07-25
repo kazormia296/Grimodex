@@ -95,6 +95,12 @@ describe("WebGpuBrowserAiTransport", () => {
     expect(done).toEqual([
       { stopReason: "end_turn", inputTokens: 3, outputTokens: 2 },
     ]);
+    expect(engine.chat.completions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stream: true,
+        stream_options: { include_usage: true },
+      }),
+    );
     await expect(transport.listModels?.(request())).resolves.toEqual([
       {
         id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
@@ -110,6 +116,153 @@ describe("WebGpuBrowserAiTransport", () => {
       createWorker: vi.fn(),
     });
 
+    await expect(transport.complete(request())).rejects.toMatchObject({
+      code: "webgpu-unsupported",
+    });
+  });
+
+  it("keeps a stream aborted while its initial model is still loading", async () => {
+    let resolveEngine!: (engine: WebLlmEngineLike) => void;
+    const create = vi.fn(async () =>
+      (async function* () {
+        yield { choices: [{ delta: { content: "must not start" } }] };
+      })(),
+    );
+    const engine: WebLlmEngineLike = {
+      chat: { completions: { create } },
+    };
+    const module: WebLlmModuleLike = {
+      prebuiltAppConfig: { model_list: [] },
+      CreateWebWorkerMLCEngine: vi.fn(
+        () =>
+          new Promise<WebLlmEngineLike>((resolve) => {
+            resolveEngine = resolve;
+          }),
+      ),
+    };
+    const transport = createWebGpuBrowserAiTransport({
+      hasWebGpu: () => true,
+      loadModule: async () => module,
+      createWorker: () => ({ terminate: vi.fn() }) as unknown as Worker,
+    });
+    const done: unknown[] = [];
+
+    const running = transport.stream?.(request(), {
+      text: vi.fn(),
+      done: (payload) => done.push(payload),
+    });
+    await vi.waitFor(() =>
+      expect(module.CreateWebWorkerMLCEngine).toHaveBeenCalledOnce(),
+    );
+    transport.abort?.("chat");
+    resolveEngine(engine);
+    await running;
+
+    expect(create).not.toHaveBeenCalled();
+    expect(done).toEqual([{ stopReason: "stopped" }]);
+  });
+
+  it("does not interrupt chat when only inline generation is aborted", async () => {
+    let release!: () => void;
+    const interruptGenerate = vi.fn();
+    const create = vi.fn(async () =>
+      (async function* () {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        yield { choices: [{ delta: { content: "chat" } }] };
+      })(),
+    );
+    const engine: WebLlmEngineLike = {
+      chat: { completions: { create } },
+      interruptGenerate,
+    };
+    const transport = createWebGpuBrowserAiTransport({
+      hasWebGpu: () => true,
+      loadModule: async () => fakeModule(engine),
+      createWorker: () => ({ terminate: vi.fn() }) as unknown as Worker,
+    });
+
+    const running = transport.stream?.(request(), {
+      text: vi.fn(),
+      done: vi.fn(),
+    });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    transport.abort?.("inline");
+    expect(interruptGenerate).not.toHaveBeenCalled();
+    release();
+    await running;
+  });
+
+  it("reports stopped when interruption ends a stream without another chunk", async () => {
+    let release!: () => void;
+    const interruptGenerate = vi.fn(() => release());
+    const create = vi.fn(async () =>
+      (async function* () {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        yield* [];
+      })(),
+    );
+    const engine: WebLlmEngineLike = {
+      chat: { completions: { create } },
+      interruptGenerate,
+    };
+    const transport = createWebGpuBrowserAiTransport({
+      hasWebGpu: () => true,
+      loadModule: async () => fakeModule(engine),
+      createWorker: () => ({ terminate: vi.fn() }) as unknown as Worker,
+    });
+    const done = vi.fn();
+
+    const running = transport.stream?.(request(), {
+      text: vi.fn(),
+      done,
+    });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    transport.abort?.("chat");
+    await running;
+
+    expect(interruptGenerate).toHaveBeenCalledOnce();
+    expect(done).toHaveBeenCalledWith({ stopReason: "stopped" });
+  });
+
+  it("does not retain an engine that finishes loading after disposal", async () => {
+    let resolveEngine!: (engine: WebLlmEngineLike) => void;
+    const unload = vi.fn(async () => undefined);
+    const create = vi.fn();
+    const engine: WebLlmEngineLike = {
+      chat: { completions: { create } },
+      unload,
+    };
+    const module: WebLlmModuleLike = {
+      prebuiltAppConfig: { model_list: [] },
+      CreateWebWorkerMLCEngine: vi.fn(
+        () =>
+          new Promise<WebLlmEngineLike>((resolve) => {
+            resolveEngine = resolve;
+          }),
+      ),
+    };
+    const terminate = vi.fn();
+    const transport = createWebGpuBrowserAiTransport({
+      hasWebGpu: () => true,
+      loadModule: async () => module,
+      createWorker: () => ({ terminate }) as unknown as Worker,
+    });
+
+    const running = transport.complete(request());
+    await vi.waitFor(() =>
+      expect(module.CreateWebWorkerMLCEngine).toHaveBeenCalledOnce(),
+    );
+    transport.dispose?.();
+    resolveEngine(engine);
+    await running;
+
+    expect(terminate).toHaveBeenCalled();
+    expect(unload).toHaveBeenCalledOnce();
+    expect(create).not.toHaveBeenCalled();
     await expect(transport.complete(request())).rejects.toMatchObject({
       code: "webgpu-unsupported",
     });
