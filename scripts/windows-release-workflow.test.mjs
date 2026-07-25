@@ -93,6 +93,14 @@ describe("Windows Electron release", () => {
       migrationE2e,
       /348A45B9C1FF056C19734CF9A85175A96C0FEB5B0B4BA25AF2A29EB65A24EB9E/,
     );
+    assert.doesNotMatch(migrationE2e, /^\s*gh release download/m);
+    assert.match(
+      migrationE2e,
+      /select\(\.tag_name == "v1\.0\.0" and \.draft == true\)/,
+    );
+    assert.match(migrationE2e, /releases\/assets\/\$\(\$legacyAssetIds\[0\]\)/);
+    assert.match(migrationE2e, /Accept = "application\/octet-stream"/);
+    assert.match(migrationE2e, /-OutFile \$legacyInstaller/);
     assert.match(migrationE2e, /electron-migration-roaming\.sentinel/);
     assert.match(migrationE2e, /electron-migration-local\.sentinel/);
     assert.match(migrationE2e, /Assert-OneElectronRegistration/);
