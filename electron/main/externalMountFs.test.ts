@@ -11,6 +11,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   ftruncateSync,
   closeSync,
   lstatSync,
@@ -43,8 +44,9 @@ const created: string[] = [];
 
 function tempDir(name: string): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), `gmx-emfs-${name}-`));
-  created.push(dir);
-  return dir;
+  const canonicalDir = realpathSync.native(dir);
+  created.push(canonicalDir);
+  return canonicalDir;
 }
 
 afterEach(() => {

@@ -50,13 +50,26 @@ export interface ScopeCheckOptions {
 export class FsScope {
   /** dialog.openFile で選ばれた単一ファイル（字面 + realpath）。 */
   private readonly files = new Set<string>();
+  /** file grant 時点の lexical parent → canonical parent 対応。 */
+  private readonly fileAliasRoots: Array<{
+    lexical: string;
+    canonical: string;
+  }> = [];
   /** dialog.openFolder で選ばれたフォルダ（字面 + realpath、配下再帰）。 */
   private readonly dirs = new Set<string>();
 
   /** dialog.openFile 成功時に呼ぶ。ダイアログの返り値は実在パス前提。 */
   async allowFile(picked: string): Promise<void> {
-    this.files.add(path.resolve(picked));
-    this.files.add(await realpath(picked));
+    const lexical = path.resolve(picked);
+    const real = await realpath(lexical);
+    this.files.add(lexical);
+    this.files.add(real);
+
+    const lexicalParent = path.dirname(lexical);
+    this.fileAliasRoots.push({
+      lexical: lexicalParent,
+      canonical: await realpath(lexicalParent),
+    });
   }
 
   /** dialog.openFolder 成功時に呼ぶ。 */
@@ -66,7 +79,20 @@ export class FsScope {
   }
 
   private contains(target: string, opts: ScopeCheckOptions): boolean {
-    if (opts.asFile && this.files.has(target)) return true;
+    if (opts.asFile) {
+      if (this.files.has(target)) return true;
+      // macOS の /var -> /private/var のように、picked の親自体が OS
+      // 由来の alias である場合がある。grant 時に確定した親同士の対応で
+      // target を写像し、選択済みの同一実体だけを許可する。
+      for (const roots of this.fileAliasRoots) {
+        if (!isWithinDir(roots.lexical, target)) continue;
+        const mapped = path.resolve(
+          roots.canonical,
+          path.relative(roots.lexical, target),
+        );
+        if (this.files.has(mapped)) return true;
+      }
+    }
     for (const dir of this.dirs) {
       if (isWithinDir(dir, target)) return true;
     }

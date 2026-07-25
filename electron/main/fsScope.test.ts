@@ -168,6 +168,35 @@ describe("FsScope: file grant", () => {
       scope.assertReadable(path.join(allowedDir, "a.txt"), { asFile: true }),
     ).resolves.toBe(realpathSync(path.join(allowedDir, "a.txt")));
   });
+
+  it.skipIf(process.platform === "win32")(
+    "OS のディレクトリ alias 越しでも symlink 実体の字面を許可する",
+    async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "grim-fs-alias-"));
+      try {
+        const canonicalRoot = path.join(root, "canonical");
+        const aliasRoot = path.join(root, "alias");
+        const canonicalAllowed = path.join(canonicalRoot, "allowed");
+        mkdirSync(canonicalAllowed, { recursive: true });
+        writeFileSync(path.join(canonicalAllowed, "a.txt"), "in-scope", "utf8");
+        symlinkSync(
+          path.join(canonicalAllowed, "a.txt"),
+          path.join(canonicalAllowed, "ok-link"),
+        );
+        symlinkSync(canonicalRoot, aliasRoot, "dir");
+
+        const scope = new FsScope();
+        await scope.allowFile(path.join(aliasRoot, "allowed", "ok-link"));
+        await expect(
+          scope.assertReadable(path.join(aliasRoot, "allowed", "a.txt"), {
+            asFile: true,
+          }),
+        ).resolves.toBe(realpathSync(path.join(canonicalAllowed, "a.txt")));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("FsScope: grant なし", () => {
