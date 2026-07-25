@@ -250,7 +250,7 @@ jobs:
           scripts/arch-electron-package.test.mjs
           scripts/linux-release-abi.test.mjs
           scripts/verify-electron-updater-metadata.test.mjs
-          scripts/windows-signing-workflow.test.mjs
+          scripts/windows-release-workflow.test.mjs
           scripts/electron-v2-cleanup.test.mjs
           scripts/generate-licenses.test.mjs
 
@@ -323,7 +323,7 @@ jobs:
 
       # This job validates electron-builder's two makensis passes, not the
       # platform runtime. Release-native binaries are built and exercised in
-      # electron-native and again in the signed release matrix.
+      # electron-native and again in the release matrix.
       - name: Prepare compile-only native placeholders
         shell: pwsh
         run: |

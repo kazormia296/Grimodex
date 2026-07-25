@@ -163,7 +163,7 @@ Stop-GrimodexProcesses
 
 Assert-Condition (Test-Path -LiteralPath $electronExecutable) "Electron executable was not installed."
 $signature = Get-AuthenticodeSignature -LiteralPath $electronExecutable
-Assert-Condition ($signature.Status.ToString() -eq "Valid") "Electron executable lost its Authenticode signature."
+Assert-Condition ($signature.Status.ToString() -eq "NotSigned") "Electron executable is expected to remain unsigned."
 Assert-Condition (-not (Test-Path -LiteralPath $legacyUninstallKey)) "Tauri v1 uninstall registration remains."
 Assert-Condition (-not (Test-Path -LiteralPath $legacyProductKey)) "Tauri v1 product registration remains."
 Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $registeredLegacyDirectory "grimodex.exe"))) "Tauri v1 executable remains."

@@ -6,27 +6,33 @@ import { load } from "js-yaml";
 
 const root = path.resolve(import.meta.dirname, "..");
 
-describe("Windows Electron release signing", () => {
-  it("requires certificate secrets and verifies both executable signatures", async () => {
+describe("Windows Electron release", () => {
+  it("builds and verifies both executable artifacts explicitly unsigned", async () => {
     const workflow = load(
       await readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
     );
-    const commands = workflow.jobs.build.steps
-      .map((step) => step.run)
-      .filter(Boolean)
-      .join("\n");
-    const environments = workflow.jobs.build.steps
-      .map((step) => step.env ?? {})
-      .map((env) => JSON.stringify(env))
-      .join("\n");
+    const buildSteps = workflow.jobs.build.steps;
+    const configureUnsigned = buildSteps.find(
+      (step) => step.name === "Configure unsigned Windows packages",
+    );
+    const verifyUnsigned = buildSteps.find(
+      (step) => step.name === "Verify unsigned Windows artifacts",
+    );
+    const buildDefinition = JSON.stringify(buildSteps);
 
-    assert.match(environments, /secrets\.WINDOWS_CERTIFICATE/);
-    assert.match(environments, /secrets\.WINDOWS_CERTIFICATE_PASSWORD/);
-    assert.match(commands, /CSC_LINK/);
-    assert.match(commands, /CSC_KEY_PASSWORD/);
-    assert.match(commands, /Get-AuthenticodeSignature/);
-    assert.match(commands, /win-unpacked/);
-    assert.match(commands, /Status.*Valid/);
+    assert.equal(configureUnsigned?.if, "matrix.id == 'windows'");
+    assert.match(
+      configureUnsigned?.run ?? "",
+      /CSC_IDENTITY_AUTO_DISCOVERY=false/,
+    );
+    assert.equal(verifyUnsigned?.if, "matrix.id == 'windows'");
+    assert.match(verifyUnsigned?.run ?? "", /Get-AuthenticodeSignature/);
+    assert.match(verifyUnsigned?.run ?? "", /win-unpacked/);
+    assert.match(verifyUnsigned?.run ?? "", /NotSigned/);
+    assert.doesNotMatch(
+      buildDefinition,
+      /WINDOWS_CERTIFICATE|CSC_LINK|CSC_KEY_PASSWORD/,
+    );
   });
 
   it("compiles and exercises the fail-closed Tauri v1 migration bridge", async () => {
@@ -80,6 +86,7 @@ describe("Windows Electron release signing", () => {
     assert.match(commands, /electron-builder --publish never/);
     assert.match(stepNames, /Tauri v1 to Electron migration/);
     assert.match(commands, /Get-AuthenticodeSignature/);
+    assert.match(commands, /NotSigned/);
     assert.match(migrationE2e, /Grimodex_1\.0\.0_x64-setup\.exe/);
     assert.match(migrationE2e, /com\.miyakey\.grimodex/);
     assert.match(
@@ -91,5 +98,7 @@ describe("Windows Electron release signing", () => {
     assert.match(migrationE2e, /Assert-OneElectronRegistration/);
     assert.match(migrationE2e, /Wait-ForElectronRestart/);
     assert.match(migrationE2e, /failedMigration\.ExitCode -ne 0/);
+    assert.match(migrationE2e, /Get-AuthenticodeSignature/);
+    assert.match(migrationE2e, /NotSigned/);
   });
 });

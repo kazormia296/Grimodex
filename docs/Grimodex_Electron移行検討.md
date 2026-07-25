@@ -82,7 +82,7 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
   - **deb/rpm**: v0.10.4 の latest.json に linux-x86_64-deb/-rpm キーが実在し、pkexec dpkg -i / rpm -U で更新される。Electron 側 deb の Package 名を `grimodex` に一致させれば正規アップグレード。
   - **Windows NSIS**: PE exe と判定されれば ShellExecuteW で実行。electron-builder の custom NSIS hook で `/P` を silent、`/R` を Electron 再起動へ変換し、実配布 v1.0.0 の identity（publisher=`miyakey`）を検証してから旧インストールを `/UPDATE` で削除する。検証不能時は side-by-side に進まず fail-closed とし、`%APPDATA%` / `%LOCALAPPDATA%` の `com.miyakey.grimodex` は削除しない。
   - **macOS**: tar.gz の .app を署名・quarantine 確認なしで丸ごと置換。
-- **移行後**: electron-updater（GitHub Releases provider、公開リポジトリはトークン不要）が NSIS / AppImage / deb / rpm / macOS zip を更新できる。macOS の **Apple Developer ID 署名 + notarization** と Windows の **Authenticode 署名 + 検証 gate** は Electron v2 の `.github/workflows/release.yml` に実装済み。Windows 証明書は GitHub Actions secrets `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` が必須で、未設定・署名不正なら release build を停止する。Linux はパッケージ署名を別途行わない。
+- **移行後**: electron-updater（GitHub Releases provider、公開リポジトリはトークン不要）が NSIS / AppImage / deb / rpm / macOS zip を更新できる。macOS は **Apple Developer ID 署名 + notarization** を行う。Windows は意図的に Authenticode 未署名で配布し、electron-builder の証明書自動検出を無効化したうえで app exe と NSIS installer が `NotSigned` であることを検証する。Linux もパッケージ署名を別途行わない。旧 Tauri updater 向けの minisign 検証は OS 署名とは独立して全プラットフォームで維持する。
 
 ### 運用上の必須事項
 
@@ -121,7 +121,7 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
 | ORT 1.24+ は darwin/x64 prebuilt を廃止                                                                                                                              | なし     | 現行 macOS 配布は arm64 のみなので実害なし。Electron v2 workflow も `macos-15`（標準M1 runner）へ固定済み（Intel Mac 対応を将来足すなら 1.23.x 固定 or napi-rs）                                                                                                          |
 | better-sqlite3 の Electron prebuild 追随ラグ（v12.7.x/12.9.1/12.11.0 で反復）                                                                                        | 低       | Electron バージョン固定運用。**napi-rs で rusqlite 温存ならこの問題自体が消える**                                                                                                                                                                                         |
 | 配布サイズ・メモリ: 相場でバンドル +100〜240MB、メモリ +150〜300MB。起動時間は有意差なし                                                                             | 受容済み | 「ビルドと起動の軽量さよりも見た目と操作感が命」という製品方針で明示的に受容                                                                                                                                                                                              |
-| Windows Authenticode secret の欠損・誤設定                                                                                                                           | 高       | v2 release は certificate/password を必須化し、app exe と NSIS の両方を `Get-AuthenticodeSignature` で検証。不正なら公開前に停止                                                                                                                                          |
+| Windows 成果物が意図せず Authenticode 署名される                                                                                                                     | 中       | 証明書自動検出を無効化し、app exe と NSIS の両方を `Get-AuthenticodeSignature` で検証。`NotSigned` 以外なら公開前に停止                                                                                                                                                   |
 
 実ユーザー規模（v0.10.1 各アセット 18〜27 DL、latest.json 13 DL）から、移行の実害ウィンドウは小さい。**移行するなら今が最安**。
 

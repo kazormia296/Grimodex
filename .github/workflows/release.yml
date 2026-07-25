@@ -136,7 +136,12 @@ jobs:
             echo "::error::Developer ID Application certificate was not found." >&2
             exit 1
           fi
-          echo "CSC_NAME=$CERT_ID" >> "$GITHUB_ENV"
+          CERT_NAME="${CERT_ID#Developer ID Application: }"
+          if [ -z "$CERT_NAME" ] || [ "$CERT_NAME" = "$CERT_ID" ]; then
+            echo "::error::Unexpected Developer ID identity format: $CERT_ID" >&2
+            exit 1
+          fi
+          echo "CSC_NAME=$CERT_NAME" >> "$GITHUB_ENV"
           rm -f "$CERT_PATH"
 
       - name: Restore App Store Connect API key
@@ -154,28 +159,17 @@ jobs:
       - name: Build Electron main, preload, and renderer
         run: pnpm electron:build
 
-      # Required repository secrets for Windows Authenticode:
-      # WINDOWS_CERTIFICATE (base64/PFX accepted by electron-builder) and
-      # WINDOWS_CERTIFICATE_PASSWORD.
-      - name: Require Windows Authenticode certificate
+      # Windows artifacts are intentionally distributed unsigned. Disable
+      # electron-builder certificate discovery so hosted-runner state cannot
+      # silently change that release contract.
+      - name: Configure unsigned Windows packages
         if: matrix.id == 'windows'
         shell: pwsh
-        env:
-          WIN_CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)) {
-            Write-Error "WINDOWS_CERTIFICATE is required for Electron v2 releases."
-            exit 1
-          }
-          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_KEY_PASSWORD)) {
-            Write-Error "WINDOWS_CERTIFICATE_PASSWORD is required for Electron v2 releases."
-            exit 1
-          }
-          "CSC_LINK=$($env:WIN_CSC_LINK)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CSC_KEY_PASSWORD=$($env:WIN_CSC_KEY_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CSC_IDENTITY_AUTO_DISCOVERY=false" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build signed host packages without publishing
+      - name: Build host packages without publishing
         env:
           CSC_NAME: ${{ env.CSC_NAME }}
           APPLE_API_KEY: ${{ runner.temp }}/authkey.p8
@@ -252,7 +246,7 @@ jobs:
             fi
           done
 
-      - name: Verify Windows app and NSIS Authenticode signatures
+      - name: Verify unsigned Windows artifacts
         if: matrix.id == 'windows'
         shell: pwsh
         run: |
@@ -264,8 +258,8 @@ jobs:
           }
           foreach ($File in @($App, $Installer)) {
             $Signature = Get-AuthenticodeSignature -FilePath $File.FullName
-            if ($Signature.Status.ToString() -ne "Valid") {
-              Write-Error "Invalid Authenticode signature ($($Signature.Status)): $($File.FullName)"
+            if ($Signature.Status.ToString() -ne "NotSigned") {
+              Write-Error "Expected an unsigned Windows artifact, got $($Signature.Status): $($File.FullName)"
               exit 1
             }
           }
