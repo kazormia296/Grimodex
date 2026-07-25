@@ -1,6 +1,6 @@
-import { Ajv, type ErrorObject } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+import generatedValidateShape from "./generated/scanBundleV1Validator.generated.js";
 import { ID_PATTERNS, SCAN_LIMITS, type ScanIdKind } from "./limits.js";
-import { scanBundleV1Schema } from "./schema.js";
 import {
   computeSourceFingerprint,
   isScanLanguage,
@@ -35,8 +35,7 @@ export type EditorSeedValidationResult =
   | { ok: true; value: EditorSeedV1 }
   | { ok: false; errors: ScanValidationError[] };
 
-const ajv = new Ajv({ allErrors: true, strict: false });
-const validateShape = ajv.compile(scanBundleV1Schema);
+const validateShape = generatedValidateShape as ValidateFunction<ScanBundleV1>;
 
 function shapeErrors(
   errors: ErrorObject[] | null | undefined,

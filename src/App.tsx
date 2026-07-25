@@ -374,10 +374,10 @@ function App() {
       <WorkspaceTrustDialog />
       <EulaConsentDialog />
       <ReleaseNotesDialog />
-      {runtimeCapabilities.genericProjectTransfer && (
+      {runtimeCapabilities.genericProjectTransfer && showWebEditorImport && (
         <Suspense fallback={null}>
           <WebEditorWorkspaceImportDialog
-            open={showWebEditorImport}
+            open
             onClose={() => setShowWebEditorImport(false)}
           />
         </Suspense>
