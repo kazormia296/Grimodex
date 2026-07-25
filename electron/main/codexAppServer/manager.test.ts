@@ -1634,12 +1634,14 @@ describe("Codex App Server manager", () => {
 
   it("revalidates file paths when an approval is accepted", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "grimodex-approval-race-"));
+    const canonicalWorkspace = path.join(root, "workspace-real");
     const workspace = path.join(root, "workspace");
-    const inside = path.join(workspace, "inside");
+    const inside = path.join(canonicalWorkspace, "inside");
     const outside = path.join(root, "outside");
-    mkdirSync(workspace);
+    mkdirSync(canonicalWorkspace);
     mkdirSync(inside);
     mkdirSync(outside);
+    symlinkSync(canonicalWorkspace, workspace, "dir");
     const linked = path.join(workspace, "linked");
     symlinkSync(inside, linked, "dir");
     const process = new FakeProcess();

@@ -94,6 +94,7 @@ interface ActiveTurn {
   codexThreadId: string;
   codexTurnId: string | null;
   workspacePath: string;
+  workspaceAliasPath: string;
   allowApprovals: boolean;
   turnStarted: boolean;
   outputStarted: boolean;
@@ -453,15 +454,29 @@ function optionalApprovalString(
   return value;
 }
 
-function pathWithinWorkspace(rawPath: string, workspacePath: string): string {
+function pathWithinWorkspace(
+  rawPath: string,
+  workspacePath: string,
+  workspaceAliasPath: string = workspacePath,
+): string {
   const workspace = path.resolve(workspacePath);
-  const candidate = path.resolve(workspace, rawPath);
-  const relative = path.relative(workspace, candidate);
-  if (
-    relative === ".." ||
-    relative.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(relative)
-  ) {
+  const workspaceAlias = path.resolve(workspaceAliasPath);
+  const candidate = path.resolve(workspaceAlias, rawPath);
+  const roots =
+    workspaceAlias === workspace ? [workspace] : [workspaceAlias, workspace];
+  let relative: string | null = null;
+  for (const root of roots) {
+    const candidateRelative = path.relative(root, candidate);
+    if (
+      candidateRelative !== ".." &&
+      !candidateRelative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(candidateRelative)
+    ) {
+      relative = candidateRelative;
+      break;
+    }
+  }
+  if (relative === null) {
     throw new CodexAppServerError(
       "Codex approval references a path outside the active workspace",
       CODEX_APP_SERVER_REQUEST_DENIED_CODE,
@@ -523,6 +538,7 @@ function validateAvailableDecisions(params: Record<string, unknown>): void {
 function fileChangeUpdate(
   params: unknown,
   workspacePath: string,
+  workspaceAliasPath: string,
 ): { itemId: string; details: FileChangeApprovalDetails } | null {
   if (!isRecord(params)) return null;
   const item = isRecord(params.item) ? params.item : params;
@@ -563,7 +579,9 @@ function fileChangeUpdate(
       ) {
         throw new Error("Codex file-change kind is invalid");
       }
-      affectedPaths.push(pathWithinWorkspace(change.path, workspacePath));
+      affectedPaths.push(
+        pathWithinWorkspace(change.path, workspacePath, workspaceAliasPath),
+      );
       if ("move_path" in kind) {
         if (
           kind.type !== "update" ||
@@ -574,7 +592,11 @@ function fileChangeUpdate(
         }
         if (typeof kind.move_path === "string") {
           affectedPaths.push(
-            pathWithinWorkspace(kind.move_path, workspacePath),
+            pathWithinWorkspace(
+              kind.move_path,
+              workspacePath,
+              workspaceAliasPath,
+            ),
           );
         }
       }
@@ -906,7 +928,11 @@ export function createCodexAppServerManager(
       method === "item/completed" ||
       method === "item/fileChange/patchUpdated"
     ) {
-      const update = fileChangeUpdate(params, active.workspacePath);
+      const update = fileChangeUpdate(
+        params,
+        active.workspacePath,
+        active.workspaceAliasPath,
+      );
       if (update) active.fileChangeDetails.set(update.itemId, update.details);
     }
     const envelope = mapCodexNotification(method, params, {
@@ -1540,6 +1566,7 @@ export function createCodexAppServerManager(
       codexThreadId: threadId,
       codexTurnId: null,
       workspacePath: cwd,
+      workspaceAliasPath: path.resolve(workspacePath),
       allowApprovals,
       turnStarted: false,
       outputStarted: false,
