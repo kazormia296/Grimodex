@@ -11,7 +11,7 @@ const lpBundle = readFileSync(
   "utf8",
 );
 
-const WEB_EDITOR_URL = "https://try.grimodex.app/editor";
+const WEB_EDITOR_URL = "https://grimodex-try.pages.dev/";
 
 describe("LP public links", () => {
   it("offers the production Web Editor with Japanese and English CTA copy", () => {
@@ -23,7 +23,7 @@ describe("LP public links", () => {
 
   it("opens the Web Editor safely without exposing the staging deployment", () => {
     const webEditorLink = lpSource.match(
-      /<a\s+href="https:\/\/try\.grimodex\.app\/editor"[\s\S]*?<\/a>/,
+      /<a\s+href="https:\/\/grimodex-try\.pages\.dev\/"[\s\S]*?<\/a>/,
     )?.[0];
 
     expect(webEditorLink).toBeDefined();
