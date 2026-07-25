@@ -12,7 +12,7 @@
 > `licensing,legacy-keyring-migration` native build、旧 keyring → safeStorage one-shot 移行、
 > packaged Linux MCP の `<userData>/bin/grimodex-mcp` eager refresh、electron-builder / updater、
 > 凍結した既存v1 asset / v2 Electron release workflow、Linux GLIBC 2.39 / deb・rpm dependency gate、成果物 metadata の
-> size/SHA-512 検証、Tauri署名の公開鍵検証、Arch updater marker、実配布 v1.0.0 からの Windows
+> size/SHA-512 検証、Tauri署名の公開鍵検証、Arch updater marker、最終公開 v0.10.4 からの Windows
 > NSIS移行E2E、RPM `%posttrans` 移行修復を実装済み。v2タグ作成と Draft release 実行は未実施。詳細と実行コマンドは
 > Phase 3 設計書 §6 を参照。
 >

@@ -93,7 +93,7 @@ describe("release workflow boundary", () => {
     assert.match(workflow.jobs.publish.if, /build-arch\.result == 'skipped'/);
   });
 
-  it("freezes the public key embedded by the published Tauri v1 client", async () => {
+  it("freezes the public key configured by the Tauri v1.0.0 bridge draft", async () => {
     const config = JSON.parse(
       await readFile(path.join(repoRoot, "src-tauri/tauri.conf.json"), "utf8"),
     );
