@@ -3350,7 +3350,7 @@ function LPVariantH() {
             }}
           >
             <a
-              href="https://try.grimodex.app/editor"
+              href="https://grimodex-try.pages.dev/"
               target="_blank"
               rel="noreferrer"
               className="hz-shadow"

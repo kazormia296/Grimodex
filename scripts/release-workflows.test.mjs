@@ -131,6 +131,28 @@ describe("release workflow boundary", () => {
     assert.match(auditStep?.run ?? "", /audit --audit-level high/);
   });
 
+  it("pins brace-expansion to the patched version required by the audit gate", async () => {
+    const workspace = await readFile(
+      path.join(repoRoot, "pnpm-workspace.yaml"),
+      "utf8",
+    );
+    const lockfile = await readFile(
+      path.join(repoRoot, "pnpm-lock.yaml"),
+      "utf8",
+    );
+
+    assert.match(workspace, /^  "brace-expansion@5\.0\.6": 5\.0\.8$/m);
+    assert.match(workspace, /^  "brace-expansion@2\.1\.2": 5\.0\.8$/m);
+    assert.match(workspace, /^  "brace-expansion@1\.1\.14": 5\.0\.8$/m);
+    assert.match(lockfile, /^  brace-expansion@5\.0\.6: 5\.0\.8$/m);
+    assert.match(lockfile, /^  brace-expansion@2\.1\.2: 5\.0\.8$/m);
+    assert.match(lockfile, /^  brace-expansion@1\.1\.14: 5\.0\.8$/m);
+    assert.match(lockfile, /^  brace-expansion@5\.0\.8:$/m);
+    assert.doesNotMatch(lockfile, /^  brace-expansion@5\.0\.7:/m);
+    assert.doesNotMatch(lockfile, /^      brace-expansion: 2\.1\.2$/m);
+    assert.doesNotMatch(lockfile, /^      brace-expansion: 1\.1\.16$/m);
+  });
+
   it("runs Electron shell and native backend gates in reusable CI", async () => {
     const workflow = await readWorkflow("ci.yml");
     assert.ok(workflow.jobs.electron);
