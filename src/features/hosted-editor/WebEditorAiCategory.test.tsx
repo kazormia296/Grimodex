@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WebEditorAiCategory } from "./WebEditorAiCategory";
 
@@ -102,5 +102,17 @@ describe("WebEditorAiCategory", () => {
       "href",
       "https://docs.ollama.com/faq#how-can-i-allow-additional-web-origins-to-access-ollama",
     );
+  });
+
+  it("does not probe loopback automatically and exposes an explicit connect action", async () => {
+    render(<WebEditorAiCategory />);
+
+    await waitFor(() => expect(mocks.loadSettings).toHaveBeenCalled());
+    expect(mocks.loadModels).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", {
+        name: /ローカルAIへ接続|Connect to local AI/i,
+      }),
+    ).toBeTruthy();
   });
 });

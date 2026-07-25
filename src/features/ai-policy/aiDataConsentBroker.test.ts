@@ -109,6 +109,23 @@ describe("AI data consent broker", () => {
     await expect(changed).rejects.toThrow("ai-data-consent-required");
   });
 
+  it("persists and reuses browser-local consent independently", async () => {
+    const localDisclosure = disclosure({
+      policyVersion: "2026-07-25.2",
+      route: "browser-local",
+      provider: "browser-local",
+      destination: "browser://local",
+      consentId: "consent_browser_local_2026_07_25_abcdef",
+    });
+    const first = requestAiDataConsent(localDisclosure);
+    acceptActiveAiDataConsent("consent_browser_local_2026_07_25_abcdef");
+    await first;
+
+    await expect(
+      requestAiDataConsent(localDisclosure),
+    ).resolves.toBeUndefined();
+  });
+
   it("authorizes the current request without hanging when consent storage is unavailable", async () => {
     const original = window.localStorage;
     const unavailable = {

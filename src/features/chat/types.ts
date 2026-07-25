@@ -13,6 +13,9 @@ export const AI_PROVIDERS = [
 
 export type AiProvider = (typeof AI_PROVIDERS)[number];
 
+/** Web Editor-only AI execution mode. Native shells always use their normal provider route. */
+export type BrowserAiMode = "http" | "webgpu";
+
 /**
  * Agent ループでツール呼び出しをどのプロトコルで授受するか。
  * - `auto`: HTTP OpenAI 互換プロバイダで、model 名に `hermes` を含む場合のみ Hermes 扱い。
@@ -102,6 +105,8 @@ export interface AiSettings {
   provider: AiProvider;
   model: string;
   ollamaEndpoint: string;
+  /** Web Editor-only transport preference; omitted in native settings. */
+  browserAiMode?: BrowserAiMode;
   thinkingEnabled: boolean;
   /** legacy 単一 OpenAI 互換設定。複数版へ移行後も round-trip / downgrade 用に保持。 */
   openaiCompatible: OpenaiCompatibleSettings;

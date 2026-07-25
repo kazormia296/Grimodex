@@ -15,6 +15,7 @@
  */
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import type { AiProvider } from "@/features/chat/types";
+import type { AiDataConsentRoute } from "@/features/ai-policy/aiDataConsent";
 
 /** 経路の到達トランスポート層。 */
 export type AiPathLayer =
@@ -84,9 +85,9 @@ export interface AiRuntimeRouteEntry {
   label: string;
   surface: string;
   transport: string;
-  consentRoute: "byok";
+  consentRoute: AiDataConsentRoute;
   providerAuthority: "user-selection";
-  providers: readonly AiProvider[];
+  providers: readonly (AiProvider | "browser-local")[];
   capabilityGate: string;
   verifier: "contract";
   testRef: string;
@@ -107,6 +108,9 @@ const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
 const BROWSER_BYOK_CONTRACT_TEST = "src/lib/browser-ai.test.ts";
 const BROWSER_BYOK_CONSENT_CONTRACT_TEST =
   "src/lib/browser-mock.ai-runtime.test.ts";
+const BROWSER_WEBGPU_CONTRACT_TEST = "src/lib/browser-webllm.test.ts";
+const BROWSER_WEBGPU_CONSENT_CONTRACT_TEST =
+  "src/features/ai-policy/browserAiDisclosure.test.ts";
 
 /** 生成経路（LLM を実際に叩く層）。n/a が許されない層。 */
 export const GENERATION_LAYERS: AiPathLayer[] = [
@@ -438,7 +442,7 @@ export const AI_PATHS: AiPathEntry[] = [
 export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
   {
     id: "browser_byok_web",
-    label: "Web Editor Local LLM / BYOK AI",
+    label: "Web Editor HTTP Local LLM / BYOK AI",
     surface: "browser Editor → BrowserMock AI transport → browser-ai",
     transport: "browser fetch → user-selected AI provider",
     consentRoute: "byok",
@@ -453,5 +457,23 @@ export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
     consentTestName:
       "does not reach the provider when consent authorization fails",
     note: "Web Editor exposes every HTTP provider (OpenRouter, OpenAI, Anthropic, Ollama, OpenAI-compatible, Sakana, and AI Novelist) with user-owned credentials or a user-configured endpoint; native CLI remains desktop-only. Web Editor has no app-owned credential or managed provider route. Consent identity includes the normalized actual connection destination, so changing an Ollama or OpenAI-compatible endpoint invalidates prior consent. The production endpoint/auth shape and refusal-before-provider boundary are deterministic Light contracts; live execution remains an explicit user action and Heavy evidence.",
+  },
+  {
+    id: "browser_local_webgpu",
+    label: "Web Editor browser-local WebGPU AI",
+    surface: "browser Editor → BrowserMock AI transport → browser-webllm",
+    transport: "Web Worker → WebLLM → browser WebGPU",
+    consentRoute: "browser-local",
+    providerAuthority: "user-selection",
+    providers: ["browser-local"],
+    capabilityGate:
+      "WebGPU support + explicit browser-local mode + user-selected model + current browser-local route/provider/policy/destination consent",
+    verifier: "contract",
+    testRef: BROWSER_WEBGPU_CONTRACT_TEST,
+    testName: "loads a model lazily and normalizes a completion",
+    consentTestRef: BROWSER_WEBGPU_CONSENT_CONTRACT_TEST,
+    consentTestName:
+      "describes WebGPU inference as browser-local instead of Ollama network processing",
+    note: "The model artifacts are downloaded into browser site storage, while prompts and selected manuscript context are processed only by WebLLM in the current browser. The route has no application-owned credential, HTTP inference endpoint, or managed provider; its separate consent identity prevents external BYOK consent from being reused.",
   },
 ];

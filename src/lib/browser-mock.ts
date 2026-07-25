@@ -8,6 +8,7 @@ import {
   resolveActiveOpenaiCompatibleEndpoint,
   type AiProvider,
   type AiSettings,
+  type BrowserAiMode,
   type ToolProtocolMode,
 } from "@/features/chat/types";
 import { isAinoveristV1Model } from "@/features/chat/aiNovelist";
@@ -554,6 +555,7 @@ export interface BrowserAiAuthorizationRequest {
   ollamaEndpoint?: string | null;
   baseUrl?: string | null;
   apiVariant?: string | null;
+  browserAiMode?: BrowserAiMode;
   hasApiKey: boolean;
 }
 
@@ -639,6 +641,7 @@ export async function createBrowserMock(
     options.authorizeAiRequest ??
     (async (request: BrowserAiAuthorizationRequest): Promise<void> => {
       if (
+        request.browserAiMode !== "webgpu" &&
         browserProviderRequiresApiKey(request.provider) &&
         !request.hasApiKey
       ) {
@@ -677,6 +680,7 @@ export async function createBrowserMock(
     provider: "ollama",
     model: "",
     ollamaEndpoint: "http://localhost:11434",
+    browserAiMode: "http",
     thinkingEnabled: true,
   });
 
@@ -686,8 +690,15 @@ export async function createBrowserMock(
         ? (value as Record<string, unknown>)
         : {};
     const provider = String(parsed.provider ?? "").trim() as AiProvider;
+    const browserAiMode: BrowserAiMode =
+      parsed.browserAiMode === "webgpu" ? "webgpu" : "http";
     if (BROWSER_AI_PROVIDERS.has(provider)) {
-      return { ...defaultBrowserAiSettings(), ...parsed, provider };
+      return {
+        ...defaultBrowserAiSettings(),
+        ...parsed,
+        provider,
+        browserAiMode,
+      };
     }
     // Native-only selections must never survive as an apparently connected
     // Web Editor setting.
@@ -696,6 +707,7 @@ export async function createBrowserMock(
       ...parsed,
       provider: "ollama",
       model: "",
+      browserAiMode,
       modelApiVariant: null,
     };
   }
@@ -748,6 +760,7 @@ export async function createBrowserMock(
 
   function hasAiProviderAccess(args: Record<string, unknown>): boolean {
     const provider = requireBrowserAiProvider(args.provider);
+    if (handleGetAiSettings().browserAiMode === "webgpu") return true;
     return (
       !browserProviderRequiresApiKey(provider) || handleGetApiKey(args) !== null
     );
@@ -845,6 +858,9 @@ export async function createBrowserMock(
       ollamaEndpoint: optionalString(settings.ollamaEndpoint),
       baseUrl: baseUrl || null,
       apiVariant,
+      browserAiMode: settings.browserAiMode === "webgpu" ? "webgpu" : "http",
+      toolProtocolMode:
+        (settings.toolProtocolMode as ToolProtocolMode | undefined) ?? "auto",
     };
   }
 
@@ -860,6 +876,7 @@ export async function createBrowserMock(
       ollamaEndpoint: request.ollamaEndpoint,
       baseUrl: request.baseUrl,
       apiVariant: request.apiVariant,
+      browserAiMode: request.browserAiMode,
       hasApiKey: Boolean(request.apiKey),
     });
   }
@@ -888,6 +905,8 @@ export async function createBrowserMock(
       compatibleEndpoint?.baseUrl?.trim().replace(/\/+$/, "") ?? null;
     const apiKey =
       handleGetApiKey({ provider, endpointId: resolvedEndpointId }) ?? "";
+    const browserAiMode: BrowserAiMode =
+      settings.browserAiMode === "webgpu" ? "webgpu" : "http";
 
     await authorizeAiRequest({
       operation: "connection",
@@ -897,14 +916,25 @@ export async function createBrowserMock(
       ollamaEndpoint,
       baseUrl,
       apiVariant: compatibleEndpoint?.apiVariant ?? null,
+      browserAiMode,
       hasApiKey: Boolean(apiKey),
     });
 
-    return fetchModels(provider, apiKey, {
+    const listRequest: BrowserAiRequest = {
+      operation: "chat",
+      provider,
+      model: "",
+      apiKey,
+      messages: [],
       ollamaEndpoint,
       baseUrl,
       apiVariant: compatibleEndpoint?.apiVariant ?? null,
-    });
+      browserAiMode,
+    };
+    if (aiTransport.listModels) {
+      return aiTransport.listModels(listRequest);
+    }
+    return fetchModels(provider, apiKey, listRequest);
   }
 
   async function handleTestAiConnection(
@@ -922,6 +952,16 @@ export async function createBrowserMock(
       "chat",
     );
     await authorizeResolvedRequest(request, "connection");
+    if (request.browserAiMode === "webgpu") {
+      const response = await aiTransport.complete({
+        ...request,
+        maxOutputTokens: 32,
+      });
+      return response.blocks
+        .filter((block) => block.type === "text")
+        .map((block) => block.content)
+        .join("\n");
+    }
     return testConnection(
       request.provider,
       request.model,
@@ -930,6 +970,7 @@ export async function createBrowserMock(
         ollamaEndpoint: request.ollamaEndpoint,
         baseUrl: request.baseUrl,
         apiVariant: request.apiVariant,
+        browserAiMode: request.browserAiMode,
       },
     );
   }
@@ -953,16 +994,13 @@ export async function createBrowserMock(
     if (aiTransport.completeAgent) {
       return aiTransport.completeAgent(request, messages, tools);
     }
-    const settings = handleGetAiSettings();
-    const toolProtocolMode =
-      (settings.toolProtocolMode as ToolProtocolMode | undefined) ?? "auto";
     return sendChatWithTools(
       request.provider,
       request.model,
       request.apiKey ?? "",
       messages,
       tools,
-      toolProtocolMode,
+      request.toolProtocolMode ?? "auto",
       {
         ollamaEndpoint: request.ollamaEndpoint,
         baseUrl: request.baseUrl,
@@ -1590,6 +1628,7 @@ export async function createBrowserMock(
     if (isClosed) return;
     aiTransport.abort?.("chat");
     aiTransport.abort?.("inline");
+    aiTransport.dispose?.();
     apiKeys.clear();
     db.close();
     isClosed = true;

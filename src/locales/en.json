@@ -636,8 +636,22 @@
         "about": "About"
       }
     },
+    "ai": {
+      "modeLabel": "AI execution location",
+      "modeHttp": "HTTP connection",
+      "modeWebGpu": "In-browser AI",
+      "modeHttpDescription": "Connect from the browser to Ollama, an AI server on the same LAN, or an OpenAI-compatible endpoint.",
+      "modeWebGpuDescription": "Run a small model in this browser on a WebGPU-capable device. Agent tool use is not available yet.",
+      "webGpuTitle": "On-device model",
+      "webGpuDescription": "The model is downloaded into this browser the first time you select it, and inference runs on this device's GPU.",
+      "webGpuAvailable": "This browser supports WebGPU.",
+      "webGpuUnavailable": "This browser does not support WebGPU. Use an HTTP connection instead.",
+      "webGpuDownloadNotice": "On mobile, prefer a small model around 0.5B–1.5B. The model cache is retained as browser site data.",
+      "refreshLocalModels": "Load on-device models",
+      "connectLocal": "Connect to local AI"
+    },
     "ollama": {
-      "browserSetup": "Allow the Web Editor origin in Ollama, then restart Ollama. Use only the origin shown below rather than a wildcard.",
+      "browserSetup": "Allow the Web Editor origin in Ollama, then restart Ollama. Use only the origin shown below rather than a wildcard. A PC's localhost means that PC; a phone's localhost means the phone itself.",
       "localNetworkPermission": "For a local Ollama endpoint, allow local network access if your browser asks for permission.",
       "setupLink": "Ollama origin setup",
       "browserPermissionLink": "Browser local-network permission"
@@ -6044,8 +6058,8 @@
     "reorder": "Reorder"
   },
   "aiDataConsent": {
-    "title": "Review before sending data to AI",
-    "sentData": "Data sent",
+    "title": "Review before AI processing",
+    "sentData": "Data processed or sent",
     "destination": "Processor and location",
     "storage": "Storage and retention",
     "sourceRetention": "Source {{days}} days",
@@ -6059,7 +6073,7 @@
     "providerStoragePolicy": "AI provider storage policy",
     "providerRetentionPolicy": "AI provider retention policy",
     "providerTrainingPolicy": "AI provider training-use policy",
-    "confirm": "I reviewed the data transfer, storage, and training-use policies",
+    "confirm": "I reviewed the processing, transfer, storage, and training-use policies",
     "decline": "Not now",
     "accept": "Accept and use AI",
     "policyVersion": "Policy version",
@@ -6070,6 +6084,15 @@
       "sentContext": "Manuscript text, scenes, Codex entries, project settings, and other context selected for the request",
       "sentCredential": "Your own API key required by the provider (sent in an authentication header and held only in this page's runtime memory)",
       "applicationStorage": "This browser's local workspace (IndexedDB)",
+      "local": {
+        "usageSummary": "Your instructions and selected manuscript context are processed in the current browser. Manuscript data is not sent to the model distributor, a third-party AI provider, or a Grimodex server.",
+        "processor": "This browser's WebGPU runtime",
+        "purpose": "Run the selected model on this device's GPU",
+        "location": "This browser's WebGPU runtime (model files are downloaded from the model distributor when selected)",
+        "storage": "Model caches are stored in this browser's storage. Prompts and responses are stored in Grimodex's local workspace.",
+        "retention": "Model-cache retention depends on this browser's site-data settings.",
+        "training": "Grimodex does not send in-browser inference results for model training."
+      },
       "provider": {
         "openai": {
           "purpose": "Generate the AI assistance you requested",

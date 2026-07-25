@@ -68,7 +68,7 @@ describe("AiDataConsentGate", () => {
     });
 
     expect(
-      screen.getByRole("dialog", { name: "AIへ送信する前に確認" }),
+      screen.getByRole("dialog", { name: "AIで処理する前に確認" }),
     ).toBeTruthy();
     act(() => declineActiveAiDataConsent());
     await expect(pending).rejects.toThrow("ai-data-consent-required");

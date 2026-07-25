@@ -55,6 +55,22 @@ describe("BYOK-local AI data consent", () => {
     ).toBe(false);
   });
 
+  it("keeps browser-local consent distinct from external BYOK consent", () => {
+    const browserLocalIdentity = {
+      policyVersion: "2026-07-25.2",
+      route: "browser-local" as const,
+      provider: "browser-local",
+      destination: "browser://local",
+    };
+    const record = createAiDataConsentRecord(
+      browserLocalIdentity,
+      "2026-07-25T01:02:03.000Z",
+    );
+
+    expect(isAiDataConsentCurrent(record, browserLocalIdentity)).toBe(true);
+    expect(isAiDataConsentCurrent(record, byokDisclosureIdentity)).toBe(false);
+  });
+
   it.each([
     "policyVersion",
     "route",

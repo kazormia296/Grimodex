@@ -110,6 +110,10 @@ rules:
     paths:
       - src/lib/browser-ai.ts
       - src/lib/browser-ai.test.ts
+      - src/lib/browser-ai-router.ts
+      - src/lib/browser-ai-router.test.ts
+      - src/lib/browser-webllm.ts
+      - src/lib/browser-webllm.test.ts
       - src/lib/browser-mock.ts
       - src/lib/browser-mock.ai-runtime.test.ts
       - src/lib/browserRuntime.ts
@@ -130,6 +134,7 @@ rules:
       - src/features/settings/categories/AiCategory.test.tsx
       - src/features/settings/categories/OpenaiCompatibleEndpointsManager.tsx
       - src/features/settings/categories/OpenaiCompatibleEndpointsManager.test.tsx
+      - src/workers/webllm.worker.ts
       - docs/AI経路検証.md
       - docs/Grimodex_ScanHostedEditor影響マトリクス.md
       - docs/Grimodex_Settingsパネル設計書.md

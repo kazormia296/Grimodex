@@ -42,7 +42,7 @@ export function AiDataConsentDialog({
           <ShieldCheck className="mt-0.5 h-6 w-6 shrink-0 text-primary" />
           <div>
             <h2 id="ai-data-consent-title" className="text-lg font-semibold">
-              {t("aiDataConsent.title", "AIへ送信する前に確認")}
+              {t("aiDataConsent.title", "AIで処理する前に確認")}
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {disclosure.usagePolicy.summary}
@@ -62,7 +62,7 @@ export function AiDataConsentDialog({
           <span>
             {t(
               "aiDataConsent.confirm",
-              "上記の送信・保存・学習利用方針を確認しました",
+              "上記の処理・送信・保存・学習利用方針を確認しました",
             )}
           </span>
         </label>

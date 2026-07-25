@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  BrowserAiConnectionError,
+  browserAiFetch,
+  classifyBrowserAiAddressSpace,
   completeBrowserAiRequest,
   createBrowserAiTransport,
   fetchModels,
+  isBrowserLocalEndpoint,
   resolveBrowserAiEndpoint,
   sendChat,
   sendChatWithTools,
@@ -23,6 +27,73 @@ function jsonResponse(data: unknown, status = 200): Response {
 
 beforeEach(() => {
   mockFetch.mockReset();
+});
+
+describe("browser local-network request policy", () => {
+  it.each([
+    ["http://localhost:11434", "loopback"],
+    ["http://127.0.0.1:1234/v1", "loopback"],
+    ["http://[::1]:11434", "loopback"],
+    ["http://192.168.1.50:1234/v1", "local"],
+    ["http://172.20.0.4:8080", "local"],
+    ["http://[fd12:3456::1]:8080", "local"],
+    ["http://[fe90::1]:8080", "local"],
+    ["http://printer.local:8080", "local"],
+    ["https://fd.example.com/v1", undefined],
+    ["https://api.example.com/v1", undefined],
+  ] as const)("classifies %s as %s", (url, expected) => {
+    expect(classifyBrowserAiAddressSpace(url)).toBe(expected);
+  });
+
+  it("identifies configured local endpoints without treating public HTTPS as local", () => {
+    expect(isBrowserLocalEndpoint("http://127.0.0.1:1234/v1")).toBe(true);
+    expect(isBrowserLocalEndpoint("http://192.168.1.20:11434")).toBe(true);
+    expect(isBrowserLocalEndpoint("https://gateway.example/v1")).toBe(false);
+  });
+
+  it("passes the browser targetAddressSpace hint to local requests", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    await browserAiFetch("http://192.168.1.20:1234/v1/models", {
+      headers: { accept: "application/json" },
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://192.168.1.20:1234/v1/models",
+      expect.objectContaining({ targetAddressSpace: "local" }),
+    );
+  });
+
+  it("lets an HTTPS page use the browser LNA permission flow for an HTTP LAN endpoint", async () => {
+    vi.stubGlobal("window", {
+      location: {
+        href: "https://try.grimodex.app/editor",
+        protocol: "https:",
+      },
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    try {
+      await browserAiFetch("http://192.168.1.20:1234/v1/models");
+    } finally {
+      vi.stubGlobal("window", undefined);
+    }
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://192.168.1.20:1234/v1/models",
+      expect.objectContaining({ targetAddressSpace: "local" }),
+    );
+  });
+
+  it("normalizes a local fetch rejection into a permission error", async () => {
+    mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    await expect(
+      browserAiFetch("http://192.168.1.20:1234/v1/models"),
+    ).rejects.toMatchObject<Partial<BrowserAiConnectionError>>({
+      code: "local-network-permission",
+    });
+  });
 });
 
 describe("sendChat", () => {
@@ -359,10 +430,26 @@ describe("fetchModels", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ models: [] }));
 
     await fetchModels("ollama", "", {
-      ollamaEndpoint: "http://192.0.2.10:11434",
+      ollamaEndpoint: "http://192.168.2.10:11434",
     });
 
-    expect(mockFetch.mock.calls[0][0]).toBe("http://192.0.2.10:11434/api/tags");
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      "http://192.168.2.10:11434/api/tags",
+    );
+    expect(mockFetch.mock.calls[0][1].targetAddressSpace).toBe("local");
+  });
+
+  it("reports a model-list endpoint that is not implemented", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "not found" }, 404));
+
+    await expect(
+      fetchModels("ollama", "", {
+        ollamaEndpoint: "http://192.0.2.10:11434",
+      }),
+    ).rejects.toMatchObject<Partial<BrowserAiConnectionError>>({
+      code: "models-unsupported",
+      status: 404,
+    });
   });
 
   it("fetches OpenRouter model metadata", async () => {

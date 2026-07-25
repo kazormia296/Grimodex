@@ -4,11 +4,12 @@ import {
   browserProviderRequiresApiKey,
   normalizeOllamaEndpoint,
 } from "@/lib/browser-ai";
+import type { BrowserAiMode } from "@/features/chat/types";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import type { AiDataDisclosureView } from "./AiDataConsentDialog";
 import { requestAiDataConsent } from "./aiDataConsentBroker";
 
-export const BROWSER_AI_DATA_POLICY_VERSION = "2026-07-24.1";
+export const BROWSER_AI_DATA_POLICY_VERSION = "2026-07-25.2";
 
 export type BrowserAiDisclosureLocale = "ja" | "en";
 type BrowserAiDisclosureProvider = (typeof BROWSER_DIRECT_AI_PROVIDERS)[number];
@@ -18,6 +19,7 @@ export interface BrowserAiDisclosureOptions {
   ollamaEndpoint?: string | null;
   baseUrl?: string | null;
   hasApiKey?: boolean;
+  browserAiMode?: BrowserAiMode;
 }
 
 type ProviderFacts = Pick<
@@ -84,6 +86,33 @@ function providerFacts(
   options: BrowserAiDisclosureOptions,
   t: TFunction,
 ): ProviderFacts {
+  if (options.browserAiMode === "webgpu") {
+    const privacyUrl = grimodexPrivacyUrl(resolveLocale(options.locale));
+    return {
+      destination: "browser://local",
+      processingDestinations: [
+        {
+          processor: t("aiDataConsent.disclosure.local.processor"),
+          purpose: t("aiDataConsent.disclosure.local.purpose"),
+          location: t("aiDataConsent.disclosure.local.location"),
+          privacyPolicyUrl: privacyUrl,
+        },
+      ],
+      providerStorage: {
+        summary: t("aiDataConsent.disclosure.local.storage"),
+        policyUrl: privacyUrl,
+      },
+      providerRetention: {
+        summary: t("aiDataConsent.disclosure.local.retention"),
+        policyUrl: privacyUrl,
+      },
+      trainingUse: {
+        status: "not-used",
+        summary: t("aiDataConsent.disclosure.local.training"),
+        policyUrl: privacyUrl,
+      },
+    };
+  }
   if (provider === "openai") {
     const retentionPolicy =
       "https://platform.openai.com/docs/models/default-usage-policies-by-endpoint";
@@ -283,16 +312,26 @@ export function createByokAiDataDisclosure(
   const facts = providerFacts(provider, options, t);
   const privacyUrl = grimodexPrivacyUrl(locale);
   const sendsCredential =
-    options.hasApiKey ?? browserProviderRequiresApiKey(provider);
+    options.browserAiMode === "webgpu"
+      ? false
+      : (options.hasApiKey ?? browserProviderRequiresApiKey(provider));
+  const isBrowserLocal = options.browserAiMode === "webgpu";
+  const disclosureProvider = isBrowserLocal ? "browser-local" : provider;
+  const consentRoute = isBrowserLocal ? "browser-local" : "byok";
+  const consentRouteId = consentRoute.replace(/-/gu, "_");
   return {
     schemaVersion: "grimodex/ai-data-disclosure/1",
     policyVersion: BROWSER_AI_DATA_POLICY_VERSION,
-    route: "byok",
-    provider,
+    route: consentRoute,
+    provider: disclosureProvider,
     destination: facts.destination,
-    consentId: `consent_byok_${provider}_${destinationFingerprint(facts.destination)}_${BROWSER_AI_DATA_POLICY_VERSION.replace(/[^0-9a-z]/gi, "_")}_v2`,
+    consentId: `consent_${consentRouteId}_${disclosureProvider}_${destinationFingerprint(facts.destination)}_${BROWSER_AI_DATA_POLICY_VERSION.replace(/[^0-9a-z]/gi, "_")}_v2`,
     usagePolicy: {
-      summary: t("aiDataConsent.disclosure.usageSummary"),
+      summary: t(
+        isBrowserLocal
+          ? "aiDataConsent.disclosure.local.usageSummary"
+          : "aiDataConsent.disclosure.usageSummary",
+      ),
       policyUrl: privacyUrl,
     },
     sentData: [
@@ -339,12 +378,14 @@ export function authorizeBrowserAiRequest(input: {
   ollamaEndpoint?: string | null;
   baseUrl?: string | null;
   hasApiKey?: boolean;
+  browserAiMode?: BrowserAiMode;
 }): Promise<void> {
   return requestAiDataConsent(
     createByokAiDataDisclosure(input.provider ?? "unknown", {
       ollamaEndpoint: input.ollamaEndpoint,
       baseUrl: input.baseUrl,
       hasApiKey: input.hasApiKey,
+      browserAiMode: input.browserAiMode,
     }),
   );
 }

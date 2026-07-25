@@ -636,8 +636,22 @@
         "about": "情報"
       }
     },
+    "ai": {
+      "modeLabel": "AIの実行場所",
+      "modeHttp": "HTTP接続",
+      "modeWebGpu": "ブラウザー内AI",
+      "modeHttpDescription": "Ollama、同一LANのAIサーバー、またはAPI互換エンドポイントへブラウザーから接続します。",
+      "modeWebGpuDescription": "WebGPU対応端末で小型モデルをブラウザー内実行します。AgentのTool Useはまだ利用できません。",
+      "webGpuTitle": "端末内モデル",
+      "webGpuDescription": "モデルは初回選択時にブラウザーへダウンロードされ、推論はこの端末のGPUで行われます。",
+      "webGpuAvailable": "このブラウザーはWebGPUに対応しています。",
+      "webGpuUnavailable": "このブラウザーではWebGPUを利用できません。HTTP接続を使用してください。",
+      "webGpuDownloadNotice": "モバイルでは0.5B〜1.5B程度の小型モデルを推奨します。モデルキャッシュはブラウザーのサイトデータとして保持されます。",
+      "refreshLocalModels": "端末内モデルを読み込む",
+      "connectLocal": "ローカルAIへ接続"
+    },
     "ollama": {
-      "browserSetup": "Web EditorのオリジンをOllama側で許可し、Ollamaを再起動してください。ワイルドカードではなく下記のオリジンだけを指定してください。",
+      "browserSetup": "Web EditorのオリジンをOllama側で許可し、Ollamaを再起動してください。ワイルドカードではなく下記のオリジンだけを指定してください。PCのlocalhostはそのPCを指し、スマートフォンのlocalhostはスマートフォン自身を指します。",
       "localNetworkPermission": "ローカルのOllamaへ接続する場合、ブラウザにローカルネットワークへのアクセス確認が表示されたら許可してください。",
       "setupLink": "Ollamaのオリジン設定",
       "browserPermissionLink": "ブラウザのローカルネットワーク許可"
@@ -6029,8 +6043,8 @@
     "reorder": "並べ替え"
   },
   "aiDataConsent": {
-    "title": "AIへ送信する前に確認",
-    "sentData": "送信されるデータ",
+    "title": "AIで処理する前に確認",
+    "sentData": "処理または送信されるデータ",
     "destination": "処理先と地域",
     "storage": "保存先と保持期間",
     "sourceRetention": "原稿 {{days}}日",
@@ -6044,7 +6058,7 @@
     "providerStoragePolicy": "AI提供者の保存ポリシー",
     "providerRetentionPolicy": "AI提供者の保持期間ポリシー",
     "providerTrainingPolicy": "AI提供者の学習利用ポリシー",
-    "confirm": "上記の送信・保存・学習利用方針を確認しました",
+    "confirm": "上記の処理・送信・保存・学習利用方針を確認しました",
     "decline": "今は使わない",
     "accept": "同意してAIを使う",
     "policyVersion": "ポリシーバージョン",
@@ -6055,6 +6069,15 @@
       "sentContext": "リクエストのために選択された本文、シーン、Codex、プロジェクト設定などの文脈",
       "sentCredential": "提供者が必要とするユーザー自身のAPIキー（認証ヘッダーで送信し、このページの実行メモリにだけ保持）",
       "applicationStorage": "このブラウザのローカルワークスペース（IndexedDB）",
+      "local": {
+        "usageSummary": "入力した指示と選択された本文や文脈を現在のブラウザ内で処理します。原稿データをモデル配布元、第三者AIまたはGrimodexのサーバーへ送信しません。",
+        "processor": "このブラウザのWebGPUランタイム",
+        "purpose": "この端末のGPU上で選択したモデルを実行するため",
+        "location": "このブラウザのWebGPU実行環境（モデルファイルは選択時にモデル配布元から取得）",
+        "storage": "モデルキャッシュはこのブラウザのストレージに保存されます。プロンプトと応答はGrimodexのローカルワークスペースに保存されます。",
+        "retention": "モデルキャッシュの保持期間はブラウザのサイトデータ設定に依存します。",
+        "training": "Grimodexはこのブラウザ内の推論結果をモデル学習へ送信しません。"
+      },
       "provider": {
         "openai": {
           "purpose": "選択したAI支援を生成するため",
