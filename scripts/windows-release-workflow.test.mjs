@@ -47,6 +47,9 @@ describe("Windows Electron release", () => {
       .map((step) => step.name)
       .filter(Boolean)
       .join("\n");
+    const migrationStep = workflow.jobs.build.steps.find(
+      (step) => step.name === "Verify Tauri v0.10.4 to Electron migration",
+    );
     const builder = load(
       await readFile(path.join(root, "electron-builder.yml"), "utf8"),
     );
@@ -84,23 +87,25 @@ describe("Windows Electron release", () => {
     assert.doesNotMatch(migration, /Exec(?:Wait)?[^\n]*\$R4/);
 
     assert.match(commands, /electron-builder --publish never/);
-    assert.match(stepNames, /Tauri v1 to Electron migration/);
+    assert.match(stepNames, /Tauri v0\.10\.4 to Electron migration/);
     assert.match(commands, /Get-AuthenticodeSignature/);
     assert.match(commands, /NotSigned/);
-    assert.match(migrationE2e, /Grimodex_1\.0\.0_x64-setup\.exe/);
+    assert.match(migrationE2e, /\$legacyTag = "v0\.10\.4"/);
+    assert.match(migrationE2e, /Grimodex_0\.10\.4_x64-setup\.exe/);
     assert.match(migrationE2e, /com\.miyakey\.grimodex/);
     assert.match(
       migrationE2e,
-      /348A45B9C1FF056C19734CF9A85175A96C0FEB5B0B4BA25AF2A29EB65A24EB9E/,
+      /A44E40BB7C393CC6C656630C15F8729D85E15EE7FE2ACF3B218A7685367A3302/,
     );
-    assert.doesNotMatch(migrationE2e, /^\s*gh release download/m);
+    assert.equal(migrationStep?.env, undefined);
     assert.match(
       migrationE2e,
-      /select\(\.tag_name == "v1\.0\.0" and \.draft == true\)/,
+      /https:\/\/github\.com\/\$env:GITHUB_REPOSITORY\/releases\/download\/\$legacyTag\/\$legacyAsset/,
     );
-    assert.match(migrationE2e, /releases\/assets\/\$\(\$legacyAssetIds\[0\]\)/);
-    assert.match(migrationE2e, /Accept = "application\/octet-stream"/);
-    assert.match(migrationE2e, /-OutFile \$legacyInstaller/);
+    assert.match(migrationE2e, /Invoke-WebRequest -Uri \$legacyUrl/);
+    assert.doesNotMatch(migrationE2e, /GH_TOKEN|Authorization/);
+    assert.doesNotMatch(migrationE2e, /draft == true/);
+    assert.doesNotMatch(migrationE2e, /api\.github\.com|releases\/assets/);
     assert.match(migrationE2e, /electron-migration-roaming\.sentinel/);
     assert.match(migrationE2e, /electron-migration-local\.sentinel/);
     assert.match(migrationE2e, /Assert-OneElectronRegistration/);
