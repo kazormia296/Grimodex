@@ -122,6 +122,31 @@ describe("release workflow boundary", () => {
     assert.doesNotMatch(commands, /CSC_NAME=\$CERT_ID/);
   });
 
+  it("builds Windows release artifacts explicitly unsigned", async () => {
+    const workflow = await readWorkflow("release.yml");
+    const buildSteps = workflow.jobs.build.steps;
+    const configureUnsigned = buildSteps.find(
+      (step) => step.name === "Configure unsigned Windows packages",
+    );
+    const verifyUnsigned = buildSteps.find(
+      (step) => step.name === "Verify unsigned Windows artifacts",
+    );
+    const buildDefinition = JSON.stringify(buildSteps);
+
+    assert.equal(configureUnsigned?.if, "matrix.id == 'windows'");
+    assert.match(
+      configureUnsigned?.run ?? "",
+      /CSC_IDENTITY_AUTO_DISCOVERY=false/,
+    );
+    assert.equal(verifyUnsigned?.if, "matrix.id == 'windows'");
+    assert.match(verifyUnsigned?.run ?? "", /Get-AuthenticodeSignature/);
+    assert.match(verifyUnsigned?.run ?? "", /NotSigned/);
+    assert.doesNotMatch(
+      buildDefinition,
+      /WINDOWS_CERTIFICATE|CSC_LINK|CSC_KEY_PASSWORD/,
+    );
+  });
+
   it("pins every third-party action to an immutable commit", async () => {
     for (const name of ["release.yml", "ci.yml", "aur-publish.yml"]) {
       const workflow = await readWorkflow(name);
