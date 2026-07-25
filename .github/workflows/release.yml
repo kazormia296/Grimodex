@@ -489,10 +489,6 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY is required for stable bridge latest.json." >&2
             exit 1
           fi
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
-            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required for stable bridge latest.json." >&2
-            exit 1
-          fi
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends minisign
           PUBKEY_FILE="packaging/tauri-v1/updater-public-key.pub"
