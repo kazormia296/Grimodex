@@ -65,10 +65,9 @@ PKGBUILD / .SRCINFO を push する。動かすには以下の一度きりの準
 
 ## 注意事項
 
-- 既存 Tauri v1 の Arch パッケージは `.deb` 由来で、アプリ内 updater が
-  `linux-x86_64-deb` を選び `dpkg` を起動するため Arch 上では移行できない。
-  **Tauri v1 の Arch ユーザーはアプリ内更新を使わず、pacman / AUR から
-  `grimodex-bin` v2 へ更新する。** 既存 v1.0.0 asset は凍結し、再ビルドしない。
+- 最終公開 Tauri v0.10.4 には updater 設定がなく、Arch 上でもアプリ内更新はできない。
+  **v0.10.4 の Arch ユーザーは pacman / AUR から `grimodex-bin` v2 へ更新する。**
+  v1.0.0 Draft の deb channel は凍結し、Draft asset も再ビルドしない。
 - pacman / AUR 版の更新は、新リリースごとの `aur-publish.yml`（AUR 側）と
   GitHub Releasesアセット再取得で配る。package markerでElectronアプリ内updaterを
   明示的に無効化し、`.deb` updaterをArch上で誤起動させない。

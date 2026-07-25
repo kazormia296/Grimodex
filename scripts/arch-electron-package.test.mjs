@@ -39,8 +39,8 @@ describe("Arch packaging transition", () => {
       path.join(root, "packaging/arch/README.md"),
       "utf8",
     );
-    assert.match(readme, /Tauri v1/);
-    assert.match(readme, /dpkg/);
+    assert.match(readme, /最終公開 Tauri v0\.10\.4/);
+    assert.match(readme, /updater 設定がなく/);
     assert.match(readme, /pacman \/ AUR/);
   });
 

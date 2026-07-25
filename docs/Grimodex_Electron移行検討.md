@@ -79,15 +79,15 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
 - updater の検証は「配信バイト列への minisign 署名」**のみ**。アプリ同一性・フォーマット・OS署名は一切見ない。`tauri signer sign` は任意ファイルに署名できる。
 - したがって**「最後の Tauri リリース」として Electron 製アーティファクトを配信するブリッジが全チャネルで成立する**:
   - **Linux AppImage**: APPIMAGE パスへ in-place 書き込み+実行権限継承。最もクリーン。
-  - **deb/rpm**: v0.10.4 の latest.json に linux-x86_64-deb/-rpm キーが実在し、pkexec dpkg -i / rpm -U で更新される。Electron 側 deb の Package 名を `grimodex` に一致させれば正規アップグレード。
-  - **Windows NSIS**: PE exe と判定されれば ShellExecuteW で実行。electron-builder の custom NSIS hook で `/P` を silent、`/R` を Electron 再起動へ変換し、実配布 v1.0.0 の identity（publisher=`miyakey`）を検証してから旧インストールを `/UPDATE` で削除する。検証不能時は side-by-side に進まず fail-closed とし、`%APPDATA%` / `%LOCALAPPDATA%` の `com.miyakey.grimodex` は削除しない。
+  - **deb/rpm**: updater 有効な Tauri client なら linux-x86_64-deb/-rpm から pkexec dpkg -i / rpm -U で更新でき、Electron 側 deb の Package 名を `grimodex` に一致させれば正規アップグレードになる。ただし最終公開 v0.10.4 には updater 設定がないため、実ユーザーは installer / package manager から移行する。
+  - **Windows NSIS**: PE exe と判定されれば ShellExecuteW で実行。electron-builder の custom NSIS hook で `/P` を silent、`/R` を Electron 再起動へ変換し、最終公開 v0.10.4 の identity（publisher=`miyakey`）を検証してから旧インストールを `/UPDATE` で削除する。検証不能時は side-by-side に進まず fail-closed とし、`%APPDATA%` / `%LOCALAPPDATA%` の `com.miyakey.grimodex` は削除しない。
   - **macOS**: tar.gz の .app を署名・quarantine 確認なしで丸ごと置換。
 - **移行後**: electron-updater（GitHub Releases provider、公開リポジトリはトークン不要）が NSIS / AppImage / deb / rpm / macOS zip を更新できる。macOS は **Apple Developer ID 署名 + notarization** を行う。Windows は意図的に Authenticode 未署名で配布し、electron-builder の証明書自動検出を無効化したうえで app exe と NSIS installer が `NotSigned` であることを検証する。Linux もパッケージ署名を別途行わない。旧 Tauri updater 向けの minisign 検証は OS 署名とは独立して全プラットフォームで維持する。
 
 ### 運用上の必須事項
 
-1. **旧クライアント向け latest.json の永続同梱**: endpoint は `releases/latest/download/latest.json` 固定なので、移行後の**全リリース**に「ブリッジ用最終 Tauri リリースのアセットを指す tauri 形式 latest.json」を複製同梱し続ける（404 はサイレント失敗 = 休眠ユーザーが永遠に取り残される）。
-2. **バージョン運用**: v1.0.0 は Draft + タグ push 済みで番号消費済み。Electron 初版は配布済み全版より大きい semver（**v2.0.0 推奨** — ランタイム交換はメジャー相当）。プレリリースタグ（ハイフン付き）は `releases/latest` に載らないため、Electron ベータは旧 Tauri ユーザーの updater から見えない — ベータ運用に好都合。
+1. **bridge latest.json の永続同梱**: v1.0.0 Draft で固定した updater endpoint は `releases/latest/download/latest.json` なので、移行後の**全リリース**に Tauri 形式 `latest.json` を複製同梱し続ける。ただし実ユーザー向け最終公開版 v0.10.4 には updater 設定がなく、この経路で自動更新はできない。v0.10.4 ユーザーは Electron installer または package manager から移行する。
+2. **バージョン運用**: 最終公開 Tauri 版は v0.10.4。v1.0.0 は Draft + タグ push 済みで番号消費済みだが公開されていない。Electron 初版は両方より大きい semver（**v2.0.0 推奨** — ランタイム交換はメジャー相当）。プレリリースタグ（ハイフン付き）は `releases/latest` に載らない。
 3. **データ移行（実装済み）**: packaged Electron は `ready` / single-instance lock より前に
    `userData` を Tauri の `data_dir/com.miyakey.grimodex` と同じ絶対 path へ固定する。dev は
    `GrimodexElectronDev` に隔離し、検証用 `GRIMODEX_USER_DATA_DIR` も絶対 path だけを許可する。
@@ -99,16 +99,16 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
    `licensing,legacy-keyring-migration`、MCP を `licensing` 付きで build し、
    `pnpm napi:verify:release` が両 capability と licensing DTO を package 前に検証する。通常の
    dev N-API は両 release-only feature を有効化せず、OS keyring に触れない。
-6. **Windows shell 移行（実装済み）**: release workflow は SHA-256 固定の実配布 v1.0.0
+6. **Windows shell 移行（実装済み）**: release workflow は SHA-256 固定の最終公開 v0.10.4
    installer を Windows runner へ導入し、Tauri updater と同じ `/P /R /UPDATE /ARGS` で Electron
    NSIS を起動する。旧 exe/registry の消滅、新 uninstall 登録が1件だけであること、shortcut、
    Authenticode、再起動、再実行の冪等性、両 user-data sentinel の hash 不変を E2E で検証する。
    旧 uninstaller を欠損させた negative case では新規 install が作られないことも確認する。
 7. **package-manager 管理（実装済み）**: Arch/AUR の deb 再パッケージは
    `resources/grimodex-package-channel=arch` を同梱する。main はこの marker を fail-closed に読み、
-   deb updater を使わず pacman / AUR helper での更新を要求する。ただし既存 Tauri v1 Arch 版は
-   build-time に deb channel が埋め込まれており、アプリ内 updater が `dpkg` を呼ぶため bridge を
-   利用できない。該当ユーザーは pacman / AUR から Electron v2 へ更新する。v2 prerelease は
+   deb updater を使わず pacman / AUR helper での更新を要求する。最終公開 v0.10.4 は updater
+   設定を持たないため、該当ユーザーは pacman / AUR から Electron v2 へ更新する。v1.0.0 Draft の
+   deb channel も Arch 上では `dpkg` を呼ぶため利用しない。v2 prerelease は
    Arch成果物を作らず AppImage / deb / rpm のみとし、pacman/AUR は stable release に限定する。
 
 ## 5. 検証で付いた留保（新規リスク）
@@ -165,7 +165,7 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
   - typed なコマンド/イベント契約を1ファイルに集約（145コマンド+19イベント）
 - **Phase 2 — Electron シェル**: main/preload、ウィンドウクローム（app-region CSS）、db_execute ブリッジ、イベントチャネル、close veto / パネル別窓（BrowserWindow）再設計
 - **Phase 3 — ネイティブ再結線**: napi-rs パッケージング CI（3OS）、chokidar、safeStorage 移行、queryLocalFonts（日本語 family 名優先ロジックの実機確認）、vivliostyle 子プロセス、MCP extraResources
-- **Phase 4 — リリース/updater（実装完了、リリース実行前）**: electron-builder 全ターゲット、electron-updater + Apple 署名/notarization、既存 Tauri v1.0.0 asset の凍結、tauri 形式 latest.json の immutable 同梱ジョブ、userData/API キー移行、release-only native feature、Linux GLIBC 2.39 / RPM posttrans gate。v2 tag / Draft release は未作成
+- **Phase 4 — リリース/updater（実装完了、リリース実行前）**: electron-builder 全ターゲット、electron-updater + Apple 署名/notarization、Tauri v1.0.0 Draft asset / bridge key の凍結、最終公開 v0.10.4 の移行fixture、tauri 形式 latest.json の immutable 同梱ジョブ、userData/API キー移行、release-only native feature、Linux GLIBC 2.39 / RPM posttrans gate。v2 tag / Draft release は未作成
 - **Phase 5 — 撤去（実装完了）**: WebKitGTK専用回避を41対象ファイルで `+87/-2,157`（net `-2,070`）削除。`webkit_features.rs`、NVIDIA DMABUF回避、直接`webkit2gtk`/`glib`依存、WebKit browser gateを撤去し、Chromium固有caret・CSS prefixは維持。CI/devcontainer/skill/MANUAL_TEST_CHECKLISTをElectronへ更新し、version正本を`package.json`へ一本化、v2.0.0 release notesを追加。Tauri root shell全撤去は純ロジックテスト80件の移設を伴うため別フェーズ
 
 ### 移行期間中の運用

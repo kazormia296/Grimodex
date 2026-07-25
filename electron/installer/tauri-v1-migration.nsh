@@ -5,7 +5,7 @@
 ; pass. Migration hooks belong only to the final installer; excluding them from
 ; that pass also keeps makensis -WX free of unused-variable warnings.
 !ifndef BUILD_UNINSTALLER
-; The published v1.0.0 installer had no explicit bundle.publisher. Tauri
+; The final published v0.10.4 installer had no explicit bundle.publisher. Tauri
 ; derived `miyakey` from `com.miyakey.grimodex`, so these values intentionally
 ; differ from the publisher now present in tauri.conf.json.
 !define TAURI_V1_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Grimodex"
@@ -36,7 +36,7 @@ Var TauriBridgeRestart
 !macroend
 
 ; This runs after electron-builder chooses CurrentUser mode but before it
-; changes files. Detect only the exact published Tauri identity and invoke its
+; changes files. Detect only the exact final public Tauri identity and invoke its
 ; known uninstaller path. Never execute the registry's raw UninstallString.
 !macro customInit
   StrCpy $TauriV1Migrated 0

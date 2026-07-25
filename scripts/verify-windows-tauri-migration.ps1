@@ -6,8 +6,9 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$legacyAsset = "Grimodex_1.0.0_x64-setup.exe"
-$legacySha256 = "348A45B9C1FF056C19734CF9A85175A96C0FEB5B0B4BA25AF2A29EB65A24EB9E"
+$legacyTag = "v0.10.4"
+$legacyAsset = "Grimodex_0.10.4_x64-setup.exe"
+$legacySha256 = "A44E40BB7C393CC6C656630C15F8729D85E15EE7FE2ACF3B218A7685367A3302"
 $legacyUninstallSubKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\Grimodex"
 $legacyUninstallKey = "HKCU:\$legacyUninstallSubKey"
 $legacyProductSubKey = "Software\miyakey\Grimodex"
@@ -121,53 +122,20 @@ New-Item -ItemType Directory -Path $migrationDirectory | Out-Null
 
 Assert-Condition (
   -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)
-) "GITHUB_REPOSITORY is required to resolve the pinned Tauri v1.0.0 draft."
-Assert-Condition (
-  -not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)
-) "GH_TOKEN is required to download the pinned Tauri v1.0.0 draft asset."
+) "GITHUB_REPOSITORY is required to resolve the pinned public Tauri release."
 
-# `gh release download <tag>` only resolves published releases. The final
-# Tauri v1.0.0 release is intentionally frozen as a draft, so resolve that
-# exact draft and asset through the authenticated Releases API instead.
-$legacyReleaseIds = @(
-  gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
-    --jq '.[] | select(.tag_name == "v1.0.0" and .draft == true) | .id'
-)
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to resolve the pinned Tauri v1.0.0 draft release."
-}
-Assert-Condition (
-  $legacyReleaseIds.Count -eq 1
-) "Expected exactly one frozen Tauri v1.0.0 draft, found $($legacyReleaseIds.Count)."
-
-$legacyReleaseId = $legacyReleaseIds[0]
-$legacyAssetIds = @(
-  gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases/$legacyReleaseId/assets?per_page=100" `
-    --jq '.[] | select(.name == "Grimodex_1.0.0_x64-setup.exe") | .id'
-)
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to resolve the pinned Tauri v1.0.0 installer asset."
-}
-Assert-Condition (
-  $legacyAssetIds.Count -eq 1
-) "Expected exactly one pinned Tauri v1.0.0 installer asset, found $($legacyAssetIds.Count)."
-
+# Exercise the exact final Tauri package that users could actually install.
+# Both the release tag and SHA-256 are pinned so a replaced asset fails closed.
 $legacyInstaller = Join-Path $migrationDirectory $legacyAsset
-Invoke-WebRequest `
-  -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/assets/$($legacyAssetIds[0])" `
-  -Headers @{
-    Accept = "application/octet-stream"
-    Authorization = "Bearer $env:GH_TOKEN"
-    "X-GitHub-Api-Version" = "2022-11-28"
-  } `
-  -OutFile $legacyInstaller
-Assert-Condition (Test-Path -LiteralPath $legacyInstaller) "Pinned Tauri v1.0.0 installer is missing."
+$legacyUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$legacyTag/$legacyAsset"
+Invoke-WebRequest -Uri $legacyUrl -OutFile $legacyInstaller
+Assert-Condition (Test-Path -LiteralPath $legacyInstaller) "Pinned public Tauri v0.10.4 installer is missing."
 Assert-Condition (
   (Get-FileHash -LiteralPath $legacyInstaller -Algorithm SHA256).Hash -eq $legacySha256
-) "Pinned Tauri v1.0.0 installer SHA-256 does not match."
+) "Pinned public Tauri v0.10.4 installer SHA-256 does not match."
 
-# Install the exact frozen v1 package, then place content-bearing sentinels in
-# both Tauri data roots. Neither directory is part of the install payload.
+# Install the exact final public Tauri package, then place content-bearing
+# sentinels in both Tauri data roots. Neither directory is part of the payload.
 Invoke-Installer $legacyInstaller @("/P")
 Stop-GrimodexProcesses
 Assert-Condition (Test-Path -LiteralPath $legacyUninstallKey) "Tauri v1 uninstall registration is missing."
@@ -222,8 +190,8 @@ Assert-OneElectronRegistration
 Assert-Condition (-not (Test-Path -LiteralPath $legacyUninstallKey)) "Idempotent update recreated the Tauri uninstall key."
 Assert-SentinelHashes $roamingSentinel $roamingHash $localSentinel $localHash
 
-# Remove Electron, reinstall v1, then corrupt only the legacy uninstaller. The
-# new installer must fail closed before creating a side-by-side registration.
+# Remove Electron, reinstall the public Tauri fixture, then corrupt only the
+# legacy uninstaller. The new installer must fail closed before side-by-side.
 Assert-Condition (Test-Path -LiteralPath $electronUninstaller) "Electron uninstaller is missing."
 Invoke-Installer $electronUninstaller @("/S", "/currentuser")
 Assert-Condition (-not (Test-Path -LiteralPath $electronExecutable)) "Electron uninstall did not remove its executable."

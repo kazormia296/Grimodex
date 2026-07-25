@@ -264,11 +264,9 @@ jobs:
             }
           }
 
-      - name: Verify Tauri v1 to Electron migration
+      - name: Verify Tauri v0.10.4 to Electron migration
         if: matrix.id == 'windows'
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $Installer = @(Get-ChildItem -Path release/electron -Filter 'Grimodex-*-windows-x64.exe' -File)
           if ($Installer.Count -ne 1) {
@@ -505,7 +503,7 @@ jobs:
             > "$EMBEDDED_PUBKEY_FILE"
           test -s "$PUBKEY_FILE"
           if ! cmp -s "$PUBKEY_FILE" "$EMBEDDED_PUBKEY_FILE"; then
-            echo "::error::Current Tauri updater public key differs from the published v1.0.0 key." >&2
+            echo "::error::Current Tauri updater public key differs from the frozen bridge key." >&2
             exit 1
           fi
           mapfile -t BRIDGE_ASSETS < <(find release-assets -maxdepth 1 -type f \

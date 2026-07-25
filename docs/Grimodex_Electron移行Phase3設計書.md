@@ -484,13 +484,14 @@ Phase 3 の完了記録は上記のとおり固定し、申し送りだった配
   Windows は意図的に未署名で配布する。electron-builder の証明書自動検出を無効化し、
   app exe と NSIS installer の両方が `Status=NotSigned` でなければ失敗させる。
   Windows 用の証明書 secret は要求しない。
-  custom NSIS hook は実配布 Tauri v1 の publisher=`miyakey`、product/uninstall key、旧 exe を
+  custom NSIS hook は最終公開 Tauri v0.10.4 の publisher=`miyakey`、product/uninstall key、旧 exe を
   検証して `/P /R /UPDATE /ARGS` を変換する。通常 CI は Windows 上で最終 makensis pass を compile
-  し、release CI は固定 SHA-256 の v1.0.0 installer を使った移行・冪等・fail-closed E2E まで行う。
+  し、release CI は固定 SHA-256 の公開済み v0.10.4 installer を使った移行・冪等・fail-closed E2E まで行う。
   RPM は新 `%post` 後に旧 payload / `%postun` が launcher と AppArmor を消す順序へ対応し、
   `%posttrans` で `/usr/bin/grimodex`、sandbox mode、AppArmor profile を冪等復元する。実 RPM の
-  `rpm -qp --scripts` も gate する。既存 Tauri v1 の Arch 版だけは build-time に deb channel が
-  固定されておりアプリ内 updater が `dpkg` を呼ぶため、pacman / AUR 経由の更新を必須とする。
+  `rpm -qp --scripts` も gate する。最終公開 Tauri v0.10.4 は updater 設定を持たないため、
+  Arch ユーザーには pacman / AUR 経由の更新を必須とする。v1.0.0 Draft の deb channel も
+  Arch 上では `dpkg` を呼ぶため利用しない。
   SemVer prerelease は Arch `pkgver` と安全な版順を共有できないため Arch/AUR成果物を作らず、
   AppImage / deb / rpm の Draft だけを公開する。stable は `build-arch` 成功を公開の必須条件に戻す。
 
