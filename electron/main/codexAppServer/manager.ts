@@ -512,7 +512,7 @@ function pathWithinWorkspace(
       CODEX_APP_SERVER_REQUEST_DENIED_CODE,
     );
   }
-  return relative || ".";
+  return relative ? relative.split(path.sep).join("/") : ".";
 }
 
 function validateAvailableDecisions(params: Record<string, unknown>): void {

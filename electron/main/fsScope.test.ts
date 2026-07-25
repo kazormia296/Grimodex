@@ -67,7 +67,7 @@ describe("FsScope: dir grant", () => {
     await scope.allowDir(allowedDir);
     await expect(
       scope.assertReadable(path.join(allowedDir, "a.txt"), { asFile: true }),
-    ).resolves.toBe(realpathSync(path.join(allowedDir, "a.txt")));
+    ).resolves.toBe(realpathSync.native(path.join(allowedDir, "a.txt")));
   });
 
   it("許可フォルダ自身は readDir（asFile: false）で通る", async () => {
@@ -75,7 +75,7 @@ describe("FsScope: dir grant", () => {
     await scope.allowDir(allowedDir);
     await expect(
       scope.assertReadable(allowedDir, { asFile: false }),
-    ).resolves.toBe(realpathSync(allowedDir));
+    ).resolves.toBe(realpathSync.native(allowedDir));
   });
 
   it("スコープ外の実在ファイルは FS_SCOPE_DENIED で拒否", async () => {
@@ -122,7 +122,7 @@ describe("FsScope: dir grant", () => {
     await scope.allowDir(allowedDir);
     await expect(
       scope.assertReadable(path.join(allowedDir, "ok-link"), { asFile: true }),
-    ).resolves.toBe(realpathSync(path.join(allowedDir, "a.txt")));
+    ).resolves.toBe(realpathSync.native(path.join(allowedDir, "a.txt")));
   });
 
   it("`..` を含む字面でのスコープ抜けは拒否", async () => {
@@ -142,7 +142,7 @@ describe("FsScope: file grant", () => {
     await scope.allowFile(path.join(outsideDir, "b.txt"));
     await expect(
       scope.assertReadable(path.join(outsideDir, "b.txt"), { asFile: true }),
-    ).resolves.toBe(realpathSync(path.join(outsideDir, "b.txt")));
+    ).resolves.toBe(realpathSync.native(path.join(outsideDir, "b.txt")));
     await expect(
       scope.assertReadable(path.join(outsideDir, "no-such.txt"), {
         asFile: true,
@@ -163,10 +163,10 @@ describe("FsScope: file grant", () => {
     await scope.allowFile(path.join(allowedDir, "ok-link"));
     await expect(
       scope.assertReadable(path.join(allowedDir, "ok-link"), { asFile: true }),
-    ).resolves.toBe(realpathSync(path.join(allowedDir, "a.txt")));
+    ).resolves.toBe(realpathSync.native(path.join(allowedDir, "a.txt")));
     await expect(
       scope.assertReadable(path.join(allowedDir, "a.txt"), { asFile: true }),
-    ).resolves.toBe(realpathSync(path.join(allowedDir, "a.txt")));
+    ).resolves.toBe(realpathSync.native(path.join(allowedDir, "a.txt")));
   });
 
   it.skipIf(process.platform === "win32")(
@@ -191,7 +191,9 @@ describe("FsScope: file grant", () => {
           scope.assertReadable(path.join(aliasRoot, "allowed", "a.txt"), {
             asFile: true,
           }),
-        ).resolves.toBe(realpathSync(path.join(canonicalAllowed, "a.txt")));
+        ).resolves.toBe(
+          realpathSync.native(path.join(canonicalAllowed, "a.txt")),
+        );
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

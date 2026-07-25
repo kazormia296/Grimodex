@@ -177,6 +177,7 @@ describe("release workflow boundary", () => {
       .map((step) => step.run)
       .filter(Boolean)
       .join("\n");
+    assert.match(windowsCommands, /pnpm test:electron --run/);
     assert.match(windowsCommands, /Language\.Parser.*ParseFile/s);
     assert.match(windowsCommands, /electron-builder --win nsis --x64/);
     assert.match(windowsCommands, /electron-contract/);
