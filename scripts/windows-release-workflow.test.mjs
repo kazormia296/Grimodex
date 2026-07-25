@@ -109,6 +109,10 @@ describe("Windows Electron release", () => {
     assert.match(migrationE2e, /electron-migration-roaming\.sentinel/);
     assert.match(migrationE2e, /electron-migration-local\.sentinel/);
     assert.match(migrationE2e, /Assert-OneElectronRegistration/);
+    assert.match(
+      migrationE2e,
+      /@\(Get-GrimodexUninstallEntries\)\.Count -eq 0/,
+    );
     assert.match(migrationE2e, /Wait-ForElectronRestart/);
     assert.match(migrationE2e, /failedMigration\.ExitCode -ne 0/);
     assert.match(migrationE2e, /Get-AuthenticodeSignature/);

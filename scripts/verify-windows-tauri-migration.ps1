@@ -195,7 +195,7 @@ Assert-SentinelHashes $roamingSentinel $roamingHash $localSentinel $localHash
 Assert-Condition (Test-Path -LiteralPath $electronUninstaller) "Electron uninstaller is missing."
 Invoke-Installer $electronUninstaller @("/S", "/currentuser")
 Assert-Condition (-not (Test-Path -LiteralPath $electronExecutable)) "Electron uninstall did not remove its executable."
-Assert-Condition ((Get-GrimodexUninstallEntries).Count -eq 0) "Electron uninstall registration remains."
+Assert-Condition (@(Get-GrimodexUninstallEntries).Count -eq 0) "Electron uninstall registration remains."
 
 Invoke-Installer $legacyInstaller @("/P")
 Stop-GrimodexProcesses
