@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { validateReleaseVersion } from "./validate-release-version.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -18,7 +19,12 @@ describe("Electron v2 cleanup contract", () => {
     const electronBuilder = read("electron-builder.yml");
     const appId = /^appId:\s*(\S+)$/m.exec(electronBuilder)?.[1];
 
-    assert.equal(packageJson.version, "2.0.0");
+    validateReleaseVersion({
+      tag: `v${packageJson.version}`,
+      packageVersion: packageJson.version,
+      expectedMajor: 2,
+      refType: "tag",
+    });
     assert.equal(tauriConfig.version, "1.0.0");
     assert.equal(appId, "com.miyakey.grimodex");
     assert.equal(tauriConfig.identifier, appId);
@@ -27,10 +33,20 @@ describe("Electron v2 cleanup contract", () => {
       /LEGACY_TAURI_DIRECTORY\s*=\s*["']com\.miyakey\.grimodex["']/,
     );
     assert.ok(
-      existsSync(path.join(repoRoot, "public/RELEASE_NOTES/v2.0.0.ja.md")),
+      existsSync(
+        path.join(
+          repoRoot,
+          `public/RELEASE_NOTES/v${packageJson.version}.ja.md`,
+        ),
+      ),
     );
     assert.ok(
-      existsSync(path.join(repoRoot, "public/RELEASE_NOTES/v2.0.0.en.md")),
+      existsSync(
+        path.join(
+          repoRoot,
+          `public/RELEASE_NOTES/v${packageJson.version}.en.md`,
+        ),
+      ),
     );
   });
 
