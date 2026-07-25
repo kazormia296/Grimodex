@@ -107,6 +107,21 @@ describe("release workflow boundary", () => {
     );
   });
 
+  it("passes electron-builder a certificate name without the identity prefix", async () => {
+    const workflow = await readWorkflow("release.yml");
+    const importCertificate = workflow.jobs.build.steps.find(
+      (step) => step.name === "Import Apple Developer ID certificate",
+    );
+    const commands = importCertificate?.run ?? "";
+
+    assert.match(
+      commands,
+      /CERT_NAME="\$\{CERT_ID#Developer ID Application: \}"/,
+    );
+    assert.match(commands, /echo "CSC_NAME=\$CERT_NAME"/);
+    assert.doesNotMatch(commands, /CSC_NAME=\$CERT_ID/);
+  });
+
   it("pins every third-party action to an immutable commit", async () => {
     for (const name of ["release.yml", "ci.yml", "aur-publish.yml"]) {
       const workflow = await readWorkflow(name);

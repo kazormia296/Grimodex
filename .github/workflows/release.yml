@@ -136,7 +136,12 @@ jobs:
             echo "::error::Developer ID Application certificate was not found." >&2
             exit 1
           fi
-          echo "CSC_NAME=$CERT_ID" >> "$GITHUB_ENV"
+          CERT_NAME="${CERT_ID#Developer ID Application: }"
+          if [ -z "$CERT_NAME" ] || [ "$CERT_NAME" = "$CERT_ID" ]; then
+            echo "::error::Unexpected Developer ID identity format: $CERT_ID" >&2
+            exit 1
+          fi
+          echo "CSC_NAME=$CERT_NAME" >> "$GITHUB_ENV"
           rm -f "$CERT_PATH"
 
       - name: Restore App Store Connect API key
