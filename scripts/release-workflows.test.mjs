@@ -122,6 +122,20 @@ describe("release workflow boundary", () => {
     assert.doesNotMatch(commands, /CSC_NAME=\$CERT_ID/);
   });
 
+  it("resolves updater metadata without shell-specific environment variable syntax", async () => {
+    const workflow = await readWorkflow("release.yml");
+    const verifyMetadata = workflow.jobs.build.steps.find(
+      (step) => step.name === "Require electron-updater metadata for this host",
+    );
+    const commands = verifyMetadata?.run ?? "";
+
+    assert.match(
+      commands,
+      /--metadata "release\/electron\/\$\{\{ matrix\.updaterMetadata \}\}"/,
+    );
+    assert.doesNotMatch(commands, /\$UPDATE_METADATA/);
+  });
+
   it("builds Windows release artifacts explicitly unsigned", async () => {
     const workflow = await readWorkflow("release.yml");
     const buildSteps = workflow.jobs.build.steps;
