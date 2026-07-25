@@ -50,7 +50,7 @@ describe("WebGpuBrowserAiTransport", () => {
     const transport = createWebGpuBrowserAiTransport({
       hasWebGpu: () => true,
       loadModule: async () => fakeModule(engine),
-      createWorker: () => ({ terminate: vi.fn() } as unknown as Worker),
+      createWorker: () => ({ terminate: vi.fn() }) as unknown as Worker,
     });
 
     await expect(transport.complete(request())).resolves.toEqual({
@@ -81,7 +81,7 @@ describe("WebGpuBrowserAiTransport", () => {
     const transport = createWebGpuBrowserAiTransport({
       hasWebGpu: () => true,
       loadModule: async () => fakeModule(engine),
-      createWorker: () => ({ terminate: vi.fn() } as unknown as Worker),
+      createWorker: () => ({ terminate: vi.fn() }) as unknown as Worker,
     });
     const text: string[] = [];
     const done: unknown[] = [];

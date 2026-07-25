@@ -113,6 +113,51 @@ describe("BrowserMock web AI runtime contract", () => {
     mock.close();
   });
 
+  it("routes the Web Editor browserAiMode through model discovery and completion", async () => {
+    const authorizeAiRequest = vi.fn().mockResolvedValue(undefined);
+    const complete = vi.fn().mockResolvedValue({
+      blocks: [{ type: "text", content: "on-device" }],
+      stopReason: "end_turn",
+    });
+    const listModels = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC", name: "Qwen 0.5B" },
+      ]);
+    const mock = await createBrowserMock({
+      authorizeAiRequest,
+      aiTransport: { complete, listModels },
+    });
+
+    await mock.invoke("save_ai_settings", {
+      settings: {
+        provider: "ollama",
+        browserAiMode: "webgpu",
+        model: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+        ollamaEndpoint: "http://localhost:11434",
+      },
+    });
+    await expect(
+      mock.invoke("list_ai_models", { provider: "ollama" }),
+    ).resolves.toEqual([
+      { id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC", name: "Qwen 0.5B" },
+    ]);
+    await mock.invoke("send_chat_message", {
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(listModels).toHaveBeenCalledWith(
+      expect.objectContaining({ browserAiMode: "webgpu" }),
+    );
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({ browserAiMode: "webgpu" }),
+    );
+    expect(authorizeAiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ browserAiMode: "webgpu" }),
+    );
+    mock.close();
+  });
+
   it("falls back from a desktop Responses preference to Web chat transport", async () => {
     const complete = vi.fn().mockResolvedValue({
       blocks: [{ type: "text", content: "sakana response" }],

@@ -35,6 +35,8 @@ export interface AiSettingsState {
   connectionTestResult: ConnectionTestResult | null;
   models: AiModel[];
   isLoadingModels: boolean;
+  /** User-visible failure from the last explicit model-list/connection probe. */
+  modelLoadError: string | null;
   /** OpenRouter 動的 capability レジストリの更新カウンタ。購読するとキャップ変更で再レンダリングされる。 */
   modelCapsRevision: number;
   /**
@@ -132,6 +134,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   connectionTestResult: null,
   models: [],
   isLoadingModels: false,
+  modelLoadError: null,
   modelCapsRevision: 0,
   chatModelOverride: null,
   chatProviderOverride: null,
@@ -148,7 +151,12 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     if (settings.provider === "cli") {
       cliBinaryAvailable = await resolveCliBinaryAvailability(settings);
     }
-    set({ settings, hasApiKey: keyPresent, cliBinaryAvailable });
+    set({
+      settings,
+      hasApiKey: keyPresent,
+      cliBinaryAvailable,
+      modelLoadError: null,
+    });
     void maybeRefreshDynamicCaps();
   },
 
@@ -175,7 +183,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     const testInvalidated =
       providerSwitched ||
       prev?.model !== settings.model ||
-      prev?.modelApiVariant !== settings.modelApiVariant;
+      prev?.modelApiVariant !== settings.modelApiVariant ||
+      prev?.browserAiMode !== settings.browserAiMode;
     set({
       settings,
       cliBinaryAvailable,
@@ -187,6 +196,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         ? {
             models: [],
             isLoadingModels: false,
+            modelLoadError: null,
             chatModelOverride: null,
             chatProviderOverride: null,
             chatModelVariantOverride: null,
@@ -271,12 +281,14 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     const requestedCliKind = settings.cli?.kind ?? "claude";
     const requestedCliTransport = settings.cli?.codexTransport ?? "exec";
     const requestedCliBinaryPath = settings.cli?.binaryPath;
+    const requestedBrowserAiMode = settings.browserAiMode ?? "http";
     const isCurrentRequest = () => {
       const current = get().settings;
       return (
         requestGeneration === modelLoadRequestGeneration &&
         current?.provider === requestedProvider &&
         current.activeOpenaiCompatibleEndpointId === requestedEndpointId &&
+        (current?.browserAiMode ?? "http") === requestedBrowserAiMode &&
         (requestedProvider !== "cli" ||
           ((current.cli?.kind ?? "claude") === requestedCliKind &&
             (current.cli?.codexTransport ?? "exec") === requestedCliTransport &&
@@ -284,7 +296,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       );
     };
 
-    set({ isLoadingModels: true });
+    set({ isLoadingModels: true, modelLoadError: null });
     try {
       if (settings.provider === "cli") {
         const useCodexAppServer =
@@ -296,7 +308,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
               requestedCliBinaryPath,
             );
         if (!isCurrentRequest()) return;
-        set({ models, isLoadingModels: false });
+        set({ models, isLoadingModels: false, modelLoadError: null });
         return;
       }
       // それ以外は Rust 側 fetch_models に委譲
@@ -311,14 +323,19 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         set({
           models,
           isLoadingModels: false,
+          modelLoadError: null,
           modelCapsRevision: get().modelCapsRevision + 1,
         });
       } else {
-        set({ models, isLoadingModels: false });
+        set({ models, isLoadingModels: false, modelLoadError: null });
       }
-    } catch {
+    } catch (error) {
       if (!isCurrentRequest()) return;
-      set({ models: [], isLoadingModels: false });
+      set({
+        models: [],
+        isLoadingModels: false,
+        modelLoadError: error instanceof Error ? error.message : String(error),
+      });
     }
   },
 }));

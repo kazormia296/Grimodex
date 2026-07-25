@@ -6,6 +6,7 @@
 import type {
   AiModel,
   AiProvider,
+  BrowserAiMode,
   ToolProtocolMode,
 } from "@/features/chat/types";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
@@ -38,11 +39,50 @@ interface ChatMessage {
 
 export type BrowserAiOperation = "chat" | "inline";
 
+export type BrowserAiAddressSpace = "local" | "loopback";
+
+export type BrowserAiErrorCode =
+  | "local-network-permission"
+  | "cors"
+  | "mixed-content"
+  | "server-unavailable"
+  | "endpoint-format"
+  | "models-unsupported"
+  | "webgpu-unsupported"
+  | "http"
+  | "network";
+
+export class BrowserAiConnectionError extends Error {
+  readonly code: BrowserAiErrorCode;
+  readonly status?: number;
+  readonly resource: BrowserAiEndpointResource;
+  readonly url: string;
+
+  constructor(
+    code: BrowserAiErrorCode,
+    message: string,
+    options: {
+      resource?: BrowserAiEndpointResource;
+      url?: string;
+      status?: number;
+      cause?: unknown;
+    } = {},
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "BrowserAiConnectionError";
+    this.code = code;
+    this.resource = options.resource ?? "chat";
+    this.url = options.url ?? "";
+    this.status = options.status;
+  }
+}
+
 export interface BrowserAiConnectionOptions {
   ollamaEndpoint?: string | null;
   /** OpenAI-compatible only. This is the user-selected endpoint base URL. */
   baseUrl?: string | null;
   apiVariant?: string | null;
+  browserAiMode?: BrowserAiMode;
 }
 
 export interface BrowserAiRequest {
@@ -56,6 +96,8 @@ export interface BrowserAiRequest {
   ollamaEndpoint?: string | null;
   baseUrl?: string | null;
   apiVariant?: string | null;
+  /** Web Editor-only transport selection. Native runtimes ignore this field. */
+  browserAiMode?: BrowserAiMode;
 }
 
 export type BrowserAiCompletion = AgentLLMResponse;
@@ -84,12 +126,179 @@ export interface BrowserAiTransport {
     tools: AgentToolDefinition[],
   ): Promise<BrowserAiCompletion>;
   stream?(request: BrowserAiRequest, sink: BrowserAiStreamSink): Promise<void>;
+  listModels?(request: BrowserAiRequest): Promise<AiModel[]>;
   abort?(operation: BrowserAiOperation): void;
+  dispose?(): void;
 }
 
 const isViteDevelopment = import.meta.env.DEV;
 
 export type BrowserAiEndpointResource = "chat" | "models";
+
+type BrowserAiFetchInit = RequestInit & {
+  /** Local Network Access is not in the current lib.dom typings yet. */
+  targetAddressSpace?: BrowserAiAddressSpace;
+};
+
+function parseHostname(value: string): string | null {
+  try {
+    const base =
+      typeof window === "undefined"
+        ? "http://browser.invalid"
+        : window.location.href;
+    const parsed = new URL(value, base);
+    // Relative Vite proxy paths must remain same-origin and should not request
+    // a local-network permission prompt.
+    if (!/^[a-z][a-z\d+.-]*:/iu.test(value.trim())) return null;
+    return parsed.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function parseIpv4(hostname: string): number[] | null {
+  const parts = hostname.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d+$/u.test(part))) {
+    return null;
+  }
+  const numbers = parts.map(Number);
+  return numbers.every((part) => part >= 0 && part <= 255) ? numbers : null;
+}
+
+/**
+ * Classifies an absolute AI endpoint for the browser Local Network Access
+ * request hint. Public endpoints intentionally return undefined.
+ */
+export function classifyBrowserAiAddressSpace(
+  value: string,
+): BrowserAiAddressSpace | undefined {
+  const hostname = parseHostname(value);
+  if (!hostname) return undefined;
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return "loopback";
+  }
+  if (hostname === "::1") return "loopback";
+
+  const ipv4 = parseIpv4(hostname);
+  if (ipv4) {
+    const [first, second] = ipv4;
+    if (first === 127) return "loopback";
+    if (
+      first === 10 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 169 && second === 254)
+    ) {
+      return "local";
+    }
+    return undefined;
+  }
+
+  if (
+    hostname.endsWith(".local") ||
+    hostname.startsWith("fc") ||
+    hostname.startsWith("fd") ||
+    hostname.startsWith("fe80:")
+  ) {
+    return "local";
+  }
+  return undefined;
+}
+
+export function isBrowserLocalEndpoint(value?: string | null): boolean {
+  return classifyBrowserAiAddressSpace(value?.trim() ?? "") !== undefined;
+}
+
+function isMixedContentEndpoint(
+  url: string,
+  addressSpace: BrowserAiAddressSpace | undefined,
+): boolean {
+  if (addressSpace !== "local" || typeof window === "undefined") return false;
+  if (window.location.protocol !== "https:") return false;
+  try {
+    const parsed = new URL(url, window.location.href);
+    return parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function createFetchFailure(
+  error: unknown,
+  url: string,
+  resource: BrowserAiEndpointResource,
+  addressSpace: BrowserAiAddressSpace | undefined,
+): BrowserAiConnectionError {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const lowerMessage = rawMessage.toLowerCase();
+  const code: BrowserAiErrorCode =
+    lowerMessage.includes("refused") ||
+    lowerMessage.includes("connection reset") ||
+    lowerMessage.includes("err_connection")
+      ? "server-unavailable"
+      : lowerMessage.includes("cors") || lowerMessage.includes("cross-origin")
+        ? "cors"
+        : addressSpace
+          ? "local-network-permission"
+          : "network";
+  const message =
+    code === "server-unavailable"
+      ? "AIサーバーが起動していないか、接続先が応答していません。サーバーの起動状態とURLを確認してください。"
+      : code === "cors"
+        ? "ブラウザーがCORSでAIエンドポイントへの接続を拒否しました。サーバーのOrigin許可を確認してください。"
+        : addressSpace
+          ? "ローカルネットワークへのアクセスが拒否されたか、AIサーバーが起動していません。ブラウザーの許可とサーバーのCORS設定を確認してください。"
+          : rawMessage || "AIエンドポイントへ接続できませんでした";
+  return new BrowserAiConnectionError(code, message, {
+    resource,
+    url,
+    cause: error,
+  });
+}
+
+export async function browserAiFetch(
+  url: string,
+  init: RequestInit = {},
+  resource: BrowserAiEndpointResource = "chat",
+): Promise<Response> {
+  const addressSpace = classifyBrowserAiAddressSpace(url);
+  if (isMixedContentEndpoint(url, addressSpace)) {
+    throw new BrowserAiConnectionError(
+      "mixed-content",
+      "HTTPSのWeb EditorからHTTPのLANエンドポイントへ接続するには、ブラウザーがLocal Network Accessをサポートしている必要があります。HTTPSのAIサーバーまたは同一端末のloopbackを使用してください。",
+      { resource, url },
+    );
+  }
+  const requestInit: BrowserAiFetchInit = {
+    ...init,
+    ...(addressSpace ? { targetAddressSpace: addressSpace } : {}),
+  };
+  try {
+    return await fetch(url, requestInit as RequestInit);
+  } catch (error) {
+    throw createFetchFailure(error, url, resource, addressSpace);
+  }
+}
+
+function createHttpFailure(
+  prefix: string,
+  response: Response,
+  message: string,
+  url: string,
+  resource: BrowserAiEndpointResource,
+): BrowserAiConnectionError {
+  let code: BrowserAiErrorCode = "http";
+  if (response.status === 404) {
+    code = resource === "models" ? "models-unsupported" : "endpoint-format";
+  } else if (response.status === 502 || response.status === 503) {
+    code = "server-unavailable";
+  }
+  return new BrowserAiConnectionError(
+    code,
+    `${prefix} (${response.status}): ${message}`,
+    { resource, url, status: response.status },
+  );
+}
 
 function requireBrowserDirectProvider(provider: AiProvider): void {
   if (
@@ -452,16 +661,20 @@ export async function completeBrowserAiRequest(
   const url = chatEndpoint(request.provider, request);
   const body = buildChatBody(request);
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
+  const resp = await browserAiFetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    },
+    "chat",
+  );
 
   if (!resp.ok) {
     const errMsg = await parseErrorResponse(resp);
-    throw new Error(`AI request failed (${resp.status}): ${errMsg}`);
+    throw createHttpFailure("AI request failed", resp, errMsg, url, "chat");
   }
 
   const result = (await resp.json()) as Record<string, unknown>;
@@ -583,15 +796,26 @@ async function streamBrowserAiRequest(
     body.stream_options = { include_usage: true };
   }
 
-  const response = await fetch(chatEndpoint(request.provider, request), {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
+  const url = chatEndpoint(request.provider, request);
+  const response = await browserAiFetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    },
+    "chat",
+  );
   if (!response.ok) {
     const message = await parseErrorResponse(response);
-    throw new Error(`AI request failed (${response.status}): ${message}`);
+    throw createHttpFailure(
+      "AI request failed",
+      response,
+      message,
+      url,
+      "chat",
+    );
   }
 
   let inputTokens: number | undefined;
@@ -748,7 +972,7 @@ export async function fetchModels(
 
   let resp: Response;
   try {
-    resp = await fetch(url, { headers });
+    resp = await browserAiFetch(url, { headers }, "models");
   } catch (error) {
     if (provider === "ai-novelist") {
       return [
@@ -775,7 +999,13 @@ export async function fetchModels(
       ];
     }
     const errMsg = await parseErrorResponse(resp);
-    throw new Error(`Failed to fetch models (${resp.status}): ${errMsg}`);
+    throw createHttpFailure(
+      "Failed to fetch models",
+      resp,
+      errMsg,
+      url,
+      "models",
+    );
   }
 
   const body = await resp.json();
@@ -1118,15 +1348,19 @@ export async function sendChatWithTools(
     };
   }
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const resp = await browserAiFetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    },
+    "chat",
+  );
 
   if (!resp.ok) {
     const errMsg = await parseErrorResponse(resp);
-    throw new Error(`Agent request failed (${resp.status}): ${errMsg}`);
+    throw createHttpFailure("Agent request failed", resp, errMsg, url, "chat");
   }
 
   const result = await resp.json();
@@ -1181,15 +1415,25 @@ export async function testConnection(
     };
   }
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const resp = await browserAiFetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    },
+    "chat",
+  );
 
   if (!resp.ok) {
     const errMsg = await parseErrorResponse(resp);
-    throw new Error(`Connection test failed (${resp.status}): ${errMsg}`);
+    throw createHttpFailure(
+      "Connection test failed",
+      resp,
+      errMsg,
+      url,
+      "chat",
+    );
   }
 
   const result = await resp.json();

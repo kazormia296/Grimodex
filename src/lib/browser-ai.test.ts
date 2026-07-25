@@ -406,10 +406,12 @@ describe("fetchModels", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ models: [] }));
 
     await fetchModels("ollama", "", {
-      ollamaEndpoint: "http://192.0.2.10:11434",
+      ollamaEndpoint: "http://192.168.2.10:11434",
     });
 
-    expect(mockFetch.mock.calls[0][0]).toBe("http://192.0.2.10:11434/api/tags");
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      "http://192.168.2.10:11434/api/tags",
+    );
     expect(mockFetch.mock.calls[0][1].targetAddressSpace).toBe("local");
   });
 

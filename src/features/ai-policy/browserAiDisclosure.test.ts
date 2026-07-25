@@ -98,4 +98,22 @@ describe("browser BYOK AI disclosure", () => {
       /not supported/i,
     );
   });
+
+  it("describes WebGPU inference as browser-local instead of Ollama network processing", () => {
+    const disclosure = createByokAiDataDisclosure("ollama", {
+      locale: "en",
+      browserAiMode: "webgpu",
+    });
+
+    expect(disclosure).toMatchObject({
+      provider: "browser-local",
+      destination: "browser://local",
+      trainingUse: { status: "not-used" },
+    });
+    expect(disclosure.sentData).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: "credential" }),
+      ]),
+    );
+  });
 });

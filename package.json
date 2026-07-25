@@ -73,6 +73,7 @@
     "@grimodex/scan-contract": "workspace:*",
     "@grimodex/scan-core": "workspace:*",
     "@gsap/react": "^2.1.2",
+    "@mlc-ai/web-llm": "^0.2.84",
     "@paper-design/shaders": "0.0.77",
     "@paper-design/shaders-react": "0.0.77",
     "@radix-ui/react-checkbox": "^1.3.3",
