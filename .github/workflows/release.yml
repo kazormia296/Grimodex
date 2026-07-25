@@ -327,11 +327,9 @@ jobs:
             -C "$(dirname "$APP")" "$(basename "$APP")"
 
       - name: Require electron-updater metadata for this host
-        env:
-          UPDATE_METADATA: ${{ matrix.updaterMetadata }}
         run: >-
           node scripts/verify-electron-updater-metadata.mjs
-          --metadata "release/electron/$UPDATE_METADATA"
+          --metadata "release/electron/${{ matrix.updaterMetadata }}"
 
       - name: Upload host packages and electron-updater metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
