@@ -32,8 +32,6 @@ describe("EULA_VERSION", () => {
         "Sakana BYOK",
         "AI のべりすと BYOK",
         "OpenAI 互換エンドポイント",
-        "ブラウザ内 WebGPU",
-        "Cache Storage",
         "handoff ファイル",
       ],
       en: [
@@ -49,8 +47,6 @@ describe("EULA_VERSION", () => {
         "Sakana BYOK",
         "AI Novelist BYOK",
         "OpenAI-compatible endpoints",
-        "Browser-local WebGPU",
-        "Cache Storage",
         "handoff file",
       ],
     } as const;
@@ -69,6 +65,7 @@ describe("EULA_VERSION", () => {
         "utf8",
       );
       expect(privacy).toContain("GDX-AI-CONSENT-001");
+      expect(privacy).not.toMatch(/WebGPU|WebLLM/);
       for (const expected of expectedEditorOnlyCopy[locale]) {
         expect(privacy).toContain(expected);
       }
@@ -86,7 +83,7 @@ describe("EULA_VERSION", () => {
       );
       expect(terms).toContain("IndexedDB");
       expect(terms).toContain("Ollama");
-      expect(terms).toContain("WebGPU");
+      expect(terms).not.toMatch(/WebGPU|WebLLM/);
       expect(terms).toMatch(/handoff/i);
       for (const retired of [
         "Grimodex Scan",

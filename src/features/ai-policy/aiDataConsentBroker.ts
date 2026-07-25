@@ -48,7 +48,7 @@ function isStoredConsentRecord(value: unknown): value is StoredConsentRecord {
   const record = value as Record<string, unknown>;
   return (
     typeof record.policyVersion === "string" &&
-    (record.route === "byok" || record.route === "browser-local") &&
+    record.route === "byok" &&
     typeof record.provider === "string" &&
     typeof record.destination === "string" &&
     typeof record.acceptedAt === "string" &&

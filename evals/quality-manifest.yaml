@@ -21,8 +21,8 @@ requirements:
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/features/chat/chatStore.ts
-      - src/lib/browser-ai-router.ts
-      - src/lib/browser-webllm.ts
+      - src/lib/browser-ai.ts
+      - src/lib/browser-mock.ts
     lightTests:
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
@@ -30,8 +30,8 @@ requirements:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/chatApi.test.ts
       - src/features/chat/chatStore.test.ts
-      - src/lib/browser-ai-router.test.ts
-      - src/lib/browser-webllm.test.ts
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ai-runtime.test.ts
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
       - src-tauri/src/commands/post_effect.rs
@@ -236,5 +236,5 @@ heavyEvaluations:
 blockedEvaluations:
   - id: blocked-web-ai-consent-live
     suiteId: tool-policy
-    reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, browser-local processor disclosure, and teardown against a real user-selected HTTP Local LLM, BYOK provider, or WebGPU model.
-    requiredAction: Add disposable user-owned provider credentials or an isolated Local LLM endpoint, a WebGPU-capable browser runner, refusal and re-consent assertions, model-cache cleanup, and deterministic teardown before promoting this gap to heavyEvaluations.
+    reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, and teardown against a real user-selected HTTP Local LLM or BYOK provider.
+    requiredAction: Add disposable user-owned provider credentials or an isolated Local LLM endpoint, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.

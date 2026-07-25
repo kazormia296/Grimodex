@@ -7,7 +7,6 @@ import {
   resolveActiveOpenaiCompatibleEndpoint,
   type AiProvider,
   type AiSettings,
-  type BrowserAiMode,
   type OpenaiCompatibleEndpoint,
 } from "@/features/chat/types";
 import { applyEndpointsToSettings } from "@/features/settings/categories/openaiCompatibleEndpointsHelpers";
@@ -23,16 +22,9 @@ import { OpenaiCompatibleEndpointsManager } from "@/features/settings/categories
 import { WebEditorAiProviderPicker } from "./WebEditorAiProviderPicker";
 import { WebEditorApiKeySettings } from "./WebEditorApiKeySettings";
 import { WebEditorOllamaSetup } from "./WebEditorOllamaSetup";
-import { WebEditorAiModePicker } from "./WebEditorAiModePicker";
-import { WebEditorLocalModelManager } from "./WebEditorLocalModelManager";
 
-function canConnect(
-  settings: AiSettings,
-  hasApiKey: boolean,
-  browserAiMode: BrowserAiMode,
-): boolean {
+function canConnect(settings: AiSettings, hasApiKey: boolean): boolean {
   if (!settings.model) return false;
-  if (browserAiMode === "webgpu") return true;
   if (settings.provider === "openai-compatible") {
     return Boolean(resolveActiveOpenaiCompatibleEndpoint(settings)?.baseUrl);
   }
@@ -67,10 +59,9 @@ export function WebEditorAiCategory() {
     settings,
   );
   const [apiKeyInput, setApiKeyInput] = useState("");
-  const browserAiMode = localSettings?.browserAiMode ?? "http";
-  const isWebGpu = browserAiMode === "webgpu";
-  const requiresExplicitLocalConnection =
-    !isWebGpu && isBrowserLocalEndpoint(activeBrowserEndpoint(localSettings));
+  const requiresExplicitLocalConnection = isBrowserLocalEndpoint(
+    activeBrowserEndpoint(localSettings),
+  );
 
   useEffect(() => {
     void loadSettings();
@@ -82,7 +73,6 @@ export function WebEditorAiCategory() {
 
   useEffect(() => {
     if (!settings) return;
-    if (settings.browserAiMode === "webgpu") return;
     if (isBrowserLocalEndpoint(activeBrowserEndpoint(settings))) {
       return;
     }
@@ -100,7 +90,7 @@ export function WebEditorAiCategory() {
   }
 
   const provider = localSettings.provider as AiProvider;
-  const needsKey = !isWebGpu && browserProviderRequiresApiKey(provider);
+  const needsKey = browserProviderRequiresApiKey(provider);
   async function persist(next: AiSettings) {
     setLocalSettings(next);
     await saveSettings(next);
@@ -110,22 +100,10 @@ export function WebEditorAiCategory() {
     await persist({
       ...localSettings!,
       provider: nextProvider,
-      browserAiMode: "http",
       model: "",
       modelApiVariant: null,
     });
     await loadSettings();
-  }
-
-  async function selectBrowserAiMode(nextMode: BrowserAiMode) {
-    await persist({
-      ...localSettings!,
-      browserAiMode: nextMode,
-      model: "",
-      modelApiVariant: null,
-    });
-    await loadSettings();
-    if (nextMode === "webgpu") await loadModels();
   }
 
   async function saveKey() {
@@ -174,19 +152,12 @@ export function WebEditorAiCategory() {
       </div>
 
       <SettingSection title={t("settings.ai.provider")}>
-        <WebEditorAiModePicker
-          mode={browserAiMode}
-          onSelect={(candidate) => void selectBrowserAiMode(candidate)}
+        <WebEditorAiProviderPicker
+          provider={provider}
+          onSelect={(candidate) => void selectProvider(candidate)}
         />
 
-        {!isWebGpu && (
-          <WebEditorAiProviderPicker
-            provider={provider}
-            onSelect={(candidate) => void selectProvider(candidate)}
-          />
-        )}
-
-        {!isWebGpu && provider === "ollama" && (
+        {provider === "ollama" && (
           <>
             <SettingRow label={t("settings.ai.endpoint")}>
               <input
@@ -208,7 +179,7 @@ export function WebEditorAiCategory() {
           </>
         )}
 
-        {!isWebGpu && provider === "openai-compatible" && (
+        {provider === "openai-compatible" && (
           <OpenaiCompatibleEndpointsManager
             endpoints={localSettings.openaiCompatibleEndpoints ?? []}
             activeId={localSettings.activeOpenaiCompatibleEndpointId ?? null}
@@ -218,7 +189,7 @@ export function WebEditorAiCategory() {
           />
         )}
 
-        {!isWebGpu && needsKey && (
+        {needsKey && (
           <WebEditorApiKeySettings
             hasApiKey={hasApiKey}
             value={apiKeyInput}
@@ -230,46 +201,34 @@ export function WebEditorAiCategory() {
       </SettingSection>
 
       <SettingSection title={t("settings.ai.models")}>
-        {isWebGpu ? (
-          <WebEditorLocalModelManager
-            models={models}
-            value={localSettings.model}
-            isLoading={isLoadingModels}
-            error={modelLoadError ?? null}
-            onChange={(model) => void selectModel(model)}
-            onRefresh={() => void loadModels()}
-          />
-        ) : (
-          <SettingRow label={t("settings.ai.defaultChatModel")}>
-            <div className="flex gap-2">
-              <ModelPicker
-                models={models}
-                value={localSettings.model}
-                onChange={(model) => void selectModel(model)}
-                isLoading={isLoadingModels}
-              />
-              <button
-                type="button"
-                onClick={() => void loadModels()}
-                disabled={isLoadingModels || (needsKey && !hasApiKey)}
-                className="rounded-md border border-border px-2 py-1 text-sm disabled:opacity-50"
-              >
-                {requiresExplicitLocalConnection
-                  ? t("hostedEditor.ai.connectLocal")
-                  : t("settings.ai.refresh")}
-              </button>
-            </div>
-          </SettingRow>
-        )}
-        {!isWebGpu && modelLoadError && (
+        <SettingRow label={t("settings.ai.defaultChatModel")}>
+          <div className="flex gap-2">
+            <ModelPicker
+              models={models}
+              value={localSettings.model}
+              onChange={(model) => void selectModel(model)}
+              isLoading={isLoadingModels}
+            />
+            <button
+              type="button"
+              onClick={() => void loadModels()}
+              disabled={isLoadingModels || (needsKey && !hasApiKey)}
+              className="rounded-md border border-border px-2 py-1 text-sm disabled:opacity-50"
+            >
+              {requiresExplicitLocalConnection
+                ? t("hostedEditor.ai.connectLocal")
+                : t("settings.ai.refresh")}
+            </button>
+          </div>
+        </SettingRow>
+        {modelLoadError && (
           <p className="mt-2 text-sm text-destructive">{modelLoadError}</p>
         )}
         <button
           type="button"
           onClick={() => void testConnection()}
           disabled={
-            isTestingConnection ||
-            !canConnect(localSettings, hasApiKey, browserAiMode)
+            isTestingConnection || !canConnect(localSettings, hasApiKey)
           }
           className="rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground disabled:opacity-50"
         >
