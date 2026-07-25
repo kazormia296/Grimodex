@@ -7,8 +7,10 @@ import {
   assertWebEditorDurability,
   browserPersistenceFailureMessage,
   BrowserWorkspaceLockError,
+  clearRetiredBrowserModelCaches,
   createWebEditorWorkspaceStore,
   initializeBrowserRuntime,
+  RETIRED_BROWSER_MODEL_CACHE_NAMES,
   WEB_EDITOR_WORKSPACE_ID,
   type BrowserRuntimeDependencies,
 } from "./browserRuntime";
@@ -59,6 +61,42 @@ function createDependencies(
 }
 
 describe("Web Editor browser runtime", () => {
+  it("deletes only the retired browser-model Cache Storage scopes", async () => {
+    const deleteCache = vi.fn(async (_name: string) => true);
+
+    await clearRetiredBrowserModelCaches({
+      delete: deleteCache,
+    } as Pick<CacheStorage, "delete">);
+
+    expect(deleteCache.mock.calls.map(([name]) => name)).toEqual([
+      ...RETIRED_BROWSER_MODEL_CACHE_NAMES,
+    ]);
+  });
+
+  it("does not block startup when retired browser-model cache cleanup fails", async () => {
+    const deleteCache = vi
+      .fn<(name: string) => Promise<boolean>>()
+      .mockRejectedValueOnce(new Error("cache unavailable"))
+      .mockResolvedValue(true);
+    const dependencies = createDependencies();
+
+    const runtime = await initializeBrowserRuntime({
+      store: createMemoryWorkspaceStore(),
+      lifecycleTarget: null,
+      lockManager: createExclusiveLockManager().lockManager,
+      cacheStorage: {
+        delete: deleteCache,
+      } as Pick<CacheStorage, "delete">,
+      dependencies,
+    });
+
+    expect(deleteCache).toHaveBeenCalledTimes(
+      RETIRED_BROWSER_MODEL_CACHE_NAMES.length,
+    );
+    expect(dependencies.createBrowserMock).toHaveBeenCalledOnce();
+    await runtime.dispose();
+  });
+
   it("fails closed when IndexedDB is unavailable", () => {
     expect(() =>
       createWebEditorWorkspaceStore({ indexedDB: null }),

@@ -68,6 +68,10 @@ describe("WebEditorAiCategory", () => {
   it("offers every HTTP provider and exposes custom endpoint setup", async () => {
     render(<WebEditorAiCategory />);
 
+    expect(
+      screen.queryByText(/WebGPU|ブラウザー内AI|In-browser AI/i),
+    ).toBeNull();
+
     for (const name of [
       /^OpenRouter$/,
       /^OpenAI$/,

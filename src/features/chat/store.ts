@@ -183,8 +183,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     const testInvalidated =
       providerSwitched ||
       prev?.model !== settings.model ||
-      prev?.modelApiVariant !== settings.modelApiVariant ||
-      prev?.browserAiMode !== settings.browserAiMode;
+      prev?.modelApiVariant !== settings.modelApiVariant;
     set({
       settings,
       cliBinaryAvailable,
@@ -281,14 +280,12 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     const requestedCliKind = settings.cli?.kind ?? "claude";
     const requestedCliTransport = settings.cli?.codexTransport ?? "exec";
     const requestedCliBinaryPath = settings.cli?.binaryPath;
-    const requestedBrowserAiMode = settings.browserAiMode ?? "http";
     const isCurrentRequest = () => {
       const current = get().settings;
       return (
         requestGeneration === modelLoadRequestGeneration &&
         current?.provider === requestedProvider &&
         current.activeOpenaiCompatibleEndpointId === requestedEndpointId &&
-        (current?.browserAiMode ?? "http") === requestedBrowserAiMode &&
         (requestedProvider !== "cli" ||
           ((current.cli?.kind ?? "claude") === requestedCliKind &&
             (current.cli?.codexTransport ?? "exec") === requestedCliTransport &&

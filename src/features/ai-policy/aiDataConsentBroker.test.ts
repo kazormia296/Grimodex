@@ -109,21 +109,24 @@ describe("AI data consent broker", () => {
     await expect(changed).rejects.toThrow("ai-data-consent-required");
   });
 
-  it("persists and reuses browser-local consent independently", async () => {
-    const localDisclosure = disclosure({
-      policyVersion: "2026-07-25.2",
-      route: "browser-local",
-      provider: "browser-local",
-      destination: "browser://local",
-      consentId: "consent_browser_local_2026_07_25_abcdef",
-    });
-    const first = requestAiDataConsent(localDisclosure);
-    acceptActiveAiDataConsent("consent_browser_local_2026_07_25_abcdef");
-    await first;
+  it("ignores consent left by the retired browser-local route", async () => {
+    localStorage.setItem(
+      "grimodex:ai-data-consents/v1",
+      JSON.stringify([
+        {
+          policyVersion: "2026-07-25.2",
+          route: "browser-local",
+          provider: "browser-local",
+          destination: "browser://local",
+          acceptedAt: "2026-07-25T01:02:03.000Z",
+        },
+      ]),
+    );
 
-    await expect(
-      requestAiDataConsent(localDisclosure),
-    ).resolves.toBeUndefined();
+    const pending = requestAiDataConsent(disclosure());
+    expect(getActiveAiDataConsentRequest()?.disclosure.route).toBe("byok");
+    declineActiveAiDataConsent();
+    await expect(pending).rejects.toThrow("ai-data-consent-required");
   });
 
   it("authorizes the current request without hanging when consent storage is unavailable", async () => {

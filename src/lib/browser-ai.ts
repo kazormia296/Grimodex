@@ -6,7 +6,6 @@
 import type {
   AiModel,
   AiProvider,
-  BrowserAiMode,
   ToolProtocolMode,
 } from "@/features/chat/types";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
@@ -47,8 +46,6 @@ export type BrowserAiErrorCode =
   | "server-unavailable"
   | "endpoint-format"
   | "models-unsupported"
-  | "webgpu-unsupported"
-  | "webgpu-busy"
   | "http"
   | "network";
 
@@ -82,7 +79,6 @@ export interface BrowserAiConnectionOptions {
   /** OpenAI-compatible only. This is the user-selected endpoint base URL. */
   baseUrl?: string | null;
   apiVariant?: string | null;
-  browserAiMode?: BrowserAiMode;
 }
 
 export interface BrowserAiRequest {
@@ -96,8 +92,6 @@ export interface BrowserAiRequest {
   ollamaEndpoint?: string | null;
   baseUrl?: string | null;
   apiVariant?: string | null;
-  /** Web Editor-only transport selection. Native runtimes ignore this field. */
-  browserAiMode?: BrowserAiMode;
   toolProtocolMode?: ToolProtocolMode;
 }
 

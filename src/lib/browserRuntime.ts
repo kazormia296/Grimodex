@@ -24,6 +24,15 @@ export const HOSTED_AI_SESSION_STORAGE_KEY = "grimodex:hosted-ai-session/v1";
 export const HOSTED_EDITOR_ENTRY_MODE_STORAGE_KEY =
   "grimodex:hosted-editor-entry-mode/v1";
 
+// WebLLM used these exact, origin-scoped Cache Storage names. Keep this
+// narrowly targeted retirement list so upgrades remove downloaded model
+// artifacts without touching the workspace or any unrelated browser cache.
+export const RETIRED_BROWSER_MODEL_CACHE_NAMES = [
+  "webllm/model",
+  "webllm/config",
+  "webllm/wasm",
+] as const;
+
 const BROWSER_WORKSPACE_LOCK_PREFIX = "grimodex:browser-workspace:";
 
 export type BrowserWorkspaceLockErrorCode =
@@ -62,24 +71,8 @@ export interface BrowserRuntimeDependencies {
   installBrowserMock(mock: BrowserRuntimeDatabase): void;
 }
 
-const loadWebEditorAiRouter =
-  import.meta.env.MODE === "web-editor"
-    ? () => import("./browser-ai-router")
-    : null;
-
-async function createRuntimeBrowserMock(
-  options: BrowserMockOptions,
-): Promise<PersistentBrowserMock> {
-  if (!loadWebEditorAiRouter) return createBrowserMock(options);
-  const { createBrowserAiRouterTransport } = await loadWebEditorAiRouter();
-  return createBrowserMock({
-    ...options,
-    aiTransport: createBrowserAiRouterTransport(),
-  });
-}
-
 const DEFAULT_DEPENDENCIES: BrowserRuntimeDependencies = {
-  createBrowserMock: createRuntimeBrowserMock,
+  createBrowserMock,
   installBrowserMock: (mock) =>
     installBrowserMock(mock as PersistentBrowserMock),
 };
@@ -126,6 +119,7 @@ export interface InitializeBrowserRuntimeOptions {
   replaceHistory?: (href: string) => void;
   lifecycleTarget?: Window | null;
   sessionStorage?: BrowserSessionStorage | null;
+  cacheStorage?: Pick<CacheStorage, "delete"> | null;
   lockManager?: Pick<LockManager, "request"> | null;
   debounceMs?: number;
   onPersistenceError?: (error: unknown) => void;
@@ -186,6 +180,25 @@ function browserLockManager(): Pick<LockManager, "request"> | null {
   } catch {
     return null;
   }
+}
+
+function browserCacheStorage(): Pick<CacheStorage, "delete"> | null {
+  try {
+    return typeof caches === "undefined" ? null : caches;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearRetiredBrowserModelCaches(
+  cacheStorage: Pick<CacheStorage, "delete"> | null,
+): Promise<void> {
+  if (!cacheStorage) return;
+  await Promise.allSettled(
+    RETIRED_BROWSER_MODEL_CACHE_NAMES.map((cacheName) =>
+      Promise.resolve().then(() => cacheStorage.delete(cacheName)),
+    ),
+  );
 }
 
 function clearLegacyHostedState(options: {
@@ -319,6 +332,11 @@ export async function initializeBrowserRuntime(
     replaceHistory: options.replaceHistory ?? replaceBrowserHistory,
     sessionStorage,
   });
+  await clearRetiredBrowserModelCaches(
+    options.cacheStorage === undefined
+      ? browserCacheStorage()
+      : options.cacheStorage,
+  );
 
   const workspaceLock = await acquireBrowserWorkspaceLock(
     workspaceId,

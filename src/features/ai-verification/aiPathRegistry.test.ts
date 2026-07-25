@@ -208,7 +208,6 @@ describe("AI runtime route registry — Web Editor direct transports", () => {
   it("registers every browser consent route exactly once", () => {
     expect(AI_RUNTIME_ROUTES.map((route) => route.consentRoute)).toEqual([
       "byok",
-      "browser-local",
     ]);
     const ids = AI_RUNTIME_ROUTES.map((route) => route.id);
     expect(new Set(ids).size).toBe(ids.length);

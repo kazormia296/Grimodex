@@ -113,17 +113,15 @@ describe("BrowserMock web AI runtime contract", () => {
     mock.close();
   });
 
-  it("routes the Web Editor browserAiMode through model discovery and completion", async () => {
+  it("removes a retired WebGPU preference and uses the HTTP transport", async () => {
     const authorizeAiRequest = vi.fn().mockResolvedValue(undefined);
     const complete = vi.fn().mockResolvedValue({
-      blocks: [{ type: "text", content: "on-device" }],
+      blocks: [{ type: "text", content: "local" }],
       stopReason: "end_turn",
     });
     const listModels = vi
       .fn()
-      .mockResolvedValue([
-        { id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC", name: "Qwen 0.5B" },
-      ]);
+      .mockResolvedValue([{ id: "qwen3:8b", name: "qwen3:8b" }]);
     const mock = await createBrowserMock({
       authorizeAiRequest,
       aiTransport: { complete, listModels },
@@ -133,27 +131,30 @@ describe("BrowserMock web AI runtime contract", () => {
       settings: {
         provider: "ollama",
         browserAiMode: "webgpu",
-        model: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+        model: "qwen3:8b",
         ollamaEndpoint: "http://localhost:11434",
       },
     });
+    const settings =
+      await mock.invoke<Record<string, unknown>>("get_ai_settings");
+    expect(settings).not.toHaveProperty("browserAiMode");
+    expect(
+      JSON.parse(localStorage.getItem("grimodex:ai-settings") ?? "{}"),
+    ).not.toHaveProperty("browserAiMode");
+
     await expect(
       mock.invoke("list_ai_models", { provider: "ollama" }),
-    ).resolves.toEqual([
-      { id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC", name: "Qwen 0.5B" },
-    ]);
+    ).resolves.toEqual([{ id: "qwen3:8b", name: "qwen3:8b" }]);
     await mock.invoke("send_chat_message", {
       messages: [{ role: "user", content: "hello" }],
     });
 
-    expect(listModels).toHaveBeenCalledWith(
-      expect.objectContaining({ browserAiMode: "webgpu" }),
-    );
-    expect(complete).toHaveBeenCalledWith(
-      expect.objectContaining({ browserAiMode: "webgpu" }),
-    );
-    expect(authorizeAiRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ browserAiMode: "webgpu" }),
+    expect(listModels).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(listModels.mock.calls[0]?.[0]).not.toHaveProperty("browserAiMode");
+    expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("browserAiMode");
+    expect(authorizeAiRequest.mock.calls[0]?.[0]).not.toHaveProperty(
+      "browserAiMode",
     );
     mock.close();
   });
