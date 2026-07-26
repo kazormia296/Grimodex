@@ -2321,7 +2321,7 @@ function LPVariantH() {
                       letterSpacing: ".12em",
                     }}
                   >
-                    TAURI · LOCAL · CLI · BYOK
+                    ELECTRON · LOCAL · CLI · BYOK
                   </span>
                 </div>
               </div>
@@ -2486,7 +2486,7 @@ function LPVariantH() {
                         }}
                       >
                         <span>RUNTIME</span>
-                        <b>TAURI v2</b>
+                        <b>ELECTRON</b>
                       </div>
                       <div
                         style={{
@@ -2516,7 +2516,7 @@ function LPVariantH() {
                       >
                         <span>STATUS</span>
                         <b style={{ background: HZ_HL, padding: "0 4px" }}>
-                          BETA
+                          v2.0.7
                         </b>
                       </div>
                     </div>
@@ -3336,8 +3336,97 @@ function LPVariantH() {
               letterSpacing: ".08em",
             }}
           >
-            FREE (BETA) · LOCAL-FIRST · BRING YOUR OWN AI KEY
+            {lang === "en"
+              ? "30-DAY FULL TRIAL · LOCAL-FIRST · BRING YOUR OWN AI KEY"
+              : "30日間フル機能トライアル · ローカルファースト · 自分のAIキーで"}
           </p>
+          {/* PRICE — 景表法対応の「予告」形式。取り消し線での比較表示はしない。
+              発売日 2026-07-26 から1か月の発売記念価格を表示する。 */}
+          <div
+            style={{
+              maxWidth: 640,
+              margin: "40px auto 0",
+              border: `2px solid ${HZ_INK}`,
+              padding: "22px 26px",
+              textAlign: "left",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: ".1em",
+                opacity: 0.65,
+                marginBottom: 10,
+              }}
+            >
+              {lang === "en"
+                ? "GRIMODEX v2.0.7 · ONE-TIME PURCHASE"
+                : "GRIMODEX v2.0.7 · 買い切り"}
+            </div>
+            <div
+              style={{
+                fontSize: 23,
+                fontWeight: 800,
+                letterSpacing: -0.5,
+                lineHeight: 1.35,
+                marginBottom: 12,
+              }}
+            >
+              {lang === "en" ? (
+                <>
+                  Launch price{" "}
+                  <span className="hz-mark" style={{ padding: "0 6px" }}>
+                    ¥6,900
+                  </span>{" "}
+                  <span
+                    style={{ fontSize: 15, fontWeight: 400, opacity: 0.75 }}
+                  >
+                    through August 26, 2026. Regular price ¥8,900 from August
+                    27.
+                  </span>
+                </>
+              ) : (
+                <>
+                  発売記念価格{" "}
+                  <span className="hz-mark" style={{ padding: "0 6px" }}>
+                    ¥6,900
+                  </span>{" "}
+                  <span
+                    style={{ fontSize: 15, fontWeight: 400, opacity: 0.75 }}
+                  >
+                    （2026年8月26日まで）。8月27日以降は通常価格 ¥8,900。
+                  </span>
+                </>
+              )}
+            </div>
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: 20,
+                fontSize: 14,
+                lineHeight: 1.8,
+                opacity: 0.85,
+              }}
+            >
+              <li>
+                {lang === "en"
+                  ? "30-day full-feature trial — every feature, no purchase required."
+                  : "30日間フル機能トライアル（購入不要ですべての機能が使えます）。"}
+              </li>
+              <li>
+                {lang === "en"
+                  ? "One-time purchase; paid upgrade only per major version."
+                  : "買い切り。メジャーバージョンごとに有償アップグレード。"}
+              </li>
+              <li>
+                {lang === "en"
+                  ? "Purchase is available only from the installed desktop app after you confirm it starts on your computer."
+                  : "購入は、デスクトップアプリが起動することを確認した後、アプリ内からのみ行えます。"}
+              </li>
+            </ul>
+          </div>
           <div
             className="hz-cta-actions"
             style={{
@@ -3447,140 +3536,61 @@ function LPVariantH() {
             </a>
           </div>
 
-          {/* OPEN BETA — Discord tester recruitment. The whole card links to
-              the Discord invite; the inner pill is a visual affordance, not a
-              nested anchor. */}
           <div
-            style={{ display: "flex", justifyContent: "center", marginTop: 40 }}
+            style={{
+              maxWidth: 760,
+              margin: "32px auto 0",
+              border: `2px solid ${HZ_INK}`,
+              background: HZ_HL,
+              padding: "18px 22px",
+              textAlign: "left",
+            }}
           >
-            <a
-              href="https://discord.gg/ufPXC48kfX"
-              target="_blank"
-              rel="noreferrer"
-              className="hz-shadow"
+            <div
               style={{
-                background: HZ_BG,
-                color: HZ_INK,
-                border: `2px solid ${HZ_INK}`,
-                padding: "24px 28px",
-                maxWidth: 760,
-                width: "100%",
-                textAlign: "left",
-                textDecoration: "none",
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "center",
-                gap: 24,
-                justifyContent: "space-between",
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: ".1em",
+                opacity: 0.65,
+                marginBottom: 14,
               }}
             >
-              <div style={{ flex: "1 1 340px", minWidth: 260 }}>
-                <div
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 11,
-                    fontWeight: 800,
-                    textTransform: "uppercase",
-                    letterSpacing: ".1em",
-                    marginBottom: 12,
-                  }}
-                >
-                  <span
-                    style={{
-                      background: HZ_HL,
-                      padding: "3px 8px",
-                      border: `1.5px solid ${HZ_INK}`,
-                    }}
-                  >
-                    OPEN BETA
-                  </span>
-                  <span style={{ opacity: 0.6 }}>
-                    {lang === "en" ? "TESTERS WANTED" : "テスター募集"}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    fontSize: 22,
-                    fontWeight: 800,
-                    letterSpacing: -0.5,
-                    lineHeight: 1.2,
-                    marginBottom: 10,
-                  }}
-                >
-                  {lang === "en" ? (
-                    <>
-                      Report a bug, shape a feature —{" "}
-                      <span className="hz-mark" style={{ padding: "0 6px" }}>
-                        earn a 1.0 license.
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      バグ報告・機能提案で、
-                      <span className="hz-mark" style={{ padding: "0 6px" }}>
-                        1.0 ライセンスを進呈。
-                      </span>
-                    </>
-                  )}
-                </div>
-                <p
-                  style={{
-                    fontSize: 14,
-                    lineHeight: 1.7,
-                    margin: 0,
-                    opacity: 0.85,
-                  }}
-                >
-                  {lang === "en"
-                    ? "Grimodex is in open beta and looking for testers. Submit at least one reproducible bug report — or a feature proposal we adopt — during the beta, and we'll grant you a full 1.0 release license."
-                    : "Grimodex は現在オープンベータ中で、ベータテスターを募集しています。ベータ期間中に「再現可能なバグ報告」または「採用された機能提案」を 1 件以上してくださった方に、1.0 の製品版ライセンスを進呈します。"}
-                </p>
-              </div>
-              <span
-                style={{
-                  flex: "0 0 auto",
-                  background: HZ_INK,
-                  color: HZ_BG,
-                  border: `2px solid ${HZ_INK}`,
-                  padding: "16px 22px",
-                  display: "inline-flex",
-                  flexDirection: "column",
-                  gap: 4,
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 10,
-                    textTransform: "uppercase",
-                    letterSpacing: ".1em",
-                    opacity: 0.7,
-                  }}
-                >
-                  ↗ DISCORD
-                </span>
-                <span
-                  style={{
-                    fontWeight: 800,
-                    fontSize: 18,
-                    letterSpacing: -0.3,
-                  }}
-                >
-                  {lang === "en" ? "Join the Discord" : "Discord に参加"}
-                </span>
-              </span>
-            </a>
+              {lang === "en"
+                ? "PURCHASE IN THE DESKTOP APP"
+                : "デスクトップアプリ内で購入"}
+            </div>
+            <p
+              style={{
+                margin: 0,
+                fontSize: 14,
+                lineHeight: 1.75,
+              }}
+            >
+              {lang === "en"
+                ? "Install and launch Grimodex first. After confirming that it works on your computer, open Settings > License > Purchase a license. This website does not link directly to checkout."
+                : "まずGrimodexをインストールして起動してください。お使いのPCで動作することを確認した後、「設定 > ライセンス > ライセンスを購入」から決済へ進めます。このWebサイトから決済ページへ直接移動することはできません。"}
+            </p>
+            <p
+              style={{
+                margin: "10px 0 0",
+                fontSize: 13,
+                lineHeight: 1.7,
+                opacity: 0.75,
+              }}
+            >
+              {lang === "en"
+                ? "Checkout and license delivery are handled by Polar, our authorized reseller. The checkout screen and confirmation email may appear in English."
+                : "決済とライセンスキーの発行は、ライセンス管理事業者のPolarが行います。チェックアウト画面と購入確認メールは英語で表示される場合があります。"}
+            </p>
           </div>
 
           <div style={{ marginTop: 80 }}>
             <HZBar
               items={[
                 { t: "GRIMODEX", k: true },
-                { t: "BETA" },
-                { t: "TAURI v2" },
+                { t: "v2.0.7" },
+                { t: "ELECTRON" },
                 {
                   t: "GITHUB ↗",
                   href: "https://github.com/kazormia296/Grimodex",
