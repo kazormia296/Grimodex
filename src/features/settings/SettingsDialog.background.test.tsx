@@ -134,7 +134,7 @@ describe("SettingsDialog Background Studio handoff", () => {
     render(<SettingsDialog open onClose={vi.fn()} initialCategory="display" />);
 
     const dialog = screen.getByTestId("settings-dialog");
-    expect(dialog.className).toContain("h-[600px]");
+    expect(dialog.className).toContain("h-[640px]");
     expect(dialog.className).toContain("min-w-[480px]");
     expect(dialog.className).not.toContain("safe-area-inset");
   });
