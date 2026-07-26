@@ -376,6 +376,43 @@ describe("release workflow boundary", () => {
     }
   });
 
+  it("publishes exact-version public releases to AUR with the protected SSH key", async () => {
+    const workflow = await readWorkflow("aur-publish.yml");
+    const publish = workflow.jobs.publish;
+    const checkout = publish.steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    const commands = publish.steps
+      .map((step) => step.run)
+      .filter(Boolean)
+      .join("\n");
+    const definition = JSON.stringify(publish);
+
+    assert.equal(publish.environment, "aur");
+    assert.match(publish.if, /github\.repository == 'kazormia296\/Grimodex'/);
+    assert.equal(
+      checkout?.with?.ref,
+      "${{ github.event.repository.default_branch }}",
+    );
+    assert.equal(checkout?.with?.["persist-credentials"], false);
+    assert.match(commands, /gh api .*releases\/tags/);
+    assert.match(commands, /published_at/);
+    assert.match(commands, /makepkg --printsrcinfo/);
+    assert.match(commands, /AUR_SSH_PRIVATE_KEY is required/);
+    assert.match(
+      commands,
+      /SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11\+4/,
+    );
+    assert.match(
+      commands,
+      /ssh:\/\/aur@aur\.archlinux\.org\/grimodex-bin\.git/,
+    );
+    assert.match(commands, /git -C "\$aur_repository" push origin HEAD:master/);
+    assert.doesNotMatch(definition, /event\.release\.prerelease/);
+    assert.doesNotMatch(definition, /AUR_USERNAME|AUR_EMAIL/);
+    assert.doesNotMatch(definition, /KSXGitHub\/github-actions-deploy-aur/);
+  });
+
   it("runs npm dependency audits through the supported bulk advisory client", async () => {
     const workflow = await readWorkflow("ci.yml");
     const securitySteps = workflow.jobs.security.steps;

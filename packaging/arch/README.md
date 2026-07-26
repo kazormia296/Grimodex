@@ -53,15 +53,16 @@ PKGBUILD / .SRCINFO を push する。動かすには以下の一度きりの準
 1. [AUR アカウント](https://aur.archlinux.org/register) を作成する。
 2. AUR 専用の SSH 鍵を作る: `ssh-keygen -t ed25519 -f aur -C aur@grimodex -N ''`
 3. AUR の **My Account → SSH Public Key** に `aur.pub` の内容を登録する。
-4. GitHub リポジトリの **Settings → Secrets and variables → Actions** に登録:
-   - `AUR_USERNAME` — AUR のユーザー名（AUR リポジトリのコミット名義になる）
-   - `AUR_EMAIL` — コミット用メールアドレス
-   - `AUR_SSH_PRIVATE_KEY` — `aur`（秘密鍵）の中身全文
-5. 初回はパッケージ未登録の状態で問題ない。AUR は初回 push で
+4. GitHub リポジトリの **Settings → Environments** に `aur` environment を作る。
+5. `aur` environment の secret に、Mozkey IbG と同じ契約で
+   `AUR_SSH_PRIVATE_KEY` — `aur`（秘密鍵）の中身全文 — を登録する。
+   コミット名義は workflow 内の `kazormia296` /
+   `kazormia296@users.noreply.github.com` に固定するため、追加 secret は不要。
+6. 初回はパッケージ未登録の状態で問題ない。AUR は初回 push で
    `grimodex-bin` パッケージが自動作成される。
 
-シークレット未設定の場合、`aur-publish.yml` は warning を出して安全にスキップする
-（リリース公開が赤 CI にならない）。
+`AUR_SSH_PRIVATE_KEY` が未設定または不正な場合、AUR 更新の取りこぼしを成功扱いに
+しないよう `aur-publish.yml` は fail closed する。
 
 ## 注意事項
 
