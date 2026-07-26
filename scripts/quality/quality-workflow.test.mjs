@@ -145,8 +145,17 @@ test("public copy follows the canonical style guide and version bumps stop at a 
   assert.match(copy, /冒頭1〜2文/);
   assert.match(copy, /Issue.*PR.*コミット|PR.*Issue.*commit/is);
   assert.match(copy, /公開.*(?:しない|権限.*ない)/is);
+  assert.match(copy, /直近の公開済みGitHub Release/);
+  assert.match(copy, /現行Assets/);
+  assert.match(copy, /手動導入用Assets.*自動更新用Assets.*別工程/is);
   assert.match(guide, /このファイル.*正本/is);
   assert.match(guide, /Issue、PR、コミットメッセージ/);
+  assert.match(guide, /## 配備要領/);
+  assert.match(guide, /## DEPLOYMENT PROCEDURE/);
+  assert.match(guide, /## ⚠️ インストール前に必ずお読みください/);
+  assert.match(guide, /## ⚠️ Please read before installing/);
+  assert.match(guide, /runtime library/);
+  assert.match(guide, /Release 公開後の別工程/);
   assert.match(impactMap, /docs\/communication-style-guide\.md/);
 
   assert.match(agents, /write-grimodex-copy/);
@@ -157,6 +166,9 @@ test("public copy follows the canonical style guide and version bumps stop at a 
   assert.match(bump, /RELEASE_NOTES\/v<新バージョン>\.ja\.md/);
   assert.match(bump, /RELEASE_NOTES\/v<新バージョン>\.en\.md/);
   assert.doesNotMatch(bump, /## 新機能 \/ New/);
+  assert.match(bump, /配備要領/);
+  assert.match(bump, /DEPLOYMENT PROCEDURE/);
+  assert.match(bump, /手動導入用Assets.*自動更新用Assets.*別工程/is);
   assert.match(bump, /Draft Release|Draftリリース/i);
   assert.match(bump, /isDraft/);
   assert.match(bump, /別.*明示.*指示.*公開/is);
