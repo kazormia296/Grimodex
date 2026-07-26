@@ -360,10 +360,7 @@ describe("release workflow boundary", () => {
       "Build Electron (mac)",
       "Build Electron (arch pacman package)",
     ]) {
-      assert.match(
-        recoverySource.run,
-        new RegExp(job.replace(/[()]/g, "\\$&")),
-      );
+      assert.ok(recoverySource.run.includes(job));
     }
     assert.match(recoverySource.run, /Assemble one Draft Release/);
     assert.match(recoverySource.run, /\.expired == false/);
