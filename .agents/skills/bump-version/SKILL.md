@@ -52,6 +52,7 @@ electron-builder、`app.getVersion()`、v2 release workflow の tag gate は、�
    - `public/RELEASE_NOTES/v<新バージョン>.en.md`
    - `/write-grimodex-copy` を使用し、`docs/communication-style-guide.md` を正本として作成する。
    - 直近リリース以降の事実を一つのFact ledgerへ固定し、ja／enの変更、分類、深刻度、対象範囲、必要操作、backup、workaroundを一致させる。
+   - デスクトップGitHub Releaseでは、ガイドが定める `配備要領`／`DEPLOYMENT PROCEDURE` とインストール前注意の必須節を日英とも記載し、現行Assets、配備区分、動作要件、更新方法、署名、データ保管、AI利用へ一致させる。手動導入用Assets、自動更新用Assets、公開後に別工程で更新される配布経路を区別する。
    - 空の節、placeholder、裏付けのない変更を残さない。
 5. **整合性を検証する**
 

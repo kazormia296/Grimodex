@@ -31,6 +31,7 @@ description: >
 文章を書く前に、根拠から次を列挙する。
 
 - 対象version、channel、現在のlifecycle状態（開発中、Draft、公開済み、延期、障害対応中）
+- 直近の公開済みGitHub Releaseの節構成と、対象versionの現行Assets一覧
 - 前回リリース以降の変更と、各変更のユーザー向け効果
 - 対象OS／環境、影響範囲、検証状態、既知制約
 - 必要な操作、移行、backup、回避策、期限
@@ -53,6 +54,8 @@ description: >
 
 - `public/RELEASE_NOTES/v<version>.ja.md` と `public/RELEASE_NOTES/v<version>.en.md` を同じFact ledgerから作る。
 - 日英で変更、分類、深刻度、対象範囲、必要操作、期限、backup、workaround、リンクを一致させる。別々に要約して情報を落とさない。
+- デスクトップGitHub Releaseでは、ガイドが定める `配備要領` と「インストール前に必ずお読みください」に対応する必須節を、日英とも変更一覧より前に置く。対象OS、architecture、channel、配布形式、動作要件、更新方法、署名、データ保管、AI利用を現行Assetsと検証結果へ一致させ、手動導入用Assets、自動更新用Assets、公開後に別工程で更新される配布経路を区別する。
+- 直近の公開済みGitHub Releaseはフォーマットの基準にだけ使用する。古いversion、公開状態、channel、Assets、署名状態、更新経路を対象versionの事実としてコピーしない。
 - Draft Release用の文面は公開可能な完成度まで書くが、Draftを公開済みと報告しない。状態を断定できないmetadataは省略する。
 - 公開前チェックリストを両言語へ適用し、version、日付、リンク、固有名詞を照合する。
 
