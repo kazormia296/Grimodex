@@ -1,4 +1,4 @@
 interface:
   display_name: "Bump Version"
-  short_description: "Bump Grimodex version and publish a release tag"
-  default_prompt: "Use $bump-version to bump the Grimodex patch version and complete the requested release workflow."
+  short_description: "Prepare a versioned release and leave it as Draft"
+  default_prompt: "Use $bump-version to prepare the next Grimodex patch release, write its notes, and stop after verifying the Draft Release."

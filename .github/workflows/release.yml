@@ -1,13 +1,47 @@
 name: Electron v2 Release
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' &&
+      format('Release debug {0} at {1}', inputs.target, inputs.candidate_ref) ||
+      format('Electron v2 Release {0}', github.ref_name) }}
 
 on:
   push:
     tags:
       - "v2.*"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Release stage to verify without publishing
+        required: true
+        default: windows
+        type: choice
+        options:
+          - windows
+          - mac
+          - linux
+          - publish
+          - all
+      publish:
+        description: Must remain false; manual debug runs never publish
+        required: true
+        default: false
+        type: boolean
+      candidate_ref:
+        description: Default branch or full 40-character SHA; workflow always runs from master
+        required: true
+        default: master
+        type: string
+      source_run_id:
+        description: Completed tag run whose artifacts are reused by target=publish
+        required: false
+        default: ""
+        type: string
 
 concurrency:
-  group: release-electron-v2-${{ github.ref }}
+  group: >-
+    ${{ github.event_name == 'workflow_dispatch' &&
+        format('release-electron-v2-debug-{0}-{1}', inputs.target, inputs.candidate_ref) ||
+        format('release-electron-v2-{0}', github.ref) }}
   cancel-in-progress: true
 
 permissions:
@@ -16,63 +50,226 @@ permissions:
 jobs:
   ci:
     name: CI Checks
-    needs: release-gate
+    needs: [release-gate, bridge-signing-preflight]
+    if: >-
+      always() &&
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      needs.release-gate.result == 'success' &&
+      needs.release-gate.outputs.should_publish == 'true' &&
+      ((needs.release-gate.outputs.prerelease == 'true' &&
+        needs.bridge-signing-preflight.result == 'skipped') ||
+       (needs.release-gate.outputs.prerelease == 'false' &&
+        needs.bridge-signing-preflight.result == 'success'))
     uses: ./.github/workflows/ci.yml
 
   release-gate:
-    name: Validate v2 release identity
+    name: Resolve v2 release or debug identity
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
+      mode: ${{ steps.version.outputs.mode }}
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      target: ${{ steps.version.outputs.target }}
+      run_build: ${{ steps.version.outputs.run_build }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
+      source_run_id: ${{ steps.version.outputs.source_run_id }}
+      candidate_ref: ${{ steps.version.outputs.candidate_ref }}
+      candidate_sha: ${{ steps.version.outputs.candidate_sha }}
+      checkout_ref: ${{ steps.version.outputs.checkout_ref }}
+      matrix: ${{ steps.version.outputs.matrix }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Checkout trusted workflow source
+        id: workflow-source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch || github.ref }}
+          path: workflow-source
+
+      - name: Resolve the debug candidate to an immutable commit
+        id: candidate
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          path: candidate
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
-      - name: Tag/package version hard gate
+      - name: Release/debug identity hard gate
         id: version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
           RELEASE_REF_TYPE: ${{ github.ref_type }}
-        run: >-
-          node scripts/validate-release-version.mjs
-          --tag "$RELEASE_TAG"
-          --ref-type "$RELEASE_REF_TYPE"
-          --package package.json
-          --major 2
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TARGET: ${{ inputs.target }}
+          RELEASE_PUBLISH: ${{ inputs.publish }}
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.commit || steps.workflow-source.outputs.commit }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          PACKAGE_PATH="workflow-source/package.json"
+          if [ "$RELEASE_EVENT" = "workflow_dispatch" ]; then
+            PACKAGE_PATH="candidate/package.json"
+          fi
+          node workflow-source/scripts/resolve-release-workflow.mjs \
+            --event "$RELEASE_EVENT" \
+            --ref-name "$RELEASE_REF_NAME" \
+            --ref-type "$RELEASE_REF_TYPE" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --target "$RELEASE_TARGET" \
+            --publish "$RELEASE_PUBLISH" \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --base-package workflow-source/package.json \
+            --package "$PACKAGE_PATH" \
+            --major 2
+
+  release-state:
+    name: Detect completed immutable bridge release
+    needs: release-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      complete: ${{ steps.state.outputs.complete }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
+
+      - name: Verify an existing completion marker
+        id: state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+          PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          echo "complete=false" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" != "push" ] || [ "$PRERELEASE" != "false" ]; then
+            exit 0
+          fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            exit 0
+          fi
+          EXISTING_DIR="$RUNNER_TEMP/existing-release"
+          mkdir -p "$EXISTING_DIR"
+          if ! gh release download "$TAG" --pattern latest.json \
+            --dir "$EXISTING_DIR" >/dev/null 2>&1; then
+            exit 0
+          fi
+          node --input-type=module -e \
+            "import fs from 'node:fs'; import {validateBridgeManifestSchema} from './scripts/generate-tauri-bridge-manifest.mjs'; const m=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); validateBridgeManifestSchema(m); if(m.version!==process.env.VERSION) throw new Error('Existing bridge version mismatch');" \
+            "$EXISTING_DIR/latest.json"
+          echo "complete=true" >> "$GITHUB_OUTPUT"
+
+  bridge-signing-preflight:
+    name: Preflight stable bridge signing
+    needs: [release-gate, release-state]
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.release-gate.result == 'success' &&
+      needs.release-state.result == 'success' &&
+      needs.release-state.outputs.complete != 'true' &&
+      needs.release-gate.outputs.prerelease == 'false' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.ref_name == github.event.repository.default_branch &&
+        inputs.publish == false &&
+        inputs.candidate_ref == github.event.repository.default_branch &&
+        (inputs.target == 'publish' || inputs.target == 'all'))) &&
+      (needs.release-gate.outputs.should_publish == 'true' ||
+       needs.release-gate.outputs.target == 'publish' ||
+       needs.release-gate.outputs.target == 'all')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify the frozen bridge key with a signed probe
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is required for stable bridge latest.json." >&2
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          PUBKEY_FILE="packaging/tauri-v1/updater-public-key.pub"
+          EMBEDDED_PUBKEY_FILE="$RUNNER_TEMP/tauri-updater-embedded.pub"
+          PROBE_FILE="$RUNNER_TEMP/tauri-bridge-signing-probe.txt"
+          DECODED_SIGNATURE="$RUNNER_TEMP/tauri-bridge-signing-probe.minisig"
+          node -e "const c=require('./src-tauri/tauri.conf.json');process.stdout.write(Buffer.from(c.plugins.updater.pubkey,'base64'))" \
+            > "$EMBEDDED_PUBKEY_FILE"
+          test -s "$PUBKEY_FILE"
+          if ! cmp -s "$PUBKEY_FILE" "$EMBEDDED_PUBKEY_FILE"; then
+            echo "::error::Current Tauri updater public key differs from the frozen bridge key." >&2
+            exit 1
+          fi
+          printf 'Grimodex stable bridge signing preflight\n' > "$PROBE_FILE"
+          pnpm tauri signer sign "$PROBE_FILE"
+          test -s "${PROBE_FILE}.sig"
+          base64 --decode "${PROBE_FILE}.sig" > "$DECODED_SIGNATURE"
+          minisign -Vm "$PROBE_FILE" -x "$DECODED_SIGNATURE" -p "$PUBKEY_FILE"
 
   build:
     name: Build Electron (${{ matrix.id }})
-    needs: [ci, release-gate]
+    needs: [release-gate, ci, bridge-signing-preflight]
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.release-gate.result == 'success' &&
+      needs.release-gate.outputs.run_build == 'true' &&
+      (needs.ci.result == 'success' ||
+       (needs.release-gate.outputs.should_publish != 'true' &&
+        needs.ci.result == 'skipped')) &&
+      (needs.bridge-signing-preflight.result == 'success' ||
+       (needs.bridge-signing-preflight.result == 'skipped' &&
+        (needs.release-gate.outputs.prerelease == 'true' ||
+         (needs.release-gate.outputs.should_publish != 'true' &&
+          needs.release-gate.outputs.target != 'all' &&
+          needs.release-gate.outputs.target != 'publish'))))
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     permissions:
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - id: linux
-            os: ubuntu-24.04
-            artifact: electron-linux
-            updaterMetadata: latest-linux.yml
-          - id: mac
-            # Grimodex の現行 macOS 配布は Apple Silicon (arm64) のみ。
-            # `macos-latest` の将来のarch変更を避け、GitHub標準M1 imageへ固定する。
-            os: macos-15
-            artifact: electron-mac
-            updaterMetadata: latest-mac.yml
-          - id: windows
-            os: windows-latest
-            artifact: electron-windows
-            updaterMetadata: latest.yml
+      matrix: ${{ fromJSON(needs.release-gate.outputs.matrix) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
 
       - name: Linux build dependencies
         if: matrix.id == 'linux'
@@ -111,7 +308,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Import Apple Developer ID certificate
-        if: matrix.id == 'mac'
+        if: >-
+          matrix.id == 'mac' &&
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_dispatch' &&
+            github.ref_name == github.event.repository.default_branch &&
+            inputs.candidate_ref == github.event.repository.default_branch &&
+            (inputs.target == 'mac' || inputs.target == 'all')))
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -145,7 +348,13 @@ jobs:
           rm -f "$CERT_PATH"
 
       - name: Restore App Store Connect API key
-        if: matrix.id == 'mac'
+        if: >-
+          matrix.id == 'mac' &&
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_dispatch' &&
+            github.ref_name == github.event.repository.default_branch &&
+            inputs.candidate_ref == github.event.repository.default_branch &&
+            (inputs.target == 'mac' || inputs.target == 'all')))
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
         run: printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/authkey.p8"
@@ -169,7 +378,18 @@ jobs:
           "CSC_IDENTITY_AUTO_DISCOVERY=false" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build host packages without publishing
+      - name: Build non-macOS host packages without publishing
+        if: matrix.id != 'mac'
+        run: pnpm exec electron-builder --publish never
+
+      - name: Build signed macOS packages without publishing
+        if: >-
+          matrix.id == 'mac' &&
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_dispatch' &&
+            github.ref_name == github.event.repository.default_branch &&
+            inputs.candidate_ref == github.event.repository.default_branch &&
+            (inputs.target == 'mac' || inputs.target == 'all')))
         env:
           CSC_NAME: ${{ env.CSC_NAME }}
           APPLE_API_KEY: ${{ runner.temp }}/authkey.p8
@@ -276,7 +496,13 @@ jobs:
           & ./scripts/verify-windows-tauri-migration.ps1 -InstallerPath $Installer[0].FullName
 
       - name: Notarize and staple the distributable DMG
-        if: matrix.id == 'mac'
+        if: >-
+          matrix.id == 'mac' &&
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_dispatch' &&
+            github.ref_name == github.event.repository.default_branch &&
+            inputs.candidate_ref == github.event.repository.default_branch &&
+            (inputs.target == 'mac' || inputs.target == 'all')))
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY }}
@@ -296,7 +522,13 @@ jobs:
           xcrun stapler validate "$DMG"
 
       - name: Verify Apple signature and notarization ticket
-        if: matrix.id == 'mac'
+        if: >-
+          matrix.id == 'mac' &&
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_dispatch' &&
+            github.ref_name == github.event.repository.default_branch &&
+            inputs.candidate_ref == github.event.repository.default_branch &&
+            (inputs.target == 'mac' || inputs.target == 'all')))
         run: |
           set -euo pipefail
           APP=$(find release/electron -type d -name '*.app' -print -quit)
@@ -354,7 +586,14 @@ jobs:
     # Arch pkgver/pkgrel cannot preserve arbitrary SemVer prerelease ordering.
     # Pre-release users use AppImage/deb/rpm; the pacman/AUR package starts at
     # each stable release so the later stable version is always an upgrade.
-    if: needs.release-gate.outputs.prerelease == 'false'
+    if: >-
+      always() &&
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      needs.release-gate.outputs.should_publish == 'true' &&
+      needs.release-gate.outputs.prerelease == 'false' &&
+      needs.build.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -363,6 +602,8 @@ jobs:
       image: archlinux:base-devel
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
 
       - name: Install Arch packaging tools
         run: pacman -Syu --noconfirm --needed pacman-contrib jq git
@@ -419,22 +660,29 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
-    name: Create one draft release
-    needs: [release-gate, build, build-arch]
+  publish-debug:
+    name: Verify publish stage from existing artifacts
+    needs: [release-gate, bridge-signing-preflight]
     if: >-
       !cancelled() &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref_name == github.event.repository.default_branch &&
+      inputs.target == 'publish' &&
+      inputs.publish == false &&
+      inputs.candidate_ref == github.event.repository.default_branch &&
       needs.release-gate.result == 'success' &&
-      needs.build.result == 'success' &&
-      (needs.build-arch.result == 'success' ||
-       (needs.release-gate.outputs.prerelease == 'true' &&
-        needs.build-arch.result == 'skipped'))
+      needs.release-gate.outputs.target == 'publish' &&
+      needs.release-gate.outputs.should_publish != 'true' &&
+      needs.bridge-signing-preflight.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
-      contents: write
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
@@ -446,6 +694,196 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Verify source release run identity
+        id: source-run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ needs.release-gate.outputs.source_run_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          RUN_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")
+          STATUS=$(jq -r .status <<<"$RUN_JSON")
+          CONCLUSION=$(jq -r .conclusion <<<"$RUN_JSON")
+          EVENT=$(jq -r .event <<<"$RUN_JSON")
+          WORKFLOW_NAME=$(jq -r .name <<<"$RUN_JSON")
+          WORKFLOW_PATH=$(jq -r .path <<<"$RUN_JSON")
+          HEAD_BRANCH=$(jq -r .head_branch <<<"$RUN_JSON")
+          SOURCE_SHA=$(jq -r .head_sha <<<"$RUN_JSON")
+          if [ "$STATUS" != "completed" ]; then
+            echo "::error::Source run is not completed: $STATUS" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_NAME" != "Electron v2 Release" ]; then
+            echo "::error::Source run belongs to another workflow: $WORKFLOW_NAME" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_PATH" != ".github/workflows/release.yml" ]; then
+            echo "::error::Source run uses an unexpected workflow path: $WORKFLOW_PATH" >&2
+            exit 1
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ "$HEAD_BRANCH" != "$DEFAULT_BRANCH" ] || [ "$CONCLUSION" != "success" ]; then
+              echo "::error::Debug source run must be a successful default-branch run." >&2
+              exit 1
+            fi
+          elif [ "$EVENT" = "push" ]; then
+            if [ "$HEAD_BRANCH" != "$TAG" ]; then
+              echo "::error::Source run tag mismatch: expected ${TAG}, got ${HEAD_BRANCH}" >&2
+              exit 1
+            fi
+            TAG_REF_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
+            TAG_OBJECT_TYPE=$(jq -r .object.type <<<"$TAG_REF_JSON")
+            TAG_OBJECT_SHA=$(jq -r .object.sha <<<"$TAG_REF_JSON")
+            if [ "$TAG_OBJECT_TYPE" = "tag" ]; then
+              TAG_OBJECT_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}")
+              TAG_OBJECT_TYPE=$(jq -r .object.type <<<"$TAG_OBJECT_JSON")
+              TAG_OBJECT_SHA=$(jq -r .object.sha <<<"$TAG_OBJECT_JSON")
+            fi
+            if [ "$TAG_OBJECT_TYPE" != "commit" ] || [ "$TAG_OBJECT_SHA" != "$SOURCE_SHA" ]; then
+              echo "::error::Source run SHA does not match ${TAG}: ${SOURCE_SHA}" >&2
+              exit 1
+            fi
+          else
+            echo "::error::Source run must be a tag push or trusted debug run." >&2
+            exit 1
+          fi
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Reusing successful host artifacts from run ${SOURCE_RUN_ID} at ${SOURCE_SHA}."
+
+      - name: Download the successful Linux artifact from the source run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: electron-linux
+          path: release-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-gate.outputs.source_run_id }}
+
+      - name: Download the successful macOS artifact from the source run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: electron-mac
+          path: release-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-gate.outputs.source_run_id }}
+
+      - name: Download the successful Windows artifact from the source run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: electron-windows
+          path: release-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-gate.outputs.source_run_id }}
+
+      - name: Sign reused installers and generate a dry-run bridge manifest
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          PUBKEY_FILE="packaging/tauri-v1/updater-public-key.pub"
+          mapfile -t BRIDGE_ASSETS < <(find release-assets -maxdepth 1 -type f \
+            \( -name "Grimodex-${VERSION}-windows-*.exe" \
+            -o -name "Grimodex-${VERSION}-mac-*.app.tar.gz" \
+            -o -name "Grimodex-${VERSION}-linux-*.AppImage" \
+            -o -name "Grimodex-${VERSION}-linux-*.deb" \
+            -o -name "Grimodex-${VERSION}-linux-*.rpm" \) | sort)
+          if [ "${#BRIDGE_ASSETS[@]}" -eq 0 ]; then
+            echo "::error::No reusable Electron installers matched the Tauri bridge contract." >&2
+            exit 1
+          fi
+          for asset in "${BRIDGE_ASSETS[@]}"; do
+            pnpm tauri signer sign "$asset"
+            test -s "${asset}.sig"
+            DECODED_SIGNATURE="$RUNNER_TEMP/$(basename "$asset").minisig"
+            base64 --decode "${asset}.sig" > "$DECODED_SIGNATURE"
+            minisign -Vm "$asset" -x "$DECODED_SIGNATURE" -p "$PUBKEY_FILE"
+          done
+          PUB_DATE=$(git show -s --format=%cI HEAD)
+          node scripts/generate-tauri-bridge-manifest.mjs \
+            --assets-dir release-assets \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --notes "Grimodex Electron v${VERSION} migration bridge debug" \
+            --pub-date "$PUB_DATE" \
+            --output release-assets/latest.json
+
+      - name: Preserve publish-debug evidence without mutating a release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-publish-debug-${{ needs.release-gate.outputs.version }}-${{ github.run_id }}
+          path: |
+            release-assets/latest.json
+            release-assets/*.sig
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Assemble one Draft Release
+    needs:
+      - release-gate
+      - ci
+      - bridge-signing-preflight
+      - build
+      - build-arch
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      needs.release-gate.outputs.should_publish == 'true' &&
+      needs.release-gate.result == 'success' &&
+      needs.ci.result == 'success' &&
+      needs.build.result == 'success' &&
+      ((needs.release-gate.outputs.prerelease == 'true' &&
+        needs.bridge-signing-preflight.result == 'skipped' &&
+        needs.build-arch.result == 'skipped') ||
+       (needs.release-gate.outputs.prerelease == 'false' &&
+        needs.bridge-signing-preflight.result == 'success' &&
+        needs.build-arch.result == 'success'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compose bilingual Draft Release notes
+        env:
+          TAG: ${{ needs.release-gate.outputs.tag }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          RELEASE_NOTES_FILE="$RUNNER_TEMP/github-release-notes.md"
+          node scripts/compose-github-release-notes.mjs \
+            --tag "$TAG" \
+            --ja "public/RELEASE_NOTES/v${VERSION}.ja.md" \
+            --en "public/RELEASE_NOTES/v${VERSION}.en.md" \
+            --output "$RELEASE_NOTES_FILE"
+          echo "RELEASE_NOTES_FILE=$RELEASE_NOTES_FILE" >> "$GITHUB_ENV"
 
       - name: Download all host artifacts into one directory
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -566,9 +1004,13 @@ jobs:
               echo "::error::Refusing to mutate an already published release without latest.json." >&2
               exit 1
             fi
+            gh release edit "$TAG" \
+              --draft \
+              --title "Grimodex v${VERSION}" \
+              --notes-file "$RELEASE_NOTES_FILE"
           else
             CREATE_ARGS=(--draft --verify-tag --title "Grimodex v${VERSION}" \
-              --notes "Grimodex Electron v${VERSION} release. Review all assets before publishing.")
+              --notes-file "$RELEASE_NOTES_FILE")
             if [ "$PRERELEASE" = "true" ]; then
               CREATE_ARGS+=(--prerelease)
             fi
@@ -587,3 +1029,56 @@ jobs:
             # and electron-updater metadata asset succeeded. Never clobber it.
             gh release upload "$TAG" release-assets/latest.json
           fi
+
+  verify-draft-release:
+    name: Verify the Release remains a Draft
+    needs: [release-gate, release-state, publish]
+    if: >-
+      always() &&
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      needs.release-gate.result == 'success' &&
+      needs.release-gate.outputs.should_publish == 'true' &&
+      needs.release-state.result == 'success' &&
+      (needs.publish.result == 'success' ||
+       (needs.release-state.outputs.complete == 'true' &&
+        needs.publish.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Compose the expected bilingual notes
+        env:
+          TAG: ${{ needs.release-gate.outputs.tag }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/compose-github-release-notes.mjs \
+            --tag "$TAG" \
+            --ja "public/RELEASE_NOTES/v${VERSION}.ja.md" \
+            --en "public/RELEASE_NOTES/v${VERSION}.en.md" \
+            --output "$RUNNER_TEMP/expected-release-notes.md"
+
+      - name: Verify Draft identity and exact body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+          PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$RUNNER_TEMP/release.json"
+          gh release view "$TAG" \
+            --json tagName,isDraft,isPrerelease,body,url > "$RELEASE_JSON"
+          node --input-type=module -e \
+            "import fs from 'node:fs'; const release=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const expectedBody=fs.readFileSync(process.argv[2],'utf8'); const expectedPrerelease=process.env.PRERELEASE==='true'; if(release.tagName!==process.env.TAG) throw new Error('Draft tag mismatch'); if(release.isDraft!==true) throw new Error('Release must remain a Draft'); if(release.isPrerelease!==expectedPrerelease) throw new Error('Draft prerelease state mismatch'); if(release.body!==expectedBody) throw new Error('Draft body does not match authored release notes'); console.log('Draft Release verified:', release.url);" \
+            "$RELEASE_JSON" "$RUNNER_TEMP/expected-release-notes.md"

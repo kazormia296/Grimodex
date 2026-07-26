@@ -4,6 +4,8 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { load } from "js-yaml";
 
+import { RELEASE_BUILD_TARGETS } from "./resolve-release-workflow.mjs";
+
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
 async function readWorkflow(name) {
@@ -32,14 +34,18 @@ describe("release workflow boundary", () => {
     assert.ok(!workflowNames.includes("release-tauri.yml"));
   });
 
-  it("builds v2 Electron assets in matrix jobs and publishes once", async () => {
+  it("builds v2 Electron assets in matrix jobs and creates one Draft Release", async () => {
     const workflow = await readWorkflow("release.yml");
     assert.equal(workflow.name, "Electron v2 Release");
+    assert.match(workflow["run-name"], /inputs\.target/);
+    assert.match(workflow["run-name"], /inputs\.candidate_ref/);
     assert.deepEqual(workflow.on.push.tags, ["v2.*"]);
     assert.ok(workflow.on.workflow_dispatch);
+    assert.match(workflow.concurrency.group, /inputs\.target/);
+    assert.match(workflow.concurrency.group, /inputs\.candidate_ref/);
     assert.equal(workflow.jobs.ci.uses, "./.github/workflows/ci.yml");
 
-    const matrix = workflow.jobs.build.strategy.matrix.include;
+    const matrix = RELEASE_BUILD_TARGETS;
     assert.deepEqual(
       matrix.map((entry) => entry.os),
       ["ubuntu-24.04", "macos-15", "windows-latest"],
@@ -73,6 +79,50 @@ describe("release workflow boundary", () => {
     assert.match(publishCommands, /base64 --decode/);
     assert.match(publishCommands, /gh release create/);
     assert.match(publishCommands, /latest\.json/);
+    assert.match(workflow.jobs.publish.name, /draft/i);
+    assert.match(
+      publishCommands,
+      /public\/RELEASE_NOTES\/v\$\{VERSION\}\.ja\.md/,
+    );
+    assert.match(
+      publishCommands,
+      /public\/RELEASE_NOTES\/v\$\{VERSION\}\.en\.md/,
+    );
+    assert.match(publishCommands, /--notes-file/);
+    assert.match(publishCommands, /gh release edit/);
+    assert.match(publishCommands, /--draft/);
+    assert.match(publishCommands, /compose-github-release-notes\.mjs/);
+    const createOrUpdateRelease = workflow.jobs.publish.steps.find(
+      (step) =>
+        step.name === "Create or update the single draft GitHub release",
+    )?.run;
+    assert.ok(createOrUpdateRelease);
+    assert.match(
+      createOrUpdateRelease,
+      /else\s+CREATE_ARGS=\(--draft[\s\S]*?gh release create "\$TAG" "\$\{CREATE_ARGS\[@\]\}"\s+fi/,
+    );
+    const verifyDraft = workflow.jobs["verify-draft-release"];
+    const verifyDraftCommands = verifyDraft.steps
+      .map((step) => step.run)
+      .filter(Boolean)
+      .join("\n");
+    assert.equal(verifyDraft.permissions.contents, "read");
+    assert.deepEqual(verifyDraft.needs, [
+      "release-gate",
+      "release-state",
+      "publish",
+    ]);
+    assert.match(verifyDraft.if, /always\(\)/);
+    assert.match(verifyDraft.if, /release-state\.outputs\.complete == 'true'/);
+    assert.match(
+      verifyDraftCommands,
+      /--json tagName,isDraft,isPrerelease,body,url/,
+    );
+    assert.match(verifyDraftCommands, /release\.isDraft!==true/);
+    assert.match(verifyDraftCommands, /release\.body!==expectedBody/);
+    const workflowDefinition = JSON.stringify(workflow);
+    assert.doesNotMatch(workflowDefinition, /--draft=false/);
+    assert.doesNotMatch(workflowDefinition, /["']?draft["']?\s*[:=]\s*false/);
     assert.equal(workflow.jobs.publish.permissions.contents, "write");
     assert.notEqual(workflow.jobs.build.permissions?.contents, "write");
     assert.deepEqual(
@@ -83,13 +133,150 @@ describe("release workflow boundary", () => {
     );
     assert.equal(
       workflow.jobs["build-arch"].if,
-      "needs.release-gate.outputs.prerelease == 'false'",
+      [
+        "always() &&",
+        "!cancelled() &&",
+        "github.event_name == 'push' &&",
+        "github.ref_type == 'tag' &&",
+        "needs.release-gate.outputs.should_publish == 'true' &&",
+        "needs.release-gate.outputs.prerelease == 'false' &&",
+        "needs.build.result == 'success'",
+      ].join(" "),
     );
     assert.match(workflow.jobs.publish.if, /!cancelled\(\)/);
     assert.doesNotMatch(workflow.jobs.publish.if, /always\(\)/);
     assert.match(workflow.jobs.publish.if, /build-arch\.result == 'success'/);
     assert.match(workflow.jobs.publish.if, /prerelease == 'true'/);
     assert.match(workflow.jobs.publish.if, /build-arch\.result == 'skipped'/);
+  });
+
+  it("supports targeted branch debugging without creating a release", async () => {
+    const workflow = await readWorkflow("release.yml");
+    const inputs = workflow.on.workflow_dispatch.inputs;
+
+    assert.deepEqual(inputs.target.options, [
+      "windows",
+      "mac",
+      "linux",
+      "publish",
+      "all",
+    ]);
+    assert.equal(inputs.target.default, "windows");
+    assert.equal(inputs.publish.type, "boolean");
+    assert.equal(inputs.publish.default, false);
+    assert.equal(inputs.source_run_id.type, "string");
+    assert.equal(inputs.candidate_ref.type, "string");
+    assert.equal(inputs.candidate_ref.default, "master");
+
+    const gate = workflow.jobs["release-gate"];
+    const gateCommands = gate.steps
+      .map((step) => step.run)
+      .filter(Boolean)
+      .join("\n");
+    const workflowSource = gate.steps.find(
+      (step) => step.id === "workflow-source",
+    );
+    const candidate = gate.steps.find((step) => step.id === "candidate");
+    assert.equal(workflowSource?.with?.path, "workflow-source");
+    assert.equal(candidate?.with?.path, "candidate");
+    assert.equal(candidate?.with?.ref, "${{ inputs.candidate_ref }}");
+    assert.match(gateCommands, /resolve-release-workflow\.mjs/);
+    assert.match(gateCommands, /--base-package/);
+    assert.match(gateCommands, /--candidate-ref/);
+    assert.match(gateCommands, /--candidate-sha/);
+    assert.deepEqual(workflow.jobs.ci.needs, [
+      "release-gate",
+      "bridge-signing-preflight",
+    ]);
+    assert.match(workflow.jobs.ci.if, /github\.event_name == 'push'/);
+    assert.match(workflow.jobs.ci.if, /github\.ref_type == 'tag'/);
+    assert.match(workflow.jobs.ci.if, /should_publish == 'true'/);
+    assert.match(workflow.jobs.ci.if, /bridge-signing-preflight/);
+    assert.equal(
+      workflow.jobs.build.strategy.matrix,
+      "${{ fromJSON(needs.release-gate.outputs.matrix) }}",
+    );
+    const buildCheckout = workflow.jobs.build.steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    assert.equal(
+      buildCheckout?.with?.ref,
+      "${{ needs.release-gate.outputs.checkout_ref }}",
+    );
+    assert.match(workflow.jobs.build.if, /run_build == 'true'/);
+    assert.match(workflow.jobs.build.if, /needs\.ci\.result == 'skipped'/);
+    assert.match(
+      workflow.jobs.build.if,
+      /bridge-signing-preflight\.result == 'skipped'/,
+    );
+    assert.match(workflow.jobs["build-arch"].if, /should_publish == 'true'/);
+    assert.match(workflow.jobs.publish.if, /should_publish == 'true'/);
+
+    const preflight = workflow.jobs["bridge-signing-preflight"];
+    const releaseState = workflow.jobs["release-state"];
+    const releaseStateCommands = releaseState.steps
+      .map((step) => step.run)
+      .filter(Boolean)
+      .join("\n");
+    assert.match(releaseStateCommands, /gh release download/);
+    assert.match(releaseStateCommands, /validateBridgeManifestSchema/);
+    assert.deepEqual(preflight.needs, ["release-gate", "release-state"]);
+    assert.match(preflight.if, /release-state\.outputs\.complete != 'true'/);
+    const preflightCommands = preflight.steps
+      .map((step) => step.run)
+      .filter(Boolean)
+      .join("\n");
+    assert.match(preflight.if, /target == 'publish'/);
+    assert.match(preflight.if, /github\.ref_name/);
+    assert.match(preflight.if, /github\.event\.repository\.default_branch/);
+    assert.match(preflightCommands, /pnpm tauri signer sign/);
+    assert.match(preflightCommands, /minisign -Vm/);
+    assert.doesNotMatch(
+      preflightCommands,
+      /TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required/,
+    );
+
+    const publishDebug = workflow.jobs["publish-debug"];
+    const publishDebugDefinition = JSON.stringify(publishDebug);
+    const publishDebugCommands = publishDebug.steps
+      .map((step) => step.run)
+      .filter(Boolean)
+      .join("\n");
+    assert.equal(publishDebug.permissions.contents, "read");
+    assert.match(publishDebugDefinition, /source_run_id/);
+    assert.match(publishDebugDefinition, /github-token/);
+    for (const artifact of [
+      "electron-linux",
+      "electron-mac",
+      "electron-windows",
+    ]) {
+      assert.match(publishDebugDefinition, new RegExp(artifact));
+    }
+    assert.doesNotMatch(publishDebugDefinition, /pattern.*electron-\*/);
+    assert.match(publishDebugCommands, /pnpm tauri signer sign/);
+    assert.match(publishDebugCommands, /generate-tauri-bridge-manifest\.mjs/);
+    assert.match(publishDebugCommands, /workflow_dispatch/);
+    assert.match(publishDebugCommands, /DEFAULT_BRANCH/);
+    assert.match(publishDebugCommands, /WORKFLOW_PATH/);
+    assert.match(publishDebugCommands, /git\/ref\/tags/);
+    assert.match(publishDebugCommands, /SOURCE_SHA/);
+    assert.doesNotMatch(publishDebugCommands, /gh release (?:create|upload)/);
+
+    const unsignedPackage = workflow.jobs.build.steps.find(
+      (step) =>
+        step.name === "Build non-macOS host packages without publishing",
+    );
+    const signedMacPackage = workflow.jobs.build.steps.find(
+      (step) => step.name === "Build signed macOS packages without publishing",
+    );
+    assert.equal(unsignedPackage?.if, "matrix.id != 'mac'");
+    assert.equal(unsignedPackage?.env, undefined);
+    assert.match(signedMacPackage?.if ?? "", /matrix\.id == 'mac'/);
+    assert.match(signedMacPackage?.if ?? "", /github\.ref_name/);
+    assert.match(JSON.stringify(signedMacPackage?.env), /APPLE_API_KEY/);
+    assert.match(workflow.jobs.publish.if, /github\.event_name == 'push'/);
+    assert.match(publishDebug.if, /inputs\.target == 'publish'/);
+    assert.match(publishDebug.if, /github\.ref_name/);
   });
 
   it("freezes the public key configured by the Tauri v1.0.0 bridge draft", async () => {

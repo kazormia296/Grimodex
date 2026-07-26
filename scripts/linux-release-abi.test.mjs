@@ -5,6 +5,8 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { load } from "js-yaml";
 
+import { RELEASE_BUILD_TARGETS } from "./resolve-release-workflow.mjs";
+
 const root = path.resolve(import.meta.dirname, "..");
 
 describe("Linux Electron release ABI gate", () => {
@@ -12,7 +14,7 @@ describe("Linux Electron release ABI gate", () => {
     const workflow = load(
       await readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
     );
-    const linux = workflow.jobs.build.strategy.matrix.include.find(
+    const linux = RELEASE_BUILD_TARGETS.find(
       (entry) => entry.id === "linux",
     );
     assert.equal(linux.os, "ubuntu-24.04");
