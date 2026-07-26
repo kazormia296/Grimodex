@@ -172,18 +172,51 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" != "push" ] || [ "$PRERELEASE" != "false" ]; then
             exit 0
           fi
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          RELEASES_JSON="$RUNNER_TEMP/releases.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
+          RELEASE_MATCH_COUNT=$(jq --arg tag "$TAG" \
+            '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES_JSON")
+          if [ "$RELEASE_MATCH_COUNT" -gt 1 ]; then
+            echo "::error::Multiple GitHub releases use tag ${TAG}." >&2
+            exit 1
+          fi
+          if [ "$RELEASE_MATCH_COUNT" -eq 0 ]; then
             exit 0
           fi
           EXISTING_DIR="$RUNNER_TEMP/existing-release"
           mkdir -p "$EXISTING_DIR"
-          if ! gh release download "$TAG" --pattern latest.json \
-            --dir "$EXISTING_DIR" >/dev/null 2>&1; then
+          LATEST_ASSET_COUNT=$(jq --arg tag "$TAG" \
+            '[.[][] | select(.tag_name == $tag) | .assets[]? | select(.name == "latest.json")] | length' \
+            "$RELEASES_JSON")
+          if [ "$LATEST_ASSET_COUNT" -gt 1 ]; then
+            echo "::error::Release ${TAG} has multiple latest.json assets." >&2
+            exit 1
+          fi
+          if [ "$LATEST_ASSET_COUNT" -eq 0 ]; then
             exit 0
           fi
+          LATEST_ASSET_ID=$(jq -r --arg tag "$TAG" \
+            '.[][] | select(.tag_name == $tag) | .assets[]? | select(.name == "latest.json") | .id' \
+            "$RELEASES_JSON")
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${LATEST_ASSET_ID}" \
+            > "$EXISTING_DIR/latest.json"
           node --input-type=module -e \
             "import fs from 'node:fs'; import {validateBridgeManifestSchema} from './scripts/generate-tauri-bridge-manifest.mjs'; const m=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); validateBridgeManifestSchema(m); if(m.version!==process.env.VERSION) throw new Error('Existing bridge version mismatch');" \
             "$EXISTING_DIR/latest.json"
+          RELEASE_JSON="$EXISTING_DIR/release.json"
+          EXPECTED_NOTES="$EXISTING_DIR/expected-release-notes.md"
+          jq --arg tag "$TAG" \
+            '.[][] | select(.tag_name == $tag)' "$RELEASES_JSON" > "$RELEASE_JSON"
+          node scripts/compose-github-release-notes.mjs \
+            --tag "$TAG" \
+            --ja "public/RELEASE_NOTES/v${VERSION}.ja.md" \
+            --en "public/RELEASE_NOTES/v${VERSION}.en.md" \
+            --output "$EXPECTED_NOTES"
+          node --input-type=module -e \
+            "import fs from 'node:fs'; const release=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const expectedBody=fs.readFileSync(process.argv[2],'utf8'); const expectedPrerelease=process.env.PRERELEASE==='true'; if(release.tag_name!==process.env.TAG) throw new Error('Completed Draft tag mismatch'); if(release.draft!==true) throw new Error('Completed release must remain a Draft'); if(release.prerelease!==expectedPrerelease) throw new Error('Completed Draft prerelease state mismatch'); if(release.body!==expectedBody) throw new Error('Completed Draft body does not match authored release notes'); if(!Number.isSafeInteger(release.id) || release.id <= 0) throw new Error('Completed Draft release ID is invalid'); console.log('Completed Draft Release verified:', release.html_url);" \
+            "$RELEASE_JSON" "$EXPECTED_NOTES"
           echo "complete=true" >> "$GITHUB_OUTPUT"
 
   bridge-signing-preflight:
@@ -1101,16 +1134,42 @@ jobs:
         run: |
           set -euo pipefail
           echo "complete=false" >> "$GITHUB_OUTPUT"
-          if [ "$PRERELEASE" = "false" ] && gh release view "$TAG" >/dev/null 2>&1; then
-            mkdir -p existing-release-assets
-            if gh release download "$TAG" --pattern latest.json \
-              --dir existing-release-assets >/dev/null 2>&1; then
-              cp existing-release-assets/latest.json release-assets/latest.json
-              node --input-type=module -e \
-                "import fs from 'node:fs'; import {validateBridgeManifestSchema} from './scripts/generate-tauri-bridge-manifest.mjs'; const m=JSON.parse(fs.readFileSync('release-assets/latest.json','utf8')); validateBridgeManifestSchema(m); if(m.version!==process.env.VERSION) throw new Error('Existing bridge version mismatch');"
-              echo "complete=true" >> "$GITHUB_OUTPUT"
-            fi
+          if [ "$PRERELEASE" != "false" ]; then
+            exit 0
           fi
+          RELEASES_JSON="$RUNNER_TEMP/releases.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
+          RELEASE_MATCH_COUNT=$(jq --arg tag "$TAG" \
+            '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES_JSON")
+          if [ "$RELEASE_MATCH_COUNT" -gt 1 ]; then
+            echo "::error::Multiple GitHub releases use tag ${TAG}." >&2
+            exit 1
+          fi
+          if [ "$RELEASE_MATCH_COUNT" -eq 0 ]; then
+            exit 0
+          fi
+          LATEST_ASSET_COUNT=$(jq --arg tag "$TAG" \
+            '[.[][] | select(.tag_name == $tag) | .assets[]? | select(.name == "latest.json")] | length' \
+            "$RELEASES_JSON")
+          if [ "$LATEST_ASSET_COUNT" -gt 1 ]; then
+            echo "::error::Release ${TAG} has multiple latest.json assets." >&2
+            exit 1
+          fi
+          if [ "$LATEST_ASSET_COUNT" -eq 0 ]; then
+            exit 0
+          fi
+          LATEST_ASSET_ID=$(jq -r --arg tag "$TAG" \
+            '.[][] | select(.tag_name == $tag) | .assets[]? | select(.name == "latest.json") | .id' \
+            "$RELEASES_JSON")
+          mkdir -p existing-release-assets
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${LATEST_ASSET_ID}" \
+            > existing-release-assets/latest.json
+          cp existing-release-assets/latest.json release-assets/latest.json
+          node --input-type=module -e \
+            "import fs from 'node:fs'; import {validateBridgeManifestSchema} from './scripts/generate-tauri-bridge-manifest.mjs'; const m=JSON.parse(fs.readFileSync('release-assets/latest.json','utf8')); validateBridgeManifestSchema(m); if(m.version!==process.env.VERSION) throw new Error('Existing bridge version mismatch');"
+          echo "complete=true" >> "$GITHUB_OUTPUT"
 
       - name: Sign Electron installers for the final Tauri v1 bridge
         if: >-
@@ -1217,16 +1276,34 @@ jobs:
             fi
           fi
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          RELEASES_JSON="$RUNNER_TEMP/releases-before-mutation.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
+          RELEASE_MATCH_COUNT=$(jq --arg tag "$TAG" \
+            '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES_JSON")
+          if [ "$RELEASE_MATCH_COUNT" -gt 1 ]; then
+            echo "::error::Multiple GitHub releases use tag ${TAG}." >&2
+            exit 1
+          fi
+          if [ "$RELEASE_MATCH_COUNT" -eq 1 ]; then
+            RELEASE_ID=$(jq -r --arg tag "$TAG" \
+              '.[][] | select(.tag_name == $tag) | .id' "$RELEASES_JSON")
+            IS_DRAFT=$(jq -r --arg tag "$TAG" \
+              '.[][] | select(.tag_name == $tag) | .draft' "$RELEASES_JSON")
             if [ "$IS_DRAFT" != "true" ]; then
               echo "::error::Refusing to mutate an already published release without latest.json." >&2
               exit 1
             fi
-            gh release edit "$TAG" \
-              --draft \
-              --title "Grimodex v${VERSION}" \
-              --notes-file "$RELEASE_NOTES_FILE"
+            UPDATE_JSON="$RUNNER_TEMP/release-update.json"
+            jq -n \
+              --arg name "Grimodex v${VERSION}" \
+              --rawfile body "$RELEASE_NOTES_FILE" \
+              --argjson prerelease "$PRERELEASE" \
+              '{name: $name, body: $body, draft: true, prerelease: $prerelease}' \
+              > "$UPDATE_JSON"
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+              --input "$UPDATE_JSON" >/dev/null
           else
             CREATE_ARGS=(--draft --verify-tag --title "Grimodex v${VERSION}" \
               --notes-file "$RELEASE_NOTES_FILE")
@@ -1249,65 +1326,25 @@ jobs:
             gh release upload "$TAG" release-assets/latest.json
           fi
 
-  verify-draft-release:
-    name: Verify the Release remains a Draft
-    needs: [release-gate, release-state, publish]
-    if: >-
-      always() &&
-      !cancelled() &&
-      needs.release-gate.result == 'success' &&
-      needs.release-state.result == 'success' &&
-      ((github.event_name == 'push' &&
-        github.ref_type == 'tag' &&
-        needs.release-gate.outputs.should_publish == 'true' &&
-        (needs.publish.result == 'success' ||
-         (needs.release-state.outputs.complete == 'true' &&
-          needs.publish.result == 'skipped'))) ||
-       (github.event_name == 'workflow_dispatch' &&
-        github.ref_name == github.event.repository.default_branch &&
-        inputs.target == 'publish' &&
-        inputs.publish == false &&
-        inputs.recover_draft == true &&
-        inputs.candidate_ref == github.event.repository.default_branch &&
-        needs.release-gate.outputs.recover_draft == 'true' &&
-        (needs.publish.result == 'success' ||
-         (needs.release-state.outputs.complete == 'true' &&
-          needs.publish.result == 'skipped'))))
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ needs.release-gate.outputs.checkout_ref }}
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 20
-
-      - name: Compose the expected bilingual notes
-        env:
-          TAG: ${{ needs.release-gate.outputs.tag }}
-          VERSION: ${{ needs.release-gate.outputs.version }}
-        run: |
-          set -euo pipefail
-          node scripts/compose-github-release-notes.mjs \
-            --tag "$TAG" \
-            --ja "public/RELEASE_NOTES/v${VERSION}.ja.md" \
-            --en "public/RELEASE_NOTES/v${VERSION}.en.md" \
-            --output "$RUNNER_TEMP/expected-release-notes.md"
-
-      - name: Verify Draft identity and exact body
+      - name: Verify Draft identity and exact body through the GitHub API
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-gate.outputs.tag }}
           PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
         run: |
           set -euo pipefail
+          RELEASES_JSON="$RUNNER_TEMP/releases-after-mutation.json"
           RELEASE_JSON="$RUNNER_TEMP/release.json"
-          gh release view "$TAG" \
-            --json tagName,isDraft,isPrerelease,body,url > "$RELEASE_JSON"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
+          RELEASE_MATCH_COUNT=$(jq --arg tag "$TAG" \
+            '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES_JSON")
+          if [ "$RELEASE_MATCH_COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly one Draft release for ${TAG}; found ${RELEASE_MATCH_COUNT}." >&2
+            exit 1
+          fi
+          jq --arg tag "$TAG" \
+            '.[][] | select(.tag_name == $tag)' "$RELEASES_JSON" > "$RELEASE_JSON"
           node --input-type=module -e \
-            "import fs from 'node:fs'; const release=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const expectedBody=fs.readFileSync(process.argv[2],'utf8'); const expectedPrerelease=process.env.PRERELEASE==='true'; if(release.tagName!==process.env.TAG) throw new Error('Draft tag mismatch'); if(release.isDraft!==true) throw new Error('Release must remain a Draft'); if(release.isPrerelease!==expectedPrerelease) throw new Error('Draft prerelease state mismatch'); if(release.body!==expectedBody) throw new Error('Draft body does not match authored release notes'); console.log('Draft Release verified:', release.url);" \
-            "$RELEASE_JSON" "$RUNNER_TEMP/expected-release-notes.md"
+            "import fs from 'node:fs'; const release=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const expectedBody=fs.readFileSync(process.env.RELEASE_NOTES_FILE,'utf8'); const expectedPrerelease=process.env.PRERELEASE==='true'; if(release.tag_name!==process.env.TAG) throw new Error('Draft tag mismatch'); if(release.draft!==true) throw new Error('Release must remain a Draft'); if(release.prerelease!==expectedPrerelease) throw new Error('Draft prerelease state mismatch'); if(release.body!==expectedBody) throw new Error('Draft body does not match authored release notes'); if(!Number.isSafeInteger(release.id) || release.id <= 0) throw new Error('Draft release ID is invalid'); console.log('Draft Release verified:', release.html_url);" \
+            "$RELEASE_JSON"
