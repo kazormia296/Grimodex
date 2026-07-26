@@ -28,13 +28,7 @@ export const RELEASE_BUILD_TARGETS = Object.freeze([
   }),
 ]);
 
-const DEBUG_TARGETS = new Set([
-  "windows",
-  "mac",
-  "linux",
-  "publish",
-  "all",
-]);
+const DEBUG_TARGETS = new Set(["windows", "mac", "linux", "publish", "all"]);
 const SECRET_BACKED_TARGETS = new Set(["mac", "publish", "all"]);
 
 function copyTargets(target) {
@@ -66,15 +60,25 @@ export function resolveReleaseWorkflow({
   candidateSha,
   target,
   publishRequested,
+  recoverDraftRequested,
   sourceRunId,
 }) {
   const requestedPublish = parseBoolean(publishRequested, "publish");
+  const requestedRecoverDraft = parseBoolean(
+    recoverDraftRequested,
+    "recover_draft",
+  );
   const normalizedSourceRunId = String(sourceRunId ?? "").trim();
   const normalizedCandidateRef = String(candidateRef ?? "").trim();
   const normalizedCandidateSha = String(candidateSha ?? "").trim();
   if (!/^[0-9a-f]{40}$/i.test(normalizedCandidateSha)) {
     throw new Error(
       `Candidate SHA must be a full 40-character commit SHA: ${normalizedCandidateSha}`,
+    );
+  }
+  if (requestedPublish) {
+    throw new Error(
+      "Manual release debugging cannot publish; use an exact v2 tag push only after focused gates pass.",
     );
   }
 
@@ -91,6 +95,7 @@ export function resolveReleaseWorkflow({
       target: "all",
       runBuild: true,
       shouldPublish: true,
+      recoverDraft: false,
       sourceRunId: "",
       candidateRef: refName,
       candidateSha: normalizedCandidateSha,
@@ -101,11 +106,6 @@ export function resolveReleaseWorkflow({
 
   if (eventName !== "workflow_dispatch") {
     throw new Error(`Unsupported release workflow event: ${eventName}`);
-  }
-  if (requestedPublish) {
-    throw new Error(
-      "Manual release debugging cannot publish; use an exact v2 tag push only after focused gates pass.",
-    );
   }
   if (refType !== "branch" || refName !== defaultBranch) {
     throw new Error(
@@ -119,6 +119,9 @@ export function resolveReleaseWorkflow({
   const normalizedTarget = target || "windows";
   if (!DEBUG_TARGETS.has(normalizedTarget)) {
     throw new Error(`Unsupported release debug target: ${normalizedTarget}`);
+  }
+  if (requestedRecoverDraft && normalizedTarget !== "publish") {
+    throw new Error("Draft recovery is only valid for the publish target.");
   }
   if (
     SECRET_BACKED_TARGETS.has(normalizedTarget) &&
@@ -139,7 +142,8 @@ export function resolveReleaseWorkflow({
   }
   if (
     /^[0-9a-f]{40}$/i.test(normalizedCandidateRef) &&
-    normalizedCandidateRef.toLowerCase() !== normalizedCandidateSha.toLowerCase()
+    normalizedCandidateRef.toLowerCase() !==
+      normalizedCandidateSha.toLowerCase()
   ) {
     throw new Error(
       `Candidate ref SHA does not match the checked out candidate SHA: requested ${normalizedCandidateRef}, resolved ${normalizedCandidateSha}`,
@@ -185,6 +189,7 @@ export function resolveReleaseWorkflow({
     target: normalizedTarget,
     runBuild: normalizedTarget !== "publish",
     shouldPublish: false,
+    recoverDraft: requestedRecoverDraft,
     sourceRunId: normalizedSourceRunId,
     candidateRef: normalizedCandidateRef,
     candidateSha: normalizedCandidateSha,
@@ -231,6 +236,7 @@ async function main() {
     candidateSha: args["candidate-sha"] ?? "",
     target: args.target ?? "",
     publishRequested: args.publish ?? "false",
+    recoverDraftRequested: args["recover-draft"] ?? "false",
     sourceRunId: args["source-run-id"] ?? "",
   });
 
@@ -246,6 +252,7 @@ async function main() {
         `target=${result.target}`,
         `run_build=${String(result.runBuild)}`,
         `should_publish=${String(result.shouldPublish)}`,
+        `recover_draft=${String(result.recoverDraft)}`,
         `source_run_id=${result.sourceRunId}`,
         `candidate_ref=${result.candidateRef}`,
         `candidate_sha=${result.candidateSha}`,

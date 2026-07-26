@@ -43,6 +43,10 @@ describe("release workflow boundary", () => {
     assert.ok(workflow.on.workflow_dispatch);
     assert.match(workflow.concurrency.group, /inputs\.target/);
     assert.match(workflow.concurrency.group, /inputs\.candidate_ref/);
+    assert.match(workflow.concurrency.group, /release-electron-v2-mutation/);
+    assert.match(workflow.concurrency.group, /inputs\.recover_draft == true/);
+    assert.equal(workflow.concurrency["cancel-in-progress"], false);
+    assert.equal(workflow.concurrency.queue, "max");
     assert.equal(workflow.jobs.ci.uses, "./.github/workflows/ci.yml");
 
     const matrix = RELEASE_BUILD_TARGETS;
@@ -77,6 +81,14 @@ describe("release workflow boundary", () => {
     );
     assert.match(publishCommands, /cmp -s/);
     assert.match(publishCommands, /base64 --decode/);
+    assert.match(
+      publishCommands,
+      /PUB_DATE=\$\(git show -s --format=%cI "\$SOURCE_SHA"\)/,
+    );
+    assert.doesNotMatch(
+      publishCommands,
+      /PUB_DATE=\$\(git show -s --format=%cI "\$TAG"\)/,
+    );
     assert.match(publishCommands, /gh release create/);
     assert.match(publishCommands, /latest\.json/);
     assert.match(workflow.jobs.publish.name, /draft/i);
@@ -124,6 +136,7 @@ describe("release workflow boundary", () => {
     assert.doesNotMatch(workflowDefinition, /--draft=false/);
     assert.doesNotMatch(workflowDefinition, /["']?draft["']?\s*[:=]\s*false/);
     assert.equal(workflow.jobs.publish.permissions.contents, "write");
+    assert.equal(workflow.jobs.publish.permissions.actions, "read");
     assert.notEqual(workflow.jobs.build.permissions?.contents, "write");
     assert.deepEqual(
       Object.entries(workflow.jobs)
@@ -143,8 +156,7 @@ describe("release workflow boundary", () => {
         "needs.build.result == 'success'",
       ].join(" "),
     );
-    assert.match(workflow.jobs.publish.if, /!cancelled\(\)/);
-    assert.doesNotMatch(workflow.jobs.publish.if, /always\(\)/);
+    assert.match(workflow.jobs.publish.if, /^always\(\) && !cancelled\(\)/);
     assert.match(workflow.jobs.publish.if, /build-arch\.result == 'success'/);
     assert.match(workflow.jobs.publish.if, /prerelease == 'true'/);
     assert.match(workflow.jobs.publish.if, /build-arch\.result == 'skipped'/);
@@ -164,6 +176,8 @@ describe("release workflow boundary", () => {
     assert.equal(inputs.target.default, "windows");
     assert.equal(inputs.publish.type, "boolean");
     assert.equal(inputs.publish.default, false);
+    assert.equal(inputs.recover_draft.type, "boolean");
+    assert.equal(inputs.recover_draft.default, false);
     assert.equal(inputs.source_run_id.type, "string");
     assert.equal(inputs.candidate_ref.type, "string");
     assert.equal(inputs.candidate_ref.default, "master");
@@ -184,6 +198,7 @@ describe("release workflow boundary", () => {
     assert.match(gateCommands, /--base-package/);
     assert.match(gateCommands, /--candidate-ref/);
     assert.match(gateCommands, /--candidate-sha/);
+    assert.match(gateCommands, /--recover-draft/);
     assert.deepEqual(workflow.jobs.ci.needs, [
       "release-gate",
       "bridge-signing-preflight",
@@ -276,7 +291,117 @@ describe("release workflow boundary", () => {
     assert.match(JSON.stringify(signedMacPackage?.env), /APPLE_API_KEY/);
     assert.match(workflow.jobs.publish.if, /github\.event_name == 'push'/);
     assert.match(publishDebug.if, /inputs\.target == 'publish'/);
+    assert.match(publishDebug.if, /inputs\.recover_draft == false/);
     assert.match(publishDebug.if, /github\.ref_name/);
+  });
+
+  it("recovers only a Draft from one failed immutable tag run", async () => {
+    const workflow = await readWorkflow("release.yml");
+    const publish = workflow.jobs.publish;
+    const publishDefinition = JSON.stringify(publish);
+    const publishCommands = publish.steps
+      .map((step) => step.run)
+      .filter(Boolean)
+      .join("\n");
+    const recoverySource = publish.steps.find(
+      (step) => step.id === "recovery-source",
+    );
+    const currentRunDownload = publish.steps.find(
+      (step) => step.name === "Download all host artifacts into one directory",
+    );
+    const verifyDraft = workflow.jobs["verify-draft-release"];
+
+    assert.deepEqual(publish.needs, [
+      "release-gate",
+      "release-state",
+      "ci",
+      "bridge-signing-preflight",
+      "build",
+      "build-arch",
+    ]);
+    assert.equal(publish.permissions.actions, "read");
+    assert.equal(publish.permissions.contents, "write");
+    assert.equal(currentRunDownload?.if, "github.event_name == 'push'");
+    assert.equal(
+      publish.steps.find((step) => step.uses?.startsWith("actions/checkout@"))
+        ?.with?.["fetch-depth"],
+      0,
+    );
+    assert.equal(
+      publish.steps.find((step) => step.uses?.startsWith("actions/checkout@"))
+        ?.with?.["persist-credentials"],
+      false,
+    );
+
+    assert.ok(recoverySource);
+    assert.match(recoverySource.if, /workflow_dispatch/);
+    assert.match(recoverySource.if, /inputs\.recover_draft == true/);
+    assert.match(recoverySource.run, /CONCLUSION.*failure/s);
+    assert.match(recoverySource.run, /EVENT.*push/s);
+    assert.match(recoverySource.run, /WORKFLOW_PATH/);
+    assert.doesNotMatch(recoverySource.run, /WORKFLOW_NAME/);
+    assert.match(recoverySource.run, /git\/ref\/tags/);
+    assert.match(recoverySource.run, /requires an annotated release tag/);
+    assert.match(recoverySource.run, /SOURCE_SHA/);
+    assert.match(recoverySource.run, /git merge-base --is-ancestor/);
+    assert.match(recoverySource.run, /SOURCE_BLOB/);
+    assert.match(recoverySource.run, /TRUSTED_BLOB/);
+    assert.match(recoverySource.run, /package\.json/);
+    assert.match(recoverySource.run, /RELEASE_NOTES/);
+    assert.match(recoverySource.run, /updater-public-key\.pub/);
+    assert.match(recoverySource.run, /src-tauri\/tauri\.conf\.json/);
+    assert.match(recoverySource.run, /JOBS_TOTAL/);
+    assert.match(recoverySource.run, /ARTIFACTS_TOTAL/);
+    assert.match(recoverySource.run, /-gt 100/);
+    assert.match(recoverySource.run, /ARTIFACT_ID/);
+    for (const job of [
+      "Build Electron (windows)",
+      "Build Electron (linux)",
+      "Build Electron (mac)",
+      "Build Electron (arch pacman package)",
+    ]) {
+      assert.match(
+        recoverySource.run,
+        new RegExp(job.replace(/[()]/g, "\\$&")),
+      );
+    }
+    assert.match(recoverySource.run, /Assemble one Draft Release/);
+    assert.match(recoverySource.run, /\.expired == false/);
+
+    for (const artifact of [
+      "electron-linux",
+      "electron-mac",
+      "electron-windows",
+      "electron-arch",
+    ]) {
+      assert.match(publishDefinition, new RegExp(artifact));
+    }
+    assert.match(publishDefinition, /source_run_id/);
+    assert.match(publishDefinition, /github-token/);
+    assert.match(publishDefinition, /artifact-ids/);
+    for (const artifactIdOutput of [
+      "linux_artifact_id",
+      "mac_artifact_id",
+      "windows_artifact_id",
+      "arch_artifact_id",
+    ]) {
+      assert.match(publishDefinition, new RegExp(artifactIdOutput));
+    }
+    assert.match(publish.if, /workflow_dispatch/);
+    assert.match(publish.if, /inputs\.target == 'publish'/);
+    assert.match(publish.if, /inputs\.publish == false/);
+    assert.match(publish.if, /inputs\.recover_draft == true/);
+    assert.match(publish.if, /inputs\.candidate_ref/);
+    assert.match(publish.if, /release-state\.outputs\.complete != 'true'/);
+    assert.match(publishCommands, /gh release create/);
+    assert.match(publishCommands, /--draft/);
+    assert.doesNotMatch(publishCommands, /--draft=false/);
+    assert.match(publishCommands, /tag moved before Release mutation/i);
+
+    assert.match(verifyDraft.if, /workflow_dispatch/);
+    assert.match(verifyDraft.if, /inputs\.recover_draft == true/);
+    assert.match(verifyDraft.if, /needs\.publish\.result == 'success'/);
+    assert.match(verifyDraft.if, /release-state\.outputs\.complete == 'true'/);
   });
 
   it("freezes the public key configured by the Tauri v1.0.0 bridge draft", async () => {

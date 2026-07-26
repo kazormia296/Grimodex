@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   RELEASE_BUILD_TARGETS,
@@ -17,6 +22,7 @@ const base = {
   candidateRef: "1111111111111111111111111111111111111111",
   candidateSha: "1111111111111111111111111111111111111111",
   publishRequested: false,
+  recoverDraftRequested: false,
   sourceRunId: "",
 };
 
@@ -41,6 +47,7 @@ describe("resolveReleaseWorkflow", () => {
       target: "all",
       runBuild: true,
       shouldPublish: true,
+      recoverDraft: false,
       sourceRunId: "",
       candidateRef: "v2.0.7",
       candidateSha: "2222222222222222222222222222222222222222",
@@ -99,8 +106,39 @@ describe("resolveReleaseWorkflow", () => {
     assert.equal(result.target, "publish");
     assert.equal(result.runBuild, false);
     assert.equal(result.shouldPublish, false);
+    assert.equal(result.recoverDraft, false);
     assert.equal(result.sourceRunId, "30173105309");
     assert.deepEqual(result.matrix, { include: [] });
+  });
+
+  it("allows draft recovery only for a safe publish-stage dispatch", () => {
+    const result = resolveReleaseWorkflow({
+      ...base,
+      candidateRef: "master",
+      target: "publish",
+      sourceRunId: "30173105309",
+      recoverDraftRequested: true,
+    });
+
+    assert.equal(result.target, "publish");
+    assert.equal(result.shouldPublish, false);
+    assert.equal(result.recoverDraft, true);
+
+    for (const target of ["windows", "linux", "mac", "all"]) {
+      assert.throws(
+        () =>
+          resolveReleaseWorkflow({
+            ...base,
+            candidateRef:
+              target === "windows" || target === "linux"
+                ? base.candidateRef
+                : "master",
+            target,
+            recoverDraftRequested: true,
+          }),
+        /draft recovery.*publish target/i,
+      );
+    }
   });
 
   it("fails closed for unsafe or incomplete manual publish requests", () => {
@@ -140,6 +178,30 @@ describe("resolveReleaseWorkflow", () => {
           sourceRunId: "30173105309",
         }),
       /only valid for the publish target/,
+    );
+    assert.throws(
+      () =>
+        resolveReleaseWorkflow({
+          ...base,
+          candidateRef: "master",
+          target: "publish",
+          sourceRunId: "30173105309",
+          recoverDraftRequested: "not-a-boolean",
+        }),
+      /recover_draft must be true or false/,
+    );
+    assert.throws(
+      () =>
+        resolveReleaseWorkflow({
+          ...base,
+          candidateRef: "master",
+          target: "publish",
+          sourceRunId: "30173105309",
+          packageVersion: "2.0.7-beta.1",
+          basePackageVersion: "2.0.7-beta.1",
+          recoverDraftRequested: true,
+        }),
+      /stable version/,
     );
   });
 
@@ -197,6 +259,19 @@ describe("resolveReleaseWorkflow", () => {
         resolveReleaseWorkflow({
           ...base,
           eventName: "push",
+          refName: "v2.0.7",
+          refType: "tag",
+          candidateRef: "",
+          publishRequested: true,
+          target: "",
+        }),
+      /cannot publish/,
+    );
+    assert.throws(
+      () =>
+        resolveReleaseWorkflow({
+          ...base,
+          eventName: "push",
           refName: "v2.0.8",
           refType: "tag",
           candidateRef: "",
@@ -216,5 +291,64 @@ describe("resolveReleaseWorkflow", () => {
         }),
       /tag ref/,
     );
+  });
+});
+
+describe("resolve-release-workflow CLI", () => {
+  it("accepts --recover-draft and writes recover_draft to GITHUB_OUTPUT", async () => {
+    const directory = await mkdtemp(
+      path.join(tmpdir(), "grimodex-release-resolver-"),
+    );
+    try {
+      const packagePath = path.join(directory, "package.json");
+      const outputPath = path.join(directory, "github-output.txt");
+      await writeFile(packagePath, '{"version":"2.0.7"}\n', "utf8");
+
+      const scriptPath = fileURLToPath(
+        new URL("./resolve-release-workflow.mjs", import.meta.url),
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          scriptPath,
+          "--event",
+          "workflow_dispatch",
+          "--ref-name",
+          "master",
+          "--ref-type",
+          "branch",
+          "--package",
+          packagePath,
+          "--base-package",
+          packagePath,
+          "--major",
+          "2",
+          "--default-branch",
+          "master",
+          "--candidate-ref",
+          "master",
+          "--candidate-sha",
+          "1111111111111111111111111111111111111111",
+          "--target",
+          "publish",
+          "--publish",
+          "false",
+          "--recover-draft",
+          "true",
+          "--source-run-id",
+          "30173105309",
+        ],
+        {
+          encoding: "utf8",
+          env: { ...process.env, GITHUB_OUTPUT: outputPath },
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).recoverDraft, true);
+      assert.match(await readFile(outputPath, "utf8"), /^recover_draft=true$/m);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
