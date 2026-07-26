@@ -101,7 +101,8 @@ describe("release workflow boundary", () => {
       /public\/RELEASE_NOTES\/v\$\{VERSION\}\.en\.md/,
     );
     assert.match(publishCommands, /--notes-file/);
-    assert.match(publishCommands, /gh release edit/);
+    assert.match(publishCommands, /--method PATCH/);
+    assert.doesNotMatch(publishCommands, /gh release edit/);
     assert.match(publishCommands, /--draft/);
     assert.match(publishCommands, /compose-github-release-notes\.mjs/);
     const createOrUpdateRelease = workflow.jobs.publish.steps.find(
@@ -113,25 +114,18 @@ describe("release workflow boundary", () => {
       createOrUpdateRelease,
       /else\s+CREATE_ARGS=\(--draft[\s\S]*?gh release create "\$TAG" "\$\{CREATE_ARGS\[@\]\}"\s+fi/,
     );
-    const verifyDraft = workflow.jobs["verify-draft-release"];
-    const verifyDraftCommands = verifyDraft.steps
-      .map((step) => step.run)
-      .filter(Boolean)
-      .join("\n");
-    assert.equal(verifyDraft.permissions.contents, "read");
-    assert.deepEqual(verifyDraft.needs, [
-      "release-gate",
-      "release-state",
-      "publish",
-    ]);
-    assert.match(verifyDraft.if, /always\(\)/);
-    assert.match(verifyDraft.if, /release-state\.outputs\.complete == 'true'/);
-    assert.match(
-      verifyDraftCommands,
-      /--json tagName,isDraft,isPrerelease,body,url/,
+    const publishDraftVerificationStep = workflow.jobs.publish.steps.at(-1);
+    assert.equal(
+      publishDraftVerificationStep?.name,
+      "Verify Draft identity and exact body through the GitHub API",
     );
-    assert.match(verifyDraftCommands, /release\.isDraft!==true/);
-    assert.match(verifyDraftCommands, /release\.body!==expectedBody/);
+    const publishDraftVerification = publishDraftVerificationStep?.run ?? "";
+    assert.match(publishDraftVerification, /gh api --paginate --slurp/);
+    assert.match(publishDraftVerification, /releases\?per_page=100/);
+    assert.match(publishDraftVerification, /release\.draft!==true/);
+    assert.match(publishDraftVerification, /release\.body!==expectedBody/);
+    assert.equal(workflow.jobs["verify-draft-release"], undefined);
+    assert.equal(workflow.jobs.publish.outputs, undefined);
     const workflowDefinition = JSON.stringify(workflow);
     assert.doesNotMatch(workflowDefinition, /--draft=false/);
     assert.doesNotMatch(workflowDefinition, /["']?draft["']?\s*[:=]\s*false/);
@@ -233,8 +227,21 @@ describe("release workflow boundary", () => {
       .map((step) => step.run)
       .filter(Boolean)
       .join("\n");
-    assert.match(releaseStateCommands, /gh release download/);
+    assert.match(releaseStateCommands, /gh api --paginate --slurp/);
+    assert.match(releaseStateCommands, /releases\/assets/);
     assert.match(releaseStateCommands, /validateBridgeManifestSchema/);
+    assert.match(releaseStateCommands, /compose-github-release-notes\.mjs/);
+    assert.match(releaseStateCommands, /release\.draft!==true/);
+    assert.match(
+      releaseStateCommands,
+      /release\.prerelease!==expectedPrerelease/,
+    );
+    assert.match(releaseStateCommands, /release\.body!==expectedBody/);
+    assert.match(releaseStateCommands, /Number\.isSafeInteger\(release\.id\)/);
+    assert.match(
+      releaseStateCommands,
+      /release\.body!==expectedBody[\s\S]*echo "complete=true"/,
+    );
     assert.deepEqual(preflight.needs, ["release-gate", "release-state"]);
     assert.match(preflight.if, /release-state\.outputs\.complete != 'true'/);
     const preflightCommands = preflight.steps
@@ -309,7 +316,22 @@ describe("release workflow boundary", () => {
     const currentRunDownload = publish.steps.find(
       (step) => step.name === "Download all host artifacts into one directory",
     );
-    const verifyDraft = workflow.jobs["verify-draft-release"];
+    const releaseStateCommands =
+      workflow.jobs["release-state"].steps.find((step) => step.id === "state")
+        ?.run ?? "";
+    const publishReleaseStateCommands =
+      publish.steps.find((step) => step.id === "release-state")?.run ?? "";
+    const releaseMutationCommands =
+      publish.steps.find(
+        (step) =>
+          step.name === "Create or update the single draft GitHub release",
+      )?.run ?? "";
+    const publishDraftVerificationCommands =
+      publish.steps.find(
+        (step) =>
+          step.name ===
+          "Verify Draft identity and exact body through the GitHub API",
+      )?.run ?? "";
 
     assert.deepEqual(publish.needs, [
       "release-gate",
@@ -394,11 +416,41 @@ describe("release workflow boundary", () => {
     assert.match(publishCommands, /--draft/);
     assert.doesNotMatch(publishCommands, /--draft=false/);
     assert.match(publishCommands, /tag moved before Release mutation/i);
-
-    assert.match(verifyDraft.if, /workflow_dispatch/);
-    assert.match(verifyDraft.if, /inputs\.recover_draft == true/);
-    assert.match(verifyDraft.if, /needs\.publish\.result == 'success'/);
-    assert.match(verifyDraft.if, /release-state\.outputs\.complete == 'true'/);
+    for (const commands of [
+      releaseStateCommands,
+      publishReleaseStateCommands,
+      releaseMutationCommands,
+      publishDraftVerificationCommands,
+    ]) {
+      assert.match(commands, /gh api --paginate --slurp/);
+      assert.match(commands, /releases\?per_page=100/);
+      assert.doesNotMatch(commands, /gh release view/);
+    }
+    for (const commands of [
+      releaseStateCommands,
+      publishReleaseStateCommands,
+    ]) {
+      assert.match(commands, /releases\/assets/);
+      assert.match(commands, /latest\.json/);
+      assert.match(commands, /LATEST_ASSET_COUNT/);
+      assert.match(commands, /LATEST_ASSET_COUNT" -gt 1/);
+    }
+    assert.match(releaseMutationCommands, /--method PATCH/);
+    assert.match(releaseMutationCommands, /releases\/\$\{RELEASE_ID\}/);
+    assert.doesNotMatch(releaseMutationCommands, /gh release edit/);
+    assert.match(
+      releaseMutationCommands,
+      /RELEASE_MATCH_COUNT" -eq 1[\s\S]*--method PATCH[\s\S]*else[\s\S]*gh release create/,
+    );
+    assert.match(
+      publishDraftVerificationCommands,
+      /RELEASE_MATCH_COUNT" -ne 1/,
+    );
+    assert.match(publishDraftVerificationCommands, /tag_name/);
+    assert.match(publishDraftVerificationCommands, /release\.draft/);
+    assert.match(publishDraftVerificationCommands, /release\.html_url/);
+    assert.equal(workflow.jobs["verify-draft-release"], undefined);
+    assert.equal(publish.outputs, undefined);
   });
 
   it("freezes the public key configured by the Tauri v1.0.0 bridge draft", async () => {
