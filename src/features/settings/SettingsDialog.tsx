@@ -115,7 +115,7 @@ export function SettingsDialog({
         "flex min-h-0 min-w-0 overflow-hidden border border-border bg-background shadow-xl",
         phoneWorkspace
           ? "h-[var(--visual-viewport-height,100dvh)] w-screen max-h-none max-w-none resize-none rounded-none border-0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
-          : "h-[600px] w-[780px] min-h-[400px] min-w-[480px] max-h-[90vh] max-w-[90vw] resize rounded-lg",
+          : "h-[640px] w-[780px] min-h-[400px] min-w-[480px] max-h-[90vh] max-w-[90vw] resize rounded-lg",
       )}
     >
       {/* Header */}

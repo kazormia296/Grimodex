@@ -73,6 +73,26 @@ const TOAST_CLEAR = {
 
 let clearTimer: ReturnType<typeof setTimeout> | null = null;
 
+function normalizeDownloadProgress(
+  downloaded: number,
+  total: number,
+): {
+  downloaded: number;
+  total: number;
+} {
+  const normalizedTotal = Number.isFinite(total) && total > 0 ? total : 0;
+  const normalizedDownloaded =
+    Number.isFinite(downloaded) && downloaded > 0 ? downloaded : 0;
+
+  return {
+    downloaded:
+      normalizedTotal > 0
+        ? Math.min(normalizedDownloaded, normalizedTotal)
+        : normalizedDownloaded,
+    total: normalizedTotal,
+  };
+}
+
 function cancelTimer(): void {
   if (clearTimer !== null) {
     clearTimeout(clearTimer);
@@ -108,7 +128,10 @@ export const useUpdaterStore = create<UpdaterState>()((set) => {
     },
     setDownloading: (downloaded, total) => {
       cancelTimer();
-      set({ phase: "downloading", downloaded, total });
+      set({
+        phase: "downloading",
+        ...normalizeDownloadProgress(downloaded, total),
+      });
     },
     setReady: () => {
       cancelTimer();
