@@ -73,7 +73,10 @@ const TOAST_CLEAR = {
 
 let clearTimer: ReturnType<typeof setTimeout> | null = null;
 
-function normalizeDownloadProgress(downloaded: number, total: number): {
+function normalizeDownloadProgress(
+  downloaded: number,
+  total: number,
+): {
   downloaded: number;
   total: number;
 } {
