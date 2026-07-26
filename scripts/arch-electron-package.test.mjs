@@ -49,13 +49,11 @@ describe("Arch packaging transition", () => {
       await readFile(path.join(root, ".github/workflows/release.yml"), "utf8"),
     );
     assert.ok(workflow.jobs["build-arch"]);
-    assert.match(
-      workflow.jobs["build-arch"].if,
-      /should_publish == 'true'/,
-    );
+    assert.match(workflow.jobs["build-arch"].if, /should_publish == 'true'/);
     assert.match(workflow.jobs["build-arch"].if, /build\.result == 'success'/);
     assert.deepEqual(workflow.jobs.publish.needs, [
       "release-gate",
+      "release-state",
       "ci",
       "bridge-signing-preflight",
       "build",

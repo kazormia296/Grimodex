@@ -26,6 +26,11 @@ on:
         required: true
         default: false
         type: boolean
+      recover_draft:
+        description: Recover one Draft Release from a failed immutable tag run
+        required: true
+        default: false
+        type: boolean
       candidate_ref:
         description: Default branch or full 40-character SHA; workflow always runs from master
         required: true
@@ -39,10 +44,14 @@ on:
 
 concurrency:
   group: >-
-    ${{ github.event_name == 'workflow_dispatch' &&
-        format('release-electron-v2-debug-{0}-{1}', inputs.target, inputs.candidate_ref) ||
-        format('release-electron-v2-{0}', github.ref) }}
-  cancel-in-progress: true
+    ${{ (github.event_name == 'push' ||
+         (github.event_name == 'workflow_dispatch' &&
+          inputs.target == 'publish' &&
+          inputs.recover_draft == true)) &&
+        'release-electron-v2-mutation' ||
+        format('release-electron-v2-debug-{0}-{1}', inputs.target, inputs.candidate_ref) }}
+  cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -76,6 +85,7 @@ jobs:
       target: ${{ steps.version.outputs.target }}
       run_build: ${{ steps.version.outputs.run_build }}
       should_publish: ${{ steps.version.outputs.should_publish }}
+      recover_draft: ${{ steps.version.outputs.recover_draft }}
       source_run_id: ${{ steps.version.outputs.source_run_id }}
       candidate_ref: ${{ steps.version.outputs.candidate_ref }}
       candidate_sha: ${{ steps.version.outputs.candidate_sha }}
@@ -110,6 +120,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RELEASE_TARGET: ${{ inputs.target }}
           RELEASE_PUBLISH: ${{ inputs.publish }}
+          RECOVER_DRAFT: ${{ inputs.recover_draft }}
           CANDIDATE_REF: ${{ inputs.candidate_ref }}
           CANDIDATE_SHA: ${{ steps.candidate.outputs.commit || steps.workflow-source.outputs.commit }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
@@ -128,6 +139,7 @@ jobs:
             --candidate-sha "$CANDIDATE_SHA" \
             --target "$RELEASE_TARGET" \
             --publish "$RELEASE_PUBLISH" \
+            --recover-draft "$RECOVER_DRAFT" \
             --source-run-id "$SOURCE_RUN_ID" \
             --base-package workflow-source/package.json \
             --package "$PACKAGE_PATH" \
@@ -664,11 +676,13 @@ jobs:
     name: Verify publish stage from existing artifacts
     needs: [release-gate, bridge-signing-preflight]
     if: >-
+      always() &&
       !cancelled() &&
       github.event_name == 'workflow_dispatch' &&
       github.ref_name == github.event.repository.default_branch &&
       inputs.target == 'publish' &&
       inputs.publish == false &&
+      inputs.recover_draft == false &&
       inputs.candidate_ref == github.event.repository.default_branch &&
       needs.release-gate.result == 'success' &&
       needs.release-gate.outputs.target == 'publish' &&
@@ -709,16 +723,11 @@ jobs:
           STATUS=$(jq -r .status <<<"$RUN_JSON")
           CONCLUSION=$(jq -r .conclusion <<<"$RUN_JSON")
           EVENT=$(jq -r .event <<<"$RUN_JSON")
-          WORKFLOW_NAME=$(jq -r .name <<<"$RUN_JSON")
           WORKFLOW_PATH=$(jq -r .path <<<"$RUN_JSON")
           HEAD_BRANCH=$(jq -r .head_branch <<<"$RUN_JSON")
           SOURCE_SHA=$(jq -r .head_sha <<<"$RUN_JSON")
           if [ "$STATUS" != "completed" ]; then
             echo "::error::Source run is not completed: $STATUS" >&2
-            exit 1
-          fi
-          if [ "$WORKFLOW_NAME" != "Electron v2 Release" ]; then
-            echo "::error::Source run belongs to another workflow: $WORKFLOW_NAME" >&2
             exit 1
           fi
           if [ "$WORKFLOW_PATH" != ".github/workflows/release.yml" ]; then
@@ -833,32 +842,51 @@ jobs:
     name: Assemble one Draft Release
     needs:
       - release-gate
+      - release-state
       - ci
       - bridge-signing-preflight
       - build
       - build-arch
     if: >-
+      always() &&
       !cancelled() &&
-      github.event_name == 'push' &&
-      github.ref_type == 'tag' &&
-      needs.release-gate.outputs.should_publish == 'true' &&
       needs.release-gate.result == 'success' &&
-      needs.ci.result == 'success' &&
-      needs.build.result == 'success' &&
-      ((needs.release-gate.outputs.prerelease == 'true' &&
-        needs.bridge-signing-preflight.result == 'skipped' &&
-        needs.build-arch.result == 'skipped') ||
-       (needs.release-gate.outputs.prerelease == 'false' &&
-        needs.bridge-signing-preflight.result == 'success' &&
-        needs.build-arch.result == 'success'))
+      needs.release-state.result == 'success' &&
+      ((github.event_name == 'push' &&
+        github.ref_type == 'tag' &&
+        needs.release-gate.outputs.should_publish == 'true' &&
+        needs.ci.result == 'success' &&
+        needs.build.result == 'success' &&
+        ((needs.release-gate.outputs.prerelease == 'true' &&
+          needs.bridge-signing-preflight.result == 'skipped' &&
+          needs.build-arch.result == 'skipped') ||
+         (needs.release-gate.outputs.prerelease == 'false' &&
+          needs.bridge-signing-preflight.result == 'success' &&
+          needs.build-arch.result == 'success'))) ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.ref_name == github.event.repository.default_branch &&
+        inputs.target == 'publish' &&
+        inputs.publish == false &&
+        inputs.recover_draft == true &&
+        inputs.candidate_ref == github.event.repository.default_branch &&
+        needs.release-gate.outputs.recover_draft == 'true' &&
+        needs.release-gate.outputs.should_publish != 'true' &&
+        needs.release-state.outputs.complete != 'true' &&
+        needs.ci.result == 'skipped' &&
+        needs.build.result == 'skipped' &&
+        needs.build-arch.result == 'skipped' &&
+        needs.bridge-signing-preflight.result == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.release-gate.outputs.checkout_ref }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
@@ -886,11 +914,182 @@ jobs:
           echo "RELEASE_NOTES_FILE=$RELEASE_NOTES_FILE" >> "$GITHUB_ENV"
 
       - name: Download all host artifacts into one directory
+        if: github.event_name == 'push'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: electron-*
           path: release-assets
           merge-multiple: true
+
+      - name: Verify the failed immutable source release
+        id: recovery-source
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.recover_draft == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ needs.release-gate.outputs.source_run_id }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          RUN_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")
+          STATUS=$(jq -r .status <<<"$RUN_JSON")
+          CONCLUSION=$(jq -r .conclusion <<<"$RUN_JSON")
+          EVENT=$(jq -r .event <<<"$RUN_JSON")
+          WORKFLOW_PATH=$(jq -r .path <<<"$RUN_JSON")
+          HEAD_BRANCH=$(jq -r .head_branch <<<"$RUN_JSON")
+          SOURCE_SHA=$(jq -r .head_sha <<<"$RUN_JSON")
+          if [ "$STATUS" != "completed" ] || [ "$CONCLUSION" != "failure" ]; then
+            echo "::error::Draft recovery requires one completed failed source run." >&2
+            exit 1
+          fi
+          if [ "$EVENT" != "push" ] ||
+             [ "$WORKFLOW_PATH" != ".github/workflows/release.yml" ]; then
+            echo "::error::Source run is not an Electron v2 tag release." >&2
+            exit 1
+          fi
+          if [ "$HEAD_BRANCH" != "$TAG" ]; then
+            echo "::error::Source run tag mismatch: expected ${TAG}, got ${HEAD_BRANCH}" >&2
+            exit 1
+          fi
+          TAG_REF_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
+          TAG_OBJECT_TYPE=$(jq -r .object.type <<<"$TAG_REF_JSON")
+          TAG_OBJECT_SHA=$(jq -r .object.sha <<<"$TAG_REF_JSON")
+          if [ "$TAG_OBJECT_TYPE" != "tag" ]; then
+            echo "::error::Draft recovery requires an annotated release tag: ${TAG}" >&2
+            exit 1
+          fi
+          TAG_OBJECT_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}")
+          TAG_OBJECT_TYPE=$(jq -r .object.type <<<"$TAG_OBJECT_JSON")
+          TAG_OBJECT_SHA=$(jq -r .object.sha <<<"$TAG_OBJECT_JSON")
+          if [ "$TAG_OBJECT_TYPE" != "commit" ] || [ "$TAG_OBJECT_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error::Source run SHA does not match immutable tag ${TAG}: ${SOURCE_SHA}" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" HEAD; then
+            echo "::error::Source release is not an ancestor of trusted master: ${SOURCE_SHA}" >&2
+            exit 1
+          fi
+          for RELEASE_FILE in \
+            package.json \
+            "public/RELEASE_NOTES/v${VERSION}.ja.md" \
+            "public/RELEASE_NOTES/v${VERSION}.en.md" \
+            packaging/tauri-v1/updater-public-key.pub \
+            src-tauri/tauri.conf.json; do
+            SOURCE_BLOB=$(git rev-parse "${SOURCE_SHA}:${RELEASE_FILE}")
+            TRUSTED_BLOB=$(git rev-parse "HEAD:${RELEASE_FILE}")
+            if [ "$SOURCE_BLOB" != "$TRUSTED_BLOB" ]; then
+              echo "::error::Trusted recovery content differs from ${TAG}: ${RELEASE_FILE}" >&2
+              exit 1
+            fi
+          done
+
+          JOBS_JSON=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?filter=latest&per_page=100")
+          JOBS_TOTAL=$(jq -r .total_count <<<"$JOBS_JSON")
+          if ! [[ "$JOBS_TOTAL" =~ ^[0-9]+$ ]] || [ "$JOBS_TOTAL" -gt 100 ]; then
+            echo "::error::Source run job count exceeds the verified API page: ${JOBS_TOTAL}" >&2
+            exit 1
+          fi
+          for REQUIRED_JOB in \
+            "Build Electron (windows)" \
+            "Build Electron (linux)" \
+            "Build Electron (mac)" \
+            "Build Electron (arch pacman package)"; do
+            MATCHES=$(jq --arg name "$REQUIRED_JOB" \
+              '[.jobs[] | select(.name == $name and .status == "completed" and .conclusion == "success")] | length' \
+              <<<"$JOBS_JSON")
+            if [ "$MATCHES" -ne 1 ]; then
+              echo "::error::Required source job is not uniquely successful: ${REQUIRED_JOB}" >&2
+              exit 1
+            fi
+          done
+          FAILED_ASSEMBLY=$(jq \
+            '[.jobs[] | select(.name == "Assemble one Draft Release" and .conclusion == "failure")] | length' \
+            <<<"$JOBS_JSON")
+          if [ "$FAILED_ASSEMBLY" -ne 1 ]; then
+            echo "::error::Source run did not fail in Draft assembly." >&2
+            exit 1
+          fi
+
+          ARTIFACTS_JSON=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")
+          ARTIFACTS_TOTAL=$(jq -r .total_count <<<"$ARTIFACTS_JSON")
+          if ! [[ "$ARTIFACTS_TOTAL" =~ ^[0-9]+$ ]] || [ "$ARTIFACTS_TOTAL" -gt 100 ]; then
+            echo "::error::Source run artifact count exceeds the verified API page: ${ARTIFACTS_TOTAL}" >&2
+            exit 1
+          fi
+          for REQUIRED_ARTIFACT in \
+            electron-windows electron-linux electron-mac electron-arch; do
+            MATCHES=$(jq --arg name "$REQUIRED_ARTIFACT" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length' \
+              <<<"$ARTIFACTS_JSON")
+            if [ "$MATCHES" -ne 1 ]; then
+              echo "::error::Required source artifact is missing, duplicated, or expired: ${REQUIRED_ARTIFACT}" >&2
+              exit 1
+            fi
+            ARTIFACT_ID=$(jq -r --arg name "$REQUIRED_ARTIFACT" \
+              '.artifacts[] | select(.name == $name and .expired == false) | .id' \
+              <<<"$ARTIFACTS_JSON")
+            if ! [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::Required source artifact has an invalid ID: ${REQUIRED_ARTIFACT}" >&2
+              exit 1
+            fi
+            OUTPUT_NAME=${REQUIRED_ARTIFACT#electron-}
+            OUTPUT_NAME=${OUTPUT_NAME//-/_}
+            echo "${OUTPUT_NAME}_artifact_id=${ARTIFACT_ID}" >> "$GITHUB_OUTPUT"
+          done
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Recovering Draft ${TAG} from run ${SOURCE_RUN_ID} at ${SOURCE_SHA}."
+
+      - name: Download the successful Linux artifact from the failed source run
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.recover_draft == true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.recovery-source.outputs.linux_artifact_id }}
+          path: release-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-gate.outputs.source_run_id }}
+
+      - name: Download the successful macOS artifact from the failed source run
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.recover_draft == true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.recovery-source.outputs.mac_artifact_id }}
+          path: release-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-gate.outputs.source_run_id }}
+
+      - name: Download the successful Windows artifact from the failed source run
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.recover_draft == true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.recovery-source.outputs.windows_artifact_id }}
+          path: release-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-gate.outputs.source_run_id }}
+
+      - name: Download the successful Arch artifact from the failed source run
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.recover_draft == true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.recovery-source.outputs.arch_artifact_id }}
+          path: release-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-gate.outputs.source_run_id }}
 
       - name: Detect an already completed immutable bridge release
         id: release-state
@@ -963,9 +1162,10 @@ jobs:
         env:
           VERSION: ${{ needs.release-gate.outputs.version }}
           TAG: ${{ needs.release-gate.outputs.tag }}
+          SOURCE_SHA: ${{ steps.recovery-source.outputs.source_sha || needs.release-gate.outputs.candidate_sha }}
         run: |
           set -euo pipefail
-          PUB_DATE=$(git show -s --format=%cI "$TAG")
+          PUB_DATE=$(git show -s --format=%cI "$SOURCE_SHA")
           node scripts/generate-tauri-bridge-manifest.mjs \
             --assets-dir release-assets \
             --version "$VERSION" \
@@ -991,11 +1191,30 @@ jobs:
           VERSION: ${{ needs.release-gate.outputs.version }}
           PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
           RELEASE_COMPLETE: ${{ steps.release-state.outputs.complete }}
+          RECOVER_DRAFT: ${{ needs.release-gate.outputs.recover_draft }}
+          SOURCE_SHA: ${{ steps.recovery-source.outputs.source_sha }}
         run: |
           set -euo pipefail
           if [ "$RELEASE_COMPLETE" = "true" ]; then
             echo "Immutable bridge latest.json already exists; release is complete and will not be mutated."
             exit 0
+          fi
+
+          if [ "$RECOVER_DRAFT" = "true" ]; then
+            TAG_REF_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
+            TAG_OBJECT_TYPE=$(jq -r .object.type <<<"$TAG_REF_JSON")
+            TAG_OBJECT_SHA=$(jq -r .object.sha <<<"$TAG_REF_JSON")
+            if [ "$TAG_OBJECT_TYPE" != "tag" ]; then
+              echo "::error::Draft recovery tag is no longer annotated: ${TAG}" >&2
+              exit 1
+            fi
+            TAG_OBJECT_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}")
+            TAG_OBJECT_TYPE=$(jq -r .object.type <<<"$TAG_OBJECT_JSON")
+            TAG_OBJECT_SHA=$(jq -r .object.sha <<<"$TAG_OBJECT_JSON")
+            if [ "$TAG_OBJECT_TYPE" != "commit" ] || [ "$TAG_OBJECT_SHA" != "$SOURCE_SHA" ]; then
+              echo "::error::Draft recovery tag moved before Release mutation: ${TAG}" >&2
+              exit 1
+            fi
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -1036,14 +1255,24 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
-      github.event_name == 'push' &&
-      github.ref_type == 'tag' &&
       needs.release-gate.result == 'success' &&
-      needs.release-gate.outputs.should_publish == 'true' &&
       needs.release-state.result == 'success' &&
-      (needs.publish.result == 'success' ||
-       (needs.release-state.outputs.complete == 'true' &&
-        needs.publish.result == 'skipped'))
+      ((github.event_name == 'push' &&
+        github.ref_type == 'tag' &&
+        needs.release-gate.outputs.should_publish == 'true' &&
+        (needs.publish.result == 'success' ||
+         (needs.release-state.outputs.complete == 'true' &&
+          needs.publish.result == 'skipped'))) ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.ref_name == github.event.repository.default_branch &&
+        inputs.target == 'publish' &&
+        inputs.publish == false &&
+        inputs.recover_draft == true &&
+        inputs.candidate_ref == github.event.repository.default_branch &&
+        needs.release-gate.outputs.recover_draft == 'true' &&
+        (needs.publish.result == 'success' ||
+         (needs.release-state.outputs.complete == 'true' &&
+          needs.publish.result == 'skipped'))))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
