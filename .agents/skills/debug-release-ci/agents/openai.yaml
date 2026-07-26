@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Release CI"
+  short_description: "Debug release CI without version bumps"
+  default_prompt: "Use $debug-release-ci to diagnose a Grimodex release failure without bumping the version or rebuilding successful platforms."

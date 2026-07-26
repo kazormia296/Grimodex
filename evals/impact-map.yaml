@@ -11,6 +11,7 @@ rules:
     paths:
       - AGENTS.md
       - .agents/skills/**
+      - docs/communication-style-guide.md
       - policies/quality/**
       - evals/**
       - scripts/quality/**

@@ -5,7 +5,8 @@ description: >
   CI・レビュー・HEAD の確認、squash merge、base branch への反映確認まで進める。
   「PR出して」「プルリク作って」「pushしてマージ」「マージまでして」
   「shipして」「リモートに上げてPR」で使用する。commit作成自体は行わない。
-  version更新を含むリリース準備は bump-version を主フローとし、release commit後の公開だけを担う。
+  version更新を含むリリース準備は bump-version を主フローとし、release commit後の
+  branch push、PR、mergeだけを担う。GitHub Releaseは公開しない。
 ---
 
 # Ship Branch
@@ -52,7 +53,7 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 2. check がまだ登録されていない場合、即座に green と扱わない。PR workflow の有無と branch protection を確認し、非同期に再取得する。
 3. 実行中は長時間 blocking せず、定期的に状態を取得して進捗を共有する。
 4. PR の HEAD が記録した local SHA から変わった場合、新しい SHA を自動採用せず停止する。変更 commit を local に取得して明示的にレビュー・検証・commit 状態を確認した後、本フローを新しい SHA で最初からやり直す。
-5. fail、cancelled、timed out があればマージしない。失敗 job とログを特定し、修正が必要なら適切な CI 修正／debug フローへ渡す。
+5. fail、cancelled、timed out があればマージしない。失敗 job とログを特定し、一般のPR CIは`/debug-issue`へ、Electron release workflow／tag build／署名／publishの失敗はversionを変更せず`/debug-release-ci`へ渡す。
 6. review decision、requested changes、未解決 inline thread、保留中の必須 reviewer を確認する。
 
 チェックが本当に設定されていない repository では、required check が存在しないことを確認してから次へ進む。`no checks reported` だけを根拠にマージしない。
@@ -86,6 +87,7 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 - PR だけがゴール: PR URL と現在の checks 状態を報告して停止する。
 - draft PR: ready 化または merge を依頼されるまで停止する。
 - CI failure: fail した check と原因調査結果を報告し、修正後に本フローを再開する。
+- release workflow failure: `/debug-release-ci`のfocused gateへ戻す。本スキルはversion、release notes、tagを作らない。
 - conflict／requested changes／未解決 thread: 解消するまで停止する。
 
 ## 完了報告

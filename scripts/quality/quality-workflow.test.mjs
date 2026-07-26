@@ -75,6 +75,97 @@ test("new skills use current frontmatter and call the canonical commands", async
   assert.match(impact, /deferred/i);
 });
 
+test("release CI failures route through a no-bump targeted debug skill", async () => {
+  const agents = await read("AGENTS.md");
+  const releaseDebug = await read(".agents/skills/debug-release-ci/SKILL.md");
+  const releaseDebugUi = yaml.load(
+    await read(".agents/skills/debug-release-ci/agents/openai.yaml"),
+  );
+  const bump = await read(".agents/skills/bump-version/SKILL.md");
+  const debugIssue = await read(".agents/skills/debug-issue/SKILL.md");
+  const ship = await read(".agents/skills/ship-branch/SKILL.md");
+
+  assert.deepEqual(Object.keys(frontmatter(releaseDebug)).sort(), [
+    "description",
+    "name",
+  ]);
+  assert.equal(frontmatter(releaseDebug).name, "debug-release-ci");
+  assert.match(releaseDebugUi.interface.default_prompt, /\$debug-release-ci/);
+
+  assert.match(agents, /release CI|release workflow/i);
+  assert.match(agents, /debug-release-ci/);
+  assert.match(agents, /一般.*CI.*debug-issue/);
+  assert.match(agents, /再実行.*目的.*patch version.*上げない/is);
+
+  assert.match(releaseDebug, /run ID/);
+  assert.match(releaseDebug, /head SHA/i);
+  assert.match(releaseDebug, /成功済み.*job/i);
+  assert.match(releaseDebug, /source_run_id/);
+  assert.match(releaseDebug, /candidate_ref/);
+  assert.match(releaseDebug, /--ref master/);
+  assert.doesNotMatch(releaseDebug, /--ref <fix-branch>/);
+  assert.doesNotMatch(releaseDebug, /candidate_ref=<fix-branch>/);
+  assert.match(releaseDebug, /candidate_ref=<40-character-fix-commit-sha>/);
+  assert.match(releaseDebug, /package\.json.*変更しない/is);
+  assert.match(releaseDebug, /tag.*(?:作成しない|移動しない)/is);
+  assert.match(releaseDebug, /ship-branch/);
+  assert.match(releaseDebug, /bump-version/);
+
+  assert.match(debugIssue, /release workflow.*debug-release-ci/is);
+  assert.match(bump, /再実行.*目的.*バージョン.*上げない/is);
+  assert.match(bump, /focused gate.*成功/is);
+  assert.match(bump, /debug-release-ci/);
+  assert.match(ship, /release workflow.*debug-release-ci/is);
+});
+
+test("public copy follows the canonical style guide and version bumps stop at a draft release", async () => {
+  const agents = await read("AGENTS.md");
+  const copy = await read(".agents/skills/write-grimodex-copy/SKILL.md");
+  const copyUi = yaml.load(
+    await read(".agents/skills/write-grimodex-copy/agents/openai.yaml"),
+  );
+  const bump = await read(".agents/skills/bump-version/SKILL.md");
+  const bumpUi = yaml.load(
+    await read(".agents/skills/bump-version/agents/openai.yaml"),
+  );
+  const guide = await read("docs/communication-style-guide.md");
+  const impactMap = await read("evals/impact-map.yaml");
+
+  assert.deepEqual(Object.keys(frontmatter(copy)).sort(), [
+    "description",
+    "name",
+  ]);
+  assert.equal(frontmatter(copy).name, "write-grimodex-copy");
+  assert.match(copyUi.interface.default_prompt, /\$write-grimodex-copy/);
+
+  assert.match(copy, /docs\/communication-style-guide\.md/);
+  assert.match(copy, /リリースノート/);
+  assert.match(copy, /日本語.*英語|日英/is);
+  assert.match(copy, /事実.*先|事実ベース/is);
+  assert.match(copy, /冒頭1〜2文/);
+  assert.match(copy, /Issue.*PR.*コミット|PR.*Issue.*commit/is);
+  assert.match(copy, /公開.*(?:しない|権限.*ない)/is);
+  assert.match(guide, /このファイル.*正本/is);
+  assert.match(guide, /Issue、PR、コミットメッセージ/);
+  assert.match(impactMap, /docs\/communication-style-guide\.md/);
+
+  assert.match(agents, /write-grimodex-copy/);
+  assert.match(agents, /リリースノート|告知文|広報文/);
+  assert.match(agents, /日英リリースノート/);
+  assert.doesNotMatch(agents, /「日英版」/);
+  assert.match(bump, /write-grimodex-copy/);
+  assert.match(bump, /RELEASE_NOTES\/v<新バージョン>\.ja\.md/);
+  assert.match(bump, /RELEASE_NOTES\/v<新バージョン>\.en\.md/);
+  assert.doesNotMatch(bump, /## 新機能 \/ New/);
+  assert.match(bump, /Draft Release|Draftリリース/i);
+  assert.match(bump, /isDraft/);
+  assert.match(bump, /別.*明示.*指示.*公開/is);
+  assert.match(bump, /--draft=false/);
+  assert.match(bumpUi.interface.short_description, /Draft/i);
+  assert.match(bumpUi.interface.default_prompt, /\$bump-version/);
+  assert.match(bumpUi.interface.default_prompt, /Draft/i);
+});
+
 test("the Iron Laws carry stable IDs used by the machine-readable manifest", async () => {
   const policy = await read("policies/quality/iron-laws.md");
   const manifest = await read("evals/quality-manifest.yaml");

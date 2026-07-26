@@ -245,6 +245,8 @@ jobs:
         run: >-
           node --test
           scripts/validate-release-version.test.mjs
+          scripts/resolve-release-workflow.test.mjs
+          scripts/compose-github-release-notes.test.mjs
           scripts/generate-tauri-bridge-manifest.test.mjs
           scripts/release-workflows.test.mjs
           scripts/arch-electron-package.test.mjs

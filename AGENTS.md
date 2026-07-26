@@ -68,7 +68,16 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
   canonical quality workflow が選択した Light suite を読み取り専用で実行する
 - 新機能は `/implement-feature`、新規 Electron IPC command は `/add-electron-command` を優先する
 - バグ修正は `/debug-issue` を主フローとし、上記の横断条件を満たす場合は影響マトリクスも併用する
-- version 更新を含むリリース作業は `/bump-version` を主フローとし、release commit 後の push／PR／merge だけを `/ship-branch` へ渡す
+- Electron release CI／release workflow／tag build／署名・公証／installer migration／artifact publish
+  の失敗は `/debug-release-ci` を主フローとする。一般のPR／master CI失敗は `/debug-issue` を使う
+- release CI修正中はversion、release notes、tagを変更せず、失敗stage相当のfocused gateを先に通す。
+  workflow再実行だけを目的にpatch versionを上げない。修正merge後のDraft Release準備だけを `/bump-version` へ渡す
+- Grimodexの公開向け文書は `docs/communication-style-guide.md` を正本として `/write-grimodex-copy`
+  を使用する。Issue、PR、コミット、UI／エラー／復旧手順、API／IPC／MCP／CLI／セットアップ等の
+  技術文書には適用しない
+- version更新を含むリリース作業は `/bump-version` を主フローとし、リリースノート作成だけを
+  `/write-grimodex-copy` に委ねる。release commit後のpush／PR／mergeは `/ship-branch` へ渡す。
+  tag workflow完了後もGitHub ReleaseはDraftのまま停止し、公開には別の明示指示を必要とする
 - SQLite WALモード、FTS5有効
 - エディタ: チャプター/シーンごとに独立TipTapインスタンス
 - AIチャット: シーンごとに独立した会話履歴を保持
@@ -76,17 +85,19 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 
 ## スキル発火条件
 
-| トリガーワード                                                    | 発動スキル                 | 動作                                   |
-| ----------------------------------------------------------------- | -------------------------- | -------------------------------------- |
-| 「調べて」「調査」                                                | /explore-codebase          | コード探索                             |
-| 「AI指示」「システムプロンプト」「Codexスキル」「AI評価fixture」  | /grimodex-author           | 正本→評価証跡→差分品質ゲート           |
-| 「差分評価」「品質ゲート」「impact gate」「コミット前／PR前評価」 | /grimodex-impact-gate      | 差分→関連Light suite選択・実行         |
-| 「実装して」「作って」                                            | /implement-feature         | 実装フロー                             |
-| 「レビュー」                                                      | /review-code               | コードレビュー                         |
-| 「テスト」                                                        | /test-feature              | テスト作成・実行                       |
-| 「デバッグ」「修正」                                              | /debug-issue               | デバッグフロー                         |
-| 「Electronコマンド」「IPC」「invoke」                             | /add-electron-command      | IPC一括追加                            |
-| 「アニメ」「トランジション」「動き」「磨いて」                    | /polish-motion             | UIモーション規律                       |
-| 「横断リファクタ」「境界整理」「責務移動」「パイプライン再編」    | /refactor-cross-boundaries | 影響マトリクス→段階レビュー→CI相当検証 |
-| 「バージョン上げて」「リリースタグ」「リリース準備」              | /bump-version              | version→PR→注釈付きtag                 |
-| 「PR出して」「プルリク作って」「pushしてマージ」「shipして」      | /ship-branch               | push→PR→CI・レビュー→squash merge      |
+| トリガーワード                                                                                              | 発動スキル                 | 動作                                   |
+| ----------------------------------------------------------------------------------------------------------- | -------------------------- | -------------------------------------- |
+| 「調べて」「調査」                                                                                          | /explore-codebase          | コード探索                             |
+| 「AI指示」「システムプロンプト」「Codexスキル」「AI評価fixture」                                            | /grimodex-author           | 正本→評価証跡→差分品質ゲート           |
+| 「差分評価」「品質ゲート」「impact gate」「コミット前／PR前評価」                                           | /grimodex-impact-gate      | 差分→関連Light suite選択・実行         |
+| 「実装して」「作って」                                                                                      | /implement-feature         | 実装フロー                             |
+| 「レビュー」                                                                                                | /review-code               | コードレビュー                         |
+| 「テスト」                                                                                                  | /test-feature              | テスト作成・実行                       |
+| 「release CI失敗」「release workflow失敗」「tag build失敗」「packaging失敗」「署名」「公証」「publish失敗」 | /debug-release-ci          | run／SHA固定→対象stageだけ検証         |
+| 「デバッグ」「修正」「一般CI失敗」                                                                          | /debug-issue               | 一般デバッグフロー                     |
+| 「Electronコマンド」「IPC」「invoke」                                                                       | /add-electron-command      | IPC一括追加                            |
+| 「アニメ」「トランジション」「動き」「磨いて」                                                              | /polish-motion             | UIモーション規律                       |
+| 「横断リファクタ」「境界整理」「責務移動」「パイプライン再編」                                              | /refactor-cross-boundaries | 影響マトリクス→段階レビュー→CI相当検証 |
+| 「リリースノート」「広報文」「告知文」「README冒頭」「日英リリースノート」                                  | /write-grimodex-copy       | 正本確認→事実整理→日英整合→公開前確認  |
+| 「バージョン上げて」「リリースタグ」「リリース準備」                                                        | /bump-version              | version→文面→PR→tag→Draft確認          |
+| 「PR出して」「プルリク作って」「pushしてマージ」「shipして」                                                | /ship-branch               | push→PR→CI・レビュー→squash merge      |
