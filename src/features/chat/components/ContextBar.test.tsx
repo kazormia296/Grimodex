@@ -64,6 +64,7 @@ function makeEntry(
     tagsCache: null,
     aliases: null,
     excludedAliases: null,
+    readings: null,
     sourceChatMessageId: null,
     notes: null,
     version: 0,
@@ -101,6 +102,139 @@ const defaultProps = {
 };
 
 describe("ContextBar グループ化", () => {
+  it("renders only items selected by the materialized ContextPlan", () => {
+    const selected = makePinnedEntry("selected", "Selected");
+    const trimmed = makePinnedEntry("trimmed", "Trimmed");
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[selected, trimmed]}
+        contextPlan={
+          {
+            requestId: "request-1",
+            items: [
+              {
+                key: "codex:selected",
+                kind: "codex",
+                authority: "canonical",
+                priority: 3,
+                stability: "turn-volatile",
+                trim: { mode: "atomic", minTokens: 0, maxTokens: 1 },
+                provenance: { sourceType: "codex-pin", sourceId: "selected" },
+                payload: {
+                  kind: "codex",
+                  entry: {
+                    id: "selected",
+                    type: "character",
+                    name: "Selected",
+                    summary: "",
+                  },
+                  includePinnedExtras: true,
+                },
+              },
+            ],
+            decisions: [
+              {
+                key: "codex:selected",
+                status: "selected",
+                reason: "within-budget",
+                tokensBefore: 1,
+                tokensAfter: 1,
+              },
+              {
+                key: "codex:trimmed",
+                status: "trimmed",
+                reason: "budget-priority",
+                tokensBefore: 1,
+                tokensAfter: 0,
+              },
+            ],
+            usage: {
+              candidateTokens: 2,
+              selectedTokens: 1,
+              trimmedTokens: 1,
+              budgetTokens: 1,
+            },
+            digest: "ctx-test",
+          } as never
+        }
+      />,
+    );
+
+    const pills = screen.getByTestId("pills-visible");
+    expect(within(pills).getByText("Selected")).toBeInTheDocument();
+    expect(within(pills).queryByText("Trimmed")).not.toBeInTheDocument();
+  });
+
+  it("summarizes unavailable, trimmed, and excluded decisions with compact details", async () => {
+    const user = userEvent.setup();
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        contextPlan={
+          {
+            requestId: "request-diagnostics",
+            items: [],
+            decisions: [
+              {
+                key: "codex:hidden",
+                status: "excluded",
+                reason: "hidden-by-policy",
+                tokensBefore: 0,
+                tokensAfter: 0,
+              },
+              {
+                key: "source:semantic-recall:SEMANTIC_RECALL_UNAVAILABLE",
+                status: "unavailable",
+                reason: "semantic-recall-unavailable",
+                tokensBefore: 0,
+                tokensAfter: 0,
+              },
+              {
+                key: "codex:optional",
+                status: "trimmed",
+                reason: "budget-priority",
+                tokensBefore: 42,
+                tokensAfter: 0,
+              },
+            ],
+            usage: {
+              candidateTokens: 42,
+              selectedTokens: 0,
+              trimmedTokens: 42,
+              budgetTokens: 0,
+            },
+            digest: "ctx-diagnostics",
+          } as never
+        }
+      />,
+    );
+
+    const summary = screen.getByTestId("context-decision-summary");
+    expect(summary).toHaveAccessibleName("3 件を非注入");
+    const contextHeader = screen
+      .getByTestId("context-bar")
+      .querySelector<HTMLElement>('[role="button"]');
+    expect(contextHeader).toHaveAttribute("aria-expanded", "true");
+    summary.focus();
+    await user.keyboard("{Enter}");
+    expect(contextHeader).toHaveAttribute("aria-expanded", "true");
+
+    const popover = screen.getByTestId("context-decision-popover");
+    expect(within(popover).getByText("取得不可: 1")).toBeInTheDocument();
+    expect(within(popover).getByText("予算により除外: 1")).toBeInTheDocument();
+    expect(
+      within(popover).getByText("ポリシーにより対象外: 1"),
+    ).toBeInTheDocument();
+    expect(
+      within(popover).getByText(
+        "source:semantic-recall:SEMANTIC_RECALL_UNAVAILABLE",
+      ),
+    ).toBeInTheDocument();
+    expect(within(popover).getByText(/42 → 0 tokens/)).toBeInTheDocument();
+  });
+
   it("6件以下では個別ピルを表示する", () => {
     const entries = Array.from({ length: 6 }, (_, i) =>
       makePinnedEntry(`e${i}`, `エントリ${i}`),
@@ -225,10 +359,10 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     expect(within(pills).queryByText(/親キャラ 由来/)).not.toBeInTheDocument();
   });
 
-  it("chat_mention (input-detected) エントリは withChildren=true で子ピルを via 表示する", () => {
+  it("chat_mention (input-detected) エントリは子ピルへ自動展開しない", () => {
     const parent: PinnedCodexEntryWithData = {
       ...makeEntry("p1", "検出キャラ"),
-      withChildren: true,
+      withChildren: false,
       pinnedType: "codex",
       pinSource: "chat_mention",
     };
@@ -238,8 +372,10 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
     const pills = screen.getByTestId("pills-visible");
     expect(within(pills).getByText("検出キャラ")).toBeInTheDocument();
-    expect(within(pills).getByText("子キャラ")).toBeInTheDocument();
-    expect(within(pills).getByText(/検出キャラ 由来/)).toBeInTheDocument();
+    expect(within(pills).queryByText("子キャラ")).not.toBeInTheDocument();
+    expect(
+      within(pills).queryByText(/検出キャラ 由来/),
+    ).not.toBeInTheDocument();
   });
 
   it("子エントリが既に pinnedEntries に含まれる場合は via 表示しない（重複排除）", () => {

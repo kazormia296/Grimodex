@@ -2,10 +2,8 @@
  * CLI プロバイダ (Claude Code / Codex / OpenCode) を Chat バックエンドとして
  * 利用するための Tauri command ラッパ。
  *
- * - 通常チャット (HTTP API 系) と同じ `chat:stream-chunk` / `chat:stream-done` /
- *   `chat:stream-error` イベントを emit するため、フロント側のストリーミング
- *   ハンドリング (`sendChatMessageStream` の `StreamCallbacks` 等) はそのまま
- *   再利用できる。
+ * - HTTP/inlineストリームとの混信を避ける専用 `cli:stream-chunk` /
+ *   `cli:stream-done` / `cli:stream-error` イベントを使う。
  * - subprocess 起動なので、API キーや baseURL は使わない。代わりに binary path /
  *   model / cli kind を payload で渡す。
  */
@@ -55,6 +53,12 @@ export async function sendCliChatStream(
   payload: CliChatPayload,
   callbacks: CliStreamCallbacks,
 ): Promise<() => void> {
+  let errorDelivered = false;
+  const reportError = (message: string): void => {
+    if (errorDelivered) return;
+    errorDelivered = true;
+    callbacks.onError(message);
+  };
   // CLI 専用のイベント名空間 (cli:stream-*) を使う。
   // HTTP 系チャット (chat:stream-*) と inline AI が同じバスを使っているため、
   // CLI も同じイベント名にすると複数ストリーム同時走行時に混信する。
@@ -74,7 +78,7 @@ export async function sendCliChatStream(
       });
     }),
     listen<StreamErrorPayload>("cli:stream-error", (p) => {
-      callbacks.onError(p.message);
+      reportError(p.message);
     }),
   ]);
   const cleanup = () => {
@@ -83,7 +87,7 @@ export async function sendCliChatStream(
 
   invoke<void>("send_cli_chat_stream", { payload }).catch((e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e);
-    callbacks.onError(msg);
+    reportError(msg);
   });
 
   return cleanup;

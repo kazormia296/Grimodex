@@ -5,20 +5,41 @@ import { projects } from "@/db/schema";
 import * as schema from "@/db/schema";
 
 const invokeMock = vi.fn().mockResolvedValue(undefined);
+const scheduleImeExportRefreshMock = vi.fn();
+const cancelScheduledImeExportsMock = vi.fn();
+const removeImeProjectExportWithRetryMock = vi
+  .fn()
+  .mockResolvedValue(undefined);
+const imeWorkspaceIdentity = { path: "/workspaces/a", openRevision: 7 };
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
+vi.mock("@/features/ime/scheduler", () => ({
+  scheduleImeExportRefresh: (...args: unknown[]) =>
+    scheduleImeExportRefreshMock(...args),
+  cancelScheduledImeExports: (...args: unknown[]) =>
+    cancelScheduledImeExportsMock(...args),
+}));
+vi.mock("@/features/ime/api", () => ({
+  removeImeProjectExportWithRetry: (...args: unknown[]) =>
+    removeImeProjectExportWithRetryMock(...args),
+}));
+vi.mock("@/features/ime/workspaceScope", () => ({
+  getCurrentImeWorkspaceIdentity: () => imeWorkspaceIdentity,
+}));
 
 const returningMock = vi.fn().mockResolvedValue([{ id: "p1", language: "en" }]);
+const deleteWhereMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/db/client", () => ({
   db: {
     update: () => ({
       set: () => ({ where: () => ({ returning: returningMock }) }),
     }),
+    delete: () => ({ where: deleteWhereMock }),
   },
 }));
 
-import { updateProject } from "./api";
+import { deleteProject, updateProject } from "./api";
 
 // In-memory store simulating SQLite via the proxy interface
 function createTestDb() {
@@ -134,7 +155,10 @@ describe("projects schema", () => {
 });
 
 describe("updateProject", () => {
-  beforeEach(() => invokeMock.mockClear());
+  beforeEach(() => {
+    invokeMock.mockClear();
+    scheduleImeExportRefreshMock.mockClear();
+  });
 
   it("rebuilds _en FTS when language is in the patch", async () => {
     await updateProject("p1", { language: "en" });
@@ -144,5 +168,50 @@ describe("updateProject", () => {
   it("does not rebuild _en FTS when language is absent", async () => {
     await updateProject("p1", { title: "New Title" });
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["title", "genre", "outline", "language"] as const)(
+    "%s changes refresh the IME snapshot",
+    async (field) => {
+      await updateProject("p1", { [field]: field === "language" ? "ja" : "x" });
+      expect(scheduleImeExportRefreshMock).toHaveBeenCalledWith("p1");
+    },
+  );
+
+  it("unrelated metadata does not refresh the IME snapshot", async () => {
+    await updateProject("p1", { pov: "first" });
+    expect(scheduleImeExportRefreshMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteProject", () => {
+  beforeEach(() => {
+    cancelScheduledImeExportsMock.mockClear();
+    deleteWhereMock.mockClear();
+    removeImeProjectExportWithRetryMock.mockClear();
+  });
+
+  it("cancels a pending refresh before deleting and removing its snapshot", async () => {
+    await deleteProject("default-project");
+
+    expect(cancelScheduledImeExportsMock).toHaveBeenCalledTimes(2);
+    expect(cancelScheduledImeExportsMock).toHaveBeenNthCalledWith(
+      1,
+      "default-project",
+    );
+    expect(cancelScheduledImeExportsMock).toHaveBeenNthCalledWith(
+      2,
+      "default-project",
+    );
+    expect(deleteWhereMock).toHaveBeenCalledTimes(2);
+    expect(removeImeProjectExportWithRetryMock).toHaveBeenCalledWith(
+      "default-project",
+      imeWorkspaceIdentity,
+    );
+    expect(
+      cancelScheduledImeExportsMock.mock.invocationCallOrder[1],
+    ).toBeLessThan(
+      removeImeProjectExportWithRetryMock.mock.invocationCallOrder[0],
+    );
   });
 });

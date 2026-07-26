@@ -1,15 +1,23 @@
 mod ai;
-mod ai_novelist;
-mod ai_responses;
 mod cli_provider;
 mod codex_matching;
 mod commands;
-mod database;
 mod external_mount;
+#[allow(unused_imports)]
 mod license;
 mod lint_logging;
 mod semantic;
-mod workspace;
+
+// grimodex-db 抽出 (Electron 移行 Phase 2 S1) の互換シム。DB 層の実体は
+// crates/grimodex-db に移動したが、既存の `crate::database::…` /
+// `crate::workspace::…` パス (semantic / commands 配下 145 コマンド) は
+// 1 行も変えずにこの re-export で従来どおり解決する。
+pub(crate) mod database {
+    pub use grimodex_db::*;
+}
+pub(crate) mod workspace {
+    pub use grimodex_db::workspace::*;
+}
 
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -17,43 +25,12 @@ use tauri::Manager;
 use codex_matching::CodexMatcherState;
 use commands::external_mount::ExternalMountState;
 #[cfg(feature = "semantic-embedding")]
-use commands::semantic::{ModelDownloadState, SemanticEmbedderState};
+use commands::semantic::TauriSemanticEventSink;
 use commands::{
-    AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LicensePath,
-    LogGuard, PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
+    AiSettingsPath, AppResult, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag,
+    LicenseRuntime, LogGuard, PostEffectAbortRegistry, StreamAbortFlag, WorkspaceState,
 };
 use external_mount::watch::ExternalMountWatchState;
-
-#[tauri::command]
-fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
-
-        let window = app
-            .get_webview_window("main")
-            .ok_or_else(|| "main window was not found".to_string())?;
-
-        if enabled {
-            apply_vibrancy(
-                &window,
-                NSVisualEffectMaterial::UnderWindowBackground,
-                None,
-                None,
-            )
-            .map_err(|error| error.to_string())?;
-        } else {
-            clear_vibrancy(&window).map_err(|error| error.to_string())?;
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, enabled);
-    }
-
-    Ok(())
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -71,6 +48,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        // アプリ自動更新 (Track2)。process は更新後の再起動 (relaunch) に使う。
+        // licensing / semantic feature とは独立の無条件プラグイン。
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 校閲 run 終端のデスクトップ通知 (非フォーカス時のみ FE 側が送る)
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let app_dir = app
                 .path()
@@ -91,11 +74,7 @@ pub fn run() {
 
             // License file path (stays in AppData, alongside global-settings.json)
             let license_path = app_dir.join("license.json");
-            app.manage(LicensePath {
-                path: license_path,
-                write_lock: Mutex::new(()),
-                validate_in_flight: std::sync::atomic::AtomicBool::new(false),
-            });
+            app.manage(LicenseRuntime::new(license_path));
 
             // ライセンスのバックグラウンド再検証 (ライセンス認証設計書 §5.4)。
             // 起動直後 + 6 時間ごとに「最終検証から 7 日以上」をチェックして
@@ -140,59 +119,67 @@ pub fn run() {
                 flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
-            // PostEffect run abort flag
-            app.manage(PostEffectAbortFlag {
-                flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            });
+            // PostEffect run abort registry (run_id 単位)
+            app.manage(PostEffectAbortRegistry::new());
 
-            // Semantic search: per-language ONNX Embedders (ja=ruri / en=...).
-            // Lazy load on first invoke, keyed by model dir name.
-            #[cfg(feature = "semantic-embedding")]
-            app.manage(SemanticEmbedderState {
-                inner: std::sync::Mutex::new(std::collections::HashMap::new()),
-            });
-
-            // オンデマンドモデル DL の in-flight 集合 (二重 DL ガード)。
-            #[cfg(feature = "semantic-embedding")]
-            app.manage(ModelDownloadState::default());
-
-            // モデル切替後に残る旧 app_data/models/<dir> を掃除する (現行 spec 以外の dir)。
-            // 起動を止めないよう spawn_blocking。models/ 未作成 (初回) なら no-op。
+            // Shared semantic runtime: explicit shell paths, four-cache epoch,
+            // per-language embedders/download flights, and event transport.
             #[cfg(feature = "semantic-embedding")]
             {
-                let handle = app.handle().clone();
+                let mut resource_semantic_root = match app.path().resource_dir() {
+                    Ok(resource_dir) => resource_dir.join("resources/semantic"),
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "resource directory unavailable; semantic models will degrade to FTS"
+                        );
+                        app_dir.join("__missing_bundled_semantic_resources__")
+                    }
+                };
+                // Dev-only explicit adapter path. Release runtime never embeds
+                // a build-machine CARGO_MANIFEST_DIR fallback.
+                #[cfg(debug_assertions)]
+                if !resource_semantic_root.exists() {
+                    let development_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources/semantic");
+                    if development_root.exists() {
+                        resource_semantic_root = development_root;
+                    }
+                }
+                let runtime = Arc::new(grimodex_semantic::runtime::SemanticRuntime::new(
+                    grimodex_semantic::runtime::SemanticPaths {
+                        models_root: app_dir.join("models"),
+                        resource_semantic_root,
+                    },
+                    Arc::new(TauriSemanticEventSink {
+                        app: app.handle().clone(),
+                    }),
+                ));
+                app.manage(Arc::clone(&runtime));
                 tauri::async_runtime::spawn_blocking(move || {
-                    semantic::download::gc_stale_model_dirs(&handle);
+                    runtime.gc_stale_model_dirs();
                 });
             }
-
-            // Semantic search: in-memory embedding cache (scene_id -> Vec<f32>).
-            // Cleared on workspace open; invalidated per-scene on index_scene.
-            app.manage(semantic::search::SearchCache::new());
-            // Codex semantic search cache (entry_id -> embedding). Same lifecycle:
-            // cleared on workspace open, invalidated per-entry on codex_index_entry.
-            // Non-gated so workspace.rs (also non-gated) can clear it.
-            app.manage(semantic::codex_search::CodexSearchCache::new());
-            // Chronicle event semantic search cache (event_id -> embedding). Same
-            // lifecycle: cleared on workspace open, invalidated per-event on
-            // events_index_entry. Non-gated so workspace.rs can clear it.
-            app.manage(semantic::events_search::EventsSearchCache::new());
-            // Chat episodic recall cache (message_id -> embedding). Same lifecycle:
-            // cleared on workspace open, invalidated per-message on chat_index_message.
-            app.manage(semantic::chat_search::ChatSearchCache::new());
 
             app.manage(ExternalMountWatchState::new());
             app.manage(ExternalMountState::new());
 
+            // Vivliostyle CLI ビルドの run / 成果物レジストリ
+            app.manage(commands::vivliostyle::VivliostyleState::default());
+            // 前回セッションで save されずに残った Vivliostyle temp 成果物を
+            // 一括掃除する。起動を止めないよう spawn_blocking。
+            tauri::async_runtime::spawn_blocking(commands::vivliostyle::cleanup_temp_root);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            set_window_vibrancy,
             commands::workspace::get_global_settings,
             commands::workspace::save_global_settings,
             commands::workspace::validate_workspace_path,
             commands::workspace::open_workspace,
             commands::workspace::get_mcp_config,
+            commands::workspace::list_backups,
+            commands::workspace::restore_backup,
             // ライセンス: licensing feature 無効でも常時登録 (get_license_state が
             // licensing_enabled:false を返す契約。cfg で消すとフロントが invoke 不能)
             commands::license::get_license_state,
@@ -201,6 +188,15 @@ pub fn run() {
             commands::license::deactivate_license,
             commands::export::export_save_text,
             commands::export::export_save_bytes,
+            commands::import_fs::import_open_text_file,
+            commands::import_fs::import_pick_folder_markdown,
+            commands::logs::open_log_dir,
+            commands::vivliostyle::vivliostyle_detect,
+            commands::vivliostyle::vivliostyle_build,
+            commands::vivliostyle::vivliostyle_abort_build,
+            commands::vivliostyle::vivliostyle_save_output,
+            commands::vivliostyle::vivliostyle_preview_start,
+            commands::vivliostyle::vivliostyle_preview_stop,
             commands::fonts::list_system_fonts,
             commands::db::db_execute,
             commands::db::db_execute_batch,
@@ -244,7 +240,6 @@ pub fn run() {
             commands::foreshadow::foreshadow_create,
             commands::foreshadow::foreshadow_update,
             commands::foreshadow::foreshadow_delete,
-            commands::foreshadow::foreshadow_list,
             commands::foreshadow::foreshadow_list_with_labels,
             commands::foreshadow::foreshadow_list_open_for_context,
             commands::foreshadow::foreshadow_get_scene_info,
@@ -285,16 +280,15 @@ pub fn run() {
             commands::plot_threads::plot_thread_link_delete,
             commands::plot_threads::plot_thread_list_links,
             commands::lint::lint_text,
+            commands::reorder::segment_bunsetsu,
             commands::post_effect::start_post_effect_run,
             commands::post_effect::start_post_effect_run_multi,
             commands::post_effect::abort_post_effect_run,
             commands::post_effect::list_post_effect_runs,
-            commands::post_effect::get_post_effect_run,
             commands::post_effect::list_scene_lens_for_project,
             commands::post_effect::list_annotations_for_scene,
             commands::post_effect::list_annotations_for_project,
             commands::post_effect::update_annotation_status,
-            commands::post_effect::update_relation_status,
             commands::post_effect::reply_to_annotation,
             commands::post_effect::save_post_effect_annotations,
             commands::onboarding::seed_sample_workspace,
@@ -341,9 +335,22 @@ pub fn run() {
             commands::external_mount::external_mount_read_file,
             commands::external_mount::external_mount_write_file,
             commands::external_mount::external_mount_file_mtime,
-            commands::external_mount::external_mount_list,
             commands::external_mount::external_mount_scan,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| match event {
+            // アプリ終了時に Vivliostyle の実行中 build とプレビューを
+            // プロセスグループごと kill する (孫の Chromium 残留防止 +
+            // 終了後も temp に書き続ける build の遮断)。updater の relaunch
+            // (tauri_plugin_process → AppHandle::restart) も Tauri v2 では
+            // ExitRequested → Exit の順で event loop を通るためここで漏れない。
+            // このアプリに prevent_exit する箇所は無いので ExitRequested 時点で
+            // 殺してよい (kill_all は冪等なので Exit との二重呼びも無害)。
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                let state = app_handle.state::<commands::vivliostyle::VivliostyleState>();
+                commands::vivliostyle::kill_all(&state);
+            }
+            _ => {}
+        });
 }

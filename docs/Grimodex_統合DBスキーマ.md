@@ -2,7 +2,13 @@
 
 ## 概要
 
-全設計書に散在するDBスキーマ定義を1つに統合した正規版。実装時はこのドキュメントをSingle Source of Truthとし、個別設計書のSQLは参考として扱う。
+全設計書に散在するDBスキーマ定義を説明用に統合した資料。**実行時の物理スキーマの正本は
+`src-tauri/crates/grimodex-db` の migration** であり、この文書は schema contract から
+生成・更新される概要資料として扱う。個別設計書のSQLは参考であり、実行時の正本ではない。
+
+物理スキーマの構造契約は [`src/db/generated/schema-contract.json`](../src/db/generated/schema-contract.json)
+に出力する。更新コマンドは `pnpm generate:db-contract`、authority の詳細は
+[`ADR 003`](adr/003-db-authority-and-schema-contract.md) を参照する。
 
 データベース: SQLite（WALモード有効）
 ORM: Drizzle ORM（sqlite-proxy）
@@ -657,7 +663,7 @@ CREATE UNIQUE INDEX uq_chat_pin_snippet ON chat_session_pinned_codex(session_id,
 
 `pin_source`:
 - `'manual'` — 「+」ボタン、ピルプレビューのPin等のユーザー明示操作
-- `'chat_mention'` — チャット入力欄で @ メンションされて送信された時の自動ピン
+- `'chat_mention'` — 旧バージョン互換用。現在の @ メンションはターン内候補としてのみ扱い、新規行を永続化しない。既存行もコンテキスト計画では明示ピンとして扱わない
 
 ### chat_messages
 
@@ -1166,7 +1172,7 @@ SQLite 3.38+の `json()` / `json_extract()` 関数でクエリ内でのJSON操�
 
 ## マイグレーション方針
 
-- スキーマ定義（DDL）は Rust 側の `src-tauri/src/database.rs` `Database::migrate()` メソッドで一元管理
+- スキーマ定義（DDL）は Rust 側の `src-tauri/crates/grimodex-db/src/migrate.rs` `Database::migrate()` メソッドで一元管理
 - TypeScript 側の `src/db/schema.ts` は Drizzle ORM のクエリビルダー用スキーマ定義のみ（DDL生成なし）
 - `drizzle-kit` によるマイグレーションファイル生成は使用しない（sqlite-proxy構成のため）
 - アプリ起動時（ワークスペースオープン時）に `Database::migrate()` が自動実行される
@@ -1859,7 +1865,7 @@ CREATE INDEX idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);
 
 ## スキーマ更新履歴（2026-05-07）
 
-現状コードベース（`src/db/schema.ts` + `src-tauri/src/database.rs`）と設計書の乖離を解消。
+現状コードベース（`src/db/schema.ts` + `src-tauri/crates/grimodex-db/`）と設計書の乖離を解消。
 
 ### 追加テーブル（設計書に未記載だったもの）
 
@@ -2201,7 +2207,7 @@ CREATE TABLE IF NOT EXISTS scene_chunks (
   model_id         TEXT NOT NULL,           -- 例: cl-nagoya/ruri-v3-30m@<rev>/model_int8.onnx/prefix-v1
   content_hash     TEXT NOT NULL,           -- 本文から安定算出。非同期 job race の回避用
   chunker_version  TEXT NOT NULL,           -- 例: semantic-prose-chunker-v1。仕様変更で stale 判定
-  created_at       INTEGER NOT NULL,        -- ms-since-epoch（Drizzle mode:'timestamp'）
+  created_at       INTEGER NOT NULL,        -- ms-since-epoch（Drizzle mode:'timestamp_ms'）
   updated_at       INTEGER NOT NULL
 );
 
@@ -2675,16 +2681,20 @@ CREATE INDEX IF NOT EXISTS idx_lint_term_dict_project ON lint_term_dictionary(pr
 | `post_effect_runs.effect_type` CHECK 拡張 | 5→9（`typo_detection` / `intent_drift` / `timeline_consistency` / `impact_review` を追加） |
 | `post_effect_annotations.category` CHECK 拡張 | 5→9（`typo_anchor` / `intent_anchor` / `timeline_anchor` / `impact_review_anchor` を追加） |
 
-### Drizzle ↔ Rust スキーマの差分
+### Drizzle ↔ Rust スキーマの projection 差分
 
-`src-tauri/src/database/migrate.rs`（実 DB の正本）と `src/db/schema.ts`（アプリ層ミラー）の現状差分。いずれも意図的か、Drizzle が遅れているだけで実害はない。
+`src-tauri/crates/grimodex-db/src/migrate.rs`（実 DB の正本）と `src/db/schema.ts`
+（アプリ層 projection）の差分。正確な table / column / index / FK の現状は
+`schema-contract.json` と parity test を参照する。この表は、Drizzle に投影しない
+Rust 専用領域と互換上の注意点だけを説明する。
 
 | 項目 | 状態 |
 |------|------|
-| `codex_chunks` / `undo_journal` | Rust のみ。FTS 仮想テーブルと同じく Rust 管理で Drizzle には定義しない（意図的） |
-| `tree_nodes.version` / `codex_entries.version` / `snippets.version` | Rust のみ（楽観ロック列）。Drizzle 未反映 |
+| `chat_message_chunks` / `event_chunks` / `fts_meta` / `undo_journal` | Rust のみ。native の索引・監査・Undo 用で Drizzle には定義しない（意図的） |
+| FTS5 仮想テーブル | Rust migration のみで管理し、Drizzle/browser projection には定義しない（意図的） |
+| `tree_nodes.version` / `codex_entries.version` / `snippets.version` | 楽観ロック列。Drizzle にも宣言し、contract test で存在を固定する |
 | `projects.is_sample` | Rust のみ。Drizzle 未反映 |
-| FTS5 / CHECK 制約 / 部分・UNIQUE インデックス / seed・cascade トリガー | すべて `migrate.rs` のみに存在（Drizzle では表現しない設計） |
+| FTS5 / CHECK 制約 / 部分・UNIQUE インデックス / seed・cascade トリガー | `migrate.rs` のみに存在する物理制約。Drizzle は列と基本 FK の projection を担う |
 
 ### マイグレーション方針について
 

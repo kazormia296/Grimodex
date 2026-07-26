@@ -1,21 +1,14 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Clock, BookOpen, Files, CalendarDays } from "lucide-react";
-import { tiptapContentFromDb } from "@/lib/prosemirror";
 import { useEditor } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
-import { FileBackedSceneBanner } from "@/features/external-mount/components/FileBackedSceneBanner";
-import { NoteContextControls } from "@/features/editor/NoteContextControls";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
-import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { loadSceneFull, savePlacedBeatPreviewOnly } from "@/features/tree/api";
-import { persistSceneBody } from "@/features/editor/persistSceneBody";
-import { EditorStatsFooter } from "@/features/editor/EditorStatsFooter";
+import { savePlacedBeatPreviewOnly } from "@/features/tree/api";
 import {
   extractPlacedBeatPreview,
   extractPlacedBeatPreviewFromDoc,
@@ -23,29 +16,38 @@ import {
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
-import { getCodexEntry } from "@/features/codex/api";
-import { getEvent } from "@/features/chronicle/api";
 import { uiUpdateEvent } from "@/features/agent-writes/event";
 import type {
   CodexMentionPopupState,
   MentionItem,
   MentionRole,
 } from "@/features/codex/CodexMentionExtension";
-import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
-import { getSnippet } from "@/features/snippets/api";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
 } from "@/features/project/projectStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
-import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { useAutoSave, AlreadyNotifiedSaveError } from "@/hooks/useAutoSave";
+import { useAutoSave } from "@/hooks/useAutoSave";
+import {
+  defaultEditorDocumentServices,
+  saveEditorDocument,
+} from "@/features/editor/document/saveEditorDocument";
+import {
+  loadEditorDocument,
+  targetFromTab,
+} from "@/features/editor/document/loadEditorDocument";
+import {
+  applySceneSidecars,
+  loadSceneSidecars,
+} from "@/features/editor/document/sceneSidecars";
+import { type SaveSnapshot } from "@/features/editor/document/mutationGate";
+import { useEditorDocumentSession } from "@/features/editor/document/useEditorDocumentSession";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -60,36 +62,32 @@ import { useGhostPreview } from "@/features/editor/useGhostPreview";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
-import { AttributionLegend } from "@/features/attribution/AttributionLegend";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
+import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
+import { useCodexCompletion } from "@/features/editor/codexCompletion/useCodexCompletion";
+import { handleZenEscapeKeyDown } from "@/features/editor/zenEscape";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
+import {
+  getEditorTimelapseCapture,
+  serializeTransactionSteps,
+  shouldHandleEditorUpdate,
+} from "@/features/editor/editorEventPolicy";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import {
-  loadAuthorshipSpans,
-  spansToMarkData,
-} from "@/features/attribution/api";
-import {
-  loadForeshadowAnchors,
-  clearAllForeshadowMarks,
-} from "@/features/foreshadow/saveAnchors";
-import { listAnnotationsForScene } from "@/features/post-effect/api";
-import {
-  clampMarkRange,
-  resolveAnchorLoads,
-} from "@/features/editor/anchorLoads";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
-import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { useFocusMode } from "@/features/editor/useFocusMode";
+import { gutterReserveInlineSize } from "@/features/editor/GutterMarksPlugin";
 import {
   useTypewriterScroll,
   computeTypewriterScrollTop,
+  computeTypewriterScrollLeft,
+  verticalColumnCenterX,
 } from "@/features/editor/useTypewriterScroll";
 import {
   getLogicalScrollOffset,
@@ -97,19 +95,17 @@ import {
 } from "@/features/editor/editorLayout";
 import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useAgentProseStaging } from "@/features/editor/inlineAi/useAgentProseStaging";
-import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import {
   buildSystemPrompt as buildInlineSystemPrompt,
   buildUserPrompt as buildInlineUserPrompt,
 } from "@/features/editor/inlineAi/inlineAiApi";
-import { AbInlineDialog } from "@/features/ab-test/AbInlineDialog";
-import type { AbMessage } from "@/features/ab-test/abHarness";
-import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
-import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
+import { resolvePhoneEditorGroup } from "@/features/editor/phoneEditorGroup";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { useRequestedEditorFocus } from "@/features/editor/useRequestedEditorFocus";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
@@ -125,22 +121,18 @@ import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { useSynopsisSuggestionStore } from "@/features/editor/synopsisSuggestionStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import { useLinter } from "@/features/lint/useLinter";
-import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
-import { AiPolicyBadge } from "@/features/ai-policy/AiPolicyBadge";
-import { LicenseBadge } from "@/features/license/LicenseBadge";
-import { LicenseRestrictionBanner } from "@/features/license/LicenseRestrictionBanner";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
 import { findChunkInDoc } from "@/features/semantic-search/findChunkInDoc";
+import { usePendingSemanticJump } from "@/features/semantic-search/usePendingSemanticJump";
 import { toast } from "sonner";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
-import { DndContext, DragOverlay } from "@dnd-kit/core";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
-import { EditorContentArea } from "@/features/editor/EditorContentArea";
+import { useParagraphReorderOverlay } from "@/features/editor/reorder/useParagraphReorderOverlay";
 import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
 import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
@@ -148,29 +140,17 @@ import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
 import type { TrashOrigin } from "@/features/trash-bin/types";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
+import { EditorPaneRibbon } from "@/features/editor/EditorPaneRibbon";
+import { EditorPaneViewport } from "@/features/editor/EditorPaneViewport";
+import { EditorPaneStatusBar } from "@/features/editor/EditorPaneStatusBar";
+import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
+import { PhoneSceneMetaSheet } from "@/features/editor/PhoneSceneMetaSheet";
 import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable";
-
-function getStatusLabels(): Record<SceneStatus, string> {
-  return {
-    outline: i18next.t("editor.status.outline"),
-    draft: i18next.t("editor.status.draft"),
-    complete: i18next.t("editor.status.complete"),
-    revision: i18next.t("editor.status.revision"),
-    final: i18next.t("editor.status.final"),
-  };
-}
-
-const STATUS_COLORS: Record<SceneStatus, string> = {
-  outline: "text-muted-foreground",
-  draft: "text-yellow-500",
-  complete: "text-green-500",
-  revision: "text-purple-400",
-  final: "text-blue-400",
-};
+  EditorPaneOverlays,
+  type AbInlineState,
+} from "@/features/editor/EditorPaneOverlays";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 
 /** Read the vertical-mode flag at call time — scroll save/restore runs inside
  *  async effects and editor callbacks where a captured value could be stale. */
@@ -204,6 +184,20 @@ interface EditorPaneProps {
  * Supports both scene/note content (Markdown via Tauri) and codex entry content (ProseMirror JSON via DB).
  */
 
+export function useClosePhoneReorderOverlay({
+  phoneWorkspace,
+  open,
+  closeOverlay,
+}: {
+  phoneWorkspace: boolean;
+  open: boolean;
+  closeOverlay: () => void;
+}) {
+  useEffect(() => {
+    if (phoneWorkspace && open) closeOverlay();
+  }, [closeOverlay, open, phoneWorkspace]);
+}
+
 export function EditorPane({
   nodeId,
   contentType,
@@ -229,15 +223,17 @@ export function EditorPane({
   // scrollOffset is the logical block-axis offset (scrollTop when horizontal,
   // -scrollLeft when vertical) — see editorLayout.getLogicalScrollOffset.
   const savedEditorStateRef = useRef<
-    Map<string, { from: number; to: number; scrollOffset: number }>
+    Map<string, { from: number; to: number; scrollOffset: number | null }>
   >(new Map());
   // Pending cursor/scroll restore for lazy application on next editor focus.
   // Set when the scene switch was triggered from the Scenes panel (no focus steal).
   // Cleared either when consumed by onFocus or when a new scene starts loading.
+  // scrollOffset=null は「無効（縦横トグルで軸が変わった等）— スクロールは
+  // 復元しない」。0 を無効値に使うと onFocus 復元が先頭へのジャンプになる。
   const pendingCursorRestoreRef = useRef<{
     from: number;
     to: number;
-    scrollOffset: number;
+    scrollOffset: number | null;
   } | null>(null);
   // count 系 state (charCount/beat) は EditorStatsFooter に分離済み。本体に
   // 置くとタイピング休止ごとの stat 更新で 2200 行ペイン全体が再レンダー
@@ -245,12 +241,34 @@ export function EditorPane({
   const externalReloadNonce = useExternalWriteStore(
     (s) => s.reloadNonce[nodeId] ?? 0,
   );
-  const [isDirty, setIsDirty] = useState(false);
   const [isSceneContentLoading, setIsSceneContentLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
-  const statusPopoverRef = useRef<HTMLDivElement>(null);
-  const statusBadgeRef = useRef<HTMLButtonElement>(null);
+  const workspaceViewportProfile = useWorkspaceViewportProfile();
+  const phoneWorkspace = workspaceViewportProfile === "phone";
+  const inlineAiProjectionStatus = useInlineAiStore((state) => state.status);
+  const inlineAiProjectionOwnerGroup = useInlineAiStore(
+    (state) => state.activeEditorGroup,
+  );
+  const inlineAiProjectionPending =
+    inlineAiProjectionStatus === "generating" ||
+    inlineAiProjectionStatus === "diffShown" ||
+    inlineAiProjectionStatus === "error";
+  const activeGroupIndex = useTabStore((state) => state.activeGroupIndex);
+  const primaryActiveTabId = useTabStore((state) => state.activeTabId);
+  const secondaryActiveTabId = useTabStore(
+    (state) => state.secondaryActiveTabId,
+  );
+  const secondaryGroupOpen = useTabStore((state) => state.secondaryGroupOpen);
+  const treeActiveSceneId = useTreeStore((state) => state.activeSceneId);
+  const phoneEditorOwnerGroup = resolvePhoneEditorGroup(
+    {
+      activeTabId: primaryActiveTabId,
+      secondaryActiveTabId,
+      secondaryGroupOpen,
+      activeGroupIndex,
+    },
+    treeActiveSceneId,
+    inlineAiProjectionPending ? inlineAiProjectionOwnerGroup : null,
+  );
 
   const activeNode = useTreeStore((s) =>
     isEntryMode ? null : s.nodes.find((n) => n.id === nodeId),
@@ -272,6 +290,28 @@ export function EditorPane({
   // Phases for this codex entry (populated into store during load)
   const codexPhases = usePhaseStore((s) =>
     isCodexMode ? (s.phasesByEntry[nodeId] ?? null) : null,
+  );
+  // Content/summary edits do not require a full editor reload, but structural
+  // changes can change the active write target at the same scene. Keep the
+  // dependency narrow so create/delete/re-anchor reruns resolution without an
+  // autosave feedback loop on every phase body update.
+  const codexPhaseStructureKey =
+    codexPhases === null
+      ? "unloaded"
+      : codexPhases
+          .map(
+            (phase) =>
+              `${phase.id}\u0000${phase.anchorNodeId ?? ""}\u0000${phase.createdAt}`,
+          )
+          .join("\u0001");
+  const phaseResolutionSceneId = useTreeStore((s) =>
+    isCodexMode ? s.activeSceneId : null,
+  );
+  const phaseSceneTimeIndex = usePhaseStore((s) =>
+    isCodexMode ? s.sceneTimeIndex : null,
+  );
+  const phaseResolutionMode = usePhaseStore((s) =>
+    isCodexMode ? s.resolutionMode : null,
   );
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const updateCodexEntryStore = useCodexStore((s) => s.update);
@@ -318,13 +358,7 @@ export function EditorPane({
   const [palettePreselect, setPalettePreselect] =
     useState<InlineAiCommand | null>(null);
   // A/B 比較 (③): インライン AI を 2 構成で並列生成して見比べるモーダル。
-  const [abInline, setAbInline] = useState<{
-    messages: AbMessage[];
-    mode: "insert" | "replace";
-    originalRange: { from: number; to: number } | null;
-    insertPos: number | null;
-    projectId: string;
-  } | null>(null);
+  const [abInline, setAbInline] = useState<AbInlineState | null>(null);
   const [mentionPopup, setMentionPopupState] =
     useState<CodexMentionPopupState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -333,48 +367,25 @@ export function EditorPane({
   // レンダー後 effect まで遅れるため、外部 flush (saveScene) の dirty ゲート
   // (dirtyGatedSaveHandler) は打鍵と同じ tick で更新されるこの ref を正とする。
   // 更新は setIsDirtyRef 経由に一本化してあり、両者は乖離しない。
-  const isDirtyRef = useRef(false);
-  // 編集世代カウンタ: dirty を立てる (=編集イベント) たびに ++。saveFn は
-  // save 開始時の世代を記録し、「同世代のときのみ」dirty をクリアする。
-  // coreSave の await 中に入った編集の dirty=true を無条件クリアでクロバー
-  // すると、外部 flush の dirty ゲートが clean 誤判定 → headless 適用
-  // (autoApplyProse) の resync が未保存編集を上書き消失させるため。
-  const editGenerationRef = useRef(0);
-  const setIsDirtyRef = useRef<(dirty: boolean) => void>(() => {});
-  setIsDirtyRef.current = (dirty: boolean) => {
-    if (dirty) editGenerationRef.current += 1;
-    isDirtyRef.current = dirty;
-    setIsDirty(dirty);
-  };
+  const {
+    mutationGate,
+    isDirty,
+    isSaving,
+    loadedPhaseId,
+    isDirtyRef,
+    setDirtyRef: setIsDirtyRef,
+    setSaving: setIsSaving,
+    setLoadedPhaseId,
+  } = useEditorDocumentSession();
 
   const saveSceneIdRef = useRef(nodeId);
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
   // stable getter（inline arrow だと footer の購読が毎レンダー再構築される）。
   const getStatsSceneId = useCallback(() => saveSceneIdRef.current, []);
-  // Tracks the contentType of whatever doc is currently loaded into the editor.
-  // Updated atomically with `saveSceneIdRef` inside switchScene so that
-  // pending autosave flushes route to the same backend the in-editor content
-  // belongs to — even when the prop has already flipped to a new tab's type.
-  // Reading from the prop directly would misroute scene A's pending edits to
-  // codex/snippet on tab switch within the autosave window.
-  const saveContentTypeRef = useRef<TabContentType>(contentType);
-  // Codex mode: non-null when the loaded content came from a phase contentOverride → save back to that phase
-  const activePhaseIdRef = useRef<string | null>(null);
-  // Reactive version of activePhaseIdRef for display purposes
-  const [loadedPhaseId, setLoadedPhaseId] = useState<string | null>(null);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   // Prevent feedback loop when applying external content sync.
   const isApplyingExternalUpdate = useRef(false);
-
-  // 「ロードに成功した本物の doc」以外は保存禁止 — 空/欠損 doc の autosave が
-  // DB (file-backed なら writeBack でファイル) を上書きする本文消失の最終防衛線。
-  // **初期値は true**: mount 直後のエディタは content:"" の空 doc であり、
-  // switchScene 冒頭の flush() はロードより前に走る。ここが false だと、
-  // ロード前の窓で何かが autosave を arm しただけで空 doc が DB に保存される
-  // (実際に起きた「リニアモード解除で本文全消失」の正体)。
-  // switchScene 開始でも悲観的に true、コンテンツ適用成功時のみ false。
-  const loadFailedRef = useRef(true);
 
   // Auto-draft: true when scene was empty at load time
   const wasEmptyRef = useRef(false);
@@ -393,100 +404,48 @@ export function EditorPane({
     }
   }, [activeStatus, nodeId, isEntryMode]);
 
-  const coreSave = useCallback(async () => {
-    const id = saveSceneIdRef.current;
+  const coreSave = useCallback(async (snapshot: SaveSnapshot) => {
     const ed = editorRef.current;
-    if (!id || !ed) return;
-    if (loadFailedRef.current) {
-      debugLog.warn(
-        "EditorPane",
-        `save skipped: load failed ${id.slice(0, 8)}`,
-      );
+    if (!ed) {
+      debugLog.warn("EditorPane", "save skipped: document is not loaded");
       return;
     }
     markStart("editor.coreSave");
-    // Branch on the ref, not the closure-captured prop, so a pending autosave
-    // flush always saves to the backend matching the doc currently in the
-    // editor — even mid-tab-switch when the prop has already flipped.
-    const ctx = saveContentTypeRef.current;
-    if (ctx === "codex") {
-      const content = JSON.stringify(ed.getJSON());
-      const phaseId = activePhaseIdRef.current;
-      if (phaseId) {
-        await usePhaseStore
-          .getState()
-          .updatePhase(phaseId, { contentOverride: content });
-      } else {
-        // updateText goes through codexStore so the in-memory entries[] is
-        // refreshed too — otherwise the Codex panel keeps the pre-edit doc
-        // and reverts visually on entry-navigation until a filter / reload
-        // pulls fresh data from DB.
-        await useCodexStore.getState().updateText(id, { content });
-      }
-    } else if (ctx === "snippet") {
-      const content = ed.getHTML();
-      // updateSnippet 直呼び + store.update の二重 DB 書き込みを store 経由の
-      // 1 回に集約 (entries 反映 / timelapse 記録 / undo 履歴も store が担う)。
-      // 二重のままだと store 側の OCC (baseVersion) が直呼びの更新と自己衝突する。
-      //
-      // store.update は false の全経路 (OCC 衝突 / 行なし=削除済み / 失敗)
-      // をユーザ通知 (conflict handler / toast) 済みの上で返す契約 (snippetStore
-      // 参照)。ここで throw に変換して saveFn へ伝播させ、setIsDirty(false) を
-      // 走らせない — 旧・直呼び (throw) と同じく「保存されていないのに clean
-      // 表示」で編集が失われるのを防ぐ。通知済みなので AlreadyNotifiedSaveError:
-      // useAutoSave の catch は autoSave.failed トーストを重ねない (二重防止)。
-      const saved = await useSnippetStore.getState().update(id, { content });
-      if (!saved) {
-        throw new AlreadyNotifiedSaveError(
-          `snippet save not persisted (version conflict or update failure): ${id}`,
-        );
-      }
-    } else if (ctx === "chronicle_event") {
-      // 出来事の詳細（ProseMirror JSON）。インスペクタと同じ tracked-write 経路
-      // （uiUpdateEvent）で保存し、undo/redo・鮮度カウンタを一貫させる。
-      const content = JSON.stringify(ed.getJSON());
-      await uiUpdateEvent({ eventId: id, detail: content });
-    } else {
-      // 本文保存の全副作用カスケードは persistSceneBody が正本。
-      // ライブエディタもエージェントの off-screen 自動適用も同じ経路を通す。
-      await persistSceneBody(id, ed.state.doc);
-    }
+    await saveEditorDocument(snapshot.binding, ed.state.doc, {
+      ...defaultEditorDocumentServices,
+      // TipTap's live serializer preserves the exact HTML representation used
+      // by the existing snippet editor.
+      serializeSnippet: () => ed.getHTML(),
+    });
     markEnd("editor.coreSave");
   }, []);
 
   const saveFn = useCallback(async () => {
-    if (loadFailedRef.current) {
+    const snapshot = mutationGate.captureSave();
+    if (!snapshot) {
       // coreSave 側でも skip するが、ここで弾かないと後続の auto-revision が
       // 未ロードの空 doc を getJSON してリビジョン履歴に書き込んでしまう
       // (実機ログで確認: save skipped 直後に空 doc の revision insert)。
       // dirty 解除も「保存していないのに消す」ことになるので丸ごと skip する。
-      debugLog.warn(
-        "EditorPane",
-        `saveFn skipped: load failed ${saveSceneIdRef.current?.slice(0, 8) ?? ""}`,
-      );
+      debugLog.warn("EditorPane", "saveFn skipped: document is not loaded");
       return;
     }
-    // save 開始時の編集世代 (下の条件付き dirty クリア用)。ここから coreSave の
-    // doc 捕捉までは同期区間なので、捕捉に入った編集を取りこぼさない。
-    const editGenAtStart = editGenerationRef.current;
     setIsSaving(true);
     try {
-      await coreSave();
+      await coreSave(snapshot);
     } finally {
       setIsSaving(false);
     }
-    // coreSave の await 中に編集が入っていた場合 (世代不一致) は dirty を維持
-    // する。無条件クリアだと外部 flush の dirty ゲートが clean 誤判定し、
-    // headless 適用の resync がその編集を上書き消失させる。
-    if (editGenerationRef.current === editGenAtStart) {
+    // coreSave の await 中に編集や文書切替が入った場合は dirty を維持する。
+    if (mutationGate.mayClearDirty(snapshot)) {
       setIsDirtyRef.current(false);
     }
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
     // Codex/snippet tabs don't use the revision system
-    if (saveContentTypeRef.current === "scene") {
+    if (snapshot.binding.kind === "tree") {
       try {
-        const id = saveSceneIdRef.current;
+        const id = snapshot.binding.id;
         const ed = editorRef.current;
         if (!id || !ed) return;
         const intervalMs =
@@ -519,7 +478,14 @@ export function EditorPane({
         );
       }
     }
-  }, [coreSave, shouldAutoRevision, recordAutoRevision]);
+  }, [
+    coreSave,
+    mutationGate,
+    setIsDirtyRef,
+    setIsSaving,
+    shouldAutoRevision,
+    recordAutoRevision,
+  ]);
 
   // Register this pane's save function so external callers (tab context menu,
   // agent writes, rename cascade, …) can flush it. dirty ゲート付き:
@@ -528,12 +494,13 @@ export function EditorPane({
     const handler = dirtyGatedSaveHandler(() => isDirtyRef.current, saveFn);
     registerSaveHandler(nodeId, handler);
     return () => unregisterSaveHandler(nodeId, handler);
-  }, [nodeId, saveFn]);
+  }, [nodeId, saveFn, isDirtyRef]);
 
   // Sync isDirty to the tab store for unsaved-changes detection
   useEffect(() => {
-    useTabStore.getState().setTabDirty(nodeId, isDirty);
-    return () => useTabStore.getState().setTabDirty(nodeId, false);
+    useEditorSessionStore.getState().setDocumentDirty(nodeId, isDirty);
+    return () =>
+      useEditorSessionStore.getState().setDocumentDirty(nodeId, false);
   }, [nodeId, isDirty]);
 
   const editorSettings = useEditorSettings();
@@ -556,6 +523,12 @@ export function EditorPane({
   // useEditor onRender effect call editor.setOptions each render (schema/
   // plugin churn). setMentionPopupState/setMentionIndex are stable setters.
   const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
+  const canEditCodexSemanticLink =
+    contentType === "scene" &&
+    activeNode?.nodeType === "scene" &&
+    !isFileBacked &&
+    !readOnly;
+  const treeNodeType = activeNode?.nodeType === "note" ? "note" : "scene";
 
   const editorExtensions = useMemo(
     () =>
@@ -635,7 +608,8 @@ export function EditorPane({
           }
           return false;
         },
-        handleKeyDown(_view, event) {
+        handleKeyDown(view, event) {
+          if (handleZenEscapeKeyDown(view, event)) return true;
           // Ctrl/Cmd+Shift+V を「書式設定なし」ペーストとして arm する。
           // native paste は止めず、handlePaste 側で Markdown 記法を除去する。
           // 他キーでは arm を解除する (paste が来なかった場合の stale 防止)。
@@ -681,23 +655,29 @@ export function EditorPane({
         },
       },
       onUpdate({ editor: e, transaction }) {
-        if (isApplyingExternalUpdate.current) return;
+        const ai = useInlineAiStore.getState();
         // TipTap は setEditable 等の「doc 未変更」イベントでも 'update' を
         // emit する (transaction.steps が空)。これを保存に流すと、未ロードの
         // 空 doc に pending が arm され本文消失の引き金になる (実機で
         // useLicenseEditableSync の mount 同期がこれを踏んでいた)。
         // 実際に doc が変わった transaction だけを保存系に通す。
-        if (!transaction.docChanged) return;
+        if (
+          !shouldHandleEditorUpdate({
+            docChanged: transaction.docChanged,
+            isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+            inlineAiStatus: ai.status,
+            activeEditor: ai.activeEditor,
+            editor: e,
+          })
+        ) {
+          return;
+        }
         // インライン AI の生成中・diff 表示中はオートセーブを止める。
         // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
         // 再度 onUpdate が走り、その時に通常の schedule が実行される。
         // owner 判定 (activeEditor === e) なので、分割ビューで別ペインが生成中でも
         // このペインの通常編集は保存される (LinearSceneBlock.onUpdate と同契約)。
-        {
-          const ai = useInlineAiStore.getState();
-          if (ai.status !== "idle" && ai.activeEditor === e) return;
-        }
-        if (loadFailedRef.current) {
+        if (mutationGate.captureSave() === null) {
           // 調査ログ: 未ロード窓 (mount〜コンテンツ適用成功の間) で doc を
           // 変更している犯人の特定用。保存自体は saveFn 側 guard で skip される。
           debugLog.warn(
@@ -786,26 +766,25 @@ export function EditorPane({
         // は両方 step として残り「AI が X を提案→ユーザーが削除」と忠実に再現される。
         // Chronicle event detail は執筆タイムラプスの対象外（scene/codex/snippet の
         // body ではないメタデータ）。誤った entityType で記録しないよう skip。
-        if (sid && !isApplyingExternalUpdate.current && !isChronicleEventMode) {
+        const capture = getEditorTimelapseCapture({
+          id: sid,
+          isEntryMode,
+          isCodexMode,
+          isSnippetMode,
+          isChronicleEventMode,
+          isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+        });
+        if (capture) {
           try {
-            const steps = transaction.steps.map((s) => s.toJSON());
-            const domain = isCodexMode
-              ? "codex"
-              : isSnippetMode
-                ? "snippet"
-                : "editor";
-            const entityType = isCodexMode
-              ? "codex_entry"
-              : isSnippetMode
-                ? "snippet"
-                : "scene";
             recordChangeEvent({
-              domain,
+              domain: capture.domain,
               opType: "doc.step",
-              sceneId: !isEntryMode ? sid : null,
-              entityType,
-              entityId: sid,
-              payload: { steps },
+              sceneId: capture.sceneId,
+              entityType: capture.entityType,
+              entityId: capture.entityId,
+              payload: {
+                steps: serializeTransactionSteps(transaction.steps),
+              },
             });
           } catch (err) {
             // 防御的: capture 失敗で本流の onTransaction を止めない。
@@ -918,7 +897,9 @@ export function EditorPane({
             const to = Math.min(pending.to, Math.max(0, docSize - 1));
             ed.commands.setTextSelection({ from, to });
           }
-          if (editorContainerRef.current) {
+          // scrollOffset=null（縦横トグルで無効化済み）はスクロールを触らない
+          // — 0 を書くと読み進めた位置から先頭へ飛ぶ。
+          if (editorContainerRef.current && pending.scrollOffset != null) {
             setLogicalScrollOffset(
               editorContainerRef.current,
               pending.scrollOffset,
@@ -938,6 +919,24 @@ export function EditorPane({
     editorViewReady && isEditorViewReady(editor) ? editor : null;
   /** DB-native-only features (authorship, inline AI) — not on file-backed scenes. */
   const dbNativeEditor = mountedEditor && !isFileBacked ? mountedEditor : null;
+
+  const paragraphReorder = useParagraphReorderOverlay(
+    dbNativeEditor,
+    readOnly || isEntryMode,
+  );
+  useClosePhoneReorderOverlay({
+    phoneWorkspace,
+    open: paragraphReorder.open,
+    closeOverlay: paragraphReorder.closeOverlay,
+  });
+  const projectLanguage = getCurrentProjectLanguage();
+  const bunsetsuAvailable = !(projectLanguage ?? "ja")
+    .toLowerCase()
+    .startsWith("en");
+  const phraseAvailable = (projectLanguage ?? "ja")
+    .toLowerCase()
+    .startsWith("en");
+  const wordAvailable = phraseAvailable;
 
   editorRef.current = editor;
 
@@ -1002,6 +1001,13 @@ export function EditorPane({
   // Linter — scene-only, primary group only.
   const lintSceneId = groupIndex === 0 && !isEntryMode ? nodeId : null;
   useLinter(mountedEditor, lintSceneId);
+  const navigationSceneId =
+    !isEntryMode &&
+    (phoneWorkspace
+      ? treeActiveSceneId === nodeId && phoneEditorOwnerGroup === groupIndex
+      : groupIndex === 0)
+      ? nodeId
+      : null;
 
   // ゴミ箱キャプチャ。Snippet / Chronicle event タブは origin = null で skip、
   // Scene/Codex は対応する種別で記録する。
@@ -1016,18 +1022,15 @@ export function EditorPane({
   // 同シーン内の伏線ジャンプ要求を処理する。
   // クロスシーンは switchScene の consumeJump に任せる（タイミング統一のため）。
   useEffect(() => {
-    if (!editor || !lintSceneId) return;
-    const unsubscribe = useForeshadowNavStore.subscribe((state, prev) => {
-      const jump = state.pendingJump;
-      if (!jump || jump === prev.pendingJump) return;
-      if (jump.sceneId !== lintSceneId) return;
-      // シーンが未ロードの間は無視（switchScene が後で消費する）。
-      if (prevSceneIdRef.current !== lintSceneId) return;
+    if (!editor || !navigationSceneId || isSceneContentLoading) return;
+    const consumePendingJump = () => {
+      const jump = useForeshadowNavStore.getState().pendingJump;
+      if (!jump || jump.sceneId !== navigationSceneId) return;
+      if (prevSceneIdRef.current !== navigationSceneId) return;
       const consumed = useForeshadowNavStore
         .getState()
-        .consumeJump(lintSceneId);
+        .consumeJump(navigationSceneId);
       if (!consumed) return;
-      // saved cursor の遅延復元が残っているとフォーカス時に上書きされるためクリア。
       pendingCursorRestoreRef.current = null;
       const docSize = editor.state.doc.content.size;
       if (consumed.toPos > docSize) {
@@ -1040,26 +1043,24 @@ export function EditorPane({
         .setTextSelection({ from: consumed.fromPos, to: consumed.toPos })
         .scrollIntoView()
         .run();
-    });
-    return unsubscribe;
-  }, [editor, lintSceneId]);
-
-  // 同シーン内のセマンティック検索結果ジャンプ要求を処理する (Step 9 TODO)。
-  // 構造は foreshadow と同じ。chunk_text を findChunkInDoc で PM position に
-  // 変換して setTextSelection + scrollIntoView。
-  useEffect(() => {
-    if (!editor || !lintSceneId) return;
-    const unsubscribe = useSemanticNavStore.subscribe((state, prev) => {
+    };
+    consumePendingJump();
+    const unsubscribe = useForeshadowNavStore.subscribe((state, prev) => {
       const jump = state.pendingJump;
       if (!jump || jump === prev.pendingJump) return;
-      if (jump.sceneId !== lintSceneId) return;
-      if (prevSceneIdRef.current !== lintSceneId) return;
-      const consumed = useSemanticNavStore.getState().consumeJump(lintSceneId);
-      if (!consumed) return;
+      consumePendingJump();
+    });
+    return unsubscribe;
+  }, [editor, isSceneContentLoading, navigationSceneId]);
+
+  // 同シーン内のセマンティック検索結果ジャンプ要求を処理する。phone では
+  // hidden 済みの secondary が owner になった時も、既存 pending を拾う。
+  const applySemanticJump = useCallback(
+    (consumed: { chunkText: string }) => {
+      if (!editor) return;
       pendingCursorRestoreRef.current = null;
       const range = findChunkInDoc(editor.state.doc, consumed.chunkText);
       if (!range) {
-        // 一致無しならスクロールだけ (シーン先頭に戻すのは過剰なのでフォーカスのみ)。
         editor.chain().focus().run();
         return;
       }
@@ -1072,9 +1073,30 @@ export function EditorPane({
         .setTextSelection({ from, to })
         .scrollIntoView()
         .run();
-    });
-    return unsubscribe;
-  }, [editor, lintSceneId]);
+    },
+    [editor],
+  );
+  usePendingSemanticJump({
+    sceneId: navigationSceneId,
+    ready:
+      Boolean(editor) &&
+      !isSceneContentLoading &&
+      prevSceneIdRef.current === navigationSceneId,
+    applyJump: applySemanticJump,
+  });
+
+  const focusLoadedEditor = useCallback(() => {
+    editorRef.current?.chain().focus().run();
+  }, []);
+  useRequestedEditorFocus({
+    groupIndex,
+    ready:
+      !isSceneContentLoading &&
+      prevSceneIdRef.current === nodeId &&
+      (!phoneWorkspace ||
+        (treeActiveSceneId === nodeId && phoneEditorOwnerGroup === groupIndex)),
+    focus: focusLoadedEditor,
+  });
 
   // Scroll editor to annotation mark when panel item is focused
   useEffect(() => {
@@ -1090,8 +1112,9 @@ export function EditorPane({
     await flush();
     if (isEntryMode) return; // Codex/snippet entries: no revision on manual save
     // 未ロード doc は手動保存リビジョンにも残さない (空 doc 汚染防止)
-    if (loadFailedRef.current) return;
-    const id = saveSceneIdRef.current;
+    const snapshot = mutationGate.captureSave();
+    if (!snapshot || snapshot.binding.kind !== "tree") return;
+    const id = snapshot.binding.id;
     const ed = editorRef.current;
     if (!id || !ed) return;
     const content = JSON.stringify(ed.getJSON());
@@ -1101,7 +1124,7 @@ export function EditorPane({
       content,
       snapshotType: "manual",
     });
-  }, [flush, isEntryMode]);
+  }, [flush, isEntryMode, mutationGate]);
 
   useEditorKeyboard({
     paneRef,
@@ -1115,22 +1138,6 @@ export function EditorPane({
     setPaletteOpen,
   });
 
-  // Close status popover on outside click
-  useEffect(() => {
-    if (!statusPopoverOpen) return;
-    function onMouseDown(e: MouseEvent) {
-      const target = e.target as Node;
-      if (
-        !statusBadgeRef.current?.contains(target) &&
-        !statusPopoverRef.current?.contains(target)
-      )
-        setStatusPopoverOpen(false);
-    }
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [statusPopoverOpen]);
-
-  const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
   const isActiveGroup = groupIndex === activeGroupIndex;
 
   useInsertHighlight(editor);
@@ -1140,28 +1147,102 @@ export function EditorPane({
     // Snippet / Chronicle-event は補助コンテンツなので Codex ハイライトは見せるが
     // matchedEntryIds（シーン単位の CodexQuick が参照するグローバル集合）は更新しない。
     isSnippetMode || isChronicleEventMode
-      ? { skipMatchedIds: true }
+      ? {
+          skipMatchedIds: true,
+          enabledOverride: phoneWorkspace ? true : undefined,
+        }
       : isCodexMode
-        ? { excludeEntryIds: [nodeId], skipMatchedIds: !isActiveGroup }
+        ? {
+            excludeEntryIds: [nodeId],
+            skipMatchedIds: !isActiveGroup,
+            enabledOverride: phoneWorkspace ? true : undefined,
+          }
         : !isActiveGroup
-          ? { skipMatchedIds: true }
-          : undefined,
+          ? {
+              skipMatchedIds: true,
+              enabledOverride: phoneWorkspace ? true : undefined,
+            }
+          : phoneWorkspace
+            ? { enabledOverride: true }
+            : undefined,
   );
   useFocusMode(editor);
   const typewriterMode = useCursorSettingsStore((s) => s.typewriterMode);
   const focusMode = useCursorSettingsStore((s) => s.focusMode);
-  const showForeshadowMarks = useCursorSettingsStore(
+  const zenMode = useCursorSettingsStore((s) => s.zenMode);
+  const storedShowForeshadowMarks = useCursorSettingsStore(
     (s) => s.showForeshadowMarks,
   );
+  const showForeshadowMarks = phoneWorkspace
+    ? false
+    : storedShowForeshadowMarks;
+  // ガター生成レイヤーのON数から本文 inline-start の予約幅を算出する
+  // （オーバーレイ表示中はアイコンが必ず見えるよう領域を確保する）。
+  const showCommentsLayer = useCursorSettingsStore((s) => s.showComments);
+  const showLintLayer = useCursorSettingsStore((s) => s.showLint);
+  const showAnnotationsLayer = useAnnotationStore((s) => s.showAnnotations);
+  const showReaderCommentsLayer = useAnnotationStore(
+    (s) => s.showReaderComments,
+  );
+  const gutterReserve = phoneWorkspace
+    ? null
+    : gutterReserveInlineSize(
+        [
+          showCommentsLayer,
+          showReaderCommentsLayer,
+          showForeshadowMarks,
+          // review チャネルは 校閲アノテーション ∨ Lint のどちらでも出るので、
+          // showLint のみ ON でもガター記号分の幅を予約する (GutterMarksPlugin と同義)。
+          showAnnotationsLayer || showLintLayer,
+        ].filter(Boolean).length,
+      );
   const focusModeHideBeats = editorSettings.focusModeHideBeats;
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
-  const isPanelVisible = sceneMetaPanelOpen && !focusMode && !isEntryMode;
+  const activeMobileSurface = useCompactNavigationStore(
+    (state) => state.activeSurface,
+  );
+  const [phoneMetaPanelOpen, setPhoneMetaPanelOpen] = useState(false);
+  const phoneMetaCloseRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    setPhoneMetaPanelOpen(false);
+  }, [nodeId, phoneWorkspace]);
+  useEffect(() => {
+    if (activeMobileSurface !== "editor") setPhoneMetaPanelOpen(false);
+  }, [activeMobileSurface]);
+  useEffect(() => {
+    if (!phoneWorkspace || !phoneMetaPanelOpen) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const focusFrame = requestAnimationFrame(() =>
+      phoneMetaCloseRef.current?.focus(),
+    );
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      if (
+        previouslyFocused?.isConnected &&
+        useCompactNavigationStore.getState().activeSurface === "editor"
+      ) {
+        requestAnimationFrame(() => previouslyFocused.focus());
+      }
+    };
+  }, [phoneMetaPanelOpen, phoneWorkspace]);
+  // フォーカスモードでも詳細ペインは隠さない（本文の減光は FocusModePlugin 側）
+  const isPanelVisible =
+    (phoneWorkspace ? phoneMetaPanelOpen : sceneMetaPanelOpen) &&
+    !isEntryMode &&
+    !zenMode;
   const handleTogglePanel = useCallback(() => {
+    if (phoneWorkspace) {
+      setPhoneMetaPanelOpen((open) => !open);
+      return;
+    }
     useSettingsStore
       .getState()
       .set("editor.sceneMetaPanelOpen", String(!sceneMetaPanelOpen));
-  }, [sceneMetaPanelOpen]);
+  }, [phoneWorkspace, sceneMetaPanelOpen]);
   const handlePanelLayoutChanged = useCallback(
     (layout: Record<string, number>) => {
       const w = layout["scene-meta"];
@@ -1174,54 +1255,73 @@ export function EditorPane({
     [],
   );
 
-  // Typewriter scroll is Y-axis only — disabled while vertical writing is on
-  // (the setting itself is left untouched so it comes back on mode exit).
+  // Typewriter scroll: 横書きは縦スクロールで行を、縦書き(vertical-rl)は
+  // 横スクロールで列を、それぞれ中央に保つ。
   const verticalMode = editorSettings.verticalMode;
-  const effectiveTypewriter = typewriterMode && !verticalMode;
-  useTypewriterScroll(editor, effectiveTypewriter, editorContainerRef);
+  const effectiveTypewriter = typewriterMode;
+  useTypewriterScroll(
+    editor,
+    effectiveTypewriter,
+    editorContainerRef,
+    verticalMode,
+  );
 
   // When typewriter mode is toggled (on or off), scroll immediately to center
-  // the cursor to prevent a visual jump from the 50vh padding being added/removed.
+  // the cursor to prevent a visual jump from the 50vh/50vw padding being
+  // added/removed. 縦書きでは横軸(scrollLeft)で列をセンタリングする。
   useEffect(() => {
-    if (verticalMode) return;
     if (!editorContainerRef.current || !isEditorViewReady(mountedEditor))
       return;
     const container = editorContainerRef.current;
     const ed = mountedEditor;
     const raf = requestAnimationFrame(() => {
       const { from } = ed.view.state.selection;
-      let coordsTop: number;
-      try {
-        coordsTop = ed.view.coordsAtPos(from).top;
-      } catch {
-        return;
-      }
       const containerRect = container.getBoundingClientRect();
-      const target = computeTypewriterScrollTop(
-        coordsTop,
-        containerRect.top,
-        container.scrollTop,
-        containerRect.height,
-      );
-      container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
+      if (verticalMode) {
+        const cursorX = verticalColumnCenterX(ed.view, from);
+        if (cursorX == null) return;
+        const target = computeTypewriterScrollLeft(
+          cursorX,
+          containerRect.left,
+          container.scrollLeft,
+          containerRect.width,
+        );
+        container.scrollTo({ left: target, behavior: "auto" });
+      } else {
+        let cursorTop: number;
+        try {
+          cursorTop = ed.view.coordsAtPos(from).top;
+        } catch {
+          return;
+        }
+        const target = computeTypewriterScrollTop(
+          cursorTop,
+          containerRect.top,
+          container.scrollTop,
+          containerRect.height,
+        );
+        container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
+      }
     });
     return () => cancelAnimationFrame(raf);
   }, [effectiveTypewriter, verticalMode, mountedEditor, nodeId]);
 
   // Saved scroll offsets belong to one writing mode's block axis — toggling
   // vertical mode invalidates them (cursor positions stay; they are logical).
+  // 無効化は 0 ではなく null: 0 は「先頭」という有効な位置なので、後段の
+  // onFocus / restore が 0 を復元して先頭ジャンプになる。
   useEffect(() => {
     for (const [id, st] of savedEditorStateRef.current) {
-      savedEditorStateRef.current.set(id, { ...st, scrollOffset: 0 });
+      savedEditorStateRef.current.set(id, { ...st, scrollOffset: null });
     }
     if (pendingCursorRestoreRef.current) {
       pendingCursorRestoreRef.current = {
         ...pendingCursorRestoreRef.current,
-        scrollOffset: 0,
+        scrollOffset: null,
       };
     }
   }, [verticalMode]);
-  const inlineAiDiff = useInlineAiDiff(dbNativeEditor);
+  const inlineAiDiff = useInlineAiDiff(dbNativeEditor, groupIndex);
   const { generate, retry, showProvidedText } = inlineAiDiff;
   // 分割ビューで両ペインが同じツールバーを二重表示しないよう、pending セッションを
   // 所有するペイン (activeEditor === このペインの editor) でだけ Toolbar を出す。
@@ -1253,23 +1353,18 @@ export function EditorPane({
   useImeDiagnostics(mountedEditor);
   useCharacterFade(mountedEditor);
   useTateChuYoko(mountedEditor);
+  useShowInvisibles(mountedEditor);
+  useCodexCompletion(mountedEditor, !isEntryMode && !readOnly);
   useAttribution(dbNativeEditor);
 
-  // Listen for slash-command events dispatched by SlashCommandExtension
-  useEffect(() => {
-    if (!dbNativeEditor || !isEditorViewReady(dbNativeEditor)) return;
-    const ed = dbNativeEditor;
-    let dom: HTMLElement;
-    try {
-      dom = ed.view.dom;
-    } catch {
-      return;
-    }
-    function onSlashCommand(e: Event) {
-      const cmd = (e as CustomEvent).detail?.command as
-        | InlineAiCommand
-        | undefined;
-      if (!cmd) return;
+  // インライン AI コマンドの起動を1箇所に集約する。slash メニュー(下の
+  // CustomEvent 経路)とバブルメニューの AI サブメニュー(EditorContentArea 経由で
+  // prop 注入)の両方から呼ばれる。分岐は従来 onSlashCommand が持っていたもの:
+  // insert-node は構造挿入 / needsArg はパレットへ委譲 / それ以外は即 generate。
+  const handleInlineAiCommand = useCallback(
+    (cmd: InlineAiCommand) => {
+      const ed = dbNativeEditor;
+      if (!ed || !isEditorViewReady(ed)) return;
       // Beat system: structural inserts skip the AI pipeline entirely.
       if (cmd.kind === "insert-node") {
         if (cmd.id === "sceneBeat") {
@@ -1297,12 +1392,32 @@ export function EditorPane({
         codexEntries,
       });
       generate(cmd, context);
+    },
+    [dbNativeEditor, nodeId, generate],
+  );
+
+  // Listen for slash-command events dispatched by SlashCommandExtension
+  useEffect(() => {
+    if (!dbNativeEditor || !isEditorViewReady(dbNativeEditor)) return;
+    const ed = dbNativeEditor;
+    let dom: HTMLElement;
+    try {
+      dom = ed.view.dom;
+    } catch {
+      return;
+    }
+    function onSlashCommand(e: Event) {
+      const cmd = (e as CustomEvent).detail?.command as
+        | InlineAiCommand
+        | undefined;
+      if (!cmd) return;
+      handleInlineAiCommand(cmd);
     }
     dom.addEventListener("inlineai:slash-command", onSlashCommand);
     return () => {
       dom.removeEventListener("inlineai:slash-command", onSlashCommand);
     };
-  }, [dbNativeEditor, nodeId, generate]);
+  }, [dbNativeEditor, handleInlineAiCommand]);
 
   // Subscribe to content sync from the other pane (or CodexContentEditor mini-editor).
   // Apply is rAF-coalesced: a typing burst on the peer pane collapses to at most
@@ -1312,17 +1427,19 @@ export function EditorPane({
     return subscribeLiveContentRafCoalesced(nodeId, groupIndex, (next) => {
       isApplyingExternalUpdate.current = true;
       try {
-        markStart("editor.externalSync.setContent");
-        editor.commands.setContent(
-          next as Parameters<typeof editor.commands.setContent>[0],
-          { emitUpdate: false },
-        );
-        markEnd("editor.externalSync.setContent");
+        mutationGate.runProgrammatic(() => {
+          markStart("editor.externalSync.setContent");
+          editor.commands.setContent(
+            next as Parameters<typeof editor.commands.setContent>[0],
+            { emitUpdate: false },
+          );
+          markEnd("editor.externalSync.setContent");
+        });
       } finally {
         isApplyingExternalUpdate.current = false;
       }
     });
-  }, [nodeId, groupIndex, editor]);
+  }, [nodeId, groupIndex, editor, mutationGate]);
 
   // Subscribe to unplaced beats changes → mark dirty and schedule save,
   // and live-sync the Grid preview cache for immediate UI feedback.
@@ -1331,7 +1448,7 @@ export function EditorPane({
     const unsubscribe = useUnplacedBeatsStore
       .getState()
       .subscribe(nodeId, () => {
-        if (loadFailedRef.current) {
+        if (mutationGate.captureSave() === null) {
           // 調査ログ: 未ロード窓で autosave を arm する経路の特定用。
           debugLog.warn(
             "EditorPane",
@@ -1347,7 +1464,7 @@ export function EditorPane({
         });
       });
     return unsubscribe;
-  }, [nodeId, isEntryMode, schedule]);
+  }, [nodeId, isEntryMode, schedule, mutationGate, setIsDirtyRef]);
 
   // Load content when nodeId changes
   useEffect(() => {
@@ -1383,14 +1500,12 @@ export function EditorPane({
         }
         cancel();
         saveSceneIdRef.current = nodeId;
-        // Update *after* flush() above so the flush still routes scene A's
-        // pending edits to the scene backend, even though the prop has already
-        // flipped to the new tab's contentType.
-        saveContentTypeRef.current = contentType;
+        // Invalidate the save binding before loading the next document. The
+        // old binding remains valid only until the pre-switch flush completes.
+        mutationGate.beginLoad();
         // ここから新コンテンツの適用が成功するまで、エディタ内の doc は
         // 保存禁止 (coreSave が skip)。途中失敗した doc を autosave が
         // 書き戻すと本文消失になるため。
-        loadFailedRef.current = true;
 
         // Hold the external-update guard for the entire scene-switch sequence
         // (setContent + authorship load + foreshadow load). Releasing it earlier
@@ -1398,140 +1513,83 @@ export function EditorPane({
         // would persist a doc with no setup marks and orphan every setup row.
         isApplyingExternalUpdate.current = true;
         try {
-          if (isCodexMode) {
-            // Load codex entry content (ProseMirror JSON)
-            const entry = await getCodexEntry(getCurrentProjectId(), nodeId);
-            if (cancelled) return;
-
-            // Load phases into store so TabBar and banner can display the phase label
-            await usePhaseStore.getState().loadPhasesForEntry(nodeId);
-            if (cancelled) return;
-
-            const phaseStore = usePhaseStore.getState();
-            const phases = phaseStore.phasesByEntry[nodeId] ?? [];
-            const globalSceneOrder = phaseStore.globalSceneOrder;
-            let phaseContentOverride: string | null = null;
-            let resolvedPhaseId: string | null = null;
-
-            if (overridePhaseId === "__base__") {
-              // Explicit base: skip phase resolution, show entry.content as-is
-            } else if (overridePhaseId) {
-              // Explicit phase ID from preview: load that phase's contentOverride
-              const targetPhase = phases.find((p) => p.id === overridePhaseId);
-              if (targetPhase?.contentOverride != null) {
-                phaseContentOverride = targetPhase.contentOverride;
-                resolvedPhaseId = targetPhase.id;
-              }
-            } else {
-              // Auto-resolve: use the phase active at the current scene
-              const activeSceneId = useTreeStore.getState().activeSceneId;
-              if (activeSceneId) {
-                const currentOrder = globalSceneOrder.get(activeSceneId);
-                if (currentOrder !== undefined) {
-                  const applicable = phases
-                    .filter(
-                      (p) =>
-                        p.anchorNodeId != null &&
-                        globalSceneOrder.has(p.anchorNodeId) &&
-                        globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-                    )
-                    .sort(
-                      (a, b) =>
-                        globalSceneOrder.get(a.anchorNodeId!)! -
-                        globalSceneOrder.get(b.anchorNodeId!)!,
-                    );
-                  const activePhase = applicable[applicable.length - 1] ?? null;
-                  if (activePhase?.contentOverride != null) {
-                    phaseContentOverride = activePhase.contentOverride;
-                    resolvedPhaseId = activePhase.id;
-                  }
-                }
-              }
-            }
-            activePhaseIdRef.current = resolvedPhaseId;
-            setLoadedPhaseId(resolvedPhaseId);
-
-            const rawContent = phaseContentOverride ?? entry?.content ?? null;
-            markStart("sceneLoad.parseContent.codex");
-            const parsed =
-              rawContent && rawContent !== "{}" ? JSON.parse(rawContent) : "";
-            markEnd("sceneLoad.parseContent.codex");
-            markStart("sceneLoad.setContent.codex");
-            editor!.commands.setContent(parsed, {
+          const target = targetFromTab(contentType, nodeId, {
+            tree: {
+              nodeType: treeNodeType,
+              storage: isFileBacked ? "file" : "database",
+            },
+            phaseIdOverride: overridePhaseId,
+            sceneId: phaseResolutionSceneId,
+          });
+          const phaseContext =
+            target.kind !== "codex"
+              ? { mode: "base" as const }
+              : target.phase.mode === "base"
+                ? { mode: "base" as const }
+                : target.phase.mode === "explicit"
+                  ? { mode: "explicit" as const, phaseId: target.phase.phaseId }
+                  : { mode: "auto" as const, sceneId: target.phase.sceneId };
+          const loaded = await loadEditorDocument(target, {
+            codex: {
+              phase: phaseContext,
+              sceneTimeIndex: phaseSceneTimeIndex,
+              resolutionMode: phaseResolutionMode,
+            },
+          });
+          if (cancelled) return;
+          if (loaded.title !== undefined) {
+            setChronicleEventTitle(loaded.title);
+          }
+          const strictContent =
+            loaded.binding.kind === "tree" || loaded.binding.kind === "codex";
+          mutationGate.runProgrammatic(() => {
+            markStart(`sceneLoad.setContent.${loaded.binding.kind}`);
+            editor!.commands.setContent(loaded.content, {
               emitUpdate: false,
-              errorOnInvalidContent: true,
+              ...(strictContent ? { errorOnInvalidContent: true } : {}),
             });
-            markEnd("sceneLoad.setContent.codex");
-          } else if (isSnippetMode) {
-            const snippet = await getSnippet(getCurrentProjectId(), nodeId);
-            if (cancelled) return;
-            markStart("sceneLoad.setContent.snippet");
-            editor!.commands.setContent(tiptapContentFromDb(snippet?.content), {
-              emitUpdate: false,
-            });
-            markEnd("sceneLoad.setContent.snippet");
-          } else if (isChronicleEventMode) {
-            // 出来事の詳細（ProseMirror JSON）をロード。タイトルはリボン表示用。
-            const ev = await getEvent(getCurrentProjectId(), nodeId);
-            if (cancelled) return;
-            setChronicleEventTitle(ev?.title ?? "");
-            markStart("sceneLoad.setContent.chronicle");
-            editor!.commands.setContent(tiptapContentFromDb(ev?.detail), {
-              emitUpdate: false,
-            });
-            markEnd("sceneLoad.setContent.chronicle");
-          } else {
-            // Load scene/note content + unplaced beats in one query
-            markStart("sceneLoad.loadSceneFull");
-            const { content, unplacedBeatsDoc } = await loadSceneFull(nodeId);
-            markEnd("sceneLoad.loadSceneFull");
-            if (cancelled) return;
-            markStart(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
-            const parsed =
-              content && content !== "{}" ? JSON.parse(content) : "";
-            markEnd(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
-            markStart(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
-            // errorOnInvalidContent: スキーマ未知ノードを TipTap の silent
-            // fallback (空 doc 化) に流さず throw → 下の catch で保存停止。
-            editor!.commands.setContent(parsed, {
-              emitUpdate: false,
-              errorOnInvalidContent: true,
-            });
-            markEnd(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
+            markEnd(`sceneLoad.setContent.${loaded.binding.kind}`);
+          });
+          if (loaded.binding.kind === "tree") {
+            const contentLength =
+              typeof loaded.content === "string"
+                ? loaded.content.length
+                : JSON.stringify(loaded.content).length;
             debugLog.info(
               "EditorPane",
               `load ${nodeId.slice(0, 8)}`,
               JSON.stringify({
-                dbLen: content?.length ?? 0,
+                dbLen: contentLength,
                 docLen: getDocText(editor!.state.doc).length,
                 fileBacked: isFileBacked,
               }),
             );
             try {
-              const beats = JSON.parse(unplacedBeatsDoc);
+              const beats = JSON.parse(loaded.unplacedBeatsDoc ?? "[]");
               useUnplacedBeatsStore.getState().setBeats(nodeId, beats, "load");
             } catch {
               useUnplacedBeatsStore.getState().setBeats(nodeId, [], "load");
             }
-
-            // Lazy backfill of placed_beat_preview for legacy scenes that have
-            // placed sceneBeat nodes but no cached preview yet.
             const curPreview = useTreeStore.getState().nodePreviews[nodeId];
             if (curPreview?.placed == null) {
               const preview = extractPlacedBeatPreview(editor!.getJSON());
               if (preview !== "[]") {
-                const next = preview;
-                savePlacedBeatPreviewOnly(nodeId, next).catch(() => {});
+                savePlacedBeatPreviewOnly(nodeId, preview).catch(() => {});
                 useTreeStore
                   .getState()
-                  .setNodePreview(nodeId, { placed: next });
+                  .setNodePreview(nodeId, { placed: preview });
               }
             }
           }
+          const loadedBinding = loaded.binding;
+          setLoadedPhaseId(
+            loadedBinding.kind === "codex" ? loadedBinding.phaseId : null,
+          );
 
           // 3 ブランチとも setContent 成功 = エディタ内 doc はロード済み本物。
           // ここで初めて保存を解禁する。
-          loadFailedRef.current = false;
+          if (cancelled) return;
+          mutationGate.commitLoad(loadedBinding);
 
           if (!cancelled) {
             setIsSceneContentLoading(false);
@@ -1544,113 +1602,20 @@ export function EditorPane({
           wasEmptyRef.current = count === 0;
 
           if (!isEntryMode) {
-            // 帰属/伏線/疑似コメントは互いにデータ依存の無い独立リード。直列 await
-            // だと各 IPC 往復 + drizzle warmed microtask(~150ms/件)が積み上がるので
-            // 並列化して往復レイテンシを重ねる（所見#4）。SQLite 実行自体は単一
-            // Mutex で直列化されるが、往復 + await microtask は隠せる。allSettled で
-            // 1 つの失敗が他のマーク適用を巻き込まないようにする(部分適用維持)。
-            markStart("sceneLoad.loadAnchors.parallel");
-            const [spansR, foreshadowR, annotationR] = await Promise.allSettled(
-              [
-                loadAuthorshipSpans(nodeId),
-                loadForeshadowAnchors(nodeId),
-                listAnnotationsForScene({
-                  projectId: useTreeStore.getState().projectId,
-                  sceneId: nodeId,
-                }),
-              ],
+            const sidecars = await loadSceneSidecars(
+              nodeId,
+              useTreeStore.getState().projectId,
             );
-            markEnd("sceneLoad.loadAnchors.parallel");
-
-            // 結果解決(fulfilled→value / rejected→欠落値) と rejected の収集は
-            // resolveAnchorLoads(純関数) に切り出し。dispatch / clamp / store 書き込み
-            // / !cancelled ガードは下のとおり当コンポーネントに残す(部分適用維持)。
-            const { spans, foreshadowMarks, annotations, errors } =
-              resolveAnchorLoads(spansR, foreshadowR, annotationR);
-
-            // allSettled で 1 件の失敗は部分適用に留めるが、無音だと
-            // マーク欠落の原因が追えない。rejected は最低限ログに残す
-            // (旧直列 await は throw→unhandledrejection で console に出ていた)。
-            for (const { label, reason } of errors) {
-              debugLog.error(
-                "EditorPane",
-                `sceneLoad.loadAnchors:${label} failed`,
-                errorDetail(reason),
-              );
-            }
-
-            if (!cancelled) {
-              const markData = spans.length > 0 ? spansToMarkData(spans) : [];
-              const authorshipType = editor!.schema.marks["authorship"];
-              const willApplyAuthorship =
-                markData.length > 0 && !!authorshipType;
-              const willApplyForeshadow =
-                foreshadowMarks.length > 0 && !!editor;
-
-              // 帰属マークと伏線マークは別 mark type・別 range で互いに干渉しない。
-              // 1 本の chain にまとめて view.dispatch を 2→1 に減らす(AnnotationPlugin
-              // の余分な full-doc walk も 1 回削減)。
-              if (willApplyAuthorship || willApplyForeshadow) {
-                markStart(
-                  `sceneLoad.applyAnchorMarks.${markData.length}+${foreshadowMarks.length}`,
-                );
-                editor!
-                  .chain()
-                  .command(({ tr }) => {
-                    tr.setMeta("programmaticInsert", true);
-                    if (willApplyAuthorship) {
-                      for (const { from, to, attrs } of markData) {
-                        const r = clampMarkRange(from, to, tr.doc.content.size);
-                        if (r) {
-                          tr.addMark(
-                            r.from,
-                            r.to,
-                            authorshipType!.create(attrs),
-                          );
-                        }
-                      }
-                    }
-                    if (willApplyForeshadow) {
-                      clearAllForeshadowMarks((fn) => fn(tr));
-                      const schema = tr.doc.type.schema;
-                      for (const {
-                        from,
-                        to,
-                        markName,
-                        attrs,
-                      } of foreshadowMarks) {
-                        const markType = schema.marks[markName];
-                        if (!markType) continue;
-                        const r = clampMarkRange(from, to, tr.doc.content.size);
-                        if (r) tr.addMark(r.from, r.to, markType.create(attrs));
-                      }
-                    }
-                    return true;
-                  })
-                  .run();
-                markEnd(
-                  `sceneLoad.applyAnchorMarks.${markData.length}+${foreshadowMarks.length}`,
-                );
-              }
-            }
-
-            // Load and apply post-effect annotation anchors。store 書き込みは元
-            // コードどおり無条件、editor へのマーク適用のみ !cancelled でガードする。
-            // annotations は resolveAnchorLoads が fulfilled 時に response object、
-            // rejected 時に null を返すので、旧 annotationR.status==="fulfilled" と等価。
-            if (annotations) {
-              const annotationResp = annotations;
-              useAnnotationStore.getState().setFocusedAnnotationId(null);
-              useAnnotationStore
-                .getState()
-                .setAnnotations(nodeId, annotationResp.annotations);
-              if (!cancelled && editor) {
-                applyAnnotationsToEditor(editor, annotationResp.annotations);
-              }
-            }
+            applySceneSidecars(editor!, nodeId, sidecars, () => cancelled);
           }
         } finally {
           isApplyingExternalUpdate.current = false;
+        }
+
+        // シーン/Codex ロード完了後: 使い回しエディタの undo スタックを空にする。
+        // 残すと Ctrl+Z が前シーンの doc スナップショットを復元して本文が消える。
+        if (!cancelled && mutationGate.captureSave() && editor) {
+          resetEditorHistory(editor.view);
         }
 
         // Reset scroll to the start edge after scene load; saved state will be
@@ -1664,7 +1629,7 @@ export function EditorPane({
 
         // Decide whether to focus the editor immediately.
         // Tab clicks set the flag; Scenes-panel navigation does not.
-        const focusNow = useTabStore
+        const focusNow = useEditorSessionStore
           .getState()
           .consumeEditorFocusRequest(groupIndex);
 
@@ -1732,7 +1697,7 @@ export function EditorPane({
                   const to = Math.min(saved.to, Math.max(0, docSize - 1));
                   ed.chain().focus().setTextSelection({ from, to }).run();
                 }
-                if (editorContainerRef.current) {
+                if (editorContainerRef.current && saved.scrollOffset != null) {
                   setLogicalScrollOffset(
                     editorContainerRef.current,
                     saved.scrollOffset,
@@ -1749,12 +1714,21 @@ export function EditorPane({
                 scrollOffset: saved.scrollOffset,
               };
             }
+          } else if (focusNow && !cancelled) {
+            // A freshly created scene has no saved cursor state yet. Mobile
+            // bootstrap/navigation still requested explicit editing focus, so
+            // focus the loaded editor instead of leaving the bottom navigation
+            // (or the temporary preparing state) as the keyboard target.
+            requestAnimationFrame(() => {
+              if (!cancelled) editorRef.current?.chain().focus().run();
+            });
           }
         }
       } catch (err) {
         if (!cancelled) {
+          mutationGate.failLoad();
           setIsSceneContentLoading(false);
-          // loadFailedRef は true のまま = この doc は保存されない。無言で
+          // mutation gate は未ロード状態のまま = この doc は保存されない。無言で
           // rethrow すると「空のエディタが出て本文が消えた」ようにしか見えない
           // ため、ログ + トーストで可視化する。
           debugLog.error(
@@ -1784,9 +1758,20 @@ export function EditorPane({
     isCodexMode,
     isSnippetMode,
     isChronicleEventMode,
+    isEntryMode,
+    isFileBacked,
+    treeNodeType,
+    contentType,
     overridePhaseId,
     groupIndex,
     externalReloadNonce,
+    codexPhaseStructureKey,
+    phaseResolutionSceneId,
+    phaseSceneTimeIndex,
+    phaseResolutionMode,
+    mutationGate,
+    setIsDirtyRef,
+    setLoadedPhaseId,
   ]);
 
   useEffect(() => {
@@ -1801,7 +1786,10 @@ export function EditorPane({
           detail.content && detail.content !== "{}"
             ? JSON.parse(detail.content)
             : "";
-        editorRef.current.commands.setContent(parsed, { emitUpdate: false });
+        mutationGate.runProgrammatic(() => {
+          editorRef.current!.commands.setContent(parsed, { emitUpdate: false });
+        });
+        resetEditorHistory(editorRef.current.view);
         setIsDirtyRef.current(false);
       } finally {
         isApplyingExternalUpdate.current = false;
@@ -1813,7 +1801,7 @@ export function EditorPane({
         "external-mount:reload-scene",
         onExternalReload,
       );
-  }, [nodeId]);
+  }, [nodeId, mutationGate, setIsDirtyRef]);
 
   const isNote = !isEntryMode && activeNode?.nodeType === "note";
 
@@ -1887,377 +1875,259 @@ export function EditorPane({
     [mentionPopup],
   );
 
+  const editorContentAreaProps = {
+    editor,
+    editorContainerRef,
+    toolbarActionsRef,
+    findOpen,
+    findShowReplace,
+    setFindOpen,
+    showForeshadowMarks,
+    gutterReserve,
+    focusModeHideBeats,
+    focusMode,
+    typewriterMode: effectiveTypewriter,
+    filterSource,
+    editorSettings,
+    editorTitle,
+    loadedPhaseLabel,
+    titleEditing,
+    titleDraft,
+    setTitleDraft,
+    handleTitleSave,
+    handleTitleCancel,
+    handleTitleEditStart,
+    isSceneContentLoading,
+    sceneId: nodeId,
+    canEditCodexSemanticLink:
+      canEditCodexSemanticLink && editor?.isEditable === true,
+    zenMode,
+    onInlineAiCommand: dbNativeEditor ? handleInlineAiCommand : undefined,
+  };
+
+  const beatDragDrop = {
+    sensors: beatSensors,
+    collisionDetection: beatCollisionDetection,
+    draggingBeat,
+    onDragStart: handleBeatDragStart,
+    onDragEnd: handleBeatDragEnd,
+  };
+
+  const handlePaletteSubmit = useCallback(
+    (command: InlineAiCommand, prompt: string) => {
+      if (!editor) return;
+      const node = useTreeStore
+        .getState()
+        .nodes.find((candidate) => candidate.id === nodeId);
+      const projectTitle =
+        useWorkspaceStore.getState().activeWorkspaceName ?? "";
+      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
+      const codexEntries = useCodexStore.getState().entries;
+      const context = buildInlineAiContext({
+        editor,
+        projectTitle,
+        sceneTitle: node?.title ?? "",
+        matchedCodexIds,
+        codexEntries,
+        arg: prompt || undefined,
+      });
+      generate(command, context);
+    },
+    [editor, generate, nodeId],
+  );
+
+  const handlePaletteSubmitAb = useCallback(
+    (command: InlineAiCommand, prompt: string) => {
+      if (!editor) return;
+      const node = useTreeStore
+        .getState()
+        .nodes.find((candidate) => candidate.id === nodeId);
+      const projectTitle =
+        useWorkspaceStore.getState().activeWorkspaceName ?? "";
+      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
+      const codexEntries = useCodexStore.getState().entries;
+      const context = buildInlineAiContext({
+        editor,
+        projectTitle,
+        sceneTitle: node?.title ?? "",
+        matchedCodexIds,
+        codexEntries,
+        arg: prompt || undefined,
+      });
+      const lang = getCurrentProjectLanguage();
+      const messages: AbInlineState["messages"] = [
+        {
+          role: "system",
+          content: buildInlineSystemPrompt(command, context, lang),
+        },
+        {
+          role: "user",
+          content: buildInlineUserPrompt(command, context, lang),
+        },
+      ];
+      const { from, to } = editor.state.selection;
+      const isReplace = command.mode === "replace" && from !== to;
+      setAbInline({
+        messages,
+        mode: isReplace ? "replace" : "insert",
+        originalRange: isReplace ? { from, to } : null,
+        insertPos: isReplace ? null : from,
+        projectId: getCurrentProjectId(),
+      });
+    },
+    [editor, nodeId],
+  );
+
+  const handleAdoptAb = useCallback(
+    (text: string) => {
+      if (!abInline) return;
+      showProvidedText(text, {
+        mode: abInline.mode,
+        originalRange: abInline.originalRange ?? undefined,
+        insertPos: abInline.insertPos ?? undefined,
+      });
+      setAbInline(null);
+    },
+    [abInline, showProvidedText],
+  );
+
+  const handleStatusChange = useCallback(
+    (status: SceneStatus) => {
+      useTreeStore
+        .getState()
+        .setStatus(nodeId, status)
+        .catch(() => {});
+    },
+    [nodeId],
+  );
+
+  const handleOpenRevisionHistory = useCallback(() => {
+    const id = saveSceneIdRef.current;
+    const ed = editorRef.current;
+    if (id && ed) {
+      const content = JSON.stringify(ed.getJSON());
+      useRevisionStore.getState().openHistory("scene", id, content);
+    }
+  }, []);
+
   const __renderResult = (
     <div
       ref={setPaneRef}
       data-droptarget-id={editorDropId}
-      className="flex flex-1 flex-col overflow-hidden data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
+      className="relative flex flex-1 flex-col overflow-hidden data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
     >
-      <Toolbar
-        editor={editor}
-        onFindReplace={() => {
-          setFindOpen(true);
-          setFindShowReplace(true);
-        }}
-        actionsRef={toolbarActionsRef}
-        panelOpen={sceneMetaPanelOpen}
-        onTogglePanel={handleTogglePanel}
-        sceneId={isEntryMode ? undefined : nodeId}
-        nodeType={activeNode?.nodeType}
-      />
-      <LicenseRestrictionBanner />
-      {isFileBacked && !isEntryMode && <FileBackedSceneBanner />}
-      <ExternalEditConflictBanner nodeId={nodeId} />
-      {isNote && (
-        <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
-          <span className="font-medium">{t("editor.ribbon.noteEditing")}</span>
-          <span className="text-amber-500/60">
-            — {t("editor.ribbon.noteDescription")}
-          </span>
-        </div>
-      )}
-      {isNote && <NoteContextControls nodeId={nodeId} />}
-      {isCodexMode && (
-        <div className="flex items-center gap-1.5 border-b border-purple-500/30 bg-purple-500/10 px-3 py-1 text-xs text-purple-600 dark:text-purple-400">
-          <span className="flex items-center gap-1 font-medium">
-            <BookOpen className="h-3 w-3" aria-hidden />
-            {t("editor.ribbon.codexEditing")}
-          </span>
-          {activeCodexEntry && (
-            <span className="text-purple-500/60">
-              — {activeCodexEntry.name}
-            </span>
-          )}
-          {loadedPhaseLabel && (
-            <span className="ml-auto rounded bg-purple-500/20 px-1.5 py-0.5 font-medium">
-              {loadedPhaseLabel}
-            </span>
-          )}
-        </div>
-      )}
-      {isSnippetMode && (
-        <div className="flex items-center gap-1.5 border-b border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
-          <span className="flex items-center gap-1 font-medium">
-            <Files className="h-3 w-3" aria-hidden />
-            {t("editor.ribbon.snippetEditing")}
-          </span>
-          {activeSnippetEntry && (
-            <span className="text-emerald-500/60">
-              — {activeSnippetEntry.title}
-            </span>
-          )}
-        </div>
-      )}
-      {isChronicleEventMode && (
-        <div className="flex items-center gap-1.5 border-b border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs text-sky-600 dark:text-sky-400">
-          <span className="flex items-center gap-1 font-medium">
-            <CalendarDays className="h-3 w-3" aria-hidden />
-            {t("editor.ribbon.chronicleEditing")}
-          </span>
-          {chronicleEventTitle && (
-            <span className="text-sky-500/60">— {chronicleEventTitle}</span>
-          )}
-        </div>
-      )}
-      <DndContext
-        sensors={beatSensors}
-        collisionDetection={beatCollisionDetection}
-        onDragStart={handleBeatDragStart}
-        onDragEnd={handleBeatDragEnd}
+      <div
+        className="contents"
+        aria-hidden={phoneWorkspace && phoneMetaPanelOpen ? true : undefined}
+        inert={phoneWorkspace && phoneMetaPanelOpen ? true : undefined}
       >
-        {isPanelVisible ? (
-          <ResizablePanelGroup
-            orientation="horizontal"
-            className="min-h-0 flex-1"
-            onLayoutChanged={handlePanelLayoutChanged}
-          >
-            <ResizablePanel
-              id="editor-main"
-              minSize="40%"
-              className="flex flex-col overflow-hidden"
-            >
-              <EditorContentArea
-                editor={editor}
-                editorContainerRef={editorContainerRef}
-                toolbarActionsRef={toolbarActionsRef}
-                findOpen={findOpen}
-                findShowReplace={findShowReplace}
-                setFindOpen={setFindOpen}
-                showForeshadowMarks={showForeshadowMarks}
-                focusModeHideBeats={focusModeHideBeats}
-                focusMode={focusMode}
-                typewriterMode={effectiveTypewriter}
-                filterSource={filterSource}
-                editorSettings={editorSettings}
-                editorTitle={editorTitle}
-                loadedPhaseLabel={loadedPhaseLabel}
-                titleEditing={titleEditing}
-                titleDraft={titleDraft}
-                setTitleDraft={setTitleDraft}
-                handleTitleSave={handleTitleSave}
-                handleTitleCancel={handleTitleCancel}
-                handleTitleEditStart={handleTitleEditStart}
-                isSceneContentLoading={isSceneContentLoading}
-                sceneId={nodeId}
-              />
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel
-              id="scene-meta"
-              minSize="15%"
-              maxSize="50%"
-              defaultSize={`${sceneMetaPanelWidth}%`}
-              className="flex flex-col overflow-hidden"
-            >
-              <SceneMetaPanel
-                sceneId={nodeId}
-                editor={editor}
-                setMentionPopup={setMentionPopupState}
-              />
-            </ResizablePanel>
-          </ResizablePanelGroup>
-        ) : (
-          <div className="flex min-h-0 flex-1 overflow-hidden">
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              <EditorContentArea
-                editor={editor}
-                editorContainerRef={editorContainerRef}
-                toolbarActionsRef={toolbarActionsRef}
-                findOpen={findOpen}
-                findShowReplace={findShowReplace}
-                setFindOpen={setFindOpen}
-                showForeshadowMarks={showForeshadowMarks}
-                focusModeHideBeats={focusModeHideBeats}
-                focusMode={focusMode}
-                typewriterMode={effectiveTypewriter}
-                filterSource={filterSource}
-                editorSettings={editorSettings}
-                editorTitle={editorTitle}
-                loadedPhaseLabel={loadedPhaseLabel}
-                titleEditing={titleEditing}
-                titleDraft={titleDraft}
-                setTitleDraft={setTitleDraft}
-                handleTitleSave={handleTitleSave}
-                handleTitleCancel={handleTitleCancel}
-                handleTitleEditStart={handleTitleEditStart}
-                isSceneContentLoading={isSceneContentLoading}
-                sceneId={nodeId}
-              />
-            </div>
-          </div>
-        )}
-        <DragOverlay dropAnimation={null}>
-          {draggingBeat && (
-            <div
-              className="rounded border border-border bg-popover px-2 py-1 text-xs shadow-md opacity-90 whitespace-nowrap"
-              style={{ width: "max-content", maxWidth: "320px" }}
-            >
-              {draggingBeat.content
-                .map((c) => ("text" in c ? String(c.text ?? "") : ""))
-                .join("")
-                .slice(0, 40) || "Beat"}
-            </div>
-          )}
-        </DragOverlay>
-      </DndContext>
-      <div className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
-        {/* Left: status badge */}
-        <div className="relative flex min-w-0 items-center gap-2">
-          {activeStatus ? (
-            <>
-              <button
-                ref={statusBadgeRef}
-                type="button"
-                title={i18next.t("editor.status.changeStatus")}
-                onClick={() => setStatusPopoverOpen((v) => !v)}
-                className={`rounded px-1.5 py-0.5 font-medium hover:bg-accent ${STATUS_COLORS[activeStatus]}`}
-              >
-                {getStatusLabels()[activeStatus]}
-              </button>
-              {statusPopoverOpen && (
-                <div
-                  ref={statusPopoverRef}
-                  className="absolute bottom-full left-0 z-50 mb-1 min-w-[120px] rounded border border-border bg-popover py-1 shadow-md"
-                >
-                  {(
-                    Object.entries(getStatusLabels()) as [SceneStatus, string][]
-                  ).map(([s, label]) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => {
-                        useTreeStore
-                          .getState()
-                          .setStatus(nodeId, s)
-                          .catch(() => {});
-                        setStatusPopoverOpen(false);
-                      }}
-                      className={`flex w-full items-center px-3 py-1.5 text-left text-xs hover:bg-accent ${s === activeStatus ? "font-medium" : ""} ${STATUS_COLORS[s]}`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : null}
-          {/* Attribution overlay legend — only while the overlay is on, kept on
-             the left away from the purple AI-ratio badge to avoid color clash. */}
-          {showAttribution && (
-            <AttributionLegend className="text-[10px] text-muted-foreground" />
-          )}
-        </div>
-        {/* Right: stats + save state + history */}
-        <div className="flex flex-shrink-0 items-center gap-3">
-          <AiPolicyBadge />
-          <LicenseBadge />
-          <StatusBarIndicator />
-          {showAttribution && aiRatio > 0 && (
-            <button
-              type="button"
-              title={i18next.t("editor.status.openAttribution")}
-              onClick={() => togglePanel("attribution")}
-              className="tabular-nums text-attribution-ai hover:text-foreground"
-            >
-              AI: {aiRatio}%
-            </button>
-          )}
-          <EditorStatsFooter
-            editor={editor}
-            getSyncSceneId={getStatsSceneId}
-            syncToTree={!isEntryMode}
-            isLoading={isSceneContentLoading}
-          />
-          {isSaving ? (
-            <span className="opacity-50">{t("editor.status.saving")}</span>
-          ) : isDirty ? (
-            <span className="text-amber-500">{t("editor.status.unsaved")}</span>
-          ) : (
-            <span className="opacity-40">{t("editor.status.saved")}</span>
-          )}
-          <button
-            type="button"
-            title={i18next.t("editor.status.revisionHistory")}
-            onClick={() => {
-              const id = saveSceneIdRef.current;
-              const ed = editorRef.current;
-              if (id && ed) {
-                const content = JSON.stringify(ed.getJSON());
-                useRevisionStore.getState().openHistory("scene", id, content);
-              }
-            }}
-            className="hover:text-foreground"
-          >
-            <Clock className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-      {editor && (
-        <InlineAIPalette
+        <Toolbar
           editor={editor}
-          open={paletteOpen}
-          preselectedCommand={palettePreselect}
-          onClose={() => setPaletteOpen(false)}
-          onSubmit={(command, prompt) => {
-            const node = useTreeStore
-              .getState()
-              .nodes.find((n) => n.id === nodeId);
-            const projectTitle =
-              useWorkspaceStore.getState().activeWorkspaceName ?? "";
-            const matchedCodexIds =
-              useCodexHighlightStore.getState().matchedEntryIds;
-            const codexEntries = useCodexStore.getState().entries;
-            const context = buildInlineAiContext({
-              editor,
-              projectTitle,
-              sceneTitle: node?.title ?? "",
-              matchedCodexIds,
-              codexEntries,
-              arg: prompt || undefined,
-            });
-            generate(command, context);
+          onFindReplace={() => {
+            setFindOpen(true);
+            setFindShowReplace(true);
           }}
-          onSubmitAb={(command, prompt) => {
-            if (!editor) return;
-            const node = useTreeStore
-              .getState()
-              .nodes.find((n) => n.id === nodeId);
-            const projectTitle =
-              useWorkspaceStore.getState().activeWorkspaceName ?? "";
-            const matchedCodexIds =
-              useCodexHighlightStore.getState().matchedEntryIds;
-            const codexEntries = useCodexStore.getState().entries;
-            const context = buildInlineAiContext({
-              editor,
-              projectTitle,
-              sceneTitle: node?.title ?? "",
-              matchedCodexIds,
-              codexEntries,
-              arg: prompt || undefined,
-            });
-            const lang = getCurrentProjectLanguage();
-            const messages: AbMessage[] = [
-              {
-                role: "system",
-                content: buildInlineSystemPrompt(command, context, lang),
-              },
-              {
-                role: "user",
-                content: buildInlineUserPrompt(command, context, lang),
-              },
-            ];
-            // 採用後に showProvidedText で diff 挿入できるよう、起動時点の
-            // 選択範囲 / 挿入位置を確定して保持する。
-            const { from, to } = editor.state.selection;
-            const isReplace = command.mode === "replace" && from !== to;
-            setAbInline({
-              messages,
-              mode: isReplace ? "replace" : "insert",
-              originalRange: isReplace ? { from, to } : null,
-              insertPos: isReplace ? null : from,
-              projectId: getCurrentProjectId(),
-            });
-          }}
+          actionsRef={toolbarActionsRef}
+          panelOpen={phoneWorkspace ? phoneMetaPanelOpen : sceneMetaPanelOpen}
+          onTogglePanel={handleTogglePanel}
+          sceneId={isEntryMode ? undefined : nodeId}
+          nodeType={activeNode?.nodeType}
+          reorderOpen={paragraphReorder.open}
+          onToggleReorder={
+            dbNativeEditor ? paragraphReorder.toggleOverlay : undefined
+          }
+          reorderDisabled={!dbNativeEditor || readOnly}
         />
-      )}
-      {abInline && (
-        <AbInlineDialog
-          open
-          onOpenChange={(next) => {
-            if (!next) setAbInline(null);
-          }}
-          projectId={abInline.projectId}
-          messages={abInline.messages}
-          onAdopt={(text) => {
-            showProvidedText(text, {
-              mode: abInline.mode,
-              originalRange: abInline.originalRange ?? undefined,
-              insertPos: abInline.insertPos ?? undefined,
-            });
-            setAbInline(null);
-          }}
+        <EditorPaneRibbon
+          nodeId={nodeId}
+          isEntryMode={isEntryMode}
+          isFileBacked={isFileBacked}
+          isNote={isNote}
+          isCodexMode={isCodexMode}
+          isSnippetMode={isSnippetMode}
+          isChronicleEventMode={isChronicleEventMode}
+          activeCodexEntry={activeCodexEntry}
+          activeSnippetEntry={activeSnippetEntry}
+          loadedPhaseLabel={loadedPhaseLabel}
+          chronicleEventTitle={chronicleEventTitle}
         />
-      )}
-      <InlineAIToolbar
-        onAccept={acceptWithStaging}
-        onReject={rejectWithStaging}
-        onRetry={retry}
-        anchorRef={editorContainerRef}
-        isOwner={isInlineAiOwner}
-      />
-      <SlashCommandPopup />
-      {mentionPopup &&
-        createPortal(
-          <MentionPopup
-            items={mentionPopup.items}
-            selectedIndex={mentionIndex}
-            onSelect={handleMentionSelect}
-            onChangeIndex={setMentionIndex}
-            clientRect={mentionPopup.clientRect}
-            onSelectWithRole={handleMentionSelectWithRole}
-          />,
-          document.body,
-        )}
+        <EditorPaneViewport
+          isPanelVisible={!phoneWorkspace && isPanelVisible}
+          sceneMetaPanelWidth={sceneMetaPanelWidth}
+          onPanelLayoutChanged={handlePanelLayoutChanged}
+          contentAreaProps={editorContentAreaProps}
+          sceneId={nodeId}
+          editor={editor}
+          setMentionPopup={setMentionPopupState}
+          beatDragDrop={beatDragDrop}
+        />
+        <EditorPaneStatusBar
+          activeStatus={activeStatus}
+          editor={editor}
+          getStatsSceneId={getStatsSceneId}
+          isEntryMode={isEntryMode}
+          isSceneContentLoading={isSceneContentLoading}
+          showAttribution={showAttribution}
+          aiRatio={aiRatio}
+          isSaving={isSaving}
+          isDirty={isDirty}
+          onStatusChange={handleStatusChange}
+          onOpenAttribution={() => togglePanel("attribution")}
+          onOpenRevisionHistory={handleOpenRevisionHistory}
+        />
+        <EditorPaneOverlays
+          editor={editor}
+          paletteOpen={paletteOpen}
+          palettePreselect={palettePreselect}
+          onClosePalette={() => setPaletteOpen(false)}
+          onSubmitPalette={handlePaletteSubmit}
+          onSubmitPaletteAb={handlePaletteSubmitAb}
+          abInline={abInline}
+          onCloseAb={() => setAbInline(null)}
+          onAdoptAb={handleAdoptAb}
+          onAccept={acceptWithStaging}
+          onReject={rejectWithStaging}
+          onRetry={retry}
+          anchorRef={editorContainerRef}
+          isInlineAiOwner={isInlineAiOwner}
+          mentionPopup={mentionPopup}
+          mentionIndex={mentionIndex}
+          onMentionSelect={handleMentionSelect}
+          onMentionIndexChange={setMentionIndex}
+          onMentionSelectWithRole={handleMentionSelectWithRole}
+          paragraphReorder={{
+            open: paragraphReorder.open,
+            units: paragraphReorder.units,
+            order: paragraphReorder.order,
+            onOrderChange: paragraphReorder.setOrder,
+            granularity: paragraphReorder.granularity,
+            onGranularityChange: paragraphReorder.setGranularity,
+            loading: paragraphReorder.loading,
+            errorMessage: paragraphReorder.errorMessage,
+            canConfirm: paragraphReorder.canConfirm,
+            onConfirm: paragraphReorder.confirm,
+            onCancel: paragraphReorder.closeOverlay,
+          }}
+          bunsetsuAvailable={bunsetsuAvailable}
+          phraseAvailable={phraseAvailable}
+          wordAvailable={wordAvailable}
+        />
+      </div>
+      <PhoneSceneMetaSheet
+        phoneWorkspace={phoneWorkspace}
+        open={isPanelVisible}
+        title={t("editor.toolbar.sceneMetaPanel")}
+        closeLabel={t("common.close")}
+        onClose={() => setPhoneMetaPanelOpen(false)}
+        closeButtonRef={phoneMetaCloseRef}
+      >
+        <SceneMetaPanel
+          sceneId={nodeId}
+          editor={editor}
+          setMentionPopup={setMentionPopupState}
+          embeddedInPhoneSheet
+        />
+      </PhoneSceneMetaSheet>
     </div>
   );
   recordMark("editorPane.render", performance.now() - __perfStart, __perfStart);

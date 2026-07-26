@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EulaConsentDialog } from "./EulaConsentDialog";
 import { EULA_VERSION } from "./constants";
+import i18n from "@/lib/i18n";
 
 const updateGlobalSettings = vi.fn();
 let mockGlobalSettings: { acceptedEulaVersion?: string } | null = null;
@@ -22,10 +23,12 @@ vi.mock("@/features/settings/categories/about/MarkdownDoc", () => ({
   ),
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
   updateGlobalSettings.mockReset();
   updateGlobalSettings.mockResolvedValue(undefined);
   mockGlobalSettings = null;
+  // 言語をテスト間でリセット（既定=ja）。他テストは日本語 UI 文言に依存する。
+  await i18n.changeLanguage("ja");
 });
 
 describe("EulaConsentDialog", () => {
@@ -95,5 +98,21 @@ describe("EulaConsentDialog", () => {
     expect(
       screen.queryByTestId("markdown-doc-DEVELOPER_MESSAGE_ja.md"),
     ).toBeNull();
+  });
+
+  it("shows Japanese terms (TERMS_ja.md) when UI language is ja", async () => {
+    mockGlobalSettings = {};
+    await i18n.changeLanguage("ja");
+    render(<EulaConsentDialog />);
+    expect(screen.getByTestId("markdown-doc-TERMS_ja.md")).toBeInTheDocument();
+    expect(screen.queryByTestId("markdown-doc-TERMS_en.md")).toBeNull();
+  });
+
+  it("shows English terms (TERMS_en.md) when UI language is en", async () => {
+    mockGlobalSettings = {};
+    await i18n.changeLanguage("en");
+    render(<EulaConsentDialog />);
+    expect(screen.getByTestId("markdown-doc-TERMS_en.md")).toBeInTheDocument();
+    expect(screen.queryByTestId("markdown-doc-TERMS_ja.md")).toBeNull();
   });
 });

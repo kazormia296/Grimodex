@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::commands::AppError;
@@ -13,10 +12,8 @@ use crate::external_mount::path::{self, OverlapError};
 use crate::external_mount::scan::{scan_root, ScanResult};
 use crate::external_mount::watch::ExternalMountWatchState;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct RegisteredRoot {
-    pub id: String,
     pub path: String,
     pub label: String,
 }
@@ -52,14 +49,7 @@ impl ExternalMountRegistry {
                 }
             }
         }
-        self.roots.insert(
-            root_id.clone(),
-            RegisteredRoot {
-                id: root_id,
-                path,
-                label,
-            },
-        );
+        self.roots.insert(root_id, RegisteredRoot { path, label });
         Ok(())
     }
 
@@ -191,17 +181,6 @@ pub(crate) fn external_mount_write_file(
     let root_path = lookup_root_path(&mount_state, &root_id)?;
     let abs = resolve_under_root(&root_path, &rel_path)?;
     atomic_write_text(&abs, &content).map_err(AppError::from)
-}
-
-#[tauri::command]
-pub(crate) fn external_mount_list(
-    mount_state: State<'_, ExternalMountState>,
-) -> Result<Vec<RegisteredRoot>, AppError> {
-    let reg = mount_state
-        .inner
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(reg.roots.values().cloned().collect())
 }
 
 #[tauri::command]

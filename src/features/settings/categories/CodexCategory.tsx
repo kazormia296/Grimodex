@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { FontFamilySelect } from "../components/FontFamilySelect";
+import { ReadingsBackfillSection } from "./ReadingsBackfillSection";
+import { ImeIntegrationSection } from "./ImeIntegrationSection";
 import type { BundledFont } from "../buildFontOptions";
 
 // Codex タイトル用の表示フォント（@font-face で同梱。src/index.css）。共通の
@@ -35,6 +37,8 @@ import {
   DEFAULT_COLOR_THEME,
   PALETTE_SIZE,
 } from "@/lib/colorThemes";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { isJapaneseProjectLanguage } from "@/features/ime/language";
 
 // --- Palette Swatch Picker ---
 
@@ -346,10 +350,13 @@ function AddForm({
 
 export function CodexCategory() {
   const { t } = useTranslation();
+  const projectLanguage = useSettingsStore((s) => s.projectLanguage);
+  const isJapaneseProject = isJapaneseProjectLanguage(projectLanguage);
   // タイトルフォントの言語別既定（空センチネル "" が追従する実フォント）。codexNameFont
   // と同じ流儀: 英語は Helvetica 系 (TeX Gyre Heros)、それ以外は駅名標 (Toaru Eki Sign)。
   // ピッカーの「デフォルト」ラベルとプレビューのフォールバックに使う。
-  const codexTitleIsEn = getCurrentProjectLanguage()?.startsWith("en") ?? false;
+  const codexTitleIsEn =
+    projectLanguage === "en" || projectLanguage.startsWith("en-");
   const codexTitleFontDefault = codexTitleIsEn
     ? '"TeX Gyre Heros"'
     : '"Toaru Eki Sign"';
@@ -516,6 +523,12 @@ export function CodexCategory() {
           )}
         </div>
       </SettingSection>
+
+      {/* IME preferences and cleanup are global privacy controls. Keep them
+          reachable even while the active work is non-Japanese; only reading
+          entry/backfill UI is language-specific. */}
+      <ImeIntegrationSection />
+      {isJapaneseProject && <ReadingsBackfillSection />}
 
       {/* Delete Confirm — SettingsDialog (AnimatedOverlay) は body へ portal
           された z-50 のため、その上に重ねるには portal + z-[60] が必要 */}

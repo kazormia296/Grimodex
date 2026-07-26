@@ -10,7 +10,6 @@ import {
   computeLayoutGridMetrics,
 } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
-import { useCardLayout } from "./cardLayout";
 import { useCenterSegments } from "./useCenterSegments";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { useRegionSegments } from "./useRegionSegments";
@@ -43,8 +42,6 @@ export function CenterStripe() {
   const slotIds = useLayoutStore(
     useShallow((s) => s.layout.center.segments.map((seg) => seg.id)),
   );
-  const cardLayout = useCardLayout();
-
   const stripeColumns = useMemo(() => {
     const metrics = computeLayoutGridMetrics({
       hasLeft,
@@ -57,7 +54,6 @@ export function CenterStripe() {
       leftSize: layout.regions.left.size,
       rightSize: layout.regions.right.size,
       bottomSize: layout.regions.bottom.size,
-      cardLayout,
     });
     return buildCenterStripeGridTemplateColumns(metrics);
   }, [
@@ -71,7 +67,6 @@ export function CenterStripe() {
     layout.regions.right.size,
     leftOpen,
     rightOpen,
-    cardLayout,
   ]);
 
   const dropSegments = useMemo(
@@ -95,6 +90,7 @@ export function CenterStripe() {
   return (
     <div
       data-center-stripe
+      data-ambient-glass-surface="stripe"
       className="gx-panel relative grid h-full w-full min-w-0 overflow-hidden"
       style={{ gridTemplateColumns: stripeColumns }}
     >

@@ -17,6 +17,8 @@ interface LabelState {
   projectId: string | null;
 
   load: (projectId: string) => Promise<void>;
+  /** Clear project-owned labels before a reload. */
+  resetForProject: () => void;
   addLabel: (data: { name: string; color: string }) => Promise<Label | null>;
   updateLabel: (
     id: string,
@@ -32,6 +34,9 @@ export const useLabelStore = create<LabelState>()((set, get) => ({
   nodeLabels: {},
   loading: false,
   projectId: null,
+
+  resetForProject: () =>
+    set({ labels: [], nodeLabels: {}, loading: false, projectId: null }),
 
   async load(projectId) {
     if (get().loading) return;

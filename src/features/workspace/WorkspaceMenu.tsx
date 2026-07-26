@@ -51,9 +51,10 @@ export function WorkspaceMenu() {
   }
 
   return (
-    <div ref={menuRef} className="relative">
+    <div ref={menuRef} className="relative" data-tour-target="workspace-menu">
       <button
         type="button"
+        data-testid="workspace-menu-trigger"
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
       >
@@ -64,7 +65,10 @@ export function WorkspaceMenu() {
       </button>
 
       {isOpen && (
-        <div className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-popover py-1 shadow-lg">
+        <div
+          data-testid="workspace-menu-dropdown"
+          className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-popover py-1 shadow-lg"
+        >
           <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground">
             <Check
               className="h-3.5 w-3.5 shrink-0"

@@ -102,7 +102,7 @@ export function createCodexMatcher(
   // Build exclusion map: entryId → excluded strings
   const exclusionMap = new Map<string, string[]>();
   for (const entry of entries) {
-    const excls = parseAliases(entry.excludedAliases);
+    const excls = parseAliases(entry.excludedAliases).filter(Boolean);
     if (excls.length > 0) {
       exclusionMap.set(entry.id, excls);
     }

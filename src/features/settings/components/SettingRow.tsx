@@ -44,7 +44,10 @@ export function SettingRow({
   );
 
   return (
-    <div className="flex min-h-[36px] items-start justify-between gap-4 rounded px-1 py-1.5">
+    <div
+      data-setting-row
+      className="flex min-h-[36px] min-w-0 flex-wrap items-start justify-between gap-4 rounded px-1 py-1.5 @max-[420px]:flex-col @max-[420px]:items-stretch @max-[420px]:gap-2"
+    >
       <div className={`flex-1 min-w-0 ${disabled ? "opacity-50" : ""}`}>
         <div id={labelId} className="text-sm text-foreground">
           {label}
@@ -58,7 +61,10 @@ export function SettingRow({
           </div>
         )}
       </div>
-      <div className="flex-shrink-0">
+      <div
+        data-setting-row-control
+        className="flex min-w-0 max-w-full flex-shrink-0 flex-wrap items-center justify-end gap-2 @max-[420px]:w-full @max-[420px]:justify-start [&>*]:min-w-0 [&>*]:max-w-full [&_input]:min-w-0 [&_input]:max-w-full [&_select]:min-w-0 [&_select]:max-w-full [&_textarea]:min-w-0 [&_textarea]:max-w-full"
+      >
         <SettingRowA11yContext.Provider value={a11y}>
           {children}
         </SettingRowA11yContext.Provider>

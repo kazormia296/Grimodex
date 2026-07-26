@@ -7,6 +7,7 @@ import {
   useAiSettingsStore,
   isRagCapableProvider,
 } from "@/features/chat/store";
+import { useChatStore } from "@/features/chat/chatStore";
 import { normalizeDomainList } from "@/features/chat/webSearchConfig";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 import { getProviderLabel } from "@/features/chat/providerLabels";
@@ -26,8 +27,18 @@ import type {
   ToolProtocolMode,
 } from "@/features/chat/types";
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
+import {
+  archiveCodexSessionThread,
+  testCodexAppServerConnection,
+} from "@/features/chat/codexAppApi";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
-import { MODEL_ROLES } from "@/features/chat/modelRouting";
+import {
+  MODEL_ROLES,
+  ROLE_PROVIDERS_KEY,
+  sameProviderRoleModelKeys,
+} from "@/features/chat/modelRouting";
 import { useChatModelCatalog } from "@/features/chat/useChatModelCatalog";
 import { RoleModelRow } from "./RoleModelRow";
 import {
@@ -43,9 +54,30 @@ import { SettingSection } from "../components/SettingSection";
 import { McpIntegrationSection } from "../components/McpIntegrationSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
-import { SettingToggle } from "../components/SettingToggle";
+import { ControlledToggle, SettingToggle } from "../components/SettingToggle";
+import { Switch } from "@/components/ui/switch";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+
+async function archiveActiveCodexThreads(): Promise<void> {
+  const projectId = getCurrentProjectId();
+  const workspaceIdentity = getCurrentImeWorkspaceIdentity();
+  if (!workspaceIdentity) return;
+  const sessions = useChatStore
+    .getState()
+    .sessions.filter((session) => session.projectId === projectId);
+  await Promise.allSettled(
+    sessions.map((session) =>
+      archiveCodexSessionThread({
+        projectId,
+        sessionId: session.id,
+        expectedWorkspacePath: workspaceIdentity.path,
+      }),
+    ),
+  );
+}
 import {
   MODEL_BY_PROVIDER_KEY,
   readModelByProvider,
@@ -137,6 +169,7 @@ function renderSamplingInput(
 }
 
 export function AiCategory() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const { t } = useTranslation();
 
   const BUDGET_LAYERS = [
@@ -236,6 +269,15 @@ export function AiCategory() {
   }, [hasApiKey, settings?.provider, handleLoadModels]);
 
   async function handleProviderChange(provider: AiProvider) {
+    const leavingCodexAppServer =
+      localSettings?.provider === "cli" &&
+      localSettings.cli?.kind === "codex" &&
+      localSettings.cli.codexTransport !== "exec" &&
+      localSettings.cli.codexTransport !== undefined &&
+      provider !== "cli";
+    if (leavingCodexAppServer) {
+      await archiveActiveCodexThreads();
+    }
     // 切替元の(モデル+variant)を per-provider マップへ焼き込み、切替先は前回の
     // 記憶を復元する。これにより別プロバイダへ移って戻っても選び直す必要がない。
     const { map: modelMap, restored } = applyProviderSwitch(
@@ -249,6 +291,15 @@ export function AiCategory() {
     );
     settingsStore.set(MODEL_BY_PROVIDER_KEY, JSON.stringify(modelMap));
     const restoredModel = restored?.model ?? "";
+
+    // 「チャットと同じプロバイダ」モードの機能別モデルは旧プロバイダの名前空間に
+    // 属するため、持ち越すと新プロバイダへ旧モデル ID をそのまま送ってしまう
+    // （例: Ollama へ claude 系 ID → 400 invalid model name）。切替時にクリアする。
+    for (const key of sameProviderRoleModelKeys(
+      settingsStore.get(ROLE_PROVIDERS_KEY, ""),
+    )) {
+      if (settingsStore.get(key, "") !== "") settingsStore.set(key, "");
+    }
 
     // 履歴の無いプロバイダへ初めて切替えるときの既定 variant。
     // Sakana は Responses API が推奨/既定経路なので "responses" を既定 ON にする
@@ -397,7 +448,10 @@ export function AiCategory() {
       {/* Provider */}
       <SettingSection title={t("settings.ai.provider")}>
         <div className="flex flex-wrap gap-2 mb-3">
-          {AI_PROVIDERS.map((p) => (
+          {(runtimeCapabilities.browserDirectAi
+            ? BROWSER_DIRECT_AI_PROVIDERS
+            : AI_PROVIDERS
+          ).map((p) => (
             <button
               key={p}
               type="button"
@@ -443,7 +497,8 @@ export function AiCategory() {
 
         {/* Responses API トグル (OpenAI 直 / OpenRouter beta)。openai-compatible は
             エンドポイント単位の apiVariant で指定するためここでは出さない。 */}
-        {localSettings.provider !== "openai-compatible" &&
+        {!runtimeCapabilities.browserDirectAi &&
+          localSettings.provider !== "openai-compatible" &&
           isResponsesApiCapableProvider(localSettings.provider) && (
             <SettingRow
               label={t("settings.ai.responsesApiLabel")}
@@ -638,6 +693,17 @@ export function AiCategory() {
             const updateCli = async (
               patch: Partial<typeof cli>,
             ): Promise<void> => {
+              const wasCodexAppServer =
+                cli.kind === "codex" &&
+                cli.codexTransport !== "exec" &&
+                cli.codexTransport !== undefined;
+              const leavesCodexAppServer =
+                (patch.kind !== undefined && patch.kind !== "codex") ||
+                (patch.codexTransport !== undefined &&
+                  patch.codexTransport === "exec");
+              if (wasCodexAppServer && leavesCodexAppServer) {
+                await archiveActiveCodexThreads();
+              }
               const updated = {
                 ...localSettings,
                 cli: { ...cli, ...patch },
@@ -668,6 +734,44 @@ export function AiCategory() {
                     <option value="opencode">OpenCode (opencode)</option>
                   </select>
                 </SettingRow>
+                {cli.kind === "codex" && (
+                  <SettingRow
+                    label={t("settings.ai.codexTransport")}
+                    description={t("settings.ai.codexTransportDesc")}
+                  >
+                    <select
+                      value={cli.codexTransport ?? "exec"}
+                      onChange={(e) =>
+                        void updateCli({
+                          codexTransport: e.target.value as
+                            | "exec"
+                            | "app-server"
+                            | "auto",
+                        }).then(() => handleLoadModels())
+                      }
+                      className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                    >
+                      <option value="exec">codex exec</option>
+                      <option value="app-server">Codex App Server</option>
+                      <option value="auto">App Server → exec fallback</option>
+                    </select>
+                  </SettingRow>
+                )}
+                {cli.kind === "codex" &&
+                  cli.codexTransport !== "exec" &&
+                  cli.codexTransport !== undefined && (
+                    <SettingRow
+                      label={t("settings.ai.codexAllowApprovals")}
+                      description={t("settings.ai.codexAllowApprovalsDesc")}
+                    >
+                      <ControlledToggle
+                        value={cli.codexAllowApprovals === true}
+                        onChange={(value) =>
+                          void updateCli({ codexAllowApprovals: value })
+                        }
+                      />
+                    </SettingRow>
+                  )}
                 <p className="mb-2 text-xs text-muted-foreground">
                   {t("settings.ai.cliAuthNoteBefore")}
                   <code className="font-mono">
@@ -769,6 +873,33 @@ export function AiCategory() {
                   >
                     {t("settings.ai.connectionTestVersion")}
                   </button>
+                  {cli.kind === "codex" &&
+                    cli.codexTransport !== "exec" &&
+                    cli.codexTransport !== undefined && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const status = await testCodexAppServerConnection();
+                            toast.success(
+                              t("settings.ai.codexAppServerConnected", {
+                                status: JSON.stringify(status),
+                              }),
+                            );
+                          } catch (e) {
+                            toast.error(
+                              t("settings.ai.codexAppServerConnectionFailed", {
+                                error:
+                                  e instanceof Error ? e.message : String(e),
+                              }),
+                            );
+                          }
+                        }}
+                        className="ml-2 rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground hover:bg-secondary/80"
+                      >
+                        {t("settings.ai.codexAppServerTest")}
+                      </button>
+                    )}
                 </div>
               </>
             );
@@ -1010,24 +1141,14 @@ export function AiCategory() {
                       : t("settings.ai.thinkingModeDesc")
                   }
                 >
-                  <button
-                    type="button"
-                    onClick={handleThinkingToggle}
+                  <Switch
+                    checked={thinkingOn}
+                    onCheckedChange={() => void handleThinkingToggle()}
                     disabled={reasoningLockedOn}
-                    aria-pressed={thinkingOn}
                     title={
                       reasoningLockedOn ? t("chat.thinkingAlwaysOn") : undefined
                     }
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-70 ${
-                      thinkingOn ? "bg-primary" : "bg-muted-foreground/30"
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                        thinkingOn ? "translate-x-4" : "translate-x-0.5"
-                      }`}
-                    />
-                  </button>
+                  />
                 </SettingRow>
                 {caps.supportsReasoning && (
                   <SettingRow
@@ -1230,7 +1351,8 @@ export function AiCategory() {
       </SettingSection>
 
       {/* Web 検索 (RAG) ドメイン制御 (global) — RAG 対応プロバイダのみ表示 */}
-      {isRagCapableProvider(localSettings.provider) &&
+      {!runtimeCapabilities.browserDirectAi &&
+        isRagCapableProvider(localSettings.provider) &&
         (() => {
           const mode = settingsStore.get("ai.webSearch.domainMode", "off");
           const domainsJson = settingsStore.get("ai.webSearch.domains", "[]");

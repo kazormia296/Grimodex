@@ -10,11 +10,11 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
-│ [Logo] [ワークスペース▾] [プロジェクト▾] [↶][↷] [↓ エクスポート]  [コマンドバー]  [レイアウト▼] [パネル▼] [⚙ 設定] │ [─][□][×] │
+│ [Logo] [ワークスペース▾] [プロジェクト▾] [↶][↷] [↓ エクスポート]  [ドラッグ領域]  [レイアウト▼] [パネル▼] [⚙ 設定] │ [─][□][×] │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-ヘッダーは `HeaderBarLayout` による **3 レール構成**（`left` / `center` / `right`）。左右レールを共に `flex-1 basis-0` にしてレール外寸を揃え、中央スロット（`CommandCenterBar`）が**ウィンドウ幾何中心**に固定されるようにしている（2026-06-18 時点。`923fa714` で中央固定化）。
+ヘッダーは `HeaderBarLayout` による **3 レール構成**（`left` / `center` / `right`）。左右レールを共に `flex-1 basis-0` にしてレール外寸を揃えている。2026-07-24 に常駐検索バーを撤去し、空になった中央レール全体を主要なウィンドウドラッグ領域にした。
 
 ### 各要素の配置
 
@@ -25,7 +25,7 @@
 | 左レール | プロジェクトメニュー | `ProjectMenu` |
 | 左レール | Undo / Redo | `HistoryButtons`（`Undo2` / `Redo2` アイコン） |
 | 左レール | エクスポート | `<button>` + `FileOutput` アイコン + ラベル |
-| 中央スロット | コマンドセンターバー | `CommandCenterBar` |
+| 中央スロット | ウィンドウドラッグ領域 | `HeaderBarLayout` の空 center レール |
 | 右レール | レイアウトプリセット | `LayoutPresetDropdown` |
 | 右レール | パネルトグル | `PanelToggleDropdown` |
 | 右レール | 設定 | `<button>` + `Settings` アイコン + ラベル |
@@ -40,9 +40,12 @@
 
 ## フレームレスウィンドウ設定
 
-Tauriのウィンドウは `decorations: false` で設定しており、OSネイティブのタイトルバーを非表示にしている。
+現行 Electron ランタイムは win/linux で `frame: false`、macOS で
+`titleBarStyle: "hidden"` を使う。ウィンドウは native resize を有効にするため
+`transparent: false` / `resizable: true` とする。
 
 - ヘッダー全体に `data-tauri-drag-region` を設定し、ウィンドウのドラッグ移動を可能にする
+- Electron では `data-tauri-drag-region` を `-webkit-app-region: drag` に写像する
 - ボタン類はクリックイベントが優先されるため、ドラッグ操作の対象外となる
 - ウィンドウの最小化・最大化・閉じるボタンは `WindowControls` コンポーネントで提供する
 
@@ -179,13 +182,13 @@ Tauriのウィンドウは `decorations: false` で設定しており、OSネイ
 
 ## レイアウトプリセットドロップダウン
 
-詳細は[レイアウトシステム設計書「レイアウトプリセットドロップダウン」](Grimodex_レイアウトシステム設計書.md)を参照。
+詳細は[レイアウトシステム置換設計書 §9 プリセット / `LayoutPresetDropdown`](Grimodex_レイアウトシステム置換設計書.md)を参照。
 
 ---
 
 ## パネルトグルドロップダウン
 
-詳細は[レイアウトシステム設計書「パネルトグルドロップダウン」](Grimodex_レイアウトシステム設計書.md)を参照。
+詳細は[レイアウトシステム置換設計書 §6 振る舞い / `PanelToggleDropdown`](Grimodex_レイアウトシステム置換設計書.md)を参照。
 
 ---
 
@@ -223,11 +226,10 @@ padding:    px-4 py-2（macOS のみ左レール pl-20 + 右レール pr-20 で�
 border:     下辺に border-b border-border
 flex:       items-center gap-3（3 レール: left / center / right、各レール内も gap-3）
 shrink:     flex-shrink-0（ドックゾーンの高さに押しつぶされない）
-drag:       data-tauri-drag-region（ヘッダー全体・各レールに付与。中央 CommandCenterBar は自前で opt-out）
-glass:      glass-shell クラスで背景ぼかし/グラスエフェクトを継承
+drag:       data-tauri-drag-region（ヘッダー全体・各レールに付与。中央レールは全面 drag）
 ```
 
-`py-2`（上下 8px）は、ボタンの上下に Tauri のドラッグ領域帯を確保するため。`py-1`（4px）では掴みづらく、中央 `CommandCenterBar` の drag opt-out と相まってウィンドウ移動できない事象が出ていた。中央スロットが真の中心であることは `HeaderBarLayout.browser.test.tsx` が実寸 assert でゲートしている。
+`py-2`（上下 8px）は、ボタンの上下にもドラッグ領域帯を確保するため。空の中央レールが `-webkit-app-region: drag` になることと、左右レールの外寸が等しいことは `HeaderBarLayout.browser.test.tsx` でゲートする。
 
 **現状の実装**: スクリーンショット撮影モード中はヘッダーに `no-screenshot` クラスが付与され、キャプチャ対象から除外される。
 
@@ -237,4 +239,4 @@ glass:      glass-shell クラスで背景ぼかし/グラスエフェクトを�
 
 - **最近のワークスペース上限**: 現在4件固定（`WorkspaceMenu` で `slice(0, 4)`）。設定で変更可能にするか検討
 
-> （2026-06-18 追記）「プロジェクトタイトルをヘッダーに表示する案」は `ProjectMenu` のトリガーボタンが現在のプロジェクトタイトルを表示することで実装済み（中央ではなく左レール、ワークスペースメニューの隣）。中央スロットは `CommandCenterBar`（検索 / コマンド）が常駐する。
+> 「プロジェクトタイトルをヘッダーに表示する案」は `ProjectMenu` のトリガーボタンが現在のプロジェクトタイトルを表示することで実装済み（中央ではなく左レール、ワークスペースメニューの隣）。

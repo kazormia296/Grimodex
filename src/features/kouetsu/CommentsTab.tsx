@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { and, eq } from "drizzle-orm";
-import { Loader2, MessageSquare, RefreshCw, User } from "lucide-react";
+import {
+  Bot,
+  EyeOff,
+  Loader2,
+  MessageSquare,
+  MessagesSquare,
+  RefreshCw,
+  User,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/platform";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { listAnnotationsForProject } from "@/features/post-effect/api";
+import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
 import {
   groupPseudoThreads,
   PseudoCommentThread,
@@ -16,11 +26,17 @@ import {
 import {
   buildCommentGroups,
   humanCommentsFromDoc,
+  isActiveSceneOutOfScope,
   type Filter,
   type HumanComment,
   type SceneGroup,
 } from "./commentsAggregation";
+import { useKouetsuStore } from "./kouetsuStore";
 import { jumpToComment } from "./jumpToComment";
+import { KouetsuScopePicker } from "./KouetsuScopePicker";
+import { PseudoCommentRunControl } from "./PseudoCommentRunControl";
+import { useResolvedKouetsuScope } from "./useResolvedKouetsuScope";
+import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
 
 async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
   const rows = await db
@@ -45,10 +61,17 @@ export function CommentsTab() {
   const { t } = useTranslation();
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
+  const nodes = useTreeStore((s) => s.nodes);
+  const activeSceneId = useTreeStore((s) => s.activeSceneId);
+  // 指摘タブと同一のスコープ（kouetsuStore.scope）を共有する。
+  const scope = useResolvedKouetsuScope();
   const [human, setHuman] = useState<HumanComment[]>([]);
   const [threads, setThreads] = useState<PseudoThread[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
+  // 除外（dismiss 済み）疑似コメント表示のトグル。Filter 型（human/ai/all）とは
+  // 直交する軸なので別 state で持つ。ON のとき本文を除外ビューに差し替える。
+  const [showDismissed, setShowDismissed] = useState(false);
 
   const sceneTitle = useCallback(
     (sceneId: string) => scenes.find((s) => s.id === sceneId)?.title ?? sceneId,
@@ -96,10 +119,31 @@ export function CommentsTab() {
     void reload();
   }, [reload]);
 
+  // スコープ内シーン集合（project = null で全件）。読み込みは常に project 全体
+  // で行い、表示だけを絞る（スコープ切替時の再フェッチ不要）。
+  const scopeSceneIds = useMemo<ReadonlySet<string> | null>(() => {
+    if (scope.type === "project") return null;
+    if (scope.type === "scene")
+      return new Set(activeSceneId ? [activeSceneId] : []);
+    return new Set(getSceneIdsForScope(nodes, "folder", scope.anchorId));
+  }, [scope, nodes, activeSceneId]);
+
   const groups = useMemo<SceneGroup[]>(
-    () => buildCommentGroups(human, threads, filter, sceneTitle),
-    [human, threads, filter, sceneTitle],
+    () => buildCommentGroups(human, threads, filter, sceneTitle, scopeSceneIds),
+    [human, threads, filter, sceneTitle, scopeSceneIds],
   );
+
+  // 疑似コメント生成の対象は常にアクティブシーン（スコープ非依存）。folder
+  // スコープでアクティブシーンがスコープ外だと、生成物がフィルタで不可視に
+  // なり無音 no-op に見えるため、完了時に scene スコープへ切り替えて結果を
+  // 見せる（敵対レビュー確定指摘）。
+  const setScope = useKouetsuStore((s) => s.setScope);
+  const handlePseudoCompleted = useCallback(async () => {
+    await reloadAnnotations();
+    if (isActiveSceneOutOfScope(scopeSceneIds, activeSceneId)) {
+      setScope({ type: "scene" });
+    }
+  }, [reloadAnnotations, scopeSceneIds, activeSceneId, setScope]);
 
   const totalCount = groups.reduce(
     (n, g) => n + g.human.length + g.threads.length,
@@ -108,42 +152,74 @@ export function CommentsTab() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border bg-muted/20 px-2 py-1 text-xs">
+      {/* narrow でもレイアウトが崩れないよう flex-wrap で段組みする。 */}
+      <div className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border bg-muted/20 px-2 py-1 text-xs">
+        <KouetsuScopePicker />
         <div className="flex items-center gap-1">
           {(
             [
-              ["all", t("snippets.filterAll")],
-              ["human", t("scenes.sortManual")],
-              ["ai", t("attribution.columnAi")],
-            ] as const
-          ).map(([id, label]) => (
+              ["all", t("snippets.filterAll"), MessagesSquare],
+              ["human", t("scenes.sortManual"), User],
+              ["ai", t("attribution.columnAi"), Bot],
+            ] as const satisfies readonly [Filter, string, LucideIcon][]
+          ).map(([id, label, Icon]) => (
             <button
               key={id}
               type="button"
               onClick={() => setFilter(id)}
               className={cn(
-                "rounded px-2 py-0.5",
+                "flex items-center gap-1 rounded px-2 py-0.5",
                 filter === id
                   ? "bg-primary text-primary-foreground"
                   : "text-muted-foreground hover:bg-accent",
               )}
             >
+              <Icon size={11} className="shrink-0" />
               {label}
             </button>
           ))}
+          <button
+            type="button"
+            aria-pressed={showDismissed}
+            onClick={() => {
+              const next = !showDismissed;
+              setShowDismissed(next);
+              // 除外ビューで復元(reopen)した annotation は status=open に戻るが
+              // 親の threads state は古いまま。通常ビューへ戻す瞬間に annotation
+              // だけ再取得し、復元分を即スレッドへ反映する（所見: 反映漏れ）。
+              if (!next) void reloadAnnotations();
+            }}
+            className={cn(
+              "flex items-center gap-1 rounded px-2 py-0.5",
+              showDismissed
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-accent",
+            )}
+          >
+            <EyeOff size={11} className="shrink-0" />
+            {t("kouetsu.filter.dismissed")}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => void reload()}
-          title={t("error.reload")}
-          className="rounded p-1 text-muted-foreground hover:bg-accent"
-        >
-          <RefreshCw size={12} />
-        </button>
+        <div className="ml-auto flex min-w-0 items-center gap-1.5">
+          <PseudoCommentRunControl onCompleted={handlePseudoCompleted} />
+          <button
+            type="button"
+            onClick={() => void reload()}
+            title={t("error.reload")}
+            className="rounded p-1 text-muted-foreground hover:bg-accent"
+          >
+            <RefreshCw size={12} />
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading ? (
+        {showDismissed ? (
+          <DismissedAnnotationsView
+            category="pseudo_comment"
+            emptyLabel={t("kouetsu.pseudoComment.emptyIgnored")}
+          />
+        ) : loading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 size={16} className="animate-spin text-muted-foreground" />
           </div>

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { compareInstantValues } from "@/lib/time";
 import { listSessionsWithStats, searchChatMessages } from "./chatHistoryApi";
 import type { SessionWithStats, MessageSearchHit } from "./chatHistoryApi";
 
@@ -45,9 +46,9 @@ export function filterAndSortSessions(
   result = [...result].sort((a, b) => {
     switch (sortMode) {
       case "recent":
-        return b.updatedAt.localeCompare(a.updatedAt);
+        return compareInstantValues(a.updatedAt, b.updatedAt, "descending");
       case "oldest":
-        return a.updatedAt.localeCompare(b.updatedAt);
+        return compareInstantValues(a.updatedAt, b.updatedAt);
       case "most_messages":
         return b.msgCount - a.msgCount;
       case "most_extractions":
@@ -164,6 +165,8 @@ interface ChatHistoryState {
 
   // Actions
   loadSessions: (projectId: string) => Promise<void>;
+  /** Clear project-owned sessions and search state before a reload. */
+  resetForProject: () => void;
   setSearchQuery: (q: string) => void;
   runSearch: (projectId: string) => Promise<void>;
   setSceneFilter: (nodeId: string | null) => void;
@@ -183,6 +186,16 @@ export const useChatHistoryStore = create<ChatHistoryState>()((set, get) => ({
   hasExtractionsOnly: false,
   projectScopeOnly: false,
   sortMode: "recent",
+
+  resetForProject: () =>
+    set({
+      sessions: [],
+      searchQuery: "",
+      searchResults: [],
+      isSearchMode: false,
+      isSearching: false,
+      sceneFilter: null,
+    }),
 
   async loadSessions(projectId) {
     set({ isLoading: true });

@@ -1,10 +1,10 @@
 /**
  * 実 Chromium で動かす HeaderBarLayout の幾何 invariant テスト。
  *
- * 回帰: ヘッダーのコマンドパレット (中央スロット) が**ウィンドウ中心からズレる**
- * バグ。旧実装は「中央だけ flex-1 + justify-center」で、左右ボタン群の*あいだ*
- * の余白の中央にバーを置いていた。左群 (ロゴ+メニュー+履歴+エクスポート) は右群
- * より広いため、バーの中心がウィンドウ中心から右へズレていた。
+ * 中央スロットが**ウィンドウ中心からズレないこと**と、空の中央レールが
+ * Electron のウィンドウドラッグ領域になることを検証する。
+ * 旧実装は「中央だけ flex-1 + justify-center」で、左右ボタン群の*あいだ*
+ * の余白を中央としていたため、左群と右群の幅が違うと中心がズレていた。
  *
  * happy-dom は flex の実寸を計算しないため、`getBoundingClientRect()` で中央
  * スロットの中心がヘッダー中心と一致することを実ブラウザで assert して gate する。
@@ -21,7 +21,7 @@ const HOST_HEIGHT = 48;
  * 旧実装ではこの非対称ぶんだけ中央がズレた。新実装 (左右レール flex-1 basis-0)
  * では中身の幅に関係なく中央がウィンドウ中心に来るはず。
  */
-function renderHeader(opts: { mac?: boolean } = {}) {
+function renderHeader(opts: { mac?: boolean; emptyCenter?: boolean } = {}) {
   return render(
     <div
       style={{
@@ -41,7 +41,11 @@ function renderHeader(opts: { mac?: boolean } = {}) {
             style={{ flex: "0 0 auto", width: 480, height: 24 }}
           />
         }
-        center={<div data-test-center style={{ width: 200, height: 24 }} />}
+        center={
+          opts.emptyCenter ? null : (
+            <div data-test-center style={{ width: 200, height: 24 }} />
+          )
+        }
         right={
           // 狭い右群 (160px, 縮まない)。
           <div
@@ -111,5 +115,23 @@ describe("HeaderBarLayout geometry invariants (real Chromium)", () => {
     // mac の pl-20 を左レールだけに入れると中央が +40px ズレる。右レールの
     // pr-20 で対称化しているので、ここでも中心は一致しているはず。
     expect(Math.abs(centerX(center!) - centerX(header!))).toBeLessThan(1);
+  });
+
+  it("uses the vacant center rail as an Electron window drag region", async () => {
+    document.documentElement.dataset.shell = "electron";
+    const { container, unmount } = renderHeader({ emptyCenter: true });
+    await nextFrame();
+
+    const centerRail = container.querySelector<HTMLElement>(
+      "[data-header-center]",
+    );
+    expect(centerRail).not.toBeNull();
+    expect(centerRail).toBeEmptyDOMElement();
+    expect(
+      getComputedStyle(centerRail!).getPropertyValue("-webkit-app-region"),
+    ).toBe("drag");
+
+    unmount();
+    delete document.documentElement.dataset.shell;
   });
 });

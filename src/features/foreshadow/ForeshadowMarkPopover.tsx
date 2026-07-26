@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { ensureEditorOverlayVisible } from "@/features/editor/ensureOverlayVisible";
 import { useForeshadowStore } from "./foreshadowStore";
 
 type MarkMode = "setup" | "payoff" | "payoff-unanchored";
@@ -79,7 +80,9 @@ export function ForeshadowMarkPopover({ editor }: Props) {
 
   const close = useCallback(() => {
     setOpen(false);
-    editor?.commands.focus();
+    // ポップオーバーを開いた位置は既に画面内 — スクロールは動かさない
+    // （既定の scrollIntoView:true は現在位置を変える可能性がある）。
+    editor?.commands.focus(null, { scrollIntoView: false });
   }, [setOpen, editor]);
 
   const applySetupMark = (foreshadowId: string) => {
@@ -90,6 +93,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
       .setTextSelection(savedRange)
       .setMark("foreshadowSetup", { setupId, foreshadowId })
       .run();
+    ensureEditorOverlayVisible("foreshadow", editor);
     close();
   };
 
@@ -100,6 +104,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
       .setTextSelection(savedRange)
       .setMark("foreshadowPayoff", { foreshadowId })
       .run();
+    ensureEditorOverlayVisible("foreshadow", editor);
     close();
   };
 

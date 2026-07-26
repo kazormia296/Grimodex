@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useCurrentProjectAiPolicy } from "./useCurrentProjectAiPolicy";
 import type { AiPolicyPreset } from "./types";
+import { openAiPolicySettings } from "./openAiPolicySettings";
 
 const BADGE_CLASSNAME: Record<Exclude<AiPolicyPreset, "full">, string> = {
   "assist-off": "text-amber-600",
@@ -21,16 +22,10 @@ export function AiPolicyBadge() {
   const policy = useCurrentProjectAiPolicy();
   if (!policy || policy.preset === "full") return null;
 
-  const onClick = () => {
-    window.dispatchEvent(
-      new CustomEvent("open-settings", { detail: { category: "project" } }),
-    );
-  };
-
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={openAiPolicySettings}
       title={t("aiPolicy.openSettingsTooltip")}
       className={`flex h-5 items-center rounded px-2 text-xs hover:bg-accent ${BADGE_CLASSNAME[policy.preset]}`}
     >

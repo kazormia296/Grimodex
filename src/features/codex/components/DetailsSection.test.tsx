@@ -26,6 +26,7 @@ const mockEntry: CodexEntry = {
   icon: null,
   aliases: "[]",
   excludedAliases: "[]",
+  readings: null,
   tagsCache: null,
   contextMode: "mentioned",
   childrenBudget: "compact",
@@ -348,6 +349,15 @@ describe("DetailsSection", () => {
       expect(
         screen.queryByTestId("codex-content-editor"),
       ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("detail-include-context-def-1"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("details-add-field-button"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("details-manage-button"),
+      ).not.toBeInTheDocument();
     });
 
     it("falls back to the base value in preview when no override applies", async () => {
@@ -374,6 +384,33 @@ describe("DetailsSection", () => {
       );
 
       expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "人間");
+    });
+
+    it("shows an inherited Phase value and seeds a new override from it", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([textDef()]);
+      mockListValues.mockResolvedValue([baseValue()]);
+      const activePhase = { id: "ph2", label: "第三幕" };
+
+      render(
+        <DetailsSection
+          entry={mockEntry}
+          activePhase={activePhase}
+          activeResolvedDetailValues={new Map([["def-1", "吸血鬼"]])}
+        />,
+      );
+
+      const inherited = await screen.findByTestId(
+        "detail-field-inherited-def-1",
+      );
+      expect(inherited).toHaveTextContent("吸血鬼");
+      expect(inherited).toHaveTextContent("Base: 人間");
+      expect(
+        screen.queryByTestId("codex-content-editor"),
+      ).not.toBeInTheDocument();
+
+      await user.click(screen.getByTestId("detail-field-override-add-def-1"));
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph2", "def-1", "吸血鬼");
     });
 
     it("edits an existing phase override instead of the base value", async () => {

@@ -747,6 +747,40 @@ describe("useLayoutStore", () => {
         true,
       );
     });
+
+    it("hydrates a desktop layout on a phone without shrinking its saved dimensions", async () => {
+      vi.stubGlobal("innerWidth", 390);
+      vi.stubGlobal("innerHeight", 844);
+      const saved = buildDefaultLayoutState({
+        activePanels: {
+          scenes: true,
+          chat: true,
+          timeline: true,
+        },
+      });
+      saved.regions.left.size = 947;
+      saved.regions.right.size = 989;
+      saved.regions.bottom.size = 871;
+      mockInvoke.mockResolvedValue({
+        recentWorkspaces: [],
+        lastActiveWorkspace: null,
+        theme: "system",
+        showLauncherOnStartup: false,
+        layout: {
+          layoutVersion: 3,
+          state: saved,
+          activePresetId: "builtin:default",
+        },
+        layoutPresets: [],
+      });
+
+      await useLayoutStore.getState().initializeLayout();
+
+      const { layout } = useLayoutStore.getState();
+      expect(layout.regions.left.size).toBe(947);
+      expect(layout.regions.right.size).toBe(989);
+      expect(layout.regions.bottom.size).toBe(871);
+    });
   });
 });
 

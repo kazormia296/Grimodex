@@ -7,8 +7,29 @@ import {
   isComparisonMeaningful,
   isSlotComplete,
   canRunComparison,
+  providersForRuntime,
   resolveSlotApiVariant,
 } from "./abConfig";
+
+describe("providersForRuntime", () => {
+  it("exposes every HTTP provider in the Web Editor", () => {
+    expect(providersForRuntime(true)).toEqual([
+      "openrouter",
+      "openai",
+      "anthropic",
+      "ollama",
+      "openai-compatible",
+      "sakana",
+      "ai-novelist",
+    ]);
+    expect(providersForRuntime(true)).not.toContain("cli");
+  });
+
+  it("preserves the desktop provider catalog", () => {
+    expect(providersForRuntime(false)).toContain("openrouter");
+    expect(providersForRuntime(false)).toContain("openai-compatible");
+  });
+});
 
 describe("createBaselineSlot", () => {
   it("is the empty default config with a stable id", () => {

@@ -1,5 +1,4 @@
-import { invoke } from "@/lib/tauri";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, listen } from "@/lib/tauri";
 
 interface StreamChunkPayload {
   delta: string;
@@ -46,22 +45,22 @@ export async function sendInlineAiStream(
   },
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
-    listen<StreamChunkPayload>("inline-ai:stream-chunk", (event) => {
+    listen<StreamChunkPayload>("inline-ai:stream-chunk", (payload) => {
       // thinking ブロックはインライン AI では無視（設計書上、扱わない）
-      if (event.payload.block_type === "text") {
-        callbacks.onTextDelta(event.payload.delta);
+      if (payload.block_type === "text") {
+        callbacks.onTextDelta(payload.delta);
       }
     }),
-    listen<StreamDonePayload>("inline-ai:stream-done", (event) => {
+    listen<StreamDonePayload>("inline-ai:stream-done", (payload) => {
       callbacks.onDone({
-        stopReason: event.payload.stop_reason,
-        inputTokens: event.payload.input_tokens,
-        outputTokens: event.payload.output_tokens,
-        cost: event.payload.cost,
+        stopReason: payload.stop_reason,
+        inputTokens: payload.input_tokens,
+        outputTokens: payload.output_tokens,
+        cost: payload.cost,
       });
     }),
-    listen<StreamErrorPayload>("inline-ai:stream-error", (event) => {
-      callbacks.onError(event.payload.message);
+    listen<StreamErrorPayload>("inline-ai:stream-error", (payload) => {
+      callbacks.onError(payload.message);
     }),
   ]);
 

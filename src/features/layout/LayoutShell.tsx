@@ -30,11 +30,11 @@ import {
 import { useLayoutStore } from "./layoutStore";
 import { useZoomReveal } from "./useZoomReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
-import { useCardLayout } from "./cardLayout";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
+import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 // gsap(+@gsap/react)を static import する drop-zone ハイライトを遅延化。常時 mount
 // だと D&D が一度も起きなくても起動時に gsap(~22KB gzip)が parse される（所見#11）。
@@ -50,6 +50,10 @@ interface LayoutShellProps {
   /** Solo mode (screenshot capture / Codex window): hide stripes and show a single panel full-screen */
   hidden?: boolean;
   soloPanelId?: PanelId | null;
+  /** Transient editor-only projection. Keeps every normal layout node mounted. */
+  zenMode?: boolean;
+  /** Responsive editor projection. Unlike Zen, normal editor chrome stays visible. */
+  editorOnly?: boolean;
 }
 
 function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
@@ -67,12 +71,20 @@ function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
 export const LayoutShell = memo(function LayoutShell({
   hidden = false,
   soloPanelId = null,
+  zenMode = false,
+  editorOnly = false,
 }: LayoutShellProps) {
   const segments = useRegionSegments();
   const layout = useLayoutStore((s) => s.layout);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const { crossfadeControls } = useLayoutPresetCrossfade();
   const shellRef = useRef<HTMLDivElement>(null);
+  const glass = useZenGlassConfig();
+  const workspaceGlassStyle = {
+    "--workspace-fluid-glass-blur": `${glass.blur}px`,
+    "--workspace-fluid-glass-saturate": glass.saturation,
+    "--workspace-fluid-glass-shine": glass.shine,
+  } as React.CSSProperties;
 
   const leftOpen = regionIsOpen(layout.regions.left.slots);
   const rightOpen = regionIsOpen(layout.regions.right.slots);
@@ -83,7 +95,7 @@ export const LayoutShell = memo(function LayoutShell({
   const hasBottom = segments.bottom.some((s) => s.panels.length > 0);
 
   const centerBandVisible = isCenterContentVisible(layout);
-  const cardLayout = useCardLayout();
+  const projectedCenterBandVisible = centerBandVisible || editorOnly;
   const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
   const clearMaximize = useLayoutStore((s) => s.clearMaximize);
 
@@ -99,6 +111,8 @@ export const LayoutShell = memo(function LayoutShell({
     if (location?.slot.activePanel !== maximizedPanelId) return null;
     return location.region;
   }, [maximizedPanelId, layout, centerBandVisible]);
+  const effectiveZoomRegion: ZoomRegion | null =
+    zenMode || editorOnly ? "center" : zoomRegion;
 
   // 最大化突入時の clip-path reveal（ズームっぽい展開演出）。
   useZoomReveal(zoomRegion, layout, shellRef);
@@ -110,23 +124,14 @@ export const LayoutShell = memo(function LayoutShell({
   //   などパネル固有の Esc（選択解除等）が先に消費した場合は解除しない
   //   （その場合 Esc 2 度押しで zoom を抜ける — 意図した階層挙動）。
   useEffect(() => {
-    if (zoomRegion === null) return;
+    if (zoomRegion === null || zenMode || editorOnly) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
       clearMaximize();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [zoomRegion, clearMaximize]);
-
-  // カードレイアウト ON/OFF 切替で chrome 量が変わるため、切替時に保存済みの
-  // region サイズを即座に再クランプする（初回マウントでは何もしない）。
-  const cardLayoutRef = useRef(cardLayout);
-  useEffect(() => {
-    if (cardLayoutRef.current === cardLayout) return;
-    cardLayoutRef.current = cardLayout;
-    useLayoutStore.getState().reclampForViewport();
-  }, [cardLayout]);
+  }, [zoomRegion, zenMode, editorOnly, clearMaximize]);
 
   const metrics = useMemo(
     () =>
@@ -137,15 +142,14 @@ export const LayoutShell = memo(function LayoutShell({
         leftOpen,
         rightOpen,
         bottomOpen,
-        centerBandVisible,
+        centerBandVisible: projectedCenterBandVisible,
         leftSize: layout.regions.left.size,
         rightSize: layout.regions.right.size,
         bottomSize: layout.regions.bottom.size,
-        cardLayout,
       }),
     [
       bottomOpen,
-      centerBandVisible,
+      projectedCenterBandVisible,
       hasBottom,
       hasLeft,
       hasRight,
@@ -154,36 +158,54 @@ export const LayoutShell = memo(function LayoutShell({
       layout.regions.right.size,
       leftOpen,
       rightOpen,
-      cardLayout,
     ],
   );
 
   const gridTemplateColumns = useMemo(
     () =>
-      zoomRegion !== null
-        ? buildZoomGridTemplateColumns(zoomRegion)
+      effectiveZoomRegion !== null
+        ? buildZoomGridTemplateColumns(effectiveZoomRegion)
         : buildLayoutGridTemplateColumns(metrics),
-    [metrics, zoomRegion],
+    [effectiveZoomRegion, metrics],
   );
 
-  const gridTemplateRows = useMemo(
-    () =>
-      zoomRegion !== null
-        ? buildZoomGridTemplateRows(zoomRegion, hasBottom, metrics.gapRowPx)
-        : buildLayoutGridTemplateRows(metrics, hasBottom),
-    [metrics, hasBottom, zoomRegion],
-  );
+  const gridTemplateRows = useMemo(() => {
+    if (zenMode || editorOnly) {
+      return hasBottom
+        ? "0px 0px minmax(0, 1fr) 0px"
+        : "0px 0px minmax(0, 1fr)";
+    }
+    return effectiveZoomRegion !== null
+      ? buildZoomGridTemplateRows(
+          effectiveZoomRegion,
+          hasBottom,
+          metrics.gapRowPx,
+        )
+      : buildLayoutGridTemplateRows(metrics, hasBottom);
+  }, [effectiveZoomRegion, hasBottom, metrics, zenMode, editorOnly]);
 
   if (hidden && soloPanelId) {
     if (soloPanelId === "editor") {
       return (
-        <div className="h-full w-full overflow-hidden">
+        <div
+          data-workspace-glass-root
+          data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+          data-workspace-fluid-glass-refraction={glass.refraction}
+          className="h-full w-full overflow-hidden"
+          style={workspaceGlassStyle}
+        >
           <EditorArea />
         </div>
       );
     }
     return (
-      <div className="h-full w-full overflow-hidden">
+      <div
+        data-workspace-glass-root
+        data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+        data-workspace-fluid-glass-refraction={glass.refraction}
+        className="h-full w-full overflow-hidden"
+        style={workspaceGlassStyle}
+      >
         <SlotView panelId={soloPanelId} />
       </div>
     );
@@ -191,7 +213,13 @@ export const LayoutShell = memo(function LayoutShell({
 
   if (hidden) {
     return (
-      <div className="h-full w-full overflow-hidden">
+      <div
+        data-workspace-glass-root
+        data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+        data-workspace-fluid-glass-refraction={glass.refraction}
+        className="h-full w-full overflow-hidden"
+        style={workspaceGlassStyle}
+      >
         <EditorArea />
       </div>
     );
@@ -205,7 +233,9 @@ export const LayoutShell = memo(function LayoutShell({
   const bottomCorners = getBottomCorners(layout);
   const gridTemplateAreas = buildLayoutGridTemplateAreas(
     hasBottom,
-    zoomRegion === "bottom" ? { left: true, right: true } : bottomCorners,
+    effectiveZoomRegion === "bottom"
+      ? { left: true, right: true }
+      : bottomCorners,
   );
 
   // zoom 中、対象 cell 以外を不可視化する。unmount はしない（DOM identity
@@ -213,7 +243,7 @@ export const LayoutShell = memo(function LayoutShell({
   // paint を止め、inert でフォーカス/ヒットを遮断する。0px に潰した cell
   // の中身は track からはみ出して描画されうるため visibility が必須。
   const cellHidden = (cell: ZoomRegion | "chrome") =>
-    zoomRegion !== null && zoomRegion !== cell;
+    effectiveZoomRegion !== null && effectiveZoomRegion !== cell;
   const hiddenCellProps = (hidden: boolean) =>
     hidden ? ({ "aria-hidden": true, inert: true } as const) : {};
   const cellStyle = (
@@ -223,19 +253,24 @@ export const LayoutShell = memo(function LayoutShell({
 
   return (
     <>
-      {draggingPanel && (
+      {!zenMode && !editorOnly && draggingPanel && (
         <Suspense fallback={null}>
           <LayoutDnDHighlightOverlay />
         </Suspense>
       )}
-      <StripeInsertIndicator />
-      <LayoutPanelDragGhost />
+      {!zenMode && !editorOnly && <StripeInsertIndicator />}
+      {!zenMode && !editorOnly && <LayoutPanelDragGhost />}
       {/* key={crossfadeKey} による remount 方式は禁止 — 配下の全エディタ/パネルが
           破棄・再生成されフリーズする。フェードは controls の opacity 再トリガーで
           実現する（useLayoutPresetCrossfade 参照）。 */}
       <motion.div
         ref={shellRef}
+        data-workspace-glass-root
         data-layout-shell
+        data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+        data-workspace-fluid-glass-refraction={glass.refraction}
+        data-zen-mode={zenMode ? "true" : undefined}
+        data-editor-only={editorOnly ? "true" : undefined}
         // overflow-clip（hidden ではなく）: hidden はスクロールコンテナになり、最大化中に
         // パネル内要素がフォーカスされるとブラウザが shell を自動スクロールして上端の
         // ZoomRestoreBar 行をクリップ外へ追い出す（＝「元に戻す」ヘッダーが消える）。clip は
@@ -244,10 +279,11 @@ export const LayoutShell = memo(function LayoutShell({
         initial={false}
         animate={crossfadeControls}
         style={{
+          ...workspaceGlassStyle,
           gridTemplateColumns,
           gridTemplateRows,
           gridTemplateAreas,
-          padding: cardLayout ? "var(--gx-outer-pad)" : undefined,
+          padding: zenMode || editorOnly ? 0 : "var(--gx-outer-pad)",
         }}
       >
         <div
@@ -260,11 +296,14 @@ export const LayoutShell = memo(function LayoutShell({
 
         {/* zoom 中の復帰バー。CenterStripe と同じ grid area に重ねる
             （CenterStripe 側は visibility:hidden + inert で休眠中）。 */}
-        {zoomRegion !== null && maximizedPanelId !== null && (
-          <div style={{ gridArea: "cstripe" }} className="min-h-0 min-w-0">
-            <ZoomRestoreBar panelId={maximizedPanelId} />
-          </div>
-        )}
+        {!zenMode &&
+          !editorOnly &&
+          zoomRegion !== null &&
+          maximizedPanelId !== null && (
+            <div style={{ gridArea: "cstripe" }} className="min-h-0 min-w-0">
+              <ZoomRestoreBar panelId={maximizedPanelId} />
+            </div>
+          )}
 
         {hasLeft && (
           <div
@@ -297,7 +336,11 @@ export const LayoutShell = memo(function LayoutShell({
               open={leftOpen}
               className="h-full w-full min-h-0 min-w-0"
             >
-              <RegionContent region="left" orientation="vertical" />
+              <RegionContent
+                region="left"
+                orientation="vertical"
+                dormant={editorOnly || cellHidden("left")}
+              />
             </AnimatedRegionChrome>
           </div>
         )}
@@ -305,7 +348,7 @@ export const LayoutShell = memo(function LayoutShell({
         {/* region 境界 splitter は zoom 中 unmount する（ステートレスな
             chrome なので安全。0 サイズで残すと dev のヒット領域 assertion
             に引っかかる）。 */}
-        {metrics.leftSplitterPx > 0 && zoomRegion === null && (
+        {metrics.leftSplitterPx > 0 && effectiveZoomRegion === null && (
           <div
             style={{ gridArea: "lspl" }}
             className="flex h-full min-h-0 overflow-hidden"
@@ -314,18 +357,18 @@ export const LayoutShell = memo(function LayoutShell({
           </div>
         )}
 
-        {centerBandVisible && (
+        {projectedCenterBandVisible && (
           <div
             data-zoom-cell="center"
             style={cellStyle({ gridArea: "editor" }, cellHidden("center"))}
             {...hiddenCellProps(cellHidden("center"))}
             className="min-h-0 min-w-0"
           >
-            <CenterContent />
+            <CenterContent zenMode={zenMode} editorOnly={editorOnly} />
           </div>
         )}
 
-        {metrics.rightSplitterPx > 0 && zoomRegion === null && (
+        {metrics.rightSplitterPx > 0 && effectiveZoomRegion === null && (
           <div
             style={{ gridArea: "rspl" }}
             className="flex h-full min-h-0 overflow-hidden"
@@ -346,7 +389,11 @@ export const LayoutShell = memo(function LayoutShell({
               open={rightOpen}
               className="h-full w-full min-h-0 min-w-0"
             >
-              <RegionContent region="right" orientation="vertical" />
+              <RegionContent
+                region="right"
+                orientation="vertical"
+                dormant={editorOnly || cellHidden("right")}
+              />
             </AnimatedRegionChrome>
           </div>
         )}
@@ -377,21 +424,22 @@ export const LayoutShell = memo(function LayoutShell({
             {...hiddenCellProps(cellHidden("bottom"))}
             className="flex min-h-0 min-w-0 flex-col"
           >
-            {zoomRegion !== null ? null : bottomOpen ? (
+            {effectiveZoomRegion !== null ? null : bottomOpen ? (
               <RegionResizeSplitter region="bottom" />
-            ) : cardLayout ? (
+            ) : (
               // content を閉じていても bottom stripe を浮かせるギャップ。
               <div
                 aria-hidden
                 className="shrink-0"
                 style={{ height: "var(--gx-stripe-gap)" }}
               />
-            ) : null}
+            )}
             <RegionDock
               region="bottom"
               stripeOrientation="horizontal"
               contentOrientation="horizontal"
               segments={segments.bottom}
+              dormant={editorOnly || cellHidden("bottom")}
               stripeReserveStartPx={
                 hasLeft && bottomCorners.left
                   ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
@@ -409,10 +457,10 @@ export const LayoutShell = memo(function LayoutShell({
         {/* 角オーナーシップ切替。side region と bottom region の両方が
             あるときだけ、その角の取り合いが意味を持つ。zoom 中は純装飾の
             chrome なので unmount で消す。 */}
-        {zoomRegion === null && hasBottom && hasLeft && (
+        {effectiveZoomRegion === null && hasBottom && hasLeft && (
           <BottomCornerToggle side="left" />
         )}
-        {zoomRegion === null && hasBottom && hasRight && (
+        {effectiveZoomRegion === null && hasBottom && hasRight && (
           <BottomCornerToggle side="right" />
         )}
       </motion.div>

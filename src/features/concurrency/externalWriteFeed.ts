@@ -5,7 +5,7 @@ import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import {
   useGlobalHistoryStore,
   setUndoConflictHandler,
@@ -23,6 +23,7 @@ import {
   type PendingProseProposal,
 } from "@/features/agent-writes/proseStagingStore";
 import { loadLatestProposedProse } from "@/features/agent-writes/prose";
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 
 const POLL_MS = 750;
 
@@ -71,7 +72,7 @@ function handleUndoConflict(cmd: HistoryCommand): void {
   const domain = domainForHistoryKind(cmd.kind);
   if (!entityId || !domain) return;
   const extStore = useExternalWriteStore.getState();
-  const dirtyTabIds = useTabStore.getState().dirtyTabIds;
+  const dirtyTabIds = useEditorSessionStore.getState().dirtyDocumentIds;
   if (dirtyTabIds.has(entityId) || isInlineAiPending()) {
     extStore.pushConflict({
       sceneId: entityId,
@@ -104,6 +105,8 @@ const state: PollerState = {
   cursor: 0,
   timer: null,
 };
+
+let pollInFlight = false;
 
 type ChangeEventRow = typeof changeEvents.$inferSelect;
 
@@ -146,6 +149,7 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   }
   if (domains.has("codex")) {
     await useCodexStore.getState().loadEntries();
+    scheduleImeExportRefresh(projectId);
   }
   if (domains.has("snippet")) {
     await useSnippetStore.getState().loadEntries();
@@ -183,7 +187,7 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   const editorEvents = events.filter(
     (e) => e.domain === "editor" && e.sceneId != null,
   );
-  const dirtyTabIds = useTabStore.getState().dirtyTabIds;
+  const dirtyTabIds = useEditorSessionStore.getState().dirtyDocumentIds;
   const extStore = useExternalWriteStore.getState();
   const inlineAiPending = isInlineAiPending();
 
@@ -278,6 +282,9 @@ async function pollTick(): Promise<void> {
   const projectId = state.projectId;
   if (!projectId) return;
 
+  if (pollInFlight) return; // skip overlapping tick; cursor retained, next interval retries
+  pollInFlight = true;
+
   // Everything below runs inside one try/catch. pollTick is fired via
   // `void pollTick()` in setInterval, so ANY throw here (including the DB reads,
   // not just fan-out) escapes as a [Global] unhandled rejection. In particular
@@ -305,6 +312,8 @@ async function pollTick(): Promise<void> {
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
     console.warn("[externalWriteFeed] poll failed; cursor retained", err);
+  } finally {
+    pollInFlight = false;
   }
 }
 

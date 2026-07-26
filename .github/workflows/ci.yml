@@ -11,14 +11,57 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Quality (traceability / impact-selected light gates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+          key: quality-grimodex-ai
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Quality model and selector contracts
+        run: pnpm verify:quality
+
+      - name: Impact-selected light gates
+        env:
+          QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          QUALITY_HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ -n "$QUALITY_BASE_SHA" ]; then
+            pnpm eval:impact -- --base "$QUALITY_BASE_SHA" --head "$QUALITY_HEAD_SHA" --run
+          else
+            pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run
+          fi
+
   frontend:
     name: Frontend (type-check / lint / test)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.33.0
 
@@ -28,6 +71,9 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Build shared workspace dependencies
+        run: pnpm build:workspace:dependencies
 
       - name: 型チェック
         run: pnpm exec tsc --noEmit
@@ -35,17 +81,26 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Architecture boundary baseline
+        run: pnpm validate:architecture
+
+      - name: Browser CI performance contracts
+        run: pnpm test:browser-ci
+
       - name: テスト
         run: pnpm test:node --run
 
+      - name: Web Editor-only production artifact
+        run: pnpm build:web-editor
+
   browser:
-    name: Browser (Vitest browser + Storybook)
+    name: Browser (Vitest browser)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.33.0
 
@@ -55,6 +110,9 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Build shared workspace dependencies
+        run: pnpm build:workspace:dependencies
 
       - name: Chromium バイナリキャッシュ
         id: pw-cache
@@ -71,20 +129,26 @@ jobs:
         if: steps.pw-cache.outputs.cache-hit == 'true'
         run: pnpm exec playwright install-deps chromium
 
-      - name: ブラウザテスト
-        run: pnpm test:browser --run
+      - name: Browser tests with resource metrics
+        run: pnpm benchmark:browser-ci -- --suite browser --runs 1 --output .artifacts/browser-ci/browser.json
 
-      - name: Storybook テスト
-        run: pnpm test:storybook --run
+      - name: Upload Browser performance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-ci-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/browser-ci/browser.json
+          if-no-files-found: error
+          retention-days: 14
 
-  security:
-    name: Security (audit)
+  storybook:
+    name: Storybook (Vitest browser)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.33.0
 
@@ -95,11 +159,281 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Build shared workspace dependencies
+        run: pnpm build:workspace:dependencies
+
+      - name: Chromium バイナリキャッシュ
+        id: pw-cache
+        uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium
+
+      - name: Playwright Chromium + システム依存をインストール
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: システム依存のみインストール (キャッシュヒット時)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Storybook tests with resource metrics
+        run: pnpm benchmark:browser-ci -- --suite storybook --runs 1 --output .artifacts/browser-ci/storybook.json
+
+      - name: Upload Storybook performance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: storybook-ci-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/browser-ci/storybook.json
+          if-no-files-found: error
+          retention-days: 14
+
+  security:
+    name: Security (audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
       - name: pnpm audit
-        run: pnpm audit --audit-level critical
+        run: pnpm dlx pnpm@11.13.0 --pm-on-fail=ignore audit --audit-level high
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit shared Rust dependencies
+        run: cargo audit --file src-tauri/Cargo.lock
+
+      - name: Audit Electron native dependencies
+        run: cargo audit --file electron/native/grimodex-node/Cargo.lock
+
+  electron:
+    name: Electron (workflow contract / type-check / test / build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Release workflow and manifest contract tests
+        run: >-
+          node --test
+          scripts/validate-release-version.test.mjs
+          scripts/resolve-release-workflow.test.mjs
+          scripts/compose-github-release-notes.test.mjs
+          scripts/generate-tauri-bridge-manifest.test.mjs
+          scripts/release-workflows.test.mjs
+          scripts/arch-electron-package.test.mjs
+          scripts/linux-release-abi.test.mjs
+          scripts/verify-electron-updater-metadata.test.mjs
+          scripts/windows-release-workflow.test.mjs
+          scripts/electron-v2-cleanup.test.mjs
+          scripts/generate-licenses.test.mjs
+
+      - name: Electron type-check
+        run: pnpm exec tsc -p electron/tsconfig.json --noEmit
+
+      - name: Electron tests
+        run: pnpm test:electron --run
+
+      - name: Electron production build
+        run: pnpm electron:build
+
+      - name: Renderer performance budget
+        run: pnpm perf:budget
+
+  electron-windows-installer-contract:
+    name: Electron Windows (unit test / NSIS migration contract)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Electron tests on Windows
+        run: pnpm test:electron --run
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+          key: ime-windows-atomic
+
+      - name: Test repeated IME snapshot replacement on Windows
+        run: >-
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          -p grimodex-db --lib windows_atomic_write
+
+      - name: Parse the migration E2E PowerShell script
+        shell: pwsh
+        run: |
+          $Tokens = $null
+          $ParseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/verify-windows-tauri-migration.ps1),
+            [ref]$Tokens,
+            [ref]$ParseErrors
+          ) | Out-Null
+          if ($ParseErrors.Count -ne 0) {
+            $ParseErrors | Format-List -Force
+            exit 1
+          }
+
+      - name: Build Electron JavaScript
+        run: pnpm electron:build
+
+      # This job validates electron-builder's two makensis passes, not the
+      # platform runtime. Release-native binaries are built and exercised in
+      # electron-native and again in the release matrix.
+      - name: Prepare compile-only native placeholders
+        shell: pwsh
+        run: |
+          New-Item -ItemType File -Path electron/native/grimodex-node/grimodex-node.node -Force | Out-Null
+          New-Item -ItemType Directory -Path src-tauri/target/release -Force | Out-Null
+          New-Item -ItemType File -Path src-tauri/target/release/grimodex-mcp.exe -Force | Out-Null
+
+      - name: Compile the final NSIS installer with migration hooks
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          pnpm exec electron-builder --win nsis --x64 --publish never `
+            --config.directories.output=release/electron-contract
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $Installer = @(Get-ChildItem release/electron-contract -Filter 'Grimodex-*-windows-x64.exe' -File)
+          if ($Installer.Count -ne 1 -or $Installer[0].Length -eq 0) {
+            Write-Error "Final NSIS migration-contract installer is missing."
+            exit 1
+          }
+
+  electron-native:
+    name: Electron native (N-API / release features / MCP)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
+          df -h /
+
+      - name: Native build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libdbus-1-dev \
+            libsecret-1-dev \
+            pkg-config
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: |
+            src-tauri
+            electron/native/grimodex-node
+          key: electron-native
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build and test the development N-API module
+        run: |
+          pnpm napi:build
+          pnpm --dir electron/native/grimodex-node test
+
+      - name: Check both release-only native features
+        run: >-
+          cargo check
+          --manifest-path electron/native/grimodex-node/Cargo.toml
+          --features licensing,legacy-keyring-migration
+
+      - name: Clippy both release-only native features
+        run: >-
+          cargo clippy
+          --manifest-path electron/native/grimodex-node/Cargo.toml
+          --all-targets
+          --features licensing,legacy-keyring-migration
+          -- -D warnings
+
+      - name: Test both release-only native features
+        run: >-
+          cargo test
+          --manifest-path electron/native/grimodex-node/Cargo.toml
+          --features licensing,legacy-keyring-migration
+
+      - name: Test licensed MCP sidecar
+        run: >-
+          cargo test
+          --manifest-path src-tauri/Cargo.toml
+          -p grimodex-mcp
+          --features licensing
 
   rust:
-    name: Rust (check / clippy / test)
+    name: Shared Rust crates (check / clippy / test)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -114,7 +448,7 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
           df -h /
 
-      - name: システム依存ライブラリのインストール
+      - name: Native build dependencies
         run: |
           # GitHub Actions ランナー同梱の Microsoft apt リポジトリ(azure-cli / prod)が
           # 403 / "no longer signed" を返し apt-get update を中断させることがある。
@@ -123,11 +457,8 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
             build-essential \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
+            libssl-dev
         env:
           DEBIAN_FRONTEND: noninteractive
 
@@ -142,16 +473,25 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --workspace
-
-      - name: cargo check (licensing feature)
-        working-directory: src-tauri
-        run: cargo check --workspace --features licensing
+        run: >-
+          cargo check --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: >-
+          cargo clippy --workspace --exclude grimodex --all-targets
+          --features grimodex-semantic/semantic-embedding
+          -- -D warnings
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --workspace
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+
+      # 通常buildではlicensingが無効なため、共有runtimeのnetwork/race testsは
+      # workspace testだけだとcfgで0件になる。releaseと同じfeatureを明示する。
+      - name: cargo test (license runtime with licensing feature)
+        working-directory: src-tauri
+        run: cargo test -p grimodex-license --features licensing

@@ -3,12 +3,13 @@ import { DURATIONS, EASINGS } from "@/lib/animation";
 export const PRESET_ANIMATION_DEBOUNCE_MS = 300;
 
 /**
- * `open` uses a generous negative inset rather than `none` because Framer
+ * `open` uses a generous negative inset during interpolation because Framer
  * Motion can't interpolate between `inset()` and the `none` keyword and
  * silently substitutes `inset(0 0 0 0)` — which clips inter-panel
- * `box-shadow` to the region border-box and reveals raw canvas in the
- * gaps. The negative buffer keeps the clip well outside any plausible
- * shadow extent so feathering stays intact.
+ * `box-shadow` to the region border-box and reveals raw canvas in the gaps.
+ * AnimatedRegionChrome clears the clip to `none` with transitionEnd once the
+ * enter animation settles; a permanent clip-path would become a Backdrop Root
+ * and isolate descendant Glass from the ambient shader behind the region.
  */
 const REGION_OPEN_CLIP = "inset(-200px)";
 

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ImportProgress } from "./importApi";
@@ -135,7 +136,33 @@ export type SimpleImportPhase =
   | "analyzing"
   | "preview"
   | "importing"
+  | "failed"
   | "done";
+
+export function useImportBusyChange(
+  phase: string,
+  onBusyChange?: (busy: boolean) => void,
+): void {
+  const busy = phase === "analyzing" || phase === "importing";
+  useEffect(() => {
+    onBusyChange?.(busy);
+    return () => {
+      if (busy) onBusyChange?.(false);
+    };
+  }, [busy, onBusyChange]);
+}
+
+/** Clear a parent dialog's failure lock whenever the active flow unmounts. */
+export function useImportFailureReset(
+  onFailedChange?: (failed: boolean) => void,
+): void {
+  useEffect(
+    () => () => {
+      onFailedChange?.(false);
+    },
+    [onFailedChange],
+  );
+}
 
 interface MetadataApplyOptions {
   applyMetadata: boolean;
@@ -202,13 +229,18 @@ export { type MetadataApplyOptions };
 export function ImportTargetPanel({
   importTarget,
   onImportTargetChange,
+  disabled = false,
 }: {
   importTarget: ImportTarget;
   onImportTargetChange: (target: ImportTarget) => void;
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <fieldset className="space-y-1 rounded-md border border-border p-3 text-sm">
+    <fieldset
+      disabled={disabled}
+      className="space-y-1 rounded-md border border-border p-3 text-sm disabled:opacity-60"
+    >
       <legend className="px-1 text-xs font-medium text-muted-foreground">
         {t("import.target.label")}
       </legend>

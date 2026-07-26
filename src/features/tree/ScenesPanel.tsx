@@ -20,6 +20,8 @@ import { AiTreeDialog } from "./aiScaffold/AiTreeDialog";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { NodeIcon } from "./TreeNodeItem";
 import { StructureTemplatePicker } from "@/features/grid/StructureTemplatePicker";
 import { StatusDot } from "./StatusDot";
@@ -38,6 +40,10 @@ import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { recordMark } from "@/lib/perfLog";
 import { useExternalRootStore } from "@/features/external-mount/externalRootStore";
 import { TreeRowSkeletonList } from "@/components/ui/skeleton-patterns";
+import {
+  selectProviderReadiness,
+  useAiSettingsStore,
+} from "@/features/chat/store";
 
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
@@ -70,6 +76,7 @@ export function ScenesPanel() {
   const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
   const pendingRevealId = useTreeStore((s) => s.pendingRevealId);
   const projectId = useTreeStore((s) => s.projectId);
+  const aiReadiness = useAiSettingsStore(selectProviderReadiness);
   const loadLens = useLensStore((s) => s.load);
   const mountInitialized = useExternalRootStore((s) => s.isInitialized);
   const createNode = useTreeStore((s) => s.createNode);
@@ -253,7 +260,16 @@ export function ScenesPanel() {
       createNode({ nodeType: type, parentId, afterId: activeSceneId })
         .then((newNode) => {
           if (newNode.nodeType === "scene" || newNode.nodeType === "note") {
-            useTabStore.getState().openPinned(newNode.id);
+            openEditorDocument(
+              {
+                target: { kind: "scene", documentId: newNode.id },
+                mode: "pinned",
+                revealEditor: true,
+                focusEditor: false,
+                syncSceneContext: true,
+              },
+              defaultEditorNavigationPorts,
+            );
           }
         })
         .catch(() => {});
@@ -397,6 +413,7 @@ export function ScenesPanel() {
                     <Button
                       variant="outline"
                       size="xs"
+                      disabled={aiReadiness !== "ready"}
                       onClick={() =>
                         setAiTree({ mode: "scaffold", rootRef: null })
                       }

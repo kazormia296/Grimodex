@@ -19,7 +19,7 @@ argument-hint: [bug-description-or-error-message]
 
 ## このプロジェクト固有で必ず確認すること
 
-- Tauri IPC 関連なら Rust 側とフロント側の両方を確認する。
+- Electron IPC 関連なら renderer / preload / main / N-API の各境界を確認する。
 - レイアウト/幾何バグは happy-dom では実寸を測れない → `*.browser.test.tsx` で gate する。
-- 検証: `pnpm test` ＋（Rust 変更時）`cd src-tauri && cargo test --no-default-features`。
+- 検証: `pnpm test` ＋（共有 Rust 変更時）`cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding`。N-API adapter 変更時は `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml` も実行する。
 - コミットは変更ファイルを個別 `git add`（`git add -A` 禁止）。master へ直接 commit せず branch を切り、push は branch + PR（master 直 push は hook でブロック済み）。

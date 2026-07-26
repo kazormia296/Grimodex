@@ -12,6 +12,12 @@ vi.mock("./SlotView", () => ({
   ),
 }));
 
+vi.mock("./AnimatedSlotPanel", () => ({
+  AnimatedSlotPanel: ({ panelId }: { panelId: string }) => (
+    <div data-mock-animated-slot-panel={panelId} />
+  ),
+}));
+
 import { CenterContent } from "./CenterContent";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
@@ -42,5 +48,38 @@ describe("CenterContent", () => {
     expect(
       container.querySelector('[data-center-segment-kind="editor"]'),
     ).toBeNull();
+  });
+
+  it("projects the editor for phone presentation even when desktop saved it closed", () => {
+    useLayoutStore.getState().setEditorOpen(false);
+    const { getByTestId, container } = render(<CenterContent editorOnly />);
+
+    expect(getByTestId("editor-area")).toBeTruthy();
+    expect(
+      container.querySelector('[data-center-segment-kind="editor"]'),
+    ).not.toHaveClass("hidden");
+    expect(useLayoutStore.getState().layout.center.editorOpen).toBe(false);
+  });
+
+  it("marks tool segments as Glass hosts while leaving the Editor on its own surface", () => {
+    const layout = buildDefaultLayoutState({ editorOpen: true });
+    layout.center.segments.push({
+      id: "center-chat",
+      kind: "tool",
+      sizeRatio: 1,
+      panels: ["chat"],
+      activePanel: "chat",
+    });
+    useLayoutStore.setState({ layout });
+
+    const { container } = render(<CenterContent />);
+    const tool = container.querySelector('[data-center-segment-kind="tool"]');
+    const editor = container.querySelector(
+      '[data-center-segment-kind="editor"]',
+    );
+
+    expect(tool).toHaveAttribute("data-ambient-glass-surface", "panel");
+    expect(tool?.classList.contains("gx-panel")).toBe(true);
+    expect(editor).not.toHaveAttribute("data-ambient-glass-surface");
   });
 });

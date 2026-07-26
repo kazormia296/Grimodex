@@ -1,9 +1,8 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
 import { Play } from "lucide-react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
@@ -12,63 +11,49 @@ import { useMapBoardAutoActivate } from "./useMapBoardAutoActivate";
 import { useMapStore } from "@/features/map/mapStore";
 import { getMapBoard } from "@/features/map/mapApi";
 import { useSceneStore } from "@/features/tree/store";
-import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
-import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
-import { ChatMessageContextMenu } from "./components/ChatMessageContextMenu";
+import type { ChatContextMenuState } from "./components/ChatDialogs";
+import { ChatDialogs } from "./components/ChatDialogs";
 import { ChatPanelHeader } from "./components/ChatPanelHeader";
-import { ChatInput, restoreSceneMentionChips } from "./components/ChatInput";
+import { ChatInput } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
 import { UserQuestionCard } from "./components/UserQuestionCard";
+import { CodexApprovalCard } from "./components/CodexApprovalCard";
 import { QuickActionStrip } from "./components/QuickActionStrip";
 import { ChatRecallPromoteBanner } from "./components/ChatRecallPromoteBanner";
-import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
-import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { ContextBar } from "./components/ContextBar";
-import { PromptPreviewModal } from "./components/PromptPreviewModal";
-import {
-  getModelCapabilities,
-  resolveModelCapabilities,
-} from "./agent/modelLimits";
+import { resolveModelCapabilities } from "./agent/modelLimits";
 import { resolveAinoveristApiVariant } from "./aiNovelist";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
-import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
+import { listen } from "@/lib/tauri";
+import { respondToCodexServerRequest } from "./codexAppApi";
+import type { CodexAppEventEnvelope } from "@/../electron/shared/codexAppProtocol";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
+import { openAiPolicySettings } from "@/features/ai-policy/openAiPolicySettings";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useTabStore } from "@/features/editor/tabStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
-import { markStart, markEnd, recordMark } from "@/lib/perfLog";
+import { recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
-import type {
-  PinnedSnippetEntryWithData,
-  PinnedStickyEntryWithData,
-  MessagePromptSnapshot,
-} from "./chatApi";
+import type { MessagePromptSnapshot } from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
-import { stripToolProtocol } from "./toolProtocol";
-
-/**
- * メッセージ全文を抽出 (Codex/Snippet) / エディタ挿入 / コピーに使う前の正規化。
- * assistant 本文に混入した擬似ツール記法 (<tool_call>/<tool_response>) を除去し、
- * ナレッジベースや本文への焼き込みを防ぐ。選択テキスト経路は描画 DOM 由来で
- * 既に浄化済みのため対象外（呼び出し側で selectedText を優先する）。
- */
-function wholeMessageContent(msg: ChatMessageType | undefined): string {
-  if (!msg) return "";
-  return msg.role === "assistant"
-    ? stripToolProtocol(msg.content)
-    : msg.content;
-}
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
+import { useChatSessionLifecycle } from "./useChatSessionLifecycle";
+import { useChatPinsController } from "./useChatPinsController";
+import { useChatMessageViewport } from "./useChatMessageViewport";
+import {
+  useChatMessageActions,
+  wholeMessageContent,
+} from "./useChatMessageActions";
 
 /**
  * チャットのシーンスコープ選択からエディタへシーンを同期する。
@@ -83,30 +68,88 @@ function wholeMessageContent(msg: ChatMessageType | undefined): string {
  * 伝播するため、Editor 非表示でもチャットの scene anchor は追従する。
  */
 export function selectSceneFromChat(sceneId: string): void {
-  if (useLayoutStore.getState().isPanelActive("editor")) {
-    useTabStore.getState().openPinned(sceneId);
-    useLayoutStore.getState().showPanel("editor");
+  const editorVisible = useLayoutStore.getState().isPanelActive("editor");
+  if (!editorVisible) {
+    useTreeStore.getState().setActiveScene(sceneId);
+    return;
   }
-  useTreeStore.getState().setActiveScene(sceneId);
+  openEditorDocument(
+    {
+      target: { kind: "scene", documentId: sceneId },
+      mode: "pinned",
+      revealEditor: true,
+      focusEditor: false,
+      syncSceneContext: true,
+    },
+    defaultEditorNavigationPorts,
+  );
 }
 
-interface SnippetDialogState {
-  open: boolean;
-  messageId: string;
-  initialContent: string;
-  messageRole: "user" | "assistant";
+export type CodexApproval = {
+  envelope: CodexAppEventEnvelope;
+  request: Extract<
+    CodexAppEventEnvelope["event"],
+    { type: "approval-requested" }
+  >;
+};
+
+function codexApprovalKey(approval: CodexApproval): string {
+  const requestId = approval.request.requestId;
+  return JSON.stringify([
+    approval.envelope.projectId,
+    approval.envelope.sessionId,
+    approval.envelope.grimodexTurnId,
+    typeof requestId,
+    requestId,
+  ]);
 }
 
-interface ContextMenuState {
-  messageId: string;
-  messageRole: "user" | "assistant";
-  messageContent: string;
-  selectedText: string | null;
-  x: number;
-  y: number;
+export function enqueueCodexApproval(
+  current: CodexApproval[],
+  approval: CodexApproval,
+): CodexApproval[] {
+  const key = codexApprovalKey(approval);
+  return current.some((item) => codexApprovalKey(item) === key)
+    ? current
+    : [...current, approval];
+}
+
+export function removeCodexApproval(
+  current: CodexApproval[],
+  approval: CodexApproval,
+): CodexApproval[] {
+  const key = codexApprovalKey(approval);
+  return current.filter((item) => codexApprovalKey(item) !== key);
+}
+
+export function removeCodexApprovalsForTurn(
+  current: CodexApproval[],
+  grimodexTurnId: string,
+): CodexApproval[] {
+  return current.filter(
+    (item) => item.envelope.grimodexTurnId !== grimodexTurnId,
+  );
+}
+
+export async function declineCodexApprovals(
+  approvals: readonly CodexApproval[],
+  respond: typeof respondToCodexServerRequest = respondToCodexServerRequest,
+): Promise<void> {
+  await Promise.allSettled(
+    approvals.map((approval) =>
+      respond({
+        projectId: approval.envelope.projectId,
+        sessionId: approval.envelope.sessionId,
+        grimodexTurnId: approval.envelope.grimodexTurnId,
+        requestId: approval.request.requestId,
+        decision: "decline",
+      }),
+    ),
+  );
 }
 
 export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const reduced = useReducedMotion();
@@ -117,11 +160,11 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
-  const deleteMessage = useChatStore((s) => s.deleteMessage);
-  const editUserMessage = useChatStore((s) => s.editUserMessage);
-  const regenerate = useChatStore((s) => s.regenerate);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
+  const contextWindowSize = useChatStore((s) => s.contextWindowSize);
+  const contextModel = useChatStore((s) => s.contextModel);
   const contextLayers = useChatStore((s) => s.contextLayers);
+  const contextPlan = useChatStore((s) => s.contextPlan);
   const pinsVersion = useChatStore((s) => s.pinsVersion);
   const projectOutline = useChatStore((s) => s.projectOutline);
   const chapterOutlines = useChatStore((s) => s.chapterOutlines);
@@ -137,7 +180,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const removeEntryFromAuto = useChatStore((s) => s.removeEntryFromAuto);
   const excludeEntryFromAuto = useChatStore((s) => s.excludeEntryFromAuto);
   const clearAutoExclusion = useChatStore((s) => s.clearAutoExclusion);
-  const setInputPinnedEntryIds = useChatStore((s) => s.setInputPinnedEntryIds);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentMode = useChatStore((s) => s.agentMode);
   const agentProgress = useChatStore((s) => s.agentProgress);
@@ -151,6 +193,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
   const ensureSession = useChatStore((s) => s.ensureSession);
+  const activeProjectId = useChatStore((s) => s.activeProjectId);
   const chatScope = useChatStore((s) => s.chatScope);
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
   const setChatScope = useChatStore((s) => s.setChatScope);
@@ -162,6 +205,18 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const ragEnabled = useChatStore((s) => s.ragEnabled);
   const setRagEnabled = useChatStore((s) => s.setRagEnabled);
   const [mapBoardTitle, setMapBoardTitle] = useState<string | null>(null);
+  const [codexApprovals, setCodexApprovals] = useState<CodexApproval[]>([]);
+  const codexApprovalsRef = useRef<CodexApproval[]>([]);
+  const codexApprovalEpochRef = useRef(0);
+  const updateCodexApprovals = useCallback(
+    (update: (current: CodexApproval[]) => CodexApproval[]) => {
+      const next = update(codexApprovalsRef.current);
+      codexApprovalsRef.current = next;
+      setCodexApprovals(next);
+    },
+    [],
+  );
+  const codexApproval = codexApprovals[0] ?? null;
   const syncInsertedToEditorMetadata = useChatStore(
     (s) => s.syncInsertedToEditorMetadata,
   );
@@ -190,11 +245,13 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   );
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
+  const chatModelOverride = useAiSettingsStore((s) => s.chatModelOverride);
   const loadAiSettings = useAiSettingsStore((s) => s.loadSettings);
   const aiModels = useAiSettingsStore((s) => s.models);
   // 動的 capability レジストリ（OpenRouter /models 等）更新時に再計算する。
   useAiSettingsStore((s) => s.modelCapsRevision);
-  const currentModel = aiSettings?.model ?? "";
+  const currentModel =
+    contextModel ?? chatModelOverride ?? aiSettings?.model ?? "";
 
   // Context Creator（AIコンテキスト提案）は Codex/Snippet 検索ツールを使う
   // エージェント実行のため、現在のモデル/プロバイダが Tool Use 対応のときだけ
@@ -210,10 +267,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     ),
   ).supportsTools;
 
-  useEffect(() => {
-    loadAiSettings();
-  }, [loadAiSettings]);
-
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [inputHasText, setInputHasText] = useState(false);
   const chatEditorRef = useRef<Editor | null>(null);
@@ -223,605 +276,93 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const allCodexEntries = useCodexStore((s) => s.entries);
 
-  // ツリーのシーン変更を chatStore に伝播
-  useEffect(() => {
-    markStart("chatPanel.mirrorEffect");
-    try {
-      setActiveSceneId(treeActiveSceneId);
-    } finally {
-      markEnd("chatPanel.mirrorEffect");
-    }
-  }, [treeActiveSceneId, setActiveSceneId]);
+  const {
+    pinnedEntries,
+    pinnedSnippets,
+    pinnedStickies,
+    pinnedIds,
+    pinnedSnippetIds,
+    inputPinnedEntries,
+    inputPinnedIds,
+    dismissedViaChildIds,
+    handleDetectedEntries,
+    resetInputDismissed,
+    handlePin,
+    handleUnpin,
+    handleReturnToAuto,
+    handleRemoveAuto,
+    handleRemoveEntry,
+    handleDismissViaChild,
+    handleTogglePinChildren,
+  } = useChatPinsController({
+    isActive,
+    activeSessionId,
+    pinsVersion,
+    allCodexEntries,
+    ensureSession,
+    removeEntryFromAuto,
+    excludeEntryFromAuto,
+    clearAutoExclusion,
+    refreshContextLayers,
+  });
 
-  // スコープ切替 / シーン切替時にセッションを自動ロードし最新を選択 (P0-1)
-  // scene スコープでシーン未確定の場合は何もしない。
-  // keepalive で hidden のときはシーン追従の load を bail し、再アクティブ化時に
-  // isActive deps 経由で最終シーンの値で 1 回再実行して catch up する
-  // (selectSession/loadSessions は replace-semantics なので中間シーンの残渣なし)。
-  useEffect(() => {
-    if (!isActive) return;
-    if (chatScope === "scene" && !treeActiveSceneId) return;
-    let stale = false;
-    const {
-      nodeId: effectiveNodeId,
-      codexAnchorId,
-      snippetAnchorId,
-    } = resolveScopeSessionKey(chatScope, treeActiveSceneId, scopeAnchorId);
-    (async () => {
-      markStart("chatPanel.loadSessions");
-      try {
-        await loadSessions(effectiveNodeId, codexAnchorId, snippetAnchorId);
-      } finally {
-        markEnd("chatPanel.loadSessions");
-      }
-      if (stale) return;
-      const { sessions } = useChatStore.getState();
-      markStart("chatPanel.selectSessionAfterLoad");
-      try {
-        if (sessions.length > 0) {
-          await selectSession(sessions[0].id);
-        } else {
-          await selectSession(null);
-        }
-      } finally {
-        markEnd("chatPanel.selectSessionAfterLoad");
-      }
-    })();
-    return () => {
-      stale = true;
-    };
-  }, [
+  useChatSessionLifecycle({
     isActive,
     treeActiveSceneId,
     chatScope,
     scopeAnchorId,
+    activeSessionId,
+    includeBodies,
+    includeMapBoard,
+    mapBoardId: mapBoardIdFromStore,
+    agentMode,
+    provider: aiSettings?.provider,
+    currentModel,
+    allCodexEntries,
+    loadAiSettings,
+    setActiveSceneId,
     loadSessions,
     selectSession,
-  ]);
-
-  // hidden 中は context layer の再構築 (DB 読込 + prompt 再構築 + lastSystemPrompt
-  // 書込) を bail。再アクティブ化時に最終状態で 1 回再実行 (set は replace-semantics)。
-  useEffect(() => {
-    if (!isActive) return;
-    refreshContextLayers();
-  }, [
-    isActive,
-    treeActiveSceneId,
-    activeSessionId,
-    chatScope,
-    scopeAnchorId,
-    includeBodies,
-    // agentMode は project スコープの集約 tier（push 全 synopsis vs pull 委譲）を
-    // 左右するため deps に含める。これが無いとトグルしても lastSystemPrompt /
-    // context bar が再構築されず、非 agent / CLI 送信は古い prompt を流用してしまう。
-    agentMode,
-    // provider も同様: pull 委譲は CLI（ツール無し）では無効化されるため、
-    // OpenRouter↔CLI の切替で集約 tier が変わる。切替時に再構築が要る。
-    aiSettings?.provider,
-    includeMapBoard,
-    mapBoardIdFromStore,
-    allCodexEntries,
     refreshContextLayers,
-  ]);
-
-  // Pinned codex entries
-  const [pinnedEntries, setPinnedEntries] = useState<
-    import("./chatApi").PinnedCodexEntryWithData[]
-  >([]);
-  const [pinnedSnippets, setPinnedSnippets] = useState<
-    PinnedSnippetEntryWithData[]
-  >([]);
-  // Map "Spotlight" stickies (chatSessionPinnedCodex with stickyId set).
-  // Internal naming keeps "pinned" to match the underlying DB column /
-  // chat API; the user-visible label says Spotlight.
-  const [pinnedStickies, setPinnedStickies] = useState<
-    PinnedStickyEntryWithData[]
-  >([]);
-
-  useEffect(() => {
-    if (!isActive) return;
-    if (!activeSessionId) {
-      setPinnedEntries([]);
-      setPinnedSnippets([]);
-      setPinnedStickies([]);
-      return;
-    }
-    chatApi.listPinnedCodexEntries(activeSessionId).then(setPinnedEntries);
-    chatApi.listPinnedSnippetEntries(activeSessionId).then(setPinnedSnippets);
-    chatApi.listPinnedStickyEntries(activeSessionId).then(setPinnedStickies);
-    setDismissedViaChildIds(new Set());
-    // pinsVersion bumps after any refreshContextLayers run; including it
-    // in deps lets us pick up Map / Codex / Sticky pin changes that
-    // happen outside this panel. hidden 中は bail し再アクティブ化で catch up。
-  }, [isActive, activeSessionId, pinsVersion]);
-
-  const pinnedIds = useMemo(
-    () => new Set(pinnedEntries.map((e) => e.id)),
-    [pinnedEntries],
-  );
-  const pinnedSnippetIds = useMemo(
-    () => new Set(pinnedSnippets.map((s) => s.id)),
-    [pinnedSnippets],
-  );
-
-  // 入力欄でリアルタイム検出されたCodexエントリID
-  const [inputDetectedIds, setInputDetectedIds] = useState<string[]>([]);
-  // ユーザーが × で明示却下したID（送信まで保持）
-  const [inputDismissedIds, setInputDismissedIds] = useState<Set<string>>(
-    new Set(),
-  );
-  // via表示の子エントリで × を押して一時非表示にしたID（セッション切替でリセット）
-  const [dismissedViaChildIds, setDismissedViaChildIds] = useState<Set<string>>(
-    new Set(),
-  );
-  const handleDetectedEntries = useCallback((ids: string[]) => {
-    setInputDetectedIds(ids);
-  }, []);
-
-  // 入力欄検出エントリを chat_mention ピン済みとして扱う
-  // （DB未確定のインメモリ状態。送信時に P2-5 が DB に永続化する）
-  const inputPinnedEntries = useMemo(() => {
-    return inputDetectedIds
-      .filter((id) => !inputDismissedIds.has(id) && !pinnedIds.has(id))
-      .map((id) => allCodexEntries.find((e) => e.id === id))
-      .filter((e): e is (typeof allCodexEntries)[0] => e !== undefined)
-      .map((e) => ({
-        ...e,
-        // UI-only flag: prompt uses the G21 block independently
-        withChildren: true,
-        pinnedType: "codex" as const,
-        pinSource: "chat_mention" as const,
-      }));
-  }, [inputDetectedIds, inputDismissedIds, allCodexEntries, pinnedIds]);
-
-  const inputPinnedIds = useMemo(
-    () => new Set(inputPinnedEntries.map((e) => e.id)),
-    [inputPinnedEntries],
-  );
-
-  // G21: chatStore に inputPinnedEntryIds を同期して prompt preview / copy に反映
-  useEffect(() => {
-    setInputPinnedEntryIds(inputPinnedEntries.map((e) => e.id));
-  }, [inputPinnedEntries, setInputPinnedEntryIds]);
-
-  const handlePin = useCallback(
-    async (entryId: string, type: "codex" | "snippet" = "codex") => {
-      // 新規シーンでメッセージ未送信のときは activeSessionId がまだ無い。
-      // sendMessage と同じく、ピン操作時にもセッションを自動作成して紐づける。
-      const sessionId = await ensureSession();
-      if (!sessionId) return;
-      await chatApi.pinCodexEntry(sessionId, entryId, false, "manual", type);
-      // Bug#1: ピン直後にautoリストから即時除去
-      removeEntryFromAuto(entryId);
-      // ピン＝ユーザーがエントリを再び使い始めた合図。過去に × で auto 除外
-      // されていても解除し、後で「autoに戻す」したときに再表示されるようにする。
-      clearAutoExclusion(entryId);
-      const [updatedCodex, updatedSnippets] = await Promise.all([
-        chatApi.listPinnedCodexEntries(sessionId),
-        chatApi.listPinnedSnippetEntries(sessionId),
-      ]);
-      setPinnedEntries(updatedCodex);
-      setPinnedSnippets(updatedSnippets);
-      await refreshContextLayers();
-    },
-    [
-      ensureSession,
-      removeEntryFromAuto,
-      clearAutoExclusion,
-      refreshContextLayers,
-    ],
-  );
-
-  const handleUnpin = useCallback(
-    async (entryId: string) => {
-      if (!activeSessionId) return;
-      await chatApi.unpinCodexEntry(activeSessionId, entryId);
-      const [updatedCodex, updatedSnippets] = await Promise.all([
-        chatApi.listPinnedCodexEntries(activeSessionId),
-        chatApi.listPinnedSnippetEntries(activeSessionId),
-      ]);
-      setPinnedEntries(updatedCodex);
-      setPinnedSnippets(updatedSnippets);
-    },
-    [activeSessionId],
-  );
-
-  // 手動ピンをautoに戻す: unpin後にコンテキスト再構築してautoリストへ即時反映
-  const handleReturnToAuto = useCallback(
-    async (entryId: string) => {
-      clearAutoExclusion(entryId);
-      await handleUnpin(entryId);
-      await refreshContextLayers();
-    },
-    [clearAutoExclusion, handleUnpin, refreshContextLayers],
-  );
-
-  // ピンエントリをコンテキストから完全除去: unpin + auto 注入からも除外。
-  // always エントリは表示配列の除去だけでは次の refresh で復活するため、
-  // excludeEntryFromAuto で除外 ID を記録する。
-  const handleRemoveFromContext = useCallback(
-    async (entryId: string) => {
-      await handleUnpin(entryId);
-      excludeEntryFromAuto(entryId);
-    },
-    [handleUnpin, excludeEntryFromAuto],
-  );
-
-  // autoエントリをコンテキストから除去（DBへの書き込みなし・セッション内で持続）
-  const handleRemoveAuto = useCallback(
-    (entryId: string) => {
-      excludeEntryFromAuto(entryId);
-    },
-    [excludeEntryFromAuto],
-  );
-
-  // ピン除去の統合ハンドラ:
-  // - 入力欄検出（インメモリ）ピン → 却下セットに追加（DB操作なし）
-  // - DB確定ピン → handleRemoveFromContext
-  const handleRemoveEntry = useCallback(
-    async (entryId: string) => {
-      if (inputPinnedIds.has(entryId)) {
-        setInputDismissedIds((prev) => new Set([...prev, entryId]));
-      } else {
-        await handleRemoveFromContext(entryId);
-      }
-    },
-    [inputPinnedIds, handleRemoveFromContext],
-  );
-
-  const handleDismissViaChild = useCallback((childId: string) => {
-    setDismissedViaChildIds((prev) => new Set([...prev, childId]));
-  }, []);
-
-  const handleTogglePinChildren = useCallback(
-    async (entryId: string, withChildren: boolean) => {
-      const sessionId = await ensureSession();
-      if (!sessionId) return;
-      await chatApi.togglePinChildren(sessionId, entryId, withChildren);
-      const updated = await chatApi.listPinnedCodexEntries(sessionId);
-      setPinnedEntries(updated);
-    },
-    [ensureSession],
-  );
-
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // 末尾追従 (stick) フラグ。更新規則は handleListScroll のコメント参照。
-  // virtualizer の補正述語からも読むため宣言だけ先に置く。
-  const stickToBottomRef = useRef(true);
-  const lastScrollTopRef = useRef(0);
-
-  // 描画対象メッセージ (system / 要約済みを除外)。仮想化の count と
-  // getItemKey の正本になるので、render 毎の filter 再生成を避けて memo する。
-  const visibleMessages = useMemo(
-    () => messages.filter((m) => m.role !== "system" && !m.isSummarized),
-    [messages],
-  );
-
-  // メッセージ一覧の仮想化 (perf 2026-06-10: 非仮想化・全件 ReactMarkdown・
-  // isStreaming トグルで全件再描画の解消)。高さは行ごとにまちまちなので
-  // measureElement による動的測定に任せ、estimateSize は初期推定のみ。
-  const virtualizer = useVirtualizer({
-    count: visibleMessages.length,
-    getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => 120,
-    overscan: 6,
-    // id キーで測定キャッシュを安定させる (index キーだと削除で全行ズレる)
-    getItemKey: (index) => visibleMessages[index]?.id ?? index,
-    // anchorTo: "end" / followOnAppend は使わない: virtual-core の at-end
-    // scrollTop 補正は React が sized div の height を再レンダーする前に走る
-    // ため旧 height でクランプされ、その時点の scroll イベントが
-    // stickToBottomRef を false に倒して末尾追従が恒久停止する競合がある
-    // (browser test 3 が gate)。末尾追従は下の stick + totalSize effect に
-    // 一本化する。
   });
 
-  // 末尾追従中は virtual-core 内蔵の「サイズ変化時 scrollTop 補正」を無効化
-  // する (オプションではなくインスタンス公開フィールド)。isStreaming トグルで
-  // 表示中の全 bubble が一斉に縮む (ChatMessage の showActions) と、デフォルト
-  // 述語が負 delta を scrollTo で反映して scrollTop が上方向に動き、その
-  // scroll イベントを handleListScroll がユーザーの上スクロールと誤認して
-  // stick を恒久 OFF にするレースがある (遅いマシンで顕在化、browser test 3
-  // が gate)。追従中のアンカー権威は下の totalSize effect ただ一つ。
-  // 非追従中 (履歴読み) は読書位置の安定のためデフォルト相当の補正を残す。
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
-    item,
-    _delta,
-    instance,
-  ) =>
-    !stickToBottomRef.current &&
-    item.start < (instance.scrollOffset ?? 0) &&
-    instance.scrollDirection !== "backward";
-
-  // 仮想化では行が scroll out/in のたびに remount するため、AnimatePresence や
-  // 無条件 initial では過去メッセージの入場アニメが再生されてしまう。
-  // 「直前の messages からこの render で新規 append された user メッセージ」
-  // だけに入場アニメを付ける。messages の遷移ごとに 1 回だけ確定させ、無関係な
-  // 再レンダー (pinsVersion 等の非同期更新) では維持したいので、render 中の
-  // 派生 state 調整 (adjust-state-on-render) で持つ。セッション読込直後
-  // (prevLoading) は一括ロードなので全件アニメ無し (従来の AnimatePresence
-  // initial={false} と同じ見え方)。
-  const [entranceAnim, setEntranceAnim] = useState<{
-    prevMessages: ChatMessageType[] | null;
-    prevLoading: boolean;
-    animateIds: ReadonlySet<string>;
-  }>({ prevMessages: null, prevLoading: true, animateIds: new Set() });
-  if (
-    entranceAnim.prevMessages !== visibleMessages ||
-    entranceAnim.prevLoading !== isLoadingMessages
-  ) {
-    const prev = entranceAnim.prevMessages;
-    // ストリーミング delta は「同一 id 列のまま末尾 content だけが伸びる」更新。
-    // チャット操作に長さ不変のまま中間 id が入れ替わる経路は無いので、
-    // 長さ + 先頭/末尾 id の O(1) 比較で検出し、O(n) の id 差分も
-    // render-phase setState (= 二重 render) も毎 delta で踏まないようにする。
-    // prevMessages は古い参照のまま残るが、id 列が同じなので次の差分計算は
-    // 壊れない (gate: ChatPanel.virtualization.test.tsx の render 回数 assert)。
-    const isPureDelta =
-      prev !== null &&
-      entranceAnim.prevLoading === isLoadingMessages &&
-      prev.length === visibleMessages.length &&
-      prev.length > 0 &&
-      prev[0].id === visibleMessages[0].id &&
-      prev[prev.length - 1].id ===
-        visibleMessages[visibleMessages.length - 1].id;
-    if (!isPureDelta) {
-      const canAnimate = prev !== null && !entranceAnim.prevLoading;
-      let animateIds: ReadonlySet<string>;
-      if (canAnimate) {
-        const prevIds = new Set(prev!.map((m) => m.id));
-        animateIds = new Set(
-          visibleMessages
-            .filter((m) => m.role === "user" && !prevIds.has(m.id))
-            .map((m) => m.id),
-        );
-      } else {
-        animateIds = new Set();
-      }
-      setEntranceAnim({
-        prevMessages: visibleMessages,
-        prevLoading: isLoadingMessages,
-        animateIds,
-      });
-    }
-  }
-
-  // Codex extraction dialog
-  const [extractionDialog, setExtractionDialog] = useState<{
-    open: boolean;
-    messageId: string;
-    content: string;
-    messageRole: "user" | "assistant";
-  }>({ open: false, messageId: "", content: "", messageRole: "assistant" });
-
-  const createCodexEntry = useCodexStore((s) => s.create);
-
-  // NOTE: ChatMessage は memo 化されている。これらのハンドラを messages 依存に
-  // すると delta 毎に新参照になり memo が全 bubble で破綻するため、最新 messages
-  // は呼び出し時に getState() から読む（イベントハンドラなので call-time 読みで正)。
-  const handleExtractCodexDetailed = useCallback(
-    (messageId: string, selectedText: string | null) => {
-      const msg = useChatStore
-        .getState()
-        .messages.find((m) => m.id === messageId);
-      const content = selectedText ?? wholeMessageContent(msg);
-      const messageRole =
-        msg?.role === "user" ? ("user" as const) : ("assistant" as const);
-      setExtractionDialog({ open: true, messageId, content, messageRole });
-    },
-    [],
-  );
-
-  const handleExtractCodexQuick = useCallback(
-    async (messageId: string) => {
-      const msg = useChatStore
-        .getState()
-        .messages.find((m) => m.id === messageId);
-      if (!msg) return;
-      const text = wholeMessageContent(msg);
-      const name =
-        text.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
-      const entry = await createCodexEntry({
-        name,
-        type: "lore",
-        summary: text,
-        sourceChatMessageId: messageId,
-      });
-      if (entry) {
-        await chatApi.updateMessageMetadata(messageId, {
-          extractedCodex: [entry.id],
-        });
-        void requestOpenInCodex(entry.id);
-      }
-    },
-    [createCodexEntry],
-  );
-
-  // Snippet extraction dialog
-  const [snippetDialog, setSnippetDialog] = useState<SnippetDialogState>({
-    open: false,
-    messageId: "",
-    initialContent: "",
-    messageRole: "assistant",
+  const {
+    bottomRef,
+    scrollContainerRef,
+    visibleMessages,
+    virtualizer,
+    entranceAnim,
+    handleListScroll,
+  } = useChatMessageViewport({
+    messages,
+    isLoadingMessages,
+    activeSessionId,
   });
-
-  const createSnippet = useSnippetStore((s) => s.create);
-
-  const handleSaveSnippetDetailed = useCallback(
-    (messageId: string, selectedText: string | null) => {
-      const msg = useChatStore
-        .getState()
-        .messages.find((m) => m.id === messageId);
-      const content = selectedText ?? wholeMessageContent(msg);
-      const messageRole =
-        msg?.role === "user" ? ("user" as const) : ("assistant" as const);
-      setSnippetDialog({
-        open: true,
-        messageId,
-        initialContent: content,
-        messageRole,
-      });
-    },
-    [],
-  );
-
-  const handleSaveSnippetQuick = useCallback(
-    async (messageId: string) => {
-      const msg = useChatStore
-        .getState()
-        .messages.find((m) => m.id === messageId);
-      if (!msg) return;
-      const content = wholeMessageContent(msg);
-      const title =
-        content.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
-      const snippet = await createSnippet(
-        {
-          title,
-          content,
-          sourceChatMessageId: messageId,
-          contentSource: msg.role === "assistant" ? "ai" : "human",
-        },
-        { silent: true },
-      );
-      if (snippet) {
-        await chatApi.updateMessageMetadata(messageId, {
-          extractedSnippets: [snippet.id],
-        });
-        useLayoutStore.getState().showPanel("snippets");
-        useSnippetStore.getState().requestSelectEntry(snippet.id);
-      }
-    },
-    [createSnippet],
-  );
-
-  const scrollToBottom = useCallback(() => {
-    const node = bottomRef.current;
-    if (node && typeof node.scrollIntoView === "function") {
-      // smooth だと delta 毎に進行中アニメを cancel+restart してレイアウトを
-      // 強制するため auto。stick ガードと併せてストリーミング中のカクつき
-      // と「上スクロールしても下端に引き戻される」UX バグを解消する。
-      node.scrollIntoView({ behavior: "auto" });
-    }
-  }, []);
-
-  // 末尾追従 (stick) の更新規則:
-  //   - 最下部 120px 以内に入ったら ON (旧 isNearBottom と同じ閾値)
-  //   - 「上方向への移動 かつ 120px 超」のときだけ OFF
-  //   - 下方向の移動で 120px 超のままでも維持する
-  // 最後の条件が肝: ストリーミング中は自前の再アンカー (scrollIntoView) が
-  // 測定途中の旧 height に短着地して distance>120 の scroll イベントを発火
-  // しうる。distance だけで OFF にすると自分のスクロールで追従を殺して
-  // ドリフトが恒久化する (browser test 3 が gate)。上方向はユーザーの
-  // 履歴読みだけなので、方向で意図を分離できる。
-  // (ref の宣言は virtualizer の補正述語から参照するため上方にある)
-  const handleListScroll = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distance < 120) {
-      stickToBottomRef.current = true;
-    } else if (el.scrollTop < lastScrollTopRef.current) {
-      stickToBottomRef.current = false;
-    }
-    lastScrollTopRef.current = el.scrollTop;
-  }, []);
-
-  // 動的測定で totalSize が確定 / 伸長するたび、追従中なら末尾へ貼り直す。
-  // render 後 (= sized div の height が新しい) の effect で再アンカーするのが
-  // 唯一の追従機構。新規 append (count 変化) もストリーミング伸長 (測定変化)
-  // もどちらも totalSize に現れるのでこの 1 本で覆える。
-  const totalSize = virtualizer.getTotalSize();
-  useEffect(() => {
-    // 保険: 実際は最下部近傍に居るのに stick が倒れていたら立て直す。
-    // プログラム起因 scroll の誤検知が補正述語の無効化をすり抜けても、
-    // 次の伸長で追従に復帰できる (恒久停止だけは構造的に防ぐ)。
-    if (!stickToBottomRef.current) {
-      const el = scrollContainerRef.current;
-      if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
-        stickToBottomRef.current = true;
-      }
-    }
-    if (stickToBottomRef.current) scrollToBottom();
-  }, [totalSize, scrollToBottom]);
-
-  // セッション切替後、メッセージ load が完了した最初の render で必ず末尾へ
-  // ジャンプする。selectSession は activeSessionId を切り替えた瞬間に
-  // messages を空 + isLoadingMessages=true にし、load 完了時に messages と
-  // isLoadingMessages=false を 1 回の set で同時更新する (chatStore.selectSession)。
-  // そのため activeSessionId だけを deps にすると、本文到着前 (空) に
-  // ジャンプして履歴のあるセッションを開くたび先頭に着地する回帰になる。
-  // load 完了を待ってジャンプする。
-  //
-  // ジャンプ先は推定 totalSize 由来でズレうるが、stick を立てておけば以降の
-  // 動的測定差分は totalSize effect の再アンカーで収束する。同一セッション内の
-  // ストリーミング追従も同 effect に任せる (旧実装の messages 依存
-  // isNearBottom 追従 effect は廃止)。
-  const lastJumpedSessionRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (
-      activeSessionId !== lastJumpedSessionRef.current &&
-      !isLoadingMessages
-    ) {
-      lastJumpedSessionRef.current = activeSessionId;
-      stickToBottomRef.current = true;
-      scrollToBottom();
-    }
-  }, [activeSessionId, isLoadingMessages, scrollToBottom]);
-
-  const rawInsertFromChat = useEditorStore((s) => s.insertFromChat);
-
-  const insertFromChat = useCallback(
-    (content: string, messageId: string) => {
-      const model = aiSettings?.model
-        ? normalizeModelId(aiSettings.provider, aiSettings.model)
-        : null;
-      const ok = rawInsertFromChat(content, messageId, model ?? undefined);
-      if (ok) {
-        syncInsertedToEditorMetadata(messageId);
-      }
-    },
-    [rawInsertFromChat, aiSettings, syncInsertedToEditorMetadata],
-  );
-
-  const handleEditMessage = useCallback(
-    (messageId: string) => {
-      const { content, mentionedSceneIds } = editUserMessage(messageId);
-      if (content && chatEditorRef.current) {
-        chatEditorRef.current.commands.setContent(content);
-        // tiptap-markdown が mention を `@Title` に潰すため metadata から
-        // chip を再構築する (詳細は restoreSceneMentionChips のコメント参照)。
-        if (mentionedSceneIds && mentionedSceneIds.length > 0) {
-          restoreSceneMentionChips(chatEditorRef.current, mentionedSceneIds);
-        }
-        chatEditorRef.current.commands.focus("end");
-      }
-    },
-    [editUserMessage],
-  );
-
-  const handleDeleteMessage = useCallback(
-    (messageId: string) => {
-      deleteMessage(messageId);
-    },
-    [deleteMessage],
-  );
-
-  const handleRegenerate = useCallback(
-    (messageId: string) => {
-      regenerate(messageId);
-    },
-    [regenerate],
-  );
-
-  const handleRetryWithAgent = useCallback(
-    (messageId: string) => {
-      regenerate(messageId, { withAgentMode: true });
-    },
-    [regenerate],
-  );
-
+  const {
+    extractionDialog,
+    snippetDialog,
+    handleExtractCodexDetailed,
+    handleExtractCodexQuick,
+    handleSaveSnippetDetailed,
+    handleSaveSnippetQuick,
+    saveCodexExtraction,
+    saveSnippetExtraction,
+    closeCodexExtraction,
+    closeSnippetExtraction,
+    insertFromChat,
+    handleEditMessage,
+    handleDeleteMessage,
+    handleRegenerate,
+    handleRetryWithAgent,
+  } = useChatMessageActions({
+    aiSettings,
+    chatEditorRef,
+    syncInsertedToEditorMetadata,
+  });
   // Context menu state
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [contextMenu, setContextMenu] = useState<ChatContextMenuState | null>(
+    null,
+  );
 
   // 過去メッセージのプロンプト表示: 送信時に保存したスナップショットを遅延取得。
   const [promptViewOpen, setPromptViewOpen] = useState(false);
@@ -887,19 +428,23 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     ) => {
       const trimmed = markdown.trim();
       if (!trimmed || isStreaming) return;
-      // 送信時に却下セットをリセット（次のメッセージでは再検出可能にする）
-      setInputDismissedIds(new Set());
       // スラッシュコマンド由来の一回限りの指示 (/brainstorm の VS 等) は
       // sendMessage の commandInstruction (L6) へ。残りは送信オプションとして渡す。
       const { commandInstruction, ...rest } = options ?? {};
       // Flush any pending editor save so sendMessage reads latest scene content from DB.
       const flushAndSend = async () => {
-        if (chatSceneId) await saveScene(chatSceneId);
-        sendMessage(trimmed, commandInstruction, rest);
+        try {
+          if (chatSceneId) await saveScene(chatSceneId);
+          await sendMessage(trimmed, commandInstruction, rest);
+        } finally {
+          // Keep current-input dismissals in the send authority snapshot. They
+          // become eligible for detection again only after this turn finishes.
+          resetInputDismissed();
+        }
       };
       void flushAndSend();
     },
-    [isStreaming, sendMessage, chatSceneId],
+    [isStreaming, sendMessage, chatSceneId, resetInputDismissed],
   );
 
   const handleScopeChange = useCallback(
@@ -914,6 +459,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   }, []);
 
   const handleNewSession = useCallback(() => {
+    if (isStreaming) return;
     const { nodeId, codexAnchorId, snippetAnchorId } = resolveScopeSessionKey(
       chatScope,
       chatSceneId,
@@ -926,7 +472,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       codexAnchorId,
       snippetAnchorId,
     );
-  }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
+  }, [createNewSession, chatScope, scopeAnchorId, chatSceneId, isStreaming]);
 
   // Map overlay chip 表示用の board title 取得。includeMapBoard が ON のとき
   // のみ fetch する（OFF 時に余計な DB アクセスを発生させない）。
@@ -952,6 +498,93 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     };
   }, [includeMapBoard, resolvedMapBoardId]);
 
+  // Approval requests are rendered outside the message virtualizer so a
+  // session switch cannot leave an old request attached to another chat.
+  useEffect(() => {
+    const epoch = codexApprovalEpochRef.current + 1;
+    codexApprovalEpochRef.current = epoch;
+    codexApprovalsRef.current = [];
+    setCodexApprovals([]);
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    const projectId = activeProjectId ?? getCurrentProjectId();
+    void listen<unknown>("codex-app:event", (raw) => {
+      if (
+        cancelled ||
+        typeof raw !== "object" ||
+        raw === null ||
+        Array.isArray(raw)
+      ) {
+        return;
+      }
+      const envelope = raw as CodexAppEventEnvelope;
+      if (
+        envelope.projectId !== projectId ||
+        envelope.sessionId !== activeSessionId ||
+        typeof envelope.event !== "object" ||
+        envelope.event === null
+      ) {
+        return;
+      }
+      if (envelope.event.type === "approval-requested") {
+        const approval = { envelope, request: envelope.event };
+        updateCodexApprovals((current) =>
+          enqueueCodexApproval(current, approval),
+        );
+        return;
+      }
+      if (
+        envelope.event.type === "turn-completed" ||
+        (envelope.event.type === "turn-error" &&
+          envelope.event.retryable !== true)
+      ) {
+        updateCodexApprovals((current) =>
+          removeCodexApprovalsForTurn(current, envelope.grimodexTurnId),
+        );
+      }
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      cancelled = true;
+      if (codexApprovalEpochRef.current === epoch) {
+        codexApprovalEpochRef.current += 1;
+      }
+      const pendingApprovals = codexApprovalsRef.current;
+      codexApprovalsRef.current = [];
+      void declineCodexApprovals(pendingApprovals);
+      unlisten?.();
+    };
+  }, [activeProjectId, activeSessionId, updateCodexApprovals]);
+
+  const handleCodexApprovalDecision = useCallback(
+    async (decision: "accept" | "decline") => {
+      if (!codexApproval) return;
+      const resolvedApproval = codexApproval;
+      const responseEpoch = codexApprovalEpochRef.current;
+      try {
+        await respondToCodexServerRequest({
+          projectId: codexApproval.envelope.projectId,
+          sessionId: codexApproval.envelope.sessionId,
+          grimodexTurnId: codexApproval.envelope.grimodexTurnId,
+          requestId: codexApproval.request.requestId,
+          decision,
+        });
+        if (codexApprovalEpochRef.current === responseEpoch) {
+          updateCodexApprovals((current) =>
+            removeCodexApproval(current, resolvedApproval),
+          );
+        }
+      } catch (cause) {
+        if (codexApprovalEpochRef.current !== responseEpoch) return;
+        toast.error(cause instanceof Error ? cause.message : String(cause));
+        throw cause;
+      }
+    },
+    [codexApproval, updateCodexApprovals],
+  );
+
   const handleToggleMapOverlay = useCallback(() => {
     const next = !includeMapBoard;
     setIncludeMapBoard(next, {
@@ -960,14 +593,17 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     });
   }, [includeMapBoard, resolvedMapBoardId, setIncludeMapBoard]);
 
-  // Web 検索 (RAG): OpenRouter / Anthropic のみ対応。他プロバイダではトグル無効。
-  const ragCapable = isRagCapableProvider(aiSettings?.provider);
+  // Direct browser transports do not expose provider-managed Web search.
+  // Keep the trial on the explicitly disclosed Local LLM/BYOK request only.
+  const ragCapable =
+    !runtimeCapabilities.browserDirectAi &&
+    isRagCapableProvider(aiSettings?.provider);
   const handleToggleRag = useCallback(() => {
     setRagEnabled(!ragEnabled);
   }, [ragEnabled, setRagEnabled]);
 
   const __renderResult = (
-    <div className="glass-chat relative flex h-full flex-col bg-background">
+    <div className="chat-panel-surface relative flex h-full flex-col bg-background">
       {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
       <CodexPopover containerEl={messagesContainerEl} />
 
@@ -981,6 +617,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onScopeChange={handleScopeChange}
         onSelectScene={handleSelectScene}
         onNewSession={handleNewSession}
+        sessionMutationsDisabled={isStreaming}
         includeBodies={includeBodies}
         onToggleIncludeBodies={() => setIncludeBodies(!includeBodies)}
         includeMapBoard={includeMapBoard}
@@ -988,12 +625,19 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         mapDisabled={!mapPanelActive}
         onToggleIncludeMapBoard={handleToggleMapOverlay}
         ragEnabled={ragEnabled}
+        agentMode={agentMode}
         ragDisabled={!ragCapable}
+        ragDisabledReason={
+          runtimeCapabilities.browserDirectAi
+            ? t("chat.webSearch.unavailableWebEditor")
+            : undefined
+        }
         onToggleRag={handleToggleRag}
       />
 
       <ContextBar
         scopeAnchor={scopeAnchor}
+        contextPlan={contextPlan}
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
         pinnedSnippets={pinnedSnippets}
         pinnedStickies={pinnedStickies}
@@ -1024,6 +668,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onUnpinEntry={handleUnpin}
         onTogglePinChildren={handleTogglePinChildren}
         contextTokenCount={contextTokenCount}
+        contextWindowOverride={contextWindowSize}
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
         model={currentModel}
@@ -1032,7 +677,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         chapterOutlines={chapterOutlines}
         summaryCount={summaryCount}
         maxSummaryGeneration={maxSummaryGeneration}
-        onCreateLinkedSession={() => void createLinkedSession()}
+        onCreateLinkedSession={
+          isStreaming ? undefined : () => void createLinkedSession()
+        }
         cacheInvalidatedReason={cacheInvalidatedReason}
         onDismissCacheInvalidated={dismissCacheInvalidated}
       />
@@ -1116,6 +763,13 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             {/* 質問カード / streaming indicator はスペーサ外の通常フロー。
                 高さは virtualizer の totalSize に乗らないが、scrollToBottom
                 が bottomRef (全兄弟の後) に着地するため末尾はズレない。 */}
+            {codexApproval && (
+              <CodexApprovalCard
+                key={codexApprovalKey(codexApproval)}
+                request={codexApproval.request}
+                onDecision={handleCodexApprovalDecision}
+              />
+            )}
             {pendingUserQuestion &&
               pendingUserQuestion.sessionId === activeSessionId && (
                 <UserQuestionCard
@@ -1192,13 +846,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
           {t("chat.aiOffNote")}{" "}
           <button
             type="button"
-            onClick={() =>
-              window.dispatchEvent(
-                new CustomEvent("open-settings", {
-                  detail: { category: "project" },
-                }),
-              )
-            }
+            onClick={openAiPolicySettings}
             className="underline hover:text-foreground"
           >
             {t("chat.aiOffOpenSettings")}
@@ -1219,105 +867,41 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             disabled={isStreaming}
             policyDisabled={chatGate.presentation !== "enabled"}
             editorRef={chatEditorRef}
-            onMentionPin={(id) => handlePin(id, "codex")}
             onDetectedEntries={handleDetectedEntries}
             onHasTextChange={setInputHasText}
           />
         </>
       )}
 
-      <CodexExtractionDialog
-        open={extractionDialog.open}
-        messageId={extractionDialog.messageId}
-        initialContent={extractionDialog.content}
-        messageRole={extractionDialog.messageRole}
-        onSave={async (data) => {
-          const entry = await createCodexEntry(data);
-          if (entry && extractionDialog.messageId) {
-            await chatApi.updateMessageMetadata(extractionDialog.messageId, {
-              extractedCodex: [entry.id],
-            });
-          }
-          setExtractionDialog({
-            open: false,
-            messageId: "",
-            content: "",
-            messageRole: "assistant",
-          });
-          if (entry) {
-            void requestOpenInCodex(entry.id);
-          }
+      <ChatDialogs
+        extractionDialog={extractionDialog}
+        snippetDialog={snippetDialog}
+        onSaveCodex={saveCodexExtraction}
+        onCloseCodex={closeCodexExtraction}
+        onSaveSnippet={saveSnippetExtraction}
+        onCloseSnippet={closeSnippetExtraction}
+        sessionsPanelOpen={sessionsPanelOpen}
+        sceneTitle={sceneTitle}
+        activeSceneId={treeActiveSceneId}
+        onCloseSessions={() => setSessionsPanelOpen(false)}
+        contextMenu={contextMenu}
+        contextMutationsDisabled={isStreaming}
+        onCloseContextMenu={() => setContextMenu(null)}
+        contextActions={{
+          onInsert: insertFromChat,
+          onExtractCodexQuick: handleExtractCodexQuick,
+          onExtractCodexDetailed: handleExtractCodexDetailed,
+          onSaveSnippetQuick: handleSaveSnippetQuick,
+          onSaveSnippetDetailed: handleSaveSnippetDetailed,
+          onCopy: handleContextCopy,
+          onEdit: handleEditMessage,
+          onDelete: handleDeleteMessage,
+          onRegenerate: handleRegenerate,
         }}
-        onClose={() =>
-          setExtractionDialog({
-            open: false,
-            messageId: "",
-            content: "",
-            messageRole: "assistant",
-          })
-        }
+        promptViewOpen={promptViewOpen}
+        promptViewSnapshot={promptViewSnapshot}
+        onClosePrompt={() => setPromptViewOpen(false)}
       />
-      <SnippetExtractionDialog
-        open={snippetDialog.open}
-        initialContent={snippetDialog.initialContent}
-        messageId={snippetDialog.messageId}
-        messageRole={snippetDialog.messageRole}
-        onSave={async (data) => {
-          const snippet = await createSnippet(data, { silent: true });
-          if (snippet && snippetDialog.messageId) {
-            await chatApi.updateMessageMetadata(snippetDialog.messageId, {
-              extractedSnippets: [snippet.id],
-            });
-          }
-          if (snippet) {
-            useLayoutStore.getState().showPanel("snippets");
-            useSnippetStore.getState().requestSelectEntry(snippet.id);
-          }
-        }}
-        onClose={() => setSnippetDialog((s) => ({ ...s, open: false }))}
-      />
-      {sessionsPanelOpen && (
-        <SessionsPanel
-          sceneTitle={sceneTitle}
-          activeSceneId={treeActiveSceneId}
-          onClose={() => setSessionsPanelOpen(false)}
-        />
-      )}
-      {contextMenu && (
-        <ChatMessageContextMenu
-          messageId={contextMenu.messageId}
-          messageRole={contextMenu.messageRole}
-          messageContent={contextMenu.messageContent}
-          selectedText={contextMenu.selectedText}
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onInsert={insertFromChat}
-          onExtractCodexQuick={handleExtractCodexQuick}
-          onExtractCodexDetailed={handleExtractCodexDetailed}
-          onSaveSnippetQuick={handleSaveSnippetQuick}
-          onSaveSnippetDetailed={handleSaveSnippetDetailed}
-          onCopy={handleContextCopy}
-          onEdit={handleEditMessage}
-          onDelete={handleDeleteMessage}
-          onRegenerate={handleRegenerate}
-        />
-      )}
-
-      {promptViewOpen && promptViewSnapshot && (
-        <PromptPreviewModal
-          systemPrompt={promptViewSnapshot.systemPrompt}
-          layers={promptViewSnapshot.layers}
-          totalTokens={promptViewSnapshot.totalTokens ?? 0}
-          model={promptViewSnapshot.model ?? undefined}
-          contextWindow={
-            promptViewSnapshot.model
-              ? getModelCapabilities(promptViewSnapshot.model).contextWindow
-              : 0
-          }
-          onClose={() => setPromptViewOpen(false)}
-        />
-      )}
     </div>
   );
   recordMark("chatPanel.render", performance.now() - __perfStart, __perfStart);

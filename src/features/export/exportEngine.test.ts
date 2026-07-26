@@ -429,9 +429,143 @@ describe("generateExport - folder headings (html)", () => {
     });
     expect(result).toContain("<!DOCTYPE html>");
     expect(result).toContain('<html lang="ja">');
+    expect(result).toContain(
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'">`,
+    );
     expect(result).toContain("<title>My Novel</title>");
     expect(result).toContain("<body>");
     expect(result).toContain("</body>");
+  });
+
+  it("lang 属性を BCP 47 に限定し、属性脱出をフォールバックする", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: doc(para("本文")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html" }),
+      projectLanguage: 'ja"><script>alert(1)</script>',
+    });
+    expect(result).toContain('<html lang="ja">');
+    expect(result).not.toContain("<script>");
+  });
+
+  it("HTMLリンクは安全なschemeと相対URLだけを出力する", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const linked = (href: string): string =>
+      JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "link",
+                marks: [{ type: "link", attrs: { href } }],
+              },
+            ],
+          },
+        ],
+      });
+
+    for (const href of [
+      "https://example.com/page",
+      "mailto:writer@example.com",
+      "/chapter/1",
+      "#scene-1",
+    ]) {
+      const result = generateExport({
+        nodes: [s1],
+        contentMap: { s1: linked(href) },
+        checkedIds: new Set(["s1"]),
+        settings: settings({ format: "html" }),
+      });
+      expect(result).toContain(`<a href="${href}">link</a>`);
+    }
+
+    for (const href of [
+      "javascript:alert(1)",
+      "data:text/html,<script>alert(1)</script>",
+      "vbscript:msgbox(1)",
+      "//evil.example/collect",
+      '"><script>alert(1)</script>',
+    ]) {
+      const result = generateExport({
+        nodes: [s1],
+        contentMap: { s1: linked(href) },
+        checkedIds: new Set(["s1"]),
+        settings: settings({ format: "html" }),
+      });
+      expect(result).not.toContain("<a ");
+      expect(result).not.toContain("<script>");
+      expect(result).toContain("link");
+    }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// codeBlock serialization (format-gated; HTML must escape, not fence)
+// ────────────────────────────────────────────────────────────────────
+
+describe("generateExport - codeBlock serialization", () => {
+  function codeBlockDoc(code: string, language = ""): string {
+    return JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "codeBlock",
+          attrs: { language },
+          content: [{ type: "text", text: code }],
+        },
+      ],
+    });
+  }
+
+  it("html: code is escaped and wrapped in <pre><code>, not raw ``` fences", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: codeBlockDoc("</p><script>alert(1)</script>") },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html" }),
+      projectTitle: "Doc",
+      projectLanguage: "ja",
+    });
+    // 本文の生 HTML 注入を防ぐ: script/閉じタグは escape される
+    expect(result).toContain(
+      "<pre><code>&lt;/p&gt;&lt;script&gt;alert(1)&lt;/script&gt;</code></pre>",
+    );
+    expect(result).not.toContain("<script>alert(1)</script>");
+    // Markdown フェンスが HTML 本文に漏れない
+    expect(result).not.toContain("```");
+  });
+
+  it("html: language becomes an escaped class attribute", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: codeBlockDoc("x = 1", '"><img src=x>') },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html" }),
+      projectTitle: "Doc",
+      projectLanguage: "ja",
+    });
+    expect(result).toContain(
+      '<code class="language-&quot;&gt;&lt;img src=x&gt;">',
+    );
+    expect(result).not.toContain('"><img src=x>');
+  });
+
+  it("markdown: still emits triple-backtick fences (unchanged)", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: codeBlockDoc("const a = 1;", "ts") },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown" }),
+    });
+    expect(result).toContain("```ts\nconst a = 1;\n```");
   });
 });
 

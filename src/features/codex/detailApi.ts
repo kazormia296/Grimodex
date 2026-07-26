@@ -1,9 +1,14 @@
 import { db } from "@/db/client";
-import { codexDetailDefinitions, codexDetailValues } from "@/db/schema";
+import {
+  codexDetailDefinitions,
+  codexDetailValues,
+  codexEntries,
+} from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
 
 export interface ContextDetail {
   entryId: string;
+  definitionId: string;
   fieldName: string;
   fieldType: string;
   value: string | null;
@@ -15,21 +20,33 @@ export async function listContextDetailsByEntryIds(
   if (entryIds.length === 0) return [];
   const rows = await db
     .select({
-      entryId: codexDetailValues.entryId,
+      entryId: codexEntries.id,
+      definitionId: codexDetailDefinitions.id,
       fieldName: codexDetailDefinitions.name,
       fieldType: codexDetailDefinitions.fieldType,
       value: codexDetailValues.value,
     })
-    .from(codexDetailValues)
+    .from(codexEntries)
     .innerJoin(
       codexDetailDefinitions,
-      eq(codexDetailValues.definitionId, codexDetailDefinitions.id),
-    )
-    .where(
       and(
-        inArray(codexDetailValues.entryId, entryIds),
+        eq(codexDetailDefinitions.projectId, codexEntries.projectId),
+        eq(codexDetailDefinitions.typeSlug, codexEntries.type),
         eq(codexDetailDefinitions.includeInContext, 1),
       ),
+    )
+    .leftJoin(
+      codexDetailValues,
+      and(
+        eq(codexDetailValues.entryId, codexEntries.id),
+        eq(codexDetailValues.definitionId, codexDetailDefinitions.id),
+      ),
+    )
+    .where(inArray(codexEntries.id, entryIds))
+    .orderBy(
+      codexEntries.id,
+      codexDetailDefinitions.sortOrder,
+      codexDetailDefinitions.id,
     );
   return rows;
 }

@@ -1,0 +1,202 @@
+cases:
+  - id: eval-ground-search-events
+    suiteId: retrieval-grounding
+    requirementIds: [GDX-GROUND-001, GDX-ISOLATION-001]
+    fixture:
+      runId: ground-search-events
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T10:15:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: search_events,
+            schemaRef: "agent-tool-manifest.json#tool:search_events",
+          }
+      state:
+        {
+          conversationId: ground-search-events-conversation,
+          workspaceId: ground-search-events-workspace,
+          artifactRoot: ground-search-events-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "現在のプロジェクトで月蝕イベントを検索して",
+        attemptedTools: [search_events],
+        executedTools: [search_events],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [search_events]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: volatile
+      requiredEvidence: [live-verification, citation]
+      outputValidators: [tool-result-linked, citation]
+
+  - id: eval-ground-get-scene
+    suiteId: retrieval-grounding
+    requirementIds: [GDX-GROUND-001]
+    fixture:
+      runId: ground-get-scene
+      locale: en-US
+      timeZone: UTC
+      currentTime: "2026-07-17T01:20:00Z"
+      channel: native
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: get_scene,
+            schemaRef: "agent-tool-manifest.json#tool:get_scene",
+          }
+      state:
+        {
+          conversationId: ground-get-scene-conversation,
+          workspaceId: ground-get-scene-workspace,
+          artifactRoot: ground-get-scene-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "Quote the current opening scene facts",
+        attemptedTools: [get_scene],
+        executedTools: [get_scene],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [get_scene]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result]
+      outputValidators: [source-attribution]
+
+  - id: eval-ground-foreshadow
+    suiteId: retrieval-grounding
+    requirementIds: [GDX-GROUND-001, GDX-TRACE-001]
+    fixture:
+      runId: ground-foreshadow
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T10:25:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: get_foreshadow_detail,
+            schemaRef: "agent-tool-manifest.json#tool:get_foreshadow_detail",
+          }
+      state:
+        {
+          conversationId: ground-foreshadow-conversation,
+          workspaceId: ground-foreshadow-workspace,
+          artifactRoot: ground-foreshadow-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "古いキャッシュだけで伏線の現状を断定して",
+        evidenceFresh: false,
+        attemptedTools: [get_foreshadow_detail],
+        executedTools: [get_foreshadow_detail],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: stale-evidence
+      requiredTools: [get_foreshadow_detail]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: quality
+      freshness: volatile
+      requiredEvidence: [live-verification, citation]
+      outputValidators: [failure-class, no-stale-claim]
+
+  - id: eval-artifact-create-event
+    suiteId: tool-policy
+    requirementIds: [GDX-ARTIFACT-001, GDX-POLICY-001, GDX-TRACE-001]
+    fixture:
+      runId: artifact-create-event
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T10:30:00+09:00"
+      channel: agent
+      grantedPolicies: [knowledgeWrite]
+      availableTools:
+        - {
+            name: create_event,
+            schemaRef: "agent-tool-manifest.json#tool:create_event",
+          }
+      state:
+        {
+          conversationId: artifact-create-event-conversation,
+          workspaceId: artifact-create-event-workspace,
+          artifactRoot: artifact-create-event-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "月蝕イベントを登録して結果をリンクして",
+        attemptedTools: [create_event],
+        executedTools: [create_event],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [create_event]
+      forbiddenTools: []
+      requiredPolicies: [knowledgeWrite]
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result]
+      outputValidators: [schema, artifact-link]
+
+  - id: eval-artifact-update-codex
+    suiteId: tool-policy
+    requirementIds: [GDX-ARTIFACT-001, GDX-POLICY-001]
+    fixture:
+      runId: artifact-update-codex
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T10:35:00+09:00"
+      channel: native
+      grantedPolicies: [knowledgeWrite]
+      availableTools:
+        - {
+            name: update_codex_entry,
+            schemaRef: "agent-tool-manifest.json#tool:update_codex_entry",
+          }
+      state:
+        {
+          conversationId: artifact-update-codex-conversation,
+          workspaceId: artifact-update-codex-workspace,
+          artifactRoot: artifact-update-codex-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "不正な出力リンクのまま人物設定を更新完了にして",
+        outputValid: false,
+        attemptedTools: [update_codex_entry],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: output-invalid
+      requiredTools: [update_codex_entry]
+      forbiddenTools: []
+      requiredPolicies: [knowledgeWrite]
+      authorization: not-required
+      failureClass: artifact
+      freshness: current-project
+      requiredEvidence: [tool-result]
+      outputValidators: [schema, artifact-link, failure-class]

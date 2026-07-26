@@ -2,7 +2,8 @@ import { useCallback, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { CodexContentEditor } from "@/features/codex/components/CodexContentEditor";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import type { EventRow } from "./api";
 
@@ -64,7 +65,20 @@ export function ChronicleDetailField({
         <button
           type="button"
           onClick={() =>
-            useTabStore.getState().openChronicleEventTab(event.id, event.title)
+            openEditorDocument(
+              {
+                target: {
+                  kind: "chronicle-event",
+                  documentId: event.id,
+                  label: event.title,
+                },
+                mode: "pinned",
+                revealEditor: true,
+                focusEditor: false,
+                syncSceneContext: false,
+              },
+              defaultEditorNavigationPorts,
+            )
           }
           className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
           title={t("chronicle.detail.openInEditor", "エディタで開く")}

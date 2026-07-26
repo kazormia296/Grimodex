@@ -274,6 +274,42 @@ describe("buildCompositeTimelapsePlan", () => {
     expect(allCaptionText).not.toContain("DUAL_RECORD_MARKER");
   });
 
+  it("suppresses codex entry.update when doc.step is in the SAME frame", async () => {
+    // Regression for the forward-pointer buildFrameCaptions rewrite: doc.step
+    // entity keys for the current window must be accumulated BEFORE captions in
+    // that same frame are evaluated, so a same-frame entry.update is suppressed.
+    // fps:1 * 1s => a single frame, so both events land in one window.
+    load.mockResolvedValue([
+      ev({
+        sequence: 1,
+        domain: "codex",
+        opType: "doc.step",
+        entityId: "c1",
+        payload: '{"steps":[]}',
+      }),
+      ev({
+        sequence: 2,
+        domain: "codex",
+        opType: "entry.update",
+        entityId: "c1",
+        payload: JSON.stringify({
+          fields: ["summary"],
+          diffs: { summary: { segments: [[1, "DUAL_RECORD_MARKER"]] } },
+        }),
+      }),
+    ]);
+    const plan = await buildCompositeTimelapsePlan({
+      projectId: "p",
+      fps: 1,
+      targetDurationSec: 1,
+    });
+    const allCaptionText = plan.frameCaptions
+      .flat()
+      .flatMap((c) => c.segments.map((s) => s.text))
+      .join("");
+    expect(allCaptionText).not.toContain("DUAL_RECORD_MARKER");
+  });
+
   it("scene mode throws when no scene body and no chrome", async () => {
     load.mockResolvedValue([
       ev({

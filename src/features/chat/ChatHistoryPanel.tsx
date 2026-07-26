@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useCallback, useMemo } from "react";
 import { Search, X, Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { formatInstant } from "@/lib/time";
 import { useChatStore } from "./chatStore";
 import {
   useChatHistoryStore,
@@ -13,7 +14,8 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { PanelHeader } from "@/features/layout/PanelHeader";
 import { SessionCard } from "./components/SessionCard";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { SortMode } from "./chatHistoryStore";
 import { ChatHistorySkeletonList } from "@/components/ui/skeleton-patterns";
@@ -362,10 +364,10 @@ export function ChatHistoryPanel() {
                     >
                       <p className="text-[10px] text-muted-foreground">
                         {hit.role === "user" ? "You" : "AI"} ·{" "}
-                        {new Date(hit.createdAt).toLocaleTimeString("ja-JP", {
+                        {formatInstant(hit.createdAt, "ja-JP", {
                           hour: "2-digit",
                           minute: "2-digit",
-                        })}
+                        }) ?? hit.createdAt}
                       </p>
                       <p className="mt-0.5 line-clamp-2 text-xs text-foreground">
                         {renderHighlight(hit.highlightedContent)}
@@ -402,8 +404,16 @@ export function ChatHistoryPanel() {
                   <button
                     type="button"
                     onClick={() => {
-                      useTreeStore.getState().setActiveScene(group.nodeId!);
-                      useTabStore.getState().openPinned(group.nodeId!);
+                      openEditorDocument(
+                        {
+                          target: { kind: "scene", documentId: group.nodeId! },
+                          mode: "pinned",
+                          revealEditor: true,
+                          focusEditor: false,
+                          syncSceneContext: true,
+                        },
+                        defaultEditorNavigationPorts,
+                      );
                     }}
                     className="mb-1 w-full text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
                   >

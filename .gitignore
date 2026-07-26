@@ -2,6 +2,11 @@ node_modules/
 .pnpm-store/
 dist/
 .env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
 *.local
 .claude/settings.local.json
 docs/.claude/settings.local.json
@@ -10,7 +15,9 @@ docs/.claude/settings.local.json
 .claude/worktrees/
 temp/
 .cache/
+.artifacts/
 .codex/
+.cursor/
 
 # Lindera UniDic 辞書のキャッシュ（~140MB）。
 # cargo build 時に LINDERA_DICTIONARIES_PATH でここを指す想定。
@@ -51,3 +58,10 @@ src/features/chat/calibration/embeddings.generated.json
 
 # SDD scratch ledger
 .superpowers/
+.worktrees/
+
+# Electron シェル（Phase 2）: esbuild 出力 / napi クレートのビルド生成物
+dist-electron/
+release/electron/
+electron/native/**/target/
+*.node

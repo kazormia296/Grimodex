@@ -20,8 +20,9 @@ import { recordMark } from "@/lib/perfLog";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { TreeContextMenu } from "./TreeContextMenu";
-import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { LabelDots } from "@/features/labels/LabelDots";
 import { ScenesThreadTrack } from "@/features/plot-threads/ScenesThreadTrack";
 import { TRACK_COL_WIDTH } from "@/features/plot-threads/sceneThreadTracks";
@@ -138,7 +139,6 @@ function TreeNodeItemImpl({
 }: TreeNodeItemProps) {
   const __perfStart = performance.now();
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
-  const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const setStatus = useTreeStore((s) => s.setStatus);
   const pendingRenameId = useTreeStore((s) => s.pendingRenameId);
@@ -227,8 +227,16 @@ function TreeNodeItemImpl({
           useTreeStore.getState().selectNode(node.id, true);
         } else {
           useTreeStore.getState().selectNode(node.id, false);
-          useTabStore.getState().openPreview(node.id);
-          setActiveScene(node.id);
+          openEditorDocument(
+            {
+              target: { kind: "scene", documentId: node.id },
+              mode: "preview",
+              revealEditor: false,
+              focusEditor: false,
+              syncSceneContext: true,
+            },
+            defaultEditorNavigationPorts,
+          );
           focusEditorPanel();
         }
       } else {
@@ -237,16 +245,24 @@ function TreeNodeItemImpl({
         toggleExpand(node.id);
       }
     },
-    [node, orderedNodesRef, setActiveScene, toggleExpand, focusEditorPanel],
+    [node, orderedNodesRef, toggleExpand, focusEditorPanel],
   );
 
   const handleDoubleClick = useCallback(() => {
     if (node.nodeType === "scene" || node.nodeType === "note") {
-      useTabStore.getState().openPinned(node.id);
-      setActiveScene(node.id);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: node.id },
+          mode: "pinned",
+          revealEditor: true,
+          focusEditor: false,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
       focusEditorPanel();
     }
-  }, [node, setActiveScene, focusEditorPanel]);
+  }, [node, focusEditorPanel]);
 
   const startEdit = useCallback(() => {
     setEditTitle(node.title);
@@ -442,7 +458,16 @@ function TreeNodeItemImpl({
                       .getState()
                       .createNode({ nodeType: "scene", parentId: node.id })
                       .then((n) => {
-                        useTabStore.getState().openPinned(n.id);
+                        openEditorDocument(
+                          {
+                            target: { kind: "scene", documentId: n.id },
+                            mode: "pinned",
+                            revealEditor: true,
+                            focusEditor: false,
+                            syncSceneContext: true,
+                          },
+                          defaultEditorNavigationPorts,
+                        );
                       })
                       .catch(() => {});
                   }}

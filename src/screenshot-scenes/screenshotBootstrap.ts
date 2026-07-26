@@ -109,7 +109,8 @@ export function applyScreenshotUiState(): void {
   const { lint, annotations } = c;
   useKouetsuStore.setState({
     activeTab: "issues",
-    activeIssuesScope: "current",
+    scope: { type: "scene" },
+    statusFilter: "open",
   });
   const lintDiagnostics = [
     {
@@ -168,7 +169,7 @@ export function applyScreenshotUiState(): void {
           confidence: "high",
           llm_reason: compassDry.llmReason,
           dismiss_key: compassDry.dismissKey,
-          detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
+          detected_by_model: "qwen3:30b",
         },
       }),
       createdAt: now,

@@ -27,7 +27,15 @@ function centerSegmentVisible(
   return segment.activePanel !== null;
 }
 
-export const CenterContent = memo(function CenterContent() {
+interface CenterContentProps {
+  zenMode?: boolean;
+  editorOnly?: boolean;
+}
+
+export const CenterContent = memo(function CenterContent({
+  zenMode = false,
+  editorOnly = false,
+}: CenterContentProps) {
   const center = useLayoutStore((s) => s.layout.center);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -41,14 +49,17 @@ export const CenterContent = memo(function CenterContent() {
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const showDropZones = useDragDropZonesReady(
-    Boolean(draggingPanel && !layoutLocked),
+    Boolean(draggingPanel && !layoutLocked && !zenMode && !editorOnly),
   );
 
   const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
+  const effectiveMaximizedPanelId =
+    zenMode || editorOnly ? "editor" : maximizedPanelId;
 
-  const visibleSegments = center.segments.filter((segment) =>
-    centerSegmentVisible(segment, center.editorOpen),
-  );
+  const visibleSegments = center.segments.filter((segment) => {
+    if (editorOnly && segment.kind === "editor") return true;
+    return centerSegmentVisible(segment, center.editorOpen);
+  });
 
   const segmentFlexGrow = normalizeFlexGrow(
     visibleSegments.map((s) => s.sizeRatio),
@@ -58,14 +69,15 @@ export const CenterContent = memo(function CenterContent() {
   // 対象 segment を全面化し、非対象 segment / splitter を 0 サイズ +
   // 不可視にする（unmount はしない — visibleSegments のフィルタ条件は
   // 変えない。editor unmount 回避の要）。
-  const zoomActive = maximizedPanelId !== null;
+  const zoomActive = effectiveMaximizedPanelId !== null;
   const zoomedSegmentId =
-    maximizedPanelId === null
+    effectiveMaximizedPanelId === null
       ? null
-      : maximizedPanelId === "editor"
+      : effectiveMaximizedPanelId === "editor"
         ? (visibleSegments.find((s) => s.kind === "editor")?.id ?? null)
         : (visibleSegments.find(
-            (s) => s.kind === "tool" && s.activePanel === maximizedPanelId,
+            (s) =>
+              s.kind === "tool" && s.activePanel === effectiveMaximizedPanelId,
           )?.id ?? null);
 
   const getLayoutBudgetPx = useCallback(() => {
@@ -261,7 +273,7 @@ export const CenterContent = memo(function CenterContent() {
                 inert={segmentZoomHidden || undefined}
                 className={cn(
                   "relative flex min-h-0 min-w-0 flex-col",
-                  !center.editorOpen && "hidden",
+                  !center.editorOpen && !editorOnly && "hidden",
                 )}
               >
                 <EditorArea />
@@ -272,10 +284,14 @@ export const CenterContent = memo(function CenterContent() {
                 data-drop-region="center"
                 data-center-segment={segment.id}
                 data-center-segment-kind="tool"
+                data-ambient-glass-surface="panel"
                 style={sizeStyle}
                 aria-hidden={segmentZoomHidden || undefined}
                 inert={segmentZoomHidden || undefined}
-                className="relative flex min-h-0 min-w-0 flex-col"
+                className={cn(
+                  "gx-panel relative flex min-h-0 min-w-0 flex-col overflow-hidden",
+                  draggingPanel === segment.activePanel && "gx-panel--dragging",
+                )}
                 onDragOver={(e) => handleSlotDragOver(segment.id, e)}
                 onDragLeave={handleSlotDragLeave}
                 onDrop={(e) => handleSlotDrop(segment.id, e)}

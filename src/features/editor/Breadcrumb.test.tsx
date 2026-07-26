@@ -1,6 +1,10 @@
+// @vitest-environment happy-dom
+import { render } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
-import { computeBreadcrumbPath } from "./Breadcrumb";
+import { Breadcrumb, computeBreadcrumbPath } from "./Breadcrumb";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useCursorSettingsStore } from "./cursorSettingsStore";
 
 const NODE_DEFAULTS = {
   storyTimeOrder: null,
@@ -158,5 +162,28 @@ describe("computeBreadcrumbPath", () => {
     expect(path).toEqual([
       { id: "folder-1", title: "資料", nodeType: "folder" },
     ]);
+  });
+});
+
+describe("Breadcrumb Zen visibility", () => {
+  it("uses the shared Editor Chrome surface outside Zen mode", () => {
+    useTreeStore.setState({ nodes: NODES, activeSceneId: "scene-1" } as never);
+    useCursorSettingsStore.setState({ zenMode: false });
+
+    const { container } = render(<Breadcrumb />);
+
+    expect(
+      container.querySelector<HTMLElement>("[data-editor-breadcrumb]"),
+    ).toHaveClass("glass-editor-chrome");
+  });
+
+  it("does not render persistent navigation chrome in Zen mode", () => {
+    useTreeStore.setState({ nodes: NODES, activeSceneId: "scene-1" } as never);
+    useCursorSettingsStore.setState({ zenMode: true });
+
+    const { container } = render(<Breadcrumb />);
+
+    expect(container).toBeEmptyDOMElement();
+    useCursorSettingsStore.setState({ zenMode: false });
   });
 });

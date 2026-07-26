@@ -6,18 +6,15 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { SettingSection } from "./SettingSection";
 import { SettingRow } from "./SettingRow";
-import { buildMcpConfigJson } from "../mcpConfig";
-
-interface McpConfigInfo {
-  command: string;
-  workspace: string;
-}
+import { buildMcpConfigJson, type McpConfigInfo } from "../mcpConfig";
+import { CapabilityGate } from "@/runtime/runtimeCapabilitiesContext";
 
 /**
  * Settings affordance that copies a ready-to-paste `.mcp.json` snippet for
- * pointing an external MCP client at this Grimodex install. The app binary
- * doubles as the MCP server (`Grimodex mcp …`), so the snippet's `command`
- * is the OS-specific absolute path resolved by the `get_mcp_config` command.
+ * pointing an external MCP client at this Grimodex install. The shell resolves
+ * both the OS-specific command and its argument prefix: Tauri uses
+ * `Grimodex mcp …`, while Electron uses the standalone `grimodex-mcp …`
+ * sidecar.
  *
  * Each button *is* a concrete copy action (changes only the copied text), so
  * none implies a persistent app-mode change. Two axes:
@@ -29,15 +26,45 @@ interface McpConfigInfo {
  */
 export function McpIntegrationSection() {
   const { t } = useTranslation();
-  const workspaceOpen = useWorkspaceStore((s) => s.activeWorkspacePath != null);
+  const workspaceReady = useWorkspaceStore(
+    (s) =>
+      s.activeWorkspacePath != null &&
+      s.workspaceHydrated &&
+      !s.workspaceSwitchInProgress,
+  );
 
   async function handleCopy(allProjects: boolean, readonly: boolean) {
     try {
+      const before = useWorkspaceStore.getState();
+      const workspacePath = before.activeWorkspacePath;
+      const workspaceRevision = before.workspaceOpenRevision;
+      const projectId = getCurrentProjectId();
+      if (
+        workspacePath == null ||
+        !before.workspaceHydrated ||
+        before.workspaceSwitchInProgress
+      ) {
+        throw new Error("Workspace is not ready for MCP config export");
+      }
+
       const info = await invoke<McpConfigInfo>("get_mcp_config");
+      const after = useWorkspaceStore.getState();
+      if (
+        !after.workspaceHydrated ||
+        after.workspaceSwitchInProgress ||
+        after.activeWorkspacePath !== workspacePath ||
+        after.workspaceOpenRevision !== workspaceRevision ||
+        getCurrentProjectId() !== projectId ||
+        info.workspace !== workspacePath
+      ) {
+        throw new Error("Workspace changed while building MCP config");
+      }
+
       const json = buildMcpConfigJson({
         command: info.command,
         workspace: info.workspace,
-        projectId: getCurrentProjectId(),
+        argsPrefix: info.argsPrefix,
+        projectId,
         readonly,
         allProjects,
       });
@@ -55,7 +82,7 @@ export function McpIntegrationSection() {
     <div className="flex flex-shrink-0 gap-2">
       <button
         type="button"
-        disabled={!workspaceOpen}
+        disabled={!workspaceReady}
         className={buttonClass}
         onClick={() => handleCopy(allProjects, true)}
       >
@@ -64,7 +91,7 @@ export function McpIntegrationSection() {
       </button>
       <button
         type="button"
-        disabled={!workspaceOpen}
+        disabled={!workspaceReady}
         className={buttonClass}
         onClick={() => handleCopy(allProjects, false)}
       >
@@ -75,24 +102,26 @@ export function McpIntegrationSection() {
   );
 
   return (
-    <SettingSection title={t("settings.ai.mcp.title")}>
-      <p className="mb-3 text-xs text-muted-foreground">
-        {t("settings.ai.mcp.description")}
-      </p>
-      <SettingRow
-        label={t("settings.ai.mcp.scopeProject")}
-        description={t("settings.ai.mcp.scopeProjectDesc")}
-        disabled={!workspaceOpen}
-      >
-        {copyButtons(false)}
-      </SettingRow>
-      <SettingRow
-        label={t("settings.ai.mcp.scopeAll")}
-        description={t("settings.ai.mcp.scopeAllDesc")}
-        disabled={!workspaceOpen}
-      >
-        {copyButtons(true)}
-      </SettingRow>
-    </SettingSection>
+    <CapabilityGate capability="mcpServer">
+      <SettingSection title={t("settings.ai.mcp.title")}>
+        <p className="mb-3 text-xs text-muted-foreground">
+          {t("settings.ai.mcp.description")}
+        </p>
+        <SettingRow
+          label={t("settings.ai.mcp.scopeProject")}
+          description={t("settings.ai.mcp.scopeProjectDesc")}
+          disabled={!workspaceReady}
+        >
+          {copyButtons(false)}
+        </SettingRow>
+        <SettingRow
+          label={t("settings.ai.mcp.scopeAll")}
+          description={t("settings.ai.mcp.scopeAllDesc")}
+          disabled={!workspaceReady}
+        >
+          {copyButtons(true)}
+        </SettingRow>
+      </SettingSection>
+    </CapabilityGate>
   );
 }

@@ -8,6 +8,21 @@ import { invoke } from "@/lib/tauri";
 const mockInvoke = vi.mocked(invoke);
 
 import {
+  chatIndexMessage,
+  chatIndexStatus,
+  chatMessageSearch,
+  chatReindexAll,
+  codexIndexEntry,
+  codexIndexStatus,
+  codexReindexAll,
+  codexSemanticSearch,
+  downloadSemanticModel,
+  eventsIndexEntry,
+  eventsIndexStatus,
+  eventsReindexAll,
+  eventsSemanticSearch,
+  getSemanticChunkContext,
+  semanticDebugDump,
   semanticIndexScene,
   semanticIndexStatus,
   semanticReindexAll,
@@ -98,6 +113,15 @@ describe("semantic-search/api", () => {
       });
       expect(n).toBe(42);
     });
+
+    it("passes an optional runId without changing the numeric return contract", async () => {
+      mockInvoke.mockResolvedValueOnce(9);
+      await expect(semanticReindexAll("p1", "run-123")).resolves.toBe(9);
+      expect(mockInvoke).toHaveBeenCalledWith("semantic_reindex_all", {
+        projectId: "p1",
+        runId: "run-123",
+      });
+    });
   });
 
   describe("semanticIndexStatus", () => {
@@ -118,5 +142,106 @@ describe("semantic-search/api", () => {
       });
       expect(result).toEqual(report);
     });
+  });
+
+  describe("remaining semantic command wrappers", () => {
+    it.each([
+      {
+        name: "semantic_download_model",
+        call: () => downloadSemanticModel("ja"),
+        args: { language: "ja" },
+      },
+      {
+        name: "codex_semantic_search",
+        call: () =>
+          codexSemanticSearch({ projectId: "p1", query: "hero", limit: 5 }),
+        args: { projectId: "p1", query: "hero", limit: 5 },
+      },
+      {
+        name: "codex_index_entry",
+        call: () => codexIndexEntry("entry-1"),
+        args: { entryId: "entry-1" },
+      },
+      {
+        name: "codex_index_status",
+        call: () => codexIndexStatus("p1"),
+        args: { projectId: "p1" },
+      },
+      {
+        name: "codex_reindex_all",
+        call: () => codexReindexAll("p1"),
+        args: { projectId: "p1" },
+      },
+      {
+        name: "events_semantic_search",
+        call: () =>
+          eventsSemanticSearch({ projectId: "p1", query: "storm", limit: 6 }),
+        args: { projectId: "p1", query: "storm", limit: 6 },
+      },
+      {
+        name: "events_index_entry",
+        call: () => eventsIndexEntry("event-1"),
+        args: { eventId: "event-1" },
+      },
+      {
+        name: "events_index_status",
+        call: () => eventsIndexStatus("p1"),
+        args: { projectId: "p1" },
+      },
+      {
+        name: "events_reindex_all",
+        call: () => eventsReindexAll("p1"),
+        args: { projectId: "p1" },
+      },
+      {
+        name: "chat_message_search",
+        call: () =>
+          chatMessageSearch({ projectId: "p1", query: "memory", limit: 7 }),
+        args: { projectId: "p1", query: "memory", limit: 7 },
+      },
+      {
+        name: "chat_index_message",
+        call: () => chatIndexMessage("message-1"),
+        args: { messageId: "message-1" },
+      },
+      {
+        name: "chat_index_status",
+        call: () => chatIndexStatus("p1"),
+        args: { projectId: "p1" },
+      },
+      {
+        name: "chat_reindex_all",
+        call: () => chatReindexAll("p1"),
+        args: { projectId: "p1" },
+      },
+      {
+        name: "semantic_chunk_context",
+        call: () =>
+          getSemanticChunkContext({
+            sceneId: "scene-1",
+            charStart: 2,
+            charEnd: 9,
+            padding: 100,
+          }),
+        args: {
+          sceneId: "scene-1",
+          charStart: 2,
+          charEnd: 9,
+          padding: 100,
+        },
+      },
+      {
+        name: "semantic_debug_dump",
+        call: () => semanticDebugDump({ projectId: "p1" }),
+        args: { projectId: "p1", sceneId: null, limit: null },
+      },
+    ])(
+      "maps $name with the exact camelCase payload",
+      async ({ name, call, args }) => {
+        mockInvoke.mockResolvedValueOnce(null);
+        await call();
+        expect(mockInvoke).toHaveBeenCalledWith(name, args);
+      },
+    );
   });
 });

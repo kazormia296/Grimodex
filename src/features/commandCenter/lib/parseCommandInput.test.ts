@@ -2,51 +2,44 @@ import { describe, expect, it } from "vitest";
 import { parseCommandInput } from "./parseCommandInput";
 
 describe("parseCommandInput", () => {
-  it("treats normal text as search mode without excludes", () => {
+  it("returns normal search text without excludes", () => {
     expect(parseCommandInput("邂逅")).toEqual({
-      mode: "search",
       text: "邂逅",
       excludes: [],
     });
   });
 
-  it("treats > prefix as command mode and trims leading whitespace", () => {
+  it("treats a leading > as ordinary search text", () => {
     expect(parseCommandInput(">cmd")).toEqual({
-      mode: "command",
-      text: "cmd",
+      text: ">cmd",
       excludes: [],
     });
     expect(parseCommandInput(">  do something")).toEqual({
-      mode: "command",
-      text: "do something",
+      text: "> do something",
       excludes: [],
     });
   });
 
-  it("returns empty text when only `>` is given", () => {
+  it("keeps a standalone > as search text", () => {
     expect(parseCommandInput(">")).toEqual({
-      mode: "command",
-      text: "",
+      text: ">",
       excludes: [],
     });
     expect(parseCommandInput("> ")).toEqual({
-      mode: "command",
-      text: "",
+      text: ">",
       excludes: [],
     });
   });
 
-  it("treats empty string as search mode", () => {
+  it("returns empty text for an empty string", () => {
     expect(parseCommandInput("")).toEqual({
-      mode: "search",
       text: "",
       excludes: [],
     });
   });
 
-  it("does NOT treat embedded > as a mode switch", () => {
+  it("keeps embedded > in search text", () => {
     expect(parseCommandInput("foo>bar")).toEqual({
-      mode: "search",
       text: "foo>bar",
       excludes: [],
     });
@@ -54,7 +47,6 @@ describe("parseCommandInput", () => {
 
   it("extracts -word tokens as excludes", () => {
     expect(parseCommandInput("邂逅 -雨")).toEqual({
-      mode: "search",
       text: "邂逅",
       excludes: ["雨"],
     });
@@ -62,23 +54,20 @@ describe("parseCommandInput", () => {
 
   it("supports multiple excludes", () => {
     expect(parseCommandInput("foo -a -b baz -c")).toEqual({
-      mode: "search",
       text: "foo baz",
       excludes: ["a", "b", "c"],
     });
   });
 
-  it("combines > mode and excludes", () => {
+  it("combines leading > search text and excludes", () => {
     expect(parseCommandInput(">cmd -foo bar")).toEqual({
-      mode: "command",
-      text: "cmd bar",
+      text: ">cmd bar",
       excludes: ["foo"],
     });
   });
 
   it("returns empty text when only excludes are given", () => {
     expect(parseCommandInput("-only")).toEqual({
-      mode: "search",
       text: "",
       excludes: ["only"],
     });
@@ -86,7 +75,6 @@ describe("parseCommandInput", () => {
 
   it("ignores standalone hyphen and double-dash tokens", () => {
     expect(parseCommandInput("foo - bar")).toEqual({
-      mode: "search",
       text: "foo bar",
       excludes: [],
     });

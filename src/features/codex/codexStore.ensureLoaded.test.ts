@@ -13,6 +13,7 @@ import type { CodexEntry } from "./api";
 
 vi.mock("./api", () => ({
   listCodexEntries: vi.fn(),
+  listCodexMatchTargets: vi.fn(() => Promise.resolve([])),
   listCodexTypes: vi.fn(() => Promise.resolve([])),
   createCodexEntry: vi.fn(),
   updateCodexEntry: vi.fn(),

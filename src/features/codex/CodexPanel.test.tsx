@@ -8,6 +8,7 @@ import type { CodexEntry } from "./api";
 
 vi.mock("./api", () => ({
   listCodexEntries: vi.fn(() => Promise.resolve([])),
+  listCodexMatchTargets: vi.fn(() => Promise.resolve([])),
   createCodexEntry: vi.fn(),
   updateCodexEntry: vi.fn(),
   deleteCodexEntry: vi.fn(),
@@ -41,6 +42,7 @@ const mockEntries: CodexEntry[] = [
     icon: null,
     aliases: "[]",
     excludedAliases: "[]",
+    readings: null,
     tagsCache: "主人公,ファンタジー",
     contextMode: "mentioned",
     childrenBudget: "compact",
@@ -61,6 +63,7 @@ const mockEntries: CodexEntry[] = [
     icon: null,
     aliases: "[]",
     excludedAliases: "[]",
+    readings: null,
     tagsCache: "場所",
     contextMode: "mentioned",
     childrenBudget: "compact",
@@ -81,6 +84,7 @@ const mockEntries: CodexEntry[] = [
     icon: null,
     aliases: "[]",
     excludedAliases: "[]",
+    readings: null,
     tagsCache: "アイテム",
     contextMode: "mentioned",
     childrenBudget: "compact",

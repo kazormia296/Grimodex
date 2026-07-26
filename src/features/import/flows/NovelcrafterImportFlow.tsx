@@ -35,8 +35,15 @@ import {
   ImportInputSlot,
   ImportAnalyzingPlaceholder,
   ImportFlowFooter,
+  useImportBusyChange,
+  useImportFailureReset,
 } from "../importShared";
 import { prepareImportTarget, type ImportTarget } from "../importTarget";
+import {
+  hasAllowedImportExtension,
+  importFileLimitViolation,
+  importLimitMessageValues,
+} from "../importFileLimits";
 
 type Phase =
   | "idle"
@@ -45,6 +52,7 @@ type Phase =
   | "tag-mapping"
   | "conflict-resolution"
   | "importing"
+  | "failed"
   | "done";
 
 function computeConflicts(
@@ -79,9 +87,18 @@ function computeConflicts(
 interface Props {
   importTarget: ImportTarget;
   onClose: () => void;
+  enforceBrowserLimits?: boolean;
+  onBusyChange?: (busy: boolean) => void;
+  onFailedChange?: (failed: boolean) => void;
 }
 
-export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
+export function NovelcrafterImportFlow({
+  importTarget,
+  onClose,
+  enforceBrowserLimits = false,
+  onBusyChange,
+  onFailedChange,
+}: Props) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>("idle");
   const [parsed, setParsed] = useState<ParseResult | null>(null);
@@ -102,6 +119,9 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
   const reloadTree = useTreeStore((s) => s.loadTree);
   const reloadSessions = useChatHistoryStore((s) => s.loadSessions);
 
+  useImportBusyChange(phase, onBusyChange);
+  useImportFailureReset(onFailedChange);
+
   useEffect(() => {
     if (!parsed) return;
     const names = collectAllTagNames(parsed.codexEntries);
@@ -116,8 +136,23 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
 
   const handleFileChange = useCallback(
     async (file: File) => {
-      if (!file.name.endsWith(".zip")) {
+      const validExtension = enforceBrowserLimits
+        ? hasAllowedImportExtension(file.name, ["zip"])
+        : file.name.endsWith(".zip");
+      if (!validExtension) {
         toast.error(t("import.invalidZip"));
+        return;
+      }
+      const limitViolation = enforceBrowserLimits
+        ? importFileLimitViolation(file, "archive")
+        : null;
+      if (limitViolation) {
+        toast.error(
+          t(
+            `import.limits.${limitViolation}`,
+            importLimitMessageValues(limitViolation, "archive"),
+          ),
+        );
         return;
       }
       setPhase("analyzing");
@@ -131,7 +166,7 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
         setPhase("idle");
       }
     },
-    [t],
+    [enforceBrowserLimits, t],
   );
 
   const runImport = useCallback(
@@ -152,32 +187,44 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
       }
 
       const allErrors: string[] = [];
-      const { imported: codexImported, errors: codexErrors } =
-        await importCodexEntries(parsed.codexEntries, setProgress, tagOptions);
-      allErrors.push(...codexErrors);
-      const { imported: snippetsImported, errors: snippetErrors } =
-        await importSnippets(parsed.snippets, setProgress);
-      allErrors.push(...snippetErrors);
-      const { imported: chaptersImported, errors: chapterErrors } =
-        await importChapters(parsed.chapters, setProgress);
-      allErrors.push(...chapterErrors);
-      const { imported: chatsImported, errors: chatErrors } =
-        await importChatSessionsBatch(parsed.chatSessions, setProgress);
-      allErrors.push(...chatErrors);
-      setErrors(allErrors);
-      setPhase("done");
-      await reloadCodex();
-      await reloadSnippets();
-      await reloadTree(getCurrentProjectId());
-      await reloadSessions(getCurrentProjectId());
-      toast.success(
-        t("import.success", {
-          codex: codexImported,
-          snippets: snippetsImported,
-          chapters: chaptersImported,
-          chats: chatsImported,
-        }),
-      );
+      try {
+        const { imported: codexImported, errors: codexErrors } =
+          await importCodexEntries(
+            parsed.codexEntries,
+            setProgress,
+            tagOptions,
+          );
+        allErrors.push(...codexErrors);
+        const { imported: snippetsImported, errors: snippetErrors } =
+          await importSnippets(parsed.snippets, setProgress);
+        allErrors.push(...snippetErrors);
+        const { imported: chaptersImported, errors: chapterErrors } =
+          await importChapters(parsed.chapters, setProgress);
+        allErrors.push(...chapterErrors);
+        const { imported: chatsImported, errors: chatErrors } =
+          await importChatSessionsBatch(parsed.chatSessions, setProgress);
+        allErrors.push(...chatErrors);
+        setErrors(allErrors);
+        await reloadCodex();
+        await reloadSnippets();
+        await reloadTree(getCurrentProjectId());
+        await reloadSessions(getCurrentProjectId());
+        setPhase("done");
+        toast.success(
+          t("import.success", {
+            codex: codexImported,
+            snippets: snippetsImported,
+            chapters: chaptersImported,
+            chats: chatsImported,
+          }),
+        );
+      } catch (error) {
+        setErrors([...allErrors, String(error)]);
+        setProgress(null);
+        toast.error(t("import.failed"));
+        onFailedChange?.(true);
+        setPhase("failed");
+      }
     },
     [
       parsed,
@@ -187,6 +234,7 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
       reloadSnippets,
       reloadTree,
       reloadSessions,
+      onFailedChange,
     ],
   );
 
@@ -298,13 +346,15 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
         </div>
       )}
 
-      {phase === "done" && <ImportErrorList errors={errors} />}
+      {(phase === "done" || phase === "failed") && (
+        <ImportErrorList errors={errors} />
+      )}
 
       {phase !== "tag-mapping" &&
         phase !== "conflict-resolution" &&
         phase !== "importing" && (
           <ImportFlowFooter>
-            {phase !== "done" && (
+            {phase !== "done" && phase !== "failed" && (
               <button
                 type="button"
                 onClick={onClose}
@@ -322,7 +372,7 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
                 {t("import.importButton")}
               </button>
             )}
-            {phase === "done" && (
+            {(phase === "done" || phase === "failed") && (
               <button
                 type="button"
                 onClick={onClose}

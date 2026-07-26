@@ -1,0 +1,203 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import yaml from "js-yaml";
+
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+
+async function read(relative) {
+  return readFile(path.join(repoRoot, relative), "utf8");
+}
+
+function frontmatter(markdown) {
+  const match = markdown.match(/^---\n([\s\S]*?)\n---\n/);
+  assert.ok(match, "SKILL.md must start with YAML frontmatter");
+  return yaml.load(match[1]);
+}
+
+test("package scripts expose one canonical quality workflow", async () => {
+  const packageJson = JSON.parse(await read("package.json"));
+
+  assert.match(packageJson.scripts["test:quality"], /quality\/.*\.test\.mjs/);
+  assert.equal(
+    packageJson.scripts["eval:fixtures"],
+    "node scripts/quality/eval-fixtures.mjs",
+  );
+  assert.equal(
+    packageJson.scripts["eval:impact"],
+    "node scripts/quality/impact-map.mjs",
+  );
+  assert.match(packageJson.scripts["verify:quality"], /test:quality/);
+  assert.match(packageJson.scripts["verify:quality"], /eval:fixtures/);
+});
+
+test("CI runs the diff gate with full history and selected light suites", async () => {
+  const workflow = await read(".github/workflows/ci.yml");
+
+  assert.match(workflow, /^ {2}quality:\s*$/m);
+  assert.match(workflow, /fetch-depth:\s*0/);
+  assert.match(workflow, /pnpm eval:impact/);
+  assert.match(workflow, /--run/);
+});
+
+test("repo routing points AI behavior authoring and diff evaluation to narrow skills", async () => {
+  const agents = await read("AGENTS.md");
+
+  assert.match(agents, /grimodex-author/);
+  assert.match(agents, /grimodex-impact-gate/);
+  assert.match(agents, /AI指示|システムプロンプト|AI評価fixture/);
+  assert.match(agents, /差分評価|impact gate|品質ゲート/);
+});
+
+test("new skills use current frontmatter and call the canonical commands", async () => {
+  const author = await read(".agents/skills/grimodex-author/SKILL.md");
+  const impact = await read(".agents/skills/grimodex-impact-gate/SKILL.md");
+
+  assert.deepEqual(Object.keys(frontmatter(author)).sort(), [
+    "description",
+    "name",
+  ]);
+  assert.deepEqual(Object.keys(frontmatter(impact)).sort(), [
+    "description",
+    "name",
+  ]);
+  assert.match(author, /policies\/quality\/iron-laws\.md/);
+  assert.match(author, /evals\/quality-manifest\.yaml/);
+  assert.match(author, /pnpm verify:quality/);
+  assert.match(author, /grimodex-impact-gate/);
+  assert.match(impact, /pnpm eval:impact/);
+  assert.match(impact, /--run/);
+  assert.match(impact, /deferred/i);
+});
+
+test("release CI failures route through a no-bump targeted debug skill", async () => {
+  const agents = await read("AGENTS.md");
+  const releaseDebug = await read(".agents/skills/debug-release-ci/SKILL.md");
+  const releaseDebugUi = yaml.load(
+    await read(".agents/skills/debug-release-ci/agents/openai.yaml"),
+  );
+  const bump = await read(".agents/skills/bump-version/SKILL.md");
+  const debugIssue = await read(".agents/skills/debug-issue/SKILL.md");
+  const ship = await read(".agents/skills/ship-branch/SKILL.md");
+
+  assert.deepEqual(Object.keys(frontmatter(releaseDebug)).sort(), [
+    "description",
+    "name",
+  ]);
+  assert.equal(frontmatter(releaseDebug).name, "debug-release-ci");
+  assert.match(releaseDebugUi.interface.default_prompt, /\$debug-release-ci/);
+
+  assert.match(agents, /release CI|release workflow/i);
+  assert.match(agents, /debug-release-ci/);
+  assert.match(agents, /一般.*CI.*debug-issue/);
+  assert.match(agents, /再実行.*目的.*patch version.*上げない/is);
+
+  assert.match(releaseDebug, /run ID/);
+  assert.match(releaseDebug, /head SHA/i);
+  assert.match(releaseDebug, /成功済み.*job/i);
+  assert.match(releaseDebug, /source_run_id/);
+  assert.match(releaseDebug, /candidate_ref/);
+  assert.match(releaseDebug, /--ref master/);
+  assert.doesNotMatch(releaseDebug, /--ref <fix-branch>/);
+  assert.doesNotMatch(releaseDebug, /candidate_ref=<fix-branch>/);
+  assert.match(releaseDebug, /candidate_ref=<40-character-fix-commit-sha>/);
+  assert.match(releaseDebug, /package\.json.*変更しない/is);
+  assert.match(releaseDebug, /tag.*(?:作成しない|移動しない)/is);
+  assert.match(releaseDebug, /ship-branch/);
+  assert.match(releaseDebug, /bump-version/);
+
+  assert.match(debugIssue, /release workflow.*debug-release-ci/is);
+  assert.match(bump, /再実行.*目的.*バージョン.*上げない/is);
+  assert.match(bump, /focused gate.*成功/is);
+  assert.match(bump, /debug-release-ci/);
+  assert.match(ship, /release workflow.*debug-release-ci/is);
+});
+
+test("public copy follows the canonical style guide and version bumps stop at a draft release", async () => {
+  const agents = await read("AGENTS.md");
+  const copy = await read(".agents/skills/write-grimodex-copy/SKILL.md");
+  const copyUi = yaml.load(
+    await read(".agents/skills/write-grimodex-copy/agents/openai.yaml"),
+  );
+  const bump = await read(".agents/skills/bump-version/SKILL.md");
+  const bumpUi = yaml.load(
+    await read(".agents/skills/bump-version/agents/openai.yaml"),
+  );
+  const guide = await read("docs/communication-style-guide.md");
+  const impactMap = await read("evals/impact-map.yaml");
+
+  assert.deepEqual(Object.keys(frontmatter(copy)).sort(), [
+    "description",
+    "name",
+  ]);
+  assert.equal(frontmatter(copy).name, "write-grimodex-copy");
+  assert.match(copyUi.interface.default_prompt, /\$write-grimodex-copy/);
+
+  assert.match(copy, /docs\/communication-style-guide\.md/);
+  assert.match(copy, /リリースノート/);
+  assert.match(copy, /日本語.*英語|日英/is);
+  assert.match(copy, /事実.*先|事実ベース/is);
+  assert.match(copy, /冒頭1〜2文/);
+  assert.match(copy, /Issue.*PR.*コミット|PR.*Issue.*commit/is);
+  assert.match(copy, /公開.*(?:しない|権限.*ない)/is);
+  assert.match(guide, /このファイル.*正本/is);
+  assert.match(guide, /Issue、PR、コミットメッセージ/);
+  assert.match(impactMap, /docs\/communication-style-guide\.md/);
+
+  assert.match(agents, /write-grimodex-copy/);
+  assert.match(agents, /リリースノート|告知文|広報文/);
+  assert.match(agents, /日英リリースノート/);
+  assert.doesNotMatch(agents, /「日英版」/);
+  assert.match(bump, /write-grimodex-copy/);
+  assert.match(bump, /RELEASE_NOTES\/v<新バージョン>\.ja\.md/);
+  assert.match(bump, /RELEASE_NOTES\/v<新バージョン>\.en\.md/);
+  assert.doesNotMatch(bump, /## 新機能 \/ New/);
+  assert.match(bump, /Draft Release|Draftリリース/i);
+  assert.match(bump, /isDraft/);
+  assert.match(bump, /別.*明示.*指示.*公開/is);
+  assert.match(bump, /--draft=false/);
+  assert.match(bumpUi.interface.short_description, /Draft/i);
+  assert.match(bumpUi.interface.default_prompt, /\$bump-version/);
+  assert.match(bumpUi.interface.default_prompt, /Draft/i);
+});
+
+test("the Iron Laws carry stable IDs used by the machine-readable manifest", async () => {
+  const policy = await read("policies/quality/iron-laws.md");
+  const manifest = await read("evals/quality-manifest.yaml");
+  const requirementIds = [
+    "GDX-ROUTE-001",
+    "GDX-PRECHECK-001",
+    "GDX-TOOL-001",
+    "GDX-POLICY-001",
+    "GDX-GROUND-001",
+    "GDX-ARTIFACT-001",
+    "GDX-ISOLATION-001",
+    "GDX-TRACE-001",
+  ];
+
+  for (const requirementId of requirementIds) {
+    assert.match(policy, new RegExp(requirementId));
+    assert.match(manifest, new RegExp(requirementId));
+  }
+});
+
+test("the Heavy runner never selects a Windows command shell from the environment", async () => {
+  const runnerUrl = pathToFileURL(
+    path.join(repoRoot, "scripts/quality/run-related-scenes-heavy.mjs"),
+  );
+  const { buildCommandInvocation } = await import(runnerUrl.href);
+
+  assert.deepEqual(buildCommandInvocation("pnpm", ["test:node"], "win32"), {
+    executable: "cmd.exe",
+    commandArgs: ["/d", "/s", "/c", "pnpm", "test:node"],
+  });
+  assert.deepEqual(buildCommandInvocation("pnpm", ["test:node"], "linux"), {
+    executable: "pnpm",
+    commandArgs: ["test:node"],
+  });
+});

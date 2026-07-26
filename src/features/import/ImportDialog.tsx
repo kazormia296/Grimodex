@@ -8,6 +8,7 @@ import { NovelcrafterImportFlow } from "./flows/NovelcrafterImportFlow";
 import { KakuyomuImportFlow } from "./flows/KakuyomuImportFlow";
 import { MarkdownImportFlow } from "./flows/MarkdownImportFlow";
 import { NovelImportFlow } from "./flows/NovelImportFlow";
+import { ScanImportFlow } from "./flows/ScanImportFlow";
 
 interface Props {
   open: boolean;
@@ -19,6 +20,7 @@ const SOURCES: ImportSource[] = [
   "kakuyomu",
   "markdown",
   "novel",
+  "scan",
 ];
 
 const DIALOG_PANEL_CLASS =
@@ -29,7 +31,15 @@ const DIALOG_PANEL_CLASS =
  * 単体ダイアログ（ImportDialog）と統合ダイアログ（TransferDialog）の
  * 両方から再利用する。閉じる制御は呼び出し側の onClose に委譲する。
  */
-export function ImportDialogBody({ onClose }: { onClose: () => void }) {
+export function ImportDialogBody({
+  onClose,
+  onBusyChange,
+  onFailureChange,
+}: {
+  onClose: () => void;
+  onBusyChange?: (busy: boolean) => void;
+  onFailureChange?: (failed: boolean) => void;
+}) {
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useState<ImportSource>("novelcrafter");
@@ -39,16 +49,49 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
     defaultImportTarget("novelcrafter"),
   );
   const [flowKey, setFlowKey] = useState(0);
+  const [flowBusy, setFlowBusy] = useState(false);
+  const [flowFailed, setFlowFailed] = useState(false);
+  const interactionLocked = flowBusy || flowFailed;
+
+  const handleBusyChange = useCallback(
+    (busy: boolean) => {
+      setFlowBusy(busy);
+      onBusyChange?.(busy);
+    },
+    [onBusyChange],
+  );
 
   const handleClose = useCallback(() => {
+    if (flowBusy) return;
+    setFlowFailed(false);
+    onFailureChange?.(false);
     setFlowKey((k) => k + 1);
     onClose();
-  }, [onClose]);
-
-  const handleSourceChange = useCallback((next: ImportSource) => {
-    setSource(next);
+  }, [flowBusy, onClose, onFailureChange]);
+  const handleImportComplete = useCallback(() => {
+    setFlowFailed(false);
+    onFailureChange?.(false);
     setFlowKey((k) => k + 1);
-  }, []);
+    onClose();
+  }, [onClose, onFailureChange]);
+
+  const handleFailureChange = useCallback(
+    (failed: boolean) => {
+      setFlowFailed(failed);
+      onFailureChange?.(failed);
+    },
+    [onFailureChange],
+  );
+
+  const handleSourceChange = useCallback(
+    (next: ImportSource) => {
+      if (interactionLocked) return;
+      handleFailureChange(false);
+      setSource(next);
+      setFlowKey((k) => k + 1);
+    },
+    [handleFailureChange, interactionLocked],
+  );
 
   useEffect(() => {
     setImportTarget(
@@ -73,6 +116,8 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
         return t("import.source.markdown");
       case "novel":
         return t("import.source.novel");
+      case "scan":
+        return t("import.source.scan");
     }
   };
 
@@ -99,6 +144,7 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
             aria-selected={source === s}
             data-testid={`import-source-${s}`}
             onClick={() => handleSourceChange(s)}
+            disabled={interactionLocked}
             className={`rounded px-2 py-1 text-xs ${
               source === s
                 ? "bg-primary text-primary-foreground"
@@ -110,10 +156,13 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
         ))}
       </div>
 
-      <ImportTargetPanel
-        importTarget={importTarget}
-        onImportTargetChange={setImportTarget}
-      />
+      {source !== "scan" && (
+        <ImportTargetPanel
+          importTarget={importTarget}
+          onImportTargetChange={setImportTarget}
+          disabled={interactionLocked}
+        />
+      )}
 
       <div
         key={flowKey}
@@ -123,12 +172,16 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
           <NovelcrafterImportFlow
             importTarget={importTarget}
             onClose={handleClose}
+            onBusyChange={handleBusyChange}
+            onFailedChange={handleFailureChange}
           />
         )}
         {source === "kakuyomu" && (
           <KakuyomuImportFlow
             importTarget={importTarget}
             onClose={handleClose}
+            onBusyChange={handleBusyChange}
+            onFailedChange={handleFailureChange}
           />
         )}
         {source === "markdown" && (
@@ -137,10 +190,24 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
             markdownMode={markdownMode}
             onMarkdownModeChange={setMarkdownMode}
             onClose={handleClose}
+            onBusyChange={handleBusyChange}
+            onFailedChange={handleFailureChange}
           />
         )}
         {source === "novel" && (
-          <NovelImportFlow importTarget={importTarget} onClose={handleClose} />
+          <NovelImportFlow
+            importTarget={importTarget}
+            onClose={handleClose}
+            onBusyChange={handleBusyChange}
+            onFailedChange={handleFailureChange}
+          />
+        )}
+        {source === "scan" && (
+          <ScanImportFlow
+            onClose={handleClose}
+            onComplete={handleImportComplete}
+            onBusyChange={handleBusyChange}
+          />
         )}
       </div>
     </div>
@@ -148,13 +215,17 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
 }
 
 export function ImportDialog({ open, onClose }: Props) {
+  const [busy, setBusy] = useState(false);
+  const handleClose = useCallback(() => {
+    if (!busy) onClose();
+  }, [busy, onClose]);
   return (
     <AnimatedOverlay
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       className={`${DIALOG_PANEL_CLASS} rounded-lg border border-border bg-background shadow-xl outline-none`}
     >
-      <ImportDialogBody onClose={onClose} />
+      <ImportDialogBody onClose={onClose} onBusyChange={setBusy} />
     </AnimatedOverlay>
   );
 }

@@ -19,6 +19,7 @@ import { ToolCallBlock } from "./ToolCallBlock";
 import { AnsweredQuestionBlock } from "./AnsweredQuestionBlock";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { SummaryBlock } from "./SummaryBlock";
+import { CodexItemList } from "./CodexItemList";
 import {
   copyChatMessageWithAttribution,
   handleCopyWithAttribution,
@@ -40,6 +41,8 @@ interface ParsedMetadata {
   citations?: Citation[];
   /** リクエストの概算コスト (USD)。OpenRouter のみ実値。 */
   cost?: number;
+  codex_items?: unknown[];
+  codex_warnings?: string[];
 }
 
 function parseMetadata(metadata: string | null | undefined): ParsedMetadata {
@@ -53,28 +56,6 @@ function parseMetadata(metadata: string | null | undefined): ParsedMetadata {
     // corrupted metadata
   }
   return {};
-}
-
-function isSummaryMarker(msg: ChatMessageType): boolean {
-  if (!msg.metadata) return false;
-  try {
-    const parsed: unknown = JSON.parse(msg.metadata);
-    return (
-      parsed !== null && typeof parsed === "object" && "summary_id" in parsed
-    );
-  } catch {
-    return false;
-  }
-}
-
-function parseToolCalls(metadata: string | null | undefined): ToolCallRecord[] {
-  return parseMetadata(metadata).tool_calls ?? [];
-}
-
-function parseThinkingBlocks(
-  metadata: string | null | undefined,
-): Array<{ thinking: string; summary?: string }> {
-  return parseMetadata(metadata).thinking_blocks ?? [];
 }
 
 interface ChatMessageProps {
@@ -118,7 +99,8 @@ function ChatMessageImpl({
   const { t } = useTranslation();
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
-  const isSummary = isSummaryMarker(msg);
+  const parsedMeta = useMemo(() => parseMetadata(msg.metadata), [msg.metadata]);
+  const isSummary = "summary_id" in parsedMeta;
   // 一部モデルが本文に吐き出す擬似ツール記法 (<tool_call>/<tool_response>) を
   // 描画・コピー・挿入・履歴の全消費前に除去する。生は DB に保持（可逆）。
   // assistant 本文のみ対象（user 投稿やサマリは原文のまま）。
@@ -129,13 +111,12 @@ function ChatMessageImpl({
   );
   const showActions = !isStreaming && safeContent.length > 0 && !isSummary;
   const toolCalls =
-    isAssistant && !isSummary ? parseToolCalls(msg.metadata) : [];
+    isAssistant && !isSummary ? (parsedMeta.tool_calls ?? []) : [];
   const thinkingBlocks =
-    isAssistant && !isSummary ? parseThinkingBlocks(msg.metadata) : [];
-  const parsedMeta =
-    isAssistant && !isSummary ? parseMetadata(msg.metadata) : {};
-  const citations = parsedMeta.citations ?? [];
-  const ragCost = parsedMeta.cost;
+    isAssistant && !isSummary ? (parsedMeta.thinking_blocks ?? []) : [];
+  const citations =
+    isAssistant && !isSummary ? (parsedMeta.citations ?? []) : [];
+  const ragCost = isAssistant && !isSummary ? parsedMeta.cost : undefined;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const codexComponents = useCodexMarkdownComponents();
@@ -220,6 +201,13 @@ function ChatMessageImpl({
                 )}
               </div>
             )}
+            <CodexItemList raw={parsedMeta.codex_items} />
+            {parsedMeta.codex_warnings &&
+              parsedMeta.codex_warnings.length > 0 && (
+                <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-300">
+                  {parsedMeta.codex_warnings.join("\n")}
+                </div>
+              )}
             <div className="prose prose-sm max-w-none dark:prose-invert">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -231,12 +219,14 @@ function ChatMessageImpl({
             {citations.length > 0 && <CitationList citations={citations} />}
             {/* G3: Meta info row */}
             {(msg.model ||
+              msg.tokensIn != null ||
               msg.tokensOut != null ||
               msg.durationMs != null ||
               ragCost != null) && (
               <div className="mt-1 text-[10px] text-muted-foreground/60">
                 {[
                   msg.model,
+                  msg.tokensIn != null ? `${msg.tokensIn} in` : null,
                   msg.tokensOut != null ? `${msg.tokensOut} tok` : null,
                   msg.durationMs != null
                     ? `${(msg.durationMs / 1000).toFixed(1)}s`

@@ -1,0 +1,196 @@
+cases:
+  - id: eval-tool-research
+    suiteId: tool-policy
+    requirementIds: [GDX-TOOL-001, GDX-GROUND-001]
+    fixture:
+      runId: tool-research
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:50:00+09:00"
+      channel: hermes
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: run_research,
+            schemaRef: "agent-tool-manifest.json#tool:run_research",
+          }
+      state:
+        {
+          conversationId: tool-research-conversation,
+          workspaceId: tool-research-workspace,
+          artifactRoot: tool-research-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "プロジェクト内で灯台の資料を調べて",
+        attemptedTools: [run_research],
+        executedTools: [run_research],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [run_research]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result]
+      outputValidators: [citation]
+
+  - id: eval-tool-hermes-write
+    suiteId: tool-policy
+    requirementIds: [GDX-TOOL-001, GDX-POLICY-001]
+    fixture:
+      runId: tool-hermes-write
+      locale: en-US
+      timeZone: UTC
+      currentTime: "2026-07-17T00:55:00Z"
+      channel: hermes
+      grantedPolicies: [knowledgeWrite]
+      availableTools: []
+      state:
+        {
+          conversationId: tool-hermes-write-conversation,
+          workspaceId: tool-hermes-write-workspace,
+          artifactRoot: tool-hermes-write-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "Write a character through the read-only channel",
+        attemptedTools: [create_codex_entry],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: channel-denied
+      requiredTools: []
+      forbiddenTools: [create_codex_entry]
+      requiredPolicies: [knowledgeWrite]
+      authorization: not-required
+      failureClass: policy
+      freshness: current-project
+      requiredEvidence: [channel-policy]
+      outputValidators: [no-side-effect, failure-class]
+
+  - id: eval-policy-propose-body
+    suiteId: tool-policy
+    requirementIds: [GDX-POLICY-001]
+    fixture:
+      runId: policy-propose-body
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T10:00:00+09:00"
+      channel: agent
+      grantedPolicies: [bodyWrite]
+      availableTools:
+        - {
+            name: propose_scene_body,
+            schemaRef: "agent-tool-manifest.json#tool:propose_scene_body",
+          }
+      state:
+        {
+          conversationId: policy-propose-body-conversation,
+          workspaceId: policy-propose-body-workspace,
+          artifactRoot: policy-propose-body-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "確認済みの本文案を提案して",
+        attemptedTools: [propose_scene_body],
+        executedTools: [propose_scene_body],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [propose_scene_body]
+      forbiddenTools: []
+      requiredPolicies: [bodyWrite]
+      authorization: granted
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [confirmation-state, tool-result]
+      outputValidators: [schema, revision-match]
+
+  - id: eval-policy-delete-relation
+    suiteId: tool-policy
+    requirementIds: [GDX-POLICY-001]
+    fixture:
+      runId: policy-delete-relation
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T10:05:00+09:00"
+      channel: native
+      grantedPolicies: [knowledgeWrite]
+      availableTools:
+        - {
+            name: remove_event_relation,
+            schemaRef: "agent-tool-manifest.json#tool:remove_event_relation",
+          }
+      state:
+        {
+          conversationId: policy-delete-relation-conversation,
+          workspaceId: policy-delete-relation-workspace,
+          artifactRoot: policy-delete-relation-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "確認した因果関係だけを削除して",
+        attemptedTools: [remove_event_relation],
+        executedTools: [remove_event_relation],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [remove_event_relation]
+      forbiddenTools: []
+      requiredPolicies: [knowledgeWrite]
+      authorization: granted
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [confirmation-state, tool-result]
+      outputValidators: [target-match, no-duplicate-retry]
+
+  - id: eval-isolation-ask-user
+    suiteId: quality-workflow
+    requirementIds: [GDX-ISOLATION-001, GDX-PRECHECK-001]
+    fixture:
+      runId: isolation-ask-user
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T10:10:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: ask_user,
+            schemaRef: "agent-tool-manifest.json#tool:ask_user",
+          }
+      state:
+        {
+          conversationId: isolation-ask-user-conversation,
+          workspaceId: isolation-ask-user-workspace,
+          artifactRoot: isolation-ask-user-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "曖昧な対象を推測せず質問して",
+        attemptedTools: [ask_user],
+        executedTools: [ask_user],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [ask_user]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: stable
+      requiredEvidence: [clarification]
+      outputValidators: [single-question]

@@ -2,15 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { X, ClipboardCopy, Check, Download } from "lucide-react";
 import { toast } from "sonner";
-import { db } from "@/db/client";
-import { treeNodes } from "@/db/schema";
-import { eq } from "drizzle-orm";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { saveTextFile } from "@/lib/exportFile";
 import {
   ExportTree,
   buildInitialTreeState,
@@ -21,9 +16,8 @@ import { ExportSettingsPanel } from "./ExportSettingsPanel";
 import { generateExport } from "./exportEngine";
 import type { TateChuYokoPolicy } from "@/features/editor/tateChuYokoPolicy";
 import { currentCodexMentionResolver } from "@/features/codex/mentionNameResolver";
-import type { ExportSettings, ExportPresetId } from "./types";
+import type { ExportSettings } from "./types";
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTING_KEYS } from "./types";
-import { resolveStoredTateChuYoko } from "./exportPresets";
 import {
   parseUserPresets,
   serializeUserPresets,
@@ -31,6 +25,7 @@ import {
 } from "./exportUserPresets";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { TimelapseExportSection } from "@/features/timelapse/TimelapseExportSection";
+import { VivliostyleExportSection } from "@/features/vivliostyle/VivliostyleExportSection";
 import {
   buildProvenanceBreakdown,
   type ProvenanceDisclosureReport,
@@ -44,143 +39,38 @@ import {
   exportProvenanceDisclosureJson,
   exportProvenanceDisclosureMarkdown,
 } from "@/features/attribution/exportReport";
+import {
+  loadContentMap,
+  loadSettingsFromStore,
+  saveFile,
+} from "./exportDataService";
+import { cn } from "@/lib/utils";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 // ────────────────────────────────────────────────────────────────────
 // 設定のロード/セーブ
 // ────────────────────────────────────────────────────────────────────
 
-function loadSettingsFromStore(
-  store: ReturnType<typeof useSettingsStore.getState>,
-): ExportSettings {
-  const s = store;
-  const exportPresetId = (s.get(EXPORT_SETTING_KEYS.exportPresetId) ||
-    DEFAULT_EXPORT_SETTINGS.exportPresetId) as ExportPresetId;
-  return {
-    format: (s.get(EXPORT_SETTING_KEYS.format) ||
-      DEFAULT_EXPORT_SETTINGS.format) as ExportSettings["format"],
-    folderHeading: s.getBoolean(
-      EXPORT_SETTING_KEYS.folderHeading,
-      DEFAULT_EXPORT_SETTINGS.folderHeading,
-    ),
-    folderHeadingStyle: (s.get(EXPORT_SETTING_KEYS.folderHeadingStyle) ||
-      DEFAULT_EXPORT_SETTINGS.folderHeadingStyle) as ExportSettings["folderHeadingStyle"],
-    sceneDivider: (s.get(EXPORT_SETTING_KEYS.sceneDivider) ||
-      DEFAULT_EXPORT_SETTINGS.sceneDivider) as ExportSettings["sceneDivider"],
-    sceneDividerCustom: s.get(EXPORT_SETTING_KEYS.sceneDividerCustom, ""),
-    sceneTitle: (s.get(EXPORT_SETTING_KEYS.sceneTitle) ||
-      DEFAULT_EXPORT_SETTINGS.sceneTitle) as ExportSettings["sceneTitle"],
-    rubyStyle: s.get(EXPORT_SETTING_KEYS.rubyStyle)
-      ? (s.get(EXPORT_SETTING_KEYS.rubyStyle) as ExportSettings["rubyStyle"])
-      : null,
-    emphasisDotsStyle: s.get(EXPORT_SETTING_KEYS.emphasisDotsStyle)
-      ? (s.get(
-          EXPORT_SETTING_KEYS.emphasisDotsStyle,
-        ) as ExportSettings["emphasisDotsStyle"])
-      : null,
-    sceneBreakStyle: (s.get(EXPORT_SETTING_KEYS.sceneBreakStyle) ||
-      DEFAULT_EXPORT_SETTINGS.sceneBreakStyle) as ExportSettings["sceneBreakStyle"],
-    sceneBreakCustom: s.get(EXPORT_SETTING_KEYS.sceneBreakCustom, ""),
-    includeTrashBin: s.getBoolean(
-      EXPORT_SETTING_KEYS.includeTrashBin,
-      DEFAULT_EXPORT_SETTINGS.includeTrashBin,
-    ),
-    folderHeadingFormat: (s.get(EXPORT_SETTING_KEYS.folderHeadingFormat) ||
-      DEFAULT_EXPORT_SETTINGS.folderHeadingFormat) as ExportSettings["folderHeadingFormat"],
-    pixivChapterNewpage: s.getBoolean(
-      EXPORT_SETTING_KEYS.pixivChapterNewpage,
-      DEFAULT_EXPORT_SETTINGS.pixivChapterNewpage,
-    ),
-    narouEmphasisMode: (s.get(EXPORT_SETTING_KEYS.narouEmphasisMode) ||
-      DEFAULT_EXPORT_SETTINGS.narouEmphasisMode) as ExportSettings["narouEmphasisMode"],
-    // 旧ストア互換: tateChuYoko キー未保存なら選択中プリセットから導出する
-    // （単純な "none" 既定だと保存済み caita/青空文庫の preset 検出が壊れる）。
-    tateChuYoko: resolveStoredTateChuYoko(
-      s.get(EXPORT_SETTING_KEYS.tateChuYoko),
-      exportPresetId,
-    ),
-    exportPresetId,
-  };
-}
-
-// ────────────────────────────────────────────────────────────────────
-// コンテンツ取得（DB + liveContent オーバーレイ）
-// ────────────────────────────────────────────────────────────────────
-
-async function loadContentMap(): Promise<Record<string, string>> {
-  const rows = await db
-    .select({ id: treeNodes.id, content: treeNodes.content })
-    .from(treeNodes)
-    .where(eq(treeNodes.projectId, getCurrentProjectId()));
-
-  const map: Record<string, string> = {};
-  for (const row of rows) {
-    map[row.id] = row.content;
-  }
-
-  // liveContent でオーバーレイ（現在編集中のシーンの最新状態）
-  const live = useSceneContentStore.getState().liveContent;
-  for (const [id, content] of Object.entries(live)) {
-    if (content) {
-      map[id] = JSON.stringify(content);
-    }
-  }
-
-  return map;
-}
-
-// ────────────────────────────────────────────────────────────────────
-// Tauri ファイル保存ダイアログ
-// ────────────────────────────────────────────────────────────────────
-
-const FORMAT_EXT: Record<ExportSettings["format"], string> = {
-  markdown: "md",
-  plaintext: "txt",
-  html: "html",
-};
-
-const FORMAT_MIME: Record<ExportSettings["format"], string> = {
-  markdown: "text/markdown;charset=utf-8",
-  plaintext: "text/plain;charset=utf-8",
-  html: "text/html;charset=utf-8",
-};
-
-const FORMAT_FILTER: Record<
-  ExportSettings["format"],
-  { name: string; extensions: string[] }
-> = {
-  markdown: { name: "Markdown", extensions: ["md"] },
-  plaintext: { name: "Plain Text", extensions: ["txt"] },
-  html: { name: "HTML", extensions: ["html"] },
-};
-
-async function saveFile(
-  content: string,
-  format: ExportSettings["format"],
-  defaultName: string,
-): Promise<string | null> {
-  const ext = FORMAT_EXT[format];
-  const filename = `${defaultName}.${ext}`;
-  // 保存ダイアログは Rust 側で開かれ、renderer はパスを渡さない (security audit
-  // PIO-2)。非 Tauri は browser ダウンロードにフォールバック。
-  return saveTextFile(
-    filename,
-    FORMAT_FILTER[format],
-    content,
-    FORMAT_MIME[format],
-  );
-}
-
-// ────────────────────────────────────────────────────────────────────
 // ExportDialog 本体
 // ────────────────────────────────────────────────────────────────────
+
+/** ダイアログのタブ（テキスト出力 / AI 使用開示 / タイムラプス動画 / 本の書き出し）。 */
+export type ExportDialogMode = "text" | "authorship" | "timelapse" | "book";
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  /**
+   * タブ指定つきで開く外部要求。
+   * ダイアログが既に開いている間の再要求でもタブを切り替えられるよう、
+   * seq（nonce）の変化で適用する。未指定なら前回のタブを維持する。
+   */
+  modeRequest?: { mode: ExportDialogMode; seq: number };
 }
 
-export function ExportDialog({ open, onClose }: Props) {
+export function ExportDialog({ open, onClose, modeRequest }: Props) {
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const nodes = useTreeStore((s) => s.nodes);
   const expandedIds = useTreeStore((s) => s.expandedIds);
   const settingsStore = useSettingsStore();
@@ -197,8 +87,8 @@ export function ExportDialog({ open, onClose }: Props) {
   const [isExporting, setIsExporting] = useState(false);
   const [projectTitle, setProjectTitle] = useState("Untitled Project");
   const [projectLanguage, setProjectLanguage] = useState("ja");
-  // テキスト出力 / AI 使用開示 / タイムラプス動画 の切り替え。
-  const [mode, setMode] = useState<"text" | "authorship" | "timelapse">("text");
+  // テキスト出力 / AI 使用開示 / タイムラプス動画 / 本の書き出し の切り替え。
+  const [mode, setMode] = useState<ExportDialogMode>("text");
   const [includePassageExcerpts, setIncludePassageExcerpts] = useState(false);
   // 制作過程開示: 各AI使用箇所に「入力(発話/指示)＋出力」を、さらにサブトグルで
   // 送信プロンプト全文を同梱する。
@@ -211,6 +101,14 @@ export function ExportDialog({ open, onClose }: Props) {
   const [isLoadingAuthorship, setIsLoadingAuthorship] = useState(false);
 
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // タブ指定つきの open 要求を適用する。seq の変化で発火するため、
+  // ダイアログが既に開いているときの再要求でもタブが切り替わる。
+  useEffect(() => {
+    if (modeRequest) setMode(modeRequest.mode);
+    // intentionally keyed on seq: same-mode re-requests must re-apply
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeRequest?.seq]);
 
   // ダイアログが開いた時に状態を初期化
   useEffect(() => {
@@ -448,37 +346,57 @@ export function ExportDialog({ open, onClose }: Props) {
     <AnimatedOverlay
       open={open}
       onClose={onClose}
-      className="flex h-[780px] w-[1000px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+      testId="export-dialog"
+      className={cn(
+        "flex min-h-0 min-w-0 flex-col overflow-hidden border border-border bg-background shadow-xl",
+        phoneWorkspace
+          ? "h-[var(--visual-viewport-height,100dvh)] w-screen max-h-none max-w-none resize-none rounded-none border-0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
+          : "h-[780px] w-[1000px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize rounded-lg",
+      )}
     >
       {/* ヘッダー */}
-      <div className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2">
-        <h2 className="text-sm font-semibold text-foreground">
+      <div
+        className={cn(
+          "flex flex-shrink-0 items-center gap-3 border-b border-border",
+          phoneWorkspace ? "flex-wrap px-3 py-2" : "px-4 py-2",
+        )}
+      >
+        <h2 className="min-w-0 text-sm font-semibold text-foreground">
           {t("export.dialog.title")}
         </h2>
-        {/* モード切替: テキスト / タイムラプス動画 (#8) */}
+        {/* モード切替: テキスト / 開示 / タイムラプス動画 / 本の書き出し */}
         <div
           role="tablist"
-          className="inline-flex rounded-md border border-border p-0.5"
+          data-testid="export-mode-tabs"
+          className={cn(
+            "inline-flex rounded-md border border-border p-0.5",
+            phoneWorkspace &&
+              "order-3 w-full overscroll-x-contain overflow-x-auto",
+          )}
         >
-          {(["text", "authorship", "timelapse"] as const).map((m) => (
+          {(["text", "authorship", "timelapse", "book"] as const).map((m) => (
             <button
               key={m}
               type="button"
               role="tab"
               aria-selected={mode === m}
               onClick={() => setMode(m)}
-              className={`rounded px-2.5 py-1 text-xs transition-colors ${
+              className={cn(
+                "shrink-0 rounded px-2.5 py-1 text-xs transition-colors",
+                phoneWorkspace && "min-h-10",
                 mode === m
                   ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent"
-              }`}
+                  : "text-muted-foreground hover:bg-accent",
+              )}
             >
               {t(
                 m === "text"
                   ? "timelapse.tabTextExport"
                   : m === "authorship"
                     ? "attribution.report"
-                    : "timelapse.tabVideoExport",
+                    : m === "timelapse"
+                      ? "timelapse.tabVideoExport"
+                      : "vivliostyle.tab",
               )}
             </button>
           ))}
@@ -487,7 +405,11 @@ export function ExportDialog({ open, onClose }: Props) {
         <button
           type="button"
           onClick={onClose}
-          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          aria-label={t("common.close")}
+          className={cn(
+            "flex items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            phoneWorkspace ? "min-h-11 min-w-11" : "p-1",
+          )}
         >
           <X className="h-4 w-4" />
         </button>
@@ -495,9 +417,23 @@ export function ExportDialog({ open, onClose }: Props) {
 
       {/* ボディ: テキスト出力 / AI 使用開示 / 動画 */}
       {mode === "text" ? (
-        <div className="flex flex-1 overflow-hidden">
+        <div
+          data-testid="export-text-layout"
+          data-layout={phoneWorkspace ? "stacked" : "split"}
+          className={cn(
+            "flex min-h-0 min-w-0 flex-1 overflow-hidden",
+            phoneWorkspace && "flex-col",
+          )}
+        >
           {/* 左: シーン選択ツリー */}
-          <div className="w-1/2 min-w-[240px] overflow-hidden border-r border-border">
+          <div
+            className={cn(
+              "overflow-hidden border-border",
+              phoneWorkspace
+                ? "h-[34%] min-h-36 w-full min-w-0 shrink-0 border-b"
+                : "w-1/2 min-w-[240px] border-r",
+            )}
+          >
             <ExportTree
               nodes={nodes}
               state={treeState}
@@ -506,7 +442,12 @@ export function ExportDialog({ open, onClose }: Props) {
           </div>
 
           {/* 右: エクスポート設定 */}
-          <div className="min-w-[280px] flex-1 overflow-hidden">
+          <div
+            className={cn(
+              "min-h-0 min-w-0 flex-1 overflow-hidden",
+              !phoneWorkspace && "min-w-[280px]",
+            )}
+          >
             <ExportSettingsPanel
               settings={exportSettings}
               onChange={handleSettingsChange}
@@ -528,16 +469,27 @@ export function ExportDialog({ open, onClose }: Props) {
           onIncludePromptsChange={setIncludePrompts}
           includeFullSystemPrompt={includeFullSystemPrompt}
           onIncludeFullSystemPromptChange={setIncludeFullSystemPrompt}
+          phoneWorkspace={phoneWorkspace}
         />
-      ) : (
-        <div className="flex-1 overflow-auto">
+      ) : mode === "timelapse" ? (
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto">
           <TimelapseExportSection projectTitle={projectTitle} />
         </div>
+      ) : (
+        // 本の書き出し（Vivliostyle）。body + 専用フッター（プレビュー/書き出し）を
+        // セクション側が描画する。タブ表示中のみマウントされ、マウント時に初期化。
+        <VivliostyleExportSection />
       )}
 
-      {/* フッター (動画は TimelapseExportSection が自前の書き出しボタンを持つ) */}
-      {mode !== "timelapse" && (
-        <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
+      {/* フッター (動画/本の書き出しは各セクションが自前のフッターを持つ) */}
+      {mode !== "timelapse" && mode !== "book" && (
+        <div
+          data-testid="export-dialog-footer"
+          className={cn(
+            "flex flex-shrink-0 items-center gap-3 border-t border-border",
+            phoneWorkspace ? "flex-wrap gap-2 px-3 py-2" : "px-4 py-2",
+          )}
+        >
           {mode === "text" ? (
             <>
               <span className="text-xs text-muted-foreground">
@@ -559,7 +511,7 @@ export function ExportDialog({ open, onClose }: Props) {
               })}
             </span>
           )}
-          <div className="flex-1" />
+          <div className={cn("flex-1", phoneWorkspace && "hidden")} />
           {/* コピーボタン */}
           <button
             type="button"
@@ -569,7 +521,10 @@ export function ExportDialog({ open, onClose }: Props) {
                 ? sceneCount === 0
                 : !authorshipReport || isLoadingAuthorship
             }
-            className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+            className={cn(
+              "flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40",
+              phoneWorkspace && "min-h-11 flex-1 justify-center",
+            )}
           >
             {isCopied ? (
               <>
@@ -592,7 +547,10 @@ export function ExportDialog({ open, onClose }: Props) {
                 ? sceneCount === 0 || isExporting
                 : !authorshipReport || isLoadingAuthorship || isExporting
             }
-            className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+            className={cn(
+              "flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40",
+              phoneWorkspace && "min-h-11 flex-1 justify-center",
+            )}
           >
             <Download className="h-3.5 w-3.5" />
             {isExporting
@@ -614,6 +572,7 @@ function AuthorshipDisclosureSection({
   onIncludePromptsChange,
   includeFullSystemPrompt,
   onIncludeFullSystemPromptChange,
+  phoneWorkspace,
 }: {
   report: ProvenanceDisclosureReport | null;
   loading: boolean;
@@ -623,6 +582,7 @@ function AuthorshipDisclosureSection({
   onIncludePromptsChange: (value: boolean) => void;
   includeFullSystemPrompt: boolean;
   onIncludeFullSystemPromptChange: (value: boolean) => void;
+  phoneWorkspace: boolean;
 }) {
   const { t } = useTranslation();
   const total = report?.totals.total ?? 0;
@@ -631,10 +591,20 @@ function AuthorshipDisclosureSection({
   const breakdown = report?.breakdown;
 
   return (
-    <div className="flex-1 overflow-auto p-4">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
+    <div
+      className={cn(
+        "min-h-0 min-w-0 flex-1 overflow-auto",
+        phoneWorkspace ? "p-3" : "p-4",
+      )}
+    >
+      <div className="mx-auto flex min-w-0 max-w-3xl flex-col gap-4">
+        <div
+          className={cn(
+            "flex justify-between gap-3",
+            phoneWorkspace ? "flex-col items-stretch" : "items-center",
+          )}
+        >
+          <div className="min-w-0">
             <h3 className="text-sm font-semibold">
               {t("export.disclosure.title")}
             </h3>
@@ -642,7 +612,12 @@ function AuthorshipDisclosureSection({
               {t("export.disclosure.subtitle")}
             </p>
           </div>
-          <div className="flex flex-col items-end gap-1.5 text-xs text-muted-foreground">
+          <div
+            className={cn(
+              "flex min-w-0 flex-col gap-1.5 text-xs text-muted-foreground",
+              phoneWorkspace ? "items-start" : "items-end",
+            )}
+          >
             <label className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -694,7 +669,12 @@ function AuthorshipDisclosureSection({
           </p>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-3">
+            <div
+              className={cn(
+                "grid gap-3",
+                phoneWorkspace ? "grid-cols-1" : "grid-cols-3",
+              )}
+            >
               <Metric
                 label={t("export.disclosure.metricTotal")}
                 value={total.toLocaleString()}

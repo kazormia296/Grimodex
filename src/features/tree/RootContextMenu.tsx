@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Sparkles } from "lucide-react";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import {
   ContextMenuContent,
   ContextMenuItem,
@@ -30,7 +31,16 @@ export function RootContextMenu({ createNode }: RootContextMenuProps) {
         onSelect={() => {
           createNode({ nodeType: "scene", parentId: null })
             .then((n) => {
-              useTabStore.getState().openPinned(n.id);
+              openEditorDocument(
+                {
+                  target: { kind: "scene", documentId: n.id },
+                  mode: "pinned",
+                  revealEditor: true,
+                  focusEditor: false,
+                  syncSceneContext: true,
+                },
+                defaultEditorNavigationPorts,
+              );
             })
             .catch(() => {});
         }}
@@ -41,7 +51,16 @@ export function RootContextMenu({ createNode }: RootContextMenuProps) {
         onSelect={() => {
           createNode({ nodeType: "note", parentId: null })
             .then((n) => {
-              useTabStore.getState().openPinned(n.id);
+              openEditorDocument(
+                {
+                  target: { kind: "scene", documentId: n.id },
+                  mode: "pinned",
+                  revealEditor: true,
+                  focusEditor: false,
+                  syncSceneContext: true,
+                },
+                defaultEditorNavigationPorts,
+              );
             })
             .catch(() => {});
         }}

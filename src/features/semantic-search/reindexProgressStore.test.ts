@@ -21,6 +21,71 @@ describe("reindexProgressStore", () => {
     expect(s.active).toBe(false);
     expect(s.current).toBeNull();
     expect(s.finished).toBe(false);
+    expect(s.activeWorkspaceKey).toBeNull();
+    expect(s.activeWorkspaceOpenRevision).toBeNull();
+    expect(s.activeProjectId).toBeNull();
+    expect(s.activeRunId).toBeNull();
+  });
+
+  it("begin/finish only mutate the matching run token", () => {
+    const store = useReindexProgressStore.getState();
+    expect(store.begin("/workspace/a", 1, "p1", "run-a")).toBe(true);
+    expect(useReindexProgressStore.getState().running).toBe(true);
+    expect(useReindexProgressStore.getState().activeRunId).toBe("run-a");
+
+    useReindexProgressStore.getState().finish("run-old");
+    expect(useReindexProgressStore.getState().running).toBe(true);
+
+    useReindexProgressStore.getState().finish("run-a");
+    expect(useReindexProgressStore.getState().running).toBe(false);
+  });
+
+  it("keeps the token after invoke finish so a delayed done event is accepted", () => {
+    const store = useReindexProgressStore.getState();
+    expect(store.begin("/workspace/a", 1, "p1", "run-fast")).toBe(true);
+    store.finish("run-fast");
+    expect(useReindexProgressStore.getState().activeRunId).toBe("run-fast");
+
+    useReindexProgressStore.getState().setProgress({
+      projectId: "p1",
+      runId: "run-fast",
+      sceneIndex: 0,
+      sceneId: "",
+      totalScenes: 0,
+      chunksIndexed: 0,
+      done: true,
+    });
+    expect(useReindexProgressStore.getState().finished).toBe(true);
+    vi.advanceTimersByTime(AUTO_CLEAR_MS);
+    expect(useReindexProgressStore.getState().activeRunId).toBeNull();
+  });
+
+  it("an old run failure cannot clear a newer workspace run", () => {
+    const store = useReindexProgressStore.getState();
+    expect(store.begin("/workspace/a", 1, "default-project", "run-a")).toBe(
+      true,
+    );
+    store.clear();
+    expect(
+      useReindexProgressStore
+        .getState()
+        .begin("/workspace/b", 2, "default-project", "run-b"),
+    ).toBe(true);
+    useReindexProgressStore.getState().setProgress({
+      projectId: "default-project",
+      runId: "run-b",
+      sceneIndex: 1,
+      sceneId: "b-scene",
+      totalScenes: 2,
+      chunksIndexed: 4,
+      done: false,
+    });
+
+    useReindexProgressStore.getState().fail("run-a");
+    const current = useReindexProgressStore.getState();
+    expect(current.running).toBe(true);
+    expect(current.activeRunId).toBe("run-b");
+    expect(current.current?.sceneId).toBe("b-scene");
   });
 
   it("setProgress activates and records current payload", () => {
@@ -94,6 +159,7 @@ describe("reindexProgressStore", () => {
   });
 
   it("clear immediately resets state and timer", () => {
+    useReindexProgressStore.getState().begin("/workspace/a", 1, "p1", "run-a");
     useReindexProgressStore.getState().setProgress({
       sceneIndex: 2,
       sceneId: "s-2",
@@ -102,7 +168,14 @@ describe("reindexProgressStore", () => {
       done: true,
     });
     useReindexProgressStore.getState().clear();
-    expect(useReindexProgressStore.getState().active).toBe(false);
+    expect(useReindexProgressStore.getState()).toMatchObject({
+      active: false,
+      running: false,
+      activeWorkspaceKey: null,
+      activeWorkspaceOpenRevision: null,
+      activeProjectId: null,
+      activeRunId: null,
+    });
     // タイマーが残っていれば後続で消えるが、既に空なので変化しないはず
     vi.advanceTimersByTime(AUTO_CLEAR_MS * 2);
     expect(useReindexProgressStore.getState().active).toBe(false);

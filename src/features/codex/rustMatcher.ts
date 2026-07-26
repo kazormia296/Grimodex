@@ -1,4 +1,5 @@
-import { invoke } from "@/lib/tauri";
+import { isElectron } from "@/lib/shell";
+import { invoke, isTauri } from "@/lib/tauri";
 import {
   isProjectLoading,
   whenProjectLoadDone,
@@ -11,11 +12,18 @@ import {
 } from "./codexMatcher";
 
 // ---------------------------------------------------------------------------
-// Tauri availability
+// Native matcher availability
 // ---------------------------------------------------------------------------
 
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/**
+ * ネイティブ (Rust) Aho-Corasick マッチャが使えるシェルか。Electron 移行
+ * Phase 3 バッチ1c で codex_rebuild_matcher / codex_match_text が napi に
+ * 載ったため、`__TAURI_INTERNALS__` 判定を `isTauri() || isElectron()` に
+ * 拡張（supportsTrashBin / supportsNativeExport と同作法）。非対応シェルは
+ * 従来どおり JS マッチャ (createCodexMatcher) にフォールバックする。
+ */
+function supportsNativeMatcher(): boolean {
+  return isTauri() || isElectron();
 }
 
 // ---------------------------------------------------------------------------
@@ -75,12 +83,12 @@ async function flushPendingRebuild(): Promise<void> {
 /**
  * Rebuild the Rust-side Aho-Corasick matcher with the given entries.
  * Skips the IPC call when entries are unchanged.
- * Falls back to a no-op when Tauri is not available (browser / test env).
+ * Falls back to a no-op when no native matcher is available (browser / test env).
  */
 export async function rebuildMatcher(
   entries: CodexMatchTarget[],
 ): Promise<void> {
-  if (!isTauri()) return;
+  if (!supportsNativeMatcher()) return;
 
   if (isProjectLoading()) {
     pendingEntries = entries;
@@ -99,14 +107,14 @@ export async function rebuildMatcher(
 
 /**
  * Match `text` against the current Rust matcher.
- * Falls back to the JS `createCodexMatcher` when Tauri is not available.
+ * Falls back to the JS `createCodexMatcher` when no native matcher is available.
  */
 export async function matchText(
   text: string,
   entries: CodexMatchTarget[],
   excludeEntryIds: string[] = [],
 ): Promise<CodexMatch[]> {
-  if (!isTauri()) {
+  if (!supportsNativeMatcher()) {
     const matcher = createCodexMatcher(entries);
     return matcher(text).filter((m) => !excludeEntryIds.includes(m.entryId));
   }
@@ -126,7 +134,7 @@ export async function findMentionedEntriesAsync(
 ): Promise<CodexMatchTarget[]> {
   if (!text || entries.length === 0) return [];
 
-  if (!isTauri()) {
+  if (!supportsNativeMatcher()) {
     return findMentionedEntries(text, entries);
   }
 

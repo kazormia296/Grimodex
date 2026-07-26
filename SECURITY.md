@@ -7,14 +7,14 @@ Grimodex の安全性向上にご協力いただきありがとうございま�
 
 ## Supported Versions / サポート対象バージョン
 
-Grimodex is pre-1.0 software under active development. Only the **latest released version** receives security fixes. Older versions are not patched — please upgrade.
+Grimodex follows a latest-release-only support policy while under active development. Only the **latest released version** receives security fixes. Older versions are not patched — please upgrade.
 
-Grimodex は 1.0 未満の開発中ソフトウェアです。セキュリティ修正の対象は **最新リリース版のみ** で、それ以前のバージョンへのバックポートは行いません。アップデートをお願いします。
+Grimodex は活発に開発中で、最新リリースのみをサポートします。セキュリティ修正の対象は **最新リリース版のみ** で、それ以前のバージョンへのバックポートは行いません。アップデートをお願いします。
 
-| Version | Supported |
-| ------- | --------- |
-| latest release on `master` | ✅ |
-| anything older | ❌ |
+| Version                    | Supported |
+| -------------------------- | --------- |
+| latest release on `master` | ✅        |
+| anything older             | ❌        |
 
 ---
 
@@ -23,13 +23,13 @@ Grimodex は 1.0 未満の開発中ソフトウェアです。セキュリティ
 **Please do NOT open a public GitHub Issue for security vulnerabilities.**
 **セキュリティ脆弱性を公開 Issue として投稿しないでください。**
 
-Use one of the following private channels:
+Use the following private channel:
 
-1. **GitHub Private Vulnerability Reporting** (preferred / 推奨)
-   - <https://github.com/kazormia296/Grimodex/security/advisories/new>
-2. **Email** — `midake745698@gmail.com`
-   - Please include `[Grimodex Security]` in the subject line.
-   - 件名に `[Grimodex Security]` を付けてください。
+**GitHub Private Vulnerability Reporting**
+
+- <https://github.com/kazormia296/Grimodex/security/advisories/new>
+- This is the only supported reporting channel. Reports sent by other means may be missed.
+- これが唯一の報告窓口です。他の手段による報告は見落とされる可能性があります。
 
 In your report, please include where possible:
 
@@ -49,12 +49,12 @@ Grimodex is maintained by a single developer, so timelines are best-effort:
 
 メンテナは個人です。対応時間はベストエフォートとなります：
 
-| Stage | Target |
-| ----- | ------ |
-| Acknowledgement / 受領連絡 | within 7 days / 7 日以内 |
-| Initial assessment / 一次評価 | within 14 days / 14 日以内 |
-| Fix or mitigation / 修正またはミティゲーション | depends on severity / 重大度による |
-| Public disclosure / 公開 | coordinated with reporter / 報告者と調整 |
+| Stage                                          | Target                                   |
+| ---------------------------------------------- | ---------------------------------------- |
+| Acknowledgement / 受領連絡                     | within 7 days / 7 日以内                 |
+| Initial assessment / 一次評価                  | within 14 days / 14 日以内               |
+| Fix or mitigation / 修正またはミティゲーション | depends on severity / 重大度による       |
+| Public disclosure / 公開                       | coordinated with reporter / 報告者と調整 |
 
 If you do not receive a reply within 14 days, please re-send via the other channel above — the first message may have been lost.
 
@@ -66,17 +66,26 @@ If you do not receive a reply within 14 days, please re-send via the other chann
 
 ### In scope / 対象
 
-- The Grimodex desktop application (Tauri shell + frontend + Rust backend)
-  - デスクトップアプリ本体（Tauri シェル + フロントエンド + Rust バックエンド）
-- Tauri IPC command surface (`src-tauri/src/commands/`)
+- The supported Grimodex desktop application (Electron main/preload/renderer + Rust N-API backend)
+  - サポート対象のデスクトップアプリ本体（Electron main/preload/renderer + Rust N-API バックエンド）
+- Electron IPC and native command surfaces (`electron/shared/`, `electron/main/`, `electron/preload/`, `electron/native/grimodex-node/`)
+  - Electron IPC と native command の境界
 - Local data handling: SQLite database, file-backed scenes, exports
   - ローカルデータ処理（SQLite、ファイル裏付けされたシーン、エクスポート）
+- The standalone MCP server and its authorization/license boundary
+  - standalone MCP サーバーと認可・ライセンス境界
 - Handling of user-supplied AI provider API keys
   - ユーザーが入力した AI プロバイダー API キーの取り扱い
-- Content Security Policy and webview hardening
-  - CSP および WebView のハードニング
+- Content Security Policy, custom `app://` protocol handling, BrowserWindow sandboxing, and context isolation
+  - CSP、`app://` プロトコル、BrowserWindow sandbox、context isolation のハードニング
+- Tauri v1-to-Electron migration code exercised by the current installer or first-run data/credential migration
+  - 現行インストーラーや初回起動で使う Tauri v1 から Electron への移行コード
 - Dependency vulnerabilities that are actually exploitable in Grimodex's usage
   - Grimodex の使用形態で実際に悪用可能な依存関係の脆弱性
+
+The Tauri app package at the `src-tauri` root is retained as frozen legacy compatibility code, not as the supported desktop runtime. Shared Rust crates under `src-tauri/crates/` and the MCP server remain active and are in scope. Vulnerabilities that affect only an older, unsupported Tauri release without affecting the current Electron runtime or its migration path follow the older-version policy above.
+
+`src-tauri` 直下の Tauri app package は frozen legacy 互換コードであり、サポート対象のデスクトップランタイムではありません。`src-tauri/crates/` の共有 Rust crates と MCP サーバーは現役で対象範囲に含まれます。古い未サポート Tauri リリースだけに影響し、現行 Electron または移行経路へ影響しない問題は、上記の旧版ポリシーに従います。
 
 ### Out of scope / 対象外
 

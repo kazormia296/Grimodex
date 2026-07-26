@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useWorkspaceStore } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 
+const cancelScheduledImeExportsMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/features/ime/scheduler", () => ({
+  cancelScheduledImeExports: cancelScheduledImeExportsMock,
+}));
+
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
@@ -15,9 +21,13 @@ function resetStore() {
     view: "loading",
     globalSettings: null,
     activeWorkspacePath: null,
+    workspaceOpenRevision: 0,
+    workspaceSwitchInProgress: false,
+    workspaceHydrated: false,
     activeWorkspaceName: null,
     error: null,
     pendingTrustPath: null,
+    showSampleTour: false,
   });
 }
 
@@ -125,6 +135,37 @@ describe("useWorkspaceStore", () => {
   });
 
   describe("openWorkspace", () => {
+    it("cancels pending IME exports before invoking the native workspace swap", async () => {
+      const order: string[] = [];
+      cancelScheduledImeExportsMock.mockImplementation(() => {
+        order.push("cancel-ime");
+      });
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "open_workspace") {
+          order.push("open-workspace");
+          return { name: "MyNovel", isExisting: true };
+        }
+        if (command === "get_global_settings") {
+          return {
+            recentWorkspaces: [],
+            lastActiveWorkspace: "D:\\Novels\\MyNovel",
+            theme: "system",
+            uiLanguage: "ja",
+            uiScale: 100,
+            showLauncherOnStartup: false,
+          };
+        }
+        return { rows: [] };
+      });
+
+      await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\MyNovel");
+
+      expect(order).toContain("cancel-ime");
+      expect(order.indexOf("cancel-ime")).toBeLessThan(
+        order.indexOf("open-workspace"),
+      );
+    });
+
     it("sets editor view and active workspace on success", async () => {
       mockInvoke.mockResolvedValueOnce({ name: "MyNovel" });
 
@@ -133,6 +174,9 @@ describe("useWorkspaceStore", () => {
       expect(state.view).toBe("editor");
       expect(state.activeWorkspacePath).toBe("D:\\Novels\\MyNovel");
       expect(state.activeWorkspaceName).toBe("MyNovel");
+      expect(state.workspaceOpenRevision).toBe(1);
+      expect(state.workspaceSwitchInProgress).toBe(false);
+      expect(state.workspaceHydrated).toBe(true);
     });
 
     it("sets error on failure", async () => {
@@ -142,6 +186,27 @@ describe("useWorkspaceStore", () => {
       const state = useWorkspaceStore.getState();
       expect(state.view).not.toBe("editor");
       expect(state.error).toBeTruthy();
+      expect(state.workspaceOpenRevision).toBe(0);
+      expect(state.workspaceSwitchInProgress).toBe(false);
+      expect(state.workspaceHydrated).toBe(false);
+    });
+
+    it("restores the previous hydrated workspace when native open rejects before swap", async () => {
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: "D:\\Novels\\Existing",
+        activeWorkspaceName: "Existing",
+        workspaceOpenRevision: 3,
+        workspaceHydrated: true,
+      });
+      mockInvoke.mockRejectedValueOnce(new Error("new DB rejected"));
+
+      await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\Broken");
+      const state = useWorkspaceStore.getState();
+      expect(state.activeWorkspacePath).toBe("D:\\Novels\\Existing");
+      expect(state.workspaceOpenRevision).toBe(3);
+      expect(state.workspaceHydrated).toBe(true);
+      expect(state.workspaceSwitchInProgress).toBe(false);
     });
 
     // R4-1 系列A: 同一パス再オープン (例: チュートリアル再実行) では
@@ -179,9 +244,11 @@ describe("useWorkspaceStore", () => {
         useWorkspaceStore.setState({
           view: "editor",
           activeWorkspacePath: samePath,
+          workspaceOpenRevision: 4,
         });
         await useWorkspaceStore.getState().openWorkspace(samePath);
         expect(useWorkspaceStore.getState().error).toBeNull();
+        expect(useWorkspaceStore.getState().workspaceOpenRevision).toBe(5);
         expect(loadProjectSpy).toHaveBeenCalledTimes(1);
 
         // 2) 別パスへの切替 → remount (mount 時の loadProject) に任せる
@@ -191,6 +258,7 @@ describe("useWorkspaceStore", () => {
           activeWorkspacePath: "D:\\Novels\\Other",
         });
         await useWorkspaceStore.getState().openWorkspace(samePath);
+        expect(useWorkspaceStore.getState().workspaceOpenRevision).toBe(6);
         expect(loadProjectSpy).not.toHaveBeenCalled();
       } finally {
         useProjectStore.setState({ loadProject: prevLoadProject });
@@ -219,6 +287,8 @@ describe("useWorkspaceStore", () => {
         // open_workspace
         .mockResolvedValueOnce({ name: "NewProject" })
         // db_execute (initCurrentProject → listProjects)
+        .mockResolvedValueOnce({ rows: [] })
+        // db_execute (initCurrentProject → getSetting workspace.lastActiveProjectId)
         .mockResolvedValueOnce({ rows: [] })
         // get_global_settings (re-read after open_workspace)
         .mockResolvedValueOnce({
@@ -273,6 +343,123 @@ describe("useWorkspaceStore", () => {
       useWorkspaceStore.setState({ view: "editor" });
       useWorkspaceStore.getState().showLauncher();
       expect(useWorkspaceStore.getState().view).toBe("launcher");
+    });
+  });
+
+  describe("seedAndOpenSample", () => {
+    it("replaces the previous immutable sample generation in trusted workspaces", async () => {
+      const oldSample =
+        "/data/sample-workspace-11111111-1111-1111-1111-111111111111";
+      const newSample =
+        "/data/sample-workspace-22222222-2222-2222-2222-222222222222";
+      const userWorkspace = "/novels/main";
+      const originalOpenWorkspace = useWorkspaceStore.getState().openWorkspace;
+      const originalLoadProject = useProjectStore.getState().loadProject;
+      const openWorkspace = vi.fn().mockResolvedValue(undefined);
+      const loadProject = vi.fn(async (projectId: string) => {
+        useProjectStore.setState({ currentProjectId: projectId });
+      });
+      useWorkspaceStore.setState({
+        openWorkspace,
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: oldSample,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 100,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [userWorkspace, oldSample],
+          sampleWorkspacePath: oldSample,
+        },
+      });
+      useProjectStore.setState({
+        currentProjectId: "user-project",
+        loadProject,
+      });
+      mockInvoke
+        .mockResolvedValueOnce({
+          path: newSample,
+          projectId: "grimodex-tutorial-project",
+        })
+        .mockResolvedValueOnce({
+          ...useWorkspaceStore.getState().globalSettings,
+          sampleWorkspacePath: newSample,
+        })
+        .mockResolvedValueOnce(undefined);
+
+      try {
+        await useWorkspaceStore
+          .getState()
+          .seedAndOpenSample("ja", '{"preset":"full"}');
+
+        expect(mockInvoke).toHaveBeenNthCalledWith(3, "save_global_settings", {
+          settings: expect.objectContaining({
+            trustedWorkspaces: [userWorkspace, newSample],
+            sampleWorkspacePath: newSample,
+          }),
+        });
+        expect(openWorkspace).toHaveBeenCalledWith(newSample);
+        expect(loadProject).toHaveBeenCalledWith("grimodex-tutorial-project");
+        expect(useWorkspaceStore.getState().showSampleTour).toBe(true);
+      } finally {
+        useWorkspaceStore.setState({ openWorkspace: originalOpenWorkspace });
+        useProjectStore.setState({ loadProject: originalLoadProject });
+      }
+    });
+
+    it("does not show the tour when sample seeding fails", async () => {
+      mockInvoke.mockRejectedValueOnce(new Error("sample seed failed"));
+
+      await useWorkspaceStore
+        .getState()
+        .seedAndOpenSample("ja", '{"preset":"full"}');
+
+      expect(useWorkspaceStore.getState().showSampleTour).toBe(false);
+      expect(useWorkspaceStore.getState().error).toBe("sample seed failed");
+    });
+
+    it("does not show the tour when the seeded project cannot become active", async () => {
+      const samplePath = "/data/sample-workspace";
+      const originalOpenWorkspace = useWorkspaceStore.getState().openWorkspace;
+      const originalLoadProject = useProjectStore.getState().loadProject;
+      const openWorkspace = vi.fn().mockResolvedValue(undefined);
+      const loadProject = vi.fn().mockResolvedValue(undefined);
+      useWorkspaceStore.setState({
+        openWorkspace,
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: samplePath,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 100,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [samplePath],
+          sampleWorkspacePath: samplePath,
+        },
+      });
+      useProjectStore.setState({
+        currentProjectId: "user-project",
+        loadProject,
+      });
+      mockInvoke.mockResolvedValueOnce({
+        path: samplePath,
+        projectId: "grimodex-tutorial-project",
+      });
+
+      try {
+        await useWorkspaceStore
+          .getState()
+          .seedAndOpenSample("ja", '{"preset":"full"}');
+
+        expect(loadProject).toHaveBeenCalledWith("grimodex-tutorial-project");
+        expect(useWorkspaceStore.getState().showSampleTour).toBe(false);
+        expect(useWorkspaceStore.getState().error).toBe(
+          "Tutorial project did not become active",
+        );
+      } finally {
+        useWorkspaceStore.setState({ openWorkspace: originalOpenWorkspace });
+        useProjectStore.setState({ loadProject: originalLoadProject });
+      }
     });
   });
 

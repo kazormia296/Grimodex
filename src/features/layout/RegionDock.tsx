@@ -4,7 +4,6 @@ import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { RegionStripe } from "./RegionStripe";
 import { RegionContent } from "./RegionContent";
 import { useLayoutStore } from "./layoutStore";
-import { useCardLayout } from "./cardLayout";
 import type { RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
 
@@ -49,6 +48,7 @@ interface RegionDockProps {
   stripeOrientation: "vertical" | "horizontal";
   contentOrientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
+  dormant?: boolean;
   /** bottom stripe の左右端に確保するコーナートグル用の余白(px)。
    *  content には適用しない（alignment 維持のため）。 */
   stripeReserveStartPx?: number;
@@ -59,6 +59,7 @@ function BottomRegionDock({
   segments,
   stripeOrientation,
   contentOrientation,
+  dormant = false,
   stripeReserveStartPx = 0,
   stripeReserveEndPx = 0,
 }: Omit<RegionDockProps, "region">) {
@@ -77,8 +78,6 @@ function BottomRegionDock({
       (slot) => slot.activePanel === id,
     );
   });
-  const cardLayout = useCardLayout();
-
   return (
     <div
       data-region-dock="bottom"
@@ -86,7 +85,7 @@ function BottomRegionDock({
       // content と icon stripe の間の stripe-gap。bottomDockPx が同じ
       // 値をドック高さに加算しているので overflow しない。
       style={{
-        gap: cardLayout && !bottomZoomed ? "var(--gx-stripe-gap)" : undefined,
+        gap: !bottomZoomed ? "var(--gx-stripe-gap)" : undefined,
       }}
     >
       <AnimatedRegionChrome
@@ -99,7 +98,11 @@ function BottomRegionDock({
         }
         className="flex min-h-0 w-full min-w-0 flex-col"
       >
-        <RegionContent region="bottom" orientation={contentOrientation} />
+        <RegionContent
+          region="bottom"
+          orientation={contentOrientation}
+          dormant={dormant}
+        />
       </AnimatedRegionChrome>
 
       <div
@@ -129,6 +132,7 @@ export const RegionDock = memo(function RegionDock({
   stripeOrientation,
   contentOrientation,
   segments,
+  dormant = false,
   stripeReserveStartPx = 0,
   stripeReserveEndPx = 0,
 }: RegionDockProps) {
@@ -140,6 +144,7 @@ export const RegionDock = memo(function RegionDock({
       stripeOrientation={stripeOrientation}
       contentOrientation={contentOrientation}
       segments={segments}
+      dormant={dormant}
       stripeReserveStartPx={stripeReserveStartPx}
       stripeReserveEndPx={stripeReserveEndPx}
     />

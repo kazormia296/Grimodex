@@ -1,6 +1,7 @@
 import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -50,8 +51,16 @@ function toItemKind(sourceType: LexicalSourceType): ItemKind {
 function navigateTo(result: LexicalSearchResult): void {
   // 既存 GlobalSearchDialog.tsx:89-104 の openResult を移植。
   if (result.sourceType === "scene") {
-    useTreeStore.getState().setActiveScene(result.id);
-    useLayoutStore.getState().showPanel("editor");
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: result.id },
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
   } else if (result.sourceType === "codex") {
     void requestOpenInCodex(result.id);
   } else {
@@ -97,8 +106,6 @@ export const lexicalSearchProvider: CommandCenterProvider = {
   order: PROVIDER_ORDER,
   title: "Lexical",
   hideWhenEmpty: true,
-  surfaces: ["bar", "panel"],
-  supportsMode: (mode) => mode === "search",
   async search(ctx: ProviderSearchContext): Promise<CommandCenterSection> {
     const query = ctx.query.trim();
     if (!query) return emptySection();

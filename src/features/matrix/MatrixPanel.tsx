@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { db } from "@/db/client";
 import { sceneCodexMentions, codexTags, sceneBeatPovCache } from "@/db/schema";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useGridStore } from "@/features/grid/gridStore";
 import {
   upsertScenePin,
@@ -24,6 +25,7 @@ import { deriveColumns } from "./lib/deriveColumns";
 import { deriveCellMap } from "./lib/deriveCells";
 import { buildCsvString } from "./lib/exportCsv";
 import { saveTextFile } from "@/lib/exportFile";
+import { compareInstantValues } from "@/lib/time";
 import type { CellSource } from "./lib/deriveCells";
 import { MatrixHeader } from "./MatrixHeader";
 import { MatrixTable } from "./MatrixTable";
@@ -48,7 +50,6 @@ export function MatrixPanel() {
   const groupCodexByType = useMatrixStore((s) => s.groupCodexByType);
   const searchQuery = useMatrixStore((s) => s.searchQuery);
   const collapsedRowIds = useMatrixStore((s) => s.collapsedRowIds);
-  const bodyBackfillCompleted = useMatrixStore((s) => s.bodyBackfillCompleted);
   const subplotTagName = useMatrixStore((s) => s.subplotTagName);
   const customSets = useMatrixStore((s) => s.customSets);
   const activeCustomSetId = useMatrixStore((s) => s.activeCustomSetId);
@@ -110,46 +111,43 @@ export function MatrixPanel() {
       .catch(() => {});
   }, []);
 
-  // Startup backfill: run once when body rows are insufficient
+  // Startup backfill: always consult the versioned, project-scoped index marker
+  // once per mount. `bodyBackfillCompleted` is a legacy persisted UI flag, so an
+  // old true value must not bypass a newer bodyMentionIndexState format (v2 adds
+  // semantic-link rows) or a previously failed scan.
   useEffect(() => {
-    if (bodyBackfillCompleted) return;
     needsBodyBackfill()
       .then((needed) => {
         if (needed) {
-          enqueueRescan(null);
+          void enqueueRescan(null);
           useMatrixStore.setState({ bodyBackfillCompleted: true });
         } else {
           useMatrixStore.setState({ bodyBackfillCompleted: true });
         }
       })
       .catch(() => {});
-  }, [bodyBackfillCompleted]);
+  }, []);
 
-  // Derive sorted rows
-  const sortedNodes = useMemo(() => {
-    const sceneNodes = [...nodes];
+  // 兄弟ノードの並び順コンパレータ。deriveRows は親ごとに子バケットを再ソート
+  // するため、フラット配列を事前ソートしても捨てられてしまう（sortOrder 以外の
+  // モードが無効化される）。モード別コンパレータを deriveRows に渡し、各バケットを
+  // 実際のモードで並べる。
+  const siblingComparator = useMemo(() => {
     switch (sortMode) {
       case "story-time":
-        sceneNodes.sort((a, b) => {
-          const ao = a.storyTimeOrder ?? "z";
-          const bo = b.storyTimeOrder ?? "z";
-          return ao.localeCompare(bo);
-        });
-        break;
+        return (a: TreeNodeData, b: TreeNodeData) =>
+          (a.storyTimeOrder ?? "z").localeCompare(b.storyTimeOrder ?? "z");
       case "word-count":
-        sceneNodes.sort((a, b) => (b.charCount ?? 0) - (a.charCount ?? 0));
-        break;
+        return (a: TreeNodeData, b: TreeNodeData) =>
+          (b.charCount ?? 0) - (a.charCount ?? 0);
       case "last-edited":
-        sceneNodes.sort(
-          (a, b) =>
-            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-        );
-        break;
+        return (a: TreeNodeData, b: TreeNodeData) =>
+          compareInstantValues(a.updatedAt, b.updatedAt, "descending");
       default:
-        break;
+        return (a: TreeNodeData, b: TreeNodeData) =>
+          a.sortOrder.localeCompare(b.sortOrder);
     }
-    return sceneNodes;
-  }, [nodes, sortMode]);
+  }, [sortMode]);
 
   // Derive cell map first (rows depends on it for hideEmpty)
   const cellMap = useMemo(
@@ -168,21 +166,23 @@ export function MatrixPanel() {
   // Total visible scene count before row filters (for status bar)
   const totalSceneCount = useMemo(
     () =>
-      deriveRows(sortedNodes, collapsedRowIds, searchQuery || null).filter(
-        (r) => !r.isFolder,
-      ).length,
-    [sortedNodes, collapsedRowIds, searchQuery],
+      deriveRows(nodes, collapsedRowIds, searchQuery || null, {
+        sortComparator: siblingComparator,
+      }).filter((r) => !r.isFolder).length,
+    [nodes, siblingComparator, collapsedRowIds, searchQuery],
   );
 
   const rows = useMemo(
     () =>
-      deriveRows(sortedNodes, collapsedRowIds, searchQuery || null, {
+      deriveRows(nodes, collapsedRowIds, searchQuery || null, {
         hideEmpty: hideEmptyRows,
         onlyUnedited: onlyUneditedRows,
         cellMap,
+        sortComparator: siblingComparator,
       }),
     [
-      sortedNodes,
+      nodes,
+      siblingComparator,
       collapsedRowIds,
       searchQuery,
       hideEmptyRows,
@@ -263,8 +263,16 @@ export function MatrixPanel() {
 
   // Actions
   function openScene(sceneId: string) {
-    useTabStore.getState().openPinned(sceneId);
-    useLayoutStore.getState().showPanel("editor");
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: sceneId },
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
   }
 
   async function handlePin(sceneId: string, entryId: string) {

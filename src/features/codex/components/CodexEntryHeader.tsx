@@ -22,6 +22,8 @@ import { TagSelector } from "./TagSelector";
 import { TagsChip } from "./TagsChip";
 import { TypeBadge } from "./TypeBadge";
 import { ChipSkeletonList } from "@/components/ui/skeleton-patterns";
+import type { ReadingMap } from "../reading";
+import { HeroReading } from "./HeroReading";
 
 const KICKER_ICON: Record<CodexEntryType, typeof UserIcon> = {
   character: UserIcon,
@@ -43,6 +45,8 @@ interface CodexEntryHeaderProps {
   type: CodexEntryType;
   icon: string | null;
   aliases: string[];
+  readings: ReadingMap;
+  showReading: boolean;
   selectedTags: CodexTag[];
   tagsLoading?: boolean;
   onNameChange: (value: string) => void;
@@ -50,6 +54,7 @@ interface CodexEntryHeaderProps {
   onTypeChange: (type: CodexEntryType) => void;
   onIconChange: (icon: string | null) => void;
   onAliasesChange: (aliases: string[]) => void;
+  onOpenReadings: () => void;
   onTagsChange: (tags: CodexTag[]) => void;
   /** Slot for top-right utility buttons (e.g. history / delete). */
   topActions?: ReactNode;
@@ -63,6 +68,8 @@ export function CodexEntryHeader({
   type,
   icon,
   aliases,
+  readings,
+  showReading,
   selectedTags,
   tagsLoading = false,
   onNameChange,
@@ -70,6 +77,7 @@ export function CodexEntryHeader({
   onTypeChange,
   onIconChange,
   onAliasesChange,
+  onOpenReadings,
   onTagsChange,
   topActions,
   leadingAction,
@@ -150,6 +158,12 @@ export function CodexEntryHeader({
           edge instead of extending under it. */}
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-6">
         <div ref={containerRef} className="relative min-w-0">
+          <HeroReading
+            name={name}
+            readings={readings}
+            enabled={showReading}
+            onOpen={onOpenReadings}
+          />
           {/* 計測専用: 常に BASE サイズ・1 行・max-content。可視 textarea とは独立
               させて縮小⇄計測のフィードバックループを断つ。 */}
           <span

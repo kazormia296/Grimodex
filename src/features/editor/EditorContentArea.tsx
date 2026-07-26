@@ -8,8 +8,11 @@ import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorBubbleMenu } from "@/features/editor/EditorBubbleMenu";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
+import { CodexSemanticLinkPopover } from "@/features/editor/CodexSemanticLinkPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
+import { AnnotationHoverPopover } from "@/features/post-effect/AnnotationHoverPopover";
+import { LintHoverPopover } from "@/features/lint/LintHoverPopover";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
 import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
@@ -19,9 +22,13 @@ import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import type { FilterSource } from "@/features/attribution/attributionStore";
+import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useCurrentProject } from "@/features/project/projectStore";
+import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
+import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
-interface EditorContentAreaProps {
+export interface EditorContentAreaProps {
   editor: Editor | null;
   editorContainerRef: React.MutableRefObject<HTMLDivElement | null>;
   toolbarActionsRef: React.MutableRefObject<ToolbarActions | null>;
@@ -29,6 +36,8 @@ interface EditorContentAreaProps {
   findShowReplace: boolean;
   setFindOpen: (open: boolean) => void;
   showForeshadowMarks: boolean;
+  /** ガター生成レイヤーON時の inline-start 予約幅 (gutterReserveInlineSize)。 */
+  gutterReserve: string | null;
   focusModeHideBeats: boolean;
   focusMode: boolean;
   typewriterMode: boolean;
@@ -44,6 +53,12 @@ interface EditorContentAreaProps {
   handleTitleEditStart: () => void;
   isSceneContentLoading: boolean;
   sceneId: string;
+  /** DB-backed sceneでのみ、選択範囲からCodex明示リンクを編集できる。 */
+  canEditCodexSemanticLink?: boolean;
+  zenMode?: boolean;
+  /** バブルメニューの AI サブメニューから起動されるインライン AI コマンドの
+   *  ハンドラ。未指定 (file-backed シーン等) のときはバブルに AI ボタンを出さない。 */
+  onInlineAiCommand?: (cmd: InlineAiCommand) => void;
 }
 
 /**
@@ -60,6 +75,7 @@ export function EditorContentArea({
   findShowReplace,
   setFindOpen,
   showForeshadowMarks,
+  gutterReserve,
   focusModeHideBeats,
   focusMode,
   typewriterMode,
@@ -75,8 +91,13 @@ export function EditorContentArea({
   handleTitleEditStart,
   isSceneContentLoading,
   sceneId,
+  canEditCodexSemanticLink = false,
+  zenMode = false,
+  onInlineAiCommand,
 }: EditorContentAreaProps) {
+  const backgroundEnabled = useZenBackgroundEnabled();
   const { t } = useTranslation();
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
   // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
   const isEnglish = useCurrentProject()?.language === "en";
@@ -102,23 +123,49 @@ export function EditorContentArea({
       </div>
       <EditorDropDiv
         outerRef={editorContainerRef}
-        data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}
+        data-editor-layer-projection={phoneWorkspace ? "codex-only" : undefined}
+        data-show-foreshadow-marks={
+          !phoneWorkspace && showForeshadowMarks ? "true" : "false"
+        }
         data-focus-hide-beats={
           focusModeHideBeats && focusMode ? "true" : undefined
         }
-        className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        className={cn(
+          "glass-editor-body relative isolate flex-1 overflow-auto bg-transparent text-content-foreground-secondary",
+          phoneWorkspace ? "px-2 py-4" : "p-4",
+          editorSettings.verticalMode && "editor-vertical",
+          typewriterMode && "typewriter-padding",
+          filterSource && `attribution-filter-${filterSource}`,
+        )}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
-            editor?.commands.focus();
+            // 余白クリックは「今見ている位置のままフォーカスだけ」戻す。
+            // 既定の scrollIntoView:true は selection が文書先頭のとき
+            // （シーンを開いてクリックせず読み進めた場合）先頭へ飛ぶ。
+            editor?.commands.focus(null, { scrollIntoView: false });
           }
         }}
       >
         <div
+          data-zen-editor-column={zenMode ? "true" : undefined}
           className={cn(
-            editorSettings.showLineNumbers && "editor-line-numbers",
+            "zen-editor-paper",
+            !phoneWorkspace &&
+              editorSettings.showLineNumbers &&
+              "editor-line-numbers",
+            editorSettings.showInvisibles && "editor-show-invisibles",
+            !phoneWorkspace && gutterReserve && "editor-gutter-reserve",
             isEnglish && "editor-en-typography",
           )}
-          style={buildEditorContentStyle(editorSettings)}
+          style={{
+            ...buildEditorContentStyle(editorSettings),
+            ...buildEditorPaperStyle({
+              enabled: backgroundEnabled,
+            }),
+            ...(!phoneWorkspace && gutterReserve
+              ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
+              : {}),
+          }}
           // contenteditable は spellcheck 属性を祖先から継承する
           spellCheck={editorSettings.spellCheck}
         >
@@ -181,26 +228,42 @@ export function EditorContentArea({
             <EditorBubbleMenu
               editor={editor}
               toolbarActionsRef={toolbarActionsRef}
+              canEditCodexSemanticLink={canEditCodexSemanticLink}
+              onInlineAiCommand={onInlineAiCommand}
             />
-            <CommentAddPopover editor={editor} />
-            <ForeshadowMarkPopover editor={editor} />
-            <ForeshadowMarkHoverPopover
-              editor={editor}
-              containerRef={editorContainerRef}
-            />
-            <CommentHoverPopover
-              editor={editor}
-              containerRef={editorContainerRef}
-            />
-            <PseudoCommentBubble
-              editor={editor}
-              containerRef={editorContainerRef}
-            />
-            <EditorContextMenu
-              editor={editor}
-              containerRef={editorContainerRef}
-              toolbarActionsRef={toolbarActionsRef}
-            />
+            {canEditCodexSemanticLink && (
+              <CodexSemanticLinkPopover editor={editor} />
+            )}
+            {!phoneWorkspace && (
+              <>
+                <CommentAddPopover editor={editor} />
+                <ForeshadowMarkPopover editor={editor} />
+                <ForeshadowMarkHoverPopover
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                />
+                <CommentHoverPopover
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                />
+                <PseudoCommentBubble
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                />
+                <AnnotationHoverPopover containerRef={editorContainerRef} />
+                <LintHoverPopover
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                  sceneId={sceneId}
+                />
+                <EditorContextMenu
+                  editor={editor}
+                  containerRef={editorContainerRef}
+                  toolbarActionsRef={toolbarActionsRef}
+                  canEditCodexSemanticLink={canEditCodexSemanticLink}
+                />
+              </>
+            )}
           </EditorBodyWithLoading>
         </div>
       </EditorDropDiv>

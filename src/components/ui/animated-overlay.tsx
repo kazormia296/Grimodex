@@ -42,8 +42,8 @@ export function AnimatedOverlay({
   if (typeof document === "undefined") return null;
 
   // Portal to document.body so the overlay escapes any ancestor stacking
-  // context. Surfaces like .glass-chat use `backdrop-filter`, which becomes
-  // the containing block for fixed-positioned descendants — without the
+  // context. A backdrop-filter surface can become the containing block for
+  // fixed-positioned descendants — without the
   // portal, `fixed inset-0` would only cover that surface, letting other
   // panels paint over the modal.
   return createPortal(

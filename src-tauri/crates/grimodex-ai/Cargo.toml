@@ -1,0 +1,41 @@
+# AI プロバイダ層（HTTP / SSE ストリーミング / provider 分岐 / 型定義）を
+# Tauri コマンド層と napi バックエンドで共用するためのクレート
+# （Electron 移行 Phase 3 バッチ3a）。
+#
+# - **tauri 非依存**: ストリーミングの emit は `emit::StreamEmitter` trait 越し。
+#   Tauri 側は AppHandle アダプタ、napi 側は EventQueue がこの trait を実装する。
+# - **keyring は optional feature**: Tauri ビルドのみ `features = ["keyring"]` で
+#   OS セキュアストレージ経路を有効化する。napi（Electron）側は safeStorage を
+#   main プロセスで使うため keyring を link しない（Phase 3 バッチ3 のキー保管方針）。
+[package]
+name = "grimodex-ai"
+version = "0.1.0"
+edition = "2021"
+license = "Elastic-2.0"
+description = "AI provider layer (HTTP/SSE streaming, provider dispatch, types) shared by the Tauri command layer and the napi backend"
+
+[dependencies]
+anyhow = "1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+keyring = { version = "3", features = [
+    "sync-secret-service",
+    "windows-native",
+    "apple-native",
+], optional = true }
+
+[features]
+# OS セキュアストレージ経由の API キー保管（save/get/delete_api_key + keyring_user*）。
+# Tauri ビルドが有効化する。napi ビルドは無効のまま（safeStorage を使う）。
+keyring = ["dep:keyring"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["time", "rt", "macros"] }
+
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

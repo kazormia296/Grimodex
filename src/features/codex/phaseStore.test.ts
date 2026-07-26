@@ -15,6 +15,16 @@ vi.mock("./phaseApi", () => ({
 import * as phaseApi from "./phaseApi";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "./phaseApi";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { buildSceneTimeIndex } from "./context/sceneTimeIndex";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 const mockListPhasesByEntry = vi.mocked(phaseApi.listPhasesByEntry);
 const mockListDetailOverridesByPhaseIds = vi.mocked(
@@ -67,10 +77,13 @@ const mockScene: TreeNodeData = {
 describe("phaseStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useGlobalHistoryStore.getState().clear();
     usePhaseStore.setState({
+      projectEpoch: 0,
       phasesByEntry: {},
       detailOverrides: {},
       globalSceneOrder: new Map(),
+      sceneTimeIndex: buildSceneTimeIndex([]),
       resolvedStates: {},
       resolutionMode: "reading",
       cachedNodes: [],
@@ -104,6 +117,72 @@ describe("phaseStore", () => {
 
       expect(usePhaseStore.getState().phasesByEntry["entry-2"]).toEqual([]);
     });
+
+    it("再ロード結果が空なら以前の detail override も破棄する", async () => {
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [mockPhase] },
+        detailOverrides: { "phase-1": [mockOverride] },
+      });
+      mockListPhasesByEntry.mockResolvedValue([]);
+      mockListDetailOverridesByPhaseIds.mockResolvedValue([]);
+
+      await usePhaseStore.getState().loadPhasesForEntry("entry-1");
+
+      expect(usePhaseStore.getState().phasesByEntry["entry-1"]).toEqual([]);
+      expect(
+        usePhaseStore.getState().detailOverrides["phase-1"],
+      ).toBeUndefined();
+    });
+
+    it("Project reset より前に開始したロード結果を公開しない", async () => {
+      const pending = deferred<CodexEntryPhase[]>();
+      mockListPhasesByEntry.mockReturnValue(pending.promise);
+
+      const load = usePhaseStore.getState().loadPhasesForEntry("entry-1");
+      usePhaseStore.getState().resetForProject();
+      pending.resolve([mockPhase]);
+      await load;
+
+      expect(usePhaseStore.getState().phasesByEntry).toEqual({});
+      expect(mockListDetailOverridesByPhaseIds).not.toHaveBeenCalled();
+    });
+
+    it("mutation 中に完了した古い同一 entry load を破棄して再取得する", async () => {
+      const oldList = deferred<CodexEntryPhase[]>();
+      const authoritativeList = deferred<CodexEntryPhase[]>();
+      const created = {
+        ...mockPhase,
+        id: "phase-created",
+        label: "Created",
+      };
+      const stale = { ...mockPhase, id: "phase-stale", label: "Stale" };
+      mockListPhasesByEntry
+        .mockReturnValueOnce(oldList.promise)
+        .mockReturnValueOnce(authoritativeList.promise);
+      mockListDetailOverridesByPhaseIds.mockResolvedValue([]);
+      mockCreatePhase.mockResolvedValue(created);
+
+      const load = usePhaseStore.getState().loadPhasesForEntry("entry-1");
+      await usePhaseStore.getState().createPhase({
+        entryId: "entry-1",
+        label: "Created",
+      });
+      oldList.resolve([stale]);
+      await load;
+
+      expect(usePhaseStore.getState().phasesByEntry["entry-1"]).toEqual([
+        created,
+      ]);
+      await vi.waitFor(() =>
+        expect(mockListPhasesByEntry).toHaveBeenCalledTimes(2),
+      );
+      authoritativeList.resolve([created]);
+      await vi.waitFor(() =>
+        expect(usePhaseStore.getState().phasesByEntry["entry-1"]).toEqual([
+          created,
+        ]),
+      );
+    });
   });
 
   describe("createPhase", () => {
@@ -120,6 +199,66 @@ describe("phaseStore", () => {
       expect(usePhaseStore.getState().phasesByEntry["entry-1"]).toContain(
         mockPhase,
       );
+    });
+
+    it("Project reset 後に完了した作成を store と履歴へ公開しない", async () => {
+      const pending = deferred<CodexEntryPhase>();
+      mockCreatePhase.mockReturnValue(pending.promise);
+
+      const creation = usePhaseStore.getState().createPhase({
+        entryId: "entry-1",
+        label: "フェーズ1",
+      });
+      usePhaseStore.getState().resetForProject();
+      pending.resolve(mockPhase);
+      await creation;
+
+      expect(usePhaseStore.getState().phasesByEntry).toEqual({});
+      expect(useGlobalHistoryStore.getState().past).toEqual([]);
+    });
+
+    it("redo で元の createdAt と updatedAt を復元する", async () => {
+      mockCreatePhase.mockResolvedValue(mockPhase);
+      mockDeletePhase.mockResolvedValue(undefined);
+      await usePhaseStore.getState().createPhase({
+        entryId: "entry-1",
+        label: "フェーズ1",
+      });
+
+      await useGlobalHistoryStore.getState().undo();
+      await useGlobalHistoryStore.getState().redo();
+
+      expect(mockCreatePhase).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          id: mockPhase.id,
+          createdAt: mockPhase.createdAt,
+          updatedAt: mockPhase.updatedAt,
+        }),
+      );
+    });
+  });
+
+  describe("resetForProject", () => {
+    it("Project 所有 cache を破棄し epoch を進めて mode を保持する", () => {
+      usePhaseStore.setState({
+        projectEpoch: 6,
+        phasesByEntry: { "entry-1": [mockPhase] },
+        detailOverrides: { "phase-1": [mockOverride] },
+        sceneTimeIndex: buildSceneTimeIndex([mockScene], 9),
+        resolutionMode: "story",
+        cachedNodes: [mockScene],
+      });
+
+      usePhaseStore.getState().resetForProject();
+
+      const state = usePhaseStore.getState();
+      expect(state.projectEpoch).toBe(7);
+      expect(state.phasesByEntry).toEqual({});
+      expect(state.detailOverrides).toEqual({});
+      expect(state.sceneTimeIndex.revision).toBe(10);
+      expect(state.resolutionMode).toBe("story");
+      expect(state.cachedNodes).toEqual([]);
     });
   });
 
@@ -155,6 +294,25 @@ describe("phaseStore", () => {
       expect(
         usePhaseStore.getState().detailOverrides["phase-1"],
       ).toBeUndefined();
+    });
+
+    it("undo で削除前の createdAt と updatedAt を復元する", async () => {
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [mockPhase] },
+      });
+      mockDeletePhase.mockResolvedValue(undefined);
+      mockCreatePhase.mockResolvedValue(mockPhase);
+
+      await usePhaseStore.getState().deletePhase("phase-1");
+      await useGlobalHistoryStore.getState().undo();
+
+      expect(mockCreatePhase).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: mockPhase.id,
+          createdAt: mockPhase.createdAt,
+          updatedAt: mockPhase.updatedAt,
+        }),
+      );
     });
   });
 
@@ -310,6 +468,7 @@ describe("phaseStore", () => {
         icon: null,
         aliases: "[]",
         excludedAliases: "[]",
+        readings: null,
         tagsCache: null,
         contextMode: "mentioned",
         childrenBudget: "compact",
@@ -345,6 +504,7 @@ describe("phaseStore", () => {
         icon: null,
         aliases: "[]",
         excludedAliases: "[]",
+        readings: null,
         tagsCache: null,
         contextMode: "mentioned",
         childrenBudget: "compact",
@@ -360,6 +520,64 @@ describe("phaseStore", () => {
       const resolved = usePhaseStore.getState().getResolvedState("entry-1");
       expect(resolved!.summary).toBe("元のsummary");
       expect(resolved!.appliedPhaseIds).toEqual([]);
+    });
+
+    it("auto の部分設定では reading に倒して未来 Phase を適用しない", () => {
+      const chapter1 = {
+        ...mockScene,
+        id: "chapter-1",
+        sortOrder: "a0",
+        storyTimeOrder: null,
+      };
+      const chapter8 = {
+        ...mockScene,
+        id: "chapter-8",
+        sortOrder: "a1",
+        storyTimeOrder: "a0",
+      };
+      const futurePhase = {
+        ...mockPhase,
+        id: "future",
+        anchorNodeId: "chapter-8",
+      };
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [futurePhase] },
+        resolutionMode: "auto",
+      });
+      usePhaseStore.getState().recomputeSceneOrder([chapter1, chapter8]);
+
+      const entry = {
+        id: "entry-1",
+        projectId: "proj-1",
+        parentId: null,
+        type: "character",
+        name: "アリス",
+        summary: "元のsummary",
+        content: "{}",
+        icon: null,
+        aliases: "[]",
+        excludedAliases: "[]",
+        readings: null,
+        tagsCache: null,
+        contextMode: "mentioned",
+        childrenBudget: "compact",
+        sourceChatMessageId: null,
+        notes: null,
+        version: 0,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      };
+      usePhaseStore.getState().resolveForScene([entry], new Map(), "chapter-1");
+
+      const resolved = usePhaseStore.getState().getResolvedState("entry-1");
+      expect(resolved?.summary).toBe("元のsummary");
+      expect(resolved?.appliedPhaseIds).toEqual([]);
+      expect(resolved?.axisUsed).toBe("reading");
+      expect(resolved?.fallbackReason).toBe("auto-incomplete-story-coverage");
+      expect(usePhaseStore.getState().sceneTimeIndex.liveSceneCount).toBe(2);
+      expect(usePhaseStore.getState().sceneTimeIndex.scheduledSceneCount).toBe(
+        1,
+      );
     });
   });
 

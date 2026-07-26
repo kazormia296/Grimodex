@@ -3,10 +3,16 @@
  *
  * Usage: npx tsx scripts/generate-licenses.ts
  */
-import { execSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { formatLicensesMarkdown } from "../src/features/licenses/formatter";
 import type { LicenseEntry } from "../src/features/licenses/types";
 
@@ -16,18 +22,38 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 /*  npm 依存のライセンス収集                                            */
 /* ------------------------------------------------------------------ */
 
+function compareStrings(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 function findLicenseFile(pkgDir: string): string | undefined {
   try {
     const files = readdirSync(pkgDir);
+    const licenseFiles = files.filter((file) => /^licen[cs]e/i.test(file));
     // 通常は LICENSE/LICENCE を優先。無ければ OFL.txt / COPYING にフォールバック
     // する（一部のフォントは LICENSE を置かず SIL OFL を OFL.txt で配布する。例:
     // gen-interface-jp）。これが無いと同梱フォントのライセンス本文と上流の帰属
     // (Inter / Source Han Sans 等) が脱落し、OFL-1.1 §2 に違反する。
-    const licenseFile =
-      files.find((f) => /^licen[cs]e/i.test(f)) ??
-      files.find((f) => /^(ofl|copying)/i.test(f));
-    if (licenseFile) {
-      return readFileSync(join(pkgDir, licenseFile), "utf-8");
+    const candidates = (
+      licenseFiles.length > 0
+        ? licenseFiles
+        : files.filter((file) => /^(ofl|copying)/i.test(file))
+    ).sort(compareStrings);
+    const uniqueTexts = new Map<string, string>();
+    for (const filename of candidates) {
+      const text = normalizeLicenseText(
+        readFileSync(join(pkgDir, filename), "utf-8"),
+      );
+      if (!uniqueTexts.has(text)) uniqueTexts.set(text, filename);
+    }
+
+    if (uniqueTexts.size === 1) return uniqueTexts.keys().next().value;
+    if (uniqueTexts.size > 1) {
+      return [...uniqueTexts.entries()]
+        .map(([text, filename]) => `----- ${filename} -----\n\n${text}`)
+        .join("\n\n");
     }
   } catch {
     // directory not readable
@@ -35,41 +61,201 @@ function findLicenseFile(pkgDir: string): string | undefined {
   return undefined;
 }
 
-function normalizeRepository(repo: unknown): string | undefined {
-  if (!repo) return undefined;
-  if (typeof repo === "string") return repo;
-  if (typeof repo === "object" && repo !== null && "url" in repo) {
-    const url = (repo as { url: string }).url;
-    return url
-      .replace(/^git\+/, "")
-      .replace(/\.git$/, "")
-      .replace(/^ssh:\/\/git@github\.com/, "https://github.com");
-  }
-  return undefined;
+export function normalizeLicenseText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "");
 }
 
-function gatherNpmLicenses(): LicenseEntry[] {
-  const pkgJsonPath = join(ROOT, "package.json");
-  const pkgJson = JSON.parse(readFileSync(pkgJsonPath, "utf-8"));
-  const depNames = Object.keys(pkgJson.dependencies ?? {});
-
-  const entries: LicenseEntry[] = [];
-  for (const name of depNames) {
-    // Handle scoped packages: @scope/pkg → node_modules/@scope/pkg
-    const pkgDir = join(ROOT, "node_modules", ...name.split("/"));
-    const depPkgPath = join(pkgDir, "package.json");
-    if (!existsSync(depPkgPath)) continue;
-
-    const depPkg = JSON.parse(readFileSync(depPkgPath, "utf-8"));
-    entries.push({
-      name,
-      version: depPkg.version ?? "unknown",
-      license: depPkg.license ?? "UNKNOWN",
-      repository: normalizeRepository(depPkg.repository),
-      licenseText: findLicenseFile(pkgDir),
-    });
+function normalizeRepository(repo: unknown): string | undefined {
+  if (!repo) return undefined;
+  let url: unknown = repo;
+  if (typeof repo === "object" && repo !== null && "url" in repo) {
+    url = (repo as { url: unknown }).url;
   }
-  return entries;
+  if (typeof url !== "string") return undefined;
+  return url
+    .replace(/^git\+/, "")
+    .replace(/\.git$/, "")
+    .replace(/^ssh:\/\/git@github\.com/, "https://github.com");
+}
+
+interface PnpmLicensePackage {
+  name: string;
+  versions: string[];
+  paths: string[];
+  homepage?: string;
+}
+
+type PnpmLicenseReport = Record<string, PnpmLicensePackage[]>;
+
+interface NpmPackageJson {
+  name?: unknown;
+  version?: unknown;
+  license?: unknown;
+  repository?: unknown;
+  homepage?: unknown;
+}
+
+export const PNPM_LICENSE_LIST_ARGS = [
+  "licenses",
+  "list",
+  "--prod",
+  "--json",
+] as const;
+
+type PnpmLicenseRunner = (args: readonly string[]) => string;
+
+interface PnpmInvocationRuntime {
+  platform: NodeJS.Platform;
+  nodeExecutable: string;
+  npmExecPath: string | undefined;
+  commandShell: string | undefined;
+}
+
+interface PnpmInvocation {
+  command: string;
+  args: string[];
+}
+
+function isThirdPartyInstallPath(pkgDir: string): boolean {
+  const hasNodeModulesSegment = (path: string) =>
+    path.split(/[\\/]+/).includes("node_modules");
+
+  if (!hasNodeModulesSegment(pkgDir)) return false;
+  return hasNodeModulesSegment(realpathSync(pkgDir));
+}
+
+function compareLicenseEntries(a: LicenseEntry, b: LicenseEntry): number {
+  return compareStrings(a.name, b.name) || compareStrings(a.version, b.version);
+}
+
+/** Resolve pnpm without relying on direct `.cmd` execution on Windows. */
+export function resolvePnpmInvocation(
+  args: readonly string[],
+  runtime: PnpmInvocationRuntime = {
+    platform: process.platform,
+    nodeExecutable: process.execPath,
+    npmExecPath: process.env.npm_execpath,
+    commandShell: process.env.ComSpec,
+  },
+): PnpmInvocation {
+  if (
+    runtime.npmExecPath &&
+    /(?:^|[\\/])pnpm\.(?:cjs|mjs|js)$/i.test(runtime.npmExecPath)
+  ) {
+    return {
+      command: runtime.nodeExecutable,
+      args: [runtime.npmExecPath, ...args],
+    };
+  }
+
+  if (runtime.platform === "win32") {
+    if (args.some((arg) => !/^[A-Za-z0-9:_-]+$/.test(arg))) {
+      throw new Error("Unsafe pnpm argument for Windows command shell");
+    }
+    return {
+      command: runtime.commandShell ?? "cmd.exe",
+      args: ["/d", "/s", "/c", `pnpm ${args.join(" ")}`],
+    };
+  }
+
+  return { command: "pnpm", args: [...args] };
+}
+
+/**
+ * pnpm が解決した全 workspace の production graph を npm ライセンス一覧へ変換する。
+ * peer context だけが異なる同一 name@version は1件へ統合し、複数versionは保持する。
+ */
+export function buildNpmLicenseEntries(
+  report: PnpmLicenseReport,
+): LicenseEntry[] {
+  const entries = new Map<string, LicenseEntry>();
+
+  for (const [reportedLicense, packages] of Object.entries(report)) {
+    if (!Array.isArray(packages)) {
+      throw new Error(`Invalid pnpm license group: ${reportedLicense}`);
+    }
+
+    for (const pkg of packages) {
+      if (!Array.isArray(pkg.versions) || !Array.isArray(pkg.paths)) {
+        throw new Error(`Invalid pnpm license record: ${pkg.name}`);
+      }
+      if (pkg.versions.length !== pkg.paths.length) {
+        throw new Error(
+          `Mismatched pnpm license paths for ${pkg.name}: ` +
+            `${pkg.versions.length} versions, ${pkg.paths.length} paths`,
+        );
+      }
+
+      const installations = pkg.paths
+        .map((pkgDir, index) => ({
+          pkgDir,
+          reportedVersion: pkg.versions[index],
+        }))
+        .sort((a, b) => compareStrings(a.pkgDir, b.pkgDir));
+
+      for (const { pkgDir, reportedVersion } of installations) {
+        // pnpm currently omits workspace members from this report. Resolve the
+        // path as an additional guard so linked first-party packages stay out.
+        if (!isThirdPartyInstallPath(pkgDir)) continue;
+
+        const depPkgPath = join(pkgDir, "package.json");
+        if (!existsSync(depPkgPath)) {
+          throw new Error(`Missing package metadata: ${depPkgPath}`);
+        }
+        const depPkg = JSON.parse(
+          readFileSync(depPkgPath, "utf-8"),
+        ) as NpmPackageJson;
+        if (depPkg.name !== pkg.name || depPkg.version !== reportedVersion) {
+          throw new Error(
+            `pnpm license identity mismatch at ${pkgDir}: expected ` +
+              `${pkg.name}@${reportedVersion}, found ` +
+              `${String(depPkg.name)}@${String(depPkg.version)}`,
+          );
+        }
+
+        const name = depPkg.name;
+        const version = depPkg.version;
+        const key = `${name}@${version}`;
+        if (entries.has(key)) continue;
+
+        entries.set(key, {
+          name,
+          version,
+          license:
+            typeof depPkg.license === "string"
+              ? depPkg.license
+              : reportedLicense || "UNKNOWN",
+          repository:
+            normalizeRepository(depPkg.repository) ??
+            (typeof depPkg.homepage === "string"
+              ? depPkg.homepage
+              : pkg.homepage),
+          licenseText: findLicenseFile(pkgDir),
+        });
+      }
+    }
+  }
+
+  return [...entries.values()].sort(compareLicenseEntries);
+}
+
+function runPnpmLicenseList(args: readonly string[]): string {
+  const invocation = resolvePnpmInvocation(args);
+  return execFileSync(invocation.command, invocation.args, {
+    cwd: ROOT,
+    encoding: "utf-8",
+    maxBuffer: 50 * 1024 * 1024,
+  });
+}
+
+export function gatherNpmLicenses(
+  runPnpm: PnpmLicenseRunner = runPnpmLicenseList,
+): LicenseEntry[] {
+  const parsed = JSON.parse(runPnpm(PNPM_LICENSE_LIST_ARGS)) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Invalid pnpm license report");
+  }
+  return buildNpmLicenseEntries(parsed as PnpmLicenseReport);
 }
 
 /* ------------------------------------------------------------------ */
@@ -77,12 +263,23 @@ function gatherNpmLicenses(): LicenseEntry[] {
 /* ------------------------------------------------------------------ */
 
 interface CargoMetadataPackage {
+  id: string;
   name: string;
   version: string;
   license: string | null;
   repository: string | null;
   manifest_path: string;
 }
+
+interface CargoMetadata {
+  packages: CargoMetadataPackage[];
+  workspace_members: string[];
+}
+
+export const CARGO_MANIFEST_RELATIVE_PATHS = [
+  "src-tauri/Cargo.toml",
+  "electron/native/grimodex-node/Cargo.toml",
+] as const;
 
 /**
  * `cargo metadata` の workspace_members の ID を `name@version` に正規化する。
@@ -105,73 +302,97 @@ function parseWorkspaceMemberId(id: string): string | undefined {
   return undefined;
 }
 
-function gatherCargoLicenses(): LicenseEntry[] {
-  const cargoDir = join(ROOT, "src-tauri");
-  if (!existsSync(join(cargoDir, "Cargo.toml"))) {
-    console.warn(
-      "Warning: src-tauri/Cargo.toml not found, skipping Cargo licenses",
-    );
-    return [];
-  }
+function packageKey(pkg: CargoMetadataPackage): string {
+  return `${pkg.name}@${pkg.version}`;
+}
 
-  // workspace member の `name@version` 集合を取得（ワークスペース自身の crate を除外するため）
-  let workspaceMemberIds = new Set<string>();
-  try {
-    const wsJson = execSync("cargo metadata --format-version 1 --no-deps", {
-      cwd: cargoDir,
-      encoding: "utf-8",
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    const wsMetadata = JSON.parse(wsJson);
-    const rawIds: string[] = wsMetadata.workspace_members ?? [];
-    workspaceMemberIds = new Set<string>(
-      rawIds
-        .map(parseWorkspaceMemberId)
-        .filter((id): id is string => id !== undefined),
-    );
-  } catch {
-    console.warn(
-      "Warning: cargo metadata --no-deps failed, workspace members may appear in output",
-    );
-  }
+function comparePackageKeys(
+  a: Pick<CargoMetadataPackage, "name" | "version">,
+  b: Pick<CargoMetadataPackage, "name" | "version">,
+): number {
+  if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+  if (a.version !== b.version) return a.version < b.version ? -1 : 1;
+  return 0;
+}
 
-  // フルメタデータで全依存（推移依存含む）を取得。
-  // 旧コードは `--no-deps` の結果数で fallback 判定していたが、
-  // workspace member が複数あると常に「依存取得済み」と誤判定して
-  // 推移依存が漏れる。常にフル取得する方が確実。
-  let allPackages: CargoMetadataPackage[];
-  try {
-    const fullJson = execSync("cargo metadata --format-version 1", {
-      cwd: cargoDir,
-      encoding: "utf-8",
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    allPackages = JSON.parse(fullJson).packages ?? [];
-  } catch {
-    console.warn(
-      "Warning: cargo metadata (full) failed, skipping Cargo licenses",
-    );
-    return [];
-  }
-
-  const entries: LicenseEntry[] = [];
-  for (const pkg of allPackages) {
-    // workspace member（自分たちのクレート）は除外
-    const pkgId = `${pkg.name}@${pkg.version}`;
-    if (workspaceMemberIds.has(pkgId)) {
-      continue;
+/**
+ * 複数の Cargo dependency graph をサードパーティ crate 一覧へ統合する。
+ *
+ * workspace member は先に全 graph から集約して除外する。N-API manifest は独立した
+ * 空 workspace のため、src-tauri/crates/* が path dependency として再登場するが、
+ * それらを Grimodex 自身ではなく third-party と誤認しないためである。
+ */
+export function buildCargoLicenseEntries(
+  metadataList: readonly CargoMetadata[],
+): LicenseEntry[] {
+  const workspaceMemberKeys = new Set<string>();
+  for (const metadata of metadataList) {
+    const packagesById = new Map(metadata.packages.map((pkg) => [pkg.id, pkg]));
+    for (const memberId of metadata.workspace_members) {
+      const member = packagesById.get(memberId);
+      const key = member
+        ? packageKey(member)
+        : parseWorkspaceMemberId(memberId);
+      if (key) workspaceMemberKeys.add(key);
     }
+  }
 
-    const manifestDir = dirname(pkg.manifest_path);
-    entries.push({
+  const dependencyPackages = new Map<string, CargoMetadataPackage>();
+  for (const metadata of metadataList) {
+    for (const pkg of metadata.packages) {
+      const key = packageKey(pkg);
+      if (!workspaceMemberKeys.has(key) && !dependencyPackages.has(key)) {
+        dependencyPackages.set(key, pkg);
+      }
+    }
+  }
+
+  return [...dependencyPackages.values()]
+    .sort(comparePackageKeys)
+    .map((pkg) => ({
       name: pkg.name,
       version: pkg.version,
       license: pkg.license ?? "UNKNOWN",
       repository: pkg.repository ?? undefined,
-      licenseText: findLicenseFile(manifestDir),
-    });
+      licenseText: findLicenseFile(dirname(pkg.manifest_path)),
+    }));
+}
+
+function gatherCargoLicenses(): LicenseEntry[] {
+  const metadataList: CargoMetadata[] = [];
+
+  for (const relativeManifestPath of CARGO_MANIFEST_RELATIVE_PATHS) {
+    const manifestPath = join(ROOT, relativeManifestPath);
+    if (!existsSync(manifestPath)) {
+      console.warn(
+        `Warning: ${relativeManifestPath} not found, skipping its Cargo licenses`,
+      );
+      continue;
+    }
+
+    try {
+      const metadataJson = execFileSync(
+        "cargo",
+        ["metadata", "--format-version", "1", "--manifest-path", manifestPath],
+        {
+          cwd: ROOT,
+          encoding: "utf-8",
+          maxBuffer: 50 * 1024 * 1024,
+        },
+      );
+      const metadata = JSON.parse(metadataJson) as Partial<CargoMetadata>;
+      metadataList.push({
+        packages: metadata.packages ?? [],
+        workspace_members: metadata.workspace_members ?? [],
+      });
+    } catch {
+      console.warn(
+        `Warning: cargo metadata failed for ${relativeManifestPath}, skipping its Cargo licenses`,
+      );
+    }
   }
-  return entries;
+
+  return buildCargoLicenseEntries(metadataList);
 }
 
 /* ------------------------------------------------------------------ */
@@ -540,9 +761,10 @@ function gatherAssetLicenses(): LicenseEntry[] {
       licenseText: UNIDIC_BSD_LICENSE_TEXT,
     },
     {
-      // Semantic Search 用の日本語テキスト埋め込みモデル。リリースビルドに
-      // ONNX (model_int8.onnx) と tokenizer.json を Tauri リソースとして同梱
-      // している (src-tauri/tauri.release.conf.json)。
+      // Semantic Search 用の日本語テキスト埋め込みモデル。int8 ONNX は同梱せず、
+      // 初回利用時に app_data へオンデマンド DL する (GitHub Release
+      // semantic-models-v1 から取得。src-tauri/src/semantic/spec.rs の
+      // artifact_url/sha256 で pin)。我々が再配布する以上ライセンス収録が必要。
       // Authors: Hayato Tsukagoshi and Ryohei Sasano (arXiv:2409.07737)。
       name: "Ruri v3 (cl-nagoya/ruri-v3-30m, Japanese text embedding model, embedded as ONNX for semantic search)",
       version: "ruri-v3-30m",
@@ -552,9 +774,10 @@ function gatherAssetLicenses(): LicenseEntry[] {
     },
     {
       // Semantic Search 用の英語テキスト埋め込みモデル。日本語の Ruri v3 と対になる
-      // 言語別モデルで、英語プロジェクトの semantic search に使う。リリースビルドに
-      // ONNX (model_int8.onnx) と tokenizer.json を Tauri リソースとして同梱している
-      // (src-tauri/tauri.release.conf.json / dir_name: bge-small-en-v15)。
+      // 言語別モデルで、英語プロジェクトの semantic search に使う。int8 ONNX は
+      // 同梱せず、初回利用時に app_data へオンデマンド DL する (GitHub Release
+      // semantic-models-v1 から取得。dir_name: bge-small-en-v15)。再配布に伴い
+      // ライセンス収録が必要。
       // BAAI (Beijing Academy of Artificial Intelligence) の FlagEmbedding プロジェクト
       // として MIT ライセンスで公開されている (商用利用可)。
       name: "BGE small en v1.5 (BAAI/bge-small-en-v1.5, English text embedding model, embedded as ONNX for semantic search)",
@@ -682,4 +905,7 @@ function main() {
   console.log("Done!");
 }
 
-main();
+const invokedScript = process.argv[1];
+if (invokedScript && import.meta.url === pathToFileURL(invokedScript).href) {
+  main();
+}

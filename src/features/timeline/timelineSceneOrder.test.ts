@@ -82,6 +82,22 @@ describe("computeTimelineSceneOrder", () => {
     expect(scenes.map((s) => s.id)).toEqual(["a", "c", "b"]);
   });
 
+  it("write proportional: 不正な createdAt を末尾へ送り weights を 0..1 に保つ", () => {
+    const nodes = [
+      node({ id: "invalid", createdAt: "not-a-date" }),
+      node({ id: "later", createdAt: "2024-01-02T00:00:00Z" }),
+      node({ id: "earlier", createdAt: "2024-01-01T00:00:00Z" }),
+    ];
+    const { scenes, weights } = computeTimelineSceneOrder(
+      nodes,
+      "write",
+      "proportional",
+    );
+
+    expect(scenes.map((s) => s.id)).toEqual(["earlier", "later", "invalid"]);
+    expect(weights).toEqual([0, 1, 1]);
+  });
+
   it("非 scene ノードは除外", () => {
     const nodes = [
       node({ id: "s1" }),

@@ -1,7 +1,7 @@
 # Grimodex - 製品仕様書
 
-> バージョン: 0.9.0
-> 最終更新: 2026-06-28
+> バージョン: 2.0.0
+> 最終更新: 2026-07-11
 
 ## 1. 製品概要
 
@@ -13,7 +13,7 @@ Grimodexは、Novelcrafterに着想を得た、日本語小説作家向けのデ
 
 | レイヤー      | 技術                                                            |
 | --------- | ------------------------------------------------------------- |
-| デスクトップシェル | Tauri v2                                                      |
+| デスクトップシェル | Electron（sandbox preload + 型付き IPC）                       |
 | フロントエンド   | React 19 + TypeScript (strict)                                |
 | エディタ      | TipTap (ProseMirror)                                          |
 | 状態管理      | Zustand (グローバル) + Jotai (ローカル)                                |
@@ -21,6 +21,7 @@ Grimodexは、Novelcrafterに着想を得た、日本語小説作家向けのデ
 | AI統合      | Vercel AI SDK                                                 |
 | データベース    | SQLite (WALモード) + FTS5 (trigram)                              |
 | ORM       | Drizzle ORM                                                   |
+| ネイティブバックエンド | Rust共有crate + N-API（Node-API）                           |
 | ストレージ     | SQLite（唯一の信頼できる情報源、ProseMirror JSON保存） + Markdownインポート/エクスポート |
 
 ### 1.2 対象ユーザー
@@ -234,11 +235,11 @@ BYOK（Bring Your Own Key）方式で複数のAIプロバイダーに対応す�
 | OpenAI | Vercel AI SDK `openai` | GPT-4o等 |
 | Ollama | Vercel AI SDK `ollama` | ローカルモデル。オフライン対応 |
 
-- APIキーはTauri keyring（OS認証情報マネージャー）に保存
+- APIキーは Electron main process の `safeStorage` で暗号化し、`userData` 配下に保存
 - モデル選択: 各プロバイダーの利用可能モデルからユーザーが選択
 - ストリーミング: Vercel AI SDK（ストリーミング有効）
 - 拡張思考（Extended Thinking）: モデルが対応している場合は常に有効化する。Anthropic Claude の `thinking` パラメータ、OpenAI の推論トークン等、プロバイダーごとの拡張思考機能を検出し自動的に利用する。thinking ブロックはAIメッセージ内に折りたたみ式（デフォルト閉じ）で表示し、ユーザーが必要に応じて推論過程を確認できるようにする
-- すべてのAPI呼び出しはRustバックエンド（Tauriコマンド）経由 — CORSの回避とキーのセキュリティ確保
+- すべてのAPI呼び出しは typed preload IPC → Electron main → Rust N-API backend 経由。renderer に平文キーを返さない
 
 ### 4.2 セッションモデル
 
@@ -317,8 +318,8 @@ LLM APIのシステムプロンプトに以下のレイヤーを階層的に注�
 **Layer 4: Codex entries + Snippets + Notes**
 - `context_mode` フィルタ: 各エントリの `context_mode` により注入可否を判定
   - `always`: 常に注入
-  - `mentioned`: 現在のシーン内容にマッチした場合のみ
-  - `suppress`: 手動ピン留め時のみ
+  - `mentioned`: 現在シーン本文または現在ターンのチャット入力で検出された場合、または Spotlight / Codex スコープで明示選択された場合
+  - `suppress`: Spotlight / Codex スコープで明示選択された場合のみ
   - `hidden`: 一切注入しない
 - ピン留めされたCodexエントリ/Snippetの全文
 - 子エントリの自動注入: マッチした親エントリの子孫エントリのsummaryをサブツリートークン予算の範囲内でBFS順に自動追加
@@ -625,7 +626,7 @@ Jotai atoms（ローカル）:
 **AIチャットフロー:**
 1. ユーザーがメッセージを入力
 2. フロントエンドが多層コンテキスト（6レイヤー + RAG）を構築（4.3節参照）
-3. Tauriコマンド: Rustバックエンド経由でAIプロバイダーにメッセージを送信
+3. Electron main が safeStorage のキーを解決し、Rust N-API backend 経由でAIプロバイダーにメッセージを送信
 4. レスポンスをフロントエンドにストリーミング
 5. レスポンスを「Insert」「Codex」「Snippet」「Copy」ボタン付きで表示
 
@@ -794,55 +795,69 @@ FTS5仮想テーブルはトリガーにより自動同期される。
 
 ---
 
-## 8. Tauriコマンド API（Rust ↔ JSブリッジ）
+## 8. Electron IPC API（renderer ↔ preload ↔ main ↔ Rust N-API）
+
+IPC の正本は `electron/shared/ipcContract.ts`。renderer は `src/lib/tauri.ts` の
+互換 facade を呼び、sandboxed preload が公開する `window.grimodex.invoke` だけを通る。
+main はコマンド名・引数を再検証し、OS API を使う shell handler または
+`electron/native/grimodex-node/` の Rust N-API backend へ dispatch する。
+返却値は `Envelope` で正規化し、任意の Node/Electron API は renderer へ公開しない。
 
 ### 8.1 ワークスペース管理
-```rust
-#[tauri::command] fn validate_workspace_path(path: String) -> Result<WorkspaceValidation>
-#[tauri::command] fn open_workspace(path: String) -> Result<()>
-#[tauri::command] fn get_global_settings() -> Result<GlobalSettings>
-#[tauri::command] fn save_global_settings(settings: GlobalSettings) -> Result<()>
+
+```ts
+invoke("validate_workspace_path", { path });
+invoke("open_workspace", { path });
+invoke("get_global_settings");
+invoke("save_global_settings", { settings });
 ```
 
 ### 8.2 データベース操作
-```rust
-#[tauri::command] fn db_execute(sql: String, params: Vec<Value>) -> Result<DbResult>
+
+```ts
+invoke("db_execute", { sql, params, method });
+invoke("db_execute_batch", { statements });
 // フロントエンドの Drizzle ORM (sqlite-proxy) がこのコマンドを経由してSQLを実行
 // 全テーブルの CRUD はフロントエンド API 関数 (src/features/*/api.ts) で実装
 ```
 
 ### 8.3 インポート/エクスポート
-```rust
-#[tauri::command] fn export_markdown(scope: ExportScope, output_dir: String) -> Result<()>
-#[tauri::command] fn import_markdown(paths: Vec<String>) -> Result<ImportResult>
+
+```ts
+invoke("export_save_text", { suggestedName, contents });
+invoke("export_save_bytes", { suggestedName, contents });
+invoke("import_open_text_file", { filters });
+invoke("import_pick_folder_markdown");
 ```
 
 ### 8.4 AIチャット
-```rust
-#[tauri::command] async fn send_chat_message(...) -> Result<String>  // ストリーミング応答
-#[tauri::command] fn get_ai_settings() -> Result<AiSettings>
-#[tauri::command] fn save_ai_settings(settings: AiSettings) -> Result<()>
-#[tauri::command] fn save_api_key(provider: String, key: String) -> Result<()>  // OS keyring
-#[tauri::command] fn get_api_key(provider: String) -> Result<Option<String>>
-#[tauri::command] fn delete_api_key(provider: String) -> Result<()>
-#[tauri::command] async fn list_ai_models(provider: String) -> Result<Vec<Model>>
-#[tauri::command] async fn test_ai_connection(provider: String) -> Result<bool>
+
+```ts
+invoke("send_chat_message_stream", request); // chunk/done/error は allowlist 済みevent
+invoke("get_ai_settings");
+invoke("save_ai_settings", { settings });
+invoke("save_api_key", { provider, key }); // main-only safeStorage handler
+invoke("has_api_key", { provider });
+invoke("delete_api_key", { provider });
+invoke("list_ai_models", { provider });
+invoke("test_ai_connection", { provider });
 ```
 
 ### 8.5 メンテナンス
-```rust
-#[tauri::command] fn fts_optimize() -> Result<()>
-#[tauri::command] fn integrity_check() -> Result<IntegrityResult>
-#[tauri::command] fn repair_integrity() -> Result<()>
+
+```ts
+invoke("fts_optimize");
+invoke("integrity_check");
+invoke("repair_integrity");
 ```
 
-> **注:** Codex/Snippet/Tree/Attribution 等のCRUD操作は Tauriコマンドではなく、フロントエンドの Drizzle ORM が `db_execute` を経由してSQLを実行する。各 feature の `api.ts` を参照。
+> **注:** Codex/Snippet/Tree/Attribution 等のCRUD操作は個別 IPC ではなく、フロントエンドの Drizzle ORM が allowlist 済み `db_execute` / `db_execute_batch` を経由してSQLを実行する。各 feature の `api.ts` を参照。
 
 ---
 
 ## 9. UIレイアウト
 
-> 詳細は [`Grimodex_レイアウトシステム設計書.md`](Grimodex_レイアウトシステム設計書.md) を参照。
+> 詳細は [`Grimodex_レイアウトシステム置換設計書.md`](Grimodex_レイアウトシステム置換設計書.md) を参照。
 
 VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 
@@ -894,7 +909,6 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 
 **検索:**
 - `Mod+Shift+F`: Command Center Results（検索結果パネルを開いてフォーカス）
-- `Mod+Shift+P`: Command Center バー（コマンドモード起動）
 
 **グローバル:**
 - `Mod+Alt+,`: Settings
@@ -948,7 +962,7 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 
 ### 11.3 AIストリーミング
 
-- Tauriコマンド経由の非同期ストリーミング
+- typed Electron IPC と main→renderer event allowlist 経由の非同期ストリーミング
 - チャット履歴: 直近N件のみ読み込み（デフォルト: 50）、古いメッセージは遅延読み込み
 - コンテキストバジェット: モデルのコンテキスト上限から逆算して配分
 
@@ -982,8 +996,10 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 
 ## 12. セキュリティ
 
-- APIキーはTauri keyring経由でOS認証情報マネージャーに保存（macOS: Keychain、Windows: Credential Manager、Linux: KWallet）
-- すべてのAI API呼び出しはRustバックエンド経由 — キーはフロントエンドに渡さない
+- APIキーは Electron main process の `safeStorage` で暗号化し、renderer から読めない `userData` 配下へ保存
+- v1 からの初回移行だけは release feature 付き N-API が旧OS keyringを読み、safeStorageへコピーする（旧値はrollback用に削除しない）
+- すべてのAI API呼び出しは main process とRust N-API backend経由 — キーはrendererに渡さない
+- BrowserWindow は `sandbox: true` / `contextIsolation: true`、preload API・event channel・外部URL schemeは列挙制
 - テレメトリーなし、ユーザーが設定したAIプロバイダー以外への外部通信なし
 - プロジェクトファイルはローカルのみ
 
@@ -993,7 +1009,7 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 
 > 詳細は [`Grimodex_Settingsパネル設計書.md`](Grimodex_Settingsパネル設計書.md) を参照。
 
-設定は `app_settings` テーブルにドット記法のKey-Valueで保存する（プロジェクト跨ぎで共有）。APIキーのみOS keyringに保存。
+設定は `app_settings` テーブルにドット記法のKey-Valueで保存する（プロジェクト跨ぎで共有）。APIキーのみElectron mainのsafeStorageで別管理する。
 
 **主要設定項目:**
 
@@ -1082,15 +1098,13 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 | **Timeline プロットスレッド** | reading-order 上の through-line。`threads` ビューで Plottr 型スイムレーン | `plot_threads`, `plot_thread_scene_links` |
 | **Plot-thread AI 注入** | 現在シーンが属する縦糸の構成を `<plot_thread_scenes>` で静的注入 | `contextBuilder.ts` |
 | **Chronicle AI 注入** | 作中時刻の世界状態スナップショットを `<chronicle_snapshot>` で注入（設定 `aiPrompt.chronicle.enabled`） | `chronicleSnapshot.ts`, agent read/write tools |
-| **Phase AI 露出 / Wiki 限定** | Phase の effective `context_mode` が suppress/hidden のとき AI 文脈から除外（設計メモ用途） | `phaseResolver.ts` |
+| **Phase AI 露出 / 手動のみ / 非公開** | `always` は常時、`mentioned` は現在シーン / 現在ターンの検出または明示選択時、`suppress` は Spotlight / Codex スコープの明示選択時のみ注入し、`hidden` は全経路で除外 | `phaseResolver.ts` |
 
 詳細: [`docs/superpowers/specs/2026-06-26-chronicle-timeline-design.md`](superpowers/specs/2026-06-26-chronicle-timeline-design.md)、[`CONTEXT_INJECTION.md`](CONTEXT_INJECTION.md)。
 
 ---
 
 ## 15. 開発フェーズ
-
-> 残りの実装タスクの詳細は [`implementation-workflow.md`](implementation-workflow.md) を参照。
 
 ### Phase 1: 基盤 ✅
 

@@ -14,14 +14,17 @@ const mockOpenPinned = vi.fn();
 const mockOpenInSecondaryGroup = vi.fn();
 
 vi.mock("@/features/tree/treeStore", () => ({
-  useTreeStore: vi.fn((sel: (s: unknown) => unknown) =>
-    sel({
-      setStatus: mockSetStatus,
-      deleteNode: mockDeleteNode,
-      updateStoryTime: mockUpdateStoryTime,
-      revealInTree: mockRevealInTree,
-      setActiveScene: vi.fn(),
-    }),
+  useTreeStore: Object.assign(
+    vi.fn((sel: (s: unknown) => unknown) =>
+      sel({
+        setStatus: mockSetStatus,
+        deleteNode: mockDeleteNode,
+        updateStoryTime: mockUpdateStoryTime,
+        revealInTree: mockRevealInTree,
+        setActiveScene: vi.fn(),
+      }),
+    ),
+    { getState: () => ({ setActiveScene: vi.fn() }) },
   ),
 }));
 

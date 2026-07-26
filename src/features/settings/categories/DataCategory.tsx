@@ -13,12 +13,14 @@ import { SettingSlider } from "../components/SettingSlider";
 import { exportCodexJson } from "../exportUtils";
 import { IntegrityCheckSection } from "@/features/workspace/IntegrityCheckDialog";
 import { SemanticIndexSection } from "./SemanticIndexSection";
+import { BackupRestoreSection } from "./BackupRestoreSection";
 import { MountListDialog } from "@/features/external-mount/components/MountListDialog";
 import {
   enqueueRescan,
   useRescanStore,
 } from "@/features/codex/mentionRescanQueue";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { CapabilityGate } from "@/runtime/runtimeCapabilitiesContext";
 
 interface ProjectStats {
   sceneCount: number;
@@ -89,7 +91,7 @@ export function DataCategory() {
   const rescanTotal = useRescanStore((s) => s.total);
 
   function handleRebuildMentionCache() {
-    enqueueRescan(null);
+    void enqueueRescan(null);
   }
 
   useEffect(() => {
@@ -132,7 +134,7 @@ export function DataCategory() {
     if (isVacuuming) return;
     setIsVacuuming(true);
     try {
-      await db.run("VACUUM" as never);
+      await invoke("vacuum_database");
       toast.success(t("settings.data.vacuumSuccess"));
     } catch {
       toast.error(t("settings.data.vacuumFail"));
@@ -213,6 +215,7 @@ export function DataCategory() {
             format={(v) => t("settings.data.maxBackupsFormat", { v })}
           />
         </SettingRow>
+        <BackupRestoreSection />
       </SettingSection>
 
       {/* Revision History */}
@@ -240,31 +243,33 @@ export function DataCategory() {
       </SettingSection>
 
       {/* Export */}
-      <SettingSection title={t("settings.data.export")}>
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <span className="text-sm">{t("settings.data.exportScenes")}</span>
-            <button
-              type="button"
-              onClick={openExportDialog}
-              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
-            >
-              {t("common.open")}
-            </button>
+      <CapabilityGate capability="genericProjectTransfer">
+        <SettingSection title={t("settings.data.export")}>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm">{t("settings.data.exportScenes")}</span>
+              <button
+                type="button"
+                onClick={openExportDialog}
+                className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+              >
+                {t("common.open")}
+              </button>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">{t("settings.data.exportCodex")}</span>
+              <button
+                type="button"
+                onClick={handleExportCodex}
+                disabled={isExportingCodex}
+                className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
+              >
+                Codex JSON
+              </button>
+            </div>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-sm">{t("settings.data.exportCodex")}</span>
-            <button
-              type="button"
-              onClick={handleExportCodex}
-              disabled={isExportingCodex}
-              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
-            >
-              Codex JSON
-            </button>
-          </div>
-        </div>
-      </SettingSection>
+        </SettingSection>
+      </CapabilityGate>
 
       {/* Data Management */}
       <SettingSection title={t("settings.data.management")}>
@@ -359,20 +364,22 @@ export function DataCategory() {
         </div>
       </SettingSection>
 
-      <SettingSection title={t("externalMount.title")}>
-        <SettingRow
-          label={t("externalMount.manage")}
-          description={t("externalMount.manageDesc")}
-        >
-          <button
-            type="button"
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
-            onClick={() => setMountDialogOpen(true)}
+      <CapabilityGate capability="externalMount">
+        <SettingSection title={t("externalMount.title")}>
+          <SettingRow
+            label={t("externalMount.manage")}
+            description={t("externalMount.manageDesc")}
           >
-            {t("externalMount.open")}
-          </button>
-        </SettingRow>
-      </SettingSection>
+            <button
+              type="button"
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+              onClick={() => setMountDialogOpen(true)}
+            >
+              {t("externalMount.open")}
+            </button>
+          </SettingRow>
+        </SettingSection>
+      </CapabilityGate>
 
       {/* 意味検索インデックス（旧: AI タブ。FTS 再構築 / VACUUM と同族の索引保守）。 */}
       <SemanticIndexSection />
@@ -382,10 +389,12 @@ export function DataCategory() {
         <IntegrityCheckSection />
       </SettingSection>
 
-      <MountListDialog
-        open={mountDialogOpen}
-        onClose={() => setMountDialogOpen(false)}
-      />
+      <CapabilityGate capability="externalMount">
+        <MountListDialog
+          open={mountDialogOpen}
+          onClose={() => setMountDialogOpen(false)}
+        />
+      </CapabilityGate>
     </div>
   );
 }

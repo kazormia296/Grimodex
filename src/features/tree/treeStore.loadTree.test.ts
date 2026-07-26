@@ -67,6 +67,8 @@ describe("loadTree activeSceneId", () => {
       nodes: [],
       scenes: [],
       isLoading: false,
+      hydratedProjectId: null,
+      hydratedWorkspaceOpenRevision: null,
     });
   });
 
@@ -123,5 +125,33 @@ describe("loadTree activeSceneId", () => {
     await useTreeStore.getState().loadTree("p1");
 
     expect(useTreeStore.getState().activeSceneId).toBe("scene-a");
+  });
+
+  it("records the project and workspace revision of a successful hydration", async () => {
+    mockListNodes.mockResolvedValue([]);
+
+    await useTreeStore.getState().loadTree("p1", 27);
+
+    expect(useTreeStore.getState()).toMatchObject({
+      hydratedProjectId: "p1",
+      hydratedWorkspaceOpenRevision: 27,
+      isLoading: false,
+    });
+  });
+
+  it("clears the hydration identity when the scoped load fails", async () => {
+    useTreeStore.setState({
+      hydratedProjectId: "p1",
+      hydratedWorkspaceOpenRevision: 26,
+    });
+    mockListNodes.mockRejectedValue(new Error("tree unavailable"));
+
+    await useTreeStore.getState().loadTree("p1", 27);
+
+    expect(useTreeStore.getState()).toMatchObject({
+      hydratedProjectId: null,
+      hydratedWorkspaceOpenRevision: null,
+      isLoading: false,
+    });
   });
 });

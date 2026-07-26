@@ -18,7 +18,6 @@ import {
   getChapterForeshadowStats,
   getSceneForeshadowContext,
   getSceneForeshadowInfo,
-  listForeshadows,
   listForeshadowsByCodexEntry,
   listForeshadowsWithLabels,
   listOpenForeshadowsForContext,
@@ -70,50 +69,31 @@ describe("foreshadow api tauri mapping", () => {
     expect(result.createdAt).toBeInstanceOf(Date);
   });
 
-  it("normalizes list rows and setup rows from tauri commands", async () => {
-    mockInvoke
-      .mockResolvedValueOnce([
+  it("normalizes setup rows from the dedicated tauri command", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      setups: [
         {
-          id: "f1",
-          project_id: "p1",
-          title: "伏線A",
-          intent: null,
-          notes: null,
-          payoff_scene_id: null,
-          payoff_from_pos: null,
-          payoff_to_pos: null,
-          payoff_confirmed: 1,
-          abandoned: 0,
+          id: "s1",
+          foreshadow_id: "f1",
+          scene_id: "scene-1",
+          from_pos: 3,
+          to_pos: 9,
+          kind: "designated_existing",
+          strength: null,
+          ai_strength: null,
+          ai_reasoning: null,
+          attribution: "human",
+          ai_rationale: null,
+          last_evaluated_at: null,
+          is_orphan: 1,
           created_at: 1714000000000,
           updated_at: 1714000001000,
         },
-      ])
-      .mockResolvedValueOnce({
-        setups: [
-          {
-            id: "s1",
-            foreshadow_id: "f1",
-            scene_id: "scene-1",
-            from_pos: 3,
-            to_pos: 9,
-            kind: "designated_existing",
-            strength: null,
-            ai_strength: null,
-            ai_reasoning: null,
-            attribution: "human",
-            ai_rationale: null,
-            last_evaluated_at: null,
-            is_orphan: 1,
-            created_at: 1714000000000,
-            updated_at: 1714000001000,
-          },
-        ],
-      });
+      ],
+    });
 
-    const foreshadows = await listForeshadows("p1");
     const setups = await listSetups("f1");
 
-    expect(foreshadows[0].payoffConfirmed).toBe(true);
     expect(setups[0].foreshadowId).toBe("f1");
     expect(setups[0].sceneId).toBe("scene-1");
     expect(setups[0].isOrphan).toBe(true);

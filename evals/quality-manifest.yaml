@@ -1,0 +1,240 @@
+version: 1
+failureClasses:
+  - routing
+  - precheck
+  - tool
+  - policy
+  - quality
+  - artifact
+lightSuites:
+  - quality-workflow
+  - ai-routing
+  - tool-policy
+  - prompt-contract
+  - retrieval-grounding
+requirements:
+  - id: GDX-ROUTE-001
+    title: Every production AI route is registered, routed, and assigned a verifier.
+    definedIn: policies/quality/iron-laws.md#GDX-ROUTE-001
+    implementedBy:
+      - src/features/ai-verification/aiPathRegistry.ts
+      - src/features/chat/modelRouting.ts
+      - src/features/chat/turn/resolveTurnRoute.ts
+      - src/features/chat/chatStore.ts
+      - src/lib/browser-ai.ts
+      - src/lib/browser-mock.ts
+    lightTests:
+      - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+      - src/features/chat/modelRouting.test.ts
+      - src/features/chat/turn/resolveTurnRoute.test.ts
+      - src/features/chat/chatApi.test.ts
+      - src/features/chat/chatStore.test.ts
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ai-runtime.test.ts
+    heavyTests:
+      - src/features/ai-verification/singleShot.live.test.ts
+      - src-tauri/src/commands/post_effect.rs
+    evaluatedBy:
+      - eval-prompt-post-effect-json
+      - eval-route-search-codex
+      - eval-route-search-scenes
+      - eval-route-list-chapters
+      - eval-route-character-timeline
+  - id: GDX-PRECHECK-001
+    title: Missing inputs, policies, confirmation, or tools stop before mutation.
+    definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
+    implementedBy:
+      - src/features/chat/turn/resolveTurnRoute.ts
+      - src/features/chat/context/chatContextPlanner.ts
+      - src/features/ai-policy/policyGuard.ts
+    lightTests:
+      - src/features/chat/turn/resolveTurnRoute.test.ts
+      - src/features/chat/context/chatContextPlanner.test.ts
+      - src/features/ai-policy/policyGuard.test.ts
+    heavyTests:
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-precheck-knowledge-policy
+      - eval-precheck-body-confirmation
+      - eval-precheck-delete-confirmation
+      - eval-route-character-timeline
+      - eval-tool-unknown
+      - eval-isolation-ask-user
+  - id: GDX-AI-CONSENT-001
+    title: External AI data use is fully disclosed and explicitly consented before dispatch.
+    definedIn: policies/quality/iron-laws.md#GDX-AI-CONSENT-001
+    implementedBy:
+      - src/features/ai-policy/aiDataDisclosureView.ts
+      - src/features/ai-policy/aiDataConsentBroker.ts
+      - src/features/ai-policy/aiDataConsent.ts
+      - src/features/ai-policy/AiDataConsentDialog.tsx
+      - src/features/ai-policy/AiDataConsentDetails.tsx
+      - src/features/ai-policy/browserAiDisclosure.ts
+      - src/features/chat/browserProviderPolicy.ts
+      - src/features/hosted-editor/WebEditorAiCategory.tsx
+      - src/lib/browser-mock.ts
+      - public/PRIVACY_ja.md
+      - public/PRIVACY_en.md
+      - public/TERMS_ja.md
+      - public/TERMS_en.md
+    lightTests:
+      - src/features/ai-policy/aiDataConsent.test.ts
+      - src/features/ai-policy/aiDataConsentBroker.test.ts
+      - src/features/ai-policy/AiDataConsentDialog.test.tsx
+      - src/features/ai-policy/browserAiDisclosure.test.ts
+      - src/features/chat/browserProviderPolicy.test.ts
+      - src/features/hosted-editor/WebEditorAiCategory.test.tsx
+      - src/features/legal/constants.test.ts
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ai-runtime.test.ts
+      - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+    heavyTests:
+      - src/features/ai-verification/singleShot.live.test.ts
+    evaluatedBy:
+      - eval-ai-data-consent-precheck
+  - id: GDX-TOOL-001
+    title: Agent tool calls must resolve to the canonical manifest and channel.
+    definedIn: policies/quality/iron-laws.md#GDX-TOOL-001
+    implementedBy:
+      - agent-tool-manifest.json
+      - src/features/chat/agent/toolManifest.ts
+      - src/features/chat/agent/toolDefinitions.ts
+      - src-tauri/crates/grimodex-ai/build.rs
+    lightTests:
+      - src/features/chat/agent/toolDefinitions.test.ts
+      - src/features/chat/agent/toolExecutors.test.ts
+      - scripts/quality/impact-map.mjs
+    heavyTests:
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-route-search-codex
+      - eval-tool-unknown
+      - eval-tool-research
+      - eval-tool-hermes-write
+  - id: GDX-POLICY-001
+    title: Mutating and destructive tools enforce policy and confirmation without silent retry.
+    definedIn: policies/quality/iron-laws.md#GDX-POLICY-001
+    implementedBy:
+      - src/features/ai-policy/policyGuard.ts
+      - src/features/chat/agent/toolExecutors.ts
+      - agent-tool-manifest.json
+    lightTests:
+      - src/features/ai-policy/policyGuard.test.ts
+      - src/features/chat/agent/toolExecutors.test.ts
+    heavyTests:
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-artifact-create-event
+      - eval-artifact-update-codex
+      - eval-precheck-knowledge-policy
+      - eval-precheck-body-confirmation
+      - eval-precheck-delete-confirmation
+      - eval-policy-create-snippet
+      - eval-policy-apply-tree
+      - eval-tool-hermes-write
+      - eval-policy-propose-body
+      - eval-policy-delete-relation
+  - id: GDX-GROUND-001
+    title: Answers and prompts preserve current, attributable grounding.
+    definedIn: policies/quality/iron-laws.md#GDX-GROUND-001
+    implementedBy:
+      - src/features/chat/citationVerify.ts
+      - src/features/chat/chatRecall.ts
+      - src/features/chat/context/chatContextPlanner.ts
+      - scripts/quality/validate-retrieval-fixtures.mjs
+    lightTests:
+      - src/features/chat/citationVerify.test.ts
+      - src/features/chat/chatRecall.test.ts
+      - src/features/chat/context/chatContextPlanner.test.ts
+      - scripts/quality/validate-retrieval-fixtures.mjs
+    heavyTests:
+      - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
+      - scripts/quality/run-related-scenes-heavy.mjs
+    evaluatedBy:
+      - eval-ground-search-events
+      - eval-ground-get-scene
+      - eval-ground-foreshadow
+      - eval-tool-research
+  - id: GDX-ARTIFACT-001
+    title: Structured and generated outputs pass schema and provenance validation.
+    definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
+    implementedBy:
+      - src/features/chat/agent/toolExecutors.ts
+      - src/features/chat/agent/chronicleWriteTools.ts
+      - src/features/post-effect/api.ts
+      - src/features/post-effect/canonicalize.ts
+    lightTests:
+      - src/features/chat/agent/toolExecutors.test.ts
+      - src/features/chat/agent/chronicleWriteTools.test.ts
+      - src/features/post-effect/api.test.ts
+      - src/features/post-effect/canonicalize.test.ts
+    heavyTests:
+      - src-tauri/src/commands/post_effect.rs
+      - src/features/codex/candidateJudgment.live.test.ts
+      - src/features/codex/codexYomi.live.test.ts
+    evaluatedBy:
+      - eval-artifact-create-event
+      - eval-artifact-update-codex
+      - eval-policy-create-snippet
+      - eval-policy-apply-tree
+      - eval-prompt-post-effect-json
+  - id: GDX-ISOLATION-001
+    title: Evaluation cases own independent context, state, artifacts, and teardown.
+    definedIn: policies/quality/iron-laws.md#GDX-ISOLATION-001
+    implementedBy:
+      - scripts/quality/eval-fixtures.mjs
+      - evals/fixtures/routing.yaml
+    lightTests:
+      - scripts/quality/eval-fixtures.test.mjs
+    heavyTests:
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-ground-search-events
+      - eval-route-search-codex
+      - eval-isolation-ask-user
+  - id: GDX-TRACE-001
+    title: Requirements, changes, suites, results, failures, and deferred work remain linked.
+    definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
+    implementedBy:
+      - scripts/quality/impact-map.mjs
+      - evals/impact-map.yaml
+      - src/features/ai-verification/aiPathRegistry.ts
+    lightTests:
+      - scripts/quality/impact-map.test.mjs
+      - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+    heavyTests:
+      - src/features/ai-verification/singleShot.live.test.ts
+    evaluatedBy:
+      - eval-ground-foreshadow
+      - eval-artifact-create-event
+      - eval-prompt-post-effect-json
+      - eval-route-search-scenes
+heavyEvaluations:
+  - id: heavy-agent-tool-loop
+    suiteId: tool-policy
+    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts
+    reason: Preserved desktop-route validation; requires billed OpenRouter access and an isolated workspace, and is not a managed Web Editor route.
+  - id: heavy-single-shot-surfaces
+    suiteId: ai-routing
+    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/ai-verification/singleShot.live.test.ts
+    reason: Preserved desktop-route validation; requires billed OpenRouter access, and missing credentials must not become a pass.
+  - id: heavy-related-scenes
+    suiteId: retrieval-grounding
+    command: EMBED_NODE_MODULES=... EMBED_RES_DIR=... node scripts/quality/run-related-scenes-heavy.mjs
+    reason: Requires local ONNX runtime dependencies and model resources; the runner generates verified embeddings, executes the eval, and restores prior artifacts.
+  - id: heavy-rust-post-effect-live
+    suiteId: prompt-contract
+    command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
+    reason: Preserved desktop Rust-route validation; requires a billed OpenRouter model and isolated credentials.
+  - id: heavy-codex-prompt-surfaces
+    suiteId: prompt-contract
+    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
+    reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
+blockedEvaluations:
+  - id: blocked-web-ai-consent-live
+    suiteId: tool-policy
+    reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, and teardown against a real user-selected HTTP Local LLM or BYOK provider.
+    requiredAction: Add disposable user-owned provider credentials or an isolated Local LLM endpoint, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.

@@ -60,6 +60,12 @@ vi.mock("@/features/editor/tabStore", () => ({
   },
 }));
 
+vi.mock("@/features/editor/editorSessionStore", () => ({
+  useEditorSessionStore: {
+    getState: () => ({ dirtyDocumentIds: h.dirtyTabs }),
+  },
+}));
+
 vi.mock("@/features/foreshadow/foreshadowStore", () => ({
   useForeshadowStore: {
     getState: () => ({ load: h.loadForeshadows }),

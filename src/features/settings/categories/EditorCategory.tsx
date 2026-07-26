@@ -4,6 +4,7 @@ import { SettingSection } from "../components/SettingSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
+import { Switch } from "@/components/ui/switch";
 import { SettingSlider } from "../components/SettingSlider";
 import { CaretMotionPreview } from "../components/CaretMotionPreview";
 import { CaretSlideResetButton } from "../components/CaretSlideResetButton";
@@ -198,6 +199,57 @@ export function EditorCategory() {
         </SettingRow>
         <SettingRow label={t("settings.editor.bubbleMenu")}>
           <SettingToggle settingKey="editor.bubbleMenu" defaultValue={true} />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.aozoraInput")}
+          description={t("settings.editor.aozoraInputDesc")}
+        >
+          <SettingToggle settingKey="editor.aozoraInput" defaultValue={true} />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.autoPairBrackets")}
+          description={t("settings.editor.autoPairBracketsDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.autoPairBrackets"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.showInvisibles")}
+          description={t("settings.editor.showInvisiblesDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.showInvisibles"
+            defaultValue={false}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.codexCompletion")}
+          description={t("settings.editor.codexCompletionDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.codexCompletion"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.codexReadingPrompt")}
+          description={t("settings.editor.codexReadingPromptDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.promptCodexReadingOnRuby"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.codexPopoverOnCaret")}
+          description={t("settings.editor.codexPopoverOnCaretDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.codexPopoverOnCaret"
+            defaultValue={false}
+          />
         </SettingRow>
       </SettingSection>
 
@@ -401,23 +453,7 @@ function DisableAllToggle({
   value: boolean;
   onChange: (v: boolean) => void;
 }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={value}
-      onClick={() => onChange(!value)}
-      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
-        value ? "bg-primary" : "bg-muted"
-      }`}
-    >
-      <span
-        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-          value ? "translate-x-4" : "translate-x-0"
-        }`}
-      />
-    </button>
-  );
+  return <Switch checked={value} onCheckedChange={onChange} />;
 }
 
 function AnimToggle({
@@ -430,21 +466,6 @@ function AnimToggle({
   disabled: boolean;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={value}
-      disabled={disabled}
-      onClick={() => onChange(!value)}
-      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
-        value ? "bg-primary" : "bg-muted"
-      }`}
-    >
-      <span
-        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-          value ? "translate-x-4" : "translate-x-0"
-        }`}
-      />
-    </button>
+    <Switch checked={value} onCheckedChange={onChange} disabled={disabled} />
   );
 }

@@ -32,7 +32,8 @@ import {
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSnippetStore } from "./snippetStore";
 import {
@@ -48,6 +49,7 @@ import {
 import type { CodexTag } from "@/features/codex/tagApi";
 import { useFitsInline } from "@/hooks/useFitsInline";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
+import { formatInstant } from "@/lib/time";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
@@ -392,7 +394,18 @@ export function SnippetDetailContent({
             <button
               type="button"
               data-testid="snippet-open-in-editor"
-              onClick={() => useTabStore.getState().openSnippetTab(snippet.id)}
+              onClick={() =>
+                openEditorDocument(
+                  {
+                    target: { kind: "snippet", documentId: snippet.id },
+                    mode: "pinned",
+                    revealEditor: true,
+                    focusEditor: false,
+                    syncSceneContext: false,
+                  },
+                  defaultEditorNavigationPorts,
+                )
+              }
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
               title={t("snippets.detail.openInEditor")}
             >
@@ -414,7 +427,7 @@ export function SnippetDetailContent({
         <div className="space-y-1 text-xs text-muted-foreground">
           <div>
             {t("snippets.detail.createdAt", {
-              date: new Date(snippet.createdAt).toLocaleString(),
+              date: formatInstant(snippet.createdAt) ?? snippet.createdAt,
             })}
           </div>
           <div>

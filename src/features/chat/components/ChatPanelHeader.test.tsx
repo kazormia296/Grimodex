@@ -239,9 +239,9 @@ describe("ChatPanelHeader — scope dropdown tabs (Spotlight 形式)", () => {
     expect(onToggle).not.toHaveBeenCalled();
   });
 
-  it("portals the dropdown out of the component subtree (escapes .glass-chat)", () => {
-    // 退行ガード: inline absolute に戻すと .glass-chat の backdrop-filter が作る
-    // stacking context に閉じ込められ、他パネルに埋もれる。document.body へ
+  it("portals the dropdown out of the component subtree (escapes the chat surface)", () => {
+    // 退行ガード: inline absolute に戻すとチャットパネルの stacking context に
+    // 閉じ込められ、他パネルに埋もれる。document.body へ
     // portal して祖先 stacking context を脱出していることを assert する。
     const { container } = render(
       <ChatPanelHeader {...baseProps({ chatScope: "scene" })} />,
@@ -279,14 +279,32 @@ describe("ChatPanelHeader — RAG egress disclosure (F-1)", () => {
     expect(note?.textContent).toContain("chat.webSearch.injectionNote");
   });
 
-  it("drops aria-describedby when the toggle is disabled", () => {
+  it("announces a supplied disabled reason instead of an inapplicable egress warning", () => {
     render(
       <ChatPanelHeader
         {...baseProps({ ragDisabled: true, ragDisabledReason: "n/a" })}
       />,
     );
     const toggle = screen.getByRole("button", { name: "chat.webSearch.off" });
-    expect(toggle.getAttribute("aria-describedby")).toBeNull();
+    expect(toggle.getAttribute("aria-describedby")).toBe("rag-disabled-note");
+    expect(document.getElementById("rag-disabled-note")?.textContent).toBe(
+      "n/a",
+    );
+    expect(document.getElementById("rag-egress-note")).toBeNull();
+  });
+
+  it("disables Web search visibly while private Agent mode is active", () => {
+    render(
+      <ChatPanelHeader {...baseProps({ agentMode: true, ragEnabled: true })} />,
+    );
+    const toggle = screen.getByRole("button", { name: "chat.webSearch.on" });
+    expect(toggle).toBeDisabled();
+    expect(toggle.getAttribute("title")).toContain(
+      "chat.webSearch.agentPrivacyNote",
+    );
+    expect(document.getElementById("rag-egress-note")?.textContent).toContain(
+      "chat.webSearch.agentPrivacyNote",
+    );
   });
 });
 

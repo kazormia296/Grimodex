@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
+import { useEditorSessionStore } from "./editorSessionStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -23,6 +24,14 @@ import { UnsavedDialog } from "./UnsavedDialog";
 import { saveScene } from "./editorSaveRegistry";
 import type { GroupIndex, TabEntry } from "./tabStore";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
+import { resolveApplicablePhases } from "@/features/codex/context/resolveApplicablePhases";
+import type {
+  PhaseResolutionMode,
+  SceneTimeIndex,
+} from "@/features/codex/context/sceneTimeIndex";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 
 export const DRAG_DATA_KEY = "application/grimodex-tab";
 /** Per-group marker so drop zones can detect source group during dragover. */
@@ -32,7 +41,8 @@ export const DRAG_GROUP_KEY = (g: 0 | 1) => `application/grimodex-tab-g${g}`;
 function getTabPhaseLabel(
   tab: TabEntry,
   phasesByEntry: Record<string, CodexEntryPhase[]>,
-  globalSceneOrder: Map<string, number>,
+  sceneTimeIndex: SceneTimeIndex,
+  resolutionMode: PhaseResolutionMode,
   activeSceneId: string | null,
 ): string | null {
   if (tab.contentType !== "codex") return null;
@@ -45,21 +55,13 @@ function getTabPhaseLabel(
   }
   // Auto-resolve from active scene
   if (!activeSceneId) return null;
-  const currentOrder = globalSceneOrder.get(activeSceneId);
-  if (currentOrder === undefined) return null;
-  const applicable = phases
-    .filter(
-      (p) =>
-        p.anchorNodeId != null &&
-        globalSceneOrder.has(p.anchorNodeId) &&
-        globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-    )
-    .sort(
-      (a, b) =>
-        globalSceneOrder.get(a.anchorNodeId!)! -
-        globalSceneOrder.get(b.anchorNodeId!)!,
-    );
-  return applicable[applicable.length - 1]?.label ?? null;
+  const resolution = resolveApplicablePhases({
+    phases,
+    index: sceneTimeIndex,
+    mode: resolutionMode,
+    anchor: { kind: "scene", sceneId: activeSceneId },
+  });
+  return resolution.applicablePhases.at(-1)?.label ?? null;
 }
 
 interface DragPayload {
@@ -77,20 +79,22 @@ interface TabBarProps {
 }
 
 export function TabBar({ groupIndex = 0 }: TabBarProps) {
+  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const { t } = useTranslation();
   const primaryTabs = useTabStore((s) => s.tabs);
   const primaryActiveTabId = useTabStore((s) => s.activeTabId);
   const secondaryTabs = useTabStore((s) => s.secondaryTabs);
   const secondaryActiveTabId = useTabStore((s) => s.secondaryActiveTabId);
   const isSyncedScene = useTabStore((s) => s.isSyncedScene);
-  const dirtyTabIds = useTabStore((s) => s.dirtyTabIds);
+  const dirtyTabIds = useEditorSessionStore((s) => s.dirtyDocumentIds);
 
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const codexEntries = useCodexStore((s) => s.entries);
   const snippetEntries = useSnippetStore((s) => s.entries);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
-  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
+  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
 
   const hasSecondaryGroup = useTabStore((s) => s.secondaryGroupOpen);
   const isLinearMode = useTabStore((s) => s.isLinearMode);
@@ -216,7 +220,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
 
   function handleTabClose(e: React.MouseEvent, nodeId: string) {
     e.stopPropagation();
-    if (useTabStore.getState().dirtyTabIds.has(nodeId)) {
+    if (useEditorSessionStore.getState().dirtyDocumentIds.has(nodeId)) {
       setPendingClose({ nodeIds: [nodeId] });
       return;
     }
@@ -235,8 +239,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   }
 
   function handleCloseSecondaryGroup() {
-    const { secondaryTabs: tabsInGroup, dirtyTabIds: dirty } =
-      useTabStore.getState();
+    const tabsInGroup = useTabStore.getState().secondaryTabs;
+    const dirty = useEditorSessionStore.getState().dirtyDocumentIds;
     const dirtyIds = tabsInGroup
       .map((t) => t.nodeId)
       .filter((id) => dirty.has(id));
@@ -253,7 +257,16 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   function handleTabDoubleClick(nodeId: string, isPreview: boolean) {
     if (!isPreview) return;
     if (isPrimary) {
-      useTabStore.getState().openPinned(nodeId);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: nodeId },
+          mode: "pinned",
+          revealEditor: true,
+          focusEditor: true,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
     } else {
       useTabStore.getState().pinSecondaryTab(nodeId);
     }
@@ -346,7 +359,10 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   }
 
   return (
-    <div className="glass-editor-chrome flex items-center border-b border-border bg-background">
+    <div
+      data-phone-tab-bar={phoneWorkspace ? "true" : undefined}
+      className="editor-background-glass glass-editor-chrome flex items-center border-b border-border"
+    >
       {/* Scrollable tab list */}
       <div
         ref={scrollRef}
@@ -382,7 +398,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
             const phaseLabel = getTabPhaseLabel(
               tab,
               phasesByEntry,
-              globalSceneOrder,
+              sceneTimeIndex,
+              resolutionMode,
               activeSceneId,
             );
             const synced = isSyncedScene(tab.nodeId);
@@ -426,7 +443,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     "border-r border-border px-3 py-1.5 text-xs",
                     "hover:bg-accent/50",
                     isActive
-                      ? "bg-background font-medium text-foreground"
+                      ? "bg-background/10 font-medium text-foreground"
                       : "text-muted-foreground",
                     isActive &&
                       "after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-primary",
@@ -513,7 +530,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     title={t("common.close")}
                     className={cn(
                       "ml-1 rounded p-0.5 hover:bg-accent active:scale-[0.97] transition-transform duration-75",
-                      isDirty
+                      phoneWorkspace || isDirty
                         ? "opacity-100"
                         : "opacity-0 group-hover:opacity-100",
                     )}
@@ -538,7 +555,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       {/* Linear mode toggle: primary group only。title は hover 可能な span 側に持たせる:
           disabled(+pointer-events-none)なボタンは hover を受けず native tooltip が出ない
           ため、なぜ無効かの説明を span のツールチップで担保する。 */}
-      {isPrimary && (
+      {isPrimary && !phoneWorkspace && (
         <span
           className="flex h-full flex-shrink-0"
           title={
@@ -566,7 +583,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
       )}
 
       {/* Split dropdown button: primary group only, when no secondary group and not in linear mode */}
-      {isPrimary && !hasSecondaryGroup && !isLinearMode && (
+      {isPrimary && !phoneWorkspace && !hasSecondaryGroup && !isLinearMode && (
         <div
           ref={splitMenuRef}
           className="relative flex-shrink-0 border-l border-border"
@@ -665,7 +682,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                 const overflowPhaseLabel = getTabPhaseLabel(
                   tab,
                   phasesByEntry,
-                  globalSceneOrder,
+                  sceneTimeIndex,
+                  resolutionMode,
                   activeSceneId,
                 );
                 return (

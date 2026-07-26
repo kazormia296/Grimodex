@@ -1,0 +1,9 @@
+[package]
+name = "grimodex-fonts"
+version = "0.1.0"
+edition = "2021"
+license = "Elastic-2.0"
+description = "System font family enumeration shared by the Tauri command layer and the napi backend"
+
+[dependencies]
+fontdb = "0.23"

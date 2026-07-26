@@ -1,6 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@/lib/tauri";
-import type { GlobalSettings } from "@/features/workspace/store";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 
 export type AxisMode = "reading" | "story" | "write";
 export type SpacingMode = "uniform" | "proportional";
@@ -193,10 +192,10 @@ useTimelineStore.subscribe((state) => {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const current = await invoke<GlobalSettings>("get_global_settings");
-      await invoke("save_global_settings", {
-        settings: { ...current, timeline: next },
-      });
+      await globalSettingsRepository.patch((current) => ({
+        ...current,
+        timeline: next,
+      }));
     } catch (e) {
       if (import.meta.env.MODE !== "test") {
         console.warn("[timeline] save failed:", e);

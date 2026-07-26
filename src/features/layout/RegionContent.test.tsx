@@ -8,6 +8,12 @@ vi.mock("./SlotView", () => ({
   ),
 }));
 
+vi.mock("./AnimatedSlotPanel", () => ({
+  AnimatedSlotPanel: ({ panelId }: { panelId: string }) => (
+    <div data-mock-animated-slot-panel={panelId} />
+  ),
+}));
+
 import { RegionContent } from "./RegionContent";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
@@ -80,5 +86,60 @@ describe("RegionContent flex-grow", () => {
     const grow = slotFlexGrows(container);
     expect(grow).toHaveLength(1);
     expect(grow[0]).toBeCloseTo(1, 5);
+  });
+
+  it("uses one stable Glass host per open panel slot", () => {
+    setLeftSlots([
+      { id: "l0", sizeRatio: 0.5, panels: ["scenes"], activePanel: "scenes" },
+      { id: "l1", sizeRatio: 0.5, panels: ["chat"], activePanel: "chat" },
+    ]);
+
+    const { container } = render(
+      <RegionContent region="left" orientation="vertical" />,
+    );
+    const surfaces = container.querySelectorAll(
+      '[data-ambient-glass-surface="panel"]',
+    );
+
+    expect(surfaces).toHaveLength(2);
+    expect(surfaces[0]).toHaveAttribute("data-drop-slot", "l0");
+    expect(surfaces[1]).toHaveAttribute("data-drop-slot", "l1");
+    for (const surface of surfaces) {
+      expect(surface.classList.contains("gx-panel")).toBe(true);
+    }
+  });
+
+  it("keeps panel hosts mounted but removes slot splitters while dormant", () => {
+    setLeftSlots([
+      {
+        id: "l0",
+        sizeRatio: 0.5,
+        panels: ["scenes"],
+        activePanel: "scenes",
+      },
+      { id: "l1", sizeRatio: 0.5, panels: ["codex"], activePanel: "codex" },
+    ]);
+
+    const { container, rerender } = render(
+      <RegionContent region="left" orientation="vertical" dormant />,
+    );
+    const region = container.querySelector('[data-region-content="left"]');
+    const scenes = container.querySelector(
+      '[data-mock-animated-slot-panel="scenes"]',
+    );
+
+    expect(region).toHaveAttribute("data-dormant", "true");
+    expect(container.querySelector("[data-splitter-handle]")).toBeNull();
+    expect(container.querySelector("[data-drop-between]")).toBeNull();
+    expect(container.querySelector("[data-drop-new-slot]")).toBeNull();
+
+    rerender(
+      <RegionContent region="left" orientation="vertical" dormant={false} />,
+    );
+
+    expect(
+      container.querySelector('[data-mock-animated-slot-panel="scenes"]'),
+    ).toBe(scenes);
+    expect(container.querySelector("[data-splitter-handle]")).not.toBeNull();
   });
 });

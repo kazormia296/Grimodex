@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { instantEpochMilliseconds } from "@/lib/time";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import type {
   PostEffectSeverity,
@@ -36,16 +37,18 @@ export function computeLensDotState(
   const worst =
     SEVERITY_ORDER.find((sev) => lenses.some((l) => l.severity === sev)) ??
     "info";
-  const latestRunCompletedAt = lenses.reduce<string | null>((max, l) => {
-    const t = l.runCompletedAt ?? null;
-    if (!t) return max;
-    if (!max) return t;
-    return new Date(t).getTime() > new Date(max).getTime() ? t : max;
+  const latestRunCompletedAt = lenses.reduce<number | null>((max, lens) => {
+    const epoch = lens.runCompletedAt
+      ? instantEpochMilliseconds(lens.runCompletedAt)
+      : null;
+    if (epoch === null) return max;
+    return max === null || epoch > max ? epoch : max;
   }, null);
+  const updatedEpoch = updatedAt ? instantEpochMilliseconds(updatedAt) : null;
   const stale =
-    !!updatedAt &&
-    !!latestRunCompletedAt &&
-    new Date(updatedAt).getTime() > new Date(latestRunCompletedAt).getTime();
+    updatedEpoch !== null &&
+    latestRunCompletedAt !== null &&
+    updatedEpoch > latestRunCompletedAt;
   return { worst, stale };
 }
 

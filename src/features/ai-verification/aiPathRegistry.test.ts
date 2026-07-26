@@ -14,6 +14,7 @@ import { dirname, resolve, join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import {
   AI_PATHS,
+  AI_RUNTIME_ROUTES,
   GENERATION_LAYERS,
   type AiPathLayer,
   type AiPathVerifier,
@@ -201,4 +202,58 @@ describe("AI path registry — completeness", () => {
       ).toBe(true);
     }
   }, 30_000); // testRef ファイル読み込みのため既定 5s を引き上げる
+});
+
+describe("AI runtime route registry — Web Editor direct transports", () => {
+  it("registers every browser consent route exactly once", () => {
+    expect(AI_RUNTIME_ROUTES.map((route) => route.consentRoute)).toEqual([
+      "byok",
+    ]);
+    const ids = AI_RUNTIME_ROUTES.map((route) => route.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("assigns every runtime route a capability decision and executable contract verifier", () => {
+    for (const route of AI_RUNTIME_ROUTES) {
+      expect(route.providers.length, `${route.id} providers`).toBeGreaterThan(
+        0,
+      );
+      expect(route.providers).not.toContain("cli");
+      expect(route.surface.length, `${route.id} surface`).toBeGreaterThan(0);
+      expect(route.transport.length, `${route.id} transport`).toBeGreaterThan(
+        0,
+      );
+      expect(
+        route.capabilityGate.length,
+        `${route.id} capabilityGate`,
+      ).toBeGreaterThan(0);
+      expect(route.verifier, `${route.id} verifier`).toBe("contract");
+      const abs = join(REPO_ROOT, route.testRef);
+      expect(existsSync(abs), `${route.id} testRef が存在しない`).toBe(true);
+      expect(
+        readFileSync(abs, "utf8").includes(route.testName),
+        `${route.id} の testRef に testName "${route.testName}" が無い`,
+      ).toBe(true);
+    }
+  });
+
+  it("proves every runtime route fails closed at its consent boundary", () => {
+    for (const route of AI_RUNTIME_ROUTES) {
+      const abs = join(REPO_ROOT, route.consentTestRef);
+      expect(existsSync(abs), `${route.id} consentTestRef が存在しない`).toBe(
+        true,
+      );
+      expect(
+        readFileSync(abs, "utf8").includes(route.consentTestName),
+        `${route.id} の consentTestRef に consentTestName "${route.consentTestName}" が無い`,
+      ).toBe(true);
+      expect(route.note.length, `${route.id} note`).toBeGreaterThan(20);
+    }
+  });
+
+  it("keeps provider authority under user selection", () => {
+    for (const route of AI_RUNTIME_ROUTES) {
+      expect(route.providerAuthority).toBe("user-selection");
+    }
+  });
 });

@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { sendChat, fetchModels, testConnection } from "./browser-ai";
+import {
+  BrowserAiConnectionError,
+  browserAiFetch,
+  classifyBrowserAiAddressSpace,
+  completeBrowserAiRequest,
+  createBrowserAiTransport,
+  fetchModels,
+  isBrowserLocalEndpoint,
+  resolveBrowserAiEndpoint,
+  sendChat,
+  sendChatWithTools,
+  testConnection,
+} from "./browser-ai";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -15,6 +27,73 @@ function jsonResponse(data: unknown, status = 200): Response {
 
 beforeEach(() => {
   mockFetch.mockReset();
+});
+
+describe("browser local-network request policy", () => {
+  it.each([
+    ["http://localhost:11434", "loopback"],
+    ["http://127.0.0.1:1234/v1", "loopback"],
+    ["http://[::1]:11434", "loopback"],
+    ["http://192.168.1.50:1234/v1", "local"],
+    ["http://172.20.0.4:8080", "local"],
+    ["http://[fd12:3456::1]:8080", "local"],
+    ["http://[fe90::1]:8080", "local"],
+    ["http://printer.local:8080", "local"],
+    ["https://fd.example.com/v1", undefined],
+    ["https://api.example.com/v1", undefined],
+  ] as const)("classifies %s as %s", (url, expected) => {
+    expect(classifyBrowserAiAddressSpace(url)).toBe(expected);
+  });
+
+  it("identifies configured local endpoints without treating public HTTPS as local", () => {
+    expect(isBrowserLocalEndpoint("http://127.0.0.1:1234/v1")).toBe(true);
+    expect(isBrowserLocalEndpoint("http://192.168.1.20:11434")).toBe(true);
+    expect(isBrowserLocalEndpoint("https://gateway.example/v1")).toBe(false);
+  });
+
+  it("passes the browser targetAddressSpace hint to local requests", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    await browserAiFetch("http://192.168.1.20:1234/v1/models", {
+      headers: { accept: "application/json" },
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://192.168.1.20:1234/v1/models",
+      expect.objectContaining({ targetAddressSpace: "local" }),
+    );
+  });
+
+  it("lets an HTTPS page use the browser LNA permission flow for an HTTP LAN endpoint", async () => {
+    vi.stubGlobal("window", {
+      location: {
+        href: "https://try.grimodex.app/editor",
+        protocol: "https:",
+      },
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    try {
+      await browserAiFetch("http://192.168.1.20:1234/v1/models");
+    } finally {
+      vi.stubGlobal("window", undefined);
+    }
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://192.168.1.20:1234/v1/models",
+      expect.objectContaining({ targetAddressSpace: "local" }),
+    );
+  });
+
+  it("normalizes a local fetch rejection into a permission error", async () => {
+    mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    await expect(
+      browserAiFetch("http://192.168.1.20:1234/v1/models"),
+    ).rejects.toMatchObject<Partial<BrowserAiConnectionError>>({
+      code: "local-network-permission",
+    });
+  });
 });
 
 describe("sendChat", () => {
@@ -35,6 +114,9 @@ describe("sendChat", () => {
     expect(url).toBe("/api/anthropic/messages");
     expect(opts.headers["x-api-key"]).toBe("sk-test");
     expect(opts.headers["anthropic-version"]).toBe("2023-06-01");
+    expect(opts.headers["anthropic-dangerous-direct-browser-access"]).toBe(
+      "true",
+    );
 
     const body = JSON.parse(opts.body);
     expect(body.system).toBe("You are helpful.");
@@ -59,19 +141,22 @@ describe("sendChat", () => {
     expect(opts.headers["Authorization"]).toBe("Bearer sk-openai");
   });
 
-  it("sends OpenRouter request with extra headers", async () => {
+  it("sends OpenRouter requests with BYOK and attribution headers", async () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse({
-        choices: [{ message: { content: "Response" } }],
+        choices: [{ message: { content: "OpenRouter says hi" } }],
       }),
     );
 
-    await sendChat("openrouter", "auto", "sk-or", [
-      { role: "user", content: "Test" },
-    ]);
+    await expect(
+      sendChat("openrouter", "openai/gpt-5-mini", "sk-or", [
+        { role: "user", content: "Test" },
+      ]),
+    ).resolves.toBe("OpenRouter says hi");
 
     const [url, opts] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/openrouter/chat/completions");
+    expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(opts.headers.Authorization).toBe("Bearer sk-or");
     expect(opts.headers["HTTP-Referer"]).toBe(
       "https://github.com/kazormia296/Grimodex",
     );
@@ -102,6 +187,203 @@ describe("sendChat", () => {
         { role: "user", content: "Hi" },
       ]),
     ).rejects.toThrow("AI request failed (401): Invalid API key");
+  });
+});
+
+describe("browser production endpoints", () => {
+  it("resolves every Web Editor provider endpoint", () => {
+    expect(
+      resolveBrowserAiEndpoint("openai", "chat", { development: false }),
+    ).toBe("https://api.openai.com/v1/chat/completions");
+    expect(
+      resolveBrowserAiEndpoint("openrouter", "models", {
+        development: false,
+      }),
+    ).toBe("https://openrouter.ai/api/v1/models");
+    expect(
+      resolveBrowserAiEndpoint("sakana", "chat", {
+        development: true,
+      }),
+    ).toBe("/api/sakana/chat/completions");
+    expect(
+      resolveBrowserAiEndpoint("ai-novelist", "chat", {
+        development: false,
+        apiVariant: "v1",
+      }),
+    ).toBe("https://api.tringpt.com/v1/chat/completions");
+    expect(
+      resolveBrowserAiEndpoint("openai-compatible", "chat", {
+        development: false,
+        baseUrl: "https://llm.example/v1/",
+      }),
+    ).toBe("https://llm.example/v1/chat/completions");
+    expect(
+      resolveBrowserAiEndpoint("anthropic", "chat", {
+        development: false,
+      }),
+    ).toBe("https://api.anthropic.com/v1/messages");
+    expect(
+      resolveBrowserAiEndpoint("ollama", "chat", {
+        development: false,
+        ollamaEndpoint: "http://localhost:11434",
+      }),
+    ).toBe("http://localhost:11434/v1/chat/completions");
+    expect(
+      resolveBrowserAiEndpoint("openai", "chat", { development: true }),
+    ).toBe("/api/openai/chat/completions");
+  });
+
+  it("honors an explicitly configured Ollama endpoint in development", () => {
+    expect(
+      resolveBrowserAiEndpoint("ollama", "models", {
+        development: true,
+        ollamaEndpoint: "http://192.0.2.10:11434/",
+      }),
+    ).toBe("http://192.0.2.10:11434/api/tags");
+    expect(
+      resolveBrowserAiEndpoint("ollama", "chat", {
+        development: true,
+        ollamaEndpoint: "http://192.0.2.10:11434/",
+      }),
+    ).toBe("http://192.0.2.10:11434/v1/chat/completions");
+  });
+
+  it("fails explicitly for native-only providers", () => {
+    expect(() =>
+      resolveBrowserAiEndpoint("cli", "chat", { development: false }),
+    ).toThrow("not supported in browser mode");
+  });
+
+  it("requires a configured base URL for OpenAI-compatible routes", () => {
+    expect(() =>
+      resolveBrowserAiEndpoint("openai-compatible", "chat", {
+        development: false,
+      }),
+    ).toThrow(/base URL/i);
+  });
+});
+
+describe("structured browser AI transport", () => {
+  it("normalizes provider text, stop reason, and usage", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        choices: [
+          { message: { content: "Actual response" }, finish_reason: "stop" },
+        ],
+        usage: { prompt_tokens: 7, completion_tokens: 3 },
+      }),
+    );
+
+    await expect(
+      completeBrowserAiRequest({
+        operation: "chat",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "Hello" }],
+      }),
+    ).resolves.toEqual({
+      blocks: [{ type: "text", content: "Actual response" }],
+      stopReason: "end_turn",
+      inputTokens: 7,
+      outputTokens: 3,
+    });
+  });
+
+  it("parses OpenAI-compatible SSE into the shared stream sink", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        [
+          'data: {"choices":[{"delta":{"content":"本"}}]}',
+          'data: {"choices":[{"delta":{"content":"物"},"finish_reason":"stop"}]}',
+          'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    const transport = createBrowserAiTransport();
+    const text: string[] = [];
+    const done: unknown[] = [];
+
+    await transport.stream?.(
+      {
+        operation: "chat",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "Hello" }],
+      },
+      {
+        text: (delta) => text.push(delta),
+        done: (payload) => done.push(payload),
+      },
+    );
+
+    expect(text).toEqual(["本", "物"]);
+    expect(done).toEqual([
+      { stopReason: "end_turn", inputTokens: 5, outputTokens: 2 },
+    ]);
+  });
+
+  it("uses the AI Novelist legacy chat contract", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: ["返答"] }));
+
+    await expect(
+      completeBrowserAiRequest({
+        operation: "chat",
+        provider: "ai-novelist",
+        model: "spiko",
+        apiKey: "novelist-key",
+        apiVariant: "legacy",
+        messages: [
+          { role: "system", content: "小説家として回答する" },
+          { role: "user", content: "続きを考えて" },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      blocks: [{ type: "text", content: "返答" }],
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body).toEqual({
+      messages: [
+        {
+          role: "user",
+          content: "小説家として回答する\n\n続きを考えて",
+        },
+      ],
+      model: "spiko",
+      max_tokens: 4096,
+    });
+  });
+
+  it("uses the AI Novelist legacy completion contract for inline AI", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: ["続き"] }));
+
+    await expect(
+      completeBrowserAiRequest({
+        operation: "inline",
+        provider: "ai-novelist",
+        model: "damsel",
+        apiKey: "novelist-key",
+        apiVariant: "legacy",
+        messages: [
+          { role: "system", content: "続きを書く" },
+          { role: "user", content: "雨が降り始めた。" },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      blocks: [{ type: "text", content: "続き" }],
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body).toEqual({
+      text: "[system]\n続きを書く\n\n[user]\n雨が降り始めた。",
+      model: "damsel",
+      length: 400,
+    });
   });
 });
 
@@ -144,15 +426,72 @@ describe("fetchModels", () => {
     expect(mockFetch.mock.calls[0][0]).toBe("/api/ollama/api/tags");
   });
 
-  it("fetches OpenRouter models with extra headers", async () => {
+  it("fetches models from the configured Ollama endpoint", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ models: [] }));
+
+    await fetchModels("ollama", "", {
+      ollamaEndpoint: "http://192.168.2.10:11434",
+    });
+
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      "http://192.168.2.10:11434/api/tags",
+    );
+    expect(mockFetch.mock.calls[0][1].targetAddressSpace).toBe("local");
+  });
+
+  it("reports a model-list endpoint that is not implemented", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "not found" }, 404));
+
+    await expect(
+      fetchModels("ollama", "", {
+        ollamaEndpoint: "http://192.0.2.10:11434",
+      }),
+    ).rejects.toMatchObject<Partial<BrowserAiConnectionError>>({
+      code: "models-unsupported",
+      status: 404,
+    });
+  });
+
+  it("fetches OpenRouter model metadata", async () => {
     mockFetch.mockResolvedValueOnce(
-      jsonResponse({ data: [{ id: "auto", name: "Auto" }] }),
+      jsonResponse({
+        data: [
+          {
+            id: "openai/gpt-5-mini",
+            name: "GPT-5 mini",
+            context_length: 400000,
+            top_provider: { max_completion_tokens: 128000 },
+            supported_parameters: ["tools"],
+            pricing: { prompt: "0.1", completion: "0.2" },
+          },
+        ],
+      }),
     );
 
-    await fetchModels("openrouter", "sk-or");
-    const [, opts] = mockFetch.mock.calls[0];
-    expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/kazormia296/Grimodex",
+    await expect(fetchModels("openrouter", "sk-or")).resolves.toEqual([
+      {
+        id: "openai/gpt-5-mini",
+        name: "GPT-5 mini",
+        contextLength: 400000,
+        maxCompletionTokens: 128000,
+        supportedParameters: ["tools"],
+        pricingPrompt: "0.1",
+        pricingCompletion: "0.2",
+      },
+    ]);
+  });
+
+  it("merges AI Novelist legacy and v1 models", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ data: [{ id: "spiko_ultra", name: "Spiko Ultra" }] }),
+    );
+
+    const models = await fetchModels("ai-novelist", "novelist-key");
+    expect(models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "spiko", apiVariant: "legacy" }),
+        expect.objectContaining({ id: "spiko_ultra", apiVariant: "v1" }),
+      ]),
     );
   });
 });
@@ -184,5 +523,66 @@ describe("testConnection", () => {
       "sk-test",
     );
     expect(result).toBe("Connection OK");
+  });
+
+  it("tests and runs tools against the configured Ollama endpoint", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({ choices: [{ message: { content: "Connection OK" } }] }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ choices: [{ message: { content: "Agent OK" } }] }),
+      );
+
+    await testConnection("ollama", "qwen3:8b", "", {
+      ollamaEndpoint: "http://192.0.2.10:11434",
+    });
+    await sendChatWithTools(
+      "ollama",
+      "qwen3:8b",
+      "",
+      [{ role: "user", content: "hello" }],
+      [],
+      "auto",
+      { ollamaEndpoint: "http://192.0.2.10:11434" },
+    );
+
+    expect(mockFetch.mock.calls.map((call) => call[0])).toEqual([
+      "http://192.0.2.10:11434/v1/chat/completions",
+      "http://192.0.2.10:11434/v1/chat/completions",
+    ]);
+  });
+
+  it("runs an OpenAI-compatible connection without an API key", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ choices: [{ message: { content: "Connection OK" } }] }),
+    );
+
+    await expect(
+      testConnection("openai-compatible", "local-model", "", {
+        baseUrl: "http://127.0.0.1:1234/v1/",
+      }),
+    ).resolves.toBe("Connection OK");
+
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:1234/v1/chat/completions");
+    expect(options.headers.Authorization).toBeUndefined();
+  });
+
+  it("parses the AI Novelist legacy response shape", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: ["Connection OK"] }));
+
+    await expect(
+      testConnection("ai-novelist", "spiko", "novelist-key", {
+        apiVariant: "legacy",
+      }),
+    ).resolves.toBe("Connection OK");
+
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.tringpt.com/api");
+    expect(JSON.parse(options.body)).toMatchObject({
+      model: "spiko",
+      length: 32,
+    });
   });
 });

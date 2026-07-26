@@ -12,11 +12,17 @@ import { defaultMarkdownSerializer } from "prosemirror-markdown";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { RubyNode } from "@/features/editor/RubyNode";
 import { EmphasisDotsMark } from "@/features/editor/EmphasisDotsMark";
+import { TcyMark } from "@/features/editor/TcyMark";
+import { CodexSemanticLinkMark } from "@/features/editor/CodexSemanticLinkMark";
+import { AozoraInputRules } from "@/features/editor/AozoraInputRules";
+import { AutoPairBracketsExtension } from "@/features/editor/AutoPairBracketsExtension";
 import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
 import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { ParagraphMoveExtension } from "@/features/editor/ParagraphMoveExtension";
+import { ParagraphReorderExtension } from "@/features/editor/reorder/ParagraphReorderExtension";
+import { ReorderInteractionExtension } from "@/features/editor/reorder/ReorderInteractionExtension";
 import { VerticalCaretNavExtension } from "@/features/editor/VerticalCaretNavExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
@@ -27,6 +33,7 @@ import { LintDisableMark } from "@/features/editor/LintDisableMark";
 import { LintDisableBlockAttrs } from "@/features/editor/LintDisableBlockAttrs";
 import { CommentMark } from "@/features/editor/CommentMark";
 import { createCommentDecorationPlugin } from "@/features/editor/CommentDecorationPlugin";
+import { createGutterMarksPlugin } from "@/features/editor/GutterMarksPlugin";
 import { ForeshadowSetupMark } from "@/features/foreshadow/marks/ForeshadowSetupMark";
 import { ForeshadowPayoffMark } from "@/features/foreshadow/marks/ForeshadowPayoffMark";
 import { ForeshadowPasteRule } from "@/features/foreshadow/marks/foreshadowPasteRule";
@@ -95,7 +102,8 @@ export const ParagraphWithEmptyLineSupport = Paragraph.extend({
  * This extension adds the shortcuts that match what the toolbar labels
  * display, so both sets of keys work.
  */
-const LintDecorationExtension = Extension.create({
+// exported for gutterLintOrder integration test (real TipTap plugin ordering).
+export const LintDecorationExtension = Extension.create({
   name: "lintDecoration",
   addProseMirrorPlugins() {
     return [createLintDecorationPlugin()];
@@ -120,6 +128,25 @@ const AnnotationDecorationExtension = Extension.create({
   name: "annotationDecoration",
   addProseMirrorPlugins() {
     return [createAnnotationPlugin()];
+  },
+});
+
+// exported for gutterLintOrder integration test (must carry the real priority).
+export const GutterMarksExtension = Extension.create({
+  name: "gutterMarks",
+  // 既定より低い priority で「最後に適用される PM プラグイン」にする。
+  // GutterMarksPlugin は review ガター記号のため LintDecorationPlugin の
+  // decoration state (lintDecorationKey) を apply 時に読む。TipTap の
+  // ExtensionManager.get plugins() は `sortExtensions([...extensions].reverse())`
+  // で **登録順を反転** してから priority 降順で安定ソートするため、既定 priority
+  // (100) のままだと後から登録した gutter の PM プラグインが lint より **先** に
+  // 適用され、gutter.apply 時点で newState の lint field が未計算 (undefined) に
+  // なる → hasLint が常に false になり lint 由来のガターが production で出ない。
+  // priority を下げて gutter を最後に回すことで、lint を含む全 decoration
+  // プラグインの適用後に gutter が走り、確実に最新の lint decoration を読める。
+  priority: 90,
+  addProseMirrorPlugins() {
+    return [createGutterMarksPlugin()];
   },
 });
 
@@ -182,12 +209,26 @@ export function getEditorExtensions(
     ToolbarShortcutsExtension,
     // 段落(最上位ブロック)を Alt+↑/↓ で上下移動
     ParagraphMoveExtension,
-    // 縦書き時の ←/→ 列移動 (Chromium の vertical-rl hardBreak カーソルバグ対策)
+    ParagraphReorderExtension,
+    // Alt=段落ハンドルドラッグ / Alt+Shift=文/文節 色帯+grab ドラッグ
+    ReorderInteractionExtension,
+    // 縦書き時の ←/→ 列移動 (Chromium hardBreak バグ対策)
     VerticalCaretNavExtension,
     // Custom marks/nodes
     AuthorshipMark,
     EmphasisDotsMark,
+    // Keep persisted scene schemas static across EditorPane tab reuse. The
+    // picker remains scene-only, but every DB-native editor must round-trip a
+    // linked scene without losing or rejecting the Mark.
+    CodexSemanticLinkMark,
+    // 縦中横（明示マーク・第一級の特殊表現）。自動変換(TateChuYokoPlugin)とは別系統。
+    TcyMark,
     RubyNode,
+    // 青空文庫記法(｜親《ふりがな》/漢字《ふりがな》/《《傍点》》)の入力時変換。
+    // ruby/emphasisDots スキーマに依存するため project DB シーンのみ (file-backed 非対応)。
+    AozoraInputRules,
+    // 約物ペア(「」『』（）等)の自動補完。テキスト操作のみでスキーマ非依存。
+    AutoPairBracketsExtension,
     SceneBreakNode,
     SceneBeatNode,
     GeneratedProseBlockNode,
@@ -205,6 +246,7 @@ export function getEditorExtensions(
     ForeshadowPasteRule,
     AnnotationMark,
     AnnotationDecorationExtension,
+    GutterMarksExtension,
   ];
 
   // mention の「ノード型」は常に登録する。popup 未配線のサーフェス

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Grimodex",
-  "version": "0.10.4",
+  "version": "1.0.0",
   "identifier": "com.miyakey.grimodex",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -32,6 +32,8 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "app", "dmg", "deb", "rpm", "appimage"],
+    "publisher": "kazormia296",
+    "homepage": "https://github.com/kazormia296/Grimodex",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -42,6 +44,30 @@
     "resources": [
       "resources/semantic/ruri-v3-30m/tokenizer.json",
       "resources/semantic/bge-small-en-v15/tokenizer.json"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "section": "utils",
+        "priority": "optional",
+        "depends": [
+          "libc6 (>= 2.39)",
+          "libstdc++6 (>= 12)",
+          "libgcc-s1",
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/kazormia296/Grimodex/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkyQTkxODVEMTVEMDQwOQpSV1FKQkYzUmhaRXFDUUlYUTNDUVhHako1TVZnbVB4dkZndHZ0bS93MW56WU91TSt5Zm5DQUtBRQo=",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

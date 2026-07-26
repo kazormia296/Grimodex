@@ -5,6 +5,8 @@ interface SceneBeatPovState {
   povIdsByScene: Record<string, string[]>;
   bulkLoadedProjectId: string | null;
   loadAllForProject: (projectId: string) => Promise<void>;
+  /** Clear project-owned POV cache before a reload. */
+  resetForProject: () => void;
 }
 
 function groupBeatPovByScene(
@@ -21,6 +23,7 @@ function groupBeatPovByScene(
 export const useSceneBeatPovStore = create<SceneBeatPovState>()((set) => ({
   povIdsByScene: {},
   bulkLoadedProjectId: null,
+  resetForProject: () => set({ povIdsByScene: {}, bulkLoadedProjectId: null }),
 
   loadAllForProject: async (projectId) => {
     const rows = await listAllBeatPovForProject(projectId);

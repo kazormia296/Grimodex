@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import i18next from "@/lib/i18n";
-import { invoke } from "@/lib/tauri";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
-import type { GlobalSettings } from "@/features/workspace/store";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import { resolveViewportProfile } from "@/runtime/viewportProfile";
 import {
   getScreenshotCaptureId,
   getScreenshotPanelId,
@@ -28,11 +29,9 @@ import {
   getOpenSlotPixelSizes,
   nudgeAdjacentCenterSegmentPixelSizes,
   getOpenSlots,
-  isCenterContentVisible,
   migrateLayoutStateV2toV3,
   normalizeCenterSegmentRatios,
   normalizeSlotRatios,
-  redistributeSpaceOnEditorClose,
   removePanelFromCenterSegment,
   removePanelFromSlot,
   reorderPanelInCenterSegment,
@@ -68,14 +67,19 @@ import type {
 import { LAYOUT_SCHEMA_VERSION } from "./layoutTypes";
 import { dragTargetsEqual, type DragOverTarget } from "./layoutDnD";
 import type { PanelId } from "./panelIds";
-import { recordLayoutSnapshot } from "@/features/timelapse/captureLayout";
+import { reduceLayout } from "./layoutReducer";
+import {
+  persistBuiltinOverrides,
+  persistPresets,
+  scheduleSave as scheduleLayoutSave,
+} from "./layoutPersistence";
 
 export type { PanelId };
 export { PANEL_DRAG_TYPE } from "./panelIds";
 export { dragTargetsEqual, TOOL_WINDOW_REASSIGN_TYPE } from "./layoutDnD";
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let editorFocusHandler: (() => void) | null = null;
+const CANONICAL_DESKTOP_VIEWPORT = { width: 1440, height: 900 } as const;
 
 export function registerEditorFocusHandler(handler: (() => void) | null) {
   editorFocusHandler = handler;
@@ -86,8 +90,15 @@ export function getPanelTitle(id: PanelId): string {
 }
 
 function getViewport(): { width: number; height: number } {
-  if (typeof window === "undefined") return { width: 1200, height: 800 };
-  return { width: window.innerWidth, height: window.innerHeight };
+  const { innerWidth, innerHeight } = globalThis;
+  if (!Number.isFinite(innerWidth) || !Number.isFinite(innerHeight)) {
+    return { width: 1200, height: 800 };
+  }
+  return { width: innerWidth, height: innerHeight };
+}
+
+function scheduleSave(get: () => LayoutStoreState): void {
+  scheduleLayoutSave(get, getViewport);
 }
 
 /**
@@ -109,6 +120,17 @@ export function applyValidatedLayout(
   const result = validateLayoutState(clamped, { viewport: vp });
   if (result.valid) return clamped;
   return fallback;
+}
+
+function hydratePersistedLayout(
+  layout: LayoutState,
+  fallback: LayoutState,
+  viewport: { width: number; height: number },
+): LayoutState {
+  if (resolveViewportProfile(viewport.width) !== "phone") {
+    return applyValidatedLayout(layout, fallback, viewport);
+  }
+  return validateLayoutState(layout).valid ? layout : fallback;
 }
 
 function scheduleEditorFocus() {
@@ -346,24 +368,6 @@ function unhideStripePanel(
   return next;
 }
 
-function serializeBuiltinOverrides(
-  overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
-): GlobalSettings["builtinLayoutPresetOverrides"] {
-  const entries = Object.entries(overrides).filter(
-    ([id, o]) => isBuiltinPresetId(id) && o != null,
-  ) as [BuiltinPresetId, BuiltinPresetOverride][];
-  if (entries.length === 0) return undefined;
-  return Object.fromEntries(
-    entries.map(([id, o]) => [
-      id,
-      {
-        state: o.state,
-        hiddenStripePanels: o.hiddenStripePanels,
-      },
-    ]),
-  );
-}
-
 function parseBuiltinOverrides(
   raw: GlobalSettings["builtinLayoutPresetOverrides"],
 ): Partial<Record<BuiltinPresetId, BuiltinPresetOverride>> {
@@ -375,147 +379,48 @@ function parseBuiltinOverrides(
     }
     const entry = value as { state?: unknown; hiddenStripePanels?: unknown };
     if (entry.state == null) continue;
-    const rawHidden = entry.hiddenStripePanels;
     result[id] = {
       state: ensureLayoutStateV3(entry.state as LayoutState),
-      hiddenStripePanels: Array.isArray(rawHidden)
-        ? (rawHidden as ToolWindowPanelId[])
+      hiddenStripePanels: Array.isArray(entry.hiddenStripePanels)
+        ? (entry.hiddenStripePanels as ToolWindowPanelId[])
         : undefined,
     };
   }
   return result;
 }
 
-function scheduleSave(get: () => LayoutStoreState) {
-  if (saveTimer !== null) clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    try {
-      const {
-        layout,
-        activePresetId,
-        customPresets,
-        builtinPresetOverrides,
-        hiddenStripePanels,
-      } = get();
-      const check = validateLayoutState(layout, { viewport: getViewport() });
-      if (!check.valid) return;
-
-      // 執筆タイムラプス: 確定したレイアウト状態を forward-only 記録 (§17 P0)。
-      // scheduleSave は live ドラッグ(setRegionSizeLive)では呼ばれず、500ms
-      // デバウンスが burst を 1 スナップショットに畳むため volume bomb にならない。
-      // recorder は flush 時に payload を stringify するので clone を渡す
-      // (queue から flush までの間に layout が mutate しても記録が壊れない)。
-      recordLayoutSnapshot({
-        layout: cloneLayoutState(layout),
-        activePresetId,
-        hiddenStripePanels:
-          hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
-      });
-
-      const current = await invoke<GlobalSettings>("get_global_settings");
-      const persisted: PersistedLayout = {
-        layoutVersion: LAYOUT_SCHEMA_VERSION,
-        state: cloneLayoutState(layout),
-        activePresetId: activePresetId ?? undefined,
-        hiddenStripePanels:
-          hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
-      };
-
-      await invoke("save_global_settings", {
-        settings: {
-          ...current,
-          layoutVersion: LAYOUT_SCHEMA_VERSION,
-          layout: persisted,
-          activeLayoutPresetId: activePresetId ?? null,
-          layoutPresets: customPresets.map((p) => ({
-            id: p.id,
-            name: p.name,
-            state: p.state,
-            hiddenStripePanels: p.hiddenStripePanels,
-          })),
-          builtinLayoutPresetOverrides: serializeBuiltinOverrides(
-            builtinPresetOverrides,
-          ),
-        },
-      });
-    } catch {
-      /* ignore */
-    }
-  }, 500);
-}
-
-async function persistPresets(
-  presets: CustomLayoutPreset[],
-  activeId: string | null,
-  builtinOverrides?: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
-) {
-  try {
-    const current = await invoke<GlobalSettings>("get_global_settings");
-    await invoke("save_global_settings", {
-      settings: {
-        ...current,
-        layoutPresets: presets.map((p) => ({
-          id: p.id,
-          name: p.name,
-          state: p.state,
-          hiddenStripePanels: p.hiddenStripePanels,
-        })),
-        activeLayoutPresetId: activeId,
-        ...(builtinOverrides !== undefined
-          ? {
-              builtinLayoutPresetOverrides:
-                serializeBuiltinOverrides(builtinOverrides),
-            }
-          : {}),
-      },
-    });
-  } catch {
-    /* ignore */
-  }
-}
-
-async function persistBuiltinOverrides(
-  overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
-) {
-  try {
-    const current = await invoke<GlobalSettings>("get_global_settings");
-    await invoke("save_global_settings", {
-      settings: {
-        ...current,
-        builtinLayoutPresetOverrides: serializeBuiltinOverrides(overrides),
-      },
-    });
-  } catch {
-    /* ignore */
-  }
-}
-
 export async function clearSavedLayout() {
   try {
-    const current = await invoke<GlobalSettings>("get_global_settings");
-    const {
-      layout: _l,
-      toolWindows: _t,
-      stripePanelIds: _s,
-      ...rest
-    } = current as GlobalSettings & {
-      layout?: unknown;
-      toolWindows?: unknown;
-      stripePanelIds?: unknown;
-    };
-    await invoke("save_global_settings", {
-      settings: {
+    await globalSettingsRepository.patch((current) => {
+      const {
+        layout: _l,
+        toolWindows: _t,
+        stripePanelIds: _s,
+        ...rest
+      } = current as GlobalSettings & {
+        layout?: unknown;
+        toolWindows?: unknown;
+        stripePanelIds?: unknown;
+      };
+      return {
         ...rest,
         layoutVersion: LAYOUT_SCHEMA_VERSION,
         layout: {
           layoutVersion: LAYOUT_SCHEMA_VERSION,
           state: buildDefaultLayoutState({ allInactive: true }),
         },
-      },
+      };
     });
   } catch {
     /* ignore */
   }
+}
+
+export interface LayoutViewportBaseline {
+  layout: LayoutState;
+  activePresetId: string | null;
+  hiddenStripePanels: ReadonlySet<ToolWindowPanelId>;
+  maximizedPanelId: PanelId | null;
 }
 
 export interface LayoutStoreState {
@@ -628,6 +533,11 @@ export interface LayoutStoreState {
   finalizeLayoutResize: () => void;
   /** 現在のビューポート＋カードレイアウトモードで region サイズを再クランプする。 */
   reclampForViewport: () => void;
+  /** presentation 用に退避した desktop layout を現在の viewport へ安全に復元する。 */
+  restoreViewportBaseline: (
+    baseline: LayoutViewportBaseline,
+    viewport?: { width: number; height: number },
+  ) => void;
   /** ボトム指定側の角を side stripe ↔ bottom region で切り替える。 */
   toggleBottomCorner: (side: "left" | "right") => void;
 
@@ -688,48 +598,12 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     )
       return;
     const vp = getViewport();
-    set((state) => {
-      const wasOpen = state.layout.center.editorOpen;
-      if (wasOpen === open) return state;
-
-      // toggle で sizeRatio を再正規化すると hide→show が非可逆になり、
-      // editor の幅が復元されない。比率は描画側 (normalizeFlexGrow 等) が
-      // 都度正規化するため、ここでは editorOpen フラグのみを変更する。
-      let next = updateCenter(state.layout, (center) => ({
-        ...center,
-        editorOpen: open,
-      }));
-
-      if (!open) {
-        // center が完全に隠れる場合 redistributeSpaceOnEditorClose が region を
-        // 破壊的に拡大する。再表示で editor 幅を復元できるよう、閉じる直前の
-        // region サイズを記憶しておく。
-        if (!isCenterContentVisible(next)) {
-          next = {
-            ...next,
-            collapsedEditorRegionSizes: {
-              left: state.layout.regions.left.size,
-              right: state.layout.regions.right.size,
-            },
-          };
-        }
-        next = redistributeSpaceOnEditorClose(next, vp);
-      } else if (state.layout.collapsedEditorRegionSizes) {
-        // 再表示: 記憶した region サイズを復元し editor 幅を再現する。
-        const memory = state.layout.collapsedEditorRegionSizes;
-        next = {
-          ...next,
-          regions: {
-            ...next.regions,
-            left: { ...next.regions.left, size: memory.left },
-            right: { ...next.regions.right, size: memory.right },
-          },
-        };
-        delete next.collapsedEditorRegionSizes;
-      }
-
-      return { layout: applyValidatedLayout(next, state.layout, vp) };
-    });
+    set((state) => ({
+      layout: reduceLayout(state.layout, {
+        type: open ? "editor/open" : "editor/close",
+        viewport: vp,
+      }),
+    }));
     scheduleSave(get);
     if (open) scheduleEditorFocus();
   },
@@ -747,28 +621,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
     set((state) => {
       const opening = location.slot.activePanel !== toolPanel;
-      let next = state.layout;
-
-      if (location.region === "center") {
-        next = updateCenterToolSegment(next, location.slot.id, (segment) => ({
-          ...segment,
-          activePanel: segment.activePanel === toolPanel ? null : toolPanel,
-        }));
-      } else {
-        next = updateRegion(next, location.region, (region) => ({
-          ...region,
-          slots: region.slots.map((slot) => {
-            if (slot.id !== location.slot.id) return slot;
-            return {
-              ...slot,
-              activePanel: slot.activePanel === toolPanel ? null : toolPanel,
-            };
-          }),
-        }));
-      }
-
       return {
-        layout: applyValidatedLayout(next, state.layout),
+        layout: reduceLayout(state.layout, {
+          type: "panel/toggle",
+          panel: toolPanel,
+        }),
         hiddenStripePanels: opening
           ? unhideStripePanel(state.hiddenStripePanels, toolPanel)
           : state.hiddenStripePanels,
@@ -789,26 +646,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     if (location.slot.activePanel === toolPanel) return;
 
     set((state) => {
-      let next = state.layout;
-
-      if (location.region === "center") {
-        next = updateCenterToolSegment(next, location.slot.id, (segment) => ({
-          ...segment,
-          activePanel: toolPanel,
-        }));
-      } else {
-        next = updateRegion(next, location.region, (region) => ({
-          ...region,
-          slots: region.slots.map((slot) =>
-            slot.id === location.slot.id
-              ? { ...slot, activePanel: toolPanel }
-              : slot,
-          ),
-        }));
-      }
-
       return {
-        layout: applyValidatedLayout(next, state.layout),
+        layout: reduceLayout(state.layout, {
+          type: "panel/show",
+          panel: toolPanel,
+        }),
         hiddenStripePanels: unhideStripePanel(
           state.hiddenStripePanels,
           toolPanel,
@@ -1179,21 +1021,14 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   setRegionSizeLive: (region, size, viewport) => {
     if (get().layoutLocked) return;
     const vp = viewport ?? getViewport();
-    set((state) => {
-      const clamped = clampRegionSize(
+    set((state) => ({
+      layout: reduceLayout(state.layout, {
+        type: "resize/live",
         region,
         size,
-        vp,
-        buildRegionSizeClampContext(state.layout),
-      );
-      const current = state.layout.regions[region].size;
-      if (clamped === current) return state;
-      const next = cloneLayoutState(state.layout);
-      next.regions[region] = { ...next.regions[region], size: clamped };
-      // 手動リサイズしたら editor collapse の復元メモリは破棄する。
-      delete next.collapsedEditorRegionSizes;
-      return { layout: applyValidatedLayout(next, state.layout, vp) };
-    });
+        viewport: vp,
+      }),
+    }));
   },
 
   nudgeRegionSize: (region, deltaPx, viewport) => {
@@ -1349,6 +1184,20 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     scheduleSave(get);
   },
 
+  restoreViewportBaseline: (baseline, viewport) => {
+    const vp = viewport ?? getViewport();
+    set((state) => ({
+      layout: applyValidatedLayout(baseline.layout, state.layout, vp),
+      activePresetId: baseline.activePresetId,
+      hiddenStripePanels: new Set(baseline.hiddenStripePanels),
+      // The layout-change subscriber clears a non-null maximize target. Restore
+      // the transient target only after the baseline layout is in place.
+      maximizedPanelId: null,
+    }));
+    set({ maximizedPanelId: baseline.maximizedPanelId });
+    scheduleSave(get);
+  },
+
   toggleBottomCorner: (side) => {
     if (get().layoutLocked) return;
     set((state) => {
@@ -1443,12 +1292,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     }
 
     try {
-      const settings = await invoke<
-        GlobalSettings & {
-          layout?: unknown;
-          layoutVersion?: number;
-        }
-      >("get_global_settings");
+      const settings = await globalSettingsRepository.read();
 
       const rawLayout = settings.layout;
       if (isPersistedLayoutV3(rawLayout)) {
@@ -1459,9 +1303,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         // (applyPreset / parseBuiltinOverrides / loadPresets) と同じく、ここでも
         // ensureLayoutStateV3 を通して新パネルを既定スロットへ自己修復注入して
         // から validate する。
-        const validated = applyValidatedLayout(
+        const viewport = getViewport();
+        const validated = hydratePersistedLayout(
           ensureLayoutStateV3(rawLayout.state),
           resetLayoutStateToDefault(),
+          viewport,
         );
         set({
           layout: validated,
@@ -1470,7 +1316,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           hiddenStripePanels: new Set(rawLayout.hiddenStripePanels ?? []),
           initialized: true,
         });
-        if (validateLayoutState(rawLayout.state).valid) {
+        if (
+          resolveViewportProfile(viewport.width) !== "phone" &&
+          validateLayoutState(rawLayout.state).valid
+        ) {
           scheduleSave(get);
         }
         return;
@@ -1488,9 +1337,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         // 行うため、active な v2→v3 アップグレード経路でも chronicle が
         // 注入され validate に弾かれない。
         const migrated = ensureLayoutStateV3(v2Persisted.state);
-        const validated = applyValidatedLayout(
+        const viewport = getViewport();
+        const validated = hydratePersistedLayout(
           migrated,
           resetLayoutStateToDefault(),
+          viewport,
         );
         set({
           layout: validated,
@@ -1499,26 +1350,34 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           hiddenStripePanels: new Set(v2Persisted.hiddenStripePanels ?? []),
           initialized: true,
         });
-        scheduleSave(get);
+        if (resolveViewportProfile(viewport.width) !== "phone") {
+          scheduleSave(get);
+        }
         return;
       }
     } catch {
       /* fall through to default */
     }
 
+    const viewport = getViewport();
+    const isPhone = resolveViewportProfile(viewport.width) === "phone";
+    const initializationViewport = isPhone
+      ? CANONICAL_DESKTOP_VIEWPORT
+      : viewport;
     const presetLayout = getBuiltinPresetState(
       "builtin:default",
-      getViewport(),
+      initializationViewport,
     );
     set({
       layout: applyValidatedLayout(
         presetLayout ?? buildDefaultLayoutState({ allInactive: true }),
         resetLayoutStateToDefault(),
+        initializationViewport,
       ),
       activePresetId: presetLayout ? "builtin:default" : null,
       initialized: true,
     });
-    scheduleSave(get);
+    if (!isPhone) scheduleSave(get);
   },
 
   saveLayout: () => scheduleSave(get),
@@ -1655,7 +1514,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   async loadPresets() {
     try {
-      const settings = await invoke<GlobalSettings>("get_global_settings");
+      const settings = await globalSettingsRepository.read();
       const raw = settings.layoutPresets;
       const customPresets: CustomLayoutPreset[] = Array.isArray(raw)
         ? raw

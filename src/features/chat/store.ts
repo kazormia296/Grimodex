@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as api from "./api";
 import * as cliApi from "./cliApi";
+import * as codexAppApi from "./codexAppApi";
 import { resolveModelApiVariant } from "./aiNovelist";
 import type {
   AiProvider,
@@ -34,6 +35,8 @@ export interface AiSettingsState {
   connectionTestResult: ConnectionTestResult | null;
   models: AiModel[];
   isLoadingModels: boolean;
+  /** User-visible failure from the last explicit model-list/connection probe. */
+  modelLoadError: string | null;
   /** OpenRouter 動的 capability レジストリの更新カウンタ。購読するとキャップ変更で再レンダリングされる。 */
   modelCapsRevision: number;
   /**
@@ -93,6 +96,15 @@ export interface AiSettingsState {
 
 // in-flight ガード（多重発火防止）
 let capsRefreshInFlight = false;
+let modelLoadRequestGeneration = 0;
+
+async function resolveCliBinaryAvailability(
+  settings: AiSettings,
+): Promise<boolean> {
+  if (settings.cli?.binaryPath?.trim()) return true;
+  const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
+  return path !== null;
+}
 
 async function maybeRefreshDynamicCaps(): Promise<void> {
   if (capsRefreshInFlight) return;
@@ -122,6 +134,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   connectionTestResult: null,
   models: [],
   isLoadingModels: false,
+  modelLoadError: null,
   modelCapsRevision: 0,
   chatModelOverride: null,
   chatProviderOverride: null,
@@ -136,10 +149,14 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     );
     let cliBinaryAvailable: boolean | null = null;
     if (settings.provider === "cli") {
-      const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
-      cliBinaryAvailable = path !== null;
+      cliBinaryAvailable = await resolveCliBinaryAvailability(settings);
     }
-    set({ settings, hasApiKey: keyPresent, cliBinaryAvailable });
+    set({
+      settings,
+      hasApiKey: keyPresent,
+      cliBinaryAvailable,
+      modelLoadError: null,
+    });
     void maybeRefreshDynamicCaps();
   },
 
@@ -150,11 +167,10 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     if (settings.provider === "cli") {
       const providerChanged = prev?.provider !== "cli";
       const kindChanged = prev?.cli?.kind !== settings.cli?.kind;
-      if (providerChanged || kindChanged) {
-        const path = await cliApi.detectCliBinary(
-          settings.cli?.kind ?? "claude",
-        );
-        cliBinaryAvailable = path !== null;
+      const binaryPathChanged =
+        (prev?.cli?.binaryPath ?? "") !== (settings.cli?.binaryPath ?? "");
+      if (providerChanged || kindChanged || binaryPathChanged) {
+        cliBinaryAvailable = await resolveCliBinaryAvailability(settings);
       }
     } else {
       cliBinaryAvailable = null;
@@ -177,6 +193,9 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       // 同時にクリアする(切替後のアクティブ設定と矛盾させない)。
       ...(providerSwitched
         ? {
+            models: [],
+            isLoadingModels: false,
+            modelLoadError: null,
             chatModelOverride: null,
             chatProviderOverride: null,
             chatModelVariantOverride: null,
@@ -255,34 +274,65 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     const { settings } = get();
     if (!settings) return;
 
-    set({ isLoadingModels: true });
+    const requestGeneration = ++modelLoadRequestGeneration;
+    const requestedProvider = settings.provider;
+    const requestedEndpointId = settings.activeOpenaiCompatibleEndpointId;
+    const requestedCliKind = settings.cli?.kind ?? "claude";
+    const requestedCliTransport = settings.cli?.codexTransport ?? "exec";
+    const requestedCliBinaryPath = settings.cli?.binaryPath;
+    const isCurrentRequest = () => {
+      const current = get().settings;
+      return (
+        requestGeneration === modelLoadRequestGeneration &&
+        current?.provider === requestedProvider &&
+        current.activeOpenaiCompatibleEndpointId === requestedEndpointId &&
+        (requestedProvider !== "cli" ||
+          ((current.cli?.kind ?? "claude") === requestedCliKind &&
+            (current.cli?.codexTransport ?? "exec") === requestedCliTransport &&
+            (current.cli?.binaryPath ?? "") === (requestedCliBinaryPath ?? "")))
+      );
+    };
+
+    set({ isLoadingModels: true, modelLoadError: null });
     try {
       if (settings.provider === "cli") {
-        const models = await cliApi.listCliModels(
-          settings.cli?.kind ?? "claude",
-          settings.cli?.binaryPath,
-        );
-        set({ models, isLoadingModels: false });
+        const useCodexAppServer =
+          requestedCliKind === "codex" && requestedCliTransport !== "exec";
+        const models = useCodexAppServer
+          ? await codexAppApi.listCodexAppModels()
+          : await cliApi.listCliModels(
+              requestedCliKind,
+              requestedCliBinaryPath,
+            );
+        if (!isCurrentRequest()) return;
+        set({ models, isLoadingModels: false, modelLoadError: null });
         return;
       }
       // それ以外は Rust 側 fetch_models に委譲
       // (Anthropic / AiNovelist は静的リストを返す、OpenAI 互換は active エンドポイントを叩く)
       const models = await api.listAiModels(
-        settings.provider,
-        settings.activeOpenaiCompatibleEndpointId,
+        requestedProvider,
+        requestedEndpointId,
       );
-      if (settings.provider === "openrouter") {
+      if (!isCurrentRequest()) return;
+      if (requestedProvider === "openrouter") {
         registerDynamicModelCaps(models);
         set({
           models,
           isLoadingModels: false,
+          modelLoadError: null,
           modelCapsRevision: get().modelCapsRevision + 1,
         });
       } else {
-        set({ models, isLoadingModels: false });
+        set({ models, isLoadingModels: false, modelLoadError: null });
       }
-    } catch {
-      set({ models: [], isLoadingModels: false });
+    } catch (error) {
+      if (!isCurrentRequest()) return;
+      set({
+        models: [],
+        isLoadingModels: false,
+        modelLoadError: error instanceof Error ? error.message : String(error),
+      });
     }
   },
 }));
@@ -319,6 +369,7 @@ export function selectProviderReadiness(s: AiSettingsState): ProviderReadiness {
     case "ollama":
       return settings.ollamaEndpoint ? "ready" : "no-provider";
     case "cli":
+      if (settings.cli?.binaryPath?.trim()) return "ready";
       if (cliBinaryAvailable === null) return "pending";
       return cliBinaryAvailable ? "ready" : "no-provider";
     default: {

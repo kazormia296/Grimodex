@@ -163,7 +163,22 @@
       "errorPreferredRequired": "推奨表記を入力してください。",
       "errorVariantsRequired": "許容しない表記を 1 つ以上入力してください。",
       "errorDuplicateVariant": "同じ variant が他のエントリに登録されています: {{variants}}",
-      "copySuffix": "{{name}}（コピー）"
+      "copySuffix": "{{name}}（コピー）",
+      "importCsvTitle": "CSV から用語辞書を取り込む",
+      "exportCsvTitle": "用語辞書を CSV に書き出す",
+      "exportEmpty": "書き出す辞書がありません",
+      "exportDone": "{{count}} 件を書き出しました",
+      "importNoEntries": "有効なエントリが見つかりませんでした",
+      "importPreviewTitle": "CSV インポート",
+      "importSummary": "{{rows}} 行から {{entries}} 件のエントリを検出",
+      "importSkippedRows": "{{count}} 行をスキップしました",
+      "importModeMerge": "マージ（推奨表記が一致する行は更新、他は追加、既存はそのまま）",
+      "importModeReplace": "全置換（既存の辞書をすべて削除して入れ替え）",
+      "importing": "取込中…",
+      "importRun": "取り込む",
+      "confirmReplace": "既存の用語辞書をすべて削除して置き換えます。よろしいですか？",
+      "importDone": "取込完了: 追加 {{added}} / 更新 {{updated}} / スキップ {{skipped}}",
+      "importFailed": "取込に失敗しました"
     },
     "a11y": {
       "completed": "Lint が完了しました。指摘は {{count}} 件です"
@@ -279,6 +294,74 @@
     "unitScenes": "シーン",
     "unitCodex": "Codex"
   },
+  "mobileWorkspace": {
+    "navigation": {
+      "label": "ワークスペース",
+      "editor": "執筆",
+      "scenes": "シーン",
+      "codex": "Codex",
+      "ai": "AI",
+      "more": "その他"
+    },
+    "header": {
+      "back": "戻る"
+    },
+    "editor": {
+      "preparing": "最初のシーンを準備しています…",
+      "createFailed": "最初のシーンを作成できませんでした。",
+      "retry": "もう一度試す"
+    },
+    "scenes": {
+      "title": "シーン",
+      "searchLabel": "シーンとノートを検索",
+      "searchPlaceholder": "検索",
+      "add": "追加",
+      "actions": "{{title}}の操作",
+      "moveUp": "上へ移動",
+      "moveDown": "下へ移動",
+      "delete": "削除",
+      "actionFailed": "操作を完了できませんでした。もう一度お試しください。",
+      "deleteTitle": "シーンを削除",
+      "deleteDescription": "「{{title}}」を削除しますか？",
+      "deleteNoteTitle": "ノートを削除",
+      "deleteNoteDescription": "「{{title}}」を削除しますか？"
+    },
+    "surfaces": {
+      "search": {
+        "title": "検索",
+        "snippetUnavailable": "スニペットの詳細はデスクトップ表示で開けます。",
+        "resultUnavailable": "検索結果は既に削除されたため開けません。",
+        "loadFailed": "検索結果を開けませんでした。もう一度お試しください。"
+      },
+      "codex": {
+        "back": "Codexへ戻る",
+        "empty": "Codex項目がありません",
+        "type": "種別",
+        "summary": "要約",
+        "save": "保存",
+        "saving": "保存中…",
+        "saveFailed": "保存できませんでした。もう一度お試しください。"
+      },
+      "ai": {
+        "label": "AIチャット",
+        "message": "メッセージ",
+        "send": "送信",
+        "openSettings": "AI設定を開く",
+        "streaming": "生成中…",
+        "empty": "AIとの会話をここから始められます",
+        "history": "過去の会話",
+        "selectHistory": "過去の会話を選択",
+        "loadingHistory": "会話を読み込み中…",
+        "noHistory": "過去の会話はありません",
+        "untitledHistory": "無題の会話",
+        "newChat": "新しい会話"
+      },
+      "more": {
+        "description": "検索、設定、書き出しなどのワークスペース操作です。",
+        "search": "作品内を検索"
+      }
+    }
+  },
   "welcome": {
     "description": "原稿の保存先フォルダを選んでください。",
     "descriptionSub": "このフォルダにデータベースと原稿ファイルが保存されます。",
@@ -345,7 +428,8 @@
     "tab": {
       "import": "インポート",
       "zip": "ZIP",
-      "novel": "AIのべりすと"
+      "novel": "AIのべりすと",
+      "scan": "Grimodex Scan"
     }
   },
   "import": {
@@ -381,12 +465,29 @@
     "success": "インポート完了: Codex {{codex}} / スニペット {{snippets}} / 章 {{chapters}} / チャット {{chats}}",
     "doneSuccess": "すべてのエントリのインポートが完了しました。",
     "errorTitle": "一部のエントリでエラーが発生しました",
+    "failed": "インポートを完了できませんでした。途中まで取り込まれている可能性があるため、内容を確認してから再試行してください。",
     "cancel": "キャンセル",
     "close": "閉じる",
     "noFile": "ファイルが選択されていません",
     "invalidZip": "有効なZIPファイルを選択してください",
     "invalidKakuyomu": "有効なカクヨムバックアップZIPを選択してください",
     "invalidMarkdown": "有効なMarkdownファイルを選択してください",
+    "limits": {
+      "empty-file": "空のファイルはインポートできません",
+      "file-too-large": "ファイルが大きすぎます（上限 {{maxMiB}} MiB）",
+      "empty-folder": "対応する原稿ファイルが見つかりません",
+      "too-many-files": "フォルダー内の原稿ファイルが多すぎます（上限 {{maxFiles}} 件）",
+      "folder-too-large": "フォルダー内の原稿ファイル合計が大きすぎます（上限 {{maxMiB}} MiB）",
+      "path-too-deep": "フォルダー階層が深すぎます（上限 {{maxDepth}} 階層）"
+    },
+    "scan": {
+      "description": "Scan のプライベート editor seed (JSON) を読み込み、新規プロジェクトへ段階適用します。既存プロジェクトは変更されません。",
+      "tooLarge": "Scan seed が大きすぎます（最大32MB）。",
+      "preview": "章 {{sections}} / Codex {{codex}} / 出来事 {{events}} / 指摘 {{findings}}",
+      "importButton": "Scanを新規プロジェクトへ取り込む",
+      "success": "Scan取り込み完了: シーン {{scenes}} / Codex {{codex}} / 指摘 {{findings}}",
+      "failed": "Scan取り込みに失敗しました。仮プロジェクトは破棄されました。"
+    },
     "tagMappingTitle": "タグ → CodexType マッピング",
     "tagMappingSubtitle": "タグをCodexTypeとして使用する場合は設定してください。設定しないタグはそのまま残ります。",
     "tagMappingNone": "使用しない",
@@ -491,6 +592,60 @@
       "saveFailed": "同意の保存に失敗しました: {{message}}"
     }
   },
+  "hostedEditor": {
+    "trial": {
+      "title": "Web Editor 試用版",
+      "description": "Grimodex本体の実エディターをブラウザで試せます。",
+      "mobileSummary": "編集内容はこのブラウザに保存され、ローカル版へ自動同期されません。",
+      "storageNotice": "データはこのブラウザに保存され、ローカル版Grimodexへ自動同期されません。",
+      "importNotice": "選択したローカルファイルはブラウザ内だけで処理されます。",
+      "aiNotice": "AIは付属していません。利用する場合は対応するHTTPプロバイダーに、ご自身のAPIキーまたは接続先を設定してください。",
+      "apiKeyMemoryNotice": "BYOKのAPIキーはこのページの実行メモリにだけ保持され、再読み込みまたは終了時に消去されます。",
+      "continueInGrimodex": "Grimodexで続きを書く"
+    },
+    "import": {
+      "localOnlyNotice": "選択したファイルはこのブラウザ内で解析・保存され、Grimodexのサーバーへ送信されません。"
+    },
+    "handoff": {
+      "title": "Grimodexで続きを書く",
+      "description": "Web Editorで作成した文書をローカル版Grimodexへ引き継ぎます。",
+      "downloadInstruction": "最初に、編集内容を保持した引き継ぎファイルをダウンロードしてください。",
+      "download": "引き継ぎファイルをダウンロード",
+      "downloading": "引き継ぎファイルを作成中…",
+      "downloaded": "ダウンロード完了: {{filename}}",
+      "downloadFailed": "引き継ぎファイルを作成できませんでした。Web Editorの編集内容は保持されています。もう一度お試しください。",
+      "openGrimodex": "Grimodexを開く",
+      "launchFallback": "Grimodexが開かない場合は、ローカル版を手動で開き、「Web Editorから続ける」からダウンロード済みファイルを選択してください。"
+    },
+    "desktopImport": {
+      "action": "Web Editorから続ける",
+      "title": "Web Editorから続きを開く",
+      "description": "Web Editorでダウンロードした引き継ぎファイルから、編集内容をローカル版Grimodexへ取り込みます。",
+      "fileNotice": "ダウンロード済みの .grimodex-handoff ファイルを選択してください。元のファイルは変更されません。",
+      "selectFile": "引き継ぎファイルを選択",
+      "importing": "取り込み中…",
+      "unknownError": "不明なエラー",
+      "failed": "引き継ぎファイルを取り込めませんでした: {{error}}"
+    },
+    "settings": {
+      "categories": {
+        "project": "プロジェクト",
+        "ai": "AI",
+        "editor": "エディター",
+        "display": "表示",
+        "about": "情報"
+      }
+    },
+    "ai": {
+      "connectLocal": "ローカルAIへ接続"
+    },
+    "ollama": {
+      "browserSetup": "Web EditorのオリジンをOllama側で許可し、Ollamaを再起動してください。ワイルドカードではなく下記のオリジンだけを指定してください。PCのlocalhostはそのPCを指し、スマートフォンのlocalhostはスマートフォン自身を指します。",
+      "localNetworkPermission": "ローカルのOllamaへ接続する場合、ブラウザにローカルネットワークへのアクセス確認が表示されたら許可してください。",
+      "setupLink": "Ollamaのオリジン設定",
+      "browserPermissionLink": "ブラウザのローカルネットワーク許可"
+    }
+  },
   "app": {
     "loading": "読み込み中…",
     "invalidLayout": "保存済みレイアウトが不正なため、デフォルトに戻しました。（{{reason}}）",
@@ -498,7 +653,8 @@
     "exportTitle": "エクスポート (Ctrl+Shift+E)",
     "exportLabel": "エクスポート",
     "settingsTitle": "設定 (Ctrl+Alt+,)",
-    "settingsLabel": "設定"
+    "settingsLabel": "設定",
+    "settingsLabelUpdateAvailable": "設定（更新があります）"
   },
   "a11y": {
     "skipToContent": "本文へスキップ",
@@ -529,32 +685,20 @@
       "animations": "アニメーション",
       "reduceMotion": "モーションを減らす",
       "reduceMotionDesc": "ダイアログ・ドロップダウン等のUIアニメーションを無効化",
-      "layout": "レイアウト",
-      "cardLayout": "カードレイアウト",
-      "cardLayoutDesc": "パネルをギャップで区切った角丸カードとして浮かせます。OFF にすると 1px の境界線で隙間なく並びます。ガラス効果とは排他です。",
+      "editorBackground": "エディター背景",
+      "backgroundStudio": "背景スタジオ",
+      "backgroundStudioDesc": "通常表示とZenで共通の背景を、実際のエディターを見ながら調整します。",
+      "openBackgroundStudio": "ライブ調整を開く",
       "codexHighlight": "Codex ハイライト",
       "enableHighlight": "Codex ハイライトを有効化",
       "highlightStyle": "ハイライトスタイル",
       "colorText": "文字色 + ハイライト",
       "underline": "下線",
+      "codexOpacity": "ハイライトの濃度",
+      "codexOpacityDesc": "背景スタイル時の色の強さ (100% = 標準)",
       "attribution": "帰属表示",
       "attributionOpacity": "帰属ハイライトの不透明度",
-      "attributionOpacityDesc": "Attribution 表示時の背景色の強さ (5〜25%)",
-      "glass": "ガラス",
-      "glassEffectEnabled": "ガラス効果を有効化",
-      "glassEffectEnabledDesc": "アプリ全体に半透明ガラス表面を適用します。カードレイアウトとは排他です。",
-      "glassTransparency": "透明度",
-      "glassTransparencyDesc": "値を大きくするほどウィンドウ越しに背景が透けます。すべてのガラス表面に一律で適用されます。",
-      "glassBackdropGradient": "背景グラデーション",
-      "glassBackdropGradientDesc": "カラーテーマの色で上端の左右にやわらかいハイライトを乗せます。オフにするとフラットな半透明背景になります。",
-      "glassNativeVibrancy": "macOS ネイティブ Vibrancy",
-      "glassNativeVibrancyDesc": "利用可能な環境では macOS のネイティブウィンドウマテリアルを使用します。",
-      "glassSurfaceShell": "ウィンドウとヘッダー",
-      "glassSurfaceDock": "ドック / タブ",
-      "glassSurfacePanels": "パネル",
-      "glassSurfaceChat": "チャット",
-      "glassSurfacePopovers": "ポップオーバー / ダイアログ",
-      "glassSurfaceEditorChrome": "エディタクロム"
+      "attributionOpacityDesc": "Attribution 表示時の背景色の強さ (5〜25%)"
     },
     "editor": {
       "textDisplay": "テキスト表示",
@@ -617,6 +761,18 @@
       "slashCommand": "/ コマンドを有効化",
       "paletteShortcut": "Ctrl+Shift+Space パレットを有効化",
       "bubbleMenu": "選択時のツールバーを表示",
+      "aozoraInput": "青空文庫記法の入力補助",
+      "aozoraInputDesc": "入力中に ｜親文字《ふりがな》・漢字《ふりがな》をルビへ、《《傍点》》を圏点へ自動変換",
+      "autoPairBrackets": "約物ペアの自動補完",
+      "autoPairBracketsDesc": "「『（【〔［〈｛ を入力すると対応する閉じ約物を自動挿入（閉じを打つと重複せず通過）",
+      "showInvisibles": "空白と改行を表示",
+      "showInvisiblesDesc": "半角空白 · / 全角空白 □ / タブ → / 段落末 ¶ / 改行 ↵ を淡色で可視化",
+      "codexCompletion": "Codex入力補完",
+      "codexCompletionDesc": "Codexの項目名と別名を入力中に候補表示し、Tabで確定します。IME変換中は動作しません。",
+      "codexReadingPrompt": "手動ルビを Codex の読みとして登録するか確認",
+      "codexReadingPromptDesc": "Codexの項目名・別名に読みがない場合、手動で設定したルビを読みとして登録するか確認します。",
+      "codexPopoverOnCaret": "キャレットで Codex ポップオーバーを表示",
+      "codexPopoverOnCaretDesc": "入力カーソルが Codex ハイライトに入ったときにエントリのポップオーバーを表示（マウスホバーでの表示は常に有効）",
       "animation": "アニメーション",
       "disableAll": "すべてのアニメーションを無効化",
       "disableAllDesc": "以下の設定を一括でOFF",
@@ -629,6 +785,88 @@
       "caretMotionReset": "既定に戻す",
       "caretMotionPreviewDesc": "文字クリックか ←→ / Home / End キーでカーソルを動かせます。操作すると自動再生は止まります。",
       "fadeOut": "文字フェードアウト",
+      "zenBackground": "Zen 背景シェーダー",
+      "zenBackgroundPreview": "Zen 背景の静止プレビュー",
+      "zenBackgroundShader": "背景",
+      "zenBackgroundShaderDesc": "Paper Shaders から執筆向けに選んだ背景。本文カラムは常に不透明で静止します。",
+      "zenShader_mesh-gradient": "Mesh Gradient",
+      "zenShader_grain-gradient": "Grain Gradient",
+      "zenShader_neuro-noise": "Neuro Noise",
+      "zenShader_warp": "Warp",
+      "zenShader_static-mesh-gradient": "Static Mesh",
+      "zenOpacity": "濃度",
+      "zenSpeed": "速度",
+      "zenSpeedDesc": "0 で静止。ウィンドウ非アクティブ時と「モーションを減らす」有効時も自動停止します。",
+      "zenScale": "拡大率",
+      "zenRotation": "回転",
+      "zenOffsetX": "横位置",
+      "zenOffsetY": "縦位置",
+      "zenPalette": "配色",
+      "zenPalette_theme": "現在のテーマに追従",
+      "zenPalette_custom": "カスタム",
+      "zenColor": "カラー {{index}}",
+      "zenColorBack": "背景色",
+      "zenMeshDistortion": "有機的な歪み",
+      "zenMeshSwirl": "渦",
+      "zenGrainMixer": "輪郭の粒状感",
+      "zenGrainOverlay": "全体の粒状感",
+      "zenGrainShape": "形状",
+      "zenGrainShape_wave": "Wave",
+      "zenGrainShape_dots": "Dots",
+      "zenGrainShape_truchet": "Truchet",
+      "zenGrainShape_corners": "Corners",
+      "zenGrainShape_ripple": "Ripple",
+      "zenGrainShape_blob": "Blob",
+      "zenGrainShape_sphere": "Sphere",
+      "zenGrainSoftness": "色境界の柔らかさ",
+      "zenGrainIntensity": "帯の歪み",
+      "zenGrainNoise": "ノイズ",
+      "zenNeuroBrightness": "交差部の明るさ",
+      "zenNeuroContrast": "コントラスト",
+      "zenWarpShape": "基礎パターン",
+      "zenWarpShape_checks": "Checks",
+      "zenWarpShape_stripes": "Stripes",
+      "zenWarpShape_edge": "Edge",
+      "zenWarpProportion": "色の比率",
+      "zenWarpSoftness": "色境界の柔らかさ",
+      "zenWarpDistortion": "ノイズ歪み",
+      "zenWarpSwirl": "渦",
+      "zenWarpIterations": "渦の重なり",
+      "zenWarpShapeScale": "パターン倍率",
+      "zenStaticPositions": "色点の配置",
+      "zenStaticWaveX": "横方向の波",
+      "zenStaticWaveXShift": "横波の位相",
+      "zenStaticWaveY": "縦方向の波",
+      "zenStaticWaveYShift": "縦波の位相",
+      "zenStaticMixing": "色の混ざり方",
+      "zenDither": "Dither フィルター",
+      "zenDitherDesc": "Paper shader の出力をBayerディザで量子化します。",
+      "zenDitherStrength": "Dither 強度",
+      "zenDitherSize": "Dither 粒度",
+      "zenDitherLevels": "色の階調数",
+      "zenHalftone": "Color Halftone フィルター",
+      "zenHalftoneDesc": "Paper shader の出力をCMYKの網点として分解します。",
+      "zenHalftoneStrength": "Halftone 強度",
+      "zenHalftoneSize": "網点サイズ",
+      "zenHalftoneAngle": "スクリーン角度",
+      "zenHalftoneSoftness": "網点の柔らかさ",
+      "zenContrastGuard": "読みやすさ保護",
+      "zenContrastGuardDesc": "本文カラム内で、文字色とのコントラストが不足する背景ピクセルだけをGPUで補正します。",
+      "zenContrastGuardNone": "なし",
+      "zenContrastGuardAuto": "自動",
+      "zenContrastGuardStrength": "保護強度",
+      "zenContrastGuardStrengthDesc": "0%で4.5:1、100%で7:1を目標にします。文字色は変更しません。",
+      "zenContrastGuardToolMix": "ツール補正強度",
+      "zenContrastGuardToolMixDesc": "ツール面に合成する補正の強さです。本文の保護強度とは別に、0〜75%の範囲で調整します（既定50%）。",
+      "zenGlassEnabled": "Glass効果",
+      "zenGlassEnabledDesc": "背景表示時に、本文エディターへFluid Glassを適用します。文字と編集DOMにはフィルターを掛けません。",
+      "zenGlassBlur": "背景ぼかし",
+      "zenGlassBlurDesc": "本文の背後にあるシェーダーだけをぼかします。",
+      "zenGlassRefraction": "屈折量",
+      "zenGlassRefractionDesc": "Editor全体の外周で、背後のシェーダーをGPU上で曲げる強さです。中央と文字は動かしません。",
+      "zenGlassSaturation": "Glass彩度",
+      "zenGlassShine": "光沢",
+      "zenGlassShineDesc": "表面のハイライトと反射の強さです。",
       "beats": "ビート",
       "focusModeHideBeats": "フォーカスモード時にビートを非表示",
       "focusModeHideBeatsDesc": "フォーカスモード有効時にビートブロックを非表示にする",
@@ -648,7 +886,7 @@
     "ai": {
       "mcp": {
         "title": "MCP 連携",
-        "description": "Claude Code / Hermes Agent などの外部 MCP クライアント用の .mcp.json をクリップボードにコピーします（本体バイナリを MCP サーバとして起動）。スコープと書き込み権限を選んでコピーしてください。「読み取り専用」は --readonly 付きでクラウド向けの安全な既定。「ポリシー準拠」は --readonly を付けず、書き込みを各プロジェクトの AI ポリシー（knowledgeWrite/bodyWrite）に委ねます（ローカル/信頼クライアント向け）。",
+        "description": "Claude Code / Hermes Agent などの外部 MCP クライアント用の .mcp.json をクリップボードにコピーします（Grimodex が提供する MCP サーバコマンドを起動）。スコープと書き込み権限を選んでコピーしてください。「読み取り専用」は --readonly 付きでクラウド向けの安全な既定。「ポリシー準拠」は --readonly を付けず、書き込みを各プロジェクトの AI ポリシー（knowledgeWrite/bodyWrite）に委ねます（ローカル/信頼クライアント向け）。",
         "scopeProject": "この作品",
         "scopeProjectDesc": "現在の作品のみ（--project で固定）",
         "scopeAll": "全作品（ローカル用）",
@@ -683,6 +921,8 @@
         "sameProvider": "チャットと同じプロバイダ",
         "unavailableProvider": "選択中のプロバイダ/エンドポイントは利用できません（鍵削除・エンドポイント削除など）。送信は失敗するか別の宛先になります。",
         "unavailableOption": "{{provider}}（利用不可）",
+        "staleModel": "保存済みモデル {{model}} は現在のプロバイダのモデル一覧にありません（プロバイダ切替前の値など）。このままでは送信に失敗する可能性があります。",
+        "staleModelOption": "{{model}}（一覧に無し）",
         "reset": "リセット",
         "cacheNote": "注意: あるロールに既定と別プロバイダのモデルを選ぶと、その経路のプロンプトキャッシュが分断され、課金・レイテンシが悪化することがあります。",
         "conversation": {
@@ -736,7 +976,7 @@
       "webSearch": {
         "title": "Web 検索 (RAG) のドメイン制御",
         "providerNote": "OpenRouter / Anthropic でのみ有効です。",
-        "privacyNote": "Web 検索を有効にすると、検索クエリが第三者の検索プロバイダ（OpenRouter / Anthropic 経由）へ送信されます。本文そのものを検索しないよう AI に指示していますが、強制ではありません。また、取得した Web ページには AI を操作しようとする指示（プロンプトインジェクション）が紛れ込んでいることがあります。内容を鵜呑みにせず、特にエージェントモードと併用する際は出力を確認してください。",
+        "privacyNote": "Web 検索を有効にすると、現在の依頼が第三者の検索プロバイダ（OpenRouter / Anthropic 経由）へ送信されます。公開Web検索ターンにはプロジェクトのコンテキストや会話履歴を含めず、本文を扱うプライベートAgentターンではWeb検索を無効化します。取得したページにはプロンプトインジェクションが紛れ込むことがあるため、結果を確認してから利用してください。",
         "domainMode": "ドメインフィルタ",
         "domainModeDesc": "検索結果を許可リスト/拒否リストで絞り込みます。許可と拒否は同時に使えません。",
         "domainModeOff": "フィルタなし",
@@ -840,6 +1080,13 @@
       "structuredTasksV1Note": "v1 モデルでは利用可能ですが、デフォルトは保守的に無効化されています",
       "structuredTasksLegacyNote": "このプロバイダは構造化出力 (JSON) の精度が低いため、デフォルトで無効化されています",
       "cliKind": "CLI 種別",
+      "codexTransport": "Codex 実行方式",
+      "codexTransportDesc": "既定は既存互換の codex exec。App Server は常駐 JSON-RPC 経路で、auto は起動前だけ exec へフォールバックします。",
+      "codexAllowApprovals": "承認付き workspace write を許可",
+      "codexAllowApprovalsDesc": "オフ（推奨）では読み取り専用です。オンにすると、Codex のコマンド実行・ファイル変更の承認カードを確認した場合だけ現在の workspace 内で許可します。",
+      "codexAppServerTest": "App Server 接続テスト",
+      "codexAppServerConnected": "App Server 接続成功: {{status}}",
+      "codexAppServerConnectionFailed": "App Server 接続失敗: {{error}}",
       "cliAuthNoteBefore": "CLI 側で事前に ",
       "cliAuthNoteAfter": " 等で認証を済ませてください。本パネルからはツール (ファイル R/W / shell) は全て無効化された状態で起動します。",
       "binaryPath": "バイナリパス",
@@ -1011,6 +1258,18 @@
       "backupIntervalFormat": "{{v}}分",
       "maxBackups": "最大保持数",
       "maxBackupsFormat": "{{v}}件",
+      "restoreTitle": "バックアップから復元",
+      "restoreDesc": "選択したバックアップでワークスペース全体（全プロジェクト）を置き換えます。復元前に現在の状態を自動で退避し、完了後にアプリを再読み込みします。",
+      "restoreNone": "まだバックアップがありません",
+      "restoreNoWorkspace": "ワークスペースが開かれていません",
+      "restoreRefresh": "更新",
+      "restoreAction": "復元",
+      "restoreConfirm": "全体を置換して復元",
+      "restoreRunning": "復元中…",
+      "restoreUnsupported": "未対応の形式",
+      "restoreSuccess": "バックアップから復元しました",
+      "restoreFail": "復元に失敗しました",
+      "restoreListFail": "バックアップ一覧を取得できませんでした",
       "revision": "リビジョン履歴",
       "revisionInterval": "自動リビジョン間隔",
       "revisionIntervalFormat": "{{v}}分",
@@ -1060,10 +1319,42 @@
       "createError": "タイプの作成に失敗しました",
       "updateError": "タイプの更新に失敗しました",
       "deleteError": "タイプの削除に失敗しました",
-      "colorInUse": "{{label}}（{{usedBy}}が使用中）"
+      "colorInUse": "{{label}}（{{usedBy}}が使用中）",
+      "imeTitle": "IME 連携",
+      "imeDescription": "Codex の名前と別名を、アクティブな作品の変換辞書としてローカルに書き出します。通信は行いません。",
+      "imeMode": "連携モード",
+      "imeModeDesc": "自動は対応 IME が見つかったときだけ書き出します。",
+      "imeModeAuto": "自動（推奨）",
+      "imeModeOn": "常に有効",
+      "imeModeOff": "無効",
+      "imeExcludeHidden": "AI から除外した項目を除く",
+      "imeExcludeHiddenDesc": "コンテキスト設定が「AI から除外」の項目を辞書に含めません。",
+      "imeIncludeProfile": "作品プロファイルを書き出す",
+      "imeIncludeProfileDesc": "ジャンル・あらすじ・主要項目の要約を文脈対応 IME 向けに含めます。",
+      "imeEnabled": "IME 書き出し有効",
+      "imeDisabled": "IME 書き出し無効",
+      "imeConsumerCount": "接続先 {{count}} 件",
+      "imePlatformLinux": "Linux",
+      "imePlatformWindows": "Windows",
+      "imePlatformMacos": "macOS",
+      "imeCapabilityDynamicDictionary": "動的辞書",
+      "imeCapabilityZenzaiV3": "Zenzai v3",
+      "imeCapabilityApplicationScoping": "アプリ限定",
+      "imeLinuxInstallTitle": "対応する Linux IME が見つかりません",
+      "imeLinuxInstallDescription": "IME は Grimodex と別にインストールしてください。対応する IME を Fcitx 5 または IBus で有効にすると、Grimodex が consumer を自動検出します。",
+      "imeLinuxInstallDocs": "IME の配布元を開く",
+      "imeClear": "書き出し済み辞書をすべて削除",
+      "imeClearDone": "IME 辞書を削除しました",
+      "imeClearFailed": "IME 辞書の削除に失敗しました",
+      "imeSyncFailed": "IME 連携の更新に失敗しました"
     },
     "about": {
       "github": "GitHub",
+      "openLogDir": "ログフォルダを開く",
+      "checkForUpdates": "更新を確認",
+      "updateNowVersion": "今すぐ更新 v{{version}}",
+      "restartToUpdate": "再起動して更新",
+      "downloadingProgress": "ダウンロード中… {{pct}}%",
       "searchPlaceholder": "{{count}} 件のライブラリを検索…",
       "notFound": "「{{query}}」に一致するライブラリは見つかりません",
       "full": "全文",
@@ -1170,6 +1461,7 @@
         "summarization": "要約",
         "context_creator": "Context Creator",
         "codex_judgment": "固有名詞候補の判定",
+        "codex_yomi": "読み推定",
         "plot_thread_extract": "プロットスレッド抽出",
         "chronicle_extract": "作中年表 出来事抽出"
       }
@@ -1290,6 +1582,122 @@
     }
   },
   "kouetsu": {
+    "triage": {
+      "openSuffix": "件の指摘がOpenです",
+      "noOpen": "Open の指摘はありません",
+      "lastCheck": "最終チェック {{time}}",
+      "sev": {
+        "high": "重大",
+        "mid": "注意",
+        "low": "提案"
+      },
+      "time": {
+        "justNow": "たった今",
+        "minutesAgo": "{{count}}分前",
+        "yesterday": "昨日"
+      },
+      "neverRun": "未実行",
+      "auto": "自動",
+      "manual": "手動",
+      "runningBadge": "実行中 {{done}}/{{total}}",
+      "runningTitle": "実行中 — クリックでパイプラインを表示",
+      "doneBadge": "完了 {{count}}件",
+      "dashboardToggle": "観点ダッシュボード",
+      "effectsNote": "影響レビューはCodex変更時に手動で実行します",
+      "pipeline": {
+        "done": "完了 — 指摘 {{count}}件",
+        "cancelled": "中止 — {{done}}/{{total}} 観点を実行",
+        "running": "全体チェック — {{scope}}",
+        "back": "戻る",
+        "waiting": "待機中",
+        "excluded": "対象外",
+        "sceneLint": "自動反映済み",
+        "impactManual": "Codex変更時に手動",
+        "noFindings": "検出なし",
+        "count": "{{count}}件"
+      },
+      "card": {
+        "jump": "本文へ",
+        "resolve": "解決",
+        "dismiss": "無視",
+        "later": "あとで",
+        "fixTitle": "修正を適用"
+      },
+      "restore": "再表示",
+      "runHistory": "実行履歴",
+      "catFilter": "観点: {{label}}",
+      "sort": {
+        "severity": "並び: 重要度",
+        "grouped": "グループ: 観点",
+        "dismissed": "除外した項目"
+      },
+      "emptyOpen": "このスコープに Open の指摘はありません",
+      "emptyDismissed": "除外した指摘はありません",
+      "run": "実行",
+      "rerun": "再実行",
+      "ok": "問題なし",
+      "noImpact": "影響なし",
+      "aiDetected": "AI検出",
+      "compare": {
+        "codex": "CODEX 設定",
+        "body": "本文",
+        "change": "変更内容"
+      },
+      "lintDisables": "校正の無効化",
+      "runCategoryFailed": "チェックを起動できませんでした"
+    },
+    "openLog": "ログを開く",
+    "openLogFailed": "ログフォルダを開けませんでした",
+    "partialFailure": "一部のシーンで解析に失敗しました",
+    "fullCheck": {
+      "run": "全体チェック",
+      "configure": "チェックする観点",
+      "progress": "{{done}}/{{total}} 観点",
+      "cancel": "中止",
+      "completed": "全体チェック完了 — 指摘 {{count}} 件",
+      "completedWithFailures": "全体チェック完了（{{failed}} 観点失敗）",
+      "alreadyRunning": "実行中です",
+      "lintProjectWide": "校正は常にプロジェクト全体を走査します",
+      "lintSceneSkipped": "現在シーンは自動反映済みのためスキップします",
+      "stepHelp": {
+        "lint": "表記ゆれ・約物・スタイルの規則違反をルールベースで機械的に検査します（AI不使用）",
+        "typo": "誤字脱字・送り仮名・助詞抜けなどをAIが検出します",
+        "consistency": "Codex設定との食い違いと、シーン内の矛盾をAIが照合します",
+        "review": "構成・ペース配分・キャラクター変化・視点の観点でAIが講評します",
+        "meta": "章立てや場面転換などの構造上の問題をAIが分析します",
+        "timeline": "出来事の時系列の矛盾（日付・経過時間）をAIが検査します",
+        "intent": "シーンに設定した「狙い」と本文のズレをAIが診断します"
+      }
+    },
+    "progressToast": {
+      "running": "実行中…",
+      "runningProgress": "実行中 {{progress}} シーン",
+      "done": "完了 — 指摘 {{count}} 件",
+      "doneNoFindings": "完了 — 指摘なし",
+      "donePartial": "完了（一部シーン失敗）— 指摘 {{count}} 件",
+      "cached": "キャッシュから再利用 — 前回から内容が変わっていないため送信していません",
+      "failed": "失敗: {{error}}",
+      "abort": "中止",
+      "aborting": "中止中…",
+      "abortFailed": "中止要求に失敗しました",
+      "close": "閉じる",
+      "effect": {
+        "review": "AIレビュー",
+        "typo_detection": "誤字脱字チェック",
+        "consistency": "Codex整合性",
+        "intra_scene_consistency": "シーン内矛盾",
+        "intent_drift": "狙いズレ診断",
+        "pseudo_comment": "疑似コメント",
+        "meta_structure": "メタ構造",
+        "timeline_consistency": "時系列チェック",
+        "impact_review": "影響レビュー"
+      },
+      "scope": {
+        "scene": "現在シーン",
+        "folder": "フォルダ",
+        "project": "プロジェクト"
+      }
+    },
     "tension": {
       "title": "テンション波形",
       "saggy": "■ 中だるみ",
@@ -1297,7 +1705,6 @@
     },
     "tab": {
       "issues": "指摘",
-      "editorial": "批評",
       "comments": "コメント",
       "blocker": "ブロッカー"
     },
@@ -1323,17 +1730,20 @@
     },
     "comments": {
       "empty": "コメントはありません",
-      "emptyHint": "本文を選択して {{shortcut}} で手動コメント、批評タブの疑似コメントもここに集約されます",
+      "emptyHint": "本文を選択して {{shortcut}} でコメントを追加できます。AIコメントは上の「AIコメント」ボタンから生成できます",
       "jumpToLocation": "該当箇所を開いて選択"
     },
     "scope": {
       "current": "現在シーン",
-      "project": "プロジェクト",
-      "ignored": "除外"
+      "project": "プロジェクト"
+    },
+    "scopePicker": "チェック範囲を選択",
+    "filter": {
+      "open": "Open",
+      "dismissed": "除外"
     },
     "editorial": {
       "review": "レビュー",
-      "pseudoComment": "疑似コメント",
       "intentDrift": "狙いズレ",
       "metaStructure": "メタ構造",
       "timeline": "時系列"
@@ -1371,7 +1781,9 @@
       "executionFailed": "狙いズレ診断の実行に失敗しました",
       "noIssues": "明確なズレは見つかりませんでした",
       "launchFailed": "狙いズレ診断を起動できませんでした",
-      "empty": "狙いズレの指摘はまだありません"
+      "empty": "狙いズレの指摘はまだありません",
+      "serialPartial": "{{total}} 件中 {{failed}} 件のシーンで診断に失敗しました",
+      "serialCancelled": "途中で中止されました"
     },
     "metaStructure": {
       "noExcluded": "メタ構造に除外項目はありません",
@@ -1385,7 +1797,6 @@
       "runTooltip": "メタ構造レビューを実行"
     },
     "pseudoComment": {
-      "projectUnavailable": "疑似コメントは現在シーンで生成します。横断表示は「コメント」タブへ。",
       "emptyIgnored": "無視した疑似コメントはありません",
       "generationFailed": "疑似コメントの生成に失敗しました",
       "noComments": "コメントはありませんでした",
@@ -1393,7 +1804,6 @@
       "targetProfileRequired": "プロジェクト設定で想定読者を入力すると選べます",
       "requiresTargetProfile": "（要・想定読者設定）",
       "generateButton": "AIコメント",
-      "empty": "コメントはまだありません",
       "runTooltip": "選択したペルソナでコメントを生成"
     },
     "review": {
@@ -1413,8 +1823,6 @@
       "checkFailed": "誤字脱字チェックに失敗しました",
       "noIssues": "誤字脱字は見つかりませんでした",
       "launchFailed": "誤字脱字チェックを起動できませんでした",
-      "localDetection": "ローカル検出",
-      "localEmpty": "確定的なタイポは見つかっていません",
       "aiDetection": "AI 検出",
       "aiEmpty": "AI チェック未実行 / 検出なし",
       "resolvedIgnored": "解決済み / 無視",
@@ -1466,7 +1874,10 @@
       "empty": "整合性の問題は見つかっていません"
     },
     "projectIntentDrift": {
-      "header": "全シーン・狙いズレ（表示のみ）"
+      "header": "全シーン・狙いズレ",
+      "runTooltip": "狙いを設定した全シーンの狙いズレを診断",
+      "failed": "全シーン狙いズレ診断に失敗しました",
+      "launchFailed": "全シーン狙いズレ診断を起動できませんでした"
     },
     "projectReview": {
       "failed": "全シーン批評に失敗しました",
@@ -1521,6 +1932,10 @@
       "answered": "回答済み",
       "dismissed": "スキップ済み"
     },
+    "codexApprovalTitle": "Codex の操作承認",
+    "codexApprovalDiff": "変更内容",
+    "codexApprovalAccept": "許可",
+    "codexApprovalDecline": "拒否",
     "sendTitle": "送信 / 右クリック: プロンプトをコピー",
     "stopTitle": "生成中断 (Esc)",
     "stopAriaLabel": "生成中断",
@@ -1589,6 +2004,8 @@
       "on": "Web検索 ON（クリックで OFF）",
       "off": "Web検索を有効にする（クリックで ON）",
       "unavailable": "このプロバイダは Web検索に非対応です（OpenRouter / Anthropic のみ）",
+      "unavailableWebEditor": "Web Editor 試用版では Web検索を提供していません",
+      "agentPrivacyNote": "プライベートAgentではプロジェクトデータと分離するため、このターンのWeb検索を無効化します。",
       "searching": "Web を検索中…",
       "egressNote": "検索クエリは第三者の検索プロバイダへ送信されます。",
       "injectionNote": "取得した Web 内容に AI を操作する指示が紛れ込む場合があります。出力は確認してください。",
@@ -1762,7 +2179,8 @@
         "RAG": "関連シーン検索",
         "EPISODIC": "過去の対話の記憶",
         "L5": "会話要約",
-        "L6": "コマンド指示"
+        "L6": "コマンド指示",
+        "CONVERSATION": "会話履歴"
       },
       "promptPreviewLoading": "プロンプトを構築中…",
       "promptSnapshotMissing": "このメッセージには送信プロンプトの記録がありません（この機能の追加より前に送信されたメッセージです）。",
@@ -1776,6 +2194,12 @@
       "unpinSpotlight": "Spotlight 解除: {{label}}",
       "childViaParent": "{{name}} 由来",
       "viaIndicator": "↑{{name}}",
+      "decisionSummary": "{{count}} 件を非注入",
+      "decisionSummaryTitle": "コンテキスト選択の詳細",
+      "decisionUnavailable": "取得不可",
+      "decisionTrimmed": "予算により除外",
+      "decisionExcluded": "ポリシーにより対象外",
+      "decisionMore": "他 {{count}} 件",
       "heading": "コンテキスト"
     },
     "conversationSummary": "会話要約",
@@ -1999,7 +2423,9 @@
       "searching": "検索中...",
       "checkOccurrences": "出現シーンを確認",
       "noMentions": "本文中での言及なし",
-      "appearsIn": "登場シーン"
+      "appearsIn": "登場シーン",
+      "automatic": "自動検出",
+      "semantic": "明示リンク"
     },
     "tracking": {
       "contextLabel": "コンテキスト",
@@ -2007,11 +2433,25 @@
       "always": "常に含める",
       "alwaysDesc": "AI コンテキストに常に注入",
       "mentioned": "言及時",
-      "mentionedDesc": "シーン中で検出された時のみ注入",
+      "mentionedDesc": "現在シーン・現在ターンで検出、Spotlight / Codex スコープで明示選択、またはアクティブタブ表示時に注入",
       "manual": "手動のみ",
-      "manualDesc": "Spotlight 経由でのみ注入",
+      "manualDesc": "Spotlight / Codex スコープで明示選択した時のみ注入",
       "hidden": "AI から除外",
       "hiddenDesc": "AI コンテキストに一切注入しない"
+    },
+    "readings": {
+      "label": "読み（ふりがな）",
+      "estimate": "AIで推定",
+      "manage": "読みを管理",
+      "auto": "自動: {{yomi}}",
+      "noSurfaces": "名前や別名を設定すると読みを登録できます",
+      "backfillTitle": "読みの一括推定",
+      "backfillDesc": "漢字を含む表記のうち読み未設定のものを AI が推定して登録します。IME 変換辞書・ルビ・五十音ソートに使われます。",
+      "backfillRun": "未設定の読みを一括推定",
+      "backfillRunning": "推定中… ({{done}}/{{total}})",
+      "backfillNone": "推定が必要な表記はありません",
+      "backfillDone": "{{count}} 件の読みを登録しました",
+      "backfillFailed": "読みの一括推定に失敗しました"
     },
     "mentions": {
       "sourceChat": "抽出元チャット: {{title}}"
@@ -2050,6 +2490,7 @@
       "started": "{{count}} 件のシーンを確認中…（結果は校閲パネルに表示されます）",
       "noChange": "変更がありません（前回チェック以降）",
       "noCandidates": "影響しそうなシーンは見つかりませんでした",
+      "sourceChanged": "実行直前に設定または本文が更新されました。もう一度お試しください",
       "done": "影響レビュー完了",
       "error": "影響チェックに失敗しました"
     },
@@ -2059,7 +2500,7 @@
     },
     "timeline": {
       "noPhases": "フェーズが設定されていません。",
-      "noPhasesDesc": "Phase はシーンが流れた後も AI に覚えさせたい状態の変化を刻む場所です。一時的な出来事は本文や synopsis に書く方が軽く済みます。AI に見せない Wiki 的なメモとしても使えます。",
+      "noPhasesDesc": "Phase はシーンが流れた後も AI に覚えさせたい状態の変化を刻む場所です。一時的な出来事は本文や synopsis に書く方が軽く済みます。必要な時だけ明示選択する記録には suppress、AI に一切見せない記録には hidden を使えます。",
       "currentSceneHere": "現在地: {{title}}",
       "noSceneContext": "シーン未選択 — Base を適用中",
       "orderModeReading": "順序: 読者順",
@@ -2072,11 +2513,11 @@
       "empty": "(空)",
       "contentOverride": "(上書きあり)",
       "exposureAiCount": "AI 露出: {{count}}",
-      "exposureWikiCount": "Wiki 限定: {{count}}",
+      "exposureWikiCount": "自動除外: {{count}}",
       "exposureAiChars": "(〜{{chars}} 文字)",
       "exposureTitle": "Phase の AI 露出",
-      "exposureDesc": "AI に注入されるのは「AI 露出」側の Phase だけです。「Wiki 限定」(suppress/hidden) は AI 文脈には載らないので、設計メモや純粋な記録として自由に増やしても prompt 重量に響きません。",
-      "exposureCostWarning": "AI 露出 summary が {{chars}} 文字と重めです。短く要点だけにするか、過去の Phase を Wiki 限定に切り替えると AI 出力が軽くなります。",
+      "exposureDesc": "always は常時注入され、mentioned は現在シーン・現在ターンで検出された時、Spotlight / Codex スコープで明示選択した時、またはアクティブタブ表示時に注入されます。suppress は Spotlight / Codex スコープで明示選択した時だけ注入され、hidden はどの経路でも AI に渡りません。",
+      "exposureCostWarning": "AI 露出 summary が {{chars}} 文字と重めです。短く要点だけにするか、過去の Phase を suppress / hidden に切り替えると通常ターンの AI 出力が軽くなります。",
       "summaryQuoted": "「{{value}}」",
       "noAnchorScene": "アンカーシーン未設定",
       "addPhase": "フェーズを追加",
@@ -2157,6 +2598,7 @@
       "tagsChanged": "タグ変更",
       "aliasesChanged": "別名変更",
       "excludedAliasesChanged": "除外別名変更",
+      "readingsChanged": "読み変更",
       "parentChanged": "親変更",
       "contextModeChanged": "コンテキストモード変更",
       "iconChanged": "アイコン変更",
@@ -3138,14 +3580,11 @@
     "noActiveScene": "アクティブなシーンがありません"
   },
   "commandCenter": {
-    "placeholderSearch": "検索… (> でコマンドモード)",
-    "placeholderCommand": "コマンド…",
+    "placeholderSearch": "検索…",
     "sectionLexical": "字句検索",
     "sectionSemantic": "意味検索",
-    "sectionCommand": "コマンド",
     "loading": "検索中…",
     "noResults": "結果なし",
-    "emptyHint": "キーワードを入力 (> でコマンドモード)",
     "untitled": "(無題)",
     "filter": {
       "sourceLabel": "ソース",
@@ -3164,15 +3603,7 @@
       "off": "OFF"
     },
     "panel": {
-      "emptyHint": "キーワードを入力して検索 (> でコマンドモード)"
-    },
-    "sectionCommands": "コマンド",
-    "sectionQuickOpen": "ジャンプ",
-    "command": {
-      "openSettings": "設定を開く",
-      "export": "エクスポート",
-      "restartTour": "ツアー再開",
-      "togglePanel": "パネル切替: {{panel}}"
+      "emptyHint": "キーワードを入力して検索"
     }
   },
   "chatCommands": {
@@ -3241,7 +3672,8 @@
         "dropToUnplace": "ここにドロップして未配置に戻す",
         "emptyState": "Beat はまだありません。+ を押して追加してください。",
         "placedHeading": "配置済み（本文順）：",
-        "emptyBeat": "空の Beat"
+        "emptyBeat": "空の Beat",
+        "paragraphRef": "本文 ¶{{n}}"
       },
       "alternativeSaved": "代替案をスニペットに保存しました",
       "modelInherit": "モデルを継承",
@@ -3273,7 +3705,35 @@
     "bubbleMenu": {
       "label": "選択ツールバー",
       "comment": "コメントを追加",
-      "foreshadow": "伏線として登録"
+      "foreshadow": "伏線として登録",
+      "semanticLink": "Codex エントリにリンク",
+      "ai": "AI で編集"
+    },
+    "semanticLink": {
+      "pickerLabel": "Codex セマンティックリンク",
+      "heading": "Codex エントリにリンク",
+      "search": "Codex エントリを検索",
+      "searchPlaceholder": "名前・別名で検索…",
+      "noResults": "見つかりません",
+      "remove": "Codex リンクを解除",
+      "deletedEntry": "削除済みのCodexエントリ",
+      "danglingHelp": "リンク先は削除されています。文字列を選択して再割り当てするか、リンクを解除してください。"
+    },
+    "zen": {
+      "entryHint": "Zen · {{title}} · Escで終了",
+      "entryHintNoTitle": "Zen · Escで終了"
+    },
+    "background": {
+      "title": "背景スタジオ",
+      "open": "背景をライブ調整",
+      "close": "背景スタジオを閉じる",
+      "enabled": "背景を表示",
+      "enabledDescription": "OFFにするとシェーダーを停止し、通常のエディター背景へ戻します。設定値は保持されます。",
+      "commonSection": "背景",
+      "glassSection": "Glass効果",
+      "propsSection": "シェーダーProps",
+      "filtersSection": "追加フィルター",
+      "shaderDescription": "通常表示とZenで共通。変更は背後の実画面へ即時反映されます。"
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",
@@ -3281,6 +3741,7 @@
       "underline": "下線 (Ctrl+U)",
       "strikethrough": "取り消し線 (Ctrl+Shift+X)",
       "emphasisDots": "傍点 (Ctrl+.)",
+      "tateChuYoko": "縦中横",
       "heading1": "見出し 1 (Ctrl+1)",
       "heading1Short": "見出し 1",
       "heading2": "見出し 2 (Ctrl+2)",
@@ -3297,13 +3758,11 @@
       "linkShort": "リンク",
       "sceneBreak": "シーン区切り (* * *)",
       "fontSize": "文字サイズ",
-      "attribution": "帰属表示",
-      "comments": "コメント表示（未実装）",
-      "foreshadowMarks": "伏線マーク表示",
-      "reviewMarks": "校閲アノテーション表示",
+      "layers": "本文レイヤー",
       "focusMode": "フォーカスモード",
       "typewriterMode": "タイプライターモード",
       "verticalMode": "縦書きで編集（この作品）",
+      "reorderMode": "推敲（段落内並べ替え）",
       "sceneMetaPanel": "シーン情報パネル",
       "moreOptions": "その他のオプション",
       "findReplace": "検索と置換",
@@ -3312,8 +3771,42 @@
       "showLineNumbers": "行番号を表示",
       "rubyBase": "ベース",
       "rubyAnnotation": "ふりがな",
+      "codexReadingPromptTitle": "「{{surface}}」の読みを登録しますか？",
+      "codexReadingPromptDescription": "「{{reading}}」を Codex の読みとして保存すると、次回から自動でルビを付けられます。",
+      "codexReadingPromptRegister": "読みとして登録",
+      "codexReadingPromptDisable": "今後は確認しない",
       "urlPlaceholder": "https://...",
-      "label": "エディタツールバー"
+      "label": "エディタツールバー",
+      "zenMode": "Zenモード",
+      "fullscreenMode": "フルスクリーン"
+    },
+    "reorder": {
+      "title": "推敲 — 段落内並べ替え",
+      "granularitySentence": "文",
+      "granularityBunsetsu": "文節",
+      "granularityPhrase": "句",
+      "granularityWord": "単語",
+      "granularityCharacter": "文字",
+      "loading": "分割中…",
+      "singleUnit": "並べ替え可能な単位が2つ以上必要です",
+      "bunsetsuFallback": "文節分割に失敗したため文単位で表示しています",
+      "segmentFailed": "分割に失敗しました",
+      "staleDocument": "段落が編集中に変更されたため、確定できません",
+      "cancel": "キャンセル",
+      "confirm": "確定",
+      "hint": {
+        "currentUnit": "入れ替え単位: {{unit}}",
+        "base": "Alt: 段落 / Alt+Shift: 文・文節・文字 を並べ替え",
+        "paragraph": "段落を並べ替え（ハンドルをドラッグ / Alt+矢印）",
+        "altShiftActive": "段落内を並べ替え（ドラッグ / Alt+Shift+矢印）",
+        "unitSentence": "文を並べ替え（ドラッグ / Alt+Shift+矢印）",
+        "unitBunsetsu": "文節を並べ替え（ドラッグ / Alt+Shift+矢印）",
+        "switchToBunsetsu": "Alt+Shift+G で文節へ",
+        "switchToPhrase": "Alt+Shift+G で句へ",
+        "switchToWord": "Alt+Shift+G で単語へ",
+        "switchToCharacter": "Alt+Shift+G で文字へ",
+        "switchToSentence": "Alt+Shift+G で文へ"
+      }
     },
     "status": {
       "outline": "アウトライン",
@@ -3365,6 +3858,7 @@
       "noSnippet": "スニペットがありません",
       "setRuby": "ルビを付ける…",
       "addToCodex": "コデックスに追加",
+      "semanticLink": "既存の Codex エントリにリンク…",
       "registerAsExcludedAlias": "「{{name}}」の除外エイリアスに登録",
       "excludedAliasRegistered": "「{{name}}」の除外エイリアスに登録しました",
       "excludedAliasAlreadyExists": "既に除外エイリアスに登録されています",
@@ -3431,6 +3925,43 @@
     "lintDisable": {
       "gutterTooltipAll": "このブロックは全 Lint ルールを無効化中",
       "gutterTooltipPartial": "このブロックに {{count}} 件の Lint 無効化があります"
+    },
+    "gutter": {
+      "comment": "この段落にコメントがあります",
+      "reader": "この段落に読者コメントがあります",
+      "foreshadow": "この段落に伏線マークがあります",
+      "review": "この段落に校閲の指摘があります"
+    },
+    "sceneDetail": {
+      "title": "シーン詳細",
+      "pov": "視点",
+      "location": "場所",
+      "notSet": "未設定",
+      "searchCharacter": "人物を検索…",
+      "searchLocation": "場所を検索…",
+      "clearSelection": "指定なしにする",
+      "noMatches": "該当なし",
+      "synopsisChip": "あらすじ",
+      "synopsisEmpty": "未記入",
+      "beatsChip": "ビート {{count}}"
+    },
+    "layers": {
+      "title": "本文レイヤー",
+      "hideAll": "すべて隠す",
+      "autoFollow": "パネル連動",
+      "autoFollowHint": "開いているパネルに合わせて表示を自動で切り替える",
+      "attribution": "帰属ハイライト",
+      "comments": "コメント",
+      "readerComments": "読者コメント",
+      "foreshadow": "伏線マーク",
+      "review": "校閲の指摘",
+      "codex": "Codexハイライト",
+      "codexStyle": "スタイル",
+      "codexStyleDefault": "デフォルト",
+      "codexStyleUnderline": "下線",
+      "codexOpacity": "Codexハイライトの濃度",
+      "opacity": "濃度",
+      "aiShare": "AI {{percent}}%"
     },
     "synopsis": {
       "title": "Synopsis",
@@ -3798,9 +4329,9 @@
     "aiExposureDefault": "デフォルト維持 (Base のまま)",
     "aiExposureAlways": "常に AI に注入 (always)",
     "aiExposureMentioned": "言及時のみ注入 (mentioned)",
-    "aiExposureSuppress": "AI 文脈から抑制 (suppress)",
-    "aiExposureHidden": "Wiki 限定 / AI に見せない (hidden)",
-    "aiExposureHint": "「AI に見せない」Phase は prompt 重量に影響しません。設計メモや純粋な記録として自由に増やせます。",
+    "aiExposureSuppress": "手動選択時のみ注入 (suppress)",
+    "aiExposureHidden": "AI に一切見せない (hidden)",
+    "aiExposureHint": "suppress は Spotlight / Codex スコープで明示選択した時だけ注入され、hidden はどの経路でも AI に渡りません。どちらも通常の自動注入からは除外されます。",
     "saving": "保存中...",
     "history": {
       "created": "Phase作成",
@@ -3941,6 +4472,51 @@
     "trustWarning": "信頼できるソースのワークスペースのみ開いてください。",
     "trustAndOpen": "信頼して開く",
     "trustCancel": "キャンセル"
+  },
+  "vivliostyle": {
+    "title": "本の書き出し（Vivliostyle）",
+    "tab": "本の書き出し",
+    "theme": {
+      "label": "テーマ",
+      "bunkoVertical": "文庫判（縦書き）",
+      "shinshoVertical": "新書判（縦書き）",
+      "a4Horizontal": "A4（横書き）"
+    },
+    "format": {
+      "label": "形式",
+      "pdf": "PDF",
+      "epub": "EPUB"
+    },
+    "cli": {
+      "checking": "Vivliostyle CLI を確認中…",
+      "detected": "Vivliostyle CLI 検出済み（{{version}}）",
+      "notFound": "Vivliostyle CLI が見つかりません",
+      "guide": "本の書き出しには Node.js と Vivliostyle CLI が必要です。Node.js をインストールした上で、次のコマンドを実行してください。",
+      "copyCommand": "コピー",
+      "copied": "コピー済み",
+      "manualPath": "vivliostyle バイナリのパスを手動指定",
+      "manualPathPlaceholder": "例: /usr/local/bin/vivliostyle",
+      "redetect": "再検出"
+    },
+    "build": {
+      "start": "書き出し",
+      "running": "組版中…",
+      "firstRunNote": "初回実行時は Chromium のダウンロードが行われるため、数分かかることがあります。",
+      "abort": "中止",
+      "done": "組版が完了しました",
+      "save": "保存",
+      "saving": "保存中…",
+      "saved": "保存しました: {{path}}",
+      "saveFailed": "保存に失敗しました: {{error}}",
+      "failed": "書き出しに失敗しました"
+    },
+    "preview": {
+      "start": "プレビュー",
+      "stop": "プレビュー停止",
+      "running": "プレビュー実行中",
+      "note": "組版結果をブラウザの別ウィンドウで開きます。ダイアログを閉じてもプレビューは表示されたままです。",
+      "failed": "プレビューの起動に失敗しました: {{error}}"
+    }
   },
   "export": {
     "selectAll": "全選択",
@@ -4388,6 +4964,18 @@
     "restartTutorial": "チュートリアルを再実行",
     "createWorkspace": "新しいワークスペースを作成する",
     "steps": {
+      "workspace": {
+        "slides": {
+          "workspace": {
+            "title": "ワークスペース",
+            "body": "ワークスペースは、複数のプロジェクトと設定をまとめて管理する作業場所です。左上のメニューから別のフォルダーを開いたり、新しいワークスペースを作成したりできます。"
+          },
+          "project": {
+            "title": "プロジェクト",
+            "body": "プロジェクトはワークスペース内の一つの作品です。本文・シーン・Codex・チャット履歴などをプロジェクトごとに整理し、上のメニューから切り替えられます。"
+          }
+        }
+      },
       "scenes": {
         "slides": {
           "overview": {
@@ -4536,6 +5124,14 @@
           }
         }
       },
+      "export": {
+        "slides": {
+          "overview": {
+            "title": "エクスポート",
+            "body": "完成した本文は、上部のエクスポートボタンからテキストや本の形式で書き出せます。シーンを選び、出力形式やサイト向けの設定を調整して保存しましょう。"
+          }
+        }
+      },
       "end": {
         "slides": {
           "summary": {
@@ -4588,6 +5184,23 @@
       "restricted": "ライセンスが有効でないため編集は無効です — 閲覧と書き出しはいつでも可能です。",
       "openSettings": "ライセンス設定を開く"
     }
+  },
+  "updater": {
+    "updateAvailable": "新しいバージョンがあります",
+    "updateNow": "今すぐ更新",
+    "later": "後で",
+    "downloading": "更新をダウンロード中…",
+    "readyToRestart": "更新の準備ができました",
+    "restartNow": "再起動",
+    "upToDate": "最新版です",
+    "checkFailed": "更新の確認に失敗しました"
+  },
+  "releaseNotes": {
+    "title": "v{{version}} の新機能",
+    "close": "閉じる",
+    "viewButton": "リリースノートを見る",
+    "notAvailable": "このバージョンのリリースノートはありません",
+    "fallbackLocale": "日本語版を表示しています"
   },
   "semanticSearch": {
     "reindexComplete": "再インデックス完了",
@@ -4745,6 +5358,41 @@
       "default": "デフォルト",
       "corkboard": "コルクボード",
       "constellation": "星座"
+    },
+    "view": {
+      "board": "ボード",
+      "galaxy": "グラフ",
+      "switchToGalaxy": "グラフビューへ切替",
+      "switchToBoard": "ボードビューへ切替"
+    },
+    "galaxy": {
+      "title": "グラフ",
+      "refresh": "更新",
+      "filters": "フィルタ",
+      "loading": "グラフを構築中…",
+      "empty": "まだノードがありません。書き始めるとグラフが育ちます。",
+      "loadError": "グラフデータの読み込みに失敗しました",
+      "noWebgl": "この環境では 3D 表示を利用できません",
+      "hideOrphans": "孤立ノードを隠す",
+      "nodeSection": "ノード",
+      "edgeSection": "つながり",
+      "nodes": {
+        "scenes": "シーン",
+        "codex": "Codex",
+        "events": "イベント",
+        "threads": "プロットスレッド"
+      },
+      "edges": {
+        "mention": "言及",
+        "relation": "関係",
+        "sequence": "シーン連結",
+        "eventLink": "イベントリンク",
+        "participant": "参加者",
+        "thread": "スレッド"
+      },
+      "openHint": "ダブルクリックで開く",
+      "dimension2d": "2D 表示",
+      "dimension3d": "3D 表示"
     },
     "arrange": {
       "readingOrder": "Grid: 読み順",
@@ -5163,7 +5811,10 @@
     "participants": "参加レーン（複数所属）",
     "addParticipant": "＋参加レーン",
     "removeParticipant": "外す",
-    "precisionShort": { "approx": "約", "unknown": "?" },
+    "precisionShort": {
+      "approx": "約",
+      "unknown": "?"
+    },
     "legendCausal": "因果",
     "exactHint": "日付が確定している",
     "approxHint": "順序は確実だが日付は概算",
@@ -5300,6 +5951,7 @@
       "removeFromSet": "セットから削除"
     },
     "sources": {
+      "semantic": "明示セマンティックリンク",
       "body": "本文言及",
       "beat": "Beat メンション",
       "relation": "明示リレーション"
@@ -5378,6 +6030,72 @@
     "deleteConfirmTitle": "「{{name}}」を削除しますか？",
     "deleteConfirmDesc": "{{count}} 件のシーン・章から外されます。",
     "reorder": "並べ替え"
+  },
+  "aiDataConsent": {
+    "title": "AIで処理する前に確認",
+    "sentData": "処理または送信されるデータ",
+    "destination": "処理先と地域",
+    "storage": "保存先と保持期間",
+    "sourceRetention": "原稿 {{days}}日",
+    "artifactRetention": "解析結果・AI応答 {{days}}日",
+    "browserRetention": "自動削除なし。ワークスペースを削除するまで保存",
+    "providerStorage": "AIプロバイダ側の保存",
+    "providerRetention": "AIプロバイダ側の保持期間",
+    "training": "モデル学習への利用",
+    "appPolicy": "GrimodexのAIデータ利用方針",
+    "processorPolicy": "{{processor}}のプライバシーポリシー",
+    "providerStoragePolicy": "AI提供者の保存ポリシー",
+    "providerRetentionPolicy": "AI提供者の保持期間ポリシー",
+    "providerTrainingPolicy": "AI提供者の学習利用ポリシー",
+    "confirm": "上記の処理・送信・保存・学習利用方針を確認しました",
+    "decline": "今は使わない",
+    "accept": "同意してAIを使う",
+    "policyVersion": "ポリシーバージョン",
+    "connectionDestination": "実際の接続先",
+    "disclosure": {
+      "usageSummary": "入力した指示、選択された本文や文脈、および必要な認証情報を、表示された接続先へ直接送信します。送信前に内容と接続先を確認してください。",
+      "sentPrompt": "入力した指示、会話履歴、システム指示",
+      "sentContext": "リクエストのために選択された本文、シーン、Codex、プロジェクト設定などの文脈",
+      "sentCredential": "提供者が必要とするユーザー自身のAPIキー（認証ヘッダーで送信し、このページの実行メモリにだけ保持）",
+      "applicationStorage": "このブラウザのローカルワークスペース（IndexedDB）",
+      "provider": {
+        "openai": {
+          "purpose": "選択したAI支援を生成するため",
+          "location": "OpenAI が管理するインフラストラクチャ",
+          "storage": "OpenAI API側では、既定で不正利用監視ログが最大30日保持されます。対象組織は保持期間変更やZero Data Retentionを申請できます。",
+          "retention": "既定の不正利用監視ログは最大30日です。契約、設定、法的例外により異なる場合があります。",
+          "training": "OpenAI APIの入出力は、組織が明示的にオプトインしない限りモデル学習に使用されません。"
+        },
+        "anthropic": {
+          "purpose": "選択したAI支援を生成するため",
+          "location": "Anthropic が管理するインフラストラクチャ",
+          "storage": "Anthropic APIの入出力は通常30日以内に削除されますが、契約、安全対策、法的義務による例外があります。",
+          "retention": "通常は30日以内に削除されます。Zero Data Retention契約や安全、法的例外では条件が異なります。",
+          "training": "Anthropicの商用/APIデータは、明示的なオプトインやフィードバック提供を除きモデル学習に使用されません。"
+        },
+        "ollama": {
+          "processor": "設定されたOllamaサーバー",
+          "purpose": "選択したAI支援をローカルまたは指定先で生成するため",
+          "storage": "保存の有無は、ユーザーが管理するOllamaサーバーと接続先モデルの設定に依存します。Grimodexは追加のサーバー保存を行いません。",
+          "retention": "保持期間は設定されたOllamaサーバーの運用方針に依存します。",
+          "training": "学習への利用は、設定されたOllamaサーバーとモデルの運用方針に依存します。"
+        },
+        "configured": {
+          "processor": "設定されたOpenAI互換エンドポイントの運用者",
+          "purpose": "設定した接続先で選択したAI支援を生成するため",
+          "storage": "保存の有無は設定した接続先の運用者に依存します。Grimodexは追加のサーバー保存を行いません。",
+          "retention": "保持期間は設定した接続先の運用者に依存します。送信前にその運用方針を確認してください。",
+          "training": "学習への利用は設定した接続先の運用者とモデルの方針に依存します。"
+        },
+        "external": {
+          "purpose": "{{provider}}を通じて選択したAI支援を生成するため",
+          "location": "{{provider}}のアカウントまたはAPIキー設定に基づいて選択されるインフラストラクチャと下流推論プロバイダー",
+          "storage": "{{provider}}および下流推論プロバイダーは、アカウント設定と現行ポリシーに従ってリクエストデータを保存する場合があります。",
+          "retention": "保持期間は{{provider}}のアカウント設定、ルーティング先、下流プロバイダー、安全・法的例外に依存します。",
+          "training": "学習への利用は{{provider}}のアカウント設定と、そのリクエストで選択された下流プロバイダーに依存します。"
+        }
+      }
+    }
   },
   "promptLibrary": {
     "section": {

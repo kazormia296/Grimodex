@@ -11,11 +11,12 @@ context: fork
 直近のコミットの変更をレビューしてください。
 
 確認観点:
+
 - セキュリティ脆弱性（APIキー漏洩、SQLインジェクション、XSS）
 - 欠落しているエラーハンドリング
 - テストカバレッジの不足
 - TipTap拡張の既知パターン違反
-- Tauri IPC: capabilities未設定、unwrap()使用、型不一致
+- Electron IPC: allowlist漏れ、引数未検証、Envelope破壊、preload越しの過剰権限
 - Rust所有権: 不要な.clone()、Arc<T>で解決すべき箇所
 
 **スタイルの指摘は不要。バグと脆弱性のみ報告。**

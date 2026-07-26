@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MarkdownImage, MarkdownLink } from "./safeMarkdown";
 
 const openUrl = vi.fn();
-vi.mock("@tauri-apps/plugin-opener", () => ({
+vi.mock("@/lib/opener", () => ({
   openUrl: (url: string) => openUrl(url),
 }));
 vi.mock("react-i18next", () => ({

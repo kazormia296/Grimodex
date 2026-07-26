@@ -11,6 +11,7 @@ import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import CharacterCount from "@tiptap/extension-character-count";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
+import { AutoPairBracketsExtension } from "@/features/editor/AutoPairBracketsExtension";
 import { ParagraphWithEmptyLineSupport } from "@/features/editor/extensions";
 import type { Extensions } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
@@ -104,6 +105,8 @@ function buildFileBackedExtensions(strict: boolean): Extensions {
     }),
     CharacterCount,
     FindReplaceExtension,
+    // 約物ペア自動補完 (テキスト操作のみ・スキーマ非依存なので file-backed でも安全)
+    AutoPairBracketsExtension,
     Table.configure({ resizable: false }),
     TableRow,
     TableHeader,

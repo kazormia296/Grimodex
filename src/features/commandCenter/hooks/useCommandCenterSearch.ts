@@ -3,26 +3,11 @@ import type { SearchStore } from "../store/commandCenterStore";
 import { getProviders } from "../providers/registry";
 import { parseCommandInput } from "../lib/parseCommandInput";
 import { filterByExcludes } from "../lib/filterByExcludes";
-import type {
-  CommandCenterProvider,
-  ProviderExtras,
-  Surface,
-} from "../providers/types";
+import type { CommandCenterProvider, ProviderExtras } from "../providers/types";
 
 /**
- * 検索バーの「入力を購読 → debounce → provider 並行実行 → store に upsert」フック。
- *
- * ## 単一所有 (single owner) の不変条件
- *
- * この hook は **アプリ内で 1 箇所のみ呼び出される**こと。具体的には
- * `CommandCenterBar` のみ。専用ビュー (`CommandCenterResultsPanel`) は
- * **呼び出さない** — もし呼ぶと、2 つの hook 実例がそれぞれ `runtimesRef` を
- * 持ち、互いを認識せずに同じクエリで provider を二重発火 → store への
- * 書込みが race する (advisor が指摘した critical bug)。
- *
- * パネル展開時の limit 切替は、Bar が `useResultsPanelStore((s) => s.mounted)`
- * を購読し、`limit: mounted ? PANEL_FETCH_LIMIT : BAR_FETCH_LIMIT` を渡す
- * 経路で行う。
+ * 検索パネルの入力を購読し、debounce 後に provider を並行実行して
+ * store へ section 単位で反映する。
  *
  * ## Race 対策
  *
@@ -31,7 +16,7 @@ import type {
  *
  * ## メモ化 (superset memo)
  *
- * `(mode, query)` を base key、その base key で fetch した最大 limit を保持。
+ * `query` を base key、その base key で fetch した最大 limit を保持。
  * 新リクエストの limit が **maxLimit 以下なら skip** する。これにより:
  *
  * - パネル open (limit 50) → fetch
@@ -39,14 +24,13 @@ import type {
  * - パネル open (limit 50) → 50 ≤ 50 で skip
  * - query 変更 → base key 変わるので fetch
  *
- * Bar の display は `BAR_VISIBLE_LIMIT_PER_SECTION` で slice して表示する。
  */
 
 interface ProviderRuntime {
   timer: ReturnType<typeof setTimeout> | null;
   controller: AbortController | null;
   generation: number;
-  /** 最後に fetch した (mode, query) */
+  /** 最後に fetch した query + provider extras */
   lastBaseKey: string | null;
   /** その base key で fetch した最大 limit。新 limit がこれ以下なら skip。 */
   lastMaxLimit: number;
@@ -60,10 +44,8 @@ const DEFAULT_DEBOUNCE_MS = 200;
 const DEFAULT_LIMIT = 10;
 
 export interface UseCommandCenterSearchOptions {
-  /** 1 provider あたりの取得件数。バー単独=10、Dockview パネル mount 中=50 */
+  /** 1 provider あたりの取得件数。 */
   limit?: number;
-  /** 絞り込み対象の surface。Phase A2 で bar/panel 個別に hook を起動するときに使う。 */
-  surface?: Surface;
 }
 
 function ensureRuntime(
@@ -102,7 +84,6 @@ export function useCommandCenterSearch(
   options: UseCommandCenterSearchOptions = {},
 ): void {
   const limit = options.limit ?? DEFAULT_LIMIT;
-  const surface = options.surface;
   const runtimesRef = useRef<Map<string, ProviderRuntime>>(new Map());
 
   const query = store((s) => s.query);
@@ -113,17 +94,14 @@ export function useCommandCenterSearch(
   useEffect(() => {
     const parsed = parseCommandInput(query);
     const state = store.getState();
-    state.setMode(parsed.mode);
     state.setParsedQuery(parsed.text);
     state.setExcludes(parsed.excludes);
 
     const trimmed = parsed.text.trim();
-    const providers = getProviders(parsed.mode, surface);
+    const providers = getProviders();
     const activeIds = new Set(providers.map((p) => p.id));
 
-    // search mode で空クエリのときは結果を完全クリア。
-    // command mode (`> ` 起動) のときは空クエリでもコマンド一覧を出したいので provider を回す。
-    if (!trimmed && parsed.mode === "search") {
+    if (!trimmed) {
       for (const runtime of runtimesRef.current.values()) {
         cancelRuntime(runtime);
         runtime.lastBaseKey = null;
@@ -133,7 +111,7 @@ export function useCommandCenterSearch(
       return;
     }
 
-    // mode 切替などで居なくなった provider の section を消す
+    // 登録解除された provider の section を消す。
     for (const id of Array.from(runtimesRef.current.keys())) {
       if (!activeIds.has(id)) {
         const runtime = runtimesRef.current.get(id);
@@ -147,13 +125,12 @@ export function useCommandCenterSearch(
     for (const provider of providers) {
       scheduleProvider(provider, store, runtimesRef.current, {
         query: trimmed,
-        mode: parsed.mode,
         limit,
         excludes: parsed.excludes,
         extras,
       });
     }
-  }, [store, query, limit, descriptionMode, surface]);
+  }, [store, query, limit, descriptionMode]);
 
   // unmount cleanup
   useEffect(() => {
@@ -167,7 +144,6 @@ export function useCommandCenterSearch(
 
 interface ScheduleArgs {
   query: string;
-  mode: "search" | "command";
   limit: number;
   /** post-filter で section.items から drop する除外語 */
   excludes: string[];
@@ -185,7 +161,7 @@ function makeBaseKey(
   // provider 固有の bust factor (例: semantic は descriptionMode を含む)。
   // 他 provider に影響しないよう provider.id 単位で計算される。
   const extras = provider.cacheKeyExtras?.(args.extras) ?? "";
-  return `${args.mode}::${args.query}::ex=${sortedExcludes}::extras=${extras}`;
+  return `${args.query}::ex=${sortedExcludes}::extras=${extras}`;
 }
 
 function scheduleProvider(
@@ -197,7 +173,7 @@ function scheduleProvider(
   const runtime = ensureRuntime(runtimes, provider.id);
   const baseKey = makeBaseKey(provider, args);
 
-  // superset memo: same baseKey (mode + query + excludes) かつ limit が直近 max 以下なら skip
+  // superset memo: same baseKey かつ limit が直近 max 以下なら skip
   if (runtime.lastBaseKey === baseKey && args.limit <= runtime.lastMaxLimit) {
     return;
   }
@@ -244,7 +220,6 @@ async function runProvider(
       query: args.query,
       signal: controller.signal,
       limit: args.limit,
-      mode: args.mode,
       generation: myGen,
       descriptionMode: args.extras.descriptionMode,
     });

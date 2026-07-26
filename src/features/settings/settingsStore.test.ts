@@ -2,6 +2,23 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { KEY_SCOPE, DEFAULT_SETTINGS } from "./types";
 import { useSettingsStore } from "./settingsStore";
 
+// loadAll / persistSetting の到達先をモックし、「永続ソースはまだ pending を
+// 反映していない」状況を再現できるようにする（設定ダイアログ巻き戻りレース）。
+vi.mock("./api", () => ({
+  getSettingsByPrefix: vi.fn(async () => ({})),
+  getAllProjectSettings: vi.fn(async () => ({})),
+  setProjectSetting: vi.fn(async () => {}),
+  setSetting: vi.fn(async () => {}),
+}));
+const updateUserPreferenceSpy = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("@/lib/globalSettings/repository", () => ({
+  globalSettingsRepository: {
+    read: vi.fn(async () => ({ userPreferences: {} })),
+    write: vi.fn(async () => {}),
+    updateUserPreference: updateUserPreferenceSpy,
+  },
+}));
+
 // Routing correctness is guaranteed by KEY_SCOPE:
 // - persistSetting() in settingsStore delegates to the correct store based on KEY_SCOPE
 // - These tests validate the classification that drives routing decisions
@@ -35,16 +52,6 @@ describe("KEY_SCOPE routing invariants", () => {
       "editor.cursorBlink",
       "display.showWordCount",
       "display.reduceMotion",
-      "display.glassEffectEnabled",
-      "display.glassTransparency",
-      "display.glassBackdropGradient",
-      "display.glassNativeVibrancy",
-      "display.glassSurfaceShell",
-      "display.glassSurfaceDock",
-      "display.glassSurfacePanels",
-      "display.glassSurfaceChat",
-      "display.glassSurfacePopovers",
-      "display.glassSurfaceEditorChrome",
       "keys.bindings",
       "data.autoBackup",
       "revision.autoInterval",
@@ -77,20 +84,26 @@ describe("KEY_SCOPE routing invariants", () => {
     }
   });
 
-  it("card layout is the default; the glass effect defaults off (mutually exclusive)", () => {
-    expect(DEFAULT_SETTINGS["display.cardLayout"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassEffectEnabled"]).toBe("false");
-    // Glass surface sub-settings still default ON so the effect is complete
-    // once the master toggle is enabled.
-    expect(DEFAULT_SETTINGS["display.glassTransparency"]).toBe("30");
-    expect(DEFAULT_SETTINGS["display.glassBackdropGradient"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassNativeVibrancy"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfaceShell"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfaceDock"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfacePanels"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfaceChat"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfacePopovers"]).toBe("true");
-    expect(DEFAULT_SETTINGS["display.glassSurfaceEditorChrome"]).toBe("true");
+  it("does not expose retired layout or app-wide glass settings", () => {
+    const retiredKeys = [
+      "display.mochiLayout",
+      "display.cardLayout",
+      "display.glassEffectEnabled",
+      "display.glassTransparency",
+      "display.glassEffectIntensity",
+      "display.glassBackdropGradient",
+      "display.glassNativeVibrancy",
+      "display.glassSurfaceShell",
+      "display.glassSurfaceDock",
+      "display.glassSurfacePanels",
+      "display.glassSurfaceChat",
+      "display.glassSurfacePopovers",
+      "display.glassSurfaceEditorChrome",
+    ];
+    for (const key of retiredKeys) {
+      expect(KEY_SCOPE).not.toHaveProperty(key);
+      expect(DEFAULT_SETTINGS).not.toHaveProperty(key);
+    }
   });
 });
 
@@ -99,6 +112,7 @@ function resetStore(projectLanguage: string) {
     layers: { legacy: {}, project: {}, global: {} },
     projectLanguage: "__init__",
     _timers: new Map(),
+    _pending: new Map(),
   });
   // Force a cache rebuild for the requested language.
   useSettingsStore.getState().applyProjectLanguage(projectLanguage);
@@ -164,5 +178,61 @@ describe("settingsStore language-linked defaults", () => {
       useSettingsStore.getState().applyProjectLanguage("ja");
       expect(useSettingsStore.getState().get("editor.lineHeight")).toBe("2.5");
     });
+  });
+});
+
+describe("デバウンス中の loadAll と pending の整合（設定ダイアログ巻き戻りレース）", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    updateUserPreferenceSpy.mockClear();
+    resetStore("ja");
+  });
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("loadAll が pending write-through を巻き戻さない", async () => {
+    useSettingsStore.getState().set("display.layerComments", "true");
+    expect(
+      useSettingsStore.getState().getBoolean("display.layerComments", false),
+    ).toBe(true);
+    // 永続ソースは空（= pending 未反映）のまま loadAll。
+    await useSettingsStore.getState().loadAll();
+    expect(
+      useSettingsStore.getState().getBoolean("display.layerComments", false),
+    ).toBe(true);
+  });
+
+  it("flushPending は loadAll 後でも pending 値を永続化する", async () => {
+    useSettingsStore.getState().set("display.layerComments", "true");
+    await useSettingsStore.getState().loadAll();
+    await useSettingsStore.getState().flushPending();
+    expect(updateUserPreferenceSpy).toHaveBeenCalledWith(
+      "display.layerComments",
+      "true",
+    );
+    expect(useSettingsStore.getState()._pending.size).toBe(0);
+  });
+
+  it("デバウンスタイマー発火で pending が掃除され、set した値が永続化される", async () => {
+    useSettingsStore.getState().set("display.layerComments", "true");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(updateUserPreferenceSpy).toHaveBeenCalledWith(
+      "display.layerComments",
+      "true",
+    );
+    expect(useSettingsStore.getState()._pending.size).toBe(0);
+  });
+
+  it("連打時は最後の値だけが pending に残り persist される", async () => {
+    useSettingsStore.getState().set("display.layerComments", "true");
+    useSettingsStore.getState().set("display.layerComments", "false");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(updateUserPreferenceSpy).toHaveBeenCalledTimes(1);
+    expect(updateUserPreferenceSpy).toHaveBeenCalledWith(
+      "display.layerComments",
+      "false",
+    );
   });
 });

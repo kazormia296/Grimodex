@@ -29,20 +29,32 @@ import {
   ImportInputSlot,
   ImportAnalyzingPlaceholder,
   ImportFlowFooter,
+  useImportBusyChange,
+  useImportFailureReset,
 } from "../importShared";
 import { prepareImportTarget, type ImportTarget } from "../importTarget";
+import {
+  hasAllowedImportExtension,
+  importFileLimitViolation,
+} from "../importFileLimits";
 
 interface Props {
   importTarget: ImportTarget;
   onClose: () => void;
+  enforceBrowserLimits?: boolean;
+  onBusyChange?: (busy: boolean) => void;
+  onFailedChange?: (failed: boolean) => void;
 }
-
-/** renderer の OOM を防ぐ入力上限（.novel は通常数 MB 以下のテキスト）。 */
-const MAX_NOVEL_FILE_BYTES = 32 * 1024 * 1024;
 
 const DEFAULT_TYPE = "character";
 
-export function NovelImportFlow({ importTarget, onClose }: Props) {
+export function NovelImportFlow({
+  importTarget,
+  onClose,
+  enforceBrowserLimits = false,
+  onBusyChange,
+  onFailedChange,
+}: Props) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<SimpleImportPhase>("idle");
   const [plan, setPlan] = useState<NovelImportPlan | null>(null);
@@ -54,6 +66,9 @@ export function NovelImportFlow({ importTarget, onClose }: Props) {
 
   const reloadCodex = useCodexStore((s) => s.loadEntries);
   const reloadTree = useTreeStore((s) => s.loadTree);
+
+  useImportBusyChange(phase, onBusyChange);
+  useImportFailureReset(onFailedChange);
 
   useEffect(() => {
     if (importTarget === "newProject") {
@@ -76,12 +91,22 @@ export function NovelImportFlow({ importTarget, onClose }: Props) {
 
   const handleFileChange = useCallback(
     async (file: File) => {
-      if (!file.name.toLowerCase().endsWith(".novel")) {
+      if (!hasAllowedImportExtension(file.name, ["novel"])) {
         toast.error(t("import.novel.invalidFile"));
         return;
       }
-      if (file.size > MAX_NOVEL_FILE_BYTES) {
-        toast.error(t("import.novel.tooLarge"));
+      const limitViolation = importFileLimitViolation(file, "text");
+      if (
+        limitViolation === "file-too-large" ||
+        (enforceBrowserLimits && limitViolation)
+      ) {
+        toast.error(
+          t(
+            limitViolation === "file-too-large"
+              ? "import.novel.tooLarge"
+              : "import.limits.empty-file",
+          ),
+        );
         return;
       }
       setPhase("analyzing");
@@ -101,7 +126,7 @@ export function NovelImportFlow({ importTarget, onClose }: Props) {
         setPhase("idle");
       }
     },
-    [t],
+    [enforceBrowserLimits, t],
   );
 
   const runImport = useCallback(async () => {
@@ -119,56 +144,75 @@ export function NovelImportFlow({ importTarget, onClose }: Props) {
       return;
     }
 
-    if (plan.memory || plan.footnote) {
-      try {
-        if (importTarget === "newProject") {
-          await importProjectMetadata({
-            outline: plan.memory || undefined,
-            aiInstructions: plan.footnote || undefined,
-          });
-        } else {
-          const memoBody = [plan.memory, plan.footnote]
-            .filter(Boolean)
-            .join("\n\n");
-          await importMemoNote(
-            t("import.novel.memoNoteTitle", { title: plan.projectTitle }),
-            memoBody,
-          );
+    try {
+      if (plan.memory || plan.footnote) {
+        try {
+          if (importTarget === "newProject") {
+            await importProjectMetadata({
+              outline: plan.memory || undefined,
+              aiInstructions: plan.footnote || undefined,
+            });
+          } else {
+            const memoBody = [plan.memory, plan.footnote]
+              .filter(Boolean)
+              .join("\n\n");
+            await importMemoNote(
+              t("import.novel.memoNoteTitle", { title: plan.projectTitle }),
+              memoBody,
+            );
+          }
+        } catch (err) {
+          allErrors.push(String(err));
         }
-      } catch (err) {
-        allErrors.push(String(err));
       }
-    }
 
-    let entryCount = 0;
-    if (plan.codexDrafts.length > 0) {
-      const entries = codexDraftsToParsedEntries(plan.codexDrafts, entryTypes);
-      const { imported, errors: codexErrors } = await importCodexEntries(
-        entries,
-        setProgress,
+      let entryCount = 0;
+      if (plan.codexDrafts.length > 0) {
+        const entries = codexDraftsToParsedEntries(
+          plan.codexDrafts,
+          entryTypes,
+        );
+        const { imported, errors: codexErrors } = await importCodexEntries(
+          entries,
+          setProgress,
+        );
+        entryCount = imported;
+        allErrors.push(...codexErrors);
+      }
+
+      let sceneCount = 0;
+      if (plan.bodyLineCount > 0) {
+        const { imported, errors: treeErrors } = await importTree(
+          [plan.scene],
+          setProgress,
+        );
+        sceneCount = imported;
+        allErrors.push(...treeErrors);
+      }
+
+      setErrors(allErrors);
+      await reloadCodex();
+      await reloadTree(getCurrentProjectId());
+      setPhase("done");
+      toast.success(
+        t("import.novel.success", { scenes: sceneCount, entries: entryCount }),
       );
-      entryCount = imported;
-      allErrors.push(...codexErrors);
+    } catch (error) {
+      setErrors([...allErrors, String(error)]);
+      setProgress(null);
+      toast.error(t("import.failed"));
+      onFailedChange?.(true);
+      setPhase("failed");
     }
-
-    let sceneCount = 0;
-    if (plan.bodyLineCount > 0) {
-      const { imported, errors: treeErrors } = await importTree(
-        [plan.scene],
-        setProgress,
-      );
-      sceneCount = imported;
-      allErrors.push(...treeErrors);
-    }
-
-    setErrors(allErrors);
-    setPhase("done");
-    await reloadCodex();
-    await reloadTree(getCurrentProjectId());
-    toast.success(
-      t("import.novel.success", { scenes: sceneCount, entries: entryCount }),
-    );
-  }, [plan, importTarget, entryTypes, t, reloadCodex, reloadTree]);
+  }, [
+    plan,
+    importTarget,
+    entryTypes,
+    t,
+    reloadCodex,
+    reloadTree,
+    onFailedChange,
+  ]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -300,11 +344,13 @@ export function NovelImportFlow({ importTarget, onClose }: Props) {
         </div>
       )}
 
-      {phase === "done" && <ImportErrorList errors={errors} />}
+      {(phase === "done" || phase === "failed") && (
+        <ImportErrorList errors={errors} />
+      )}
 
       {phase !== "importing" && (
         <ImportFlowFooter>
-          {phase !== "done" && (
+          {phase !== "done" && phase !== "failed" && (
             <button
               type="button"
               onClick={onClose}
@@ -322,7 +368,7 @@ export function NovelImportFlow({ importTarget, onClose }: Props) {
               {t("import.importButton")}
             </button>
           )}
-          {phase === "done" && (
+          {(phase === "done" || phase === "failed") && (
             <button
               type="button"
               onClick={onClose}

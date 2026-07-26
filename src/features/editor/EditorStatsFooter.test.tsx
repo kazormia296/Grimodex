@@ -43,6 +43,23 @@ describe("EditorStatsFooter", () => {
     editor.destroy();
   });
 
+  it("renders a non-popover live count in compact chrome", () => {
+    const editor = createTestEditor("<p>あいうえお</p>");
+    render(
+      <EditorStatsFooter
+        compact
+        editor={editor as never}
+        getSyncSceneId={() => "scene-1"}
+        syncToTree={false}
+        isLoading={false}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("5 字");
+    expect(screen.getByTestId("char-count").tagName).toBe("SPAN");
+    editor.destroy();
+  });
+
   it("uses word count (not char count) as the primary metric for en projects", () => {
     // en プロジェクト + ja UI (i18n 既定) のクロスケース: 主役は語数、単位語は
     // UI 言語 (ja→「語」)。これが char ではなく word を主役にしている配線の gate。

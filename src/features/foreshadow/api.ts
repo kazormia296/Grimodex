@@ -37,6 +37,7 @@ import type {
 import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { prosemirrorToText } from "@/lib/prosemirror";
+import { instantEpochMilliseconds } from "@/lib/time";
 
 /** Max chars of a scene-prefix excerpt used when `foreshadows.notes` is empty. */
 const SETUP_EXCERPT_FALLBACK_MAX_CHARS = 200;
@@ -45,8 +46,20 @@ function getForeshadowCustomInstruction(): string {
   return useSettingsStore.getState().get("aiPrompt.custom.foreshadow", "");
 }
 
+/**
+ * ネイティブ backend（Tauri / Electron）で走っているか。true なら invoke が
+ * ネイティブコマンドへルートし、false（ブラウザ/テスト）だけ renderer 直
+ * Drizzle にフォールバックする。
+ *
+ * Electron 移行 Phase 3 バッチ1: 従来は `__TAURI_INTERNALS__` のみを見ており、
+ * Electron は Drizzle 分岐に落ちてサーバサイド検証（load_bearing 等）を
+ * 素通ししていた。isElectron 相当（`"grimodex" in window`、src/lib/shell.ts と
+ * 同判定）を inline で足す（@/lib/tauri から import すると既存テストの部分
+ * mock を壊すため inline にする）。
+ */
 function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (typeof window === "undefined") return false;
+  return "__TAURI_INTERNALS__" in window || "grimodex" in window;
 }
 
 function toDate(value: unknown): Date {
@@ -215,14 +228,6 @@ export async function getForeshadow(id: string): Promise<ForeshadowRow | null> {
 export async function listForeshadows(
   projectId: string,
 ): Promise<ForeshadowRow[]> {
-  if (isTauriRuntime()) {
-    const rows = await invoke<unknown[]>("foreshadow_list", {
-      projectId,
-      filter: null,
-    });
-    return rows.map(normalizeForeshadowRow);
-  }
-
   return db
     .select()
     .from(foreshadows)
@@ -371,10 +376,13 @@ function buildOpenForeshadowsForContext(
         loadBearing: r.loadBearing,
         codexLinkDirtyAt: null,
         createdAt: new Date(),
-        updatedAt:
-          r.updatedAt instanceof Date
-            ? r.updatedAt
-            : new Date(String(r.updatedAt ?? Date.now())),
+        updatedAt: new Date(
+          r.updatedAt instanceof Date ||
+            typeof r.updatedAt === "string" ||
+            typeof r.updatedAt === "number"
+            ? (instantEpochMilliseconds(r.updatedAt) ?? Date.now())
+            : Date.now(),
+        ),
       }),
     ),
     setups,
@@ -393,9 +401,9 @@ function buildOpenForeshadowsForContext(
     optional: 2,
   };
   const toMs = (v: unknown): number => {
-    if (v instanceof Date) return v.getTime();
-    if (typeof v === "string") return new Date(v).getTime();
-    if (typeof v === "number") return v;
+    if (v instanceof Date || typeof v === "string" || typeof v === "number") {
+      return instantEpochMilliseconds(v) ?? 0;
+    }
     return 0;
   };
   return rows

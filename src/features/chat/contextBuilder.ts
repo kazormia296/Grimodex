@@ -4,12 +4,38 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import type { L1TrimMarkers, L3TrimMarkers } from "@/prompts/shared/types";
 import {
+  AUTHOR_POLICY_TAG,
+  PROMPT_DATA_TAGS,
+  PROMPT_RESERVED_TAG_NAMES,
+} from "@/prompts/shared/dataLayerRegistry";
+import {
   JA_L1_TRIM_MARKERS,
   JA_L3_TRIM_MARKERS,
 } from "@/prompts/ja/chatSystem";
 import { getPromptCatalog } from "@/prompts/index";
 import { recordMark } from "@/lib/perfLog";
 import type { IntraContextRelationEdge } from "@/features/codex/relationExpansion";
+import { selectContextItems } from "@/features/ai-context/budgetSelector";
+import { planContextCache } from "@/features/ai-context/cachePlanner";
+import { createContextPlan } from "@/features/ai-context/types";
+import type {
+  ContextDecision,
+  PlannedContextUsage,
+} from "@/features/ai-context/types";
+import type {
+  ChatContextItem,
+  ChatContextPlan,
+  ChatContextPayload,
+} from "./context/types";
+
+export interface SceneSemanticLink {
+  /** Stable Codex entry identifier stored on the editor Mark. */
+  entryId: string;
+  /** Live Codex name resolved for this turn after visibility policy. */
+  entryName: string;
+  /** Author-selected scene text that carries the semantic Mark. */
+  text: string;
+}
 
 export interface SceneContext {
   id: string;
@@ -17,6 +43,8 @@ export interface SceneContext {
   content: string;
   /** Raw ProseMirror JSON string (DB value). Used to extract Placed beats for context injection. */
   contentJson?: string;
+  /** Author-declared span-to-Codex mappings eligible for this turn. */
+  semanticLinks?: SceneSemanticLink[];
   synopsis?: string;
   /** Author-declared goal for this scene (treeNodes.intent). Injected into L3 as steering
    * info right after synopsis. Chat only — graders (review/meta_structure) must NOT receive
@@ -62,7 +90,9 @@ export interface CodexContext {
 
 export interface PinnedCodexContext extends CodexContext {
   withChildren?: boolean;
-  children?: CodexContext[]; // full content children (budget ignored)
+  /** Direct children explicitly selected by `withChildren`; full content,
+   * pinned retention priority, subtree budget ignored. */
+  children?: CodexContext[];
 }
 
 export interface PinnedSnippetContext {
@@ -79,6 +109,11 @@ export interface PinnedStickyContext {
 
 export interface TrimInput {
   baseText: string;
+  /** Application-enforced instruction that must remain after author policy. */
+  fixedPolicyText?: string;
+  /** Author-controlled instructions. Protected from ordinary L1 trimming but
+   * bounded when the final context window cannot fit them wholesale. */
+  authorPolicyText?: string;
   l1Text: string;
   l2Text: string;
   l3Text: string;
@@ -98,6 +133,9 @@ export interface TrimInput {
   /** chat episodic recall (エピソード記憶) セクション。最も投機的な層なので
    * 予算超過時は RAG よりさらに先に削られる (trim 順の先頭)。未指定は空文字と等価。 */
   episodicText?: string;
+  /** Codex/Snippet/Plot Thread scope anchor. Kept until every lower-priority
+   * variable layer has been reduced, then head-trimmed as the final fallback. */
+  focusText?: string;
 }
 
 export interface TrimResult {
@@ -108,6 +146,19 @@ export interface TrimResult {
 
 export interface BuildSystemPromptInput {
   scene: SceneContext;
+  /** Immutable turn/request identity attached to the typed ContextPlan only. */
+  contextRequestId?: string;
+  /** Explicit temporal provenance for typed context items. Non-scene scopes
+   * must not infer this from their synthetic aggregate scene id. */
+  contextTemporal?: ChatContextItem["temporal"];
+  /** Per-source Phase resolution provenance. Codex entries can individually
+   * fall back from story/auto to reading, so one scope-wide axis is not enough. */
+  contextTemporalBySourceId?: Readonly<
+    Record<string, NonNullable<ChatContextItem["temporal"]>>
+  >;
+  /** Source/policy decisions for candidates that cannot become renderable L4
+   * items (for example a missing or effectively hidden explicit pin). */
+  contextDecisions?: ContextDecision[];
   project?: ProjectContext;
   storySoFar?: string;
   /** G11: 直前シーンのsynopsis（L3に追加） */
@@ -123,6 +174,16 @@ export interface BuildSystemPromptInput {
    * 応答予約計算で min(maxOutputTokens, contextWindow*5%) のクランプに使用。
    */
   maxOutputTokens?: number;
+  /**
+   * Provider request bodyへ実際に設定する出力上限と同じ予約値。
+   * 指定時は legacy の比率ベース `maxOutputTokens` 計算より優先する。
+   */
+  outputReservationTokens?: number;
+  /** Known provider framing/tool/safety overhead not represented in the
+   * rendered system or conversation strings. */
+  inputOverheadTokens?: number;
+  /** `totalTokens` を実provider system表現に合わせる。未指定はplain互換。 */
+  deliveryMode?: "plain" | "cache";
   /** G9: 会話履歴のトークン数（trimToFit使用時に必要） */
   conversationTokens?: number;
   /** G25: トリムで除外するレイヤー（空文字に置換される） */
@@ -140,6 +201,8 @@ export interface BuildSystemPromptInput {
    * 不要なら未指定 (undefined) で何もしない。
    */
   mapBoardMarkdown?: string;
+  /** Resolved board identity used by typed provenance/cache stability. */
+  mapBoardId?: string;
   /** G19: アクティブタブのコンテンツ (L3に注入) */
   activeTabContent?: {
     type: "codex" | "snippet";
@@ -243,6 +306,9 @@ export interface BuildSystemPromptInput {
   customChatInstruction?: string;
   /** Codex entry IDs fixed at session start — L4 cache marker boundary. */
   sessionStableCodexIds?: string[];
+  /** Distinguishes an initialized empty baseline (all new items volatile) from
+   * the first turn, where the initial selected set establishes the prefix. */
+  sessionStableContextInitialized?: boolean;
   /** context_mode=always entries (L4 trim: lowest removal priority). */
   alwaysEntryIds?: string[];
   /** Note entries injected into L4 (mentioned / always). */
@@ -340,12 +406,14 @@ const INPUT_FLOOR_TOTAL = 4_500; // L1 500 + L2 500 + L3 2000 + L4 500 + L5 1000
  */
 export function allocateLayerBudgets(
   contextWindow: number,
-  opts?: { maxOutputTokens?: number },
+  opts?: {
+    maxOutputTokens?: number;
+    responseReservationTokens?: number;
+  },
 ): LayerBudgets {
-  const responseReservation = computeResponseReservation(
-    contextWindow,
-    opts?.maxOutputTokens,
-  );
+  const responseReservation =
+    opts?.responseReservationTokens ??
+    computeResponseReservation(contextWindow, opts?.maxOutputTokens);
   const available = Math.max(0, contextWindow - responseReservation);
 
   if (available < INPUT_FLOOR_TOTAL) {
@@ -381,6 +449,8 @@ export interface SystemPromptResult {
   prompt: string;
   totalTokens: number;
   layers: LayerBreakdown[];
+  /** Typed L4 selection plan. Present on real builder output; optional for legacy adapters/mocks. */
+  contextPlan?: ChatContextPlan;
   trimmedLayers?: string[];
   /** Anthropic cache_control segments (L1–L4 boundaries)。stable な内容のみ。 */
   cacheSegments?: string[];
@@ -392,6 +462,17 @@ export interface SystemPromptResult {
    * 破棄するため、ここに乗せないと これらが届かない。
    */
   volatileTail?: string;
+  /** Materialize後の実system表現 + 会話 + 出力予約による最終検査。 */
+  payloadBudget?: {
+    systemTokens: number;
+    conversationTokens: number;
+    inputOverheadTokens: number;
+    inputTokens: number;
+    outputReservedTokens: number;
+    reservedTotalTokens: number;
+    contextWindow: number;
+    overflowTokens: number;
+  };
 }
 
 // tiktoken (WASM) を o200k_base ranks + lite ランタイムだけ動的 import する。
@@ -399,6 +480,11 @@ export interface SystemPromptResult {
 let encoder: Tiktoken | null = null;
 let encoderLoadingPromise: Promise<Tiktoken | null> | null = null;
 let _heuristicWarned = false;
+
+/** Estimator identity persisted with usage-drift telemetry. */
+export function getTokenEstimatorFamily(): "o200k_base" | "cjk_heuristic_v1" {
+  return encoder ? "o200k_base" : "cjk_heuristic_v1";
+}
 
 export async function ensureTokenizer(): Promise<void> {
   const __t0 = performance.now();
@@ -481,25 +567,18 @@ export function sanitizeSceneContent(html: string): string {
  * ため、セキュリティ境界はこのタグが担い、内部の `##` ヘッダは書式として温存する。
  * trim 関数群は `##` ヘッダ形式に依存するため、ラップは必ず trim 後に行うこと。
  */
-export const PROMPT_DATA_TAGS = {
-  l1: "project_info",
-  l2: "story_so_far",
-  l3: "current_scene",
-  focus: "focus_subject",
-  l4: "codex_entries",
-  plotThreadScenes: "plot_thread_scenes",
-  chronicle: "chronicle_snapshot",
-  rag: "related_scenes",
-  episodic: "chat_history",
-  l5: "conversation_summary",
-} as const;
+export { PROMPT_DATA_TAGS };
 
 // 予約タグ名の開閉タグ風文字列 (大文字小文字・空白変種を含む) を導く `<`。
 // データ内に閉じタグが混入するとブロック境界の終了を偽装できるため、`<` の
 // 直後に `\` を挿入して無害化する。挿入後は `<` の次が `\` になり再マッチ
 // しない (冪等)。`<note>` `<sticky>` `<map>` は予約外なので素通しになる。
-const RESERVED_TAG_RE =
-  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|focus_subject|codex_entries|plot_thread_scenes|chronicle_snapshot|related_scenes|chat_history|conversation_summary)\b)/gi;
+const escapeRegex = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const RESERVED_TAG_RE = new RegExp(
+  `<(?=\\s*\\/?\\s*(?:${PROMPT_RESERVED_TAG_NAMES.map(escapeRegex).join("|")})\\b)`,
+  "gi",
+);
 
 /** データ内の予約タグ偽装をエスケープする (`</current_scene>` → `<\/current_scene>`)。 */
 export function escapeReservedTags(text: string): string {
@@ -510,20 +589,34 @@ export function escapeReservedTags(text: string): string {
  * trim 済みのレイヤーテキストを予約タグで包む。空白のみなら空文字を返し、
  * 空レイヤーに `<story_so_far></story_so_far>` のような空ブロックを出さない。
  */
-export function wrapDataLayer(text: string, tag: string): string {
+function wrapPromptLayer(text: string, tag: string): string {
   if (!text.trim()) return "";
   const escaped = escapeReservedTags(text);
   const body = escaped.startsWith("\n") ? escaped.slice(1) : escaped;
   return `\n<${tag}>\n${body}\n</${tag}>`;
 }
 
-function deduplicateById(entries: CodexContext[]): CodexContext[] {
-  const seen = new Set<string>();
-  return entries.filter((e) => {
-    if (seen.has(e.id)) return false;
-    seen.add(e.id);
-    return true;
-  });
+export function wrapDataLayer(text: string, tag: string): string {
+  return wrapPromptLayer(text, tag);
+}
+
+function mergeCodexContextsById(entries: CodexContext[]): CodexContext[] {
+  const merged = new Map<string, CodexContext>();
+  for (const entry of entries) {
+    const previous = merged.get(entry.id);
+    if (!previous) {
+      merged.set(entry.id, entry);
+      continue;
+    }
+    // Later sources are more explicit in the construction order (relation,
+    // then child/session pin). Merge instead of first-wins so an earlier child
+    // projection cannot erase a later Spotlight full body or metadata.
+    const defined = Object.fromEntries(
+      Object.entries(entry).filter(([, value]) => value !== undefined),
+    ) as Partial<CodexContext>;
+    merged.set(entry.id, { ...previous, ...defined, id: entry.id });
+  }
+  return [...merged.values()];
 }
 
 // Re-export for backward compatibility
@@ -558,18 +651,11 @@ export interface L4PriorityFlags {
 }
 
 export function computeL4Priority(flags: L4PriorityFlags): number {
-  if (flags.isChild) return L4_PRI_CHILD;
   if (flags.isAlways) return L4_PRI_ALWAYS;
   if (flags.isPinned) return L4_PRI_PINNED;
+  if (flags.isChild) return L4_PRI_CHILD;
   if (flags.hasRelationVia) return L4_PRI_RELATION;
   return L4_PRI_MENTIONED;
-}
-
-const L4_PRI_MARKER_RE = /<!-- l4pri:\d+ -->\n?/g;
-
-/** trimL4Text 後に LLM へ渡す前で marker を除去。trim 内部 sort には marker が必要なので必ず trim 後に呼ぶこと。 */
-function stripL4Markers(text: string): string {
-  return text.replace(L4_PRI_MARKER_RE, "");
 }
 
 /** Max chars of a Note body injected into L4 to keep one Note from monopolizing the budget. */
@@ -578,50 +664,6 @@ export const NOTE_CONTENT_MAX_CHARS = 1500;
 function truncateForL4(text: string, max: number): string {
   if (text.length <= max) return text;
   return text.slice(0, max) + "…";
-}
-
-/** L4: remove lowest-priority entry blocks first. */
-export function trimL4Text(text: string, targetTokens: number): string {
-  if (countTokens(text) <= targetTokens) return text;
-  if (targetTokens <= 0) return "";
-
-  const headerMatch = text.match(/^(\n## [^\n]+\n)/);
-  const header = headerMatch ? headerMatch[1] : "";
-  const body = header ? text.slice(header.length) : text;
-
-  const parts = body.split(/(?=<!-- l4pri:\d -->)/).filter((b) => b.length > 0);
-  if (parts.length === 0) {
-    const entryBlocks = body.split(/(?=\n- \*\*)/).filter((b) => b.length > 0);
-    let kept = [...entryBlocks];
-    while (kept.length > 0) {
-      const candidate = header + kept.join("");
-      if (countTokens(candidate) <= targetTokens) return candidate;
-      kept = kept.slice(0, kept.length - 1);
-    }
-    return header.trim() ? header : "";
-  }
-
-  const blocks = parts.map((block, index) => {
-    const priMatch = block.match(/<!-- l4pri:(\d+) -->/);
-    return {
-      block,
-      priority: priMatch ? Number(priMatch[1]) : L4_PRI_MENTIONED,
-      index,
-    };
-  });
-
-  const removed = new Set<number>();
-  for (const item of [...blocks].sort(
-    (a, b) => a.priority - b.priority || a.index - b.index,
-  )) {
-    const kept = blocks.filter((_, i) => !removed.has(i));
-    const candidate = header + kept.map((b) => b.block).join("");
-    if (countTokens(candidate) <= targetTokens) break;
-    removed.add(item.index);
-  }
-
-  const kept = blocks.filter((_, i) => !removed.has(i));
-  return header + kept.map((b) => b.block).join("");
 }
 
 /** L2: Story So Far のエントリを先頭から削除 */
@@ -658,16 +700,53 @@ export function trimL3Text(
   if (targetTokens <= 0) return "";
 
   const bodyHeaderMatch = text.match(markers.bodyHeaderRegex);
-  if (!bodyHeaderMatch) return text;
+  if (!bodyHeaderMatch) return "";
 
-  const sceneHeader = bodyHeaderMatch[1];
-  const sceneBody = text.slice(sceneHeader.length);
+  const originalSceneHeader = bodyHeaderMatch[1];
+  const sceneBody = text.slice(originalSceneHeader.length);
+  let sceneHeader = originalSceneHeader;
+
+  // Semantic mappings are rendered immediately before the body header for
+  // readability, but unlike scene identity metadata they must not become an
+  // unbounded, non-trimmable prefix. Drop mapping lines from the end until the
+  // fixed header fits; remove the heading too when no mapping remains.
+  const semanticMatch = markers.semanticLinksBlockRegex
+    ? sceneHeader.match(markers.semanticLinksBlockRegex)
+    : null;
+  if (
+    semanticMatch?.index !== undefined &&
+    countTokens(sceneHeader) > targetTokens
+  ) {
+    const block = semanticMatch[0];
+    const blockLines = block.split("\n");
+    const firstItemIndex = blockLines.findIndex((line) =>
+      line.startsWith("- "),
+    );
+    const headingLines =
+      firstItemIndex >= 0 ? blockLines.slice(0, firstItemIndex) : blockLines;
+    const itemLines =
+      firstItemIndex >= 0 ? blockLines.slice(firstItemIndex) : [];
+    const before = sceneHeader.slice(0, semanticMatch.index);
+    const after = sceneHeader.slice(semanticMatch.index + block.length);
+    let keepCount = itemLines.length;
+    while (keepCount > 0) {
+      const replacement = [
+        ...headingLines,
+        ...itemLines.slice(0, keepCount),
+      ].join("\n");
+      const candidate = before + replacement + after;
+      if (countTokens(candidate) <= targetTokens) {
+        sceneHeader = candidate;
+        break;
+      }
+      keepCount -= 1;
+    }
+    if (keepCount === 0) sceneHeader = before + after;
+  }
 
   const headerTokens = countTokens(sceneHeader);
-  if (headerTokens >= targetTokens) {
-    // Can't fit even the header; return just the header
-    return sceneHeader;
-  }
+  if (headerTokens > targetTokens) return "";
+  if (headerTokens === targetTokens) return sceneHeader;
 
   const bodyBudget = targetTokens - headerTokens;
 
@@ -760,6 +839,75 @@ function trimChronicleText(text: string, targetTokens: number): string {
   return trimRagText(text, targetTokens);
 }
 
+/** Explicit focus is protected until all other variable layers have yielded.
+ * If it alone is too large, preserve the identifying head and discard the tail. */
+function trimFocusText(text: string, targetTokens: number): string {
+  if (countTokens(text) <= targetTokens) return text;
+  if (targetTokens <= 0) return "";
+
+  const chars = Array.from(text);
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const candidate = `${chars.slice(0, mid).join("")}…`;
+    if (countTokens(candidate) <= targetTokens) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (lo === 0) return "";
+  return `${chars.slice(0, lo).join("")}…`;
+}
+
+function trimFocusTextPreservingMinimum(
+  text: string,
+  targetTokens: number,
+  minimumText: string,
+): string {
+  if (countTokens(text) <= targetTokens) return text;
+  const minimumTokens = countTokens(minimumText);
+  if (!minimumText.trim() || targetTokens < minimumTokens) {
+    throw new Error("required focus context exceeds the available budget");
+  }
+  if (targetTokens === minimumTokens) return minimumText;
+
+  const suffix = text.startsWith(minimumText)
+    ? text.slice(minimumText.length).replace(/^\n/, "")
+    : text;
+  const chars = Array.from(suffix);
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const candidate = `${minimumText}\n${chars.slice(0, mid).join("")}…`;
+    if (countTokens(candidate) <= targetTokens) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo > 0
+    ? `${minimumText}\n${chars.slice(0, lo).join("")}…`
+    : minimumText;
+}
+
+/** Trim author instructions only after reference layers have yielded. */
+function trimAuthorPolicyText(text: string, targetTokens: number): string {
+  if (countTokens(text) <= targetTokens) return text;
+  if (targetTokens <= 0) return "";
+
+  const chars = Array.from(text);
+  const suffix = "\n…";
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const candidate = `${chars.slice(0, mid).join("")}${suffix}`;
+    if (countTokens(candidate) <= targetTokens) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo > 0 ? `${chars.slice(0, lo).join("")}${suffix}` : "";
+}
+
 /** semantic recall (RAG): 末尾 (低スコア側) の抜粋ブロックから丸ごと削る。
  * 抜粋が 1 つも残らない場合はヘッダだけ残しても無意味なので空にする。 */
 function trimRagText(text: string, targetTokens: number): string {
@@ -788,9 +936,17 @@ export function trimToFit(
     l1: JA_L1_TRIM_MARKERS,
     l3: JA_L3_TRIM_MARKERS,
   },
+  options?: {
+    /** Typed builder path supplies an item-aware L4 trimmer; legacy callers keep marker parsing. */
+    l4Trimmer?: (text: string, targetTokens: number) => string;
+    /** Required focus identity is renderer-specific and must remain atomic. */
+    focusTrimmer?: (text: string, targetTokens: number) => string;
+  },
 ): TrimResult {
   const sumTokens = (t: TrimInput) =>
     countTokens(t.baseText) +
+    countTokens(t.fixedPolicyText ?? "") +
+    countTokens(t.authorPolicyText ?? "") +
     countTokens(t.l1Text) +
     countTokens(t.l2Text) +
     countTokens(t.l3Text) +
@@ -800,7 +956,8 @@ export function trimToFit(
     countTokens(t.ragText ?? "") +
     countTokens(t.plotThreadScenesText ?? "") +
     countTokens(t.chronicleSnapshotText ?? "") +
-    countTokens(t.episodicText ?? "");
+    countTokens(t.episodicText ?? "") +
+    countTokens(t.focusText ?? "");
 
   const total = sumTokens(layers);
   if (total <= budget) {
@@ -834,10 +991,28 @@ export function trimToFit(
       fn: trimChronicleText,
     },
     { key: "l5Text", name: "L5", fn: trimL5Text },
-    { key: "l4Text", name: "L4", fn: trimL4Text },
+    {
+      key: "l4Text",
+      name: "L4",
+      // Production callers provide the typed item selector. A legacy direct
+      // trimToFit caller has no item metadata, so L4 is safely atomic.
+      fn:
+        options?.l4Trimmer ??
+        ((text, target) => (countTokens(text) <= target ? text : "")),
+    },
     { key: "l2Text", name: "L2", fn: trimL2Text },
     { key: "l3Text", name: "L3", fn: (t, n) => trimL3Text(t, n, markers.l3) },
     { key: "l1Text", name: "L1", fn: (t, n) => trimL1Text(t, n, markers.l1) },
+    {
+      key: "authorPolicyText",
+      name: "AUTHOR_POLICY",
+      fn: trimAuthorPolicyText,
+    },
+    {
+      key: "focusText",
+      name: "FOCUS",
+      fn: options?.focusTrimmer ?? trimFocusText,
+    },
   ];
 
   for (const { key, name, fn } of trimOrder) {
@@ -876,23 +1051,40 @@ export function buildSystemPrompt(
   const fsCountSuffix = isEnLang ? "" : "件";
   const layers: LayerBreakdown[] = [];
 
-  // Base instruction (L0)。Agent モード時は agentInstruction を付加。
-  let baseText = input.agentMode
+  // Application policy (L0)。Agent モード時は agentInstruction を付加。
+  const baseText = input.agentMode
     ? `${s.baseText}\n\n${s.agentInstruction}`
     : s.baseText;
-  // ユーザー定義のチャット追記指示 (口調・振る舞い・ペルソナ)。
-  // bodyWriteDisabledInstruction と同様 L0 末尾に置くことで trim 免除され常に効く。
-  // 空文字なら baseText は現行のまま (byte-identical / cache 非破壊)。
-  // agentInstruction の後ろに置き、組み込みツール運用規約を上書きする印象を避ける。
-  if (input.customChatInstruction?.trim()) {
-    baseText += `\n\n${input.customChatInstruction.trim()}`;
+  let fixedPolicyText = "";
+  // Author/project instructions are intentional instructions, not reference
+  // data. Keep them outside <project_info> and give them a separate trim slot
+  // so a large but valid project configuration cannot make every request
+  // overflow the window.
+  const authorPolicyLines: string[] = [];
+  if (input.project?.styleGuide?.trim()) {
+    authorPolicyLines.push(
+      `${s.labels.styleGuide}:\n${input.project.styleGuide.trim()}`,
+    );
   }
-  // AiPolicy で本文書き込みが無効なプロジェクトでは、チャットからの本文代筆を
-  // 抑止する指示を L0 に追加する (bodyWrite=ON のデフォルトでは何も足さない)。
-  // L0 は trim 対象外なので、この hard constraint は常に残る。
-  // ユーザー custom より後ろに置き、自由文で policy が弱まらない順序にする。
+  if (input.project?.aiInstructions?.trim()) {
+    authorPolicyLines.push(
+      `${s.labels.aiInstructions}:\n${input.project.aiInstructions.trim()}`,
+    );
+  }
+  if (input.customChatInstruction?.trim()) {
+    authorPolicyLines.push(
+      `${s.labels.customChatInstruction}:\n${input.customChatInstruction.trim()}`,
+    );
+  }
+  const authorPolicyText = wrapPromptLayer(
+    authorPolicyLines.join("\n\n"),
+    AUTHOR_POLICY_TAG,
+  );
+
+  // Keep the application hard constraint after free-form author policy so the
+  // final instruction in this policy prefix cannot appear to relax it.
   if (input.project?.bodyWriteDisabled) {
-    baseText += `\n\n${s.bodyWriteDisabledInstruction}`;
+    fixedPolicyText = `\n\n${s.bodyWriteDisabledInstruction}`;
   }
 
   // L1: Project info
@@ -903,9 +1095,6 @@ export function buildSystemPrompt(
     if (p.genre) info.push(`${s.labels.genre}: ${p.genre}`);
     if (p.pov) info.push(`${s.labels.pov}: ${p.pov}`);
     if (p.tense) info.push(`${s.labels.tense}: ${p.tense}`);
-    if (p.styleGuide) info.push(`${s.labels.styleGuide}:\n${p.styleGuide}`);
-    if (p.aiInstructions)
-      info.push(`${s.labels.aiInstructions}:\n${p.aiInstructions}`);
     l1Text = `${s.headers.projectInfo}\n${info.join("\n")}`;
   }
 
@@ -1060,6 +1249,25 @@ export function buildSystemPrompt(
       l3Text += lines.join("\n");
     }
   }
+  // Semantic links are author-declared disambiguation, not inferred aliases.
+  // Keep the mapping next to the scene text in L3 so the model knows exactly
+  // which Codex entry the selected span denotes. The enclosing L3 wrapper
+  // escapes reserved tags after trimming, together with the rest of scene data.
+  if (input.scene.semanticLinks && input.scene.semanticLinks.length > 0) {
+    const lines = [s.headers.semanticLinks];
+    const seen = new Set<string>();
+    for (const link of input.scene.semanticLinks) {
+      const linkedText = link.text.replace(/\s+/g, " ").trim();
+      const entryName = link.entryName.replace(/\s+/g, " ").trim();
+      const key = `${link.entryId}\u0000${linkedText}`;
+      if (!linkedText || !entryName || seen.has(key)) continue;
+      seen.add(key);
+      lines.push(
+        `- ${fsQuote(linkedText)} → ${entryName} (id: ${link.entryId})`,
+      );
+    }
+    if (lines.length > 1) l3Text += lines.join("\n");
+  }
   if (input.scene.content) {
     l3Text += `${s.headers.sceneBody}\n${sanitizeSceneContent(input.scene.content)}`;
   }
@@ -1087,7 +1295,8 @@ export function buildSystemPrompt(
 
   // Codex エントリ 1 件分の本文行を組む共通ロジック。L4 (mentioned/pinned/always)
   // と <focus_subject> (codex スコープのアンカー = Spotlight 相当) の両方で使う。
-  // includePinnedExtras=true で Spotlight 専用の追加情報 (タグ / カスタム詳細) も出す。
+  // includePinnedExtras=true で Spotlight 専用タグも出す。includeInContext の
+  // custom details は canonical context なので detected/always にも出す。
   // 両端とも文脈内 (両方 seed) の関係を index 化する。surfacing は両者とも本体付きで
   // 意図的に張られた直接関係なので、discovery の役割非断定 (from/to via) と違い「役割明示」
   // で向きを伝える: from=主語・to=label 役 という手動 relation UI (outgoing=自分→相手) の
@@ -1144,7 +1353,7 @@ export function buildSystemPrompt(
     if (includePinnedExtras && entry.tags?.length) {
       out.push(`  ${s.labels.codexTags}: ${entry.tags.join(", ")}`);
     }
-    if (includePinnedExtras && entry.customDetails?.length) {
+    if (!entry.relationVia && entry.customDetails?.length) {
       for (const detail of entry.customDetails) {
         out.push(`  - ${detail.fieldName}: ${detail.value}`);
       }
@@ -1159,140 +1368,220 @@ export function buildSystemPrompt(
   };
 
   // L4: Codex entries
-  // Build pinned entries with children injected (full content, budget ignored)
-  const pinnedChildIds = new Set<string>();
+  // `withChildren` is a manual request to select each direct child, not an
+  // automatic hierarchy expansion. Keep those children at pin authority even
+  // if the same id is also globally `always`.
+  const manualChildIds = new Set<string>();
   const pinnedWithChildren: CodexContext[] = [];
   for (const pinned of input.pinnedCodexEntries ?? []) {
     pinnedWithChildren.push(pinned);
     if (pinned.withChildren && pinned.children) {
       for (const child of pinned.children) {
-        if (!pinnedChildIds.has(child.id)) {
-          pinnedChildIds.add(child.id);
+        if (!manualChildIds.has(child.id)) {
+          manualChildIds.add(child.id);
           pinnedWithChildren.push(child);
         }
       }
     }
   }
 
-  const pinnedIds = new Set((input.pinnedCodexEntries ?? []).map((e) => e.id));
+  const pinnedIds = new Set([
+    ...(input.pinnedCodexEntries ?? []).map((entry) => entry.id),
+    ...manualChildIds,
+  ]);
   const alwaysEntryIdSet = new Set(input.alwaysEntryIds ?? []);
-  const allCodex = deduplicateById([
-    ...(input.codexEntries ?? []).filter(
-      (e) => !pinnedChildIds.has(e.id) && !pinnedIds.has(e.id),
-    ),
+  const allCodex = mergeCodexContextsById([
+    ...(input.codexEntries ?? []).filter((entry) => !pinnedIds.has(entry.id)),
     ...(input.relationCodexEntries ?? []),
     ...pinnedWithChildren,
   ]);
-  let l4Text = "";
   const l4StableIds = new Set(input.sessionStableCodexIds ?? []);
-  let l4StableSegment = "";
-  const l4VolatileLines: string[] = [];
-  const hasPinnedSnippets =
-    input.pinnedSnippets && input.pinnedSnippets.length > 0;
-  const hasPinnedStickies =
-    input.pinnedStickies && input.pinnedStickies.length > 0;
-  const hasNotes = input.noteEntries && input.noteEntries.length > 0;
-  const hasMapBoard = Boolean(input.mapBoardMarkdown?.trim());
-  if (
-    allCodex.length > 0 ||
-    hasPinnedSnippets ||
-    hasPinnedStickies ||
-    hasNotes ||
-    hasMapBoard
-  ) {
-    const lines = [s.headers.codexSection];
-    const stableLines = [s.headers.codexSection];
-    for (const entry of allCodex) {
-      const priority = computeL4Priority({
-        isChild: pinnedChildIds.has(entry.id),
-        isAlways: alwaysEntryIdSet.has(entry.id),
-        isPinned: pinnedIds.has(entry.id),
-        hasRelationVia: Boolean(entry.relationVia),
-      });
-      // relationVia は HTML コメントでなく通常行として可視注入する
-      // (コメントを無視する LLM でも traversal 方向が届くように)。
-      const blockLines = [
-        `<!-- l4pri:${priority} -->`,
-        ...buildCodexEntryLines(entry, pinnedIds.has(entry.id)),
-      ];
-      const blockText = blockLines.join("\n");
-      lines.push(blockText);
-      const isStable = l4StableIds.size === 0 || l4StableIds.has(entry.id);
-      if (isStable) {
-        stableLines.push(blockText);
-      } else {
-        l4VolatileLines.push(blockText);
-      }
-    }
-    const alwaysNoteIdSet = new Set(input.alwaysNoteIds ?? []);
-    for (const note of input.noteEntries ?? []) {
-      const priority = alwaysNoteIdSet.has(note.id)
-        ? L4_PRI_ALWAYS
-        : L4_PRI_MENTIONED;
-      const blockLines = [
-        `<!-- l4pri:${priority} -->`,
-        `<note>`,
-        `- **${note.title}** (Note)`,
-        `  ${s.labels.codexId}: ${note.id}`,
-      ];
-      if (note.aliases && note.aliases.length > 0) {
-        blockLines.push(
-          `  ${s.labels.codexAliases}: ${note.aliases.join(", ")}`,
-        );
-      }
-      const trimmedContent = note.content.trim();
-      if (trimmedContent) {
-        blockLines.push(
-          `  ${s.labels.contentBody}: ${truncateForL4(trimmedContent, NOTE_CONTENT_MAX_CHARS)}`,
-        );
-      }
-      blockLines.push(`</note>`);
-      const blockText = blockLines.join("\n");
-      lines.push(blockText);
-      if (l4StableIds.size === 0 || l4StableIds.has(note.id)) {
-        stableLines.push(blockText);
-      } else {
-        l4VolatileLines.push(blockText);
-      }
-    }
-    for (const snippet of input.pinnedSnippets ?? []) {
-      const snippetBlock = `<!-- l4pri:${L4_PRI_PINNED} -->\n- **${snippet.title}** (Snippet): ${snippet.content}`;
-      lines.push(snippetBlock);
-      if (l4StableIds.size === 0 || l4StableIds.has(snippet.id)) {
-        stableLines.push(snippetBlock);
-      } else {
-        l4VolatileLines.push(snippetBlock);
-      }
-    }
-    for (const sticky of input.pinnedStickies ?? []) {
-      const title = sticky.title?.trim() || "Sticky";
-      const blockLines = [
-        `<!-- l4pri:${L4_PRI_PINNED} -->`,
-        `<sticky>`,
-        `- **${title}** (Sticky)`,
-        `  ${s.labels.codexId}: ${sticky.id}`,
-        `  ${s.labels.contentBody}: ${sticky.content.trim()}`,
-        `</sticky>`,
-      ];
-      const stickyBlock = blockLines.join("\n");
-      lines.push(stickyBlock);
-      if (l4StableIds.size === 0 || l4StableIds.has(sticky.id)) {
-        stableLines.push(stickyBlock);
-      } else {
-        l4VolatileLines.push(stickyBlock);
-      }
-    }
-    // Map overlay: board 全体を 1 ブロックとして L4 に注入（pri = PINNED）
-    if (hasMapBoard) {
-      const mapBlock = `<!-- l4pri:${L4_PRI_PINNED} -->\n${input.mapBoardMarkdown!.trim()}`;
-      lines.push(mapBlock);
-      stableLines.push(mapBlock);
-    }
-    l4Text = lines.join("\n");
-    // stable segment は trimL4Text を通らないため、この時点で marker を strip して
-    // cacheSegments (= LLM に届く content blocks) に marker が漏れないようにする。
-    l4StableSegment = stripL4Markers(stableLines.join("\n"));
+  const stableBaselineInitialized =
+    input.sessionStableContextInitialized ?? l4StableIds.size > 0;
+  const splitL4ByStability = stableBaselineInitialized || l4StableIds.size > 0;
+  const stabilityFor = (id: string): ChatContextItem["stability"] =>
+    !stableBaselineInitialized || l4StableIds.has(id)
+      ? "session-stable"
+      : "turn-volatile";
+  const defaultTemporal =
+    input.contextTemporal ??
+    (input.scene.id ? { asOfSceneId: input.scene.id } : undefined);
+  const temporalFor = (sourceId: string) => {
+    const temporal =
+      input.contextTemporalBySourceId?.[sourceId] ?? defaultTemporal;
+    return temporal ? { temporal } : {};
+  };
+  const rawL4Items: ChatContextItem[] = [];
+  for (const entry of allCodex) {
+    const isPinned = pinnedIds.has(entry.id);
+    const isChild = false;
+    const isAlways = alwaysEntryIdSet.has(entry.id) && !isPinned;
+    const hasRelationVia = Boolean(entry.relationVia);
+    const priority = computeL4Priority({
+      isChild,
+      isAlways,
+      isPinned,
+      hasRelationVia,
+    });
+    const sourceType = isAlways
+      ? "codex-always"
+      : isPinned
+        ? "codex-pin"
+        : isChild
+          ? "codex-child"
+          : hasRelationVia
+            ? "codex-relation"
+            : "codex-mentioned";
+    rawL4Items.push({
+      key: `codex:${entry.id}`,
+      kind: "codex",
+      authority: "canonical",
+      priority,
+      stability: stabilityFor(entry.id),
+      ...temporalFor(entry.id),
+      trim: { mode: "atomic", minTokens: 0, maxTokens: 0 },
+      provenance: { sourceType, sourceId: entry.id },
+      payload: {
+        kind: "codex",
+        entry,
+        includePinnedExtras: isPinned,
+      },
+    });
   }
+
+  const alwaysNoteIdSet = new Set(input.alwaysNoteIds ?? []);
+  for (const note of input.noteEntries ?? []) {
+    const isAlways = alwaysNoteIdSet.has(note.id);
+    rawL4Items.push({
+      key: `note:${note.id}`,
+      kind: "note",
+      authority: "canonical",
+      priority: isAlways ? L4_PRI_ALWAYS : L4_PRI_MENTIONED,
+      stability: stabilityFor(note.id),
+      ...temporalFor(note.id),
+      trim: { mode: "atomic", minTokens: 0, maxTokens: 0 },
+      provenance: {
+        sourceType: isAlways ? "note-always" : "note-mentioned",
+        sourceId: note.id,
+      },
+      payload: { kind: "note", note },
+    });
+  }
+  for (const snippet of input.pinnedSnippets ?? []) {
+    rawL4Items.push({
+      key: `snippet:${snippet.id}`,
+      kind: "snippet",
+      authority: "canonical",
+      priority: L4_PRI_PINNED,
+      stability: stabilityFor(snippet.id),
+      ...temporalFor(snippet.id),
+      trim: { mode: "atomic", minTokens: 0, maxTokens: 0 },
+      provenance: { sourceType: "snippet-pin", sourceId: snippet.id },
+      payload: { kind: "snippet", snippet },
+    });
+  }
+  for (const sticky of input.pinnedStickies ?? []) {
+    rawL4Items.push({
+      key: `sticky:${sticky.id}`,
+      kind: "sticky",
+      authority: "author_instruction",
+      priority: L4_PRI_PINNED,
+      stability: stabilityFor(sticky.id),
+      ...temporalFor(sticky.id),
+      trim: { mode: "atomic", minTokens: 0, maxTokens: 0 },
+      provenance: { sourceType: "sticky-pin", sourceId: sticky.id },
+      payload: { kind: "sticky", sticky },
+    });
+  }
+  if (input.mapBoardMarkdown?.trim()) {
+    const mapSourceId = input.mapBoardId ?? "active-board";
+    rawL4Items.push({
+      key: `map:${mapSourceId}`,
+      kind: "map",
+      authority: "derived",
+      priority: L4_PRI_PINNED,
+      stability: stabilityFor(mapSourceId),
+      ...temporalFor(mapSourceId),
+      trim: { mode: "atomic", minTokens: 0, maxTokens: 0 },
+      provenance: { sourceType: "map-board", sourceId: mapSourceId },
+      payload: { kind: "map", markdown: input.mapBoardMarkdown.trim() },
+    });
+  }
+
+  const renderL4Item = (item: ChatContextItem): string => {
+    const payload = item.payload;
+    switch (payload.kind) {
+      case "codex":
+        return buildCodexEntryLines(
+          payload.entry,
+          payload.includePinnedExtras,
+        ).join("\n");
+      case "note": {
+        const { note } = payload;
+        const lines = [
+          `<note>`,
+          `- **${note.title}** (Note)`,
+          `  ${s.labels.codexId}: ${note.id}`,
+        ];
+        if (note.aliases && note.aliases.length > 0) {
+          lines.push(`  ${s.labels.codexAliases}: ${note.aliases.join(", ")}`);
+        }
+        const content = note.content.trim();
+        if (content) {
+          lines.push(
+            `  ${s.labels.contentBody}: ${truncateForL4(content, NOTE_CONTENT_MAX_CHARS)}`,
+          );
+        }
+        lines.push(`</note>`);
+        return lines.join("\n");
+      }
+      case "snippet":
+        return `- **${payload.snippet.title}** (Snippet): ${payload.snippet.content}`;
+      case "sticky": {
+        const { sticky } = payload;
+        const title = sticky.title?.trim() || "Sticky";
+        return [
+          `<sticky>`,
+          `- **${title}** (Sticky)`,
+          `  ${s.labels.codexId}: ${sticky.id}`,
+          `  ${s.labels.contentBody}: ${sticky.content.trim()}`,
+          `</sticky>`,
+        ].join("\n");
+      }
+      case "map":
+        return payload.markdown;
+      default:
+        payload satisfies never;
+        return "";
+    }
+  };
+  const renderL4Items = (items: readonly ChatContextItem[]): string =>
+    items.length > 0
+      ? [s.headers.codexSection, ...items.map(renderL4Item)].join("\n")
+      : "";
+  const candidateL4Items: ChatContextItem[] = rawL4Items.map((item) => ({
+    ...item,
+    trim: {
+      ...item.trim,
+      maxTokens: countTokens(renderL4Item(item)),
+    },
+  }));
+  const candidateL4Tokens = countTokens(renderL4Items(candidateL4Items));
+  let selectedL4Items = [...candidateL4Items];
+  let l4Decisions: ContextDecision[] = candidateL4Items.map((item) => ({
+    key: item.key,
+    status: "selected",
+    reason: "within-budget",
+    tokensBefore: item.trim.maxTokens,
+    tokensAfter: item.trim.maxTokens,
+  }));
+  let l4PlanUsage: PlannedContextUsage = {
+    candidateTokens: candidateL4Tokens,
+    selectedTokens: candidateL4Tokens,
+    trimmedTokens: 0,
+    budgetTokens: null,
+  };
+  const l4Text = renderL4Items(candidateL4Items);
 
   // semantic recall (Layer4 RAG): 意味検索による過去シーン抜粋。クエリ
   // (直近ユーザー発話 + 現在シーン本文末尾) 依存で毎ターン変わるため、
@@ -1375,15 +1664,30 @@ export function buildSystemPrompt(
   // L4 側からは当該アンカーを除外済みの前提 (呼び出し側責務) なので重複しない。
   // trim 対象外で常に注入されるため、予算は hardeningOverhead 側で予約する。
   let focusText = "";
+  let focusMinimumText = "";
   if (input.focusSubject) {
     const fs = input.focusSubject;
     if (fs.kind === "codex") {
       // Spotlight (pinned) 相当: 同じ codex エントリ描画 (タグ/カスタム詳細/全文/子) を
       // includePinnedExtras=true で出す。種別は名前行の `(キャラクター)` 等で伝わる。
+      const entryLines = buildCodexEntryLines(fs.entry, true);
+      const summaryPrefix = `  ${s.labels.codexSummary}:`;
+      const requiredLines = entryLines.filter(
+        (line, index) => index < 2 || line.startsWith(summaryPrefix),
+      );
+      const optionalLines = entryLines.filter(
+        (line, index) => index >= 2 && !line.startsWith(summaryPrefix),
+      );
       focusText = [
         s.headers.focusSubject,
         s.focusSubjectIntro,
-        ...buildCodexEntryLines(fs.entry, true),
+        ...requiredLines,
+        ...optionalLines,
+      ].join("\n");
+      focusMinimumText = [
+        s.headers.focusSubject,
+        s.focusSubjectIntro,
+        ...requiredLines,
       ].join("\n");
     } else if (fs.kind === "thread") {
       // Phase 3b: スレッド focus。種別トークンは Snippet と同じく英語固定
@@ -1399,6 +1703,7 @@ export function buildSystemPrompt(
           focusLines.push(`${s.labels.contentBody}:\n${fs.body.trim()}`);
         }
         focusText = focusLines.join("\n");
+        focusMinimumText = focusLines.slice(0, 4).join("\n");
       }
     } else if (fs.name.trim() || fs.body.trim()) {
       const focusLines = [
@@ -1411,6 +1716,7 @@ export function buildSystemPrompt(
         focusLines.push(`${s.labels.contentBody}:\n${fs.body.trim()}`);
       }
       focusText = focusLines.join("\n");
+      focusMinimumText = focusLines.slice(0, 4).join("\n");
     }
   }
 
@@ -1425,15 +1731,29 @@ export function buildSystemPrompt(
   let effectivePlotThread = plotThreadText;
   let effectiveChronicle = chronicleText;
   let effectiveEpisodic = episodicText;
+  let effectiveFocusText = focusText;
+  let effectiveAuthorPolicyText = authorPolicyText;
   const exclude = input.excludeLayers ?? [];
+  const excludeL4 = exclude.includes("L4");
   if (exclude.includes("L1")) effectiveL1 = "";
   if (exclude.includes("L2")) effectiveL2 = "";
   if (exclude.includes("L3")) effectiveL3 = "";
-  if (exclude.includes("L4")) {
+  if (excludeL4) {
     effectiveL4 = "";
-    // stable segment は trim 前に構築済みのため、ここで空にしないと
-    // cacheSegments (l4StableSegment || effectiveL4) 経由で L4 が残ってしまう
-    l4StableSegment = "";
+    selectedL4Items = [];
+    l4Decisions = candidateL4Items.map((item) => ({
+      key: item.key,
+      status: "excluded",
+      reason: "excluded-layer",
+      tokensBefore: item.trim.maxTokens,
+      tokensAfter: 0,
+    }));
+    l4PlanUsage = {
+      candidateTokens: candidateL4Tokens,
+      selectedTokens: 0,
+      trimmedTokens: candidateL4Tokens,
+      budgetTokens: null,
+    };
   }
   if (exclude.includes("L5")) effectiveL5 = "";
   if (exclude.includes("L6")) effectiveL6 = "";
@@ -1442,6 +1762,23 @@ export function buildSystemPrompt(
   if (exclude.includes("CHRONICLE")) effectiveChronicle = "";
   if (exclude.includes("EPISODIC")) effectiveEpisodic = "";
 
+  const trimTypedL4 = (_text: string, targetTokens: number): string => {
+    if (excludeL4) return "";
+    const selection = selectContextItems<
+      ChatContextPayload,
+      ChatContextItem["kind"]
+    >({
+      items: candidateL4Items,
+      budgetTokens: targetTokens,
+      measureSelectionTokens: (items) => countTokens(renderL4Items(items)),
+      measureItemTokens: (item) => countTokens(renderL4Item(item)),
+    });
+    selectedL4Items = selection.selectedItems;
+    l4Decisions = selection.decisions;
+    l4PlanUsage = selection.usage;
+    return renderL4Items(selection.selectedItems);
+  };
+
   let trimmedLayers: string[] | undefined;
 
   // Apply trimToFit if contextWindow and conversationTokens are both provided
@@ -1449,18 +1786,17 @@ export function buildSystemPrompt(
     input.contextWindow !== undefined &&
     input.conversationTokens !== undefined
   ) {
-    const responseReservation = computeResponseReservation(
-      input.contextWindow,
-      input.maxOutputTokens,
-    );
+    const responseReservation =
+      input.outputReservationTokens ??
+      computeResponseReservation(input.contextWindow, input.maxOutputTokens);
     // タグラッパーと境界リマインダーは trim 後に付加されるため、その分を
     // 予算から先に差し引く。定数文字列なので countTokens はキャッシュヒットする。
     // 空レイヤーはラッパーを出さないので非空レイヤーぶんだけ予約する。
-    // RAG は trim で最初に丸ごと消える投機的レイヤーなので予約しない
-    // (生き残るのは予算に余裕がある時だけで、超過 ~10 tok は
-    // responseReservation の余裕内に収まる)。
     const wrapperOverhead = (tag: string) =>
       countTokens(`\n<${tag}>\n\n</${tag}>`);
+    // Every rendered route is measured again below. Reserve fixed wrappers for
+    // author-controlled layers here; speculative layers are commonly removed
+    // by this pass, so their wrappers are handled by the final measurement.
     let hardeningOverhead = countTokens(s.dataBoundaryReminder) + 1;
     if (effectiveL1.trim())
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l1);
@@ -1468,15 +1804,14 @@ export function buildSystemPrompt(
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l2);
     if (effectiveL3.trim())
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l3);
-    // focus は trimToFit に渡さず常に注入するため、ラッパー + 本文ぶんを丸ごと
-    // 予算から先取りして他レイヤーの trim 余地を確保する。
-    if (focusText.trim())
-      hardeningOverhead +=
-        wrapperOverhead(PROMPT_DATA_TAGS.focus) + countTokens(focusText);
+    if (effectiveFocusText.trim())
+      // Separate raw/wrapped BPE boundaries can add a few tokens; keep a small
+      // deterministic guard so the protected focus trim converges in one pass.
+      hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.focus) + 4;
     if (effectiveL4.trim()) {
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l4);
       // stable/volatile 分割時は codex_entries ブロックが 2 つになる
-      if (l4VolatileLines.length > 0)
+      if (candidateL4Items.some((item) => item.stability === "turn-volatile"))
         hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l4);
     }
     if (effectiveL5.trim())
@@ -1485,9 +1820,12 @@ export function buildSystemPrompt(
       input.contextWindow -
       responseReservation -
       input.conversationTokens -
+      (input.inputOverheadTokens ?? 0) -
       hardeningOverhead;
     const trimInput: TrimInput = {
       baseText,
+      fixedPolicyText,
+      authorPolicyText: effectiveAuthorPolicyText,
       l1Text: effectiveL1,
       l2Text: effectiveL2,
       l3Text: effectiveL3,
@@ -1498,98 +1836,228 @@ export function buildSystemPrompt(
       plotThreadScenesText: effectivePlotThread,
       chronicleSnapshotText: effectiveChronicle,
       episodicText: effectiveEpisodic,
+      focusText: effectiveFocusText,
     };
     // 言語別 trim マーカーを渡す: en では L1/L3 のヘッダが英語になるため、
     // ja 既定の regex では一致せず trim が効かない (s = lang の chatSystem)。
-    const result = trimToFit(trimInput, budget, s.trimMarkers);
+    const result = trimToFit(trimInput, budget, s.trimMarkers, {
+      l4Trimmer: trimTypedL4,
+      focusTrimmer: (text, targetTokens) =>
+        trimFocusTextPreservingMinimum(text, targetTokens, focusMinimumText),
+    });
     effectiveL1 = result.trimmedTexts.l1Text;
     effectiveL2 = result.trimmedTexts.l2Text;
     effectiveL3 = result.trimmedTexts.l3Text;
-    effectiveL4 = result.trimmedTexts.l4Text;
     effectiveL5 = result.trimmedTexts.l5Text;
     effectiveL6 = result.trimmedTexts.l6Text;
     effectiveRag = result.trimmedTexts.ragText ?? "";
     effectivePlotThread = result.trimmedTexts.plotThreadScenesText ?? "";
     effectiveChronicle = result.trimmedTexts.chronicleSnapshotText ?? "";
     effectiveEpisodic = result.trimmedTexts.episodicText ?? "";
+    effectiveFocusText = result.trimmedTexts.focusText ?? "";
+    effectiveAuthorPolicyText = result.trimmedTexts.authorPolicyText ?? "";
     if (result.trimmedLayers.length > 0) {
       trimmedLayers = result.trimmedLayers;
     }
   }
 
-  // 非 stable な L4 ブロック (セッション途中で言及された codex 等) のうち trim を
-  // 生き残ったものを volatileTail 用に抽出する。stable segment は byte 安定性の
-  // ため意図的に trim を通さないが、揮発側は予算を尊重して trim 後を正とする。
-  let l4VolatileSegment = "";
-  if (l4StableSegment && l4VolatileLines.length > 0) {
-    const presentBlocks = new Set(
-      effectiveL4.split(/(?=<!-- l4pri:\d+ -->)/).map((b) => b.trimEnd()),
+  /** Materialize the exact provider-facing representation for one selected L4
+   * set. Budget correction below uses this same function as final delivery, so
+   * escaping, wrappers, cache splitting, joins and reminder bytes cannot drift. */
+  const materializeSelection = (items: readonly ChatContextItem[]) => {
+    const rawL4 = excludeL4 ? "" : renderL4Items(items);
+    const cachePlan = planContextCache(items);
+    const rawStableL4 = splitL4ByStability
+      ? renderL4Items(cachePlan.stableItems)
+      : "";
+    const rawVolatileL4 = splitL4ByStability
+      ? renderL4Items(cachePlan.volatileItems)
+      : "";
+    const wrappedL1 = wrapDataLayer(effectiveL1, PROMPT_DATA_TAGS.l1);
+    const wrappedL2 = wrapDataLayer(effectiveL2, PROMPT_DATA_TAGS.l2);
+    const wrappedL3 = wrapDataLayer(effectiveL3, PROMPT_DATA_TAGS.l3);
+    const wrappedFocus = wrapDataLayer(
+      effectiveFocusText,
+      PROMPT_DATA_TAGS.focus,
     );
-    const keptVolatile = l4VolatileLines.filter((b) =>
-      presentBlocks.has(b.trimEnd()),
+    const wrappedL4 = wrapDataLayer(rawL4, PROMPT_DATA_TAGS.l4);
+    const wrappedStableL4 = wrapDataLayer(rawStableL4, PROMPT_DATA_TAGS.l4);
+    const wrappedVolatileL4 = wrapDataLayer(rawVolatileL4, PROMPT_DATA_TAGS.l4);
+    const wrappedPlotThread = wrapDataLayer(
+      effectivePlotThread,
+      PROMPT_DATA_TAGS.plotThreadScenes,
     );
-    if (keptVolatile.length > 0) {
-      l4VolatileSegment = stripL4Markers(keptVolatile.join("\n"));
+    const wrappedChronicle = wrapDataLayer(
+      effectiveChronicle,
+      PROMPT_DATA_TAGS.chronicle,
+    );
+    const wrappedRag = wrapDataLayer(effectiveRag, PROMPT_DATA_TAGS.rag);
+    const wrappedEpisodic = wrapDataLayer(
+      effectiveEpisodic,
+      PROMPT_DATA_TAGS.episodic,
+    );
+    const wrappedL5 = wrapDataLayer(effectiveL5, PROMPT_DATA_TAGS.l5);
+    const policyPrefix = `${baseText}${effectiveAuthorPolicyText}${fixedPolicyText}`;
+    const hasDataLayers = [
+      wrappedL1,
+      wrappedL2,
+      wrappedL3,
+      wrappedFocus,
+      wrappedL4,
+      wrappedStableL4,
+      wrappedPlotThread,
+      wrappedChronicle,
+      wrappedRag,
+      wrappedEpisodic,
+      wrappedL5,
+    ].some((segment) => segment.trim().length > 0);
+    const reminder = hasDataLayers ? s.dataBoundaryReminder : "";
+    const prompt = [
+      policyPrefix,
+      wrappedL1,
+      wrappedL2,
+      wrappedL3,
+      wrappedFocus,
+      wrappedChronicle,
+      wrappedL4,
+      wrappedPlotThread,
+      wrappedRag,
+      wrappedEpisodic,
+      wrappedL5,
+      ...(reminder ? [reminder] : []),
+      effectiveL6,
+    ].join("\n");
+    const l3CacheSegment = [wrappedL3, wrappedFocus, wrappedChronicle]
+      .filter((segment) => segment.trim().length > 0)
+      .join("\n");
+    const cacheSegments = [
+      `${policyPrefix}${wrappedL1}`,
+      wrappedL2,
+      l3CacheSegment,
+      splitL4ByStability ? wrappedStableL4 : wrappedL4,
+    ].filter((segment) => segment.trim().length > 0);
+    const volatileTail = [
+      wrappedVolatileL4,
+      wrappedPlotThread,
+      wrappedRag,
+      wrappedEpisodic,
+      wrappedL5,
+      reminder,
+      effectiveL6,
+    ]
+      .filter((segment) => segment.trim().length > 0)
+      .join("\n");
+    const systemTokens =
+      input.deliveryMode === "cache"
+        ? cacheSegments.reduce(
+            (sum, segment) => sum + countTokens(segment),
+            0,
+          ) + countTokens(volatileTail)
+        : countTokens(prompt);
+    const l4Tokens =
+      input.deliveryMode === "cache" && splitL4ByStability
+        ? countTokens(wrappedStableL4) + countTokens(wrappedVolatileL4)
+        : countTokens(wrappedL4);
+    return {
+      wrappedL1,
+      wrappedL2,
+      wrappedL3,
+      wrappedFocus,
+      wrappedL4,
+      wrappedStableL4,
+      wrappedVolatileL4,
+      wrappedPlotThread,
+      wrappedChronicle,
+      wrappedRag,
+      wrappedEpisodic,
+      wrappedL5,
+      reminder,
+      prompt,
+      cacheSegments,
+      volatileTail,
+      systemTokens,
+      l4Tokens,
+    };
+  };
+
+  const conversationTokens = input.conversationTokens ?? 0;
+  let materialized = materializeSelection(selectedL4Items);
+  if (
+    input.contextWindow !== undefined &&
+    input.conversationTokens !== undefined &&
+    !excludeL4
+  ) {
+    const outputReservedTokens =
+      input.outputReservationTokens ??
+      computeResponseReservation(input.contextWindow, input.maxOutputTokens);
+    const exactSystemBudget = Math.max(
+      0,
+      // Known non-text request overhead is finalized separately but must take
+      // part in selection while optional typed context can still yield.
+      input.contextWindow -
+        outputReservedTokens -
+        conversationTokens -
+        (input.inputOverheadTokens ?? 0),
+    );
+    let correctionPasses = 0;
+    while (
+      materialized.systemTokens > exactSystemBudget &&
+      selectedL4Items.length > 0 &&
+      correctionPasses < candidateL4Items.length
+    ) {
+      const overflow = materialized.systemTokens - exactSystemBudget;
+      const exactL4Budget = Math.max(0, materialized.l4Tokens - overflow);
+      const selection = selectContextItems<
+        ChatContextPayload,
+        ChatContextItem["kind"]
+      >({
+        items: candidateL4Items,
+        budgetTokens: exactL4Budget,
+        measureSelectionTokens: (selectionItems) =>
+          materializeSelection(selectionItems).l4Tokens,
+        measureItemTokens: (item) => countTokens(renderL4Item(item)),
+      });
+      selectedL4Items = selection.selectedItems;
+      l4Decisions = selection.decisions;
+      l4PlanUsage = selection.usage;
+      materialized = materializeSelection(selectedL4Items);
+      correctionPasses += 1;
+    }
+    if (correctionPasses > 0) {
+      trimmedLayers = Array.from(new Set([...(trimmedLayers ?? []), "L4"]));
     }
   }
 
-  // trim 後 (or trim をスキップした場合の素の l4Text) から marker を strip。
-  // ここで落とすことで l4Tokens / prompt / cacheSegments 全てが marker レスになる。
-  effectiveL4 = stripL4Markers(effectiveL4);
-
-  // インジェクション対策: trim と stable/volatile 抽出 (どちらも生文字列の照合・
-  // regex に依存) が終わったこの時点で、各データレイヤーを予約タグで包み、
-  // データ内の予約タグ偽装をエスケープする。以降のトークン計算・prompt・
-  // cacheSegments・volatileTail はすべてタグ込みの実送信値になる。
-  // L4 は stable/volatile が別位置に配置されるため、それぞれ完結したブロックとして包む。
-  effectiveL1 = wrapDataLayer(effectiveL1, PROMPT_DATA_TAGS.l1);
-  effectiveL2 = wrapDataLayer(effectiveL2, PROMPT_DATA_TAGS.l2);
-  effectiveL3 = wrapDataLayer(effectiveL3, PROMPT_DATA_TAGS.l3);
-  const effectiveFocus = wrapDataLayer(focusText, PROMPT_DATA_TAGS.focus);
-  effectiveL4 = wrapDataLayer(effectiveL4, PROMPT_DATA_TAGS.l4);
-  l4StableSegment = wrapDataLayer(l4StableSegment, PROMPT_DATA_TAGS.l4);
-  l4VolatileSegment = wrapDataLayer(l4VolatileSegment, PROMPT_DATA_TAGS.l4);
-  effectivePlotThread = wrapDataLayer(
-    effectivePlotThread,
-    PROMPT_DATA_TAGS.plotThreadScenes,
-  );
-  effectiveChronicle = wrapDataLayer(
-    effectiveChronicle,
-    PROMPT_DATA_TAGS.chronicle,
-  );
-  effectiveRag = wrapDataLayer(effectiveRag, PROMPT_DATA_TAGS.rag);
-  effectiveEpisodic = wrapDataLayer(
-    effectiveEpisodic,
-    PROMPT_DATA_TAGS.episodic,
-  );
-  effectiveL5 = wrapDataLayer(effectiveL5, PROMPT_DATA_TAGS.l5);
-
-  // サンドイッチ: 全データレイヤーの直後・L6 (正当な指示) の前に境界リマインダー
-  // を置く。データレイヤーが 1 つも無ければ付けない。l4StableSegment は trim を
-  // 通らないため、effectiveL4 が trim で空になっても cache 経路にデータが残る
-  // ケースを拾う。
-  const hasDataLayers = [
-    effectiveL1,
-    effectiveL2,
-    effectiveL3,
-    effectiveFocus,
-    effectiveL4,
-    l4StableSegment,
-    effectivePlotThread,
-    effectiveChronicle,
-    effectiveRag,
-    effectiveEpisodic,
-    effectiveL5,
-  ].some((seg) => seg.trim().length > 0);
-  const reminderText = hasDataLayers ? s.dataBoundaryReminder : "";
+  // stable / volatile は最終 exact-fit item 集合だけを分類する。stability は
+  // cache placement の属性であり、window budget の免除ではない。
+  effectiveL1 = materialized.wrappedL1;
+  effectiveL2 = materialized.wrappedL2;
+  effectiveL3 = materialized.wrappedL3;
+  const effectiveFocus = materialized.wrappedFocus;
+  effectiveL4 = materialized.wrappedL4;
+  const l4StableSegment = materialized.wrappedStableL4;
+  const l4VolatileSegment = materialized.wrappedVolatileL4;
+  effectivePlotThread = materialized.wrappedPlotThread;
+  effectiveChronicle = materialized.wrappedChronicle;
+  effectiveRag = materialized.wrappedRag;
+  effectiveEpisodic = materialized.wrappedEpisodic;
+  effectiveL5 = materialized.wrappedL5;
+  const contextPlan = createContextPlan({
+    requestId: input.contextRequestId ?? "context-builder:l4",
+    items: selectedL4Items,
+    decisions: [...(input.contextDecisions ?? []), ...l4Decisions],
+    usage: l4PlanUsage,
+  });
 
   // 各 layer のトークン数を 1 度だけ計算 (cache hit でも text 全長 hash コストを避ける)
-  const baseTokens = countTokens(baseText);
   const l1Tokens = countTokens(effectiveL1);
   const l2Tokens = countTokens(effectiveL2);
   const l3Tokens = countTokens(effectiveL3);
   const focusTokens = effectiveFocus ? countTokens(effectiveFocus) : 0;
-  const l4Tokens = countTokens(effectiveL4);
+  const l4Tokens =
+    input.deliveryMode === "cache" && splitL4ByStability
+      ? countTokens(l4StableSegment) + countTokens(l4VolatileSegment)
+      : countTokens(effectiveL4);
   const plotThreadTokens = effectivePlotThread
     ? countTokens(effectivePlotThread)
     : 0;
@@ -1670,81 +2138,55 @@ export function buildSystemPrompt(
       used: l6Tokens,
     });
   }
+  if (conversationTokens > 0) {
+    layers.push({
+      layer: "CONVERSATION",
+      label: i18next.t("chat.context.layer.CONVERSATION"),
+      used: conversationTokens,
+    });
+  }
 
-  const prompt = [
-    baseText,
-    effectiveL1,
-    effectiveL2,
-    effectiveL3,
-    effectiveFocus,
-    effectiveChronicle,
-    effectiveL4,
-    effectivePlotThread,
-    effectiveRag,
-    effectiveEpisodic,
-    effectiveL5,
-    ...(reminderText ? [reminderText] : []),
-    effectiveL6,
-  ].join("\n");
-
-  // focus は L3 と同じ stable 領域。Rust 側は cache_control を 4 breakpoint まで
-  // しか張れない (ai.rs build_system_payload) ため、別セグメントにせず L3 スロットへ
-  // 統合する。実運用では effectiveL3 (scene スコープ) と effectiveFocus
-  // (codex/snippet スコープ) は排他だが、両在しても 1 セグメントに収めて上限を守る。
-  const l3CacheSegment = [effectiveL3, effectiveFocus, effectiveChronicle]
-    .filter((seg) => seg.trim().length > 0)
-    .join("\n");
-  const cacheSegments = [
-    `${baseText}${effectiveL1}`,
-    effectiveL2,
-    l3CacheSegment,
-    l4StableSegment || effectiveL4,
-  ].filter((seg) => seg.trim().length > 0);
-
-  // cacheSegments を使うプロバイダ向けの揮発層。cacheSegments の直後に
-  // cache_control 無しブロックとして送られる (4 breakpoint 制限を消費しない)。
-  // semantic recall (RAG) と chat episodic recall はクエリ依存で毎ターン変わるため
-  // 必ずこちら側。episodic は scene RAG の後ろ・L5 の前 = Codex > scene RAG > chatRAG の順。
-  const volatileTail = [
-    l4VolatileSegment,
-    effectivePlotThread,
-    effectiveRag,
-    effectiveEpisodic,
-    effectiveL5,
-    reminderText,
-    effectiveL6,
-  ]
-    .filter((seg) => seg.trim().length > 0)
-    .join("\n");
-
-  // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 分 (BPE で各 1 token)。
-  // リマインダーが入ると join 要素が 1 つ増えるため \n も 1 個分加算する。
-  const reminderTokens = reminderText ? countTokens(reminderText) : 0;
-  const totalTokens =
-    baseTokens +
-    l1Tokens +
-    l2Tokens +
-    l3Tokens +
-    focusTokens +
-    chronicleTokens +
-    l4Tokens +
-    plotThreadTokens +
-    ragTokens +
-    episodicTokens +
-    l5Tokens +
-    l6Tokens +
-    reminderTokens +
-    // prompt 配列の固定要素は baseText/L1/L2/L3/focus/chronicle/L4/plot_thread/rag/episodic/L5/L6 = 12。
-    // join("\n") の区切りは要素数 -1。reminder が入ると要素が 1 増える。
-    (reminderText ? 12 : 11);
+  // The exact same materialization used for correction is returned to the
+  // transport adapter; there is no second renderer that can reintroduce drift.
+  const { prompt, cacheSegments, volatileTail, systemTokens } = materialized;
+  const totalTokens = systemTokens + conversationTokens;
+  const payloadBudget =
+    input.contextWindow !== undefined && input.conversationTokens !== undefined
+      ? (() => {
+          const outputReservedTokens =
+            input.outputReservationTokens ??
+            computeResponseReservation(
+              input.contextWindow!,
+              input.maxOutputTokens,
+            );
+          const inputOverheadTokens = input.inputOverheadTokens ?? 0;
+          const inputTokens = totalTokens + inputOverheadTokens;
+          const reservedTotalTokens = inputTokens + outputReservedTokens;
+          return {
+            systemTokens,
+            conversationTokens,
+            inputOverheadTokens,
+            inputTokens,
+            outputReservedTokens,
+            reservedTotalTokens,
+            contextWindow: input.contextWindow!,
+            overflowTokens: Math.max(
+              0,
+              reservedTotalTokens - input.contextWindow!,
+            ),
+          };
+        })()
+      : undefined;
 
   return {
     prompt,
     totalTokens,
     layers,
+    contextPlan,
     ...(trimmedLayers ? { trimmedLayers } : {}),
     cacheSegments,
     ...(volatileTail ? { volatileTail } : {}),
+    ...(payloadBudget ? { payloadBudget } : {}),
   };
 }
 

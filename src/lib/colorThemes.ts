@@ -32,11 +32,11 @@ export interface ThemePalette {
   "--content-foreground-muted": string;
   "--content-accent": string;
   "--content-border": string;
-  // Glass backdrop highlight tints (top-left / top-right radial).
+  // Ambient background highlight tints (top-left / top-right radial).
   // Decoupled from --primary / --content-accent so themes can tune the
-  // glass aurora independently from the brand colours.
-  "--glass-tint-a": string;
-  "--glass-tint-b": string;
+  // Zen background independently from the brand colours.
+  "--ambient-tint-a": string;
+  "--ambient-tint-b": string;
   // Attribution highlight hues (human / ai / unknown). The HUE is constant
   // across every theme (human=blue 220°, ai=teal 165°, unknown=amber 30°) for a
   // consistent colour language; only lightness/chroma are tuned per theme×mode
@@ -99,8 +99,8 @@ export const THEME_CSS_VARS = [
   "--content-foreground-muted",
   "--content-accent",
   "--content-border",
-  "--glass-tint-a",
-  "--glass-tint-b",
+  "--ambient-tint-a",
+  "--ambient-tint-b",
   "--attribution-human",
   "--attribution-ai",
   "--attribution-unknown",
@@ -144,8 +144,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "oklch(0.556 0 0)",
       "--content-accent": "oklch(0.205 0 0)",
       "--content-border": "oklch(0.922 0 0)",
-      "--glass-tint-a": "#8FB4D6",
-      "--glass-tint-b": "#D6B5A5",
+      "--ambient-tint-a": "#8FB4D6",
+      "--ambient-tint-b": "#D6B5A5",
       "--attribution-human": "oklch(0.65 0.1 220)",
       "--attribution-ai": "oklch(0.72 0.2 165)",
       "--attribution-unknown": "oklch(0.72 0.14 30)",
@@ -184,8 +184,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "oklch(0.708 0 0)",
       "--content-accent": "oklch(0.985 0 0)",
       "--content-border": "oklch(0.269 0 0)",
-      "--glass-tint-a": "#4A6FA8",
-      "--glass-tint-b": "#A87055",
+      "--ambient-tint-a": "#4A6FA8",
+      "--ambient-tint-b": "#A87055",
       "--attribution-human": "oklch(0.72 0.13 220)",
       "--attribution-ai": "oklch(0.82 0.19 165)",
       "--attribution-unknown": "oklch(0.8 0.16 30)",
@@ -254,8 +254,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#9A8DA6",
       "--content-accent": "#8B6914",
       "--content-border": "#D8D0C4",
-      "--glass-tint-a": "#3D2447",
-      "--glass-tint-b": "#1E5236",
+      "--ambient-tint-a": "#3D2447",
+      "--ambient-tint-b": "#1E5236",
       "--attribution-human": "oklch(0.65 0.1 220)",
       "--attribution-ai": "oklch(0.72 0.2 165)",
       "--attribution-unknown": "oklch(0.72 0.14 30)",
@@ -294,8 +294,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#7A6D55",
       "--content-accent": "#C9A84C",
       "--content-border": "#3A3530",
-      "--glass-tint-a": "#7A4A8C",
-      "--glass-tint-b": "#4A9B6E",
+      "--ambient-tint-a": "#7A4A8C",
+      "--ambient-tint-b": "#4A9B6E",
       "--attribution-human": "oklch(0.71 0.12 220)",
       "--attribution-ai": "oklch(0.8 0.17 165)",
       "--attribution-unknown": "oklch(0.78 0.15 30)",
@@ -364,8 +364,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#8098B0",
       "--content-accent": "#0097A7",
       "--content-border": "#C8D6E0",
-      "--glass-tint-a": "#0097A7",
-      "--glass-tint-b": "#5B5BC4",
+      "--ambient-tint-a": "#0097A7",
+      "--ambient-tint-b": "#5B5BC4",
       "--attribution-human": "oklch(0.65 0.1 220)",
       "--attribution-ai": "oklch(0.72 0.2 165)",
       "--attribution-unknown": "oklch(0.72 0.14 30)",
@@ -404,8 +404,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#4A7080",
       "--content-accent": "#00BCD4",
       "--content-border": "#1A3348",
-      "--glass-tint-a": "#3DDFE6",
-      "--glass-tint-b": "#7878D8",
+      "--ambient-tint-a": "#3DDFE6",
+      "--ambient-tint-b": "#7878D8",
       "--attribution-human": "oklch(0.73 0.13 220)",
       "--attribution-ai": "oklch(0.83 0.18 165)",
       "--attribution-unknown": "oklch(0.81 0.16 30)",
@@ -474,8 +474,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#A89080",
       "--content-accent": "#B07D10",
       "--content-border": "#DDD0BC",
-      "--glass-tint-a": "#B07D10",
-      "--glass-tint-b": "#A85510",
+      "--ambient-tint-a": "#B07D10",
+      "--ambient-tint-b": "#A85510",
       "--attribution-human": "oklch(0.65 0.1 220)",
       "--attribution-ai": "oklch(0.72 0.2 165)",
       "--attribution-unknown": "oklch(0.72 0.14 30)",
@@ -514,8 +514,8 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-foreground-muted": "#8B7260",
       "--content-accent": "#D4930D",
       "--content-border": "#5A4035",
-      "--glass-tint-a": "#E0A030",
-      "--glass-tint-b": "#D86618",
+      "--ambient-tint-a": "#E0A030",
+      "--ambient-tint-b": "#D86618",
       "--attribution-human": "oklch(0.71 0.12 220)",
       "--attribution-ai": "oklch(0.8 0.16 165)",
       "--attribution-unknown": "oklch(0.78 0.15 30)",

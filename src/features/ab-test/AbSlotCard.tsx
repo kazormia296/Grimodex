@@ -8,8 +8,9 @@ import {
   type AiProvider,
 } from "@/features/chat/types";
 import type { AbConfig } from "./abHarness";
-import { AB_PROVIDERS, AB_PROVIDER_LABELS } from "./abConfig";
+import { AB_PROVIDER_LABELS, providersForRuntime } from "./abConfig";
 import { useProviderModels } from "./useProviderModels";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 interface AbSlotCardProps {
   /** 表示番号 (基準を 1 とした連番。最初の変種枠は 2)。 */
@@ -37,6 +38,7 @@ export function AbSlotCard({
   disabled = false,
 }: AbSlotCardProps) {
   const { t } = useTranslation();
+  const runtimeCapabilities = useRuntimeCapabilities();
   const settings = useAiSettingsStore((s) => s.settings);
   const activeProvider = settings?.provider;
 
@@ -108,11 +110,13 @@ export function AbSlotCard({
               className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none disabled:opacity-40"
             >
               <option value="">{t("abTest.providerDefault")}</option>
-              {AB_PROVIDERS.map((p) => (
-                <option key={p} value={p}>
-                  {AB_PROVIDER_LABELS[p]}
-                </option>
-              ))}
+              {providersForRuntime(runtimeCapabilities.browserDirectAi).map(
+                (p) => (
+                  <option key={p} value={p}>
+                    {AB_PROVIDER_LABELS[p]}
+                  </option>
+                ),
+              )}
             </select>
           </label>
         )}

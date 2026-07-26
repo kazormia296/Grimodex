@@ -4,6 +4,7 @@ import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import {
   getFileBackedEditorExtensions,
   sanitizePastedMarkdown,
@@ -21,7 +22,7 @@ import {
   unregisterSaveHandler,
   dirtyGatedSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
-import { useTabStore } from "@/features/editor/tabStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { subscribeLiveContentRafCoalesced } from "@/features/editor/sceneContentStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
@@ -33,6 +34,9 @@ import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
+import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
+import { useCodexCompletion } from "@/features/editor/codexCompletion/useCodexCompletion";
+import { handleZenEscapeKeyDown } from "@/features/editor/zenEscape";
 import {
   loadAuthorshipSpans,
   spansToMarkData,
@@ -60,6 +64,7 @@ import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
+import { shouldHandleEditorUpdate } from "@/features/editor/editorEventPolicy";
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -189,7 +194,7 @@ function MountedSceneBlock({
     // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
     // (editGenerationRef のコメント参照)。
     if (editGenerationRef.current === editGenAtStart) {
-      useTabStore.getState().setTabDirty(sceneId, false);
+      useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
     }
   }, [sceneId]);
 
@@ -224,7 +229,8 @@ function MountedSceneBlock({
             isFileBacked ? { sanitize: sanitizePastedMarkdown } : {},
           );
         },
-        handleKeyDown(_view, event) {
+        handleKeyDown(view, event) {
+          if (handleZenEscapeKeyDown(view, event)) return true;
           notePlainPasteKeyDown(event);
           return false;
         },
@@ -237,10 +243,20 @@ function MountedSceneBlock({
         }
       },
       onUpdate({ editor: e, transaction }) {
-        if (isApplyingExternalUpdate.current) return;
+        const aiState = useInlineAiStore.getState();
         // setEditable 等の doc 未変更 'update' を保存に流さない
         // (EditorPane.onUpdate と同じガード — 詳細はそちらのコメント参照)。
-        if (!transaction.docChanged) return;
+        if (
+          !shouldHandleEditorUpdate({
+            docChanged: transaction.docChanged,
+            isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+            inlineAiStatus: aiState.status,
+            activeEditor: aiState.activeEditor,
+            editor: e,
+          })
+        ) {
+          return;
+        }
         // インライン AI の生成中・diff 表示中は "このエディタ" の編集をオート
         // セーブしない (EditorPane.onUpdate と同じ契約)。未 accept の生成テキスト
         // が autosave で焼き込まれる (= 未帰属保存・本文消失) のを防ぐ。Accept/
@@ -248,8 +264,6 @@ function MountedSceneBlock({
         // schedule する。owner 判定 (activeEditor === e) なので、別シーンで AI
         // 実行中でも当シーンの通常編集は通常どおり保存される (リニアは複数
         // エディタがグローバル単一 store を共有するため status だけでは不可)。
-        const aiState = useInlineAiStore.getState();
-        if (aiState.status !== "idle" && aiState.activeEditor === e) return;
         if (loadFailedRef.current) {
           // 調査ログ: 未ロード窓で doc を変更している犯人の特定用。
           // 保存自体は coreSave 側 guard で skip される。
@@ -269,7 +283,7 @@ function MountedSceneBlock({
         // 上書きする。解除は coreSave 成功時と unmount cleanup。
         // 世代カウンタは dirty 立てと同時に ++ (coreSave の条件付き解除用)。
         editGenerationRef.current += 1;
-        useTabStore.getState().setTabDirty(sceneId, true);
+        useEditorSessionStore.getState().setDocumentDirty(sceneId, true);
 
         // Auto-transition outline → draft: wasEmptyRef が true の間だけ
         // 全文 walk する (EditorPane.onUpdate と同じ制限 — 一度本文を観測
@@ -379,7 +393,7 @@ function MountedSceneBlock({
   // (onUpdate で同期セット / coreSave 成功時とunmount で解除)。
   useEffect(() => {
     const handler = dirtyGatedSaveHandler(
-      () => useTabStore.getState().dirtyTabIds.has(sceneId),
+      () => useEditorSessionStore.getState().dirtyDocumentIds.has(sceneId),
       saveFn,
     );
     registerSaveHandler(sceneId, handler);
@@ -390,7 +404,8 @@ function MountedSceneBlock({
   // unmount flush (useAutoSave cleanup) が保存を引き受けるため、残った
   // dirty フラグは「閉じたエディタの幽霊 dirty」になる。
   useEffect(() => {
-    return () => useTabStore.getState().setTabDirty(sceneId, false);
+    return () =>
+      useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
   }, [sceneId]);
 
   // 打鍵 debounce タイマーの後始末 (unmount 後の setState を防ぐ)。
@@ -448,7 +463,8 @@ function MountedSceneBlock({
             ? JSON.parse(detail.content)
             : "";
         ed.commands.setContent(parsed, { emitUpdate: false });
-        useTabStore.getState().setTabDirty(sceneId, false);
+        resetEditorHistory(ed.view);
+        useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
       } finally {
         isApplyingExternalUpdate.current = false;
       }
@@ -476,6 +492,8 @@ function MountedSceneBlock({
   useCursorOverlay(editor);
   useImeDiagnostics(editor);
   useTateChuYoko(editor);
+  useShowInvisibles(editor);
+  useCodexCompletion(editor);
 
   // Load content
   useEffect(() => {
@@ -575,6 +593,10 @@ function MountedSceneBlock({
           }
         }
       }
+
+      if (!cancelled) {
+        resetEditorHistory(editor!.view);
+      }
     }
 
     load();
@@ -628,6 +650,7 @@ function MountedSceneBlock({
       <div
         className={cn(
           editorSettings.showLineNumbers && "editor-line-numbers",
+          editorSettings.showInvisibles && "editor-show-invisibles",
           isEnglish && "editor-en-typography",
         )}
         style={buildEditorContentStyle(editorSettings)}

@@ -1,5 +1,11 @@
 import { create } from "zustand";
+import type { Editor } from "@tiptap/core";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import type { LayerSetOptions } from "@/features/post-effect/annotationStore";
+import {
+  isWindowFullscreen,
+  toggleFullscreenWindow,
+} from "@/lib/windowControls";
 
 interface CursorSettingsState {
   cursorAnimation: boolean;
@@ -10,13 +16,41 @@ interface CursorSettingsState {
   toggleFocusMode: () => void;
   typewriterMode: boolean;
   toggleTypewriterMode: () => void;
+  zenMode: boolean;
+  setZenMode: (active: boolean) => void;
+  toggleZenMode: () => void;
+  fullscreenMode: boolean;
+  setFullscreenMode: (active: boolean) => void;
+  syncFullscreenMode: () => Promise<void>;
+  toggleFullscreenMode: () => void;
   showComments: boolean;
+  setShowComments: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleShowComments: () => void;
   showForeshadowMarks: boolean;
+  setShowForeshadowMarks: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleShowForeshadowMarks: () => void;
+  /** Lint 波線の表示（本文レイヤー）。診断の実行自体は止めない。 */
+  showLint: boolean;
+  setShowLint: (visible: boolean, opts?: LayerSetOptions) => void;
+  toggleShowLint: () => void;
+  /** 本文レイヤーのパネル連動 (Auto) モード。ON中は開いているパネルに追従。 */
+  layerAutoFollow: boolean;
+  toggleLayerAutoFollow: () => void;
+  /**
+   * パネル連動の再同期要求カウンタ（非永続）。initFromSettings 等の外部リセットが
+   * Auto 追従中のランタイム状態を巻き戻した後に bump すると、useLayerAutoFollow の
+   * follow effect が再実行されてパネル可視状態へ再同期する。
+   */
+  layerAutoFollowSyncNonce: number;
+  requestLayerAutoFollowSync: () => void;
   /** Whether the "add comment" input popover is open. */
   commentPickerOpen: boolean;
   setCommentPickerOpen: (open: boolean) => void;
+  /** Whether the Codex semantic-link entry picker is open. */
+  semanticLinkPickerOpen: boolean;
+  /** Editor that owns the semantic-link picker in split/linear views. */
+  semanticLinkPickerOwner: Editor | null;
+  setSemanticLinkPickerOpen: (open: boolean, owner?: Editor | null) => void;
   /** Whether the foreshadow mark picker is open. */
   foreshadowPickerOpen: boolean;
   setForeshadowPickerOpen: (open: boolean) => void;
@@ -30,64 +64,145 @@ interface CursorSettingsState {
   initFromSettings: () => void;
 }
 
-export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
-  cursorAnimation: true,
-  toggleCursorAnimation: () =>
-    set((s) => {
-      const next = !s.cursorAnimation;
-      useSettingsStore.getState().set("editor.smoothCaret", String(next));
-      return { cursorAnimation: next };
-    }),
+export const useCursorSettingsStore = create<CursorSettingsState>()(
+  (set, get) => ({
+    cursorAnimation: true,
+    toggleCursorAnimation: () =>
+      set((s) => {
+        const next = !s.cursorAnimation;
+        useSettingsStore.getState().set("editor.smoothCaret", String(next));
+        return { cursorAnimation: next };
+      }),
 
-  cursorBlink: true,
-  toggleCursorBlink: () =>
-    set((s) => {
-      const next = !s.cursorBlink;
-      useSettingsStore.getState().set("editor.cursorBlink", String(next));
-      return { cursorBlink: next };
-    }),
+    cursorBlink: true,
+    toggleCursorBlink: () =>
+      set((s) => {
+        const next = !s.cursorBlink;
+        useSettingsStore.getState().set("editor.cursorBlink", String(next));
+        return { cursorBlink: next };
+      }),
 
-  focusMode: false,
-  toggleFocusMode: () =>
-    set((s) => {
-      const next = !s.focusMode;
-      useSettingsStore.getState().set("editor.focusMode", String(next));
-      return { focusMode: next };
-    }),
+    focusMode: false,
+    toggleFocusMode: () =>
+      set((s) => {
+        const next = !s.focusMode;
+        useSettingsStore.getState().set("editor.focusMode", String(next));
+        return { focusMode: next };
+      }),
 
-  typewriterMode: false,
-  toggleTypewriterMode: () =>
-    set((s) => {
-      const next = !s.typewriterMode;
-      useSettingsStore.getState().set("editor.typewriterMode", String(next));
-      return { typewriterMode: next };
-    }),
+    typewriterMode: false,
+    toggleTypewriterMode: () =>
+      set((s) => {
+        const next = !s.typewriterMode;
+        useSettingsStore.getState().set("editor.typewriterMode", String(next));
+        return { typewriterMode: next };
+      }),
 
-  showComments: false,
-  toggleShowComments: () => set((s) => ({ showComments: !s.showComments })),
+    zenMode: false,
+    setZenMode: (active) => set({ zenMode: active }),
+    toggleZenMode: () => set((s) => ({ zenMode: !s.zenMode })),
 
-  showForeshadowMarks: false,
-  toggleShowForeshadowMarks: () =>
-    set((s) => ({ showForeshadowMarks: !s.showForeshadowMarks })),
+    fullscreenMode: false,
+    setFullscreenMode: (active) => set({ fullscreenMode: active }),
+    syncFullscreenMode: async () => {
+      try {
+        set({ fullscreenMode: await isWindowFullscreen() });
+      } catch {
+        // Keep the last state confirmed by the runtime. A transient native
+        // query failure must not flip the toolbar indicator optimistically.
+      }
+    },
+    toggleFullscreenMode: () => {
+      void toggleFullscreenWindow()
+        .then((active) => set({ fullscreenMode: active }))
+        .catch(() => {
+          // Preserve the last confirmed state when the OS rejects a transition.
+        });
+    },
 
-  commentPickerOpen: false,
-  setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
+    showComments: false,
+    setShowComments: (visible, opts) => {
+      if (opts?.persist !== false) {
+        useSettingsStore
+          .getState()
+          .set("display.layerComments", String(visible));
+      }
+      set({ showComments: visible });
+    },
+    toggleShowComments: () => get().setShowComments(!get().showComments),
 
-  foreshadowPickerOpen: false,
-  setForeshadowPickerOpen: (open) =>
-    set({ foreshadowPickerOpen: open, foreshadowPickerInitialMode: null }),
+    showForeshadowMarks: false,
+    setShowForeshadowMarks: (visible, opts) => {
+      if (opts?.persist !== false) {
+        useSettingsStore
+          .getState()
+          .set("display.layerForeshadow", String(visible));
+      }
+      set({ showForeshadowMarks: visible });
+    },
+    toggleShowForeshadowMarks: () =>
+      get().setShowForeshadowMarks(!get().showForeshadowMarks),
 
-  foreshadowPickerInitialMode: null,
-  openForeshadowPicker: (mode) =>
-    set({ foreshadowPickerOpen: true, foreshadowPickerInitialMode: mode }),
+    showLint: true,
+    setShowLint: (visible, opts) => {
+      if (opts?.persist !== false) {
+        useSettingsStore.getState().set("display.layerLint", String(visible));
+      }
+      set({ showLint: visible });
+    },
+    toggleShowLint: () => get().setShowLint(!get().showLint),
 
-  initFromSettings: () => {
-    const s = useSettingsStore.getState();
-    set({
-      cursorAnimation: s.getBoolean("editor.smoothCaret", true),
-      cursorBlink: s.getBoolean("editor.cursorBlink", true),
-      focusMode: s.getBoolean("editor.focusMode", false),
-      typewriterMode: s.getBoolean("editor.typewriterMode", false),
-    });
-  },
-}));
+    layerAutoFollow: false,
+    toggleLayerAutoFollow: () =>
+      set((s) => {
+        const next = !s.layerAutoFollow;
+        useSettingsStore
+          .getState()
+          .set("display.layerAutoFollow", String(next));
+        return { layerAutoFollow: next };
+      }),
+
+    layerAutoFollowSyncNonce: 0,
+    requestLayerAutoFollowSync: () =>
+      set((s) => ({
+        layerAutoFollowSyncNonce: s.layerAutoFollowSyncNonce + 1,
+      })),
+
+    commentPickerOpen: false,
+    setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
+
+    semanticLinkPickerOpen: false,
+    semanticLinkPickerOwner: null,
+    setSemanticLinkPickerOpen: (open, owner = null) =>
+      set({
+        semanticLinkPickerOpen: open,
+        semanticLinkPickerOwner: open ? owner : null,
+      }),
+
+    foreshadowPickerOpen: false,
+    setForeshadowPickerOpen: (open) =>
+      set({ foreshadowPickerOpen: open, foreshadowPickerInitialMode: null }),
+
+    foreshadowPickerInitialMode: null,
+    openForeshadowPicker: (mode) =>
+      set({ foreshadowPickerOpen: true, foreshadowPickerInitialMode: mode }),
+
+    initFromSettings: () => {
+      const s = useSettingsStore.getState();
+      set({
+        cursorAnimation: s.getBoolean("editor.smoothCaret", true),
+        cursorBlink: s.getBoolean("editor.cursorBlink", true),
+        focusMode: s.getBoolean("editor.focusMode", false),
+        typewriterMode: s.getBoolean("editor.typewriterMode", false),
+        // Zen is a transient view projection. Never reopen an application
+        // session with all navigation chrome hidden.
+        zenMode: false,
+        fullscreenMode: false,
+        showComments: s.getBoolean("display.layerComments", false),
+        showForeshadowMarks: s.getBoolean("display.layerForeshadow", false),
+        showLint: s.getBoolean("display.layerLint", true),
+        layerAutoFollow: s.getBoolean("display.layerAutoFollow", false),
+      });
+    },
+  }),
+);

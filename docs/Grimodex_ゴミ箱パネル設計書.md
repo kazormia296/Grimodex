@@ -165,7 +165,7 @@ subKind ごとの payload インターフェイス定義は本書末尾 §16 に
 ### 3.6 Drizzle / Rust マイグレーション
 
 - `src/db/schema.ts` に `trashItems` を追加。`payload` / `previewMeta` / `spans` 系の JSON は素の `text()` で持ち、アプリ層で `JSON.parse` / `JSON.stringify`（本リポは `mode: "json"` の前例なし、例: `aiReasoning`）
-- `src-tauri/src/database/migrate.rs` に `CREATE TABLE IF NOT EXISTS trash_items ...` と上記インデックスを追加
+- `src-tauri/crates/grimodex-db/src/migrate.rs` に `CREATE TABLE IF NOT EXISTS trash_items ...` と上記インデックスを追加
 
 ---
 
@@ -772,7 +772,7 @@ interface FocusedContentEditorStore {
 | ファイル | 内容 |
 |---|---|
 | `src/db/schema.ts` | `trashItems` 追加（kind/subKind/payload 両系統対応） |
-| `src-tauri/src/database/migrate.rs` | `CREATE TABLE IF NOT EXISTS trash_items` |
+| `src-tauri/crates/grimodex-db/src/migrate.rs` | `CREATE TABLE IF NOT EXISTS trash_items` |
 | `docs/Grimodex_統合DBスキーマ.md` | `trashItems` を追記 |
 | `src/features/editor/EditorPane.tsx` | `useTrashBinCapture` 呼び出し + `trashBin.origin` meta + `focusedContentEditorStore.setCurrent` + Drop target register |
 | `src/features/codex/components/CodexContentEditor.tsx` | 同上（副次経路）+ `trashBin.paused` |
@@ -782,9 +782,9 @@ interface FocusedContentEditorStore {
 | `src/features/map/MapCanvas.tsx` | sticky 削除ハンドラで `captureMapStickyDeletion` 呼び出し（座標を MapNodePosition から渡すため UI 起点） |
 | `src/features/foreshadow/foreshadowStore.ts` | `remove` 内で `captureForeshadowDeletion` 呼び出し |
 | `src/features/pins/pinStore.ts` | `deletePin` 内で `capturePinDeletion` 呼び出し（※ 現状未実装） |
-| `src/features/scenes/ScenesPanel.tsx` | Drop target register（`scenes-panel`） |
-| `src/features/codex/components/CodexPanel.tsx` | 同上（`codex-panel`） |
-| `src/features/snippets/SnippetsPanel.tsx` | 同上 |
+| `src/features/tree/ScenesPanel.tsx` | Drop target register（`scenes-panel`） |
+| `src/features/codex/CodexPanel.tsx` | 同上（`codex-panel`） |
+| `src/features/snippets/SnippetPanel.tsx` | 同上 |
 | `src/features/map/MapPanel.tsx` | 同上（`map-panel`） |
 | `src/features/foreshadow/ForeshadowPanel.tsx` | 同上 |
 | `src/features/pins/PinsPanel.tsx` | 同上（※ 現状未実装） |
@@ -1023,7 +1023,7 @@ type GridChapterPayload = {
 
 ## 17. 検証方法
 
-1. `pnpm tauri dev` で起動
+1. `pnpm electron:dev` で起動
 2. **文字屑系**:
    - シーンでテキスト選択 → 削除 → ゴミ箱に文字片が落下
    - Backspace 連打 → 1 つに合体されてから落下

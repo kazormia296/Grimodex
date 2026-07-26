@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildCrossReferenceFromTexts } from "./crossReference";
+import {
+  buildCrossReferenceFromMentionRows,
+  buildCrossReferenceFromTexts,
+} from "./crossReference";
 
 describe("buildCrossReferenceFromTexts", () => {
   const entries = [
@@ -62,5 +65,125 @@ describe("buildCrossReferenceFromTexts", () => {
     const names = result.map((r) => r.entryName);
     const sorted = [...names].sort((a, b) => a.localeCompare(b));
     expect(names).toEqual(sorted);
+  });
+
+  it("reports semantic-only links even when the Codex name is absent", () => {
+    const result = buildCrossReferenceFromTexts(entries, [
+      {
+        id: "s1",
+        title: "シーン1",
+        content: "彼女は振り返った。",
+        semanticLinks: [{ entryId: "codex-2", label: "花子", text: "彼女" }],
+      },
+    ]);
+
+    expect(result.find((entry) => entry.entryId === "codex-2")?.scenes).toEqual(
+      [
+        {
+          sceneId: "s1",
+          sceneTitle: "シーン1",
+          count: 1,
+          automaticCount: 0,
+          semanticCount: 1,
+        },
+      ],
+    );
+  });
+
+  it("keeps automatic and semantic occurrence counts independent", () => {
+    const result = buildCrossReferenceFromTexts(entries, [
+      {
+        id: "s1",
+        title: "シーン1",
+        content: "花子は花子と呼ばれた。",
+        semanticLinks: [
+          { entryId: "codex-2", label: "花子", text: "彼女" },
+          { entryId: "codex-2", label: "花子", text: "あの人" },
+        ],
+      },
+    ]);
+
+    expect(
+      result.find((entry) => entry.entryId === "codex-2")?.scenes[0],
+    ).toEqual({
+      sceneId: "s1",
+      sceneTitle: "シーン1",
+      count: 4,
+      automaticCount: 2,
+      semanticCount: 2,
+    });
+  });
+
+  it("ignores semantic links to missing Codex entries", () => {
+    const result = buildCrossReferenceFromTexts(entries, [
+      {
+        id: "s1",
+        title: "シーン1",
+        content: "本文",
+        semanticLinks: [
+          { entryId: "deleted-entry", label: "削除済み", text: "彼女" },
+        ],
+      },
+    ]);
+
+    expect(result).toEqual([]);
+  });
+});
+
+describe("buildCrossReferenceFromMentionRows", () => {
+  const mentionEntries = [
+    {
+      id: "codex-1",
+      name: "太郎",
+      type: "character",
+      aliases: null,
+      excludedAliases: null,
+    },
+    {
+      id: "codex-2",
+      name: "花子",
+      type: "character",
+      aliases: null,
+      excludedAliases: null,
+    },
+  ];
+
+  it("builds scene links from the incremental mention index without duplicate edges", () => {
+    const result = buildCrossReferenceFromMentionRows(mentionEntries, [
+      { entryId: "codex-1", sceneId: "s1", sceneTitle: "シーン1" },
+      { entryId: "codex-1", sceneId: "s1", sceneTitle: "シーン1" },
+      { entryId: "codex-1", sceneId: "s2", sceneTitle: "シーン2" },
+    ]);
+
+    expect(result.find((entry) => entry.entryId === "codex-1")?.scenes).toEqual(
+      [
+        { sceneId: "s1", sceneTitle: "シーン1", count: 1 },
+        { sceneId: "s2", sceneTitle: "シーン2", count: 1 },
+      ],
+    );
+    expect(result.find((entry) => entry.entryId === "codex-2")?.scenes).toEqual(
+      [],
+    );
+  });
+
+  it("deduplicates body and semantic cache rows into one Galaxy edge", () => {
+    const result = buildCrossReferenceFromMentionRows(mentionEntries, [
+      {
+        entryId: "codex-1",
+        sceneId: "s1",
+        sceneTitle: "シーン1",
+        source: "body",
+      },
+      {
+        entryId: "codex-1",
+        sceneId: "s1",
+        sceneTitle: "シーン1",
+        source: "semantic",
+      },
+    ]);
+
+    expect(result.find((entry) => entry.entryId === "codex-1")?.scenes).toEqual(
+      [{ sceneId: "s1", sceneTitle: "シーン1", count: 1 }],
+    );
   });
 });

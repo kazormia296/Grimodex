@@ -33,6 +33,8 @@ describe("SCREENSHOT_SEED_CONTENT", () => {
           c.snippets.reunion.title,
           c.map.frameTitle,
           c.foreshadows.warmth.title,
+          c.chronicle.fire.title,
+          c.chronicle.returnHome.title,
           c.chat.sessionTitle,
           c.lint.lastSceneText,
         ];

@@ -5,6 +5,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { SceneDateEditor } from "@/features/chronicle/SceneDateEditor";
+import { formatInstant } from "@/lib/time";
 import { useTimelineStore } from "./timelineStore";
 
 interface Props {
@@ -169,7 +170,11 @@ export function TimelineInspector({
           {/* Created at */}
           <div className="mt-auto text-muted-foreground">
             {t("timeline.inspector.created", "Created")}{" "}
-            {new Date(node.createdAt).toLocaleDateString()}
+            {formatInstant(node.createdAt, undefined, {
+              year: "numeric",
+              month: "numeric",
+              day: "numeric",
+            }) ?? node.createdAt}
           </div>
         </>
       )}

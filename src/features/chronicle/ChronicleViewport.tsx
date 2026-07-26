@@ -926,6 +926,7 @@ export function ChronicleViewport({
         <ChronicleLaneGutter
           lanes={pack.lanes}
           gutterX={spacing.gutterX}
+          minHeight={contentHeight}
           activeLaneKey={activeLaneKey}
           laneOptions={laneOptions}
           locked={locked}

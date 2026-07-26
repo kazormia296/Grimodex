@@ -32,7 +32,7 @@ Chronicle パネル（作中年表）は、物語の **作中時間（fabula＝�
 
 ## パネル構造
 
-縦方向に「ヘッダー → ツールバー →（任意）凡例 → DOM pan/zoom ビューポート（適応ルーラー＋左レーンガター＋トラック＋スクロールバー）→（任意）タイ線複合ビュー → 下部インスペクタ／無選択フッタ」を積む。暦エディタと AI 抽出はモーダル／ダイアログ、日付ピッカーは popover。
+縦方向に「ヘッダー → ツールバー →（任意）凡例 → DOM pan/zoom ビューポート（適応ルーラー＋左レーンガター＋トラック＋スクロールバー）→（任意）タイ線複合ビュー〔#224 で撤去・§D 参照〕 → 下部インスペクタ／無選択フッタ」を積む。暦エディタと AI 抽出はモーダル／ダイアログ、日付ピッカーは popover。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -68,7 +68,7 @@ Chronicle パネル（作中年表）は、物語の **作中時間（fabula＝�
   （モーダル）ChronicleCalendarEditor … 開始年・1年の日数・季節境界・月・曜日名
 ```
 
-実装は `ChroniclePanel.tsx` がデータロード・状態（pan/zoom view・密度・ラベル・凡例・因果トグル）・CRUD ハンドラを束ね、`ChronicleViewport`（DOM タイムライン）/ `ChronicleRuler`（適応ルーラー）/ `ChronicleLaneGutter`（レーンガター）/ `EventMarker`（DOM マーカー）/ `ChronicleDatePicker`（暦 popover）/ `ChronicleToolbar`（ツールバー＋凡例）/ `ChronicleInspector`（選択 Event 編集）/ `ChronicleTieView`（タイ線）/ `ChronicleCalendarEditor`（暦）/ `ChronicleExtractDialog`（AI 抽出）を配置する。座標数学は純関数モジュール `chronicleAxis`（pan/zoom・実効日）/ `chronicleTicks`（適応ルーラー）/ `chronicleLanePack`（多段行詰め）/ `chronicleCausalBezier`（ベジェ因果）/ `laneColor`（安定 oklch）を `chronicleLayout` が束ねて供給する。
+実装は `ChroniclePanel.tsx` がデータロード・状態（pan/zoom view・密度・ラベル・凡例・因果トグル）・CRUD ハンドラを束ね、`ChronicleViewport`（DOM タイムライン）/ `ChronicleRuler`（適応ルーラー）/ `ChronicleLaneGutter`（レーンガター）/ `EventMarker`（DOM マーカー）/ `ChronicleDatePicker`（暦 popover）/ `ChronicleToolbar`（ツールバー＋凡例）/ `ChronicleInspector`（選択 Event 編集）/ ~~`ChronicleTieView`（タイ線・#224 撤去）~~ / `ChronicleCalendarEditor`（暦）/ `ChronicleExtractDialog`（AI 抽出）を配置する。座標数学は純関数モジュール `chronicleAxis`（pan/zoom・実効日）/ `chronicleTicks`（適応ルーラー）/ `chronicleLanePack`（多段行詰め）/ `chronicleCausalBezier`（ベジェ因果）/ `laneColor`（安定 oklch）を `chronicleLayout` が束ねて供給する。
 
 ---
 
@@ -79,7 +79,7 @@ Chronicle パネル（作中年表）は、物語の **作中時間（fabula＝�
   - `[+ 新規イベント]`: `uiCreateEvent`（tracked-write）を採番（`nextEventOrdinal` で既存 ordinal の max の次）して空 Event を追加。
   - `[AI 抽出]`: `ChronicleExtractDialog` を開く（AI 抽出ウィザード、後述 I）。
   - `[暦の設定]`: `ChronicleCalendarEditor` を開く（後述 G）。
-  - `[↔ タイ線]`: `tieMode` をトグルして `ChronicleTieView` を表示（後述 D）。
+  - `[↔ タイ線]`: `tieMode` をトグルして `ChronicleTieView` を表示（後述 D）。**※ #224 で撤去済み。**
   - `[⚠ 整合警告 n]`: 整合チェックで検出した issue 件数バッジ。クリックで先頭 issue を選択しビューを中央へ寄せる。
   - `[因果]`: 因果エッジ表示トグル。`[密度]`: レーン密度 compact/standard/roomy 循環。`[ラベル]`: マーカーラベル表示トグル。
   - `[- z +]` / `[全体]`: ズーム / 全体フィット。`chronicleAxis` の `zoomByCenter` / `fitAll` で `pxPerDay`・`viewStartDay` を更新。`[凡例]`: 凡例ストリップのトグル。
@@ -123,6 +123,8 @@ Chronicle パネル（作中年表）は、物語の **作中時間（fabula＝�
 - 描画順は `(causeId, effectId)` 昇順で決定的。
 
 ### タイ線複合ビュー（任意タブ）
+
+> **【撤去済み / #224】** タイ線複合ビュー（`ChronicleTieView.tsx` / `tieView.ts` / `buildTieView`）は #224（Scene=Event union）で撤去され、現在のコードには存在しない。読む順×作中時間の複合ビューは現行では提供していない。以下は設計経緯として残す。
 
 `ChronicleTieView.tsx` は「読む順では前なのに作中では後」のズレを線の交差として可視化する任意ビュー（無改変）。`tieView.ts` の `buildTieView({scenes, events, links, width, padX, topY, bottomY})` が `TieViewModel = {sceneDots, eventDots, ties, topY, bottomY}` を返す。
 
@@ -349,7 +351,7 @@ Event とは統合せず、**同じ `chronicleTime` 日付モデルをシーン�
 
 ## データモデル / DBスキーマ
 
-正本は **`src-tauri/src/database/migrate.rs`**（`CREATE TABLE` ＋ `add_column_if_missing`、CHECK 制約は SQL 側のみ）。`src/db/schema.ts` の Drizzle 定義はこれを CHECK 抜きでミラーする。値集合 `EVENT_PRECISIONS` / `EVENT_KINDS` / `EVENT_GRANULARITIES` は `schema.ts:1351-1371`。
+正本は **`src-tauri/crates/grimodex-db/src/migrate.rs`**（`CREATE TABLE` ＋ `add_column_if_missing`、CHECK 制約は SQL 側のみ）。`src/db/schema.ts` の Drizzle 定義はこれを CHECK 抜きでミラーする。値集合 `EVENT_PRECISIONS` / `EVENT_KINDS` / `EVENT_GRANULARITIES` は `schema.ts:1351-1371`。
 
 ### events（`migrate.rs:1766-1794` 正本 / `schema.ts:1373`）
 
@@ -476,7 +478,6 @@ CREATE INDEX idx_event_chunks_model ON event_chunks(model_id);
 | toolWindowDefaults | `src/features/layout/toolWindowDefaults.ts:51` | `chronicle: "BL"`（初期スロット 左下） |
 | layoutPresets | `src/features/layout/layoutPresets.ts:152, 217, 326, 418, 509` | 各プリセットへ登録。新規パネルは curated プリセットへ自動補充（同 :522 コメント） |
 | keybindings（command） | `src/features/settings/keybindings.ts:83-87` | `id:"focusChronicle"` / `defaultBinding:"Mod+Alt+K"` / `panel:"chronicle"` |
-| commandProvider | `src/features/commandCenter/providers/commandProvider.ts` | keybindings の `panel` 付きコマンド（focusChronicle）をコマンドパレットへ surface |
 
 `Mod` は `matchesMod` で macOS=`⌘`、その他=`Ctrl` に解決される。
 
@@ -505,12 +506,12 @@ CREATE INDEX idx_event_chunks_model ON event_chunks(model_id);
 | `src/features/chronicle/ChronicleDatePicker.tsx` | 暦駆動の日付/時刻ピッカー popover（年/季節/月/日/時刻・月長クランプ） |
 | `src/features/chronicle/ChronicleCalendarEditor.tsx` | 暦エディタ（months/weekday/startYear 行エディタ） |
 | `src/features/chronicle/ChronicleExtractDialog.tsx` | AI 抽出ウィザード（フォルダ選択→解析→確認→取込） |
-| `src/features/chronicle/ChronicleTieView.tsx` | タイ線複合ビュー SVG（読む順×作中時間） |
+| ~~`src/features/chronicle/ChronicleTieView.tsx`~~ | タイ線複合ビュー SVG（読む順×作中時間）。**#224 で撤去済み・現在ファイル無し** |
 | `src/features/chronicle/EventMarker.tsx` | DOM マーカートークン（point/interval/オフページ・種別/秘匿/警告タグ・precision style） |
-| `src/features/chronicle/EventDateEditor.tsx` | インライン日付入力（暦駆動）。現在は Scene 日付共有で再利用 |
+| `src/features/chronicle/EventDateFields.tsx` | インライン日付入力（暦駆動）。現在は Scene 日付共有で再利用 |
 | `src/features/chronicle/CodexEntryPicker.tsx` | 人物/場所 select（type フィルタ・共有部品） |
 | `src/features/chronicle/SceneDateEditor.tsx` | Scene 日付エディタ（`tree_nodes.chronicle*` へマップ） |
-| `src/features/chronicle/chronicleStore.ts` | Zustand（pxPerDay/viewStartDay〔pan/zoom 永続〕・showOffpage・selectedEventId・revisionCounter・`setChronicleView`/`bumpRevision`・legacy zoom/scrollOffset）。calendar=`useSeasonConflicts`・密度/ラベル/凡例/因果/tieMode=ChroniclePanel ローカル `useState` |
+| `src/features/chronicle/chronicleStore.ts` | Zustand（pxPerDay/viewStartDay〔pan/zoom 永続〕・showOffpage・selectedEventId・revisionCounter・`setChronicleView`/`bumpRevision`・legacy zoom/scrollOffset）。calendar=`useSeasonConflicts`・密度/ラベル/凡例/因果=ChroniclePanel ローカル `useState`（`tieMode` は #224 で撤去） |
 | `src/features/chronicle/chronicleTime.ts` | 暦エンジン（`dayNumberToDate`/`dateToDayNumber`/`formatChronicleDate`/`seasonOf`/`nextEventOrdinal` 他） |
 | `src/features/chronicle/chronicleAxis.ts` | pan/zoom 変換・`effectiveDays`（実暦軸 / sequence モード）・scrollbar 幾何（純関数・テスト gate） |
 | `src/features/chronicle/chronicleTicks.ts` | `adaptiveTicks`（暦対応の適応ルーラー目盛り・任意暦対応） |
@@ -522,7 +523,7 @@ CREATE INDEX idx_event_chunks_model ON event_chunks(model_id);
 | `src/features/chronicle/ageCheck.ts`（:95） | 年齢整合チェック（`DEFAULT_AGE_WORDS`） |
 | `src/features/chronicle/eventCausality.ts`（:20） | 因果整合チェック |
 | `src/features/chronicle/twoPlaces.ts`（:23） | 2か所同時チェック |
-| `src/features/chronicle/tieView.ts` | `buildTieView` |
+| ~~`src/features/chronicle/tieView.ts`~~ | `buildTieView`。**#224 で撤去済み・現在ファイル無し** |
 | `src/features/chronicle/api.ts` | CRUD（`normalizeEvent`/`listEvents`/`createEvent`/`updateEvent`・snake_case↔camelCase） |
 | `src/features/chronicle/extractEventsApi.ts` | `proposeEvents`/`importExtractedEvents`（LLM 抽出） |
 | `src/features/chronicle/chronicleSnapshot.ts` | 静的注入 derive 正本・`renderChronicleSnapshot` |
@@ -535,8 +536,8 @@ CREATE INDEX idx_event_chunks_model ON event_chunks(model_id);
 | `src/features/tree/treeStore.ts` | `updateChronicleDate`（Scene 日付永続化） |
 | `src/features/timeline/TimelineInspector.tsx` | `SceneDateEditor` 埋め込み |
 | `src/db/schema.ts:84-104, 1351-1512` | events/tree_nodes/値集合 Drizzle 定義 |
-| `src-tauri/src/database/migrate.rs:39, 1397, 1766` | DDL 正本（events/event_chunks/tree_nodes chronicle 列） |
-| `src/lib/browser-mock.ts` / `src/features/project/projectSnapshotApi.ts` | test DDL / round-trip |
+| `src-tauri/crates/grimodex-db/src/migrate.rs:39, 1397, 1766` | DDL 正本（events/event_chunks/tree_nodes chronicle 列） |
+| `src/lib/browser-mock.ts` / `src/features/revision/projectSnapshotApi.ts` | test DDL / round-trip |
 | `src-tauri/src/commands/agent_writes.rs` | tracked-write TX（`domain='event'`・surface） |
 | `src-tauri/src/semantic/events_index.rs` / `events_search.rs` | RAG 索引 / 検索 |
 | `src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs` / `db.rs` / `chronicle_snapshot.rs` | MCP read4/write8・SQL 再実装・Rust derive parity |

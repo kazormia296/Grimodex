@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
-import type { GlobalSettings } from "@/features/workspace/store";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import type { ShowMode } from "./lib/deriveColumns";
 
 export type SortMode = "reading" | "story-time" | "word-count" | "last-edited";
@@ -274,9 +274,10 @@ useMatrixStore.subscribe((state) => {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const current = await invoke<GlobalSettings>("get_global_settings");
-      const updated = { ...current, matrix: JSON.parse(next) };
-      await invoke("save_global_settings", { settings: updated });
+      await globalSettingsRepository.patch((current) => ({
+        ...current,
+        matrix: JSON.parse(next),
+      }));
       useMatrixStore.getState().markSettingsSaved();
     } catch {
       // non-fatal

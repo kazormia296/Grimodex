@@ -25,6 +25,9 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* ネイティブ UI (select のドロップダウン一覧・スクロールバー・チェックボックス
+     等) をライトで描画させる。テーマは .dark で dark に切り替える。 */
+  color-scheme: light;
   /* Auxiliary UI scale factor (1 = 100%); overridden from JS — see syncUiScaleFromGlobalSettings */
   --ui-scale: 1;
   --background: oklch(1 0 0);
@@ -79,46 +82,35 @@
   /* Map note node — tinted with the app's brand accent (#534AB7). */
   --note-bg: #eeebfa;
   --note-border: #8b7fd4;
+  /* ─── 校閲トリアージ (kouetsu triage) ───────────────────────
+     Brand-purple accent + severity palette from the design doc
+     (docs/superpowers/specs/2026-07-06-kouetsu-triage-refine-design.md).
+     Light values come from the Claude Design mock; dark values are the
+     same hues lifted in lightness for contrast on dark surfaces. */
+  --kouetsu-accent: #534ab7;
+  --kouetsu-accent-hover: #463d9e;
+  --kouetsu-accent-weak: #eeecf6;
+  --kouetsu-sev-high: #d64545;
+  --kouetsu-sev-mid: #e09a3a;
+  --kouetsu-sev-low: #7a72ce;
+  --kouetsu-chip-high-bg: #f6e7e7;
+  --kouetsu-chip-high-fg: #a33232;
+  --kouetsu-chip-mid-bg: #f7eedd;
+  --kouetsu-chip-mid-fg: #946417;
+  --kouetsu-chip-low-bg: #edebf8;
+  --kouetsu-chip-low-fg: #4a4390;
+  --kouetsu-mark-high: #f9e0dd;
+  --kouetsu-mark-mid: #f7eedd;
+  --kouetsu-mark-low: #edebf8;
+  --kouetsu-ok: #3fa66c;
   /* Sticky paper bg is set per-instance via inline `--sticky-bg-light` from
      stickyPalettes.ts. See `.sticky-paper` rule below for the consumer. */
   /* Subtle paper noise texture (fractalNoise, ~5% opacity) */
   --sticky-noise: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.08 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  /* Glass transparency: 0% = fully solid, 90% = nearly see-through.
-     Set globally from display.glassTransparency via JS (see App.tsx). */
-  --glass-transparency-pct: 30%;
-  /* All glass surfaces share the same alpha so panels/chat/header look
-     consistently translucent. `-strong` is a slightly more opaque variant
-     used for popovers/dialogs and dockview tab strips. */
-  --glass-bg: color-mix(
-    in oklch,
-    var(--background) calc(100% - var(--glass-transparency-pct)),
-    transparent
-  );
-  --glass-bg-strong: color-mix(
-    in oklch,
-    var(--background) calc(100% - var(--glass-transparency-pct) * 0.55),
-    transparent
-  );
-  /* Editor body uses the theme's `--content-background` (paper / sepia /
-     cool-white etc., overridden per color theme) so the writing surface
-     keeps its distinctive tint even when glass is on. */
-  --glass-content-bg: color-mix(
-    in oklch,
-    var(--content-background) calc(100% - var(--glass-transparency-pct)),
-    transparent
-  );
-  --glass-border: color-mix(in oklch, white 42%, var(--border));
-  /* Glass intensity is fixed to "lightweight" — these tuned values used to
-     live under `[data-glass-intensity="lightweight"]` selectors. The user
-     facing intensity dropdown was removed, so the defaults below ARE the
-     intensity. Bump them directly here if you want a heavier feel. */
-  --glass-blur: 6px;
-  --glass-saturate: 1.08;
-  --glass-shadow: 0 8px 18px rgb(0 0 0 / 0.1);
-  /* Backdrop gradient tints. Overridden per color theme via THEME_CSS_VARS;
-     these values are the fallback when no theme is applied. */
-  --glass-tint-a: var(--primary);
-  --glass-tint-b: var(--content-accent);
+  /* トグルスイッチ専用トークン。 */
+  --switch-track-off: var(--muted);
+  --switch-track-on: var(--primary);
+  --switch-thumb: var(--background);
 
   /* ─────────────────────────────────────────────────────────
      Card layout system (D案) — see temp design handoff.
@@ -153,6 +145,8 @@
 }
 
 .dark {
+  /* ネイティブ UI (select ドロップダウン一覧・スクロールバー等) をダークで描画。 */
+  color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.145 0 0);
@@ -186,6 +180,8 @@
   --content-foreground-muted: oklch(0.708 0 0);
   --content-accent: oklch(0.985 0 0);
   --content-border: oklch(0.269 0 0);
+  --switch-track-on: var(--sidebar-primary);
+  --switch-thumb: oklch(0.985 0 0);
   /* Dark-mode attribution hues: same hue as :root (blue/teal/amber) but brighter
      + higher chroma so the 20% color-mix highlight stays visible on dark paper.
      Per-named-theme values come from colorThemes.ts via applyTheme(); these are
@@ -195,8 +191,23 @@
   --attribution-unknown: oklch(0.8 0.16 30);
   --note-bg: #2a2540;
   --note-border: #7a6bc4;
-  --glass-border: color-mix(in oklch, white 16%, var(--border));
-  --glass-shadow: 0 18px 48px rgb(0 0 0 / 0.36);
+  /* 校閲トリアージ — ダークは同系色相を明度反転（暗面でのコントラスト確保）。 */
+  --kouetsu-accent: #8d84e0;
+  --kouetsu-accent-hover: #a49ce8;
+  --kouetsu-accent-weak: #2e2a4a;
+  --kouetsu-sev-high: #e07070;
+  --kouetsu-sev-mid: #e0ac62;
+  --kouetsu-sev-low: #948ce0;
+  --kouetsu-chip-high-bg: #4a2626;
+  --kouetsu-chip-high-fg: #e8a9a9;
+  --kouetsu-chip-mid-bg: #453722;
+  --kouetsu-chip-mid-fg: #e0be85;
+  --kouetsu-chip-low-bg: #2e2a4a;
+  --kouetsu-chip-low-fg: #b3ace8;
+  --kouetsu-mark-high: #4a2626;
+  --kouetsu-mark-mid: #453722;
+  --kouetsu-mark-low: #2e2a4a;
+  --kouetsu-ok: #5dbd88;
   /* Sticky paper bg in dark mode is computed from the inline --sticky-bg-light
      variable via color-mix in the .sticky-paper rule (8% black mixed in). */
 
@@ -212,6 +223,24 @@
     inset 0 -2px 0 rgba(0, 0, 0, 0.5), inset 0 -8px 16px rgba(0, 0, 0, 0.25);
 }
 
+/* ── トグルスイッチ (Switch) ─────────────────────────────────────────────
+ * appearance を切り、専用トークン (--switch-*) で統一描画する。 */
+.ui-switch,
+button[role="switch"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: none;
+  background-color: var(--switch-track-off);
+  color: inherit;
+}
+.ui-switch[data-state="checked"],
+button[role="switch"][aria-checked="true"] {
+  background-color: var(--switch-track-on);
+}
+.ui-switch-thumb {
+  background-color: var(--switch-thumb);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.28);
+}
 @theme inline {
   /* UI 書体。--ui-font は App.tsx が display.uiFontFamily 設定から実行時に
      html へ setProperty する。未設定時は同梱 M PLUS 1 → system stack に fallback。
@@ -293,263 +322,245 @@
    Doubled selector raises specificity (0-2-0) to beat the <style> tag
    that dockview-core injects at runtime via styleInject(). */
 .app-shell {
+  position: relative;
+  isolation: isolate;
   background: var(--background);
 }
 
-/* App-shell backdrop: flat translucent base. Its alpha scales with the
-   user's transparency slider so cranking the slider up actually shows
-   more of the desktop through the window. */
-.app-shell[data-glass-enabled="true"] {
-  background: color-mix(
-    in oklch,
-    var(--background) calc(100% - var(--glass-transparency-pct) * 0.8),
-    transparent
-  );
+/* A single main-surface Paper canvas is shared by normal and Zen layouts. The
+   isolated negative layer paints above the shell background and below every
+   interactive surface, so it never intercepts editor input. */
+.editor-ambient-backdrop {
+  direction: ltr;
+  writing-mode: horizontal-tb;
+  z-index: -1;
 }
 
-/* Tinted radial gradients rendered as a property of each glass surface
-   itself (NOT as a top-level overlay). `background-attachment: fixed`
-   makes every surface paint the gradient at viewport coordinates, so all
-   glass surfaces visually share one continuous aurora across the window.
+/* The shader lives below the interactive layout. Its full-size canvas paint
+   must pass it through so every opted-in Glass surface can sample the same
+   live background. The id scope keeps the header outside this system. */
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-workspace-glass-root],
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-area] {
+  background: transparent;
+}
 
-   Why not a `position: fixed` `::after` overlay on `.app-shell`? Because
-   surfaces like `.glass-shell` (the header) use `backdrop-filter`, which
-   creates its own stacking context. Children of such surfaces — most
-   notably absolutely-positioned dropdown menus extending below the bar —
-   live inside that context. An overlay on `.app-shell` at any z-index
-   above the surface's z:auto would visually occlude those children
-   (popover backgrounds are translucent, so the tint blends them into
-   oblivion). Anchoring the gradient INSIDE each surface keeps it on the
-   same stacking plane as the surface's content and leaves dropdowns
-   free.
+/* Fluid Glass translation for the editor viewport. The WebGL pass bends the
+   live background along the complete Editor boundary; this CSS layer supplies
+   blur and specular light without ever filtering the editable DOM. */
+[data-editor-fluid-glass="true"] {
+  --editor-fluid-glass-blur: 14px;
+  --editor-fluid-glass-saturate: 1.16;
+  --editor-fluid-glass-shine: 1;
+  position: relative;
+}
 
-   The gradient is captured in a custom property so the per-surface
-   rules below only need a single line each. When
-   `data-glass-gradient="true"` is absent, `--glass-aurora` is never set
-   and the surfaces fall back to no image. Colours come from
-   `--glass-tint-a` (top-left) and `--glass-tint-b` (bottom-right),
-   overridden per color theme in colorThemes.ts. */
-.app-shell[data-glass-enabled="true"][data-glass-gradient="true"] {
-  --glass-aurora:
+[data-editor-fluid-glass="true"]::before {
+  position: absolute;
+  z-index: 1;
+  inset: -6px;
+  content: "";
+  pointer-events: none;
+  opacity: 0;
+  background-image: none;
+  box-shadow: none;
+  filter: none;
+}
+
+/* Chromium does not reliably sample the sibling WebGL canvas when the same
+   element owns both the editor stacking context and backdrop-filter. Keep the
+   filter on this paint-only child so the editable DOM remains untouched. */
+[data-editor-fluid-glass-filter] {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-editor-fluid-glass="true"] > :not([data-editor-fluid-glass-filter]) {
+  position: relative;
+  z-index: 2;
+}
+
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-fluid-glass="true"] {
+  background-image:
     radial-gradient(
-      120% 70% at 8% 0%,
-      color-mix(in oklch, var(--glass-tint-a) 12%, transparent),
-      transparent 54%
+      90% 46% at 8% 0%,
+      color-mix(in oklch, white 5%, transparent),
+      transparent 64%
+    ),
+    linear-gradient(
+      150deg,
+      color-mix(in oklch, var(--primary) 3%, transparent),
+      transparent 42%
+    );
+  border-color: color-mix(in oklch, white 18%, var(--border));
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 24%, transparent),
+    inset 1px 0 0 color-mix(in oklch, #67e8f9 7%, transparent),
+    inset -1px 0 0 color-mix(in oklch, #f0abfc 6%, transparent),
+    0 16px 42px rgb(0 0 0 / 0.1);
+}
+
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-fluid-glass="true"]
+  > [data-editor-fluid-glass-filter] {
+  backdrop-filter: blur(var(--editor-fluid-glass-blur))
+    saturate(var(--editor-fluid-glass-saturate)) contrast(1.03);
+  -webkit-backdrop-filter: blur(var(--editor-fluid-glass-blur))
+    saturate(var(--editor-fluid-glass-saturate)) contrast(1.03);
+}
+
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-fluid-glass="true"]::before {
+  opacity: var(--editor-fluid-glass-shine);
+  background-image:
+    radial-gradient(
+      120% 64% at 4% -8%,
+      color-mix(in oklch, white 12%, transparent),
+      transparent 55%
     ),
     radial-gradient(
-      100% 80% at 100% 20%,
-      color-mix(in oklch, var(--glass-tint-b) 10%, transparent),
-      transparent 58%
+      100% 70% at 104% 104%,
+      color-mix(in oklch, var(--primary) 8%, transparent),
+      transparent 62%
+    ),
+    linear-gradient(
+      135deg,
+      color-mix(in oklch, white 4%, transparent),
+      transparent 38%,
+      color-mix(in oklch, black 4%, transparent)
     );
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 32%, transparent),
+    inset 0 -1px 0 color-mix(in oklch, black 12%, transparent);
+  filter: none;
 }
 
-html[data-glass-enabled="true"],
-html[data-glass-enabled="true"] body {
-  background: transparent;
-}
-
-/* When the glass effect is enabled but a surface's toggle is OFF, that
-   surface must stay SOLID so toggling more surfaces ON intuitively means
-   "more transparency", not less. Without these defaults, `.glass-shell`
-   and `.glass-editor-chrome` (which have no `bg-*` Tailwind class on
-   their JSX) would fall through to the translucent app-shell gradient
-   and look MORE transparent than when their toggle is ON. */
-.app-shell[data-glass-enabled="true"] .glass-shell,
-.app-shell[data-glass-enabled="true"] .glass-editor-chrome {
-  background-color: var(--background);
-}
-
-.app-shell[data-glass-enabled="true"] .glass-surface,
-.app-shell[data-glass-enabled="true"][data-glass-shell="true"] .glass-shell,
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"] .glass-chat,
-.app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-fluid-glass="true"]
+  .glass-editor-body,
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-fluid-glass="true"]
   .glass-editor-chrome {
-  background-color: var(--glass-bg);
-  background-image: var(--glass-aurora);
-  background-attachment: fixed;
-  border-color: var(--glass-border);
-  box-shadow: var(--glass-shadow);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
-}
-
-/* `.glass-shell` (the top-level header) sits ABOVE the DockView container
-   in DOM order, but `backdrop-filter` traps its absolutely-positioned
-   children (dropdown menus extending below the bar) inside its own
-   stacking context. Without an explicit z-index here, the header's whole
-   stacking context renders at z:auto, and the later-painted DockView
-   wrapper covers any dropdowns that overflow downward — making the menus
-   look "invisible". `position: relative; z-index: 30` lifts the entire
-   header context above the dock so dropdowns paint over panel content
-   normally, while staying under Tailwind's z-50 modals/dialogs. */
-.app-shell[data-glass-enabled="true"][data-glass-shell="true"] .glass-shell {
-  position: relative;
-  z-index: 30;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  .glass-region-panel,
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  [data-region-content] {
-  background: var(--glass-bg);
-  border-color: var(--glass-border);
-}
-
-/* v2 layout: panel surfaces inside region slots (replaces Dockview .dv-content-container) */
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  [data-slot-panel] {
-  background: transparent;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  [data-slot-panel]
-  .bg-background:not(.tiptap):not(.ProseMirror),
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  [data-slot-panel]
-  .bg-card {
-  background-color: var(--glass-bg);
-  background-image: var(--glass-aurora);
-  background-attachment: fixed;
-}
-
-/* Tab strip + active sash are visible glass surfaces, so they paint the
-   aurora. The DockView content container itself is just a pass-through
-   stacking parent: its visible children (panel roots with `bg-background`
-   / `bg-card`) already paint the aurora, and adding it here too would
-   double the tint wherever a translucent panel sits on top. */
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  .dv-tabs-and-actions-container,
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"] .dv-active-sash {
-  background-image: var(--glass-aurora);
-  background-attachment: fixed;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  .dv-tabs-and-actions-container,
-.app-shell[data-glass-enabled="true"][data-glass-dock="true"] .dv-active-sash,
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .dv-content-container {
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"] .dv-groupview {
-  background: transparent;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .dv-content-container
-  > * {
-  background: transparent;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .dv-content-container
-  .bg-background:not(.tiptap):not(.ProseMirror),
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .dv-content-container
-  .bg-card {
-  background-color: var(--glass-bg);
-  background-image: var(--glass-aurora);
-  background-attachment: fixed;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
-  .glass-editor-body {
-  background-color: var(--glass-content-bg);
-  background-image: var(--glass-aurora);
-  background-attachment: fixed;
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
-}
-
-/* Chat panel uses the same `--glass-bg` as other panels so its opacity is
-   consistent. The slider (`display.glassTransparency`) is the single source
-   of truth — previously chat had hardcoded 48% / 42% rules that fought with
-   the panels rule and made chat look noticeably more translucent than the
-   surrounding surfaces depending on which toggles were on. */
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"] .glass-chat,
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"]
-  .glass-chat
-  .bg-background {
-  background-color: var(--glass-bg);
-  background-image: var(--glass-aurora);
-  background-attachment: fixed;
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"]
-  .glass-chat
-  .bg-accent\/30 {
-  background-color: color-mix(in oklch, var(--accent) 30%, transparent);
-}
-
-.app-shell[data-glass-enabled="true"][data-glass-chat="true"]
-  .glass-chat
-  input.bg-background {
   background-color: transparent;
+  background-image: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
-.app-shell[data-glass-enabled="true"][data-glass-popovers="true"] .bg-popover,
-.app-shell[data-glass-enabled="true"][data-glass-popovers="true"]
-  [role="dialog"],
-.app-shell[data-glass-enabled="true"][data-glass-popovers="true"]
-  [data-radix-popper-content-wrapper]
-  > *,
-html[data-glass-enabled="true"][data-glass-popovers="true"] .bg-popover,
-html[data-glass-enabled="true"][data-glass-popovers="true"] [role="dialog"],
-html[data-glass-enabled="true"][data-glass-popovers="true"]
-  [data-radix-popper-content-wrapper]
-  > * {
-  background-color: var(--glass-bg-strong);
-  background-image: var(--glass-aurora);
-  background-attachment: fixed;
-  border-color: var(--glass-border);
-  box-shadow: var(--glass-shadow);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
+/* Background-aware editor chrome. It is solid when the ambient background is
+   disabled, and only becomes a lightly blurred pane while a shader is actually
+   present. */
+.editor-background-glass {
+  background-color: var(--background);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
-.app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
-  .border-b.border-border,
-.app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
-  .border-t.border-border {
-  border-color: var(--glass-border);
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  .editor-background-glass {
+  background-color: color-mix(in oklch, var(--background) 10%, transparent);
+  backdrop-filter: blur(6px) saturate(0.9);
+  -webkit-backdrop-filter: blur(6px) saturate(0.9);
 }
 
-@supports not (
-  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
-) {
-  .app-shell[data-glass-enabled="true"] .glass-surface,
-  .app-shell[data-glass-enabled="true"][data-glass-shell="true"] .glass-shell,
-  .app-shell[data-glass-enabled="true"][data-glass-chat="true"] .glass-chat,
-  .app-shell[data-glass-enabled="true"][data-glass-editor-chrome="true"]
-    .glass-editor-chrome {
-    background-color: var(--glass-bg-strong);
-    background-image: var(--glass-aurora);
-    background-attachment: fixed;
-    box-shadow: 0 8px 20px rgb(0 0 0 / 0.12);
-  }
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-editor-fluid-glass="true"]
+  .editor-background-glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.zen-shader-surface > [data-paper-shader],
+.zen-shader-surface canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+/* The element itself (including every glyph and decoration) remains at
+   opacity:1 and is never filtered. */
+.zen-editor-paper {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+}
+
+/* Background-off fallback. The fill resolves to transparent while the live
+   shader is enabled; Glass lighting belongs to the complete Editor surface. */
+.zen-editor-paper::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background: var(--editor-paper-fill, var(--content-background));
+}
+
+.zen-editor-paper[data-zen-editor-column="true"] {
+  min-block-size: 100%;
+}
+
+.zen-settings-preview-paper {
+  z-index: 1;
+  background: var(--content-background);
+  box-shadow: 0 0 0 1px var(--content-border);
 }
 
 /* ───────────────────────────────────────────────────────────
    Card layout system (D案)
 
    `.gx-panel` is applied to every top-level panel surface (tool
-   panels, stripes/rails, the editor). The entire card treatment —
-   radius, dome gradient, rim shadow, canvas — is gated to
-   `[data-card="true"]`, a toggle (display.cardLayout) that is mutually
-   exclusive with the glass effect. When OFF, the legacy splitter-line
-   layout is restored (see the `:not([data-card="true"])` block).
+   panels, stripes/rails, the editor). The card treatment is always active:
+   radius, dome gradient, rim shadow and canvas are part of the base layout.
    ─────────────────────────────────────────────────────────── */
-.app-shell[data-card="true"] .gx-panel {
+.app-shell .gx-panel {
   border-radius: var(--gx-panel-radius);
   background: var(--gx-panel-bg);
+  background-color: var(--card);
   border: var(--gx-panel-border);
   box-shadow: var(--gx-panel-shadow);
+}
+
+/* Non-Editor Glass hosts are stable slot/Stripe wrappers. Keeping the Glass
+   on the wrapper (rather than AnimatedSlotPanel's crossfading keepalive
+   layers) prevents an opaque flash and avoids hidden backdrop-filter layers. */
+.app-shell [data-ambient-glass-surface] {
+  position: relative;
+  isolation: isolate;
+}
+
+.app-shell [data-ambient-glass-surface]::before {
+  position: absolute;
+  z-index: -1;
+  inset: -6px;
+  content: "";
+  pointer-events: none;
+  opacity: 0;
+  background-image: none;
+  box-shadow: none;
+  filter: none;
+}
+
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-workspace-glass-root][data-workspace-fluid-glass="true"]
+  [data-ambient-glass-surface] {
+  background-color: transparent;
+  background-image: none;
+  border-color: color-mix(in oklch, var(--border) 55%, transparent);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 0.1);
+  backdrop-filter: blur(var(--workspace-fluid-glass-blur, 14px))
+    saturate(var(--workspace-fluid-glass-saturate, 1.16)) contrast(1.03);
+  -webkit-backdrop-filter: blur(var(--workspace-fluid-glass-blur, 14px))
+    saturate(var(--workspace-fluid-glass-saturate, 1.16)) contrast(1.03);
 }
 
 /* `--flat` variant: a card with a uniform fill instead of the dome
@@ -558,46 +569,53 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
    gradient bleeds through the transparent ones and leaves the opaque
    ones reading as black boxes. A flat surface keeps all chrome bands
    tonally uniform. Must follow the `.gx-panel` rule to win on order. */
-.app-shell[data-card="true"] .gx-panel--flat {
+.app-shell .gx-panel--flat {
   background: var(--background);
 }
 
 /* Animation wrappers must not clip card shadows into inter-panel gaps. */
-.app-shell[data-card="true"] [data-animated-region] {
+.app-shell [data-animated-region] {
   overflow: visible;
 }
 
-.app-shell[data-card="true"] [data-region-content] {
+.app-shell [data-region-content] {
   overflow: visible;
 }
 
 /* Stripe (side/bottom) は .gx-panel の 1px border をオフにする。border が
    あると stripe 内側の flex 配分域が両端 1px ずつ縮み、content 側の Slot
    Splitter 位置と divider 位置がズレる（content には border が無い）。
-   center stripe は .gx-panel を付けていないため対象外。 */
-.app-shell[data-card="true"] [data-stripe-region].gx-panel {
+   center stripe は data-stripe-region を持たないため対象外。 */
+.app-shell [data-stripe-region].gx-panel {
   border: none;
 }
 
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
-.app-shell[data-card="true"] [data-layout-shell] {
+.app-shell [data-layout-shell] {
   background: var(--gx-canvas-bg);
 }
 
-/* Reveal the dome gradient: a tool panel's own root fill is dropped
-   so the `.gx-panel` background shows. Direct-child scope only — the
-   editor's paper surface and nested inputs keep their fill. tiptap /
-   ProseMirror writing surfaces are always excluded. */
-.app-shell[data-card="true"]
-  [data-slot-panel].gx-panel
+/* Reveal the stable panel host: a tool panel's own root fill is dropped so
+   the host's solid dome or live Glass shows. Direct-child scope only — nested
+   cards and inputs keep their fills. */
+.app-shell
+  [data-ambient-glass-surface="panel"]
   > .bg-background:not(.tiptap):not(.ProseMirror),
-.app-shell[data-card="true"] [data-slot-panel].gx-panel > .bg-card {
+.app-shell [data-ambient-glass-surface="panel"] > .bg-card,
+.app-shell
+  [data-ambient-glass-surface="panel"]
+  > [data-animated-slot-panel]
+  > .bg-background:not(.tiptap):not(.ProseMirror),
+.app-shell
+  [data-ambient-glass-surface="panel"]
+  > [data-animated-slot-panel]
+  > .bg-card {
   background-color: transparent;
 }
 
 /* Dragging a panel lifts the card — a touch more shadow + scale.
    Hover is intentionally left alone (the user rejected hover motion). */
-.app-shell[data-card="true"] .gx-panel--dragging {
+.app-shell .gx-panel--dragging {
   box-shadow:
     0 48px 96px rgba(0, 0, 0, 0.66),
     0 20px 40px rgba(0, 0, 0, 0.5),
@@ -606,28 +624,6 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
     inset 0 -2px 0 rgba(0, 0, 0, 0.5);
   transform: scale(1.01);
   z-index: 10;
-}
-
-/* Card layout OFF — restore the legacy splitter-line chrome. The JSX no
-   longer carries these borders / fills, so they live here, gated to
-   the absence of the card flag. Stripe/center-stripe panels abut
-   the editor with hairline dividers; gaps and radius are all 0. */
-.app-shell:not([data-card="true"])
-  [data-stripe-root]:not([data-stripe-region="center"]),
-.app-shell:not([data-card="true"]) [data-center-stripe] {
-  background-color: color-mix(in oklch, var(--background) 40%, transparent);
-}
-.app-shell:not([data-card="true"]) [data-stripe-region="left"] {
-  border-right: 1px solid var(--border);
-}
-.app-shell:not([data-card="true"]) [data-stripe-region="right"] {
-  border-left: 1px solid var(--border);
-}
-.app-shell:not([data-card="true"]) [data-stripe-region="bottom"] {
-  border-top: 1px solid var(--border);
-}
-.app-shell:not([data-card="true"]) [data-center-stripe] {
-  border-bottom: 1px solid var(--border);
 }
 
 .dockview-theme-dark.dockview-theme-dark {
@@ -777,6 +773,143 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   line-height: inherit;
   user-select: none;
   pointer-events: none;
+}
+/* Alt 押下中（reorder ハンドル表示中）は、同じ inline-start ガターを使う
+   行番号と段落ガター種別アイコンを隠す。.reorder-block-anchor は
+   ReorderInteractionExtension が mode=alt の間だけ最上位ブロックへ付ける
+   node decoration クラスなので、この規則だけで排他が成立し、Alt を離せば
+   即座に両方が戻る。display/content ではなく visibility にするのは
+   カウンタと幾何を一切動かさずリフローゼロで消すため。 */
+.editor-line-numbers .tiptap > .reorder-block-anchor::before {
+  visibility: hidden;
+}
+.tiptap > .reorder-block-anchor .gutter-marks__row {
+  visibility: hidden;
+}
+
+/* 空白・改行の可視化 (editor.showInvisibles)。
+   ShowInvisiblesPlugin の decoration が付けるクラスへマークを重ねる
+   (実文字は残るのでコピー/文字数に影響しない)。
+   display:inline を明示 — inline-block 化は折り返し段落先頭で幻の改行を生む
+   (.gutter-marks / .lint-disable-gutter と同型)。論理プロパティで縦書き追従。 */
+.pm-ws {
+  display: inline;
+  position: relative;
+  /* マーク色 (旧 opacity 0.45 を色へ畳み込み) */
+  --pm-ws-ink: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+}
+.pm-ws-space,
+.pm-ws-ideographic,
+.pm-ws-tab {
+  /* 実空白は見えないようにし、マークだけ描画する */
+  color: transparent;
+}
+
+/* 半角空白 (·) / 全角空白 (□) は「フォント由来グリフ」ではなく CSS 図形で描く。
+   理由: U+00B7 / U+25A1 はプラットフォームのフォントフォールバックに依存し、
+   グリフの advance も ink 位置も環境で変わる。実測で □(U+25A1) は Noto Serif JP
+   に無く、Linux フォールバックでは advance 0.6em・Windows では 2em になる。
+   text-align:center は「グリフの advance」を中央寄せするだけなので、ink が advance
+   内で偏るフォールバックフォント(= ユーザーの Windows 実機)では □/· が横(左)ずれ
+   する — これが「テストは緑・日本語実機だけ左寄り」の真因。
+
+   図形は擬似要素ではなく span 自身の background で描く。background なら
+   包含ブロックを経由せず span ボックスに直接描画でき、図形が点対称なので
+   物理指定の background-position: center が縦書きでもそのまま成立する。span
+   ボックスは空白文字そのもの(=文字間の隙間)なので、図形が span 中央にいれば
+   隙間の中央に見え、全 OS・全フォント・縦横どちらでも一致する。
+   既知のトレードオフ: 要素 background は選択ハイライトの下に描かれるため、
+   範囲選択中はマークがハイライトに沈む（旧 ::before 方式はハイライトの上）。
+   選択中だけの一時的・視覚的差分として許容する。 */
+.pm-ws-space {
+  /* 中黒相当の小さなドット (直径 0.16em) */
+  background-image: radial-gradient(
+    circle at center,
+    var(--pm-ws-ink) calc(0.08em - 0.25px),
+    transparent calc(0.08em + 0.25px)
+  );
+  background-position: center;
+  background-repeat: no-repeat;
+}
+.pm-ws-ideographic {
+  /* 全角スペースの中空四角 (0.5em 角・線幅 1px) — 4 本のストライプで描く */
+  background-image:
+    linear-gradient(var(--pm-ws-ink), var(--pm-ws-ink)),
+    linear-gradient(var(--pm-ws-ink), var(--pm-ws-ink)),
+    linear-gradient(var(--pm-ws-ink), var(--pm-ws-ink)),
+    linear-gradient(var(--pm-ws-ink), var(--pm-ws-ink));
+  background-size:
+    0.5em 1px,
+    0.5em 1px,
+    1px 0.5em,
+    1px 0.5em;
+  background-position:
+    center calc(50% - 0.25em),
+    center calc(50% + 0.25em),
+    calc(50% - 0.25em) center,
+    calc(50% + 0.25em) center;
+  background-repeat: no-repeat;
+}
+
+/* タブ (→) も span 自身の background で描く。グリフ ::before の abspos 方式は
+   vertical-rl で論理 inset-inline-start と物理 top が衝突するため使わない。
+   mask 方式にしないこと: mask は span と内容の描画全体（選択ハイライトや
+   同一 span にマージされる attribution/find 系の background-color を含む）を
+   矢印形に切り抜いてしまう。background-image なら他レイヤーと共存できる。
+   代償として色はテーマ変数に追従できないため、light/dark で SVG を差し替える。
+   矢印は行頭 (inline-start) 寄せ・字送り方向向き。 */
+.pm-ws-tab {
+  /* light: 黒 45% ≈ var(--pm-ws-ink) 相当 */
+  --pm-ws-tab-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1.5 8h12M9.5 4l4 4-4 4' fill='none' stroke='%23000' stroke-opacity='.45' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-image: var(--pm-ws-tab-arrow);
+  background-repeat: no-repeat;
+  background-size: 1em 1em;
+  background-position: left center;
+}
+.dark .pm-ws-tab {
+  --pm-ws-tab-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1.5 8h12M9.5 4l4 4-4 4' fill='none' stroke='%23fff' stroke-opacity='.5' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+/* 縦書き: 字送りは下向きなので矢印も下向き、行頭 = 物理 top。 */
+.editor-vertical .pm-ws-tab {
+  --pm-ws-tab-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5v12M4 9.5l4 4 4-4' fill='none' stroke='%23000' stroke-opacity='.45' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-position: center top;
+}
+.dark .editor-vertical .pm-ws-tab {
+  --pm-ws-tab-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5v12M4 9.5l4 4 4-4' fill='none' stroke='%23fff' stroke-opacity='.5' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+
+/* hardBreak ↵ / 段落末 ¶ — フロー幅ゼロ widget。グリフは ::before で描画。
+   アンカーは安定した包含ブロックを作るため inline-block にする。この widget は実文字を
+   包まない空 span なので inline-block でも幻の改行は生まない — 実文字を包む
+   .pm-ws-space 系の inline 装飾は inline-block 化禁止のまま。 */
+.pm-ws-br,
+.pm-ws-para-end {
+  display: inline-block;
+  inline-size: 0;
+  overflow: visible;
+  vertical-align: baseline;
+  user-select: none;
+  pointer-events: none;
+}
+.pm-ws-br::before,
+.pm-ws-para-end::before {
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-end: 0;
+  line-height: inherit;
+  color: var(--muted-foreground);
+  user-select: none;
+  pointer-events: none;
+}
+.pm-ws-br::before {
+  content: "↵";
+  opacity: 0.45;
+}
+.pm-ws-para-end::before {
+  content: "¶";
+  opacity: 0.35;
+  font-size: 0.9em;
+  margin-inline-start: 0.15em;
 }
 
 .tiptap {
@@ -991,13 +1124,209 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   color: currentColor;
 }
 
-/* Codex highlight decorations (Task 3.6) */
+/* Codex highlight decorations (Task 3.6)
+   cursor は本文装飾全種で help に統一（全種ホバーで詳細ポップオーバーが
+   出るモデルのため。クリックハンドラを持つ装飾は無い）。 */
 .codex-highlight {
-  cursor: pointer;
+  cursor: help;
   transition: opacity 0.15s;
 }
 .codex-highlight:hover {
   opacity: 0.7;
+}
+
+/* Author-defined Codex links are persisted Marks, not automatic match
+   decorations. A double underline keeps the explicit semantic decision
+   visible even when the same span also receives a colored Codex highlight. */
+.codex-semantic-link {
+  cursor: help;
+  text-decoration-line: underline;
+  text-decoration-style: double;
+  text-decoration-color: color-mix(in srgb, var(--primary) 85%, currentColor);
+  text-decoration-thickness: 1px;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+
+/* Local Codex completion is a ProseMirror widget, not document content. It is
+   deliberately quiet and non-interactive so it never competes with IME or
+   selection/copy behavior. */
+.codex-completion-ghost {
+  color: currentColor;
+  opacity: 0.42;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre;
+  writing-mode: inherit;
+  text-orientation: inherit;
+}
+
+/* ── 推敲リオーダー（Alt=段落 / Alt+Shift=文・文節）─────────────────
+   Alt+Shift 押下中に段落内の入れ替え単位を色帯で示す。隣接単位を見分け
+   やすいよう 5 色を循環し、カーソル位置の単位は --primary のリングで強調。
+   単位は grab カーソルにしてドラッグ入れ替えを促す。 */
+:root {
+  --reorder-band-0: color-mix(in oklch, #4a90e2 16%, transparent);
+  --reorder-band-1: color-mix(in oklch, #3ab98a 16%, transparent);
+  --reorder-band-2: color-mix(in oklch, #d9a441 16%, transparent);
+  --reorder-band-3: color-mix(in oklch, #d071a8 16%, transparent);
+  --reorder-band-4: color-mix(in oklch, #9b7fe0 16%, transparent);
+}
+.dark {
+  --reorder-band-0: color-mix(in oklch, #6ea8fe 22%, transparent);
+  --reorder-band-1: color-mix(in oklch, #5fd6a4 22%, transparent);
+  --reorder-band-2: color-mix(in oklch, #e6bd63 22%, transparent);
+  --reorder-band-3: color-mix(in oklch, #e69ac8 22%, transparent);
+  --reorder-band-4: color-mix(in oklch, #b7a2f0 22%, transparent);
+}
+.reorder-unit {
+  cursor: grab;
+  border-radius: 3px;
+  /* インライン装飾は前進幅を変えてはならない。padding/margin を持たせると
+     帯の付与・除去（特に文節モードは unit 数が多く、swap 後の bunsetsu
+     cache miss で一旦帯が消えて prefetch 後に戻る）ごとに横方向へリフロー
+     し「幅方向のちらつき」になる。背景/リングは advance に影響しない
+     box-shadow・outline・background のみで描く。 */
+  /* 折り返した各行片にも背景/角丸/リングを個別に描く。 */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition:
+    background-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.reorder-unit-c0 {
+  background-color: var(--reorder-band-0);
+}
+.reorder-unit-c1 {
+  background-color: var(--reorder-band-1);
+}
+.reorder-unit-c2 {
+  background-color: var(--reorder-band-2);
+}
+.reorder-unit-c3 {
+  background-color: var(--reorder-band-3);
+}
+.reorder-unit-c4 {
+  background-color: var(--reorder-band-4);
+}
+/* 文節モード: 細かい単位であることを示す下線リング（文モードとの視覚差）。 */
+.reorder-unit-bunsetsu {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  outline: 1px dashed color-mix(in srgb, var(--foreground) 18%, transparent);
+  outline-offset: -1px;
+}
+/* 英語 phrase モード: 破線リング（文節と word の中間）。 */
+.reorder-unit-phrase {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  outline: 1px dashed color-mix(in srgb, var(--foreground) 16%, transparent);
+  outline-offset: -1px;
+}
+/* 英語 word モード: 点線リング（文節より細かい単位であることを示す）。 */
+.reorder-unit-word {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  outline: 1px dotted color-mix(in srgb, var(--foreground) 14%, transparent);
+  outline-offset: -1px;
+}
+.reorder-unit-sentence {
+  /* 文モードは背景色帯のみ（上記 c0–c4）。 */
+}
+/* 文字モード: 色帯なし。入れ替え対象（active）の枠のみ。 */
+.reorder-unit-character {
+  background: none !important;
+  padding-inline: 0;
+}
+.reorder-unit-character.reorder-unit-active,
+.reorder-unit-character.reorder-unit-dragging {
+  box-shadow: inset 0 0 0 1.5px var(--primary);
+  border-radius: 2px;
+}
+/* 範囲選択で強制された 1 unit（文/文節）。 */
+.reorder-unit-selection-override {
+  outline: 1.5px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 1px;
+}
+/* カーソル位置の単位を強調（内側リング）。 */
+.reorder-unit-active {
+  box-shadow: inset 0 0 0 1.5px var(--primary);
+  border-radius: 4px;
+}
+.reorder-unit-dragging {
+  cursor: grabbing;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+/* 段落(最上位ブロック)のドラッグハンドル。Alt 押下中のみ描画。
+   inline-start マージン（本文パディング内）へ絶対配置し、本文の折り返しを
+   ずらさない。論理プロパティで縦書き(vertical-rl)にも追従する。 */
+.reorder-block-anchor {
+  position: relative;
+}
+.reorder-block-handle {
+  position: absolute;
+  /* 段落先頭行と垂直整列。gutter 側へ 28px 幅のヒット領域を確保。 */
+  inset-inline-start: -28px;
+  inset-block-start: 0.15em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--muted-foreground);
+  opacity: 0.55;
+  border-radius: 6px;
+  cursor: grab;
+  user-select: none;
+  pointer-events: auto;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background-color 0.12s ease;
+}
+.reorder-block-handle:hover {
+  opacity: 1;
+  color: var(--foreground);
+  background-color: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+.reorder-block-handle:active {
+  cursor: grabbing;
+  background-color: color-mix(in srgb, var(--primary) 22%, transparent);
+}
+.reorder-block-handle svg {
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
+/* ── 本文レイヤーのチャネル色 ──────────────────────────────────
+   Editorパネル Refine (1e→2b): 本文中の装飾チャネル。
+     面   = 帰属 (背景 color-mix、--attribution-* を継続使用)
+     波線 = 校閲の指摘 (校閲+Lint 共通の重要度色 error/warning/info、
+            suggestion は info と同色)
+     点線・破線 = コメント族と自分のメモ (自分のコメント=琥珀点線 /
+            読者コメント=菫点線 / 伏線=破線)
+     文字色 = Codex (タイプ色)
+   旧: 校閲はピンク単色 (--deco-review) の波線だったが、ソースで色を
+   分ける意味が薄いため Lint と統合し重要度スケールへ一本化した。 */
+:root {
+  --deco-comment: #d99a26;
+  --deco-reader-comment: #8b5cf6;
+  --deco-foreshadow-setup: #5b6fd8;
+  --deco-foreshadow-payoff: #2f9e6b;
+  --deco-issue-error: #ef4444;
+  --deco-issue-warning: #d98d1f;
+  --deco-issue-info: #3b82f6;
+}
+.dark {
+  --deco-comment: #e3b04a;
+  --deco-reader-comment: #a78bfa;
+  --deco-foreshadow-setup: #7d8ce8;
+  --deco-foreshadow-payoff: #4ade80;
+  --deco-issue-error: #f87171;
+  --deco-issue-warning: #e8a94a;
+  --deco-issue-info: #60a5fa;
 }
 
 /* Lint diagnostic decorations (squiggly underlines) */
@@ -1009,20 +1338,22 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   cursor: help;
 }
 .lint-deco--error {
-  text-decoration-color: #ef4444;
+  text-decoration-color: var(--deco-issue-error);
 }
 .lint-deco--warning {
-  text-decoration-color: #f59e0b;
+  text-decoration-color: var(--deco-issue-warning);
 }
 .lint-deco--info {
-  text-decoration-color: #3b82f6;
+  text-decoration-color: var(--deco-issue-info);
 }
 
-/* ForeshadowMarks — visible only when showForeshadowMarks is ON */
+/* ForeshadowMarks — visible only when showForeshadowMarks is ON.
+   破線 = 自分のメモチャネル (setup と payoff は色で区別)。 */
 [data-show-foreshadow-marks="true"] [data-foreshadow-setup] {
   text-decoration-line: underline;
-  text-decoration-style: solid;
-  text-decoration-color: #60a5fa; /* blue-400 */
+  text-decoration-style: dashed;
+  text-decoration-color: var(--deco-foreshadow-setup);
+  text-decoration-thickness: 1.5px;
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
   cursor: help;
@@ -1030,49 +1361,129 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 
 [data-show-foreshadow-marks="true"] [data-foreshadow-payoff] {
   text-decoration-line: underline;
-  text-decoration-style: solid;
-  text-decoration-color: #4ade80; /* green-400 */
+  text-decoration-style: dashed;
+  text-decoration-color: var(--deco-foreshadow-payoff);
+  text-decoration-thickness: 1.5px;
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
   cursor: help;
 }
 
-/* PostEffect annotation decorations — wavy underlines, severity-keyed colours */
+/* PostEffect annotation decorations — 校閲チャネルは Lint と同じ重要度色の
+   波線 (error/warning/info。suggestion=info、既定=warning)。
+   pseudo_comment (読者コメント) は指摘ではなくコメント族 — 菫色の点線。
+   旧の文字全体背景は帰属ハイライト (面) と視覚言語が衝突するため廃止。 */
 .pe-annotation {
   text-decoration-line: underline;
   text-decoration-style: wavy;
-  text-decoration-skip-ink: none;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-.pe-annotation-severity-error {
-  text-decoration-color: #ef4444; /* red-500 */
-}
-.pe-annotation-severity-warning {
-  text-decoration-color: #f59e0b; /* amber-500 */
-}
-.pe-annotation-severity-suggestion {
-  text-decoration-color: #60a5fa; /* blue-400 */
-}
-.pe-annotation-severity-info {
-  text-decoration-color: #94a3b8; /* slate-400 / muted */
-}
-/* pseudo_comment は severity 下線ではなくコメント色のハイライトにする。
-   severity rule の後に置いて下線を打ち消す (同 specificity で後勝ち)。 */
-.pe-annotation-pseudo_comment {
-  text-decoration-line: none;
-  background-color: rgb(129 140 248 / 0.16); /* indigo-400 tint */
-  border-radius: 2px;
-}
-
-/* CommentMark decoration — amber wavy underline when showComments is ON */
-.comment-deco {
-  text-decoration-line: underline;
-  text-decoration-style: wavy;
-  text-decoration-color: #f59e0b;
+  text-decoration-color: var(--deco-issue-warning);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
   cursor: help;
+}
+.pe-annotation-severity-error {
+  text-decoration-color: var(--deco-issue-error);
+}
+.pe-annotation-severity-warning {
+  text-decoration-color: var(--deco-issue-warning);
+}
+.pe-annotation-severity-suggestion,
+.pe-annotation-severity-info {
+  text-decoration-color: var(--deco-issue-info);
+}
+/* severity クラスと同居するため 2 クラスで specificity を上げて上書きする */
+.pe-annotation.pe-annotation-pseudo_comment {
+  text-decoration-style: dotted;
+  text-decoration-color: var(--deco-reader-comment);
+  text-decoration-thickness: 1.5px;
+}
+
+/* CommentMark decoration — dotted underline (自分のメモチャネル) */
+.comment-deco {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--deco-comment);
+  text-decoration-thickness: 1.5px;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+/* 段落ガター記号 — コメント/伏線/校閲を含むブロックの先頭に当たりアイコン。
+   幅0の anchor + 論理プロパティ絶対配置で、横書きでは段落左、縦書きでは
+   段落頭の上部余白に回る (lint-disable-gutter と同じ手法)。 */
+
+/* ガター生成レイヤーON時は本文ラッパーの inline-start にアイコン分の余白を
+   予約する（EditorDropDiv の p-4=16px だけでは狭幅時に張り出しがクリップ
+   される）。幅は有効チャネル数から gutterReserveInlineSize が算出し、
+   EditorContentArea が --gutter-reserve で供給する。行番号 (2.5em 予約) と
+   併用時は加算する。縦書きでは論理プロパティにより上余白へ自動追従。 */
+.editor-gutter-reserve {
+  padding-inline-start: var(--gutter-reserve, 0px);
+}
+.editor-line-numbers.editor-gutter-reserve {
+  padding-inline-start: calc(2.5em + var(--gutter-reserve, 0px));
+}
+
+.gutter-marks {
+  /* display:inline (NOT inline-block): a zero-size inline-block atomic box at
+     the paragraph start forces an extra empty line box whenever the paragraph
+     wraps via overflow-wrap:break-word (long unbreakable runs) — a phantom
+     "改行" above the first line in both writing modes. A plain inline anchor
+     participates in the existing line box without spawning one, and still
+     serves as the position:relative containing block for the absolute
+     .gutter-marks__row. width/height are no-ops on inline and dropped. */
+  display: inline;
+  position: relative;
+}
+.gutter-marks__row {
+  position: absolute;
+  inset-inline-end: 0.6em;
+  inset-block-start: 0.25em;
+  display: flex;
+  gap: 2px;
+  pointer-events: auto;
+}
+.gutter-mark {
+  display: flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  opacity: 0.9;
+}
+.gutter-mark svg {
+  display: block;
+}
+.gutter-mark--comment {
+  color: var(--deco-comment);
+  background-color: color-mix(in srgb, var(--deco-comment) 14%, transparent);
+}
+.gutter-mark--foreshadow {
+  color: var(--deco-foreshadow-setup);
+  background-color: color-mix(
+    in srgb,
+    var(--deco-foreshadow-setup) 13%,
+    transparent
+  );
+}
+.gutter-mark--reader {
+  color: var(--deco-reader-comment);
+  background-color: color-mix(
+    in srgb,
+    var(--deco-reader-comment) 12%,
+    transparent
+  );
+}
+.gutter-mark--review {
+  color: var(--deco-issue-warning);
+  background-color: color-mix(
+    in srgb,
+    var(--deco-issue-warning) 12%,
+    transparent
+  );
 }
 
 /* Inline `lintDisable` Mark — regular disable (listed rule IDs) gets a
@@ -1114,11 +1525,12 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
  * `--all` variant uses a slightly stronger fill to flag the broader
  * suppression. */
 .lint-disable-gutter {
-  display: inline-block;
-  width: 0;
-  height: 0;
+  /* display:inline (NOT inline-block): 同じ 0×0 inline-block anchor は
+     .gutter-marks と同様、break-word で折り返す段落先頭で空行を1つ余分に生む
+     (幻の改行)。inline なら既存の行ボックスに参加し行を増やさない。::before の
+     ドットは position:relative アンカーからの絶対配置なので inline でも位置は保つ。 */
+  display: inline;
   position: relative;
-  vertical-align: top;
   pointer-events: auto;
 }
 .lint-disable-gutter::before {
@@ -1157,19 +1569,59 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
  * so the scroll axis flips and writing-mode inherits down to .tiptap, where
  * the logical properties above resolve against vertical-rl. */
 .editor-vertical {
+  /* スクロールコンテナ自身は横書きのまま、右端起点・負方向へ読み進む
+   * 横スクロール軸だけを借りる。縦書きは直下の content wrapper から開始する。
+   * scrollLeft の符号規約（0=右端・負方向=前方）は editorLayout の前提と一致する。 */
+  direction: rtl;
+  /* flex にするのは行長キャップの中央寄せ復元のため: content wrapper の
+   * marginInline: auto（縦書きでは物理上下マージン）は、通常フローだと親の
+   * ブロック軸なので 0 に潰れるが、flex アイテムの交差軸 auto マージンとして
+   * は中央寄せが効く（あふれ時は 0 になり上詰め = safe）。 */
+  display: flex;
+  /* スクロールアンカリング切り: 編集中の DOM 変異でエンジンが視点を動かす
+   * 要因にしかならない（Chromium でも無害）。 */
+  overflow-anchor: none;
+  /* 縦組み用字形 (縦向きの長音符・右上寄せの句読点) を有効化（継承で本文へ届く）。
+     "vpal" は縦組みプロポーショナル字間詰め。 */
+  font-feature-settings:
+    "vert" 1,
+    "vrt2" 1,
+    "vpal" 1;
+}
+/* 縦書きの実体はスクローラ直下の content wrapper から（Zen の ambient layer は
+ * viewport 固定の背景なので除外する。direction は rtl をスクロール軸にだけ借りたので
+ * ltr へ戻す）。
+ * inline-size (物理高さ) はスクロールポートに固定する — orthogonal flow の
+ * 自動解決は content ベースに転ぶことがあり、行が折り返さず列化しなくなる。
+ * block-size (物理幅) は従来どおり列の増加に合わせて content 成長に任せる。 */
+.editor-vertical > :not(.zen-ambient-backdrop) {
   writing-mode: vertical-rl;
+  direction: ltr;
   text-orientation: mixed;
-  font-feature-settings: "vpal";
+  -webkit-text-orientation: mixed;
+  inline-size: 100%;
 }
 .editor-vertical .tiptap ruby rt {
   font-size: 0.5em;
 }
-/* 縦中横（tate-chu-yoko）— TateChuYokoPlugin が当てる .tcy span 内の半角数字を
- * 正立・横並びに結合する。プラグインは縦書き時のみ登録されるが、CSS も
- * .editor-vertical スコープに閉じて二重ガードする（横書きでは no-op）。
+
+/* 縦中横（tate-chu-yoko）— .tcy span 内を正立・横並びに結合する。
+ * .tcy が付く経路は2つ:
+ *  1. TateChuYokoPlugin の自動 decoration（縦書き時のみ登録）。
+ *  2. TcyMark（明示マーク・doc 永続）。横書きでも DOM に出る。
+ * combine は縦書きでのみ意味を持つので .editor-vertical スコープに閉じる。
  * Baseline 2022（全エンジン対応）の native CSS 委譲。 */
 .editor-vertical .tiptap .tcy {
   text-combine-upright: all;
+  /* 縦中横として結合される run には横書き用の下線ヒントを出さない。 */
+  text-decoration: none;
+}
+/* 横書き時の明示縦中横マークの可視化。横書きでは自動 decoration は動かない
+ * ため（useTateChuYoko は縦書き時のみ登録）、この下線は TcyMark 由来の run
+ * だけに乗る。淡い点線で「縦中横の印」を控えめに示す。 */
+.tiptap .tcy {
+  text-decoration: underline dotted var(--muted-foreground);
+  text-underline-offset: 0.15em;
 }
 /* Node islands stay horizontal UI chunks inside the vertical flow
  * (writing-mode reset back to horizontal-tb). pre = code blocks and
@@ -1180,15 +1632,29 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
  * 生成の本編プロセ (novel prose persisted in the doc), so it must inherit
  * vertical-rl — resetting it made AI-drafted scenes render horizontally
  * in vertical linear mode.
- * scene-beat も島ではない: Beat ノードは縦書きフローに参加する（wrapper /
- * header / footer / content が vertical-rl を継承し縦帯になる）。操作
- * ポップオーバーは document.body へ portal される（useAnchoredPopover）ため
- * 縦書きフロー外で、既定の横書き・トリガー矩形基準の fixed 配置で描画される。 */
+ * scene-beat は本文も操作 UI（header / footer / アクションバー / エラー帯）も
+ * まるごと縦書きフローに参加する（vertical-rl を継承し縦帯になる）。操作 UI の
+ * writing-mode は下の別ルールで明示的に vertical-rl へ揃える。操作ポップオーバーは
+ * document.body へ portal される
+ * （useAnchoredPopover）ため縦書きフロー外で、既定の横書き・トリガー矩形基準の
+ * fixed 配置で描画される。 */
 .editor-vertical .tiptap .scene-break,
 .editor-vertical .tiptap table,
 .editor-vertical .tiptap pre,
 .editor-vertical .tiptap ul[data-type="taskList"] {
   writing-mode: horizontal-tb;
+}
+
+/* Beat の操作 UI（header / footer / アクションバー / エラー帯）も本文と同じく縦組みに
+ * する。chrome とその子孫に vertical-rl を明示して縦帯に揃える。SVG アイコンは writing-mode
+ * の影響を受けない。ポップオーバーは body へ portal されるので対象外（横書きのまま）。 */
+.editor-vertical .tiptap [data-type="scene-beat"] > header,
+.editor-vertical .tiptap [data-type="scene-beat"] > footer,
+.editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider,
+.editor-vertical .tiptap [data-type="scene-beat"] > header *,
+.editor-vertical .tiptap [data-type="scene-beat"] > footer *,
+.editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
+  writing-mode: vertical-rl;
 }
 
 /* Beat ノードのブロック軸スタイル — Tailwind コアに block 軸の論理
@@ -1453,6 +1919,14 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .typewriter-padding .tiptap {
   padding-top: 50vh;
   padding-bottom: 50vh;
+}
+/* 縦書き (vertical-rl) は列が右→左に流れるので、先頭/末尾の列を水平中央まで
+   スクロールできるよう水平パディングに切り替える (縦パディングは打ち消す)。 */
+.typewriter-padding.editor-vertical .tiptap {
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-left: 50vw;
+  padding-right: 50vw;
 }
 
 /* Revision diff display (F-8) */
@@ -1801,4 +2275,30 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ── Electron シェル: data-tauri-drag-region → app-region 写像 ────────────
+   (Electron移行Phase2設計書 §6.2。JSX 無変更で、main.tsx が立てる
+   html[data-shell="electron"] でのみ有効。Tauri の属性は「その要素自身への
+   mousedown」だけだが CSS app-region は子孫まで drag 化するため、2 つ目の
+   セレクタで子孫の対話要素を no-drag に戻して差分吸収する。) */
+html[data-shell="electron"] [data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+html[data-shell="electron"]
+  [data-tauri-drag-region]
+  :where(
+    button,
+    a,
+    input,
+    select,
+    textarea,
+    [role="button"],
+    [role="menuitem"],
+    [data-tauri-drag-region="false"]
+  ) {
+  -webkit-app-region: no-drag;
+}
+html[data-shell="electron"] [data-tauri-drag-region="false"] {
+  -webkit-app-region: no-drag;
 }

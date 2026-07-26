@@ -10,6 +10,7 @@ import {
   CARET_SLIDE_DURATION_DEFAULT,
   CARET_SLIDE_SNAPPINESS_DEFAULT,
   applyCaretSlideVars,
+  clampCaretSlideDuration,
 } from "./caretSlideStyle";
 
 /**
@@ -58,6 +59,17 @@ export function useCursorOverlay(editor: Editor | null) {
           useSettingsStore.getState().getBoolean("editor.cursorBlink", true),
         () =>
           useSettingsStore.getState().getBoolean("editor.verticalMode", false),
+        // 高速入力検出の閾値。実効スライド時間 (CSS 変数と同じクランプ値) を
+        // 使うことで「スライドが追いつけない速さ」をそのまま基準にする。
+        () =>
+          clampCaretSlideDuration(
+            useSettingsStore
+              .getState()
+              .getNumber(
+                "editor.caretSlideDuration",
+                CARET_SLIDE_DURATION_DEFAULT,
+              ),
+          ),
       ),
     );
     return () => {

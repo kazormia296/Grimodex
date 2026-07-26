@@ -68,7 +68,7 @@ Workspace は DB エンティティではない。実体は以下を含むディ
 ### Project 作成行の起点
 
 `grimodex.db` 初期化時、Rust マイグレーション
-（`src-tauri/src/database/migrate.rs`）が
+（`src-tauri/crates/grimodex-db/src/migrate.rs`）が
 `INSERT OR IGNORE INTO projects ... VALUES ('default-project', ...)` で
 `default-project` 行を常設する。サンプルワークスペース生成時のみ
 `src-tauri/src/commands/onboarding.rs` が独自 `project_id` で置き換える。
@@ -280,7 +280,7 @@ per-project 化、Rust 側の変更（`default-project` 常設はそのまま）
 - **新規テスト**：2 つ目の Project 行と双方の codex/snippet を作り、
   `listCodexEntries` / `listSnippets` が `currentProjectId` 側のみ返すことを検証
   （潜在リークバグ修正の回帰防止）。
-- `pnpm tauri dev` — ワークスペースを開き、tree / codex / snippet / chat / grid /
+- `pnpm electron:dev` — ワークスペースを開き、tree / codex / snippet / chat / grid /
   map / foreshadow / trash / lint が従来どおり表示されることを目視確認。
 
 ---

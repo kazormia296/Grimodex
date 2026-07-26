@@ -13,6 +13,10 @@ import {
   Activity,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import {
+  ZEN_BACKGROUND_DEFAULTS,
+  ZEN_BACKGROUND_DEFAULT_SHADER_PROPS,
+} from "@/features/editor/zen/zenBackgroundDefaults";
 
 export type SettingsCategory =
   | "project"
@@ -63,6 +67,65 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.maxContentWidth": "global",
   "editor.paragraphSpacing": "global",
   "editor.typewriterMode": "global",
+  "editor.zenMode": "global",
+  "editor.zenBackground.enabled": "global",
+  "editor.zenBackground.shader": "global",
+  "editor.zenBackground.paletteMode": "global",
+  "editor.zenBackground.opacity": "global",
+  "editor.zenBackground.speed": "global",
+  "editor.zenBackground.speedPercent": "global",
+  "editor.zenBackground.shaderProps": "global",
+  "editor.zenBackground.scale": "global",
+  "editor.zenBackground.rotation": "global",
+  "editor.zenBackground.offsetX": "global",
+  "editor.zenBackground.offsetY": "global",
+  "editor.zenBackground.color1": "global",
+  "editor.zenBackground.color2": "global",
+  "editor.zenBackground.color3": "global",
+  "editor.zenBackground.color4": "global",
+  "editor.zenBackground.colorBack": "global",
+  "editor.zenBackground.mesh.distortion": "global",
+  "editor.zenBackground.mesh.swirl": "global",
+  "editor.zenBackground.mesh.grainMixer": "global",
+  "editor.zenBackground.mesh.grainOverlay": "global",
+  "editor.zenBackground.grain.softness": "global",
+  "editor.zenBackground.grain.intensity": "global",
+  "editor.zenBackground.grain.noise": "global",
+  "editor.zenBackground.grain.shape": "global",
+  "editor.zenBackground.neuro.brightness": "global",
+  "editor.zenBackground.neuro.contrast": "global",
+  "editor.zenBackground.warp.proportion": "global",
+  "editor.zenBackground.warp.softness": "global",
+  "editor.zenBackground.warp.distortion": "global",
+  "editor.zenBackground.warp.swirl": "global",
+  "editor.zenBackground.warp.swirlIterations": "global",
+  "editor.zenBackground.warp.shape": "global",
+  "editor.zenBackground.warp.shapeScale": "global",
+  "editor.zenBackground.staticMesh.positions": "global",
+  "editor.zenBackground.staticMesh.waveX": "global",
+  "editor.zenBackground.staticMesh.waveXShift": "global",
+  "editor.zenBackground.staticMesh.waveY": "global",
+  "editor.zenBackground.staticMesh.waveYShift": "global",
+  "editor.zenBackground.staticMesh.mixing": "global",
+  "editor.zenBackground.staticMesh.grainMixer": "global",
+  "editor.zenBackground.staticMesh.grainOverlay": "global",
+  "editor.zenBackground.dither.enabled": "global",
+  "editor.zenBackground.dither.strength": "global",
+  "editor.zenBackground.dither.size": "global",
+  "editor.zenBackground.dither.levels": "global",
+  "editor.zenBackground.halftone.enabled": "global",
+  "editor.zenBackground.halftone.strength": "global",
+  "editor.zenBackground.halftone.size": "global",
+  "editor.zenBackground.halftone.angle": "global",
+  "editor.zenBackground.halftone.softness": "global",
+  "editor.zenBackground.contrastGuard.mode": "global",
+  "editor.zenBackground.contrastGuard.strength": "global",
+  "editor.zenBackground.contrastGuard.toolMix": "global",
+  "editor.zenBackground.glass.enabled": "global",
+  "editor.zenBackground.glass.blur": "global",
+  "editor.zenBackground.glass.refraction": "global",
+  "editor.zenBackground.glass.saturation": "global",
+  "editor.zenBackground.glass.shine": "global",
   "editor.focusMode": "global",
   "editor.autoSaveDelay": "global",
   "editor.spellCheck": "global",
@@ -83,6 +146,12 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.sceneMetaPanelWidth": "global",
   "editor.linearBeatDisplay": "global",
   "editor.showLineNumbers": "global",
+  "editor.aozoraInput": "global",
+  "editor.showInvisibles": "global",
+  "editor.codexCompletion": "global",
+  "editor.promptCodexReadingOnRuby": "global",
+  "editor.autoPairBrackets": "global",
+  "editor.codexPopoverOnCaret": "global",
   // Editor — work-specific (project)
   "editor.targetCharCount": "project",
   "editor.wordBreak": "project",
@@ -104,22 +173,25 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "display.showWordCount": "global",
   "display.showAiBadge": "global",
   "display.reduceMotion": "global",
-  "display.cardLayout": "global",
-  "display.glassEffectEnabled": "global",
-  "display.glassTransparency": "global",
-  "display.glassBackdropGradient": "global",
-  "display.glassNativeVibrancy": "global",
-  "display.glassSurfaceShell": "global",
-  "display.glassSurfaceDock": "global",
-  "display.glassSurfacePanels": "global",
-  "display.glassSurfaceChat": "global",
-  "display.glassSurfacePopovers": "global",
-  "display.glassSurfaceEditorChrome": "global",
   "display.codexHighlight": "global",
   "display.codexHighlightStyle": "global",
+  "display.codexHighlightOpacity": "global",
   "display.attributionHighlightOpacity": "global",
+  // 本文レイヤーの表示トグル (Editorパネル Refine 1c で永続化を統一)
+  "display.layerAttribution": "global",
+  "display.layerComments": "global",
+  "display.layerReaderComments": "global",
+  "display.layerForeshadow": "global",
+  "display.layerReview": "global",
+  "display.layerLint": "global",
+  // 本文レイヤーのパネル連動 (Auto) モード
+  "display.layerAutoFollow": "global",
   // Codex — user preference (global)
   "codex.entryTitleFont": "global",
+  // IME dictionary bridge — OS/user environment preference (cross-workspace).
+  "ime.integrationMode": "global",
+  "ime.excludeHidden": "global",
+  "ime.includeProfile": "global",
   // AI — user preference (global)
   "ai.inlineModel": "global",
   "ai.sessionTitleModel": "global",
@@ -217,6 +289,11 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "export.sceneBreakCustom": "project",
   // Timelapse — work-specific (project)
   "timelapse.enabled": "project",
+  // Vivliostyle（本の書き出し）— CLI バイナリパスはユーザー環境依存 (global)、
+  // テーマ/形式は作品の体裁 (project)
+  "vivliostyle.binaryPath": "global",
+  "vivliostyle.theme": "project",
+  "vivliostyle.format": "project",
 };
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
@@ -229,6 +306,101 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.maxContentWidth": "720",
   "editor.paragraphSpacing": "8",
   "editor.typewriterMode": "false",
+  "editor.zenMode": "false",
+  // 通常/Zenで共有するPaper shader。背景表示中は本文面を全面Glassにする。
+  "editor.zenBackground.enabled": String(ZEN_BACKGROUND_DEFAULTS.enabled),
+  "editor.zenBackground.shader": ZEN_BACKGROUND_DEFAULTS.shader,
+  "editor.zenBackground.paletteMode": ZEN_BACKGROUND_DEFAULTS.paletteMode,
+  "editor.zenBackground.opacity": String(ZEN_BACKGROUND_DEFAULTS.opacity),
+  "editor.zenBackground.speed": String(ZEN_BACKGROUND_DEFAULTS.legacySpeed),
+  "editor.zenBackground.speedPercent": String(
+    ZEN_BACKGROUND_DEFAULTS.speedPercent,
+  ),
+  "editor.zenBackground.shaderProps": JSON.stringify(
+    ZEN_BACKGROUND_DEFAULT_SHADER_PROPS,
+  ),
+  "editor.zenBackground.scale": String(ZEN_BACKGROUND_DEFAULTS.scale),
+  "editor.zenBackground.rotation": String(ZEN_BACKGROUND_DEFAULTS.rotation),
+  "editor.zenBackground.offsetX": String(ZEN_BACKGROUND_DEFAULTS.offsetX),
+  "editor.zenBackground.offsetY": String(ZEN_BACKGROUND_DEFAULTS.offsetY),
+  "editor.zenBackground.color1": ZEN_BACKGROUND_DEFAULTS.colors[0],
+  "editor.zenBackground.color2": ZEN_BACKGROUND_DEFAULTS.colors[1],
+  "editor.zenBackground.color3": ZEN_BACKGROUND_DEFAULTS.colors[2],
+  "editor.zenBackground.color4": ZEN_BACKGROUND_DEFAULTS.colors[3],
+  "editor.zenBackground.colorBack": ZEN_BACKGROUND_DEFAULTS.colorBack,
+  "editor.zenBackground.mesh.distortion": "0.7",
+  "editor.zenBackground.mesh.swirl": "0.25",
+  "editor.zenBackground.mesh.grainMixer": "0",
+  "editor.zenBackground.mesh.grainOverlay": "0",
+  "editor.zenBackground.grain.softness": "0.75",
+  "editor.zenBackground.grain.intensity": "0.35",
+  "editor.zenBackground.grain.noise": "0.12",
+  "editor.zenBackground.grain.shape": ZEN_BACKGROUND_DEFAULTS.grainShape,
+  "editor.zenBackground.neuro.brightness": "0.1",
+  "editor.zenBackground.neuro.contrast": "0.35",
+  "editor.zenBackground.warp.proportion": "0.5",
+  "editor.zenBackground.warp.softness": "0.8",
+  "editor.zenBackground.warp.distortion": "0.2",
+  "editor.zenBackground.warp.swirl": "0.5",
+  "editor.zenBackground.warp.swirlIterations": "6",
+  "editor.zenBackground.warp.shape": "edge",
+  "editor.zenBackground.warp.shapeScale": "0.4",
+  "editor.zenBackground.staticMesh.positions": "35",
+  "editor.zenBackground.staticMesh.waveX": "0.5",
+  "editor.zenBackground.staticMesh.waveXShift": "0.25",
+  "editor.zenBackground.staticMesh.waveY": "0.55",
+  "editor.zenBackground.staticMesh.waveYShift": "0.65",
+  "editor.zenBackground.staticMesh.mixing": "0.65",
+  "editor.zenBackground.staticMesh.grainMixer": "0",
+  "editor.zenBackground.staticMesh.grainOverlay": "0",
+  "editor.zenBackground.dither.enabled": String(
+    ZEN_BACKGROUND_DEFAULTS.dither.enabled,
+  ),
+  "editor.zenBackground.dither.strength": String(
+    ZEN_BACKGROUND_DEFAULTS.dither.strength,
+  ),
+  "editor.zenBackground.dither.size": String(
+    ZEN_BACKGROUND_DEFAULTS.dither.size,
+  ),
+  "editor.zenBackground.dither.levels": String(
+    ZEN_BACKGROUND_DEFAULTS.dither.levels,
+  ),
+  "editor.zenBackground.halftone.enabled": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.enabled,
+  ),
+  "editor.zenBackground.halftone.strength": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.strength,
+  ),
+  "editor.zenBackground.halftone.size": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.size,
+  ),
+  "editor.zenBackground.halftone.angle": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.angle,
+  ),
+  "editor.zenBackground.halftone.softness": String(
+    ZEN_BACKGROUND_DEFAULTS.halftone.softness,
+  ),
+  "editor.zenBackground.contrastGuard.mode":
+    ZEN_BACKGROUND_DEFAULTS.contrastGuard.mode,
+  "editor.zenBackground.contrastGuard.strength": String(
+    ZEN_BACKGROUND_DEFAULTS.contrastGuard.strength,
+  ),
+  "editor.zenBackground.contrastGuard.toolMix": String(
+    ZEN_BACKGROUND_DEFAULTS.contrastGuard.toolMix,
+  ),
+  "editor.zenBackground.glass.enabled": String(
+    ZEN_BACKGROUND_DEFAULTS.glass.enabled,
+  ),
+  "editor.zenBackground.glass.blur": String(ZEN_BACKGROUND_DEFAULTS.glass.blur),
+  "editor.zenBackground.glass.refraction": String(
+    ZEN_BACKGROUND_DEFAULTS.glass.refraction,
+  ),
+  "editor.zenBackground.glass.saturation": String(
+    ZEN_BACKGROUND_DEFAULTS.glass.saturation,
+  ),
+  "editor.zenBackground.glass.shine": String(
+    ZEN_BACKGROUND_DEFAULTS.glass.shine,
+  ),
   "editor.focusMode": "false",
   "editor.autoSaveDelay": "2000",
   "editor.spellCheck": "false",
@@ -258,6 +430,20 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.sceneMetaPanelWidth": "20",
   "editor.linearBeatDisplay": "collapsed",
   "editor.showLineNumbers": "false",
+  // 青空文庫記法(｜親《ふりがな》/漢字《ふりがな》自動/《《傍点》》)の入力時自動変換。既定ON。
+  "editor.aozoraInput": "true",
+  // 空白・改行(¶/↵/半角・全角空白/タブ)の可視化。既定OFF。
+  "editor.showInvisibles": "false",
+  // Codex name/alias ghost completion. Local only; no AI or translation.
+  "editor.codexCompletion": "true",
+  // 手動ルビを未設定の Codex 読みとして登録する確認。ユーザー設定で停止可能。
+  "editor.promptCodexReadingOnRuby": "true",
+  // 約物ペア(「」『』（）等)の自動補完。既定ON。
+  "editor.autoPairBrackets": "true",
+  // キャレットが Codex ハイライトに入ったときのポップオーバー表示
+  // （キーボード操作者向けのオプトイン）。マウスホバーは設定に関わらず常に
+  // 有効。執筆中にキャレット移動で開くのは煩わしいため既定OFF。
+  "editor.codexPopoverOnCaret": "false",
   "editor.paragraphIndent": "0",
   "editor.verticalMode": "false",
   // 縦中横（縦書き時に半角数字を正立結合）。既定は出版物の慣習に最も近い
@@ -277,24 +463,29 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "display.showWordCount": "true",
   "display.showAiBadge": "false",
   "display.reduceMotion": "false",
-  "display.cardLayout": "true",
-  "display.glassEffectEnabled": "false",
-  "display.glassTransparency": "30",
-  "display.glassBackdropGradient": "true",
-  "display.glassNativeVibrancy": "true",
-  "display.glassSurfaceShell": "true",
-  "display.glassSurfaceDock": "true",
-  "display.glassSurfacePanels": "true",
-  "display.glassSurfaceChat": "true",
-  "display.glassSurfacePopovers": "true",
-  "display.glassSurfaceEditorChrome": "true",
   "display.codexHighlight": "true",
   "display.codexHighlightStyle": "color-text",
+  // Codex ハイライト(背景スタイル)の濃度。10 = パレット設計値そのまま
+  // (codexHighlightBackground が 10 未満を透明側、10 超を fg 混合で解決)
+  "display.codexHighlightOpacity": "10",
   "display.attributionHighlightOpacity": "10",
+  // 本文レイヤー表示の既定: 校閲・Lint・読者コメントはON、帰属・コメント・伏線はOFF
+  // （従来の各ストア初期値と同じ。以後はトグルが write-through で永続化）
+  "display.layerAttribution": "false",
+  "display.layerComments": "false",
+  "display.layerReaderComments": "true",
+  "display.layerForeshadow": "false",
+  "display.layerReview": "true",
+  "display.layerLint": "true",
+  "display.layerAutoFollow": "false",
   // Codex — エントリタイトル(名称欄)のフォント。空 = 言語別の既定に追従
   // (codexNameFont が ja=駅名標 / en=Helvetica系 を解決)。ユーザーが明示選択した
   // 値が勝つ。ピッカーでは空が「デフォルト (<言語の既定フォント名>)」として表示される。
   "codex.entryTitleFont": "",
+  // IME dictionary bridge: auto activates only when a consumer handshake exists.
+  "ime.integrationMode": "auto",
+  "ime.excludeHidden": "false",
+  "ime.includeProfile": "true",
   // AI
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",
@@ -370,6 +561,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // Timelapse — record changes for this project (default on, preserves
   // the previous always-on behaviour; legacy projects with no row read on).
   "timelapse.enabled": "true",
+  // Vivliostyle（本の書き出し）
+  "vivliostyle.binaryPath": "",
+  "vivliostyle.theme": "bunko-vertical",
+  "vivliostyle.format": "pdf",
 };
 
 /**

@@ -49,21 +49,24 @@ describe("getPromptCatalog en wiring", () => {
     expect(en.chatSystem.typeLabels.character).toBe("Character");
   });
 
-  it("en L1 trim markers match how contextBuilder assembles the en L1 block", () => {
-    // contextBuilder builds L1 as `${headers.projectInfo}\n${labels.title}: ...`
-    // with the style guide as `${labels.styleGuide}:\n<value>`. The en L1 removable
-    // patterns must match that en text or trimming silently no-ops for en projects.
+  it("en L1 trim markers cover reference metadata but never author policy", () => {
     const h = en.chatSystem.headers;
     const l = en.chatSystem.labels;
     const l1Block =
       `${h.projectInfo}\n${l.title}: T\n${l.genre}: Fantasy\n` +
-      `${l.styleGuide}:\nbe concise and vivid`;
+      `${l.pov}: Third Person`;
     const matched = en.chatSystem.trimMarkers.l1.removablePatterns.some((re) =>
       re.test(l1Block),
     );
-    expect(matched, "an en L1 pattern should match the style-guide block").toBe(
+    expect(matched, "an en L1 pattern should match reference metadata").toBe(
       true,
     );
+    const authorPolicy = `${l.styleGuide}:\nbe concise and vivid\n${l.aiInstructions}:\navoid spoilers`;
+    expect(
+      en.chatSystem.trimMarkers.l1.removablePatterns.some((re) =>
+        re.test(authorPolicy),
+      ),
+    ).toBe(false);
   });
 
   it("en L3 body-header regex matches the en scene-body header", () => {
@@ -106,5 +109,19 @@ describe("getPromptCatalog en wiring", () => {
         1,
       );
     }
+  });
+
+  it("consistency/typo/intra prompts pin the explicit empty-array instruction (ja/en)", () => {
+    // 弱いローカル LLM は「該当なし」を {} やキー省略で返しがちで、期待キー
+    // 欠落 → scene 失敗 → プロジェクト全体チェック失敗の一因だった。
+    // 「空配列を返せ」の指示行を ja/en 両方で固定する (落とすと再発する)。
+    expect(JA_POST_EFFECT.consistencySystem).toContain('"violations" を空配列');
+    expect(JA_POST_EFFECT.typoSystem).toContain('"issues" を空配列');
+    expect(JA_POST_EFFECT.intraSystem).toContain('"pairs" を空配列');
+    expect(EN_POST_EFFECT.consistencySystem).toContain(
+      'empty "violations" array',
+    );
+    expect(EN_POST_EFFECT.typoSystem).toContain('empty "issues" array');
+    expect(EN_POST_EFFECT.intraSystem).toContain('empty "pairs" array');
   });
 });

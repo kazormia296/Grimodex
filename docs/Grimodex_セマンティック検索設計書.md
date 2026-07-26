@@ -9,7 +9,7 @@
 さらに Codex エントリのセマンティック検索と、チャット文脈への自動注入（Layer 4 RAG・
 dense+sparse ハイブリッド）まで拡張済み。
 
-実装上流のタスクコンテキストは [`temp/semantic-prose-search-context.md`](../temp/semantic-prose-search-context.md)。
+実装上流のタスクコンテキスト（作業用メモ `temp/semantic-prose-search-context.md`）は非追跡のため本リポジトリには含まれない。
 本書は **実装で確定した最終形** をまとめる正本であり、上流コンテキストとの差分
 （実装中に追加された防御層など）も明記する。
 
@@ -74,36 +74,39 @@ localStorage に保持する。`SearchDialog.tsx` ラッパーが store の値�
         │ 全再構築 → semanticReindexAll(...)        // progress event
         ▼
 [features/semantic-search]  ─────── frontend
-        │ invoke('semantic_*', ...) / listen('semantic:reindex_progress')
+        │ invoke('semantic_*', ...) / listen('semantic:*_progress')
         ▼
-[commands/semantic.rs]      ─────── Rust Tauri commands (feature-gated)
-        │
-        │ ┌──────────────────────────────────────┐
-        │ │ SemanticEmbedderState                 │  ONNX Session (lazy, dir_name 別)
-        │ │  Mutex<HashMap<&str, Embedder>>       │   (ja=ruri / en=bge を同居キャッシュ)
-        │ └──────────────────────────────────────┘
-        │ ┌──────────────────────────────────────┐
-        │ │ SearchCache / CodexSearchCache        │  scene_id / entry_id → CacheEntry
-        │ │  Mutex<HashMap<id, CacheEntry>>       │   (model/dim/version 付き)
-        │ └──────────────────────────────────────┘
-        │
+[Tauri commands/semantic.rs]        [Electron grimodex-node]
+        │ thin adapter                       │ thin N-API adapter
+        └──────────────┬─────────────────────┘
+                       │ SemanticRequest = pinned DB Arc + cache epoch
+                       ▼
+[grimodex-semantic::runtime::SemanticRuntime]
+        │ ├─ explicit SemanticPaths (bundled root / appData models root)
+        │ ├─ lazy Embedder map + model-download in-flight
+        │ ├─ SemanticEpoch { scene / codex / events / chat caches }
+        │ ├─ per generation/domain/project/model reindex single-flight
+        │ └─ EventSink → semantic:model_download_progress / reindex_progress
         ▼
-[semantic::spec]      project language → EmbeddingModelSpec (ja/en)
-[semantic::chunker(_en)] ProseMirror JSON → ChunkerConfig → Vec<SceneChunk>
-[semantic::embedding] tokenizer + ONNX inference (spec 駆動) → L2 正規化済み Vec<f32>
-[semantic::index]     content_hash 検証 + DELETE/INSERT トランザクション
-[semantic::search]    cache + コサイン Top-K + dialogue_ratio 減点
+[grimodex-semantic::spec] project language → EmbeddingModelSpec (ja/en)
+[grimodex-semantic::chunker(_en)] ProseMirror JSON → ChunkerConfig → Vec<SceneChunk>
+[grimodex-semantic::embedding] tokenizer + ONNX inference → L2 正規化済み Vec<f32>
+[grimodex-semantic::{index,search,...}] content_hash検証 + upsert + cosine Top-K
         ▼
-SQLite (scene_chunks / codex_chunks テーブル)
+SQLite (scene_chunks / codex_chunks / event_chunks / chat_message_chunks)
 ```
 
-* **Rust 側はすべて `semantic-embedding` Cargo feature の中**。
-  `--no-default-features` 環境では `commands/semantic.rs` ごと外れる。
-  pure logic (`semantic::index::upsert_*`, `semantic::search::run_search`) は
-  Embedder に依存しないので `cargo test --no-default-features` で完全に検証できる。
-* **Tauri State の取得は `AppHandle` 経由**。`tauri::async_runtime::spawn_blocking`
-  が `Send + 'static` を要求し、`tauri::State<'_, T>` の lifetime を持ち越せないため、
-  closure に `AppHandle` を move して内部で `app.state::<T>()` で取り直す。
+* 共有crateのDB/chunker/search/cache/status/previewはfeature非依存で、ONNX/tokenizer/download
+  だけを`semantic-embedding`で有効化する。したがってfeature-offでもpure logicと
+  epoch/single-flightの大半を検証できる。Tauri command公開は従来どおりfeature gate下、
+  Electron native通常buildはfeatureを明示的に有効化する。
+* download以外の18コマンドは、adapterがblocking poolへ投入する前に
+  `SemanticRuntime::pin_request`を呼ぶ。epoch snapshot→active DB Arc pin→generation再確認を
+  lock非保持で行い、切替と競合したらretryする。worker内でAppHandle/WorkspaceStateを
+  再解決しないため、1コマンドがworkspaceやcache epochを跨がない。
+* `open_workspace`のswap hookと`restore_backup`の再活性化hookは4cacheを個別clearせず、
+  `rotate_workspace_epoch()`で新しいcache集合へ原子的に切り替える。旧taskは旧epochを保持した
+  まま完了できるが、そのlate putは新workspaceから不可視になる。
 
 ---
 
@@ -112,7 +115,7 @@ SQLite (scene_chunks / codex_chunks テーブル)
 ### `scene_chunks` テーブル
 
 Drizzle 定義: `src/db/schema.ts` (`sceneChunks`)、
-Rust マイグレーション: `src-tauri/src/database/migrate.rs` の trash_items の直後に
+Rust マイグレーション: `src-tauri/crates/grimodex-db/src/migrate.rs` の trash_items の直後に
 同じ `execute_batch` 内で `CREATE TABLE IF NOT EXISTS scene_chunks ...` として追加。
 
 | カラム | 型 | 説明 |
@@ -129,7 +132,7 @@ Rust マイグレーション: `src-tauri/src/database/migrate.rs` の trash_ite
 | `model_id` | TEXT | 例: `cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1` |
 | `content_hash` | TEXT | シーン本文の SHA-256 hex (race condition 検出) |
 | `chunker_version` | TEXT | 例: `semantic-prose-chunker-v1` |
-| `created_at` | INTEGER | ms-since-epoch（Drizzle `mode: "timestamp"` と一致） |
+| `created_at` | INTEGER | ms-since-epoch（Drizzle `mode: "timestamp_ms"` と一致） |
 | `updated_at` | INTEGER | 同上 |
 
 インデックス:
@@ -168,7 +171,7 @@ DB スキーマ詳細（`scene_chunks` / `codex_chunks` の完全な DDL）は
 
 ## チャンク化戦略
 
-実装: `src-tauri/src/semantic/chunker.rs`。
+実装: `src-tauri/crates/grimodex-semantic/src/chunker.rs`。
 バージョン定数 `CHUNKER_VERSION = "semantic-prose-chunker-v1"`。
 **ProseMirror / TipTap JSON 起点で行う**（生 plain_text から再構築しない）。
 
@@ -234,8 +237,8 @@ DB スキーマ詳細（`scene_chunks` / `codex_chunks` の完全な DDL）は
 
 ## 埋め込みモデル
 
-実装: `src-tauri/src/semantic/embedding.rs`。モデル/言語固有のパラメータは
-`src-tauri/src/semantic/spec.rs` (`EmbeddingModelSpec`) に集約する。
+実装: `src-tauri/crates/grimodex-semantic/src/embedding.rs`。モデル/言語固有のパラメータは
+同crateの`spec.rs` (`EmbeddingModelSpec`) に集約する。
 
 ### 採用モデル（言語別 2 モデル体制 / 2026-06-18 追記）
 
@@ -298,7 +301,7 @@ spec に従って分岐する（以下は日本語 ruri の例。英語 bge は 
 5. **L2 正規化**
 
 L2 正規化済み出力同士はドット積 = コサイン類似度になるため、検索時のスコアリングは
-`semantic::search::dot_product` で済む。
+`grimodex_semantic::search::dot_product` で済む。
 
 ### 検収条件（golden test）
 
@@ -317,8 +320,9 @@ golden が落ちたまま検索 UI へ進むことは禁止 (§2.2)。
 
 ## インデックス更新
 
-実装: `src-tauri/src/semantic/index.rs` (pure logic) +
-`commands/semantic.rs::semantic_index_scene` (Tauri command)。
+実装本体: `src-tauri/crates/grimodex-semantic/src/index.rs` + `runtime.rs`。
+入口はTauri `src-tauri/src/commands/semantic.rs`とElectron
+`electron/native/grimodex-node/src/lib.rs`の薄いadapter。
 
 ### フロー
 
@@ -407,8 +411,8 @@ t4: t2 の embed が新たに開始
 
 ## 検索パイプライン
 
-実装: `src-tauri/src/semantic/search.rs` (pure logic) +
-`commands/semantic.rs::semantic_search`。
+実装本体: `src-tauri/crates/grimodex-semantic/src/search.rs` + `runtime.rs`。
+Tauri/N-API adapterはいずれも開始時に同じ`SemanticRequest`をpinして呼ぶ。
 
 ### 1. クエリの埋め込み
 
@@ -436,7 +440,9 @@ stale (識別子不一致) のチャンクは検索対象から除外される�
 * `Arc<Vec<...>>` を返すことでロック保持時間を短くする (clone は arc bump のみ)。
 * miss → `load_scene_chunks_from_db` で BLOB を decode → `put`
 * `invalidate(scene_id)` — `semantic_index_scene` 成功時に呼ぶ
-* `clear()` — `open_workspace` で呼び、別 workspace の cache poisoning を防ぐ
+* workspace切替では個別`clear()`を順番に呼ばない。scene/codex/events/chatの4cacheを束ねた
+  `SemanticEpoch`を`rotate_workspace_epoch()`で差し替え、別workspaceのcache poisoningと
+  旧taskのlate putを同時に防ぐ
 
 ### 4. スコアリング
 
@@ -465,9 +471,8 @@ pub fn apply_dialogue_penalty(score: f32, dialogue_ratio: f32, description_mode:
 
 ## Codex セマンティック検索（2026-06-18 追記）
 
-実装: `src-tauri/src/semantic/codex_index.rs` (index) +
-`src-tauri/src/semantic/codex_search.rs` (検索) +
-`commands/semantic.rs` の codex コマンド群。
+実装: `src-tauri/crates/grimodex-semantic/src/codex_index.rs` (index) +
+`codex_search.rs` (検索) + `runtime.rs`。shell固有コードはTauri/N-API adapterのみ。
 
 scene の index/search を「**チャンク不要・1 エントリ 1 ベクトル**」にフォークした版。
 codex 本文は短い (80〜300字) ので段落チャンカーを通さず、entry 全体
@@ -591,10 +596,11 @@ Layer 4 RAG が「AI のための recall（チャット文脈へ自動注入）�
 
 ---
 
-## Tauri Command インタフェース
+## Desktop shell Command インタフェース
 
-すべて `commands/semantic.rs` に実装、`semantic-embedding` feature gate 内。
-serde は camelCase。
+19コマンドの実装本体は`grimodex_semantic::runtime::SemanticRuntime`に1つだけ置く。
+Tauri `commands/semantic.rs`はfeature gate付き薄層、Electronは`grimodex-node`のN-API薄層で、
+どちらもcamelCase wireと同じ戻りDTOを公開する。
 
 ```rust
 #[tauri::command]
@@ -616,15 +622,16 @@ async fn semantic_index_status(app: AppHandle, project_id: String) -> Result<Ind
 // Embedder 不要 (軽量)
 
 #[tauri::command]
-async fn semantic_reindex_all(app: AppHandle, project_id: String) -> Result<usize>
+async fn semantic_reindex_all(
+    app: AppHandle, project_id: String, run_id: Option<String>,
+) -> Result<usize>
 // 戻り値: 投入チャンク総数
 // 1 scene 完了ごとに `semantic:reindex_progress` event を emit
 ```
 
 #### Codex セマンティック / 補助コマンド（2026-06-18 追記）
 
-scene 系の 4 コマンドに加え、以下 6 コマンドを実装している（同じく
-`commands/semantic.rs`・`semantic-embedding` feature gate 内・camelCase）。
+scene系4コマンドに加え、以下6コマンドを同じshared runtimeで実装している。
 
 ```rust
 #[tauri::command]
@@ -659,6 +666,18 @@ async fn semantic_debug_dump(
 // 埋め込み L2 ノルム/stale 判定)。Embedder 不要。limit 既定 200・上限 2000
 ```
 
+残り9コマンドは、model download 1件とevents/chat各4件:
+
+```text
+semantic_download_model
+events_index_entry / events_semantic_search / events_index_status / events_reindex_all
+chat_index_message / chat_message_search / chat_index_status / chat_reindex_all
+```
+
+`semantic_download_model`だけはworkspace DBを必要とせず、必要ならdownload jobを背景taskへ
+渡して即`installed|downloading|unavailable`を返す。他18件は全てadapterでDB+epochをpinしてから
+blocking workerへ渡す。
+
 * `CodexSearchHit`: `{ entryId, entryName, entryType, summary, score }`
 * `CodexIndexStatus`: `{ indexedEntryCount, totalEntryCount }`
   （`indexedEntryCount < totalEntryCount` で未 index の既存エントリがある）
@@ -683,18 +702,21 @@ interface ReindexProgressPayload {
   totalScenes: number;
   chunksIndexed: number;    // 累積 chunk 数
   done: boolean;            // 全完了で true
+  projectId: string;        // 別workspaceのeventを拒否する
+  runId: string;            // 同projectの旧runを拒否するopaque token
 }
 ```
 
 `total_scenes = 0` のケースでも完了 event を必ず流す（フロントの「完了
-トースト」を最後まで出すため）。emit 失敗は reindex 自体に影響しないので
-`let _ =` で握りつぶす。
+トースト」を最後まで出すため）。同じsingle-flightへ合流した待機側にも、各caller自身の
+`runId`でterminal eventを送る。共有`EventSink`のemit失敗はreindex自体へ影響させない。
 
 ### Slow command 登録
 
-`src/lib/tauri.ts::SLOW_COMMANDS` に `semantic_reindex_all` を含める。
-medium scale (~32 scenes) は 10s デフォルトを超え得るため、AI 系コマンドと同じ
-5 分タイムアウトに昇格する。
+`src/lib/tauri.ts::SLOW_COMMANDS`にはscene/codex/events/chatのindex・search・全件reindexの
+うち長時間になり得る12件を登録する。ONNX cold loadやmedium scaleの全件処理は10秒を
+超え得るため、AI系コマンドと同じ5分タイムアウトに昇格する。status/context/debugと、
+即時statusを返すmodel download開始は通常枠のまま。
 
 ---
 
@@ -764,7 +786,8 @@ const useSearchModeStore = create<SearchModeState>()(
 ### 再インデックス進行表示
 
 `features/semantic-search/`:
-* `useReindexProgressListener.ts` — `App.tsx` で 1 度だけ呼び、Tauri event を購読
+* `useReindexProgressListener.ts` — `App.tsx` で1度だけ呼び、Tauri/Electron共通eventを購読。
+  `projectId`/`runId`が現在のworkspace/runと一致するeventだけをstoreへ反映
 * `reindexProgressStore.ts` — Zustand store。`done=true` 受信から 4s で自動消滅。
   途中で別の reindex が走った場合は古いタイマーを破棄して新進捗に切替
 * `ReindexProgressToast.tsx` — 画面右下に固定表示。`pointerEvents: none` で他要素を
@@ -774,28 +797,32 @@ const useSearchModeStore = create<SearchModeState>()(
 
 ## ファイル構成
 
-### Rust (`src-tauri/src/`)
+### Rust shared crate + shell adapters
 
 ```
-semantic/
-├── mod.rs            … モジュール宣言。embedding のみ feature gate
-├── spec.rs           … EmbeddingModelSpec / SPEC_JA / SPEC_EN / spec_for_language (pure)
-├── chunker.rs        … 日本語: 段落抽出 + 分類 + 文分割 + パッキング (pure)
-├── chunker_en.rs     … 英語: 引用スパン基準の dialogue 計数 + 共有パッキング (pure)
-├── embedding.rs      … ort + tokenizers の Embedder (spec 駆動)。golden test 同居
-├── index.rs          … upsert_scene_chunks (pure) + index_scene (feature gated)
-│                       + collect_index_status / list_scene_ids_in_project (pure)
-├── search.rs         … SearchCache / load_scene_chunks_from_db / run_search (pure)
-├── codex_index.rs    … codex_chunks の upsert / 1 entry 1 ベクトル / status (pure + embed)
-├── codex_search.rs   … CodexSearchCache / run_codex_search (pure)
-└── preview.rs        … semantic_chunk_context 用の前後文脈切り出し (pure)
+src-tauri/crates/grimodex-semantic/src/
+├── lib.rs            … shell非依存module公開。embedding/downloadのみfeature gate
+├── runtime.rs        … SemanticRuntime / SemanticRequest / 4cache epoch / single-flight / events
+├── download.rs       … explicit SemanticPathsを使うatomic model install + sha256 sidecar
+├── spec.rs           … EmbeddingModelSpec / SPEC_JA / SPEC_EN / spec_for_language
+├── chunker.rs / chunker_en.rs … ProseMirror段落抽出・言語別chunking
+├── embedding.rs      … ort + tokenizers のEmbedder（spec駆動）
+├── index.rs / search.rs             … scene index/cache/search/status
+├── codex_index.rs / codex_search.rs … codex index/cache/search/status
+├── events_index.rs / events_search.rs … Chronicle event index/cache/search/status
+├── chat_index.rs / chat_search.rs   … episodic chat index/cache/search/status
+├── codex_candidates.rs … DB snapshot + lock外UniDic/Aho-Corasick候補抽出
+└── preview.rs        … semantic_chunk_context用の前後文脈切り出し
 
-commands/
-└── semantic.rs       … 10 個の Tauri command + SemanticEmbedderState
-                        + SearchCache / CodexSearchCache + *_split_lock
-                        + resolve dir (resource_dir 経由 + CARGO_MANIFEST_DIR fallback)
+src-tauri/src/
+├── commands/semantic.rs … 19個の薄いTauri adapter + TauriSemanticEventSink
+└── semantic/mod.rs      … 旧crate::semantic path用re-export shim
 
-database/migrate.rs   … scene_chunks + codex_chunks CREATE TABLE
+electron/
+├── native/grimodex-node/src/{state,lib}.rs … SemanticRuntime保持 + 19 N-API adapter
+└── main/backend.ts      … dev/package resource_semantic_rootを明示注入
+
+src-tauri/crates/grimodex-db/src/migrate.rs … 4 chunk table CREATE TABLE
 ```
 
 ### Frontend (`src/features/`)
@@ -807,16 +834,16 @@ search/
 └── GlobalSearchDialog.tsx     … 既存 FTS5、上部に SearchModeTabs を追加
 
 semantic-search/
-├── api.ts                     … 10 個の invoke ラッパー (型付き、scene + codex + 補助)
+├── api.ts                     … 19個のinvokeラッパー（scene/codex/events/chat/model）
 ├── SemanticSearchDialog.tsx   … 検索 UI 本体 (SearchModeTabs export 元)
 ├── searchResultSelection.ts   … キーボードナビ pure helper
 ├── semanticNavStore.ts        … chunk jump 要求 store (foreshadow nav と同形)
 ├── findChunkInDoc.ts          … PM doc 内で chunkText 先頭一致を探す pure
 ├── scheduler.ts               … シーン保存後の debounce 付き自動再インデックス
-├── autoIndex.ts               … open 時の codex/scene 自動 back-index (ensureSemanticIndexesOnOpen)
+├── autoIndex.ts               … open時のscene/codex/events/chat back-index（workspace identity guard）
 ├── searchEval.ts / searchEvalSets.ts … dev 評価ハーネス (Recall/MRR/閾値 sweep)
 ├── reindexProgressStore.ts    … 進捗トースト用 store
-├── useReindexProgressListener.ts … Tauri event 購読 hook
+├── useReindexProgressListener.ts … shell共通event購読 + projectId/runId stale guard
 └── ReindexProgressToast.tsx   … 右下固定の進捗トースト
 
 chat/semanticRecall.ts         … Layer 4 RAG。dense+sparse RRF 取得・選別・言語別閾値
@@ -830,7 +857,7 @@ App.tsx                        … listener 起動 + Toast マウント + Search
                                   + open 時 ensureSemanticIndexesOnOpen
 features/editor/EditorPane.tsx … coreSave 末尾で scheduleSceneIndex、
                                   switchScene + subscribe で chunk jump consume
-lib/tauri.ts                   … SLOW_COMMANDS に semantic_reindex_all 追加
+lib/tauri.ts                   … semantic長時間12コマンドをSLOW_COMMANDSへ登録
 ```
 
 ### リソース
@@ -838,25 +865,34 @@ lib/tauri.ts                   … SLOW_COMMANDS に semantic_reindex_all 追加
 ```
 src-tauri/resources/semantic/
 ├── ruri-v3-30m/          … 日本語 (SPEC_JA.dir_name)
-│   ├── model_int8.onnx       … 36MB、tauri.conf.json#bundle.resources 同梱
-│   ├── model.onnx            … 141MB、golden test 専用 (非同梱)
 │   ├── tokenizer.json        … 6.5MB、同梱
+│   ├── model_int8.onnx       … optional bundled model（通常はon-demand DL）
+│   ├── model.onnx            … golden test専用（非同梱）
 │   └── (その他 config 系)
-└── bge-small-en-v15/     … 英語 (SPEC_EN.dir_name)、同様に int8 ONNX + tokenizer を同梱
+└── bge-small-en-v15/     … 英語 (SPEC_EN.dir_name)、同様にtokenizerを同梱
 ```
 
-dev / prod の両方で `resolve_model_dir(app, spec)` =
-`app.path().resource_dir().join("resources/semantic/{spec.dir_name}")` で解決。
-`model_int8.onnx` の存在で検証し、見つからなければ `CARGO_MANIFEST_DIR`
-にフォールバック (cargo test 経路や非 Tauri ランタイム救済)。Embedder は
-`SemanticEmbedderState` が `dir_name` 別にキャッシュし、ja/en プロジェクトの
-切替で取り直す。
+共有crateへ渡すpathは`SemanticPaths { resource_semantic_root, models_root }`だけで、
+shared runtime自身はcwd・shell API・build-machine `CARGO_MANIFEST_DIR`を参照しない。
+
+* Tauri release: `resource_dir/resources/semantic` + `<appData>/models`をsetupで注入。
+  debug adapterだけはbundle rootが無い開発時に、実在するrepoの`resources/semantic`を
+  明示的なdevelopment rootとして選ぶ。release runtimeにbuild-machine fallbackは無い。
+* Electron dev: `<repo>/src-tauri/resources/semantic`、package:
+  `process.resourcesPath/resources/semantic`、download: `<userData>/models`をmainからN-API
+  constructorへ注入する。package配置はelectron-builder `extraResources`と同じ契約。
+
+`resolve_model_dir(paths, spec)`は、必要ファイルが揃うbundled dirを先に、次にsha256 sidecarが
+現行specと一致するdownload dirを選ぶ。downloadは`.part`→atomic renameでmodelを確定し、
+注入済みresource rootからtokenizerをcopyする。path/モデル欠落でもdesktop Backend全体は
+起動し、semantic commandだけが明示エラーを返してFTSへ縮退する。Embedderは
+`SemanticRuntime`が`dir_name`別にlazy cacheし、download成功時に該当entryを破棄する。
 
 ---
 
 ## テスト戦略
 
-### Rust (`--no-default-features` で完全実行可能)
+### Rust shared crate（feature-off / feature-on）
 
 * `chunker.rs`: 段落抽出 / 分類 / 文分割 / パッキング / overlap / dialogue ratio / chunk_index
 * `index.rs`: `upsert_scene_chunks` の挿入・置換・空・hash mismatch・short embedding
@@ -873,14 +909,22 @@ dev / prod の両方で `resolve_model_dir(app, spec)` =
 * `codex_search.rs`: `CodexSearchCache` identity / `run_codex_search` ranking・scope・limit
 * `chunker_en.rs`: 英語の文/引用スキャンと dialogue 計数
 * `preview.rs`: `slice_context` の前後切り出し境界
+* `events_*` / `chat_*`: upsert hash race、status、project scope、cache identity、ranking
+* `runtime.rs`: DB+epoch optimistic pin、4cache rotateとlate-put隔離、domain/project/model
+  single-flight、identity切替retry、panic/error時waiter解放、caller別runId terminal event、
+  model download in-flight/cleanup/event
+
+2026-07-11のshared runtime gateはfeature-off 181 tests / feature-on 217 tests、両構成の
+strict clippy。Tauri off/on checkと、最新runtimeへ再linkした実`.node` semantic E2E 6件も通過。
 
 ### Frontend (Vitest)
 
-* `api.test.ts`: invoke ペイロード形状と返値の型 (scene + codex + 補助)
+* `api.test.ts`: 19 invokeのpayload/返値、optional runId、scene/codex/events/chat/model
 * `searchResultSelection.test.ts` / `semanticNavStore.test.ts` / `findChunkInDoc.test.ts`:
   キーボードナビ・jump 要求・PM doc 先頭一致 (従来どおり)
 * `scheduler.test.ts` / `reindexProgressStore.test.ts`: debounce / 進捗トースト
-* `autoIndex.test.ts`: open 時の codex/scene 自動 back-index と充足判定・無音フォールバック
+* `autoIndex.test.ts`: open時のscene/codex/events/chat自動back-index、workspace identity guard、
+  model download完了後の再開、充足判定・無音フォールバック
 * `searchEval.test.ts`: dev 評価ハーネスの集計
 * `chat/semanticRecall.test.ts` / `contextBuilder.semanticRecall.test.ts`:
   Layer 4 RAG の取得・選別・言語別閾値・注入組み立て
@@ -954,14 +998,14 @@ dev / prod の両方で `resolve_model_dir(app, spec)` =
 | `sqlite-vec` / LanceDB は採用しない (総当たりで十分) | 上流で確定 |
 | Transformers.js は採用しない (Rust 側で統一) | 上流で確定 |
 | char_start/end は Unicode scalar index (byte でも UTF-16 でもない) | 上流で確定 |
-| `SearchCache` に identity (model/dim/version) を持たせ、scene_chunks 行フィルタと二重防御 | **実装中追加** |
+| 4検索cacheを`SemanticEpoch`へ束ね、workspace open/restoreでepoch rotate。各cacheもmodel/dim/version identityを検証 | **2026-07-11 shared runtime化** |
 | 検索 Dialog で世代カウンタによる stale 応答抑止 | **実装中追加** |
 | `findChunkInDoc` は先頭 line を prefix にした単純検索 (MVP) | 実装で確定 |
-| `bundle.resources` にモデルを同梱 (production 配布で必須) | 後続で確定 |
-| reindex_all に progress event、abort は後回し | 実装で確定 |
+| shellがbundled/download rootを`SemanticPaths`で明示注入し、shared runtimeはcwd/CARGO fallbackを持たない | **2026-07-11 shared runtime化** |
+| reindex_all にprojectId/runId付きprogress event。domain/model identity single-flight、abortは後回し | **2026-07-11実装** |
 | 言語別 2 モデル体制 (ja=ruri-256d / en=bge-small-en-v1.5-384d)、`spec.rs` に集約 | **2026-06-18 出荷** |
 | ja 識別子をバイト固定 (`spec.rs` ja-invariant test) し既存 index を無効化しない | **2026-06-18 出荷** |
 | Codex は 1 entry 1 ベクトル (チャンク無し) で `codex_chunks` に index | **2026-06-18 出荷** |
 | dense + FTS5 sparse を RRF 融合 (chat 注入 / codex 検索)。閾値は言語別 | **2026-06-18 出荷** |
 | Layer 4 RAG を chat 文脈へ自動注入 (`semanticRecall.ts`、cacheSegments 外) | **2026-06-18 出荷** |
-| open 時に codex/scene を言語別に自動 back-index (`autoIndex.ts`) | **2026-06-18 出荷** |
+| open時にscene/codex/events/chatを言語別に自動back-index（workspace identity guard） | **2026-07-11拡張** |

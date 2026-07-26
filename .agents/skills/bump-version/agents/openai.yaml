@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bump Version"
+  short_description: "Prepare a versioned release and leave it as Draft"
+  default_prompt: "Use $bump-version to prepare the next Grimodex patch release, write its notes, and stop after verifying the Draft Release."

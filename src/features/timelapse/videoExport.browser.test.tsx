@@ -31,7 +31,7 @@ function captureSteps(initial: string, inserts: string[]): ReplayEvent[] {
   return out;
 }
 
-describe("captureCanvasToWebm (real MediaRecorder)", () => {
+describe("captureCanvasToWebm (real Chromium MediaRecorder)", () => {
   it("encodes replayed frames into a non-empty WebM blob", async () => {
     const mime = pickSupportedWebmMime();
     expect(mime, "Chromium should support a WebM mime").toBeTruthy();

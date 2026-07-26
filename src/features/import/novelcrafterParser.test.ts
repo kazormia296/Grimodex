@@ -421,6 +421,23 @@ fields: {}
     });
   });
 
+  describe("codex entries — malformed metadata.json", () => {
+    it("skips an entry whose metadata lacks attributes without aborting the import", () => {
+      // 構造は valid JSON だが attributes 欠落 → 以前は TypeError で import 全体が停止していた
+      const zip = makeZip({
+        "characters/broken-NC_BAD/metadata.json": JSON.stringify({
+          id: "NC_BAD",
+        }),
+        "characters/alice-NC_CHAR_001/metadata.json": CHARACTER_METADATA,
+        "characters/alice-NC_CHAR_001/entry.md": CHARACTER_ENTRY,
+      });
+      const result = parseNovelcrafterZip(zip);
+      // 壊れたエントリは skip、正常なエントリは残る
+      expect(result.codexEntries).toHaveLength(1);
+      expect(result.codexEntries[0].ncId).toBe("NC_CHAR_001");
+    });
+  });
+
   describe("novel body — chapters/scenes", () => {
     it("parses ## as chapters and ### as scenes, capturing body verbatim", () => {
       const novel = `# Title

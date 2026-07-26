@@ -8,8 +8,6 @@ import {
   Globe2,
   FolderTree,
   FileText,
-  Check,
-  Circle,
   BookOpen,
   BookMarked,
   NotepadText,
@@ -21,8 +19,7 @@ import {
 } from "lucide-react";
 import { useChatStore } from "../chatStore";
 import { useTreeStore } from "@/features/tree/treeStore";
-import type { TreeNodeData } from "@/features/tree/treeStore";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { ScopeTreePickerList } from "@/features/tree/ScopeTreePicker";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -62,6 +59,8 @@ interface ChatPanelHeaderProps {
   /** シーンをクリックしたとき: エディタ移動 + scope=scene を発火 */
   onSelectScene: (sceneId: string) => void;
   onNewSession: () => void;
+  /** A running turn owns its current session until Stop/finalization. */
+  sessionMutationsDisabled?: boolean;
   /** 本文を context に含めるか (eco モード相当)。project でも Tier 1 閾値内なら有効 */
   includeBodies: boolean;
   onToggleIncludeBodies: () => void;
@@ -81,40 +80,13 @@ interface ChatPanelHeaderProps {
   onToggleIncludeMapBoard: () => void;
   /** Web 検索 (RAG) トグルの状態。 */
   ragEnabled: boolean;
+  /** private Agent と public Web 検索を同時に有効化しないための表示ゲート。 */
+  agentMode?: boolean;
   /** RAG 非対応プロバイダ等で操作不可のとき true (トグルを無効化)。 */
   ragDisabled: boolean;
   /** 無効時のツールチップ理由文 (例: ollama は非対応)。 */
   ragDisabledReason?: string;
   onToggleRag: () => void;
-}
-
-interface TreeRow {
-  node: TreeNodeData;
-  depth: number;
-}
-
-/** Flatten nodes into a depth-tagged DFS order using parentId chains. */
-function flattenTree(nodes: TreeNodeData[]): TreeRow[] {
-  const childrenByParent = new Map<string | null, TreeNodeData[]>();
-  for (const n of nodes) {
-    const key = n.parentId;
-    const arr = childrenByParent.get(key) ?? [];
-    arr.push(n);
-    childrenByParent.set(key, arr);
-  }
-  for (const arr of childrenByParent.values()) {
-    arr.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-  }
-  const out: TreeRow[] = [];
-  function walk(parentId: string | null, depth: number) {
-    const kids = childrenByParent.get(parentId) ?? [];
-    for (const n of kids) {
-      out.push({ node: n, depth });
-      if (n.nodeType === "folder") walk(n.id, depth + 1);
-    }
-  }
-  walk(null, 0);
-  return out;
 }
 
 export function ChatPanelHeader({
@@ -127,6 +99,7 @@ export function ChatPanelHeader({
   onScopeChange,
   onSelectScene,
   onNewSession,
+  sessionMutationsDisabled = false,
   includeBodies,
   onToggleIncludeBodies,
   includeMapBoard,
@@ -134,11 +107,14 @@ export function ChatPanelHeader({
   mapDisabled,
   onToggleIncludeMapBoard,
   ragEnabled,
+  agentMode = false,
   ragDisabled,
   ragDisabledReason,
   onToggleRag,
 }: ChatPanelHeaderProps) {
   const { t } = useTranslation();
+  const privacyRagDisabled = agentMode;
+  const effectiveRagDisabled = ragDisabled || privacyRagDisabled;
   const nodes = useTreeStore((s) => s.nodes);
   const codexEntries = useCodexStore((s) => s.entries);
   const snippetEntries = useSnippetStore((s) => s.entries);
@@ -146,8 +122,6 @@ export function ChatPanelHeader({
   // Phase 3b: スレッド focus override（補助チップで表示・解除。scope dropdown とは別）。
   const threadFocus = useChatStore((s) => s.threadFocusOverride);
   const clearThreadFocus = useChatStore((s) => s.clearThreadFocusOverride);
-
-  const rows = useMemo(() => flattenTree(nodes), [nodes]);
 
   // snippet スコープのラベル解決にタイトルが要る。Snippet パネル未訪問だと
   // store が空のままなので、scope が snippet の間はロードを保証する。
@@ -196,8 +170,8 @@ export function ChatPanelHeader({
   const [scopeHint, setScopeHint] = useState(false);
   const activePresetId = useLayoutStore((s) => s.activePresetId);
 
-  // ドロップダウン / 時限ヒントは .glass-chat の backdrop-filter が作る stacking
-  // context に埋もれないよう document.body へ portal する。位置計算と外側クリック
+  // ドロップダウン / 時限ヒントはチャットパネル内の stacking context に埋もれない
+  // よう document.body へ portal する。位置計算と外側クリック
   // /Escape での閉じ処理は useAnchoredPopover に委譲（同一トリガに 2 つぶら下げ）。
   const dropdownPopover = useAnchoredPopover(
     triggerRef,
@@ -377,78 +351,21 @@ export function ChatPanelHeader({
                 </div>
 
                 {pickerTab === "scene" && (
-                  <>
-                    {/* Project (root) */}
-                    <button
-                      type="button"
-                      onClick={handlePickProject}
-                      className={[
-                        "flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs",
-                        chatScope === "project"
-                          ? "bg-accent font-medium text-foreground"
-                          : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                      ].join(" ")}
-                    >
-                      <Globe className="h-3.5 w-3.5 shrink-0" />
-                      <span className="flex-1">{t("chat.scope.project")}</span>
-                      {chatScope === "project" && (
-                        <Check className="h-3 w-3 shrink-0" />
-                      )}
-                    </button>
-
-                    <div className="max-h-72 overflow-y-auto py-1">
-                      {rows.length === 0 && (
-                        <p className="px-3 py-2 text-xs text-muted-foreground">
-                          {t("chat.noScenes")}
-                        </p>
-                      )}
-                      {rows.map(({ node, depth }) => {
-                        const isFolder = node.nodeType === "folder";
-                        if (!isFolder && node.nodeType !== "scene") return null;
-                        const isSelected = isFolder
-                          ? chatScope === "folder" && scopeAnchorId === node.id
-                          : chatScope === "scene" && chatSceneId === node.id;
-                        const isEditorActive =
-                          !isFolder && editorActiveSceneId === node.id;
-                        return (
-                          <button
-                            key={node.id}
-                            type="button"
-                            onClick={() =>
-                              isFolder
-                                ? handlePickFolder(node.id)
-                                : handlePickScene(node.id)
-                            }
-                            style={{ paddingLeft: 12 + depth * 12 }}
-                            className={[
-                              "flex w-full items-center gap-1.5 py-1 pr-3 text-left text-xs",
-                              isSelected
-                                ? "bg-accent font-medium text-foreground"
-                                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                            ].join(" ")}
-                          >
-                            {isFolder ? (
-                              <FolderTree className="h-3 w-3 shrink-0 opacity-70" />
-                            ) : (
-                              <FileText className="h-3 w-3 shrink-0 opacity-70" />
-                            )}
-                            <span className="flex-1 truncate">
-                              {node.title}
-                            </span>
-                            {isEditorActive && (
-                              <Circle
-                                className="h-2 w-2 shrink-0 fill-primary text-primary"
-                                aria-label={t("chat.scope.editorHere")}
-                              />
-                            )}
-                            {isSelected && (
-                              <Check className="h-3 w-3 shrink-0" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </>
+                  <ScopeTreePickerList
+                    selection={
+                      chatScope === "project"
+                        ? { type: "project" }
+                        : chatScope === "folder" && scopeAnchorId
+                          ? { type: "folder", anchorId: scopeAnchorId }
+                          : chatScope === "scene"
+                            ? { type: "scene", sceneId: chatSceneId }
+                            : null
+                    }
+                    editorActiveSceneId={editorActiveSceneId}
+                    onPickScene={handlePickScene}
+                    onPickFolder={handlePickFolder}
+                    onPickProject={handlePickProject}
+                  />
                 )}
 
                 {pickerTab === "codex" && (
@@ -575,17 +492,23 @@ export function ChatPanelHeader({
         <button
           type="button"
           onClick={onToggleRag}
-          disabled={ragDisabled}
+          disabled={effectiveRagDisabled}
           aria-pressed={ragEnabled}
           aria-label={
             ragEnabled ? t("chat.webSearch.on") : t("chat.webSearch.off")
           }
           // 第三者送信の開示は title (ホバー専用) に頼らず aria-describedby で
           // スクリーンリーダー/タッチにも到達させる（security review F-1）。
-          aria-describedby={ragDisabled ? undefined : "rag-egress-note"}
+          aria-describedby={
+            effectiveRagDisabled && ragDisabledReason
+              ? "rag-disabled-note"
+              : "rag-egress-note"
+          }
           title={
-            ragDisabled
-              ? (ragDisabledReason ?? t("chat.webSearch.unavailable"))
+            effectiveRagDisabled
+              ? privacyRagDisabled
+                ? t("chat.webSearch.agentPrivacyNote")
+                : (ragDisabledReason ?? t("chat.webSearch.unavailable"))
               : `${
                   ragEnabled ? t("chat.webSearch.on") : t("chat.webSearch.off")
                 }\n${t("chat.webSearch.egressNote")}\n${t(
@@ -594,7 +517,7 @@ export function ChatPanelHeader({
           }
           className={[
             "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
-            ragDisabled
+            effectiveRagDisabled
               ? "cursor-not-allowed text-muted-foreground/40"
               : ragEnabled
                 ? "bg-primary/10 text-primary hover:bg-primary/15"
@@ -604,13 +527,19 @@ export function ChatPanelHeader({
           <Globe2 className="h-3 w-3 shrink-0" />
           <span>{t("chat.webSearch.label")}</span>
         </button>
-        {/* aria-describedby の参照先。第三者送信(egress)＋取得内容による
-            プロンプトインジェクションの両方を SR/タッチへ開示（security review F-1）。 */}
-        <span id="rag-egress-note" className="sr-only">
-          {`${t("chat.webSearch.egressNote")} ${t(
-            "chat.webSearch.injectionNote",
-          )}`}
-        </span>
+        {effectiveRagDisabled && ragDisabledReason ? (
+          <span id="rag-disabled-note" className="sr-only">
+            {ragDisabledReason}
+          </span>
+        ) : (
+          /* aria-describedby の参照先。第三者送信(egress)＋取得内容による
+             プロンプトインジェクションの両方を SR/タッチへ開示（security review F-1）。 */
+          <span id="rag-egress-note" className="sr-only">
+            {`${t("chat.webSearch.egressNote")} ${t(
+              "chat.webSearch.injectionNote",
+            )}${agentMode ? ` ${t("chat.webSearch.agentPrivacyNote")}` : ""}`}
+          </span>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
@@ -624,9 +553,10 @@ export function ChatPanelHeader({
         <button
           type="button"
           onClick={onNewSession}
+          disabled={sessionMutationsDisabled}
           title={t("chat.newSession")}
           aria-label={t("chat.newSession")}
-          className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>

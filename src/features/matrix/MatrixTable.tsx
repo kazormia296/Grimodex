@@ -436,6 +436,7 @@ export function MatrixTable({
                     entryId={entryId}
                     entryName={entryName}
                     source={source}
+                    hasRelationPin={cellInfo?.sources.has("relation") ?? false}
                     onClose={closeAll}
                     onOpenScene={() => onOpenScene(row.node.id)}
                     onPin={() => void onPin(row.node.id, entryId)}

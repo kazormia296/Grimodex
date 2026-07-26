@@ -133,9 +133,9 @@ describe("ChatPanel virtualization contract", () => {
       inputPinnedEntryIds: [],
       // 非同期の DB / コンテキスト再構築がテストの act 内に着地して
       // render 回数の assert を汚さないよう、store action を stub する
-      loadSessions: async () => {},
+      loadSessions: async () => false,
       selectSession: async () => {},
-      refreshContextLayers: async () => {},
+      refreshContextLayers: async () => null,
     });
     virtualizerCapture.opts = null;
     perfCapture.marks.length = 0;

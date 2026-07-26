@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useGridStore } from "../gridStore";
-import type { GlobalSettings } from "@/features/workspace/store";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 
 // Mock persistence helpers so tests are isolated from DB
 vi.mock("../gridContainerPersistence", () => ({
@@ -17,7 +17,8 @@ vi.mock("@/features/tree/treeStore", () => ({
 }));
 
 // Mock invoke so the auto-persist subscriber doesn't fail
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn().mockResolvedValue({}),
 }));
 
@@ -194,7 +195,7 @@ describe("loadFromSettings — filter 永続化", () => {
         display: DEFAULT_DISPLAY,
         filter: { emptyOnly: true, hideCompleted: false, codexFilter: "e1" },
       },
-    } as unknown as import("@/features/workspace/store").GlobalSettings;
+    } as unknown as GlobalSettings;
 
     useGridStore.getState().loadFromSettings(settings);
     const { filter } = useGridStore.getState();
@@ -205,7 +206,7 @@ describe("loadFromSettings — filter 永続化", () => {
   it("filter キーが欠落している場合はデフォルトにフォールバックする", () => {
     const settings = {
       grid: { display: DEFAULT_DISPLAY },
-    } as unknown as import("@/features/workspace/store").GlobalSettings;
+    } as unknown as GlobalSettings;
 
     useGridStore.getState().loadFromSettings(settings);
     expect(useGridStore.getState().filter).toEqual(DEFAULT_FILTER);
@@ -237,7 +238,7 @@ describe("labelFilter", () => {
         display: DEFAULT_DISPLAY,
         filter: { emptyOnly: false, hideCompleted: false, codexFilter: null },
       },
-    } as unknown as import("@/features/workspace/store").GlobalSettings;
+    } as unknown as GlobalSettings;
 
     useGridStore.getState().loadFromSettings(settings);
     expect(useGridStore.getState().filter.labelFilter).toEqual([]);
@@ -254,7 +255,7 @@ describe("labelFilter", () => {
           labelFilter: ["label-x"],
         },
       },
-    } as unknown as import("@/features/workspace/store").GlobalSettings;
+    } as unknown as GlobalSettings;
 
     useGridStore.getState().loadFromSettings(settings);
     expect(useGridStore.getState().filter.labelFilter).toEqual(["label-x"]);

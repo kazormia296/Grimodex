@@ -1,0 +1,47 @@
+[package]
+name = "grimodex-semantic"
+version = "0.1.0"
+edition = "2021"
+license = "Elastic-2.0"
+description = "Tauri-independent semantic indexing, search, chunking, and embedding core shared by Grimodex desktop backends"
+
+[features]
+default = []
+semantic-embedding = [
+    "dep:futures",
+    "dep:ndarray",
+    "dep:ort",
+    "dep:reqwest",
+    "dep:tokenizers",
+]
+
+[dependencies]
+aho-corasick = "1"
+anyhow = "1"
+chrono = "0.4"
+grimodex-db = { path = "../grimodex-db" }
+grimodex-lint = { path = "../grimodex-lint" }
+hex = "0.4"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.11"
+uuid = { version = "1", features = ["v4"] }
+
+futures = { version = "0.3", optional = true }
+ndarray = { version = "0.17", optional = true }
+ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = [
+    "download-binaries",
+    "std",
+    "ndarray",
+    "tls-rustls",
+] }
+tokenizers = { version = "0.23", optional = true, default-features = false, features = [
+    "fancy-regex",
+] }
+reqwest = { version = "0.13", optional = true, features = ["stream"] }
+tracing = "0.1"
+unicode-normalization = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

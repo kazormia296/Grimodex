@@ -65,9 +65,9 @@ pub async fn list_snippets(
         .collect();
 
     let json = serde_json::to_string_pretty(&results).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -152,7 +152,7 @@ pub async fn create_snippet(
         title,
     };
     let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }

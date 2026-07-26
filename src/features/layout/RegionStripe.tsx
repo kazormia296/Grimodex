@@ -12,7 +12,6 @@ import {
   DND_NEW_SLOT_BETWEEN_HALF_PX,
   slotSplitterPx,
 } from "./layoutConstants";
-import { useCardLayout } from "./cardLayout";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import type { LayoutRegionId, RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
@@ -380,8 +379,7 @@ export function RegionStripe({
   // open slot 間のアイコングループ仕切り幅。content 側の Splitter 帯
   // （slotSplitterPx）と一致させることで、ストライプの分割位置と
   // content の Splitter 位置を揃える。
-  const cardLayout = useCardLayout();
-  const dividerGapPx = slotSplitterPx(cardLayout);
+  const dividerGapPx = slotSplitterPx();
 
   return (
     // reserveStart/EndPx は stripe-root の outer padding にしていたが、それだと
@@ -393,6 +391,7 @@ export function RegionStripe({
     <div
       data-stripe-root
       data-stripe-region={region}
+      data-ambient-glass-surface={region !== "center" ? "stripe" : undefined}
       className={cn(
         "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
         // D案: stripe/rail も他パネルと同じ「カード」。境界線は引かず、

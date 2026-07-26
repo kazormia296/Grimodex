@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ToolWindowIcon } from "./ToolWindowIcon";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState, findPanelLocation } from "./layoutStateUtils";
+import { usePostEffectRunStore } from "@/features/post-effect/runStore";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -80,5 +81,64 @@ describe("ToolWindowIcon context menu", () => {
     expect(useLayoutStore.getState().hiddenStripePanels.has("scenes")).toBe(
       true,
     );
+  });
+});
+
+describe("ToolWindowIcon 校閲実行中バッジ", () => {
+  beforeEach(() => {
+    useLayoutStore.setState({
+      layout: buildDefaultLayoutState({ allInactive: true }),
+      layoutLocked: false,
+      hiddenStripePanels: new Set(),
+    });
+    usePostEffectRunStore.setState({ runs: {} });
+  });
+
+  function renderIcon(panelId: "kouetsu" | "scenes") {
+    useLayoutStore.getState().showPanel(panelId);
+    const slotId = findPanelLocation(useLayoutStore.getState().layout, panelId)!
+      .slot.id;
+    return render(
+      <ToolWindowIcon
+        region="left"
+        panelId={panelId}
+        slotId={slotId}
+        active={false}
+        slotOpen={false}
+      />,
+    );
+  }
+
+  it("post-effect 実行中は kouetsu アイコンにバッジが出て、終端で消える", () => {
+    act(() => {
+      usePostEffectRunStore.getState().begin({
+        runId: "r1",
+        projectId: "p1",
+        effectType: "review",
+        scopeType: "project",
+        scopeTargetId: null,
+      });
+    });
+    renderIcon("kouetsu");
+    expect(screen.getByTestId("stripe-busy-badge")).toBeInTheDocument();
+
+    act(() => {
+      usePostEffectRunStore.getState().complete("r1", 0);
+    });
+    expect(screen.queryByTestId("stripe-busy-badge")).toBeNull();
+  });
+
+  it("kouetsu 以外のアイコンにはバッジを出さない", () => {
+    act(() => {
+      usePostEffectRunStore.getState().begin({
+        runId: "r1",
+        projectId: "p1",
+        effectType: "review",
+        scopeType: "project",
+        scopeTargetId: null,
+      });
+    });
+    renderIcon("scenes");
+    expect(screen.queryByTestId("stripe-busy-badge")).toBeNull();
   });
 });

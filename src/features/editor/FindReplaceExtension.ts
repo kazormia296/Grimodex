@@ -61,6 +61,10 @@ function buildMatches(
       let match: RegExpExecArray | null;
       regex.lastIndex = 0;
       while ((match = regex.exec(node.text)) !== null) {
+        if (match[0].length === 0) {
+          regex.lastIndex++;
+          continue;
+        }
         matches.push({
           from: pos + match.index,
           to: pos + match.index + match[0].length,
@@ -206,11 +210,15 @@ export const FindReplaceExtension = Extension.create<
           if (storage.matches.length === 0) return false;
           const match = storage.matches[storage.currentIndex];
           if (dispatch) {
-            tr.replaceWith(
-              match.from,
-              match.to,
-              editor.schema.text(replacement),
-            );
+            if (replacement) {
+              tr.replaceWith(
+                match.from,
+                match.to,
+                editor.schema.text(replacement),
+              );
+            } else {
+              tr.delete(match.from, match.to);
+            }
             // Rebuild matches after replacement
             const { matches: newMatches, regexError } = buildMatches(
               tr.doc,
@@ -242,11 +250,15 @@ export const FindReplaceExtension = Extension.create<
           // Replace from end to start so positions don't shift
           const sorted = [...storage.matches].sort((a, b) => b.from - a.from);
           for (const match of sorted) {
-            tr.replaceWith(
-              match.from,
-              match.to,
-              editor.schema.text(replacement),
-            );
+            if (replacement) {
+              tr.replaceWith(
+                match.from,
+                match.to,
+                editor.schema.text(replacement),
+              );
+            } else {
+              tr.delete(match.from, match.to);
+            }
           }
           storage.matches = [];
           storage.currentIndex = 0;

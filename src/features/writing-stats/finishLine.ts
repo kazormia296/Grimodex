@@ -4,10 +4,10 @@
  * 計算する。`computeGoalProgress`（本日の目標）の累積版にあたる。
  *
  * すべて `now`（unix ms）を注入する純関数。日付はローカルタイムゾーン基準の
- * "YYYY-MM-DD" 日キーで扱い、DST を跨いでも日数がずれないようにする
- * （日数差はローカル正午アンカーで丸め、±1h を吸収する）。
+ * `Temporal.PlainDate` と "YYYY-MM-DD" 日キーで扱うため、DST を跨いでも
+ * 24 時間単位の差分計算に引きずられない。
  */
-import { localDayKey, shiftDayKey } from "./deriveStats";
+import { plainDateAtEpochMilliseconds, plainDateFromKey } from "@/lib/time";
 
 export interface FinishLineInput {
   /** 目標総文字数（<= 0 は「目標未設定」）。 */
@@ -50,21 +50,6 @@ export interface FinishLineProgress {
   onTrack: boolean | null;
 }
 
-const MS_PER_DAY = 86_400_000;
-
-/** 日キーのローカル正午の unix ms。DST の ±1h を吸収して日数差を安定させる。 */
-function dayKeyToLocalNoon(key: string): number {
-  const [y, m, d] = key.split("-").map(Number);
-  return new Date(y, m - 1, d, 12, 0, 0, 0).getTime();
-}
-
-/** `fromKey` から `toKey` までの日数（toKey が未来なら正）。 */
-function daysBetween(fromKey: string, toKey: string): number {
-  return Math.round(
-    (dayKeyToLocalNoon(toKey) - dayKeyToLocalNoon(fromKey)) / MS_PER_DAY,
-  );
-}
-
 /**
  * 完走進捗とペースメーカー指標を計算する純関数。`target <= 0` は「目標未設定」
  * として hasTarget=false を返す（締切の残り日数だけは設定されていれば返す）。
@@ -75,14 +60,14 @@ export function computeFinishLineProgress(
   const current = input.current > 0 ? input.current : 0;
   const pace = input.pace > 0 ? input.pace : 0;
   const { target } = input;
-  const deadlineKey =
+  const deadline =
     input.deadlineKey && input.deadlineKey.length > 0
-      ? input.deadlineKey
+      ? plainDateFromKey(input.deadlineKey)
       : null;
-  const hasDeadline = deadlineKey !== null;
-  const todayKey = localDayKey(input.now);
+  const hasDeadline = deadline !== null;
+  const today = plainDateAtEpochMilliseconds(input.now);
   const daysUntilDeadline = hasDeadline
-    ? daysBetween(todayKey, deadlineKey)
+    ? today.until(deadline, { largestUnit: "day" }).days
     : null;
 
   if (target <= 0) {
@@ -115,7 +100,7 @@ export function computeFinishLineProgress(
       : null;
   const projectedFinishKey =
     !reached && daysToFinish !== null
-      ? shiftDayKey(todayKey, daysToFinish)
+      ? today.add({ days: daysToFinish }).toString()
       : null;
 
   let requiredPace: number | null = null;

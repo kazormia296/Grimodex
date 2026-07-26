@@ -2,7 +2,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ChatPanel, selectSceneFromChat } from "./ChatPanel";
+import {
+  ChatPanel,
+  declineCodexApprovals,
+  enqueueCodexApproval,
+  removeCodexApproval,
+  removeCodexApprovalsForTurn,
+  selectSceneFromChat,
+  type CodexApproval,
+} from "./ChatPanel";
 import { useChatStore } from "./chatStore";
 import { useAiSettingsStore } from "./store";
 import { DEFAULT_AI_SETTINGS } from "./types";
@@ -11,6 +19,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useProjectStore } from "@/features/project/projectStore";
 
 // ChatInput を軽量なtextareaモックで置換（TipTapはhappy-domで動作不安定なため）
 vi.mock("./components/ChatInput", async () => {
@@ -69,18 +78,63 @@ vi.mock("./components/ChatInput", async () => {
   };
 });
 
-vi.mock("./chatApi", () => ({
-  sendChatMessage: vi.fn(),
-  listSessions: vi.fn(() => Promise.resolve([])),
-  createSession: vi.fn(),
-  deleteSession: vi.fn(),
-  listMessages: vi.fn(() => Promise.resolve([])),
-  addMessage: vi.fn(() => Promise.resolve({})),
-  updateSessionTitle: vi.fn(() => Promise.resolve()),
-  listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
-  generateSessionTitle: vi.fn(() => Promise.resolve(null)),
-  updateMessageMetadata: vi.fn(() => Promise.resolve()),
-}));
+vi.mock("./chatApi", () => {
+  const sendChatMessage = vi.fn();
+  const session = (
+    id: string,
+    projectId: string,
+    title = "New session",
+    nodeId?: string,
+  ) => ({
+    id,
+    projectId,
+    title,
+    titleManual: 0,
+    model: "",
+    nodeId: nodeId ?? null,
+    codexAnchorId: null,
+    snippetAnchorId: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  });
+  return {
+    sendChatMessage,
+    sendChatMessageStream: vi.fn(
+      async (
+        messages: Array<{ role: string; content: string }>,
+        _thinkingParams: unknown,
+        callbacks: {
+          onTextDelta: (delta: string) => void;
+          onDone: (info: { stopReason: string }) => void;
+        },
+      ) => {
+        await sendChatMessage(messages, callbacks.onTextDelta);
+        callbacks.onDone({ stopReason: "end_turn" });
+        return () => {};
+      },
+    ),
+    abortChatStream: vi.fn(() => Promise.resolve()),
+    listSessions: vi.fn(() => Promise.resolve([])),
+    getSessionForProject: vi.fn((sessionId: string, projectId: string) =>
+      Promise.resolve(session(sessionId, projectId)),
+    ),
+    createSession: vi.fn((projectId: string, title: string, nodeId?: string) =>
+      Promise.resolve(session("session-created", projectId, title, nodeId)),
+    ),
+    deleteSession: vi.fn(),
+    listMessages: vi.fn(() => Promise.resolve([])),
+    listSummaries: vi.fn(() => Promise.resolve([])),
+    getSummaryGeneration: vi.fn(() => Promise.resolve(1)),
+    addMessage: vi.fn(() => Promise.resolve({})),
+    saveMessagePrompt: vi.fn(() => Promise.resolve()),
+    updateSessionTitle: vi.fn(() => Promise.resolve()),
+    listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
+    listPinnedSnippetEntries: vi.fn(() => Promise.resolve([])),
+    listPinnedStickyEntries: vi.fn(() => Promise.resolve([])),
+    generateSessionTitle: vi.fn(() => Promise.resolve(null)),
+    updateMessageMetadata: vi.fn(() => Promise.resolve()),
+  };
+});
 
 // tiktoken WASM の dynamic import がフルテスト並列実行時に遅くなり
 // `await ensureTokenizer()` が waitFor timeout に間に合わない問題のガード。
@@ -108,16 +162,51 @@ vi.mock("@/features/editor/editorStore", async () => {
   return { useEditorStore: store };
 });
 
-vi.mock("@/features/codex/api", () => ({
-  listCodexEntries: vi.fn(() => Promise.resolve([])),
-  listCodexEntriesForContext: vi.fn(() => Promise.resolve([])),
-  listCodexMatchTargets: vi.fn(() => Promise.resolve([])),
-  getCodexEntry: vi.fn(),
-  createCodexEntry: vi.fn(),
-  updateCodexEntry: vi.fn(),
-  deleteCodexEntry: vi.fn(),
-  listCodexEntriesByMessageId: vi.fn(() => Promise.resolve([])),
-}));
+vi.mock("@/features/codex/api", () => {
+  const listCodexEntriesForContext = vi.fn(
+    async (_projectId?: string): Promise<Array<Record<string, unknown>>> => [],
+  );
+  const withoutContent = (entry: Record<string, unknown>) => {
+    const { content: _content, ...metadata } = entry;
+    return metadata;
+  };
+  const pickMatchTarget = (entry: Record<string, unknown>) => ({
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    aliases: entry.aliases,
+    excludedAliases: entry.excludedAliases,
+  });
+  return {
+    listCodexEntries: vi.fn(() => Promise.resolve([])),
+    listCodexEntriesForContext,
+    listCodexContextMetadata: vi.fn(async (projectId: string) =>
+      (await listCodexEntriesForContext(projectId)).map(withoutContent),
+    ),
+    listCodexEntriesForContextByIds: vi.fn(
+      async (projectId: string, ids: readonly string[]) => {
+        const byId = new Map(
+          (await listCodexEntriesForContext(projectId)).map((entry) => [
+            entry.id,
+            entry,
+          ]),
+        );
+        return [...new Set(ids)].flatMap((id) => {
+          const entry = byId.get(id);
+          return entry ? [entry] : [];
+        });
+      },
+    ),
+    listCodexMatchTargets: vi.fn(async (projectId: string) =>
+      (await listCodexEntriesForContext(projectId)).map(pickMatchTarget),
+    ),
+    getCodexEntry: vi.fn(),
+    createCodexEntry: vi.fn(),
+    updateCodexEntry: vi.fn(),
+    deleteCodexEntry: vi.fn(),
+    listCodexEntriesByMessageId: vi.fn(() => Promise.resolve([])),
+  };
+});
 
 vi.mock("@/features/snippets/api", () => ({
   listSnippets: vi.fn(() => Promise.resolve([])),
@@ -126,6 +215,17 @@ vi.mock("@/features/snippets/api", () => ({
   updateSnippet: vi.fn(),
   deleteSnippet: vi.fn(),
   listSnippetsByMessageId: vi.fn(() => Promise.resolve([])),
+}));
+
+vi.mock("@/features/project/api", () => ({
+  getProject: vi.fn((projectId: string) =>
+    Promise.resolve({
+      id: projectId,
+      title: "テストプロジェクト",
+      genre: "ファンタジー",
+      language: "ja",
+    }),
+  ),
 }));
 
 import * as chatApi from "./chatApi";
@@ -139,10 +239,13 @@ function resetStore() {
     error: null,
     chatScope: "scene",
     scopeAnchorId: null,
+    activeProjectId: "proj-1",
     activeSceneId: "",
     activeSessionId: null,
     inputPinnedEntryIds: [],
   });
+  useTreeStore.setState({ projectId: "proj-1", activeSceneId: "" });
+  useProjectStore.setState({ currentProjectId: "proj-1", projects: [] });
 }
 
 describe("ChatPanel", () => {
@@ -262,6 +365,92 @@ describe("ChatPanel", () => {
     expect(
       screen.queryByRole("button", { name: /送信/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("queues approval requests and clears only the answered request", () => {
+    const approval = (
+      requestId: string,
+      title: string,
+      grimodexTurnId = "turn-1",
+    ): CodexApproval => {
+      const request: CodexApproval["request"] = {
+        type: "approval-requested",
+        requestId,
+        kind: "command",
+        title,
+        summary: title,
+      };
+      return {
+        envelope: {
+          projectId: "proj-1",
+          sessionId: "session-1",
+          grimodexTurnId,
+          event: request,
+        },
+        request,
+      };
+    };
+    const first = approval("request-1", "First approval");
+    const second = approval("request-2", "Second approval");
+    const otherTurn = approval("request-3", "Other turn", "turn-2");
+
+    let queue = enqueueCodexApproval([], first);
+    queue = enqueueCodexApproval(queue, second);
+
+    expect(enqueueCodexApproval(queue, first)).toBe(queue);
+    expect(removeCodexApproval(queue, first)).toEqual([second]);
+    expect(
+      removeCodexApprovalsForTurn([...queue, otherTurn], "turn-1"),
+    ).toEqual([otherTurn]);
+  });
+
+  it("best-effort declines every pending approval when releasing a session", async () => {
+    const request = (requestId: string, sessionId: string): CodexApproval => {
+      const approvalRequest: CodexApproval["request"] = {
+        type: "approval-requested",
+        requestId,
+        kind: "permission",
+        title: requestId,
+        summary: requestId,
+      };
+      return {
+        envelope: {
+          projectId: "proj-1",
+          sessionId,
+          grimodexTurnId: `turn-${requestId}`,
+          event: approvalRequest,
+        },
+        request: approvalRequest,
+      };
+    };
+    const respond = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("request already settled"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(
+      declineCodexApprovals(
+        [request("request-1", "session-1"), request("request-2", "session-1")],
+        respond,
+      ),
+    ).resolves.toBeUndefined();
+    expect(respond).toHaveBeenCalledTimes(2);
+    expect(respond).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        sessionId: "session-1",
+        requestId: "request-1",
+        decision: "decline",
+      }),
+    );
+    expect(respond).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        sessionId: "session-1",
+        requestId: "request-2",
+        decision: "decline",
+      }),
+    );
   });
 
   it("disables send button when input is empty", () => {

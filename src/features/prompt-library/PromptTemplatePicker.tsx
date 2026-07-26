@@ -15,8 +15,8 @@ interface PromptTemplatePickerProps {
 /**
  * チャット入力欄の下段ツール列に置くプロンプトテンプレートピッカー。
  * 保存済みテンプレを選んで入力エディタへ挿入する導線。
- * `.glass-chat` の backdrop-filter stacking context を避けるため
- * useAnchoredPopover で document.body へ portal する。
+ * チャットパネル内の stacking context を避けるため useAnchoredPopover で
+ * document.body へ portal する。
  */
 export function PromptTemplatePicker({
   onSelect,

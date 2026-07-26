@@ -15,8 +15,8 @@ export const annotationKey = new PluginKey("peAnnotation");
 export const ANNOTATION_REBUILD_META = "annotationUpdate";
 
 function buildDecorations(doc: ProseMirrorNode): DecorationSet {
-  const { showAnnotations } = useAnnotationStore.getState();
-  if (!showAnnotations) return DecorationSet.empty;
+  const { showAnnotations, showReaderComments } = useAnnotationStore.getState();
+  if (!showAnnotations && !showReaderComments) return DecorationSet.empty;
 
   const decos: Decoration[] = [];
 
@@ -30,6 +30,9 @@ function buildDecorations(doc: ProseMirrorNode): DecorationSet {
     const status = (mark.attrs.status as string) ?? "open";
 
     if (status === "dismissed") return;
+    // pseudo_comment (読者コメント) は「校閲の指摘」とは別レイヤーでゲートする
+    if (category === "pseudo_comment" ? !showReaderComments : !showAnnotations)
+      return;
 
     const classes = [
       "pe-annotation",

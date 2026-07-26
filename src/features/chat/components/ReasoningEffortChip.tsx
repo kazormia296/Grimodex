@@ -38,8 +38,8 @@ export function ReasoningEffortChip({
   const reduced = useReducedMotion();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  // メニューは入力欄上部に開くため上向き。.glass-chat の backdrop-filter が作る
-  // stacking context に埋もれないよう document.body へ portal する。
+  // メニューは入力欄上部に開くため上向き。チャットパネル内の stacking /
+  // overflow の影響を避け、document.body へ portal する。
   const { popoverRef, style, maxHeight } = useAnchoredPopover(
     triggerRef,
     open,

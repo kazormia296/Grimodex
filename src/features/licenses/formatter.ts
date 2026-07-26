@@ -24,7 +24,11 @@ function formatEntry(entry: LicenseEntry): string[] {
 
 function formatSection(heading: string, entries: LicenseEntry[]): string[] {
   if (entries.length === 0) return [];
-  const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = [...entries].sort((a, b) => {
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+    if (a.version !== b.version) return a.version < b.version ? -1 : 1;
+    return 0;
+  });
   const lines: string[] = [`## ${heading}`, ""];
   for (const entry of sorted) {
     lines.push(...formatEntry(entry));

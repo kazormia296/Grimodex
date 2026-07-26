@@ -6,9 +6,12 @@ import type { RecentWorkspace } from "./store";
 import { cn } from "@/lib/utils";
 import { TitleBar } from "@/components/TitleBar";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
+import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 export function LauncherScreen() {
   const { t } = useTranslation();
+  const runtimeCapabilities = useRuntimeCapabilities();
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
   const requestOpenWorkspace = useWorkspaceStore((s) => s.requestOpenWorkspace);
   const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
@@ -81,6 +84,15 @@ export function LauncherScreen() {
             {t("launcher.newWorkspace")}
           </button>
         </div>
+        {runtimeCapabilities.genericProjectTransfer && (
+          <button
+            type="button"
+            onClick={requestWebEditorHandoffImport}
+            className="self-center text-sm font-medium text-primary underline-offset-4 hover:underline"
+          >
+            {t("hostedEditor.desktopImport.action")}
+          </button>
+        )}
       </div>
     </div>
   );

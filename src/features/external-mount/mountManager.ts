@@ -2,6 +2,7 @@ import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { compareInstantValues } from "@/lib/time";
 import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
 import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -21,6 +22,7 @@ import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useChatStore } from "@/features/chat/chatStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import * as mountApi from "./api";
 import { useExternalRootStore } from "./externalRootStore";
 import { markdownToPmJson, pmJsonToMarkdown } from "./markdownBridge";
@@ -418,14 +420,16 @@ export async function buildDbByUriMap(
   for (const [uri, nodes] of grouped) {
     const active = nodes.filter((n) => !n.archivedAt);
     if (active.length > 1) {
-      active.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      active.sort((a, b) => compareInstantValues(a.createdAt, b.createdAt));
       for (const dup of active.slice(1)) {
         await softArchiveNode(dup.id);
       }
     }
     const preferred =
       active[0] ??
-      nodes.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      nodes
+        .slice()
+        .sort((a, b) => compareInstantValues(a.createdAt, b.createdAt))[0];
     if (preferred) map.set(uri, preferred);
   }
   return map;
@@ -560,8 +564,9 @@ async function handleFileChanged(
 
   const content = await mountApi.readExternalFile(root.id, relPath);
   const fileMtime = await mountApi.getExternalFileMtime(root.id, relPath);
-  const { useTabStore } = await import("@/features/editor/tabStore");
-  const isDirty = useTabStore.getState().dirtyTabIds.has(node.id);
+  const isDirty = useEditorSessionStore
+    .getState()
+    .dirtyDocumentIds.has(node.id);
 
   if (isDirty) {
     useExternalRootStore.getState().enqueueConflict({
@@ -649,9 +654,9 @@ async function applyExternalContent(
   // LinearSceneBlock) に反映する。リニアはタブを持たないので tab リスト
   // だけのゲートでは取りこぼし、editor の古い doc が次の autosave で
   // 取り込み分を上書きしてしまう。
-  const { useTabStore } = await import("@/features/editor/tabStore");
   const { useLinearEditorStore } =
     await import("@/features/editor/linearEditorStore");
+  const { useTabStore } = await import("@/features/editor/tabStore");
   const tabState = useTabStore.getState();
   const hasLiveEditor =
     tabState.tabs.some((t) => t.nodeId === nodeId) ||
@@ -716,8 +721,9 @@ async function handleFileRemoved(
     });
   }
 
-  const { useTabStore } = await import("@/features/editor/tabStore");
-  const isDirty = useTabStore.getState().dirtyTabIds.has(node.id);
+  const isDirty = useEditorSessionStore
+    .getState()
+    .dirtyDocumentIds.has(node.id);
   if (isDirty) {
     toast.warning(i18next.t("externalMount.toast.fileDeletedExternally"));
     return;

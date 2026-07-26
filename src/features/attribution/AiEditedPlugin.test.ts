@@ -147,6 +147,186 @@ describe("AiEditedPlugin", () => {
     editor.destroy();
   });
 
+  it("does not extend manualOverride past its boundary", () => {
+    editor.destroy();
+    editor = createTestEditor("<p></p>");
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContent([
+        {
+          type: "text",
+          text: "ABCDE",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+              },
+            },
+          ],
+        },
+      ])
+      .run();
+    editor.chain().focus().setTextSelection(6).insertContent("X").run();
+
+    const nodes: { text: string; source: string | null }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      nodes.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(nodes).toEqual([
+      { text: "ABCDE", source: "ai" },
+      { text: "X", source: null },
+    ]);
+    editor.destroy();
+  });
+
+  it("does not preserve manualOverride across an unmarked replacement range", () => {
+    editor.destroy();
+    editor = createTestEditor("<p></p>");
+    editor
+      .chain()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContent([
+        {
+          type: "text",
+          text: "ABCDE",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+                traceId: "manual-1",
+              },
+            },
+          ],
+        },
+        { type: "text", text: "FG" },
+      ])
+      .run();
+
+    editor
+      .chain()
+      .setTextSelection({ from: 4, to: 8 })
+      .insertContent("X")
+      .run();
+
+    const nodes: { text: string; source: string | null }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      nodes.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(nodes).toEqual([
+      { text: "ABC", source: "ai" },
+      { text: "X", source: null },
+    ]);
+    editor.destroy();
+  });
+
+  it("does not preserve manualOverride across different authorship attrs", () => {
+    editor.destroy();
+    editor = createTestEditor("<p></p>");
+    editor
+      .chain()
+      .command(({ tr }) => {
+        tr.setMeta("programmaticInsert", true);
+        return true;
+      })
+      .insertContent([
+        {
+          type: "text",
+          text: "A",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+                traceId: "manual-1",
+              },
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "B",
+          marks: [
+            {
+              type: "authorship",
+              attrs: {
+                source: "ai",
+                manualOverride: true,
+                traceId: "manual-2",
+              },
+            },
+          ],
+        },
+      ])
+      .run();
+
+    editor
+      .chain()
+      .setTextSelection({ from: 1, to: 3 })
+      .insertContent("X")
+      .run();
+
+    const nodes: { text: string; source: string | null }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      nodes.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(nodes).toEqual([{ text: "X", source: null }]);
+    editor.destroy();
+  });
+
+  it("makes replacement text human at an unmarked-to-AI boundary", () => {
+    editor.destroy();
+    editor = createTestEditor("<p></p>");
+    editor.chain().insertContent("H").run();
+    insertAiText(editor, "ABCDE");
+
+    editor
+      .chain()
+      .focus()
+      .setTextSelection({ from: 2, to: 7 })
+      .insertContent("X")
+      .run();
+
+    const nodes: { text: string; source: string | null }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      nodes.push({
+        text: node.text ?? "",
+        source: mark ? (mark.attrs.source as string) : null,
+      });
+    });
+    expect(nodes).toEqual([{ text: "HX", source: null }]);
+    editor.destroy();
+  });
+
   // --- Adjacent node isolation ---
 
   it("editing one node does NOT affect adjacent nodes", () => {
@@ -182,7 +362,7 @@ describe("AiEditedPlugin", () => {
     editor.destroy();
   });
 
-  it("inclusive:false prevents mark inheritance at insertion boundary", () => {
+  it("keeps adjacent runs with distinct authorship metadata separate", () => {
     const text = "承知しました。「これは生成AIの生成した文章です。」";
     for (let i = 0; i < 3; i++) {
       const { from } = editor.state.selection;
@@ -421,6 +601,29 @@ describe("AiEditedPlugin", () => {
       expect(relevantNodes[0]).toEqual({ text: "Hello", source: "unknown" });
       expect(relevantNodes[1]).toEqual({ text: "XYZ", source: null });
       expect(relevantNodes[2]).toEqual({ text: "World", source: "unknown" });
+      editor.destroy();
+    });
+
+    it("makes non-IME typing after an unknown span human", () => {
+      editor.destroy();
+      editor = createTestEditor("<p></p>");
+      insertUnknownText(editor, "ABCDE");
+
+      editor.chain().focus().setTextSelection(6).insertContent("X").run();
+
+      const nodes: { text: string; source: string | null }[] = [];
+      editor.state.doc.descendants((node) => {
+        if (!node.isText) return;
+        const mark = node.marks.find((m) => m.type.name === "authorship");
+        nodes.push({
+          text: node.text ?? "",
+          source: mark ? (mark.attrs.source as string) : null,
+        });
+      });
+      expect(nodes).toEqual([
+        { text: "ABCDE", source: "unknown" },
+        { text: "X", source: null },
+      ]);
       editor.destroy();
     });
 

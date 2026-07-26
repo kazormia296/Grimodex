@@ -42,7 +42,7 @@ Settingsパネルはプロジェクト設定、AI設定、エディタ設定、�
 | カテゴリ | 内容 |
 |---------|------|
 | Project | プロジェクトのメタ情報、Phase 解決モード、ネーミングルール、ゴミ箱、執筆タイムラプス記録、デフォルト雛形保存 |
-| AI | APIキー管理、プロバイダ設定（OpenRouter / OpenAI / Anthropic / Ollama / OpenAI 互換 / AI のべりすと / CLI エージェント）、ツールプロトコル、モデル選択、モデルホワイトリスト、拡張思考、Web 検索 (RAG) ドメイン制御、AI 使用ポリシー・AI 作品設定（Outline / 対象読者 / Style guide / AI instructions）、関連シーン自動注入（意味/ハイブリッド検索）、コンテキスト予算配分、Beat AI 統合、AI プロンプト追記カスタマイズ、MCP 連携 |
+| AI | APIキー管理、プロバイダ設定（OpenRouter / OpenAI / Anthropic / Ollama / OpenAI 互換 / Sakana / AI のべりすと / CLI エージェント）、ツールプロトコル、モデル選択、モデルホワイトリスト、拡張思考、Web 検索 (RAG) ドメイン制御、AI 使用ポリシー・AI 作品設定（Outline / 対象読者 / Style guide / AI instructions）、関連シーン自動注入（意味/ハイブリッド検索）、コンテキスト予算配分、Beat AI 統合、AI プロンプト追記カスタマイズ、MCP 連携 |
 | Editor | フォント、行間、タイプライターモード、執筆目標（日次文字数）、縦書き・縦中横、和欧スペーシング、単語・行頭禁則、段落字下げ、インライン AI、Beat 表示モード等 |
 | Display | カラーテーマ、ライト／ダーク、UI 言語、UI フォント、UI スケール、reduceMotion、Glass エフェクト、Attribution 表示、Codex ハイライト |
 | Keys | キーボードショートカットのカスタマイズ |
@@ -170,6 +170,7 @@ BYOKのAPIキー管理とモデル設定。Chatパネル設計書で定義され
 | Anthropic | `anthropic` | API キー必須 |
 | Ollama | `ollama` | API キー不要。`Endpoint`（既定 `http://localhost:11434`）を指定し `GET /api/tags` でモデル取得 |
 | OpenAI 互換 | `openai-compatible` | llama.cpp / LM Studio / vLLM / 自前ホストの GPU 推論サーバ等。`Base URL` / `コンテキスト窓` / `最大出力` / `構造化出力許可` を入力。API キーは任意 |
+| Sakana | `sakana` | API キー必須。fugu 系モデルを利用する HTTP プロバイダ |
 | AI のべりすと | `ai-novelist` | 日本語小説特化プロバイダ。Base URL 二系統（legacy `/api` + v1 `/v1`）。`GET /v1/models` で v1 モデル動的取得 + レガシー静的リストをマージ。API キー必須。legacy モデル選択時のみ KoboldAI サンプリングパラメータ編集可。`multilingualMode` チェックボックスあり。構造化出力（Codex 自動抽出 / Synopsis 自動生成）はデフォルト無効 |
 | CLI エージェント | `cli` | API キーではなく**ローカル CLI バイナリ**経由で呼び出す。`Claude Code` (`claude`) / `Codex CLI` (`codex`) / `OpenCode` (`opencode`) を選択し、バイナリパスを「自動検出」または手動指定。事前に CLI 側で `claude login` 等の認証が必要。ツール（ファイル R/W / shell）は全て無効化された状態で起動する |
 
@@ -177,7 +178,7 @@ BYOKのAPIキー管理とモデル設定。Chatパネル設計書で定義され
 ┌──────────────────────────────────────────────┐
 │ プロバイダ                                    │
 │ [OpenRouter] [OpenAI] [Anthropic] [Ollama]   │
-│ [OpenAI 互換] [AI のべりすと] [CLI エージェント] │
+│ [OpenAI 互換] [Sakana] [AI のべりすと] [CLI] │
 │                                              │
 │ ─ 選択中のプロバイダ固有設定 ─                  │
 │ API Key: [••••••••••]  [Show] [Save] [Delete]│
@@ -399,26 +400,8 @@ UIの外観全般を設定する。
 | UI font | `FontFamilySelect` | `"M PLUS 1"`（同梱） | UI 表示書体。`display.uiFontFamily`（global）。同梱フォント + システムフォント列挙 + カスタム指定 |
 | UI scale | スライダー | 100% | 80% - 上限（実機の Hi-DPI に応じて `getUiScaleMaxPercent()` で算出、最大 150% 程度）。5% 刻み。ポインタドラッグ中は IPC を抑制し、リリース時にのみコミットする。`uiScale` はグローバル設定 |
 | Reduce motion | トグル | OFF | アニメーションを抑制し Framer Motion / GSAP の遷移を最小化。OS の `prefers-reduced-motion` とも連動。キー: `display.reduceMotion` |
-| Card layout | トグル | ON | カードレイアウト表示。キー: `display.cardLayout` |
 | Show word count in Scenes | トグル | ON | Scenesパネルのツリーに文字数を表示（`display.showWordCount`） |
 | Show AI badge in Scenes | トグル | OFF | ScenesパネルのツリーにAI帰属バッジを表示（`display.showAiBadge`） |
-
-### Glass エフェクト
-
-ウィンドウ全体のガラス調表現と、各サーフェスへの個別適用を制御する。マスタートグルが OFF のとき下位のコントロールは disabled になる（値は保持）。
-
-| フィールド | UI 要素 | デフォルト | キー |
-|-----------|---------|-----------|------|
-| Enable glass effect | トグル | OFF | `display.glassEffectEnabled` |
-| Transparency | スライダー（0 - 90%） | 30% | `display.glassTransparency` |
-| Tinted backdrop gradient | トグル | ON | `display.glassBackdropGradient` |
-| macOS native vibrancy | トグル | ON | `display.glassNativeVibrancy` |
-| Window and header | トグル | ON | `display.glassSurfaceShell` |
-| Dock and tabs | トグル | ON | `display.glassSurfaceDock` |
-| Panels | トグル | ON | `display.glassSurfacePanels` |
-| Chat | トグル | ON | `display.glassSurfaceChat` |
-| Popovers and dialogs | トグル | ON | `display.glassSurfacePopovers` |
-| Editor chrome | トグル | ON | `display.glassSurfaceEditorChrome` |
 
 ### Codex ハイライト / Attribution
 
@@ -449,7 +432,6 @@ Focus Attribution panel          Ctrl+Alt+A
 Focus Chat History panel         Ctrl+Alt+H
 Focus Map panel                  Ctrl+Alt+M
 Open Settings                    Ctrl+Alt+,
-Command palette                  Ctrl+Shift+P
 Toggle Left Dock                 Ctrl+Alt+B
 Toggle Right Dock                Ctrl+Alt+R
 Toggle Bottom Dock               Ctrl+Alt+J
@@ -777,8 +759,8 @@ UI の外観など「どのプロジェクトを開いても同じであって�
 | AI (プロンプト追記 `aiPrompt.custom.*`) | `project_settings` テーブル | プロジェクト固有 |
 | Editor (フォント / 行間 / アニメーション / インライン AI / Beat 表示 / `goal.dailyDefaultChars` 等のユーザー嗜好) | `global-settings.json` | グローバル |
 | Editor (`wordBreak` / `lineBreak` / `paragraphIndent` / `textAutospace` / `verticalMode` / `tateChuYoko` / `targetCharCount` / `goal.dailyChars`) | `project_settings` テーブル | プロジェクト固有（作品ごとに変えうる） |
-| Display (theme / colorTheme / uiLanguage / uiScale / `display.uiFontFamily` / `display.cardLayout`) | `global-settings.json` | グローバル |
-| Display (reduceMotion / Glass / Codex highlight / Attribution opacity 等) | `global-settings.json`（`KEY_SCOPE` 上は `global`） | グローバル |
+| Display (theme / colorTheme / uiLanguage / uiScale / `display.uiFontFamily`) | `global-settings.json` | グローバル |
+| Display (reduceMotion / Codex highlight / Attribution opacity 等) | `global-settings.json`（`KEY_SCOPE` 上は `global`） | グローバル |
 | Keys (`keys.bindings`) | `global-settings.json` | グローバル |
 | Data (バックアップ / リビジョン) | `global-settings.json` | グローバル |
 | Map (`map.defaultStickyPaletteId` / `map.defaultStickyColorSlot` / `map.defaultEdgeStyle`) | `global-settings.json` | グローバル |

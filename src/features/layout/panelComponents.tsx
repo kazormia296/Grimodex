@@ -7,19 +7,6 @@ import type {
 
 import { Sidebar } from "@/features/tree/Sidebar";
 import { SceneContextPanel } from "@/features/tree/SceneContextPanel";
-import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
-import { ChatPanel } from "@/features/chat/ChatPanel";
-import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
-import { SnippetPanel } from "@/features/snippets/SnippetPanel";
-import { AttributionReport } from "@/features/attribution/AttributionReport";
-import { TimelinePanel } from "@/features/timeline/TimelinePanel";
-import { MapPanel } from "@/features/map/MapPanel";
-import { KouetsuPanel } from "@/features/kouetsu/KouetsuPanel";
-import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
-import { GridPanel } from "@/features/grid/GridPanel";
-import { MatrixPanel } from "@/features/matrix/MatrixPanel";
-import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
-import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCenterResultsPanel";
 import { SceneEditor } from "@/features/tree/SceneEditor";
 
 import type { PanelId } from "./panelIds";
@@ -37,6 +24,68 @@ const ChroniclePanel = lazy(() =>
 const WritingStatsPanel = lazy(() =>
   import("@/features/writing-stats/WritingStatsPanel").then((m) => ({
     default: m.WritingStatsPanel,
+  })),
+);
+
+const CodexManagementPanel = lazy(() =>
+  import("@/features/codex/CodexManagementPanel").then((m) => ({
+    default: m.CodexManagementPanel,
+  })),
+);
+const ChatHistoryPanel = lazy(() =>
+  import("@/features/chat/ChatHistoryPanel").then((m) => ({
+    default: m.ChatHistoryPanel,
+  })),
+);
+const ChatPanel = lazy(() =>
+  import("@/features/chat/ChatPanel").then((m) => ({
+    default: m.ChatPanel,
+  })),
+);
+const SnippetPanel = lazy(() =>
+  import("@/features/snippets/SnippetPanel").then((m) => ({
+    default: m.SnippetPanel,
+  })),
+);
+const AttributionReport = lazy(() =>
+  import("@/features/attribution/AttributionReport").then((m) => ({
+    default: m.AttributionReport,
+  })),
+);
+const TimelinePanel = lazy(() =>
+  import("@/features/timeline/TimelinePanel").then((m) => ({
+    default: m.TimelinePanel,
+  })),
+);
+const MapPanel = lazy(() =>
+  import("@/features/map/MapPanel").then((m) => ({ default: m.MapPanel })),
+);
+const KouetsuPanel = lazy(() =>
+  import("@/features/kouetsu/KouetsuPanel").then((m) => ({
+    default: m.KouetsuPanel,
+  })),
+);
+const ForeshadowPanel = lazy(() =>
+  import("@/features/foreshadow/ForeshadowPanel").then((m) => ({
+    default: m.ForeshadowPanel,
+  })),
+);
+const GridPanel = lazy(() =>
+  import("@/features/grid/GridPanel").then((m) => ({ default: m.GridPanel })),
+);
+const MatrixPanel = lazy(() =>
+  import("@/features/matrix/MatrixPanel").then((m) => ({
+    default: m.MatrixPanel,
+  })),
+);
+const TrashBinPanel = lazy(() =>
+  import("@/features/trash-bin/TrashBinPanel").then((m) => ({
+    default: m.TrashBinPanel,
+  })),
+);
+const CommandCenterResultsPanel = lazy(() =>
+  import("@/features/commandCenter/CommandCenterResultsPanel").then((m) => ({
+    default: m.CommandCenterResultsPanel,
   })),
 );
 

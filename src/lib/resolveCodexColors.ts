@@ -38,6 +38,26 @@ export function resolveCodexColor(
 }
 
 /**
+ * Codexハイライト（背景スタイル）の背景色を濃度レベルから解決する。
+ * レベルは 5〜25、既定 10 = パレット設計値 (hl) をそのまま使う。
+ * 10 未満は hl を透明側へ薄め、10 超は fg を混ぜて濃くする —
+ * 既定値で従来の見た目が完全に保存されるようにした2セグメント式。
+ */
+export function codexHighlightBackground(
+  colors: ResolvedCodexColor,
+  level: number,
+): string {
+  const clamped = Number.isFinite(level)
+    ? Math.min(25, Math.max(5, level))
+    : 10;
+  if (clamped === 10) return colors.hl;
+  if (clamped < 10) {
+    return `color-mix(in srgb, ${colors.hl} ${clamped * 10}%, transparent)`;
+  }
+  return `color-mix(in srgb, ${colors.fg} ${(clamped - 10) * 2}%, ${colors.hl})`;
+}
+
+/**
  * 背景 hex 色に対して可読なテキスト色（濃 or 白）を返す。YIQ 輝度で判定。
  * 入力が #RRGGBB でない（CSS 変数など）場合は白を返す。
  * プロットスレッドのチップ（色付き背景に段階テキスト）の文字色決定に使う。

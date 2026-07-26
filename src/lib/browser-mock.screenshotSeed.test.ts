@@ -13,6 +13,10 @@ import {
   SCREENSHOT_MODE_LOCALSTORAGE_KEY,
 } from "@/screenshot-scenes/screenshotMode";
 import { SCREENSHOT_SEED_CONTENT } from "@/screenshot-scenes/screenshotSeedContent";
+import {
+  verifyChain,
+  type EventForVerify,
+} from "@/features/timelapse/hashChain";
 
 async function scalar(
   mock: BrowserMock,
@@ -60,10 +64,12 @@ describe("seedScreenshotWorkspace via createBrowserMock", () => {
         expect(await count(mock, "tree_nodes")).toBe(4);
         const scene1 = await scalar(
           mock,
-          "SELECT title, char_count FROM tree_nodes WHERE id = 'scene-1'",
+          "SELECT title, char_count, chronicle_start_time, chronicle_start_granularity FROM tree_nodes WHERE id = 'scene-1'",
         );
         expect(scene1?.title).toBe(c.scenes.scene1.title);
         expect(scene1?.char_count).toBe(c.scenes.scene1.charCount);
+        expect(scene1?.chronicle_start_time).toBe(150);
+        expect(scene1?.chronicle_start_granularity).toBe("day");
 
         // codex 5 件、name は言語追従
         expect(await count(mock, "codex_entries")).toBe(5);
@@ -81,6 +87,64 @@ describe("seedScreenshotWorkspace via createBrowserMock", () => {
         expect(await count(mock, "chat_messages")).toBe(2);
         expect(await count(mock, "authorship_spans")).toBe(5);
         expect(await count(mock, "map_edges")).toBe(2);
+
+        // 新しい撮影対象（作中年表・執筆統計）が空状態にならない。
+        expect(await count(mock, "events")).toBe(4);
+        expect(await count(mock, "event_participants")).toBe(5);
+        expect(await count(mock, "scene_events")).toBe(2);
+        expect(await count(mock, "event_relations")).toBe(3);
+        expect(await count(mock, "change_events")).toBe(14);
+
+        const changeEvents = await mock.invoke<{
+          rows: EventForVerify[];
+        }>("db_execute", {
+          sql: `SELECT project_id AS projectId, scene_id AS sceneId, domain,
+                       op_type AS opType, entity_type AS entityType,
+                       entity_id AS entityId, payload,
+                       session_id AS sessionId, sequence, timestamp,
+                       prev_hash AS prevHash, hash
+                  FROM change_events
+                 WHERE project_id = 'default-project'
+                 ORDER BY sequence`,
+          params: [],
+        });
+        expect(changeEvents.rows).toHaveLength(14);
+        expect(
+          changeEvents.rows.every((event) => event.domain === "editor"),
+        ).toBe(true);
+        expect(
+          changeEvents.rows.every(
+            (event) =>
+              Number.isFinite(event.timestamp) &&
+              Array.isArray(
+                (JSON.parse(event.payload) as { steps?: unknown[] }).steps,
+              ),
+          ),
+        ).toBe(true);
+        expect(await verifyChain(changeEvents.rows)).toEqual({ ok: true });
+
+        const query = Array.from(c.codex.akane.name)[0];
+        const searchResults = await mock.invoke<
+          Array<{ sourceType: string; id: string; title: string }>
+        >("fts_search", {
+          projectId: "default-project",
+          query,
+          scope: "all",
+          limit: 50,
+        });
+        expect(searchResults).toContainEqual(
+          expect.objectContaining({
+            sourceType: "codex",
+            id: "codex-akane",
+            title: c.codex.akane.name,
+          }),
+        );
+
+        const chronicleReturn = await scalar(
+          mock,
+          "SELECT title FROM events WHERE id = 'shot-event-return'",
+        );
+        expect(chronicleReturn?.title).toBe(c.chronicle.returnHome.title);
 
         const setup = await scalar(
           mock,

@@ -177,6 +177,20 @@ interface RenderCtx {
   settings: ExportSettings;
   resolvedRuby: RubyStyle;
   resolvedEmphasis: EmphasisDotsStyle;
+  /**
+   * 明示的な縦中横マーク(TcyMark)を書き出す記法スタイル。auto の縦中横
+   * (applyTateChuYoko / settings.tateChuYoko) とは独立: 明示マークはユーザ意図
+   * なので policy 非依存で常に出力する。resolvedRuby/resolvedEmphasis と同じ
+   * 「マーク専用の解決済みスタイル」。archive markdown は auto を "none" で切る
+   * 一方で明示マークは失わないよう aozora-range で保存する。
+   */
+  resolvedTcy: TateChuYokoExportStyle;
+  /**
+   * html format 限定: 段落を実 `<p>` 要素で包み、hardBreak を `<br>` にする
+   * （CSS 組版向け。Vivliostyle 連携が使う）。false（既定）は従来どおり
+   * 素のテキスト行 — publish 出力（word-html/ao3 プリセット）の凍結挙動。
+   */
+  htmlParagraphs: boolean;
   /** Optional `@mention` → display-name resolver. See {@link MentionNameResolver}. */
   resolveMentionName?: MentionNameResolver;
   /**
@@ -237,7 +251,15 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       // exports.
       if (inner === "") {
         if (ctx.settings.format === "markdown") return "<p></p>\n";
+        if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
+          // 意図的な空行（連続空行由来の空段落）。CSS 組版では whitespace-only
+          // 行は潰れるため、blank class 付き要素として高さを保持させる。
+          return '<p class="blank"></p>\n';
+        }
         return "\n";
+      }
+      if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
+        return `<p>${inner}</p>\n`;
       }
       return inner + "\n";
     }
@@ -257,14 +279,32 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
     }
 
     case "text": {
-      const raw = node.text ?? "";
+      // html format は本文を必ずエスケープする。従来の publish 用途（Word 貼付・
+      // AO3）でも `<` を含む本文が構造を壊すのは誤りであり、Vivliostyle 連携では
+      // 生成 HTML がヘッドレス Chromium で実行されるため、未エスケープの
+      // <script> 焼き込みは原稿流出・ローカルファイル読取につながる（敵対
+      // レビュー Critical）。エスケープは縦中横 wrap（<span> を差し込む）より
+      // 前に行う — run は数字・記号のみでエスケープの影響を受けない。
+      const rawText = node.text ?? "";
+      const raw =
+        ctx.settings.format === "html" ? escapeHtml(rawText) : rawText;
       const marks = node.marks ?? [];
       // 傍点(emphasisDots)が乗った run には縦中横記法を付けない。傍点も縦中横も
       // ［＃…］系の注記/囲みを出すため、両方適用すると注記がネストして青空文庫
       // として不正になる（例: 29［＃「29」は縦中横］［＃「29［＃…］」に傍点］）。
       // 傍点を優先し数字は素のまま残す（縦書きビューアが2桁を自動結合する）。
       const hasEmphasis = marks.some((m) => m.type === "emphasisDots");
-      const body = hasEmphasis ? raw : applyTateChuYoko(raw, ctx);
+      // 明示縦中横(TcyMark)は policy 非依存で常に記法を出す(resolvedTcy)。auto
+      // (applyTateChuYoko)と同じく mark 装飾より先に raw を包む。text node の mark は
+      // 一様なので run 単位で包める(別マークが一部に乗ると tcy run が複数 node に
+      // 割れて複数記法になるが、その別マークが CSS の combine context も割るので
+      // エディタ表示と一致する)。傍点が同居する run は傍点優先(注記ネスト回避)。
+      const hasTcy = marks.some((m) => m.type === "tcy");
+      const body = hasEmphasis
+        ? raw
+        : hasTcy
+          ? wrapTateChuYoko(raw, ctx.resolvedTcy)
+          : applyTateChuYoko(raw, ctx);
       return applyMarks(body, marks, ctx);
     }
 
@@ -276,14 +316,25 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       //  - `breaks: false` (CommonMark strict, opt-in): bare `\n` collapses to
       //    a soft break (space) on re-parse, permanently losing the node. Emit
       //    the spec hardBreak marker (`  \n`) so it round-trips.
+      if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
+        // <p> 内の生 \n は whitespace として潰れるため実 <br> で出す。
+        return "<br>";
+      }
       return ctx.strictLineBreaks ? "  \n" : "\n";
 
-    case "ruby":
-      return renderRuby(
-        (node.attrs?.base as string) ?? "",
-        (node.attrs?.annotation as string) ?? "",
-        ctx.resolvedRuby,
-      );
+    case "ruby": {
+      // html format はルビの base/annotation もエスケープ（text と同じ理由）。
+      const base = (node.attrs?.base as string) ?? "";
+      const annotation = (node.attrs?.annotation as string) ?? "";
+      if (ctx.settings.format === "html") {
+        return renderRuby(
+          escapeHtml(base),
+          escapeHtml(annotation),
+          ctx.resolvedRuby,
+        );
+      }
+      return renderRuby(base, annotation, ctx.resolvedRuby);
+    }
 
     case "mention": {
       // `@mention` is an inline atom: the display name lives in attrs (`label`),
@@ -297,9 +348,11 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       const id = (node.attrs?.id as string) ?? "";
       const label = (node.attrs?.label as string | undefined) ?? "";
       const fallback = label || id;
-      return ctx.resolveMentionName
+      const name = ctx.resolveMentionName
         ? ctx.resolveMentionName(id, fallback)
         : fallback;
+      // html format はメンション名もエスケープ（text と同じ理由）。
+      return ctx.settings.format === "html" ? escapeHtml(name) : name;
     }
 
     case "sceneBeat":
@@ -348,6 +401,10 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
     case "codeBlock": {
       const lang = (node.attrs?.language as string) ?? "";
       const code = (node.content ?? []).map((c) => c.text ?? "").join("");
+      if (ctx.settings.format === "html") {
+        const cls = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+        return `<pre><code${cls}>${escapeHtml(code)}</code></pre>\n`;
+      }
       return "```" + lang + "\n" + code + "\n```\n";
     }
 
@@ -499,7 +556,10 @@ function applyMarks(text: string, marks: PMMark[], ctx: RenderCtx): string {
         if (ctx.settings.format === "markdown") {
           result = `[${result}](${href})`;
         } else if (ctx.settings.format === "html") {
-          result = `<a href="${escapeHtml(href)}">${result}</a>`;
+          const safeHref = sanitizeHtmlHref(href);
+          if (safeHref !== null) {
+            result = `<a href="${escapeHtml(safeHref)}">${result}</a>`;
+          }
         }
         break;
       }
@@ -572,6 +632,10 @@ function wrapTateChuYoko(run: string, style: TateChuYokoExportStyle): string {
       return `［＃縦中横］${run}［＃縦中横終わり］`;
     case "caita":
       return `[tatechuyoko]${run}[/tatechuyoko]`;
+    case "html-span":
+      // CSS 組版向け（.tcy { text-combine-upright: all }）。run は数字・記号・
+      // ローマ数字のみ（TATE_CHU_YOKO_RUN）なので HTML エスケープ不要。
+      return `<span class="tcy">${run}</span>`;
     case "none":
       return run;
     default: {
@@ -675,6 +739,11 @@ export function renderPmDocToArchiveMarkdown(
     },
     resolvedRuby: rubyStyle,
     resolvedEmphasis: emphasisDotsStyle,
+    // auto の縦中横は "none" で焼き込まない一方、明示マーク(TcyMark)はユーザ意図
+    // なので aozora-range で保存する (ruby=括弧 / 傍点=《《》》 と同じく記法として残す。
+    // file-backed 再取り込みでマークには戻らないが記法テキストとして復元可能)。
+    resolvedTcy: "aozora-range",
+    htmlParagraphs: false,
     strictLineBreaks: options.strictLineBreaks ?? false,
     tateChuYokoPolicy: "2",
     resolveMentionName: options.resolveMentionName,
@@ -742,11 +811,69 @@ function getSceneDivider(settings: ExportSettings): string {
 // HTML ラッパー
 // ────────────────────────────────────────────────────────────────────
 
+const HTML_EXPORT_CSP =
+  "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'";
+const URI_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+const HTML_UNSAFE_HREF_CHARACTERS = /[<>"']/;
+
+function hasHtmlControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** HTML artifact の lang 属性を BCP 47 の妥当な値へ限定する。 */
+function sanitizeHtmlLanguage(lang: string): string {
+  const candidate = lang.trim();
+  if (!candidate || candidate !== lang || hasHtmlControlCharacters(candidate)) {
+    return "ja";
+  }
+  try {
+    const [canonical] = Intl.getCanonicalLocales(candidate);
+    if (
+      !canonical ||
+      !/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(canonical)
+    ) {
+      return "ja";
+    }
+    return canonical;
+  } catch {
+    return "ja";
+  }
+}
+
+/** HTML artifact のリンクで実行可能な URL scheme を許可しない。 */
+function sanitizeHtmlHref(href: string): string | null {
+  if (
+    !href ||
+    href !== href.trim() ||
+    hasHtmlControlCharacters(href) ||
+    HTML_UNSAFE_HREF_CHARACTERS.test(href) ||
+    href.startsWith("//")
+  ) {
+    return null;
+  }
+  if (!URI_SCHEME.test(href)) {
+    // Relative paths, root-relative paths, query strings, and fragments are
+    // safe in a standalone export and stay within the artifact's origin.
+    return href;
+  }
+  try {
+    const protocol = new URL(href).protocol.toLowerCase();
+    return ["http:", "https:", "mailto:"].includes(protocol) ? href : null;
+  } catch {
+    return null;
+  }
+}
+
 function wrapHtml(body: string, title: string, lang: string): string {
   return `<!DOCTYPE html>
-<html lang="${lang}">
+<html lang="${sanitizeHtmlLanguage(lang)}">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="${HTML_EXPORT_CSP}">
   <title>${escapeHtml(title)}</title>
   <style>
     body { max-width: 40em; margin: 2em auto; font-family: serif; line-height: 1.8; }
@@ -790,6 +917,14 @@ export interface GenerateExportInput {
   tateChuYokoPolicy?: TateChuYokoPolicy;
   /** Optional `@mention` → display-name resolver. See {@link MentionNameResolver}. */
   resolveMentionName?: MentionNameResolver;
+  /**
+   * html format 限定: 文書シェル（doctype/head/body）を差し替える。
+   * 未指定なら従来の `wrapHtml`（インライン style）— publish 出力の凍結挙動。
+   * Vivliostyle 連携は theme.css への `<link>` を持つ自前シェルを渡す。
+   */
+  htmlWrapper?: (body: string, title: string, lang: string) => string;
+  /** html format 限定: 段落を実 `<p>` で包む。{@link RenderCtx.htmlParagraphs} 参照。 */
+  htmlParagraphs?: boolean;
 }
 
 /**
@@ -806,12 +941,17 @@ export function generateExport(input: GenerateExportInput): string {
     projectLanguage = "ja",
     tateChuYokoPolicy = "2",
     resolveMentionName,
+    htmlWrapper,
+    htmlParagraphs = false,
   } = input;
 
   const resolvedRuby: RubyStyle =
     settings.rubyStyle ?? defaultRubyStyle(settings.format);
   const resolvedEmphasis: EmphasisDotsStyle =
     settings.emphasisDotsStyle ?? defaultEmphasisDotsStyle(settings.format);
+  // 明示縦中横マークは publish 出力ではユーザの site スタイルに合わせる
+  // (auto と同じ settings.tateChuYoko。"none" 選択時は明示マークも出さない)。
+  const resolvedTcy: TateChuYokoExportStyle = settings.tateChuYoko ?? "none";
 
   // generateExport is the user-facing publish path (markdown/html/plaintext).
   // Leaves strictLineBreaks=false for diff-friendly bare `\n` output. The
@@ -822,6 +962,8 @@ export function generateExport(input: GenerateExportInput): string {
     settings,
     resolvedRuby,
     resolvedEmphasis,
+    resolvedTcy,
+    htmlParagraphs,
     strictLineBreaks: false,
     tateChuYokoPolicy,
     resolveMentionName,
@@ -922,7 +1064,11 @@ export function generateExport(input: GenerateExportInput): string {
   }
 
   if (settings.format === "html") {
-    return wrapHtml(result, projectTitle, projectLanguage);
+    return (htmlWrapper ?? wrapHtml)(
+      result,
+      projectTitle,
+      sanitizeHtmlLanguage(projectLanguage),
+    );
   }
 
   return result;

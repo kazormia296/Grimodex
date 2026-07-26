@@ -43,6 +43,7 @@ import { getPromptCatalog } from "@/prompts/index";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
+import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload";
 
 // --- AI message sending (existing) ---
 
@@ -205,6 +206,13 @@ export async function sendAgentMessage(
    * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
    */
   endpointId?: string | null,
+  /** Finalized output limit; backend uses this exact value on the provider wire. */
+  requestMaxOutputTokens?: number | null,
+  /** Immutable route snapshot; takes precedence over the legacy override. */
+  resolvedProvider?: string | null,
+  resolvedEndpointId?: string | null,
+  /** Turn-start protocol snapshot; prevents backend settings drift mid-turn. */
+  resolvedToolProtocol?: TurnToolProtocol | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -218,8 +226,10 @@ export async function sendAgentMessage(
     webSearch: webSearch ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
-    provider: provider ?? null,
-    endpointId: endpointId ?? null,
+    provider: resolvedProvider ?? provider ?? null,
+    endpointId: resolvedEndpointId ?? endpointId ?? null,
+    ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
+    ...(resolvedToolProtocol != null ? { resolvedToolProtocol } : {}),
   });
 }
 
@@ -256,6 +266,9 @@ export async function sendChatMessageWithThinking(
    * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
    */
   endpointId?: string | null,
+  requestMaxOutputTokens?: number | null,
+  resolvedProvider?: string | null,
+  resolvedEndpointId?: string | null,
 ): Promise<ChatMessageResult> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -267,8 +280,9 @@ export async function sendChatMessageWithThinking(
     apiVariant: apiVariant ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
-    provider: provider ?? null,
-    endpointId: endpointId ?? null,
+    provider: resolvedProvider ?? provider ?? null,
+    endpointId: resolvedEndpointId ?? endpointId ?? null,
+    ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -358,6 +372,11 @@ export async function sendChatMessageStream(
    * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
    */
   endpointId?: string | null,
+  /** Finalized output limit shared with the context reservation. */
+  requestMaxOutputTokens?: number | null,
+  /** Immutable route snapshot; takes precedence over the legacy override. */
+  resolvedProvider?: string | null,
+  resolvedEndpointId?: string | null,
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -397,8 +416,9 @@ export async function sendChatMessageStream(
     apiVariant: apiVariant ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
-    provider: provider ?? null,
-    endpointId: endpointId ?? null,
+    provider: resolvedProvider ?? provider ?? null,
+    endpointId: resolvedEndpointId ?? endpointId ?? null,
+    ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
     const msg = e instanceof Error ? e.message : String(e);
@@ -582,12 +602,37 @@ export async function listSessions(
   return rows.map(toSession);
 }
 
+/**
+ * Resolve a session only when both authorities match the persisted row.
+ * Turn setup must use this instead of trusting a session id captured from UI
+ * state, because session ids alone do not establish project ownership.
+ */
+export async function getSessionForProject(
+  sessionId: string,
+  projectId: string,
+): Promise<ChatSession | null> {
+  const rows = await db
+    .select()
+    .from(chatSessions)
+    .where(
+      and(
+        eq(chatSessions.id, sessionId),
+        eq(chatSessions.projectId, projectId),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.id !== sessionId || row.projectId !== projectId) return null;
+  return toSession(row);
+}
+
 export async function createSession(
   projectId: string,
   title: string,
   nodeId?: string,
   codexAnchorId?: string,
   snippetAnchorId?: string,
+  model?: string,
 ): Promise<ChatSession> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -600,6 +645,7 @@ export async function createSession(
       nodeId: nodeId ? nodeId : null,
       codexAnchorId: codexAnchorId ?? null,
       snippetAnchorId: snippetAnchorId ?? null,
+      ...(model !== undefined ? { model } : {}),
       createdAt: now,
       updatedAt: now,
     })
@@ -822,7 +868,7 @@ export async function updateSessionTitle(
 export type PinnedCodexEntryWithData = CodexEntry & {
   withChildren: boolean;
   pinnedType: "codex" | "snippet";
-  /** ピンの起源: "manual" = 手動ピン, "chat_mention" = チャット@メンション */
+  /** ピンの起源。`chat_mention` は旧バージョンが保存した互換値。 */
   pinSource?: "manual" | "chat_mention";
 };
 
@@ -1018,7 +1064,28 @@ export async function pinCodexEntry(
           withChildren: withChildren ? 1 : 0,
           pinSource: source,
         };
-  await db.insert(chatSessionPinnedCodex).values(values).onConflictDoNothing();
+  const insert = db.insert(chatSessionPinnedCodex).values(values);
+  if (source === "manual") {
+    // Older releases persisted current-input mentions in the same unique row
+    // with pinSource=chat_mention. Promote that row atomically when the user
+    // explicitly chooses Spotlight instead of silently ignoring the insert.
+    const conflictTarget =
+      type === "snippet"
+        ? [chatSessionPinnedCodex.sessionId, chatSessionPinnedCodex.snippetId]
+        : [
+            chatSessionPinnedCodex.sessionId,
+            chatSessionPinnedCodex.codexEntryId,
+          ];
+    await insert.onConflictDoUpdate({
+      target: conflictTarget,
+      set: {
+        pinSource: "manual",
+        withChildren: withChildren ? 1 : 0,
+      },
+    });
+  } else {
+    await insert.onConflictDoNothing();
+  }
 }
 
 /**

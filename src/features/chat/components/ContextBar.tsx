@@ -32,6 +32,7 @@ import type {
   PinnedStickyEntryWithData,
 } from "../chatApi";
 import type { LayerBreakdown } from "../contextBuilder";
+import type { ChatContextPlan } from "../context/types";
 import { PromptPreviewModal } from "./PromptPreviewModal";
 import { ContextCreatorButton } from "./ContextCreatorButton";
 import { ContextCreatorDialog } from "./ContextCreatorDialog";
@@ -81,6 +82,9 @@ interface ContextBarProps {
     | { kind: "snippet"; id: string; title: string }
     | null;
   pinnedEntries: PinnedCodexEntryWithData[];
+  /** Last materialized plan is the display authority. Source arrays describe
+   * candidates only and may contain budget-trimmed or policy-excluded rows. */
+  contextPlan?: ChatContextPlan | null;
   /** G15: auto-detected entries (excluding pinned)。M10: icon なし projection 行 */
   detectedEntries?: CodexContextEntry[];
   /** G15: always-mode entries (excluding pinned and detected) */
@@ -111,6 +115,7 @@ interface ContextBarProps {
   onUnpinEntry: (entryId: string) => void;
   onTogglePinChildren: (entryId: string, withChildren: boolean) => void;
   contextTokenCount: number;
+  contextWindowOverride?: number | null;
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
   model: string;
@@ -128,11 +133,12 @@ interface ContextBarProps {
 
 export function ContextBar({
   scopeAnchor = null,
-  pinnedEntries,
-  detectedEntries = [],
-  alwaysEntries = [],
-  pinnedSnippets = [],
-  pinnedStickies = [],
+  pinnedEntries: candidatePinnedEntries,
+  contextPlan = null,
+  detectedEntries: candidateDetectedEntries = [],
+  alwaysEntries: candidateAlwaysEntries = [],
+  pinnedSnippets: candidatePinnedSnippets = [],
+  pinnedStickies: candidatePinnedStickies = [],
   onUnpinSticky,
   onReturnToAuto,
   onRemove,
@@ -146,6 +152,7 @@ export function ContextBar({
   onUnpinEntry,
   onTogglePinChildren,
   contextTokenCount,
+  contextWindowOverride,
   contextLayers,
   systemPrompt,
   model,
@@ -192,6 +199,27 @@ export function ContextBar({
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const allCodexEntries = useCodexStore((s) => s.entries);
 
+  const selectedPlanKeys = contextPlan
+    ? new Set(contextPlan.items.map((item) => item.key))
+    : null;
+  const isSelected = (kind: string, id: string) =>
+    selectedPlanKeys === null || selectedPlanKeys.has(`${kind}:${id}`);
+  const pinnedEntries = candidatePinnedEntries.filter((entry) =>
+    isSelected("codex", entry.id),
+  );
+  const detectedEntries = candidateDetectedEntries.filter((entry) =>
+    isSelected("codex", entry.id),
+  );
+  const alwaysEntries = candidateAlwaysEntries.filter((entry) =>
+    isSelected("codex", entry.id),
+  );
+  const pinnedSnippets = candidatePinnedSnippets.filter((entry) =>
+    isSelected("snippet", entry.id),
+  );
+  const pinnedStickies = candidatePinnedStickies.filter((entry) =>
+    isSelected("sticky", entry.id),
+  );
+
   // M10: detected/always は icon 列を持たない projection 行。ピルのホバー
   // ポップオーバーに出すアイコンは codexStore の全列行から補完する
   // (store 未 hydrate 時は従来の色ドット表示にフォールバック)。
@@ -206,10 +234,15 @@ export function ContextBar({
     ...alwaysEntries.map((e) => e.id),
   ]);
   const dismissedSet = dismissedViaChildIds ?? new Set<string>();
-  const viaChildren: ViaChild[] = pinnedEntries.flatMap((entry) => {
+  const viaChildren: ViaChild[] = candidatePinnedEntries.flatMap((entry) => {
     if (!entry.withChildren) return [];
     return getChildrenFromArray(entry.id, allCodexEntries)
-      .filter((c) => !alreadyShownIds.has(c.id) && !dismissedSet.has(c.id))
+      .filter(
+        (c) =>
+          isSelected("codex", c.id) &&
+          !alreadyShownIds.has(c.id) &&
+          !dismissedSet.has(c.id),
+      )
       .map((c) => ({
         child: c,
         viaParentId: entry.id,
@@ -290,7 +323,9 @@ export function ContextBar({
     }
   }
 
-  const pinnedIds = pinnedEntries.map((e) => e.id);
+  // Mutation controls reflect persisted candidate state; only the visible pill
+  // projection is plan-filtered.
+  const pinnedIds = candidatePinnedEntries.map((entry) => entry.id);
 
   async function handleCreatorSearch(
     instruction: string,
@@ -317,7 +352,9 @@ export function ContextBar({
       : `${t("chat.scope.snippet")}: ${scopeAnchor.title}`
     : null;
 
-  const contextWindow = model ? getModelCapabilities(model).contextWindow : 0;
+  const contextWindow =
+    contextWindowOverride ??
+    (model ? getModelCapabilities(model).contextWindow : 0);
   const ctxWindowLabel = model ? formatContextWindow(contextWindow) : null;
   const windowFillPct =
     contextWindow > 0
@@ -331,6 +368,28 @@ export function ContextBar({
         : windowFillPct >= 50
           ? "stroke-amber-500"
           : "stroke-primary";
+  const omittedDecisions = (contextPlan?.decisions ?? [])
+    .filter((decision) => decision.status !== "selected")
+    .sort((left, right) => {
+      const statusOrder = { unavailable: 0, trimmed: 1, excluded: 2 } as const;
+      return (
+        statusOrder[left.status as keyof typeof statusOrder] -
+          statusOrder[right.status as keyof typeof statusOrder] ||
+        left.key.localeCompare(right.key) ||
+        left.reason.localeCompare(right.reason)
+      );
+    });
+  const omittedDecisionCounts = {
+    unavailable: omittedDecisions.filter(
+      (decision) => decision.status === "unavailable",
+    ).length,
+    trimmed: omittedDecisions.filter(
+      (decision) => decision.status === "trimmed",
+    ).length,
+    excluded: omittedDecisions.filter(
+      (decision) => decision.status === "excluded",
+    ).length,
+  };
 
   return (
     <>
@@ -400,6 +459,94 @@ export function ContextBar({
                     ? t("chat.context.cacheRebuiltInstructions")
                     : t("chat.context.cacheRebuiltBudget")}
               </button>
+            )}
+            {omittedDecisions.length > 0 && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    data-testid="context-decision-summary"
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
+                    aria-label={t("chat.context.decisionSummary", {
+                      count: omittedDecisions.length,
+                    })}
+                    title={t("chat.context.decisionSummary", {
+                      count: omittedDecisions.length,
+                    })}
+                  >
+                    <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
+                    {t("chat.context.decisionSummary", {
+                      count: omittedDecisions.length,
+                    })}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="end"
+                  sideOffset={6}
+                  data-testid="context-decision-popover"
+                  className="w-96 max-w-[min(28rem,calc(100vw-1rem))]"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="mb-2 text-xs font-medium text-foreground">
+                    {t("chat.context.decisionSummaryTitle")}
+                  </div>
+                  <div className="mb-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+                    {omittedDecisionCounts.unavailable > 0 && (
+                      <span>
+                        {t("chat.context.decisionUnavailable")}:{" "}
+                        {omittedDecisionCounts.unavailable}
+                      </span>
+                    )}
+                    {omittedDecisionCounts.trimmed > 0 && (
+                      <span>
+                        {t("chat.context.decisionTrimmed")}:{" "}
+                        {omittedDecisionCounts.trimmed}
+                      </span>
+                    )}
+                    {omittedDecisionCounts.excluded > 0 && (
+                      <span>
+                        {t("chat.context.decisionExcluded")}:{" "}
+                        {omittedDecisionCounts.excluded}
+                      </span>
+                    )}
+                  </div>
+                  <ul className="max-h-64 space-y-1.5 overflow-y-auto text-[11px]">
+                    {omittedDecisions.slice(0, 8).map((decision, index) => (
+                      <li
+                        key={`${decision.status}:${decision.key}:${decision.reason}:${index}`}
+                        className="rounded bg-muted/60 px-2 py-1.5"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <code className="break-all text-foreground">
+                            {decision.key}
+                          </code>
+                          <span className="shrink-0 text-muted-foreground">
+                            {decision.status === "unavailable"
+                              ? t("chat.context.decisionUnavailable")
+                              : decision.status === "trimmed"
+                                ? t("chat.context.decisionTrimmed")
+                                : t("chat.context.decisionExcluded")}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 break-all text-muted-foreground">
+                          {decision.reason} · {decision.tokensBefore}
+                          {" → "}
+                          {decision.tokensAfter} tokens
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {omittedDecisions.length > 8 && (
+                    <div className="mt-2 text-[11px] text-muted-foreground">
+                      {t("chat.context.decisionMore", {
+                        count: omittedDecisions.length - 8,
+                      })}
+                    </div>
+                  )}
+                </PopoverContent>
+              </Popover>
             )}
             {contextTokenCount > 0 &&
               (() => {
@@ -888,7 +1035,7 @@ export function ContextBar({
                   // ダイアログでも「ピン済み」扱いにして重複手動ピンを防ぐ。
                   pinnedIds={
                     new Set([
-                      ...pinnedEntries.map((e) => e.id),
+                      ...candidatePinnedEntries.map((e) => e.id),
                       ...(scopeAnchor?.kind === "codex"
                         ? [scopeAnchor.id]
                         : []),
@@ -896,7 +1043,7 @@ export function ContextBar({
                   }
                   withChildrenIds={
                     new Set(
-                      pinnedEntries
+                      candidatePinnedEntries
                         .filter((e) => e.withChildren)
                         .map((e) => e.id),
                     )

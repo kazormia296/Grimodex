@@ -16,7 +16,7 @@
   「**狭く、かつ大半は別の層で**」。
 - **CI への組み込みは追加配線不要**: 新規 `*.browser.test.tsx` は `vitest.browser.config.ts` の
   `include: ["src/**/*.browser.test.{ts,tsx}"]` に、新規 `*.stories.tsx` は `.storybook/main.ts` の
-  `../src/**/*.stories.@(ts|tsx)` に **glob で自動取り込み**。既存の `browser` job（`test:browser` + `test:storybook`）がそのまま拾う。
+  `../src/**/*.stories.@(ts|tsx)` に **glob で自動取り込み**。独立した `browser` / `storybook` jobがそれぞれ自動で拾う。
 - **ただし flake surface が増える**: 433 happy-dom テストより browser/Storybook は遅く脆い。browser job は
   `timeout-minutes: 15`。これが「**dnd-kit を full drive せず geometry seam を決定的に assert**」原則を
   per-test だけでなく **CI レベルでも**守るべき理由。

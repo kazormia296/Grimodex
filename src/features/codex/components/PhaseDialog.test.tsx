@@ -47,7 +47,7 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
         entryId="entry-1"
         phase={null}
         onClose={() => {}}
-        currentContent={"{}"}
+        resolveCurrentContent={() => "{}"}
       />,
     );
 
@@ -66,7 +66,7 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
         entryId="entry-1"
         phase={null}
         onClose={() => {}}
-        currentContent={"{}"}
+        resolveCurrentContent={() => "{}"}
       />,
     );
     const select = screen.getByTestId(
@@ -83,7 +83,7 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
         entryId="entry-1"
         phase={null}
         onClose={() => {}}
-        currentContent={"{}"}
+        resolveCurrentContent={() => "{}"}
       />,
     );
     const select = screen.getByTestId(
@@ -98,7 +98,7 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
         entryId="entry-1"
         phase={null}
         onClose={() => {}}
-        currentContent={"{}"}
+        resolveCurrentContent={() => "{}"}
       />,
     );
     fireEvent.change(screen.getByPlaceholderText(/追放後/), {
@@ -136,7 +136,7 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
         entryId="entry-1"
         phase={null}
         onClose={() => {}}
-        currentContent={"{}"}
+        resolveCurrentContent={() => "{}"}
       />,
     );
     fireEvent.change(screen.getByPlaceholderText(/追放後/), {
@@ -147,6 +147,38 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
 
     const save = screen.getByRole("button", { name: /保存|Save/ });
     expect(save).toBeDisabled();
+  });
+
+  it("新規 Content は選択したアンカー時点の解決値を保存する", async () => {
+    const resolveCurrentContent = vi.fn(
+      (anchorNodeId: string) => `${anchorNodeId}-resolved-content`,
+    );
+    render(
+      <PhaseDialog
+        entryId="entry-1"
+        phase={null}
+        onClose={() => {}}
+        resolveCurrentContent={resolveCurrentContent}
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText(/追放後/), {
+      target: { value: "過去の状態" },
+    });
+    fireEvent.change(document.querySelectorAll("select")[0], {
+      target: { value: "scene-1" },
+    });
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getByRole("button", { name: /保存|Save/ }));
+
+    await waitFor(() => {
+      expect(resolveCurrentContent).toHaveBeenCalledWith("scene-1", undefined);
+      expect(mockCreatePhase).toHaveBeenCalledWith(
+        expect.objectContaining({
+          anchorNodeId: "scene-1",
+          contentOverride: "scene-1-resolved-content",
+        }),
+      );
+    });
   });
 
   it("既存 Phase 編集時、contextModeOverride 値が select に復元される", () => {
@@ -165,7 +197,7 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
           updatedAt: "2024-01-01T00:00:00Z",
         }}
         onClose={() => {}}
-        currentContent={"{}"}
+        resolveCurrentContent={() => "{}"}
       />,
     );
     const select = screen.getByTestId(

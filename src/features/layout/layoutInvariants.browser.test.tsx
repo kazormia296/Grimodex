@@ -113,8 +113,8 @@ function rectsOverlap(a: DOMRect, b: DOMRect): boolean {
 }
 
 function renderShell() {
-  // card 用の CSS chain (gx-panel, --gx-* variables) は `app-shell[data-card]`
-  // が必要。LayoutShell の root motion.div は h-full/w-full なので、外側 div に
+  // card 用の CSS chain (gx-panel, --gx-* variables) は app-shell 配下で有効。
+  // LayoutShell の root motion.div は h-full/w-full なので、外側 div に
   // explicit な width/height を与えて viewport の代替にする。
   // 直接 document.body に portal せず testing-library の container を使うと、
   // container 自身の height が auto (block) で h-full の解決連鎖が崩れる。
@@ -123,7 +123,6 @@ function renderShell() {
   return render(
     <div
       className="app-shell"
-      data-card="true"
       data-shell-host
       style={{
         position: "fixed",

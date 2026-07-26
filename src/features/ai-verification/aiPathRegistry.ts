@@ -13,6 +13,9 @@
  *   - CLI サブプロセスは外部バイナリ依存のため自動検証不可（stub として明示）。
  *   - 埋め込み/全文検索は LLM 生成ではない（n/a）。
  */
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
+import type { AiProvider } from "@/features/chat/types";
+import type { AiDataConsentRoute } from "@/features/ai-policy/aiDataConsent";
 
 /** 経路の到達トランスポート層。 */
 export type AiPathLayer =
@@ -68,13 +71,43 @@ export interface AiPathEntry {
   note: string;
 }
 
+/**
+ * A deployed runtime route for an existing AI surface.
+ *
+ * `AI_PATHS` remains the canonical logical surface/model-role registry. These
+ * entries separately prove that the browser transport does not disappear
+ * behind the Electron/Rust transport names and that each external-data route
+ * has a consent verifier. Runtime routes do not create an additional model
+ * role; they carry the role selected explicitly by the user.
+ */
+export interface AiRuntimeRouteEntry {
+  id: string;
+  label: string;
+  surface: string;
+  transport: string;
+  consentRoute: AiDataConsentRoute;
+  providerAuthority: "user-selection";
+  providers: readonly AiProvider[];
+  capabilityGate: string;
+  verifier: "contract";
+  testRef: string;
+  testName: string;
+  consentTestRef: string;
+  consentTestName: string;
+  note: string;
+}
+
 const AGENT_LOOP_TEST = "src/features/chat/agent/agentToolCall.live.test.ts";
 const SINGLE_SHOT_TEST = "src/features/ai-verification/singleShot.live.test.ts";
 const RELATION_EVAL_TEST =
   "src/features/codex/relationInjectionEval.live.test.ts";
 const CANDIDATE_JUDGMENT_TEST =
   "src/features/codex/candidateJudgment.live.test.ts";
+const CODEX_YOMI_TEST = "src/features/codex/codexYomi.live.test.ts";
 const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
+const BROWSER_BYOK_CONTRACT_TEST = "src/lib/browser-ai.test.ts";
+const BROWSER_BYOK_CONSENT_CONTRACT_TEST =
+  "src/lib/browser-mock.ai-runtime.test.ts";
 
 /** 生成経路（LLM を実際に叩く層）。n/a が許されない層。 */
 export const GENERATION_LAYERS: AiPathLayer[] = [
@@ -230,6 +263,17 @@ export const AI_PATHS: AiPathEntry[] = [
     testRef: CANDIDATE_JUDGMENT_TEST,
     testName: "codex candidate judgment live E2E",
     note: "本番ビルダー codexJudgment.buildCandidateJudgmentPrompt + 本番パーサ parseJudgmentResponse + runLiveSingleShot。形態素×LLM の LLM 半分（種別分類/別名検出）を実モデルで検証。",
+  },
+  {
+    id: "codex_yomi",
+    label: "Codex 表記の読み(ふりがな)推定",
+    surface: "codex/codexYomi.ts inferReadings",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    verifier: "js-live",
+    testRef: CODEX_YOMI_TEST,
+    testName: "codex yomi estimation live E2E",
+    note: "本番ビルダー codexYomi.buildYomiEstimationPrompt + 本番パーサ parseYomiResponse + runLiveSingleShot。漢字表記のひらがな読み推定を実モデルで検証。",
   },
   {
     id: "map_branch",
@@ -388,5 +432,27 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "n/a",
     testRef: null,
     note: "LLM ではなく BM25 ランキング。semanticRecall.test.ts（決定的）で融合ロジックを検証。",
+  },
+];
+
+/** Web Editor transports and their fail-closed consent contracts. */
+export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
+  {
+    id: "browser_byok_web",
+    label: "Web Editor HTTP Local LLM / BYOK AI",
+    surface: "browser Editor → BrowserMock AI transport → browser-ai",
+    transport: "browser fetch → user-selected AI provider",
+    consentRoute: "byok",
+    providerAuthority: "user-selection",
+    providers: BROWSER_DIRECT_AI_PROVIDERS,
+    capabilityGate:
+      "explicit user-selected HTTP provider + configured endpoint where required + session-memory credential when required + current route/provider/policy/actual connection destination consent",
+    verifier: "contract",
+    testRef: BROWSER_BYOK_CONTRACT_TEST,
+    testName: "resolves every Web Editor provider endpoint",
+    consentTestRef: BROWSER_BYOK_CONSENT_CONTRACT_TEST,
+    consentTestName:
+      "does not reach the provider when consent authorization fails",
+    note: "Web Editor exposes every HTTP provider (OpenRouter, OpenAI, Anthropic, Ollama, OpenAI-compatible, Sakana, and AI Novelist) with user-owned credentials or a user-configured endpoint; native CLI remains desktop-only. Web Editor has no app-owned credential or managed provider route. Consent identity includes the normalized actual connection destination, so changing an Ollama or OpenAI-compatible endpoint invalidates prior consent. The production endpoint/auth shape and refusal-before-provider boundary are deterministic Light contracts; live execution remains an explicit user action and Heavy evidence.",
   },
 ];

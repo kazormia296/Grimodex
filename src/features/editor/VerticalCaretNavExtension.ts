@@ -4,23 +4,20 @@ import type { EditorView } from "@tiptap/pm/view";
 import { adjacentColumnPoint, resolveCoordsVertical } from "./cursorCoords";
 
 /**
- * VerticalCaretNavExtension — 縦書き (vertical-rl) 時の ArrowLeft / ArrowRight を
- * ジオメトリ計算で置き換える。
- *
- * 背景: 本文エディタは矢印キーによる実カーソル移動を Chromium/ProseMirror
- * ネイティブに委ねているが、Chromium は vertical-rl の hardBreak (Shift+Enter の
- * 段落内改行) 境界で「視覚的な列移動」を適用できず、横書き論理の前進 (pos+1) に
- * フォールバックする不具合がある。結果、一行目末尾で → (前の列 = 右) を押すと
- * 二行目行頭へ飛んでしまう。
+ * VerticalCaretNavExtension — 縦書き (vertical-rl) 時の ←/→ キャレット移動を
+ * Chromium のレイアウト規約に合わせて置き換える。
  *
  * 縦書き規約 (CursorOverlayPlugin / ParagraphMoveExtension と一致):
- *   ← = 次の列 (前方 / 左)、→ = 前の列 (後方 / 右)、↑/↓ = 列内移動 (ネイティブ据置)。
+ *   ← = 次の列 (前方 / 左)、→ = 前の列 (後方 / 右)。
  *
- * 対策: 縦書き時のみ ←/→ を必ず consume (return true) し、現在キャレットの実矩形
- * (resolveCoordsVertical) から隣接列の同じインライン位置を `posAtCoords` で解決して
- * selection を張り替える。移動先が無い (ドキュメント端) 場合も consume して no-op に
- * し、バグのあるネイティブ挙動が発火しないようにする。↑/↓ と修飾つき矢印
- * (Alt = 段落移動 / Ctrl・Cmd = 単語・行末) は据え置き。横書きでは全て素通し。
+ * ── ←/→ (列間 = ブロック軸) ──
+ * Chromium は vertical-rl の hardBreak (Shift+Enter の段落内改行) 境界で「視覚的な
+ * 列移動」を適用できず横書き論理の前進 (pos+1) にフォールバックする不具合があり、
+ * 一行目末尾で → を押すと二行目行頭へ飛ぶ。縦書き時は ←/→ を必ず consume し、実矩形
+ * (resolveCoordsVertical) から隣接列の同じインライン位置を posAtCoords で解決して
+ * selection を張り替える。移動先が無い (ドキュメント端) 場合も consume して no-op。
+ *
+ * 修飾つき左右矢印は据え置き。横書きでは素通し。
  */
 
 /** view.dom (contenteditable) の computed writing-mode が縦書きか。 */

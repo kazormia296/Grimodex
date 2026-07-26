@@ -31,6 +31,16 @@ describe("kakuyomuBodyToProseMirror", () => {
     ]);
   });
 
+  it("auto-ruby base spans a contiguous kanji run including ヶ (霞ヶ関)", () => {
+    // ヶ(U+30F6) は 霞ヶ関 / 三ヶ月 等で漢字連続の一部。base が 関 だけに
+    // 割れて 霞ヶ が literal 化する回帰を防ぐ (AozoraInputRules と parity)。
+    const doc = parseDoc(kakuyomuBodyToProseMirror("霞ヶ関《かすみがせき》"));
+    const inline = doc.content[0]?.content ?? [];
+    expect(inline).toEqual([
+      { type: "ruby", attrs: { base: "霞ヶ関", annotation: "かすみがせき" } },
+    ]);
+  });
+
   it("converts pipe ruby", () => {
     const doc = parseDoc(
       kakuyomuBodyToProseMirror("｜カタカナ《カタカナよみ》"),

@@ -1,6 +1,7 @@
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { compareInstantValues, instantEpochMilliseconds } from "@/lib/time";
 import type { AxisMode, SpacingMode } from "./timelineStore";
 
 export interface TimelineSceneOrder {
@@ -52,15 +53,28 @@ export function computeTimelineSceneOrder(
 
   // write-order: sort by createdAt
   const sorted = [...sceneNodes].sort((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
+    compareInstantValues(a.createdAt, b.createdAt),
   );
   const ws =
     spacingMode === "proportional" && sorted.length > 1
       ? (() => {
-          const t0 = Date.parse(sorted[0].createdAt);
-          const t1 = Date.parse(sorted[sorted.length - 1].createdAt);
-          const span = t1 - t0 || 1;
-          return sorted.map((n) => (Date.parse(n.createdAt) - t0) / span);
+          const epochs = sorted.map((node) =>
+            instantEpochMilliseconds(node.createdAt),
+          );
+          const validEpochs = epochs.filter(
+            (epoch): epoch is number => epoch !== null,
+          );
+          if (validEpochs.length === 0) {
+            return sorted.map((_, index) => index / (sorted.length - 1));
+          }
+
+          const t0 = validEpochs[0];
+          const t1 = validEpochs[validEpochs.length - 1];
+          const span = t1 - t0;
+          return epochs.map((epoch) => {
+            if (epoch === null) return 1;
+            return span === 0 ? 0 : (epoch - t0) / span;
+          });
         })()
       : null;
   return { scenes: sorted, weights: ws };

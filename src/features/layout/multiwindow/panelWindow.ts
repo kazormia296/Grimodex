@@ -1,5 +1,14 @@
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isTauri } from "@/lib/tauri";
+// isElectron は @/lib/tauri の re-export ではなく実体（@/lib/shell）から
+// import する。既存テストが `vi.mock("@/lib/tauri")` を部分 factory
+// （isTauri のみ等）で当てており、re-export 経由だと undefined 呼び出しに
+// なるため（shell.ts 冒頭の設計メモと同じ理由）。
+import { isElectron } from "@/lib/shell";
+import {
+  createWebviewWindow,
+  getWebviewWindowByLabel,
+  type AppWindowHandle,
+} from "@/lib/webviewWindows";
 import type { PanelId } from "../panelIds";
 import { TOGGLEABLE_PANELS } from "../panelRegions";
 
@@ -14,6 +23,17 @@ import { TOGGLEABLE_PANELS } from "../panelRegions";
  */
 
 export const PANEL_WINDOW_LABEL_PREFIX = "panel-";
+
+/**
+ * この実行シェルがパネル別窓（マルチウィンドウ）を提供するか。
+ * Tauri（WebviewWindow）と Electron（main の panelWindow ブリッジ、
+ * Phase 2 設計書 §6.5）が対象。plain browser / happy-dom は false。
+ * UI 側（「別ウィンドウで開く」項目の表示可否）と openPanelWindow /
+ * getPanelWindowHandle のガードが共有する正本判定。
+ */
+export function supportsPanelWindows(): boolean {
+  return isTauri() || isElectron();
+}
 
 const TOGGLEABLE_SET = new Set<string>(TOGGLEABLE_PANELS);
 
@@ -75,34 +95,36 @@ export function buildPanelWindowOptions(panelId: PanelId): PanelWindowOptions {
 }
 
 /**
- * パネルを別窓で開く（既存なら focus）。非 Tauri 環境では no-op。
- * WebviewWindow は失敗時 `tauri://error` を自イベントへ流すので unhandled
- * rejection でクラッシュはしない（現状その失敗は無通知。呼び出し側 UI で
- * `win.once("tauri://error", …)` を listen する余地あり）。
+ * パネルを別窓で開く（既存なら focus）。非 Tauri / 非 Electron 環境では no-op。
+ * Tauri の WebviewWindow は失敗時 `tauri://error` を自イベントへ流すので
+ * unhandled rejection でクラッシュはしない（現状その失敗は無通知。呼び出し側
+ * UI で `win.once("tauri://error", …)` を listen する余地あり）。Electron は
+ * open が reject しうるが await + 無通知許容で同等（設計書 §6.5）。
  */
 export async function openPanelWindow(panelId: PanelId): Promise<void> {
-  if (!isTauri()) return;
+  if (!supportsPanelWindows()) return;
   // 別窓対象外（editor／未知 panel）は no-op。これが無いと生成窓は
   // target=null でアプリ全体を描く複製窓になる（呼び出し側 UI も項目を
   // 隠すが、ここを最終防衛線にして経路を問わず複製窓を不可能にする）。
   if (!canOpenPanelWindow(panelId)) return;
   const label = panelWindowLabel(panelId);
-  const existing = await WebviewWindow.getByLabel(label);
+  const existing = await getWebviewWindowByLabel(label);
   if (existing) {
     await existing.setFocus();
     return;
   }
   const { label: l, ...options } = buildPanelWindowOptions(panelId);
-  new WebviewWindow(l, options);
+  await createWebviewWindow(l, options);
 }
 
 /**
- * そのパネルの別窓が存在すれば WebviewWindow ハンドルを返す（無ければ null）。
- * ルーティング判定（別窓があるか）や focus に使う。非 Tauri は null。
+ * そのパネルの別窓が存在すればウィンドウハンドルを返す（無ければ null）。
+ * ルーティング判定（別窓があるか）や focus に使う。非 Tauri / 非 Electron は
+ * null。
  */
 export async function getPanelWindowHandle(
   panelId: PanelId,
-): Promise<WebviewWindow | null> {
-  if (!isTauri()) return null;
-  return WebviewWindow.getByLabel(panelWindowLabel(panelId));
+): Promise<AppWindowHandle | null> {
+  if (!supportsPanelWindows()) return null;
+  return getWebviewWindowByLabel(panelWindowLabel(panelId));
 }

@@ -27,7 +27,7 @@ interface Target {
  * ポップオーバー表示する。CommentHoverPopover の配置パターンを踏襲。
  */
 export function PseudoCommentBubble({ editor, containerRef }: Props) {
-  const showAnnotations = useAnnotationStore((s) => s.showAnnotations);
+  const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
   const annotationsByScene = useAnnotationStore((s) => s.annotationsByScene);
   const setAnnotations = useAnnotationStore((s) => s.setAnnotations);
   const [target, setTarget] = useState<Target | null>(null);
@@ -47,7 +47,7 @@ export function PseudoCommentBubble({ editor, containerRef }: Props) {
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !showAnnotations) return;
+    if (!container || !showReaderComments) return;
 
     function onMouseOver(e: MouseEvent) {
       const el = (e.target as Element).closest(
@@ -66,11 +66,11 @@ export function PseudoCommentBubble({ editor, containerRef }: Props) {
 
     container.addEventListener("mouseover", onMouseOver);
     return () => container.removeEventListener("mouseover", onMouseOver);
-  }, [containerRef, showAnnotations, scheduleHide, clearHideTimer]);
+  }, [containerRef, showReaderComments, scheduleHide, clearHideTimer]);
 
   useEffect(() => {
-    if (!showAnnotations) setTarget(null);
-  }, [showAnnotations]);
+    if (!showReaderComments) setTarget(null);
+  }, [showReaderComments]);
 
   const reload = useCallback(async () => {
     const { projectId, activeSceneId } = useTreeStore.getState();

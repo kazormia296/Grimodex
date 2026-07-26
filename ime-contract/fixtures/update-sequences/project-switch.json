@@ -1,0 +1,22 @@
+{
+  "description": "Project B is written before state.json points at it; identical rewrites do not advance generation.",
+  "initial_active_project_id": "project-a",
+  "initial_generation": 1,
+  "steps": [
+    {
+      "operation": "replace_project_b",
+      "expected_active_project_id": "project-a",
+      "expected_generation": 1
+    },
+    {
+      "operation": "replace_state_with_project_b",
+      "expected_active_project_id": "project-b",
+      "expected_generation": 2
+    },
+    {
+      "operation": "rewrite_identical_project_b",
+      "expected_active_project_id": "project-b",
+      "expected_generation": 2
+    }
+  ]
+}

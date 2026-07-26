@@ -354,7 +354,7 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 | TipTap マーク定義 | `src/features/attribution/AuthorshipMark.ts` のパターン | `src/features/post-effect/AnnotationMark.ts` |
 | 装飾の可視性切替 | `AttributionPlugin.ts` の `filterSource` Zustand 購読パターン | `AnnotationPlugin.ts` |
 | doc → DB 同期 | `src/features/attribution/api.ts::saveAuthorshipSpans` の descendants 走査パターン | `savePostEffectAnnotations` |
-| DB → doc 復元 | `src/features/attribution/applyInitialMarks.ts`（`programmaticInsert` meta） | `applyInitialPostEffectAnnotations` |
+| DB → doc 復元 | ~~`src/features/attribution/applyInitialMarks.ts`~~（`programmaticInsert` meta。attribution 側は後に dead code として撤去。当時の参考パターン） | `applyInitialPostEffectAnnotations` |
 | 保存フック | `EditorPane.tsx:256`（`saveSceneContent` 直後） | 同位置に注釈保存フックを追加 |
 | LLM ストリーミング | `src-tauri/src/lib.rs::send_chat_message_stream` + `listen("chat:stream-*")` | `run_post_effect` + `post_effect:progress` / `:partial` / `:done` / `:error` イベント |
 | 中断 | `StreamAbortFlag` (AtomicBool tauri state) | `PostEffectAbortFlag` を run ごとに用意 |
@@ -366,7 +366,7 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 **スキーマ定義は二重メンテになる点に注意:**
 
 - **Drizzle 側** (`src/db/schema.ts`) — TypeScript 型・クエリビルダー用。CLAUDE.md 規約により DB アクセスは Drizzle 経由のみ。
-- **Rust 側** (`src-tauri/src/database.rs::migrate()`) — 実際の `CREATE TABLE` を append で追記。FTS 仮想テーブル、トリガ、CHECK 制約はここでしか書けない。
+- **Rust 側** (`src-tauri/crates/grimodex-db/src/migrate.rs::migrate()`) — 実際の `CREATE TABLE` を append で追記。FTS 仮想テーブル、トリガ、CHECK 制約はここでしか書けない。
 
 **enum カラムには CHECK 制約を付ける（`authorship_spans` 先例に倣う）:** Drizzle は CHECK を表現できないため、Rust 側マイグレーションに直書きする。対象: `effect_type`, `scope_type`, `runs.status`, `anchor_type`, `category`, `severity`, `author_role`, `annotations.status`, `relation_type`, `direction`, `relations.status`, `lens_type`。これを怠ると不正値が静かに混入する。
 
@@ -708,7 +708,21 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 
 自動実行（シーン保存後 debounce）は post-MVP、設定で opt-in。
 
-**現状の実装**: 校閲（Kouetsu）パネルの `Issues` タブ配下に統合済み。エントリポイントは `src/features/kouetsu/views/CurrentSceneAnnotationsView.tsx`（現在シーン）と `ProjectAnnotationsView.tsx`（全シーン一括 = folder/project scope 用）。`DismissedAnnotationsView.tsx` で dismissed の一覧／復帰も可能。各 view で `consistency` / `intra` / `both` の 3 モード起動が選べる（ドロップダウン）。エディタツールバーには `consistencyMarks` トグル（`Cs` ボタン）があり、`useAnnotationStore.showAnnotations` を切り替えて `AnnotationPlugin` の Decoration を一括 ON/OFF できる。
+**現状の実装**: 校閲（Kouetsu）パネルの **「指摘」タブ内の「整合性」観点グループ**に統合済み。#287 の統合トリアージ UI 化により、スコープ解決（scene/folder/project）は `src/features/kouetsu/useResolvedKouetsuScope.ts` + `src/features/kouetsu/triage/useUnifiedIssues.ts`、描画は `triage/IssueList.tsx` / `IssueRow.tsx` に一本化され、スコープ + ステータス（開いている/除外）は `KouetsuScopePicker` が決める（旧 `views/CurrentSceneAnnotationsView.tsx` / `ProjectAnnotationsView.tsx` / `KouetsuScopeBar` / `ConsistencySection` は撤去・改名済み）。整合性の起動は `consistency` / `intra` / `both` の 3 モードから選ぶ。エディタツールバーには `consistencyMarks` トグル（`Cs` ボタン）があり、`useAnnotationStore.showAnnotations` を切り替えて `AnnotationPlugin` の Decoration を一括 ON/OFF できる。
+
+> **（2026-07-06 追記 / PR #281・#282）校閲パネルの受信箱モデル再編**: 旧「指摘 / 批評（editorial）」の 2 タブ + `current` / `project` / `ignored` スコープ切替の構成を廃し、**トップタブ 3 つ**へ再編した（`KouetsuPanel.tsx` の `TABS`、`kouetsuStore.KouetsuTab = "issues" | "comments" | "blocker"`）。旧 `editorial` タブ値は persist から来ても既知タブへ正規化される。
+>
+> - **指摘**（`IssuesInbox`）: 旧「指摘 / 批評」を 1 つの受信箱に統合。**8 観点グループを機械系 → 批評系の固定順**で縦に並べる — 校正（`linter`）/ 誤字脱字（`typo`）/ 整合性（`consistency`）/ 影響レビュー（`impact`）/ レビュー（`review`）/ 狙いズレ（`intent`）/ メタ構造（`meta`）/ 時系列（`timeline`）。先頭 3 グループは既定展開、以降は折りたたみ。**折りたたみ中は Body を mount しない**（project フェッチの束を避ける。`IssuesInbox.tsx` の `SECTIONS`・`InboxSection.tsx`、件数バッジは `issueCounts.deriveIssueCounts`）。「指摘 / 批評」はタブではなく並び順に降格した。
+> - **コメント**（`CommentsTab`）: **人間コメント**（`CommentMark` の doc 焼き込みを `humanCommentsFromDoc` で走査）と **AI 疑似コメント**（annotation を `groupPseudoThreads`）を **シーン単位に一本化**して表示（`commentsAggregation.buildCommentGroups`、filter=all/human/ai + 除外トグル）。**疑似コメントの実行導線もこのタブに集約**（`PseudoCommentRunControl` / `usePseudoCommentRun`、対象は常にアクティブシーン）。
+> - **ブロッカー**（`BlockerTab` / `deriveBlockers`）: 各ドメインパネルが既に計算済みのシグナル（foreshadow・lens 診断・未配置 beat・intent 空・救済候補 trash 等）を、新規 authored データ無しで 1 つのランク付きダッシュボードへ集約する（Tier A-3）。
+>
+> **スコープ**（`KouetsuScopeBar` / `useResolvedKouetsuScope`）: Chat と共通の `ScopeTreePickerList`（`@/features/tree/ScopeTreePicker`）による **シーン（アクティブ追従）/ フォルダ（act・章）/ プロジェクト** のツリーピッカー。旧「除外（ignored）」スコープは廃し、**「開いている / 除外」の 2 値ステータスフィルタ**として場所軸から直交分離した（`KouetsuStatusFilter`。migration で旧 `ignored` スコープを `statusFilter: "dismissed"` へ昇格）。宙に浮いた folder anchor は project へ正規化してから表示・選択に使う。スコープ / ステータスフィルタは 8 観点グループ全体で共有する。
+>
+> **全体チェック**（`FullCheckControl` / `fullCheck.ts` / `fullCheckSteps.ts` / `fullCheckStore.ts`）: 選択観点を **固定順（`FULL_CHECK_STEP_ORDER` = lint→typo→consistency→review→meta→timeline→intent）で 1 つずつ直列実行**するオーケストレータ。continue-on-error（`run_multi_task` と同じ思想。片観点が throw しても `failures` に積んで続行）。scene スコープでは live lint 済みのため lint を除外する。**疑似コメント・影響レビューは全体チェックの対象外**（設計決定 — `FULL_CHECK_STEP_ORDER` にも選択肢にも含めない）。**中止は「全体チェック自身が起動した run」だけを abort し、残りの観点はスキップ**する（`onRunStarted` で run_id を `trackFullCheckRun` の追跡集合へ記録 → `requestCancel` はその集合の in-flight run のみ abort。並走する手動起動 run を巻き込まない）。
+>
+> **実行系**（`runners.ts` + `runners/`、1 effect 1 ファイル）: ガード（policy/license）→ flush → payload build → `runPostEffect(Multi)` → outcome 正規化までを集約し、トースト・一覧再取得・エディタ反映は呼び出し側に残す（`runners/shared.ts`）。typo/review/consistency/metaStructure は scene=単発 / folder・project=multi、timeline は multi 専用。**`intent_drift` だけは FE 側でシーン毎の単発 run を直列実行**する（`runners/intentDrift.ts`）— per-scene の intent が `system_prompt` / `input_hash` に畳み込まれるため `start_post_effect_run_multi` に載せられない（`CurrentSceneIntentDriftView` とバイト同等のキャッシュキーを保つのが絶対条件。未変更シーンは per-scene `input_hash` により from_cache で即終わる）。Rust 側の中止フラグは **`PostEffectAbortRegistry`（run_id 単位の `HashSet<String>`、`request` / `is_aborted` / `clear`）**で per-run に abort を登録・照会する（`src-tauri/src/commands/mod.rs`。旧・アプリ全体単一 `AtomicBool` を per-run 化し、並走 run の一方の中止が全 run へ波及していた問題を解消）。
+>
+> **（追記 / #287）統合トリアージ UI へ**: 上記の 3 タブ受信箱は #287 でさらに統合トリアージ UI へ再編された。`InboxSection` と `IssuesInbox` の `SECTIONS` による観点別セクション分割描画は撤去され、観点横断の描画は `triage/useUnifiedIssues.ts` + `triage/IssueList.tsx` / `IssueRow.tsx` に一本化。`KouetsuScopeBar` は `KouetsuScopePicker`（`useResolvedKouetsuScope`）に改名した。
 
 ### 異常系
 
@@ -944,11 +958,11 @@ LLM ベースの誤字脱字検出。Linter（確定論ルール）では拾え�
 | `start_post_effect_run_multi` | `{ ..., scenes: [{ scene_id, codex_payload_json, scene_text }] }` | `{ run_id, from_cache }` | ✓ (folder / project scope の per-scene iteration ランナー) |
 | `abort_post_effect_run` | `{ run_id }` | `()` | ✓ |
 | `list_post_effect_runs` | `{ project_id, effect_type?, limit?, offset? }` | `Run[]` | ✓ |
-| `get_post_effect_run` | `{ run_id }` | `Run & { annotations, lens_data, relations }` | ✓ |
+| `get_post_effect_run` | `{ run_id }` | `Run & { annotations, lens_data, relations }` | 撤去（本番 caller なし、2026-07-11） |
 | `list_annotations_for_scene` | `{ project_id, scene_id, status? }` | `{ annotations: Annotation[], relations: Relation[] }`（`relations` は両端の少なくとも一方が `annotations` に含まれるもの。intra_scene_consistency / 伏線・テーマの hydration に必須）| ✓ |
 | `list_annotations_for_project` | `{ project_id, status? }` | `{ annotations: Annotation[] }`（全シーン横断ビュー用）| ✓ |
 | `update_annotation_status` | `{ annotation_id, status }` | `Annotation`（relation 経由なら端点もまとめて更新）| ✓ |
-| `update_relation_status` | `{ relation_id, status }` | `Relation`（両端 annotation にカスケード）| ✓ |
+| `update_relation_status` | `{ relation_id, status }` | `Relation`（両端 annotation にカスケード）| 撤去（本番 caller なし、2026-07-11） |
 | `reply_to_annotation` | `{ parent_id, content, author_role }` | 新 `Annotation` | ✓ (親の `project_id` / `scene_id` / `run_id` / `persona` を継承して `category='pseudo_comment'` の子を作成。§4 のとおり親の `run_id` を継承) |
 | `save_post_effect_annotations` | `{ scene_id, annotations[] }` | scene 保存時の同期用（`saveAuthorshipSpans` と同タイミングで呼ぶ）| ✓ |
 | `extract_codex_candidates` | `{ project_id, min_count? }` | `CodexCandidate[]`（`{surface, lemma, count, first_scene_id, context}`）| ✓ (2026-06-20 / PR #130。日本語専用＝lindera UniDic。全シーンを読書順 DFS で形態素解析→固有名詞を完全列挙→既存 Codex name/alias 差引。post_effect_run には乗らない独立コマンド。LLM 判定なし＝B1 のみ。`min_count` 既定 2) |

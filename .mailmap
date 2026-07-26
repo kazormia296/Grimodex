@@ -1,0 +1,22 @@
+# git の author/committer 表示を正規化する。
+#
+# 履歴そのものは書き換えず、git log / git shortlog / GitHub の一部表示で
+# 読み替えるだけ。コミット SHA は変わらない。
+#
+# 経緯: 初期の作業環境で user.name / user.email が未設定または
+# エージェント既定値のままコミットされ、以下の名義が master に残っている。
+#   - Your Name <you@example.com>  … git 未設定のプレースホルダ (2026-03〜05)
+#   - Codex <codex@openai.com>     … エージェント既定値 (2026-05〜06)
+#   - Codex <codex@anthropic.com>  … 同上 (ドメイン誤り)
+#   - Noname <...>                 … 名前のみ未設定 (メールは正常)
+# いずれも実体は kazormia296 なので、正準名義へ寄せる。
+#
+# 書式: Proper Name <proper@email> <commit@email>
+#       Proper Name <proper@email> Commit Name <commit@email>
+# 詳細: https://git-scm.com/docs/gitmailmap
+
+kazormia296 <88490667+kazormia296@users.noreply.github.com> <you@example.com>
+kazormia296 <88490667+kazormia296@users.noreply.github.com> <codex@openai.com>
+kazormia296 <88490667+kazormia296@users.noreply.github.com> <codex@anthropic.com>
+kazormia296 <88490667+kazormia296@users.noreply.github.com> <kazormia296@users.noreply.github.com>
+kazormia296 <88490667+kazormia296@users.noreply.github.com> Noname <88490667+kazormia296@users.noreply.github.com>

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ship Branch"
+  short_description: "Push a branch, verify its PR, and merge safely"
+  default_prompt: "Use $ship-branch to push the current clean branch, open a PR, and merge it after all gates pass."

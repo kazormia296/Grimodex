@@ -9,7 +9,7 @@
  *
  * 注意: 合成 KeyboardEvent はネイティブのキャレット移動を起こさないため、この
  * スイートは「ネイティブバグの再現」ではなく「拡張が selection を正しい列へ動かす
- * / 誤前進を抑止する」ことを gate する。ネイティブ挙動の目視は pnpm tauri dev。
+ * / 誤前進を抑止する」ことを gate する。ネイティブ挙動の目視は Electron 開発版で行う。
  *
  * happy-dom は writing-mode のレイアウトも getBoundingClientRect の実寸も計算しない
  * ため browser test 必須 (CLAUDE.md のレイアウト/幾何ルール)。

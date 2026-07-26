@@ -59,7 +59,10 @@ describe("TimelapseSettings", () => {
 
   it("purge confirms then clears the history", async () => {
     render(<TimelapseSettings />);
+    const sw = await screen.findByRole("switch");
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
     const btn = await screen.findByTestId("timelapse-purge-button");
+    await waitFor(() => expect(btn).not.toBeDisabled());
 
     fireEvent.click(btn);
     await waitFor(() => expect(confirmMock.confirm).toHaveBeenCalled());

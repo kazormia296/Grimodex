@@ -1,14 +1,36 @@
 import { db } from "@/db/client";
-import { projects, lintTermDictionary } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { projects, lintTermDictionary, projectSettings } from "@/db/schema";
+import { and, eq, notExists } from "drizzle-orm";
+import {
+  SCAN_IMPORT_STATE_KEY,
+  SCAN_IMPORT_STAGING,
+} from "@/features/import/scan/scanImportState";
 import { invoke } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import {
+  cancelScheduledImeExports,
+  scheduleImeExportRefresh,
+} from "@/features/ime/scheduler";
+import { removeImeProjectExportWithRetry } from "@/features/ime/api";
+import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 
+const IME_PROJECT_FIELDS = new Set(["title", "genre", "outline", "language"]);
+
 export async function listProjects(): Promise<Project[]> {
-  return db.select().from(projects);
+  const stagingProject = db
+    .select({ projectId: projectSettings.projectId })
+    .from(projectSettings)
+    .where(
+      and(
+        eq(projectSettings.projectId, projects.id),
+        eq(projectSettings.key, SCAN_IMPORT_STATE_KEY),
+        eq(projectSettings.value, SCAN_IMPORT_STAGING),
+      ),
+    );
+  return db.select().from(projects).where(notExists(stagingProject));
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {
@@ -57,6 +79,7 @@ export async function updateProject(
       | "aiPolicy"
     >
   >,
+  options?: { suppressImeExport?: boolean },
 ): Promise<Project | undefined> {
   const rows = await db
     .update(projects)
@@ -80,14 +103,27 @@ export async function updateProject(
   recordChangeEvent({
     domain: "project",
     opType: "meta.update",
+    projectId: id,
     entityType: "project",
     entityId: id,
     payload: { projectId: id, fields: Object.keys(data) },
   });
+  if (
+    rows[0] &&
+    !options?.suppressImeExport &&
+    Object.keys(data).some((field) => IME_PROJECT_FIELDS.has(field))
+  ) {
+    scheduleImeExportRefresh(id);
+  }
   return rows[0];
 }
 
 export async function deleteProject(id: string): Promise<void> {
+  const imeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
+  // A pending pre-delete refresh would otherwise race the native remove gate:
+  // refresh can become latest, fail on the deleted DB row, and leave the old
+  // plaintext snapshot behind.
+  cancelScheduledImeExports(id);
   // lint_term_dictionary.project_id is FK-cascaded only on fresh DBs; on DBs
   // upgraded via ALTER the column has no FK, so delete its rows explicitly to
   // avoid orphans (harmless on fresh DBs — the rows are already gone).
@@ -95,4 +131,10 @@ export async function deleteProject(id: string): Promise<void> {
     .delete(lintTermDictionary)
     .where(eq(lintTermDictionary.projectId, id));
   await db.delete(projects).where(eq(projects.id, id));
+  // The DB delete is authoritative; cleanup has a bounded background retry so
+  // a transient filesystem failure cannot leave plaintext indefinitely.
+  // Cancel again after the awaited DB work: another window/local mutation may
+  // have scheduled while deletion was in flight.
+  cancelScheduledImeExports(id);
+  await removeImeProjectExportWithRetry(id, imeWorkspaceIdentity);
 }

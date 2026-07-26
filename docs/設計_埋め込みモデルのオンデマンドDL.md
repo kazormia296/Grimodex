@@ -4,6 +4,8 @@
 対象: semantic 機能の配布形態
 日付: 2026-06-19
 
+> **【2026-07-04 追記 / 実装後の現状】** 本書の提案は PR#240 でオンデマンドDL機構（Strategy A: int8 非同梱・tokenizer のみ git-tracked・初回利用時に GitHub Release `semantic-models-v1` から DL）として実装済み。それに伴い、以下の §0・付録で「現状のバンドル定義」として参照している `src-tauri/tauri.release.conf.json` は **PR#253 で削除済み**（release ビルドから参照されておらず dead だったため）。したがって §0 以降の「前提となる現状」は 2026-06-19 時点のスナップショットであり、現行の配布形態ではない点に注意。現行の同梱定義は `src-tauri/tauri.conf.json` の `bundle.resources`（tokenizer のみ）を参照のこと。
+
 本書は「埋め込みモデルをアプリに同梱せず、執筆言語に応じて初回利用時にダウンロード（DL）する」機構の設計検討である。将来の大型モデル化（ruri-130m / 310m 等、同梱が現実的でないサイズ）への接続も視野に入れる。実装計画ではなく、採否判断とアーキ方針を固めるための資料。
 
 ---
@@ -114,7 +116,7 @@ pub artifact_size: u64,              // 事前サイズ（DoS guard・進捗分�
 
 - **sha256 は必須**。理由は破損検知だけでなく **calibration 整合**（§0 制約2）。`external_mount/hash.rs:10-14` に既存の Sha256→hex パターンがあるので流用。
 - DL 後、rename 前に必ず検証。不一致なら tmp を破棄し Err。
-- **署名（コード署名/GPG）は当面不要**と判断する。理由: (a) sha256 を**アプリバイナリ内に焼く**ので、改ざんするには配布物（署名済みインストーラ）自体を改ざんする必要があり、DL artifact 単独の差し替えは sha256 で弾ける。(b) HTTPS で取得元を保証。署名を足すのは「sha256 を後から OTA で差し替えたい」要件が出た時に再検討（その時は署名付きマニフェストが要る）。現状は spec に焼くので不要。
+- **モデル artifact 自体の署名（GPG 等）は当面不要**と判断する。理由: (a) sha256 を**アプリバイナリ内に焼く**ため、DL artifact 単独の差し替えは sha256 で弾ける。(b) HTTPS で取得元を保証する。アプリ配布物と埋め込み hash を同時に改変する攻撃は配布経路の整合性として別途扱う。モデル署名を足すのは「sha256 を後から OTA で差し替えたい」要件が出た時に再検討する（その時は署名付きマニフェストが要る）。現状は spec に焼くので不要。
 
 ### 2.4 atomic install（tmp → rename）
 
@@ -322,7 +324,7 @@ fn resolve_model_dir(app, spec) -> PathBuf {
 - spec 正本/byte-stability: `src-tauri/src/semantic/spec.rs:104-147`（SPEC_JA/EN）, `:80-82`（full_model_id）, `:151-157`（spec_for_language）, `:159-205`（regression test）, `:124-131`（EN calibration/MIT）
 - ローダ: `src-tauri/src/commands/semantic.rs:86-96`（resolve_model_dir）, `:100-123`（load/ensure_embedder）, `src-tauri/src/semantic/embedding.rs:53-84`（Embedder::load）
 - staleness: `src-tauri/src/semantic/index.rs:170-225`（collect_index_status）
-- 言語: `src-tauri/src/database/migrate.rs`（projects.language default 'ja'）, `src-tauri/src/semantic/index.rs:349-376`
+- 言語: `src-tauri/crates/grimodex-db/src/migrate.rs`（projects.language default 'ja'）, `src-tauri/src/semantic/index.rs:349-376`
 - DL 基盤: `src-tauri/Cargo.toml:55`（reqwest）, `src-tauri/src/license.rs:149-180`（timeout 例）, `src-tauri/src/ai.rs:2309-2326`（stream 例）, `src-tauri/src/external_mount/hash.rs:10-14`（sha256）, `src-tauri/src/lib.rs:74-77`（app_data_dir）
 - CSP/firewall: `src-tauri/tauri.conf.json:28`, `.devcontainer/init-firewall.sh:95-108`
 - degrade 経路: `src/features/chat/semanticRecall.ts:352-426`（fetchSemanticRecall）, `src/features/related-scenes/fetchRelatedScenes.ts:53-105`（fetchRelatedPastScenes）, `src/features/commandCenter/hooks/useCommandCenterSearch.ts:55-58`, `src-tauri/src/commands/semantic.rs:351-393`, `src/features/semantic-search/autoIndex.ts:15-21`

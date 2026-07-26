@@ -6,6 +6,7 @@ import {
   LANGUAGE_DEFAULT_OVERRIDES,
 } from "./types";
 import { PROJECT_ID } from "@/features/project/constants";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 
 type Layer = Record<string, string>;
 
@@ -21,6 +22,12 @@ interface SettingsState {
   projectLanguage: string;
   isLoaded: boolean;
   _timers: Map<string, ReturnType<typeof setTimeout>>;
+  /**
+   * デバウンス中でまだ persist されていない key→value。flushPending と
+   * loadAll はここを正とする — cache は loadAll の再構築で pending 書き込みを
+   * 失い得るため、cache から読み戻すと古い値を永続化してしまう。
+   */
+  _pending: Map<string, string>;
 
   loadAll: () => Promise<void>;
   /** Re-point the default fallback at the given language and rebuild. */
@@ -33,13 +40,10 @@ interface SettingsState {
 }
 
 // Route a key/value write to the correct persistent store.
-// Dynamic import of workspace store breaks the circular dep
-// (workspace/store → settingsStore → workspace/store).
 async function persistSetting(key: string, value: string): Promise<void> {
   const scope = KEY_SCOPE[key];
   if (scope === "global") {
-    const { useWorkspaceStore } = await import("@/features/workspace/store");
-    await useWorkspaceStore.getState().updateUserPreference(key, value);
+    await globalSettingsRepository.updateUserPreference(key, value);
   } else if (scope === "project") {
     await api.setProjectSetting(PROJECT_ID, key, value);
   } else {
@@ -76,22 +80,27 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   projectLanguage: "ja",
   isLoaded: false,
   _timers: new Map(),
+  _pending: new Map(),
 
   loadAll: async () => {
-    const [legacyAll, workspaceModule, projectAll] = await Promise.all([
+    const [legacyAll, globalSettings, projectAll] = await Promise.all([
       api.getSettingsByPrefix(""),
-      import("@/features/workspace/store"),
+      globalSettingsRepository.read(),
       api.getAllProjectSettings(PROJECT_ID),
     ]);
-    const globalPrefs =
-      workspaceModule.useWorkspaceStore.getState().globalSettings
-        ?.userPreferences ?? {};
+    const globalPrefs = globalSettings.userPreferences ?? {};
     set((s) => {
       const layers = {
-        legacy: legacyAll,
-        project: projectAll,
-        global: globalPrefs,
+        legacy: { ...legacyAll },
+        project: { ...projectAll },
+        global: { ...globalPrefs },
       };
+      // デバウンス中の write-through を、まだ pending を反映していない
+      // 永続ソースで上書きしない（設定ダイアログを開いた直後の loadAll で
+      // 直前のトグルが巻き戻るレースの防止）。
+      for (const [key, value] of s._pending) {
+        layers[layerForKey(key)][key] = value;
+      }
       return {
         layers,
         cache: buildCache(layers, s.projectLanguage),
@@ -148,10 +157,19 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     const state = get();
     const existing = state._timers.get(key);
     if (existing) clearTimeout(existing);
+    state._pending.set(key, value);
 
     const timer = setTimeout(async () => {
-      await persistSetting(key, value);
-      state._timers.delete(key);
+      try {
+        await persistSetting(key, value);
+      } catch (error) {
+        console.error(`[settings] persist failed for ${key}`, error);
+      } finally {
+        state._timers.delete(key);
+        // 後続の set で pending が更新されている場合は消さない
+        // （その値は新しいタイマーが persist する）。
+        if (state._pending.get(key) === value) state._pending.delete(key);
+      }
     }, 300);
 
     state._timers.set(key, timer);
@@ -159,13 +177,22 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   flushPending: async () => {
     const state = get();
+    let firstError: unknown;
     for (const [key, timer] of state._timers.entries()) {
       clearTimeout(timer);
-      const value = state.cache[key];
+      // cache は loadAll で pending 未反映の値に巻き戻り得るため、
+      // 「書くべき値」の正は _pending。
+      const value = state._pending.get(key) ?? state.cache[key];
       if (value !== undefined) {
-        await persistSetting(key, value);
+        try {
+          await persistSetting(key, value);
+        } catch (error) {
+          firstError ??= error;
+        }
       }
     }
     state._timers.clear();
+    state._pending.clear();
+    if (firstError) throw firstError;
   },
 }));

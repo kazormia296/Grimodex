@@ -434,11 +434,82 @@ describe("縦書きMODE: Beat ノードの縦書き表示", () => {
     const chipRect = chip.getBoundingClientRect();
     // トリガー直下(block-start)に開く。入場アニメ(y:-4→0)の落ち着き後の最終位置で
     // 測る（誤った placement なら settle しても満たさず timeout で fail する）。
+    // 基準は chip の実測 bottom（固定 px はフォントメトリクス差で
+    // サブピクセル割れする）。-1 は subpixel 丸めの許容。
     await waitFor(() => {
       expect(menu.getBoundingClientRect().top).toBeGreaterThanOrEqual(
-        chipRect.top + 18,
+        chipRect.bottom - 1,
       );
     });
+  });
+});
+
+describe("縦書きMODE: スクローラ非縦書き構造と行長キャップ中央寄せ", () => {
+  // スクローラ自身は horizontal-tb + direction:rtl のまま、縦書きは直下の
+  // 子から始める（index.css の .editor-vertical / > * の構造契約）。
+  it("スクローラは horizontal-tb + rtl、直下の子から vertical-rl が始まる", () => {
+    render(
+      <div
+        data-testid="scroller"
+        className="editor-vertical"
+        style={{ width: 400, height: 400, overflow: "auto" }}
+      >
+        <div data-testid="wrapper">
+          <p>縦書き本文</p>
+        </div>
+      </div>,
+    );
+    const scroller = document.querySelector(
+      "[data-testid='scroller']",
+    ) as HTMLElement;
+    const wrapper = document.querySelector(
+      "[data-testid='wrapper']",
+    ) as HTMLElement;
+    const scs = getComputedStyle(scroller);
+    expect(scs.writingMode).toBe("horizontal-tb");
+    expect(scs.direction).toBe("rtl");
+    const wcs = getComputedStyle(wrapper);
+    expect(wcs.writingMode).toBe("vertical-rl");
+    expect(wcs.direction).toBe("ltr");
+  });
+
+  it("行長キャップ (maxInlineSize + marginInline auto) が縦方向の中央寄せに解決される", () => {
+    // buildEditorMeasureStyle と同じ指定を持つ wrapper が、キャップ発動時に
+    // flex 交差軸 auto マージンで上下中央に寄る（「上のスペース」の回帰 gate。
+    // 通常フローだと親のブロック軸なので auto=0 に潰れて上詰めになる）。
+    render(
+      <div
+        data-testid="scroller"
+        className="editor-vertical"
+        style={{ width: 400, height: 900, overflow: "auto", padding: 16 }}
+      >
+        <div
+          data-testid="wrapper"
+          style={{
+            maxInlineSize: "720px",
+            marginBlock: 0,
+            marginInline: "auto",
+          }}
+        >
+          <p>本文</p>
+        </div>
+      </div>,
+    );
+    const scroller = document.querySelector(
+      "[data-testid='scroller']",
+    ) as HTMLElement;
+    const wrapper = document.querySelector(
+      "[data-testid='wrapper']",
+    ) as HTMLElement;
+    const sr = scroller.getBoundingClientRect();
+    const wr = wrapper.getBoundingClientRect();
+    // 高さは 720px にキャップされる（inline-size:100% と max の min 側）
+    expect(Math.round(wr.height)).toBe(720);
+    const topGap = wr.top - sr.top;
+    const bottomGap = sr.bottom - wr.bottom;
+    // (900 - 720) / 2 = 90px ずつ — padding 16px より十分大きい中央寄せ
+    expect(topGap).toBeGreaterThan(50);
+    expect(Math.abs(topGap - bottomGap)).toBeLessThan(2);
   });
 });
 

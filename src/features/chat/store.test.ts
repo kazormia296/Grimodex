@@ -22,8 +22,13 @@ vi.mock("./cliApi", () => ({
   listCliModels: vi.fn(),
 }));
 
+vi.mock("./codexAppApi", () => ({
+  listCodexAppModels: vi.fn(),
+}));
+
 import * as api from "./api";
 import * as cliApi from "./cliApi";
+import * as codexAppApi from "./codexAppApi";
 
 const mockGetAiSettings = vi.mocked(api.getAiSettings);
 const mockSaveAiSettings = vi.mocked(api.saveAiSettings);
@@ -35,6 +40,7 @@ const mockListAiModels = vi.mocked(api.listAiModels);
 
 const mockDetectCliBinary = vi.mocked(cliApi.detectCliBinary);
 const mockListCliModels = vi.mocked(cliApi.listCliModels);
+const mockListCodexAppModels = vi.mocked(codexAppApi.listCodexAppModels);
 
 function resetStore() {
   useAiSettingsStore.setState({
@@ -409,10 +415,219 @@ describe("useAiSettingsStore", () => {
       expect(useAiSettingsStore.getState().models).toEqual(models);
     });
 
+    it("fetches models from the Codex App Server transport", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "cli",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      const models: AiModel[] = [{ id: "gpt-5.5", name: "GPT-5.5" }];
+      mockListCodexAppModels.mockResolvedValueOnce(models);
+
+      await useAiSettingsStore.getState().loadModels();
+
+      expect(mockListCodexAppModels).toHaveBeenCalledOnce();
+      expect(mockListCliModels).not.toHaveBeenCalled();
+      expect(useAiSettingsStore.getState().models).toEqual(models);
+    });
+
     it("does nothing without settings", async () => {
       await useAiSettingsStore.getState().loadModels();
       expect(mockListAiModels).not.toHaveBeenCalled();
     });
+
+    it("discards a stale model response after the provider changes", async () => {
+      let resolveOld!: (models: AiModel[]) => void;
+      mockListAiModels.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveOld = resolve)),
+      );
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "ai-novelist" },
+        models: [{ id: "old", name: "Old" }],
+      });
+
+      const pending = useAiSettingsStore.getState().loadModels();
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "openrouter",
+      });
+
+      expect(useAiSettingsStore.getState().models).toEqual([]);
+      resolveOld([{ id: "ai-novelist-v1", name: "AI Novelist" }]);
+      await pending;
+      expect(useAiSettingsStore.getState().models).toEqual([]);
+    });
+
+    it("keeps the latest request loading when an identical older request resolves", async () => {
+      let resolveFirst!: (models: AiModel[]) => void;
+      let resolveLatest!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveFirst = resolve)),
+        )
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveLatest = resolve)),
+        );
+      useAiSettingsStore.setState({
+        settings: defaultSettings,
+        models: [{ id: "current", name: "Current" }],
+      });
+
+      const first = useAiSettingsStore.getState().loadModels();
+      const latest = useAiSettingsStore.getState().loadModels();
+      resolveFirst([{ id: "stale", name: "Stale" }]);
+      await first;
+
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [{ id: "current", name: "Current" }],
+        isLoadingModels: true,
+      });
+
+      resolveLatest([{ id: "latest", name: "Latest" }]);
+      await latest;
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [{ id: "latest", name: "Latest" }],
+        isLoadingModels: false,
+      });
+    });
+
+    it("discards an ABA response after settings return to their original values", async () => {
+      let resolveFirst!: (models: AiModel[]) => void;
+      let resolveLatest!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveFirst = resolve)),
+        )
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveLatest = resolve)),
+        );
+      const settingsA: AiSettings = {
+        ...defaultSettings,
+        activeOpenaiCompatibleEndpointId: "endpoint-a",
+      };
+      useAiSettingsStore.setState({
+        settings: settingsA,
+        models: [{ id: "current", name: "Current" }],
+      });
+      const first = useAiSettingsStore.getState().loadModels();
+
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          activeOpenaiCompatibleEndpointId: "endpoint-b",
+        },
+      });
+      useAiSettingsStore.setState({ settings: settingsA });
+      const latest = useAiSettingsStore.getState().loadModels();
+
+      resolveFirst([{ id: "stale-a", name: "Stale A" }]);
+      await first;
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [{ id: "current", name: "Current" }],
+        isLoadingModels: true,
+      });
+
+      resolveLatest([{ id: "latest-a", name: "Latest A" }]);
+      await latest;
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [{ id: "latest-a", name: "Latest A" }],
+        isLoadingModels: false,
+      });
+    });
+
+    it("clears loading when the latest parallel request fails", async () => {
+      let resolveFirst!: (models: AiModel[]) => void;
+      let rejectLatest!: (cause: Error) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveFirst = resolve)),
+        )
+        .mockImplementationOnce(
+          () => new Promise((_resolve, reject) => (rejectLatest = reject)),
+        );
+      useAiSettingsStore.setState({
+        settings: defaultSettings,
+        models: [{ id: "current", name: "Current" }],
+      });
+
+      const first = useAiSettingsStore.getState().loadModels();
+      const latest = useAiSettingsStore.getState().loadModels();
+      resolveFirst([{ id: "stale", name: "Stale" }]);
+      await first;
+      expect(useAiSettingsStore.getState().isLoadingModels).toBe(true);
+
+      rejectLatest(new Error("latest failed"));
+      await latest;
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [],
+        isLoadingModels: false,
+      });
+    });
+
+    it.each([
+      [
+        "kind",
+        {
+          kind: "claude",
+          binaryPath: "/usr/bin/codex",
+          codexTransport: "app-server",
+        },
+      ],
+      [
+        "transport",
+        {
+          kind: "codex",
+          binaryPath: "/usr/bin/codex",
+          codexTransport: "exec",
+        },
+      ],
+      [
+        "binary path",
+        {
+          kind: "codex",
+          binaryPath: "/opt/codex",
+          codexTransport: "app-server",
+        },
+      ],
+    ] satisfies Array<[string, NonNullable<AiSettings["cli"]>]>)(
+      "discards a stale Codex model response after CLI %s changes",
+      async (_, cli) => {
+        let resolveOld!: (models: AiModel[]) => void;
+        mockListCodexAppModels.mockImplementationOnce(
+          () => new Promise((resolve) => (resolveOld = resolve)),
+        );
+        useAiSettingsStore.setState({
+          settings: {
+            ...defaultSettings,
+            provider: "cli",
+            cli: {
+              kind: "codex",
+              binaryPath: "/usr/bin/codex",
+              codexTransport: "app-server",
+            },
+          },
+          models: [{ id: "current", name: "Current" }],
+        });
+
+        const pending = useAiSettingsStore.getState().loadModels();
+        useAiSettingsStore.setState({
+          settings: { ...defaultSettings, provider: "cli", cli },
+        });
+        resolveOld([{ id: "stale", name: "Stale" }]);
+        await pending;
+
+        expect(useAiSettingsStore.getState().models).toEqual([
+          { id: "current", name: "Current" },
+        ]);
+      },
+    );
   });
 
   describe("loadSettings — CLI binary detection", () => {
@@ -442,6 +657,19 @@ describe("useAiSettingsStore", () => {
       await useAiSettingsStore.getState().loadSettings();
 
       expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(false);
+    });
+
+    it("uses an explicit binary path without requiring it on PATH", async () => {
+      mockGetAiSettings.mockResolvedValueOnce({
+        ...cliSettings,
+        cli: { kind: "codex", binaryPath: "/opt/codex/bin/codex" },
+      });
+      mockHasApiKey.mockResolvedValueOnce(false);
+
+      await useAiSettingsStore.getState().loadSettings();
+
+      expect(mockDetectCliBinary).not.toHaveBeenCalled();
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(true);
     });
 
     it("does not call detectCliBinary for non-CLI providers", async () => {
@@ -488,6 +716,42 @@ describe("useAiSettingsStore", () => {
       await useAiSettingsStore.getState().saveSettings(codexSettings);
 
       expect(mockDetectCliBinary).toHaveBeenCalledWith("codex");
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(false);
+    });
+
+    it("marks an explicit binary path available when only the path changes", async () => {
+      useAiSettingsStore.setState({
+        settings: cliSettings,
+        cliBinaryAvailable: false,
+      });
+      const settingsWithExplicitPath: AiSettings = {
+        ...cliSettings,
+        cli: { kind: "claude", binaryPath: "/opt/claude/bin/claude" },
+      };
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore
+        .getState()
+        .saveSettings(settingsWithExplicitPath);
+
+      expect(mockDetectCliBinary).not.toHaveBeenCalled();
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(true);
+    });
+
+    it("re-detects PATH availability when an explicit path is cleared", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...cliSettings,
+          cli: { kind: "claude", binaryPath: "/opt/claude/bin/claude" },
+        },
+        cliBinaryAvailable: true,
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+      mockDetectCliBinary.mockResolvedValueOnce(null);
+
+      await useAiSettingsStore.getState().saveSettings(cliSettings);
+
+      expect(mockDetectCliBinary).toHaveBeenCalledWith("claude");
       expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(false);
     });
 
@@ -721,6 +985,21 @@ describe("selectProviderReadiness", () => {
     useAiSettingsStore.setState({
       settings: { ...defaultSettings, provider: "cli", model: "claude" },
       cliBinaryAvailable: true,
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "ready",
+    );
+  });
+
+  it("cli with an explicit binary path ignores a stale PATH miss", () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...defaultSettings,
+        provider: "cli",
+        model: "gpt-5",
+        cli: { kind: "codex", binaryPath: "/opt/codex/bin/codex" },
+      },
+      cliBinaryAvailable: false,
     });
     expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
       "ready",

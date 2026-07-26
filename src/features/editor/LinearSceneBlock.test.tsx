@@ -208,6 +208,14 @@ vi.mock("@/features/editor/tabStore", () => ({
     }),
   },
 }));
+vi.mock("@/features/editor/editorSessionStore", () => ({
+  useEditorSessionStore: {
+    getState: () => ({
+      setDocumentDirty: mockSetTabDirty,
+      dirtyDocumentIds: mockDirtyTabIds,
+    }),
+  },
+}));
 // conflict バナーは i18n + tabStore に依存するので描画だけ落とす
 // (バナー自体の挙動は ExternalEditConflictBanner 側の責務)。
 vi.mock("@/features/editor/ExternalEditConflictBanner", () => ({

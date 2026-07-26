@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSceneStore } from "./store";
 import { useTreeStore } from "./treeStore";
 import { TabBar } from "@/features/editor/TabBar";
 import { Breadcrumb } from "@/features/editor/Breadcrumb";
+import { SceneMetaChipRow } from "@/features/editor/SceneMetaChipRow";
 import { EditorPane } from "@/features/editor/EditorPane";
 import { useTabStore } from "@/features/editor/tabStore";
 import { LinearEditorView } from "@/features/editor/LinearEditorView";
@@ -11,6 +12,13 @@ import { AsciiSplash } from "@/features/editor/AsciiSplash";
 import { cn } from "@/lib/utils";
 import { DRAG_DATA_KEY, DRAG_GROUP_KEY } from "@/features/editor/TabBar";
 import type { GroupIndex } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { resolvePhoneEditorGroup } from "@/features/editor/phoneEditorGroup";
+import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { PhoneEmptySceneBootstrap } from "./PhoneEmptySceneBootstrap";
 
 interface DragPayload {
   nodeId: string;
@@ -143,7 +151,35 @@ function EdgeDropZones() {
  * Empty editor groups are allowed — they show a placeholder instead of an editor.
  */
 export function SceneEditor() {
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
+  const viewportProfile = useWorkspaceViewportProfile();
+  const rawPhoneProjection = viewportProfile === "phone";
+  const inlineAiStatus = useInlineAiStore((state) => state.status);
+  const inlineAiOwnerGroup = useInlineAiStore(
+    (state) => state.activeEditorGroup,
+  );
+  const inlineAiPending =
+    inlineAiStatus === "generating" ||
+    inlineAiStatus === "diffShown" ||
+    inlineAiStatus === "error";
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
+  const previousPhoneProjectionRef = useRef(rawPhoneProjection);
+  const attemptingToLeavePhone =
+    !rawPhoneProjection && previousPhoneProjectionRef.current;
+  // An unaccepted inline-AI diff belongs to the projected phone editor. Keep
+  // that editor mounted and visible across a resize until Accept/Reject makes
+  // the document safe to swap back to its desktop tab projection.
+  const phoneProjection =
+    rawPhoneProjection || (attemptingToLeavePhone && inlineAiPending);
+  const singleGroupProjection = zenMode || phoneProjection;
+  const desktopSceneContextRef = useRef(activeSceneId);
+  const activePhoneDocument = useTreeStore((state) =>
+    state.nodes.find(
+      (node) =>
+        node.id === state.activeSceneId &&
+        (node.nodeType === "scene" || node.nodeType === "note"),
+    ),
+  );
   const isLinearMode = useTabStore((s) => s.isLinearMode);
 
   const primaryActiveTabId = useTabStore((s) => s.activeTabId);
@@ -157,6 +193,13 @@ export function SceneEditor() {
   const secondaryTab = useTabStore((s) =>
     s.secondaryTabs.find((t) => t.nodeId === s.secondaryActiveTabId),
   );
+  const hasDesktopDocumentProjection =
+    primaryActiveTabId != null ||
+    (secondaryGroupOpen && secondaryActiveTabId != null);
+  const restoringDesktopProjection =
+    !phoneProjection &&
+    previousPhoneProjectionRef.current &&
+    hasDesktopDocumentProjection;
 
   const isDraggingTab = useTabStore((s) => s.isDraggingTab);
 
@@ -170,9 +213,23 @@ export function SceneEditor() {
     };
   }, []);
 
+  // Mobile document selection is intentionally independent from desktop tabs.
+  // Restore the last desktop scene context before tab-ensuring effects run when
+  // leaving phone, otherwise the mobile-only document would become a new tab.
+  useEffect(() => {
+    if (!restoringDesktopProjection) return;
+    const desktopSceneId = desktopSceneContextRef.current;
+    const node = useTreeStore
+      .getState()
+      .nodes.find((candidate) => candidate.id === desktopSceneId);
+    if (node?.nodeType === "scene" || node?.nodeType === "note") {
+      useTreeStore.getState().setActiveScene(desktopSceneId);
+    }
+  }, [restoringDesktopProjection]);
+
   // Ensure the active scene always has a tab (handles external changes like node creation).
   useEffect(() => {
-    if (!activeSceneId) return;
+    if (phoneProjection || restoringDesktopProjection || !activeSceneId) return;
     const node = useTreeStore
       .getState()
       .nodes.find((n) => n.id === activeSceneId);
@@ -183,12 +240,22 @@ export function SceneEditor() {
       tabs.some((t) => t.nodeId === activeSceneId) ||
       secondaryTabs.some((t) => t.nodeId === activeSceneId);
     if (!inAnyGroup) {
-      useTabStore.getState().openPreview(activeSceneId);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: activeSceneId },
+          mode: "preview",
+          revealEditor: false,
+          focusEditor: false,
+          syncSceneContext: false,
+        },
+        defaultEditorNavigationPorts,
+      );
     }
-  }, [activeSceneId]);
+  }, [activeSceneId, phoneProjection, restoringDesktopProjection]);
 
   // Sync activeGroupIndex → treeStore.activeSceneId (skip for codex/snippet tabs)
   useEffect(() => {
+    if (phoneProjection) return;
     if (activeGroupIndex === 0 && primaryActiveTabId) {
       if (primaryTab?.contentType === "scene") {
         useTreeStore.getState().setActiveScene(primaryActiveTabId);
@@ -204,15 +271,25 @@ export function SceneEditor() {
     secondaryActiveTabId,
     primaryTab,
     secondaryTab,
+    phoneProjection,
   ]);
 
+  useEffect(() => {
+    if (!phoneProjection) {
+      desktopSceneContextRef.current = useTreeStore.getState().activeSceneId;
+    }
+    previousPhoneProjectionRef.current = phoneProjection;
+  }, [activeSceneId, phoneProjection]);
+
   // --- Linear mode: all scenes in a single scroll view ---
-  if (isLinearMode) {
+  if (isLinearMode && !phoneProjection) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden">
-        <Breadcrumb />
+        {!zenMode && !phoneProjection && <Breadcrumb />}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <TabBar groupIndex={0} />
+          {!zenMode && <TabBar groupIndex={0} />}
+          {/* メタチップ行はタブバー直下 (タブ=どのシーンか、チップ=その中身) */}
+          {!zenMode && !phoneProjection && <SceneMetaChipRow />}
           <div className="relative flex flex-1 flex-col overflow-hidden">
             <LinearEditorView />
           </div>
@@ -222,49 +299,105 @@ export function SceneEditor() {
     );
   }
 
-  const primarySceneId = primaryActiveTabId;
-  const secondarySceneId = secondaryActiveTabId;
-
-  const splitClass =
-    secondaryGroupOpen && splitDirection === "below"
+  const projectedActiveGroup = phoneProjection
+    ? resolvePhoneEditorGroup(
+        {
+          activeTabId: primaryActiveTabId,
+          secondaryActiveTabId,
+          secondaryGroupOpen,
+          activeGroupIndex,
+        },
+        activePhoneDocument?.id,
+        inlineAiPending ? inlineAiOwnerGroup : null,
+      )
+    : secondaryGroupOpen
+      ? activeGroupIndex
+      : 0;
+  const primaryOwnsPhoneProjection =
+    phoneProjection && projectedActiveGroup === 0;
+  const secondaryOwnsPhoneProjection =
+    phoneProjection && projectedActiveGroup === 1;
+  const primarySceneId = primaryOwnsPhoneProjection
+    ? activePhoneDocument?.id
+    : primaryActiveTabId;
+  const secondarySceneId = secondaryOwnsPhoneProjection
+    ? activePhoneDocument?.id
+    : secondaryActiveTabId;
+  const splitClass = singleGroupProjection
+    ? "flex flex-1 overflow-hidden"
+    : secondaryGroupOpen && splitDirection === "below"
       ? "flex flex-1 flex-col overflow-hidden"
       : "flex flex-1 overflow-hidden";
 
-  const primaryClass = secondaryGroupOpen
-    ? splitDirection === "below"
-      ? "flex h-1/2 flex-col border-b border-border"
-      : "flex w-1/2 flex-col border-r border-border"
-    : "flex min-w-0 flex-1 flex-col";
+  const primaryClass = singleGroupProjection
+    ? cn("flex min-w-0 flex-1 flex-col", projectedActiveGroup !== 0 && "hidden")
+    : secondaryGroupOpen
+      ? splitDirection === "below"
+        ? "flex h-1/2 flex-col border-b border-border"
+        : "flex w-1/2 flex-col border-r border-border"
+      : "flex min-w-0 flex-1 flex-col";
 
-  const secondaryClass =
-    splitDirection === "below" ? "flex h-1/2 flex-col" : "flex w-1/2 flex-col";
+  const secondaryClass = singleGroupProjection
+    ? cn("flex min-w-0 flex-1 flex-col", projectedActiveGroup !== 1 && "hidden")
+    : splitDirection === "below"
+      ? "flex h-1/2 flex-col"
+      : "flex w-1/2 flex-col";
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
-      <Breadcrumb />
+      {!zenMode && !phoneProjection && <Breadcrumb />}
 
       <div className={splitClass}>
         {/* ---- Primary group ---- */}
-        <div className={primaryClass}>
-          <TabBar groupIndex={0} />
+        <div
+          data-editor-group="0"
+          className={primaryClass}
+          aria-hidden={
+            singleGroupProjection && projectedActiveGroup !== 0
+              ? true
+              : undefined
+          }
+          inert={
+            singleGroupProjection && projectedActiveGroup !== 0
+              ? true
+              : undefined
+          }
+        >
+          {!zenMode && !phoneProjection && <TabBar groupIndex={0} />}
+          {/* メタチップ行はタブバー直下。split view では各グループに置き、
+              アクティブシーンを表示しているグループにだけ出る */}
+          {!zenMode && !phoneProjection && <SceneMetaChipRow groupIndex={0} />}
           <div className="relative flex flex-1 flex-col overflow-hidden">
             {primarySceneId ? (
               <EditorPane
                 nodeId={primarySceneId}
-                contentType={primaryTab?.contentType ?? "scene"}
+                contentType={
+                  primaryOwnsPhoneProjection
+                    ? "scene"
+                    : (primaryTab?.contentType ?? "scene")
+                }
                 groupIndex={0}
                 onFocus={() => {
-                  useTabStore.getState().setActiveGroup(0);
-                  if (primaryTab?.contentType === "scene") {
+                  if (!phoneProjection) {
+                    useTabStore.getState().setActiveGroup(0);
+                  }
+                  if (
+                    primaryOwnsPhoneProjection ||
+                    primaryTab?.contentType === "scene"
+                  ) {
                     useTreeStore.getState().setActiveScene(primarySceneId);
                   }
                 }}
               />
+            ) : primaryOwnsPhoneProjection ? (
+              <PhoneEmptySceneBootstrap />
             ) : (
               <EmptyGroupPlaceholder groupIndex={0} />
             )}
 
-            {isDraggingTab &&
+            {!zenMode &&
+              !phoneProjection &&
+              isDraggingTab &&
               (secondaryGroupOpen ? (
                 // Split view: accept drops from the secondary group across the full area
                 <FullAreaDropZone targetGroup={0} />
@@ -277,27 +410,56 @@ export function SceneEditor() {
 
         {/* ---- Secondary group ---- */}
         {secondaryGroupOpen && (
-          <div className={secondaryClass}>
-            <TabBar groupIndex={1} />
+          <div
+            data-editor-group="1"
+            className={secondaryClass}
+            aria-hidden={
+              singleGroupProjection && projectedActiveGroup !== 1
+                ? true
+                : undefined
+            }
+            inert={
+              singleGroupProjection && projectedActiveGroup !== 1
+                ? true
+                : undefined
+            }
+          >
+            {!zenMode && !phoneProjection && <TabBar groupIndex={1} />}
+            {!zenMode && !phoneProjection && (
+              <SceneMetaChipRow groupIndex={1} />
+            )}
             <div className="relative flex flex-1 flex-col overflow-hidden">
               {secondarySceneId ? (
                 <EditorPane
                   nodeId={secondarySceneId}
-                  contentType={secondaryTab?.contentType ?? "scene"}
+                  contentType={
+                    secondaryOwnsPhoneProjection
+                      ? "scene"
+                      : (secondaryTab?.contentType ?? "scene")
+                  }
                   groupIndex={1}
                   onFocus={() => {
-                    useTabStore.getState().setActiveGroup(1);
-                    if (secondaryTab?.contentType === "scene") {
+                    if (!phoneProjection) {
+                      useTabStore.getState().setActiveGroup(1);
+                    }
+                    if (
+                      secondaryOwnsPhoneProjection ||
+                      secondaryTab?.contentType === "scene"
+                    ) {
                       useTreeStore.getState().setActiveScene(secondarySceneId);
                     }
                   }}
                 />
+              ) : secondaryOwnsPhoneProjection ? (
+                <PhoneEmptySceneBootstrap />
               ) : (
                 <EmptyGroupPlaceholder groupIndex={1} />
               )}
 
               {/* Secondary always accepts drops from primary across the full area */}
-              {isDraggingTab && <FullAreaDropZone targetGroup={1} />}
+              {!zenMode && !phoneProjection && isDraggingTab && (
+                <FullAreaDropZone targetGroup={1} />
+              )}
             </div>
           </div>
         )}

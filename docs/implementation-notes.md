@@ -286,7 +286,7 @@ function getChatInputExtensions(): Extensions {
 **`@` メンション補完**:
 - `@` 入力で Codex エントリ検索ポップアップ表示
 - `context_mode = 'hidden'` のエントリは候補から除外
-- 選択するとエントリ名をテキストとして挿入し、自動ピンに追加
+- 選択するとエントリ名をテキストとして挿入し、現在ターンの言及候補に追加（DBピンにはしない）
 - TipTap の `@tiptap/suggestion` 拡張 + カスタムレンダラーで実装
 
 ---

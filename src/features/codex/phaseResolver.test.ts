@@ -8,6 +8,7 @@ import {
   formatTimelineContext,
   resolveCodexState,
 } from "./phaseResolver";
+import { buildSceneTimeIndex } from "./context/sceneTimeIndex";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -586,6 +587,125 @@ describe("resolveCodexState", () => {
     expect(result.content).toBe('{"type":"doc"}');
     expect(result.contextMode).toBe("always");
   });
+
+  it("SceneTimeIndex API: safe auto semantics と diagnostics を反映する", () => {
+    const nodes = [
+      makeNode({ id: "chapter-1", sortOrder: "a0" }),
+      makeNode({
+        id: "chapter-8",
+        sortOrder: "a1",
+        storyTimeOrder: "a0",
+      }),
+    ];
+    const result = resolveCodexState(
+      BASE_ENTRY,
+      [
+        makePhase({
+          id: "future",
+          entryId: "e1",
+          anchorNodeId: "chapter-8",
+          summaryOverride: "Future truth",
+        }),
+      ],
+      new Map(),
+      new Map(),
+      { kind: "scene", sceneId: "chapter-1" },
+      buildSceneTimeIndex(nodes),
+      "auto",
+    );
+
+    expect(result.summary).toBe("Base summary");
+    expect(result.appliedPhaseIds).toEqual([]);
+    expect(result.activePhaseId).toBeNull();
+    expect(result.activePhaseLabel).toBeNull();
+    expect(result.axisUsed).toBe("reading");
+    expect(result.fallbackReason).toBe("auto-incomplete-story-coverage");
+  });
+
+  it("SceneTimeIndex API: latest は deterministic 順で全 valid phase を適用する", () => {
+    const nodes = [
+      makeNode({ id: "s1", sortOrder: "a0" }),
+      makeNode({ id: "s2", sortOrder: "a1" }),
+    ];
+    const result = resolveCodexState(
+      BASE_ENTRY,
+      [
+        makePhase({
+          id: "p2",
+          entryId: "e1",
+          anchorNodeId: "s2",
+          label: "Second",
+          summaryOverride: "Second",
+        }),
+        makePhase({
+          id: "p1",
+          entryId: "e1",
+          anchorNodeId: "s1",
+          label: "First",
+          summaryOverride: "First",
+        }),
+      ],
+      new Map(),
+      new Map(),
+      { kind: "latest" },
+      buildSceneTimeIndex(nodes),
+      "reading",
+    );
+
+    expect(result.summary).toBe("Second");
+    expect(result.appliedPhaseIds).toEqual(["p1", "p2"]);
+    expect(result.activePhaseId).toBe("p2");
+    expect(result.activePhaseLabel).toBe("Second");
+    expect(result.axisUsed).toBe("reading");
+  });
+
+  it("SceneTimeIndex API: explicit Phase preview inherits earlier values without later sibling leakage", () => {
+    const index = buildSceneTimeIndex([
+      makeNode({ id: "shared", sortOrder: "a0" }),
+    ]);
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const earlier = makePhase({
+      id: "a-earlier",
+      entryId: "e1",
+      anchorNodeId: "shared",
+      label: "Earlier",
+      contentOverride: '{"type":"doc","from":"earlier"}',
+      createdAt,
+    });
+    const target = makePhase({
+      id: "b-target",
+      entryId: "e1",
+      anchorNodeId: "shared",
+      label: "Target",
+      summaryOverride: "Target summary",
+      createdAt,
+    });
+    const later = makePhase({
+      id: "c-later",
+      entryId: "e1",
+      anchorNodeId: "shared",
+      label: "Later",
+      contentOverride: '{"type":"doc","from":"later"}',
+      summaryOverride: "Later summary",
+      createdAt,
+    });
+
+    const result = resolveCodexState(
+      BASE_ENTRY,
+      [later, target, earlier],
+      new Map(),
+      new Map(),
+      { kind: "phase", phaseId: target.id },
+      index,
+      "reading",
+    );
+
+    expect(result.content).toBe('{"type":"doc","from":"earlier"}');
+    expect(result.summary).toBe("Target summary");
+    expect(result.appliedPhaseIds).toEqual(["a-earlier", "b-target"]);
+    expect(result.activePhaseId).toBe("b-target");
+    expect(result.activePhaseLabel).toBe("Target");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -600,6 +720,10 @@ describe("formatTimelineContext", () => {
     contextMode: "mentioned",
     detailValues: new Map<string, string | null>(),
     appliedPhaseIds: [],
+    activePhaseId: null,
+    activePhaseLabel: null,
+    axisUsed: "reading" as const,
+    fallbackReason: null,
   };
 
   it("フェーズなし → 変遷セクション省略", () => {
@@ -757,7 +881,7 @@ describe("computeSceneTimeIndex", () => {
     expect(result.get("s2")).toBe(1);
   });
 
-  it("auto モード: story モードと同一の結果", () => {
+  it("auto モード: 部分設定中は project 全体を reading-order に倒す", () => {
     const nodes = [
       makeNode({
         id: "s1",
@@ -778,9 +902,10 @@ describe("computeSceneTimeIndex", () => {
         storyTimeOrder: null,
       }),
     ];
-    const storyResult = computeSceneTimeIndex(nodes, "story");
     const autoResult = computeSceneTimeIndex(nodes, "auto");
-    expect(autoResult).toEqual(storyResult);
+    expect(autoResult.get("s1")).toBe(0);
+    expect(autoResult.get("s2")).toBe(1);
+    expect(autoResult.get("s3")).toBe(2);
   });
 
   it("story モード: フォルダ構造内でもstoryTimeOrder順が優先される", () => {

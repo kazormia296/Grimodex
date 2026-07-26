@@ -64,6 +64,31 @@ describe("recordAiUsage", () => {
     );
   });
 
+  it("keeps explicit turn provider/project and telemetry metadata snapshots", async () => {
+    const metadata = {
+      inputTokenDrift: {
+        provider: "sakana",
+        projectId: "turn-project",
+        requestCount: 1,
+      },
+    };
+    await recordAiUsage({
+      surface: "chat",
+      model: "fugu",
+      provider: "sakana",
+      projectId: "turn-project",
+      metadata,
+    });
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "turn-project",
+        model: "fugu",
+        provider: "sakana",
+        metadata: JSON.stringify(metadata),
+      }),
+    );
+  });
+
   it("records prompt-cache read/write tokens", async () => {
     await recordAiUsage({
       surface: "chat",

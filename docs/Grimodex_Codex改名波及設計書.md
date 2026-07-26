@@ -6,7 +6,7 @@ Codex エントリの名前(`codex_entries.name`)を改名したとき、その�
 変更を波及させる。ただし同名別エントリ・部分文字列・別 alias 一致といった**重複ハザード**を
 踏まないこと。
 
-ステータス: Item A / B / C すべて実装完了(2026-06-08)。Item C の I/O 統合層は実機検証(pnpm tauri dev)が残課題。
+ステータス: Item A / B / C すべて実装完了(2026-06-08)。Item C の I/O 統合層は実機検証(pnpm electron:dev)が残課題。
 
 ## 実装進捗
 
@@ -34,7 +34,7 @@ Codex エントリの名前(`codex_entries.name`)を改名したとき、その�
   4. 改名 commit(`CodexDetailContent.handleNameBlur`)からの起動配線(old≠new かつ occurrences>0 でモーダル)。
 
   3 つの純粋コア(検出・flatten・置換)は単体テスト済み。残りは DB/editor/store にまたがる I/O 統合で、
-  `pnpm tauri dev` での実機検証を要する(top3 落とし穴: schema stub・派生キャッシュ同梱・双方向再同期+flush race)。
+  `pnpm electron:dev` での実機検証を要する(top3 落とし穴: schema stub・派生キャッシュ同梱・双方向再同期+flush race)。
 
 - **Item C 統合層 実装完了(実機検証残)**:
   - `codex/rename/renameEngine.ts` — `gatherRenameSources`(全ノード title/synopsis/scene本文 + codex

@@ -86,6 +86,9 @@ export interface AgentLLMResponse {
    */
   inputTokens?: number;
   outputTokens?: number;
+  /** Prompt cache usage used for provider-normalized input drift telemetry. */
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 // アシスタントメッセージ内のtool_useブロック（多ターン会話用）

@@ -8,6 +8,14 @@ export const DURATIONS = {
   dialog: 0.25,
 } as const;
 
+/** Zen の背景だけに使う、知覚しにくい長周期モーション。 */
+export const ZEN_AMBIENT_DURATIONS = {
+  enter: 0.8,
+  exit: 0.45,
+  primaryDrift: 72,
+  secondaryDrift: 88,
+} as const;
+
 export const EASINGS = {
   easeOut: [0.16, 1, 0.3, 1] as [number, number, number, number],
   spring: { type: "spring" as const, damping: 25, stiffness: 300 },

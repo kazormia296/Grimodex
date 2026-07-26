@@ -29,6 +29,29 @@ const MENTION_DOC = {
   ],
 };
 
+const CODEX_SEMANTIC_LINK_DOC = {
+  type: "doc",
+  content: [
+    {
+      type: "paragraph",
+      content: [
+        { type: "text", text: "その名は" },
+        {
+          type: "text",
+          text: "銀の魔女",
+          marks: [
+            {
+              type: "codexSemanticLink",
+              attrs: { entryId: "entry-elara", label: "エララ" },
+            },
+          ],
+        },
+        { type: "text", text: "と呼ばれた。" },
+      ],
+    },
+  ],
+};
+
 function countMentions(editor: Editor): number {
   let n = 0;
   editor.state.doc.descendants((node) => {
@@ -39,6 +62,18 @@ function countMentions(editor: Editor): number {
 }
 
 describe("editor schema parity (mention)", () => {
+  it("DB-native editor modes share the codexSemanticLink Mark schema", () => {
+    const editor = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: () => {} }),
+      content: "",
+    });
+    try {
+      expect(editor.schema.marks.codexSemanticLink).toBeDefined();
+    } finally {
+      editor.destroy();
+    }
+  });
+
   it("popup 無しスキーマ (LinearSceneBlock 等) でも mention 入り doc を失わず読める", () => {
     const editor = new Editor({
       extensions: getEditorExtensions(),
@@ -73,6 +108,35 @@ describe("editor schema parity (mention)", () => {
         errorOnInvalidContent: true,
       });
       expect(withoutPopup.getJSON()).toEqual(withPopup.getJSON());
+    } finally {
+      withPopup.destroy();
+      withoutPopup.destroy();
+    }
+  });
+
+  it("popup 有り / 無しスキーマ間で codexSemanticLink Mark JSON が同一ラウンドトリップする", () => {
+    const withPopup = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: () => {} }),
+      content: "",
+    });
+    const withoutPopup = new Editor({
+      extensions: getEditorExtensions(),
+      content: "",
+    });
+    try {
+      withPopup.commands.setContent(CODEX_SEMANTIC_LINK_DOC, {
+        emitUpdate: false,
+        errorOnInvalidContent: true,
+      });
+      withoutPopup.commands.setContent(withPopup.getJSON(), {
+        emitUpdate: false,
+        errorOnInvalidContent: true,
+      });
+
+      expect(withoutPopup.getJSON()).toEqual(withPopup.getJSON());
+      expect(withoutPopup.getJSON().content?.[0]?.content?.[1]).toMatchObject(
+        CODEX_SEMANTIC_LINK_DOC.content[0].content[1],
+      );
     } finally {
       withPopup.destroy();
       withoutPopup.destroy();

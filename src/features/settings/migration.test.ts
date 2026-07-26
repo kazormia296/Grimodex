@@ -2,6 +2,33 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Uses the browser-mock DB (in-memory SQLite via sql.js)
 
+const globalSettingsHarness = vi.hoisted(() => {
+  type GlobalSettingsLike = Record<string, unknown>;
+  let settings: GlobalSettingsLike = {};
+  const read = vi.fn(async () => settings);
+  const patch = vi.fn(
+    async (updater: (current: GlobalSettingsLike) => GlobalSettingsLike) => {
+      settings = updater(settings);
+      return settings;
+    },
+  );
+  const setSettings = (next: GlobalSettingsLike) => {
+    settings = next;
+  };
+  return {
+    read,
+    patch,
+    setSettings,
+    getSettings: () => settings,
+  };
+});
+
+function mockGlobalSettingsRepository(): void {
+  vi.doMock("@/lib/globalSettings/repository", () => ({
+    globalSettingsRepository: globalSettingsHarness,
+  }));
+}
+
 beforeEach(async () => {
   const { db } = await import("@/db/client");
   const { appSettings, projectSettings } = await import("@/db/schema");
@@ -10,18 +37,10 @@ beforeEach(async () => {
 });
 
 describe("migrateAppSettingsToScopedStores", () => {
-  const mockUpdateGlobalSettings = vi.fn().mockResolvedValue(undefined);
-  const mockGetState = vi.fn();
-
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetState.mockReturnValue({
-      globalSettings: { userPreferences: {} },
-      updateGlobalSettings: mockUpdateGlobalSettings,
-    });
-    vi.doMock("@/features/workspace/store", () => ({
-      useWorkspaceStore: { getState: mockGetState },
-    }));
+    globalSettingsHarness.setSettings({ userPreferences: {} });
+    mockGlobalSettingsRepository();
   });
 
   it("skips migration if already at version 1", async () => {
@@ -31,7 +50,7 @@ describe("migrateAppSettingsToScopedStores", () => {
     const { migrateAppSettingsToScopedStores } = await import("./migration");
     await migrateAppSettingsToScopedStores();
 
-    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
+    expect(globalSettingsHarness.patch).not.toHaveBeenCalled();
   });
 
   it("migrates global keys to userPreferences", async () => {
@@ -42,14 +61,13 @@ describe("migrateAppSettingsToScopedStores", () => {
     const { migrateAppSettingsToScopedStores } = await import("./migration");
     await migrateAppSettingsToScopedStores();
 
-    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userPreferences: expect.objectContaining({
-          "editor.fontFamily": "sans-serif",
-          "editor.fontSize": "16",
-        }),
-      }),
-    );
+    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
+    expect(globalSettingsHarness.getSettings()).toMatchObject({
+      userPreferences: {
+        "editor.fontFamily": "sans-serif",
+        "editor.fontSize": "16",
+      },
+    });
   });
 
   it("migrates project keys to project_settings", async () => {
@@ -104,169 +122,95 @@ describe("migrateAppSettingsToScopedStores", () => {
     await migrateAppSettingsToScopedStores();
     await migrateAppSettingsToScopedStores();
 
-    // updateGlobalSettings called only once
-    expect(mockUpdateGlobalSettings).toHaveBeenCalledTimes(1);
+    // GlobalSettingsRepository.patch called only once
+    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
   });
 });
 
-describe("migrateCardLayoutKey", () => {
-  const mockUpdateGlobalSettings = vi.fn().mockResolvedValue(undefined);
-  const mockGetState = vi.fn();
-
+describe("removeRetiredDisplaySettings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.doMock("@/features/workspace/store", () => ({
-      useWorkspaceStore: { getState: mockGetState },
-    }));
+    globalSettingsHarness.setSettings({ userPreferences: {} });
+    mockGlobalSettingsRepository();
   });
 
-  it("copies the legacy display.mochiLayout value to display.cardLayout", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
+  it("removes retired layout and app-wide glass keys while preserving active preferences", async () => {
+    globalSettingsHarness.setSettings({
+      userPreferences: {
+        "display.mochiLayout": "false",
+        "display.cardLayout": "true",
+        "display.glassEffectEnabled": "true",
+        "display.glassTransparency": "30",
+        "display.glassSurfacePanels": "true",
+        "editor.fontSize": "16",
+      },
+    });
+
+    const { removeRetiredDisplaySettings } = await import("./migration");
+    await removeRetiredDisplaySettings();
+
+    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
+    expect(globalSettingsHarness.getSettings()).toEqual({
+      userPreferences: {
+        "editor.fontSize": "16",
+      },
+    });
+  });
+
+  it("preserves preferences written before the queued patch runs", async () => {
+    globalSettingsHarness.setSettings({
+      userPreferences: {
+        "display.mochiLayout": "false",
+        "editor.fontSize": "16",
+      },
+    });
+    globalSettingsHarness.patch.mockImplementationOnce(async (updater) => {
+      globalSettingsHarness.setSettings({
         userPreferences: {
           "display.mochiLayout": "false",
           "editor.fontSize": "16",
+          "editor.fontFamily": "serif",
         },
-      },
-      updateGlobalSettings: mockUpdateGlobalSettings,
+      });
+      const next = updater(globalSettingsHarness.getSettings());
+      globalSettingsHarness.setSettings(next);
+      return next;
     });
 
-    const { migrateCardLayoutKey } = await import("./migration");
-    await migrateCardLayoutKey();
+    const { removeRetiredDisplaySettings } = await import("./migration");
+    await removeRetiredDisplaySettings();
 
-    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+    expect(globalSettingsHarness.getSettings()).toEqual({
       userPreferences: {
         "editor.fontSize": "16",
-        "display.cardLayout": "false",
+        "editor.fontFamily": "serif",
       },
     });
   });
 
-  it("is a no-op when the legacy key is absent", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: { userPreferences: { "display.cardLayout": "true" } },
-      updateGlobalSettings: mockUpdateGlobalSettings,
-    });
+  it("leaves active preferences unchanged when no retired key is present", async () => {
+    const current = {
+      userPreferences: { "editor.fontSize": "16" },
+    };
+    globalSettingsHarness.setSettings(current);
 
-    const { migrateCardLayoutKey } = await import("./migration");
-    await migrateCardLayoutKey();
+    const { removeRetiredDisplaySettings } = await import("./migration");
+    await removeRetiredDisplaySettings();
 
-    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
-  });
-
-  it("does not overwrite an existing display.cardLayout value", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        userPreferences: {
-          "display.mochiLayout": "false",
-          "display.cardLayout": "true",
-        },
-      },
-      updateGlobalSettings: mockUpdateGlobalSettings,
-    });
-
-    const { migrateCardLayoutKey } = await import("./migration");
-    await migrateCardLayoutKey();
-
-    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
-  });
-});
-
-describe("resolveCardLayoutGlassConflict", () => {
-  const mockUpdateGlobalSettings = vi.fn().mockResolvedValue(undefined);
-  const mockGetState = vi.fn();
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.doMock("@/features/workspace/store", () => ({
-      useWorkspaceStore: { getState: mockGetState },
-    }));
-  });
-
-  it("turns the glass effect off when both are persisted on", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        userPreferences: {
-          "display.cardLayout": "true",
-          "display.glassEffectEnabled": "true",
-        },
-      },
-      updateGlobalSettings: mockUpdateGlobalSettings,
-    });
-
-    const { resolveCardLayoutGlassConflict } = await import("./migration");
-    await resolveCardLayoutGlassConflict();
-
-    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
-      userPreferences: {
-        "display.cardLayout": "true",
-        "display.glassEffectEnabled": "false",
-      },
-    });
-  });
-
-  it("resolves the conflict when the card layout relies on its default", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        userPreferences: { "display.glassEffectEnabled": "true" },
-      },
-      updateGlobalSettings: mockUpdateGlobalSettings,
-    });
-
-    const { resolveCardLayoutGlassConflict } = await import("./migration");
-    await resolveCardLayoutGlassConflict();
-
-    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
-      userPreferences: { "display.glassEffectEnabled": "false" },
-    });
-  });
-
-  it("is a no-op when the card layout is off", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        userPreferences: {
-          "display.cardLayout": "false",
-          "display.glassEffectEnabled": "true",
-        },
-      },
-      updateGlobalSettings: mockUpdateGlobalSettings,
-    });
-
-    const { resolveCardLayoutGlassConflict } = await import("./migration");
-    await resolveCardLayoutGlassConflict();
-
-    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
-  });
-
-  it("is a no-op when the glass effect is off by default", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        userPreferences: { "display.cardLayout": "true" },
-      },
-      updateGlobalSettings: mockUpdateGlobalSettings,
-    });
-
-    const { resolveCardLayoutGlassConflict } = await import("./migration");
-    await resolveCardLayoutGlassConflict();
-
-    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
+    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
+    expect(globalSettingsHarness.getSettings()).toBe(current);
   });
 });
 
 describe("seedProjectSettingsFromDefaults", () => {
-  const mockGetState = vi.fn();
-
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.doMock("@/features/workspace/store", () => ({
-      useWorkspaceStore: { getState: mockGetState },
-    }));
+    globalSettingsHarness.setSettings({ projectDefaults: {} });
+    mockGlobalSettingsRepository();
   });
 
   it("is a no-op when projectDefaults is empty", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: { projectDefaults: {} },
-    });
+    globalSettingsHarness.setSettings({ projectDefaults: {} });
     const { getProjectSetting } = await import("./api");
     const { seedProjectSettingsFromDefaults } = await import("./migration");
     await seedProjectSettingsFromDefaults();
@@ -277,10 +221,8 @@ describe("seedProjectSettingsFromDefaults", () => {
   });
 
   it("seeds project_settings from projectDefaults when keys are absent", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        projectDefaults: { "export.format": "epub", "beat.enabled": "true" },
-      },
+    globalSettingsHarness.setSettings({
+      projectDefaults: { "export.format": "epub", "beat.enabled": "true" },
     });
     const { getProjectSetting } = await import("./api");
     const { seedProjectSettingsFromDefaults } = await import("./migration");
@@ -298,10 +240,8 @@ describe("seedProjectSettingsFromDefaults", () => {
     const { setProjectSetting, getProjectSetting } = await import("./api");
     await setProjectSetting("default-project", "export.format", "plaintext");
 
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        projectDefaults: { "export.format": "epub" },
-      },
+    globalSettingsHarness.setSettings({
+      projectDefaults: { "export.format": "epub" },
     });
     const { seedProjectSettingsFromDefaults } = await import("./migration");
     await seedProjectSettingsFromDefaults();
@@ -314,32 +254,26 @@ describe("seedProjectSettingsFromDefaults", () => {
 });
 
 describe("migrateModelRoleKeys", () => {
-  const mockUpdateGlobalSettings = vi.fn().mockResolvedValue(undefined);
-  const mockGetState = vi.fn();
-
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.doMock("@/features/workspace/store", () => ({
-      useWorkspaceStore: { getState: mockGetState },
-    }));
+    globalSettingsHarness.setSettings({ userPreferences: {} });
+    mockGlobalSettingsRepository();
   });
 
   it("旧 ai.inlineModel / ai.sessionTitleModel を role.inline / role.cheap へ移送し旧キーを除去する", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        userPreferences: {
-          "ai.inlineModel": "gpt-4o",
-          "ai.sessionTitleModel": "gpt-4o-mini",
-          "editor.fontSize": "16",
-        },
+    globalSettingsHarness.setSettings({
+      userPreferences: {
+        "ai.inlineModel": "gpt-4o",
+        "ai.sessionTitleModel": "gpt-4o-mini",
+        "editor.fontSize": "16",
       },
-      updateGlobalSettings: mockUpdateGlobalSettings,
     });
 
     const { migrateModelRoleKeys } = await import("./migration");
     await migrateModelRoleKeys();
 
-    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
+    expect(globalSettingsHarness.getSettings()).toEqual({
       userPreferences: {
         "editor.fontSize": "16",
         "aiModel.role.inline": "gpt-4o",
@@ -348,33 +282,63 @@ describe("migrateModelRoleKeys", () => {
     });
   });
 
-  it("旧キーが無ければ no-op", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: { userPreferences: { "aiModel.role.inline": "gpt-4o" } },
-      updateGlobalSettings: mockUpdateGlobalSettings,
+  it("旧キーが無ければ同じ設定を返して no-op にする", async () => {
+    const current = {
+      userPreferences: { "aiModel.role.inline": "gpt-4o" },
+    };
+    globalSettingsHarness.setSettings(current);
+
+    const { migrateModelRoleKeys } = await import("./migration");
+    await migrateModelRoleKeys();
+
+    expect(globalSettingsHarness.patch).toHaveBeenCalledOnce();
+    expect(globalSettingsHarness.getSettings()).toBe(current);
+  });
+
+  it("patch 実行直前までに書かれた設定を保持する", async () => {
+    globalSettingsHarness.setSettings({
+      userPreferences: {
+        "ai.inlineModel": "gpt-4o",
+        "editor.fontSize": "16",
+      },
+    });
+    globalSettingsHarness.patch.mockImplementationOnce(async (updater) => {
+      globalSettingsHarness.setSettings({
+        userPreferences: {
+          "ai.inlineModel": "gpt-4o",
+          "editor.fontSize": "16",
+          "editor.fontFamily": "serif",
+        },
+      });
+      const next = updater(globalSettingsHarness.getSettings());
+      globalSettingsHarness.setSettings(next);
+      return next;
     });
 
     const { migrateModelRoleKeys } = await import("./migration");
     await migrateModelRoleKeys();
 
-    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
+    expect(globalSettingsHarness.getSettings()).toEqual({
+      userPreferences: {
+        "editor.fontSize": "16",
+        "editor.fontFamily": "serif",
+        "aiModel.role.inline": "gpt-4o",
+      },
+    });
   });
 
   it("ロール値が既にあれば上書きしない（旧キーはクリーンアップする）", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        userPreferences: {
-          "ai.inlineModel": "gpt-4o",
-          "aiModel.role.inline": "claude-opus-4-8",
-        },
+    globalSettingsHarness.setSettings({
+      userPreferences: {
+        "ai.inlineModel": "gpt-4o",
+        "aiModel.role.inline": "claude-opus-4-8",
       },
-      updateGlobalSettings: mockUpdateGlobalSettings,
     });
 
     const { migrateModelRoleKeys } = await import("./migration");
     await migrateModelRoleKeys();
 
-    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+    expect(globalSettingsHarness.getSettings()).toEqual({
       userPreferences: {
         "aiModel.role.inline": "claude-opus-4-8",
       },
@@ -382,20 +346,17 @@ describe("migrateModelRoleKeys", () => {
   });
 
   it("空文字の旧値は移送せずクリーンアップのみ（ロールは未設定のまま）", async () => {
-    mockGetState.mockReturnValue({
-      globalSettings: {
-        userPreferences: {
-          "ai.sessionTitleModel": "",
-          "editor.fontSize": "16",
-        },
+    globalSettingsHarness.setSettings({
+      userPreferences: {
+        "ai.sessionTitleModel": "",
+        "editor.fontSize": "16",
       },
-      updateGlobalSettings: mockUpdateGlobalSettings,
     });
 
     const { migrateModelRoleKeys } = await import("./migration");
     await migrateModelRoleKeys();
 
-    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+    expect(globalSettingsHarness.getSettings()).toEqual({
       userPreferences: {
         "editor.fontSize": "16",
       },

@@ -1,0 +1,36 @@
+cases:
+  - id: eval-prompt-post-effect-json
+    suiteId: prompt-contract
+    requirementIds: [GDX-ROUTE-001, GDX-ARTIFACT-001, GDX-TRACE-001]
+    fixture:
+      runId: prompt-post-effect-json
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T10:40:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        {
+          conversationId: prompt-post-effect-json-conversation,
+          workspaceId: prompt-post-effect-json-workspace,
+          artifactRoot: prompt-post-effect-json-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      promptAssets:
+        - src/prompts/ja/postEffect.ts
+        - src/prompts/en/postEffect.ts
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: stable
+      requiredEvidence: [prompt-contract-test]
+      outputValidators: [localized-parity, json-contract]

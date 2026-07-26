@@ -2,7 +2,8 @@ import { useTranslation } from "react-i18next";
 import i18next from "@/lib/i18n";
 import { MapPin, Settings, Tag, Sparkles } from "lucide-react";
 import { useTreeStore } from "./treeStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { resolveLabelColor } from "@/lib/labelPalette";
 import { formatShortcut } from "@/lib/platform";
@@ -52,7 +53,7 @@ interface TreeContextMenuProps {
  */
 export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
   const { t } = useTranslation();
-  const { deleteNode, setStatus, createNode, setActiveScene } = useTreeStore();
+  const { deleteNode, setStatus, createNode } = useTreeStore();
   const selectedIds = useTreeStore((s) => s.selectedIds);
   const allNodes = useTreeStore((s) => s.nodes);
   const allLabels = useLabelStore((s) => s.labels);
@@ -61,6 +62,20 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
   );
   const { boards, addToBoard } = useAddToMapBoards(getCurrentProjectId());
   const scenesContext = useScenesPanelContext();
+
+  function openInEditor(documentId: string, group: 0 | 1 = 0): void {
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId },
+        group,
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
+  }
 
   // If the right-clicked node is part of a multi-selection, operations apply
   // to all selected nodes; otherwise only to the right-clicked node.
@@ -113,8 +128,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
         <>
           <ContextMenuItem
             onSelect={() => {
-              useTabStore.getState().openPinned(node.id);
-              setActiveScene(node.id);
+              openInEditor(node.id);
             }}
           >
             {t("tree.openInEditor")}
@@ -122,8 +136,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
           </ContextMenuItem>
           <ContextMenuItem
             onSelect={() => {
-              useTabStore.getState().openInSecondaryGroup(node.id);
-              setActiveScene(node.id);
+              openInEditor(node.id, 1);
             }}
           >
             {t("tree.openInSide")}
@@ -219,7 +232,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
             onSelect={() => {
               createNode({ nodeType: "scene", parentId: node.id })
                 .then((n) => {
-                  useTabStore.getState().openPinned(n.id);
+                  openInEditor(n.id);
                 })
                 .catch(() => {});
             }}
@@ -231,7 +244,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
             onSelect={() => {
               createNode({ nodeType: "note", parentId: node.id })
                 .then((n) => {
-                  useTabStore.getState().openPinned(n.id);
+                  openInEditor(n.id);
                 })
                 .catch(() => {});
             }}
@@ -295,7 +308,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
                 afterId: node.id,
               })
                 .then((n) => {
-                  useTabStore.getState().openPinned(n.id);
+                  openInEditor(n.id);
                 })
                 .catch(() => {});
             }}
@@ -311,7 +324,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
                 afterId: node.id,
               })
                 .then((n) => {
-                  useTabStore.getState().openPinned(n.id);
+                  openInEditor(n.id);
                 })
                 .catch(() => {});
             }}

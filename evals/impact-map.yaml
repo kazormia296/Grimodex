@@ -1,0 +1,164 @@
+version: 1
+allSuites:
+  - quality-workflow
+  - ai-routing
+  - tool-policy
+  - prompt-contract
+  - retrieval-grounding
+rules:
+  - id: quality-foundation
+    reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
+    paths:
+      - AGENTS.md
+      - .agents/skills/**
+      - docs/communication-style-guide.md
+      - policies/quality/**
+      - evals/**
+      - scripts/quality/**
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
+      - GDX-TOOL-001
+      - GDX-POLICY-001
+      - GDX-GROUND-001
+      - GDX-ARTIFACT-001
+      - GDX-ISOLATION-001
+      - GDX-TRACE-001
+    suites:
+      - all
+  - id: workflow-runtime
+    reason: Dependency and CI workflow changes can alter every validation lane.
+    paths:
+      - package.json
+      - pnpm-lock.yaml
+      - .github/workflows/**
+    requirements:
+      - GDX-TRACE-001
+    suites:
+      - all
+  - id: ai-routing
+    reason: AI path, role, route, or provider changes must preserve complete routing coverage.
+    paths:
+      - src/features/ai-verification/**
+      - docs/AI経路検証.md
+      - src/features/chat/modelRouting.ts
+      - src/features/chat/modelRouting.test.ts
+      - src/features/chat/turn/**
+      - src/features/chat/types.ts
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
+      - GDX-TRACE-001
+    suites:
+      - ai-routing
+  - id: tool-policy
+    reason: Tool schemas, policy gates, privacy, and execution adapters share one safety contract.
+    paths:
+      - agent-tool-manifest.json
+      - src/features/ai-policy/**
+      - src/features/chat/agent/**
+      - src/features/chat/toolProtocolParse.ts
+      - src-tauri/crates/grimodex-ai/build.rs
+    requirements:
+      - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
+      - GDX-TOOL-001
+      - GDX-POLICY-001
+    suites:
+      - tool-policy
+  - id: localized-prompts
+    reason: Localized prompts and shared output contracts require prompt validation.
+    paths:
+      - src/prompts/**
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-GROUND-001
+      - GDX-ARTIFACT-001
+    suites:
+      - prompt-contract
+  - id: post-effect-contracts
+    reason: Post-effect payload builders, parsers, and UI contracts must remain aligned with their prompt output schema.
+    paths:
+      - src/features/post-effect/**
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-ARTIFACT-001
+      - GDX-TRACE-001
+    suites:
+      - prompt-contract
+  - id: retrieval-grounding
+    reason: Recall, context planning, citation, and related-scene changes affect grounding.
+    paths:
+      - src/features/chat/chatRecall.ts
+      - src/features/chat/chatRecall.test.ts
+      - src/features/chat/chatRecallPromote.ts
+      - src/features/chat/chatRecallPromote.test.ts
+      - src/features/chat/citationVerify.ts
+      - src/features/chat/citationVerify.test.ts
+      - src/features/chat/context/**
+      - src/features/chat/contextBuilder.chatRecall.test.ts
+      - src/features/related-scenes/**
+      - scripts/fixtures/**
+    requirements:
+      - GDX-GROUND-001
+      - GDX-ISOLATION-001
+    suites:
+      - retrieval-grounding
+  - id: web-editor-ai
+    reason: Web Editor must expose every user-selected HTTP provider through explicit Local LLM or BYOK routes with no application-owned credential or managed provider.
+    paths:
+      - src/lib/browser-ai.ts
+      - src/lib/browser-ai.test.ts
+      - src/lib/browser-mock.ts
+      - src/lib/browser-mock.ai-runtime.test.ts
+      - src/lib/browserRuntime.ts
+      - src/lib/browserRuntime.test.ts
+      - src/features/ai-policy/**
+      - src/features/hosted-editor/**
+      - src/features/ab-test/abConfig.ts
+      - src/features/ab-test/abConfig.test.ts
+      - src/features/ab-test/AbSlotCard.tsx
+      - src/features/chat/browserProviderPolicy.ts
+      - src/features/chat/browserProviderPolicy.test.ts
+      - src/features/chat/chatApi.ts
+      - src/features/chat/chatApi.test.ts
+      - src/features/chat/chatStore.ts
+      - src/features/chat/chatStore.test.ts
+      - src/features/chat/useChatModelCatalog.ts
+      - src/features/settings/categories/AiCategory.tsx
+      - src/features/settings/categories/AiCategory.test.tsx
+      - src/features/settings/categories/OpenaiCompatibleEndpointsManager.tsx
+      - src/features/settings/categories/OpenaiCompatibleEndpointsManager.test.tsx
+      - docs/AI経路検証.md
+      - docs/Grimodex_ScanHostedEditor影響マトリクス.md
+      - docs/Grimodex_Settingsパネル設計書.md
+      - scripts/cloudflare-editor-deploy.mjs
+      - scripts/cloudflare-editor-deploy.test.mjs
+      - scripts/validate-web-editor-artifact.mjs
+      - scripts/web-editor-artifact.test.mjs
+      - vite.config.ts
+      - vercel.json
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
+      - GDX-TRACE-001
+    suites:
+      - ai-routing
+      - tool-policy
+  - id: ai-data-legal-notices
+    reason: Terms, privacy notices, and EULA versioning must remain aligned with the runtime AI disclosure and consent boundary.
+    paths:
+      - public/TERMS_*.md
+      - public/PRIVACY_*.md
+      - src/features/legal/constants.ts
+      - src/features/legal/constants.test.ts
+    requirements:
+      - GDX-AI-CONSENT-001
+      - GDX-TRACE-001
+    suites:
+      - ai-routing
+      - tool-policy
+default: all

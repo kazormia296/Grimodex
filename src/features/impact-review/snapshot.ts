@@ -11,35 +11,96 @@ import {
   codexEntryPhases,
   codexPhaseDetailOverrides,
 } from "@/db/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import { unionAll } from "drizzle-orm/sqlite-core";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { detailValueToPlainText } from "@/features/codex/detailCleanup";
 import { parseAliases } from "@/features/codex/codexMatcher";
 import type { CodexSnapshot, PhaseSnapshot } from "./diff";
+import { canIncludeResolvedCodexContext } from "@/features/codex/context/codexVisibilityPolicy";
+import type { SqliteSourceRevisionGuard } from "@/features/post-effect/types";
 
 export interface CodexSnapshotResult {
   snapshot: CodexSnapshot;
   projectId: string;
   entryType: string;
   entryName: string;
+  sourceRevision: SqliteSourceRevisionGuard;
+  contextMode?: string;
+  /** Any explicit phase visibility restriction makes phase diff AI payloads unsafe. */
+  hasRestrictedPhases?: boolean;
+}
+
+type SnapshotRowKind = "entry" | "detail" | "phase" | "phase-detail";
+const nullText = sql<string | null>`NULL`;
+
+function rowKind(kind: SnapshotRowKind) {
+  return sql<SnapshotRowKind>`${kind}`;
 }
 
 /** エントリ 1 件の base 状態スナップショットを構築。存在しなければ null。 */
 export async function buildCodexSnapshot(
   entryId: string,
 ): Promise<CodexSnapshotResult | null> {
-  const rows = await db
-    .select()
+  // sqlite-proxy executes each awaited Drizzle query as a separate IPC call.
+  // UNION ALL keeps entry/details/phases in one SQLite statement (one coherent
+  // visibility view) without a details x phase-overrides Cartesian product.
+  const entryQuery = db
+    .select({
+      kind: rowKind("entry"),
+      projectId: sql<string | null>`${codexEntries.projectId}`,
+      entryType: sql<string | null>`${codexEntries.type}`,
+      entryName: sql<string | null>`${codexEntries.name}`,
+      aliases: sql<string | null>`${codexEntries.aliases}`,
+      summary: sql<string | null>`${codexEntries.summary}`,
+      content: sql<string | null>`${codexEntries.content}`,
+      contextMode: sql<string | null>`${codexEntries.contextMode}`,
+      sourceConnectionEpoch: sql<
+        string | null
+      >`(SELECT epoch FROM temp.grimodex_connection_meta LIMIT 1)`,
+      sourceTotalChanges: sql<string | null>`CAST(total_changes() AS TEXT)`,
+      sourceDataVersion: sql<
+        string | null
+      >`CAST((SELECT data_version FROM pragma_data_version) AS TEXT)`,
+      detailId: nullText,
+      detailName: nullText,
+      detailValue: nullText,
+      phaseId: nullText,
+      phaseLabel: nullText,
+      phaseSummary: nullText,
+      phaseContent: nullText,
+      phaseContextMode: nullText,
+      phaseDetailId: nullText,
+      phaseDetailName: nullText,
+      phaseDetailValue: nullText,
+    })
     .from(codexEntries)
     .where(eq(codexEntries.id, entryId));
-  const entry = rows[0];
-  if (!entry) return null;
 
-  // includeInContext=1 の detail のみ（chat/consistency と同じ選定）
-  const rawDetails = await db
+  const detailQuery = db
     .select({
-      value: codexDetailValues.value,
-      name: codexDetailDefinitions.name,
+      kind: rowKind("detail"),
+      projectId: nullText,
+      entryType: nullText,
+      entryName: nullText,
+      aliases: nullText,
+      summary: nullText,
+      content: nullText,
+      contextMode: nullText,
+      sourceConnectionEpoch: nullText,
+      sourceTotalChanges: nullText,
+      sourceDataVersion: nullText,
+      detailId: sql<string | null>`${codexDetailDefinitions.id}`,
+      detailName: sql<string | null>`${codexDetailDefinitions.name}`,
+      detailValue: sql<string | null>`${codexDetailValues.value}`,
+      phaseId: nullText,
+      phaseLabel: nullText,
+      phaseSummary: nullText,
+      phaseContent: nullText,
+      phaseContextMode: nullText,
+      phaseDetailId: nullText,
+      phaseDetailName: nullText,
+      phaseDetailValue: nullText,
     })
     .from(codexDetailValues)
     .innerJoin(
@@ -49,58 +110,68 @@ export async function buildCodexSnapshot(
         eq(codexDetailDefinitions.includeInContext, 1),
       ),
     )
-    .where(inArray(codexDetailValues.entryId, [entryId]));
+    .where(eq(codexDetailValues.entryId, entryId));
 
-  const details = rawDetails
-    .map((d) => ({ name: d.name, value: detailValueToPlainText(d.value) }))
-    .filter((d) => d.value.trim() !== "");
-
-  const phases = await buildPhaseSnapshots(entryId);
-
-  const snapshot: CodexSnapshot = {
-    name: entry.name,
-    aliases: parseAliases(entry.aliases),
-    summary: entry.summary ?? "",
-    contentPlain: extractPlainText(entry.content ?? ""),
-    details,
-    phases,
-  };
-
-  return {
-    snapshot,
-    projectId: entry.projectId,
-    entryType: entry.type,
-    entryName: entry.name,
-  };
-}
-
-/**
- * エントリのフェーズ別オーバーライドを PhaseSnapshot[] へ取り出す。
- * 各フェーズの summary/content/detail 上書き値（null=ベース継承）を、base と
- * 同じ規則（content は plain text 化、detail は includeInContext のみ）で収める。
- * 上書きが 1 つも無いフェーズは差分に寄与しないため除外する。
- */
-async function buildPhaseSnapshots(entryId: string): Promise<PhaseSnapshot[]> {
-  const phaseRows = await db
+  const phaseQuery = db
     .select({
-      id: codexEntryPhases.id,
-      label: codexEntryPhases.label,
-      summaryOverride: codexEntryPhases.summaryOverride,
-      contentOverride: codexEntryPhases.contentOverride,
+      kind: rowKind("phase"),
+      projectId: nullText,
+      entryType: nullText,
+      entryName: nullText,
+      aliases: nullText,
+      summary: nullText,
+      content: nullText,
+      contextMode: nullText,
+      sourceConnectionEpoch: nullText,
+      sourceTotalChanges: nullText,
+      sourceDataVersion: nullText,
+      detailId: nullText,
+      detailName: nullText,
+      detailValue: nullText,
+      phaseId: sql<string | null>`${codexEntryPhases.id}`,
+      phaseLabel: sql<string | null>`${codexEntryPhases.label}`,
+      phaseSummary: sql<string | null>`${codexEntryPhases.summaryOverride}`,
+      phaseContent: sql<string | null>`${codexEntryPhases.contentOverride}`,
+      phaseContextMode: sql<
+        string | null
+      >`${codexEntryPhases.contextModeOverride}`,
+      phaseDetailId: nullText,
+      phaseDetailName: nullText,
+      phaseDetailValue: nullText,
     })
     .from(codexEntryPhases)
     .where(eq(codexEntryPhases.entryId, entryId));
-  if (phaseRows.length === 0) return [];
 
-  const phaseIds = phaseRows.map((p) => p.id);
-  // フェーズ別 detail 上書き（base と同様 includeInContext=1 のみ）。
-  const overrideRows = await db
+  const phaseDetailQuery = db
     .select({
-      phaseId: codexPhaseDetailOverrides.phaseId,
-      name: codexDetailDefinitions.name,
-      value: codexPhaseDetailOverrides.value,
+      kind: rowKind("phase-detail"),
+      projectId: nullText,
+      entryType: nullText,
+      entryName: nullText,
+      aliases: nullText,
+      summary: nullText,
+      content: nullText,
+      contextMode: nullText,
+      sourceConnectionEpoch: nullText,
+      sourceTotalChanges: nullText,
+      sourceDataVersion: nullText,
+      detailId: nullText,
+      detailName: nullText,
+      detailValue: nullText,
+      phaseId: sql<string | null>`${codexEntryPhases.id}`,
+      phaseLabel: nullText,
+      phaseSummary: nullText,
+      phaseContent: nullText,
+      phaseContextMode: nullText,
+      phaseDetailId: sql<string | null>`${codexDetailDefinitions.id}`,
+      phaseDetailName: sql<string | null>`${codexDetailDefinitions.name}`,
+      phaseDetailValue: sql<string | null>`${codexPhaseDetailOverrides.value}`,
     })
     .from(codexPhaseDetailOverrides)
+    .innerJoin(
+      codexEntryPhases,
+      eq(codexPhaseDetailOverrides.phaseId, codexEntryPhases.id),
+    )
     .innerJoin(
       codexDetailDefinitions,
       and(
@@ -108,40 +179,132 @@ async function buildPhaseSnapshots(entryId: string): Promise<PhaseSnapshot[]> {
         eq(codexDetailDefinitions.includeInContext, 1),
       ),
     )
-    .where(inArray(codexPhaseDetailOverrides.phaseId, phaseIds));
+    .where(eq(codexEntryPhases.entryId, entryId));
 
-  const detailsByPhase = new Map<
-    string,
-    Array<{ name: string; value: string }>
-  >();
-  for (const r of overrideRows) {
-    if (r.value === null) continue; // null=継承（上書きなし）
-    const value = detailValueToPlainText(r.value);
-    if (value.trim() === "") continue;
-    const list = detailsByPhase.get(r.phaseId) ?? [];
-    list.push({ name: r.name, value });
-    detailsByPhase.set(r.phaseId, list);
+  const rows = await unionAll(
+    entryQuery,
+    detailQuery,
+    phaseQuery,
+    phaseDetailQuery,
+  );
+  const entry = rows.find((row) => row.kind === "entry");
+  if (
+    !entry ||
+    entry.projectId === null ||
+    entry.entryType === null ||
+    entry.entryName === null ||
+    entry.content === null ||
+    entry.contextMode === null ||
+    entry.sourceConnectionEpoch === null ||
+    entry.sourceTotalChanges === null ||
+    entry.sourceDataVersion === null
+  ) {
+    return null;
   }
 
-  const phases: PhaseSnapshot[] = [];
-  for (const p of phaseRows) {
-    const summary = p.summaryOverride ?? null;
+  const details = rows.flatMap((row) => {
+    if (
+      row.kind !== "detail" ||
+      row.detailId === null ||
+      row.detailName === null
+    ) {
+      return [];
+    }
+    const value = detailValueToPlainText(row.detailValue);
+    return value.trim() === "" ? [] : [{ name: row.detailName, value }];
+  });
+
+  const phaseRows = new Map<
+    string,
+    {
+      label: string;
+      summary: string | null;
+      content: string | null;
+      contextMode: string | null;
+      details: Array<{ name: string; value: string }>;
+    }
+  >();
+  for (const row of rows) {
+    if (row.kind === "phase" && row.phaseId !== null) {
+      phaseRows.set(row.phaseId, {
+        label: row.phaseLabel ?? "",
+        summary: row.phaseSummary,
+        content: row.phaseContent,
+        contextMode: row.phaseContextMode,
+        details: [],
+      });
+    }
+  }
+  for (const row of rows) {
+    if (
+      row.kind !== "phase-detail" ||
+      row.phaseId === null ||
+      row.phaseDetailId === null ||
+      row.phaseDetailName === null
+    ) {
+      continue;
+    }
+    const phase = phaseRows.get(row.phaseId);
+    if (!phase) continue;
+    const value = detailValueToPlainText(row.phaseDetailValue);
+    if (value.trim() !== "") {
+      phase.details.push({ name: row.phaseDetailName, value });
+    }
+  }
+
+  const allPhaseIds = [...phaseRows.keys()];
+  const restrictedPhaseIds = [...phaseRows]
+    .filter(
+      ([, phase]) =>
+        phase.contextMode !== null &&
+        !canIncludeResolvedCodexContext(phase.contextMode, "current-mention"),
+    )
+    .map(([phaseId]) => phaseId);
+  const phases: PhaseSnapshot[] = [...phaseRows].flatMap(([phaseId, phase]) => {
+    const summary = phase.summary ?? null;
     const contentPlain =
-      p.contentOverride !== null ? extractPlainText(p.contentOverride) : null;
-    const phaseDetails = detailsByPhase.get(p.id) ?? [];
-    // 実効的な上書きが無いフェーズは差分対象外（baseline を肥大させない）。
+      phase.content !== null ? extractPlainText(phase.content) : null;
     const hasOverride =
       (summary !== null && summary.trim() !== "") ||
       (contentPlain !== null && contentPlain.trim() !== "") ||
-      phaseDetails.length > 0;
-    if (!hasOverride) continue;
-    phases.push({
-      phaseId: p.id,
-      label: p.label,
-      summary,
-      contentPlain,
-      details: phaseDetails,
-    });
-  }
-  return phases;
+      phase.details.length > 0;
+    return hasOverride
+      ? [
+          {
+            phaseId,
+            label: phase.label,
+            summary,
+            contentPlain,
+            details: phase.details,
+          },
+        ]
+      : [];
+  });
+
+  const snapshot: CodexSnapshot = {
+    name: entry.entryName,
+    aliases: parseAliases(entry.aliases),
+    summary: entry.summary ?? "",
+    contentPlain: extractPlainText(entry.content),
+    details,
+    phases,
+    visibilityProvenanceVersion: 1,
+    allPhaseIds,
+    restrictedPhaseIds,
+  };
+
+  return {
+    snapshot,
+    projectId: entry.projectId,
+    entryType: entry.entryType,
+    entryName: entry.entryName,
+    sourceRevision: {
+      kind: "sqlite_revision_v1",
+      expected_connection_epoch: entry.sourceConnectionEpoch,
+      expected_total_changes: entry.sourceTotalChanges,
+      expected_data_version: entry.sourceDataVersion,
+    },
+    contextMode: entry.contextMode,
+    hasRestrictedPhases: restrictedPhaseIds.length > 0,
+  };
 }

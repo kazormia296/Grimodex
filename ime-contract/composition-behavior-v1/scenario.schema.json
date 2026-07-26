@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.app/ime-contract/composition-behavior-v1/scenario.schema.json",
+  "title": "Grimodex composition behavior scenario",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "scenario_id",
+    "initial",
+    "actions",
+    "statuses",
+    "snapshots",
+    "expected_learning"
+  ],
+  "properties": {
+    "contract_version": { "const": "composition-behavior-v1" },
+    "scenario_id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "initial": {
+      "type": "object",
+      "required": ["phase", "composition", "revision"],
+      "properties": {
+        "phase": { "enum": ["idle", "composing", "previewing", "selecting", "reconverting", "unicode_input"] },
+        "composition": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "actions.schema.json" }
+    },
+    "statuses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "success", "stale_revision", "stale_candidate", "invalid_action",
+          "converter_unavailable", "secure_input_violation"
+        ]
+      }
+    },
+    "snapshots": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "snapshots.schema.json" }
+    },
+    "converter_fault": { "enum": ["converter_throws"] },
+    "expected_learning": {
+      "type": "object",
+      "required": ["completed", "updated", "committed", "forgotten"],
+      "properties": {
+        "completed": { "type": "integer", "minimum": 0 },
+        "updated": { "type": "integer", "minimum": 0 },
+        "committed": { "type": "integer", "minimum": 0 },
+        "forgotten": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

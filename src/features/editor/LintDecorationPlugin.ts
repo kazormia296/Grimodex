@@ -1,13 +1,31 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
+import type { EditorState, Transaction } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 import type { Diagnostic, Severity } from "@/features/lint/types";
 import { buildOffsetMap, strOffsetToPmPos } from "./offsetMap";
+import { useCursorSettingsStore } from "./cursorSettingsStore";
 
-export const lintDecorationKey = new PluginKey<DecorationSet>("lintDecoration");
+export interface LintDecorationState {
+  /**
+   * Last diagnostics payload. Kept so the layer toggle can re-materialise
+   * decorations without waiting for the next lint debounce. Ranges are
+   * NOT mapped through edits — they may be slightly stale when the toggle
+   * flips right after typing, and the next lint run corrects them.
+   */
+  diagnostics: Diagnostic[];
+  decos: DecorationSet;
+}
+
+export const lintDecorationKey = new PluginKey<LintDecorationState>(
+  "lintDecoration",
+);
 
 const META_SET = "lintDecoration/set";
+
+/** Meta key to force decoration rebuild (dispatched when showLint toggles). */
+export const LINT_REBUILD_META = "lintDecoration/rebuild";
 
 /**
  * Produce a DecorationSet for the given diagnostics. Ranges are translated
@@ -47,6 +65,9 @@ export function buildLintDecorations(
         class: `lint-deco lint-deco--${d.severity}`,
         "data-lint-rule": d.rule_id,
         "data-lint-severity": d.severity,
+        // ホバーポップオーバー (LintHoverPopover) が DOM から直接読めるよう
+        // メッセージも載せる（診断の位置照合を不要にする）
+        "data-lint-message": d.message,
       }),
     );
   }
@@ -89,33 +110,45 @@ function severityRank(s: Severity): number {
  * decorations from the new list and the current doc.
  */
 export function setLintDiagnostics(
-  view: {
-    state: { tr: { setMeta: (k: unknown, v: unknown) => unknown } };
-    dispatch: (tr: unknown) => void;
-  },
+  view: { state: EditorState; dispatch: (tr: Transaction) => void },
   diagnostics: Diagnostic[],
 ) {
-  const tr = (
-    view.state.tr as unknown as {
-      setMeta: (k: unknown, v: unknown) => unknown;
-    }
-  ).setMeta(lintDecorationKey, { type: META_SET, diagnostics });
+  const tr = view.state.tr.setMeta(lintDecorationKey, {
+    type: META_SET,
+    diagnostics,
+  });
   view.dispatch(tr);
 }
 
 export function createLintDecorationPlugin(): Plugin {
-  return new Plugin<DecorationSet>({
+  const showLint = () => useCursorSettingsStore.getState().showLint;
+
+  return new Plugin<LintDecorationState>({
     key: lintDecorationKey,
     state: {
       init() {
-        return DecorationSet.empty;
+        return { diagnostics: [], decos: DecorationSet.empty };
       },
-      apply(tr, oldDecos, oldState, newState) {
+      apply(tr, old, oldState, newState) {
         const meta = tr.getMeta(lintDecorationKey) as
           | { type: string; diagnostics?: Diagnostic[] }
           | undefined;
         if (meta && meta.type === META_SET) {
-          return buildLintDecorations(newState.doc, meta.diagnostics ?? []);
+          const diagnostics = meta.diagnostics ?? [];
+          return {
+            diagnostics,
+            decos: showLint()
+              ? buildLintDecorations(newState.doc, diagnostics)
+              : DecorationSet.empty,
+          };
+        }
+        if (tr.getMeta(LINT_REBUILD_META) === true) {
+          return {
+            diagnostics: old.diagnostics,
+            decos: showLint()
+              ? buildLintDecorations(newState.doc, old.diagnostics)
+              : DecorationSet.empty,
+          };
         }
         if (tr.docChanged) {
           // Detect whole-doc replacements (TipTap `setContent` used when
@@ -123,19 +156,22 @@ export function createLintDecorationPlugin(): Plugin {
           // mapping in that case leaves zombie decorations visible on
           // the next document's content, which is visually wrong.
           if (isWholeDocReplacement(tr, oldState.doc.content.size)) {
-            return DecorationSet.empty;
+            return { diagnostics: [], decos: DecorationSet.empty };
           }
           // Small edits (typing, paste): map decorations through the
           // transaction so they stay put until the next lint debounce
           // refreshes them.
-          return oldDecos.map(tr.mapping, tr.doc);
+          return {
+            diagnostics: old.diagnostics,
+            decos: old.decos.map(tr.mapping, tr.doc),
+          };
         }
-        return oldDecos;
+        return old;
       },
     },
     props: {
       decorations(state) {
-        return lintDecorationKey.getState(state);
+        return lintDecorationKey.getState(state)?.decos;
       },
     },
   });

@@ -14,7 +14,7 @@ agent: Explore
 
 1. 関連ファイルを特定する
 2. データフロー・依存関係を把握する
-3. Tauri IPC境界（Rust↔TypeScript）がある場合、両側を確認する
+3. Electron IPC境界（renderer↔preload↔main↔N-API）がある場合、全層を確認する
 4. 発見事項を構造化して報告する
 
 **コードの変更は一切行わないこと。**

@@ -12,7 +12,7 @@ ChatパネルはGrimodexのコア体験を担うAI対話パネル。現在のシ
 
 | UI 表記 | 旧称（本書内の歴史的記述） | 内部名（DB / コード識別子） |
 | ------- | ------------------- | ------------------------- |
-| Spotlight / 🔦 | ピン留め / 📌 | `pinned_codex` / `chat_session_pinned_codex` / `pinSource: 'manual' \| 'chat_mention'` / `inputPinnedEntries` 等 |
+| Spotlight / 🔦 | ピン留め / 📌 | `chat_session_pinned_codex` / `pinSource: 'manual'`。`chat_mention` は旧DB互換値、`inputPinnedEntries` は現在ターンの一時言及ピル |
 | Unspotlight | ピン解除 | `unpinCodexEntry` 等 |
 | Spotlight 候補 (✨) | （新規） | `spotlightSuggestion.ts` / `computeSpotlightCandidates` |
 
@@ -153,9 +153,9 @@ Codex + Snippet のピル合計が コンテキストバーの横幅に収まら
     - 例: summary なし + detected → 1+2+1=4（採用）/ summary あり + detected → 1+0+1=2（採用）/ summary あり + always → 1+0+0=1（不採用）
   - 上限: `MAX_CANDIDATES`（既定 3）。先頭から順に候補化し、すでに pinned のエントリは除外
   - グループ化表示時もグループ内ピル展開後に同じ ✨ マークが付与される
-- **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合（CodexHighlightまたは@メンション経由）、そのエントリをセッションの `pinned_codex` に自動追加する。シーン本文での言及（summary注入）とは異なり、チャットでの言及はユーザーの明確な意図を示すため、content全文を注入する。自動ピン留めされたエントリはContext Barにピルとして表示され、不要な場合は×で除外可能
-- **チャット言及の編集による自動ピン解除**: 送信前にユーザーがメッセージを編集し、Codexエントリ名が入力欄から消えた場合、そのエントリの自動ピン留めを解除する。ただし手動ピン留め（「+」ボタンやピルプレビューのPinボタン経由）されたエントリは編集で解除されない。これを区別するため、`pinned_codex` の各エントリに `source: 'manual' | 'chat_mention'` を保持する
-- **Pin with children**: Codex の **ピン留めダイアログ（`PinEntryDialog`）** に各エントリの「子エントリも含める」チェックボックスを提供。ONにすると `chat_session_pinned_codex.withChildren = 1` で保存され、親+全直接子エントリをまとめてピン留めし、それぞれcontent全文が注入される（手動ピンはサブツリートークン予算を無視する）。フラグは `togglePinChildren` でいつでも切り替え可能。個別の×ボタンで子エントリ単位の除外も可能
+- **現在ターンのチャット言及**: CodexHighlight、名前 / alias matcher、構造化 @メンションで検出したエントリは、そのターンだけ `current-mention` 候補としてsummaryを注入する。Context Barには入力中から一時ピルを表示するが、Spotlightへ自動昇格せず、`chat_session_pinned_codex` にも永続化しない。入力から言及を消すと一時ピルも消える
+- **手動Spotlightとの分離**: content全文を継続注入するには「+」ボタンまたはピルプレビューのSpotlightを明示操作する。`suppress` は手動Spotlight / Codexスコープ / `Pin with children` の明示選択時だけ注入でき、現在ターンの言及だけでは注入しない。旧バージョンが保存した `pin_source='chat_mention'` 行は互換読取のみとし、コンテキスト計画では明示ピンとして扱わない
+- **Pin with children**: Codex の **ピン留めダイアログ（`PinEntryDialog`）** に各エントリの「子エントリも含める」チェックボックスを提供。ONにすると `chat_session_pinned_codex.withChildren = 1` で保存され、親と effective `context_mode=mentioned` / `suppress` / `always` の直接子を個別の明示Spotlightとして扱い、それぞれcontent全文・タグ・カスタムディテールを注入する。`hidden` の子は拒否する（直接子の全文はサブツリートークン予算を使わない）。フラグは `togglePinChildren` でいつでも切り替え可能。個別の×ボタンで子エントリ単位の除外も可能
 
 ### 折りたたみ
 
@@ -170,7 +170,7 @@ Codex + Snippet のピル合計が コンテキストバーの横幅に収まら
 | 自動検出ピル（シーン本文からの検出）         |   ✅ 表示   |      ❌ すべて非表示      |
 | `context_mode = always` ピル |   ✅ 表示   |        ✅ 表示        |
 | 📌 手動ピン留めピル                |   ✅ 表示   |        ✅ 表示        |
-| チャット言及による自動ピンピル            |   ✅ 表示   |        ✅ 表示        |
+| 現在ターンのチャット言及ピル             |   ✅ 表示   |        ✅ 表示        |
 | {子エントリ名} via {親名} ピル       |   ✅ 表示   |        ✅ 表示        |
 | Snippetピル                  |   ✅ 表示   |        ✅ 表示        |
 | フェーズバッジ ⏱{N}               | シーン時点の状態 |      タイムライン全体      |
@@ -311,7 +311,7 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 - `Enter` で送信、`Shift+Enter` で改行（TipTapのキーマップでハンドル）
 - 入力内容に応じて高さが自動伸縮（最大5行まで、それ以降はスクロール）
 - プレースホルダー: 「Ask about this scene...」(プロジェクトスコープ時は「Ask about this project...」)
-- **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。入力中にCodexエントリ名がハイライトされ、チャット言及による自動ピン留めの対象が視覚的に確認できる
+- **CodexHighlight対応**: エディタ本文と同じCodexHighlight Pure Decorationを適用。入力中にCodexエントリ名がハイライトされ、現在ターンのコンテキスト候補を視覚的に確認できる
 - @ボタン/ /ボタン : 後述の特殊入力のポップオーバー表示
 - 🛠️ボタン: AIのオプションをポップオーバーリスト表示。全て対応モデルのみ活性化。対応機能が一つもない場合はこのボタン自体非活性マウスカーソル🚫(コンテキストバーのAIボタンと同じ)。ポップオーバー内の各トグル状態は `ai_settings` テーブルに永続化され、セッション・再起動をまたいで保持される。
 	- **🔧 Agent mode トグル（スタンドアロン実行モード）**: Tool Use を有効化し、LLM がプロジェクトデータを能動的に検索・取得できるモードに切り替える。ON にすると送信時に `runAgentLoop` が起動し、LLM のツール呼び出しをループ実行する:
@@ -334,8 +334,8 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 ### 特殊入力
 
 **@メンション補完**: 
- - `@` 入力でCodexエントリの補完候補をポップオーバーリスト表示。選択するとエントリ名が挿入され、自動ピン留めの対象になる。`context_mode = hidden` のエントリは候補に表示しない
- - **インメモリピン（送信前の仮ピン）**: @ メンションで挿入されたエントリは、メッセージを送信する前からインメモリで一時的にピン留め扱いされる。DB の `chat_session_pinned_codex` テーブルへの書き込みは送信確定時まで行われず、コンテキストバーには「仮ピン」としてピルが即座に表示される。ユーザーが送信前に入力欄から当該メンションを消した場合は仮ピンも解除される（DB に痕跡を残さない）。送信確定時点で入力欄に残っている仮ピンのみが `source: 'chat_mention'` として永続化される
+ - `@` 入力でCodexエントリの補完候補をポップオーバーリスト表示。選択するとエントリ名を挿入し、現在ターンの `current-mention` 候補に加える。`context_mode = hidden` のエントリは候補に表示しない
+ - **インメモリ言及ピル**: @ メンションで挿入されたエントリは送信前からContext Barに一時ピルとして表示される。入力から当該メンションを消すとピルも消え、送信後もDBへ永続化しない。継続的なcontent全文注入が必要な場合だけ、別途Spotlightへ昇格する
 
 **/ コマンド**:
 - `/` を入力するとコマンド一覧を表示
@@ -504,13 +504,13 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
   - `id` 行は Agent が `get_codex_entry` / `find_related_entries` を search_codex 往復なしで打てるよう露出する
   - `別名` は別呼称で言及されたエントリの再 fetch を防ぐ
   - `タグ` は同タグの他エントリ発見動線（`search_codex_by_tags`）の起点として機能する
-- **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合、セッションの `pinned_codex` に自動追加し、content全文を注入する（シーン本文の自動検出とは区別）
+- **現在ターンのチャット言及**: ユーザー入力で検出されたCodexは `current-mention` としてsummaryを注入する。Spotlightへ自動昇格せず、content全文や子孫の自動開示は行わない
 - コンテキストバーでピン留めされたSnippetの全文
-- **子孫エントリの自動注入**: 上記でマッチした親Codexエントリの子孫エントリのsummaryを、サブツリートークン予算（エントリごとに設定、デフォルト: Layer 4予算の15%）の範囲内でBFS（幅優先）順に自動追加。depth制限はなく、予算が自然な制限として機能する（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
+- **子孫エントリの自動注入**: 上記で選ばれた親Codexから、effective `context_mode=always` の子孫summary（未記入時はcontent）をサブツリートークン予算（エントリごとに設定、デフォルト: Layer 4予算の15%）の範囲内でBFS（幅優先）順に追加する。`mentioned` の子孫はidentity参照に限り、本文やsummaryを自動開示・ロードしない
 - 予算超過時の優先順: always > mentioned > pinned content > 子孫エントリsummary（最初に切り詰め）
 - 予算配分: コンテキストの ~20%
 - **append-only 順序ポリシー (prefix cache 最適化)**: 同一セッション内で
-  Codex 注入リストに新規エントリが加わる場合 (チャット言及による自動ピン留め等)、
+  stable な Codex 注入リストに新規エントリが加わる場合（手動Spotlightやalways設定等）、
   既存エントリの順序は固定し、**新規エントリは末尾に追加** する。理由は
   プロンプトプレフィックスの不変性を保ち、LLM プロバイダ側のプレフィックスキャッシュを
   最大限活かすため。詳細は §「プレフィックスキャッシュ最適化」参照
@@ -568,8 +568,8 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
   - **gate は RAW cosine**: 選別は重み付け前の生 cosine で行う（precision 規律を scene recall と同一に保つ）。
     en は較正で gate 0.51→0.66 に引き上げ（`CHAT_RECALL_GATE_EN`）。重み付け（効いた発話の加点・素 assistant の減点）は
     **注入確定後の並べ替えにのみ**使い、ゲート突破による無関連混入を防ぐ。較正の詳細は別文書参照
-  - **「チャット言及による自動ピン留め」（`source:'chat_mention'`、コンテキストバー §参照）とは別機能**。
-    そちらは「いま入力欄に書いた Codex 名」をピンに固定する仕組みで、過去対話の意味検索 recall とは無関係
+  - **現在ターンのCodex言及（`current-mention`、コンテキストバー §参照）とは別機能**。
+    そちらは「いま入力欄に書いた Codex 名」を当該ターンの候補にする仕組みで、過去対話の意味検索 recall とは無関係
 
 - **「Codex に昇格しますか？」昇格バナー（柔→硬の橋渡し）**: エピソード recall が**同じ過去発言を閾値 3 回**
   （`CHAT_RECALL_PROMOTE_THRESHOLD`）recall したら、それは恒久的な事実（Codex = 硬い層）へ昇格する価値があるサイン。
@@ -732,18 +732,21 @@ function buildContext(
   const layer2 = sceneId ? buildStorySoFar(sceneId, allocations.layer2) : null;
   const layer3 = sceneId ? buildSceneContext(sceneId, allocations.layer3) : null;
 
-  // チャットメッセージ内のCodex言及を検出し、自動ピン留め（source: 'chat_mention'）
-  const chatMentionedIds = detectCodexMentions(userMessage);
-  const updatedPins = reconcilePins(session.pinnedCodex, chatMentionedIds);
-  // プロジェクトスコープ時: sceneId=null → 自動検出なし、ピン留めのみ
-  const layer4 = buildCodexContext(sceneId, updatedPins, allocations.layer4);
+  // 現在ターンのCodex言及は一時候補。DB pinへ昇格しない
+  const currentMentionIds = detectCodexMentions(userMessage);
+  const layer4 = buildCodexContext(
+    sceneId,
+    session.manualSpotlights,
+    currentMentionIds,
+    allocations.layer4,
+  );
   // buildCodexContext 内でフェーズ解決 + context_mode フィルタ適用:
   //   1. 各エントリのフェーズをアクティブシーン時点で解決（resolveCodexState）
   //      → summary, content, detailValues, contextMode がフェーズ適用後の値に
   //   2. プロジェクトスコープ時はタイムライン全体を俯瞰注入（最新状態+変遷リスト）
   //   3. context_mode フィルタ（フェーズ解決後の値で判定）:
   //      hidden → 除外、always → 無条件追加、mentioned → 検出時のみ、
-  //      suppress → ピンリスト存在時のみ
+  //      suppress → 手動Spotlight / Codexスコープ時のみ
   //   4. summaryが未記入の場合はcontent全文をフォールバック注入
   //   5. カスタムディテール（include_in_context=1）も注入対象に含める
   //   6. 子孫エントリはサブツリートークン予算（Layer 4予算の比率）内でBFS順に注入
@@ -858,7 +861,7 @@ OpenAI / Anthropic / OpenRouter いずれも、リクエストプロンプトの
 | L1 Project info | 高 (Settings 変更時のみ変化) | セッション全体 |
 | L2 storySoFar | 中 (新規 synopsis 追加時のみ伸長) | 数ターン〜セッション全体 |
 | L3 Current scene | 中 (アクティブシーン内では本文編集のみで変化) | シーン編集まで |
-| L4 Codex | 動 (チャット言及で自動ピン追加) | append-only ポリシーで延命 |
+| L4 Codex | stable=always/手動Spotlight、volatile=現在ターン言及 | stable/volatile分割で前半キャッシュを維持 |
 | L4 semantic recall (RAG) | 超動 (クエリ毎に変わる) | キャッシュ対象外。`cacheSegments` に入れず `volatileTail` 側に置く |
 | L5 History | 動 (毎ターン append) | append-only により延命 |
 

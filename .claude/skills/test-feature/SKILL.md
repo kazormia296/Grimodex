@@ -18,8 +18,8 @@ argument-hint: [feature-or-file-path]
 ## 手順（既存コードのカバレッジ追加）
 
 1. 対象コードを読み、正常系・異常系・エッジケース・主要分岐・エラーハンドリングを洗い出す
-2. テストは Vitest でソースと同階層に `*.test.ts(x)`。Rust は `src-tauri` 内 `#[cfg(test)]` モジュール
+2. テストは Vitest でソースと同階層に `*.test.ts(x)`。Rust は共有crateまたはN-API adapter内の `#[cfg(test)]` モジュール
 3. レイアウト/幾何の assert は happy-dom 不可（flex/grid 実寸を計算しない）→ `*.browser.test.tsx` を書く
-4. Tauri IPC 境界は型安全性も検証する
-5. `pnpm test` /（Rust）`cd src-tauri && cargo test --no-default-features` を実行し結果を報告
+4. Electron IPC 境界はallowlist・引数変換・Envelope型安全性も検証する
+5. `pnpm test` /（共有 Rust）`cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding` /（N-API）`cargo test --manifest-path electron/native/grimodex-node/Cargo.toml` を対象に応じて実行し結果を報告
 6. 失敗時はまずテストコード側の誤りを疑ってから直す

@@ -8,6 +8,14 @@ import type {
   AiProvider,
   ToolProtocolMode,
 } from "@/features/chat/types";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
+import {
+  AINOVERIST_BASE_URL,
+  AINOVERIST_MODEL_CAPS,
+  AINOVERIST_V1_BASE_URL,
+  AINOVERIST_V1_KNOWN_MODELS,
+  isAinoveristV1Model,
+} from "@/features/chat/aiNovelist";
 import type {
   AgentMessagePayload,
   AgentLLMResponse,
@@ -28,48 +36,378 @@ interface ChatMessage {
   content: string;
 }
 
-function chatEndpoint(provider: AiProvider): string {
-  switch (provider) {
-    case "anthropic":
-      return "/api/anthropic/messages";
-    case "openai":
-      return "/api/openai/chat/completions";
-    case "openrouter":
-      return "/api/openrouter/chat/completions";
-    case "ollama":
-      return "/api/ollama/v1/chat/completions";
-    case "openai-compatible":
-    case "sakana":
-    case "ai-novelist":
-    case "cli":
-      throw new Error(
-        `Provider "${provider}" is not supported in browser mode (Tauri only)`,
-      );
+export type BrowserAiOperation = "chat" | "inline";
+
+export type BrowserAiAddressSpace = "local" | "loopback";
+
+export type BrowserAiErrorCode =
+  | "local-network-permission"
+  | "cors"
+  | "server-unavailable"
+  | "endpoint-format"
+  | "models-unsupported"
+  | "http"
+  | "network";
+
+export class BrowserAiConnectionError extends Error {
+  readonly code: BrowserAiErrorCode;
+  readonly status?: number;
+  readonly resource: BrowserAiEndpointResource;
+  readonly url: string;
+
+  constructor(
+    code: BrowserAiErrorCode,
+    message: string,
+    options: {
+      resource?: BrowserAiEndpointResource;
+      url?: string;
+      status?: number;
+      cause?: unknown;
+    } = {},
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "BrowserAiConnectionError";
+    this.code = code;
+    this.resource = options.resource ?? "chat";
+    this.url = options.url ?? "";
+    this.status = options.status;
   }
 }
 
-function modelsEndpoint(provider: AiProvider): string | null {
+export interface BrowserAiConnectionOptions {
+  ollamaEndpoint?: string | null;
+  /** OpenAI-compatible only. This is the user-selected endpoint base URL. */
+  baseUrl?: string | null;
+  apiVariant?: string | null;
+}
+
+export interface BrowserAiRequest {
+  operation: BrowserAiOperation;
+  provider: AiProvider;
+  model: string;
+  endpointId?: string | null;
+  apiKey?: string;
+  messages: ChatMessage[];
+  maxOutputTokens?: number | null;
+  ollamaEndpoint?: string | null;
+  baseUrl?: string | null;
+  apiVariant?: string | null;
+  toolProtocolMode?: ToolProtocolMode;
+}
+
+export type BrowserAiCompletion = AgentLLMResponse;
+
+export interface BrowserAiStreamDone {
+  stopReason: AgentLLMResponse["stopReason"] | "stopped";
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+export interface BrowserAiStreamSink {
+  text(delta: string, blockType?: "text" | "thinking"): void;
+  done(payload: BrowserAiStreamDone): void;
+}
+
+export interface BrowserAiTransport {
+  complete(request: BrowserAiRequest): Promise<BrowserAiCompletion>;
+  /**
+   * Optional structured agent surface. Hosted runtimes use this to keep the
+   * Editor's normal agent loop on the same scoped transport instead of
+   * bypassing it with a direct provider request.
+   */
+  completeAgent?(
+    request: BrowserAiRequest,
+    messages: AgentMessagePayload[],
+    tools: AgentToolDefinition[],
+  ): Promise<BrowserAiCompletion>;
+  stream?(request: BrowserAiRequest, sink: BrowserAiStreamSink): Promise<void>;
+  listModels?(request: BrowserAiRequest): Promise<AiModel[]>;
+  abort?(operation: BrowserAiOperation): void;
+  dispose?(): void;
+}
+
+const isViteDevelopment = import.meta.env.DEV;
+
+export type BrowserAiEndpointResource = "chat" | "models";
+
+type BrowserAiFetchInit = RequestInit & {
+  /** Local Network Access is not in the current lib.dom typings yet. */
+  targetAddressSpace?: BrowserAiAddressSpace;
+};
+
+function parseHostname(value: string): string | null {
+  try {
+    const base =
+      typeof window === "undefined"
+        ? "http://browser.invalid"
+        : window.location.href;
+    const parsed = new URL(value, base);
+    // Relative Vite proxy paths must remain same-origin and should not request
+    // a local-network permission prompt.
+    if (!/^[a-z][a-z\d+.-]*:/iu.test(value.trim())) return null;
+    return parsed.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function parseIpv4(hostname: string): number[] | null {
+  const parts = hostname.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d+$/u.test(part))) {
+    return null;
+  }
+  const numbers = parts.map(Number);
+  return numbers.every((part) => part >= 0 && part <= 255) ? numbers : null;
+}
+
+function isLocalIpv6Literal(hostname: string): boolean {
+  if (!hostname.includes(":")) return false;
+  const firstHextet = hostname.split(":", 1)[0];
+  if (!firstHextet || !/^[\da-f]{1,4}$/u.test(firstHextet)) return false;
+  const first = Number.parseInt(firstHextet, 16);
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+}
+
+/**
+ * Classifies an absolute AI endpoint for the browser Local Network Access
+ * request hint. Public endpoints intentionally return undefined.
+ */
+export function classifyBrowserAiAddressSpace(
+  value: string,
+): BrowserAiAddressSpace | undefined {
+  const hostname = parseHostname(value);
+  if (!hostname) return undefined;
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return "loopback";
+  }
+  if (hostname === "::1") return "loopback";
+
+  const ipv4 = parseIpv4(hostname);
+  if (ipv4) {
+    const [first, second] = ipv4;
+    if (first === 127) return "loopback";
+    if (
+      first === 10 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 169 && second === 254)
+    ) {
+      return "local";
+    }
+    return undefined;
+  }
+
+  if (hostname.endsWith(".local") || isLocalIpv6Literal(hostname)) {
+    return "local";
+  }
+  return undefined;
+}
+
+export function isBrowserLocalEndpoint(value?: string | null): boolean {
+  return classifyBrowserAiAddressSpace(value?.trim() ?? "") !== undefined;
+}
+
+function createFetchFailure(
+  error: unknown,
+  url: string,
+  resource: BrowserAiEndpointResource,
+  addressSpace: BrowserAiAddressSpace | undefined,
+): BrowserAiConnectionError {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const lowerMessage = rawMessage.toLowerCase();
+  const code: BrowserAiErrorCode =
+    lowerMessage.includes("refused") ||
+    lowerMessage.includes("connection reset") ||
+    lowerMessage.includes("err_connection")
+      ? "server-unavailable"
+      : lowerMessage.includes("cors") || lowerMessage.includes("cross-origin")
+        ? "cors"
+        : addressSpace
+          ? "local-network-permission"
+          : "network";
+  const message =
+    code === "server-unavailable"
+      ? "AIサーバーが起動していないか、接続先が応答していません。サーバーの起動状態とURLを確認してください。"
+      : code === "cors"
+        ? "ブラウザーがCORSでAIエンドポイントへの接続を拒否しました。サーバーのOrigin許可を確認してください。"
+        : addressSpace
+          ? "ローカルネットワークへのアクセスが拒否されたか、AIサーバーが起動していません。ブラウザーの許可とサーバーのCORS設定を確認してください。"
+          : rawMessage || "AIエンドポイントへ接続できませんでした";
+  return new BrowserAiConnectionError(code, message, {
+    resource,
+    url,
+    cause: error,
+  });
+}
+
+export async function browserAiFetch(
+  url: string,
+  init: RequestInit = {},
+  resource: BrowserAiEndpointResource = "chat",
+): Promise<Response> {
+  const addressSpace = classifyBrowserAiAddressSpace(url);
+  const requestInit: BrowserAiFetchInit = {
+    ...init,
+    ...(addressSpace ? { targetAddressSpace: addressSpace } : {}),
+  };
+  try {
+    return await fetch(url, requestInit as RequestInit);
+  } catch (error) {
+    throw createFetchFailure(error, url, resource, addressSpace);
+  }
+}
+
+function createHttpFailure(
+  prefix: string,
+  response: Response,
+  message: string,
+  url: string,
+  resource: BrowserAiEndpointResource,
+): BrowserAiConnectionError {
+  let code: BrowserAiErrorCode = "http";
+  if (response.status === 404) {
+    code = resource === "models" ? "models-unsupported" : "endpoint-format";
+  } else if (response.status === 502 || response.status === 503) {
+    code = "server-unavailable";
+  }
+  return new BrowserAiConnectionError(
+    code,
+    `${prefix} (${response.status}): ${message}`,
+    { resource, url, status: response.status },
+  );
+}
+
+function requireBrowserDirectProvider(provider: AiProvider): void {
+  if (
+    !(BROWSER_DIRECT_AI_PROVIDERS as readonly AiProvider[]).includes(provider)
+  ) {
+    throw new Error(`Provider "${provider}" is not supported in browser mode`);
+  }
+}
+
+const BROWSER_PROVIDERS_REQUIRING_KEY = new Set<AiProvider>([
+  "openrouter",
+  "openai",
+  "anthropic",
+  "sakana",
+  "ai-novelist",
+]);
+
+export function browserProviderRequiresApiKey(provider: AiProvider): boolean {
+  requireBrowserDirectProvider(provider);
+  return BROWSER_PROVIDERS_REQUIRING_KEY.has(provider);
+}
+
+function normalizeBaseUrl(
+  value: string | null | undefined,
+  label: string,
+): string {
+  const normalized = value?.trim().replace(/\/+$/, "") ?? "";
+  if (!normalized) {
+    throw new Error(`${label} base URL is not configured`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error(`${label} base URL is invalid`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${label} base URL must use http or https`);
+  }
+  return normalized;
+}
+
+export function resolveBrowserAiEndpoint(
+  provider: AiProvider,
+  resource: BrowserAiEndpointResource,
+  options: BrowserAiConnectionOptions & { development?: boolean } = {},
+): string | null {
+  requireBrowserDirectProvider(provider);
+  const development = options.development ?? isViteDevelopment;
+  if (resource === "models" && provider === "anthropic") return null;
+
+  const suffix = resource === "chat" ? "chat/completions" : "models";
   switch (provider) {
     case "anthropic":
-      return null; // static list
+      return development
+        ? "/api/anthropic/messages"
+        : "https://api.anthropic.com/v1/messages";
     case "openai":
-      return "/api/openai/models";
+      return development
+        ? `/api/openai/${suffix}`
+        : `https://api.openai.com/v1/${suffix}`;
     case "openrouter":
-      return "/api/openrouter/models";
-    case "ollama":
-      return "/api/ollama/api/tags";
-    case "openai-compatible":
+      return `https://openrouter.ai/api/v1/${suffix}`;
+    case "ollama": {
+      const normalizedOllamaEndpoint = normalizeOllamaEndpoint(
+        options.ollamaEndpoint,
+      );
+      const useDevelopmentProxy =
+        development && normalizedOllamaEndpoint === "http://localhost:11434";
+      if (resource === "models") {
+        return useDevelopmentProxy
+          ? "/api/ollama/api/tags"
+          : `${normalizedOllamaEndpoint}/api/tags`;
+      }
+      return useDevelopmentProxy
+        ? "/api/ollama/v1/chat/completions"
+        : `${normalizedOllamaEndpoint}/v1/chat/completions`;
+    }
+    case "openai-compatible": {
+      const baseUrl = normalizeBaseUrl(
+        options.baseUrl,
+        "OpenAI-compatible endpoint",
+      );
+      return `${baseUrl}/${suffix}`;
+    }
     case "sakana":
-    case "ai-novelist":
-    case "cli":
-      return null;
+      return development
+        ? `/api/sakana/${suffix}`
+        : `https://api.sakana.ai/v1/${suffix}`;
+    case "ai-novelist": {
+      if (resource === "models") {
+        return `${AINOVERIST_V1_BASE_URL}/models`;
+      }
+      const useV1 = options.apiVariant === "v1";
+      return useV1
+        ? `${AINOVERIST_V1_BASE_URL}/chat/completions`
+        : AINOVERIST_BASE_URL;
+    }
   }
+  throw new Error(`Provider "${provider}" is not supported in browser mode`);
+}
+
+export function normalizeOllamaEndpoint(endpoint?: string | null): string {
+  const base = endpoint?.trim() || "http://localhost:11434";
+  return base.replace(/\/+$/, "");
+}
+
+function chatEndpoint(
+  provider: AiProvider,
+  options: BrowserAiConnectionOptions = {},
+): string {
+  const endpoint = resolveBrowserAiEndpoint(provider, "chat", {
+    ...options,
+  });
+  if (!endpoint) {
+    throw new Error(`No browser chat endpoint is available for ${provider}`);
+  }
+  return endpoint;
+}
+
+function modelsEndpoint(
+  provider: AiProvider,
+  options: BrowserAiConnectionOptions = {},
+): string | null {
+  return resolveBrowserAiEndpoint(provider, "models", options);
 }
 
 function buildHeaders(
   provider: AiProvider,
   apiKey: string,
 ): Record<string, string> {
+  requireBrowserDirectProvider(provider);
   const headers: Record<string, string> = {
     "content-type": "application/json",
   };
@@ -78,14 +416,22 @@ function buildHeaders(
     case "anthropic":
       headers["x-api-key"] = apiKey;
       headers["anthropic-version"] = "2023-06-01";
+      // Anthropic requires an explicit opt-in header for credentialed browser
+      // requests. The API key remains only in this page's runtime memory.
+      headers["anthropic-dangerous-direct-browser-access"] = "true";
+      break;
+    case "openai":
+    case "sakana":
+    case "ai-novelist":
+      headers["Authorization"] = `Bearer ${apiKey}`;
       break;
     case "openrouter":
       headers["Authorization"] = `Bearer ${apiKey}`;
       headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
       headers["X-Title"] = "Grimodex";
       break;
-    case "openai":
-      headers["Authorization"] = `Bearer ${apiKey}`;
+    case "openai-compatible":
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
       break;
     case "ollama":
       // No auth
@@ -112,11 +458,70 @@ export async function sendChat(
   model: string,
   apiKey: string,
   messages: ChatMessage[],
+  options: BrowserAiConnectionOptions = {},
 ): Promise<string> {
-  const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider);
+  const result = await completeBrowserAiRequest({
+    operation: "chat",
+    provider,
+    model,
+    apiKey,
+    messages,
+    ...options,
+  });
+  return result.blocks
+    .filter(
+      (block): block is Extract<ResponseBlock, { type: "text" }> =>
+        block.type === "text",
+    )
+    .map((block) => block.content)
+    .join("\n");
+}
 
-  let body: Record<string, unknown>;
+function buildChatBody(request: BrowserAiRequest): Record<string, unknown> {
+  const { provider, model, messages } = request;
+  const maxTokens = request.maxOutputTokens ?? 4096;
+
+  if (isAiNovelistLegacy(request)) {
+    const legacyMaxTokens =
+      request.maxOutputTokens ??
+      AINOVERIST_MODEL_CAPS[model]?.maxOutputTokens ??
+      4096;
+    if (request.operation === "inline") {
+      return {
+        text: messages
+          .map(({ role, content }) => `[${role}]\n${content}`)
+          .join("\n\n"),
+        model,
+        length: legacyMaxTokens,
+      };
+    }
+
+    const systemMessages: string[] = [];
+    const chatMessages: ChatMessage[] = [];
+    for (const message of messages) {
+      if (message.role === "system") {
+        systemMessages.push(message.content);
+        continue;
+      }
+      const content =
+        systemMessages.length > 0 && chatMessages.length === 0
+          ? `${systemMessages.join("\n\n")}\n\n${message.content}`
+          : message.content;
+      if (chatMessages.length === 0) systemMessages.length = 0;
+      chatMessages.push({ role: message.role, content });
+    }
+    if (systemMessages.length > 0) {
+      chatMessages.push({
+        role: "user",
+        content: systemMessages.join("\n\n"),
+      });
+    }
+    return {
+      messages: chatMessages,
+      model,
+      max_tokens: legacyMaxTokens,
+    };
+  }
 
   if (provider === "anthropic") {
     const systemContent = messages
@@ -128,41 +533,388 @@ export async function sendChat(
       .filter((m) => m.role !== "system")
       .map((m) => ({ role: m.role, content: m.content }));
 
-    body = { model, max_tokens: 4096, messages: chatMessages };
+    const body: Record<string, unknown> = {
+      model,
+      max_tokens: maxTokens,
+      messages: chatMessages,
+    };
     if (systemContent) {
       body.system = systemContent;
     }
-  } else {
-    const chatMessages = messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
-    body = { model, max_tokens: 4096, messages: chatMessages };
+    return body;
   }
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const chatMessages = messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+  return { model, max_tokens: maxTokens, messages: chatMessages };
+}
+
+function isAiNovelistLegacy(request: {
+  provider: AiProvider;
+  model: string;
+  apiVariant?: string | null;
+}): boolean {
+  return (
+    request.provider === "ai-novelist" &&
+    !isAinoveristV1Model(request.model, request.apiVariant)
+  );
+}
+
+function parseAiNovelistLegacyResponse(
+  result: Record<string, unknown>,
+): BrowserAiCompletion {
+  const data = result.data;
+  let content = "";
+  let usage: Record<string, unknown> = {};
+  let stopReason: AgentLLMResponse["stopReason"] = "end_turn";
+  if (Array.isArray(data)) {
+    content = typeof data[0] === "string" ? data[0] : "";
+  } else if (typeof data === "string") {
+    content = data;
+  } else if (data && typeof data === "object") {
+    const object = data as Record<string, unknown>;
+    const choices = Array.isArray(object.choices)
+      ? (object.choices as Array<Record<string, unknown>>)
+      : [];
+    const first = choices[0] ?? {};
+    const choiceText = typeof first.text === "string" ? first.text : "";
+    content =
+      choiceText ||
+      (typeof object["0"] === "string" ? (object["0"] as string) : "");
+    stopReason = normalizeStopReason(first.finish_reason);
+    usage =
+      object.usage && typeof object.usage === "object"
+        ? (object.usage as Record<string, unknown>)
+        : {};
+  }
+  if (
+    !Object.keys(usage).length &&
+    result.usage &&
+    typeof result.usage === "object"
+  ) {
+    usage = result.usage as Record<string, unknown>;
+  }
+  content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "").trim();
+  const input = usage.input_tokens ?? usage.prompt_tokens;
+  const output = usage.output_tokens ?? usage.completion_tokens;
+  return {
+    blocks: content ? [{ type: "text", content }] : [],
+    stopReason,
+    inputTokens: typeof input === "number" && input >= 0 ? input : undefined,
+    outputTokens:
+      typeof output === "number" && output >= 0 ? output : undefined,
+  };
+}
+
+function requireBrowserAiRequest(request: BrowserAiRequest): void {
+  requireBrowserDirectProvider(request.provider);
+  if (!request.model.trim()) {
+    throw new Error("AIモデルが設定されていません");
+  }
+  if (
+    browserProviderRequiresApiKey(request.provider) &&
+    !request.apiKey?.trim()
+  ) {
+    throw new Error(
+      `AIは未接続です。APIキーを設定してください: ${request.provider}`,
+    );
+  }
+}
+
+function normalizeStopReason(value: unknown): AgentLLMResponse["stopReason"] {
+  if (value === "tool_use" || value === "tool_calls") return "tool_use";
+  if (value === "max_tokens" || value === "length") return "max_tokens";
+  return "end_turn";
+}
+
+export async function completeBrowserAiRequest(
+  request: BrowserAiRequest,
+  signal?: AbortSignal,
+): Promise<BrowserAiCompletion> {
+  requireBrowserAiRequest(request);
+  const headers = buildHeaders(request.provider, request.apiKey ?? "");
+  const url = chatEndpoint(request.provider, request);
+  const body = buildChatBody(request);
+
+  const resp = await browserAiFetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    },
+    "chat",
+  );
 
   if (!resp.ok) {
     const errMsg = await parseErrorResponse(resp);
-    throw new Error(`AI request failed (${resp.status}): ${errMsg}`);
+    throw createHttpFailure("AI request failed", resp, errMsg, url, "chat");
   }
 
-  const result = await resp.json();
+  const result = (await resp.json()) as Record<string, unknown>;
 
-  if (provider === "anthropic") {
-    return result?.content?.[0]?.text ?? "";
+  if (isAiNovelistLegacy(request)) {
+    return parseAiNovelistLegacyResponse(result);
   }
-  return result?.choices?.[0]?.message?.content ?? "";
+
+  if (request.provider === "anthropic") {
+    const blocks: ResponseBlock[] = [];
+    for (const rawBlock of (result.content as unknown[]) ?? []) {
+      const block = rawBlock as Record<string, unknown>;
+      if (
+        (block.type === "text" || block.type === undefined) &&
+        typeof block.text === "string"
+      ) {
+        blocks.push({ type: "text", content: block.text });
+      } else if (
+        block.type === "thinking" &&
+        typeof block.thinking === "string"
+      ) {
+        blocks.push({ type: "thinking", content: block.thinking });
+      }
+    }
+    const usage = (result.usage as Record<string, unknown> | undefined) ?? {};
+    return {
+      blocks,
+      stopReason: normalizeStopReason(result.stop_reason),
+      inputTokens:
+        typeof usage.input_tokens === "number" ? usage.input_tokens : undefined,
+      outputTokens:
+        typeof usage.output_tokens === "number"
+          ? usage.output_tokens
+          : undefined,
+    };
+  }
+
+  const choices = (result.choices as Array<Record<string, unknown>>) ?? [];
+  const choice = choices[0] ?? {};
+  const message = (choice.message as Record<string, unknown> | undefined) ?? {};
+  const content = typeof message.content === "string" ? message.content : "";
+  const usage = (result.usage as Record<string, unknown> | undefined) ?? {};
+  return {
+    blocks: content ? [{ type: "text", content }] : [],
+    stopReason: normalizeStopReason(choice.finish_reason),
+    inputTokens:
+      typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : undefined,
+    outputTokens:
+      typeof usage.completion_tokens === "number"
+        ? usage.completion_tokens
+        : undefined,
+  };
+}
+
+async function readSse(
+  response: Response,
+  onData: (data: string) => void,
+): Promise<void> {
+  if (!response.body) {
+    throw new Error("AI streaming response did not include a body");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const consumeEvent = (event: string): void => {
+    const data = event
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (data) onData(data);
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    // Normalize after concatenating so a CRLF pair split across network
+    // chunks still produces the SSE blank-line boundary.
+    buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      consumeEvent(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) consumeEvent(buffer);
+}
+
+async function streamBrowserAiRequest(
+  request: BrowserAiRequest,
+  sink: BrowserAiStreamSink,
+  signal: AbortSignal,
+): Promise<void> {
+  requireBrowserAiRequest(request);
+  if (isAiNovelistLegacy(request)) {
+    const response = await completeBrowserAiRequest(request, signal);
+    for (const block of response.blocks) {
+      if (block.type === "text" || block.type === "thinking") {
+        sink.text(block.content, block.type);
+      }
+    }
+    sink.done({
+      stopReason: response.stopReason,
+      inputTokens: response.inputTokens,
+      outputTokens: response.outputTokens,
+    });
+    return;
+  }
+  const headers = buildHeaders(request.provider, request.apiKey ?? "");
+  const body: Record<string, unknown> = {
+    ...buildChatBody(request),
+    stream: true,
+  };
+  if (request.provider !== "anthropic" && request.provider !== "ollama") {
+    body.stream_options = { include_usage: true };
+  }
+
+  const url = chatEndpoint(request.provider, request);
+  const response = await browserAiFetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    },
+    "chat",
+  );
+  if (!response.ok) {
+    const message = await parseErrorResponse(response);
+    throw createHttpFailure(
+      "AI request failed",
+      response,
+      message,
+      url,
+      "chat",
+    );
+  }
+
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let stopReason: BrowserAiStreamDone["stopReason"] = "end_turn";
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    sink.done({ stopReason, inputTokens, outputTokens });
+  };
+
+  await readSse(response, (data) => {
+    if (data === "[DONE]") {
+      finish();
+      return;
+    }
+
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    if (request.provider === "anthropic") {
+      const eventType = event.type;
+      if (eventType === "message_start") {
+        const message =
+          (event.message as Record<string, unknown> | undefined) ?? {};
+        const usage =
+          (message.usage as Record<string, unknown> | undefined) ?? {};
+        if (typeof usage.input_tokens === "number") {
+          inputTokens = usage.input_tokens;
+        }
+      } else if (eventType === "content_block_delta") {
+        const delta =
+          (event.delta as Record<string, unknown> | undefined) ?? {};
+        if (delta.type === "text_delta" && typeof delta.text === "string") {
+          sink.text(delta.text, "text");
+        } else if (
+          delta.type === "thinking_delta" &&
+          typeof delta.thinking === "string"
+        ) {
+          sink.text(delta.thinking, "thinking");
+        }
+      } else if (eventType === "message_delta") {
+        const delta =
+          (event.delta as Record<string, unknown> | undefined) ?? {};
+        const usage =
+          (event.usage as Record<string, unknown> | undefined) ?? {};
+        stopReason = normalizeStopReason(delta.stop_reason);
+        if (typeof usage.output_tokens === "number") {
+          outputTokens = usage.output_tokens;
+        }
+      } else if (eventType === "message_stop") {
+        finish();
+      }
+      return;
+    }
+
+    const choices = (event.choices as Array<Record<string, unknown>>) ?? [];
+    const choice = choices[0];
+    if (choice) {
+      const delta = (choice.delta as Record<string, unknown> | undefined) ?? {};
+      if (typeof delta.content === "string" && delta.content) {
+        sink.text(delta.content, "text");
+      }
+      const thinking = delta.reasoning_content ?? delta.reasoning;
+      if (typeof thinking === "string" && thinking) {
+        sink.text(thinking, "thinking");
+      }
+      if (choice.finish_reason != null) {
+        stopReason = normalizeStopReason(choice.finish_reason);
+      }
+    }
+    const usage = (event.usage as Record<string, unknown> | undefined) ?? {};
+    if (typeof usage.prompt_tokens === "number") {
+      inputTokens = usage.prompt_tokens;
+    }
+    if (typeof usage.completion_tokens === "number") {
+      outputTokens = usage.completion_tokens;
+    }
+  });
+  finish();
+}
+
+export function createBrowserAiTransport(): BrowserAiTransport {
+  const controllers = new Map<BrowserAiOperation, AbortController>();
+
+  return {
+    complete: (request) => completeBrowserAiRequest(request),
+    stream: async (request, sink) => {
+      controllers.get(request.operation)?.abort();
+      const controller = new AbortController();
+      controllers.set(request.operation, controller);
+      try {
+        await streamBrowserAiRequest(request, sink, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted) {
+          sink.done({ stopReason: "stopped" });
+          return;
+        }
+        throw error;
+      } finally {
+        if (controllers.get(request.operation) === controller) {
+          controllers.delete(request.operation);
+        }
+      }
+    },
+    abort: (operation) => {
+      controllers.get(operation)?.abort();
+    },
+  };
 }
 
 export async function fetchModels(
   provider: AiProvider,
   apiKey: string,
+  options: BrowserAiConnectionOptions = {},
 ): Promise<AiModel[]> {
+  requireBrowserDirectProvider(provider);
   // Anthropic: static list
   if (provider === "anthropic") {
     return [
@@ -175,23 +927,62 @@ export async function fetchModels(
     ];
   }
 
-  const url = modelsEndpoint(provider);
+  const legacyAiNovelistModels: AiModel[] =
+    provider === "ai-novelist"
+      ? Object.keys(AINOVERIST_MODEL_CAPS).map((id) => ({
+          id,
+          name:
+            id === "supertrin"
+              ? "supertrin (legacy)"
+              : id === "damsel"
+                ? "damsel (legacy)"
+                : id,
+          apiVariant: "legacy" as const,
+        }))
+      : [];
+
+  const url = modelsEndpoint(provider, options);
   if (!url) return [];
 
-  const headers: Record<string, string> = {};
-  if (provider === "openrouter") {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-    headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
-    headers["X-Title"] = "Grimodex";
-  } else if (provider === "openai") {
-    headers["Authorization"] = `Bearer ${apiKey}`;
+  const headers = buildHeaders(provider, apiKey);
+  delete headers["content-type"];
+
+  let resp: Response;
+  try {
+    resp = await browserAiFetch(url, { headers }, "models");
+  } catch (error) {
+    if (provider === "ai-novelist") {
+      return [
+        ...legacyAiNovelistModels,
+        ...AINOVERIST_V1_KNOWN_MODELS.map((id) => ({
+          id,
+          name: id === "spiko_ultra" ? "Spiko Ultra" : id,
+          apiVariant: "v1" as const,
+        })),
+      ];
+    }
+    throw error;
   }
 
-  const resp = await fetch(url, { headers });
-
   if (!resp.ok) {
+    if (provider === "ai-novelist") {
+      return [
+        ...legacyAiNovelistModels,
+        ...AINOVERIST_V1_KNOWN_MODELS.map((id) => ({
+          id,
+          name: id === "spiko_ultra" ? "Spiko Ultra" : id,
+          apiVariant: "v1" as const,
+        })),
+      ];
+    }
     const errMsg = await parseErrorResponse(resp);
-    throw new Error(`Failed to fetch models (${resp.status}): ${errMsg}`);
+    throw createHttpFailure(
+      "Failed to fetch models",
+      resp,
+      errMsg,
+      url,
+      "models",
+    );
   }
 
   const body = await resp.json();
@@ -204,7 +995,6 @@ export async function fetchModels(
     }));
   }
 
-  // OpenAI / OpenRouter
   const data = body?.data ?? [];
   if (provider === "openrouter") {
     return data.map(
@@ -213,25 +1003,34 @@ export async function fetchModels(
         name?: string;
         context_length?: number;
         top_provider?: { max_completion_tokens?: number };
-        supported_parameters?: unknown[];
+        supported_parameters?: string[];
         pricing?: { prompt?: string; completion?: string };
       }) => ({
         id: m.id,
         name: m.name ?? m.id,
         contextLength: m.context_length,
         maxCompletionTokens: m.top_provider?.max_completion_tokens,
-        supportedParameters: (m.supported_parameters ?? []).filter(
-          (p): p is string => typeof p === "string",
-        ),
+        supportedParameters: m.supported_parameters,
         pricingPrompt: m.pricing?.prompt,
         pricingCompletion: m.pricing?.completion,
       }),
     );
   }
-  return data.map((m: { id: string; name?: string }) => ({
+  const openAiModels = data.map((m: { id: string; name?: string }) => ({
     id: m.id,
     name: m.name ?? m.id,
+    ...(provider === "ai-novelist" ? { apiVariant: "v1" as const } : undefined),
   }));
+  if (provider === "ai-novelist") {
+    const byId = new Map<string, AiModel>();
+    for (const model of [...legacyAiNovelistModels, ...openAiModels]) {
+      byId.set(model.id, model);
+    }
+    return [...byId.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+  }
+  return openAiModels;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,9 +1258,19 @@ export async function sendChatWithTools(
   messages: AgentMessagePayload[],
   tools: AgentToolDefinition[],
   toolProtocolMode: ToolProtocolMode = "auto",
+  options: BrowserAiConnectionOptions = {},
 ): Promise<AgentLLMResponse> {
+  if (
+    isAiNovelistLegacy({
+      provider,
+      model,
+      apiVariant: options.apiVariant,
+    })
+  ) {
+    throw new Error("AI のべりすと (legacy) は Tool Use に対応していません");
+  }
   const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider);
+  const url = chatEndpoint(provider, options);
 
   // Rust parity: provider ゲート + auto/native/hermes を一度だけ解決し、
   // 送信側 (tools[] 省略 + <tools> XML) と受信側パースの両方で使う。
@@ -516,15 +1325,19 @@ export async function sendChatWithTools(
     };
   }
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const resp = await browserAiFetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    },
+    "chat",
+  );
 
   if (!resp.ok) {
     const errMsg = await parseErrorResponse(resp);
-    throw new Error(`Agent request failed (${resp.status}): ${errMsg}`);
+    throw createHttpFailure("Agent request failed", resp, errMsg, url, "chat");
   }
 
   const result = await resp.json();
@@ -543,13 +1356,25 @@ export async function testConnection(
   provider: AiProvider,
   model: string,
   apiKey: string,
+  options: BrowserAiConnectionOptions = {},
 ): Promise<string> {
   const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider);
+  const request = {
+    provider,
+    model,
+    apiVariant: options.apiVariant,
+  };
+  const url = chatEndpoint(provider, options);
 
   let body: Record<string, unknown>;
 
-  if (provider === "anthropic") {
+  if (isAiNovelistLegacy(request)) {
+    body = {
+      text: "Reply with exactly: Connection OK",
+      model,
+      length: 32,
+    };
+  } else if (provider === "anthropic") {
     body = {
       model,
       max_tokens: 32,
@@ -567,19 +1392,41 @@ export async function testConnection(
     };
   }
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const resp = await browserAiFetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    },
+    "chat",
+  );
 
   if (!resp.ok) {
     const errMsg = await parseErrorResponse(resp);
-    throw new Error(`Connection test failed (${resp.status}): ${errMsg}`);
+    throw createHttpFailure(
+      "Connection test failed",
+      resp,
+      errMsg,
+      url,
+      "chat",
+    );
   }
 
   const result = await resp.json();
 
+  if (isAiNovelistLegacy(request)) {
+    const parsed = parseAiNovelistLegacyResponse(
+      result as Record<string, unknown>,
+    );
+    return parsed.blocks
+      .filter(
+        (block): block is Extract<ResponseBlock, { type: "text" }> =>
+          block.type === "text",
+      )
+      .map((block) => block.content)
+      .join("\n");
+  }
   if (provider === "anthropic") {
     return result?.content?.[0]?.text ?? "Connection successful";
   }

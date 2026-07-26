@@ -1,4 +1,11 @@
-import { useEffect, useCallback, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useCallback,
+  useRef,
+  useState,
+} from "react";
 import { Toaster, toast } from "sonner";
 
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
@@ -7,28 +14,30 @@ import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { ProjectMenu } from "@/features/project/ProjectMenu";
 import { WorkspaceTrustDialog } from "@/features/workspace/WorkspaceTrustDialog";
 import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
+import { ReleaseNotesDialog } from "@/features/release-notes/ReleaseNotesDialog";
+import { useReleaseNotesGate } from "@/features/release-notes/useReleaseNotesGate";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
-import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
-import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
-import {
-  TransferDialog,
-  type TransferTab,
-} from "@/features/transfer/TransferDialog";
+import type { TransferTab } from "@/features/transfer/TransferDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
-import { useLayoutStore } from "@/features/layout/layoutStore";
-import { LayoutShell } from "@/features/layout/LayoutShell";
 import {
-  CommandCenterBar,
-  useBarStore,
-  useResultsPanelStore,
-} from "@/features/commandCenter";
+  useLayoutStore,
+  type LayoutViewportBaseline,
+} from "@/features/layout/layoutStore";
+import { LayoutShell } from "@/features/layout/LayoutShell";
+import { cloneLayoutState } from "@/features/layout/layoutStateUtils";
+import { useResultsPanelStore } from "@/features/commandCenter";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
+import { PostEffectProgressToast } from "@/features/post-effect/PostEffectProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { ModelDownloadToast } from "@/features/semantic-search/ModelDownloadToast";
 import { useModelDownloadListener } from "@/features/semantic-search/useModelDownloadListener";
+import { UpdateToast } from "@/features/updater/UpdateToast";
+import { useUpdateChecker } from "@/features/updater/useUpdateChecker";
+import { UpdateDot } from "@/features/updater/UpdateDot";
+import { useUpdatePending } from "@/features/updater/updaterStore";
 import { ensureSemanticIndexesOnOpen } from "@/features/semantic-search/autoIndex";
 import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
@@ -42,7 +51,7 @@ import {
 } from "@/features/editor/inlineAi/pendingGuard";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
-import { ExportDialog } from "@/features/export/ExportDialog";
+import type { ExportDialogMode } from "@/features/export/ExportDialog";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -58,7 +67,10 @@ import { useTranslation } from "react-i18next";
 import { WindowControls } from "@/components/WindowControls";
 import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { handleEditorTabSwitchKeydown } from "@/features/editor/tabSwitchKeybinding";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { ZenModeController } from "@/features/editor/ZenModeController";
+import { BackgroundStudioHost } from "@/features/editor/background/BackgroundStudioHost";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { HistoryButtons } from "@/features/history/HistoryButtons";
 import {
@@ -73,8 +85,7 @@ import {
   getMergedBindings,
   matchesBinding,
 } from "@/features/settings/keybindings";
-import { invoke } from "@/lib/tauri";
-import { SampleTour } from "@/features/onboarding/SampleTour";
+import { onWindowCloseRequested } from "@/lib/windowControls";
 import {
   getScreenshotPanelId,
   isScreenshotCapture,
@@ -83,13 +94,70 @@ import {
   markScreenshotStageReady,
   clearScreenshotStageReady,
 } from "@/screenshot-scenes/screenshotBootstrap";
-import {
-  isPanelWindow,
-  getPanelWindowTarget,
-} from "@/features/layout/multiwindow/panelWindow";
+import { getPanelWindowTarget } from "@/features/layout/multiwindow/panelWindow";
 import { useCodexSelectionSync } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { startCodexLockListener } from "@/features/codex/multiwindow/codexEditLockStore";
+import { shouldMountZenAmbientBackdrop } from "@/features/editor/zen/zenAmbientBackdropPolicy";
 import { cn } from "@/lib/utils";
+import { useImeExportSync } from "@/features/ime/useImeExportSync";
+import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorkspaceShell";
+import { ConnectedMobileWorkspaceSurface } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
+import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
+import { shouldUseAdaptiveWorkspace } from "@/features/layout/adaptive/adaptiveWorkspacePolicy";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import { useViewportProfile } from "@/runtime/useViewportProfile";
+import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
+import {
+  consumeWebEditorHandoffRequest,
+  requestWebEditorHandoffImport,
+  subscribeWebEditorHandoffRequests,
+} from "@/features/import/webEditorHandoffRequest";
+
+const SettingsDialog = lazy(() =>
+  import("@/features/settings/SettingsDialog").then((m) => ({
+    default: m.SettingsDialog,
+  })),
+);
+const ZenAmbientBackdrop = lazy(() =>
+  import("@/features/editor/ZenAmbientBackdrop").then((module) => ({
+    default: module.ZenAmbientBackdrop,
+  })),
+);
+const ProjectSnapshotModal = lazy(() =>
+  import("@/features/revision/ProjectSnapshotModal").then((m) => ({
+    default: m.ProjectSnapshotModal,
+  })),
+);
+const TransferDialog = lazy(() =>
+  import("@/features/transfer/TransferDialog").then((m) => ({
+    default: m.TransferDialog,
+  })),
+);
+const ExportDialog = lazy(() =>
+  import("@/features/export/ExportDialog").then((m) => ({
+    default: m.ExportDialog,
+  })),
+);
+const SampleTour = lazy(() =>
+  import("@/features/onboarding/SampleTour").then((m) => ({
+    default: m.SampleTour,
+  })),
+);
+const HostedEditorTrialBar = lazy(() =>
+  import("@/features/hosted-editor/HostedEditorTrialBar").then((m) => ({
+    default: m.HostedEditorTrialBar,
+  })),
+);
+const HostedEditorHandoffDialog = lazy(() =>
+  import("@/features/hosted-editor/HostedEditorHandoffDialog").then((m) => ({
+    default: m.HostedEditorHandoffDialog,
+  })),
+);
+const WebEditorWorkspaceImportDialog = lazy(() =>
+  import("@/features/import/WebEditorWorkspaceImportDialog").then((m) => ({
+    default: m.WebEditorWorkspaceImportDialog,
+  })),
+);
 
 /* ── App root ── */
 
@@ -128,8 +196,16 @@ function applyTheme(theme: string, colorTheme?: string) {
 }
 
 function App() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (s) => s.workspaceOpenRevision,
+  );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (s) => s.workspaceSwitchInProgress,
+  );
+  const workspaceHydrated = useWorkspaceStore((s) => s.workspaceHydrated);
   const initialize = useWorkspaceStore((s) => s.initialize);
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
@@ -137,21 +213,51 @@ function App() {
     (s) => s.globalSettings?.uiLanguage ?? "ja",
   );
   const { t } = useTranslation();
+  const [showWebEditorImport, setShowWebEditorImport] = useState(false);
+
+  useEffect(
+    () =>
+      subscribeWebEditorHandoffRequests(() => {
+        if (consumeWebEditorHandoffRequest()) {
+          setShowWebEditorImport(true);
+        }
+      }),
+    [],
+  );
 
   // semantic_reindex_all の進行状況 event を購読 (App 起動中ずっと 1 度だけ)。
   useReindexProgressListener();
   // オンデマンド埋め込みモデル DL の進行状況 event を購読。完了後に back-index を再実行。
   useModelDownloadListener();
+  // アプリ更新: 起動 ~10 秒後にサイレント check() → 更新があればトーストを出す。
+  useUpdateChecker();
+  useReleaseNotesGate();
   useExternalMountListener();
   useLicenseStateListener();
 
-  // 段階3c: プロジェクトを開いたら codex / scene の未 index を自動補完する。
+  // プロジェクトを開いたら codex / events / chat / scene の未 index を自動補完する。
   // status は embedder 不要の軽量チェック → 未 index がある時だけ背景 reindex。
-  // 失敗は無音 (sparse で動く)。1 セッション 1 プロジェクト 1 回。
+  // workspace path も依存に含め、異なるDBが同じ default-project
+  // id を持つ場合も必ず別 scope として起動する。panel 窓は関数内で no-op。
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   useEffect(() => {
-    if (currentProjectId) void ensureSemanticIndexesOnOpen(currentProjectId);
-  }, [currentProjectId]);
+    if (
+      runtimeCapabilities.localAi &&
+      workspaceHydrated &&
+      !workspaceSwitchInProgress &&
+      currentProjectId &&
+      activeWorkspacePath
+    ) {
+      void ensureSemanticIndexesOnOpen(currentProjectId, activeWorkspacePath);
+    }
+  }, [
+    activeWorkspacePath,
+    currentProjectId,
+    workspaceHydrated,
+    workspaceOpenRevision,
+    workspaceSwitchInProgress,
+    runtimeCapabilities.localAi,
+  ]);
 
   // Sync uiLanguage setting → i18next
   useEffect(() => {
@@ -169,8 +275,7 @@ function App() {
     let disposed = false;
     void (async () => {
       try {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        const un = await getCurrentWindow().onCloseRequested((event) => {
+        const un = await onWindowCloseRequested((event) => {
           if (guardInlineAiPending()) event.preventDefault();
         });
         if (disposed) un();
@@ -268,56 +373,65 @@ function App() {
       {view === "editor" && <EditorScreen key={activeWorkspacePath ?? ""} />}
       <WorkspaceTrustDialog />
       <EulaConsentDialog />
+      <ReleaseNotesDialog />
+      {runtimeCapabilities.genericProjectTransfer && (
+        <Suspense fallback={null}>
+          <WebEditorWorkspaceImportDialog
+            open={showWebEditorImport}
+            onClose={() => setShowWebEditorImport(false)}
+          />
+        </Suspense>
+      )}
       <DebugLogViewer />
     </>
   );
 }
 
 function EditorScreen() {
+  const runtimeCapabilities = useRuntimeCapabilities();
+  const screenshotPanelId = getScreenshotPanelId();
+  const panelWindowTarget = getPanelWindowTarget();
+  const panelWindow = panelWindowTarget !== null;
+  const soloPanelId = screenshotPanelId ?? panelWindowTarget;
+  const mountZenAmbientBackdrop = shouldMountZenAmbientBackdrop({
+    panelWindowTarget,
+    screenshotPanelId,
+  });
+  const zenMode = useCursorSettingsStore((state) => state.zenMode);
+  const editorZenMode = zenMode && !panelWindow && !screenshotPanelId;
+  const adaptiveWorkspaceEnabled = shouldUseAdaptiveWorkspace({
+    featureEnabled: import.meta.env.VITE_ADAPTIVE_WORKSPACE !== "false",
+    panelWindow,
+    screenshotPanelId,
+  });
+  const viewport = useViewportProfile({ observeNode: false });
+  const workspaceProfile = adaptiveWorkspaceEnabled ? viewport.profile : "wide";
+  const phoneWorkspace =
+    adaptiveWorkspaceEnabled && workspaceProfile === "phone";
   const { t } = useTranslation();
+  // 更新が保留中か (⚙ ボタンの SR ラベル用。UpdateDot も同じ store を読む)。
+  const updatePending = useUpdatePending();
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
+  // エクスポートダイアログを特定タブで開く要求。seq（nonce）の変化で
+  // ダイアログ既開時の再要求にもタブ切替が効く（undefined なら前回タブ維持）。
+  const [exportModeRequest, setExportModeRequest] = useState<
+    { mode: ExportDialogMode; seq: number } | undefined
+  >(undefined);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showTransferDialog, setShowTransferDialog] = useState(false);
+  const [showHostedHandoff, setShowHostedHandoff] = useState(false);
   const [transferTab, setTransferTab] = useState<TransferTab>("import");
-  const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
+  const seedAndOpenSample = useWorkspaceStore((s) => s.seedAndOpenSample);
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
-  const glassEnabled = useSettingsStore((s) =>
-    s.getBoolean("display.glassEffectEnabled", false),
-  );
-  const cardLayout = useSettingsStore((s) =>
-    s.getBoolean("display.cardLayout", true),
-  );
-  const glassTransparency = useSettingsStore((s) =>
-    s.getNumber("display.glassTransparency", 30),
-  );
-  const glassBackdropGradient = useSettingsStore((s) =>
-    s.getBoolean("display.glassBackdropGradient", true),
-  );
-  const glassNativeVibrancy = useSettingsStore((s) =>
-    s.getBoolean("display.glassNativeVibrancy", true),
-  );
-  const glassSurfaceShell = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfaceShell", true),
-  );
-  const glassSurfaceDock = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfaceDock", true),
-  );
-  const glassSurfacePanels = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfacePanels", true),
-  );
-  const glassSurfaceChat = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfaceChat", true),
-  );
-  const glassSurfacePopovers = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfacePopovers", true),
-  );
-  const glassSurfaceEditorChrome = useSettingsStore((s) =>
-    s.getBoolean("display.glassSurfaceEditorChrome", true),
-  );
   const mac = isMac();
+  const layoutInitialized = useLayoutStore((state) => state.initialized);
+  const phoneLayoutBaseline = useRef<LayoutViewportBaseline | null>(null);
+
+  // IME dictionary snapshot + active-project pointer (Tauri/Electron/browser-safe).
+  useImeExportSync();
 
   // AI 応答ストリームの開始/完了を SR へ読み上げる (a11y)。単一マウント。
   useAiStreamingAnnouncer();
@@ -331,42 +445,16 @@ function EditorScreen() {
   }, []);
 
   useEffect(() => {
+    if (!runtimeCapabilities.externalMount) return;
     void initializeExternalMounts().catch(() => {});
-  }, []);
+  }, [runtimeCapabilities.externalMount]);
 
   // ライセンス状態の初期化（refresh は内部 catch 済みで reject しない）。
   // 取得まで・失敗時はゲートが fail-open なので執筆は止まらない。
   useEffect(() => {
+    if (!runtimeCapabilities.secureSecretStore) return;
     void useLicenseStore.getState().refresh();
-  }, []);
-
-  useEffect(() => {
-    const html = document.documentElement;
-    if (glassEnabled) {
-      html.dataset.glassEnabled = "true";
-    } else {
-      delete html.dataset.glassEnabled;
-    }
-    html.dataset.glassPopovers =
-      glassEnabled && glassSurfacePopovers ? "true" : "false";
-    const clamped = Math.max(0, Math.min(90, glassTransparency));
-    html.style.setProperty("--glass-transparency-pct", `${clamped}%`);
-
-    return () => {
-      delete html.dataset.glassEnabled;
-      delete html.dataset.glassPopovers;
-      html.style.removeProperty("--glass-transparency-pct");
-    };
-  }, [glassEnabled, glassSurfacePopovers, glassTransparency]);
-
-  useEffect(() => {
-    invoke("set_window_vibrancy", {
-      enabled: glassEnabled && glassNativeVibrancy,
-    }).catch(() => {});
-    return () => {
-      invoke("set_window_vibrancy", { enabled: false }).catch(() => {});
-    };
-  }, [glassEnabled, glassNativeVibrancy]);
+  }, [runtimeCapabilities.secureSecretStore]);
 
   // Re-run SampleTour: open/re-seed sample workspace then start tour
   useEffect(() => {
@@ -380,14 +468,12 @@ function EditorScreen() {
           preset: "off",
           toggles: { chat: false, bodyWrite: false, analysis: false },
         });
-      void seedAndOpenSample(lang, policy).then(() => {
-        setShowSampleTour(true);
-      });
+      void seedAndOpenSample(lang, policy);
     }
     window.addEventListener("restart-sample-tour", onRestartTutorial);
     return () =>
       window.removeEventListener("restart-sample-tour", onRestartTutorial);
-  }, [seedAndOpenSample, setShowSampleTour]);
+  }, [seedAndOpenSample]);
 
   // Project メタデータ（執筆言語・Phase resolution mode）を適用し、
   // screenshot キャプチャ用のステージを初期化する
@@ -423,11 +509,37 @@ function EditorScreen() {
   useEffect(() => {
     useGlobalHistoryStore.getState().clear();
   }, []);
-  const { togglePanel, initializeLayout } = useLayoutStore();
+  const { togglePanel, initializeLayout, restoreViewportBaseline } =
+    useLayoutStore();
 
   useEffect(() => {
     void initializeLayout();
   }, [initializeLayout]);
+
+  // Phone is a presentation projection, not a persisted desktop layout. Keep
+  // the hydrated desktop state as an in-memory baseline so a phone → desktop
+  // resize in the same session cannot carry mobile-only layout mutations back.
+  useEffect(() => {
+    if (phoneWorkspace) {
+      if (!layoutInitialized || phoneLayoutBaseline.current) return;
+      const state = useLayoutStore.getState();
+      phoneLayoutBaseline.current = {
+        layout: cloneLayoutState(state.layout),
+        activePresetId: state.activePresetId,
+        hiddenStripePanels: new Set(state.hiddenStripePanels),
+        maximizedPanelId: state.maximizedPanelId,
+      };
+      return;
+    }
+
+    useCompactNavigationStore.getState().reset();
+    const baseline = phoneLayoutBaseline.current;
+    if (!baseline) return;
+    // Entering phone mode may have cancelled a pending desktop debounce.
+    // Restoring through the store also persists the viewport-safe baseline.
+    restoreViewportBaseline(baseline);
+    phoneLayoutBaseline.current = null;
+  }, [layoutInitialized, phoneWorkspace, restoreViewportBaseline]);
 
   // Open settings dialog when triggered by error handler or other sources
   useEffect(() => {
@@ -443,17 +555,38 @@ function EditorScreen() {
   // Open export dialog via custom event (e.g. from Settings > Data)
   useEffect(() => {
     function onOpenExport() {
+      if (!runtimeCapabilities.genericProjectTransfer) return;
       setShowExport(true);
     }
     window.addEventListener("open-export-dialog", onOpenExport);
     return () => window.removeEventListener("open-export-dialog", onOpenExport);
-  }, []);
+  }, [runtimeCapabilities.genericProjectTransfer]);
+
+  // Open export dialog on the book (Vivliostyle) tab via a custom event.
+  useEffect(() => {
+    function onOpenVivliostyle() {
+      if (!runtimeCapabilities.genericProjectTransfer) return;
+      setExportModeRequest((prev) => ({
+        mode: "book",
+        seq: (prev?.seq ?? 0) + 1,
+      }));
+      setShowExport(true);
+    }
+    window.addEventListener("open-vivliostyle-dialog", onOpenVivliostyle);
+    return () =>
+      window.removeEventListener("open-vivliostyle-dialog", onOpenVivliostyle);
+  }, [runtimeCapabilities.genericProjectTransfer]);
 
   // Keyboard shortcuts (Ctrl+Alt+*)
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       // Ctrl+Shift+E: エクスポートダイアログ開閉
-      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "e") {
+      if (
+        runtimeCapabilities.genericProjectTransfer &&
+        matchesMod(e) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "e"
+      ) {
         e.preventDefault();
         setShowExport((v) => !v);
         return;
@@ -465,19 +598,15 @@ function EditorScreen() {
       if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "f") {
         if (e.defaultPrevented) return;
         e.preventDefault();
+        if (phoneWorkspace) {
+          useCompactNavigationStore.getState().openSurface("search");
+          requestAnimationFrame(() => {
+            useResultsPanelStore.getState().requestFocus();
+          });
+          return;
+        }
         useLayoutStore.getState().showPanel("command-center-results");
         useResultsPanelStore.getState().requestFocus();
-        return;
-      }
-
-      // Ctrl+Shift+P: VSCode コマンドパレット相当。CommandCenter バーに
-      // focus を渡し、`> ` prefix で command mode に切替えて起動する。
-      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        const cc = useBarStore.getState();
-        cc.setQuery("> ");
-        cc.setOpen(true);
-        cc.requestFocus();
         return;
       }
 
@@ -491,6 +620,20 @@ function EditorScreen() {
       for (const pc of PANEL_COMMANDS) {
         if (matchesBinding(e, merged[pc.id] ?? "", mac)) {
           e.preventDefault();
+          if (phoneWorkspace) {
+            const surface =
+              pc.panel === "editor"
+                ? "editor"
+                : pc.panel === "scenes"
+                  ? "scenes"
+                  : pc.panel === "codex" || pc.panel === "codex-quick"
+                    ? "codex"
+                    : pc.panel === "chat" || pc.panel === "chat-history"
+                      ? "ai"
+                      : "more";
+            useCompactNavigationStore.getState().openSurface(surface);
+            return;
+          }
           togglePanel(pc.panel);
           if (pc.panel === "codex-quick") {
             requestAnimationFrame(() => {
@@ -515,6 +658,7 @@ function EditorScreen() {
           : null;
       if (splitDir) {
         e.preventDefault();
+        if (phoneWorkspace) return;
         const tabs = useTabStore.getState();
         if (tabs.activeTabId) {
           tabs.openInSecondaryGroupDirectional(tabs.activeTabId, splitDir);
@@ -523,7 +667,7 @@ function EditorScreen() {
         }
       }
     },
-    [togglePanel],
+    [phoneWorkspace, runtimeCapabilities.genericProjectTransfer, togglePanel],
   );
 
   useEffect(() => {
@@ -579,180 +723,289 @@ function EditorScreen() {
   // Ctrl+Tab / Ctrl+Shift+Tab: switch tabs in the active editor group
   useEffect(() => {
     function onTabSwitch(e: KeyboardEvent) {
-      const merged = getMergedBindings();
-      const mac = isMac();
-      const isPrev = matchesBinding(e, merged.prevTab ?? "", mac);
-      const isNext = matchesBinding(e, merged.nextTab ?? "", mac);
-      if (!isPrev && !isNext) return;
-      e.preventDefault();
-
-      const {
-        activeGroupIndex,
-        tabs,
-        activeTabId,
-        secondaryTabs,
-        secondaryActiveTabId,
-        setActiveTab,
-        setSecondaryActiveTab,
-      } = useTabStore.getState();
-
-      const currentTabs = activeGroupIndex === 0 ? tabs : secondaryTabs;
-      const currentActiveId =
-        activeGroupIndex === 0 ? activeTabId : secondaryActiveTabId;
-
-      if (currentTabs.length < 2) return;
-
-      const currentIdx = currentTabs.findIndex(
-        (t) => t.nodeId === currentActiveId,
-      );
-      if (currentIdx === -1) return;
-
-      const nextIdx = isPrev
-        ? (currentIdx - 1 + currentTabs.length) % currentTabs.length
-        : (currentIdx + 1) % currentTabs.length;
-
-      const nextTab = currentTabs[nextIdx];
-      if (activeGroupIndex === 0) {
-        setActiveTab(nextTab.nodeId);
-      } else {
-        setSecondaryActiveTab(nextTab.nodeId);
-      }
-      if (nextTab.contentType === "scene") {
-        useTreeStore.getState().setActiveScene(nextTab.nodeId);
-      }
+      handleEditorTabSwitchKeydown(e, phoneWorkspace);
     }
 
     window.addEventListener("keydown", onTabSwitch);
     return () => window.removeEventListener("keydown", onTabSwitch);
-  }, []);
+  }, [phoneWorkspace]);
 
   return (
-    <div
-      className="app-shell flex h-screen flex-col"
-      data-card={cardLayout ? "true" : undefined}
-      data-glass-enabled={glassEnabled ? "true" : undefined}
-      data-glass-shell={glassSurfaceShell ? "true" : undefined}
-      data-glass-dock={glassSurfaceDock ? "true" : undefined}
-      data-glass-panels={glassSurfacePanels ? "true" : undefined}
-      data-glass-chat={glassSurfaceChat ? "true" : undefined}
-      data-glass-popovers={glassSurfacePopovers ? "true" : undefined}
-      data-glass-editor-chrome={glassSurfaceEditorChrome ? "true" : undefined}
-      data-glass-gradient={glassBackdropGradient ? "true" : undefined}
-      data-platform-mac={mac ? "true" : undefined}
-    >
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow focus:outline-none focus:ring-2 focus:ring-ring"
+    <WorkspaceViewportProvider profile={workspaceProfile}>
+      <div
+        className="app-shell flex h-screen flex-col"
+        data-platform-mac={mac ? "true" : undefined}
+        data-viewport-profile={workspaceProfile}
+        data-mobile-workspace={phoneWorkspace ? "true" : undefined}
+        data-zen-mode={editorZenMode ? "true" : undefined}
       >
-        {t("a11y.skipToContent")}
-      </a>
-      {isPanelWindow() ? (
-        // 別フローティング窓: ヘッダはドラッグ領域 + ウィンドウ操作のみに簡素化
-        // (ロゴ/エクスポート/設定/プロジェクト切替はメイン窓の領分で、別窓に
-        // 出すとややこしいため)。WindowControls は getCurrentWindow() で自窓を
-        // 操作する。mac は decorations 側の扱いが別途必要(現状 Windows 前提)。
-        <header
-          data-header-bar
-          className="flex h-9 shrink-0 items-center border-b border-border"
-        >
-          <div data-tauri-drag-region className="h-full flex-1" />
-          {!mac && <WindowControls />}
-        </header>
-      ) : (
-        <HeaderBarLayout
-          mac={mac}
-          className={cn(getScreenshotPanelId() && "no-screenshot")}
-          left={
-            <>
-              <GrimodexLogo height={24} className="text-foreground" />
-              <WorkspaceMenu />
-              <ProjectMenu
-                onOpenImport={() => {
-                  setTransferTab("import");
-                  setShowTransferDialog(true);
-                }}
-                onOpenExport={() => {
-                  setTransferTab("zip");
-                  setShowTransferDialog(true);
-                }}
-                onOpenSnapshot={() => setShowSnapshotModal(true)}
-              />
-              <HistoryButtons />
-              <button
-                type="button"
-                aria-label={t("app.exportLabel")}
-                title={t("app.exportTitle")}
-                onClick={() => setShowExport((v) => !v)}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <FileOutput className="h-4 w-4 shrink-0" />
-                <span className="hidden whitespace-nowrap text-sm xl:inline">
-                  {t("app.exportLabel")}
-                </span>
-              </button>
-            </>
-          }
-          center={<CommandCenterBar />}
-          right={
-            <>
-              <LayoutPresetDropdown />
-              <PanelToggleDropdown />
-              <button
-                type="button"
-                aria-label={t("app.settingsLabel")}
-                title={t("app.settingsTitle")}
-                onClick={() => {
-                  setSettingsInitialCategory("project");
-                  setShowSettings(true);
-                }}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <Settings className="h-4 w-4 shrink-0" />
-                <span className="hidden whitespace-nowrap text-sm xl:inline">
-                  {t("app.settingsLabel")}
-                </span>
-              </button>
-              {!mac && (
+        {!editorZenMode && (
+          <a
+            href="#main-content"
+            className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            {t("a11y.skipToContent")}
+          </a>
+        )}
+        {!editorZenMode &&
+          !phoneWorkspace &&
+          (panelWindow ? (
+            // 別フローティング窓: ヘッダはドラッグ領域 + ウィンドウ操作のみに簡素化
+            // (ロゴ/エクスポート/設定/プロジェクト切替はメイン窓の領分で、別窓に
+            // 出すとややこしいため)。WindowControls は getCurrentWindow() で自窓を
+            // 操作する。mac は decorations 側の扱いが別途必要(現状 Windows 前提)。
+            <header
+              data-header-bar
+              className="flex h-9 shrink-0 items-center border-b border-border"
+            >
+              <div data-tauri-drag-region className="h-full flex-1" />
+              {!mac && <WindowControls />}
+            </header>
+          ) : (
+            <HeaderBarLayout
+              mac={mac}
+              className={cn(getScreenshotPanelId() && "no-screenshot")}
+              left={
                 <>
-                  <div className="h-4 w-px bg-border" />
-                  <WindowControls />
+                  <GrimodexLogo height={24} className="text-foreground" />
+                  <WorkspaceMenu />
+                  <ProjectMenu
+                    onOpenImport={
+                      runtimeCapabilities.localFileImport
+                        ? () => {
+                            setTransferTab("import");
+                            setShowTransferDialog(true);
+                          }
+                        : undefined
+                    }
+                    onOpenExport={
+                      runtimeCapabilities.genericProjectTransfer
+                        ? () => {
+                            setTransferTab("zip");
+                            setShowTransferDialog(true);
+                          }
+                        : undefined
+                    }
+                    onOpenSnapshot={() => setShowSnapshotModal(true)}
+                    onOpenWebEditorHandoff={
+                      runtimeCapabilities.genericProjectTransfer
+                        ? requestWebEditorHandoffImport
+                        : undefined
+                    }
+                  />
+                  <HistoryButtons />
+                  {runtimeCapabilities.genericProjectTransfer && (
+                    <button
+                      type="button"
+                      data-tour-target="export-button"
+                      aria-label={t("app.exportLabel")}
+                      title={t("app.exportTitle")}
+                      onClick={() => setShowExport((v) => !v)}
+                      className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <FileOutput className="h-4 w-4 shrink-0" />
+                      <span className="hidden whitespace-nowrap text-sm xl:inline">
+                        {t("app.exportLabel")}
+                      </span>
+                    </button>
+                  )}
                 </>
+              }
+              center={null}
+              right={
+                <>
+                  <LayoutPresetDropdown />
+                  <PanelToggleDropdown />
+                  <button
+                    type="button"
+                    aria-label={
+                      updatePending
+                        ? t("app.settingsLabelUpdateAvailable", {
+                            defaultValue: "設定（更新があります）",
+                          })
+                        : t("app.settingsLabel")
+                    }
+                    title={t("app.settingsTitle")}
+                    onClick={() => {
+                      setSettingsInitialCategory("project");
+                      setShowSettings(true);
+                    }}
+                    className="relative flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <Settings className="h-4 w-4 shrink-0" />
+                    <span className="hidden whitespace-nowrap text-sm xl:inline">
+                      {t("app.settingsLabel")}
+                    </span>
+                    <UpdateDot className="absolute right-1 top-1" />
+                  </button>
+                  {!mac && (
+                    <>
+                      <div className="h-4 w-px bg-border" />
+                      <WindowControls />
+                    </>
+                  )}
+                </>
+              }
+            />
+          ))}
+        <Suspense fallback={null}>
+          {showSettings && (
+            <SettingsDialog
+              open
+              onClose={() => setShowSettings(false)}
+              initialCategory={settingsInitialCategory}
+              phoneWorkspace={phoneWorkspace}
+            />
+          )}
+          {runtimeCapabilities.genericProjectTransfer && showExport && (
+            <ExportDialog
+              open
+              onClose={() => setShowExport(false)}
+              modeRequest={exportModeRequest}
+            />
+          )}
+          {showSnapshotModal && (
+            <ProjectSnapshotModal
+              open
+              onClose={() => setShowSnapshotModal(false)}
+            />
+          )}
+          {runtimeCapabilities.localFileImport && showTransferDialog && (
+            <TransferDialog
+              open
+              tab={transferTab}
+              onTabChange={setTransferTab}
+              onClose={() => setShowTransferDialog(false)}
+            />
+          )}
+          {/* The current tour targets desktop-only panels such as Timeline.
+              Do not mount its blocking spotlight in the phone projection. */}
+          {showSampleTour && !phoneWorkspace && <SampleTour />}
+        </Suspense>
+        {!runtimeCapabilities.genericProjectTransfer &&
+          runtimeCapabilities.browserDirectAi && (
+            <Suspense fallback={null}>
+              <HostedEditorHandoffDialog
+                open={showHostedHandoff}
+                onClose={() => setShowHostedHandoff(false)}
+                downloadHandoff={async () => {
+                  const { downloadHostedEditorHandoff } =
+                    await import("@/features/hosted-editor/downloadHostedEditorHandoff");
+                  return downloadHostedEditorHandoff();
+                }}
+              />
+            </Suspense>
+          )}
+        <ReindexProgressToast />
+        <ModelDownloadToast />
+        <PostEffectProgressToast />
+        <UpdateToast />
+        <ReloadConflictDialog />
+        {!runtimeCapabilities.genericProjectTransfer &&
+          runtimeCapabilities.browserDirectAi && (
+            <Suspense fallback={null}>
+              <HostedEditorTrialBar
+                compact={phoneWorkspace}
+                onContinue={() => setShowHostedHandoff(true)}
+              />
+            </Suspense>
+          )}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="relative isolate flex min-h-0 flex-1 overflow-hidden outline-none"
+        >
+          {mountZenAmbientBackdrop && (
+            <Suspense fallback={null}>
+              <ZenAmbientBackdrop active={editorZenMode} />
+            </Suspense>
+          )}
+          {adaptiveWorkspaceEnabled ? (
+            <AdaptiveWorkspaceShell
+              profile={workspaceProfile}
+              zenMode={editorZenMode}
+              editor={
+                <LayoutShell
+                  hidden={false}
+                  soloPanelId={null}
+                  zenMode={editorZenMode}
+                  editorOnly={phoneWorkspace}
+                />
+              }
+              renderMobileSurface={(surface) => (
+                <ConnectedMobileWorkspaceSurface
+                  surface={surface}
+                  onOpenSettings={() => {
+                    setSettingsInitialCategory("project");
+                    setShowSettings(true);
+                  }}
+                  onOpenAiSettings={() => {
+                    setSettingsInitialCategory("ai");
+                    setShowSettings(true);
+                  }}
+                  onOpenImport={
+                    runtimeCapabilities.localFileImport
+                      ? () => {
+                          setTransferTab("import");
+                          setShowTransferDialog(true);
+                        }
+                      : undefined
+                  }
+                  onOpenExport={
+                    runtimeCapabilities.genericProjectTransfer
+                      ? () => setShowExport(true)
+                      : undefined
+                  }
+                  onContinueInGrimodex={
+                    !runtimeCapabilities.genericProjectTransfer &&
+                    runtimeCapabilities.browserDirectAi
+                      ? () => setShowHostedHandoff(true)
+                      : undefined
+                  }
+                  workspaceControls={
+                    <div data-phone-workspace-controls className="grid gap-2">
+                      <WorkspaceMenu />
+                      <ProjectMenu
+                        onOpenImport={
+                          runtimeCapabilities.localFileImport
+                            ? () => {
+                                setTransferTab("import");
+                                setShowTransferDialog(true);
+                              }
+                            : undefined
+                        }
+                        onOpenExport={
+                          runtimeCapabilities.genericProjectTransfer
+                            ? () => {
+                                setTransferTab("zip");
+                                setShowTransferDialog(true);
+                              }
+                            : undefined
+                        }
+                        onOpenSnapshot={() => setShowSnapshotModal(true)}
+                        onOpenWebEditorHandoff={
+                          runtimeCapabilities.genericProjectTransfer
+                            ? requestWebEditorHandoffImport
+                            : undefined
+                        }
+                      />
+                    </div>
+                  }
+                />
               )}
-            </>
-          }
-        />
-      )}
-      <SettingsDialog
-        open={showSettings}
-        onClose={() => setShowSettings(false)}
-        initialCategory={settingsInitialCategory}
-      />
-      <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
-      <ProjectSnapshotModal
-        open={showSnapshotModal}
-        onClose={() => setShowSnapshotModal(false)}
-      />
-      <TransferDialog
-        open={showTransferDialog}
-        tab={transferTab}
-        onTabChange={setTransferTab}
-        onClose={() => setShowTransferDialog(false)}
-      />
-      {showSampleTour && <SampleTour />}
-      <ReindexProgressToast />
-      <ModelDownloadToast />
-      <ReloadConflictDialog />
-      <main
-        id="main-content"
-        tabIndex={-1}
-        className="flex min-h-0 flex-1 overflow-hidden outline-none"
-      >
-        <LayoutShell
-          hidden={!!getScreenshotPanelId() || isPanelWindow()}
-          soloPanelId={getScreenshotPanelId() ?? getPanelWindowTarget()}
-        />
-      </main>
-    </div>
+            />
+          ) : (
+            <LayoutShell
+              hidden={Boolean(screenshotPanelId) || panelWindow}
+              soloPanelId={soloPanelId}
+              zenMode={editorZenMode}
+            />
+          )}
+        </main>
+        <ZenModeController />
+        <BackgroundStudioHost zenMode={editorZenMode} />
+      </div>
+    </WorkspaceViewportProvider>
   );
 }
 

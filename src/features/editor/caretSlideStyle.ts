@@ -29,6 +29,18 @@ function round3(n: number): number {
 }
 
 /**
+ * slide duration を設定スライダーと同じ範囲へクランプする。CSS 変数書き込み
+ * (applyCaretSlideVars) と、高速入力検出の閾値 (CursorOverlayPlugin) の両方が
+ * 同じ実効 duration を使うよう共有する。
+ */
+export function clampCaretSlideDuration(durationMs: number): number {
+  return Math.min(
+    CARET_SLIDE_DURATION_MAX,
+    Math.max(CARET_SLIDE_DURATION_MIN, durationMs),
+  );
+}
+
+/**
  * 設定値を CSS 変数へ反映する。呼び出しは冪等（エディタが複数あっても同値）。
  */
 export function applyCaretSlideVars(
@@ -36,10 +48,7 @@ export function applyCaretSlideVars(
   snappiness: number,
   root: HTMLElement = document.documentElement,
 ): void {
-  const d = Math.min(
-    CARET_SLIDE_DURATION_MAX,
-    Math.max(CARET_SLIDE_DURATION_MIN, durationMs),
-  );
+  const d = clampCaretSlideDuration(durationMs);
   root.style.setProperty("--caret-slide-duration", `${Math.round(d)}ms`);
   root.style.setProperty("--caret-slide-easing", caretSlideEasing(snappiness));
 }

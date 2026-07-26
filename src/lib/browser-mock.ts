@@ -3,12 +3,25 @@
 // @ts-ignore — sql.js/dist/sql-asm.js has no dedicated type declarations
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlValue } from "sql.js";
-import type { AiProvider, ToolProtocolMode } from "@/features/chat/types";
+import schemaContract from "@/db/generated/schema-contract.json";
 import {
-  sendChat,
+  resolveActiveOpenaiCompatibleEndpoint,
+  type AiProvider,
+  type AiSettings,
+  type ToolProtocolMode,
+} from "@/features/chat/types";
+import { isAinoveristV1Model } from "@/features/chat/aiNovelist";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
+import {
+  createBrowserAiTransport,
+  browserProviderRequiresApiKey,
   fetchModels,
   testConnection,
   sendChatWithTools,
+  type BrowserAiOperation,
+  type BrowserAiRequest,
+  type BrowserAiStreamSink,
+  type BrowserAiTransport,
 } from "@/lib/browser-ai";
 import { lintTextBrowser } from "@/lib/browser-lint";
 import type {
@@ -26,608 +39,534 @@ import {
   GENESIS_HASH,
   hexToBytes,
 } from "@/features/timelapse/hashChain";
+import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
+import sampleProjectJa from "../../src-tauri/resources/sample_project/v1.json";
+import sampleProjectEn from "../../src-tauri/resources/sample_project/v1_en.json";
 
-const SCHEMA_DDL = `
-  CREATE TABLE IF NOT EXISTS projects (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL DEFAULT 'Untitled Project',
-    genre TEXT,
-    pov TEXT,
-    tense TEXT,
-    language TEXT NOT NULL DEFAULT 'ja',
-    style_guide TEXT,
-    ai_instructions TEXT,
-    outline TEXT,
-    target_readers TEXT,
-    phase_resolution_mode TEXT NOT NULL DEFAULT 'auto' CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
-    ai_policy TEXT NOT NULL DEFAULT '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true}}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS tree_nodes (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    parent_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    node_type TEXT NOT NULL,
-    title TEXT NOT NULL DEFAULT 'Untitled',
-    synopsis TEXT,
-    intent TEXT,
-    sort_order TEXT NOT NULL DEFAULT 'a0',
-    story_time_order TEXT,
-    story_time_label TEXT,
-    pov_character_id TEXT,
-    location_id TEXT,
-    chronicle_start_time INTEGER,
-    chronicle_start_minute INTEGER,
-    chronicle_start_granularity TEXT NOT NULL DEFAULT 'none',
-    chronicle_end_time INTEGER,
-    chronicle_end_minute INTEGER,
-    chronicle_end_granularity TEXT NOT NULL DEFAULT 'none',
-    chronicle_precision TEXT NOT NULL DEFAULT 'exact',
-    status TEXT DEFAULT 'outline',
-    content TEXT NOT NULL DEFAULT '{}',
-    unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
-    char_count INTEGER NOT NULL DEFAULT 0,
-    unplaced_beat_preview TEXT,
-    placed_beat_preview TEXT,
-    source_uri TEXT,
-    source_mtime TEXT,
-    archived_at TEXT,
-    context_mode TEXT,
-    aliases TEXT NOT NULL DEFAULT '[]',
-    excluded_aliases TEXT NOT NULL DEFAULT '[]',
-    version INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS codex_entries (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    parent_id TEXT,
-    type TEXT NOT NULL DEFAULT 'character',
-    name TEXT NOT NULL DEFAULT 'Untitled',
-    aliases TEXT,
-    excluded_aliases TEXT,
-    summary TEXT,
-    content TEXT NOT NULL DEFAULT '{}',
-    icon TEXT,
-    tags_cache TEXT,
-    context_mode TEXT NOT NULL DEFAULT 'mentioned',
-    children_budget TEXT NOT NULL DEFAULT 'compact',
-    tags TEXT,
-    source_chat_message_id TEXT,
-    notes TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    version INTEGER NOT NULL DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS codex_dismissed_relations (
-    entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    PRIMARY KEY (entry_id, dismissed_id)
-  );
-  CREATE TABLE IF NOT EXISTS codex_relations (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    from_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    to_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    relation_type TEXT NOT NULL DEFAULT 'custom',
-    label TEXT,
-    depth_hint INTEGER,
-    source_map_edge_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS snippets (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    title TEXT NOT NULL DEFAULT 'Untitled',
-    content TEXT NOT NULL DEFAULT '',
-    tags_cache TEXT,
-    content_source TEXT,
-    tags TEXT,
-    scene_id TEXT,
-    source_chat_message_id TEXT,
-    usage_count INTEGER NOT NULL DEFAULT 0,
-    version INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS chat_sessions (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    node_id TEXT,
-    codex_anchor_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
-    title TEXT NOT NULL DEFAULT 'New session',
-    title_manual INTEGER NOT NULL DEFAULT 0,
-    model TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-    pinned_codex TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_chat_sessions_node
-    ON chat_sessions(project_id, node_id);
-  CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor
-    ON chat_sessions(project_id, codex_anchor_id);
-  CREATE TABLE IF NOT EXISTS chat_messages (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    model TEXT,
-    tokens_in INTEGER,
-    tokens_out INTEGER,
-    duration_ms INTEGER,
-    metadata TEXT,
-    is_starred INTEGER NOT NULL DEFAULT 0,
-    is_summarized INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS generation_logs (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')),
-    command_id TEXT,
-    instruction TEXT,
-    prompt_full TEXT,
-    model TEXT,
-    trace_id TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS chat_session_pinned_codex (
-    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    codex_entry_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
-    snippet_id TEXT REFERENCES snippets(id) ON DELETE CASCADE,
-    with_children INTEGER NOT NULL DEFAULT 0,
-    pin_source TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, codex_entry_id, snippet_id)
-  );
-  CREATE TABLE IF NOT EXISTS chat_summaries (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    summary TEXT NOT NULL,
-    token_count INTEGER,
-    generation INTEGER NOT NULL DEFAULT 1,
-    source_msg_count INTEGER NOT NULL DEFAULT 0,
-    last_msg_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS chat_summary_messages (
-    summary_id TEXT NOT NULL REFERENCES chat_summaries(id) ON DELETE CASCADE,
-    message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
-    PRIMARY KEY (summary_id, message_id)
-  );
-  CREATE TABLE IF NOT EXISTS authorship_spans (
-    id TEXT PRIMARY KEY,
-    node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    codex_entry_id TEXT,
-    snippet_id TEXT,
-    detail_value_id TEXT,
-    from_pos INTEGER NOT NULL,
-    to_pos INTEGER NOT NULL,
-    source TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
-    model TEXT,
-    timestamp TEXT,
-    chat_msg_id TEXT,
-    trace_id TEXT,
-    phase_id TEXT,
-    sticky_id TEXT
-  );
-  CREATE TABLE IF NOT EXISTS codex_tags (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    color TEXT,
-    type_filter TEXT,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS codex_entry_tags (
-    entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    tag_id TEXT NOT NULL REFERENCES codex_tags(id) ON DELETE CASCADE,
-    PRIMARY KEY (entry_id, tag_id)
-  );
-  CREATE TABLE IF NOT EXISTS app_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS project_settings (
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    key TEXT NOT NULL,
-    value TEXT NOT NULL,
-    PRIMARY KEY (project_id, key)
-  );
-  CREATE TABLE IF NOT EXISTS change_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_uid TEXT,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-    domain TEXT NOT NULL,
-    op_type TEXT NOT NULL,
-    entity_type TEXT,
-    entity_id TEXT,
-    payload TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    timestamp INTEGER NOT NULL,
-    prev_hash TEXT NOT NULL,
-    hash TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_change_events_project_ts
-    ON change_events(project_id, timestamp);
-  CREATE INDEX IF NOT EXISTS idx_change_events_scene_ts
-    ON change_events(scene_id, timestamp);
-  CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_seq
-    ON change_events(project_id, sequence);
-  CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_uid
-    ON change_events(project_id, event_uid);
-  CREATE TABLE IF NOT EXISTS codex_types (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    slug TEXT NOT NULL,
-    label TEXT NOT NULL,
-    color TEXT NOT NULL DEFAULT '#888888',
-    palette_index INTEGER,
-    icon TEXT,
-    is_builtin INTEGER NOT NULL DEFAULT 0,
-    sort_order REAL NOT NULL DEFAULT 0.0,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS codex_detail_definitions (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    type_slug TEXT NOT NULL,
-    name TEXT NOT NULL,
-    field_type TEXT NOT NULL DEFAULT 'text',
-    field_config TEXT,
-    sort_order REAL NOT NULL DEFAULT 0.0,
-    include_in_context INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS codex_detail_values (
-    id TEXT PRIMARY KEY,
-    entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
-    value TEXT
-  );
-  CREATE TABLE IF NOT EXISTS labels (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    color TEXT NOT NULL,
-    sort_order REAL NOT NULL DEFAULT 0.0,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS tree_node_labels (
-    node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-    PRIMARY KEY (node_id, label_id)
-  );
-  CREATE TABLE IF NOT EXISTS map_boards (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    title TEXT NOT NULL DEFAULT 'Main',
-    sort_order REAL NOT NULL DEFAULT 0.0,
-    mode TEXT NOT NULL DEFAULT 'free',
-    viewport_x REAL NOT NULL DEFAULT 0,
-    viewport_y REAL NOT NULL DEFAULT 0,
-    viewport_zoom REAL NOT NULL DEFAULT 1.0,
-    show_config TEXT NOT NULL DEFAULT '{}',
-    color_by TEXT NOT NULL DEFAULT 'none',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS map_ai_branches (
-    id TEXT PRIMARY KEY,
-    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-    prompt TEXT NOT NULL,
-    seed_node_ids TEXT NOT NULL DEFAULT '[]',
-    session_id TEXT,
-    model TEXT,
-    token_usage INTEGER,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS map_stickies (
-    id TEXT PRIMARY KEY,
-    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-    title TEXT,
-    body TEXT NOT NULL DEFAULT '{"type":"doc","content":[]}',
-    preview_text TEXT,
-    palette_id TEXT NOT NULL DEFAULT 'post-it-playful',
-    color_slot INTEGER NOT NULL DEFAULT 0,
-    ai_branch_id TEXT,
-    source_chat_message_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS map_node_positions (
-    id TEXT PRIMARY KEY,
-    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-    node_ref_type TEXT NOT NULL,
-    tree_node_id TEXT,
-    codex_entry_id TEXT,
-    snippet_id TEXT,
-    sticky_id TEXT,
-    ai_branch_id TEXT,
-    x REAL NOT NULL,
-    y REAL NOT NULL,
-    pinned INTEGER NOT NULL DEFAULT 0,
-    z_index INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS map_edges (
-    id TEXT PRIMARY KEY,
-    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-    from_position_id TEXT NOT NULL,
-    to_position_id TEXT NOT NULL,
-    forward_label TEXT,
-    backward_label TEXT,
-    labels TEXT NOT NULL DEFAULT '[]',
-    style TEXT NOT NULL DEFAULT 'solid',
-    color TEXT NOT NULL DEFAULT '#000000',
-    direction TEXT NOT NULL DEFAULT 'none',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS map_frames (
-    id TEXT PRIMARY KEY,
-    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
-    title TEXT NOT NULL DEFAULT 'Frame',
-    x REAL NOT NULL,
-    y REAL NOT NULL,
-    width REAL NOT NULL,
-    height REAL NOT NULL,
-    background TEXT NOT NULL DEFAULT '#f5f5f5',
-    border_color TEXT NOT NULL DEFAULT '#cccccc',
-    z_index INTEGER NOT NULL DEFAULT -1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS foreshadows (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    title TEXT NOT NULL,
-    intent TEXT,
-    notes TEXT,
-    payoff_scene_id TEXT,
-    payoff_from_pos INTEGER,
-    payoff_to_pos INTEGER,
-    payoff_confirmed INTEGER NOT NULL DEFAULT 0,
-    abandoned INTEGER NOT NULL DEFAULT 0,
-    secret INTEGER NOT NULL DEFAULT 1,
-    load_bearing TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS foreshadow_setups (
-    id TEXT PRIMARY KEY,
-    foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
-    scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    from_pos INTEGER NOT NULL,
-    to_pos INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    strength TEXT,
-    ai_strength TEXT,
-    ai_reasoning TEXT,
-    attribution TEXT NOT NULL DEFAULT 'human',
-    ai_rationale TEXT,
-    last_evaluated_at INTEGER,
-    is_orphan INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS codex_quick_pins (
-    entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS lint_term_dictionary (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    preferred TEXT NOT NULL,
-    variants TEXT NOT NULL,
-    severity TEXT NOT NULL DEFAULT 'warning',
-    note TEXT,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS scene_codex_mentions (
-    scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    source TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'mentioned',
-    PRIMARY KEY (scene_id, codex_entry_id, source)
-  );
-  CREATE TABLE IF NOT EXISTS scene_beat_pov_cache (
-    scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    pov_character_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    PRIMARY KEY (scene_id, pov_character_id)
-  );
-  CREATE TABLE IF NOT EXISTS plot_threads (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name TEXT NOT NULL DEFAULT '',
-    color TEXT,
-    description TEXT,
-    sort_order TEXT NOT NULL DEFAULT 'a0',
-    start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-    end_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE IF NOT EXISTS plot_thread_scene_links (
-    id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
-    node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    phase_type TEXT NOT NULL
-      CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')),
-    note TEXT,
-    sort_order TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE IF NOT EXISTS plot_thread_branches (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    from_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
-    to_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
-    at_node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK(kind IN ('branch','merge')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE IF NOT EXISTS events (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    title TEXT NOT NULL DEFAULT '',
-    note TEXT,
-    detail TEXT,
-    ordinal TEXT NOT NULL DEFAULT 'a0',
-    primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
-    lane_group TEXT,
-    location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
-    start_time INTEGER,
-    end_time INTEGER,
-    start_minute INTEGER,
-    end_minute INTEGER,
-    start_granularity TEXT NOT NULL DEFAULT 'none',
-    end_granularity TEXT NOT NULL DEFAULT 'none',
-    precision TEXT NOT NULL DEFAULT 'exact',
-    kind TEXT NOT NULL DEFAULT 'generic',
-    secret INTEGER NOT NULL DEFAULT 0,
-    reveal_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE IF NOT EXISTS event_participants (
-    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-    role TEXT,
-    PRIMARY KEY (event_id, codex_entry_id)
-  );
-  CREATE TABLE IF NOT EXISTS scene_events (
-    scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    PRIMARY KEY (scene_id, event_id)
-  );
-  CREATE TABLE IF NOT EXISTS project_calendar (
-    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-    days_per_year INTEGER NOT NULL DEFAULT 360,
-    season_boundaries TEXT NOT NULL DEFAULT '[]',
-    start_year INTEGER NOT NULL DEFAULT 0,
-    months TEXT NOT NULL DEFAULT '[]',
-    weekday_names TEXT NOT NULL DEFAULT '[]',
-    weekday_start_index INTEGER NOT NULL DEFAULT 0,
-    leap_rule TEXT NOT NULL DEFAULT '{"kind":"none"}',
-    age_reckoning TEXT NOT NULL DEFAULT 'full',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE IF NOT EXISTS event_relations (
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    cause_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    effect_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    PRIMARY KEY (cause_event_id, effect_event_id)
-  );
-  CREATE TABLE IF NOT EXISTS content_versions (
-    id TEXT PRIMARY KEY,
-    entity_type TEXT NOT NULL CHECK(entity_type IN ('scene','note','codex_entry','snippet')),
-    entity_id TEXT NOT NULL,
-    content TEXT NOT NULL,
-    version_number INTEGER NOT NULL,
-    snapshot_type TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto','manual')),
-    created_at TEXT NOT NULL,
-    UNIQUE(entity_type, entity_id, version_number)
-  );
-  CREATE TABLE IF NOT EXISTS project_snapshots (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    description TEXT,
-    created_at TEXT NOT NULL,
-    UNIQUE(project_id, name)
-  );
-  CREATE TABLE IF NOT EXISTS project_snapshot_entries (
-    snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-    version_id TEXT NOT NULL REFERENCES content_versions(id) ON DELETE RESTRICT,
-    PRIMARY KEY (snapshot_id, version_id)
-  );
-  CREATE TABLE IF NOT EXISTS project_snapshot_tree_nodes (
-    snapshot_id        TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-    node_id            TEXT NOT NULL,
-    parent_id          TEXT,
-    node_type          TEXT NOT NULL,
-    title              TEXT NOT NULL,
-    synopsis           TEXT,
-    intent             TEXT,
-    sort_order         TEXT NOT NULL,
-    story_time_order   TEXT,
-    story_time_label   TEXT,
-    pov_character_id   TEXT,
-    location_id        TEXT,
-    chronicle_start_time        INTEGER,
-    chronicle_start_minute      INTEGER,
-    chronicle_start_granularity TEXT NOT NULL DEFAULT 'none',
-    chronicle_end_time          INTEGER,
-    chronicle_end_minute        INTEGER,
-    chronicle_end_granularity   TEXT NOT NULL DEFAULT 'none',
-    chronicle_precision         TEXT NOT NULL DEFAULT 'exact',
-    status             TEXT,
-    body_version_id    TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
-    unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
-    char_count         INTEGER NOT NULL DEFAULT 0,
-    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (snapshot_id, node_id)
-  );
-  CREATE TABLE IF NOT EXISTS project_snapshot_codex_entries (
-    snapshot_id      TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-    entry_id         TEXT NOT NULL,
-    type             TEXT NOT NULL,
-    name             TEXT NOT NULL,
-    parent_id        TEXT,
-    aliases          TEXT,
-    excluded_aliases TEXT,
-    summary          TEXT,
-    icon             TEXT,
-    context_mode     TEXT NOT NULL,
-    children_budget  TEXT NOT NULL,
-    notes            TEXT,
-    body_version_id  TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
-    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (snapshot_id, entry_id)
-  );
-  CREATE TABLE IF NOT EXISTS project_snapshot_snippets (
-    snapshot_id            TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-    snippet_id             TEXT NOT NULL,
-    title                  TEXT NOT NULL,
-    scene_id               TEXT,
-    source_chat_message_id TEXT,
-    body_version_id        TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
-    created_at             TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (snapshot_id, snippet_id)
-  );
-  CREATE TABLE IF NOT EXISTS project_snapshot_aux (
-    snapshot_id  TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-    scope        TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    PRIMARY KEY (snapshot_id, scope)
-  );
-`;
+type BrowserSchemaTable = {
+  kind: string;
+  columns: Record<string, unknown>;
+  createSql: string;
+};
 
+type BrowserSchemaIndex = {
+  table: string;
+  createSql: string;
+};
+
+type BrowserSchemaContract = {
+  tables: Record<string, BrowserSchemaTable>;
+  indexes: Record<string, BrowserSchemaIndex>;
+  triggers: Record<string, string>;
+};
+
+// Keep this list aligned with the native-only contract surfaces asserted by
+// src/db/schema.contract.test.ts. BrowserMock uses every other canonical
+// CREATE statement so browser editing exercises the same renderer schema.
+const RUST_ONLY_BROWSER_TABLES = new Set([
+  "chat_message_chunks",
+  "event_chunks",
+  "fts_meta",
+  "codex_fts",
+  "codex_fts_en",
+  "snippets_fts",
+  "snippets_fts_en",
+  "chat_messages_fts",
+  "chat_messages_fts_en",
+  "tree_nodes_fts",
+  "tree_nodes_fts_en",
+  "post_effect_annotations_fts",
+  "post_effect_annotations_fts_en",
+  "undo_journal",
+]);
+
+function executableCreateSql(createSql: string, columnNames: string[]): string {
+  // sqlite_master preserves line comments, while the generated contract
+  // normalizes their line breaks to spaces. Remove only those comments so the
+  // canonical statement remains executable after normalization.
+  if (!createSql.includes("--")) return createSql;
+  const escapedColumnNames = columnNames.map((name) =>
+    name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+  );
+  const nextSqlToken = [
+    ...escapedColumnNames.map(
+      (name) => `${name}\\s+(?:TEXT|INTEGER|REAL|BLOB)\\b`,
+    ),
+    "FOREIGN KEY\\b",
+    "PRIMARY KEY\\b",
+    "UNIQUE\\b",
+    "CHECK\\b",
+  ].join("|");
+  return createSql.replace(
+    new RegExp(`-- .*?(?=(?:${nextSqlToken}))`, "giu"),
+    "",
+  );
+}
+
+function buildBrowserSchemaDdl(contract: BrowserSchemaContract): string {
+  const tables = Object.entries(contract.tables).filter(
+    ([name, table]) =>
+      table.kind === "table" && !RUST_ONLY_BROWSER_TABLES.has(name),
+  );
+  const tableStatements = tables.map(([, table]) =>
+    executableCreateSql(table.createSql, Object.keys(table.columns)),
+  );
+  const indexStatements = Object.values(contract.indexes)
+    .filter((index) => !RUST_ONLY_BROWSER_TABLES.has(index.table))
+    .map((index) => index.createSql);
+  const triggerStatements = Object.values(contract.triggers).filter(
+    (createSql) =>
+      ![...RUST_ONLY_BROWSER_TABLES].some((tableName) =>
+        new RegExp(
+          `\\b${tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+          "u",
+        ).test(createSql),
+      ),
+  );
+  return `${[...tableStatements, ...indexStatements, ...triggerStatements].join(
+    ";\n",
+  )};`;
+}
+
+type BrowserDbStatementResult = {
+  rows: Record<string, unknown>[];
+  mutated: boolean;
+};
+
+function executeBrowserDbStatement(
+  db: Database,
+  sql: string,
+  params: SqlValue[],
+): BrowserDbStatementResult {
+  const stmt = db.prepare(sql);
+  const rows: Record<string, unknown>[] = [];
+  let mutated = false;
+  db.updateHook(() => {
+    mutated = true;
+  });
+  try {
+    stmt.bind(params);
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject());
+    }
+  } finally {
+    db.updateHook(null);
+    stmt.free();
+  }
+  return { rows, mutated };
+}
+
+function methodAssumesMutation(method: unknown): boolean {
+  // Drizzle uses `run` for non-returning writes. Returning writes use a row
+  // method (`all`/`get`) and are detected by SQLite's update hook instead.
+  return method === "run";
+}
+
+const SCHEMA_DDL = buildBrowserSchemaDdl(
+  schemaContract as unknown as BrowserSchemaContract,
+);
 const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";
+const ROLE_PROVIDERS_SETTING_KEY = "aiModel.roleProviders";
+const ROLE_MODEL_SETTING_PREFIX = "aiModel.role.";
+const BROWSER_AI_PROVIDERS = new Set<AiProvider>(BROWSER_DIRECT_AI_PROVIDERS);
+const BROWSER_WORKSPACE_PATH = "/dev/workspace";
+const TUTORIAL_PROJECT_ID = "grimodex-tutorial-project";
+
+interface BrowserSampleSeed {
+  project: {
+    title: string;
+    genre?: string | null;
+    ai_instructions?: string | null;
+  };
+  tree_nodes: Array<{
+    id: string;
+    parent_id?: string | null;
+    node_type: string;
+    title: string;
+    synopsis?: string | null;
+    sort_order: string;
+    status?: string | null;
+    content?: string | null;
+    story_time_order?: string | null;
+    story_time_label?: string | null;
+  }>;
+  codex_entries: Array<{
+    id: string;
+    type: string;
+    name: string;
+    aliases?: string | null;
+    summary?: string | null;
+    content?: string | null;
+    notes?: string | null;
+    context_mode?: string | null;
+  }>;
+  chat_sessions: Array<{
+    id: string;
+    node_id?: string | null;
+    title: string;
+    model: string;
+  }>;
+  chat_messages: Array<{
+    id: string;
+    session_id: string;
+    role: string;
+    content: string;
+  }>;
+  foreshadows: Array<{
+    id: string;
+    title: string;
+    intent?: string | null;
+    notes?: string | null;
+    payoff_scene_id?: string | null;
+  }>;
+  snippets: Array<{
+    id: string;
+    title: string;
+    content: string;
+    content_source?: string | null;
+  }>;
+  foreshadow_setups: Array<{
+    id: string;
+    foreshadow_id: string;
+    scene_id: string;
+    from_pos: number;
+    to_pos: number;
+    kind: string;
+    strength?: string | null;
+    attribution: string;
+  }>;
+  authorship_spans: Array<{
+    id: string;
+    node_id: string;
+    from_pos: number;
+    to_pos: number;
+    source: string;
+    model?: string | null;
+    timestamp?: string | null;
+  }>;
+}
+
+const SAMPLE_PROJECT_JA = sampleProjectJa as BrowserSampleSeed;
+const SAMPLE_PROJECT_EN = sampleProjectEn as BrowserSampleSeed;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Old Web Editor builds exposed desktop provider routing. Keep supported BYOK /
+ * local role selections, but remove hidden cross-provider routes that the
+ * editor-only browser runtime cannot execute. The paired model is removed too:
+ * without its provider it could otherwise be sent to the active provider under
+ * a foreign model id.
+ */
+function normalizeBrowserGlobalSettings(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isRecord(value.userPreferences)) return value;
+  const preferences = value.userPreferences;
+  const rawRoleProviders = preferences[ROLE_PROVIDERS_SETTING_KEY];
+  if (typeof rawRoleProviders !== "string") return value;
+
+  let parsedRoleProviders: unknown;
+  try {
+    parsedRoleProviders = JSON.parse(rawRoleProviders);
+  } catch {
+    return value;
+  }
+  if (!isRecord(parsedRoleProviders)) return value;
+
+  const nextRoleProviders = { ...parsedRoleProviders };
+  const nextPreferences = { ...preferences };
+  let changed = false;
+  for (const [role, override] of Object.entries(parsedRoleProviders)) {
+    if (!isRecord(override) || typeof override.provider !== "string") {
+      continue;
+    }
+    const provider = override.provider.trim() as AiProvider;
+    if (!provider || BROWSER_AI_PROVIDERS.has(provider)) continue;
+    delete nextRoleProviders[role];
+    delete nextPreferences[`${ROLE_MODEL_SETTING_PREFIX}${role}`];
+    changed = true;
+  }
+  if (!changed) return value;
+
+  nextPreferences[ROLE_PROVIDERS_SETTING_KEY] =
+    JSON.stringify(nextRoleProviders);
+  return { ...value, userPreferences: nextPreferences };
+}
+
+function defaultBrowserGlobalSettings(): Record<string, unknown> {
+  const settings: Record<string, unknown> = {
+    recentWorkspaces: [],
+    lastActiveWorkspace: null,
+    theme: "system",
+    uiLanguage: "ja",
+    uiScale: 100,
+    showLauncherOnStartup: false,
+    trustedWorkspaces: [],
+    hasSeenWelcome: false,
+  };
+  if (!isScreenshotStagingActive()) return settings;
+
+  return {
+    ...settings,
+    recentWorkspaces: [
+      {
+        path: BROWSER_WORKSPACE_PATH,
+        lastOpened: new Date().toISOString(),
+      },
+    ],
+    lastActiveWorkspace: BROWSER_WORKSPACE_PATH,
+  };
+}
+
+function seedBrowserTutorialProject(
+  db: Database,
+  language: string,
+  aiPolicy: string,
+): void {
+  const isEnglish = language === "en";
+  const seed = isEnglish ? SAMPLE_PROJECT_EN : SAMPLE_PROJECT_JA;
+  const sampleLanguage = isEnglish ? "en" : "ja";
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const emptyDoc = '{"type":"doc","content":[]}';
+  // A project switch can leave a pending renderer write that republishes an
+  // old tutorial entity under the user's active Project. Never delete that
+  // user-owned row or reuse its global primary key: each tutorial restart gets
+  // a fresh entity generation instead.
+  const entityPrefix = `${TUTORIAL_PROJECT_ID}:${crypto.randomUUID()}`;
+  const entityId = (seedId: string) => `${entityPrefix}:${seedId}`;
+
+  db.run("BEGIN IMMEDIATE");
+  try {
+    // The browser runtime owns one persistent database. Recreate only its
+    // dedicated tutorial Project so existing manuscripts remain untouched.
+    // codex entries/field definitions have RESTRICT composite FKs to
+    // codex_types, while all three tables cascade from projects. Remove both
+    // dependants first so SQLite never has to choose an unsafe cascade order
+    // during a tutorial restart.
+    db.run("DELETE FROM codex_detail_definitions WHERE project_id = ?", [
+      TUTORIAL_PROJECT_ID,
+    ]);
+    db.run("DELETE FROM codex_entries WHERE project_id = ?", [
+      TUTORIAL_PROJECT_ID,
+    ]);
+    db.run("DELETE FROM projects WHERE id = ?", [TUTORIAL_PROJECT_ID]);
+    db.run(
+      `INSERT INTO projects
+        (id, title, genre, language, ai_instructions, ai_policy, is_sample, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        TUTORIAL_PROJECT_ID,
+        seed.project.title,
+        seed.project.genre ?? null,
+        sampleLanguage,
+        seed.project.ai_instructions ?? null,
+        aiPolicy,
+        now,
+        now,
+      ],
+    );
+
+    for (const node of seed.tree_nodes) {
+      const content = node.content ?? emptyDoc;
+      db.run(
+        `INSERT INTO tree_nodes
+          (id, project_id, parent_id, node_type, title, synopsis, sort_order,
+           status, content, char_count, story_time_order, story_time_label,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(node.id),
+          TUTORIAL_PROJECT_ID,
+          node.parent_id ? entityId(node.parent_id) : null,
+          node.node_type,
+          node.title,
+          node.synopsis ?? null,
+          node.sort_order,
+          node.status ?? null,
+          content,
+          countSceneBodyCharsFromJson(content),
+          node.story_time_order ?? null,
+          node.story_time_label ?? null,
+          now,
+          now,
+        ],
+      );
+    }
+
+    for (const entry of seed.codex_entries) {
+      db.run(
+        `INSERT INTO codex_entries
+          (id, project_id, type, name, aliases, summary, content, notes,
+           context_mode, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(entry.id),
+          TUTORIAL_PROJECT_ID,
+          entry.type,
+          entry.name,
+          entry.aliases ?? null,
+          entry.summary ?? null,
+          entry.content ?? emptyDoc,
+          entry.notes ?? null,
+          entry.context_mode ?? "mentioned",
+          now,
+          now,
+        ],
+      );
+    }
+
+    for (const session of seed.chat_sessions) {
+      db.run(
+        `INSERT INTO chat_sessions
+          (id, project_id, node_id, title, model, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(session.id),
+          TUTORIAL_PROJECT_ID,
+          session.node_id ? entityId(session.node_id) : null,
+          session.title,
+          session.model,
+          now,
+          now,
+        ],
+      );
+    }
+
+    for (const message of seed.chat_messages) {
+      db.run(
+        `INSERT INTO chat_messages
+          (id, session_id, role, content, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          entityId(message.id),
+          entityId(message.session_id),
+          message.role,
+          message.content,
+          now,
+        ],
+      );
+    }
+
+    for (const foreshadow of seed.foreshadows) {
+      db.run(
+        `INSERT INTO foreshadows
+          (id, project_id, title, intent, notes, payoff_scene_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(foreshadow.id),
+          TUTORIAL_PROJECT_ID,
+          foreshadow.title,
+          foreshadow.intent ?? null,
+          foreshadow.notes ?? null,
+          foreshadow.payoff_scene_id
+            ? entityId(foreshadow.payoff_scene_id)
+            : null,
+          nowMs,
+          nowMs,
+        ],
+      );
+    }
+
+    for (const snippet of seed.snippets) {
+      db.run(
+        `INSERT INTO snippets
+          (id, project_id, title, content, content_source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(snippet.id),
+          TUTORIAL_PROJECT_ID,
+          snippet.title,
+          snippet.content,
+          snippet.content_source ?? null,
+          now,
+          now,
+        ],
+      );
+    }
+
+    for (const setup of seed.foreshadow_setups) {
+      db.run(
+        `INSERT INTO foreshadow_setups
+          (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
+           attribution, is_orphan, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [
+          entityId(setup.id),
+          entityId(setup.foreshadow_id),
+          entityId(setup.scene_id),
+          setup.from_pos,
+          setup.to_pos,
+          setup.kind,
+          setup.strength ?? null,
+          setup.attribution,
+          nowMs,
+          nowMs,
+        ],
+      );
+    }
+
+    for (const span of seed.authorship_spans) {
+      db.run(
+        `INSERT INTO authorship_spans
+          (id, node_id, from_pos, to_pos, source, model, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entityId(span.id),
+          entityId(span.node_id),
+          span.from_pos,
+          span.to_pos,
+          span.source,
+          span.model ?? null,
+          span.timestamp ?? null,
+        ],
+      );
+    }
+
+    db.run("COMMIT");
+  } catch (error) {
+    try {
+      db.run("ROLLBACK");
+    } catch {
+      // Preserve the original seeding error.
+    }
+    throw error;
+  }
+}
+
+export interface BrowserMockOptions {
+  databaseBytes?: Uint8Array;
+  onDatabaseDirty?: () => void;
+  authorizeAiRequest?: (
+    request: BrowserAiAuthorizationRequest,
+  ) => Promise<void>;
+  aiTransport?: BrowserAiTransport;
+}
+
+export interface BrowserAiAuthorizationRequest {
+  operation: BrowserAiOperation | "agent" | "connection";
+  provider: AiProvider;
+  model: string;
+  endpointId?: string | null;
+  ollamaEndpoint?: string | null;
+  baseUrl?: string | null;
+  apiVariant?: string | null;
+  hasApiKey: boolean;
+}
 
 export interface BrowserMock {
   invoke: <T = unknown>(
     cmd: string,
     args?: Record<string, unknown>,
   ) => Promise<T>;
+}
+
+export interface PersistentBrowserMock extends BrowserMock {
+  exportDatabase(): Uint8Array;
+  close(): void;
 }
 
 interface TimelapseAppendEvent {
@@ -641,166 +580,467 @@ interface TimelapseAppendEvent {
   timestamp: number;
 }
 
-export async function createBrowserMock(): Promise<BrowserMock> {
+export async function createBrowserMock(
+  options: BrowserMockOptions = {},
+): Promise<PersistentBrowserMock> {
   const SQL = await initSqlJs();
-  const db: Database = new SQL.Database();
+  const isNewDatabase = options.databaseBytes === undefined;
+  const db: Database = new SQL.Database(options.databaseBytes);
   db.run("PRAGMA foreign_keys = ON;");
-  db.run(SCHEMA_DDL);
-
-  // Seed default project only — folder/scenes are no longer auto-created
-  // so a fresh workspace stays empty (mirrors src-tauri/src/database.rs).
-  const now = new Date().toISOString();
+  if (isNewDatabase) {
+    // The ASM.js build has a fixed shared heap. A compact page size keeps
+    // repeated in-memory BrowserMock instances within that heap even with the
+    // complete renderer schema.
+    db.run("PRAGMA page_size = 1024;");
+    db.run(SCHEMA_DDL);
+  }
+  db.run(`CREATE TEMP TABLE grimodex_connection_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    epoch TEXT NOT NULL
+  )`);
   db.run(
-    "INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at) VALUES ('default-project', 'Untitled Project', 'ja', ?, ?)",
-    [now, now],
+    "INSERT INTO temp.grimodex_connection_meta (singleton, epoch) VALUES (1, ?)",
+    [crypto.randomUUID()],
   );
 
-  seedBuiltinCodexTypes(db, now);
-  if (isScreenshotStagingActive()) {
-    seedScreenshotWorkspace(db, now);
+  const now = new Date().toISOString();
+  if (isNewDatabase) {
+    // Seed default project only — folder/scenes are no longer auto-created
+    // so a fresh workspace stays empty (mirrors src-tauri/src/database.rs).
+    db.run(
+      "INSERT INTO projects (id, title, language, created_at, updated_at) VALUES ('default-project', 'Untitled Project', 'ja', ?, ?)",
+      [now, now],
+    );
+
+    seedBuiltinCodexTypes(db, now);
+    if (isScreenshotStagingActive()) {
+      await seedScreenshotWorkspace(db, now);
+    }
   }
 
   const AI_SETTINGS_KEY = "grimodex:ai-settings";
-  const API_KEY_PREFIX = "grimodex:api-key:";
+  // Browser BYOK credentials are deliberately scoped to this runtime. They
+  // are never written to localStorage or included in the persisted SQL image.
+  const apiKeys = new Map<string, string>();
+  try {
+    // Remove credentials left by older browser-mock builds. They are not
+    // imported into memory: a reload must always require the key again.
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith("grimodex:api-key:")) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+  const aiTransport = options.aiTransport ?? createBrowserAiTransport();
+  const authorizeAiRequest =
+    options.authorizeAiRequest ??
+    (async (request: BrowserAiAuthorizationRequest): Promise<void> => {
+      if (
+        browserProviderRequiresApiKey(request.provider) &&
+        !request.hasApiKey
+      ) {
+        throw new Error(
+          `AIは未接続です。APIキーを設定してください: ${request.provider}`,
+        );
+      }
+      // Keep consent UI state out of the database adapter's eager import
+      // graph. Most renderer calls are DB-only, and loading the broker only
+      // when AI is actually requested also prevents unrelated async DB reads
+      // from crossing a test/environment teardown boundary.
+      const { authorizeBrowserAiRequest } =
+        await import("@/features/ai-policy/browserAiDisclosure");
+      await authorizeBrowserAiRequest(request);
+    });
+
+  function requireBrowserAiProvider(value: unknown): AiProvider {
+    const provider = String(value ?? "").trim() as AiProvider;
+    if (!BROWSER_AI_PROVIDERS.has(provider)) {
+      throw new Error(
+        `Provider "${provider || "unknown"}" is not supported in browser mode`,
+      );
+    }
+    return provider;
+  }
+
+  function optionalString(value: unknown): string | null {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  function apiKeySlot(provider: string, endpointId?: string | null): string {
+    return endpointId ? `${provider}:${endpointId}` : provider;
+  }
+
+  const defaultBrowserAiSettings = (): Record<string, unknown> => ({
+    provider: "ollama",
+    model: "",
+    ollamaEndpoint: "http://localhost:11434",
+    thinkingEnabled: true,
+  });
+
+  function normalizeBrowserAiSettings(value: unknown): Record<string, unknown> {
+    const parsed =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    const httpSettings = { ...parsed };
+    delete httpSettings.browserAiMode;
+    const provider = String(parsed.provider ?? "").trim() as AiProvider;
+    if (BROWSER_AI_PROVIDERS.has(provider)) {
+      return {
+        ...defaultBrowserAiSettings(),
+        ...httpSettings,
+        provider,
+      };
+    }
+    // Native-only selections must never survive as an apparently connected
+    // Web Editor setting.
+    return {
+      ...defaultBrowserAiSettings(),
+      ...httpSettings,
+      provider: "ollama",
+      model: "",
+      modelApiVariant: null,
+    };
+  }
 
   function handleGetAiSettings(): Record<string, unknown> {
     try {
       const raw = localStorage.getItem(AI_SETTINGS_KEY);
-      if (raw) return JSON.parse(raw) as Record<string, unknown>;
+      if (raw) {
+        const normalized = normalizeBrowserAiSettings(JSON.parse(raw));
+        if (JSON.stringify(normalized) !== raw) {
+          localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(normalized));
+        }
+        return normalized;
+      }
     } catch {
       // noop
     }
-    return {
-      provider: "openrouter",
-      // 撮影ステージでは seedScreenshotWorkspace の chat-scene-1.model と
-      // 揃え、チャットパネルが「モデル未設定」表示にならないようにする。
-      model: isScreenshotStagingActive()
-        ? "openrouter/anthropic/claude-sonnet-4.6"
-        : "",
-      ollamaEndpoint: "http://localhost:11434",
-      thinkingEnabled: true,
-    };
+    return defaultBrowserAiSettings();
   }
 
   function handleSaveAiSettings(args: Record<string, unknown>): void {
     const settings = args.settings as Record<string, unknown>;
+    requireBrowserAiProvider(settings?.provider);
+    const normalized = normalizeBrowserAiSettings(settings);
     try {
-      localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(settings));
+      localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(normalized));
     } catch {
       // noop
     }
   }
 
   function handleSaveApiKey(args: Record<string, unknown>): void {
-    const provider = args.provider as string;
-    const key = args.key as string;
-    try {
-      localStorage.setItem(API_KEY_PREFIX + provider, key);
-    } catch {
-      // noop
+    const provider = requireBrowserAiProvider(args.provider);
+    const key = String(args.key ?? "").trim();
+    if (!provider || !key) {
+      throw new Error("provider and key are required");
     }
+    apiKeys.set(apiKeySlot(provider, optionalString(args.endpointId)), key);
   }
 
   function handleGetApiKey(args: Record<string, unknown>): string | null {
-    const provider = args.provider as string;
-    try {
-      return localStorage.getItem(API_KEY_PREFIX + provider) ?? null;
-    } catch {
-      return null;
-    }
+    const provider = requireBrowserAiProvider(args.provider);
+    const endpointId = optionalString(args.endpointId);
+    return (
+      apiKeys.get(apiKeySlot(provider, endpointId)) ??
+      apiKeys.get(apiKeySlot(provider)) ??
+      null
+    );
+  }
+
+  function hasAiProviderAccess(args: Record<string, unknown>): boolean {
+    const provider = requireBrowserAiProvider(args.provider);
+    return (
+      !browserProviderRequiresApiKey(provider) || handleGetApiKey(args) !== null
+    );
   }
 
   function handleDeleteApiKey(args: Record<string, unknown>): void {
-    const provider = args.provider as string;
-    try {
-      localStorage.removeItem(API_KEY_PREFIX + provider);
-    } catch {
-      // noop
+    const provider = requireBrowserAiProvider(args.provider);
+    const endpointId = optionalString(args.endpointId);
+    if (endpointId) {
+      apiKeys.delete(apiKeySlot(provider, endpointId));
+    } else {
+      for (const slot of apiKeys.keys()) {
+        if (slot === provider || slot.startsWith(`${provider}:`)) {
+          apiKeys.delete(slot);
+        }
+      }
     }
+  }
+
+  function resolveAiRequest(
+    args: Record<string, unknown>,
+    operation: BrowserAiOperation,
+  ): BrowserAiRequest {
+    const settings = handleGetAiSettings();
+    const provider = requireBrowserAiProvider(
+      args.resolvedProvider ?? args.provider ?? settings.provider,
+    );
+    const model =
+      optionalString(args.model) ?? optionalString(settings.model) ?? "";
+    if (!model) {
+      throw new Error(
+        "AIモデルを設定してください。AIはWeb Editorに付属していません。",
+      );
+    }
+    const requestedEndpointId = optionalString(
+      args.resolvedEndpointId ?? args.endpointId,
+    );
+    const compatibleEndpoint =
+      provider === "openai-compatible"
+        ? resolveActiveOpenaiCompatibleEndpoint(
+            settings as unknown as AiSettings,
+            requestedEndpointId,
+          )
+        : undefined;
+    const endpointId =
+      provider === "openai-compatible"
+        ? (compatibleEndpoint?.id ?? requestedEndpointId)
+        : requestedEndpointId;
+    const baseUrl = compatibleEndpoint?.baseUrl?.trim().replace(/\/+$/, "");
+    const explicitApiVariant = optionalString(args.apiVariant);
+    const persistedApiVariant =
+      provider === settings.provider
+        ? optionalString(settings.modelApiVariant)
+        : null;
+    const requestedApiVariant =
+      explicitApiVariant ??
+      (provider === "openai-compatible"
+        ? (compatibleEndpoint?.apiVariant ?? null)
+        : provider === "ai-novelist"
+          ? (persistedApiVariant ??
+            (isAinoveristV1Model(model) ? "v1" : "legacy"))
+          : persistedApiVariant);
+    // Web Editor currently implements chat-style HTTP transports, not the
+    // desktop Responses API path. Fall back explicitly instead of silently
+    // attaching a stale desktop "responses" variant to a chat request.
+    const apiVariant =
+      requestedApiVariant === "responses"
+        ? provider === "ai-novelist"
+          ? isAinoveristV1Model(model)
+            ? "v1"
+            : "legacy"
+          : null
+        : requestedApiVariant;
+    const messages = Array.isArray(args.messages)
+      ? args.messages.map((message) => {
+          const value = message as Record<string, unknown>;
+          return {
+            role: String(value.role ?? "user"),
+            content: String(value.content ?? ""),
+          };
+        })
+      : [];
+    const requestMaxOutputTokens = Number(args.requestMaxOutputTokens);
+    return {
+      operation,
+      provider,
+      model,
+      endpointId,
+      apiKey: handleGetApiKey({ provider, endpointId }) ?? undefined,
+      messages,
+      maxOutputTokens:
+        Number.isInteger(requestMaxOutputTokens) && requestMaxOutputTokens > 0
+          ? requestMaxOutputTokens
+          : null,
+      ollamaEndpoint: optionalString(settings.ollamaEndpoint),
+      baseUrl: baseUrl || null,
+      apiVariant,
+      toolProtocolMode:
+        (settings.toolProtocolMode as ToolProtocolMode | undefined) ?? "auto",
+    };
+  }
+
+  async function authorizeResolvedRequest(
+    request: BrowserAiRequest,
+    operation: BrowserAiAuthorizationRequest["operation"] = request.operation,
+  ): Promise<void> {
+    await authorizeAiRequest({
+      operation,
+      provider: request.provider,
+      model: request.model,
+      endpointId: request.endpointId,
+      ollamaEndpoint: request.ollamaEndpoint,
+      baseUrl: request.baseUrl,
+      apiVariant: request.apiVariant,
+      hasApiKey: Boolean(request.apiKey),
+    });
   }
 
   async function handleListAiModels(
     args: Record<string, unknown>,
   ): Promise<Array<{ id: string; name: string }>> {
     const settings = handleGetAiSettings();
-    const provider = (args.provider ?? settings.provider) as AiProvider;
-    const apiKey = handleGetApiKey({ provider })?.toString() ?? "";
+    const provider = requireBrowserAiProvider(
+      args.provider ?? settings.provider,
+    );
+    const endpointId = optionalString(args.endpointId);
+    const ollamaEndpoint = optionalString(settings.ollamaEndpoint);
+    const compatibleEndpoint =
+      provider === "openai-compatible"
+        ? resolveActiveOpenaiCompatibleEndpoint(
+            settings as unknown as AiSettings,
+            endpointId,
+          )
+        : undefined;
+    const resolvedEndpointId =
+      provider === "openai-compatible"
+        ? (compatibleEndpoint?.id ?? endpointId)
+        : endpointId;
+    const baseUrl =
+      compatibleEndpoint?.baseUrl?.trim().replace(/\/+$/, "") ?? null;
+    const apiKey =
+      handleGetApiKey({ provider, endpointId: resolvedEndpointId }) ?? "";
+    await authorizeAiRequest({
+      operation: "connection",
+      provider,
+      model: "",
+      endpointId: resolvedEndpointId,
+      ollamaEndpoint,
+      baseUrl,
+      apiVariant: compatibleEndpoint?.apiVariant ?? null,
+      hasApiKey: Boolean(apiKey),
+    });
 
-    try {
-      return await fetchModels(provider, apiKey);
-    } catch {
-      // Fallback to static list if fetch fails
-      return [
-        { id: "openrouter/auto", name: "Auto (OpenRouter)" },
-        { id: "openai/gpt-4o", name: "GPT-4o" },
-        { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-      ];
+    const listRequest: BrowserAiRequest = {
+      operation: "chat",
+      provider,
+      model: "",
+      apiKey,
+      messages: [],
+      ollamaEndpoint,
+      baseUrl,
+      apiVariant: compatibleEndpoint?.apiVariant ?? null,
+    };
+    if (aiTransport.listModels) {
+      return aiTransport.listModels(listRequest);
     }
+    return fetchModels(provider, apiKey, listRequest);
   }
 
   async function handleTestAiConnection(
     args: Record<string, unknown>,
   ): Promise<string> {
     const provider = args.provider as AiProvider;
-    const model = args.model as string;
-    const apiKey = handleGetApiKey({ provider })?.toString() ?? "";
-
-    if (!apiKey && provider !== "ollama") {
-      throw new Error(`APIキーが設定されていません: ${provider}`);
-    }
-
-    return testConnection(provider, model, apiKey);
+    const request = resolveAiRequest(
+      {
+        ...args,
+        provider,
+        messages: [
+          { role: "user", content: "Reply with exactly: Connection OK" },
+        ],
+      },
+      "chat",
+    );
+    await authorizeResolvedRequest(request, "connection");
+    return testConnection(
+      request.provider,
+      request.model,
+      request.apiKey ?? "",
+      {
+        ollamaEndpoint: request.ollamaEndpoint,
+        baseUrl: request.baseUrl,
+        apiVariant: request.apiVariant,
+      },
+    );
   }
 
   async function handleSendChatMessage(
     args: Record<string, unknown>,
-  ): Promise<string> {
-    const settings = handleGetAiSettings();
-    const provider = settings.provider as AiProvider;
-    const model = settings.model as string;
-    const apiKey = handleGetApiKey({ provider })?.toString() ?? "";
-
-    if (!apiKey && provider !== "ollama") {
-      return "[browser-mock] AIは未接続です。AI設定からAPIキーを設定してください。";
-    }
-
-    const messages = args.messages as Array<{ role: string; content: string }>;
-    return sendChat(provider, model, apiKey, messages);
+  ): Promise<Awaited<ReturnType<BrowserAiTransport["complete"]>>> {
+    const request = resolveAiRequest(args, "chat");
+    await authorizeResolvedRequest(request);
+    return aiTransport.complete(request);
   }
 
   async function handleSendAgentMessage(
     args: Record<string, unknown>,
   ): Promise<unknown> {
-    const settings = handleGetAiSettings();
-    const provider = settings.provider as AiProvider;
-    const model = settings.model as string;
-    const apiKey = handleGetApiKey({ provider })?.toString() ?? "";
-
-    if (!apiKey && provider !== "ollama") {
-      return {
-        blocks: [
-          {
-            type: "text",
-            content:
-              "[browser-mock] AIは未接続です。AI設定からAPIキーを設定してください。",
-          },
-        ],
-        stopReason: "end_turn",
-      };
-    }
+    const request = resolveAiRequest(args, "chat");
+    await authorizeResolvedRequest(request, "agent");
 
     const messages = args.messages as AgentMessagePayload[];
     const tools = args.tools as AgentToolDefinition[];
-    const toolProtocolMode =
-      (settings.toolProtocolMode as ToolProtocolMode | undefined) ?? "auto";
+    if (aiTransport.completeAgent) {
+      return aiTransport.completeAgent(request, messages, tools);
+    }
     return sendChatWithTools(
-      provider,
-      model,
-      apiKey,
+      request.provider,
+      request.model,
+      request.apiKey ?? "",
       messages,
       tools,
-      toolProtocolMode,
+      request.toolProtocolMode ?? "auto",
+      {
+        ollamaEndpoint: request.ollamaEndpoint,
+        baseUrl: request.baseUrl,
+        apiVariant: request.apiVariant,
+      },
     );
+  }
+
+  function emitBrowserAiEvent(
+    channel: string,
+    detail: Record<string, unknown>,
+  ): void {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent(channel, { detail }));
+  }
+
+  async function handleAiStream(
+    args: Record<string, unknown>,
+    operation: BrowserAiOperation,
+  ): Promise<void> {
+    const request = resolveAiRequest(args, operation);
+    await authorizeResolvedRequest(request);
+    const channel = operation === "chat" ? "chat" : "inline-ai";
+    let doneEmitted = false;
+    const sink: BrowserAiStreamSink = {
+      text(delta, blockType = "text") {
+        if (!delta) return;
+        emitBrowserAiEvent(`${channel}:stream-chunk`, {
+          delta,
+          block_type: blockType,
+        });
+      },
+      done(payload) {
+        if (doneEmitted) return;
+        doneEmitted = true;
+        emitBrowserAiEvent(`${channel}:stream-done`, {
+          stop_reason: payload.stopReason,
+          input_tokens: payload.inputTokens ?? null,
+          output_tokens: payload.outputTokens ?? null,
+        });
+      },
+    };
+
+    try {
+      if (aiTransport.stream) {
+        await aiTransport.stream(request, sink);
+      } else {
+        const response = await aiTransport.complete(request);
+        for (const block of response.blocks) {
+          if (block.type === "text" || block.type === "thinking") {
+            sink.text(block.content, block.type);
+          }
+        }
+        sink.done({
+          stopReason: response.stopReason,
+          inputTokens: response.inputTokens,
+          outputTokens: response.outputTokens,
+        });
+      }
+      if (!doneEmitted) sink.done({ stopReason: "end_turn" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emitBrowserAiEvent(`${channel}:stream-error`, { message });
+      throw error;
+    }
   }
 
   function handleDbExecute(args: Record<string, unknown>): {
@@ -808,18 +1048,77 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   } {
     const sql = args.sql as string;
     const params = args.params as SqlValue[];
+    const result = executeBrowserDbStatement(db, sql, params);
 
-    const stmt = db.prepare(sql);
-    stmt.bind(params);
-
-    const rows: Record<string, unknown>[] = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
-      rows.push(row);
+    if (methodAssumesMutation(args.method) || result.mutated) {
+      options.onDatabaseDirty?.();
     }
-    stmt.free();
 
-    return { rows };
+    return { rows: result.rows };
+  }
+
+  function handleFtsSearch(args: Record<string, unknown>): Array<{
+    sourceType: "scene" | "codex" | "snippet";
+    id: string;
+    title: string;
+    excerpt: string;
+  }> {
+    const projectId = String(args.projectId ?? "default-project");
+    const query = String(args.query ?? "").trim();
+    const limit = Math.max(1, Number(args.limit ?? 50));
+    if (!query) return [];
+
+    const like = `%${query}%`;
+    const result = handleDbExecute({
+      sql: `SELECT 'scene' AS source_type, id, title,
+                   COALESCE(synopsis, '') AS excerpt
+              FROM tree_nodes
+             WHERE project_id = ? AND node_type = 'scene'
+               AND (title LIKE ? OR COALESCE(synopsis, '') LIKE ? OR content LIKE ?)
+            UNION ALL
+            SELECT 'codex' AS source_type, id, name AS title,
+                   COALESCE(summary, '') AS excerpt
+              FROM codex_entries
+             WHERE project_id = ?
+               AND (name LIKE ? OR COALESCE(summary, '') LIKE ? OR content LIKE ?)
+            UNION ALL
+            SELECT 'snippet' AS source_type, id, title,
+                   content AS excerpt
+              FROM snippets
+             WHERE project_id = ?
+               AND (title LIKE ? OR content LIKE ?)
+            LIMIT ?`,
+      params: [
+        projectId,
+        like,
+        like,
+        like,
+        projectId,
+        like,
+        like,
+        like,
+        projectId,
+        like,
+        like,
+        limit,
+      ],
+    });
+
+    return result.rows.map((row) => {
+      const sourceType = String(row.source_type) as
+        | "scene"
+        | "codex"
+        | "snippet";
+      return {
+        sourceType,
+        id: String(row.id),
+        title: String(row.title),
+        excerpt:
+          sourceType === "snippet"
+            ? proseDocText(row.excerpt)
+            : String(row.excerpt),
+      };
+    });
   }
 
   function handleDbExecuteBatch(args: Record<string, unknown>): {
@@ -832,15 +1131,17 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     }[];
     db.run("BEGIN");
     let last: Record<string, unknown>[] = [];
+    let mutated = false;
     try {
       for (const s of statements) {
-        last = handleDbExecute({
-          sql: s.sql,
-          params: s.params,
-          method: s.method,
-        }).rows;
+        const result = executeBrowserDbStatement(db, s.sql, s.params);
+        last = result.rows;
+        mutated ||= methodAssumesMutation(s.method) || result.mutated;
       }
       db.run("COMMIT");
+      if (mutated) {
+        options.onDatabaseDirty?.();
+      }
     } catch (e) {
       try {
         db.run("ROLLBACK");
@@ -963,6 +1264,9 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         insertedCount += 1;
       }
       db.run("COMMIT");
+      if (insertedCount > 0) {
+        options.onDatabaseDirty?.();
+      }
       return {
         insertedCount,
         tailSequence: sequence,
@@ -984,34 +1288,41 @@ export async function createBrowserMock(): Promise<BrowserMock> {
       if (raw) {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         const recent = parsed.recentWorkspaces as unknown[];
-        // If stored settings have workspaces, use them as-is
-        if (Array.isArray(recent) && recent.length > 0) {
-          return parsed;
+        // Reuse the workspace while removing legacy desktop-only provider
+        // routes that old Web Editor builds may have persisted.
+        if (Array.isArray(recent)) {
+          const normalized = normalizeBrowserGlobalSettings(parsed);
+          if (normalized !== parsed) {
+            localStorage.setItem(
+              GLOBAL_SETTINGS_KEY,
+              JSON.stringify(normalized),
+            );
+          }
+          return normalized;
         }
       }
     } catch {
       // noop
     }
-    // Auto-seed a dev workspace so browser preview skips folder selection
-    const devWorkspace = "/dev/workspace";
-    const devSettings: Record<string, unknown> = {
-      recentWorkspaces: [
-        { path: devWorkspace, lastOpened: new Date().toISOString() },
-      ],
-      lastActiveWorkspace: devWorkspace,
-      theme: "system",
-      showLauncherOnStartup: false,
-    };
+    // Normal Web Editor launches mirror native first-run settings so the
+    // preflight/tutorial is reachable. Screenshot staging intentionally keeps
+    // its automatic workspace bootstrap for deterministic captures.
+    const defaultSettings = defaultBrowserGlobalSettings();
     try {
-      localStorage.setItem(GLOBAL_SETTINGS_KEY, JSON.stringify(devSettings));
+      localStorage.setItem(
+        GLOBAL_SETTINGS_KEY,
+        JSON.stringify(defaultSettings),
+      );
     } catch {
       // noop
     }
-    return devSettings;
+    return defaultSettings;
   }
 
   function handleSaveGlobalSettings(args: Record<string, unknown>): void {
-    const settings = args.settings as Record<string, unknown>;
+    const settings = normalizeBrowserGlobalSettings(
+      args.settings as Record<string, unknown>,
+    );
     try {
       localStorage.setItem(GLOBAL_SETTINGS_KEY, JSON.stringify(settings));
     } catch {
@@ -1062,6 +1373,30 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     return { name, isExisting: false };
   }
 
+  function handleSeedSampleWorkspace(args: Record<string, unknown>): {
+    path: string;
+    projectId: string;
+  } {
+    const language = args.language === "en" ? "en" : "ja";
+    const aiPolicy =
+      typeof args.aiPolicy === "string" ? args.aiPolicy : '{"preset":"off"}';
+    seedBrowserTutorialProject(db, language, aiPolicy);
+    options.onDatabaseDirty?.();
+
+    const settings = handleGetGlobalSettings();
+    const path =
+      typeof settings.lastActiveWorkspace === "string"
+        ? settings.lastActiveWorkspace
+        : BROWSER_WORKSPACE_PATH;
+    handleSaveGlobalSettings({
+      settings: {
+        ...settings,
+        sampleWorkspacePath: path,
+      },
+    });
+    return { path, projectId: TUTORIAL_PROJECT_ID };
+  }
+
   async function invoke<T = unknown>(
     cmd: string,
     args: Record<string, unknown> = {},
@@ -1076,16 +1411,92 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleValidateWorkspacePath() as T;
       case "open_workspace":
         return handleOpenWorkspace(args) as T;
+      case "seed_sample_workspace":
+        return handleSeedSampleWorkspace(args) as T;
       case "get_mcp_config":
         return handleGetMcpConfig() as T;
-      case "set_window_vibrancy":
-        return undefined as T;
       case "db_execute":
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "vacuum_database":
+        db.run("VACUUM");
+        options.onDatabaseDirty?.();
+        return undefined as T;
+      case "fts_search":
+        return handleFtsSearch(args) as T;
+      case "semantic_search":
+      case "codex_semantic_search":
+      case "events_semantic_search":
+      case "chat_message_search":
+        // Hosted Editor has no local embedding model. Dense search is an
+        // explicit empty arm; fts_search above remains a real SQL LIKE arm.
+        return [] as T;
+      case "semantic_index_scene":
+      case "semantic_reindex_all":
+      case "codex_index_entry":
+      case "codex_reindex_all":
+      case "events_index_entry":
+      case "events_reindex_all":
+      case "chat_index_message":
+      case "chat_reindex_all":
+        return 0 as T;
+      case "semantic_download_model":
+        return "unavailable" as T;
+      case "semantic_index_status":
+        return {
+          indexedChunkCount: 0,
+          staleChunkCount: 0,
+          indexedSceneCount: 0,
+          nonemptySceneCount: 0,
+          currentModelId: "",
+          currentEmbeddingDim: 0,
+          currentChunkerVersion: "",
+        } as T;
+      case "codex_index_status":
+        return { indexedEntryCount: 0, totalEntryCount: 0 } as T;
+      case "events_index_status":
+        return { indexedEventCount: 0, totalEventCount: 0 } as T;
+      case "chat_index_status":
+        return { indexedMessageCount: 0, totalMessageCount: 0 } as T;
+      case "semantic_chunk_context":
+        return {
+          before: "",
+          chunk: "",
+          after: "",
+          sceneTitle: "",
+        } as T;
+      case "semantic_debug_dump":
+        return {
+          projectId: String(args.projectId ?? "default-project"),
+          language: "",
+          currentModelId: "",
+          currentEmbeddingDim: 0,
+          currentChunkerVersion: "",
+          totalChunks: 0,
+          returnedChunks: 0,
+          chunks: [],
+        } as T;
       case "timelapse_append_batch":
         return (await handleTimelapseAppendBatch(args)) as T;
+      case "ime_export_get_status":
+      case "ime_export_refresh":
+      case "ime_export_set_active_project":
+        // Browser preview has no native filesystem. Keep the complete invoke
+        // contract while making the feature an explicit, side-effect-free no-op.
+        return {
+          rootPath: "",
+          consumers: [],
+          activeProjectId: null,
+          exportedProjectCount: 0,
+          effectiveEnabled: false,
+        } as T;
+      case "ime_export_clear_all":
+      case "ime_export_remove_project":
+        return null as T;
+      case "open_log_dir":
+        // ブラウザではファイルマネージャを開けない。no-op で成功扱い。
+        return undefined as T;
       case "get_ai_settings":
         return handleGetAiSettings() as T;
       case "save_ai_settings":
@@ -1095,9 +1506,9 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         handleSaveApiKey(args);
         return undefined as T;
       case "has_api_key":
-        // 本物の IPC と同様、キー本体は renderer に渡さず有無のみ返す。
-        // (mock 内部の AI 呼び出しは handleGetApiKey で localStorage を直接読む)
-        return (handleGetApiKey(args) !== null) as T;
+        // 本物の IPC と同様、renderer には利用可否だけを返す。BYOK key
+        // 本体は runtime-local Map から外へ公開しない。
+        return hasAiProviderAccess(args) as T;
       case "delete_api_key":
         handleDeleteApiKey(args);
         return undefined as T;
@@ -1107,21 +1518,33 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return (await handleTestAiConnection(args)) as T;
       case "send_chat_message":
         return (await handleSendChatMessage(args)) as T;
+      case "send_chat_message_stream":
+        await handleAiStream(args, "chat");
+        return undefined as T;
+      case "abort_chat_stream":
+        aiTransport.abort?.("chat");
+        return undefined as T;
       case "send_inline_ai_stream":
-        // ブラウザモックではストリーミング未対応（Tauri イベントエミッタがないため）。
-        // 設計書に合わせ、呼び出しをエラー扱いせずに no-op で完了させ、
-        // Rust 側と同様に送信イベントは発火しない状態とする。
+        await handleAiStream(args, "inline");
         return undefined as T;
       case "abort_inline_ai_stream":
+        aiTransport.abort?.("inline");
+        return undefined as T;
+      case "detect_cli_binary":
+        return null as T;
+      case "list_cli_models":
+        return [] as T;
+      case "test_cli_connection":
+        throw new Error("CLI subprocess is unavailable in browser mock");
+      case "send_cli_chat_stream":
+      case "abort_cli_chat_stream":
         return undefined as T;
       case "list_post_effect_runs":
         return [] as T;
-      case "get_post_effect_run":
-        return {
-          run: null,
-          annotations: getScreenshotAnnotations(now),
-          relations: [],
-        } as T;
+      case "list_scene_lens_for_project":
+        // Lens overlays are generated by the native post-effect pipeline.
+        // Browser editing remains functional with an explicitly empty lens.
+        return [] as T;
       case "list_annotations_for_scene":
         return {
           annotations: getScreenshotAnnotations(now).filter(
@@ -1163,8 +1586,6 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return undefined as T;
       case "external_mount_read_file":
         return "" as T;
-      case "external_mount_list":
-        return [] as T;
       case "external_mount_scan":
         return { dirs: [], files: [] } as T;
       default:
@@ -1172,7 +1593,23 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     }
   }
 
-  return { invoke };
+  let isClosed = false;
+
+  function exportDatabase(): Uint8Array {
+    return db.export();
+  }
+
+  function close(): void {
+    if (isClosed) return;
+    aiTransport.abort?.("chat");
+    aiTransport.abort?.("inline");
+    aiTransport.dispose?.();
+    apiKeys.clear();
+    db.close();
+    isClosed = true;
+  }
+
+  return { invoke, exportDatabase, close };
 }
 
 function proseDoc(lines: string[]): string {
@@ -1183,6 +1620,22 @@ function proseDoc(lines: string[]): string {
       content: [{ type: "text", text }],
     })),
   });
+}
+
+function proseDocText(raw: unknown): string {
+  try {
+    const parts: string[] = [];
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const value = node as { text?: unknown; content?: unknown };
+      if (typeof value.text === "string") parts.push(value.text);
+      if (Array.isArray(value.content)) value.content.forEach(visit);
+    };
+    visit(JSON.parse(String(raw)));
+    return parts.join(" ");
+  } catch {
+    return String(raw ?? "");
+  }
 }
 
 function getScreenshotAnnotations(now: string) {
@@ -1218,7 +1671,7 @@ function getScreenshotAnnotations(now: string) {
           confidence: "high",
           llm_reason: compassDry.llmReason,
           dismiss_key: compassDry.dismissKey,
-          detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
+          detected_by_model: "qwen3:30b",
         },
       }),
       createdAt: now,
@@ -1246,7 +1699,7 @@ function getScreenshotAnnotations(now: string) {
         found_context: foreignMemory.foundContext,
         llm_reason: foreignMemory.llmReason,
         dismiss_key: foreignMemory.dismissKey,
-        detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
+        detected_by_model: "qwen3:30b",
       }),
       createdAt: now,
       updatedAt: now,
@@ -1340,7 +1793,10 @@ function seedBuiltinCodexTypes(db: Database, now: string): void {
   stmt.free();
 }
 
-function seedScreenshotWorkspace(db: Database, now: string): void {
+async function seedScreenshotWorkspace(
+  db: Database,
+  now: string,
+): Promise<void> {
   const lang = getScreenshotLanguage();
   const c = SCREENSHOT_SEED_CONTENT[lang];
   db.run(
@@ -1378,6 +1834,13 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "a0",
       null,
       null,
+      null,
+      null,
+      "none",
+      null,
+      null,
+      "none",
+      "exact",
       "outline",
       "{}",
       0,
@@ -1391,6 +1854,13 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "a0",
       "a0",
       c.scenes.scene1.storyTimeLabel,
+      150,
+      null,
+      "day",
+      null,
+      null,
+      "none",
+      "exact",
       "draft",
       sceneContent,
       c.scenes.scene1.charCount,
@@ -1404,6 +1874,13 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "a1",
       "a1",
       c.scenes.scene2.storyTimeLabel,
+      151,
+      null,
+      "day",
+      null,
+      null,
+      "none",
+      "exact",
       "outline",
       proseDoc(c.scenes.scene2.body),
       c.scenes.scene2.charCount,
@@ -1417,6 +1894,13 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "a2",
       "a2",
       c.scenes.scene3.storyTimeLabel,
+      100,
+      null,
+      "day",
+      null,
+      null,
+      "none",
+      "approx",
       "outline",
       proseDoc(c.scenes.scene3.body),
       c.scenes.scene3.charCount,
@@ -1426,9 +1910,12 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
   const nodeStmt = db.prepare(
     `INSERT OR IGNORE INTO tree_nodes
       (id, project_id, parent_id, node_type, title, synopsis, sort_order,
-       story_time_order, story_time_label, status, content, char_count,
+       story_time_order, story_time_label, chronicle_start_time,
+       chronicle_start_minute, chronicle_start_granularity,
+       chronicle_end_time, chronicle_end_minute, chronicle_end_granularity,
+       chronicle_precision, status, content, char_count,
        unplaced_beats_doc, created_at, updated_at)
-     VALUES (?, 'default-project', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
+     VALUES (?, 'default-project', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
   );
   nodes.forEach((row) => nodeStmt.run([...row, now, now]));
   nodeStmt.free();
@@ -1489,6 +1976,95 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
     ]);
   });
   codexStmt.free();
+
+  const chronicleRows = [
+    [
+      "shot-event-fire",
+      c.chronicle.fire.title,
+      c.chronicle.fire.note,
+      "a0",
+      "codex-akane",
+      "codex-haisha",
+      100,
+      null,
+      "day",
+      "none",
+      "approx",
+    ],
+    [
+      "shot-event-departure",
+      c.chronicle.departure.title,
+      c.chronicle.departure.note,
+      "a1",
+      "codex-akane",
+      "codex-haisha",
+      102,
+      null,
+      "day",
+      "none",
+      "exact",
+    ],
+    [
+      "shot-event-return",
+      c.chronicle.returnHome.title,
+      c.chronicle.returnHome.note,
+      "a2",
+      "codex-akane",
+      "codex-haisha",
+      150,
+      null,
+      "day",
+      "none",
+      "exact",
+    ],
+    [
+      "shot-event-awakening",
+      c.chronicle.awakening.title,
+      c.chronicle.awakening.note,
+      "a3",
+      "codex-akahimo",
+      "codex-haisha",
+      151,
+      153,
+      "day",
+      "day",
+      "unknown",
+    ],
+  ];
+  const chronicleStmt = db.prepare(
+    `INSERT OR IGNORE INTO events
+      (id, project_id, title, note, ordinal, primary_codex_id,
+       location_codex_id, start_time, end_time, start_granularity,
+       end_granularity, precision, kind, secret, created_at, updated_at)
+     VALUES (?, 'default-project', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+       'generic', 0, ?, ?)`,
+  );
+  chronicleRows.forEach((row) => chronicleStmt.run([...row, now, now]));
+  chronicleStmt.free();
+
+  db.run(
+    `INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+     VALUES
+      ('shot-event-fire', 'codex-akane', 'witness'),
+      ('shot-event-departure', 'codex-akane', 'subject'),
+      ('shot-event-return', 'codex-akane', 'subject'),
+      ('shot-event-return', 'codex-otowa', 'witness'),
+      ('shot-event-awakening', 'codex-akahimo', 'source')`,
+  );
+  db.run(
+    `INSERT OR IGNORE INTO scene_events (scene_id, event_id)
+     VALUES
+      ('scene-1', 'shot-event-return'),
+      ('scene-2', 'shot-event-awakening')`,
+  );
+  db.run(
+    `INSERT OR IGNORE INTO event_relations
+      (project_id, cause_event_id, effect_event_id)
+     VALUES
+      ('default-project', 'shot-event-fire', 'shot-event-departure'),
+      ('default-project', 'shot-event-departure', 'shot-event-return'),
+      ('default-project', 'shot-event-return', 'shot-event-awakening')`,
+  );
 
   db.run(
     `UPDATE tree_nodes SET pov_character_id = ?, location_id = ? WHERE id = 'scene-1'`,
@@ -1647,7 +2223,7 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
     `INSERT OR IGNORE INTO chat_sessions
       (id, project_id, node_id, title, title_manual, model, created_at, updated_at)
      VALUES ('chat-scene-1', 'default-project', 'scene-1', ?, 1,
-       'openrouter/anthropic/claude-sonnet-4.6', ?, ?)`,
+       'qwen3:30b', ?, ?)`,
     [c.chat.sessionTitle, now, now],
   );
   const msgStmt = db.prepare(
@@ -1671,7 +2247,7 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
     "chat-message-assistant-1",
     "assistant",
     c.chat.assistantMsg,
-    "openrouter/anthropic/claude-sonnet-4.6",
+    "qwen3:30b",
     820,
     118,
     1320,
@@ -1692,7 +2268,6 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
 
   db.run(
     `INSERT OR REPLACE INTO app_settings (key, value) VALUES
-      ('display.glassEffectEnabled', 'false'),
       ('display.reduceMotion', 'true')`,
   );
 
@@ -1741,10 +2316,10 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       (id, node_id, codex_entry_id, snippet_id, detail_value_id, from_pos, to_pos, source, model, timestamp, chat_msg_id, phase_id, sticky_id)
      VALUES
       ('shot-auth-s1a', 'scene-1', NULL, NULL, NULL, 0, ?, 'human', NULL, ?, NULL, NULL, NULL),
-      ('shot-auth-s1b', 'scene-1', NULL, NULL, NULL, ?, ?, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL),
+      ('shot-auth-s1b', 'scene-1', NULL, NULL, NULL, ?, ?, 'ai', 'qwen3:30b', ?, NULL, NULL, NULL),
       ('shot-auth-s1c', 'scene-1', NULL, NULL, NULL, ?, ?, 'unknown', NULL, ?, NULL, NULL, NULL),
       ('shot-auth-s2a', 'scene-2', NULL, NULL, NULL, 0, ?, 'human', NULL, ?, NULL, NULL, NULL),
-      ('shot-auth-s3a', 'scene-3', NULL, NULL, NULL, 0, ?, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL)`,
+      ('shot-auth-s3a', 'scene-3', NULL, NULL, NULL, 0, ?, 'ai', 'qwen3:30b', ?, NULL, NULL, NULL)`,
     [
       c.authorship.scene1.humanTo,
       now,
@@ -1760,4 +2335,62 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       now,
     ],
   );
+
+  // 執筆統計パネル用。直近5日の連続執筆と疎な過去日の両方を作り、
+  // streak・集計カード・ヒートマップが一枚で確認できるようにする。
+  const writingDayOffsets = [0, 1, 2, 3, 4, 6, 7, 9, 12, 16, 24, 35, 52, 84];
+  const nowMs = new Date(now).getTime();
+  const dayMs = 86_400_000;
+  const writingEventStmt = db.prepare(
+    `INSERT OR IGNORE INTO change_events
+      (event_uid, project_id, scene_id, domain, op_type, entity_type,
+       entity_id, payload, session_id, sequence, timestamp, prev_hash, hash)
+     VALUES (?, 'default-project', ?, 'editor', 'doc.change', 'scene', ?, ?,
+       'shot-writing-session', ?, ?, ?, ?)`,
+  );
+  let prevHash = bytesToHex(GENESIS_HASH);
+  for (const [index, dayOffset] of writingDayOffsets.entries()) {
+    const sceneId = `scene-${(index % 3) + 1}`;
+    const source = c.scenes.scene1.body[index % c.scenes.scene1.body.length];
+    const insertedText = source.repeat((index % 3) + 1);
+    const sequence = index + 1;
+    const timestamp = nowMs - dayOffset * dayMs;
+    const payload = JSON.stringify({
+      steps: [
+        {
+          stepType: "replace",
+          from: 1,
+          to: 1,
+          slice: { content: [{ type: "text", text: insertedText }] },
+        },
+      ],
+    });
+    const hash = bytesToHex(
+      await computeEventHash({
+        projectId: "default-project",
+        sceneId,
+        domain: "editor",
+        opType: "doc.change",
+        entityType: "scene",
+        entityId: sceneId,
+        payload,
+        sessionId: "shot-writing-session",
+        sequence,
+        timestamp,
+        prevHash: hexToBytes(prevHash),
+      }),
+    );
+    writingEventStmt.run([
+      `shot-writing-${sequence}`,
+      sceneId,
+      sceneId,
+      payload,
+      sequence,
+      timestamp,
+      prevHash,
+      hash,
+    ]);
+    prevHash = hash;
+  }
+  writingEventStmt.free();
 }

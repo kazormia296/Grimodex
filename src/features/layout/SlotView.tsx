@@ -16,8 +16,9 @@ export const SlotView = memo(function SlotView({ panelId }: SlotViewProps) {
   return (
     <div
       data-slot-panel={panelId}
+      data-ambient-glass-surface="panel"
       className={cn(
-        "gx-panel glass-region-panel flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden",
+        "gx-panel flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden",
         isDragging && "gx-panel--dragging",
       )}
     >

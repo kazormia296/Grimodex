@@ -47,14 +47,28 @@ interface SwapPlan {
   secondSize: number;
 }
 
-/** カーソル直下の最上位ブロックと隣ブロックを入れ替える計画を組む。不可なら null。 */
-function planSwap(state: EditorState, dir: -1 | 1): SwapPlan | null {
+/**
+ * ブロックと隣ブロックを入れ替える計画を組む。不可なら null。
+ * indexOverride 省略時はカーソル直下の最上位ブロックを対象にする。
+ * indexOverride 指定時（ドラッグ）は選択に依らず任意ブロックを対象にできる。
+ */
+function planSwap(
+  state: EditorState,
+  dir: -1 | 1,
+  indexOverride?: number,
+): SwapPlan | null {
   const { selection, doc } = state;
-  const { $from, $to } = selection;
-  if ($from.depth === 0) return null;
-  const index = $from.index(0);
-  // 複数の最上位ブロックに跨る選択は対象外（どのブロックを動かすか曖昧）。
-  if ($to.index(0) !== index) return null;
+  let index: number;
+  if (indexOverride !== undefined) {
+    if (indexOverride < 0 || indexOverride >= doc.childCount) return null;
+    index = indexOverride;
+  } else {
+    const { $from, $to } = selection;
+    if ($from.depth === 0) return null;
+    index = $from.index(0);
+    // 複数の最上位ブロックに跨る選択は対象外（どのブロックを動かすか曖昧）。
+    if ($to.index(0) !== index) return null;
+  }
 
   const swapWith = index + dir;
   if (swapWith < 0 || swapWith >= doc.childCount) return null;
@@ -177,6 +191,66 @@ function animatedMove(editor: Editor, dir: -1 | 1): boolean {
   if (animate) {
     // editor.commands.* の戻り後は DOM が新状態に反映済み。新位置の要素を旧位置から
     // スライドさせる。
+    flipBlock(view, plan.currentAfter, beforeCurrent);
+    flipBlock(view, plan.neighborAfter, beforeNeighbor);
+  }
+  return true;
+}
+
+/** 最上位ブロック index の DOM 矩形（view.dom 基準）。 */
+export function blockRectAtIndex(
+  view: EditorView,
+  index: number,
+): DOMRect | null {
+  const { doc } = view.state;
+  if (index < 0 || index >= doc.childCount) return null;
+  let pos = 0;
+  for (let i = 0; i < index; i++) pos += doc.child(i).nodeSize;
+  const offset = blockOffset(view, pos);
+  if (!offset) return null;
+  const base = view.dom.getBoundingClientRect();
+  return new DOMRect(
+    base.left + offset.left,
+    base.top + offset.top,
+    offset.el.offsetWidth,
+    offset.el.offsetHeight,
+  );
+}
+
+/**
+ * 指定 index の最上位ブロックを隣ブロック(dir)と入れ替える（ドラッグ用）。
+ * caret は動かさず transaction の mapping に委ねる（ドラッグ中に別位置の
+ * キャレットを奪わないため）。animate=true なら各 swap に FLIP を掛ける。
+ * 成否を返す。
+ */
+export function swapBlockAt(
+  view: EditorView,
+  index: number,
+  dir: -1 | 1,
+  options?: { animate?: boolean },
+): boolean {
+  const plan = planSwap(view.state, dir, index);
+  if (!plan) return false;
+
+  const animate =
+    options?.animate === true &&
+    !isReducedMotion() &&
+    typeof view.dom.animate === "function";
+  const beforeCurrent = animate ? blockOffset(view, plan.currentBefore) : null;
+  const beforeNeighbor = animate
+    ? blockOffset(view, plan.neighborBefore)
+    : null;
+
+  const tr = view.state.tr;
+  tr.replaceWith(plan.start, plan.end, plan.fragment);
+  tr.setMeta("codexHighlightReorder", {
+    start: plan.start,
+    firstSize: plan.firstSize,
+    secondSize: plan.secondSize,
+  });
+  view.dispatch(tr);
+
+  if (animate) {
     flipBlock(view, plan.currentAfter, beforeCurrent);
     flipBlock(view, plan.neighborAfter, beforeNeighbor);
   }

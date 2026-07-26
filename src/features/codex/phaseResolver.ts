@@ -1,8 +1,26 @@
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { compareInstantValues } from "@/lib/time";
+import {
+  buildReadingOrder,
+  buildSceneTimeIndex,
+  linearizeSceneTimeIndex,
+  type PhaseResolutionMode,
+  type ResolutionAxis,
+  type SceneTimeIndex,
+  type TemporalAnchor,
+} from "./context/sceneTimeIndex";
+import {
+  resolveApplicablePhases,
+  type PhaseFallbackReason,
+} from "./context/resolveApplicablePhases";
 
-export type PhaseResolutionMode = "reading" | "story" | "auto";
+export type {
+  PhaseResolutionMode,
+  ResolutionAxis,
+  SceneTimeIndex,
+  TemporalAnchor,
+};
 
 export interface ResolvedCodexState {
   summary: string | null;
@@ -10,6 +28,10 @@ export interface ResolvedCodexState {
   contextMode: string;
   detailValues: Map<string, string | null>; // definitionId → value
   appliedPhaseIds: string[]; // 適用されたフェーズのIDリスト（デバッグ用）
+  activePhaseId: string | null;
+  activePhaseLabel: string | null;
+  axisUsed: ResolutionAxis | null;
+  fallbackReason: PhaseFallbackReason | null;
 }
 
 /**
@@ -19,91 +41,65 @@ export interface ResolvedCodexState {
 export function computeGlobalSceneOrder(
   nodes: TreeNodeData[],
 ): Map<string, number> {
-  const result = new Map<string, number>();
-  if (nodes.length === 0) return result;
-
-  // parentId → children[] マップを構築
-  const childrenMap = new Map<string | null, TreeNodeData[]>();
-  for (const node of nodes) {
-    const key = node.parentId;
-    if (!childrenMap.has(key)) {
-      childrenMap.set(key, []);
-    }
-    childrenMap.get(key)!.push(node);
-  }
-
-  // 各グループをsortOrder順でソート
-  for (const children of childrenMap.values()) {
-    children.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-  }
-
-  let index = 0;
-
-  function dfs(parentId: string | null): void {
-    const children = childrenMap.get(parentId);
-    if (!children) return;
-    for (const node of children) {
-      if (node.nodeType === "scene") {
-        result.set(node.id, index++);
-        // シーンは子を持てないのでDFS不要
-      } else if (node.nodeType === "folder") {
-        // フォルダはindexを消費しないが再帰する
-        dfs(node.id);
-      }
-      // noteノードはスキップ（インデックス割り当てなし、再帰なし）
-    }
-  }
-
-  dfs(null);
-  return result;
+  return buildReadingOrder(nodes);
 }
 
 /**
  * phase_resolution_mode に応じたシーンインデックスを計算する。
  * - reading: DFS順（reading-order）
- * - story / auto: storyTimeOrder順。未設定シーンはreading-order末尾に追加
+ * - auto: 全 live scene の storyTimeOrder が揃うまで reading、揃えば story
+ * - story: inherited story order。冒頭に未解決 scene があれば安全側に reading
+ *
+ * @deprecated Phase semantics は entry 単位 fallback を必要とするため、この単一
+ * Map ではなく SceneTimeIndex + resolveApplicablePhases を使用すること。
  */
 export function computeSceneTimeIndex(
   nodes: TreeNodeData[],
   mode: PhaseResolutionMode,
 ): Map<string, number> {
-  if (mode === "reading") {
-    return computeGlobalSceneOrder(nodes);
-  }
+  return linearizeSceneTimeIndex(buildSceneTimeIndex(nodes), mode);
+}
 
-  // story / auto: scheduled scenes sorted by storyTimeOrder, then unscheduled in reading-order
-  const readingOrder = computeGlobalSceneOrder(nodes);
-  const scenes = nodes.filter((n) => n.nodeType === "scene");
+type ResolvableEntry = {
+  summary: string | null;
+  content: string;
+  contextMode: string;
+};
 
-  const scheduled = scenes.filter((s) => s.storyTimeOrder !== null);
-  const unscheduled = scenes.filter((s) => s.storyTimeOrder === null);
-
-  scheduled.sort((a, b) => cmpKeys(a.storyTimeOrder!, b.storyTimeOrder!));
-  unscheduled.sort(
-    (a, b) =>
-      (readingOrder.get(a.id) ?? Infinity) -
-      (readingOrder.get(b.id) ?? Infinity),
-  );
-
-  const result = new Map<string, number>();
-  let index = 0;
-  for (const scene of [...scheduled, ...unscheduled]) {
-    result.set(scene.id, index++);
-  }
-  return result;
+export interface LegacyResolveCodexStateOptions {
+  applyAllPhases?: boolean;
 }
 
 /**
  * Base state + フェーズを順番に適用してResolvedCodexStateを計算する。
  */
 export function resolveCodexState(
-  entry: { summary: string | null; content: string; contextMode: string },
+  entry: ResolvableEntry,
+  phases: CodexEntryPhase[],
+  phaseDetails: Map<string, CodexPhaseDetailOverride[]>,
+  baseDetails: Map<string, string | null>,
+  anchor: TemporalAnchor,
+  sceneTimeIndex: SceneTimeIndex,
+  resolutionMode: PhaseResolutionMode,
+): ResolvedCodexState;
+/** @deprecated Migrate callers to TemporalAnchor + SceneTimeIndex. */
+export function resolveCodexState(
+  entry: ResolvableEntry,
+  phases: CodexEntryPhase[],
+  phaseDetails: Map<string, CodexPhaseDetailOverride[]>,
+  baseDetails: Map<string, string | null>,
+  currentSceneId: string | null,
+  sceneOrder: Map<string, number>,
+  options?: LegacyResolveCodexStateOptions,
+): ResolvedCodexState;
+export function resolveCodexState(
+  entry: ResolvableEntry,
   phases: CodexEntryPhase[],
   phaseDetails: Map<string, CodexPhaseDetailOverride[]>, // phaseId → overrides
   baseDetails: Map<string, string | null>, // definitionId → value
-  currentSceneId: string | null,
-  sceneOrder: Map<string, number>,
-  options?: { applyAllPhases?: boolean },
+  anchorOrSceneId: TemporalAnchor | string | null,
+  indexOrOrder: SceneTimeIndex | Map<string, number>,
+  modeOrOptions?: PhaseResolutionMode | LegacyResolveCodexStateOptions,
 ): ResolvedCodexState {
   // Base stateから初期化
   const state: ResolvedCodexState = {
@@ -112,43 +108,13 @@ export function resolveCodexState(
     contextMode: entry.contextMode,
     detailValues: new Map(baseDetails),
     appliedPhaseIds: [],
+    activePhaseId: null,
+    activePhaseLabel: null,
+    axisUsed: null,
+    fallbackReason: null,
   };
 
-  const applyAllPhases = options?.applyAllPhases === true;
-
-  // currentSceneId=null → Baseのみ返す（applyAllPhases 時は全 valid phase を適用）
-  if (currentSceneId === null && !applyAllPhases) {
-    return state;
-  }
-
-  let currentOrder: number | undefined;
-  if (!applyAllPhases) {
-    // currentSceneIdがsceneOrderにない（シーン削除済み） → Baseを返す
-    currentOrder = sceneOrder.get(currentSceneId!);
-    if (currentOrder === undefined) {
-      return state;
-    }
-  }
-
-  // anchorNodeIdがnullまたはsceneOrderにないフェーズをフィルタリングしてソート
-  const validPhases = phases
-    .filter((phase) => {
-      if (phase.anchorNodeId === null) return false;
-      return sceneOrder.has(phase.anchorNodeId);
-    })
-    .sort((a, b) => {
-      const orderA = sceneOrder.get(a.anchorNodeId!)!;
-      const orderB = sceneOrder.get(b.anchorNodeId!)!;
-      return orderA - orderB;
-    });
-
-  // currentScene順以下のフェーズを順番に適用（applyAllPhases 時は gating なし）
-  for (const phase of validPhases) {
-    if (!applyAllPhases) {
-      const anchorOrder = sceneOrder.get(phase.anchorNodeId!)!;
-      if (anchorOrder > currentOrder!) break;
-    }
-
+  const applyPhase = (phase: CodexEntryPhase): void => {
     // summaryOverrideがnon-null → summaryを上書き
     if (phase.summaryOverride !== null) {
       state.summary = phase.summaryOverride;
@@ -173,6 +139,66 @@ export function resolveCodexState(
     }
 
     state.appliedPhaseIds.push(phase.id);
+    state.activePhaseId = phase.id;
+    state.activePhaseLabel = phase.label;
+  };
+
+  if (!(indexOrOrder instanceof Map)) {
+    if (typeof anchorOrSceneId !== "object" || anchorOrSceneId === null) {
+      return state;
+    }
+    const resolution = resolveApplicablePhases({
+      phases,
+      index: indexOrOrder,
+      mode:
+        typeof modeOrOptions === "string"
+          ? modeOrOptions
+          : ("reading" as const),
+      anchor: anchorOrSceneId,
+    });
+    state.axisUsed = resolution.axisUsed;
+    state.fallbackReason = resolution.fallbackReason;
+    for (const phase of resolution.applicablePhases) applyPhase(phase);
+    return state;
+  }
+
+  // Legacy compatibility path. A single Map cannot represent entry-level story
+  // fallback, so new consumers must use the SceneTimeIndex overload above.
+  const sceneOrder = indexOrOrder;
+  const currentSceneId =
+    typeof anchorOrSceneId === "string" ? anchorOrSceneId : null;
+  const options = typeof modeOrOptions === "object" ? modeOrOptions : undefined;
+  const applyAllPhases = options?.applyAllPhases === true;
+
+  if (currentSceneId === null && !applyAllPhases) return state;
+  const currentOrder = applyAllPhases
+    ? undefined
+    : sceneOrder.get(currentSceneId as string);
+  if (!applyAllPhases && currentOrder === undefined) return state;
+
+  const validPhases = phases
+    .filter(
+      (phase) =>
+        phase.anchorNodeId !== null && sceneOrder.has(phase.anchorNodeId),
+    )
+    .sort((a, b) => {
+      const orderDiff =
+        sceneOrder.get(a.anchorNodeId!)! - sceneOrder.get(b.anchorNodeId!)!;
+      return (
+        orderDiff ||
+        compareInstantValues(a.createdAt, b.createdAt) ||
+        a.id.localeCompare(b.id)
+      );
+    });
+
+  for (const phase of validPhases) {
+    if (
+      !applyAllPhases &&
+      sceneOrder.get(phase.anchorNodeId!)! > currentOrder!
+    ) {
+      break;
+    }
+    applyPhase(phase);
   }
 
   return state;
@@ -181,7 +207,7 @@ export function resolveCodexState(
 export interface PhaseExposureBreakdown {
   /** AI に露出する Phase 数（always/mentioned が effective） */
   aiVisibleCount: number;
-  /** Wiki 限定 Phase 数（suppress/hidden が effective） */
+  /** 自動注入対象外の Phase 数（manual-only suppress + never-visible hidden） */
   wikiOnlyCount: number;
   /** Phase 総数 */
   total: number;
@@ -190,7 +216,7 @@ export interface PhaseExposureBreakdown {
   /**
    * AI 露出状態における summary 文字数の最大値。
    * Base が AI-visible なら base.summary 長を初期値に、各 AI-visible Phase の
-   * resolved summary 長と比較して最大を取る。Wiki-only 状態の値は無視。
+   * resolved summary 長と比較して最大を取る。自動注入対象外の状態は無視。
    */
   maxAiVisibleSummaryChars: number;
 }
@@ -200,7 +226,7 @@ function isAiVisibleMode(mode: string): boolean {
 }
 
 /**
- * Phase 群を Base から順に走査し、AI 露出 / Wiki 限定の分解と
+ * Phase 群を Base から順に走査し、自動 AI 露出 / 自動注入対象外の分解と
  * AI 露出時の summary 文字数の最大値を算出する。
  * Phases は anchor シーン順にソート済みである前提。
  */

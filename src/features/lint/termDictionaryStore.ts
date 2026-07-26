@@ -5,6 +5,12 @@ import { invoke } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { listCodexMatchTargets } from "@/features/codex/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  planBulkImport,
+  type ImportMode,
+  type ImportResult,
+} from "./termDictionaryImport";
+import type { ParsedTermEntry } from "./termDictionaryCsv";
 import type { LintTermEntry, Severity } from "./types";
 
 /**
@@ -214,6 +220,8 @@ interface TermDictionaryState {
   sortBy: "preferred" | "updatedAt" | "severity" | "sortOrder";
 
   load: () => Promise<void>;
+  /** Clear project-owned dictionary rows before a reload. */
+  resetForProject: () => void;
   upsert: (
     input: {
       preferred: string;
@@ -229,6 +237,16 @@ interface TermDictionaryState {
   toggleEnabled: (id: string, enabled: boolean) => Promise<void>;
   remove: (id: string) => Promise<void>;
   duplicate: (id: string) => Promise<TermDictionaryRow | null>;
+  /**
+   * CSV インポートで得たエントリを一括反映する。`mode` = "merge"（preferred
+   * 一致で更新・他は追加・既存据え置き）/ "replace"（全削除して入替）。
+   * variant 一意性の解決・スキップ判定は `planBulkImport` に委譲し、反映後は
+   * `load()` で rows と aliasCollision を作り直す。
+   */
+  bulkImport: (
+    entries: ParsedTermEntry[],
+    mode: ImportMode,
+  ) => Promise<ImportResult>;
   setSearchQuery: (q: string) => void;
   setSortBy: (sort: TermDictionaryState["sortBy"]) => void;
   /** Rebuild `aliasCollision` on every row — called after Codex edits. */
@@ -244,6 +262,8 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
     loading: false,
     searchQuery: "",
     sortBy: "sortOrder",
+
+    resetForProject: () => set({ rows: [], isLoaded: false, loading: false }),
 
     load: async () => {
       if (get().loading) return;
@@ -448,6 +468,76 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       };
       set({ rows: [...get().rows, row].sort(compareRows(get().sortBy)) });
       return row;
+    },
+
+    bulkImport: async (entries, mode) => {
+      // 未ロードのまま replace すると既存行を取りこぼすため、先に読み込む。
+      if (!get().isLoaded) await get().load();
+      const plan = planBulkImport(get().rows, entries, mode);
+      const now = Date.now();
+      const projectId = getCurrentProjectId();
+      for (const id of plan.deletes) {
+        await dbExec(
+          `DELETE FROM lint_term_dictionary WHERE id = ?`,
+          [id],
+          "run",
+        );
+      }
+      for (const u of plan.updates) {
+        await dbExec(
+          `UPDATE lint_term_dictionary
+             SET preferred = ?, variants = ?, severity = ?, note = ?, enabled = ?, updated_at = ?
+           WHERE id = ?`,
+          [
+            u.preferred,
+            JSON.stringify(u.variants),
+            u.severity,
+            u.note,
+            u.enabled ? 1 : 0,
+            now,
+            u.id,
+          ],
+          "run",
+        );
+        recordChangeEvent({
+          domain: "lint",
+          opType: "term.upsert",
+          entityType: "lint_term",
+          entityId: u.id,
+          payload: { termId: u.id, preferred: u.preferred },
+        });
+      }
+      for (const ins of plan.inserts) {
+        const id = crypto.randomUUID();
+        await dbExec(
+          `INSERT INTO lint_term_dictionary
+             (id, project_id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id,
+            projectId,
+            ins.preferred,
+            JSON.stringify(ins.variants),
+            ins.severity,
+            ins.note,
+            ins.enabled ? 1 : 0,
+            ins.sortOrder,
+            now,
+            now,
+          ],
+          "run",
+        );
+        recordChangeEvent({
+          domain: "lint",
+          opType: "term.upsert",
+          entityType: "lint_term",
+          entityId: id,
+          payload: { termId: id, preferred: ins.preferred },
+        });
+      }
+      // rows と aliasCollision を DB から作り直す。
+      await get().load();
+      return plan.result;
     },
 
     setSearchQuery: (q) => set({ searchQuery: q }),

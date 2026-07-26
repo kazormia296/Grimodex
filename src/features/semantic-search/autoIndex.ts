@@ -1,54 +1,173 @@
-import { debugLog, errorDetail } from "@/lib/debugLog";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
+import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
 import {
-  codexIndexStatus,
-  codexReindexAll,
+  getCurrentProjectLanguage,
+  useProjectStore,
+} from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import {
   chatIndexStatus,
   chatReindexAll,
+  codexIndexStatus,
+  codexReindexAll,
   downloadSemanticModel,
+  eventsIndexStatus,
+  eventsReindexAll,
   semanticIndexStatus,
   semanticReindexAll,
 } from "./api";
-import { useReindexProgressStore } from "./reindexProgressStore";
+import {
+  createReindexRunId,
+  useReindexProgressStore,
+} from "./reindexProgressStore";
 
 /**
- * 段階3c: プロジェクトを開いたときに semantic index を自動補完する。
- *
- * codex / scene とも、埋め込みは編集時の逐次更新だけなので、機能追加前から在る・
- * 編集していないエントリ/シーンは未 index のまま = dense 検索に乗らない (sparse 退避)。
- * プロジェクト open 時にここで一括 back-index する。
- *
- * コスト配慮 (共通方針):
- *  - まず embedder 不要の軽量 status で「未 index があるか」を判定し、**ある時だけ**
- *    reindex (= モデルを無駄にロードしない)。充足済みなら即 return。
- *  - 失敗 (feature 無効ビルド / モデル不在) は無音 — sparse で動くグレースフル契約。
- *  - 1 セッション 1 プロジェクト 1 回。以後は per-edit 増分が維持。失敗時はガードを
- *    外し、プロジェクトを開き直したら再試行できるようにする。
+ * Identity captured before an async indexing flow starts. Project ids are only
+ * unique inside one workspace (`default-project` is deliberately reused), so
+ * every guard and stale-result check must include the workspace path.
  */
+export interface SemanticIndexScope {
+  workspaceKey: string;
+  workspaceOpenRevision: number;
+  projectId: string;
+  guardKey: string;
+}
+
+function makeGuardKey(
+  workspaceKey: string,
+  workspaceOpenRevision: number,
+  projectId: string,
+): string {
+  return JSON.stringify([workspaceKey, workspaceOpenRevision, projectId]);
+}
+
+/** Capture a nullable, fully initialized current scope. */
+export function captureCurrentSemanticScope(
+  expectedProjectId?: string,
+  expectedWorkspaceKey?: string,
+): SemanticIndexScope | null {
+  if (
+    useWorkspaceStore.getState().workspaceSwitchInProgress ||
+    !useWorkspaceStore.getState().workspaceHydrated
+  ) {
+    return null;
+  }
+  const currentWorkspaceKey =
+    useWorkspaceStore.getState().activeWorkspacePath ?? null;
+  if (
+    expectedWorkspaceKey != null &&
+    expectedWorkspaceKey !== currentWorkspaceKey
+  ) {
+    return null;
+  }
+  const workspaceKey = expectedWorkspaceKey ?? currentWorkspaceKey;
+  const workspaceOpenRevision =
+    useWorkspaceStore.getState().workspaceOpenRevision;
+  const currentProjectId = useProjectStore.getState().currentProjectId;
+  const projectId = expectedProjectId ?? currentProjectId;
+  if (!workspaceKey || !projectId || currentProjectId !== projectId)
+    return null;
+  return {
+    workspaceKey,
+    workspaceOpenRevision,
+    projectId,
+    guardKey: makeGuardKey(workspaceKey, workspaceOpenRevision, projectId),
+  };
+}
+
+/** Re-check a captured scope after every await before starting the next stage. */
+export function isSemanticScopeCurrent(scope: SemanticIndexScope): boolean {
+  return (
+    useWorkspaceStore.getState().workspaceHydrated &&
+    !useWorkspaceStore.getState().workspaceSwitchInProgress &&
+    useWorkspaceStore.getState().activeWorkspacePath === scope.workspaceKey &&
+    useWorkspaceStore.getState().workspaceOpenRevision ===
+      scope.workspaceOpenRevision &&
+    useProjectStore.getState().currentProjectId === scope.projectId
+  );
+}
 
 const codexAttempted = new Set<string>();
-const sceneAttempted = new Set<string>();
+const eventsAttempted = new Set<string>();
 const chatAttempted = new Set<string>();
+const sceneAttempted = new Set<string>();
 const modelAttempted = new Set<string>();
 
+let activeScopeGuardKey: string | null = null;
+
 /**
- * プロジェクト言語の埋め込みモデルが未インストールなら、バックグラウンド DL を
- * 開始する (int8 は非同梱: JA/EN とも初回利用時にここで DL、tokenizer のみ同梱)。
- * 進捗/完了は `useModelDownloadListener` が受け取り、完了後に back-index を再実行する。
- * 失敗は無音 (FTS degrade)。1 セッション 1 プロジェクト 1 回 (DL 開始済みなら再試行しない)。
+ * Activate the App-level scope. A real workspace/project switch clears the
+ * foreground run token and toast exactly once; React StrictMode's duplicate
+ * effect for the same identity is a no-op.
  */
+export function activateSemanticIndexScope(
+  workspaceKey: string,
+  projectId: string,
+  workspaceOpenRevision = useWorkspaceStore.getState().workspaceOpenRevision,
+): void {
+  const next = makeGuardKey(workspaceKey, workspaceOpenRevision, projectId);
+  if (activeScopeGuardKey === next) return;
+  activeScopeGuardKey = next;
+  useReindexProgressStore.getState().clear();
+}
+
+function captureScope(
+  projectId: string,
+  workspaceKey?: string,
+): SemanticIndexScope | null {
+  if (!projectId) return null;
+  return captureCurrentSemanticScope(projectId, workspaceKey);
+}
+
+/**
+ * Release a once-per-session guard when an awaited result belongs to a scope
+ * that is no longer active. Without this, A -> B -> A can permanently skip A:
+ * the stale A task stops correctly, but leaves its `attempted` entry behind.
+ */
+function stopStaleAttempt(
+  scope: SemanticIndexScope,
+  attempted: Set<string>,
+): boolean {
+  if (isSemanticScopeCurrent(scope)) return false;
+  attempted.delete(scope.guardKey);
+  return true;
+}
+
+/** Wait for the foreground scene reindex slot without polling. */
+function waitForSceneReindexIdle(): Promise<void> {
+  if (!useReindexProgressStore.getState().running) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = useReindexProgressStore.subscribe((state) => {
+      if (!state.running) {
+        unsubscribe();
+        resolve();
+      }
+    });
+    // Close the check-to-subscribe race if the active run finished between
+    // the fast-path read above and listener registration.
+    if (!useReindexProgressStore.getState().running) {
+      unsubscribe();
+      resolve();
+    }
+  });
+}
+
+/** Ensure the current project's embedding model, once per workspace/project. */
 export async function ensureSemanticModelForProject(
   projectId: string,
+  workspaceKey?: string,
 ): Promise<void> {
-  if (!projectId || modelAttempted.has(projectId)) return;
-  modelAttempted.add(projectId);
+  const scope = captureScope(projectId, workspaceKey);
+  if (!scope || modelAttempted.has(scope.guardKey)) return;
+  modelAttempted.add(scope.guardKey);
   try {
     const language = getCurrentProjectLanguage();
     const status = await downloadSemanticModel(language);
+    if (stopStaleAttempt(scope, modelAttempted)) return;
     debugLog.info("semantic-search", `model ensure (${language}): ${status}`);
   } catch (e) {
-    // "unavailable"/接続失敗などは再 open で再試行できるようガードを外す。
-    modelAttempted.delete(projectId);
+    modelAttempted.delete(scope.guardKey);
+    if (!isSemanticScopeCurrent(scope)) return;
     debugLog.warn(
       "semantic-search",
       `model ensure skipped: ${projectId}`,
@@ -57,35 +176,31 @@ export async function ensureSemanticModelForProject(
   }
 }
 
-/**
- * 自動 scene back-index の単一フライト トークン。`reindexProgressStore.running`
- * (boolean) だけでは、高速なプロジェクト切替 A→B で両方の呼び出しが async な
- * status 取得中に `running===false` を通過し、二重起動 → 先に終わった側の
- * `finally{setRunning(false)}` が、まだ実行中の後発 bulk reindex のフラグを
- * 消してしまう (相互排他破れ)。in-flight な projectId を覚えておくことで、
- * (1) 実行中は別プロジェクトの新規起動を弾き、(2) finally では自分が掴んだ
- * トークンの時だけフラグを下ろす (横取りで早期クリアしない)。
- */
-let autoIndexingProjectId: string | null = null;
-
-/** 既存 codex エントリの自動 back-index。 */
-export async function ensureCodexIndexed(projectId: string): Promise<void> {
-  if (!projectId || codexAttempted.has(projectId)) return;
-  codexAttempted.add(projectId);
+/** Backfill Codex entries that predate incremental semantic indexing. */
+export async function ensureCodexIndexed(
+  projectId: string,
+  workspaceKey?: string,
+): Promise<void> {
+  const scope = captureScope(projectId, workspaceKey);
+  if (!scope || codexAttempted.has(scope.guardKey)) return;
+  codexAttempted.add(scope.guardKey);
   try {
     const status = await codexIndexStatus(projectId);
-    if (status.indexedEntryCount >= status.totalEntryCount) return; // 充足
+    if (stopStaleAttempt(scope, codexAttempted)) return;
+    if (status.indexedEntryCount >= status.totalEntryCount) return;
     debugLog.info(
       "semantic-search",
       `codex auto back-index: ${status.indexedEntryCount}/${status.totalEntryCount} → reindexing`,
     );
     const n = await codexReindexAll(projectId);
+    if (stopStaleAttempt(scope, codexAttempted)) return;
     debugLog.info(
       "semantic-search",
       `codex auto back-index done: ${n} vectors`,
     );
   } catch (e) {
-    codexAttempted.delete(projectId);
+    codexAttempted.delete(scope.guardKey);
+    if (!isSemanticScopeCurrent(scope)) return;
     debugLog.warn(
       "semantic-search",
       `codex auto back-index skipped: ${projectId}`,
@@ -94,25 +209,61 @@ export async function ensureCodexIndexed(projectId: string): Promise<void> {
   }
 }
 
-/**
- * 既存チャットメッセージの自動 back-index (エピソード記憶)。codex と同型 (軽量・
- * メッセージは短く件数も限られるので progress toast なし)。機能追加前から在る過去
- * セッションは未 index = dense recall に乗らないため、open 時に一括 back-index する。
- */
-export async function ensureChatIndexed(projectId: string): Promise<void> {
-  if (!projectId || chatAttempted.has(projectId)) return;
-  chatAttempted.add(projectId);
+/** Backfill Chronicle events; search_events is dense-only, so this is required. */
+export async function ensureEventsIndexed(
+  projectId: string,
+  workspaceKey?: string,
+): Promise<void> {
+  const scope = captureScope(projectId, workspaceKey);
+  if (!scope || eventsAttempted.has(scope.guardKey)) return;
+  eventsAttempted.add(scope.guardKey);
+  try {
+    const status = await eventsIndexStatus(projectId);
+    if (stopStaleAttempt(scope, eventsAttempted)) return;
+    if (status.indexedEventCount >= status.totalEventCount) return;
+    debugLog.info(
+      "semantic-search",
+      `events auto back-index: ${status.indexedEventCount}/${status.totalEventCount} → reindexing`,
+    );
+    const n = await eventsReindexAll(projectId);
+    if (stopStaleAttempt(scope, eventsAttempted)) return;
+    debugLog.info(
+      "semantic-search",
+      `events auto back-index done: ${n} vectors`,
+    );
+  } catch (e) {
+    eventsAttempted.delete(scope.guardKey);
+    if (!isSemanticScopeCurrent(scope)) return;
+    debugLog.warn(
+      "semantic-search",
+      `events auto back-index skipped: ${projectId}`,
+      errorDetail(e),
+    );
+  }
+}
+
+/** Backfill existing chat messages for episodic recall. */
+export async function ensureChatIndexed(
+  projectId: string,
+  workspaceKey?: string,
+): Promise<void> {
+  const scope = captureScope(projectId, workspaceKey);
+  if (!scope || chatAttempted.has(scope.guardKey)) return;
+  chatAttempted.add(scope.guardKey);
   try {
     const status = await chatIndexStatus(projectId);
-    if (status.indexedMessageCount >= status.totalMessageCount) return; // 充足
+    if (stopStaleAttempt(scope, chatAttempted)) return;
+    if (status.indexedMessageCount >= status.totalMessageCount) return;
     debugLog.info(
       "semantic-search",
       `chat auto back-index: ${status.indexedMessageCount}/${status.totalMessageCount} → reindexing`,
     );
     const n = await chatReindexAll(projectId);
+    if (stopStaleAttempt(scope, chatAttempted)) return;
     debugLog.info("semantic-search", `chat auto back-index done: ${n} vectors`);
   } catch (e) {
-    chatAttempted.delete(projectId);
+    chatAttempted.delete(scope.guardKey);
+    if (!isSemanticScopeCurrent(scope)) return;
     debugLog.warn(
       "semantic-search",
       `chat auto back-index skipped: ${projectId}`,
@@ -121,100 +272,138 @@ export async function ensureChatIndexed(projectId: string): Promise<void> {
   }
 }
 
-/**
- * 既存 scene の自動 back-index。手動「再構築」ボタンと同じ `semanticReindexAll` を
- * 使い、進捗は既存の ReindexProgressToast (App 常設リスナ) が表示する。多重起動は
- * `reindexProgressStore.running` で手動 reindex と相互排他にする。
- */
-export async function ensureSceneIndexed(projectId: string): Promise<void> {
-  if (!projectId || sceneAttempted.has(projectId)) return;
-  // 手動/別の reindex、または別プロジェクトの自動 back-index が進行中なら任せる
-  // (次の open で再試行)。in-flight トークンは A→B 高速切替で running boolean が
-  // 取りこぼす二重起動を弾く。
-  if (useReindexProgressStore.getState().running) return;
-  if (autoIndexingProjectId !== null) return;
-  sceneAttempted.add(projectId);
+/** Backfill and refresh prose chunks, with a renderer-owned run token. */
+export async function ensureSceneIndexed(
+  projectId: string,
+  workspaceKey?: string,
+): Promise<void> {
+  const scope = captureScope(projectId, workspaceKey);
+  if (!scope || sceneAttempted.has(scope.guardKey)) return;
+  if (useReindexProgressStore.getState().running) {
+    await waitForSceneReindexIdle();
+    if (!isSemanticScopeCurrent(scope)) return;
+    // Re-enter after the slot opens: another waiter may have claimed it first,
+    // and resetIndexGuards may have changed the once-per-session guard while
+    // the previous language/model run was still active.
+    return ensureSceneIndexed(projectId, scope.workspaceKey);
+  }
+  sceneAttempted.add(scope.guardKey);
+
+  let runId: string | null = null;
   try {
     const status = await semanticIndexStatus(projectId);
-    // 分母は total scene 数ではなく nonemptySceneCount (本文が chunk を生む scene 数)。
-    // 空 scene は chunk を 1 件も生まず indexedSceneCount に載らないので、total を分母に
-    // すると空 scene が 1 つでもあれば恒真になり、stale=0 でも open ごとに無駄な再
-    // インデックスが走っていた (例: 空 14 + 実体 1 → 1/15 で毎回発火)。
+    if (stopStaleAttempt(scope, sceneAttempted)) return;
     const incomplete =
       status.indexedSceneCount < status.nonemptySceneCount ||
       status.staleChunkCount > 0;
-    if (!incomplete) return; // 充足 (未 index の非空 scene も stale も無い)
-    // status 取得は async なので、その間に他の reindex が走り出していないか再確認。
-    if (useReindexProgressStore.getState().running) return;
-    if (autoIndexingProjectId !== null) return;
-    autoIndexingProjectId = projectId;
+    if (!incomplete) return;
+
+    const progress = useReindexProgressStore.getState();
+    if (progress.running) {
+      sceneAttempted.delete(scope.guardKey);
+      return;
+    }
+    runId = createReindexRunId();
+    if (
+      !progress.begin(
+        scope.workspaceKey,
+        scope.workspaceOpenRevision,
+        projectId,
+        runId,
+      )
+    ) {
+      sceneAttempted.delete(scope.guardKey);
+      return;
+    }
+
     debugLog.info(
       "semantic-search",
       `scene auto back-index: ${status.indexedSceneCount}/${status.nonemptySceneCount} indexable, stale=${status.staleChunkCount} → reindexing`,
     );
-    useReindexProgressStore.getState().setRunning(true);
-    try {
-      const n = await semanticReindexAll(projectId);
-      debugLog.info(
-        "semantic-search",
-        `scene auto back-index done: ${n} chunks`,
-      );
-    } finally {
-      // 自分が掴んだトークンの時だけフラグを下ろす (後発が早期に消さない)。
-      if (autoIndexingProjectId === projectId) {
-        autoIndexingProjectId = null;
-        useReindexProgressStore.getState().setRunning(false);
-      }
-    }
+    const n = await semanticReindexAll(projectId, runId);
+    if (stopStaleAttempt(scope, sceneAttempted)) return;
+    debugLog.info("semantic-search", `scene auto back-index done: ${n} chunks`);
   } catch (e) {
-    sceneAttempted.delete(projectId);
-    if (autoIndexingProjectId === projectId) {
-      autoIndexingProjectId = null;
-      useReindexProgressStore.getState().clear();
-    }
+    sceneAttempted.delete(scope.guardKey);
+    if (runId) useReindexProgressStore.getState().fail(runId);
+    if (!isSemanticScopeCurrent(scope)) return;
     debugLog.warn(
       "semantic-search",
       `scene auto back-index skipped: ${projectId}`,
       errorDetail(e),
     );
+  } finally {
+    if (runId) useReindexProgressStore.getState().finish(runId);
   }
 }
 
-/** プロジェクト open 時に codex / scene の自動 back-index をまとめて起動する。 */
+/**
+ * Main-window coordinator. Every stage re-checks the captured workspace and
+ * project before starting the next one, so A cannot continue into B after a
+ * workspace swap even when both use `default-project`.
+ */
 export async function ensureSemanticIndexesOnOpen(
   projectId: string,
+  workspaceKey?: string,
 ): Promise<void> {
-  // 先にモデル DL を起動 (fire-and-forget で即返る)。未 DL の言語はここで DL が
-  // 走り、完了後に useModelDownloadListener が本関数を再呼び出しして index し直す。
-  await ensureSemanticModelForProject(projectId);
-  // codex / chat 先 (軽量・短時間) → scene (重い)。embedder ロックは Rust 側で直列化。
-  // モデル未着ならこれらは無音で degrade (sparse/FTS)、DL 完了後の再呼び出しで index。
-  await ensureCodexIndexed(projectId);
-  await ensureChatIndexed(projectId);
-  await ensureSceneIndexed(projectId);
+  if (isPanelWindow()) return;
+  const scope = captureScope(projectId, workspaceKey);
+  if (!scope) return;
+  activateSemanticIndexScope(
+    scope.workspaceKey,
+    scope.projectId,
+    scope.workspaceOpenRevision,
+  );
+
+  await ensureSemanticModelForProject(projectId, scope.workspaceKey);
+  if (!isSemanticScopeCurrent(scope)) return;
+  await ensureCodexIndexed(projectId, scope.workspaceKey);
+  if (!isSemanticScopeCurrent(scope)) return;
+  await ensureEventsIndexed(projectId, scope.workspaceKey);
+  if (!isSemanticScopeCurrent(scope)) return;
+  await ensureChatIndexed(projectId, scope.workspaceKey);
+  if (!isSemanticScopeCurrent(scope)) return;
+  await ensureSceneIndexed(projectId, scope.workspaceKey);
+}
+
+/** Reset this workspace/project's once-per-session guards after language change. */
+export function resetIndexGuards(
+  projectId: string,
+  workspaceKey?: string,
+): void {
+  const scope = captureScope(projectId, workspaceKey);
+  if (!scope) return;
+  clearBackIndexGuards(scope);
+  modelAttempted.delete(scope.guardKey);
+}
+
+function clearBackIndexGuards(scope: SemanticIndexScope): void {
+  codexAttempted.delete(scope.guardKey);
+  eventsAttempted.delete(scope.guardKey);
+  chatAttempted.delete(scope.guardKey);
+  sceneAttempted.delete(scope.guardKey);
 }
 
 /**
- * 指定プロジェクトの「1セッション1回」ガードだけを解除する。執筆言語の切替で
- * 埋め込みモデル/次元/チャンカ仕様が変わり既存チャンクが全 stale 化したとき、
- * open 時オートインデックス（と DL 完了リスナの再インデックス）を**もう一度**
- * 走らせられるようにする。これを呼ばないと同一セッション内では projectId 単位の
- * ガードに弾かれ、開き直すまで dense 検索が stale のまま残る。
- * 重い処理はここでは起こさない（呼び出し側が明示トリガ/再 open で回す）。
+ * Re-run domain status checks after an asynchronous model download completes.
+ * The model guard intentionally remains: the successful completion event is
+ * already proof that this scope's model ensure has finished.
  */
-export function resetIndexGuards(projectId: string): void {
-  if (!projectId) return;
-  codexAttempted.delete(projectId);
-  sceneAttempted.delete(projectId);
-  chatAttempted.delete(projectId);
-  modelAttempted.delete(projectId);
+export function resetBackIndexGuards(
+  projectId: string,
+  workspaceKey?: string,
+): void {
+  const scope = captureScope(projectId, workspaceKey);
+  if (scope) clearBackIndexGuards(scope);
 }
 
-/** テスト用: 試行済みガードをリセット。 */
+/** Test-only reset of module-level guards and the active coordinator scope. */
 export function _resetAutoIndexForTests(): void {
   codexAttempted.clear();
-  sceneAttempted.clear();
+  eventsAttempted.clear();
   chatAttempted.clear();
+  sceneAttempted.clear();
   modelAttempted.clear();
-  autoIndexingProjectId = null;
+  activeScopeGuardKey = null;
+  useReindexProgressStore.getState().clear();
 }

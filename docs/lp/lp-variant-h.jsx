@@ -18,12 +18,15 @@ import pSnippets from "/assets/panel-snippets.png?w=1100;1700;2400&format=avif;w
 import pChat from "/assets/panel-chat.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pKouetsu from "/assets/panel-kouetsu.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pTimeline from "/assets/panel-timeline.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pChronicle from "/assets/panel-chronicle.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pMap from "/assets/panel-map.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pMatrix from "/assets/panel-matrix.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pTrashBin from "/assets/panel-trash-bin.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pChatHistory from "/assets/panel-chat-history.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pCodexQuick from "/assets/panel-codex-quick.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pCommandCenter from "/assets/panel-command-center-results.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pAttribution from "/assets/panel-attribution.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pWritingStats from "/assets/panel-writing-stats.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pForeshadow from "/assets/panel-foreshadow.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import psDefault from "/assets/preset-default.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
 import psPlan from "/assets/preset-plan.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
@@ -41,12 +44,15 @@ import pSnippetsEn from "/assets/panel-snippets-en.png?w=1100;1700;2400&format=a
 import pChatEn from "/assets/panel-chat-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pKouetsuEn from "/assets/panel-kouetsu-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pTimelineEn from "/assets/panel-timeline-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pChronicleEn from "/assets/panel-chronicle-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pMapEn from "/assets/panel-map-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pMatrixEn from "/assets/panel-matrix-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pTrashBinEn from "/assets/panel-trash-bin-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pChatHistoryEn from "/assets/panel-chat-history-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pCodexQuickEn from "/assets/panel-codex-quick-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pCommandCenterEn from "/assets/panel-command-center-results-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pAttributionEn from "/assets/panel-attribution-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pWritingStatsEn from "/assets/panel-writing-stats-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pForeshadowEn from "/assets/panel-foreshadow-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import psDefaultEn from "/assets/preset-default-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
 import psPlanEn from "/assets/preset-plan-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
@@ -444,6 +450,18 @@ const WS_PANELS = {
     },
     img: { ja: pTimeline, en: pTimelineEn },
   },
+  Chronicle: {
+    jp: "Chronicle",
+    cat: {
+      ja: "作中時間を、レーンと因果で見渡す。",
+      en: "See story time through lanes and causality.",
+    },
+    desc: {
+      ja: "出来事を作中時間・レーン・因果関係で並べ、参照シーンや人物の動きを追う作中年表。回想や並行進行、季節・年齢・同時刻の矛盾も見つけやすくする。",
+      en: "A story chronicle that arranges events by story time, lane, and cause-and-effect, tying them back to scenes and character movement. Flashbacks, parallel threads, and time conflicts become easier to spot.",
+    },
+    img: { ja: pChronicle, en: pChronicleEn },
+  },
   Map: {
     jp: "Map",
     cat: {
@@ -516,6 +534,18 @@ const WS_PANELS = {
     },
     img: { ja: pAttribution, en: pAttributionEn },
   },
+  WritingStats: {
+    jp: "Writing Stats",
+    cat: {
+      ja: "書いた量とペースを、次の一日に繋ぐ。",
+      en: "Turn output and pace into tomorrow's plan.",
+    },
+    desc: {
+      ja: "今日・直近7日・30日の文字数、連続執筆、ヒートマップ、Human / AI の内訳を一望する統計パネル。日次目標と完走ペースメーカーで、締切までの進み方も組み立てられる。",
+      en: "See today's output, the last 7 and 30 days, streaks, a heatmap, and the Human / AI breakdown at a glance. Daily goals and a finish-line pacemaker turn the numbers into a route to your deadline.",
+    },
+    img: { ja: pWritingStats, en: pWritingStatsEn },
+  },
   Foreshadow: {
     jp: "Foreshadow",
     cat: {
@@ -528,6 +558,18 @@ const WS_PANELS = {
     },
     img: { ja: pForeshadow, en: pForeshadowEn },
   },
+  CommandCenter: {
+    jp: "Command Center",
+    cat: {
+      ja: "横断検索を、一箇所から。",
+      en: "Search across your project in one place.",
+    },
+    desc: {
+      ja: "Scene・Codex・Snippet を字句検索し、Scene 本文には意味検索も重ねて、その場で目的地へジャンプする専用検索パネル。",
+      en: "Search Scenes, Codex, and Snippets lexically, with semantic search layered over scene prose, then jump straight to the result from a dedicated search panel.",
+    },
+    img: { ja: pCommandCenter, en: pCommandCenterEn },
+  },
 };
 
 const WS_ALL_PANEL_KEYS = [
@@ -536,14 +578,17 @@ const WS_ALL_PANEL_KEYS = [
   "Grid",
   "Codex",
   "CodexQuick",
+  "CommandCenter",
   "Snippets",
   "Chat",
   "ChatHistory",
   "Review",
   "Timeline",
+  "Chronicle",
   "Map",
   "Matrix",
   "Attribution",
+  "WritingStats",
   "Foreshadow",
   "TrashBin",
 ];
@@ -1121,7 +1166,7 @@ function HWorkspaceSection() {
             pointerEvents: "none",
           }}
         >
-          15 PANELS · ONE DESK
+          18 PANELS · ONE DESK
         </div>
 
         <div
@@ -1157,7 +1202,7 @@ function HWorkspaceSection() {
                 lineHeight: 0.95,
               }}
             >
-              15 PANELS.
+              18 PANELS.
             </span>
             <br />
             ONE DESK.
@@ -1286,7 +1331,7 @@ function HWorkspaceSection() {
                 letterSpacing: ".06em",
               }}
             >
-              {lang === "en" ? "↓ OPEN FROM 15 PANELS" : "↓ 15 PANELS から開く"}
+              {lang === "en" ? "↓ OPEN FROM 18 PANELS" : "↓ 18 PANELS から開く"}
             </span>
           </div>
 
@@ -1316,7 +1361,7 @@ function HWorkspaceSection() {
                 marginRight: 4,
               }}
             >
-              ALL 15 PANELS ↓
+              ALL 18 PANELS ↓
             </span>
             {WS_ALL_PANEL_KEYS.map((k) => (
               <button
@@ -2079,13 +2124,6 @@ function LPVariantH() {
               >
                 E FOR
               </a>
-              <a
-                className="hz-nav-link"
-                href="#buy"
-                style={{ color: HZ_INK, textDecoration: "none" }}
-              >
-                F BUY
-              </a>
             </div>
             <div
               style={{
@@ -2283,7 +2321,7 @@ function LPVariantH() {
                       letterSpacing: ".12em",
                     }}
                   >
-                    TAURI · LOCAL · CLI · BYOK
+                    ELECTRON · LOCAL · CLI · BYOK
                   </span>
                 </div>
               </div>
@@ -2448,7 +2486,7 @@ function LPVariantH() {
                         }}
                       >
                         <span>RUNTIME</span>
-                        <b>TAURI v2</b>
+                        <b>ELECTRON</b>
                       </div>
                       <div
                         style={{
@@ -2478,7 +2516,7 @@ function LPVariantH() {
                       >
                         <span>STATUS</span>
                         <b style={{ background: HZ_HL, padding: "0 4px" }}>
-                          v1.0
+                          v2.0.7
                         </b>
                       </div>
                     </div>
@@ -3302,8 +3340,8 @@ function LPVariantH() {
               ? "30-DAY FULL TRIAL · LOCAL-FIRST · BRING YOUR OWN AI KEY"
               : "30日間フル機能トライアル · ローカルファースト · 自分のAIキーで"}
           </p>
-          {/* PRICE — 景表法対応の「予告」形式。取り消し線での比較表示はしない（§4.1.3）。
-              TODO(発売前): {{SALE_END_DATE}} を発売記念セールの終了日（実日付）へ置換する。 */}
+          {/* PRICE — 景表法対応の「予告」形式。取り消し線での比較表示はしない。
+              発売日 2026-07-26 から1か月の発売記念価格を表示する。 */}
           <div
             style={{
               maxWidth: 640,
@@ -3324,8 +3362,8 @@ function LPVariantH() {
               }}
             >
               {lang === "en"
-                ? "GRIMODEX v1.0 · ONE-TIME PURCHASE"
-                : "GRIMODEX v1.0 · 買い切り"}
+                ? "GRIMODEX v2.0.7 · ONE-TIME PURCHASE"
+                : "GRIMODEX v2.0.7 · 買い切り"}
             </div>
             <div
               style={{
@@ -3345,8 +3383,8 @@ function LPVariantH() {
                   <span
                     style={{ fontSize: 15, fontWeight: 400, opacity: 0.75 }}
                   >
-                    until {"{{SALE_END_DATE}}"} — regular price ¥8,900
-                    thereafter.
+                    through August 26, 2026. Regular price ¥8,900 from August
+                    27.
                   </span>
                 </>
               ) : (
@@ -3358,7 +3396,7 @@ function LPVariantH() {
                   <span
                     style={{ fontSize: 15, fontWeight: 400, opacity: 0.75 }}
                   >
-                    （{"{{SALE_END_DATE}}"} まで）。以降は通常価格 ¥8,900。
+                    （2026年8月26日まで）。8月27日以降は通常価格 ¥8,900。
                   </span>
                 </>
               )}
@@ -3382,17 +3420,74 @@ function LPVariantH() {
                   ? "One-time purchase; paid upgrade only per major version."
                   : "買い切り。メジャーバージョンごとに有償アップグレード。"}
               </li>
+              <li>
+                {lang === "en"
+                  ? "Purchase is available only from the installed desktop app after you confirm it starts on your computer."
+                  : "購入は、デスクトップアプリが起動することを確認した後、アプリ内からのみ行えます。"}
+              </li>
             </ul>
           </div>
           <div
+            className="hz-cta-actions"
             style={{
               display: "flex",
-              justifyContent: "center",
               flexWrap: "wrap",
-              gap: 20,
+              justifyContent: "center",
+              alignItems: "stretch",
+              gap: 18,
               marginTop: 44,
             }}
           >
+            <a
+              href="https://grimodex-try.pages.dev/"
+              target="_blank"
+              rel="noreferrer"
+              className="hz-shadow"
+              style={{
+                background: HZ_BG,
+                color: HZ_INK,
+                border: `2px solid ${HZ_INK}`,
+                padding: "22px 30px",
+                textAlign: "left",
+                cursor: "pointer",
+                display: "inline-flex",
+                flex: "1 1 320px",
+                flexDirection: "column",
+                gap: 5,
+                maxWidth: 360,
+                minWidth: 0,
+                textDecoration: "none",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  textTransform: "uppercase",
+                  letterSpacing: ".1em",
+                  opacity: 0.65,
+                }}
+              >
+                ↗ WEB EDITOR
+              </div>
+              <div
+                style={{ fontWeight: 800, fontSize: 26, letterSpacing: -0.5 }}
+              >
+                {lang === "en" ? "Try in your browser" : "ブラウザで試す"}
+              </div>
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 10,
+                  textTransform: "uppercase",
+                  opacity: 0.6,
+                }}
+              >
+                {lang === "en"
+                  ? "No install · Browser-local trial"
+                  : "インストール不要 · ブラウザ内に保存"}
+              </div>
+            </a>
             <a
               href="https://github.com/kazormia296/Grimodex/releases/latest"
               className="hz-shadow"
@@ -3404,9 +3499,11 @@ function LPVariantH() {
                 textAlign: "left",
                 cursor: "pointer",
                 display: "inline-flex",
+                flex: "1 1 320px",
                 flexDirection: "column",
                 gap: 5,
-                minWidth: 360,
+                maxWidth: 360,
+                minWidth: 0,
                 textDecoration: "none",
               }}
             >
@@ -3437,66 +3534,17 @@ function LPVariantH() {
                 macOS / Windows / Linux
               </div>
             </a>
-            {/* TODO(発売前): href を Polar の実 checkout URL に差し替える。
-                現状はプレースホルダ（例: 製品ページ / organization の checkout）。 */}
-            <a
-              href="https://polar.sh/grimodex"
-              target="_blank"
-              rel="noreferrer"
-              className="hz-shadow"
-              style={{
-                background: HZ_INK,
-                color: HZ_BG,
-                border: `2px solid ${HZ_INK}`,
-                padding: "22px 30px",
-                textAlign: "left",
-                cursor: "pointer",
-                display: "inline-flex",
-                flexDirection: "column",
-                gap: 5,
-                minWidth: 360,
-                textDecoration: "none",
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 11,
-                  textTransform: "uppercase",
-                  letterSpacing: ".1em",
-                  opacity: 0.7,
-                }}
-              >
-                ↗ {lang === "en" ? "BUY A LICENSE" : "ライセンスを購入"}
-              </div>
-              <div
-                style={{ fontWeight: 800, fontSize: 26, letterSpacing: -0.5 }}
-              >
-                {lang === "en" ? "Buy now — ¥6,900" : "いま購入 — ¥6,900"}
-              </div>
-              <div
-                style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 10,
-                  textTransform: "uppercase",
-                  opacity: 0.6,
-                }}
-              >
-                {lang === "en"
-                  ? "Secure checkout · Polar"
-                  : "Polar の安全な決済"}
-              </div>
-            </a>
           </div>
 
-          {/* BUY — 日本語購入ガイド（§4.1.2）。チェックアウトと確認メールが英語のみ
-              である点を先に明示する。スクリーンショットは撮影後に assets/ へ置き、
-              言語出し分け命名（<id>.png = ja / <id>-en.png = en）で差し込む想定。
-              TODO(発売前): buy-checkout / buy-email / buy-activate のスクショを撮影し、
-              下の枠を実画像（<img>）へ置き換える。 */}
           <div
-            id="buy"
-            style={{ maxWidth: 900, margin: "84px auto 0", textAlign: "left" }}
+            style={{
+              maxWidth: 760,
+              margin: "32px auto 0",
+              border: `2px solid ${HZ_INK}`,
+              background: HZ_HL,
+              padding: "18px 22px",
+              textAlign: "left",
+            }}
           >
             <div
               style={{
@@ -3509,270 +3557,40 @@ function LPVariantH() {
               }}
             >
               {lang === "en"
-                ? "HOW TO BUY · 3 STEPS"
-                : "購入ガイド · 3ステップ"}
+                ? "PURCHASE IN THE DESKTOP APP"
+                : "デスクトップアプリ内で購入"}
             </div>
-            <div
+            <p
               style={{
-                border: `2px solid ${HZ_INK}`,
-                background: HZ_HL,
-                padding: "14px 18px",
+                margin: 0,
                 fontSize: 14,
-                lineHeight: 1.7,
-                marginBottom: 24,
+                lineHeight: 1.75,
               }}
             >
               {lang === "en"
-                ? "Heads up: the checkout screen and the confirmation email are in English only — this is normal and legitimate. Payment and license keys are handled by Polar, our authorized reseller."
-                : "ご案内: チェックアウト画面と購入確認メールは英語のみで届きますが、正規のものです。決済とライセンスキーの発行は、当社のライセンス管理事業者 Polar が行います。"}
-            </div>
-            <div
+                ? "Install and launch Grimodex first. After confirming that it works on your computer, open Settings > License > Purchase a license. This website does not link directly to checkout."
+                : "まずGrimodexをインストールして起動してください。お使いのPCで動作することを確認した後、「設定 > ライセンス > ライセンスを購入」から決済へ進めます。このWebサイトから決済ページへ直接移動することはできません。"}
+            </p>
+            <p
               style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                gap: 20,
+                margin: "10px 0 0",
+                fontSize: 13,
+                lineHeight: 1.7,
+                opacity: 0.75,
               }}
             >
-              {[
-                {
-                  n: "01",
-                  shot: "buy-checkout",
-                  title: {
-                    ja: "チェックアウトで入力",
-                    en: "Fill in the checkout",
-                  },
-                  body: {
-                    ja: "「いま購入」から Polar のチェックアウトへ進み、メールアドレスとカード情報を入力します（画面は英語）。",
-                    en: "Open the Polar checkout from “Buy now,” then enter your email address and card details (the screen is in English).",
-                  },
-                },
-                {
-                  n: "02",
-                  shot: "buy-email",
-                  title: {
-                    ja: "キーが英語メールで届く",
-                    en: "Get your key by email",
-                  },
-                  body: {
-                    ja: "購入後、ライセンスキーが英語のメールで届きます。キー文字列をコピーしておきます。",
-                    en: "After purchase, your license key arrives in an English email. Copy the key string.",
-                  },
-                },
-                {
-                  n: "03",
-                  shot: "buy-activate",
-                  title: { ja: "アプリ設定に入力", en: "Activate in the app" },
-                  body: {
-                    ja: "Grimodex の設定を開き、ライセンス欄にキーを貼り付けて認証すれば完了です。",
-                    en: "Open Grimodex Settings, paste the key into the license field, and activate. Done.",
-                  },
-                },
-              ].map((s) => (
-                <div
-                  key={s.n}
-                  style={{
-                    border: `2px solid ${HZ_INK}`,
-                    padding: "18px 18px 20px",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 12,
-                  }}
-                >
-                  <div
-                    style={{ display: "flex", alignItems: "baseline", gap: 10 }}
-                  >
-                    <span
-                      style={{
-                        background: HZ_INK,
-                        color: HZ_BG,
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 11,
-                        fontWeight: 700,
-                        padding: "3px 7px",
-                        letterSpacing: ".08em",
-                      }}
-                    >
-                      {s.n}
-                    </span>
-                    <span
-                      style={{
-                        fontWeight: 800,
-                        fontSize: 16,
-                        letterSpacing: -0.3,
-                      }}
-                    >
-                      {lpText(s.title, lang)}
-                    </span>
-                  </div>
-                  {/* スクショ枠（撮影待ち）。実画像は <shot>.png(ja)/<shot>-en.png(en) を
-                      assets/ に置き、この枠を <img> へ差し替える。 */}
-                  <div
-                    aria-hidden="true"
-                    style={{
-                      border: `2px dashed ${HZ_INK}`,
-                      aspectRatio: "16 / 10",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      textAlign: "center",
-                      padding: 8,
-                      opacity: 0.55,
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 10,
-                      textTransform: "uppercase",
-                      letterSpacing: ".08em",
-                    }}
-                  >
-                    {lang === "en"
-                      ? `SCREENSHOT · ${s.shot}-en.png`
-                      : `スクリーンショット · ${s.shot}.png`}
-                  </div>
-                  <p
-                    style={{
-                      margin: 0,
-                      fontSize: 13,
-                      lineHeight: 1.7,
-                      opacity: 0.85,
-                    }}
-                  >
-                    {lpText(s.body, lang)}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* TESTER RECRUITMENT — Discord テスター募集 / 進呈公約の履行。The whole
-              card links to the Discord invite; the inner chip is a visual
-              affordance, not a nested anchor. */}
-          <div
-            style={{ display: "flex", justifyContent: "center", marginTop: 40 }}
-          >
-            <a
-              href="https://discord.gg/ufPXC48kfX"
-              target="_blank"
-              rel="noreferrer"
-              className="hz-shadow"
-              style={{
-                background: HZ_BG,
-                color: HZ_INK,
-                border: `2px solid ${HZ_INK}`,
-                padding: "24px 28px",
-                maxWidth: 760,
-                width: "100%",
-                textAlign: "left",
-                textDecoration: "none",
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "center",
-                gap: 24,
-                justifyContent: "space-between",
-              }}
-            >
-              <div style={{ flex: "1 1 340px", minWidth: 260 }}>
-                <div
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 11,
-                    fontWeight: 800,
-                    textTransform: "uppercase",
-                    letterSpacing: ".1em",
-                    marginBottom: 12,
-                  }}
-                >
-                  <span
-                    style={{
-                      background: HZ_HL,
-                      padding: "3px 8px",
-                      border: `1.5px solid ${HZ_INK}`,
-                    }}
-                  >
-                    {lang === "en" ? "TESTERS WANTED" : "テスター募集"}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    fontSize: 22,
-                    fontWeight: 800,
-                    letterSpacing: -0.5,
-                    lineHeight: 1.2,
-                    marginBottom: 10,
-                  }}
-                >
-                  {lang === "en" ? (
-                    <>
-                      Report a bug, shape a feature —{" "}
-                      <span className="hz-mark" style={{ padding: "0 6px" }}>
-                        earn a 1.0 license.
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      バグ報告・機能提案で、
-                      <span className="hz-mark" style={{ padding: "0 6px" }}>
-                        1.0 ライセンスを進呈。
-                      </span>
-                    </>
-                  )}
-                </div>
-                <p
-                  style={{
-                    fontSize: 14,
-                    lineHeight: 1.7,
-                    margin: 0,
-                    opacity: 0.85,
-                  }}
-                >
-                  {lang === "en"
-                    ? "Testers wanted. Submit at least one reproducible bug report — or a feature proposal we adopt — during the beta, and we'll grant you a full 1.0 release license, delivered as a 100%-off code through the normal checkout."
-                    : "テスターを募集しています。ベータ期間中に「再現可能なバグ報告」または「採用された機能提案」を 1 件以上してくださった方に、1.0 の製品版ライセンスを進呈します（100% 割引コードで通常のチェックアウトを通す形でお渡しします）。"}
-                </p>
-              </div>
-              <span
-                style={{
-                  flex: "0 0 auto",
-                  background: HZ_INK,
-                  color: HZ_BG,
-                  border: `2px solid ${HZ_INK}`,
-                  padding: "16px 22px",
-                  display: "inline-flex",
-                  flexDirection: "column",
-                  gap: 4,
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 10,
-                    textTransform: "uppercase",
-                    letterSpacing: ".1em",
-                    opacity: 0.7,
-                  }}
-                >
-                  ↗ DISCORD
-                </span>
-                <span
-                  style={{
-                    fontWeight: 800,
-                    fontSize: 18,
-                    letterSpacing: -0.3,
-                  }}
-                >
-                  {lang === "en" ? "Join the Discord" : "Discord に参加"}
-                </span>
-              </span>
-            </a>
+              {lang === "en"
+                ? "Checkout and license delivery are handled by Polar, our authorized reseller. The checkout screen and confirmation email may appear in English."
+                : "決済とライセンスキーの発行は、ライセンス管理事業者のPolarが行います。チェックアウト画面と購入確認メールは英語で表示される場合があります。"}
+            </p>
           </div>
 
           <div style={{ marginTop: 80 }}>
             <HZBar
               items={[
                 { t: "GRIMODEX", k: true },
-                { t: "v1.0" },
-                { t: "TAURI v2" },
+                { t: "v2.0.7" },
+                { t: "ELECTRON" },
                 {
                   t: "GITHUB ↗",
                   href: "https://github.com/kazormia296/Grimodex",

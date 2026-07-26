@@ -12,6 +12,8 @@ import {
   type CatalogProviderInput,
   type CatalogSection,
 } from "./chatModelCatalog";
+import { BROWSER_DIRECT_AI_PROVIDERS } from "./browserProviderPolicy";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 /**
  * チャット入力欄のモデルピッカー(複数プロバイダ横断)用カタログ取得フック。
@@ -54,6 +56,7 @@ export function useChatModelCatalog(open: boolean): {
   sections: CatalogSection[];
   loading: boolean;
 } {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const settings = useAiSettingsStore((s) => s.settings);
   const activeProvider = settings?.provider;
   const activeEndpointId = settings?.activeOpenaiCompatibleEndpointId;
@@ -81,7 +84,10 @@ export function useChatModelCatalog(open: boolean): {
     setLoading(true);
 
     // 別「単一」プロバイダ(OpenAI 互換以外)。
-    const otherProviders = AI_PROVIDERS.filter(
+    const availableProviders = runtimeCapabilities.browserDirectAi
+      ? BROWSER_DIRECT_AI_PROVIDERS
+      : AI_PROVIDERS;
+    const otherProviders = availableProviders.filter(
       (p) => p !== "cli" && p !== "openai-compatible" && p !== activeProvider,
     );
 
@@ -143,7 +149,7 @@ export function useChatModelCatalog(open: boolean): {
     };
     // compatKey は compatEndpoints の id 列(配列 identity に依存させない)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeProvider, compatKey]);
+  }, [open, activeProvider, compatKey, runtimeCapabilities.browserDirectAi]);
 
   const sections = useMemo(() => {
     if (!activeProvider) return [];

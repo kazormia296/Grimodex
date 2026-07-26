@@ -129,10 +129,10 @@ foreshadows = sqliteTable("foreshadows", {
   // impact-review（2026-06-18 追記）。リンク先 Codex の変更時刻。setup の
   // lastEvaluatedAt より新しければ「Codex 変更により再評価が必要」と stale 判定する
   // （null=未変更）。詳細は「Codex 変更追従（codexLinkDirtyAt）」セクション参照
-  codexLinkDirtyAt: integer("codex_link_dirty_at", { mode: "timestamp" }),
+  codexLinkDirtyAt: integer("codex_link_dirty_at", { mode: "timestamp_ms" }),
 
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 }, (t) => [
   index("idx_foreshadows_project").on(t.projectId),
   index("idx_foreshadows_payoff_scene").on(t.payoffSceneId),
@@ -155,12 +155,12 @@ foreshadowSetups = sqliteTable("foreshadow_setups", {
   aiReasoning: text("ai_reasoning"),                     // Phase 1: 平文。Phase 2 以降: AiEvaluation JSON（下記参照）
   attribution: text("attribution").notNull().default("human"),  // 'human' | 'ai'
   aiRationale: text("ai_rationale"),                     // AI が候補提案した時の理由
-  lastEvaluatedAt: integer("last_evaluated_at", { mode: "timestamp" }),
+  lastEvaluatedAt: integer("last_evaluated_at", { mode: "timestamp_ms" }),
 
   isOrphan: integer("is_orphan", { mode: "boolean" }).notNull().default(false),  // mark消失検出時に立てる
 
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 }, (t) => [
   index("idx_fs_setup_fid").on(t.foreshadowId),
   index("idx_fs_setup_scene").on(t.sceneId),
@@ -861,10 +861,6 @@ foreshadow_update(id: String, patch: ForeshadowPatch) -> Result<Foreshadow>
 
 #[tauri::command]
 foreshadow_delete(id: String) -> Result<()>
-
-#[tauri::command]
-foreshadow_list(project_id: String, filter: ForeshadowFilter) -> Result<Vec<ForeshadowWithDerived>>
-// derived label, setup count を含む
 
 #[tauri::command]
 foreshadow_get(id: String) -> Result<ForeshadowDetail>
@@ -1744,7 +1740,7 @@ src/features/foreshadow/
 
 src-tauri/src/commands/foreshadow.rs       # foreshadow 関連 Tauri コマンド（lib.rs の invoke_handler に登録）
                                            # （foreshadow_create / foreshadow_update / foreshadow_delete /
-                                           #   foreshadow_list / foreshadow_list_with_labels /
+                                           #   foreshadow_list_with_labels /
                                            #   foreshadow_list_open_for_context / foreshadow_get /
                                            #   foreshadow_get_scene_info / foreshadow_get_scene_context /
                                            #   foreshadow_list_by_codex_entry / foreshadow_get_chapter_stats /

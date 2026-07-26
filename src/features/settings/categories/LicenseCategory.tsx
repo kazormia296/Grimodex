@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@/lib/opener";
 import { ExternalLink, KeyRound } from "lucide-react";
 import { useLicenseStore } from "@/features/license/store";
+import { formatInstant } from "@/lib/time";
 
-// TODO(発売前): Polar checkout URL に差し替える (POLAR_ORGANIZATION_ID と同期)。
-const PURCHASE_URL = "https://polar.sh/grimodex";
+// Polar checkout link (Grimodex org, slug: grimodex)。2026-07-04 設定。
+const PURCHASE_URL =
+  "https://buy.polar.sh/polar_cl_tNDN5o9ho4h29XGEEHugWVwn3mH5NPbJJEcpx4Q87Sl";
 
 /**
  * Settings の License カテゴリ (ライセンス認証設計書 §7)。
@@ -127,7 +129,7 @@ export function LicenseCategory() {
         {activated && lastValidatedAt && (
           <p className="mt-1 text-xs text-muted-foreground">
             {t("license.settings.lastValidated", {
-              date: new Date(lastValidatedAt).toLocaleString(),
+              date: formatInstant(lastValidatedAt) ?? lastValidatedAt,
             })}
           </p>
         )}

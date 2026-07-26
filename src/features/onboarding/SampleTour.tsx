@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { useGSAP } from "@gsap/react";
@@ -11,9 +12,10 @@ import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
 import { parseAiPolicy } from "@/features/ai-policy/parse";
-import type { PanelId } from "@/features/layout/layoutStore";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { SpotlightOverlay, useFocusRects, type FocusRect } from "./spotlight";
 import { computeCardStyle, CARD_WIDTH } from "./cardPlacement";
+import { getTourSteps, type TourStepKey } from "./tourSteps";
 import {
   useSceneOpenGate,
   useEditorWriteGate,
@@ -24,139 +26,6 @@ import {
   usePanelDwellGate,
   usePostEffectRunGate,
 } from "./tourGates";
-
-// ---------------------------------------------------------------------------
-// Step definitions
-// ---------------------------------------------------------------------------
-
-type TourStepKey =
-  | "scenes"
-  | "layout"
-  | "editor"
-  | "snippets"
-  | "codex"
-  | "chat"
-  | "codexExtract"
-  | "foreshadow"
-  | "consistency"
-  | "timeline"
-  | "end";
-
-interface TourSlide {
-  /** Slide id — used as i18n suffix (tour.steps.<step>.slides.<slide>) and motion key. */
-  id: string;
-  /**
-   * data-tour-target values to spotlight for this slide.
-   * Overrides panelId highlight when at least one element is found in the DOM.
-   * Falls back to panelId panel when nothing matches.
-   */
-  targets?: string[];
-}
-
-interface TourStepDef {
-  key: TourStepKey;
-  panelId: PanelId | null;
-  requires: keyof AiPolicyToggles | null;
-  slides: TourSlide[];
-  /** Index of the slide that requires the action gate. Defaults to last slide. */
-  gatedSlideIndex?: number;
-  /** No gate required — all slides advance freely. */
-  passive?: boolean;
-}
-
-const ALL_STEPS: TourStepDef[] = [
-  {
-    key: "scenes",
-    panelId: "scenes",
-    requires: null,
-    slides: [
-      { id: "overview" },
-      { id: "addItems" },
-      { id: "hierarchy" },
-      { id: "action" },
-    ],
-  },
-  {
-    key: "layout",
-    panelId: null,
-    requires: null,
-    passive: true,
-    slides: [
-      {
-        id: "overview",
-        targets: ["layout-preset-btn", "panel-toggle-btn"],
-      },
-    ],
-  },
-  {
-    key: "editor",
-    panelId: "editor",
-    requires: null,
-    passive: true,
-    slides: [{ id: "overview" }],
-  },
-  {
-    key: "snippets",
-    panelId: "snippets",
-    requires: null,
-    passive: true,
-    slides: [{ id: "overview" }],
-  },
-  {
-    key: "codex",
-    panelId: "codex",
-    requires: null,
-    gatedSlideIndex: 1,
-    slides: [{ id: "overview" }, { id: "action" }, { id: "fourLayers" }],
-  },
-  {
-    key: "chat",
-    panelId: "chat",
-    requires: "chat",
-    passive: true,
-    slides: [
-      { id: "overview" },
-      { id: "contextBar", targets: ["chat-context-bar"] },
-      {
-        id: "contextUsage",
-        targets: ["chat-tokens-badge", "chat-context-progress"],
-      },
-    ],
-  },
-  {
-    key: "codexExtract",
-    panelId: "chat",
-    requires: "chat",
-    passive: true,
-    slides: [{ id: "overview" }],
-  },
-  {
-    key: "foreshadow",
-    panelId: "foreshadow",
-    requires: null,
-    passive: true,
-    slides: [{ id: "overview" }],
-  },
-  {
-    key: "consistency",
-    panelId: "kouetsu",
-    requires: "analysis",
-    passive: true,
-    slides: [{ id: "overview" }],
-  },
-  {
-    key: "timeline",
-    panelId: "timeline",
-    requires: null,
-    slides: [{ id: "overview" }, { id: "zoom" }],
-  },
-  {
-    key: "end",
-    panelId: null,
-    requires: null,
-    slides: [{ id: "summary" }, { id: "restartHint" }],
-  },
-];
 
 // ---------------------------------------------------------------------------
 // Tour card
@@ -352,6 +221,7 @@ function TourCard({
  * mounted conditionally so all useState/useRef/gate state resets between runs.
  */
 export function SampleTour() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const setShowSampleTour = useWorkspaceStore((s) => s.setShowSampleTour);
   const updateGlobalSettings = useWorkspaceStore((s) => s.updateGlobalSettings);
   const showLauncher = useWorkspaceStore((s) => s.showLauncher);
@@ -368,8 +238,11 @@ export function SampleTour() {
 
   // Build filtered step list
   const steps = useMemo(
-    () => ALL_STEPS.filter((s) => !s.requires || toggles[s.requires]),
-    [toggles],
+    () =>
+      getTourSteps(toggles, {
+        includeExport: runtimeCapabilities.genericProjectTransfer,
+      }),
+    [toggles, runtimeCapabilities.genericProjectTransfer],
   );
 
   const [stepIndex, setStepIndex] = useState(0);
@@ -434,6 +307,7 @@ export function SampleTour() {
       case "timeline":
         return timelineDwellDone;
       // passive steps — gate never blocks (isGatedSlide is always false)
+      case "workspace":
       case "layout":
       case "editor":
       case "snippets":
@@ -441,6 +315,7 @@ export function SampleTour() {
       case "codexExtract":
       case "foreshadow":
       case "consistency":
+      case "export":
       case "end":
         return true;
     }
@@ -481,30 +356,35 @@ export function SampleTour() {
         panelId={currentStep.panelId}
         targets={currentSlide.targets}
       />
-      <AnimatePresence mode="wait">
-        <TourCard
-          key={`${currentStep.key}:${currentSlide.id}`}
-          stepKey={currentStep.key}
-          slideId={currentSlide.id}
-          stepIndex={stepIndex}
-          totalSteps={steps.length}
-          slideIndex={slideIndex}
-          slideCount={currentStep.slides.length}
-          isLastStep={isLastStep}
-          isLastSlide={isLastSlide}
-          showActionHint={showActionHint}
-          canAdvance={canAdvance}
-          highlightNext={highlightNext}
-          focusRects={focusRects}
-          viewport={{ vw, vh }}
-          onNext={() => void handleNext()}
-          onSkip={() => void completeTour()}
-          onCreateWorkspace={() => {
-            void completeTour();
-            showLauncher();
-          }}
-        />
-      </AnimatePresence>
+      {/* `.app-shell` is an isolated stacking context. Portal the card beside
+          the body-level spotlight so its z-index can stay above the blur. */}
+      {createPortal(
+        <AnimatePresence mode="wait">
+          <TourCard
+            key={`${currentStep.key}:${currentSlide.id}`}
+            stepKey={currentStep.key}
+            slideId={currentSlide.id}
+            stepIndex={stepIndex}
+            totalSteps={steps.length}
+            slideIndex={slideIndex}
+            slideCount={currentStep.slides.length}
+            isLastStep={isLastStep}
+            isLastSlide={isLastSlide}
+            showActionHint={showActionHint}
+            canAdvance={canAdvance}
+            highlightNext={highlightNext}
+            focusRects={focusRects}
+            viewport={{ vw, vh }}
+            onNext={() => void handleNext()}
+            onSkip={() => void completeTour()}
+            onCreateWorkspace={() => {
+              void completeTour();
+              showLauncher();
+            }}
+          />
+        </AnimatePresence>,
+        document.body,
+      )}
     </>
   );
 }

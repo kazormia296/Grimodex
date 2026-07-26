@@ -182,4 +182,49 @@ describe("deriveRows", () => {
     const rows = deriveRows(nodes, new Set(), null, { onlyUnedited: true });
     expect(rows.map((r) => r.node.id)).toEqual(["s1"]);
   });
+
+  // Regression (finding 22): sibling ordering must honor a caller comparator,
+  // not always fall back to sortOrder.
+  it("uses sortComparator to order sibling buckets instead of sortOrder", () => {
+    const nodes: TreeNodeData[] = [
+      { ...makeScene("s1", null, "a"), charCount: 10 },
+      { ...makeScene("s2", null, "b"), charCount: 100 },
+      { ...makeScene("s3", null, "c"), charCount: 50 },
+    ];
+    // Descending charCount (word-count style) — differs from sortOrder a<b<c.
+    const rows = deriveRows(nodes, new Set(), null, {
+      sortComparator: (a, b) => (b.charCount ?? 0) - (a.charCount ?? 0),
+    });
+    expect(rows.map((r) => r.node.id)).toEqual(["s2", "s3", "s1"]);
+  });
+
+  // Regression (finding 23): a collapsed folder with non-empty scenes must
+  // survive hideEmpty so it can be re-expanded.
+  it("hideEmpty keeps a collapsed non-empty folder (still re-expandable)", () => {
+    const nodes: TreeNodeData[] = [
+      makeFolder("f1", null, "a"),
+      makeScene("s1", "f1", "a"),
+    ];
+    const cellMap = new Map([["s1::e1", {} as never]]);
+    const rows = deriveRows(nodes, new Set(["f1"]), null, {
+      hideEmpty: true,
+      cellMap,
+    });
+    const ids = rows.map((r) => r.node.id);
+    expect(ids).toContain("f1");
+    expect(ids).not.toContain("s1"); // collapsed → child hidden, folder kept
+  });
+
+  it("hideEmpty still prunes a collapsed folder whose scenes are all empty", () => {
+    const nodes: TreeNodeData[] = [
+      makeFolder("f1", null, "a"),
+      makeScene("s1", "f1", "a"),
+    ];
+    const cellMap = new Map<string, never>();
+    const rows = deriveRows(nodes, new Set(["f1"]), null, {
+      hideEmpty: true,
+      cellMap,
+    });
+    expect(rows).toHaveLength(0);
+  });
 });

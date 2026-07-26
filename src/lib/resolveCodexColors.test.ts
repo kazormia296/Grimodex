@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   resolveCodexColor,
   activeCodexPaletteSlots,
+  codexHighlightBackground,
   contrastTextColor,
 } from "./resolveCodexColors";
 import { PALETTE_SIZE } from "./colorThemes";
@@ -85,5 +86,35 @@ describe("contrastTextColor", () => {
   });
   it("hex でない（CSS 変数等）は白にフォールバック", () => {
     expect(contrastTextColor("var(--primary)")).toBe("#ffffff");
+  });
+});
+
+describe("codexHighlightBackground", () => {
+  const colors = { hl: "#E8F0FF", tx: "#1A3A8F", fg: "#2045AA" };
+
+  it("既定レベル 10 はパレット設計値 (hl) をそのまま返す", () => {
+    expect(codexHighlightBackground(colors, 10)).toBe("#E8F0FF");
+  });
+
+  it("10 未満は hl を透明側へ薄める (レベル×10%)", () => {
+    expect(codexHighlightBackground(colors, 5)).toBe(
+      "color-mix(in srgb, #E8F0FF 50%, transparent)",
+    );
+  });
+
+  it("10 超は fg を混ぜて濃くする ((レベル-10)×2%)", () => {
+    expect(codexHighlightBackground(colors, 25)).toBe(
+      "color-mix(in srgb, #2045AA 30%, #E8F0FF)",
+    );
+  });
+
+  it("範囲外・非数は 5〜25 にクランプ / 既定 10 扱い", () => {
+    expect(codexHighlightBackground(colors, 0)).toBe(
+      "color-mix(in srgb, #E8F0FF 50%, transparent)",
+    );
+    expect(codexHighlightBackground(colors, 100)).toBe(
+      "color-mix(in srgb, #2045AA 30%, #E8F0FF)",
+    );
+    expect(codexHighlightBackground(colors, Number.NaN)).toBe("#E8F0FF");
   });
 });

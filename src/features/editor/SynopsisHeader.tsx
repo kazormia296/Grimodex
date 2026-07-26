@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { SynopsisArea } from "@/features/tree/SynopsisArea";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
-import { useCodexStore } from "@/features/codex/codexStore";
 import { generateSynopsisFromBeats } from "@/features/editor/beat/generateSynopsisFromBeats";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
@@ -16,39 +15,10 @@ interface SynopsisHeaderProps {
   editor?: Editor | null;
 }
 
-function CodexRefSelect({
-  label,
-  value,
-  entries,
-  onSelect,
-}: {
-  label: string;
-  value: string | null;
-  entries: { id: string; name: string }[];
-  onSelect: (id: string | null) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-[10px] text-muted-foreground">{label}</span>
-      <select
-        value={value ?? ""}
-        onChange={(e) => onSelect(e.target.value || null)}
-        className="h-5 rounded border border-border bg-background px-1 text-[10px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-      >
-        <option value="">—</option>
-        {entries.map((e) => (
-          <option key={e.id} value={e.id}>
-            {e.name}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
 /**
  * Collapsible synopsis header above the editor.
- * Includes POV character and Location selectors (C2-U).
+ * POV / Location の編集は ScenePropertyGrid（チップ + ポップオーバー）へ
+ * 移設済み（Editorパネル Refine 1f）。ここはあらすじ + 狙いのカード。
  */
 export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
   const { t } = useTranslation();
@@ -56,15 +26,9 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const nodes = useTreeStore((s) => s.nodes);
-  const updatePovCharacter = useTreeStore((s) => s.updatePovCharacter);
-  const updateLocation = useTreeStore((s) => s.updateLocation);
   const updateIntent = useTreeStore((s) => s.updateIntent);
-  const allCodexEntries = useCodexStore((s) => s.entries);
 
   const node = nodes.find((n) => n.id === sceneId);
-
-  const characters = allCodexEntries.filter((e) => e.type === "character");
-  const locations = allCodexEntries.filter((e) => e.type === "location");
 
   const hasPlacedBeats = editor
     ? (() => {
@@ -202,26 +166,6 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
               textareaClassName="w-full resize-none rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
-          {(characters.length > 0 || locations.length > 0) && (
-            <div className="flex flex-wrap gap-3">
-              {characters.length > 0 && (
-                <CodexRefSelect
-                  label={t("editor.synopsis.povLabel")}
-                  value={node.povCharacterId}
-                  entries={characters}
-                  onSelect={(id) => updatePovCharacter(sceneId, id)}
-                />
-              )}
-              {locations.length > 0 && (
-                <CodexRefSelect
-                  label={t("codex.location")}
-                  value={node.locationId}
-                  entries={locations}
-                  onSelect={(id) => updateLocation(sceneId, id)}
-                />
-              )}
-            </div>
-          )}
         </div>
       )}
     </div>

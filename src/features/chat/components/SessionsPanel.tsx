@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { X, MoreVertical, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { formatInstant } from "@/lib/time";
 import { useChatStore } from "@/features/chat/chatStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveScopeSessionKey } from "../chatScope";
@@ -16,6 +17,7 @@ interface SessionsPanelProps {
   sceneTitle: string;
   activeSceneId: string;
   onClose: () => void;
+  mutationsDisabled?: boolean;
 }
 
 interface SessionItemProps {
@@ -24,6 +26,7 @@ interface SessionItemProps {
   onSelect: () => void;
   onRename: (newTitle: string) => void;
   onDelete: () => void;
+  mutationsDisabled: boolean;
 }
 
 function SessionItem({
@@ -32,14 +35,15 @@ function SessionItem({
   onSelect,
   onRename,
   onDelete,
+  mutationsDisabled,
 }: SessionItemProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(session.title);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  // セッションメニューは .glass-chat 内のセッションドロワーにあり、inline absolute
-  // だと祖先 stacking context に埋もれる。document.body へ portal して脱出する。
+  // セッションメニューはチャットパネル内のドロワーにあり、inline absolute だと
+  // 祖先 stacking context に埋もれる。document.body へ portal して脱出する。
   const { popoverRef, style } = useAnchoredPopover(
     menuTriggerRef,
     menuOpen,
@@ -73,7 +77,12 @@ function SessionItem({
     }
   };
 
-  const date = new Date(session.updatedAt).toLocaleDateString();
+  const date =
+    formatInstant(session.updatedAt, undefined, {
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+    }) ?? session.updatedAt;
 
   return (
     <div
@@ -128,23 +137,25 @@ function SessionItem({
             >
               <button
                 type="button"
+                disabled={mutationsDisabled}
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuOpen(false);
                   setIsEditing(true);
                 }}
-                className="w-full px-3 py-1.5 text-left text-xs hover:bg-accent"
+                className="w-full px-3 py-1.5 text-left text-xs hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
               >
                 {t("chat.sessionRename")}
               </button>
               <button
                 type="button"
+                disabled={mutationsDisabled}
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuOpen(false);
                   onDelete();
                 }}
-                className="w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-accent"
+                className="w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
               >
                 {t("common.delete")}
               </button>
@@ -160,6 +171,7 @@ export function SessionsPanel({
   sceneTitle,
   activeSceneId,
   onClose,
+  mutationsDisabled = false,
 }: SessionsPanelProps) {
   const sessions = useChatStore((s) => s.sessions);
   const isLoadingSessions = useChatStore((s) => s.isLoadingSessions);
@@ -226,6 +238,7 @@ export function SessionsPanel({
 
   const handleDelete = useCallback(
     async (sessionId: string) => {
+      if (mutationsDisabled) return;
       const confirmed = window.confirm(t("chat.sessionDeleteConfirm"));
       if (!confirmed) return;
       try {
@@ -247,10 +260,12 @@ export function SessionsPanel({
       deleteSession,
       loadSessions,
       t,
+      mutationsDisabled,
     ],
   );
 
   const handleCreate = useCallback(async () => {
+    if (mutationsDisabled) return;
     try {
       await createNewSession(
         getCurrentProjectId(),
@@ -277,6 +292,7 @@ export function SessionsPanel({
     loadSessions,
     onClose,
     t,
+    mutationsDisabled,
   ]);
 
   // Close on click outside
@@ -327,6 +343,7 @@ export function SessionsPanel({
                 onSelect={() => handleSelect(session.id)}
                 onRename={(newTitle) => handleRename(session.id, newTitle)}
                 onDelete={() => handleDelete(session.id)}
+                mutationsDisabled={mutationsDisabled}
               />
             ))
           )}
@@ -337,7 +354,8 @@ export function SessionsPanel({
           <button
             type="button"
             onClick={handleCreate}
-            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            disabled={mutationsDisabled}
+            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
           >
             <Plus className="h-3.5 w-3.5" />
             New session

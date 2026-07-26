@@ -1,0 +1,79 @@
+# リリース公開時に AUR の grimodex-bin を更新する。
+# draft のうちは発火せず、GitHub 上で「Publish release」した時点で走る
+# (.deb アセットが公開 URL になってから updpkgsums が checksum を取れるため)。
+# 必要なシークレットと初回セットアップは packaging/arch/README.md を参照。
+name: AUR Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "公開対象の Electron リリースタグ (例: v2.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# AUR リポジトリへの push が競合しないよう直列化
+concurrency:
+  group: aur-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish grimodex-bin to AUR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # prerelease (v2.1.0-beta 等) はハイフンが pkgver に使えないため対象外
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false) &&
+      startsWith(github.event.release.tag_name || inputs.tag, 'v2.')
+    steps:
+      # シークレット未設定のリポジトリ (fork 等) でリリース公開しても
+      # 赤い CI にならないよう、明示的にスキップする
+      - name: AUR シークレットの確認
+        id: creds
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::warning::AUR_SSH_PRIVATE_KEY が未設定のため AUR 公開をスキップします (packaging/arch/README.md 参照)。"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: steps.creds.outputs.ok == 'true'
+
+      - name: バージョン確定と PKGBUILD 生成
+        if: steps.creds.outputs.ok == 'true'
+        id: ver
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::タグ ${TAG} から有効な pkgver を得られません (x.y.z のみ対応)。" >&2
+            exit 1
+          fi
+          sed "s/@PKGVER@/${VERSION}/" packaging/arch/PKGBUILD > PKGBUILD.aur
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Arch コンテナ内で updpkgsums (公開済みアセットの checksum 計算) と
+      # .SRCINFO 生成を行い、ssh://aur@aur.archlinux.org/grimodex-bin.git へ push する
+      - name: AUR へ公開
+        if: steps.creds.outputs.ok == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
+        with:
+          pkgname: grimodex-bin
+          pkgbuild: ./PKGBUILD.aur
+          updpkgsums: true
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to v${{ steps.ver.outputs.version }}"

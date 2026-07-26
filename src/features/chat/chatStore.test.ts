@@ -2,18 +2,37 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useChatStore, contextPromptKey } from "./chatStore";
 import { useAiSettingsStore, DEFAULT_AI_SETTINGS } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { setCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
   sendChatMessageWithThinking: vi.fn(),
   sendChatMessageStream: vi.fn(),
+  sendAgentMessage: vi.fn(),
   abortChatStream: vi.fn(() => Promise.resolve()),
   listSessions: vi.fn(),
+  getSessionForProject: vi.fn(),
   createSession: vi.fn(),
   deleteSession: vi.fn(),
   listMessages: vi.fn(),
   listSummaries: vi.fn(() => Promise.resolve([])),
+  getSummaryGeneration: vi.fn(() => Promise.resolve(1)),
+  addSummary: vi.fn(() =>
+    Promise.resolve({
+      id: "summary-1",
+      sessionId: "session-1",
+      summary: "summary",
+      sourceMessageIds: [],
+      tokenCount: 1,
+      generation: 1,
+      sourceMsgCount: 1,
+      lastMsgId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  ),
+  markMessagesSummarized: vi.fn(() => Promise.resolve()),
   addMessage: vi.fn(),
   saveMessagePrompt: vi.fn(() => Promise.resolve()),
   getMessagePrompt: vi.fn(() => Promise.resolve(null)),
@@ -21,8 +40,17 @@ vi.mock("./chatApi", () => ({
   generateSessionTitle: vi.fn(() => Promise.resolve(null)),
   listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
   listPinnedSnippetEntries: vi.fn(() => Promise.resolve([])),
+  listPinnedStickyEntries: vi.fn(() => Promise.resolve([])),
   pinCodexEntry: vi.fn(),
   unpinCodexEntry: vi.fn(),
+}));
+
+vi.mock("./codexAppApi", () => ({
+  sendCodexAppTurn: vi.fn(),
+  advanceCodexHistoryRevision: vi.fn(),
+  abortCodexAppTurn: vi.fn(() => Promise.resolve()),
+  setCodexSessionThreadName: vi.fn(() => Promise.resolve()),
+  archiveCodexSessionThread: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("./contextBuilder", () => ({
@@ -43,6 +71,11 @@ vi.mock("./contextBuilder", () => ({
     degraded: false,
   })),
   ensureTokenizer: vi.fn(() => Promise.resolve()),
+  getTokenEstimatorFamily: vi.fn(() => "o200k_base"),
+}));
+
+vi.mock("@/features/ai-usage/recordAiUsage", () => ({
+  recordAiUsage: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
@@ -98,13 +131,58 @@ vi.mock("@/features/project/api", () => ({
   ),
 }));
 
-vi.mock("@/features/codex/api", () => ({
-  listCodexEntries: vi.fn(() => Promise.resolve([])),
-  listCodexEntriesForContext: vi.fn(() => Promise.resolve([])),
-}));
+vi.mock("@/features/codex/api", () => {
+  const listCodexEntriesForContext = vi.fn(
+    async (_projectId?: string): Promise<Array<Record<string, unknown>>> => [],
+  );
+  const withoutContent = (entry: Record<string, unknown>) => {
+    const { content: _content, ...metadata } = entry;
+    return metadata;
+  };
+  const pickMatchTarget = (entry: Record<string, unknown>) => ({
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    aliases: entry.aliases,
+    excludedAliases: entry.excludedAliases,
+  });
+  return {
+    listCodexEntries: vi.fn(() => Promise.resolve([])),
+    listCodexEntriesForContext,
+    listCodexContextMetadata: vi.fn(async (projectId: string) =>
+      (await listCodexEntriesForContext(projectId)).map(withoutContent),
+    ),
+    listCodexEntriesForContextByIds: vi.fn(
+      async (projectId: string, ids: readonly string[]) => {
+        const byId = new Map(
+          (await listCodexEntriesForContext(projectId)).map((entry) => [
+            entry.id,
+            entry,
+          ]),
+        );
+        return [...new Set(ids)].flatMap((id) => {
+          const entry = byId.get(id);
+          return entry ? [entry] : [];
+        });
+      },
+    ),
+    listCodexMatchTargets: vi.fn(async (projectId: string) =>
+      (await listCodexEntriesForContext(projectId)).map(pickMatchTarget),
+    ),
+  };
+});
 
 vi.mock("@/features/snippets/api", () => ({
   getSnippet: vi.fn(() => Promise.resolve(undefined)),
+}));
+
+vi.mock("@/features/map/mapApi", () => ({
+  getMapBoard: vi.fn(() => Promise.resolve(null)),
+  listStickies: vi.fn(() => Promise.resolve([])),
+  listUserEdges: vi.fn(() => Promise.resolve([])),
+  listFrames: vi.fn(() => Promise.resolve([])),
+  listNodePositions: vi.fn(() => Promise.resolve([])),
+  listAiBranches: vi.fn(() => Promise.resolve([])),
 }));
 
 vi.mock("@/features/codex/codexMatcher", () => ({
@@ -140,10 +218,18 @@ vi.mock("@/features/semantic-search/api", () => ({
 }));
 
 import * as chatApi from "./chatApi";
-import type { StreamCallbacks } from "./chatApi";
+import * as codexAppApi from "./codexAppApi";
+import type { ChatMessageResult, StreamCallbacks } from "./chatApi";
 import * as contextBuilder from "./contextBuilder";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 const mockSendChatMessageStream = vi.mocked(chatApi.sendChatMessageStream);
+const mockSendCodexAppTurn = vi.mocked(codexAppApi.sendCodexAppTurn);
+const mockAdvanceCodexHistoryRevision = vi.mocked(
+  codexAppApi.advanceCodexHistoryRevision,
+);
+const mockSendAgentMessage = vi.mocked(chatApi.sendAgentMessage);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
+const mockRecordAiUsage = vi.mocked(recordAiUsage);
 
 /**
  * Helper: set up sendChatMessageStream mock to immediately call onTextDelta + onDone.
@@ -171,6 +257,7 @@ function mockStreamError(message: string) {
 }
 
 const mockListSessions = vi.mocked(chatApi.listSessions);
+const mockGetSessionForProject = vi.mocked(chatApi.getSessionForProject);
 const mockCreateSession = vi.mocked(chatApi.createSession);
 const mockDeleteSession = vi.mocked(chatApi.deleteSession);
 const mockListMessages = vi.mocked(chatApi.listMessages);
@@ -181,16 +268,21 @@ function resetStore() {
     sessions: [],
     activeSessionId: null,
     isLoadingSessions: false,
+    isLoadingMessages: false,
     messages: [],
     isStreaming: false,
     error: null,
     activeSceneId: "scene-1",
     activeProjectId: "proj-1",
     contextTokenCount: 0,
+    contextPlan: null,
     // スコープ/プロンプトキーはテスト間で漏れると stale 判定や copy 経路の
     // 分岐が前のテストの構成で動いてしまうため必ず初期化する
     chatScope: "scene",
     scopeAnchorId: null,
+    includeBodies: true,
+    includeMapBoard: false,
+    mapBoardId: null,
     lastSystemPromptKey: null,
     // prefix cache バッジ系も毎テスト初期化する。これらは resetStore で戻さないと
     // sendMessage 冒頭のモデル一致判定が前テストの残留値で分岐し、後続テストへ
@@ -203,7 +295,7 @@ function resetStore() {
 function makeMessage(
   role: "user" | "assistant",
   content: string,
-  id = crypto.randomUUID(),
+  id: string = crypto.randomUUID(),
 ): ChatMessage {
   return {
     id,
@@ -260,6 +352,10 @@ describe("useChatStore", () => {
   beforeEach(() => {
     resetStore();
     vi.clearAllMocks();
+    setCurrentImeWorkspaceIdentity({
+      path: "/workspace/chat-store-test",
+      openRevision: 1,
+    });
     // チャット用一時モデルはテスト間で漏れると後続の送信モデル判定を汚すので初期化。
     useAiSettingsStore.setState({
       chatModelOverride: null,
@@ -269,8 +365,28 @@ describe("useChatStore", () => {
     // policy 既定はクリア（projects 空 → fail-open=full）。chat ガードを
     // 素通りさせ、既存の sendMessage テストを従来どおり走らせる。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
+    useTabStore.setState({ tabs: [], activeTabId: null });
     // プロンプトプレビューの入力ドラフト DI をテスト間でリセット
     useChatStore.getState().registerInputDraftProvider(null);
+    mockCreateSession.mockImplementation(
+      async (projectId, title, nodeId, codexAnchorId, snippetAnchorId) => ({
+        ...session1,
+        projectId,
+        title,
+        nodeId: nodeId ?? null,
+        codexAnchorId: codexAnchorId ?? null,
+        snippetAnchorId: snippetAnchorId ?? null,
+      }),
+    );
+    mockGetSessionForProject.mockImplementation(async (sessionId, projectId) =>
+      sessionId
+        ? {
+            ...session1,
+            id: sessionId,
+            projectId,
+          }
+        : null,
+    );
   });
 
   // --- Session management tests ---
@@ -279,9 +395,10 @@ describe("useChatStore", () => {
     it("loads sessions for a scene", async () => {
       mockListSessions.mockResolvedValueOnce([session1, session2]);
 
-      await useChatStore.getState().loadSessions("scene-1");
+      const loaded = await useChatStore.getState().loadSessions("scene-1");
 
       const state = useChatStore.getState();
+      expect(loaded).toBe(true);
       expect(state.sessions).toHaveLength(2);
       expect(mockListSessions).toHaveBeenCalledWith(
         "proj-1",
@@ -319,6 +436,39 @@ describe("useChatStore", () => {
 
       expect(useChatStore.getState().isLoadingSessions).toBe(false);
     });
+
+    it("discards an in-flight scene history load after the active scene changes", async () => {
+      let resolvePromise: (value: ChatSession[]) => void;
+      const promise = new Promise<ChatSession[]>((resolve) => {
+        resolvePromise = resolve;
+      });
+      mockListSessions.mockReturnValueOnce(promise);
+
+      const loadPromise = useChatStore.getState().loadSessions("scene-1");
+      useChatStore.getState().setActiveSceneId("scene-2");
+      resolvePromise!([session1]);
+      await expect(loadPromise).resolves.toBe(false);
+
+      const state = useChatStore.getState();
+      expect(state.activeSceneId).toBe("scene-2");
+      expect(state.sessions).toEqual([]);
+      expect(state.activeSessionId).toBeNull();
+      expect(state.messages).toEqual([]);
+      expect(state.isLoadingSessions).toBe(false);
+      expect(state.isLoadingMessages).toBe(false);
+    });
+
+    it("reports a failed history load without treating stale sessions as fresh", async () => {
+      useChatStore.setState({ sessions: [session1] });
+      mockListSessions.mockRejectedValueOnce(new Error("load failed"));
+
+      await expect(
+        useChatStore.getState().loadSessions("scene-1"),
+      ).resolves.toBe(false);
+
+      expect(useChatStore.getState().sessions).toEqual([]);
+      expect(useChatStore.getState().isLoadingSessions).toBe(false);
+    });
   });
 
   describe("selectSession", () => {
@@ -345,6 +495,32 @@ describe("useChatStore", () => {
       const state = useChatStore.getState();
       expect(state.activeSessionId).toBeNull();
       expect(state.messages).toEqual([]);
+    });
+
+    it("does not run a queued selection after the scope changes", async () => {
+      useChatStore.setState({
+        sessions: [session1, session2],
+        activeSessionId: session1.id,
+      });
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "first", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const selection = useChatStore.getState().selectSession(session2.id);
+
+      useChatStore.setState({ activeSceneId: "scene-2" });
+      resolveCreate(session2);
+      await Promise.all([create, selection]);
+
+      expect(mockGetSessionForProject).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
     });
   });
 
@@ -452,6 +628,210 @@ describe("useChatStore", () => {
       expect(state.sessions).toContainEqual(session1);
       expect(state.activeSessionId).toBe("session-1");
     });
+
+    it("does not inherit the desktop OpenRouter model for a fresh Web session", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      vi.stubGlobal("document", {
+        documentElement: { dataset: { runtimeTarget: "web" } },
+      });
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "ollama",
+          model: "",
+        },
+      });
+      mockCreateSession.mockResolvedValueOnce({ ...session1, model: "" });
+
+      try {
+        await useChatStore
+          .getState()
+          .createNewSession("proj-1", "Web conversation", "scene-1");
+
+        expect(mockCreateSession).toHaveBeenCalledWith(
+          "proj-1",
+          "Web conversation",
+          "scene-1",
+          undefined,
+          undefined,
+          "",
+        );
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not replace the active session while a turn is streaming", async () => {
+      useChatStore.setState({ isStreaming: true });
+
+      await useChatStore
+        .getState()
+        .createNewSession("proj-1", "blocked", "scene-1");
+
+      expect(mockCreateSession).not.toHaveBeenCalled();
+    });
+
+    it("finishes a previously requested session creation before Send captures authority", async () => {
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      mockStreamResponse("new-session answer");
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "new", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const send = useChatStore.getState().sendMessage("new-session question");
+      await Promise.resolve();
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      resolveCreate(session2);
+      await create;
+      await send;
+
+      expect(mockCreateSession).toHaveBeenCalledOnce();
+      expect(useChatStore.getState().activeSessionId).toBe(session2.id);
+      expect(
+        useChatStore.getState().messages.map((message) => message.sessionId),
+      ).toEqual([session2.id, session2.id]);
+    });
+
+    it("does not let a later session creation overtake a Send start", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      let streamCallbacks: StreamCallbacks | undefined;
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          streamCallbacks = callbacks;
+          return () => {};
+        },
+      );
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("existing-session question");
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "too late", "scene-1");
+      await vi.waitFor(() => expect(streamCallbacks).toBeDefined());
+      await create;
+
+      expect(mockCreateSession).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+      streamCallbacks?.onTextDelta("existing-session answer");
+      streamCallbacks?.onDone({ stopReason: "completed" });
+      await send;
+    });
+
+    it("does not publish a created session after the workspace identity changes", async () => {
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "stale", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+
+      setCurrentImeWorkspaceIdentity({
+        path: "/workspace/chat-store-test",
+        openRevision: 2,
+      });
+      resolveCreate(session1);
+      await create;
+
+      expect(useChatStore.getState().activeSessionId).toBeNull();
+      expect(useChatStore.getState().sessions).toEqual([]);
+    });
+  });
+
+  describe("createLinkedSession", () => {
+    it("does not replace the active session while a turn is streaming", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        isStreaming: true,
+      });
+
+      await useChatStore.getState().createLinkedSession();
+
+      expect(mockCreateSession).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+    });
+
+    it("does not retarget a queued link operation after the scope changes", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      let resolveFirstCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveFirstCreate = resolve;
+        }),
+      );
+
+      const firstCreate = useChatStore
+        .getState()
+        .createNewSession("proj-1", "first", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const linkedCreate = useChatStore.getState().createLinkedSession();
+
+      useChatStore.setState({ activeSceneId: "scene-2" });
+      resolveFirstCreate(session2);
+      await Promise.all([firstCreate, linkedCreate]);
+
+      expect(mockCreateSession).toHaveBeenCalledOnce();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+    });
+  });
+
+  describe("ensureSession authority", () => {
+    it("does not reuse a session from a different resolved scope", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-2",
+      });
+
+      expect(await useChatStore.getState().ensureSession()).toBeNull();
+      expect(mockCreateSession).not.toHaveBeenCalled();
+    });
+
+    it("does not retarget a queued ensure after a workspace reopen", async () => {
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "first", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const ensured = useChatStore.getState().ensureSession();
+
+      setCurrentImeWorkspaceIdentity({
+        path: "/workspace/chat-store-test",
+        openRevision: 2,
+      });
+      resolveCreate(session1);
+      await create;
+
+      expect(await ensured).toBeNull();
+      expect(mockCreateSession).toHaveBeenCalledOnce();
+      expect(useChatStore.getState().activeSessionId).toBeNull();
+    });
   });
 
   describe("deleteSession", () => {
@@ -470,6 +850,11 @@ describe("useChatStore", () => {
       expect(state.sessions[0].id).toBe("session-2");
       expect(state.activeSessionId).toBeNull();
       expect(state.messages).toEqual([]);
+      expect(codexAppApi.archiveCodexSessionThread).toHaveBeenCalledWith({
+        projectId: "proj-1",
+        sessionId: "session-1",
+        expectedWorkspacePath: "/workspace/chat-store-test",
+      });
     });
 
     it("does not clear selection when deleting non-active session", async () => {
@@ -486,6 +871,63 @@ describe("useChatStore", () => {
       expect(state.sessions).toHaveLength(1);
       expect(state.activeSessionId).toBe("session-1");
       expect(state.messages).toEqual([msg1]);
+    });
+
+    it("does not delete a session while a turn is streaming", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        isStreaming: true,
+      });
+
+      await useChatStore.getState().deleteSession(session1.id);
+
+      expect(mockDeleteSession).not.toHaveBeenCalled();
+      expect(codexAppApi.archiveCodexSessionThread).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+    });
+
+    it("does not delete when the session is not owned by the captured project", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      mockGetSessionForProject.mockResolvedValueOnce(null);
+
+      await useChatStore.getState().deleteSession(session1.id);
+
+      expect(mockDeleteSession).not.toHaveBeenCalled();
+      expect(codexAppApi.archiveCodexSessionThread).not.toHaveBeenCalled();
+    });
+
+    it("does not continue deletion after a same-path workspace reopen", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      let resolveOwnership!: (session: ChatSession | null) => void;
+      mockGetSessionForProject.mockReturnValueOnce(
+        new Promise<ChatSession | null>((resolve) => {
+          resolveOwnership = resolve;
+        }),
+      );
+
+      const deletion = useChatStore.getState().deleteSession(session1.id);
+      await vi.waitFor(() =>
+        expect(mockGetSessionForProject).toHaveBeenCalledWith(
+          session1.id,
+          "proj-1",
+        ),
+      );
+      setCurrentImeWorkspaceIdentity({
+        path: "/workspace/chat-store-test",
+        openRevision: 2,
+      });
+      resolveOwnership(session1);
+      await deletion;
+
+      expect(mockDeleteSession).not.toHaveBeenCalled();
+      expect(codexAppApi.archiveCodexSessionThread).not.toHaveBeenCalled();
     });
   });
 
@@ -635,6 +1077,71 @@ describe("useChatStore", () => {
   // --- sendMessage tests ---
 
   describe("sendMessage", () => {
+    it("fails closed and rolls back placeholders when auto-creating a session fails", async () => {
+      mockCreateSession.mockRejectedValueOnce(
+        new Error("session db unavailable"),
+      );
+
+      await useChatStore.getState().sendMessage("初回質問");
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toEqual([]);
+      expect(useChatStore.getState().isStreaming).toBe(false);
+      expect(useChatStore.getState().error).toContain("session db unavailable");
+    });
+
+    it("does not adopt an auto-created old-scene session after navigation", async () => {
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+
+      const send = useChatStore.getState().sendMessage("シーンAの質問");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      useChatStore.setState({ activeSceneId: "scene-2" });
+      resolveCreate(session1);
+      await send;
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBeNull();
+      expect(useChatStore.getState().sessions).toEqual([]);
+      expect(useChatStore.getState().messages).toEqual([]);
+      expect(useChatStore.getState().isStreaming).toBe(false);
+    });
+
+    it("validates persisted session ownership before reading turn sources", async () => {
+      mockGetSessionForProject.mockResolvedValueOnce(null);
+      useChatStore.setState({
+        sessions: [],
+        activeSessionId: "foreign-session",
+        messages: [],
+      });
+
+      await useChatStore.getState().sendMessage("質問");
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(chatApi.listSummaries).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toEqual([]);
+      expect(useChatStore.getState().error).toBe(
+        "chat session project mismatch",
+      );
+    });
+
+    it("continues the turn after adopting its auto-created session", async () => {
+      mockCreateSession.mockResolvedValueOnce(session1);
+      mockStreamResponse("初回回答");
+
+      await useChatStore.getState().sendMessage("初回質問");
+
+      expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+      expect(
+        useChatStore.getState().messages.map((message) => message.sessionId),
+      ).toEqual([session1.id, session1.id]);
+    });
+
     it("adds user message, sets streaming, and appends assistant response", async () => {
       mockStreamResponse("こんにちは！");
 
@@ -647,6 +1154,331 @@ describe("useChatStore", () => {
       expect(messages[1].role).toBe("assistant");
       expect(messages[1].content).toBe("こんにちは！");
       expect(isStreaming).toBe(false);
+    });
+
+    it("advances a completed Codex App Server turn only after both messages persist", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      mockSendCodexAppTurn.mockImplementation(async (_payload, callbacks) => {
+        callbacks.onTurnStarted?.({
+          threadId: "codex-thread-1",
+          turnId: "codex-turn-1",
+        });
+        callbacks.onTextDelta("App Server 応答");
+        callbacks.onDone({ stopReason: "completed" });
+        return () => {};
+      });
+      mockAdvanceCodexHistoryRevision.mockResolvedValue({
+        status: "advanced",
+      });
+
+      await useChatStore.getState().sendMessage("App Server 質問");
+
+      expect(mockAddMessage).toHaveBeenCalledTimes(2);
+      const startPayload = mockSendCodexAppTurn.mock.calls[0]?.[0];
+      expect(startPayload).toBeDefined();
+      expect(mockAdvanceCodexHistoryRevision).toHaveBeenCalledWith({
+        projectId: "proj-1",
+        sessionId: "session-1",
+        grimodexTurnId: startPayload?.grimodexTurnId,
+        codexThreadId: "codex-thread-1",
+        codexTurnId: "codex-turn-1",
+        expectedHistoryRevision: startPayload?.historyRevision,
+        nextHistoryRevision: expect.any(String),
+      });
+      expect(mockAddMessage.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        mockAdvanceCodexHistoryRevision.mock.invocationCallOrder[0] ?? 0,
+      );
+      expect(
+        mockAdvanceCodexHistoryRevision.mock.calls[0]?.[0].nextHistoryRevision,
+      ).not.toBe(startPayload?.historyRevision);
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("keeps the current user message out of App Server bootstrap after summarization", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      const history = Array.from({ length: 5 }, (_, index) => [
+        makeMessage("user", `past-user-${index}`, `past-user-${index}`),
+        makeMessage(
+          "assistant",
+          `past-assistant-${index}`,
+          `past-assistant-${index}`,
+        ),
+      ]).flat();
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: history,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      vi.mocked(contextBuilder.allocateLayerBudgets).mockReturnValueOnce({
+        responseReservation: 1,
+        l1: 1,
+        l2: 1,
+        l3: 1,
+        l4: 1,
+        l5: 1,
+        degraded: false,
+      });
+      vi.mocked(chatApi.sendChatMessageWithThinking).mockResolvedValueOnce({
+        text: "summary result",
+        thinkingBlocks: [],
+        inputTokens: 1,
+        outputTokens: 1,
+      });
+      mockSendCodexAppTurn.mockImplementation(async (_payload, callbacks) => {
+        callbacks.onTurnStarted?.({
+          threadId: "codex-thread-summary",
+          turnId: "codex-turn-summary",
+        });
+        callbacks.onTextDelta("summary-safe answer");
+        callbacks.onDone({ stopReason: "completed" });
+        return () => {};
+      });
+
+      await useChatStore.getState().sendMessage("CURRENT-USER-QUESTION");
+
+      expect(chatApi.addSummary).toHaveBeenCalledOnce();
+      const payload = mockSendCodexAppTurn.mock.calls[0]?.[0];
+      expect(payload?.userMessage).toBe("CURRENT-USER-QUESTION");
+      expect(payload?.bootstrapHistory).not.toContain("CURRENT-USER-QUESTION");
+      expect(mockAdvanceCodexHistoryRevision).toHaveBeenCalledOnce();
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("does not advance Codex history when assistant persistence fails", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      mockSendCodexAppTurn.mockImplementation(async (_payload, callbacks) => {
+        callbacks.onTurnStarted?.({
+          threadId: "codex-thread-1",
+          turnId: "codex-turn-1",
+        });
+        callbacks.onTextDelta("App Server 応答");
+        callbacks.onDone({ stopReason: "completed" });
+        return () => {};
+      });
+      mockAddMessage
+        .mockResolvedValueOnce(msg1)
+        .mockRejectedValueOnce(new Error("assistant insert failed"));
+
+      await useChatStore.getState().sendMessage("App Server 質問");
+
+      expect(mockAddMessage).toHaveBeenCalledTimes(2);
+      expect(mockAdvanceCodexHistoryRevision).not.toHaveBeenCalled();
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("does not advance Codex history when prior messages change during the turn", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        agentMode: false,
+        ragEnabled: false,
+      });
+      let streamCallbacks: codexAppApi.CodexAppStreamCallbacks | undefined;
+      mockSendCodexAppTurn.mockImplementation(async (_payload, callbacks) => {
+        streamCallbacks = callbacks;
+        callbacks.onTurnStarted?.({
+          threadId: "codex-thread-1",
+          turnId: "codex-turn-1",
+        });
+        callbacks.onTextDelta("App Server 応答");
+        return () => {};
+      });
+
+      const send = useChatStore.getState().sendMessage("App Server 質問");
+      await vi.waitFor(() => expect(streamCallbacks).toBeDefined());
+      useChatStore.setState((state) => ({
+        messages: state.messages.filter((message) => message.id !== msg1.id),
+      }));
+      streamCallbacks?.onDone({ stopReason: "completed" });
+      await send;
+
+      expect(mockAddMessage).toHaveBeenCalledTimes(2);
+      expect(mockAdvanceCodexHistoryRevision).not.toHaveBeenCalled();
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("stops a Codex App Server turn with its captured project and session ids", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeProjectId: "proj-1",
+        activeSessionId: session1.id,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      mockSendCodexAppTurn.mockResolvedValue(() => {});
+
+      const send = useChatStore.getState().sendMessage("Stop target");
+      await vi.waitFor(() => expect(mockSendCodexAppTurn).toHaveBeenCalled());
+      const payload = mockSendCodexAppTurn.mock.calls[0]?.[0];
+      useChatStore.setState({
+        activeProjectId: "proj-2",
+        activeSessionId: "session-2",
+      });
+
+      useChatStore.getState().stopGeneration();
+
+      await vi.waitFor(() =>
+        expect(codexAppApi.abortCodexAppTurn).toHaveBeenCalledWith({
+          projectId: "proj-1",
+          sessionId: session1.id,
+          grimodexTurnId: payload?.grimodexTurnId,
+        }),
+      );
+      await send;
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("records normalized chat input drift with the immutable route/provider/project", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+        },
+      });
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "telemetry system prompt",
+        totalTokens: 42,
+        layers: [],
+        contextPlan: {
+          requestId: "request-telemetry",
+          items: [],
+          decisions: [],
+          usage: {
+            candidateTokens: 0,
+            selectedTokens: 0,
+            trimmedTokens: 0,
+            budgetTokens: 1_000,
+          },
+          digest: "ctx-telemetry",
+        },
+      });
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          callbacks.onTextDelta("ok");
+          callbacks.onDone({
+            stopReason: "end_turn",
+            inputTokens: 50,
+            outputTokens: 10,
+            cacheReadTokens: 1_200,
+            cacheWriteTokens: 300,
+          });
+          return () => {};
+        },
+      );
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const usage = mockRecordAiUsage.mock.calls.find(
+        ([input]) => input.surface === "chat",
+      )?.[0];
+      expect(usage).toMatchObject({
+        provider: "anthropic",
+        projectId: "proj-1",
+        tokensIn: 50,
+        cacheReadTokens: 1_200,
+        cacheWriteTokens: 300,
+      });
+      const drift = usage?.metadata?.["inputTokenDrift"] as
+        | Record<string, unknown>
+        | undefined;
+      expect(drift).toMatchObject({
+        scope: "chat",
+        provider: "anthropic",
+        projectId: "proj-1",
+        estimatorFamily: "o200k_base",
+        language: "ja",
+        safetyMarginTokens: 32,
+        contextPlanDigest: expect.stringMatching(/^ctx-/),
+        normalizedActualInputTokens: 1_550,
+        requestCount: 1,
+        route: expect.objectContaining({
+          surface: "chat",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          toolProtocol: "native",
+        }),
+      });
+      expect(drift?.["deltaInputTokens"]).toBe(
+        1_550 - Number(drift?.["estimatedInputTokens"]),
+      );
     });
 
     it("非エージェント送信は chatModelOverride(一時モデル)を transport へ渡し、既定モデルは書き換えない", async () => {
@@ -776,6 +1608,310 @@ describe("useChatStore", () => {
       const assistant = messages.find((m) => m.role === "assistant");
       expect(assistant?.content).toBe("途中まで");
       expect(error).toBe("ストリーム中断");
+    });
+
+    it("flushes a buffered final frame before Stop invalidates the turn", async () => {
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        vi.fn(() => 1),
+      );
+      vi.stubGlobal("cancelAnimationFrame", vi.fn());
+      let callbacks!: StreamCallbacks;
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, capturedCallbacks) => {
+          callbacks = capturedCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+      });
+
+      try {
+        const send = useChatStore.getState().sendMessage("テスト");
+        await vi.waitFor(() => expect(callbacks).toBeDefined());
+        callbacks.onTextDelta("停止直前の末尾");
+
+        useChatStore.getState().stopGeneration();
+        expect(useChatStore.getState().messages.at(-1)?.content).toBe(
+          "停止直前の末尾",
+        );
+
+        await send;
+        expect(chatApi.addMessage).toHaveBeenCalledWith(
+          session1.id,
+          "user",
+          "テスト",
+          expect.objectContaining({ id: expect.any(String) }),
+        );
+        expect(chatApi.addMessage).toHaveBeenCalledWith(
+          session1.id,
+          "assistant",
+          "停止直前の末尾",
+          expect.objectContaining({
+            metadata: JSON.stringify({ stopped: true }),
+          }),
+        );
+
+        // A late backend abort error is idempotent after synthetic Stop
+        // finalization and cannot erase/persist the turn twice.
+        callbacks.onError("stopped");
+        expect(chatApi.addMessage).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("preserves a stopped agent turn when the in-flight transport rejects", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        agentMode: true,
+      });
+
+      let rejectSecondCall!: (error: Error) => void;
+      mockSendAgentMessage
+        .mockResolvedValueOnce({
+          blocks: [
+            { type: "text", content: "途中回答" },
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "undeclared_tool",
+              input: {},
+            },
+          ],
+          stopReason: "tool_use",
+        })
+        .mockImplementationOnce(
+          () =>
+            new Promise((_, reject) => {
+              rejectSecondCall = reject;
+            }),
+        );
+
+      try {
+        const sendPromise = useChatStore.getState().sendMessage("調べて");
+        await vi.waitFor(() => {
+          expect(useChatStore.getState().messages.at(-1)?.content).toBe(
+            "途中回答",
+          );
+        });
+
+        useChatStore.getState().stopGeneration();
+        rejectSecondCall(new Error("aborted by stop"));
+        await sendPromise;
+
+        const state = useChatStore.getState();
+        expect(state.isStreaming).toBe(false);
+        expect(state.error).toBeNull();
+        expect(state.messages.map((message) => message.content)).toEqual([
+          "調べて",
+          "途中回答",
+        ]);
+        expect(
+          JSON.parse(state.messages.at(-1)?.metadata ?? "{}"),
+        ).toMatchObject({ stopped: true });
+        expect(chatApi.addMessage).toHaveBeenCalledWith(
+          session1.id,
+          "user",
+          "調べて",
+          expect.objectContaining({ id: expect.any(String) }),
+        );
+        const assistantPersistCall = vi
+          .mocked(chatApi.addMessage)
+          .mock.calls.find(
+            (call) => call[0] === session1.id && call[1] === "assistant",
+          );
+        expect(assistantPersistCall?.[2]).toBe("途中回答");
+        expect(assistantPersistCall?.[3]).toMatchObject({
+          id: expect.any(String),
+        });
+        expect(
+          JSON.parse(
+            String(
+              (assistantPersistCall?.[3] as { metadata?: string } | undefined)
+                ?.metadata ?? "{}",
+            ),
+          ),
+        ).toMatchObject({ stopped: true });
+      } finally {
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
+    it("public RAGはprivate historyを除外しつつcommandInstructionを保持する", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [makeMessage("assistant", "PRIVATE HISTORY")],
+        agentMode: false,
+        ragEnabled: true,
+      });
+      mockSendAgentMessage.mockResolvedValueOnce({
+        blocks: [{ type: "text", content: "public answer" }],
+        stopReason: "end_turn",
+      });
+
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("public question", "TRUSTED COMMAND INSTRUCTION");
+
+        const sentMessages = mockSendAgentMessage.mock.calls.at(-1)?.[0] ?? [];
+        expect(sentMessages).toContainEqual({
+          role: "system",
+          content: expect.stringContaining("TRUSTED COMMAND INSTRUCTION"),
+        });
+        expect(sentMessages).toContainEqual({
+          role: "user",
+          content: "public question",
+        });
+        expect(JSON.stringify(sentMessages)).not.toContain("PRIVATE HISTORY");
+      } finally {
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
+    it("accumulates parent and research Agent drift without changing aggregate tokens", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        agentMode: true,
+        ragEnabled: false,
+      });
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "agent telemetry system prompt",
+        totalTokens: 42,
+        layers: [],
+        contextPlan: {
+          requestId: "request-agent-telemetry",
+          items: [],
+          decisions: [],
+          usage: {
+            candidateTokens: 0,
+            selectedTokens: 0,
+            trimmedTokens: 0,
+            budgetTokens: 1_000,
+          },
+          digest: "ctx-agent-telemetry",
+        },
+      });
+      mockSendAgentMessage
+        .mockResolvedValueOnce({
+          blocks: [
+            {
+              type: "tool_use",
+              id: "research-1",
+              name: "run_research",
+              input: { task: "moon archives" },
+            },
+          ],
+          stopReason: "tool_use",
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 100,
+          cacheWriteTokens: 20,
+        })
+        .mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "research findings" }],
+          stopReason: "end_turn",
+          inputTokens: 30,
+          outputTokens: 6,
+          cacheReadTokens: 200,
+          cacheWriteTokens: 40,
+        })
+        .mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "final answer" }],
+          stopReason: "end_turn",
+          inputTokens: 20,
+          outputTokens: 7,
+          cacheReadTokens: 300,
+          cacheWriteTokens: 60,
+        });
+
+      try {
+        await useChatStore.getState().sendMessage("調べて");
+
+        const agentUsage = mockRecordAiUsage.mock.calls
+          .map(([input]) => input)
+          .filter((input) => input.surface === "agent");
+        const byScope = new Map(
+          agentUsage.map((input) => {
+            const drift = input.metadata?.["inputTokenDrift"] as Record<
+              string,
+              unknown
+            >;
+            return [drift["scope"], { input, drift }];
+          }),
+        );
+        const research = byScope.get("agent-research");
+        const parent = byScope.get("agent-parent");
+
+        expect(research?.input).toMatchObject({
+          provider: "anthropic",
+          projectId: "proj-1",
+          tokensIn: 30,
+          tokensOut: 6,
+          cacheReadTokens: 200,
+          cacheWriteTokens: 40,
+        });
+        expect(research?.drift).toMatchObject({
+          contextPlanDigest: null,
+          language: "ja",
+          normalizedActualInputTokens: 270,
+          requestCount: 1,
+        });
+        expect(parent?.input).toMatchObject({
+          provider: "anthropic",
+          projectId: "proj-1",
+          // Existing Agent aggregate semantics stay as raw provider input sums.
+          tokensIn: 30,
+          tokensOut: 12,
+          cacheReadTokens: 400,
+          cacheWriteTokens: 80,
+        });
+        expect(parent?.drift).toMatchObject({
+          contextPlanDigest: expect.stringMatching(/^ctx-/),
+          language: "ja",
+          normalizedActualInputTokens: 510,
+          requestCount: 2,
+          safetyMarginTokens: 64,
+        });
+        expect(parent?.drift["deltaInputTokens"]).toBe(
+          510 - Number(parent?.drift["estimatedInputTokens"]),
+        );
+      } finally {
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
     });
 
     it("sets isStreaming to true during API call", async () => {
@@ -1038,8 +2174,12 @@ describe("useChatStore", () => {
 
       await useChatStore.getState().sendMessage("質問");
 
-      const { contextTokenCount } = useChatStore.getState();
+      const { contextTokenCount, contextPlan } = useChatStore.getState();
       expect(contextTokenCount).toBe(100);
+      expect(contextPlan).toMatchObject({
+        items: [],
+        decisions: [],
+      });
     });
 
     it("excludes scene body from the actual send when includeBodies=false (eco)", async () => {
@@ -1057,6 +2197,313 @@ describe("useChatStore", () => {
 
       const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
       expect(args?.scene.content).toBe("");
+    });
+
+    it("snapshots scene authority before async reads during send", async () => {
+      const { getNode, loadSceneContent } = await import("@/features/tree/api");
+      const mockGetNode = vi.mocked(getNode);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      let resolveNode!: (node: {
+        id: string;
+        title: string;
+        synopsis: string;
+      }) => void;
+
+      mockGetNode.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveNode = resolve;
+        }) as never,
+      );
+      mockLoadScene.mockResolvedValueOnce("切替前シーンの本文");
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "snapshot prompt",
+        totalTokens: 10,
+        layers: [],
+      });
+      mockStreamResponse("回答");
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+        includeBodies: true,
+      });
+
+      const sendPromise = useChatStore.getState().sendMessage("質問");
+      expect(useChatStore.getState().isStreaming).toBe(true);
+
+      // The user may navigate or toggle eco mode while source IO is pending.
+      // The in-flight turn must still use the authority captured at invocation.
+      useChatStore.setState({
+        activeSceneId: "scene-2",
+        includeBodies: false,
+      });
+      resolveNode({
+        id: "scene-1",
+        title: "切替前シーン",
+        synopsis: "切替前の要約",
+      });
+
+      await sendPromise;
+
+      expect(mockGetNode).toHaveBeenCalledWith("scene-1");
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect(args?.scene).toMatchObject({
+        id: "scene-1",
+        title: "切替前シーン",
+        content: "切替前シーンの本文",
+      });
+    });
+
+    it("does not start a transport after Stop during context preparation", async () => {
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+      });
+
+      const sendPromise = useChatStore.getState().sendMessage("止める質問");
+      expect(useChatStore.getState().isStreaming).toBe(true);
+      useChatStore.getState().stopGeneration();
+      releaseTokenizer();
+
+      await sendPromise;
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toEqual([]);
+      expect(useChatStore.getState().isStreaming).toBe(false);
+    });
+
+    it("keeps a replacement turn authoritative when the stopped pre-transport turn resumes", async () => {
+      let releaseFirstTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseFirstTokenizer = resolve;
+        }),
+      );
+      let replacementCallbacks!: StreamCallbacks;
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks) => {
+          replacementCallbacks = callbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+      });
+
+      const firstSend = useChatStore.getState().sendMessage("古い質問");
+      useChatStore.getState().stopGeneration();
+      const replacementSend = useChatStore.getState().sendMessage("新しい質問");
+      await vi.waitFor(() => {
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      });
+
+      releaseFirstTokenizer();
+      await firstSend;
+
+      expect(useChatStore.getState().isStreaming).toBe(true);
+      expect(
+        useChatStore.getState().messages.map((message) => message.content),
+      ).toEqual(["新しい質問", ""]);
+
+      replacementCallbacks.onTextDelta("新しい回答");
+      replacementCallbacks.onDone({ stopReason: "end_turn" });
+      await replacementSend;
+      expect(useChatStore.getState().messages.at(-1)?.content).toBe(
+        "新しい回答",
+      );
+    });
+
+    it("ignores late callbacks from a stopped stream after a replacement starts", async () => {
+      const callbacks: StreamCallbacks[] = [];
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, streamCallbacks) => {
+          callbacks.push(streamCallbacks);
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+      });
+
+      const firstSend = useChatStore.getState().sendMessage("古い質問");
+      await vi.waitFor(() => expect(callbacks).toHaveLength(1));
+      useChatStore.getState().stopGeneration();
+      const replacementSend = useChatStore.getState().sendMessage("新しい質問");
+      await vi.waitFor(() => expect(callbacks).toHaveLength(2));
+
+      callbacks[0].onError("古いターンの遅延エラー");
+      await firstSend;
+
+      expect(useChatStore.getState().isStreaming).toBe(true);
+      expect(useChatStore.getState().error).toBeNull();
+      expect(
+        useChatStore
+          .getState()
+          .messages.slice(-2)
+          .map((message) => message.content),
+      ).toEqual(["新しい質問", ""]);
+
+      callbacks[1].onTextDelta("新しい回答");
+      callbacks[1].onDone({ stopReason: "end_turn" });
+      await replacementSend;
+      expect(useChatStore.getState().messages.at(-1)?.content).toBe(
+        "新しい回答",
+      );
+    });
+
+    it("does not publish or persist a summary after the turn loses authority", async () => {
+      const history = Array.from({ length: 5 }, (_, index) => [
+        makeMessage("user", `user-${index}`, `user-${index}`),
+        makeMessage("assistant", `assistant-${index}`, `assistant-${index}`),
+      ]).flat();
+      vi.mocked(contextBuilder.allocateLayerBudgets).mockReturnValueOnce({
+        responseReservation: 1,
+        l1: 1,
+        l2: 1,
+        l3: 1,
+        l4: 1,
+        l5: 1,
+        degraded: false,
+      });
+      let resolveSummary!: (value: ChatMessageResult) => void;
+      vi.mocked(chatApi.sendChatMessageWithThinking).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSummary = resolve;
+        }),
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: history,
+        summaryCount: 0,
+      });
+
+      const send = useChatStore.getState().sendMessage("要約を発火する質問");
+      await vi.waitFor(() => {
+        expect(chatApi.sendChatMessageWithThinking).toHaveBeenCalledOnce();
+      });
+      useChatStore.getState().stopGeneration();
+      const replacement = [makeMessage("user", "replacement", "replacement")];
+      useChatStore.setState({ messages: replacement, summaryCount: 0 });
+      resolveSummary({
+        text: "old summary",
+        thinkingBlocks: [],
+        inputTokens: 1,
+        outputTokens: 1,
+      });
+      await send;
+
+      expect(chatApi.addSummary).not.toHaveBeenCalled();
+      expect(chatApi.markMessagesSummarized).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toEqual(replacement);
+      expect(useChatStore.getState().summaryCount).toBe(0);
+    });
+
+    it("fails closed when a stale scene id resolves to another project", async () => {
+      const { getNode, loadSceneContent } = await import("@/features/tree/api");
+      vi.mocked(getNode).mockResolvedValueOnce({
+        id: "scene-1",
+        projectId: "foreign-project",
+        title: "別プロジェクトのシーン",
+      } as never);
+      vi.mocked(loadSceneContent).mockResolvedValueOnce("漏れてはいけない本文");
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+      });
+
+      await useChatStore.getState().sendMessage("質問");
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+      expect(useChatStore.getState().error).toContain(
+        "scene context project mismatch",
+      );
+    });
+
+    it("fails closed when required project context cannot be loaded", async () => {
+      const { getProject } = await import("@/features/project/api");
+      vi.mocked(getProject).mockRejectedValueOnce(new Error("project db down"));
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+      });
+
+      await useChatStore.getState().sendMessage("質問");
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toEqual([]);
+      expect(useChatStore.getState().error).toBe(
+        "required project context is unavailable",
+      );
+    });
+
+    it("aborts send when the selected scene cannot be loaded", async () => {
+      const { getNode } = await import("@/features/tree/api");
+      vi.mocked(getNode).mockResolvedValueOnce(null as never);
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "missing-scene",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+      });
+
+      await useChatStore.getState().sendMessage("質問");
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(useChatStore.getState().error).toContain(
+        "required scene context is unavailable",
+      );
+    });
+
+    it("rejects a captured map board that belongs to another project", async () => {
+      const { getMapBoard } = await import("@/features/map/mapApi");
+      vi.mocked(getMapBoard).mockResolvedValueOnce({
+        id: "foreign-board",
+        projectId: "foreign-project",
+        title: "Foreign secrets",
+      } as never);
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "safe prompt",
+        totalTokens: 1,
+        layers: [],
+      });
+      mockStreamResponse("回答");
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+        includeMapBoard: true,
+        mapBoardId: "foreign-board",
+      });
+
+      await useChatStore.getState().sendMessage("質問");
+
+      expect(
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0].mapBoardMarkdown,
+      ).toBe(undefined);
     });
 
     it("passes volatileTail through to sendChatMessageStream", async () => {
@@ -1093,11 +2540,33 @@ describe("useChatStore", () => {
   // --- シーンなし時のシステムプロンプトフォールバック ---
 
   describe("lastSystemPrompt fallback (no active scene)", () => {
-    it("sendMessage injects lastSystemPrompt as system message when no scene", async () => {
+    it("fails closed when the captured session belongs to another project", async () => {
+      useChatStore.setState({
+        sessions: [{ ...session1, projectId: "foreign-project" }],
+        activeSessionId: session1.id,
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+      });
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(useChatStore.getState().error).toBe(
+        "chat session project mismatch",
+      );
+    });
+
+    it("sendMessage rebuilds instead of trusting lastSystemPrompt when no scene", async () => {
       useChatStore.setState({
         activeSceneId: "",
         activeProjectId: null,
         lastSystemPrompt: "フォールバックプロンプト",
+      });
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "ターン専用プロンプト",
+        totalTokens: 1,
+        layers: [],
       });
       mockStreamResponse("回答");
 
@@ -1105,7 +2574,48 @@ describe("useChatStore", () => {
 
       const passedMessages = mockSendChatMessageStream.mock.calls[0][0];
       expect(passedMessages[0].role).toBe("system");
-      expect(passedMessages[0].content).toBe("フォールバックプロンプト");
+      expect(passedMessages[0].content).toBe("ターン専用プロンプト");
+    });
+
+    it("uses the exact non-scene planner result instead of reading UI prompt state", async () => {
+      const realRefresh = useChatStore.getState().refreshContextLayers;
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+        lastSystemPrompt: "OLD UI PROMPT",
+        refreshContextLayers: async () => {
+          // Simulate another UI refresh overwriting the display cache before
+          // the send continuation resumes.
+          useChatStore.setState({ lastSystemPrompt: "OTHER UI PROMPT" });
+          return {
+            prompt: "DIRECT TURN PROMPT",
+            totalTokens: 1,
+            layers: [],
+            contextPlan: {} as never,
+            cacheSegments: ["DIRECT CACHE"],
+            volatileTail: "DIRECT TAIL",
+            fullyInjectedIds: [],
+          };
+        },
+      });
+      mockStreamResponse("回答");
+
+      try {
+        await useChatStore.getState().sendMessage("テスト");
+      } finally {
+        useChatStore.setState({ refreshContextLayers: realRefresh });
+      }
+
+      const call = mockSendChatMessageStream.mock.calls[0];
+      expect(call[0][0]).toMatchObject({
+        role: "system",
+        content: "DIRECT TURN PROMPT",
+      });
+      expect(call[3]).toEqual(["DIRECT CACHE"]);
+      expect(call[5]).toBe("DIRECT TAIL");
     });
 
     it("sendMessage sends no system message when lastSystemPrompt is empty", async () => {
@@ -1163,7 +2673,7 @@ describe("useChatStore", () => {
       expect(passedMessages[0].content).toBe("NEW PROMPT (project scope)");
     });
 
-    it("sendMessage reuses lastSystemPrompt built for the current scope (no rebuild)", async () => {
+    it("sendMessage rebuilds even when the UI prompt key still matches", async () => {
       useChatStore.setState({
         activeSceneId: "",
         activeProjectId: "proj-1",
@@ -1177,22 +2687,207 @@ describe("useChatStore", () => {
       useChatStore.setState({
         lastSystemPromptKey: contextPromptKey(useChatStore.getState()),
       });
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "FRESH TURN PROMPT",
+        totalTokens: 1,
+        layers: [],
+      });
       mockStreamResponse("回答");
 
       await useChatStore.getState().sendMessage("テスト");
 
       const passedMessages = mockSendChatMessageStream.mock.calls[0][0];
       expect(passedMessages[0].role).toBe("system");
-      expect(passedMessages[0].content).toBe("CURRENT PROMPT");
-      // 構成が一致しているので再構築は走らない
-      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+      expect(passedMessages[0].content).toBe("FRESH TURN PROMPT");
+      expect(mockBuildSystemPrompt).toHaveBeenCalled();
     });
 
-    it("buildPromptForCopy uses lastSystemPrompt as fallback when no scene", async () => {
+    it("captures non-scene map selection at the send click", async () => {
+      const { getMapBoard } = await import("@/features/map/mapApi");
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "captured project prompt",
+        totalTokens: 1,
+        layers: [],
+      });
+      mockStreamResponse("回答");
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+        includeMapBoard: false,
+        mapBoardId: null,
+      });
+
+      const send = useChatStore.getState().sendMessage("テスト");
+      useChatStore.setState({
+        includeMapBoard: true,
+        mapBoardId: "board-late",
+      });
+      releaseTokenizer();
+      await send;
+
+      expect(getMapBoard).not.toHaveBeenCalled();
+      expect(
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0].mapBoardMarkdown,
+      ).toBe(undefined);
+    });
+
+    it("captures the non-scene active tab at the send click", async () => {
+      const { getSnippet } = await import("@/features/snippets/api");
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      vi.mocked(getSnippet).mockResolvedValueOnce({
+        id: "snippet-captured",
+        projectId: "proj-1",
+        title: "Captured Snippet",
+        content: "captured body",
+      } as never);
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "captured active-tab prompt",
+        totalTokens: 1,
+        layers: [],
+      });
+      mockStreamResponse("回答");
+      useTabStore.setState({
+        tabs: [
+          {
+            nodeId: "snippet-captured",
+            contentType: "snippet",
+            isPreview: false,
+          },
+        ],
+        activeTabId: "snippet-captured",
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+      });
+
+      const send = useChatStore.getState().sendMessage("テスト");
+      useTabStore.setState({
+        tabs: [
+          {
+            nodeId: "snippet-late",
+            contentType: "snippet",
+            isPreview: false,
+          },
+        ],
+        activeTabId: "snippet-late",
+      });
+      releaseTokenizer();
+      await send;
+
+      expect(getSnippet).toHaveBeenCalledWith("proj-1", "snippet-captured");
+      expect(
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0].activeTabContent,
+      ).toEqual({
+        type: "snippet",
+        title: "Captured Snippet",
+        content: "Captured Snippet",
+      });
+    });
+
+    it("does not let an older same-key refresh overwrite the newer result", async () => {
+      const { getProject } = await import("@/features/project/api");
+      let resolveOldProject!: (value: {
+        id: string;
+        title: string;
+        language: string;
+      }) => void;
+      vi.mocked(getProject)
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveOldProject = resolve;
+          }) as never,
+        )
+        .mockResolvedValueOnce({
+          id: "proj-1",
+          title: "New Project",
+          language: "ja",
+        } as never);
+      mockBuildSystemPrompt
+        .mockReturnValueOnce({
+          prompt: "NEW REFRESH",
+          totalTokens: 2,
+          layers: [],
+        })
+        .mockReturnValueOnce({
+          prompt: "OLD REFRESH",
+          totalTokens: 1,
+          layers: [],
+        });
+      useChatStore.setState({
+        sessions: [],
+        activeSessionId: null,
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+      });
+
+      const oldRefresh = useChatStore
+        .getState()
+        .refreshContextLayers({ purpose: "live" });
+      await vi.waitFor(() => expect(getProject).toHaveBeenCalledTimes(1));
+      await useChatStore.getState().refreshContextLayers({ purpose: "live" });
+      resolveOldProject({
+        id: "proj-1",
+        title: "Old Project",
+        language: "ja",
+      });
+      await oldRefresh;
+
+      expect(useChatStore.getState().lastSystemPrompt).toBe("NEW REFRESH");
+      expect(useChatStore.getState().contextTokenCount).toBe(2);
+    });
+
+    it("clears stale prompt state and aborts send when non-scene planning fails", async () => {
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
+      vi.mocked(listCodexEntriesForContext).mockRejectedValueOnce(
+        new Error("source unavailable"),
+      );
       useChatStore.setState({
         activeSceneId: "",
-        activeProjectId: null,
-        lastSystemPrompt: "フォールバックプロンプト",
+        activeProjectId: "proj-1",
+        activeSessionId: "session-1",
+        chatScope: "project",
+        scopeAnchorId: null,
+        lastSystemPrompt: "STALE OTHER PROJECT PROMPT",
+        lastSystemPromptKey: "stale-key",
+      });
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(useChatStore.getState().lastSystemPrompt).toBe("");
+      expect(useChatStore.getState().lastSystemPromptKey).toBeNull();
+    });
+
+    it("buildPromptForCopy rebuilds instead of reading lastSystemPrompt", async () => {
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "FRESH GLOBAL COPY",
+        totalTokens: 2,
+        layers: [],
+      });
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        lastSystemPrompt: "STALE PROMPT",
         messages: [],
       });
 
@@ -1200,15 +2895,21 @@ describe("useChatStore", () => {
         .getState()
         .buildPromptForCopy("ユーザー入力");
 
-      expect(result).toContain("[system]\nフォールバックプロンプト");
+      expect(result).toContain("[system]\nFRESH GLOBAL COPY");
+      expect(result).not.toContain("STALE PROMPT");
       expect(result).toContain("[user]\nユーザー入力");
     });
 
-    it("buildPromptForCopy omits system block when lastSystemPrompt is empty", async () => {
+    it("buildPromptForCopy never falls back to stale state after planning fails", async () => {
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
+      vi.mocked(listCodexEntriesForContext).mockRejectedValueOnce(
+        new Error("source unavailable"),
+      );
       useChatStore.setState({
         activeSceneId: "",
-        activeProjectId: null,
-        lastSystemPrompt: "",
+        activeProjectId: "proj-1",
+        lastSystemPrompt: "STALE PROMPT",
         messages: [],
       });
 
@@ -1217,11 +2918,17 @@ describe("useChatStore", () => {
         .buildPromptForCopy("ユーザー入力");
 
       expect(result).not.toContain("[system]");
+      expect(result).not.toContain("STALE PROMPT");
       expect(result).toContain("[user]\nユーザー入力");
     });
 
-    it("buildPromptForCopy uses lastSystemPrompt for project scope instead of empty scene prompt", async () => {
+    it("buildPromptForCopy rebuilds a project-scope TurnRequest", async () => {
       mockBuildSystemPrompt.mockClear();
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "FRESH PROJECT COPY",
+        totalTokens: 2,
+        layers: [],
+      });
       useChatStore.setState({
         activeSceneId: "",
         activeProjectId: "proj-1",
@@ -1235,9 +2942,40 @@ describe("useChatStore", () => {
         .getState()
         .buildPromptForCopy("ユーザー入力");
 
-      expect(result).toContain("[system]\n=== Act 1 ===");
-      expect(result).toContain("集約済みプロンプト");
-      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+      expect(result).toContain("[system]\nFRESH PROJECT COPY");
+      expect(result).not.toContain("集約済みプロンプト");
+      expect(mockBuildSystemPrompt).toHaveBeenCalled();
+    });
+
+    it("captures scene scope before tokenizer initialization during copy", async () => {
+      const { getNode } = await import("@/features/tree/api");
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "SCENE COPY",
+        totalTokens: 1,
+        layers: [],
+      });
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+        messages: [],
+      });
+
+      const copyPromise = useChatStore
+        .getState()
+        .buildPromptForCopy("ユーザー入力");
+      useChatStore.setState({ activeSceneId: "scene-2" });
+      releaseTokenizer();
+
+      await copyPromise;
+
+      expect(vi.mocked(getNode)).toHaveBeenCalledWith("scene-1");
     });
 
     it("buildPromptForCopy refreshes context when lastSystemPrompt is empty in project scope", async () => {
@@ -1471,7 +3209,7 @@ describe("useChatStore", () => {
   // --- Regression: global chat pin + mention should not duplicate summary ---
 
   describe("refreshContextLayers global chat pinned+mention dedup", () => {
-    it("excludes mentioned child from DB-pinned parent's children and childrenContext", async () => {
+    it("treats every visible direct child of a DB-pinned withChildren parent as an explicit child pin", async () => {
       const { listCodexEntriesForContext } =
         await import("@/features/codex/api");
       const mockListCodex = vi.mocked(listCodexEntriesForContext);
@@ -1486,6 +3224,7 @@ describe("useChatStore", () => {
         name: "親A",
         aliases: null,
         excludedAliases: null,
+        readings: null,
         summary: "A-summary",
         content: "{}",
         icon: null,
@@ -1511,6 +3250,7 @@ describe("useChatStore", () => {
         parentId: "A",
         name: "子Y",
         summary: "Y-summary",
+        contextMode: "always",
       };
 
       mockListCodex.mockResolvedValue([parent, childX, childY]);
@@ -1537,19 +3277,74 @@ describe("useChatStore", () => {
       expect(mockBuildSystemPrompt).toHaveBeenCalled();
       const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
       const pinned = args?.pinnedCodexEntries ?? [];
+      const detected = args?.codexEntries ?? [];
       const parentCtx = pinned.find((p) => p.id === "A");
-      const childCtx = pinned.find((p) => p.id === "X");
+      const childCtx = detected.find((entry) => entry.id === "X");
 
       expect(parentCtx).toBeDefined();
-      expect(childCtx).toBeDefined();
+      expect(childCtx).toBeUndefined();
 
-      // A の children 配列に X が含まれてはならない（G21 pin されているため重複防止）
-      expect(parentCtx?.children?.map((c) => c.id) ?? []).not.toContain("X");
-      // A の childrenContext にも X-summary が含まれてはならない
+      // withChildren は直下子を個別の explicit selection として扱うため、
+      // current mention の有無に関係なく X/Y は full child block になる。
+      expect(parentCtx?.children?.map((c) => c.id) ?? []).toEqual(
+        expect.arrayContaining(["X", "Y"]),
+      );
+      // direct child の summary は childrenContext に重ねて出さない。
       expect(parentCtx?.childrenContext ?? "").not.toContain("X-summary");
-      // Y は依然として children/childrenContext に含まれるべき
-      expect(parentCtx?.children?.map((c) => c.id) ?? []).toContain("Y");
-      expect(parentCtx?.childrenContext ?? "").toContain("Y-summary");
+      expect(parentCtx?.childrenContext ?? "").not.toContain("Y-summary");
+    });
+
+    it("resolves non-scene mentions from the captured project tree", async () => {
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+      const capturedScene = {
+        id: "mentioned-scene",
+        projectId: "proj-1",
+        parentId: null,
+        nodeType: "scene" as const,
+        title: "Captured title",
+        sortOrder: "a0",
+        synopsis: null,
+        charCount: 10,
+      };
+      mockTreeState
+        .mockReturnValueOnce({ nodes: [capturedScene] } as ReturnType<
+          typeof useTreeStore.getState
+        >)
+        .mockReturnValue({ nodes: [] } as unknown as ReturnType<
+          typeof useTreeStore.getState
+        >);
+      vi.mocked(listCodexEntriesForContext).mockResolvedValue([]);
+      vi.mocked(loadSceneContent).mockResolvedValue("captured body");
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "captured prompt",
+        totalTokens: 10,
+        layers: [],
+      });
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "project",
+        scopeAnchorId: null,
+      });
+
+      await useChatStore
+        .getState()
+        .refreshContextLayers({ mentionedSceneIds: [capturedScene.id] });
+
+      expect(
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.mentionedScenes,
+      ).toEqual([
+        {
+          id: capturedScene.id,
+          title: "Captured title",
+          content: "captured body",
+        },
+      ]);
     });
   });
 
@@ -1605,6 +3400,7 @@ describe("useChatStore", () => {
         name: "アリス",
         aliases: null,
         excludedAliases: null,
+        readings: null,
         summary: "ヒロイン",
         content: "{}",
         icon: null,
@@ -2310,6 +4106,37 @@ describe("useChatStore", () => {
       // 一方 synopsis は残り、scene.title も残る
       expect(args?.scene.title).toBe("テストシーン");
     });
+
+    it("snapshots conversation history before scene refresh awaits", async () => {
+      const { getNode, loadSceneContent } = await import("@/features/tree/api");
+      let resolveNode!: (node: { id: string; title: string }) => void;
+      vi.mocked(getNode).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveNode = resolve;
+        }) as never,
+      );
+      vi.mocked(loadSceneContent).mockResolvedValueOnce("本文");
+      const mockCountTokens = vi.mocked(contextBuilder.countTokens);
+      mockCountTokens.mockClear();
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+        includeBodies: true,
+        messages: [makeMessage("user", "refresh 開始前の履歴", "before")],
+      });
+
+      const refreshPromise = useChatStore.getState().refreshContextLayers();
+      useChatStore.setState({
+        messages: [makeMessage("user", "refresh 開始後の履歴", "after")],
+      });
+      resolveNode({ id: "scene-1", title: "テストシーン" });
+
+      await refreshPromise;
+
+      expect(mockCountTokens).toHaveBeenCalledWith("refresh 開始前の履歴");
+      expect(mockCountTokens).not.toHaveBeenCalledWith("refresh 開始後の履歴");
+    });
   });
 
   // プレビューは開いた瞬間に意味検索を1回走らせ related_scenes 込みで
@@ -2390,10 +4217,15 @@ describe("useChatStore", () => {
       expect(result.prompt).toBe("PREVIEW PROMPT");
     });
 
-    it("非 scene スコープ: 検索せずライブ値を返す", async () => {
+    it("非 scene スコープ: 検索せずpreview TurnRequestを再構築する", async () => {
       const { semanticSearch } = await import("@/features/semantic-search/api");
       const mockSearch = vi.mocked(semanticSearch);
       mockSearch.mockClear();
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "PREVIEW PROJECT PROMPT",
+        totalTokens: 8,
+        layers: [],
+      });
 
       useChatStore.setState({
         activeSceneId: "",
@@ -2409,9 +4241,9 @@ describe("useChatStore", () => {
 
       expect(mockSearch).not.toHaveBeenCalled();
       expect(result).toEqual({
-        prompt: "LIVE PROJECT PROMPT",
+        prompt: "PREVIEW PROJECT PROMPT",
         layers: [],
-        totalTokens: 99,
+        totalTokens: 8,
         userMessage: "",
       });
     });
@@ -3716,6 +5548,7 @@ describe("useChatStore", () => {
       name: "常時キャラ",
       aliases: null,
       excludedAliases: null,
+      readings: null,
       summary: "always-summary",
       content: "{}",
       icon: null,
@@ -3882,6 +5715,7 @@ describe("useChatStore", () => {
             type: "character",
             aliases: null,
             excludedAliases: null,
+            readings: null,
           },
         ] as never),
       );

@@ -235,7 +235,7 @@ Noteの場合:
 
 | ボタン | 動作 | ショートカット | 詳細 |
 |--------|------|-------------|------|
-| Ruby | ルビ付与 | `Ctrl+Shift+R` | テキスト選択中のみ有効。ダイアログでふりがな入力 |
+| Ruby | ルビ付与 | `Ctrl+Shift+R` | Codex の name / alias に代表読みがあれば即時付与。未設定・競合時はダイアログで入力 |
 | Link | リンク挿入 | `Ctrl+K` | |
 | Scene break | シーン区切り | | ※ オーバーフローに移動してもよい。`* * *` を挿入する専用ブロック |
 
@@ -384,8 +384,8 @@ Attr / Cmt / Focus / TW / 縦 は独立したトグルで、組み合わせ可�
 - TipTap `Node.create()` でインラインノードとして定義
 - attrs: `{ text: string, ruby: string }`
 - Markdownエクスポート時は `{漢字|ふりがな}` 形式に変換
-- ショートカットまたはツールバーボタンでルビ付与ダイアログを表示
-- ダイアログ: ベーステキスト（選択テキストから自動入力） + ルビテキスト入力欄
+- ショートカットまたはツールバーボタンでルビ付与。Codex の name / alias に設定済みの代表読みが一意なら即時付与
+- 設定済み読みが無い・競合する・既存ルビを編集する場合はダイアログを表示: ベーステキスト（選択テキストから自動入力） + ルビテキスト入力欄
 
 **SceneBreakNode（ブロックノード）**
 
@@ -996,7 +996,7 @@ Codexハイライト上での右クリックは通常のテキスト選択時コ
 
 ### 全シーン横断検索
 
-`Ctrl+Shift+F` またはコマンドパレットから「Find in all scenes」で、プロジェクト全体を検索するパネルを開く。結果はBottom Dockにリスト表示し、クリックで該当シーン・該当行にジャンプする。
+`Ctrl+Shift+F` でプロジェクト全体を検索する専用パネルを開く。結果は Bottom Dock にリスト表示し、クリックで該当シーン・該当行にジャンプする。
 
 ---
 
@@ -1667,7 +1667,7 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### エディタ内コンテキストメニュー
 
 - ✅ Cut / Copy / Paste / Add comment / Add to Codex / Save as Snippet / Look up in Chat / Mark as ▶（Attribution 変更）/ Insert scene break / Select all
-- ✅ `Set ruby...`（選択時）— Toolbar の openRuby を `toolbarActionsRef` 経由で起動し既存 Ruby ダイアログを再利用
+- ✅ `Set ruby...`（選択時）— Toolbar の openRuby を `toolbarActionsRef` 経由で起動し、Codex 読みが一意なら即時付与、その他は既存 Ruby ダイアログを再利用
 - ✅ `Insert from Snippet...` — 検索ボックス付き Snippet ピッカーで `editorStore.insertFromSnippet` 経由挿入
 - ➕ Lint Disable / Foreshadow メニュー項目
 

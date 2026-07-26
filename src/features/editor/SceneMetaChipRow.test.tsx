@@ -1,0 +1,182 @@
+// @vitest-environment happy-dom
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { createElement } from "react";
+import { render, screen, fireEvent } from "@testing-library/react";
+
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useCursorSettingsStore } from "./cursorSettingsStore";
+import { useEditorStore } from "./editorStore";
+import { useTabStore } from "./tabStore";
+import { SceneMetaChipRow } from "./SceneMetaChipRow";
+
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (k: string, opts?: unknown) =>
+      opts && typeof opts === "object" && "count" in opts
+        ? `${k}:${(opts as { count: number }).count}`
+        : k,
+    i18n: { language: "ja" },
+  }),
+}));
+
+vi.mock("motion/react", () => ({
+  motion: new Proxy(
+    {},
+    {
+      get:
+        (_target, tag: string) =>
+        ({
+          initial: _i,
+          animate: _a,
+          transition: _t,
+          exit: _e,
+          ...rest
+        }: Record<string, unknown>) =>
+          createElement(tag, rest as object),
+    },
+  ),
+  AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
+  useReducedMotion: () => false,
+}));
+
+const settingsSetSpy = vi.fn();
+
+function stubPanelOpen(open: boolean) {
+  useSettingsStore.setState({
+    getBoolean: (key: string, def: boolean) =>
+      key === "editor.sceneMetaPanelOpen" ? open : def,
+    set: settingsSetSpy,
+  } as never);
+}
+
+function seedScene(overrides: Partial<TreeNodeData> = {}) {
+  const node = {
+    id: "s1",
+    nodeType: "scene",
+    projectId: "p1",
+    title: "シーン",
+    povCharacterId: "c1",
+    locationId: "l1",
+    synopsis: "千早が帰還する。",
+    ...overrides,
+  } as TreeNodeData;
+  useTreeStore.setState({
+    nodes: [node],
+    activeSceneId: "s1",
+  } as never);
+}
+
+beforeEach(() => {
+  settingsSetSpy.mockClear();
+  stubPanelOpen(false);
+  useCursorSettingsStore.setState({ focusMode: false, zenMode: false });
+  useEditorStore.setState({ editor: null } as never);
+  useTabStore.setState({
+    activeTabId: "s1",
+    secondaryActiveTabId: null,
+    activeGroupIndex: 0,
+  } as never);
+  useCodexStore.setState({
+    entries: [
+      { id: "c1", name: "千早", type: "character" },
+      { id: "l1", name: "廃社", type: "location" },
+    ],
+  } as never);
+  seedScene();
+});
+
+describe("SceneMetaChipRow の表示条件", () => {
+  it("パネルが閉じているシーンで表示される", () => {
+    render(<SceneMetaChipRow />);
+    expect(screen.getByTestId("scene-meta-chip-row")).toHaveClass(
+      "glass-editor-chrome",
+    );
+    expect(screen.getByText("千早")).toBeTruthy();
+    expect(screen.getByText("廃社")).toBeTruthy();
+    expect(screen.getByText("千早が帰還する。")).toBeTruthy();
+  });
+
+  it("あらすじピルは背景を透過するクローム面を使う", () => {
+    render(<SceneMetaChipRow />);
+    expect(screen.getByText("千早が帰還する。").closest("button")).toHaveClass(
+      "editor-background-glass",
+    );
+  });
+
+  it("パネルが開いていると出ない", () => {
+    stubPanelOpen(true);
+    render(<SceneMetaChipRow />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+  });
+
+  it("フォーカスモード中も表示される (本文減光のみがフォーカスモードの効果)", () => {
+    useCursorSettingsStore.setState({ focusMode: true });
+    render(<SceneMetaChipRow />);
+    expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
+  });
+
+  it("Zenモード中は本文専用表示のため出ない", () => {
+    useCursorSettingsStore.setState({ zenMode: true });
+    render(<SceneMetaChipRow />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+  });
+
+  it("scene 以外のノードでは出ない", () => {
+    seedScene({ nodeType: "note" } as Partial<TreeNodeData>);
+    render(<SceneMetaChipRow />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+  });
+
+  it("groupIndex 指定時: そのグループのアクティブタブがアクティブシーンのときだけ出る", () => {
+    useTabStore.setState({
+      activeTabId: "s1",
+      secondaryActiveTabId: "other",
+      activeGroupIndex: 0,
+    } as never);
+    const { unmount } = render(<SceneMetaChipRow groupIndex={0} />);
+    expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
+    unmount();
+
+    render(<SceneMetaChipRow groupIndex={1} />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+  });
+
+  it("groupIndex 指定時: 同一シーンが両グループで開いているとフォーカス中のグループだけに出る", () => {
+    useTabStore.setState({
+      activeTabId: "s1",
+      secondaryActiveTabId: "s1",
+      activeGroupIndex: 1,
+    } as never);
+    const { unmount } = render(<SceneMetaChipRow groupIndex={0} />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+    unmount();
+
+    render(<SceneMetaChipRow groupIndex={1} />);
+    expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
+  });
+});
+
+describe("SceneMetaChipRow の操作", () => {
+  it("ビートチップでパネルを開く", () => {
+    render(<SceneMetaChipRow />);
+    fireEvent.click(screen.getByText("editor.sceneDetail.beatsChip:0"));
+    expect(settingsSetSpy).toHaveBeenCalledWith(
+      "editor.sceneMetaPanelOpen",
+      "true",
+    );
+  });
+
+  it("視点チップでピッカーが開く", async () => {
+    render(<SceneMetaChipRow />);
+    fireEvent.click(screen.getByText("千早"));
+    expect(await screen.findByTestId("codex-ref-picker")).toBeTruthy();
+  });
+
+  it("あらすじチップでポップオーバーが開く", async () => {
+    render(<SceneMetaChipRow />);
+    fireEvent.click(screen.getByText("千早が帰還する。"));
+    expect(await screen.findByTestId("synopsis-chip-popover")).toBeTruthy();
+  });
+});

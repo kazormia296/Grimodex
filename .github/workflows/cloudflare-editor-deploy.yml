@@ -1,0 +1,186 @@
+name: Cloudflare Web Editor Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [master]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Cloudflare Pages environment to deploy
+        required: true
+        type: choice
+        default: staging
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Verify Web Editor deployment candidate
+    if: >-
+      (
+        github.event_name == 'workflow_dispatch' &&
+        (
+          inputs.environment != 'production' ||
+          github.ref == 'refs/heads/master'
+        )
+      ) ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'master'
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CF_PAGES_ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
+      DEPLOY_CANDIDATE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+    outputs:
+      deploy: ${{ steps.current_master.outputs.deploy }}
+    steps:
+      - name: Checkout current master for deployment preflight
+        if: env.CF_PAGES_ENVIRONMENT == 'production'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: refs/heads/master
+
+      - name: Verify candidate revision is current master
+        id: current_master
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$CF_PAGES_ENVIRONMENT" != "production" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          current_master_sha="$(git rev-parse HEAD)"
+          is_valid_sha() {
+            [[ "$1" =~ ^[0-9a-fA-F]{40}$ || "$1" =~ ^[0-9a-fA-F]{64}$ ]]
+          }
+
+          if is_valid_sha "$DEPLOY_CANDIDATE_SHA" &&
+            is_valid_sha "$current_master_sha" &&
+            [[ "${DEPLOY_CANDIDATE_SHA,,}" == "${current_master_sha,,}" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping stale deployment $DEPLOY_CANDIDATE_SHA; current master is $current_master_sha."
+          fi
+
+  deploy:
+    name: Deploy Web Editor (${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }})
+    needs: preflight
+    if: needs.preflight.outputs.deploy == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: cloudflare-web-editor-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      CF_PAGES_ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
+      DEPLOY_CANDIDATE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Checkout deployed revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.DEPLOY_CANDIDATE_SHA }}
+
+      - name: Verify queued revision is current master
+        id: queued_current_master
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$CF_PAGES_ENVIRONMENT" != "production" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+          current_master_sha="$(git rev-parse refs/remotes/origin/master)"
+          is_valid_sha() {
+            [[ "$1" =~ ^[0-9a-fA-F]{40}$ || "$1" =~ ^[0-9a-fA-F]{64}$ ]]
+          }
+
+          if is_valid_sha "$DEPLOY_CANDIDATE_SHA" &&
+            is_valid_sha "$current_master_sha" &&
+            [[ "${DEPLOY_CANDIDATE_SHA,,}" == "${current_master_sha,,}" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping stale deployment $DEPLOY_CANDIDATE_SHA; current master is $current_master_sha."
+          fi
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        if: steps.queued_current_master.outputs.deploy == 'true'
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.queued_current_master.outputs.deploy == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.queued_current_master.outputs.deploy == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Cloudflare credentials
+        if: steps.queued_current_master.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID GitHub Actions secret is required."
+            exit 1
+          fi
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then
+            echo "::error::CLOUDFLARE_API_TOKEN GitHub Actions secret is required."
+            exit 1
+          fi
+
+      - name: Build Web Editor
+        if: steps.queued_current_master.outputs.deploy == 'true'
+        run: pnpm editor:cloudflare web-build "$CF_PAGES_ENVIRONMENT"
+
+      - name: Verify deployed revision is current master
+        id: current_master
+        if: steps.queued_current_master.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$CF_PAGES_ENVIRONMENT" != "production" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+          current_master_sha="$(git rev-parse refs/remotes/origin/master)"
+          is_valid_sha() {
+            [[ "$1" =~ ^[0-9a-fA-F]{40}$ || "$1" =~ ^[0-9a-fA-F]{64}$ ]]
+          }
+
+          if is_valid_sha "$DEPLOY_CANDIDATE_SHA" &&
+            is_valid_sha "$current_master_sha" &&
+            [[ "${DEPLOY_CANDIDATE_SHA,,}" == "${current_master_sha,,}" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping stale deployment $DEPLOY_CANDIDATE_SHA; current master is $current_master_sha."
+          fi
+
+      - name: Deploy Web Editor
+        if: steps.current_master.outputs.deploy == 'true'
+        run: pnpm editor:cloudflare web-deploy-artifact "$CF_PAGES_ENVIRONMENT"

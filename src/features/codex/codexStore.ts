@@ -5,11 +5,18 @@ import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import {
   listCodexEntries,
+  listCodexMatchTargets,
+  getCodexEntry,
   createCodexEntry,
   updateCodexEntry,
   deleteCodexEntry,
 } from "./api";
-import type { CodexEntry, CodexEntryType, NewCodexEntry } from "./api";
+import type {
+  CodexEntry,
+  CodexEntryType,
+  CodexMatchRow,
+  NewCodexEntry,
+} from "./api";
 import { CodexVersionConflictError } from "./occ";
 import { listCodexTypes, type CodexType } from "./typeApi";
 import { searchCodexEntries } from "./search";
@@ -19,6 +26,7 @@ import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
+import { _clearCodexCrossMentionCaches } from "./codexCrossMentions";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
   computeBodyDiff,
@@ -29,6 +37,12 @@ import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
+import {
+  parseReadings,
+  resolveUnsetReadingTargetForSurface,
+  serializeReadings,
+} from "./reading";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 export type CodexSortOrder =
   | "category"
@@ -55,6 +69,38 @@ export function setCodexEditConflictHandler(
   codexEditConflictHandler = handler;
 }
 
+interface RendererAuthority {
+  projectId: string;
+  workspacePath: string | null;
+  workspaceOpenRevision: number | null;
+}
+
+function captureRendererAuthority(): RendererAuthority {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  return {
+    projectId: getCurrentProjectId(),
+    workspacePath: workspaceIdentity?.path ?? null,
+    workspaceOpenRevision: workspaceIdentity?.openRevision ?? null,
+  };
+}
+
+function isCurrentRendererAuthority(authority: RendererAuthority): boolean {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  return (
+    getCurrentProjectId() === authority.projectId &&
+    (workspaceIdentity?.path ?? null) === authority.workspacePath &&
+    (workspaceIdentity?.openRevision ?? null) ===
+      authority.workspaceOpenRevision
+  );
+}
+
+class CodexCreateAuthorityChangedError extends Error {
+  constructor() {
+    super("codex create authority changed");
+    this.name = "CodexCreateAuthorityChangedError";
+  }
+}
+
 type StructuralPatch = Partial<
   Pick<
     NewCodexEntry,
@@ -65,6 +111,7 @@ type StructuralPatch = Partial<
     | "tagsCache"
     | "aliases"
     | "excludedAliases"
+    | "readings"
     | "parentId"
     | "contextMode"
     | "icon"
@@ -84,6 +131,7 @@ const FIELD_LABEL_KEYS: Record<string, string> = {
   tagsCache: "codex.history.tagsChanged",
   aliases: "codex.history.aliasesChanged",
   excludedAliases: "codex.history.excludedAliasesChanged",
+  readings: "codex.history.readingsChanged",
   parentId: "codex.history.parentChanged",
   contextMode: "codex.history.contextModeChanged",
   icon: "codex.history.iconChanged",
@@ -101,6 +149,11 @@ function labelForPatch(data: StructuralPatch): string {
 
 interface CodexState {
   entries: CodexEntry[];
+  /**
+   * Search/filter independent lightweight rows used by local matching features.
+   * Unlike `entries`, this collection always represents the whole project.
+   */
+  completionTargets: CodexMatchRow[];
   /** type slug → CodexType の lookup 用キャッシュ。loadEntries で更新。 */
   types: CodexType[];
   searchQuery: string;
@@ -140,6 +193,7 @@ interface CodexState {
           | "tagsCache"
           | "aliases"
           | "excludedAliases"
+          | "readings"
           | "sourceChatMessageId"
         >
       >,
@@ -149,6 +203,23 @@ interface CodexState {
    */
   update: (id: string, data: StructuralPatch) => Promise<void>;
   /**
+   * Type + summary detail form save. Persists both fields in one OCC-protected
+   * write and reports whether the complete save was committed.
+   */
+  saveTypeAndSummary: (
+    id: string,
+    data: { type: CodexEntryType; summary: string },
+  ) => Promise<boolean>;
+  /**
+   * 手動ルビを未設定の Codex 読みへ登録する。DB の最新行へ非破壊マージし、
+   * version OCC で別窓/MCPとの競合を弾く。
+   */
+  registerRubyReading: (
+    expectedEntryId: string,
+    surface: string,
+    reading: string,
+  ) => Promise<boolean>;
+  /**
    * Auto-save path for TipTap-driven text fields. Does NOT push history;
    * TipTap's built-in undo handles text-level reversal.
    */
@@ -157,6 +228,8 @@ interface CodexState {
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
   requestSelectEntry: (id: string) => void;
   clearPendingEntry: () => void;
+  /** Drop project-owned entries, filters, selections, and derived caches. */
+  resetForProject: () => void;
 }
 
 // mount eager load の in-flight dedup (詳細は ensureEntriesLoaded の docs)
@@ -165,8 +238,52 @@ function entriesLoadKey(filterType: CodexEntryType | null): string {
   return `${getCurrentProjectId()}|${filterType ?? ""}`;
 }
 
+function toCompletionTarget(entry: CodexEntry): CodexMatchRow {
+  return {
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    aliases: entry.aliases,
+    excludedAliases: entry.excludedAliases,
+    readings: entry.readings,
+  };
+}
+
+function sameCompletionTarget(a: CodexMatchRow, b: CodexMatchRow): boolean {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.type === b.type &&
+    a.aliases === b.aliases &&
+    a.excludedAliases === b.excludedAliases &&
+    a.readings === b.readings
+  );
+}
+
+function upsertCompletionTarget(
+  targets: CodexMatchRow[],
+  entry: CodexEntry,
+): CodexMatchRow[] {
+  const target = toCompletionTarget(entry);
+  const index = targets.findIndex((candidate) => candidate.id === target.id);
+  if (index < 0) return [target, ...targets];
+  if (sameCompletionTarget(targets[index], target)) return targets;
+  const next = [...targets];
+  next[index] = target;
+  return next;
+}
+
+function removeCompletionTarget(
+  targets: CodexMatchRow[],
+  entryId: string,
+): CodexMatchRow[] {
+  const next = targets.filter((target) => target.id !== entryId);
+  return next.length === targets.length ? targets : next;
+}
+
 export const useCodexStore = create<CodexState>()((set, get) => ({
   entries: [],
+  completionTargets: [],
   types: [],
   searchQuery: "",
   filterType: null,
@@ -198,11 +315,12 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       try {
         const { filterType } = get();
         const projectId = getCurrentProjectId();
-        const [entries, types] = await Promise.all([
+        const [entries, types, completionTargets] = await Promise.all([
           listCodexEntries(projectId, filterType ?? undefined),
           listCodexTypes(projectId),
+          listCodexMatchTargets(projectId),
         ]);
-        set({ entries, types, isLoading: false });
+        set({ entries, types, completionTargets, isLoading: false });
       } catch (e) {
         set({ isLoading: false });
         toast.error(i18next.t("codex.store.loadFailed"));
@@ -260,17 +378,29 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
   create: async (data) => {
     if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
+    const authority = captureRendererAuthority();
+    const { projectId } = authority;
     try {
       const id = crypto.randomUUID();
       const entry = await createCodexEntry({
         id,
-        projectId: getCurrentProjectId(),
+        projectId,
         ...data,
       });
-      const { filterType } = get();
-      if (!filterType || filterType === entry.type) {
-        set((state) => ({ entries: [entry, ...state.entries] }));
+      if (!isCurrentRendererAuthority(authority)) {
+        throw new CodexCreateAuthorityChangedError();
       }
+      const { filterType } = get();
+      set((state) => ({
+        entries:
+          !filterType || filterType === entry.type
+            ? [entry, ...state.entries]
+            : state.entries,
+        completionTargets: upsertCompletionTarget(
+          state.completionTargets,
+          entry,
+        ),
+      }));
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const captured = { ...entry };
@@ -280,8 +410,13 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           entityId: captured.id,
           async undo() {
             await deleteCodexEntry(captured.projectId, captured.id);
+            if (!isCurrentRendererAuthority(authority)) return;
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
+              completionTargets: removeCompletionTarget(
+                state.completionTargets,
+                captured.id,
+              ),
             }));
           },
           async redo() {
@@ -294,6 +429,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               tagsCache: captured.tagsCache ?? undefined,
               aliases: captured.aliases ?? undefined,
               excludedAliases: captured.excludedAliases ?? undefined,
+              readings: captured.readings ?? undefined,
               parentId: captured.parentId ?? undefined,
               sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
             });
@@ -305,16 +441,25 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               childrenBudget: captured.childrenBudget ?? undefined,
               notes: captured.notes ?? undefined,
             });
+            if (!isCurrentRendererAuthority(authority)) return;
             const { filterType } = get();
-            if (!filterType || filterType === captured.type) {
-              set((state) => ({ entries: [captured, ...state.entries] }));
-            }
+            set((state) => ({
+              entries:
+                !filterType || filterType === captured.type
+                  ? [captured, ...state.entries]
+                  : state.entries,
+              completionTargets: upsertCompletionTarget(
+                state.completionTargets,
+                captured,
+              ),
+            }));
           },
         });
       }
       recordChangeEvent({
         domain: "codex",
         opType: "entry.create",
+        projectId,
         entityType: "codex_entry",
         entityId: entry.id,
         payload: {
@@ -325,6 +470,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       });
       return entry;
     } catch (e) {
+      if (
+        e instanceof CodexCreateAuthorityChangedError ||
+        !isCurrentRendererAuthority(authority)
+      ) {
+        throw e instanceof CodexCreateAuthorityChangedError
+          ? e
+          : new CodexCreateAuthorityChangedError();
+      }
       toast.error(i18next.t("codex.store.createFailed"));
       debugLog.error("CodexStore", `create: ${rootCause(e)}`, errorDetail(e));
       throw e;
@@ -332,13 +485,22 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   },
 
   update: async (id, data) => {
-    const before = get().entries.find((e) => e.id === id);
+    const snapshot = get();
+    const before =
+      snapshot.entries.find((e) => e.id === id) ??
+      (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
 
     try {
       const updated = await updateCodexEntry(getCurrentProjectId(), id, data);
       if (updated) {
         set((state) => ({
           entries: state.entries.map((e) => (e.id === id ? updated : e)),
+          completionTargets: upsertCompletionTarget(
+            state.completionTargets,
+            updated,
+          ),
+          selectedEntry:
+            state.selectedEntry?.id === id ? updated : state.selectedEntry,
         }));
       }
     } catch (e) {
@@ -384,6 +546,12 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         if (restored) {
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? restored : e)),
+            completionTargets: upsertCompletionTarget(
+              state.completionTargets,
+              restored,
+            ),
+            selectedEntry:
+              state.selectedEntry?.id === id ? restored : state.selectedEntry,
           }));
         }
       },
@@ -396,14 +564,269 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         if (reapplied) {
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? reapplied : e)),
+            completionTargets: upsertCompletionTarget(
+              state.completionTargets,
+              reapplied,
+            ),
+            selectedEntry:
+              state.selectedEntry?.id === id ? reapplied : state.selectedEntry,
           }));
         }
       },
     });
   },
 
+  saveTypeAndSummary: async (id, data) => {
+    if (blockIfUnlicensed()) return false;
+    const snapshot = get();
+    const before =
+      snapshot.entries.find((entry) => entry.id === id) ??
+      (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
+    if (!before) return false;
+
+    const changedFields: Array<"type" | "summary"> = [];
+    if (data.type !== before.type) changedFields.push("type");
+    if (data.summary !== (before.summary ?? "")) changedFields.push("summary");
+    if (changedFields.length === 0) return true;
+
+    const authority = captureRendererAuthority();
+    const { projectId } = authority;
+    let updated: CodexEntry | undefined;
+    try {
+      updated = await updateCodexEntry(
+        projectId,
+        id,
+        { type: data.type, summary: data.summary },
+        { baseVersion: before.version },
+      );
+      if (!updated) return false;
+    } catch (error) {
+      if (error instanceof CodexVersionConflictError) {
+        codexEditConflictHandler(id);
+        return false;
+      }
+      toast.error(i18next.t("codex.store.updateFailed"));
+      debugLog.error(
+        "CodexStore",
+        `saveTypeAndSummary: ${rootCause(error)}`,
+        errorDetail(error),
+      );
+      return false;
+    }
+
+    const syncUpdatedEntry = (entry: CodexEntry): void => {
+      if (!isCurrentRendererAuthority(authority)) return;
+      set((state) => ({
+        entries: state.entries.map((candidate) =>
+          candidate.id === id ? entry : candidate,
+        ),
+        completionTargets: upsertCompletionTarget(
+          state.completionTargets,
+          entry,
+        ),
+        selectedEntry:
+          state.selectedEntry?.id === id ? entry : state.selectedEntry,
+      }));
+    };
+    // Persistence is scoped to the project/workspace captured before the
+    // await. If renderer authority changed while that write was in flight, the
+    // write is still successful but none of its renderer/history/timelapse
+    // side effects belong to the newly active scope.
+    if (!isCurrentRendererAuthority(authority)) return true;
+    syncUpdatedEntry(updated);
+
+    const changedPatch: StructuralPatch = {};
+    const undoPatch: StructuralPatch = {};
+    if (changedFields.includes("type")) {
+      changedPatch.type = data.type;
+      undoPatch.type = before.type;
+    }
+    if (changedFields.includes("summary")) {
+      changedPatch.summary = data.summary;
+      undoPatch.summary = before.summary;
+    }
+
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      const redoPatch = { ...changedPatch };
+      let undoBaseVersion = updated.version;
+      let redoBaseVersion: number | undefined;
+      useGlobalHistoryStore.getState().push({
+        kind: "codex",
+        label: labelForPatch(changedPatch),
+        entityId: id,
+        async undo() {
+          const restored = await updateCodexEntry(projectId, id, undoPatch, {
+            baseVersion: undoBaseVersion,
+          });
+          if (!restored) return;
+          redoBaseVersion = restored.version;
+          syncUpdatedEntry(restored);
+        },
+        async redo() {
+          const reapplied = await updateCodexEntry(
+            projectId,
+            id,
+            redoPatch,
+            redoBaseVersion === undefined
+              ? undefined
+              : { baseVersion: redoBaseVersion },
+          );
+          if (!reapplied) return;
+          undoBaseVersion = reapplied.version;
+          syncUpdatedEntry(reapplied);
+        },
+      });
+    }
+
+    const diffs: Record<string, BodyDiff> = {};
+    if (changedFields.includes("summary")) {
+      const summaryDiff = computeBodyDiff(
+        before.summary ?? "",
+        updated.summary ?? "",
+      );
+      if (summaryDiff) diffs.summary = summaryDiff;
+    }
+    recordChangeEvent({
+      domain: "codex",
+      opType: "entry.update",
+      entityType: "codex_entry",
+      entityId: id,
+      payload: {
+        fields: changedFields,
+        ...(Object.keys(diffs).length > 0 ? { diffs } : {}),
+      },
+    });
+    return true;
+  },
+
+  registerRubyReading: async (expectedEntryId, surface, rawReading) => {
+    if (blockIfUnlicensed()) return false;
+    const reading = rawReading.trim();
+    if (!expectedEntryId || !surface || !reading) return false;
+
+    const projectId = getCurrentProjectId();
+    try {
+      // renderer cache は別窓/MCP更新を即時反映しないため、クリック時に DB を再読込する。
+      const [freshTargets, before] = await Promise.all([
+        listCodexMatchTargets(projectId),
+        getCodexEntry(projectId, expectedEntryId),
+      ]);
+      if (!before) return false;
+
+      // 2本の SELECT 間に対象行が変わっても、対象自身は version を持つ full row を正とする。
+      const targets = freshTargets.map((target) =>
+        target.id === before.id ? toCompletionTarget(before) : target,
+      );
+      const target = resolveUnsetReadingTargetForSurface(surface, targets);
+      if (!target || target.id !== expectedEntryId) return false;
+
+      const readings = serializeReadings({
+        ...parseReadings(before.readings),
+        [surface]: [reading],
+      });
+      const patch: StructuralPatch = { readings };
+      const updated = await updateCodexEntry(
+        projectId,
+        expectedEntryId,
+        patch,
+        {
+          baseVersion: before.version,
+          baseSurface: {
+            name: before.name,
+            aliases: before.aliases,
+            excludedAliases: before.excludedAliases,
+            readings: before.readings,
+          },
+        },
+      );
+      if (!updated) return false;
+
+      set((state) => ({
+        entries: state.entries.map((entry) =>
+          entry.id === expectedEntryId ? updated : entry,
+        ),
+        completionTargets: upsertCompletionTarget(
+          state.completionTargets,
+          updated,
+        ),
+      }));
+
+      recordChangeEvent({
+        domain: "codex",
+        opType: "entry.update",
+        entityType: "codex_entry",
+        entityId: expectedEntryId,
+        payload: { fields: ["readings"] },
+      });
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const beforeReadings = before.readings;
+        useGlobalHistoryStore.getState().push({
+          kind: "codex",
+          label: labelForPatch(patch),
+          entityId: expectedEntryId,
+          async undo() {
+            const restored = await updateCodexEntry(
+              projectId,
+              expectedEntryId,
+              {
+                readings: beforeReadings,
+              },
+            );
+            if (restored) {
+              set((state) => ({
+                entries: state.entries.map((entry) =>
+                  entry.id === expectedEntryId ? restored : entry,
+                ),
+                completionTargets: upsertCompletionTarget(
+                  state.completionTargets,
+                  restored,
+                ),
+              }));
+            }
+          },
+          async redo() {
+            const reapplied = await updateCodexEntry(
+              projectId,
+              expectedEntryId,
+              patch,
+            );
+            if (reapplied) {
+              set((state) => ({
+                entries: state.entries.map((entry) =>
+                  entry.id === expectedEntryId ? reapplied : entry,
+                ),
+                completionTargets: upsertCompletionTarget(
+                  state.completionTargets,
+                  reapplied,
+                ),
+              }));
+            }
+          },
+        });
+      }
+
+      return true;
+    } catch (error) {
+      if (error instanceof CodexVersionConflictError) {
+        codexEditConflictHandler(expectedEntryId);
+        return false;
+      }
+      toast.error(i18next.t("codex.store.updateFailed"));
+      debugLog.error(
+        "CodexStore",
+        `registerRubyReading: ${rootCause(error)}`,
+        errorDetail(error),
+      );
+      return false;
+    }
+  },
+
   updateText: async (id, data) => {
-    const before = get().entries.find((e) => e.id === id);
+    const snapshot = get();
+    const before =
+      snapshot.entries.find((e) => e.id === id) ??
+      (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
     try {
       // OCC: 読み込み時点の version を base_version として渡す。別窓 / 別プロセスが
       // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
@@ -413,6 +836,8 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       if (updated) {
         set((state) => ({
           entries: state.entries.map((e) => (e.id === id ? updated : e)),
+          selectedEntry:
+            state.selectedEntry?.id === id ? updated : state.selectedEntry,
         }));
       }
     } catch (e) {
@@ -501,6 +926,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
             tagsCache: captured.tagsCache ?? undefined,
             aliases: captured.aliases ?? undefined,
             excludedAliases: captured.excludedAliases ?? undefined,
+            readings: captured.readings ?? undefined,
             parentId: captured.parentId ?? undefined,
             sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
           });
@@ -523,6 +949,19 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
   requestSelectEntry: (id) => set({ pendingEntryId: id }),
   clearPendingEntry: () => set({ pendingEntryId: null }),
+  resetForProject: () => {
+    _clearCodexCrossMentionCaches();
+    set({
+      entries: [],
+      completionTargets: [],
+      types: [],
+      searchQuery: "",
+      filterType: null,
+      pendingEntryId: null,
+      selectedEntry: null,
+      previewPhaseByEntry: {},
+    });
+  },
 
   setFilterType: async (type) => {
     set({ filterType: type, isLoading: true });

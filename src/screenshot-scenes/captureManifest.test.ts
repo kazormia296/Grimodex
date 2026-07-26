@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TOOL_WINDOW_PANEL_IDS } from "@/features/layout/toolWindowDefaults";
 import {
   DEFAULT_SCREENSHOT_COLOR_THEME,
   DEFAULT_SCREENSHOT_DIR,
@@ -111,25 +112,9 @@ describe("SCREENSHOT_CAPTURES", () => {
       ),
     );
 
-    expect(panels).toEqual(
-      new Set([
-        "scenes",
-        "editor",
-        "chat",
-        "chat-history",
-        "codex",
-        "codex-quick",
-        "snippets",
-        "attribution",
-        "timeline",
-        "map",
-        "kouetsu",
-        "foreshadow",
-        "grid",
-        "matrix",
-        "trash-bin",
-      ]),
-    );
+    const registeredPanels = ["editor", ...TOOL_WINDOW_PANEL_IDS];
+    expect(panels).toEqual(new Set(registeredPanels));
+    expect(panelCaptures).toHaveLength(registeredPanels.length);
     expect(
       Object.fromEntries(
         panelCaptures.map((capture) => [
@@ -151,12 +136,19 @@ describe("SCREENSHOT_CAPTURES", () => {
       snippets: { width: 850, height: 650, actions: ["select-snippet"] },
       attribution: { width: 460, height: 280, actions: ["select-scene"] },
       timeline: { width: 790, height: 200, actions: [] },
+      chronicle: { width: 1080, height: 890, actions: [] },
       map: { width: 1080, height: 890, actions: ["fit-map"] },
       kouetsu: { width: 850, height: 650, actions: ["select-scene"] },
       foreshadow: { width: 850, height: 650, actions: [] },
       grid: { width: 1080, height: 890, actions: [] },
       matrix: { width: 850, height: 650, actions: [] },
+      "writing-stats": { width: 850, height: 650, actions: [] },
       "trash-bin": { width: 850, height: 650, actions: [] },
+      "command-center-results": {
+        width: 460,
+        height: 650,
+        actions: ["search-command-center"],
+      },
     });
   });
 

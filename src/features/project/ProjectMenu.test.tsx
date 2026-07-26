@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ProjectMenu } from "./ProjectMenu";
 import { useProjectStore } from "./projectStore";
 import { PROJECT_ID } from "./constants";
+import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -174,5 +175,47 @@ describe("ProjectMenu", () => {
     render(<ProjectMenu />);
     fireEvent.click(screen.getByTestId("project-menu-trigger"));
     expect(screen.queryByTestId("project-snapshot-open")).toBeNull();
+  });
+
+  it("uses a focus-managed, safe-area alert dialog for phone deletion", async () => {
+    render(
+      <WorkspaceViewportProvider profile="phone">
+        <ProjectMenu />
+      </WorkspaceViewportProvider>,
+    );
+
+    const trigger = screen.getByTestId("project-menu-trigger");
+    fireEvent.click(trigger);
+    trigger.focus();
+    fireEvent.click(screen.getByTestId("project-delete-proj-b"));
+
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "project.delete.confirmTitle",
+    });
+    expect(dialog).toHaveAccessibleDescription(
+      "project.delete.confirmBody:Novel B",
+    );
+    expect(dialog.className).toContain(
+      "h-[var(--visual-viewport-height,100dvh)]",
+    );
+    expect(dialog.className).toContain("overflow-y-auto");
+    expect(dialog.className).toContain(
+      "pl-[max(1rem,env(safe-area-inset-left))]",
+    );
+    expect(screen.getByRole("button", { name: "common.cancel" })).toHaveClass(
+      "min-h-11",
+    );
+    expect(
+      screen.getByRole("button", { name: "common.deleteConfirm" }),
+    ).toHaveClass("min-h-11");
+
+    await waitFor(() => {
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    });
+    fireEvent.keyDown(document.activeElement ?? dialog, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+    expect(trigger).toHaveFocus();
   });
 });

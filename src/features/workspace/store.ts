@@ -2,6 +2,8 @@ import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import { flushAllAutoSaves } from "@/hooks/useAutoSave";
 import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
 import {
@@ -12,9 +14,7 @@ import {
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
-import type { TimelineSettings } from "@/features/timeline/timelineStore";
 import { loadAndSyncChronicleSettings } from "@/features/chronicle/chronicleStore";
-import type { ChronicleSettings } from "@/features/chronicle/chronicleStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { useGridStore } from "@/features/grid/gridStore";
 import {
@@ -23,77 +23,16 @@ import {
 } from "@/features/project/projectStore";
 import { toast } from "sonner";
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
+import { cancelScheduledImeExports } from "@/features/ime/scheduler";
+import {
+  getCurrentImeWorkspaceIdentity,
+  setCurrentImeWorkspaceIdentity,
+} from "@/features/ime/workspaceScope";
 
-export interface RecentWorkspace {
-  path: string;
-  lastOpened: string;
-}
-
-export interface GlobalSettings {
-  recentWorkspaces: RecentWorkspace[];
-  lastActiveWorkspace: string | null;
-  theme: string;
-  uiLanguage: string;
-  uiScale: number;
-  showLauncherOnStartup: boolean;
-  /** Region/slot layout v2 (PersistedLayout) */
-  layout?: unknown;
-  layoutVersion?: number;
-  /** User-saved layout presets (LayoutState snapshots) */
-  layoutPresets?: Array<{
-    id: string;
-    name: string;
-    state: unknown;
-    hiddenStripePanels?: string[];
-  }>;
-  /** User overrides for built-in layout presets (keyed by builtin:* id) */
-  builtinLayoutPresetOverrides?: Record<
-    string,
-    { state: unknown; hiddenStripePanels?: string[] }
-  >;
-  /** ID of the last-applied layout preset */
-  activeLayoutPresetId?: string | null;
-  /** Per-panel tool window state (slot / view mode / undock size) */
-  toolWindows?: Record<string, unknown>;
-  /** Panel ids that have icons on the stripe (persist across close so icon doesn't disappear) */
-  stripePanelIds?: string[];
-  /** Stripe (left/right/bottom) widths in px */
-  stripeSizes?: Record<string, number>;
-  /** Stripe visibility per region */
-  stripeVisibility?: Record<string, boolean>;
-  /** Named color theme (e.g. "dark-academia"). Undefined = default theme. */
-  colorTheme?: string;
-  /** Workspace paths the user has explicitly trusted. */
-  trustedWorkspaces?: string[];
-  /** Whether the user has already seen the welcome tour. */
-  hasSeenWelcome?: boolean;
-  /** Version of the EULA the user has accepted. Mismatch with current version triggers modal. */
-  acceptedEulaVersion?: string;
-  /** Persisted timeline panel state */
-  timeline?: TimelineSettings;
-  /** Persisted chronicle (作中年表) panel state */
-  chronicle?: ChronicleSettings;
-  /** Persisted map panel state */
-  map?: unknown;
-  /** Persisted grid panel display settings */
-  grid?: unknown;
-  /** Persisted matrix panel settings */
-  matrix?: unknown;
-  /**
-   * User-preference settings (cross-workspace): editor visuals, keys, display, data, revision.
-   * Keyed by the same key strings used in app_settings (e.g. "editor.fontFamily").
-   */
-  userPreferences?: Record<string, string>;
-  /**
-   * Default values applied to new projects on creation.
-   * Covers work-specific settings (tree.*, export.*, beat.*, editor.targetCharCount, ai.contextBudget.*).
-   */
-  projectDefaults?: Record<string, string>;
-  /** Default AI policy preset applied to new projects (JSON-serialized AiPolicy). */
-  defaultAiPolicy?: string;
-  /** Path to the sample workspace created during onboarding. Used for re-run flow. */
-  sampleWorkspacePath?: string;
-}
+export type {
+  GlobalSettings,
+  RecentWorkspace,
+} from "@/lib/globalSettings/GlobalSettings";
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
 
@@ -106,6 +45,16 @@ interface WorkspaceState {
   view: AppView;
   globalSettings: GlobalSettings | null;
   activeWorkspacePath: string | null;
+  /**
+   * In-memory identity for the currently opened DB instance. Incremented on
+   * every successful open, including a same-path reopen after sample reseed or
+   * restore, where `activeWorkspacePath` alone cannot signal a new database.
+   */
+  workspaceOpenRevision: number;
+  /** True from pre-open quiesce until all post-swap store hydration settles. */
+  workspaceSwitchInProgress: boolean;
+  /** True only after the active DB's project/settings hydration completed. */
+  workspaceHydrated: boolean;
   activeWorkspaceName: string | null;
   error: string | null;
   pendingTrustPath: string | null;
@@ -140,6 +89,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   view: "loading",
   globalSettings: null,
   activeWorkspacePath: null,
+  workspaceOpenRevision: 0,
+  workspaceSwitchInProgress: false,
+  workspaceHydrated: false,
   activeWorkspaceName: null,
   error: null,
   pendingTrustPath: null,
@@ -147,7 +99,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
 
   initialize: async () => {
     try {
-      let settings = await invoke<GlobalSettings>("get_global_settings");
+      let settings = await globalSettingsRepository.read();
       set({ globalSettings: settings });
 
       // Migration: trust all existing recent workspaces for existing users
@@ -157,9 +109,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       ) {
         const trusted = settings.recentWorkspaces.map((ws) => ws.path);
         const migrated = { ...settings, trustedWorkspaces: trusted };
-        await invoke("save_global_settings", { settings: migrated });
+        await globalSettingsRepository.write(migrated);
         settings = migrated;
-        set({ globalSettings: migrated });
+        set({ globalSettings: settings });
       }
 
       // フローティング パネル窓は main 窓と同じワークスペースに追従する。
@@ -228,8 +180,19 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     // EditorScreen の key (activeWorkspacePath) が変わらず remount しない。
     const wasSamePathReopen =
       get().view === "editor" && get().activeWorkspacePath === path;
+    const previousWorkspaceHydrated = get().workspaceHydrated;
+    const previousImeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
+    let swapDone = false;
     try {
-      set({ error: null });
+      // Debounced snapshot writes carry the old Project id. Stop them before
+      // any await so they cannot wake up against the replacement database.
+      cancelScheduledImeExports();
+      setCurrentImeWorkspaceIdentity(null);
+      set({
+        error: null,
+        workspaceSwitchInProgress: true,
+        workspaceHydrated: false,
+      });
       // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
       // swap を跨いだ in-flight write が旧 workspace の内容を新 workspace の
       // DB に落とさないよう、切替前に書き込みを静止させる:
@@ -265,7 +228,6 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // 「旧 workspace の束縛で新 chain に書く」誤束縛にはならない。
       beginWorkspaceSwitch();
       let result: OpenWorkspaceResult;
-      let swapDone = false;
       try {
         result = await invoke<OpenWorkspaceResult>("open_workspace", {
           path,
@@ -285,25 +247,33 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // panels reading currentProjectId have a value to work with.
       await useProjectStore.getState().initCurrentProject();
       // Re-read global settings after open_workspace updated them
-      const settings = await invoke<GlobalSettings>("get_global_settings");
-      set({
+      const settings = await globalSettingsRepository.read();
+      // Publish path + DB revision only after currentProjectId is rebound. The
+      // editor is keyed by activeWorkspacePath, so exposing the new path before
+      // initCurrentProject would mount the new DB with the old project's state.
+      set((state) => ({
         view: "editor",
         activeWorkspacePath: path,
+        workspaceOpenRevision: state.workspaceOpenRevision + 1,
         activeWorkspaceName: result.name,
         globalSettings: settings,
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: true,
+      }));
+      setCurrentImeWorkspaceIdentity({
+        path,
+        openRevision: get().workspaceOpenRevision,
       });
       // Migrate app_settings → userPreferences + project_settings (runs once per workspace)
       const {
         migrateAppSettingsToScopedStores,
-        migrateCardLayoutKey,
         migrateModelRoleKeys,
-        resolveCardLayoutGlassConflict,
+        removeRetiredDisplaySettings,
         seedProjectSettingsFromDefaults,
       } = await import("@/features/settings/migration");
       await migrateAppSettingsToScopedStores();
-      await migrateCardLayoutKey();
+      await removeRetiredDisplaySettings();
       await migrateModelRoleKeys();
-      await resolveCardLayoutGlassConflict();
       // Seed project defaults for brand-new workspaces
       if (!result.isExisting) {
         await seedProjectSettingsFromDefaults();
@@ -315,6 +285,13 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         const { useCodexHighlightStore } =
           await import("@/features/editor/codexHighlightStore");
         useCodexHighlightStore.getState().initFromSettings();
+        // 本文レイヤーの表示トグル (帰属 / 校閲) も設定から復元する
+        const { useAttributionStore } =
+          await import("@/features/attribution/attributionStore");
+        useAttributionStore.getState().initFromSettings();
+        const { useAnnotationStore } =
+          await import("@/features/post-effect/annotationStore");
+        useAnnotationStore.getState().initFromSettings();
       }
       // Lint config depends on settings being loaded first.
       const { useLintConfigStore } =
@@ -349,10 +326,20 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // イベントは warn 付きで破棄される (誤束縛での混入より安全側)。
       set({
         error: e instanceof Error ? e.message : String(e),
+        // Native open rejected before swap: the previous DB/UI binding remains
+        // valid, so restore its semantic-ready state. A post-swap hydration
+        // failure must stay false to avoid issuing commands through stale UI.
+        ...(!swapDone ? { workspaceHydrated: previousWorkspaceHydrated } : {}),
         // If still on loading screen (called from initialize), recover to launcher
         ...(get().view === "loading" ? { view: "launcher" as const } : {}),
       });
+      if (!swapDone && previousWorkspaceHydrated) {
+        setCurrentImeWorkspaceIdentity(previousImeWorkspaceIdentity);
+      }
     } finally {
+      if (get().workspaceSwitchInProgress) {
+        set({ workspaceSwitchInProgress: false });
+      }
       openWorkspaceInFlight = false;
     }
   },
@@ -421,10 +408,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   async updateGlobalSettings(updates: Partial<GlobalSettings>) {
     const current = get().globalSettings;
     if (!current) return false;
-    const updated = { ...current, ...updates };
-    set({ globalSettings: updated });
+    // 楽観更新（即時 UI 反映）。確定値は patch 解決後に上書きする。
+    set({ globalSettings: { ...current, ...updates } });
     try {
-      await invoke("save_global_settings", { settings: updated });
+      // ディスクの最新値へマージして保存する。layout/map/grid 等、所有 store が
+      // セッション中に直接ディスクへ書いた slice を、開いた時点の stale な
+      // in-memory スナップショットで潰さないため（旧実装のリグレッション）。
+      const saved = await globalSettingsRepository.patch((disk) => ({
+        ...disk,
+        ...updates,
+      }));
+      set({ globalSettings: saved });
       return true;
     } catch (e) {
       // Revert on failure
@@ -441,13 +435,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   async updateUserPreference(key: string, value: string) {
     const current = get().globalSettings;
     if (!current) return false;
-    const updated = {
-      ...current,
-      userPreferences: { ...(current.userPreferences ?? {}), [key]: value },
-    };
-    set({ globalSettings: updated });
+    set({
+      globalSettings: {
+        ...current,
+        userPreferences: { ...(current.userPreferences ?? {}), [key]: value },
+      },
+    });
     try {
-      await invoke("save_global_settings", { settings: updated });
+      const saved = await globalSettingsRepository.patch((disk) => ({
+        ...disk,
+        userPreferences: { ...(disk.userPreferences ?? {}), [key]: value },
+      }));
+      set({ globalSettings: saved });
       return true;
     } catch (e) {
       set({ globalSettings: current });
@@ -463,13 +462,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   async updateProjectDefaults(updates: Record<string, string>) {
     const current = get().globalSettings;
     if (!current) return false;
-    const updated = {
-      ...current,
-      projectDefaults: { ...(current.projectDefaults ?? {}), ...updates },
-    };
-    set({ globalSettings: updated });
+    set({
+      globalSettings: {
+        ...current,
+        projectDefaults: { ...(current.projectDefaults ?? {}), ...updates },
+      },
+    });
     try {
-      await invoke("save_global_settings", { settings: updated });
+      const saved = await globalSettingsRepository.patch((disk) => ({
+        ...disk,
+        projectDefaults: { ...(disk.projectDefaults ?? {}), ...updates },
+      }));
+      set({ globalSettings: saved });
       return true;
     } catch (e) {
       set({ globalSettings: current });
@@ -497,21 +501,43 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   async seedAndOpenSample(language: string, aiPolicy: string) {
     try {
       set({ error: null });
+      const previousSamplePath = get().globalSettings?.sampleWorkspacePath;
       const result = await invoke<{ path: string; projectId: string }>(
         "seed_sample_workspace",
         { language, aiPolicy },
       );
-      // Add to trusted workspaces so the trust dialog is bypassed
+      // Each restart publishes a new immutable sample generation so a live DB
+      // or external MCP reader is never unlinked. Replace the previous sample's
+      // trust entry instead of accumulating one entry per tutorial restart.
       const currentTrusted = get().globalSettings?.trustedWorkspaces ?? [];
-      if (!currentTrusted.includes(result.path)) {
+      const nextTrusted = currentTrusted.filter(
+        (path) => path !== previousSamplePath && path !== result.path,
+      );
+      nextTrusted.push(result.path);
+      if (
+        nextTrusted.length !== currentTrusted.length ||
+        nextTrusted.some((path, index) => path !== currentTrusted[index])
+      ) {
         await get().updateGlobalSettings({
-          trustedWorkspaces: [...currentTrusted, result.path],
+          trustedWorkspaces: nextTrusted,
         });
       }
       await get().openWorkspace(result.path);
+      if (useProjectStore.getState().currentProjectId !== result.projectId) {
+        await useProjectStore.getState().loadProject(result.projectId);
+      }
+      if (useProjectStore.getState().currentProjectId !== result.projectId) {
+        throw new Error("Tutorial project did not become active");
+      }
       set({ showSampleTour: true });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      const message = e instanceof Error ? e.message : String(e);
+      debugLog.error(
+        "workspaceStore",
+        "sample tutorial setup failed",
+        errorDetail(e),
+      );
+      set({ error: message });
     }
   },
 }));

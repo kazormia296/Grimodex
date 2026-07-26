@@ -26,6 +26,12 @@ describe("resolveToolProtocol", () => {
     ).toBe("native");
   });
 
+  it("keeps Sakana in sync with the Rust OpenAI-compatible Hermes gate", () => {
+    expect(resolveToolProtocol("sakana", "fugu-hermes", "hermes")).toBe(
+      "hermes",
+    );
+  });
+
   it("auto detects only model names containing 'hermes'", () => {
     expect(
       resolveToolProtocol("openrouter", "nousresearch/Hermes-3-Llama", "auto"),
@@ -68,6 +74,12 @@ describe("hermesAllowedToolNames", () => {
     expect(allowed).toContain("search_codex");
     expect(allowed).toContain("get_scene");
     for (const m of MUTATING_TOOL_NAMES) expect(allowed).not.toContain(m);
+  });
+
+  it("drops undeclared manifest-unknown tools by default", () => {
+    expect(
+      hermesAllowedToolNames(["search_codex", "future_unknown_tool"]),
+    ).toEqual(["search_codex"]);
   });
 
   it("a mutating body tool_call is not parsed into a call", () => {

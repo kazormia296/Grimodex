@@ -1,9 +1,10 @@
-import type { GlobalSettings } from "@/features/workspace/store";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import {
   SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT,
   SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT,
 } from "@/screenshot-scenes/captureManifest";
 import { isScreenshotStagingActive } from "@/screenshot-scenes/screenshotMode";
+import { electronBridge, isElectron } from "@/lib/shell";
 import { isTauri } from "@/lib/tauri";
 
 export const UI_SCALE_MIN_PCT = SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT;
@@ -37,7 +38,9 @@ export function uiScalePercentToFactor(rawPercent: number | undefined): number {
 export type UiScaleSyncAbort = { cancelled: boolean };
 
 /**
- * Applies global UI scale: Tauri WebView `setZoom` when available, otherwise
+ * Applies global UI scale: Tauri WebView `setZoom` / Electron main の
+ * `setZoomFactor`（sandbox preload の webFrame 制約を踏まないよう main 経由に
+ * 統一 — 設計書 §3.4）when available, otherwise
  * `document.documentElement.style.zoom`. Sets `--ui-scale` for auxiliary use.
  */
 export async function syncUiScaleFromGlobalSettings(
@@ -52,27 +55,39 @@ export async function syncUiScaleFromGlobalSettings(
 
   html.style.setProperty("--ui-scale", String(factor));
 
-  if (!isTauri()) {
+  const applyCssZoom = () => {
     if (factor === 1) {
       html.style.removeProperty("zoom");
     } else {
       html.style.zoom = String(factor);
+    }
+  };
+
+  if (isTauri()) {
+    try {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      if (cancelled()) return;
+      await getCurrentWebview().setZoom(factor);
+      if (cancelled()) return;
+      html.style.removeProperty("zoom");
+    } catch {
+      if (cancelled()) return;
+      applyCssZoom();
     }
     return;
   }
 
-  try {
-    const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-    if (cancelled()) return;
-    await getCurrentWebview().setZoom(factor);
-    if (cancelled()) return;
-    html.style.removeProperty("zoom");
-  } catch {
-    if (cancelled()) return;
-    if (factor === 1) {
+  if (isElectron()) {
+    try {
+      await electronBridge().setZoomFactor(factor);
+      if (cancelled()) return;
       html.style.removeProperty("zoom");
-    } else {
-      html.style.zoom = String(factor);
+    } catch {
+      if (cancelled()) return;
+      applyCssZoom();
     }
+    return;
   }
+
+  applyCssZoom();
 }

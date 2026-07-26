@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
+import { ensureEditorOverlayVisible } from "./ensureOverlayVisible";
 
 interface Props {
   editor: Editor | null;
@@ -44,7 +45,9 @@ export function CommentAddPopover({ editor }: Props) {
 
   const close = useCallback(() => {
     setOpen(false);
-    editor?.commands.focus();
+    // ポップオーバーを開いた位置は既に画面内 — スクロールは動かさない
+    // （既定の scrollIntoView:true は現在位置を変える可能性がある）。
+    editor?.commands.focus(null, { scrollIntoView: false });
   }, [setOpen, editor]);
 
   const confirm = () => {
@@ -67,11 +70,7 @@ export function CommentAddPopover({ editor }: Props) {
       })
       .run();
 
-    // Ensure comments are visible after adding one
-    if (!useCursorSettingsStore.getState().showComments) {
-      useCursorSettingsStore.getState().toggleShowComments();
-      editor.view.dispatch(editor.state.tr.setMeta(COMMENT_REBUILD_META, true));
-    }
+    ensureEditorOverlayVisible("comment", editor);
 
     close();
   };

@@ -1,4 +1,9 @@
-import { invoke } from "@/lib/tauri";
+import { invoke, isTauri } from "@/lib/tauri";
+// isElectron は @/lib/tauri の re-export ではなく実体（@/lib/shell）から
+// import する。既存テストが `vi.mock("@/lib/tauri")` を部分 factory で当てて
+// も undefined 呼び出しにならないため（panelWindow.ts の supportsPanelWindows
+// と同じ作法 — 設計書 §6.5 改訂注記）。
+import { isElectron } from "@/lib/shell";
 import type {
   TrashItemData,
   TrashItemInput,
@@ -7,8 +12,14 @@ import type {
   TrashPayload,
 } from "./types";
 
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/**
+ * この実行シェルで trash_bin 5 コマンドがネイティブ実装されているか。
+ * Tauri（Rust コマンド）と Electron（napi 垂直スライス — 設計書 §4.3）が対象。
+ * plain browser / happy-dom は false（従来どおり create は throw、
+ * delete/clear/prune は no-op）。
+ */
+export function supportsTrashBin(): boolean {
+  return isTauri() || isElectron();
 }
 
 function toBool(value: unknown): boolean {
@@ -82,8 +93,8 @@ export async function createTrashItem(
   input: TrashItemInput,
   options: { charCount: number; isInteresting: boolean; deletedAt?: string },
 ): Promise<TrashItemData> {
-  if (!isTauriRuntime()) {
-    throw new Error("trash_bin_create: tauri runtime required");
+  if (!supportsTrashBin()) {
+    throw new Error("trash_bin_create: native shell (tauri/electron) required");
   }
   const payload: CreatePayload = {
     projectId: input.projectId,
@@ -104,12 +115,12 @@ export async function createTrashItem(
 }
 
 export async function deleteTrashItem(id: string): Promise<void> {
-  if (!isTauriRuntime()) return;
+  if (!supportsTrashBin()) return;
   await invoke("trash_bin_delete", { id });
 }
 
 export async function clearAllTrashItems(projectId: string): Promise<void> {
-  if (!isTauriRuntime()) return;
+  if (!supportsTrashBin()) return;
   await invoke("trash_bin_clear_all", { projectId });
 }
 
@@ -118,7 +129,7 @@ export async function pruneTrashItems(
   retentionDays = 60,
   maxCount = 10_000,
 ): Promise<number> {
-  if (!isTauriRuntime()) return 0;
+  if (!supportsTrashBin()) return 0;
   return invoke<number>("trash_bin_prune", {
     projectId,
     retentionDays,

@@ -1,9 +1,24 @@
 import { db } from "@/db/client";
 import { codexEntries, foreshadows, foreshadowCodexLinks } from "@/db/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { CodexVersionConflictError } from "./occ";
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { markImpactBaselinePhasesRestricted } from "./impactBaselineVisibility";
+
+const IME_EXPORT_FIELDS = new Set([
+  "type",
+  "name",
+  "aliases",
+  "excludedAliases",
+  "readings",
+  "contextMode",
+]);
+
+function affectsImeExport(data: Record<string, unknown>): boolean {
+  return Object.keys(data).some((key) => IME_EXPORT_FIELDS.has(key));
+}
 
 /**
  * impact-review: この Codex に紐づく伏線を「Codex 変更で再評価が必要」とマークする。
@@ -64,21 +79,56 @@ export async function listCodexEntries(
 // codexStore（一覧/編集面/undo が全列に依存）は従来通り listCodexEntries を使う。
 // ---------------------------------------------------------------------------
 
-/** mention 検出 (CodexMatchTarget) に必要な 5 列だけの行。 */
+/**
+ * renderer のローカル照合に必要な軽量行。
+ *
+ * name / aliases は mention・入力補完、readings は選択表記への自動ルビ付与で
+ * 使う。本文・画像・ノートは全件キャッシュへ載せない。
+ */
 export type CodexMatchRow = Pick<
   CodexEntry,
   "id" | "name" | "type" | "aliases" | "excludedAliases"
->;
+> &
+  Partial<Pick<CodexEntry, "readings">>;
 
 /**
- * AI 文脈構築用: icon / notes の 2 列だけを除いた行。content は L4 注入・
+ * AI 文脈構築用: icon / notes / readings の 3 列を除いた行。content は L4 注入・
  * children budget・reverse mention 走査が全件横断で読むため残す。
- * notes は「AI 文脈には注入しない」列 (schema comment 参照) なので除外して良い。
+ * notes は「AI 文脈には注入しない」列 (schema comment 参照)。readings は IME 辞書・
+ * ルビ・ソート用のメタデータで物語本文ではないため AI 文脈には注入しない。
  */
-export type CodexContextEntry = Omit<CodexEntry, "icon" | "notes">;
+export type CodexContextEntry = Omit<CodexEntry, "icon" | "notes" | "readings">;
+export type CodexContextMetadataEntry = Omit<CodexContextEntry, "content">;
+
+function codexContextMetadataSelection() {
+  return {
+    id: codexEntries.id,
+    projectId: codexEntries.projectId,
+    parentId: codexEntries.parentId,
+    type: codexEntries.type,
+    name: codexEntries.name,
+    aliases: codexEntries.aliases,
+    excludedAliases: codexEntries.excludedAliases,
+    summary: codexEntries.summary,
+    tagsCache: codexEntries.tagsCache,
+    contextMode: codexEntries.contextMode,
+    childrenBudget: codexEntries.childrenBudget,
+    sourceChatMessageId: codexEntries.sourceChatMessageId,
+    createdAt: codexEntries.createdAt,
+    updatedAt: codexEntries.updatedAt,
+    version: codexEntries.version,
+  };
+}
+
+function codexContextEntrySelection() {
+  return {
+    ...codexContextMetadataSelection(),
+    content: codexEntries.content,
+  };
+}
 
 /**
- * mention 検出の match target 専用の軽量 projection。
+ * mention・入力補完・自動ルビ付与用の軽量 projection。
  * content / icon / notes を転送しない。
  */
 export async function listCodexMatchTargets(
@@ -93,6 +143,7 @@ export async function listCodexMatchTargets(
       type: codexEntries.type,
       aliases: codexEntries.aliases,
       excludedAliases: codexEntries.excludedAliases,
+      readings: codexEntries.readings,
     })
     .from(codexEntries)
     .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
@@ -108,26 +159,50 @@ export async function listCodexEntriesForContext(
 ): Promise<CodexContextEntry[]> {
   const scope = eq(codexEntries.projectId, projectId);
   return db
-    .select({
-      id: codexEntries.id,
-      projectId: codexEntries.projectId,
-      parentId: codexEntries.parentId,
-      type: codexEntries.type,
-      name: codexEntries.name,
-      aliases: codexEntries.aliases,
-      excludedAliases: codexEntries.excludedAliases,
-      summary: codexEntries.summary,
-      content: codexEntries.content,
-      tagsCache: codexEntries.tagsCache,
-      contextMode: codexEntries.contextMode,
-      childrenBudget: codexEntries.childrenBudget,
-      sourceChatMessageId: codexEntries.sourceChatMessageId,
-      createdAt: codexEntries.createdAt,
-      updatedAt: codexEntries.updatedAt,
-      version: codexEntries.version,
-    })
+    .select(codexContextEntrySelection())
     .from(codexEntries)
     .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
+}
+
+/**
+ * AI 文脈候補選抜用 projection。全件横断で必要な名前・階層・visibility・
+ * summary だけを返し、PM JSON 本文(content)を転送しない。
+ */
+export async function listCodexContextMetadata(
+  projectId: string,
+  type?: CodexEntryType,
+): Promise<CodexContextMetadataEntry[]> {
+  const scope = eq(codexEntries.projectId, projectId);
+  return db
+    .select(codexContextMetadataSelection())
+    .from(codexEntries)
+    .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
+}
+
+/**
+ * AI 文脈の本文 materialize 用 projection。候補選抜後の ID だけを読み込む。
+ * 戻り順は呼び出し元の ids 順に揃える。
+ */
+export async function listCodexEntriesForContextByIds(
+  projectId: string,
+  ids: readonly string[],
+): Promise<CodexContextEntry[]> {
+  const uniqueIds = [...new Set(ids)];
+  if (uniqueIds.length === 0) return [];
+  const rows = await db
+    .select(codexContextEntrySelection())
+    .from(codexEntries)
+    .where(
+      and(
+        eq(codexEntries.projectId, projectId),
+        inArray(codexEntries.id, uniqueIds),
+      ),
+    );
+  const byId = new Map(rows.map((row) => [row.id, row] as const));
+  return uniqueIds.flatMap((id) => {
+    const row = byId.get(id);
+    return row ? [row] : [];
+  });
 }
 
 /** timelapse ベースライン記録用: id + content (PM JSON) のみ。 */
@@ -160,10 +235,12 @@ export async function createCodexEntry(
         | "tagsCache"
         | "aliases"
         | "excludedAliases"
+        | "readings"
         | "parentId"
         | "sourceChatMessageId"
       >
     >,
+  opts?: { suppressImeExport?: boolean },
 ): Promise<CodexEntry> {
   const now = new Date().toISOString();
   const rows = await db
@@ -171,35 +248,67 @@ export async function createCodexEntry(
     .values({ ...data, createdAt: now, updatedAt: now })
     .returning();
   // 段階3: 新規エントリを semantic index へ (debounce + Rust 側 hash 再検証で冪等)。
-  if (rows[0]) scheduleCodexIndex(rows[0].id);
+  if (rows[0]) {
+    scheduleCodexIndex(rows[0].id);
+    if (!opts?.suppressImeExport) scheduleImeExportRefresh(data.projectId);
+  }
   return rows[0];
+}
+
+type CodexEntryUpdateData = Partial<
+  Pick<
+    NewCodexEntry,
+    | "type"
+    | "name"
+    | "summary"
+    | "content"
+    | "tagsCache"
+    | "aliases"
+    | "excludedAliases"
+    | "readings"
+    | "parentId"
+    | "contextMode"
+    | "icon"
+    | "childrenBudget"
+    | "notes"
+  >
+>;
+
+interface CodexEntryUpdateOptions {
+  baseVersion?: number;
+  suppressImeExport?: boolean;
+  /**
+   * 読み登録の read-modify-write で照合した取得時表記。指定された場合、version
+   * を増やさない legacy writer による改名・alias・除外・読み変更も比較検出する。
+   */
+  baseSurface?: Pick<
+    CodexEntry,
+    "name" | "aliases" | "excludedAliases" | "readings"
+  >;
 }
 
 export async function updateCodexEntry(
   projectId: string,
   id: string,
-  data: Partial<
-    Pick<
-      NewCodexEntry,
-      | "type"
-      | "name"
-      | "summary"
-      | "content"
-      | "tagsCache"
-      | "aliases"
-      | "excludedAliases"
-      | "parentId"
-      | "contextMode"
-      | "icon"
-      | "childrenBudget"
-      | "notes"
-    >
-  >,
-  opts?: { baseVersion?: number },
+  data: CodexEntryUpdateData,
+  opts?: CodexEntryUpdateOptions,
 ): Promise<CodexEntry | undefined> {
-  // OCC: baseVersion 指定時のみ条件付き UPDATE (version 照合 + インクリメント)。
-  // 省略時は従来通りの blind UPDATE で完全後方互換 (version 列は触らない)。
+  if (
+    Object.prototype.hasOwnProperty.call(data, "contextMode") &&
+    data.contextMode !== "always" &&
+    data.contextMode !== "mentioned"
+  ) {
+    // Base visibility is inherited by phases. Record the fail-closed marker
+    // before a hidden/suppressed/unknown mode can become observable.
+    await markImpactBaselinePhasesRestricted(id);
+  }
+  // OCC: baseVersion 指定時は version 照合 + インクリメント。
+  // baseSurface 指定時は取得時の表記関連列も比較し、version 非更新の既存 writer が
+  // 間に入った場合も read-modify-write で上書きしない。両方省略なら従来通り。
   const useOcc = opts?.baseVersion !== undefined;
+  const baseSurface = opts?.baseSurface;
+  const compareSurface = baseSurface !== undefined;
+  const useConditionalUpdate = useOcc || compareSurface;
   const baseVersion = opts?.baseVersion ?? 0;
   const rows = await db
     .update(codexEntries)
@@ -213,25 +322,40 @@ export async function updateCodexEntry(
         : { ...data, updatedAt: new Date().toISOString() },
     )
     .where(
-      useOcc
-        ? and(
-            eq(codexEntries.id, id),
-            eq(codexEntries.projectId, projectId),
-            eq(codexEntries.version, baseVersion),
-          )
-        : and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
+      and(
+        eq(codexEntries.id, id),
+        eq(codexEntries.projectId, projectId),
+        useOcc ? eq(codexEntries.version, baseVersion) : undefined,
+        compareSurface ? eq(codexEntries.name, baseSurface.name) : undefined,
+        compareSurface
+          ? baseSurface.aliases === null
+            ? isNull(codexEntries.aliases)
+            : eq(codexEntries.aliases, baseSurface.aliases)
+          : undefined,
+        compareSurface
+          ? baseSurface.excludedAliases === null
+            ? isNull(codexEntries.excludedAliases)
+            : eq(codexEntries.excludedAliases, baseSurface.excludedAliases)
+          : undefined,
+        compareSurface
+          ? baseSurface.readings === null
+            ? isNull(codexEntries.readings)
+            : eq(codexEntries.readings, baseSurface.readings)
+          : undefined,
+      ),
     )
     .returning();
 
-  // 0 件マッチ。OCC 有効時は「行が存在するのに 0 件」= version 衝突として
-  // CodexVersionConflictError を投げ、呼び出し側に非破壊リロードを委ねる。
+  // 0 件マッチ。version / baseSurface の条件付き更新時は「行が存在するのに
+  // 0 件」= 競合として CodexVersionConflictError を投げ、呼び出し側に
+  // 非破壊リロードを委ねる。
   // 行が存在しないなら従来通り undefined (別プロジェクト等のスコープ miss)。
   // OCC 無効時は従来通り undefined。
   // どちらの 0 件でも後続の副作用 (rescan/index/伏線 dirty) は走らせない。
   // 特に markLinkedForeshadowsDirty は projectId 非依存なので、ここで
   // 早期 return しないと別プロジェクトの伏線を汚染しうる。
   if (!rows[0]) {
-    if (useOcc) {
+    if (useConditionalUpdate) {
       const exists = await db
         .select({ id: codexEntries.id })
         .from(codexEntries)
@@ -250,7 +374,7 @@ export async function updateCodexEntry(
     data.aliases !== undefined ||
     data.excludedAliases !== undefined
   ) {
-    enqueueRescan(id);
+    void enqueueRescan(id);
   }
 
   // 段階3: 埋め込み対象 (name/aliases/summary/content) が変わったら再 index。
@@ -271,6 +395,9 @@ export async function updateCodexEntry(
     }
   }
 
+  if (affectsImeExport(data) && !opts?.suppressImeExport)
+    scheduleImeExportRefresh(projectId);
+
   return rows[0];
 }
 
@@ -281,6 +408,7 @@ export async function deleteCodexEntry(
   await db
     .delete(codexEntries)
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
+  scheduleImeExportRefresh(projectId);
 }
 
 export async function listCodexEntriesByMessageId(

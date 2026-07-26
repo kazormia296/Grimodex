@@ -5,17 +5,21 @@
 
 import { invoke, listen } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { usePostEffectRunStore } from "./runStore";
+import {
+  ensureNotificationPermission,
+  notifyRunTerminalIfUnfocused,
+} from "./desktopNotify";
 import type {
   PostEffectRun,
   PostEffectAnnotation,
-  PostEffectAnnotationRelation,
   PostEffectStatus,
   PostEffectType,
   StartPostEffectRunRequest,
   StartPostEffectRunMultiRequest,
   StartPostEffectRunResult,
   AnnotationsForSceneResponse,
-  RunDetailResponse,
   PostEffectProgressEvent,
   PostEffectPartialEvent,
   PostEffectDoneEvent,
@@ -39,10 +43,7 @@ export async function flushPendingSceneSaves(sceneId?: string): Promise<void> {
     await saveScene(sceneId);
     return;
   }
-  // tabStore は layoutStore/i18n を引き込むため、本モジュールを import する
-  // 純関数モジュールの test graph を汚さないよう遅延 import に留める。
-  const { useTabStore } = await import("@/features/editor/tabStore");
-  const ids = [...useTabStore.getState().dirtyTabIds];
+  const ids = [...useEditorSessionStore.getState().dirtyDocumentIds];
   await Promise.all(ids.map((id) => saveScene(id)));
 }
 
@@ -89,13 +90,6 @@ export async function listPostEffectRuns(params: {
     limit: params.limit ?? 20,
     offset: params.offset ?? 0,
   });
-}
-
-export async function getPostEffectRun(
-  runId: string,
-  projectId: string,
-): Promise<RunDetailResponse> {
-  return invoke<RunDetailResponse>("get_post_effect_run", { runId, projectId });
 }
 
 export async function listAnnotationsForScene(params: {
@@ -155,29 +149,6 @@ export async function updateAnnotationStatus(
     entityType: "post_effect_annotation",
     entityId: annotationId,
     payload: { annotationId, status },
-  });
-  return result;
-}
-
-export async function updateRelationStatus(
-  relationId: string,
-  status: PostEffectStatus,
-  projectId: string,
-): Promise<PostEffectAnnotationRelation> {
-  const result = await invoke<PostEffectAnnotationRelation>(
-    "update_relation_status",
-    {
-      relationId,
-      status,
-      projectId,
-    },
-  );
-  recordChangeEvent({
-    domain: "review",
-    opType: "relation.status",
-    entityType: "post_effect_relation",
-    entityId: relationId,
-    payload: { relationId, status },
   });
   return result;
 }
@@ -263,6 +234,8 @@ export async function onPostEffectError(
 // ---------------------------------------------------------------------------
 
 export interface PostEffectRunCallbacks {
+  /** Last async guard before the backend start request is dispatched. */
+  beforeStart?: () => void | Promise<void>;
   onProgress?: (e: PostEffectProgressEvent) => void;
   onPartial?: (e: PostEffectPartialEvent) => void;
   onDone?: (e: PostEffectDoneEvent) => void;
@@ -289,7 +262,12 @@ export async function runPostEffect(
   req: StartPostEffectRunRequest,
   callbacks: PostEffectRunCallbacks,
 ): Promise<{ runId: string; cleanup: () => void }> {
-  return runPostEffectInternal(callbacks, () => startPostEffectRun(req));
+  return runPostEffectInternal(callbacks, () => startPostEffectRun(req), {
+    projectId: req.project_id,
+    effectType: req.effect_type,
+    scopeType: req.scope_type,
+    scopeTargetId: req.scope_target_id ?? null,
+  });
 }
 
 /**
@@ -302,12 +280,28 @@ export async function runPostEffectMulti(
   req: StartPostEffectRunMultiRequest,
   callbacks: PostEffectRunCallbacks,
 ): Promise<{ runId: string; cleanup: () => void }> {
-  return runPostEffectInternal(callbacks, () => startPostEffectRunMulti(req));
+  return runPostEffectInternal(callbacks, () => startPostEffectRunMulti(req), {
+    projectId: req.project_id,
+    effectType: req.effect_type,
+    scopeType: req.scope_type,
+    scopeTargetId: req.scope_target_id ?? null,
+    totalScenes: req.scenes.length,
+  });
+}
+
+/** runStore へ登録する run のメタ（req から一元的に導出する）。 */
+interface RunTrackMeta {
+  projectId: string;
+  effectType: string;
+  scopeType: string;
+  scopeTargetId: string | null;
+  totalScenes?: number;
 }
 
 async function runPostEffectInternal(
   callbacks: PostEffectRunCallbacks,
   starter: () => Promise<StartPostEffectRunResult>,
+  meta: RunTrackMeta,
 ): Promise<{ runId: string; cleanup: () => void }> {
   // unlisteners は terminal handler 内からも触れるよう先に箱だけ用意する
   // (Promise.all 完了前にイベントが来ることはないが、TDZ を避けるため)。
@@ -325,13 +319,29 @@ async function runPostEffectInternal(
     }
   };
 
+  // ---- run_id フィルタリング + 確定前バッファ ----
+  // post_effect:* はグローバルチャンネルで全 run のイベントが流れてくる。
+  // 以前は無フィルタで購読していたため、並行 run があると他 run の
+  // done/error でこの run の terminal handler + cleanup が誤発火し得た。
+  // 一方 starter() が run_id を返す前に自 run の done が届くこともある
+  // （超高速 completion。上の TDZ コメント参照）ため、単純に「run_id 不明
+  // なら捨てる」わけにもいかない。確定前のイベントはバッファし、確定後に
+  // 自 run 分だけ順序どおり再生する。
+  type Buffered =
+    | { kind: "progress"; e: PostEffectProgressEvent }
+    | { kind: "partial"; e: PostEffectPartialEvent }
+    | { kind: "done"; e: PostEffectDoneEvent }
+    | { kind: "error"; e: PostEffectErrorEvent };
+  let runId: string | null = null;
+  let buffered: Buffered[] | null = [];
+
   // terminal (done/error) ハンドラを cleanup 自動付与でラップ。
   // ユーザー callback の例外は飲み込み (cleanup を最優先で実行する)。
   const wrapTerminal =
-    <T>(fn: ((e: T) => void | Promise<void>) | undefined) =>
+    <T>(fn: (e: T) => void | Promise<void>) =>
     async (e: T) => {
       try {
-        if (fn) await fn(e);
+        await fn(e);
       } catch (err) {
         console.error("post-effect terminal handler error", err);
       } finally {
@@ -339,45 +349,155 @@ async function runPostEffectInternal(
       }
     };
 
-  const registered = await Promise.all([
-    callbacks.onProgress
-      ? onPostEffectProgress(callbacks.onProgress)
-      : Promise.resolve(() => {}),
-    callbacks.onPartial
-      ? onPostEffectPartial(callbacks.onPartial)
-      : Promise.resolve(() => {}),
-    onPostEffectDone(wrapTerminal(callbacks.onDone)),
-    onPostEffectError(wrapTerminal(callbacks.onError)),
-  ]);
-  unlisteners.push(...registered);
+  // dispatch = runStore への反映（グローバル進捗表示）+ ユーザー callback。
+  // runStore の各 action は run_id を知らないエントリを無視するので、
+  // store 側は from_cache（begin しない）でも安全。
+  const dispatchProgress = (e: PostEffectProgressEvent) => {
+    usePostEffectRunStore.getState().updateProgress(e.run_id, {
+      stage: e.stage,
+      progress: e.progress,
+      message: e.message ?? null,
+    });
+    callbacks.onProgress?.(e);
+  };
+  const dispatchPartial = (e: PostEffectPartialEvent) => {
+    callbacks.onPartial?.(e);
+  };
+  const dispatchDone = wrapTerminal(async (e: PostEffectDoneEvent) => {
+    usePostEffectRunStore
+      .getState()
+      .complete(e.run_id, e.annotation_count, e.summary ?? undefined);
+    // 非フォーカス時のみ OS 通知 (キャッシュ短絡は即時完了なので通知しない)。
+    if (!e.from_cache) {
+      void notifyRunTerminalIfUnfocused(
+        { effectType: meta.effectType, scopeType: meta.scopeType },
+        {
+          kind: "done",
+          annotationCount: e.annotation_count,
+          summary: e.summary ?? undefined,
+        },
+      );
+    }
+    if (callbacks.onDone) await callbacks.onDone(e);
+  });
+  const dispatchError = wrapTerminal(async (e: PostEffectErrorEvent) => {
+    usePostEffectRunStore.getState().fail(e.run_id, e.error);
+    void notifyRunTerminalIfUnfocused(
+      { effectType: meta.effectType, scopeType: meta.scopeType },
+      { kind: "error", error: e.error },
+    );
+    if (callbacks.onError) await callbacks.onError(e);
+  });
 
-  // Listen 登録 → 呼び出し側 await 前に done/error が届くと
-  // cleanup() が走るが、unlisteners に他の listen も入っているので OK。
+  const replayOne = (b: Buffered): void => {
+    switch (b.kind) {
+      case "progress":
+        dispatchProgress(b.e);
+        break;
+      case "partial":
+        dispatchPartial(b.e);
+        break;
+      case "done":
+        void dispatchDone(b.e);
+        break;
+      case "error":
+        void dispatchError(b.e);
+        break;
+    }
+  };
+
+  const filtered =
+    <E extends { run_id: string }>(
+      toBuffered: (e: E) => Buffered,
+      dispatch: (e: E) => void | Promise<void>,
+    ) =>
+    (e: E) => {
+      if (runId === null) {
+        buffered?.push(toBuffered(e));
+        return;
+      }
+      if (e.run_id !== runId) return;
+      void dispatch(e);
+    };
+
   try {
+    // Start registrations together (preserving the pre-start buffering
+    // timing) but inspect every result so partial success is still cleaned up
+    // when one channel fails to subscribe.
+    const registrations: Array<Promise<() => void>> = [
+      onPostEffectProgress(
+        filtered((e) => ({ kind: "progress", e }), dispatchProgress),
+      ),
+    ];
+    if (callbacks.onPartial) {
+      registrations.push(
+        onPostEffectPartial(
+          filtered((e) => ({ kind: "partial", e }), dispatchPartial),
+        ),
+      );
+    }
+    registrations.push(
+      onPostEffectDone(filtered((e) => ({ kind: "done", e }), dispatchDone)),
+      onPostEffectError(filtered((e) => ({ kind: "error", e }), dispatchError)),
+    );
+    const registered = await Promise.allSettled(registrations);
+    for (const result of registered) {
+      if (result.status === "fulfilled") unlisteners.push(result.value);
+    }
+    const registrationFailure = registered.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (registrationFailure) throw registrationFailure.reason;
+
+    await callbacks.beforeStart?.();
     const result = await starter();
+    runId = result.run_id;
+    const replay = (buffered ?? []).filter((b) => b.e.run_id === runId);
+    buffered = null;
+
     // from_cache: true のときバックエンドはタスクを spawn せず、
     // 既存の completed run の id だけ返してくる。done イベントは
     // 永遠に飛んでこないので、ここで合成的に onDone を fire してやる。
     // (これがないと spinner が永久に回る)
+    // 常駐トーストには cached の終端エントリとして登録する: 以前は登録
+    // しない仕様で、成功トーストを持たないビュー (review / timeline /
+    // meta_structure) では「押しても何も起きない」ように見えていた。
+    // 全サーフェス共通のフィードバックはこの 1 箇所で担保する。
+    // (合成 done → complete は runStore 側の終端上書きガードで無視される)
     if (result.from_cache) {
+      usePostEffectRunStore.getState().recordCacheHit({
+        runId: result.run_id,
+        projectId: meta.projectId,
+        effectType: meta.effectType,
+        scopeType: meta.scopeType,
+        scopeTargetId: meta.scopeTargetId,
+        totalScenes: meta.totalScenes,
+      });
       const synthetic: PostEffectDoneEvent = {
         run_id: result.run_id,
         annotation_count: 0,
         from_cache: true,
       };
-      // wrapTerminal と同じ意味: callback 実行 → cleanup
-      void (async () => {
-        try {
-          if (callbacks.onDone) await callbacks.onDone(synthetic);
-        } catch (err) {
-          console.error("post-effect onDone (cache) error", err);
-        } finally {
-          cleanup();
-        }
-      })();
+      void dispatchDone(synthetic);
+      return { runId: result.run_id, cleanup };
     }
+
+    usePostEffectRunStore.getState().begin({
+      runId: result.run_id,
+      projectId: meta.projectId,
+      effectType: meta.effectType,
+      scopeType: meta.scopeType,
+      scopeTargetId: meta.scopeTargetId,
+      totalScenes: meta.totalScenes,
+    });
+    // 通知権限は run 開始時 = ユーザーがボタンを押した直後 (フォーカス中) に
+    // 確保しておく。終端時の通知 (非フォーカス中) では権限プロンプトを出さない。
+    void ensureNotificationPermission();
+    // begin 後に再生する（progress が store のエントリを見つけられるように）。
+    for (const b of replay) replayOne(b);
     return { runId: result.run_id, cleanup };
   } catch (e) {
+    buffered = null;
     cleanup(); // 起動自体が失敗したらリスナーをリーク死しないよう解除
     throw e;
   }

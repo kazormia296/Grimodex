@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
+import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 
 /**
  * editor.spellCheck 設定が本文ラッパーの spellcheck 属性に届く配線契約
@@ -55,12 +56,23 @@ vi.mock("@/features/editor/EditorContentSkeleton", () => ({
   ),
 }));
 vi.mock("@/features/editor/EditorDropDiv", () => ({
-  EditorDropDiv: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
+  EditorDropDiv: ({
+    children,
+    outerRef: _outerRef,
+    ...props
+  }: React.HTMLAttributes<HTMLDivElement> & {
+    children: React.ReactNode;
+    outerRef?: React.MutableRefObject<HTMLDivElement | null>;
+  }) => <div {...props}>{children}</div>,
 }));
 vi.mock("@/features/editor/useVerticalWheelScroll", () => ({
   useVerticalWheelScroll: () => {},
+}));
+vi.mock("@/features/editor/zen/useZenBackgroundAppearance", () => ({
+  useZenBackgroundEnabled: () => true,
+}));
+vi.mock("@/features/editor/ZenAmbientBackdrop", () => ({
+  ZenAmbientBackdrop: () => <div data-zen-ambient aria-hidden="true" />,
 }));
 
 import { EditorContentArea } from "./EditorContentArea";
@@ -92,6 +104,9 @@ function makeSettings(spellCheck: boolean): EditorSettings {
     sceneMetaPanelOpen: false,
     sceneMetaPanelWidth: 20,
     showLineNumbers: false,
+    aozoraInput: true,
+    showInvisibles: false,
+    autoPairBrackets: true,
     paragraphIndent: 0,
     verticalMode: false,
   };
@@ -100,32 +115,44 @@ function makeSettings(spellCheck: boolean): EditorSettings {
 function renderArea(
   spellCheck: boolean,
   filterSource: "human" | "ai" | "unknown" | null = null,
+  zenMode = false,
+  options: {
+    profile?: "wide" | "compact" | "phone";
+    gutterReserve?: string | null;
+    showLineNumbers?: boolean;
+  } = {},
 ) {
+  const settings = makeSettings(spellCheck);
+  settings.showLineNumbers = options.showLineNumbers ?? false;
   return render(
-    <EditorContentArea
-      editor={null}
-      editorContainerRef={{ current: null }}
-      toolbarActionsRef={{ current: null }}
-      findOpen={false}
-      findShowReplace={false}
-      setFindOpen={() => {}}
-      showForeshadowMarks={false}
-      focusModeHideBeats={false}
-      focusMode={false}
-      typewriterMode={false}
-      filterSource={filterSource}
-      editorSettings={makeSettings(spellCheck)}
-      editorTitle=""
-      loadedPhaseLabel={null}
-      titleEditing={false}
-      titleDraft=""
-      setTitleDraft={() => {}}
-      handleTitleSave={() => {}}
-      handleTitleCancel={() => {}}
-      handleTitleEditStart={() => {}}
-      isSceneContentLoading={false}
-      sceneId="scene-1"
-    />,
+    <WorkspaceViewportProvider profile={options.profile ?? "wide"}>
+      <EditorContentArea
+        editor={null}
+        editorContainerRef={{ current: null }}
+        toolbarActionsRef={{ current: null }}
+        findOpen={false}
+        findShowReplace={false}
+        setFindOpen={() => {}}
+        showForeshadowMarks
+        gutterReserve={options.gutterReserve ?? null}
+        focusModeHideBeats={false}
+        focusMode={false}
+        typewriterMode={false}
+        filterSource={filterSource}
+        editorSettings={settings}
+        editorTitle=""
+        loadedPhaseLabel={null}
+        titleEditing={false}
+        titleDraft=""
+        setTitleDraft={() => {}}
+        handleTitleSave={() => {}}
+        handleTitleCancel={() => {}}
+        handleTitleEditStart={() => {}}
+        isSceneContentLoading={false}
+        sceneId="scene-1"
+        zenMode={zenMode}
+      />
+    </WorkspaceViewportProvider>,
   );
 }
 
@@ -157,5 +184,45 @@ describe("EditorContentArea attribution filter live region", () => {
   it("keeps the live region mounted but empty without a filter", () => {
     const { getByRole } = renderArea(false, null);
     expect(getByRole("status").textContent).toBe("");
+  });
+});
+
+describe("EditorContentArea background boundary", () => {
+  it("leaves the shared background at App level and applies alpha only to the paper", () => {
+    const { container } = renderArea(false, null, true);
+
+    const paper = container.querySelector('[data-zen-editor-column="true"]');
+    expect(paper).not.toBeNull();
+    expect(container.querySelector("[data-zen-ambient]")).toBeNull();
+    expect(paper).toHaveStyle({
+      background:
+        "color-mix(in oklch, var(--content-background) 35%, transparent)",
+    });
+    expect((paper as HTMLElement).style.opacity).toBe("");
+  });
+});
+
+describe("EditorContentArea phone projection", () => {
+  it("uses equal compact padding and removes every inline-start gutter reserve", () => {
+    const { container } = renderArea(false, null, false, {
+      profile: "phone",
+      gutterReserve: "40px",
+      showLineNumbers: true,
+    });
+
+    const body = container.querySelector(
+      '[data-editor-layer-projection="codex-only"]',
+    );
+    expect(body).toBeInTheDocument();
+    expect(body).toHaveClass("px-2", "py-4");
+    expect(body).not.toHaveClass("p-4");
+    expect(body).toHaveAttribute("data-show-foreshadow-marks", "false");
+
+    const paper = container.querySelector("div[spellcheck]") as HTMLElement;
+    expect(paper).not.toHaveClass(
+      "editor-line-numbers",
+      "editor-gutter-reserve",
+    );
+    expect(paper.style.getPropertyValue("--gutter-reserve")).toBe("");
   });
 });

@@ -1,0 +1,2498 @@
+{
+  "meta": {
+    "generatedAt": "2026-07-10",
+    "purpose": "Grimodex Electron 移行 Phase 3: Tauri コマンドの napi / main-TS 化 正規化台帳（棚卸しデータ + lib.rs 正式リスト + FE コールサイトのマージ）",
+    "inventorySemantics": "doneCount / remainingCount / 各 classification は生成時点の静的棚卸し値であり、現在進捗の再集計ではない。進捗正本は Phase 3 設計書。2026-07-11 時点で Phase 3a〜3e・Batch 4〜5、Phase 4配布/更新/互換移行、Phase 5 WebKitGTK専用回避撤去まで実装済み。タグ作成とDraft release実行は未実施",
+    "phase3cValidation": "2026-07-11: Electron 17 files / 345 passed、node 861 files passed + 8 skipped / 8809 passed + 35 skipped、browser 73 files passed + 1 skipped / 309 passed + 1 skipped。electron:build / electron:smoke PASS（3起動、全layout layer opacity=1、scene作成→autosave→再起動後DB/UI残存）",
+    "phase3cShellHardening": "ready-to-show未発火時はdid-finish-loadで冪等表示。startup hydration中だけlayout crossfade / region chrome / editor enter animationを抑止し、初期化後のmotionは維持",
+    "phase3dValidation": "2026-07-11: post-effect 3コマンド + 4イベントを共有Rust/N-APIへ移植。開始DB固定、XPROJ、terminal CAS、abort TOCTOU、資格情報snapshotを回帰固定。共有Rust 103 tests、実.node post-effect E2E 5 tests PASS",
+    "phase3eValidation": "2026-07-11: license 4 IPC + 内部validate cycleを共有Rust/N-APIへ移植。feature無効のexact disabled/ディスク非接触、起動5秒後→完了後6h、manual success/errorの全窓state_changed、activate single-flight + remote補償解除を固定。Electron 18 files / 401 tests、native 70 pass + 1 skip、license Polar/DTO 27 + runtime/race 19 + disabled 1 PASS",
+    "phase3Batch4Validation": "2026-07-11: semantic 19 IPC + extract_codex_candidatesをgrimodex-semantic共有runtime/N-APIへ移植。DB+4cache epoch pin、open/restore rotate、domain/project/model single-flight、明示resource root、2 progress eventsを固定。shared Rust feature-off 181 / feature-on 217、実.node semantic E2E 6、native Node 85 pass + 1 skip、native Rust 12、Electron IPC/backend 226、Electron full 21 files / 491 tests、両TypeScript check PASS",
+    "phase3Batch4CommandCount": 20,
+    "phase3Batch4SemanticCommandCount": 19,
+    "phase3Batch4CandidateCommandCount": 1,
+    "phase3Batch5Validation": "2026-07-11: seed_sample_workspaceをgrimodex-db共有コア/Tauri/N-APIへ移植し、get_mcp_configをstandalone sidecar + main-TSで実装。UUID不変generation、公開前失敗掃除、共通write_lock、published generation保持、executable/mtime resolver、main所有license argsPrefix、workspace/project revision guardを固定。grimodex-db 256 pass + 1 ignored、MCP licensing 151、native Node 86 pass + 1 skip、native Rust 12、Electron対象 196、renderer対象 27、両TypeScript check PASS。full suiteはElectron 23 files / 511 passed、renderer 866 files passed + 8 skipped / 8879 tests passed + 35 skipped（114s）PASS",
+    "phase3Batch5CommandCount": 2,
+    "phase4Implementation": "2026-07-11: packaged userDataを既存Tauri data_dir/com.miyakey.grimodexへready/single-instance lock前に固定。product N-APIはlicensing,legacy-keyring-migrationを明示し、main-only keyring export→safeStorage atomic import→0600 markerのone-shot移行を実装（既存値優先、失敗時markerなし、旧keyring非削除）。packaged Linux MCPは起動時に<userData>/bin/grimodex-mcpへSHA-256比較・0755・fsync・atomic renameでeager refresh。electron-builder 26.15.3 / electron-updater 6.8.9、Tauri v1.0.0 Draft assetの再ビルド禁止とv2 Electron workflow、immutable Tauri bridge manifest、公開鍵によるbridge署名検証、updater metadataのsize/SHA-512検証、Arch markerによるpacman委譲、最終公開v0.10.4からElectron NSISへのWindows移行E2E、RPM posttransによるlauncher/AppArmor修復、Ubuntu 24.04 + GLIBC_2.39/deb・rpm dependency gateを実装。v2 release tag/Draft作成は未実施",
+    "phase5Implementation": "2026-07-11: WebKitGTK専用frontend/Rust回避を41対象ファイルで+87/-2157（net -2070）撤去。data-engine/data-vfc、focus/scroll/emphasis/font/reorder/上下caret回避、webkit_features.rs、NVIDIA DMABUF回避、直接webkit2gtk/glib依存、Playwright WebKit/host互換libを削除。Chromium左右hardBreak caret、cursorCoords、native text-emphasis、論理scroll、-webkit-app-region、Tauri v1 installer/updater/userData/keyring移行は維持。CI/devcontainer/skills/manual QAをElectronへ更新し、package.jsonをv2.0.0唯一のactive version正本、Tauri version 1.0.0をfrozen legacyとした。third-party generatorはroot/N-API両Cargo graphをunionしてN-API固有crateを収録。v2 tag/Draftは未作成",
+    "phase5Validation": "renderer unit 864 files passed + 8 skipped / 8844 passed + 35 skipped、Chromium browser 36 files / 143 passed、Electron cleanup contract 4 passed、license generation contract 3 passed、TypeScript pass。Rust workspace 1312 passed + 1 ignored、cargo check/clippy -D warnings pass。active CIはroot grimodexを除外しつつgrimodex-semantic/semantic-embedding featureを明示し、feature-on 217 testsを含める。Cargo license metadata/生成見出し846件一致、欠落/余剰/重複0、root/public byte一致",
+    "postPhase5ImeImplementation": "2026-07-11: origin/master #326を同期し、IME辞書連携をElectron-onlyで統合。renderer→typed preload IPC→N-API→grimodex-db共有実装の順に ime_export_refresh / ime_export_set_active_project / ime_export_get_status / ime_export_clear_all / ime_export_remove_project の5 IPCを追加し、main will-quit専用の同期deactivate、legacy Tauri userData互換、atomic write、request latest-winsを実装。root Tauri command adapterは削除し凍結shellへ戻さない。この5 IPCはpost-Phase 5追加であり、生成時点の静的Tauri inventory 145件には加算しない",
+    "postPhase5ImeValidation": "grimodex-db integrationでauto/on/off、consumer検証、読み展開、non-ja削除、project remove/clear、atomic snapshotと競合順序を回帰固定。Electron typed IPCで5コマンドの引数・camelCase wire・unit null、main testでwill-quit active解除、rendererでAPI/debounce/project focus-switch/settings UIを検証",
+    "phase4Commands": [
+      "pnpm electron:native:release",
+      "pnpm napi:verify:release",
+      "pnpm electron:package:dir",
+      "pnpm electron:package",
+      "pnpm test:electron --run",
+      "node --test scripts/validate-release-version.test.mjs scripts/generate-tauri-bridge-manifest.test.mjs scripts/release-workflows.test.mjs scripts/linux-release-abi.test.mjs scripts/arch-electron-package.test.mjs"
+    ],
+    "deadCodeRemoval": "2026-07-11: FE本番コールサイトが存在しない foreshadow_list / external_mount_list / get_post_effect_run / update_relation_status を Tauri handler・Rust本体・TS wrapper・browser mock から撤去。Electron mirrorは追加しない",
+    "totalCommands": 145,
+    "doneCount": 13,
+    "remainingCount": 132,
+    "missingFromInventory": ["set_window_vibrancy", "codex_rebuild_matcher", "codex_match_text"],
+    "classificationCounts": {
+      "done": 13,
+      "pure-db": 68,
+      "network": 12,
+      "keyring": 3,
+      "fs": 10,
+      "other": 3,
+      "child-process": 10,
+      "main-ts": 5,
+      "lindera": 3,
+      "ort": 12,
+      "db+state": 3,
+      "unknown(missing)": 3
+    },
+    "priorityCounts": { "done(P0既済)": 13, "P0": 11, "P1": 61, "P2": 44, "P3": 16 },
+    "priorityDefinition": {
+      "P0": "起動 / workspace-open / 編集ループ（オートセーブ・シーンオープン）で呼ばれ、壊れると致命的",
+      "P1": "主要パネル機能（AIチャット・エージェント書込・伏線・校閲・タイムライン等）",
+      "P2": "明示操作系（エクスポート・組版・再インデックス・設定変更アクション）",
+      "P3": "設定表示・低頻度・未使用・デバッグ専用"
+    }
+  },
+  "commands": {
+    "get_global_settings": {
+      "file": "workspace.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": [],
+      "returns": "GlobalSettings",
+      "stateDeps": ["GlobalSettingsPath"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "settings.json をロック付きで読み GlobalSettings を返す（読めなければデフォルト）",
+      "napiNotes": "napi 実装済み。GlobalSettingsPath.write_lock (Mutex) で read/write を直列化している点だけ既存実装と整合していれば追加作業なし",
+      "callSites": [
+        { "file": "src/features/workspace/store.ts", "trigger": "startup", "notes": "L152 initialize() — 起動フロー最初の invoke。失敗すると welcome 画面へ縮退" },
+        { "file": "src/features/workspace/store.ts", "trigger": "workspace-open", "notes": "L290 openWorkspace 内の設定再読込（view='editor' 前で blocking）" },
+        { "file": "src/features/layout/layoutStore.ts", "trigger": "startup", "notes": "L1446 initializeLayout / L1658 loadPresets / L415,453,481,495 各保存系（user-action）" },
+        { "file": "src/features/{chronicle,grid,map,matrix,timeline}/*Store.ts", "trigger": "user-action", "notes": "store.subscribe の debounce 保存の read 側（500-600ms）" }
+      ]
+    },
+    "save_global_settings": {
+      "file": "workspace.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["settings: GlobalSettings"],
+      "returns": "()",
+      "stateDeps": ["GlobalSettingsPath"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "GlobalSettings をロック付きで settings.json に書き込む",
+      "napiNotes": "napi 実装済み。get 側と同じ write_lock を共有して read-modify-write 競合を防いでいる契約を維持（seed_sample_workspace とも同一ロック共有が必要）",
+      "callSites": [
+        { "file": "src/features/workspace/store.ts", "trigger": "startup", "notes": "L162 trustedWorkspaces 移行 / L436 updateGlobalSettings / L459 updateUserPreference / L481 updateProjectDefaults" },
+        { "file": "src/features/{layout,chronicle,grid,map,matrix,timeline}/*Store.ts", "trigger": "user-action", "notes": "debounce 保存の write 側" }
+      ]
+    },
+    "validate_workspace_path": {
+      "file": "workspace.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["path: String"],
+      "returns": "bool",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "パスが存在するディレクトリで grimodex.db を含むかを判定する",
+      "napiNotes": "napi 実装済み。Result ではなく素の bool を返す唯一のコマンド（エラー無し）",
+      "callSites": [
+        { "file": "src/features/workspace/store.ts", "trigger": "startup", "notes": "L171/L195 initialize（前回 workspace 自動再オープン判定）、L370 requestOpenWorkspace、L412 openRecentWorkspace（workspace-open）" }
+      ]
+    },
+    "open_workspace": {
+      "file": "workspace.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["path: String"],
+      "returns": "OpenWorkspaceResult",
+      "stateDeps": ["WorkspaceState", "GlobalSettingsPath", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "workspace を開く（backup→migrate→swap→SwitchingGuard→recent-workspaces 更新）。本体は grimodex_db::open::open_workspace_sync に抽出済み",
+      "napiNotes": "napi実装済み。OpenDeps::on_swappedでSemanticRuntime.rotate_workspace_epoch()を呼び、scene/codex/events/chatの4cacheを新世代へ原子的に交換する。Electronは同hookでCodex matcherも破棄。spawn_blocking、reject_unsafe_workspace_path、DB swap本体はgrimodex-db共有",
+      "callSites": [
+        { "file": "src/features/workspace/store.ts", "trigger": "workspace-open", "notes": "L272 openWorkspace（DB swap 本体、SLOW_COMMANDS 300s、beginWorkspaceSwitch〜endWorkspaceSwitch）" }
+      ]
+    },
+    "get_mcp_config": {
+      "file": "workspace.rs",
+      "classification": "main-ts",
+      "status": "done",
+      "priority": "P3",
+      "args": [],
+      "returns": "McpConfigInfo { command, workspace, argsPrefix }",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "外部 MCP クライアント向けにstandalone sidecarの絶対path、active workspace、shell所有の安全なargsPrefixを返し、FEが `.mcp.json` 断片を組み立てる",
+      "napiNotes": "実装済み。N-APIはget_active_workspace_pathでactive DBのworkspace identityを返し、Electron mainがstandalone grimodex-mcp[.exe]を解決。strict絶対overrideとregular-file/非Windows X_OK検証、dev debug/releaseのmtime比較を行う。packaged Linuxは起動時にsourceをexecutable regular non-symlinkとして再検証し、SHA-256比較・0755・fsync・atomic renameで<userData>/bin/grimodex-mcpへeager refreshするため、AppImage mount終了後もcommandが安定する。argsPrefixはrenderer入力ではなくmain所有の [--license-file, <userData>/license.json]。MCP CLIはlicense pathの絶対性を検証し、release buildはlicensing feature有効。FEはinvoke前後のworkspace path/open revision/hydration/switch/project IDと返却workspaceを再検証し、途中切替時はcopyを拒否。TauriはargsPrefix=[mcp]の従来アプリsubcommand adapterを維持",
+      "callSites": [
+        { "file": "src/features/settings/components/McpIntegrationSection.tsx", "trigger": "settings", "notes": "L36 handleCopy（.mcp.json スニペットのコピーボタン）" }
+      ]
+    },
+    "list_backups": {
+      "file": "workspace.rs",
+      "classification": "fs",
+      "priority": "P2",
+      "args": [],
+      "returns": "Vec<BackupInfo>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "アクティブ workspace の backups/ ディレクトリを列挙し grimodex-*.db(.gz) を新しい順で返す",
+      "napiNotes": "テスト可能な本体 list_backups_in(&Path) が State を剥がしてあるので napi 化はそれを呼ぶだけ。同期・軽量で spawn_blocking 不要。BackupInfo は camelCase serialize（fileName/sizeBytes/modifiedMs/format）",
+      "callSites": [
+        { "file": "src/features/settings/backupApi.ts", "trigger": "settings", "notes": "L19 listBackups ← BackupRestoreSection 一覧ロード" }
+      ]
+    },
+    "restore_backup": {
+      "file": "workspace.rs",
+      "classification": "db+state",
+      "priority": "P2",
+      "args": ["file_name: String"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState", "SearchCache", "CodexSearchCache", "EventsSearchCache", "ChatSearchCache"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "選択したバックアップ (.db / .db.gz) で grimodex.db を原子置換し再オープンする（quick_check 検証・安全退避・WAL 残骸削除・FTS rebuild 込み）",
+      "napiNotes": "副次分類 fs（gunzip・copy・rename・sidecar 削除）。本体 restore_backup_core は State/caches を剥がし on_reopened クロージャ注入式で移植容易（napi 側は on_reopened を no-op に）。spawn_blocking 必須。依存: rusqlite quick_check、grimodex_db::gunzip_file(flate2)、chrono、SwitchingGuard/open_lock。wait_for_sole_owner（Arc strong_count==1 まで最大10秒）あり。エラー文字列マーカー RESTORE_SESSION_LOST は FE backupApi との契約 — 一字一句維持。成功後 FE が window.location.reload() する前提",
+      "callSites": [
+        { "file": "src/features/settings/backupApi.ts", "trigger": "settings", "notes": "L28 restoreBackup ← BackupRestoreSection 復元ボタン（成功後 reload 前提）" }
+      ]
+    },
+    "get_license_state": {
+      "file": "license.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": [],
+      "returns": "LicenseStateDto",
+      "stateDeps": ["LicenseRuntime"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "起動時のライセンス状態取得。license.json を読み、試用使用日の登録・last_seen 単調更新・時計巻き戻し検出を行って DTO を返す",
+      "napiNotes": "Phase 3e実装済み。grimodex-license共有runtimeをTauri/N-APIで共用。license.json read-modify-writeは同一Mutexで直列化。feature無効buildはexact disabled DTOを返してファイルへ触れない",
+      "callSites": [
+        { "file": "src/features/license/store.ts", "trigger": "startup", "notes": "L54 refresh() — EditorScreen mount 時（App.tsx:360）。fail-open 設計（失敗でもゲートを閉じない）+ license:state_changed リスナと連動" }
+      ]
+    },
+    "activate_license": {
+      "file": "license.rs",
+      "classification": "network",
+      "status": "done",
+      "priority": "P3",
+      "args": ["key: String"],
+      "returns": "LicenseStateDto",
+      "stateDeps": ["LicenseRuntime"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "ライセンスキーを Polar API で activate し、benefit_id のメジャーバージョン照合後に license.json へ適用して新状態 DTO を返す",
+      "napiNotes": "Phase 3e実装済み。grimodex-license共有crateのreqwest Polar clientをTauri/N-APIで共用。activateはsingle-flight。await中はfile lockを持たず、benefit照合後にatomic write。benefit不一致/local persist失敗は作成済みremote activationを補償解除。通常buildはfeature無効で同じ明示errorを返しlicense.jsonへ触れない",
+      "callSites": [
+        { "file": "src/features/license/store.ts", "trigger": "settings", "notes": "L75 activate()（settings/LicenseCategory）" }
+      ]
+    },
+    "revalidate_license": {
+      "file": "license.rs",
+      "classification": "network",
+      "status": "done",
+      "priority": "P3",
+      "args": [],
+      "returns": "LicenseStateDto",
+      "stateDeps": ["LicenseRuntime"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "手動再検証。Polar validate の明示 Invalid のみ revoked に落とし、通信失敗は fail-soft で状態を変えずエラーを返す",
+      "napiNotes": "Phase 3e実装済み。LicenseRuntimeのAtomicBool single-flightを手動/背景cycleで共有し、RAII Dropで成功・error・future cancel時も解除。await後のread-back + is_same_activationでstale responseを捨て、通信失敗は状態不変",
+      "callSites": [
+        { "file": "src/features/license/store.ts", "trigger": "settings", "notes": "L84 revalidate()（license_stale からの手動再検証ボタン）" }
+      ]
+    },
+    "deactivate_license": {
+      "file": "license.rs",
+      "classification": "network",
+      "status": "done",
+      "priority": "P3",
+      "args": [],
+      "returns": "LicenseStateDto",
+      "stateDeps": ["LicenseRuntime"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "この端末のライセンス解除。Polar deactivate 成功時のみローカルの license を破棄し、試用日数が残れば trial に戻る",
+      "napiNotes": "Phase 3e実装済み。Polar失敗時はローカル不変、成功後もread-back + is_same_activationが一致した場合だけlocal activationを破棄。feature無効ではディスク非接触の明示error",
+      "callSites": [
+        { "file": "src/features/license/store.ts", "trigger": "settings", "notes": "L79 deactivate()（端末解除）" }
+      ]
+    },
+    "export_save_text": {
+      "file": "export.rs",
+      "classification": "main-ts",
+      "priority": "P2",
+      "args": ["suggested_name: String", "filter_name: String", "extensions: Vec<String>", "contents: String"],
+      "returns": "Option<String>",
+      "stateDeps": [],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": false,
+      "summary": "ネイティブ保存ダイアログを開き、ユーザー選択パスへテキストを書き込んで絶対パス（キャンセル時 None）を返す",
+      "napiNotes": "napi 化不要。Electron main TS で dialog.showSaveDialog + fs.writeFile に 1:1 対応（副次分類: fs）。重要: security audit PIO-2 の設計思想（renderer に書き込み先パスを渡させない・パスはダイアログ由来に限定）を維持 — renderer がパス指定する write IPC にすると任意書き込みプリミティブに退行。共有ヘルパー prompt_save_path は vivliostyle_save_output とも共用のため同じダイアログユーティリティに集約",
+      "callSites": [
+        { "file": "src/lib/exportFile.ts", "trigger": "user-action", "notes": "L48 saveTextFile()（エクスポート系 UI の保存ボタン）" }
+      ]
+    },
+    "export_save_bytes": {
+      "file": "export.rs",
+      "classification": "main-ts",
+      "priority": "P2",
+      "args": ["suggested_name: String", "filter_name: String", "extensions: Vec<String>", "contents_base64: String"],
+      "returns": "Option<String>",
+      "stateDeps": [],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": false,
+      "summary": "保存ダイアログを開き、base64 デコードしたバイナリをユーザー選択パスへ書き込んで絶対パス（キャンセル時 None）を返す",
+      "napiNotes": "napi 化不要。main TS で dialog.showSaveDialog + Buffer.from(base64) + fs.writeFile。structured clone なら base64 経由をやめ Uint8Array 直接渡しの最適化可（ペイロード膨張 33% 回避）。PIO-2 設計厳守。invalid base64 はエラーとして返す挙動を維持",
+      "callSites": [
+        { "file": "src/lib/exportFile.ts", "trigger": "user-action", "notes": "L74 saveBinaryFile()" }
+      ]
+    },
+    "open_log_dir": {
+      "file": "logs.rs",
+      "classification": "main-ts",
+      "priority": "P3",
+      "args": [],
+      "returns": "()",
+      "stateDeps": [],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": false,
+      "summary": "ログフォルダ (~/.grimodex/logs) を必要なら作成した上で OS のファイルマネージャで開く",
+      "napiNotes": "Electron では shell.openPath で main TS 直実装が最短。create_dir_all（失敗無視）は fs.mkdirSync({recursive:true})。パスは dirs::home_dir().join('.grimodex/logs')（home 不可時 temp_dir フォールバック）— os.homedir() 基準で同一パス再現。副次分類: fs",
+      "callSites": [
+        { "file": "src/features/post-effect/errorToast.ts", "trigger": "user-action", "notes": "L7 openLogDir ← 失敗トーストの『ログを開く』ボタン" }
+      ]
+    },
+    "vivliostyle_detect": {
+      "file": "vivliostyle.rs",
+      "classification": "child-process",
+      "priority": "P2",
+      "args": ["binary_path: Option<String>"],
+      "returns": "Option<VivliostyleCliInfo> ({ path, version })",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "vivliostyle CLI をユーザー指定パスまたは PATH から検出し --version で起動確認、失敗時はエラーでなく None を返す",
+      "napiNotes": "cli_provider::detect_binary_named / test_binary 依存（PATH 解決にログインシェル起動を伴い遅い場合あり）。Node なら which + execFile('--version') で再実装可能。State 不要・emit 無し",
+      "callSites": [
+        { "file": "src/features/vivliostyle/api.ts", "trigger": "panel-open", "notes": "L22 detectVivliostyle ← VivliostyleExportSection mount" }
+      ]
+    },
+    "vivliostyle_build": {
+      "file": "vivliostyle.rs",
+      "classification": "child-process",
+      "priority": "P2",
+      "args": ["files: Vec<VivliostyleFile>", "format: String ('pdf'|'epub')", "binary_path: Option<String>"],
+      "returns": "String (run_id)",
+      "stateDeps": ["VivliostyleState"],
+      "appHandle": true,
+      "emits": ["vivliostyle:log", "vivliostyle:done", "vivliostyle:error"],
+      "isAsync": true,
+      "summary": "book.html/theme.css を temp dir に書き出し vivliostyle build を fire-and-forget 実行、即 run_id を返し進捗/完了/失敗をイベント通知する",
+      "napiNotes": "副次分類 fs（temp 書き出し・旧成果物掃除）。Node では child_process.spawn(detached=setsid 相当、Windows は CREATE_NO_WINDOW)+readline で再実装。VivliostyleState 相当のメモリレジストリ（runs abort フラグ / run_pids / outputs: output_token→成果物）を main TS に保持。abort は SIGTERM→2秒で SIGKILL、kill はプロセスグループ単位（孫 Chromium 道連れ）。成功時 output_token 発行 + vivliostyle:done、abort/失敗時 temp 即削除 + vivliostyle:error",
+      "callSites": [
+        { "file": "src/features/vivliostyle/api.ts", "trigger": "user-action", "notes": "L31 startVivliostyleBuild ← runStore（ビルド実行ボタン）" }
+      ]
+    },
+    "vivliostyle_abort_build": {
+      "file": "vivliostyle.rs",
+      "classification": "child-process",
+      "priority": "P2",
+      "args": ["run_id: String"],
+      "returns": "()",
+      "stateDeps": ["VivliostyleState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "実行中ビルドの abort フラグを立てて中断を要求する（run_id 未知なら no-op）",
+      "napiNotes": "メモリ上の AtomicBool フラグ操作のみ。build タスク側のポーリングが検知して kill_process_group(SIGTERM)。build と同じレジストリを共有する main TS 実装なら AbortController 等で置換可。中断結果は vivliostyle:error('ビルドを中断しました') として build 側から届く",
+      "callSites": [
+        { "file": "src/features/vivliostyle/api.ts", "trigger": "user-action", "notes": "L40 abortVivliostyleBuild ← runStore（中止）" }
+      ]
+    },
+    "vivliostyle_save_output": {
+      "file": "vivliostyle.rs",
+      "classification": "main-ts",
+      "priority": "P2",
+      "args": ["output_token: String"],
+      "returns": "Option<String>（保存先絶対パス、キャンセル時 None）",
+      "stateDeps": ["VivliostyleState"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": false,
+      "summary": "output_token で temp の成果物 (output.pdf/epub) を引き、保存ダイアログ経由でユーザー選択先へコピーし temp dir を削除する",
+      "napiNotes": "副次分類 fs。Electron では dialog.showSaveDialog + fs.copyFile で main TS 再実装。renderer に保存先パスを渡させない PIO-2 流儀を維持。キャンセル時は token 未消費で再試行可、保存成功時のみ remove_output + temp 削除。outputs レジストリを build 実装と共有",
+      "callSites": [
+        { "file": "src/features/vivliostyle/api.ts", "trigger": "user-action", "notes": "L50 saveVivliostyleOutput ← 成果物保存ボタン" }
+      ]
+    },
+    "vivliostyle_preview_start": {
+      "file": "vivliostyle.rs",
+      "classification": "child-process",
+      "priority": "P2",
+      "args": ["files: Vec<VivliostyleFile>", "binary_path: Option<String>"],
+      "returns": "()",
+      "stateDeps": ["VivliostyleState"],
+      "appHandle": true,
+      "emits": ["vivliostyle:preview-exited"],
+      "isAsync": true,
+      "summary": "入力を temp dir に書き出して vivliostyle preview を singleton 起動（旧プレビューはプロセスグループごと kill+temp 掃除して置換）、自然終了時に preview-exited を emit する",
+      "napiNotes": "副次分類 fs。最難関: 世代 ID (generation) + stop epoch の 2 段 race 対策を忠実移植 — (1) kill 側は take-then-kill でエントリを先に引き抜き二重掃除防止、(2) start はバイナリ解決 await 中の stop を epoch 差分で検知して自殺 kill + preview-exited emit。Node は 'exit' イベントで自動 reap されるため zombie reap は簡略化可。stdout/stderr の読み捨て必須（パイプ詰まり防止）",
+      "callSites": [
+        { "file": "src/features/vivliostyle/api.ts", "trigger": "user-action", "notes": "L61 startVivliostylePreview ← runStore" }
+      ]
+    },
+    "vivliostyle_preview_stop": {
+      "file": "vivliostyle.rs",
+      "classification": "child-process",
+      "priority": "P2",
+      "args": [],
+      "returns": "()",
+      "stateDeps": ["VivliostyleState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "実行中プレビューを kill_preview 経由でプロセスグループごと SIGKILL し temp dir を掃除する（未実行なら no-op、冪等）",
+      "napiNotes": "kill_preview は lib.rs のアプリ終了ハンドラ (kill_all) からも呼ばれる — Electron では before-quit で kill_all 相当（全 build pid drain + preview kill）と起動時 cleanup_temp_root の移植を忘れないこと。stop 経路では preview-exited は emit されない設計（take_preview がエントリを先に引き抜く）",
+      "callSites": [
+        { "file": "src/features/vivliostyle/api.ts", "trigger": "user-action", "notes": "L69 stopVivliostylePreview ← runStore" }
+      ]
+    },
+    "list_system_fonts": {
+      "file": "fonts.rs",
+      "classification": "fs",
+      "priority": "P3",
+      "args": [],
+      "returns": "Vec<String>",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "fontdb で OS のフォントディレクトリをスキャンし、日本語名優先で正規化（trim・大小無視の重複排除・昇順ソート）した family 名リストを返す",
+      "napiNotes": "依存は fontdb のみ。素の Vec<String> を返す。load_system_fonts() は同期ブロッキングなので napi では AsyncTask/spawn_blocking が望ましい（FE は起動後1回キャッシュ）。日本語ローカライズ名→英語(US)名→先頭名のフォールバック順が仕様 — JS 製 font-list への置換は名前解決が変わるリスクがあり fontdb を napi 側に温存が安全",
+      "callSites": [
+        { "file": "src/features/settings/hooks/useSystemFonts.ts", "trigger": "settings", "notes": "L16 fetchSystemFonts ← FontFamilySelect 初回 mount（セッション中 1 回キャッシュ）" }
+      ]
+    },
+    "db_execute": {
+      "file": "db.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["sql: String", "params: Vec<serde_json::Value>", "method: String"],
+      "returns": "QueryResult",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "単発 SQL をアクティブ workspace の DB で実行し行結果を返す汎用コマンド。50ms 超で slow ログを warn 出力する",
+      "napiNotes": "napi 実装済。sync fn を #[tauri::command(async)] で tokio へ退避 — napi 側も AsyncTask/spawn_blocking 相当を維持。実体は crates/grimodex-db の with_db_state。ロック順序 ws_state.inner → db.conn を崩さない",
+      "callSites": [
+        { "file": "src/db/client.ts", "trigger": "editing-loop", "notes": "L11 Drizzle sqlite-proxy ドライバ — 全 Drizzle DB 操作の共通経路（実質最頻 IPC。startup/workspace-open/オートセーブ全帯域）" },
+        { "file": "src/features/tree/api.ts", "trigger": "editing-loop", "notes": "L301-325 saveSceneContentInner（オートセーブ本体）、L414 loadSceneFull（シーンオープン、失敗時は保存禁止セーフティ）" },
+        { "file": "（他多数）", "trigger": "user-action", "notes": "chatHistoryApi 検索 / chat/agent/toolExecutors ×9 / codex 検索・version・crossReference / snippets 検索 / lint 辞書・無視リスト / revision snapshot / projectStore / tabStore など約 20 箇所" }
+      ]
+    },
+    "db_execute_batch": {
+      "file": "db.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["statements: Vec<database::BatchStatement>"],
+      "returns": "QueryResult",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "複数 SQL 文を単一トランザクション (execute_batch_tx) で一括実行する。長時間 txn になり得るため spawn_blocking で専用ブロッキングプールへ",
+      "napiNotes": "napi 実装済。AppHandle は 'static 化回避のためだけで napi では不要。JoinError は AppError::Anyhow 変換。workspace 切替との並行は switching フラグ + フロント pre-switch quiesce で抑止する契約を踏襲",
+      "callSites": [
+        { "file": "src/features/attribution/api.ts", "trigger": "editing-loop", "notes": "L85 saveAuthorshipSpans — persistSceneBody 保存チェーン内で帰属スパンを 1tx 置換" },
+        { "file": "（他多数）", "trigger": "user-action", "notes": "chronicle 参加者置換 / codex rename undo / tagApi ×2 / map（correlationBoard・causalityBoard・mapApi ×5）/ revision snapshot / tree aiScaffold applyPlan" }
+      ]
+    },
+    "timelapse_append_batch": {
+      "file": "timelapse.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["project_id: String", "session_id: String", "events: Vec<AppendChangeEvent>"],
+      "returns": "AppendResult",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "タイムラプス用の変更イベント列を hash chain 付きで change_events テーブルへ冪等にバッチ追記する",
+      "napiNotes": "napi 実装済。実体は grimodex-db の append_change_events（BEGIN IMMEDIATE + busy_timeout + 再送冪等フィルタ + prev_hash 連鎖）。AsyncTask/spawn_blocking 相当でメインスレッドをブロックしない",
+      "callSites": [
+        { "file": "src/features/timelapse/recorder.ts", "trigger": "editing-loop", "notes": "L530 flushNow（recordChangeEvent キューの debounce flush。全編集イベントが経由）" }
+      ]
+    },
+    "set_window_vibrancy": {
+      "file": "lib.rs（直定義）",
+      "classification": "unknown",
+      "missing": true,
+      "priority": "P3",
+      "args": null,
+      "returns": null,
+      "stateDeps": [],
+      "appHandle": null,
+      "emits": [],
+      "isAsync": null,
+      "summary": "（棚卸し漏れ）ウィンドウの vibrancy/glass 効果の切替。lib.rs 直定義で command 台帳に未収載 — 要追加棚卸し",
+      "napiNotes": "Electron では BrowserWindow の setBackgroundMaterial / vibrancy オプションで main TS 再実装が自然（napi 不要見込み）。FE 側は fail-soft（.catch 黙殺）なので優先度低",
+      "callSites": [
+        { "file": "src/App.tsx", "trigger": "workspace-open", "notes": "L401 EditorScreen mount 時（glass 設定変更時も）。fail-soft: .catch(() => {}) 黙殺。unmount 時 enabled:false 呼び出し（L405）" }
+      ]
+    },
+    "agent_codex_create": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentCodexCreatePayload"],
+      "returns": "serde_json::Value（AgentWriteResult: entityId/version/changeEventUid/undoJournalId）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "Codexエントリ新規作成＋authorship_spans＋undo_journal＋change_events を単一 BEGIN IMMEDIATE トランザクションで書き込む",
+      "napiNotes": "依存: rusqlite/uuid/chrono/serde_json/anyhow、grimodex_core::undo_journal/commit_or_rollback。napi でも AsyncTask/spawn_blocking 必須（busy_timeout 5s のブロッキング書込）。State は WorkspaceState のみで拡張不要。返り値は camelCase JSON",
+      "callSites": [
+        { "file": "src/features/agent-writes/codex.ts", "trigger": "user-action", "notes": "L137 agentCreateCodex() ← toolExecutors.createCodexEntryTool（エージェントチャットの AI ツール実行）" }
+      ]
+    },
+    "agent_codex_update": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentCodexUpdatePayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "Codexエントリを楽観ロック（baseVersion 照合）付きで部分更新し、レーン別 authorship_spans マージ＋undo/change_events を記録",
+      "napiNotes": "動的 SET 句（set-if-present）と version 競合時 bail のエラーメッセージが FE の競合検知に使われる可能性 — 文言維持推奨。レーンモデル定数 __lane_summary__/__lane_content__ を含む merge_codex_authorship_spans を同梱移植。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/codex.ts", "trigger": "user-action", "notes": "L230 agentUpdateCodex() ← toolExecutors.updateCodexEntryTool（version 読取は codex/version.ts の db_execute）" }
+      ]
+    },
+    "agent_write_bundle": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentWriteBundlePayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "FE 指定の任意 BatchStatement 列＋undo_journal＋change_event を1トランザクションで実行する汎用書込バンドル",
+      "napiNotes": "BatchStatement は napi 実装済みの db_execute_batch と同じ Database::execute_with_conn 機構を再利用 — done 隣接。insert_undo_journal_in_tx / append_change_events_in_tx ヘルパーを napi 側にも移植要。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/bundle.ts", "trigger": "user-action", "notes": "L50 agentWriteBundle() — codex rename 伝播（renameEngine）と AI ツリー scaffold 適用（applyPlan）" }
+      ]
+    },
+    "agent_snippet_create": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentSnippetCreatePayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "Snippet 新規作成（content_source='ai' 固定）＋authorship_spans 全置換＋undo/change_events を1トランザクションで書き込む",
+      "napiNotes": "grimodex_core::undo_journal::snippet_create_after_snapshot に依存。replace_snippet_authorship_spans（DELETE→INSERT ループ）を同梱移植。spawn_blocking 必須、State 拡張不要",
+      "callSites": [
+        { "file": "src/features/agent-writes/snippet.ts", "trigger": "user-action", "notes": "L57 agentCreateSnippet() ← toolExecutors.createSnippetTool" }
+      ]
+    },
+    "agent_propose_scene_body": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentProposeSceneBodyPayload"],
+      "returns": "serde_json::Value（ProseStageResult: stagingId/sceneId/status）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "シーン本文への AI 提案（append/insert/replace）を prose_staging に 'proposed' 状態で積み、change_event を記録（undo_journal なし）",
+      "napiNotes": "file-backed scene（source_uri が /.mount 以外の非NULL）は bail する仕様を維持。tree_nodes から version/source_uri を読むためスキーマ結合が広い。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/prose.ts", "trigger": "user-action", "notes": "L92 agentProposeSceneBody() — AI エージェントの本文提案ツール（proposeSceneBodyTool / MCP）" }
+      ]
+    },
+    "agent_accept_prose_stage": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentProseStageIdPayload"],
+      "returns": "serde_json::Value（ProseStageResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "prose_staging 行を proposed→accepted に遷移させ change_event（prose.accept）を記録",
+      "napiNotes": "エラーメッセージ部分文字列 'not in proposed status' が JS 側 useAgentProseStaging の isRowNotProposedError のワイヤ契約 — napi 化でも文言を一字一句維持。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/prose.ts", "trigger": "user-action", "notes": "L110 agentAcceptProseStage() — 本文提案の採用（inlineAi/useAgentProseStaging）" }
+      ]
+    },
+    "agent_discard_prose_stage": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentProseStageIdPayload"],
+      "returns": "serde_json::Value（ProseStageResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "prose_staging 行を proposed→discarded に遷移させ change_event（prose.discard）を記録",
+      "napiNotes": "accept と同型・同ワイヤ契約（'not in proposed status' 文言依存）。status 文字列だけ違うので napi 側は共通実装＋フラグで統合可。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/prose.ts", "trigger": "user-action", "notes": "L123 agentDiscardProseStage() — 提案破棄" }
+      ]
+    },
+    "agent_apply_undo_journal": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentUndoJournalPayload"],
+      "returns": "serde_json::Value（{ ok: true }）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "undo_journal 行を direction（undo/redo）に従い復元/再適用し、対応する change_event を追記（codex/snippet/foreshadow は core 委譲、event はローカル複合スナップショット復元）",
+      "napiNotes": "grimodex_core::undo_journal（load/revert/apply）委譲部と、event 系復元ロジック一式（apply_event_composite_snapshot/restore_event_*/delete_event_cascade/batch_insert_* 約400行）の両方を移植する最重量コマンド。reveal_scene_id の FK フォールバック（参照先消失時 NULL）等の細部仕様に注意。spawn_blocking 必須。undo/redo UX の基盤なので P1 の中でも先頭で",
+      "callSites": [
+        { "file": "src/features/agent-writes/undoJournal.ts", "trigger": "user-action", "notes": "L9 applyUndoJournal() — globalHistoryStore の undo/redo 実行時" }
+      ]
+    },
+    "agent_foreshadow_create": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentForeshadowCreatePayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線を grimodex_core::writes::foreshadow::tracked_foreshadow_create（MCP と同一経路、surface='in-app-agent'）で作成",
+      "napiNotes": "grimodex-core の tracked writer への薄いアダプタ — napi crate から grimodex-core を直接依存すればほぼそのまま呼べる。トランザクション管理も core 側。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/foreshadow.ts", "trigger": "user-action", "notes": "L102 agentCreateForeshadow() ← toolExecutors.createForeshadowTool" }
+      ]
+    },
+    "agent_foreshadow_update": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentForeshadowUpdatePayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線を grimodex_core の tracked_foreshadow_update（ForeshadowPatch）で部分更新。見つからなければ 'foreshadow not found in project' で失敗",
+      "napiNotes": "create 同様 grimodex-core 委譲の薄いアダプタ。Option<WriteResult> の None → anyhow エラー変換のみ再現。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/foreshadow.ts", "trigger": "user-action", "notes": "L139 agentUpdateForeshadow() ← toolExecutors.updateForeshadowTool" }
+      ]
+    },
+    "agent_event_create": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentEventCreatePayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "年表イベントを participants/scene links 込みで作成し、複合スナップショットを undo_journal(after) に保存、change_event（event.create）を記録",
+      "napiNotes": "ensure_codex_in_project / ensure_scene_in_project のクロスプロジェクト混入ガードを必ず移植。surface は Option（省略時 'in-app-agent'）で MCP/manual と共用。chunked INSERT OR IGNORE（INSERT_CHUNK_ROWS=100）ヘルパー同梱。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite(command,…) 動的第1引数。呼び出し元: ChroniclePanel 手動 CRUD（surface=manual）・chronicleWriteTools・EditorPane のシーン⇔出来事リンク" }
+      ]
+    },
+    "agent_event_update": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentEventUpdatePayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "年表イベントを set-if-present で部分更新（空文字→NULL 正規化、granularity='none' で time/minute を明示 NULL 化）し before/after 複合スナップショットを undo_journal に記録",
+      "napiNotes": "動的 SET 句組立が最長のコマンド。空文字→NULL 正規化（primaryCodexId/laneGroup/locationCodexId/revealSceneId）と granularity='none' シグナルによる端点クリアの2つの暗黙ワイヤ契約を落とさない。events に version 列なし（undo は base=1/result=1 固定）。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
+      ]
+    },
+    "agent_event_delete": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentEventIdPayload"],
+      "returns": "serde_json::Value（AgentWriteResult、version=0）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "年表イベントを削除（FK ON DELETE CASCADE）。削除前に複合スナップショットを undo_journal(before) へ退避",
+      "napiNotes": "CASCADE 発火前に collect_event_snapshot で participants/sceneLinks/relations 込みの before を採取する順序が undo 可否を決める — 移植時に順序を崩さない。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
+      ]
+    },
+    "agent_event_set_participants": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentEventParticipantsPayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "イベント参加者（event_participants）を全置換し、参加者スナップショットを op_kind='update' の undo_journal に記録（change_event: event.participants）",
+      "napiNotes": "各 codex_entry_id に ensure_codex_in_project スコープガード必須。DELETE→chunked INSERT OR IGNORE の置換セマンティクスを維持。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
+      ]
+    },
+    "agent_scene_event_link": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentSceneEventPayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "scene_events にシーン↔イベントリンクを INSERT OR IGNORE で追加（change_event: event.stamp、undo は linked bool スナップショット）",
+      "napiNotes": "unlink と同一実装 agent_scene_event_mutate_impl の link=true 分岐 — napi 側でも共通実装＋bool で統合可。scene/event 双方の project 所属ガードあり。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（EditorPane のシーン⇔出来事リンク含む）" }
+      ]
+    },
+    "agent_scene_event_unlink": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentSceneEventPayload"],
+      "returns": "serde_json::Value（AgentWriteResult）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "scene_events からシーン↔イベントリンクを削除（change_event: event.unstamp）",
+      "napiNotes": "agent_scene_event_mutate_impl の link=false 分岐。link 側と統合実装可。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
+      ]
+    },
+    "agent_event_relation_add": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentEventRelationPayload"],
+      "returns": "serde_json::Value（AgentWriteResult、entityId=causeEventId）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "イベント因果関係（event_relations）を追加（自己ループ禁止・両端の project 所属検証・change_event: event.relation_add）",
+      "napiNotes": "remove と同一実装 agent_event_relation_mutate_impl の add=true 分岐。self-loop bail と cause/effect 双方の存在チェックを維持。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
+      ]
+    },
+    "agent_event_relation_remove": {
+      "file": "agent_writes.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: AgentEventRelationPayload"],
+      "returns": "serde_json::Value（AgentWriteResult、entityId=causeEventId）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "イベント因果関係を削除（change_event: event.relation_remove）",
+      "napiNotes": "agent_event_relation_mutate_impl の add=false 分岐。add 側と統合実装可。spawn_blocking 必須",
+      "callSites": [
+        { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
+      ]
+    },
+    "send_chat_message": {
+      "file": "ai.rs",
+      "classification": "network",
+      "priority": "P1",
+      "args": ["messages: Vec<ChatMessagePayload>", "thinking: Option<ThinkingConfig>", "effort: Option<String>", "reasoning_enabled: Option<bool>", "reasoning_effort: Option<String>", "system_cache_segments: Option<Vec<String>>", "api_variant: Option<String>", "system_volatile_tail: Option<String>", "model: Option<String>", "provider: Option<AiProvider>", "endpoint_id: Option<String>"],
+      "returns": "ai::ChatResponse",
+      "stateDeps": ["AiSettingsPath"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "非ストリームのAIチャット送信。provider/model/OpenAI互換endpointのper-call overrideに対応し、AIのべりすとextra_bodyや429リトライも解決する",
+      "napiNotes": "reqwest+tokio。副次分類: keyring（resolve_api_key→ai::get_api_key、Linux は D-Bus Secret Service でブロッキング → spawn_blocking 推奨）と fs（read_ai_settings）。AiSettingsPath は PathBuf 設定なので addon 初期化時に注入。ai.rs 本体（~5700行）の ChatParams 構築・provider 分岐をまるごと持ち込む",
+      "callSites": [
+        { "file": "src/features/chat/chatApi.ts", "trigger": "user-action", "notes": "L71 sendChatMessage / L111 A/B 送信 / L154 あらすじ生成 / L260 withThinking（chatStore・foreshadow AI・plot-threads 抽出）/ L447 セッションタイトル自動生成" },
+        { "file": "src/features/map/mapAiApi.ts", "trigger": "user-action", "notes": "L422 マップ AI 分岐生成（map_branch ロール）" },
+        { "file": "src/features/tree/aiScaffold/generate.ts", "trigger": "user-action", "notes": "L391 generateAiTreePlan ← AiTreeDialog 構成案生成" }
+      ]
+    },
+    "send_chat_message_stream": {
+      "file": "ai.rs",
+      "classification": "network",
+      "priority": "P1",
+      "args": ["（send_chat_message と同一の 11 引数）"],
+      "returns": "()",
+      "stateDeps": ["AiSettingsPath", "StreamAbortFlag"],
+      "appHandle": true,
+      "emits": ["chat:stream-chunk", "chat:stream-done", "chat:stream-error"],
+      "isAsync": true,
+      "summary": "SSEストリーミングのAIチャット送信（event_prefix='chat'）。開始時にabortフラグをfalseへリセットし、chunk/doneをemit、エラー時はstream-errorをemitして返す",
+      "napiNotes": "ai::send_chat_stream（Anthropic SSE/OpenAI互換SSE/のべりすとlegacy疑似ストリーム）と ai_responses::send_stream（OpenAI Responses API）の両経路が同じ chunk/done 契約で emit。AppHandle は emit 専用 → napi では ThreadsafeFunction コールバックに置換し Electron main で webContents.send へブリッジ。StreamAbortFlag の Arc<AtomicBool> は addon グローバル状態として abort_chat_stream と共有必須。副次分類: keyring+fs",
+      "callSites": [
+        { "file": "src/features/chat/chatApi.ts", "trigger": "user-action", "notes": "L390 sendChatMessageStream — チャット送信のストリーミング経路（chatStore L4645）" }
+      ]
+    },
+    "abort_chat_stream": {
+      "file": "ai.rs",
+      "classification": "other",
+      "priority": "P1",
+      "args": [],
+      "returns": "()",
+      "stateDeps": ["StreamAbortFlag"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "進行中のチャットストリームの中断フラグ（AtomicBool）をtrueに立てる。DB・ネットワーク一切なし",
+      "napiNotes": "純メモリ操作。Arc<AtomicBool> を send_chat_message_stream と同一の addon グローバル状態で共有することが唯一の要件。InlineAiAbortFlag とは別インスタンス（相互不干渉設計）を維持。同期関数・依存クレートなし",
+      "callSites": [
+        { "file": "src/features/chat/chatApi.ts", "trigger": "user-action", "notes": "L413 abortChatStream — ストリーム停止ボタン（chatStore L5404）" }
+      ]
+    },
+    "send_inline_ai_stream": {
+      "file": "ai.rs",
+      "classification": "network",
+      "priority": "P1",
+      "args": ["messages", "thinking", "effort", "reasoning_enabled", "reasoning_effort", "model", "api_variant", "provider", "endpoint_id"],
+      "returns": "()",
+      "stateDeps": ["AiSettingsPath", "InlineAiAbortFlag"],
+      "appHandle": true,
+      "emits": ["inline-ai:stream-chunk", "inline-ai:stream-done", "inline-ai:stream-error"],
+      "isAsync": true,
+      "summary": "インラインAI補完のストリーミング送信（event_prefix='inline-ai'、AiNovelistMode::Completion）。openai-compatible 時はグローバル model_api_variant を持ち込まない（PlaMo等404防止）",
+      "napiNotes": "send_chat_message_stream と同構造だが専用の InlineAiAbortFlag（別 Arc<AtomicBool>）。pure helper の apply_inline_provider_override / inline_effective_variant（単体テスト付き）ごと移植。emit→ThreadsafeFunction 化、abort フラグの addon 状態共有、keyring+fs 副次依存はチャット版と同じ",
+      "callSites": [
+        { "file": "src/features/editor/inlineAi/inlineAiStreaming.ts", "trigger": "user-action", "notes": "L71 sendInlineAiStream — インライン AI 生成（inlineAiApi）と Beat 生成（useBeatGeneration/generateBeatOnce）" }
+      ]
+    },
+    "abort_inline_ai_stream": {
+      "file": "ai.rs",
+      "classification": "other",
+      "priority": "P1",
+      "args": [],
+      "returns": "()",
+      "stateDeps": ["InlineAiAbortFlag"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "進行中のインラインAIストリームの中断フラグ（AtomicBool）をtrueに立てる",
+      "napiNotes": "abort_chat_stream と同型の純メモリ操作。send_inline_ai_stream と同一の Arc<AtomicBool> を addon グローバル状態で共有。StreamAbortFlag とは独立（チャットと補完の相互干渉防止）",
+      "callSites": [
+        { "file": "src/features/editor/inlineAi/inlineAiStreaming.ts", "trigger": "user-action", "notes": "L91 abortInlineAiStream — インライン AI 停止" }
+      ]
+    },
+    "send_agent_message": {
+      "file": "ai.rs",
+      "classification": "network",
+      "priority": "P1",
+      "args": ["messages: Vec<AgentMessage>", "tools: Vec<AgentToolDef>", "thinking", "effort", "reasoning_enabled", "reasoning_effort", "system_cache_segments", "api_variant", "web_search: Option<WebSearchConfig>", "system_volatile_tail", "model", "provider", "endpoint_id"],
+      "returns": "ai::ChatResponse",
+      "stateDeps": ["AiSettingsPath"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "tool定義付きのエージェント送信（非ストリーム、ai::send_chat_with_tools）。web_search設定とtool_protocol解決（resolve_tool_protocol）を含む",
+      "napiNotes": "send_chat_message と同じ骨格＋ツールプロトコル層（native/Hermes等の resolve_tool_protocol、低信頼プロバイダの tool_call 遮断）が移植対象。AgentMessage/AgentToolDef/ChatResponse の serde 型を napi 境界の TS 型と揃える。副次分類: keyring+fs",
+      "callSites": [
+        { "file": "src/features/chat/chatApi.ts", "trigger": "user-action", "notes": "L209 sendAgentMessage — エージェントチャットの LLM ループ（chatStore L3833/L3965・contextCreatorApi）" }
+      ]
+    },
+    "get_ai_settings": {
+      "file": "ai.rs",
+      "classification": "fs",
+      "priority": "P1",
+      "args": [],
+      "returns": "ai::AiSettings",
+      "stateDeps": ["AiSettingsPath"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "AI設定JSONファイル（AiSettingsPath）を読み、失敗時はデフォルトを返す",
+      "napiNotes": "同期ファイル読取（エラー時 Default フォールバック）。get_global_settings（napi実装済）とは別ファイル・別型で流用不可。AiSettings の serde スキーマ（endpoints・fusion・ai_novelist 等ネスト）を TS 側 types.ts と一致維持。他コマンドが Rust 側で read_ai_settings を内部利用するため Rust 側に残す方が整合的",
+      "callSites": [
+        { "file": "src/features/chat/api.ts", "trigger": "panel-open", "notes": "L5 getAiSettings ← chat/store.ts loadSettings（ChatPanel マウント・設定 AiCategory・ExportDialog・onboarding AiProviderStep）" }
+      ]
+    },
+    "save_ai_settings": {
+      "file": "ai.rs",
+      "classification": "fs",
+      "priority": "P2",
+      "args": ["settings: ai::AiSettings"],
+      "returns": "()",
+      "stateDeps": ["AiSettingsPath"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "AI設定をJSONファイル（AiSettingsPath）へ書き込む",
+      "napiNotes": "write_ai_settings の同期書込。get と対で、送信系コマンドが同じファイルを読むため write→read 間の整合（同一パス注入）が必要。書込は小さく spawn_blocking 不要レベル",
+      "callSites": [
+        { "file": "src/features/chat/api.ts", "trigger": "settings", "notes": "L9 saveAiSettings ← chat/store.ts saveSettings（AI 設定画面）" }
+      ]
+    },
+    "save_api_key": {
+      "file": "ai.rs",
+      "classification": "keyring",
+      "priority": "P2",
+      "args": ["provider: AiProvider", "key: String", "endpoint_id: Option<String>"],
+      "returns": "()",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "OSキーリングへAPIキーを保存。OpenAI互換は endpoint_id 単位の per-endpoint キーに対応",
+      "napiNotes": "keyring クレート依存（keyring_service×keyring_user）。Linux Secret Service/D-Bus はブロッキング → spawn_blocking 推奨。endpoint_id→keyring user 変換と 'default' エンドポイントの legacy user 互換ルールを get/delete と三点セットで移植。Electron safeStorage 代替は既存キーリング資産の移行が発生するため keyring クレート温存が安全",
+      "callSites": [
+        { "file": "src/features/chat/api.ts", "trigger": "settings", "notes": "L21 saveApiKey（settings/AiCategory・OpenaiCompatibleEndpointsManager・onboarding）" }
+      ]
+    },
+    "has_api_key": {
+      "file": "ai.rs",
+      "classification": "keyring",
+      "priority": "P1",
+      "args": ["provider: AiProvider", "endpoint_id: Option<String>"],
+      "returns": "bool",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "APIキーの有無のみをboolで返す（平文キーをrendererへ渡さないXSS-exfil対策の設計契約）",
+      "napiNotes": "keyring 依存＋spawn_blocking 推奨。get_api_key は 'default' エンドポイントの NoEntry 時に旧 user（grimodex-user）へフォールバックする移行互換ロジックを含む — この契約を壊さない。『平文キーを JS 側に返さない』設計は napi 境界でも必ず維持（キー解決は Rust 内で完結）",
+      "callSites": [
+        { "file": "src/features/chat/api.ts", "trigger": "panel-open", "notes": "L37 hasApiKey ← loadSettings・useChatModelCatalog（モデルピッカー）・設定画面" }
+      ]
+    },
+    "delete_api_key": {
+      "file": "ai.rs",
+      "classification": "keyring",
+      "priority": "P2",
+      "args": ["provider: AiProvider", "endpoint_id: Option<String>"],
+      "returns": "()",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "OSキーリングからAPIキーを削除。legacyフォールバック候補userも全削除して残留キーを防ぐ",
+      "napiNotes": "keyring 依存＋spawn_blocking 推奨。keyring_user_candidates の全候補（legacy 含む）削除が get_api_key フォールバックとペアの契約 — 片方だけ移植すると『削除したのに旧キーで送信され続ける』バグが再発",
+      "callSites": [
+        { "file": "src/features/chat/api.ts", "trigger": "settings", "notes": "L47 deleteApiKey（設定画面のキー削除）" }
+      ]
+    },
+    "list_ai_models": {
+      "file": "ai.rs",
+      "classification": "network",
+      "priority": "P2",
+      "args": ["provider: AiProvider", "endpoint_id: Option<String>"],
+      "returns": "Vec<ai::AiModel>",
+      "stateDeps": ["AiSettingsPath"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "プロバイダのモデル一覧をHTTPで取得（ai::fetch_models）。OpenAI互換は endpoint_id 指定で対象エンドポイント切替（未知idは据え置き）",
+      "napiNotes": "reqwest 依存。キー解決は resolve_api_key でなく ai::get_api_key 直（未設定なら空文字で続行=キー不要サーバ許容）を維持。副次分類: keyring+fs。エンドポイントURL構築（Ollama /api/tags 等）は ai.rs 内 base_url 系ヘルパー依存",
+      "callSites": [
+        { "file": "src/features/chat/api.ts", "trigger": "settings", "notes": "L71 listAiModels — 設定画面・useChatModelCatalog・ab-test useProviderModels" }
+      ]
+    },
+    "test_ai_connection": {
+      "file": "ai.rs",
+      "classification": "network",
+      "priority": "P2",
+      "args": ["provider: AiProvider", "model: String", "api_variant: Option<String>", "endpoint_id: Option<String>"],
+      "returns": "String",
+      "stateDeps": ["AiSettingsPath"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "指定provider/modelへの疎通テスト（ai::test_connection）。settings.provider をテスト対象に差し替えて api_variant の endpoint-default 解決を行う",
+      "napiNotes": "reqwest 依存。resolve_api_key 経由（Ollama/Cli は空キー、AiNovelist 等は必須）と resolve_api_variant の解決規則をチャット送信系と共有するため、送信系と同じ Rust モジュールに同居させる。副次分類: keyring+fs",
+      "callSites": [
+        { "file": "src/features/chat/api.ts", "trigger": "settings", "notes": "L59 testAiConnection — 接続テストボタン" }
+      ]
+    },
+    "detect_cli_binary": {
+      "file": "cli_ai.rs",
+      "classification": "child-process",
+      "priority": "P2",
+      "args": ["cli: CliKind"],
+      "returns": "Option<String>",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "CLI バイナリ (claude/codex/opencode) を PATH 上から探索し、見つかったフルパスを返す",
+      "napiNotes": "内部は Unix で bash -lc 'which <bin>'、Windows で where.exe/powershell を tokio::process で起動。GUI 起動時の PATH 未継承問題への対処（login shell 経由）が肝。Electron なら main TS + Node child_process（または which パッケージ）で再実装容易。napi 不要候補",
+      "electronImplementation": "Phase 3c 完了。main-TS + cross-spawn。固定 CliKind のみでGUI PATHをfail-soft探索し、realpath + regular fileをmain検証。manual grantとは別のcurrent auto-detected pathとしてsession trustし、FEにはsymlink名を保つrequested pathを返す。kind別generation/epochをrefresh開始時に進めてauto cacheを無効化し、detect/realpath後も最新世代だけcommit/delete。stale世代はcurrent/nullを返して古い結果を復活させない。disposed後はfail-closed",
+      "callSites": [
+        { "file": "src/features/chat/cliApi.ts", "trigger": "panel-open", "notes": "L102 detectCliBinary ← chat/store.ts loadSettings（provider=cli のときのみ）" }
+      ]
+    },
+    "test_cli_connection": {
+      "file": "cli_ai.rs",
+      "classification": "child-process",
+      "priority": "P2",
+      "args": ["binary_path: String"],
+      "returns": "String",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "指定バイナリで --version を実行し、起動可否を確認してバージョン文字列を返す（認証状態は見ない）",
+      "napiNotes": "cli_provider::test_binary が --version を叩くだけ。main TS の execFile で等価再実装可能、napi 化の必要性は低い。TS 側では stderr/exit code をメッセージに含める設計に合わせる",
+      "electronImplementation": "Phase 3c 完了。許可CLIのbasenameのみ受理。手入力pathは絶対path + realpath + regular fileを検証し、Windows UNC/deviceはslash正規化してrealpath前後で拒否。未検出canonical targetはdefault-cancelのnative dialog許可後だけmanual grantし、Windowsでもlowercaseせずexact path比較。shell:falseで--versionのみ、capture 10秒/4MiB、FEはSLOW 300秒。disposed後はfail-closed",
+      "callSites": [
+        { "file": "src/features/chat/cliApi.ts", "trigger": "settings", "notes": "L108 testCliConnection — CLI 接続テスト" }
+      ]
+    },
+    "list_cli_models": {
+      "file": "cli_ai.rs",
+      "classification": "child-process",
+      "priority": "P2",
+      "args": ["cli: CliKind", "binary_path: Option<String>"],
+      "returns": "Vec<ai::AiModel>",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": true,
+      "summary": "CLI ごとの利用可能モデル一覧を返す（Claude は静的リスト、Codex/OpenCode は CLI コマンド実行で取得）",
+      "napiNotes": "Claude 分は TS 定数化で済む。Codex/OpenCode 分は子プロセス起動+出力パースで Node child_process で再実装可能。返り値 AiModel は crate::ai の共有型 — TS 化時は ai.rs 側モデル型定義と共通化が必要",
+      "electronImplementation": "Phase 3c 完了。Claude は静的リスト、Codex は debug models --bundled のJSON、OpenCodeは models の行出力をmainでparse。Codex/OpenCodeはsend/testと同じauto-detected current pathまたはexact canonical manual grantを通し、disposed後はClaude静的返却を含めfail-closed",
+      "callSites": [
+        { "file": "src/features/chat/cliApi.ts", "trigger": "settings", "notes": "L116 listCliModels — CLI モデル一覧取得" }
+      ]
+    },
+    "abort_cli_chat_stream": {
+      "file": "cli_ai.rs",
+      "classification": "child-process",
+      "priority": "P1",
+      "args": [],
+      "returns": "()",
+      "stateDeps": ["CliStreamAbortFlag"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "進行中の CLI ストリームの中断フラグ (AtomicBool) を立てる。実際の kill は cli_provider::run のループが行う",
+      "napiNotes": "Arc<AtomicBool> (CliStreamAbortFlag) を store するだけの純メモリ State 操作。send_cli_chat_stream と一体で移行すべき対。Electron main TS では AbortController か共有 boolean + child.kill() で置換。現状アプリ全体で単一フラグ共有のため CLI 並行実行時は両方止まる — 移行時に stream_id ベース化を検討（ソース内 TODO あり）",
+      "electronImplementation": "Phase 3c 完了。アプリ全体single-flightのためabort対象は一意。path解決/許可待ち中のabortも保持してspawnせずstoppedへ着地。通常はactive childを即TERM→2秒後KILL。will-quitはTERM直後KILL + runner全child一括dispose、Windowsは同期taskkill /T /F。disposed後のabortもfail-closed",
+      "callSites": [
+        { "file": "src/features/chat/cliApi.ts", "trigger": "user-action", "notes": "L94 abortCliChatStream — CLI ストリーム停止" }
+      ]
+    },
+    "send_cli_chat_stream": {
+      "file": "cli_ai.rs",
+      "classification": "child-process",
+      "priority": "P1",
+      "args": ["payload: CliChatPayload"],
+      "returns": "()",
+      "stateDeps": ["CliStreamAbortFlag"],
+      "appHandle": true,
+      "emits": ["cli:stream-chunk", "cli:stream-done", "cli:stream-error"],
+      "isAsync": true,
+      "summary": "CLI (Claude Code/Codex/OpenCode) を子プロセス起動し、stdout の NDJSON を cli:stream-chunk/done イベントに変換して emit、失敗時は cli:stream-error を emit する",
+      "napiNotes": "cli_provider::run（tokio::process、stdout 行読み + adapter.rs の CLI 別 NDJSON パーサ、abort 検知で kill、Windows は taskkill.exe でプロセスツリー kill）が本体。Electron 移行では napi 化より main TS + Node child_process/readline での再実装が適切（adapter.rs の 3 系統イベント変換ロジック移植が主工数）。emit チャネルは実コードでは cli:* だがファイル冒頭 doc コメントは chat:stream-* と記載の不一致あり（FE リスナー確認時に注意）。CliChatPayload は camelCase deserialize。abort を stream_id 単位に分割する場合はレジストリ化が必要",
+      "electronImplementation": "Phase 3c 完了。cross-spawn(shell:false) + main常駐single-flight manager。3系統NDJSONをcli:stream-{chunk,done,error}へ全窓broadcast。raw stdoutは1行1MiB/合計64MiB/10000行、emitted deltaは8MiB。send受付から絶対290秒（path検出/native許可を含み期限後spawn禁止）。capture/stream全childをrunner追跡、manager/runner disposed latchで新規実行をfail-closed、FEはerror event + invoke rejectを1回へdedupe",
+      "callSites": [
+        { "file": "src/features/chat/cliApi.ts", "trigger": "user-action", "notes": "L84 sendCliChatStream — CLI プロバイダ経由のチャット送信" }
+      ]
+    },
+    "foreshadow_create": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: ForeshadowCreatePayload"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線レコードを新規作成し（load_bearing 値を Rust 境界で厳格検証）、作成後の行を返す",
+      "napiNotes": "依存: uuid/chrono/serde_json/anyhow + grimodex-db::Database。同期 rusqlite → AsyncTask/spawn_blocking。validate_load_bearing（critical/supporting/optional/null のみ許可）を napi 側にも必ず移植",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L169 createForeshadow — foreshadowStore 作成系・SnippetContextMenu・trash-bin/restorers" }
+      ]
+    },
+    "foreshadow_update": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id: String", "patch: ForeshadowPatch"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線を部分更新（動的 SET 句組み立て）し、更新後の行を返す。空 patch は現行行をそのまま返す",
+      "napiNotes": "ForeshadowPatch は Option<Option<T>> の3値セマンティクス（undefined=変更なし / null=NULLクリア / 値=設定）。napi 境界で JS undefined と null の区別が落ちないよう serde_json::Value 経由か #[serde] struct で受ける。load_bearing 検証あり。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L945 updateForeshadow — EditForeshadowDialog / パネル編集" }
+      ]
+    },
+    "foreshadow_delete": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id: String"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線を1件削除する",
+      "napiNotes": "単純 DELETE 1文。napi 実装済みの db_execute で FE から代替可能な最有力候補。専用化なら spawn_blocking のみ",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L961 deleteForeshadow" }
+      ]
+    },
+    "foreshadow_list": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "status": "removed",
+      "priority": "P3",
+      "args": ["project_id: String", "filter: Option<ForeshadowFilter>"],
+      "returns": "Vec<Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "未使用だった汎用伏線一覧 IPC。専用 foreshadow_list_with_labels 系とブラウザ用 Drizzle 経路だけを残し、2026-07-11 に撤去",
+      "napiNotes": "本番 FE から到達不能だったため Electron mirror は追加せず、Tauri handler・共有Rust関数・native runtime分岐を削除済み",
+      "callSites": []
+    },
+    "foreshadow_list_with_labels": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String"],
+      "returns": "ForeshadowListWithLabelsResponse",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線一覧と対応する setup 行を1回の DB ロック取得でまとめて返す（後続 db_execute IPC のタイムアウト回避が目的）",
+      "napiNotes": "存在理由が『単一ロック取得での2クエリ』なので db_execute 2連発に分解せず1コマンド維持。IN 句プレースホルダを動的生成（SQLite 変数上限 ~32k 注意）。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "panel-open", "notes": "L333 invokeForeshadowListWithLabels（動的第1引数）→ foreshadowStore.refresh（伏線パネル）" }
+      ]
+    },
+    "foreshadow_list_open_for_context": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String"],
+      "returns": "ForeshadowListWithLabelsResponse",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "未回収（payoff_confirmed=0 かつ abandoned=0 かつ secret=0）の伏線と setup ラベル行を単一ロックで取得（AIコンテキスト用）",
+      "napiNotes": "fetch_setup_label_rows ヘルパー共有。secret=0 フィルタは AI への秘匿伏線漏洩防止なので落とさない。単一ロック意図を保って1コマンドで移植。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "panel-open", "notes": "L333 同ヘルパ経由 — チャット送信 context 構築（chatStore L2542）+ agent tool" }
+      ]
+    },
+    "foreshadow_get_scene_info": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["scene_id: String"],
+      "returns": "ForeshadowSceneInfoResponse",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "シーンに紐づく setup 側 / payoff 側の伏線ID一覧を返す",
+      "napiNotes": "SELECT 2本のみ。camelCase シリアライズ（setupForeshadowIds/payoffForeshadowIds）を維持。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "panel-open", "notes": "L654 getSceneForeshadowInfo ← ForeshadowPanel L351（表示中シーン切替時）" }
+      ]
+    },
+    "foreshadow_get_scene_context": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["scene_id: String"],
+      "returns": "ForeshadowSceneContextResponse",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "シーンの setup（title/intent）、payoff 対象伏線、payoff 伏線の setup 元シーンタイトルを JOIN で取得（AIコンテキスト用）",
+      "napiNotes": "foreshadows/foreshadow_setups/tree_nodes の3テーブル JOIN + 動的 IN 句。abandoned=0 フィルタあり。3クエリの整合を保つなら1コマンド維持。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L712 getSceneForeshadowContext ← chatStore L2537 — チャット送信時のコンテキスト構築" }
+      ]
+    },
+    "foreshadow_list_by_codex_entry": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["codex_entry_id: String"],
+      "returns": "ForeshadowListWithLabelsResponse",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "Codex エントリにリンクされた伏線＋setup ラベル行を foreshadow_codex_links 経由で取得",
+      "napiNotes": "リンク→伏線→setup の3段クエリを単一ロック内で実行。fetch_setup_label_rows と in_placeholders ヘルパーを共有移植。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "panel-open", "notes": "L333 同ヘルパ経由 — codex ForeshadowTab・codexSpoilerFlags" }
+      ]
+    },
+    "foreshadow_get_chapter_stats": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["chapter_id: String"],
+      "returns": "ForeshadowChapterStatsBundle",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "チャプター配下のシーン群と、その上の setup・payoff・関連伏線・関連 setup を一括バンドルで返す（章統計用）",
+      "napiNotes": "本ファイル最多の5クエリ + 関連ID 重複排除（Vec 線形走査）。scenes には content 列（全文 JSON）が含まれペイロード大 — napi 境界のシリアライズコストに注意。1コマンド維持推奨。spawn_blocking 必須級",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "panel-open", "notes": "L1596 getChapterForeshadowStats（ForeshadowChapterTab L38 表示時）" }
+      ]
+    },
+    "foreshadow_get_setup": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["setup_id: String"],
+      "returns": "Option<Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "setup 行を1件取得（存在しなければ None）",
+      "napiNotes": "単純 SELECT 1本。db_execute で代替可能な候補。Option→null 変換のみ注意。reinsertOrphanSetup フローの一部なので resolve_orphan とセットで移植",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L1121 reinsertOrphanSetup 内の再挿入行読み戻し" }
+      ]
+    },
+    "foreshadow_update_setup": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id: String", "patch: ForeshadowSetupPatch"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "setup 行を部分更新（strength/ai_strength/ai_reasoning/is_orphan/last_evaluated_at）。空 patch は no-op",
+      "napiNotes": "foreshadow_update と同じ Option<Option<T>> 3値セマンティクス — undefined/null の区別を napi 境界で保持。動的 SET 句。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L1055 updateSetup ← foreshadowStore L661" }
+      ]
+    },
+    "foreshadow_get": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id: String"],
+      "returns": "Value（{ foreshadow, setups }）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線1件とその全 setup 行を詳細オブジェクトで返す",
+      "napiNotes": "SELECT 2本を単一ロックで実行し serde_json::Map で合成。返却キーは snake_case のまま（rename 属性なしの手組み Map）— FE の期待形を napi でも合わせる。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L201 getForeshadow（エージェントツール・詳細表示）/ L1011 listSetups（foreshadowStore L416、panel-open）" }
+      ]
+    },
+    "foreshadow_link_codex": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P2",
+      "args": ["foreshadow_id: String", "codex_id: String"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線と Codex エントリのリンクを INSERT OR IGNORE で作成（冪等）",
+      "napiNotes": "1文のみ。db_execute で代替可能な最有力候補。冪等性（OR IGNORE）を保持",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L1169 addCodexLink（EditForeshadowDialog L146）" }
+      ]
+    },
+    "foreshadow_unlink_codex": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P2",
+      "args": ["foreshadow_id: String", "codex_id: String"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線と Codex エントリのリンクを削除する",
+      "napiNotes": "1文のみ。db_execute で代替可能な候補",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L1187 removeCodexLink（EditForeshadowDialog L147）" }
+      ]
+    },
+    "foreshadow_list_linked_codex": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P2",
+      "args": ["foreshadow_id: String"],
+      "returns": "Vec<Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "伏線にリンクされた Codex エントリを名前順で JOIN 取得する",
+      "napiNotes": "JOIN 1本のみ。db_execute で代替可能な候補。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "panel-open", "notes": "L1211 listCodexEntriesByForeshadow（EditForeshadowDialog 表示時 L82）" }
+      ]
+    },
+    "foreshadow_set_setup_strength": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P2",
+      "args": ["setup_id: String", "strength: Option<String>"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "setup の strength 列を設定（None で NULL クリア）し updated_at を更新する",
+      "napiNotes": "UPDATE 1文。strength は Option<String> — null 許容引数。db_execute で代替可能な候補",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L1235 setSetupStrength（ForeshadowPanel L727）" }
+      ]
+    },
+    "foreshadow_setup_create_ai": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id", "foreshadow_id", "scene_id", "from_pos: i64", "to_pos: i64", "kind", "strength: Option<String>", "ai_strength: Option<String>", "attribution", "ai_rationale: Option<String>", "ai_reasoning: Option<String>", "last_evaluated_at: Option<i64>"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "AI 検出の setup 行を UPSERT する（ID 衝突時は from_pos/to_pos/is_orphan/updated_at のみ更新）",
+      "napiNotes": "12個のフラット引数 — napi 化時は payload オブジェクト1個に畳むのが自然。ON CONFLICT DO UPDATE の部分更新セマンティクス（strength 等は既存値維持）を落とさない。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L973 createForeshadowSetup ← foreshadowStore（仕込みアンカー作成、AI 提案適用含む）" }
+      ]
+    },
+    "foreshadow_resolve_orphan": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: OrphanResolvePayload"],
+      "returns": "Option<String>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "孤児 setup を action（reanchor/delete/reinsert）で解決。reinsert は新規行 INSERT + 旧行 DELETE をトランザクションで行い新 ID を返す",
+      "napiNotes": "reinsert 経路は execute_batch_tx によるアトミック実行が必須（重複行防止）。uuid 生成・action 分岐・必須引数検証（reanchor は scene_id/from_pos/to_pos 必須）を移植。未知 action は黙って Ok(None)。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/foreshadow/api.ts", "trigger": "user-action", "notes": "L1067 deleteSetup(delete) / L1080 reanchorOrphanSetup(reanchor) / L1109 reinsertOrphanSetup(reinsert)" }
+      ]
+    },
+    "foreshadow_save_anchors_for_scene": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P0",
+      "args": ["scene_id: String", "setups: Vec<SetupAnchorInput>", "payoffs: Vec<PayoffAnchorInput>", "doc_content_size: i64"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "シーンのアンカーを一括保存: setup UPSERT + payoff UPDATE + リストにない setup の孤児化を1トランザクションで実行。空 setups 時は doc_content_size<=2（ProseMirror 空ドキュメント）の場合のみ一括孤児化するデータロスガード付き",
+      "napiNotes": "全文が execute_batch_tx 1回のアトミック実行 — napi でも必ず単一トランザクションで移植（部分適用は孤児化と UPSERT の不整合を生む）。doc_content_size<=2 ガードは誤孤児化防止の仕様として保持。NOT IN 句を動的生成。spawn_blocking 推奨。オートセーブ保存チェーン内なので P0",
+      "callSites": [
+        { "file": "src/features/foreshadow/saveAnchors.ts", "trigger": "editing-loop", "notes": "L113 saveForeshadowAnchors ← editor/persistSceneBody — シーン保存（オートセーブ）毎。失敗は autosave の catch でトースト + dirty 維持。file-backed シーンはスキップ" }
+      ]
+    },
+    "foreshadow_load_anchors_for_scene": {
+      "file": "foreshadow.rs",
+      "classification": "pure-db",
+      "priority": "P0",
+      "args": ["scene_id: String"],
+      "returns": "Vec<AnchorMarkOutput>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "シーンの setup/payoff アンカーを TipTap マーク形式（foreshadowSetup/foreshadowPayoff + attrs）に整形して返す。from/to<=0 の不正座標行はスキップ。50ms 超で tracing::warn 計測付き",
+      "napiNotes": "is_orphan=0 フィルタと座標<=0 スキップの防御ロジックを保持。AnchorMarkOutput は camelCase（markName/attrs、attrs 内は setupId/foreshadowId）— エディタ拡張と結合しているためキー名厳守。50ms 警告計測は napi 側でも維持推奨（エディタ初期化パスの遅延検知）。シーンオープン毎に呼ばれるため P0",
+      "callSites": [
+        { "file": "src/features/foreshadow/saveAnchors.ts", "trigger": "editing-loop", "notes": "L252 loadForeshadowAnchors ← EditorPane / anchorLoads — シーンをエディタで開くたび（EditorPane L1643-1652 の並列ロード、Promise.allSettled で fail-soft）" }
+      ]
+    },
+    "fts_optimize": {
+      "file": "integrity.rs",
+      "classification": "pure-db",
+      "priority": "P2",
+      "args": [],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "全FTS5テーブル（codex/snippets/chat_messages/tree_nodes/post_effect_annotations の通常+_en 計10個）に 'optimize' を発行して索引を最適化する",
+      "napiNotes": "AppHandle は spawn_blocking 内 state 取得のためだけ — napi では不要。実体は grimodex-db の Database::fts_optimize。db_execute 済みの接続基盤に薄いラッパーを足すだけ",
+      "callSites": [
+        { "file": "src/features/workspace/store.ts", "trigger": "workspace-open", "notes": "L353 openWorkspace 末尾の fire-and-forget（.catch 完全黙殺、fail-soft）" }
+      ]
+    },
+    "fts_rebuild": {
+      "file": "integrity.rs",
+      "classification": "pure-db",
+      "priority": "P3",
+      "args": [],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "external-content FTS 5テーブルへ 'rebuild' を発行し、続けて _en 系5テーブルを DELETE+INSERT...SELECT で全再構築する（slim バックアップ復元後の修復にも使用）",
+      "napiNotes": "Database::fts_rebuild へ委譲。大規模DBで長時間ブロック → spawn_blocking 必須。DB 層の rebuild_fts_if_stale（open_workspace 経路の自己修復）と整合を取る",
+      "callSites": [
+        { "file": "src/features/settings/categories/DataCategory.tsx", "trigger": "settings", "notes": "L123 handleRebuildFts（FTS 再構築ボタン）" }
+      ]
+    },
+    "fts_rebuild_en": {
+      "file": "integrity.rs",
+      "classification": "pure-db",
+      "priority": "P3",
+      "args": [],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "英語プロジェクトの内容だけを対象に _en 系 FTS 5テーブルを再構築する（プロジェクト言語変更時・手動修復用）",
+      "napiNotes": "Database::rebuild_en_fts → rebuild_en_fts_sql（純SQL）。spawn_blocking 推奨。AppHandle は state 取得のみ",
+      "callSites": [
+        { "file": "src/features/project/api.ts", "trigger": "settings", "notes": "L69 updateProject 内（language 変更時のみ）← useProjectSettings / importApi" }
+      ]
+    },
+    "fts_search": {
+      "file": "integrity.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String", "query: String", "scope: String", "limit: u32"],
+      "returns": "Vec<Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "プロジェクト内をスコープ指定（all/scenes/codex/snippets/chat）で FTS5 全文検索し、最大 limit 件（上限50）の JSON 結果を返す",
+      "napiNotes": "#[tauri::command(async)] 付き同期 fn — napi でも AsyncTask 等でメインスレッドを塞がない。to_fts_match のトークン квоート化はフロント src/lib/fts.ts の toFtsMatchQuery と同期必須。短トークン時 LIKE フォールバック。'chat' スコープは episodic recall 専用で 'all' に含めない仕様",
+      "callSites": [
+        { "file": "src/features/chat/chatRecall.ts", "trigger": "user-action", "notes": "L266 チャット送信毎の hybrid recall sparse 腕（scope=chat）" },
+        { "file": "src/features/chat/semanticRecall.ts", "trigger": "user-action", "notes": "L335 hybrid recall / related-scenes 共有（scope=scenes）" },
+        { "file": "src/features/commandCenter/providers/lexicalSearchProvider.ts", "trigger": "user-action", "notes": "L106 コマンドセンター検索入力毎（scope=all）" },
+        { "file": "src/features/impact-review/narrowing.ts", "trigger": "user-action", "notes": "L113 sparseSceneSearch ← runImpactReview（影響チェック）" }
+      ]
+    },
+    "integrity_check": {
+      "file": "integrity.rs",
+      "classification": "pure-db",
+      "priority": "P3",
+      "args": [],
+      "returns": "serde_json::Map<String, Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "codex/snippets の孤児参照を COUNT して {orphanedCodexSources, orphanedSnippetSources, orphanedSnippetScenes} レポートを返す。読み取り専用",
+      "napiNotes": "3本の COUNT クエリのみで軽量。grimodex-db の Database::integrity_check をそのまま呼べる。repair_integrity とセットで napi 化",
+      "callSites": [
+        { "file": "src/features/workspace/IntegrityCheckDialog.tsx", "trigger": "settings", "notes": "L36 runCheck / L58 runRepair 内の修復後再チェック" }
+      ]
+    },
+    "repair_integrity": {
+      "file": "integrity.rs",
+      "classification": "pure-db",
+      "priority": "P3",
+      "args": [],
+      "returns": "serde_json::Map<String, Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "孤児参照を UPDATE ... SET NULL で修復し、修復件数レポート {codexSourcesFixed, snippetSourcesFixed, snippetScenesFixed} を返す",
+      "napiNotes": "Database::repair_integrity へ委譲、3本の UPDATE のみ。spawn_blocking でオフスレッド実行。integrity_check とペア移植",
+      "callSites": [
+        { "file": "src/features/workspace/IntegrityCheckDialog.tsx", "trigger": "settings", "notes": "L49 runRepair（修復ボタン）" }
+      ]
+    },
+    "trash_bin_create": {
+      "file": "trash_bin.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["payload: TrashBinCreatePayload"],
+      "returns": "serde_json::Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "trash_items へ 1 行 INSERT し、作成行を JSON object（列名 snake_case）で返す",
+      "napiNotes": "napi 実装済（垂直スライス）。本体は crates/grimodex-db/src/trash_bin.rs::create を共用。id は Rust 側 uuid v4。blocking task で包む",
+      "callSites": [
+        { "file": "src/features/trash-bin/api.ts", "trigger": "editing-loop", "notes": "L113 createTrashItem ← flushPending ← TrashBinCapturePlugin（削除テキスト捕捉）・tree/codex/snippet 削除" }
+      ]
+    },
+    "trash_bin_list": {
+      "file": "trash_bin.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["project_id: String", "limit: Option<i64>"],
+      "returns": "Vec<serde_json::Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "指定プロジェクトの trash_items を（limit 付きで）新しい順に SELECT して返す",
+      "napiNotes": "napi 実装済。列名 snake_case のまま返す契約。blocking task 要",
+      "callSites": [
+        { "file": "src/features/trash-bin/api.ts", "trigger": "workspace-open", "notes": "L88 listTrashItems ← loadItems ← reloadProjectData・TrashBinPanel mount/prune 後" }
+      ]
+    },
+    "trash_bin_delete": {
+      "file": "trash_bin.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["id: String"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "id 指定で trash_items から 1 件 DELETE する",
+      "napiNotes": "napi 実装済。grimodex-db::trash_bin::delete を共用",
+      "callSites": [
+        { "file": "src/features/trash-bin/api.ts", "trigger": "user-action", "notes": "L119 deleteTrashItem ← removeItem（削除/復元）" }
+      ]
+    },
+    "trash_bin_clear_all": {
+      "file": "trash_bin.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["project_id: String"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "指定プロジェクトの trash_items を全件 DELETE する（他プロジェクトには触れない）",
+      "napiNotes": "napi 実装済。grimodex-db::trash_bin::clear_all を共用",
+      "callSites": [
+        { "file": "src/features/trash-bin/api.ts", "trigger": "user-action", "notes": "L124 clearAllTrashItems ← TrashBinPanel 全消去ボタン" }
+      ]
+    },
+    "trash_bin_prune": {
+      "file": "trash_bin.rs",
+      "classification": "done",
+      "status": "done",
+      "priority": "P0",
+      "args": ["project_id: String", "retention_days: i64", "max_count: i64"],
+      "returns": "i64",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "保持期間切れ・件数超過の trash_items を刈り取り、削除件数を返す",
+      "napiNotes": "napi 実装済。Phase 7 でバックグラウンド定期実行化予定 — napi 側でスケジューラを持つ場合も DB 関数はそのまま流用可",
+      "callSites": [
+        { "file": "src/features/trash-bin/api.ts", "trigger": "panel-open", "notes": "L133 pruneTrashItems ← TrashBinPanel mount 時 + 1 時間毎 interval" }
+      ]
+    },
+    "codex_rebuild_matcher": {
+      "file": "codex_matching.rs",
+      "classification": "unknown",
+      "missing": true,
+      "priority": "P0",
+      "args": null,
+      "returns": null,
+      "stateDeps": ["CodexMatcherState（lib.rs managed state より推定）", "WorkspaceState（推定）"],
+      "appHandle": null,
+      "emits": [],
+      "isAsync": null,
+      "summary": "（棚卸し漏れ）Codex エントリ群から Aho-Corasick matcher をオンデマンド再構築する。lib.rs 正式リストに存在するが command 台帳に未収載 — 要追加棚卸し",
+      "napiNotes": "CodexMatcherState { inner: Mutex<Option<..>> } を napi 側プロセスグローバルに移植する必要（codex_match_text と同一インスタンス共有が必須）。編集ループの Codex ハイライト基盤で P0。aho-corasick 依存の見込み。要ソース精読",
+      "callSites": [
+        { "file": "src/features/codex/rustMatcher.ts", "trigger": "editing-loop", "notes": "L65 invokeRebuildMatcher — entries ハッシュ変化時のみ IPC（skip gate、SLOW_COMMANDS 300s、projectLoad 中は遅延）。useCodexHighlight L162 / crossReference / foreshadow/api から。fail-soft（reject は unhandledrejection → debugLog のみ）" }
+      ]
+    },
+    "codex_match_text": {
+      "file": "codex_matching.rs",
+      "classification": "unknown",
+      "missing": true,
+      "priority": "P0",
+      "args": null,
+      "returns": null,
+      "stateDeps": ["CodexMatcherState（推定）"],
+      "appHandle": null,
+      "emits": [],
+      "isAsync": null,
+      "summary": "（棚卸し漏れ）構築済み matcher で本文テキストの Codex 言及をマッチングする。lib.rs 正式リストに存在するが command 台帳に未収載 — 要追加棚卸し",
+      "napiNotes": "codex_rebuild_matcher と同一の CodexMatcherState を参照。打鍵ごと（150ms debounce）に呼ばれる最高頻度級 IPC のひとつなので、napi 境界のシリアライズコストとスレッドモデルに注意。要ソース精読",
+      "callSites": [
+        { "file": "src/features/codex/rustMatcher.ts", "trigger": "editing-loop", "notes": "L113 matchText ← codexMatchOrchestrator の 150ms デバウンス（入力毎の Codex ハイライト）。post-effect/beat/chatStore も利用。fail-soft（try/catch で黙殺）" }
+      ]
+    },
+    "extract_codex_candidates": {
+      "file": "codex_candidates.rs",
+      "classification": "lindera",
+      "status": "done",
+      "priority": "P2",
+      "args": ["project_id: String", "min_count: Option<usize>"],
+      "returns": "Vec<CodexCandidate>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "全シーン本文を読書順に lindera (UniDic) で形態素解析し、既存 Codex の name/alias に無い固有名詞を出現数・初出シーン・文脈付き候補として返す（日本語プロジェクト専用、min_count 未満は除外）",
+      "napiNotes": "実装済み。grimodex-semantic::codex_candidatesへ本体を集約し、Tauri/N-APIとも開始時のArc<Database>を1回pin。DB snapshotを単一connection lockで読み、UniDic/Aho-Corasick解析はlock外。normalize_nameとFE candidateKeyの一致、u32境界を回帰固定",
+      "callSites": [
+        { "file": "src/features/codex/candidateExtractor.ts", "trigger": "panel-open", "notes": "L36 extractCodexCandidates ← CodexCandidatesReport.tsx L83（候補レポート表示時）" }
+      ]
+    },
+    "plot_thread_create": {
+      "file": "plot_threads.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: PlotThreadCreatePayload"],
+      "returns": "Value（作成行）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "UUID を採番して plot_threads に INSERT し、作成行を SELECT して返す",
+      "napiNotes": "同期 rusqlite → spawn_blocking/AsyncTask。DTO は serde camelCase（projectId/name/color/description/sortOrder）。単純 CRUD だが UUID 採番と作成行返却の契約を保つなら専用実装が素直",
+      "callSites": [
+        { "file": "src/features/plot-threads/api.ts", "trigger": "user-action", "notes": "L84 createPlotThread ← plotThreadStore.addThread/ensureThread（Timeline パネル・PlotThreadExtractDialog）" }
+      ]
+    },
+    "plot_thread_update": {
+      "file": "plot_threads.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id: String", "patch: PlotThreadPatch"],
+      "returns": "Value（更新後行、空 patch 時は現行行）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "部分 patch から動的 SET 句を組み立てて plot_threads を UPDATE（updated_at 込み）し、更新後行を返す",
+      "napiNotes": "color/description は Option<Option<String>>（未指定/明示 null の二段）— undefined と null の区別を落とさないシリアライズ設計が必要。空 patch は UPDATE せず現行行返却の契約。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/plot-threads/api.ts", "trigger": "user-action", "notes": "L126 updatePlotThread ← renameThread/setThreadColor/reorderThread と各 undo/redo" }
+      ]
+    },
+    "plot_thread_delete": {
+      "file": "plot_threads.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id: String"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "plot_threads から id 指定で 1 行 DELETE する",
+      "napiNotes": "単純 DELETE。scene_links の連鎖削除は FK/スキーマ側依存 — スキーマの ON DELETE 挙動を変えない。db_execute で代替可能な最有力候補",
+      "callSites": [
+        { "file": "src/features/plot-threads/api.ts", "trigger": "user-action", "notes": "L137 deletePlotThread ← removeThread と addThread の undo" }
+      ]
+    },
+    "plot_thread_list": {
+      "file": "plot_threads.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String"],
+      "returns": "Vec<Value>（sort_order 昇順）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "project_id で plot_threads を sort_order ASC で全件 SELECT する",
+      "napiNotes": "読み取り専用の単発 SELECT。db_execute へ寄せられる。invoke 引数キー変換（projectId ⇔ project_id）に注意",
+      "callSites": [
+        { "file": "src/features/plot-threads/api.ts", "trigger": "workspace-open", "notes": "L169 listPlotThreads ← plotThreadStore.load（reloadProjectData・TimelinePanel mount・externalWriteFeed）と map/galaxyData" }
+      ]
+    },
+    "plot_thread_link_create": {
+      "file": "plot_threads.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["payload: PlotThreadLinkCreatePayload"],
+      "returns": "Value（作成行）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "phase_type 検証（introduce/develop/turn/climax/resolve）と thread↔node の同一 project ガード（XPROJ）を通してから plot_thread_scene_links に INSERT する",
+      "napiNotes": "バリデーションが本体: validate_phase の5値ホワイトリストと project_of() による project_id 照合（FK では守れない越境ガード）。素の db_execute へ分解すると FE にガードが漏れ TOCTOU になるため、napi 側でもサーバサイド一体実装（単一トランザクション化推奨）。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/plot-threads/api.ts", "trigger": "user-action", "notes": "L190 createPlotThreadLink ← addMarker（マーカー配置）" }
+      ]
+    },
+    "plot_thread_link_update": {
+      "file": "plot_threads.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id: String", "patch: PlotThreadLinkPatch"],
+      "returns": "Value（更新後行、空 patch 時は現行行）",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "phase_type 検証と、thread_id 変更時の XPROJ ガード（移動先 thread と変更後 node の同一 project 照合、node_id が patch に無ければ既存値を SELECT で補完）を経て動的 UPDATE する",
+      "napiNotes": "plot_threads 系で最も複雑。thread_id 移動時の read-then-write（読み戻し→二重照合→UPDATE）なので napi 化ではトランザクションで包むのが安全（現実装は非トランザクション）。note/sort_order は Option<Option> の null クリア二段。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/plot-threads/api.ts", "trigger": "user-action", "notes": "L236 updatePlotThreadLink ← updateMarker（PlotMarkerContextMenu 等）" }
+      ]
+    },
+    "plot_thread_link_delete": {
+      "file": "plot_threads.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["id: String"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "plot_thread_scene_links から id 指定で 1 行 DELETE する",
+      "napiNotes": "単純 DELETE。db_execute で代替可能。追加 State・依存クレートなし",
+      "callSites": [
+        { "file": "src/features/plot-threads/api.ts", "trigger": "user-action", "notes": "L247 deletePlotThreadLink ← deleteMarker と undo" }
+      ]
+    },
+    "plot_thread_list_links": {
+      "file": "plot_threads.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String"],
+      "returns": "Vec<Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "plot_threads と JOIN して project 配下の scene link を全件 SELECT する",
+      "napiNotes": "読み取り専用 JOIN SELECT。db_execute へ寄せられる。ORDER BY 無し（並び順は FE 側 sort_order 解釈依存）を移植時も変えない",
+      "callSites": [
+        { "file": "src/features/plot-threads/api.ts", "trigger": "workspace-open", "notes": "L273 listPlotThreadLinks ← plotThreadStore.load と galaxyData" }
+      ]
+    },
+    "lint_text": {
+      "file": "lint.rs",
+      "classification": "lindera",
+      "priority": "P1",
+      "args": ["blocks: Vec<LintBlock>", "language: String", "scope: LintScope", "config: LintConfig", "disables: Option<Vec<DisableDirective>>"],
+      "returns": "grimodex_lint::LintResponse",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "テキストブロック群を言語別（ja/en）の決定的リンタでチェックし LintResponse（指摘一覧）を返す薄いラッパー",
+      "napiNotes": "grimodex_lint クレート（lindera 4.0 embed-unidic / rust-stemmers / regex）委譲のみで tauri 依存ゼロ、napi 化しやすい。注意: (1) embed-unidic の include_bytes! で .node サイズ約 +200〜250MB — 辞書外部ファイル化の要検討。(2) 同期 fn で CPU 重＋初回 OnceLock<Tokenizer> 初期化コスト → AsyncTask/spawn_blocking で worker 実行。(3) State/emit なし。Ok/Err 双方 serde 構造体なので Result を JSON シリアライズして返す形が素直",
+      "callSites": [
+        { "file": "src/features/lint/lintStore.ts", "trigger": "editing-loop", "notes": "L352 lint action ← useLinter（EditorPane L1041）— 入力デバウンス毎のライブ lint（block 単位キャッシュで miss 分のみ IPC）" },
+        { "file": "src/features/lint/projectScan.ts", "trigger": "user-action", "notes": "L352 runProjectScan — プロジェクト一括 lint（LinterPanel・kouetsu 統合チェック）" }
+      ]
+    },
+    "segment_bunsetsu": {
+      "file": "reorder.rs",
+      "classification": "lindera",
+      "priority": "P2",
+      "args": ["text: String"],
+      "returns": "Vec<BunsetsuDto>",
+      "stateDeps": [],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "段落プレーンテキストを lindera(UniDic) で文節境界（UTF-16 offset の start/end + surface）に分割して返す",
+      "napiNotes": "依存は grimodex-lint のみ。純関数的で State/AppHandle/emit なし。初回呼び出しで OnceLock 経由の辞書ロード＋Tokenizer 構築が走るため AsyncTask/spawn_blocking でブロック回避。MAX_INPUT_BYTES 上限ガードを napi 側でも維持",
+      "callSites": [
+        { "file": "src/features/editor/reorder/bunsetsuSegmenter.ts", "trigger": "editing-loop", "notes": "L68 fetchBunsetsuUnits — 文節並べ替え操作（Alt+Shift）時のみ。text 単位キャッシュ + in-flight dedup。失敗時は文粒度フォールバック" }
+      ]
+    },
+    "seed_sample_workspace": {
+      "file": "onboarding.rs",
+      "classification": "db+state",
+      "status": "done",
+      "priority": "P2",
+      "args": ["language: String", "ai_policy: String"],
+      "returns": "SeedResult { path: String, projectId: String }",
+      "stateDeps": ["GlobalSettingsPath"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "AppData下に不変な `sample-workspace-<UUID>` generationを新規作成し、UI言語に合った埋込みサンプルJSON（ja/en）でDBをmigrate + seedし、そのpathをGlobalSettingsに公開する（open_workspaceは呼び出し側の責務）",
+      "napiNotes": "実装済み。本体はgrimodex-db::sample_seed共有コア、Tauri/N-APIはspawn_blockingの薄いadapter。create→migrate→seed→sampleWorkspacePath公開をGlobalSettingsPath.write_lockでsave/openと直列化する。未公開generationは失敗時にRAII掃除。その後rendererのseedAndOpenSampleがtrustedWorkspacesの旧サンプルentryを新pathへ置換してopenする。公開後generationは生存中desktop task/外部MCPの古いDB handleを壊さないため意図的に保持し、unlinkや固定slot再利用は行わない。埋込みv1.json/v1_en.json、返り値はcamelCase projectId",
+      "callSites": [
+        { "file": "src/features/workspace/store.ts", "trigger": "user-action", "notes": "L509 seedAndOpenSample（オンボーディング『サンプルを試す』→ openWorkspace へ連鎖）" }
+      ]
+    },
+    "start_post_effect_run": {
+      "file": "post_effect.rs",
+      "classification": "network",
+      "status": "done",
+      "priority": "P1",
+      "args": ["args: StartPostEffectRunArgs"],
+      "returns": "StartPostEffectRunResult",
+      "stateDeps": ["WorkspaceState", "AiSettingsPath", "PostEffectAbortRegistry"],
+      "appHandle": true,
+      "emits": ["post_effect:progress", "post_effect:partial", "post_effect:done", "post_effect:error"],
+      "isAsync": true,
+      "summary": "単一シーンの post-effect 解析 run を fire-and-forget で開始し即 run_id を返す（キャッシュヒット時は既存 run_id を from_cache=true で返却）",
+      "napiNotes": "Phase 3d実装済み。grimodex-post-effect共有crate + Node runtime/AI adapter + EventQueue 4ch。cache hitはAI/key/eventを再実行しない。開始時Arc<Database>をworker/registryへ固定しworkspace切替後も同じDBへ終端。XPROJはINSERT/AI前に拒否",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "user-action", "notes": "L61 startPostEffectRun ← runPostEffect ← kouetsu runners/usePseudoCommentRun（校閲実行ボタン）" }
+      ]
+    },
+    "start_post_effect_run_multi": {
+      "file": "post_effect.rs",
+      "classification": "network",
+      "status": "done",
+      "priority": "P1",
+      "args": ["args: StartPostEffectRunMultiArgs"],
+      "returns": "StartPostEffectRunResult",
+      "stateDeps": ["WorkspaceState", "AiSettingsPath", "PostEffectAbortRegistry"],
+      "appHandle": true,
+      "emits": ["post_effect:progress", "post_effect:partial", "post_effect:done", "post_effect:error"],
+      "isAsync": true,
+      "summary": "複数シーン（folder/project スコープ）の post-effect 解析 run を fire-and-forget で開始し、シーン逐次処理・部分失敗集計・中止監視を行う",
+      "napiNotes": "Phase 3d実装済み。singleと同じ共有runtime/開始DB/abort registryを使用。scene逐次中止、空scene skip、部分失敗summary、meta_structure特例、role別endpoint/key routingを維持。terminal CASのClaimed時だけdoneをemit",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "user-action", "notes": "L69 startPostEffectRunMulti ← kouetsu runners（folder/project 一括）/ impact-review runImpactReview" }
+      ]
+    },
+    "abort_post_effect_run": {
+      "file": "post_effect.rs",
+      "classification": "db+state",
+      "status": "done",
+      "priority": "P1",
+      "args": ["run_id: String", "project_id: String"],
+      "returns": "()",
+      "stateDeps": ["PostEffectAbortRegistry", "WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "指定 run_id の中止をメモリ内レジストリへ要求し、DB 上の running 行を cancelled に更新する（XPROJ ガード付き）",
+      "napiNotes": "Phase 3d実装済み。start時にrun_id→開始DBをregistryへbindし、workspace切替後のabortも元DBを対象にする。registry lock内でproject付きDB terminal CAS→abort flag公開を線形化。wrong-project/late abortはno-op、cancelledは完了側に上書きされない",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "user-action", "notes": "L78 abortPostEffectRun ← PostEffectProgressToast 中止ボタン・fullCheckStore" }
+      ]
+    },
+    "list_post_effect_runs": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String", "effect_type: Option<String>", "limit: Option<i64>", "offset: Option<i64>"],
+      "returns": "Vec<Value>",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "プロジェクトの post_effect_runs を started_at 降順でページング取得する（effect_type フィルタ、既定 limit=20/offset=0）",
+      "napiNotes": "SELECT のみ。row_to_run_value の camelCase JSON 整形（inputHash/errorMessage 等）を FE 契約どおり維持。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "panel-open", "notes": "L91 listPostEffectRuns ← kouetsu triage useEffectLastRuns（校閲パネル表示時）" }
+      ]
+    },
+    "get_post_effect_run": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "status": "removed",
+      "priority": "P3",
+      "args": ["run_id: String", "project_id: String"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "未使用だった post-effect run 詳細 IPC。2026-07-11 に撤去",
+      "napiNotes": "非テストコードからの呼び出しが無かったため Electron mirror は追加せず、Tauri handler・TS wrapper・browser mockを削除済み",
+      "callSites": []
+    },
+    "list_scene_lens_for_project": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "Outline オーバーレイ用に、completed な meta_structure run の最新 lens を scene×lens_type ごとに runCompletedAt 付きで返す",
+      "napiNotes": "SCENE_LENS_FOR_PROJECT_SQL の MAX(created_at) サブクエリは外側と同じ母集団（completed×meta_structure）に scope するのが回帰ガードの要 — failed/running re-run の lens 行が MAX を汚染するバグの再発防止。napi 化では SQL を一字一句そのまま移植し、既存回帰テスト相当を持ち込む",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "panel-open", "notes": "L122 listSceneLensForProject ← lensStore.loadLens・kouetsu useUnifiedIssues（Outline オーバーレイ/triage）" }
+      ]
+    },
+    "list_annotations_for_scene": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String", "scene_id: String", "status: Option<String>"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "シーンの annotations（status 任意フィルタ、range_start 順）と、その両端いずれかを含む relations を返す",
+      "napiNotes": "relations の IN 句は annotation id 数に応じた動的 placeholder 生成（params 2回連結）— napi 側でも同じ動的バインドが必要。読み取りのみ。spawn_blocking 推奨。シーンオープン毎に呼ばれる（fail-soft の並列ロード）",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "editing-loop", "notes": "L111 listAnnotationsForScene ← EditorPane（シーンを開くたび）・PostEffectAnnotationPanel/PseudoCommentBubble/useUnifiedIssues・usePseudoCommentRun" }
+      ]
+    },
+    "list_annotations_for_project": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["project_id: String", "status: Option<String>"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "プロジェクト全体の annotations を scene_id, range_start, created_at 順で返す（relations は含まない）",
+      "napiNotes": "単純 SELECT。返却形は { annotations: [...] } のオブジェクト包み（scene 版と違い relations キー無し）— FE 契約を維持。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "panel-open", "notes": "L131 listAnnotationsForProject ← kouetsu CommentsTab/useUnifiedIssues/DismissedAnnotationsView・codex ConsistencyTab・map causalityBoard" }
+      ]
+    },
+    "update_annotation_status": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["annotation_id: String", "status: String", "project_id: String"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "annotation の status を XPROJ ガード付きで更新し（dismissed 時は metadata.dismiss_source='manual' を json_set）、更新後の行を返す",
+      "napiNotes": "0 行更新は bail（fail-closed）。json_set は SQLite JSON1 拡張前提 — napi 側 SQLite ビルドで JSON1 有効を確認。dismiss_source は再解析時の dismiss_key 照合（is_annotation_previously_closed）に効くため意味論を変えない",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "user-action", "notes": "L149 updateAnnotationStatus ← closeAnnotation/typoFix/issueActions/autoResolveOnLintFix（指摘の解決・却下）" }
+      ]
+    },
+    "update_relation_status": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "status": "removed",
+      "priority": "P3",
+      "args": ["relation_id: String", "status: String", "project_id: String"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "未使用だった relation status 更新 IPC。2026-07-11 に撤去",
+      "napiNotes": "非テストコードからの呼び出しが無かったため Electron mirror は追加せず、Tauri handler・更新本体・専用test・TS wrapperを削除済み",
+      "callSites": []
+    },
+    "reply_to_annotation": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "priority": "P1",
+      "args": ["args: ReplyToAnnotationArgs"],
+      "returns": "Value",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "疑似コメント annotation への返信を追加する。親の project_id/scene_id/run_id/persona を継承し、category='pseudo_comment' の子行を INSERT して返す",
+      "napiNotes": "親検索は id+project_id の XPROJ ガード（NoRows で fail-closed）。author_role は user/ai/system 以外を 'user' に丸める。uuid v4 生成。INSERT+read-back の2文だが単一 conn 内でトランザクション不要。spawn_blocking 推奨",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "user-action", "notes": "L197 replyToAnnotation ← PseudoCommentThread（疑似コメント返信）" }
+      ]
+    },
+    "save_post_effect_annotations": {
+      "file": "post_effect.rs",
+      "classification": "pure-db",
+      "priority": "P0",
+      "args": ["project_id: String", "scene_id: String", "annotations: Vec<Value>"],
+      "returns": "()",
+      "stateDeps": ["WorkspaceState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "FE 側で再アンカーした annotation 群の range_start/range_end/text_snapshot を一括 UPDATE で永続化する（id+project_id+scene_id で限定）",
+      "napiNotes": "現実装はループ UPDATE で明示トランザクション無し（行ごと自動コミット）— napi 化時は 1 トランザクションに包むと安全かつ高速（差は途中失敗時の部分反映のみ）。入力 Value の欠損フィールドは 0/'' に defaulting している点も維持。spawn_blocking 推奨。persistSceneBody 保存チェーン内なので P0",
+      "callSites": [
+        { "file": "src/features/post-effect/api.ts", "trigger": "editing-loop", "notes": "L226 savePostEffectAnnotations ← syncAnnotations.saveAnnotationAnchors ← persistSceneBody（シーン保存時の AnnotationMark 位置同期）" }
+      ]
+    },
+    "semantic_download_model": {
+      "file": "semantic.rs",
+      "classification": "network",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["language: String"],
+      "returns": "String",
+      "stateDeps": ["SemanticRuntime"],
+      "appHandle": true,
+      "emits": ["semantic:model_download_progress"],
+      "isAsync": true,
+      "summary": "指定言語の埋め込みモデルが未インストールならバックグラウンドDLを開始し、即座に installed/downloading/unavailable の状態文字列を返す",
+      "napiNotes": "実装済み。SemanticRuntimeが明示SemanticPaths、download in-flight、言語別Embedderを保持。共有download jobをdetached taskで実行し、EventSink→Tauri emitter/Electron EventQueueへprogressを配信。成功時は該当Embedderを破棄しFEがopen back-indexを再開。Backend全体はresource欠落でもfail-soft起動",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L75 downloadSemanticModel ← autoIndex.ensureSemanticIndexesOnOpen（背景モデル DL、fail-soft）" }
+      ]
+    },
+    "semantic_index_scene": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["scene_id: String"],
+      "returns": "usize",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "シーン1件を読み出し→ONNX埋め込み→scene_chunks へ upsert し、投入チャンク数を返す（Indexed 時は SearchCache を invalidate）",
+      "napiNotes": "実装済み。adapterでDB Arc+SemanticEpochをblocking投入前にpinし、shared runtimeがread→lock外embed→hash再確認upsertを実行。成功時はpin済みscene cacheをinvalidate。Electron通常buildでsemantic-embedding有効",
+      "callSites": [
+        { "file": "src/features/semantic-search/scheduler.ts", "trigger": "editing-loop", "notes": "L37 scheduleSceneIndex ← persistSceneBody（autosave、2.5s debounce、fail-soft .catch(debugLog.warn)）・external-mount writeBack/mountManager" }
+      ]
+    },
+    "semantic_search": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String", "query: String", "limit: usize", "scene_scope: Option<String>", "description_mode: Option<bool>"],
+      "returns": "Vec<SearchHit>",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "クエリを埋め込み scene_chunks に総当たりコサインで Top-K を返す本文セマンティック検索（description_mode で会話チャンク減点）",
+      "napiNotes": "実装済み。DB+epoch pin済みSemanticRequestをshared runtimeへ渡し、言語specのquery embeddingとscene cache Top-Kを実行。IPC limitは0..u32、sceneScope/descriptionModeはnull/undefinedを厳格変換。SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L53 semanticSearch ← chat semanticRecall・commandCenter semanticSearchProvider・related-scenes（シーン切替 debounce）・impact-review narrowing・searchEval" }
+      ]
+    },
+    "semantic_index_status": {
+      "file": "semantic.rs",
+      "classification": "pure-db",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String"],
+      "returns": "IndexStatusReport",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "scene_chunks の index 充足/stale 状況を SQL 集計で返し、未 chunk scene 本文を現行チャンカに掛けて nonempty_scene_count を補正する",
+      "napiNotes": "実装済み。shared runtimeのpure-DB経路。開始時DB+epoch pin後、SQL集計とlock外count_indexable_scenesをblocking workerで実行。resource/model欠落時も利用可能",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L236 semanticIndexStatus ← autoIndex（open 時）・settings SemanticIndexSection・searchEval" }
+      ]
+    },
+    "semantic_reindex_all": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String", "run_id: Option<String>"],
+      "returns": "usize",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": ["semantic:reindex_progress"],
+      "isAsync": true,
+      "summary": "project 配下の全 scene を順次再 index し、scene 完了ごとに progress event を emit（total_scenes=0 でも done=true を1回送る）。合計 chunk 数を返す",
+      "napiNotes": "実装済み。generation/domain/project/model identity単位single-flight、panic/error時waiter解放、identity変更時retry。progress payloadはsceneIndex/sceneId/totalScenes/chunksIndexed/done/projectId/runIdで、合流callerにも自身runIdのterminal eventを配信。IPC runIdはUnicode code point 1..256",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L64 semanticReindexAll ← autoIndex.ensureSemanticIndexesOnOpen（SLOW_COMMANDS 300s）・reindexActions（設定ボタン）" }
+      ]
+    },
+    "semantic_chunk_context": {
+      "file": "semantic.rs",
+      "classification": "pure-db",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["scene_id: String", "char_start: usize", "char_end: usize", "padding: usize"],
+      "returns": "PreviewContext",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "semantic hit の前後文脈を切り出して返す hover プレビュー用（scene content JSON→段落抽出→slice_context_verified）",
+      "napiNotes": "実装済み。shared runtimeのpure-DB経路でpin済みDBのみ参照。preview/chunkerを共有しindexed_chunk照合でoffsetずれを補正。charStart/charEnd/paddingはIPCで0..u32検証、scene不在は空DTO",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L256 getSemanticChunkContext ← commandCenter/preview/semanticPreview（検索ヒット hover）" }
+      ]
+    },
+    "semantic_debug_dump": {
+      "file": "semantic.rs",
+      "classification": "pure-db",
+      "status": "done",
+      "priority": "P3",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String", "scene_id: Option<String>", "limit: Option<usize>"],
+      "returns": "DebugDumpReport",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "開発者向けに scene_chunks を検査用ダンプ（本文プレビュー・model_id・embedding L2 ノルム・stale 判定）。limit 省略時 200 / 上限 2000",
+      "napiNotes": "実装済み。shared runtimeのpure-DB経路。pin済みDBからL2 norm/stale判定を返す。sceneIdはoptional string、limitはoptional 0..u32をIPCで検証。resource/model欠落時も利用可能",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "settings", "notes": "L303 semanticDebugDump ← settings SemanticIndexSection の開発用ダンプボタン" }
+      ]
+    },
+    "codex_semantic_search": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String", "query: String", "limit: usize"],
+      "returns": "Vec<CodexSearchHit>",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "Codex セマンティック検索の dense arm。クエリ埋め込み→codex_chunks 総当たりコサイン Top-K（JS 側で FTS と RRF 融合）",
+      "napiNotes": "実装済み。DB+epoch pin済みshared runtimeでCodex cache dense Top-Kを実行し、camelCase JSON wireをN-API/IPCで復元。limitは0..u32厳格検証、SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L97 codexSemanticSearch ← chat/agent toolExecutors（AI ツール＝チャット送信起点）" }
+      ]
+    },
+    "codex_index_entry": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["entry_id: String"],
+      "returns": "usize",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "Codex entry 1件を埋め込み codex_chunks へ upsert（不在/hash 不一致は 0、成功時 CodexSearchCache を invalidate）",
+      "napiNotes": "実装済み。開始時DB+epoch pin、shared runtimeでread→lock外embed→hash再確認upsert、成功時pin済みCodex cacheをinvalidate。SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "editing-loop", "notes": "L106 codexIndexEntry ← scheduler.scheduleCodexIndex ← codex/api 保存・agent-writes/codex" }
+      ]
+    },
+    "codex_index_status": {
+      "file": "semantic.rs",
+      "classification": "pure-db",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String"],
+      "returns": "CodexIndexStatus",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "Codex index の充足状況（indexed/total 件数など）を返す cheap クエリ。Embedder 不要",
+      "napiNotes": "実装済み。shared runtimeのpure-DB status。spec/model identityも共有crate内で算出し、resource/model欠落時もN-APIから利用可能",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L120 codexIndexStatus ← autoIndex.ensureSemanticIndexesOnOpen" }
+      ]
+    },
+    "codex_reindex_all": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String"],
+      "returns": "usize",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "project 配下の全 Codex entry を一括再 index し投入ベクトル総数を返す（bulk back-index、progress event なし）",
+      "napiNotes": "実装済み。pin済みDB/epochとdomain/project/model identity single-flightを共有。entryごとにlock外embed→upsertしCodex cacheをinvalidate。SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L125 codexReindexAll ← autoIndex（未 index 検出時の back-index）" }
+      ]
+    },
+    "events_index_entry": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["event_id: String"],
+      "returns": "usize",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "Chronicle event 1件を埋め込み event_chunks へ upsert（不在/hash 不一致は 0、成功時 EventsSearchCache を invalidate）",
+      "napiNotes": "実装済み。開始時DB+epoch pin、shared runtimeでlock外embed→hash再確認upsert、成功時Events cacheをinvalidate。SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "editing-loop", "notes": "L155 eventsIndexEntry ← scheduler.scheduleEventIndex ← chronicle/api・agent-writes/event" }
+      ]
+    },
+    "events_semantic_search": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String", "query: String", "limit: usize"],
+      "returns": "Vec<EventSearchHit>",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "Chronicle event のセマンティック検索（dense のみ・FTS 融合なし）。JS の search_events agent ツールが呼ぶ",
+      "napiNotes": "実装済み。DB+epoch pin済みshared runtimeでdense-only event cache検索。limitは0..u32厳格検証、SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L146 eventsSemanticSearch ← chat/agent toolExecutors" }
+      ]
+    },
+    "events_index_status": {
+      "file": "semantic.rs",
+      "classification": "pure-db",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String"],
+      "returns": "EventsIndexStatus",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "Chronicle event index の充足状況を返す cheap クエリ。Embedder 不要",
+      "napiNotes": "実装済み。shared runtimeのpure-DB status。open時autoIndexが充足不足を検知しevents_reindex_allへ繋ぐ",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L171 eventsIndexStatus ← autoIndex.ensureSemanticIndexesOnOpen" }
+      ]
+    },
+    "events_reindex_all": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String"],
+      "returns": "usize",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "project 配下の全 Chronicle event を一括再 index し投入ベクトル総数を返す（progress event なし）",
+      "napiNotes": "実装済み。pin済みDB/epochとdomain/project/model identity single-flightを共有。open時back-indexのFE callerも実装済み。SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L176 eventsReindexAll ← autoIndex（back-index）" }
+      ]
+    },
+    "chat_index_message": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["message_id: String"],
+      "returns": "usize",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "チャットメッセージ1件を episodic index に upsert（system/空本文/不在は embedder load 前に即 0 で返す事前 read あり）",
+      "napiNotes": "実装済み。開始時DB+epoch pin。shared runtimeは非対象messageをEmbedder load前に0返却し、対象はlock外embed→hash再確認upsert、成功時Chat cacheをinvalidate。SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "editing-loop", "notes": "L210 chatIndexMessage ← scheduler.scheduleChatIndex ← chatApi（メッセージ永続化後）" }
+      ]
+    },
+    "chat_message_search": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String", "query: String", "limit: usize"],
+      "returns": "Vec<ChatSearchHit>",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "chat episodic dense 検索。生 cosine + 信号を返し、重み付けは JS 側 chatRecall が行う",
+      "napiNotes": "実装済み。DB+epoch pin済みshared runtimeでepisodic Chat cache検索。camelCase JSON wire、limit 0..u32、SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L201 chatMessageSearch ← chat/chatRecall（episodic recall、チャット送信時）" }
+      ]
+    },
+    "chat_index_status": {
+      "file": "semantic.rs",
+      "classification": "pure-db",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String"],
+      "returns": "ChatIndexStatus",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "chat episodic index の充足状況を返す cheap クエリ。Embedder 不要",
+      "napiNotes": "実装済み。shared runtimeのpure-DB status。open時autoIndexが既存chat messageの不足を検知してback-indexする",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L224 chatIndexStatus ← autoIndex.ensureSemanticIndexesOnOpen" }
+      ]
+    },
+    "chat_reindex_all": {
+      "file": "semantic.rs",
+      "classification": "ort",
+      "status": "done",
+      "priority": "P2",
+      "featureGate": "semantic-embedding",
+      "args": ["project_id: String"],
+      "returns": "usize",
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
+      "appHandle": true,
+      "emits": [],
+      "isAsync": true,
+      "summary": "project 配下の全 index 対象チャットメッセージを一括再 index し投入ベクトル総数を返す",
+      "napiNotes": "実装済み。pin済みDB/epochとdomain/project/model identity single-flightを共有し、open時back-indexへ接続。SLOW_COMMANDS 300s",
+      "callSites": [
+        { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L229 chatReindexAll ← autoIndex（back-index）" }
+      ]
+    },
+    "external_mount_register": {
+      "file": "external_mount.rs",
+      "classification": "fs",
+      "priority": "P0",
+      "args": ["root_id: String", "path: String", "label: String"],
+      "returns": "ScanResult",
+      "stateDeps": ["ExternalMountWatchState", "ExternalMountState"],
+      "appHandle": true,
+      "emits": ["external-mount://file-changed", "external-mount://file-added", "external-mount://file-removed", "external-mount://file-renamed"],
+      "isAsync": false,
+      "summary": "外部マウントルートを安全性検証（reject_unsafe_workspace_path）後に登録し、初回 scan_root の結果を返しつつ notify ウォッチャーを起動する（watcher 起動失敗時は登録をロールバック）",
+      "napiNotes": "emit はコマンド本体でなく notify watcher の非同期 event loop（watch.rs の flush_if_ready → app.emit、500ms デバウンス付き）から発火。Electron 化では notify 相当を main TS の chokidar + webContents.send で再実装が自然（副次分類 main-ts）。scan_root はツリー walk + 全 .md 読込で重く、napi 化なら spawn_blocking 必須。ExternalMountState（Mutex<HashMap>）と ExternalMountWatchState（Arc<Mutex<WatchRegistry>>）の 2 State と、try_register の overlap 検査（親子/同一パス拒否）+ register_with_rollback の原子性を移植",
+      "callSites": [
+        { "file": "src/features/external-mount/api.ts", "trigger": "startup", "notes": "L9 registerMount ← mountManager.initializeExternalMounts（App.tsx L354 起動時 + reloadProjectData=workspace-open）と addExternalMount（user-action）。fail-soft（register 失敗は missingRoots 化）" }
+      ]
+    },
+    "external_mount_unregister": {
+      "file": "external_mount.rs",
+      "classification": "fs",
+      "priority": "P0",
+      "args": ["root_id: String"],
+      "returns": "()",
+      "stateDeps": ["ExternalMountWatchState", "ExternalMountState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "登録済みルートをレジストリから削除し、対応する notify ウォッチャーを停止（WatcherHandle drop で event loop abort）する",
+      "napiNotes": "実体は 2 つの in-memory State 操作のみだが、WatcherHandle の Drop が event_loop.abort() を担う watcher ライフサイクル管理と一体。registry ごと TS main プロセスに移せば napi 不要（chokidar の close() に対応）。register と同一 State 共有のため分離不可、register とセット移植",
+      "callSites": [
+        { "file": "src/features/external-mount/api.ts", "trigger": "startup", "notes": "L13 unregisterMount ← initializeExternalMounts の再登録前 cleanup + removeExternalMount（user-action）" }
+      ]
+    },
+    "external_mount_read_file": {
+      "file": "external_mount.rs",
+      "classification": "fs",
+      "priority": "P0",
+      "args": ["root_id: String", "rel_path: String"],
+      "returns": "String",
+      "stateDeps": ["ExternalMountState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "登録済みルート配下の相対パスを解決（traversal/絶対パス拒否 + canonicalize による root 逸脱チェック）してテキストを読み、CRLF→LF 正規化して返す",
+      "napiNotes": "resolve_under_root のセキュリティ検査（`..` 拒否・絶対パス拒否・canonicalize 後の starts_with 検証）と 32MiB 読込上限（RUST-DOS-01 対策）を必ず移植。純 fs 操作なので TS main の fs.promises で再実装可能（napi 不要候補）",
+      "callSites": [
+        { "file": "src/features/external-mount/api.ts", "trigger": "unknown", "notes": "L20 readExternalFile ← mountManager.handleFileChanged — ファイル監視イベント駆動（外部エディタでの変更検知時）" }
+      ]
+    },
+    "external_mount_write_file": {
+      "file": "external_mount.rs",
+      "classification": "fs",
+      "priority": "P0",
+      "args": ["root_id: String", "rel_path: String", "content: String"],
+      "returns": "()",
+      "stateDeps": ["ExternalMountState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "登録済みルート配下の相対パスへ tmp ファイル + rename によるアトミック書込を行う（LF 正規化、親ディレクトリ自動作成、sync_all 付き）",
+      "napiNotes": "書込が同ルートの watcher 経由で external-mount://file-changed を間接誘発（自己エコー抑止は FE/watcher 側の責務）。tmp は `.md.tmp` 拡張子 — with_extension のため元拡張子を置換する仕様に注意。fsync + rename のアトミック性を TS 移植時も維持。file-backed シーンのオートセーブ書き戻しなのでデータロス観点で P0",
+      "callSites": [
+        { "file": "src/features/external-mount/api.ts", "trigger": "editing-loop", "notes": "L28 writeExternalFile ← writeBack.scheduleWriteBack ← editor/persistSceneBody（file-backed シーンのオートセーブ、setTimeout debounce）" }
+      ]
+    },
+    "external_mount_list": {
+      "file": "external_mount.rs",
+      "classification": "other",
+      "status": "removed",
+      "priority": "P3",
+      "args": [],
+      "returns": "Vec<RegisteredRoot>",
+      "stateDeps": ["ExternalMountState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "未使用だった登録済み外部マウント一覧 IPC。2026-07-11 に撤去",
+      "napiNotes": "Electron main の registry は manager 内部状態として保持し、公開一覧APIを必要とするFE callerが無いため両ランタイムから削除済み",
+      "callSites": []
+    },
+    "external_mount_file_mtime": {
+      "file": "external_mount.rs",
+      "classification": "fs",
+      "priority": "P0",
+      "args": ["root_id: String", "rel_path: String"],
+      "returns": "String",
+      "stateDeps": ["ExternalMountState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "登録済みルート配下ファイルの mtime を ISO 8601 (RFC3339) UTC 文字列で返す",
+      "napiNotes": "fs::metadata + chrono のみ。TS では fs.stat の mtime.toISOString() で等価再実装（napi 不要候補）。resolve_under_root のパス検査は read/write と共通ヘルパーとして 1 箇所に移植",
+      "callSites": [
+        { "file": "src/features/external-mount/api.ts", "trigger": "unknown", "notes": "L39 getExternalFileMtime ← handleFileChanged — ファイル監視イベント駆動" }
+      ]
+    },
+    "external_mount_scan": {
+      "file": "external_mount.rs",
+      "classification": "fs",
+      "priority": "P0",
+      "args": ["root_id: String"],
+      "returns": "ScanResult",
+      "stateDeps": ["ExternalMountState"],
+      "appHandle": false,
+      "emits": [],
+      "isAsync": false,
+      "summary": "登録済みルートを再スキャンし、ディレクトリ/ファイルツリー（ScannedDir/ScannedFile を含む ScanResult）を返す",
+      "napiNotes": "scan_root はルート全体 walk + .md 読込（content_hash 計算、external_mount::hash の normalize_content/content_hash と連動）で同期ブロッキングが長い。napi 化なら spawn_blocking、TS 再実装なら worker か非同期イテレーション。register の初回スキャンと同一関数なので実装一本化",
+      "callSites": [
+        { "file": "src/features/external-mount/api.ts", "trigger": "unknown", "notes": "L43 scanMount ← handleFileAdded（ファイル監視イベント駆動）" }
+      ]
+    }
+  },
+  "eventChannels": [
+    { "channel": "chat:stream-chunk", "emitter": "send_chat_message_stream", "subscribers": ["src/features/chat/chatApi.ts"], "importance": "critical", "notes": "送信ごとに購読。HTTP チャットの text/thinking デルタの唯一の経路。消費者は chatStore。無いとチャット応答が完全に沈黙" },
+    { "channel": "chat:stream-done", "emitter": "send_chat_message_stream", "subscribers": ["src/features/chat/chatApi.ts"], "importance": "critical", "notes": "終端契約（stop_reason + token/cost）。無いとスピナー永続。invoke は fire-and-forget なので代替経路なし" },
+    { "channel": "chat:stream-error", "emitter": "send_chat_message_stream", "subscribers": ["src/features/chat/chatApi.ts"], "importance": "critical", "notes": "ストリーム途中エラーの唯一の伝達路（invoke の catch は起動失敗のみ）。無いとエラー時スピナー永続 + エラー非表示" },
+    { "channel": "inline-ai:stream-chunk", "emitter": "send_inline_ai_stream", "subscribers": ["src/features/editor/inlineAi/inlineAiStreaming.ts"], "importance": "critical", "notes": "インライン AI / Beat 生成の本文デルタ。消費者: inlineAiApi・streamInlineAiText・useBeatGeneration・generateBeatOnce。thinking ブロックは意図的に無視" },
+    { "channel": "inline-ai:stream-done", "emitter": "send_inline_ai_stream", "subscribers": ["src/features/editor/inlineAi/inlineAiStreaming.ts"], "importance": "critical", "notes": "インライン AI / Beat 生成の終端契約。無いと生成 UI が完了しない" },
+    { "channel": "inline-ai:stream-error", "emitter": "send_inline_ai_stream", "subscribers": ["src/features/editor/inlineAi/inlineAiStreaming.ts"], "importance": "critical", "notes": "インライン AI のエラー伝達路。無いと失敗が沈黙" },
+    { "channel": "cli:stream-chunk", "emitter": "send_cli_chat_stream", "subscribers": ["src/features/chat/cliApi.ts"], "importance": "critical", "notes": "CLI subprocess チャットのデルタ。chat:stream-* と名前空間分離済み（同時走行時の混信対策）" },
+    { "channel": "cli:stream-done", "emitter": "send_cli_chat_stream", "subscribers": ["src/features/chat/cliApi.ts"], "importance": "critical", "notes": "CLI ストリーム終端契約。無いと CLI チャットが完了しない" },
+    { "channel": "cli:stream-error", "emitter": "send_cli_chat_stream", "subscribers": ["src/features/chat/cliApi.ts"], "importance": "critical", "notes": "CLI ストリームのエラー伝達路。無いと失敗が沈黙しスピナー永続" },
+    { "channel": "external-mount://file-changed", "emitter": "external_mount watcher (watch.rs)", "subscribers": ["src/features/external-mount/useExternalMountListener.ts"], "importance": "critical", "notes": "App.tsx で単一マウント。watcher → handleFileEvent(mountManager) の唯一の駆動源。ペイロード { rootId, relPath, oldRelPath? }。無いと外部マウント同期が完全に沈黙" },
+    { "channel": "external-mount://file-added", "emitter": "external_mount watcher", "subscribers": ["src/features/external-mount/useExternalMountListener.ts"], "importance": "critical", "notes": "同上（kind=added）。4ch とも同一 hook が一括購読" },
+    { "channel": "external-mount://file-removed", "emitter": "external_mount watcher", "subscribers": ["src/features/external-mount/useExternalMountListener.ts"], "importance": "critical", "notes": "同上（kind=removed）" },
+    { "channel": "external-mount://file-renamed", "emitter": "external_mount watcher", "subscribers": ["src/features/external-mount/useExternalMountListener.ts"], "importance": "critical", "notes": "同上（kind=renamed、oldRelPath 使用）。Tauri emit は全窓配信契約 — Electron 側も main から全窓 broadcast が必要" },
+    { "channel": "post_effect:done", "emitter": "start_post_effect_run / start_post_effect_run_multi", "subscribers": ["src/features/post-effect/api.ts"], "importance": "critical", "notes": "終端契約。kouetsu runner / impact-review / pseudo-comment が Promise resolve をこれで待つ。runStore.complete + 非フォーカス時 OS 通知 + リスナー自動 cleanup。from_cache 時のみ合成 done で代替" },
+    { "channel": "post_effect:error", "emitter": "start_post_effect_run / start_post_effect_run_multi", "subscribers": ["src/features/post-effect/api.ts"], "importance": "critical", "notes": "終端契約（done と対）。無いと失敗 run で outcome resolve されず校閲 UI が固まる" },
+    { "channel": "vivliostyle:done", "emitter": "vivliostyle_build", "subscribers": ["src/features/vivliostyle/api.ts"], "importance": "critical", "notes": "ビルド終端契約。runStore が phase=done 遷移 + outputToken 取得（保存導線）。無いと running 表示のまま固まる" },
+    { "channel": "vivliostyle:error", "emitter": "vivliostyle_build", "subscribers": ["src/features/vivliostyle/api.ts"], "importance": "critical", "notes": "ビルドのエラー終端。無いと失敗が沈黙し phase 固着" },
+    { "channel": "license:state_changed", "emitter": "license バックグラウンド検証サイクル（run_validate_cycle、コマンド外）", "subscribers": ["src/features/license/useLicenseStateListener.ts"], "importance": "critical", "notes": "App.tsx 単一マウント。稼働中のライセンス制限発動/解除の反映を担う。初期状態は get_license_state で取れるため fail-soft 寄りだが正当性チャネル" },
+    { "channel": "post_effect:progress", "emitter": "start_post_effect_run / multi", "subscribers": ["src/features/post-effect/api.ts"], "importance": "progress", "notes": "run ごとに無条件購読 → usePostEffectRunStore.updateProgress（グローバル進捗トースト）。runId フィルタ + 確定前バッファ。無くても run は完了" },
+    { "channel": "semantic:model_download_progress", "emitter": "semantic_download_model", "subscribers": ["src/features/semantic-search/useModelDownloadListener.ts"], "importance": "progress", "notes": "Batch4配線済み。shared EventSink→Tauri emitter / Electron EventQueue(TSFn→全窓)。done && !errorで現在workspace identityのensureSemanticIndexesOnOpenを再実行し4domain back-indexを再開" },
+    { "channel": "semantic:reindex_progress", "emitter": "semantic_reindex_all", "subscribers": ["src/features/semantic-search/useReindexProgressListener.ts"], "importance": "progress", "notes": "Batch4配線済み。payloadはsceneIndex/sceneId/totalScenes/chunksIndexed/done/projectId/runId。listenerはcurrent workspace/project/runだけを反映し、single-flight followerにもcaller自身のrunIdでterminal eventを配信" },
+    { "channel": "vivliostyle:log", "emitter": "vivliostyle_build", "subscribers": ["src/features/vivliostyle/api.ts"], "importance": "progress", "notes": "onLog callback がある場合のみ購読。実消費者は runStore.startBuild（ビルドログパネル、MAX_LOG_LINES リングバッファ）。runId gate + 確定前バッファ" },
+    { "channel": "vivliostyle:preview-exited", "emitter": "vivliostyle_preview_start（wait タスク）", "subscribers": ["src/features/vivliostyle/api.ts", "src/features/vivliostyle/runStore.ts"], "importance": "progress", "notes": "プレビュー自然終了検知 → previewRunning=false 同期のみ。fail-soft 明記あり（無いとボタン状態が stale になるだけ）" },
+    { "channel": "post_effect:partial", "emitter": "start_post_effect_run / multi", "subscribers": ["src/features/post-effect/api.ts（条件付き）"], "importance": "debug", "notes": "onPartial callback が渡された場合のみ購読だが、現状 FE に onPartial を渡す呼び出しがゼロ = 実質未購読。配線優先度最下位。ipcContract.ts allowlist には収録済み" }
+  ],
+  "managedStates": [
+    "LogGuard (setup 前に builder.manage — lint_logging::init_tauri_logging() が Some を返した場合のみ)",
+    "GlobalSettingsPath { path, write_lock: Mutex<()> } — app_data/global-settings.json",
+    "AiSettingsPath { path } — app_data/ai-settings.json",
+    "LicensePath { path, write_lock: Mutex<()>, validate_in_flight: AtomicBool } — app_data/license.json",
+    "WorkspaceState { inner: Mutex<Option<..>>, switching: AtomicBool, open_lock: Mutex<()> } — 起動時は空、open_workspace で充填",
+    "CodexMatcherState { inner: Mutex<Option<..>> } — codex_rebuild_matcher でオンデマンド再構築",
+    "StreamAbortFlag { flag: Arc<AtomicBool> } — チャット HTTP ストリーム中断用",
+    "InlineAiAbortFlag { flag: Arc<AtomicBool> } — インライン AI 用（チャットとは別フラグ）",
+    "CliStreamAbortFlag { flag: Arc<AtomicBool> } — CLI プロバイダ（サブプロセス）ストリーム中断用",
+    "PostEffectAbortRegistry — run_id 単位の中断レジストリ",
+    "Arc<grimodex_semantic::runtime::SemanticRuntime> [cfg semantic-embedding] — explicit SemanticPaths、言語別Embedder、download in-flight、scene/codex/events/chatのSemanticEpoch caches、reindex single-flight、EventSinkを一体保持。open/restoreでepoch rotate",
+    "ExternalMountWatchState (external_mount::watch)",
+    "ExternalMountState (commands::external_mount)",
+    "VivliostyleState — Vivliostyle CLI build run / 成果物レジストリ"
+  ],
+  "setupNotes": "setup フックは src-tauri/src/lib.rs に定義。処理順: (1) [Linux] webkit feature適用。(2) app_data_dir取得。(3) GlobalSettingsPath / AiSettingsPath / LicenseRuntimeをmanage。(4) license検証loop。(5) WorkspaceState・CodexMatcherState・abort群・PostEffect registry。(6) [semantic-embedding] resource_dir/resources/semanticとappData/modelsをSemanticPathsへ明示注入したArc<SemanticRuntime>をmanageし、gc_stale_model_dirsをspawn_blocking。4cacheはruntime内SemanticEpochでopen/restore時rotate。(7) ExternalMount states。(8) Vivliostyle lifecycle。Electronはmain/backend.tsがdev/package resource rootをN-API constructorへ注入し、AppStateが同じSemanticRuntimeを保持する"
+}

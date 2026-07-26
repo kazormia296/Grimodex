@@ -163,7 +163,22 @@
       "errorPreferredRequired": "Please enter a preferred form.",
       "errorVariantsRequired": "Please enter at least one disallowed form.",
       "errorDuplicateVariant": "The same variant is already registered in another entry: {{variants}}",
-      "copySuffix": "{{name}} (copy)"
+      "copySuffix": "{{name}} (copy)",
+      "importCsvTitle": "Import the term dictionary from CSV",
+      "exportCsvTitle": "Export the term dictionary to CSV",
+      "exportEmpty": "No dictionary entries to export",
+      "exportDone": "Exported {{count}} entries",
+      "importNoEntries": "No valid entries were found",
+      "importPreviewTitle": "Import CSV",
+      "importSummary": "Detected {{entries}} entries from {{rows}} rows",
+      "importSkippedRows": "Skipped {{count}} rows",
+      "importModeMerge": "Merge (update rows whose preferred form matches, add others, keep existing)",
+      "importModeReplace": "Replace (delete the entire existing dictionary and swap in)",
+      "importing": "Importing…",
+      "importRun": "Import",
+      "confirmReplace": "This will delete the entire existing term dictionary and replace it. Continue?",
+      "importDone": "Import complete: {{added}} added / {{updated}} updated / {{skipped}} skipped",
+      "importFailed": "Import failed"
     },
     "a11y": {
       "completed": "Lint finished: {{count}} issue(s) found"
@@ -279,6 +294,74 @@
     "unitScenes": "scenes",
     "unitCodex": "codex"
   },
+  "mobileWorkspace": {
+    "navigation": {
+      "label": "Workspace",
+      "editor": "Write",
+      "scenes": "Scenes",
+      "codex": "Codex",
+      "ai": "AI",
+      "more": "More"
+    },
+    "header": {
+      "back": "Back"
+    },
+    "editor": {
+      "preparing": "Preparing your first scene…",
+      "createFailed": "The first scene could not be created.",
+      "retry": "Try again"
+    },
+    "scenes": {
+      "title": "Scenes",
+      "searchLabel": "Search scenes and notes",
+      "searchPlaceholder": "Search",
+      "add": "Add",
+      "actions": "{{title}} actions",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "delete": "Delete",
+      "actionFailed": "Could not complete the action. Try again.",
+      "deleteTitle": "Delete scene",
+      "deleteDescription": "Delete “{{title}}”?",
+      "deleteNoteTitle": "Delete note",
+      "deleteNoteDescription": "Delete “{{title}}”?"
+    },
+    "surfaces": {
+      "search": {
+        "title": "Search",
+        "snippetUnavailable": "Snippet details are available in the desktop layout.",
+        "resultUnavailable": "This search result is no longer available.",
+        "loadFailed": "Could not open this search result. Try again."
+      },
+      "codex": {
+        "back": "Back to Codex",
+        "empty": "No Codex entries yet",
+        "type": "Type",
+        "summary": "Summary",
+        "save": "Save",
+        "saving": "Saving…",
+        "saveFailed": "Could not save. Try again."
+      },
+      "ai": {
+        "label": "AI chat",
+        "message": "Message",
+        "send": "Send",
+        "openSettings": "Open AI settings",
+        "streaming": "Streaming…",
+        "empty": "Start a conversation with AI here",
+        "history": "Past chats",
+        "selectHistory": "Select a past chat",
+        "loadingHistory": "Loading chats…",
+        "noHistory": "No past chats",
+        "untitledHistory": "Untitled chat",
+        "newChat": "New chat"
+      },
+      "more": {
+        "description": "Search, settings, export, and other workspace actions.",
+        "search": "Search this project"
+      }
+    }
+  },
   "welcome": {
     "description": "Choose a folder to save your manuscript.",
     "descriptionSub": "The database and manuscript files will be stored in this folder.",
@@ -345,7 +428,8 @@
     "tab": {
       "import": "Import",
       "zip": "ZIP",
-      "novel": "AI Novelist"
+      "novel": "AI Novelist",
+      "scan": "Grimodex Scan"
     }
   },
   "import": {
@@ -381,12 +465,29 @@
     "success": "Import complete: codex {{codex}} / snippets {{snippets}} / chapters {{chapters}} / chats {{chats}}",
     "doneSuccess": "All entries imported successfully.",
     "errorTitle": "Some entries had errors",
+    "failed": "The import could not be completed. Some content may already have been imported; review it before retrying.",
     "cancel": "Cancel",
     "close": "Close",
     "noFile": "No file selected",
     "invalidZip": "Please select a valid ZIP file",
     "invalidKakuyomu": "Please select a valid Kakuyomu backup ZIP",
     "invalidMarkdown": "Please select a valid Markdown file",
+    "limits": {
+      "empty-file": "Empty files cannot be imported",
+      "file-too-large": "File is too large (maximum {{maxMiB}} MiB)",
+      "empty-folder": "No supported manuscript files were found",
+      "too-many-files": "The folder contains too many manuscript files (maximum {{maxFiles}})",
+      "folder-too-large": "The manuscript files in this folder are too large in total (maximum {{maxMiB}} MiB)",
+      "path-too-deep": "The folder hierarchy is too deep (maximum {{maxDepth}} levels)"
+    },
+    "scan": {
+      "description": "Load a private Scan editor seed (JSON) into a new project using staged apply. Existing projects are unchanged.",
+      "tooLarge": "The Scan seed is too large (maximum 32 MB).",
+      "preview": "{{sections}} sections / {{codex}} Codex / {{events}} events / {{findings}} findings",
+      "importButton": "Import Scan as new project",
+      "success": "Scan import complete: {{scenes}} scenes / {{codex}} Codex / {{findings}} findings",
+      "failed": "Scan import failed. The staging project was discarded."
+    },
     "tagMappingTitle": "Tag → CodexType Mapping",
     "tagMappingSubtitle": "Optionally map tags to CodexTypes. Tags without a mapping are kept as-is.",
     "tagMappingNone": "No mapping",
@@ -483,12 +584,66 @@
   "legal": {
     "eula": {
       "title": "Agreement to the Terms of Use",
-      "description": "Using Grimodex requires acceptance of the Terms of Use (v{{version}}). The terms are written in Japanese only.",
+      "description": "Using Grimodex requires acceptance of the Terms of Use (v{{version}}). The English text is a reference translation; the Japanese text is authoritative.",
       "agreeCheckbox": "I have read the Terms of Use and agree to them",
       "acceptButton": "Accept and continue",
       "showDeveloperMessage": "Read the message from the developer (optional)",
       "hideDeveloperMessage": "Hide the developer message",
       "saveFailed": "Failed to save consent: {{message}}"
+    }
+  },
+  "hostedEditor": {
+    "trial": {
+      "title": "Web Editor Trial",
+      "description": "Try the real Grimodex editor in your browser.",
+      "mobileSummary": "Your edits are stored in this browser and are not automatically synced to the local app.",
+      "storageNotice": "Data is stored in this browser and is not automatically synced to the local Grimodex app.",
+      "importNotice": "Local files you select are processed only in this browser.",
+      "aiNotice": "AI is not included. To use AI, configure a supported HTTP provider with your own API key or endpoint.",
+      "apiKeyMemoryNotice": "A BYOK API key is held only in this page's runtime memory and is cleared when you reload or close the page.",
+      "continueInGrimodex": "Continue writing in Grimodex"
+    },
+    "import": {
+      "localOnlyNotice": "Selected files are parsed and stored in this browser and are not sent to Grimodex servers."
+    },
+    "handoff": {
+      "title": "Continue writing in Grimodex",
+      "description": "Move the document created in the Web Editor to the local Grimodex app.",
+      "downloadInstruction": "First, download the handoff file that preserves your edits.",
+      "download": "Download handoff file",
+      "downloading": "Creating handoff file…",
+      "downloaded": "Download complete: {{filename}}",
+      "downloadFailed": "Could not create the handoff file. Your edits remain in the Web Editor. Please try again.",
+      "openGrimodex": "Open Grimodex",
+      "launchFallback": "If Grimodex does not open, launch the local app manually, choose Continue from Web Editor, and select the downloaded file."
+    },
+    "desktopImport": {
+      "action": "Continue from Web Editor",
+      "title": "Continue from the Web Editor",
+      "description": "Import your edits into the local Grimodex app from the handoff file downloaded in the Web Editor.",
+      "fileNotice": "Select the downloaded .grimodex-handoff file. The original file will not be modified.",
+      "selectFile": "Select handoff file",
+      "importing": "Importing…",
+      "unknownError": "Unknown error",
+      "failed": "Could not import the handoff file: {{error}}"
+    },
+    "settings": {
+      "categories": {
+        "project": "Project",
+        "ai": "AI",
+        "editor": "Editor",
+        "display": "Display",
+        "about": "About"
+      }
+    },
+    "ai": {
+      "connectLocal": "Connect to local AI"
+    },
+    "ollama": {
+      "browserSetup": "Allow the Web Editor origin in Ollama, then restart Ollama. Use only the origin shown below rather than a wildcard. A PC's localhost means that PC; a phone's localhost means the phone itself.",
+      "localNetworkPermission": "For a local Ollama endpoint, allow local network access if your browser asks for permission.",
+      "setupLink": "Ollama origin setup",
+      "browserPermissionLink": "Browser local-network permission"
     }
   },
   "app": {
@@ -498,7 +653,8 @@
     "exportTitle": "Export (Ctrl+Shift+E)",
     "exportLabel": "Export",
     "settingsTitle": "Settings (Ctrl+Alt+,)",
-    "settingsLabel": "Settings"
+    "settingsLabel": "Settings",
+    "settingsLabelUpdateAvailable": "Settings (update available)"
   },
   "a11y": {
     "skipToContent": "Skip to content",
@@ -529,32 +685,20 @@
       "animations": "Animations",
       "reduceMotion": "Reduce motion",
       "reduceMotionDesc": "Disable UI animations for dialogs, dropdowns, etc.",
-      "layout": "Layout",
-      "cardLayout": "Card layout",
-      "cardLayoutDesc": "Float panels as soft rounded cards separated by gaps. When off, panels abut with 1px splitter lines. Mutually exclusive with the glass effect.",
+      "editorBackground": "Editor background",
+      "backgroundStudio": "Background Studio",
+      "backgroundStudioDesc": "Adjust the background shared by normal and Zen views while watching the real editor.",
+      "openBackgroundStudio": "Open live adjustment",
       "codexHighlight": "Codex Highlight",
       "enableHighlight": "Enable Codex highlight",
       "highlightStyle": "Highlight style",
       "colorText": "Text color + highlight",
       "underline": "Underline",
+      "codexOpacity": "Highlight opacity",
+      "codexOpacityDesc": "Background tint strength (100% = default)",
       "attribution": "Attribution",
       "attributionOpacity": "Attribution highlight opacity",
-      "attributionOpacityDesc": "Background intensity when Attribution is visible (5–25%)",
-      "glass": "Glass",
-      "glassEffectEnabled": "Enable glass effect",
-      "glassEffectEnabledDesc": "Applies translucent glass surfaces across the app chrome. Mutually exclusive with the card layout.",
-      "glassTransparency": "Transparency",
-      "glassTransparencyDesc": "Higher values let more of what's behind the window show through, uniformly across all glass surfaces.",
-      "glassBackdropGradient": "Tinted backdrop gradient",
-      "glassBackdropGradientDesc": "Adds a soft tinted highlight at the top corners using the active color theme. Turn off for a flat translucent backdrop.",
-      "glassNativeVibrancy": "macOS native vibrancy",
-      "glassNativeVibrancyDesc": "Uses the native macOS window material when available.",
-      "glassSurfaceShell": "Window and header",
-      "glassSurfaceDock": "Dock and tabs",
-      "glassSurfacePanels": "Panels",
-      "glassSurfaceChat": "Chat",
-      "glassSurfacePopovers": "Popovers and dialogs",
-      "glassSurfaceEditorChrome": "Editor chrome"
+      "attributionOpacityDesc": "Background intensity when Attribution is visible (5–25%)"
     },
     "editor": {
       "textDisplay": "Text Display",
@@ -617,6 +761,18 @@
       "slashCommand": "Enable / commands",
       "paletteShortcut": "Enable Ctrl+Shift+Space palette",
       "bubbleMenu": "Show selection toolbar",
+      "aozoraInput": "Aozora notation input aid",
+      "aozoraInputDesc": "While typing, convert ｜base《reading》 and 漢字《reading》 to ruby, and 《《text》》 to emphasis dots",
+      "autoPairBrackets": "Auto-close bracket pairs",
+      "autoPairBracketsDesc": "Typing 「『（【〔［〈｛ auto-inserts the matching close (typing the close steps over it instead of duplicating)",
+      "showInvisibles": "Show whitespace & line breaks",
+      "showInvisiblesDesc": "Reveal space ·, ideographic space □, tab →, paragraph end ¶, and line break ↵ in a faint color",
+      "codexCompletion": "Codex completion",
+      "codexCompletionDesc": "Suggest Codex names and aliases while typing. Press Tab to accept. Disabled during IME composition.",
+      "codexReadingPrompt": "Confirm saving manual ruby as a Codex reading",
+      "codexReadingPromptDesc": "When a Codex name or alias has no reading, ask whether to save a manually applied ruby annotation as its reading.",
+      "codexPopoverOnCaret": "Show Codex popover at caret",
+      "codexPopoverOnCaretDesc": "Show the entry popover when the text caret enters a Codex highlight (hover display is always on)",
       "animation": "Animations",
       "disableAll": "Disable all animations",
       "disableAllDesc": "Turn off all settings below at once",
@@ -629,6 +785,88 @@
       "caretMotionReset": "Reset to defaults",
       "caretMotionPreviewDesc": "Click a character or use ←→ / Home / End to move the caret. Interacting stops the autoplay.",
       "fadeOut": "Character fade-out",
+      "zenBackground": "Zen Background Shader",
+      "zenBackgroundPreview": "Static preview of the Zen background",
+      "zenBackgroundShader": "Background",
+      "zenBackgroundShaderDesc": "A writing-friendly selection from Paper Shaders. The text column always stays opaque and still.",
+      "zenShader_mesh-gradient": "Mesh Gradient",
+      "zenShader_grain-gradient": "Grain Gradient",
+      "zenShader_neuro-noise": "Neuro Noise",
+      "zenShader_warp": "Warp",
+      "zenShader_static-mesh-gradient": "Static Mesh",
+      "zenOpacity": "Intensity",
+      "zenSpeed": "Speed",
+      "zenSpeedDesc": "Set to 0 for a still frame. Animation also pauses when the window is inactive or Reduce Motion is enabled.",
+      "zenScale": "Scale",
+      "zenRotation": "Rotation",
+      "zenOffsetX": "Horizontal position",
+      "zenOffsetY": "Vertical position",
+      "zenPalette": "Palette",
+      "zenPalette_theme": "Follow current theme",
+      "zenPalette_custom": "Custom",
+      "zenColor": "Color {{index}}",
+      "zenColorBack": "Background color",
+      "zenMeshDistortion": "Organic distortion",
+      "zenMeshSwirl": "Swirl",
+      "zenGrainMixer": "Edge grain",
+      "zenGrainOverlay": "Overall grain",
+      "zenGrainShape": "Shape",
+      "zenGrainShape_wave": "Wave",
+      "zenGrainShape_dots": "Dots",
+      "zenGrainShape_truchet": "Truchet",
+      "zenGrainShape_corners": "Corners",
+      "zenGrainShape_ripple": "Ripple",
+      "zenGrainShape_blob": "Blob",
+      "zenGrainShape_sphere": "Sphere",
+      "zenGrainSoftness": "Color softness",
+      "zenGrainIntensity": "Band distortion",
+      "zenGrainNoise": "Noise",
+      "zenNeuroBrightness": "Crossing brightness",
+      "zenNeuroContrast": "Contrast",
+      "zenWarpShape": "Base pattern",
+      "zenWarpShape_checks": "Checks",
+      "zenWarpShape_stripes": "Stripes",
+      "zenWarpShape_edge": "Edge",
+      "zenWarpProportion": "Color proportion",
+      "zenWarpSoftness": "Color softness",
+      "zenWarpDistortion": "Noise distortion",
+      "zenWarpSwirl": "Swirl",
+      "zenWarpIterations": "Swirl layers",
+      "zenWarpShapeScale": "Pattern scale",
+      "zenStaticPositions": "Color positions",
+      "zenStaticWaveX": "Horizontal wave",
+      "zenStaticWaveXShift": "Horizontal phase",
+      "zenStaticWaveY": "Vertical wave",
+      "zenStaticWaveYShift": "Vertical phase",
+      "zenStaticMixing": "Color mixing",
+      "zenDither": "Dither filter",
+      "zenDitherDesc": "Quantizes the Paper shader output with a Bayer dither.",
+      "zenDitherStrength": "Dither strength",
+      "zenDitherSize": "Dither pixel size",
+      "zenDitherLevels": "Color levels",
+      "zenHalftone": "Color Halftone filter",
+      "zenHalftoneDesc": "Separates the Paper shader output into CMYK screen dots.",
+      "zenHalftoneStrength": "Halftone strength",
+      "zenHalftoneSize": "Dot size",
+      "zenHalftoneAngle": "Screen angle",
+      "zenHalftoneSoftness": "Dot softness",
+      "zenContrastGuard": "Readability protection",
+      "zenContrastGuardDesc": "Corrects only background pixels inside the writing column that lack contrast with the current text color, entirely on the GPU.",
+      "zenContrastGuardNone": "None",
+      "zenContrastGuardAuto": "Automatic",
+      "zenContrastGuardStrength": "Protection strength",
+      "zenContrastGuardStrengthDesc": "Targets 4.5:1 at 0% and 7:1 at 100%. The text color never changes.",
+      "zenContrastGuardToolMix": "Tool correction strength",
+      "zenContrastGuardToolMixDesc": "Adjusts the correction blended into tool surfaces separately from the writing column, from 0–75% (50% by default).",
+      "zenGlassEnabled": "Glass effect",
+      "zenGlassEnabledDesc": "Applies Fluid Glass to the writing editor while the background is visible. Text and the editable DOM are never filtered.",
+      "zenGlassBlur": "Backdrop blur",
+      "zenGlassBlurDesc": "Blurs only the shader behind the writing surface.",
+      "zenGlassRefraction": "Refraction",
+      "zenGlassRefractionDesc": "Bends the live shader along the complete Editor boundary on the GPU. Its center and text stay stationary.",
+      "zenGlassSaturation": "Glass saturation",
+      "zenGlassShine": "Shine",
+      "zenGlassShineDesc": "Controls surface highlights and reflections.",
       "beats": "Beats",
       "focusModeHideBeats": "Hide beats in Focus Mode",
       "focusModeHideBeatsDesc": "Hide beat blocks when Focus Mode is active",
@@ -648,7 +886,7 @@
     "ai": {
       "mcp": {
         "title": "MCP Integration",
-        "description": "Copy a .mcp.json to the clipboard for external MCP clients (Claude Code / Hermes Agent); the app binary runs as the MCP server. Pick a scope and write permission. \"Read-only\" adds --readonly (cloud-safe default). \"Per policy\" omits --readonly, leaving writes governed by the project's AI policy (knowledgeWrite/bodyWrite) — for local/trusted clients.",
+        "description": "Copy a .mcp.json to the clipboard for external MCP clients (Claude Code / Hermes Agent); it launches the MCP server command provided by Grimodex. Pick a scope and write permission. \"Read-only\" adds --readonly (cloud-safe default). \"Per policy\" omits --readonly, leaving writes governed by the project's AI policy (knowledgeWrite/bodyWrite) — for local/trusted clients.",
         "scopeProject": "This project",
         "scopeProjectDesc": "Current project only (pinned via --project)",
         "scopeAll": "All projects (local)",
@@ -683,6 +921,8 @@
         "sameProvider": "Same provider as chat",
         "unavailableProvider": "The selected provider/endpoint is no longer available (key or endpoint removed). Sends will fail or go to a different target.",
         "unavailableOption": "{{provider}} (unavailable)",
+        "staleModel": "The saved model {{model}} is not in the current provider's model list (e.g. a leftover from before a provider switch). Sends may fail until it is changed.",
+        "staleModelOption": "{{model}} (not in list)",
         "reset": "Reset",
         "cacheNote": "Note: picking a model from a different provider than your default for a role splits that path's prompt cache, which can raise cost and latency.",
         "conversation": {
@@ -736,7 +976,7 @@
       "webSearch": {
         "title": "Web search (RAG) domain control",
         "providerNote": "Only effective with OpenRouter / Anthropic.",
-        "privacyNote": "Enabling web search sends your search queries to a third-party search provider (via OpenRouter / Anthropic). The AI is instructed not to search your manuscript text verbatim, but this is not enforced. Also, fetched web pages may contain hidden instructions that try to manipulate the AI (prompt injection). Don't take results at face value, and review outputs especially when combined with agent mode.",
+        "privacyNote": "Enabling web search sends your current request to a third-party search provider (via OpenRouter / Anthropic). Public web-search turns do not include project context or chat history; private Agent turns disable Web search. Fetched pages may still contain hidden prompt-injection instructions, so review results before using them.",
         "domainMode": "Domain filter",
         "domainModeDesc": "Restrict search results with an allow or block list. Allow and block cannot be used together.",
         "domainModeOff": "No filter",
@@ -840,6 +1080,13 @@
       "structuredTasksV1Note": "Available on v1 models, but disabled by default to be safe.",
       "structuredTasksLegacyNote": "This provider has low structured-output (JSON) accuracy, so it is disabled by default.",
       "cliKind": "CLI type",
+      "codexTransport": "Codex transport",
+      "codexTransportDesc": "Defaults to the compatible codex exec path. App Server uses resident JSON-RPC; auto falls back to exec only before startup.",
+      "codexAllowApprovals": "Allow approval-gated workspace writes",
+      "codexAllowApprovalsDesc": "Off (recommended) keeps the session read-only. When enabled, command and file changes are allowed only after you approve them, and only inside the active workspace.",
+      "codexAppServerTest": "Test App Server connection",
+      "codexAppServerConnected": "App Server connected: {{status}}",
+      "codexAppServerConnectionFailed": "App Server connection failed: {{error}}",
       "cliAuthNoteBefore": "Authenticate in advance on the CLI side with ",
       "cliAuthNoteAfter": " etc. Tools (file R/W / shell) are all disabled when launched from this panel.",
       "binaryPath": "Binary path",
@@ -1011,6 +1258,18 @@
       "backupIntervalFormat": "{{v}}min",
       "maxBackups": "Max Backups",
       "maxBackupsFormat": "{{v}}",
+      "restoreTitle": "Restore from Backup",
+      "restoreDesc": "Replace the entire workspace (all projects) with the selected backup. The current state is saved automatically first, and the app reloads when done.",
+      "restoreNone": "No backups yet",
+      "restoreNoWorkspace": "No workspace is open",
+      "restoreRefresh": "Refresh",
+      "restoreAction": "Restore",
+      "restoreConfirm": "Replace & restore",
+      "restoreRunning": "Restoring…",
+      "restoreUnsupported": "Unsupported format",
+      "restoreSuccess": "Restored from backup",
+      "restoreFail": "Restore failed",
+      "restoreListFail": "Could not load the backup list",
       "revision": "Revision History",
       "revisionInterval": "Auto Revision Interval",
       "revisionIntervalFormat": "{{v}}min",
@@ -1060,10 +1319,42 @@
       "createError": "Failed to create type",
       "updateError": "Failed to update type",
       "deleteError": "Failed to delete type",
-      "colorInUse": "{{label}} (in use by {{usedBy}})"
+      "colorInUse": "{{label}} (in use by {{usedBy}})",
+      "imeTitle": "IME integration",
+      "imeDescription": "Writes Codex names and aliases to a local conversion dictionary for the active work. No network connection is used.",
+      "imeMode": "Integration mode",
+      "imeModeDesc": "Auto writes only when a compatible IME consumer is detected.",
+      "imeModeAuto": "Auto (recommended)",
+      "imeModeOn": "Always on",
+      "imeModeOff": "Off",
+      "imeExcludeHidden": "Exclude entries hidden from AI",
+      "imeExcludeHiddenDesc": "Do not include entries whose context setting is Exclude from AI.",
+      "imeIncludeProfile": "Write work profile",
+      "imeIncludeProfileDesc": "Include genre, outline, and key entries for context-aware IMEs.",
+      "imeEnabled": "IME export enabled",
+      "imeDisabled": "IME export disabled",
+      "imeConsumerCount": "{{count}} consumer(s)",
+      "imePlatformLinux": "Linux",
+      "imePlatformWindows": "Windows",
+      "imePlatformMacos": "macOS",
+      "imeCapabilityDynamicDictionary": "Dynamic dictionary",
+      "imeCapabilityZenzaiV3": "Zenzai v3",
+      "imeCapabilityApplicationScoping": "App scoped",
+      "imeLinuxInstallTitle": "No compatible Linux IME found",
+      "imeLinuxInstallDescription": "Install the IME separately from Grimodex. Enable a compatible IME in Fcitx 5 or IBus and Grimodex will detect its consumer automatically.",
+      "imeLinuxInstallDocs": "Open the IME distribution page",
+      "imeClear": "Delete all generated dictionaries",
+      "imeClearDone": "IME dictionaries deleted",
+      "imeClearFailed": "Failed to delete IME dictionaries",
+      "imeSyncFailed": "Failed to update IME integration"
     },
     "about": {
       "github": "GitHub",
+      "openLogDir": "Open log folder",
+      "checkForUpdates": "Check for updates",
+      "updateNowVersion": "Update now (v{{version}})",
+      "restartToUpdate": "Restart to update",
+      "downloadingProgress": "Downloading… {{pct}}%",
       "searchPlaceholder": "Search {{count}} libraries…",
       "notFound": "No libraries found matching \"{{query}}\"",
       "full": "Full text",
@@ -1073,7 +1364,7 @@
       "docLoadError": "Failed to load document: {{message}}",
       "terms": {
         "title": "Terms of Use",
-        "description": "Grimodex usage terms and disclaimer (Japanese only)"
+        "description": "Grimodex usage terms and disclaimer (English reference translation available)"
       },
       "developerMessage": {
         "title": "Message from the developer",
@@ -1170,6 +1461,7 @@
         "summarization": "Summarization",
         "context_creator": "Context Creator",
         "codex_judgment": "Proper-noun candidate judgment",
+        "codex_yomi": "Reading estimation",
         "plot_thread_extract": "Plot thread extraction",
         "chronicle_extract": "Chronicle event extraction"
       }
@@ -1290,6 +1582,122 @@
     }
   },
   "kouetsu": {
+    "triage": {
+      "openSuffix": "open issues",
+      "noOpen": "No open issues",
+      "lastCheck": "Last check {{time}}",
+      "sev": {
+        "high": "Critical",
+        "mid": "Warning",
+        "low": "Suggestion"
+      },
+      "time": {
+        "justNow": "just now",
+        "minutesAgo": "{{count}}m ago",
+        "yesterday": "yesterday"
+      },
+      "neverRun": "Not run",
+      "auto": "Auto",
+      "manual": "Manual",
+      "runningBadge": "Running {{done}}/{{total}}",
+      "runningTitle": "Running — click to show the pipeline",
+      "doneBadge": "Done: {{count}}",
+      "dashboardToggle": "Aspect dashboard",
+      "effectsNote": "Impact review runs manually when Codex entries change",
+      "pipeline": {
+        "done": "Done — {{count}} issues",
+        "cancelled": "Cancelled — ran {{done}}/{{total}} aspects",
+        "running": "Full check — {{scope}}",
+        "back": "Back",
+        "waiting": "Waiting",
+        "excluded": "Not included",
+        "sceneLint": "Covered by live lint",
+        "impactManual": "Manual on Codex changes",
+        "noFindings": "No findings",
+        "count": "{{count}}"
+      },
+      "card": {
+        "jump": "Open in text",
+        "resolve": "Resolve",
+        "dismiss": "Dismiss",
+        "later": "Later",
+        "fixTitle": "Apply fix"
+      },
+      "restore": "Restore",
+      "runHistory": "Run history",
+      "catFilter": "Aspect: {{label}}",
+      "sort": {
+        "severity": "Sort: severity",
+        "grouped": "Grouped by aspect",
+        "dismissed": "Dismissed items"
+      },
+      "emptyOpen": "No open issues in this scope",
+      "emptyDismissed": "No dismissed issues",
+      "run": "Run",
+      "rerun": "Re-run",
+      "ok": "No issues",
+      "noImpact": "No impact",
+      "aiDetected": "AI detected",
+      "compare": {
+        "codex": "CODEX ENTRY",
+        "body": "TEXT",
+        "change": "CHANGE"
+      },
+      "lintDisables": "Lint disables",
+      "runCategoryFailed": "Failed to launch the check"
+    },
+    "openLog": "Open logs",
+    "openLogFailed": "Failed to open the log folder",
+    "partialFailure": "Some scenes failed to analyze",
+    "fullCheck": {
+      "run": "Full check",
+      "configure": "Checks to run",
+      "progress": "{{done}}/{{total}} checks",
+      "cancel": "Cancel",
+      "completed": "Full check done — {{count}} findings",
+      "completedWithFailures": "Done with {{failed}} failed checks",
+      "alreadyRunning": "Already running",
+      "lintProjectWide": "Proofreading always scans the whole project",
+      "lintSceneSkipped": "Skipped — the current scene is linted live",
+      "stepHelp": {
+        "lint": "Rule-based, mechanical checks for style, punctuation and notation (no AI)",
+        "typo": "AI detects typos, okurigana errors, missing particles and more",
+        "consistency": "AI cross-checks the text against Codex entries and finds in-scene contradictions",
+        "review": "AI critiques structure, pacing, character arcs and point of view",
+        "meta": "AI analyzes structural issues such as chaptering and scene transitions",
+        "timeline": "AI checks chronological contradictions (dates, elapsed time)",
+        "intent": "AI diagnoses drift between the scene's stated intent and the text"
+      }
+    },
+    "progressToast": {
+      "running": "Running…",
+      "runningProgress": "Running scene {{progress}}",
+      "done": "Done — {{count}} findings",
+      "doneNoFindings": "Done — no findings",
+      "donePartial": "Done with some scene failures — {{count}} findings",
+      "cached": "Reused cached result — nothing has changed since the last run",
+      "failed": "Failed: {{error}}",
+      "abort": "Abort",
+      "aborting": "Aborting…",
+      "abortFailed": "Failed to request abort",
+      "close": "Close",
+      "effect": {
+        "review": "AI review",
+        "typo_detection": "Typo check",
+        "consistency": "Codex consistency",
+        "intra_scene_consistency": "In-scene contradictions",
+        "intent_drift": "Intent drift",
+        "pseudo_comment": "Pseudo comments",
+        "meta_structure": "Meta structure",
+        "timeline_consistency": "Timeline check",
+        "impact_review": "Impact review"
+      },
+      "scope": {
+        "scene": "Current scene",
+        "folder": "Folder",
+        "project": "Project"
+      }
+    },
     "tension": {
       "title": "Tension curve",
       "saggy": "■ Saggy stretch",
@@ -1297,7 +1705,6 @@
     },
     "tab": {
       "issues": "Issues",
-      "editorial": "Editorial",
       "comments": "Comments",
       "blocker": "Blockers"
     },
@@ -1323,17 +1730,20 @@
     },
     "comments": {
       "empty": "No comments",
-      "emptyHint": "Select text and press {{shortcut}} to add a manual comment; pseudo-comments from the Editorial tab are also aggregated here",
+      "emptyHint": "Select text and press {{shortcut}} to add a comment. Generate AI comments with the “AI Comment” button above.",
       "jumpToLocation": "Open and select location"
     },
     "scope": {
       "current": "Current scene",
-      "project": "Project",
-      "ignored": "Excluded"
+      "project": "Project"
+    },
+    "scopePicker": "Select check scope",
+    "filter": {
+      "open": "Open",
+      "dismissed": "Dismissed"
     },
     "editorial": {
       "review": "Review",
-      "pseudoComment": "Pseudo-comments",
       "intentDrift": "Intent drift",
       "metaStructure": "Meta structure",
       "timeline": "Timeline"
@@ -1371,7 +1781,9 @@
       "executionFailed": "Failed to execute intent drift diagnosis",
       "noIssues": "No clear intent drift found",
       "launchFailed": "Failed to launch intent drift diagnosis",
-      "empty": "No intent-drift findings yet"
+      "empty": "No intent-drift findings yet",
+      "serialPartial": "{{failed}} of {{total}} scenes failed to diagnose",
+      "serialCancelled": "Stopped partway"
     },
     "metaStructure": {
       "noExcluded": "No excluded items in meta structure",
@@ -1385,7 +1797,6 @@
       "runTooltip": "Run meta-structure review"
     },
     "pseudoComment": {
-      "projectUnavailable": "Pseudo-comments are generated per scene. Use the Comments tab for cross-project view",
       "emptyIgnored": "No ignored pseudo-comments",
       "generationFailed": "Failed to generate pseudo comments",
       "noComments": "No comments generated",
@@ -1393,7 +1804,6 @@
       "targetProfileRequired": "Enter target reader profile in project settings to enable",
       "requiresTargetProfile": " (requires target reader setting)",
       "generateButton": "AI Comment",
-      "empty": "No comments yet",
       "runTooltip": "Generate comments with the selected persona"
     },
     "review": {
@@ -1413,8 +1823,6 @@
       "checkFailed": "Typo check failed",
       "noIssues": "No typos found",
       "launchFailed": "Failed to launch typo check",
-      "localDetection": "Local Detection",
-      "localEmpty": "No confirmed typos found",
       "aiDetection": "AI Detection",
       "aiEmpty": "AI check not run / no findings",
       "resolvedIgnored": "Resolved / Ignored",
@@ -1466,7 +1874,10 @@
       "empty": "No consistency issues found"
     },
     "projectIntentDrift": {
-      "header": "All Scenes Intent Drift (view only)"
+      "header": "All Scenes Intent Drift",
+      "runTooltip": "Diagnose intent drift for every scene that has an intent",
+      "failed": "Failed to diagnose intent drift for all scenes",
+      "launchFailed": "Failed to launch intent drift diagnosis for all scenes"
     },
     "projectReview": {
       "failed": "Failed to review all scenes",
@@ -1521,6 +1932,10 @@
       "answered": "Answered",
       "dismissed": "Skipped"
     },
+    "codexApprovalTitle": "Codex action approval",
+    "codexApprovalDiff": "Proposed changes",
+    "codexApprovalAccept": "Allow",
+    "codexApprovalDecline": "Decline",
     "sendTitle": "Send / Right-click: copy prompt",
     "stopTitle": "Stop generation (Esc)",
     "stopAriaLabel": "Stop generation",
@@ -1589,6 +2004,8 @@
       "on": "Web search ON (click to turn off)",
       "off": "Enable web search (click to turn on)",
       "unavailable": "This provider does not support web search (OpenRouter / Anthropic only)",
+      "unavailableWebEditor": "Web search is not included in the Web Editor trial",
+      "agentPrivacyNote": "Private Agent mode disables Web search for this turn so project data stays separate.",
       "searching": "Searching the web…",
       "egressNote": "Search queries are sent to a third-party search provider.",
       "injectionNote": "Fetched web content may contain instructions that try to manipulate the AI. Review the output.",
@@ -1762,7 +2179,8 @@
         "RAG": "Related scenes (semantic)",
         "EPISODIC": "Past conversation memory",
         "L5": "Conversation summary",
-        "L6": "Command instruction"
+        "L6": "Command instruction",
+        "CONVERSATION": "Conversation history"
       },
       "promptPreviewLoading": "Building prompt…",
       "promptSnapshotMissing": "No sent-prompt record for this message (it was sent before this feature was added).",
@@ -1776,6 +2194,12 @@
       "unpinSpotlight": "Remove Spotlight: {{label}}",
       "childViaParent": "via {{name}}",
       "viaIndicator": "↑{{name}}",
+      "decisionSummary": "{{count}} not included",
+      "decisionSummaryTitle": "Context decisions",
+      "decisionUnavailable": "Unavailable",
+      "decisionTrimmed": "Trimmed by budget",
+      "decisionExcluded": "Excluded by policy",
+      "decisionMore": "and {{count}} more",
       "heading": "Context"
     },
     "conversationSummary": "Conversation summary",
@@ -2004,7 +2428,9 @@
       "searching": "Searching...",
       "checkOccurrences": "Check occurrences",
       "noMentions": "Not mentioned in text",
-      "appearsIn": "Appears in"
+      "appearsIn": "Appears in",
+      "automatic": "Automatic match",
+      "semantic": "Explicit link"
     },
     "tracking": {
       "contextLabel": "Context",
@@ -2012,11 +2438,25 @@
       "always": "Always include",
       "alwaysDesc": "Always inject into AI context",
       "mentioned": "When mentioned",
-      "mentionedDesc": "Inject when detected in scene",
+      "mentionedDesc": "Inject when detected in the current scene/current turn, explicitly selected via Spotlight/Codex scope, or open in the active tab",
       "manual": "Manual only",
-      "manualDesc": "Only via Spotlight",
+      "manualDesc": "Only when explicitly selected via Spotlight/Codex scope",
       "hidden": "Exclude from AI",
       "hiddenDesc": "Never inject into AI context"
+    },
+    "readings": {
+      "label": "Readings (furigana)",
+      "estimate": "Estimate with AI",
+      "manage": "Manage readings",
+      "auto": "Auto: {{yomi}}",
+      "noSurfaces": "Set a name or aliases to add readings",
+      "backfillTitle": "Bulk reading estimation",
+      "backfillDesc": "AI estimates readings for kanji-bearing surfaces that have none. Used for IME dictionary injection, ruby, and kana sorting.",
+      "backfillRun": "Estimate all missing readings",
+      "backfillRunning": "Estimating… ({{done}}/{{total}})",
+      "backfillNone": "No surfaces need estimation",
+      "backfillDone": "Registered {{count}} readings",
+      "backfillFailed": "Bulk reading estimation failed"
     },
     "mentions": {
       "sourceChat": "Source chat: {{title}}"
@@ -2055,6 +2495,7 @@
       "started": "Checking {{count}} scenes… (results appear in the Review panel)",
       "noChange": "No changes since the last check",
       "noCandidates": "No affected scenes were found",
+      "sourceChanged": "Settings or scene text changed before launch. Please try again",
       "done": "Impact review complete",
       "error": "Impact check failed"
     },
@@ -2064,7 +2505,7 @@
     },
     "timeline": {
       "noPhases": "No phases configured.",
-      "noPhasesDesc": "Phases record state changes you want the AI to remember after scenes scroll out of context. Temporary events are lighter in scene body or synopsis. Phases can also serve as wiki-only notes the AI never sees.",
+      "noPhasesDesc": "Phases record state changes you want the AI to remember after scenes scroll out of context. Temporary events are lighter in scene body or synopsis. Use suppress for records selected only when needed, or hidden for records AI must never see.",
       "currentSceneHere": "You are here: {{title}}",
       "noSceneContext": "No scene selected — applying Base",
       "orderModeReading": "Order: Reading",
@@ -2077,11 +2518,11 @@
       "empty": "(empty)",
       "contentOverride": "(overridden)",
       "exposureAiCount": "AI-visible: {{count}}",
-      "exposureWikiCount": "Wiki-only: {{count}}",
+      "exposureWikiCount": "Auto-excluded: {{count}}",
       "exposureAiChars": "(~{{chars}} chars)",
       "exposureTitle": "Phase AI exposure",
-      "exposureDesc": "Only \"AI-visible\" phases are injected into the prompt. \"Wiki-only\" phases (suppress/hidden) never reach AI, so you can stack as many as you like for planning or pure record-keeping without bloating prompts.",
-      "exposureCostWarning": "AI-visible summary is {{chars}} chars — a bit heavy. Trimming summaries or switching past phases to Wiki-only will lighten AI output.",
+      "exposureDesc": "always is injected continuously. mentioned is injected when detected in the current scene/current turn, explicitly selected via Spotlight/Codex scope, or open in the active tab. suppress is injected only through an explicit Spotlight/Codex-scope selection, while hidden never reaches AI through any path.",
+      "exposureCostWarning": "AI-visible summary is {{chars}} chars — a bit heavy. Trimming summaries or switching past phases to suppress / hidden will lighten normal-turn AI output.",
       "summaryQuoted": "\"{{value}}\"",
       "noAnchorScene": "No anchor scene set",
       "addPhase": "Add phase",
@@ -2162,6 +2603,7 @@
       "tagsChanged": "Tags changed",
       "aliasesChanged": "Aliases changed",
       "excludedAliasesChanged": "Excluded aliases changed",
+      "readingsChanged": "Readings changed",
       "parentChanged": "Parent changed",
       "contextModeChanged": "Context mode changed",
       "iconChanged": "Icon changed",
@@ -3143,14 +3585,11 @@
     "noActiveScene": "No active scene"
   },
   "commandCenter": {
-    "placeholderSearch": "Search… (> for command mode)",
-    "placeholderCommand": "Command…",
+    "placeholderSearch": "Search…",
     "sectionLexical": "Lexical",
     "sectionSemantic": "Semantic",
-    "sectionCommand": "Commands",
     "loading": "Searching…",
     "noResults": "No results",
-    "emptyHint": "Type to search (> for command mode)",
     "untitled": "(Untitled)",
     "filter": {
       "sourceLabel": "Source",
@@ -3169,15 +3608,7 @@
       "off": "OFF"
     },
     "panel": {
-      "emptyHint": "Type to search (> for command mode)"
-    },
-    "sectionCommands": "Commands",
-    "sectionQuickOpen": "Jump to",
-    "command": {
-      "openSettings": "Open Settings",
-      "export": "Export",
-      "restartTour": "Restart Tour",
-      "togglePanel": "Toggle Panel: {{panel}}"
+      "emptyHint": "Type to search"
     }
   },
   "chatCommands": {
@@ -3246,7 +3677,8 @@
         "dropToUnplace": "Drop beat here to unplace",
         "emptyState": "No beats yet. Click + to add your first beat.",
         "placedHeading": "Placed (in document order):",
-        "emptyBeat": "empty beat"
+        "emptyBeat": "empty beat",
+        "paragraphRef": "Body ¶{{n}}"
       },
       "modelInherit": "Inherit model",
       "actionBarKeep": "Keep",
@@ -3278,7 +3710,35 @@
     "bubbleMenu": {
       "label": "Selection toolbar",
       "comment": "Add comment",
-      "foreshadow": "Mark as foreshadowing"
+      "foreshadow": "Mark as foreshadowing",
+      "semanticLink": "Link to Codex entry",
+      "ai": "Edit with AI"
+    },
+    "semanticLink": {
+      "pickerLabel": "Codex semantic link",
+      "heading": "Link to Codex entry",
+      "search": "Search Codex entries",
+      "searchPlaceholder": "Search names and aliases…",
+      "noResults": "No entries found",
+      "remove": "Remove Codex link",
+      "deletedEntry": "Deleted Codex entry",
+      "danglingHelp": "The linked entry was deleted. Select the text to reassign or remove the link."
+    },
+    "zen": {
+      "entryHint": "Zen · {{title}} · Esc to exit",
+      "entryHintNoTitle": "Zen · Esc to exit"
+    },
+    "background": {
+      "title": "Background Studio",
+      "open": "Adjust background live",
+      "close": "Close Background Studio",
+      "enabled": "Show background",
+      "enabledDescription": "Turn this off to stop the shader and restore the standard editor surface. Your settings are preserved.",
+      "commonSection": "Background",
+      "glassSection": "Glass effect",
+      "propsSection": "Shader props",
+      "filtersSection": "Post filters",
+      "shaderDescription": "Shared by normal and Zen views. Changes appear immediately on the real canvas behind this panel."
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
@@ -3286,6 +3746,7 @@
       "underline": "Underline (Ctrl+U)",
       "strikethrough": "Strikethrough (Ctrl+Shift+X)",
       "emphasisDots": "Emphasis dots (Ctrl+.)",
+      "tateChuYoko": "Tate-chu-yoko",
       "heading1": "Heading 1 (Ctrl+1)",
       "heading1Short": "Heading 1",
       "heading2": "Heading 2 (Ctrl+2)",
@@ -3302,13 +3763,11 @@
       "linkShort": "Link",
       "sceneBreak": "Scene break (* * *)",
       "fontSize": "Font size",
-      "attribution": "Attribution",
-      "comments": "Comments (not implemented)",
-      "foreshadowMarks": "Show foreshadow marks",
-      "reviewMarks": "Show review annotations",
+      "layers": "Body layers",
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
       "verticalMode": "Vertical writing (this work)",
+      "reorderMode": "Reorder (in-paragraph)",
       "sceneMetaPanel": "Scene info panel",
       "moreOptions": "More options",
       "findReplace": "Find and replace",
@@ -3317,8 +3776,43 @@
       "showLineNumbers": "Show line numbers",
       "rubyBase": "Base",
       "rubyAnnotation": "Reading",
+      "codexReadingPromptTitle": "Save a reading for “{{surface}}”?",
+      "codexReadingPromptDescription": "Save “{{reading}}” as its Codex reading so ruby can be applied automatically next time.",
+      "codexReadingPromptRegister": "Save as reading",
+      "codexReadingPromptDisable": "Don't ask again",
       "urlPlaceholder": "https://...",
-      "label": "Editor toolbar"
+      "label": "Editor toolbar",
+      "zenMode": "Zen mode",
+      "fullscreenMode": "Fullscreen"
+    },
+    "reorder": {
+      "title": "Reorder — within paragraph",
+      "granularitySentence": "Sentence",
+      "granularityBunsetsu": "Bunsetsu",
+      "granularityPhrase": "Phrase",
+      "granularityWord": "Word",
+      "granularityCharacter": "Character",
+      "loading": "Segmenting…",
+      "singleUnit": "Need at least two units to reorder",
+      "bunsetsuFallback": "Bunsetsu segmentation failed; showing sentences",
+      "segmentFailed": "Segmentation failed",
+      "staleDocument": "The paragraph changed while reordering; confirm aborted.",
+      "cancel": "Cancel",
+      "confirm": "Apply",
+      "hint": {
+        "currentUnit": "Unit: {{unit}}",
+        "base": "Alt: paragraphs / Alt+Shift: sentences · bunsetsu · characters",
+        "baseEn": "Alt: paragraphs / Alt+Shift: sentences · phrases · words · characters",
+        "paragraph": "Reorder paragraphs (drag handle / Alt+arrows)",
+        "altShiftActive": "Reorder within paragraph (drag / Alt+Shift+arrows)",
+        "unitSentence": "Reorder sentences (drag / Alt+Shift+arrows)",
+        "unitBunsetsu": "Reorder bunsetsu (drag / Alt+Shift+arrows)",
+        "switchToBunsetsu": "Alt+Shift+G → bunsetsu",
+        "switchToPhrase": "Alt+Shift+G → phrases",
+        "switchToWord": "Alt+Shift+G → words",
+        "switchToCharacter": "Alt+Shift+G → characters",
+        "switchToSentence": "Alt+Shift+G → sentences"
+      }
     },
     "status": {
       "outline": "Outline",
@@ -3370,6 +3864,7 @@
       "noSnippet": "No snippets available",
       "setRuby": "Set Ruby…",
       "addToCodex": "Add to Codex",
+      "semanticLink": "Link to an existing Codex entry…",
       "registerAsExcludedAlias": "Register as excluded alias of \"{{name}}\"",
       "excludedAliasRegistered": "Registered as excluded alias of \"{{name}}\"",
       "excludedAliasAlreadyExists": "Already registered as an excluded alias",
@@ -3436,6 +3931,43 @@
     "lintDisable": {
       "gutterTooltipAll": "All Lint rules are disabled on this block",
       "gutterTooltipPartial": "{{count}} Lint disable directives on this block"
+    },
+    "gutter": {
+      "comment": "This paragraph has comments",
+      "reader": "This paragraph has reader comments",
+      "foreshadow": "This paragraph has foreshadow marks",
+      "review": "This paragraph has review issues"
+    },
+    "sceneDetail": {
+      "title": "Scene Details",
+      "pov": "POV",
+      "location": "Location",
+      "notSet": "Not set",
+      "searchCharacter": "Search characters…",
+      "searchLocation": "Search locations…",
+      "clearSelection": "Clear selection",
+      "noMatches": "No matches",
+      "synopsisChip": "Synopsis",
+      "synopsisEmpty": "Empty",
+      "beatsChip": "Beats {{count}}"
+    },
+    "layers": {
+      "title": "Body layers",
+      "hideAll": "Hide all",
+      "autoFollow": "Follow panels",
+      "autoFollowHint": "Automatically match layer visibility to open panels",
+      "attribution": "Attribution highlight",
+      "comments": "Comments",
+      "readerComments": "Reader comments",
+      "foreshadow": "Foreshadow marks",
+      "review": "Review issues",
+      "codex": "Codex highlight",
+      "codexStyle": "Style",
+      "codexStyleDefault": "Default",
+      "codexStyleUnderline": "Underline",
+      "codexOpacity": "Codex highlight opacity",
+      "opacity": "Opacity",
+      "aiShare": "AI {{percent}}%"
     },
     "synopsis": {
       "title": "Synopsis",
@@ -3805,9 +4337,9 @@
     "aiExposureDefault": "Keep default (inherit Base)",
     "aiExposureAlways": "Always inject (always)",
     "aiExposureMentioned": "Only when mentioned (mentioned)",
-    "aiExposureSuppress": "Suppress from AI context (suppress)",
-    "aiExposureHidden": "Wiki-only / never shown to AI (hidden)",
-    "aiExposureHint": "\"Wiki-only\" phases never reach the AI prompt, so feel free to use them for planning, outlining, or pure record-keeping without bloating context.",
+    "aiExposureSuppress": "Manual selection only (suppress)",
+    "aiExposureHidden": "Never show to AI (hidden)",
+    "aiExposureHint": "suppress is injected only when explicitly selected via Spotlight/Codex scope; hidden never reaches AI through any path. Both are excluded from normal automatic injection.",
     "saving": "Saving...",
     "history": {
       "created": "Phase created",
@@ -3948,6 +4480,51 @@
     "trustWarning": "Only open workspaces from sources you trust.",
     "trustAndOpen": "Trust & Open",
     "trustCancel": "Cancel"
+  },
+  "vivliostyle": {
+    "title": "Book Export (Vivliostyle)",
+    "tab": "Book Export",
+    "theme": {
+      "label": "Theme",
+      "bunkoVertical": "Bunko (vertical writing)",
+      "shinshoVertical": "Shinsho (vertical writing)",
+      "a4Horizontal": "A4 (horizontal writing)"
+    },
+    "format": {
+      "label": "Format",
+      "pdf": "PDF",
+      "epub": "EPUB"
+    },
+    "cli": {
+      "checking": "Checking for Vivliostyle CLI…",
+      "detected": "Vivliostyle CLI detected ({{version}})",
+      "notFound": "Vivliostyle CLI not found",
+      "guide": "Book export requires Node.js and the Vivliostyle CLI. Install Node.js, then run the following command.",
+      "copyCommand": "Copy",
+      "copied": "Copied",
+      "manualPath": "Set the vivliostyle binary path manually",
+      "manualPathPlaceholder": "e.g. /usr/local/bin/vivliostyle",
+      "redetect": "Detect again"
+    },
+    "build": {
+      "start": "Export",
+      "running": "Typesetting…",
+      "firstRunNote": "The first run downloads Chromium and may take several minutes.",
+      "abort": "Abort",
+      "done": "Typesetting finished",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Saved: {{path}}",
+      "saveFailed": "Failed to save: {{error}}",
+      "failed": "Export failed"
+    },
+    "preview": {
+      "start": "Preview",
+      "stop": "Stop preview",
+      "running": "Preview running",
+      "note": "Opens the typeset result in a separate browser window. The preview stays open even if you close this dialog.",
+      "failed": "Failed to start preview: {{error}}"
+    }
   },
   "export": {
     "selectAll": "Select all",
@@ -4395,6 +4972,18 @@
     "restartTutorial": "Restart Tutorial",
     "createWorkspace": "Create a new workspace",
     "steps": {
+      "workspace": {
+        "slides": {
+          "workspace": {
+            "title": "Workspace",
+            "body": "A workspace is the place where you manage multiple projects and their settings together. Use the menu at the top left to open another folder or create a new workspace."
+          },
+          "project": {
+            "title": "Project",
+            "body": "A project is a single work inside a workspace. Its manuscript, scenes, Codex, and chat history stay organized by project, and you can switch projects from the menu above."
+          }
+        }
+      },
       "scenes": {
         "slides": {
           "overview": {
@@ -4543,6 +5132,14 @@
           }
         }
       },
+      "export": {
+        "slides": {
+          "overview": {
+            "title": "Export",
+            "body": "When your manuscript is ready, use the Export button above to save it as text or a book. Choose the scenes to include, then adjust the format and site-specific options before saving."
+          }
+        }
+      },
       "end": {
         "slides": {
           "summary": {
@@ -4595,6 +5192,23 @@
       "restricted": "Editing is locked without a valid license — reading and exporting are always available.",
       "openSettings": "Open license settings"
     }
+  },
+  "updater": {
+    "updateAvailable": "A new version is available",
+    "updateNow": "Update now",
+    "later": "Later",
+    "downloading": "Downloading update…",
+    "readyToRestart": "Update ready to install",
+    "restartNow": "Restart",
+    "upToDate": "You're up to date",
+    "checkFailed": "Failed to check for updates"
+  },
+  "releaseNotes": {
+    "title": "What's New in v{{version}}",
+    "close": "Close",
+    "viewButton": "View release notes",
+    "notAvailable": "No release notes for this version",
+    "fallbackLocale": "Showing Japanese release notes"
   },
   "semanticSearch": {
     "reindexComplete": "Reindex complete",
@@ -4752,6 +5366,41 @@
       "default": "Default",
       "corkboard": "Corkboard",
       "constellation": "Constellation"
+    },
+    "view": {
+      "board": "Board",
+      "galaxy": "Graph",
+      "switchToGalaxy": "Switch to graph view",
+      "switchToBoard": "Switch to board view"
+    },
+    "galaxy": {
+      "title": "Graph",
+      "refresh": "Refresh",
+      "filters": "Filters",
+      "loading": "Building the graph…",
+      "empty": "No nodes yet. Start writing and the graph will grow.",
+      "loadError": "Failed to load graph data",
+      "noWebgl": "3D view is not available in this environment",
+      "hideOrphans": "Hide orphan nodes",
+      "nodeSection": "Nodes",
+      "edgeSection": "Links",
+      "nodes": {
+        "scenes": "Scenes",
+        "codex": "Codex",
+        "events": "Events",
+        "threads": "Plot threads"
+      },
+      "edges": {
+        "mention": "Mentions",
+        "relation": "Relations",
+        "sequence": "Scene order",
+        "eventLink": "Event links",
+        "participant": "Participants",
+        "thread": "Threads"
+      },
+      "openHint": "Double-click to open",
+      "dimension2d": "2D view",
+      "dimension3d": "3D view"
     },
     "arrange": {
       "readingOrder": "Grid: Reading order",
@@ -5176,7 +5825,10 @@
     "participants": "Lanes (multi-membership)",
     "addParticipant": "+ Lane",
     "removeParticipant": "Remove",
-    "precisionShort": { "approx": "~", "unknown": "?" },
+    "precisionShort": {
+      "approx": "~",
+      "unknown": "?"
+    },
     "legendCausal": "Causal",
     "exactHint": "The date is fixed",
     "approxHint": "Order is certain but the date is approximate",
@@ -5313,6 +5965,7 @@
       "removeFromSet": "Remove from set"
     },
     "sources": {
+      "semantic": "Explicit semantic link",
       "body": "Body mention",
       "beat": "Beat mention",
       "relation": "Explicit relation"
@@ -5392,6 +6045,72 @@
     "deleteConfirmDesc_one": "It will be removed from {{count}} scene or chapter.",
     "deleteConfirmDesc_other": "It will be removed from {{count}} scenes and chapters.",
     "reorder": "Reorder"
+  },
+  "aiDataConsent": {
+    "title": "Review before AI processing",
+    "sentData": "Data processed or sent",
+    "destination": "Processor and location",
+    "storage": "Storage and retention",
+    "sourceRetention": "Source {{days}} days",
+    "artifactRetention": "Analysis and AI responses {{days}} days",
+    "browserRetention": "No automatic deletion; retained until you delete the workspace",
+    "providerStorage": "Storage by the AI provider",
+    "providerRetention": "Retention by the AI provider",
+    "training": "Use for model training",
+    "appPolicy": "Grimodex AI data-use policy",
+    "processorPolicy": "{{processor}} privacy policy",
+    "providerStoragePolicy": "AI provider storage policy",
+    "providerRetentionPolicy": "AI provider retention policy",
+    "providerTrainingPolicy": "AI provider training-use policy",
+    "confirm": "I reviewed the processing, transfer, storage, and training-use policies",
+    "decline": "Not now",
+    "accept": "Accept and use AI",
+    "policyVersion": "Policy version",
+    "connectionDestination": "Actual connection destination",
+    "disclosure": {
+      "usageSummary": "Your instructions, selected manuscript context, and any required credential are sent directly to the displayed destination. Review both the content and destination before sending.",
+      "sentPrompt": "Your instructions, conversation history, and system instructions",
+      "sentContext": "Manuscript text, scenes, Codex entries, project settings, and other context selected for the request",
+      "sentCredential": "Your own API key required by the provider (sent in an authentication header and held only in this page's runtime memory)",
+      "applicationStorage": "This browser's local workspace (IndexedDB)",
+      "provider": {
+        "openai": {
+          "purpose": "Generate the AI assistance you requested",
+          "location": "Infrastructure managed by OpenAI",
+          "storage": "OpenAI API abuse-monitoring logs are retained for up to 30 days by default. Eligible organizations can apply for modified retention or Zero Data Retention.",
+          "retention": "Default abuse-monitoring logs are retained for up to 30 days. Contracts, settings, and legal exceptions may change this period.",
+          "training": "OpenAI does not use API inputs or outputs to train models unless the organization explicitly opts in."
+        },
+        "anthropic": {
+          "purpose": "Generate the AI assistance you requested",
+          "location": "Infrastructure managed by Anthropic",
+          "storage": "Anthropic normally deletes API inputs and outputs within 30 days, subject to contractual, safety, and legal exceptions.",
+          "retention": "Data is normally deleted within 30 days. Zero Data Retention agreements and safety or legal exceptions have different terms.",
+          "training": "Anthropic does not use commercial or API data for model training unless the customer explicitly opts in or provides feedback."
+        },
+        "ollama": {
+          "processor": "Configured Ollama server",
+          "purpose": "Generate the requested AI assistance locally or at the destination you configured",
+          "storage": "Storage depends on the Ollama server and model configuration you control. Grimodex does not add server-side storage.",
+          "retention": "Retention depends on the operating policy of the configured Ollama server.",
+          "training": "Training use depends on the operating policy of the configured Ollama server and model."
+        },
+        "configured": {
+          "processor": "Operator of the configured OpenAI-compatible endpoint",
+          "purpose": "Generate the requested AI assistance at the endpoint you configured",
+          "storage": "Storage depends on the configured endpoint operator. Grimodex does not add server-side storage.",
+          "retention": "Retention depends on the configured endpoint operator. Review that operator's policy before sending.",
+          "training": "Training use depends on the configured endpoint operator and model."
+        },
+        "external": {
+          "purpose": "Generate the requested AI assistance through {{provider}}",
+          "location": "Infrastructure and downstream inference providers selected under your {{provider}} account or API key settings",
+          "storage": "{{provider}} and any downstream inference provider may store request data according to your account settings and their current policies.",
+          "retention": "Retention depends on your {{provider}} account settings, routing choice, downstream provider, and legal or safety exceptions.",
+          "training": "Training use depends on your {{provider}} account settings and any downstream provider selected for the request."
+        }
+      }
+    }
   },
   "promptLibrary": {
     "section": {

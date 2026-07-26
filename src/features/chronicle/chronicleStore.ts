@@ -1,6 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@/lib/tauri";
-import type { GlobalSettings } from "@/features/workspace/store";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 
 export interface ChronicleSettings {
   zoom: number;
@@ -168,10 +167,10 @@ useChronicleStore.subscribe((state) => {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const current = await invoke<GlobalSettings>("get_global_settings");
-      await invoke("save_global_settings", {
-        settings: { ...current, chronicle: next },
-      });
+      await globalSettingsRepository.patch((current) => ({
+        ...current,
+        chronicle: next,
+      }));
     } catch (e) {
       if (import.meta.env.MODE !== "test") {
         console.warn("[chronicle] save failed:", e);

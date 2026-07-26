@@ -16,6 +16,7 @@ const mockEntry: CodexEntry = {
   icon: null,
   aliases: "[]",
   excludedAliases: "[]",
+  readings: null,
   tagsCache: null,
   contextMode: "mentioned",
   childrenBudget: "compact",
@@ -26,18 +27,23 @@ const mockEntry: CodexEntry = {
   updatedAt: "2024-01-01T00:00:00Z",
 };
 
+const { mockBuildReportFn } = vi.hoisted(() => ({
+  mockBuildReportFn: vi.fn(),
+}));
+
 vi.mock("@/features/codex/crossReference", () => ({
-  buildCrossReferenceReport: vi.fn(),
+  buildCrossReferenceReport: mockBuildReportFn,
+  buildCrossReferenceReportForProject: mockBuildReportFn,
 }));
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: vi.fn(() => vi.fn()),
 }));
 
-import { buildCrossReferenceReport } from "@/features/codex/crossReference";
+import { buildCrossReferenceReportForProject } from "@/features/codex/crossReference";
 import { useTreeStore } from "@/features/tree/treeStore";
 
-const mockBuildReport = vi.mocked(buildCrossReferenceReport);
+const mockBuildReport = vi.mocked(buildCrossReferenceReportForProject);
 const mockUseTreeStore = vi.mocked(useTreeStore);
 
 describe("ReferencesSection", () => {
@@ -61,7 +67,7 @@ describe("ReferencesSection", () => {
     const user = userEvent.setup();
     render(<ReferencesSection entry={mockEntry} />);
     await user.click(screen.getByTestId("references-load-button"));
-    expect(mockBuildReport).toHaveBeenCalledOnce();
+    expect(mockBuildReport).toHaveBeenCalledWith("proj-1");
   });
 
   it("shows 'not mentioned' message when entry has no scene mentions", async () => {
@@ -130,6 +136,38 @@ describe("ReferencesSection", () => {
       expect(screen.getByTestId("references-count-scene-1")).toHaveTextContent(
         "3",
       );
+    });
+  });
+
+  it("shows automatic and explicit semantic counts separately", async () => {
+    const user = userEvent.setup();
+    mockBuildReport.mockResolvedValue([
+      {
+        entryId: "entry-1",
+        entryName: "アリス",
+        entryType: "character",
+        scenes: [
+          {
+            sceneId: "scene-1",
+            sceneTitle: "第一章",
+            count: 5,
+            automaticCount: 3,
+            semanticCount: 2,
+          },
+        ],
+      },
+    ]);
+
+    render(<ReferencesSection entry={mockEntry} />);
+    await user.click(screen.getByTestId("references-load-button"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("references-automatic-count-scene-1"),
+      ).toHaveTextContent("3");
+      expect(
+        screen.getByTestId("references-semantic-count-scene-1"),
+      ).toHaveTextContent("2");
     });
   });
 

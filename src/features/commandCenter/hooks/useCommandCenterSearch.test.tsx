@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
-import { renderHook, act } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   _clearProvidersForTests,
   registerProvider,
 } from "../providers/registry";
-import { useCommandCenterStore } from "../store/commandCenterStore";
+import { usePanelStore } from "../store/commandCenterStore";
 import type {
   CommandCenterProvider,
   CommandCenterSection,
@@ -19,7 +19,6 @@ function makeProvider(
     order?: number;
     hideWhenEmpty?: boolean;
     search?: (ctx: ProviderSearchContext) => Promise<CommandCenterSection>;
-    supportsMode?: CommandCenterProvider["supportsMode"];
   } = {},
 ): CommandCenterProvider {
   return {
@@ -27,8 +26,6 @@ function makeProvider(
     order: options.order ?? 1,
     title: id,
     hideWhenEmpty: options.hideWhenEmpty ?? true,
-    surfaces: ["bar", "panel"],
-    supportsMode: options.supportsMode ?? ((m) => m === "search"),
     search:
       options.search ??
       (async (ctx) => ({
@@ -48,15 +45,8 @@ function makeProvider(
 }
 
 function resetStore() {
-  useCommandCenterStore.setState({
-    open: false,
-    mode: "search",
-    query: "",
-    parsedQuery: "",
-    sections: [],
-    selectedIndex: 0,
-    focusRequest: 0,
-  });
+  usePanelStore.getState().reset();
+  usePanelStore.getState().setDescriptionMode(false);
 }
 
 describe("useCommandCenterSearch", () => {
@@ -70,17 +60,20 @@ describe("useCommandCenterSearch", () => {
     _clearProvidersForTests();
   });
 
-  it("parses input and writes mode/parsedQuery to store", () => {
-    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
+  it("parses search text and exclusion tokens into the panel store", () => {
+    renderHook(() => useCommandCenterSearch(usePanelStore));
     act(() => {
-      useCommandCenterStore.getState().setQuery(">cmd hello");
+      usePanelStore.getState().setQuery("chapter -rain");
     });
-    const s = useCommandCenterStore.getState();
-    expect(s.mode).toBe("command");
-    expect(s.parsedQuery).toBe("cmd hello");
+
+    expect(usePanelStore.getState()).toMatchObject({
+      parsedQuery: "chapter",
+      excludes: ["rain"],
+    });
+    expect(usePanelStore.getState()).not.toHaveProperty("mode");
   });
 
-  it("invokes provider.search with trimmed query after debounce and upserts section", async () => {
+  it("invokes providers with the trimmed query after debounce", async () => {
     const search = vi.fn<
       (ctx: ProviderSearchContext) => Promise<CommandCenterSection>
     >(async () => ({
@@ -97,47 +90,41 @@ describe("useCommandCenterSearch", () => {
       ],
     }));
     registerProvider(makeProvider("lexical", { search }));
+    renderHook(() => useCommandCenterSearch(usePanelStore, { limit: 10 }));
 
-    renderHook(() =>
-      useCommandCenterSearch(useCommandCenterStore, { limit: 10 }),
-    );
     act(() => {
-      useCommandCenterStore.getState().setQuery("邂逅");
+      usePanelStore.getState().setQuery("邂逅");
     });
-    // before debounce timer fires, search must not have been called
     expect(search).not.toHaveBeenCalled();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
+
     expect(search).toHaveBeenCalledTimes(1);
     expect(search.mock.calls[0][0]).toMatchObject({
       query: "邂逅",
       limit: 10,
-      mode: "search",
     });
-
-    const sections = useCommandCenterStore.getState().sections;
-    expect(sections.map((s) => s.id)).toEqual(["lexical"]);
-    expect(sections[0].items.map((i) => i.id)).toEqual(["x"]);
+    expect(search.mock.calls[0][0]).not.toHaveProperty("mode");
+    expect(usePanelStore.getState().sections[0].items[0].id).toBe("x");
   });
 
-  it("shows loading section immediately while debounce timer is pending", () => {
+  it("shows a loading section while debounce is pending", () => {
     registerProvider(makeProvider("lexical"));
-    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
+    renderHook(() => useCommandCenterSearch(usePanelStore));
     act(() => {
-      useCommandCenterStore.getState().setQuery("x");
+      usePanelStore.getState().setQuery("x");
     });
-    const s = useCommandCenterStore.getState();
-    expect(s.sections).toHaveLength(1);
-    expect(s.sections[0].state?.kind).toBe("loading");
+
+    expect(usePanelStore.getState().sections[0].state?.kind).toBe("loading");
   });
 
-  it("discards stale responses when query changes mid-flight (generation gating)", async () => {
-    let resolveFirst: ((v: CommandCenterSection) => void) | undefined;
+  it("discards stale responses when the query changes mid-flight", async () => {
+    let resolveFirst: ((value: CommandCenterSection) => void) | undefined;
     const search = vi.fn((ctx: ProviderSearchContext) => {
       if (ctx.query === "first") {
-        return new Promise<CommandCenterSection>((res) => {
-          resolveFirst = res;
+        return new Promise<CommandCenterSection>((resolve) => {
+          resolveFirst = resolve;
         });
       }
       return Promise.resolve({
@@ -155,22 +142,20 @@ describe("useCommandCenterSearch", () => {
       });
     });
     registerProvider(makeProvider("lexical", { search }));
-    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
+    renderHook(() => useCommandCenterSearch(usePanelStore));
 
     act(() => {
-      useCommandCenterStore.getState().setQuery("first");
+      usePanelStore.getState().setQuery("first");
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    // change query before first resolves
     act(() => {
-      useCommandCenterStore.getState().setQuery("second");
+      usePanelStore.getState().setQuery("second");
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    // now resolve the stale first
     act(() => {
       resolveFirst?.({
         id: "lexical",
@@ -190,28 +175,29 @@ describe("useCommandCenterSearch", () => {
       await vi.runOnlyPendingTimersAsync();
     });
 
-    const sections = useCommandCenterStore.getState().sections;
-    expect(sections[0].items.map((i) => i.id)).toEqual(["second"]);
+    expect(
+      usePanelStore.getState().sections[0].items.map((item) => item.id),
+    ).toEqual(["second"]);
   });
 
-  it("clears all sections when query becomes empty", async () => {
+  it("clears all sections when the query becomes empty", async () => {
     registerProvider(makeProvider("lexical"));
-    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
+    renderHook(() => useCommandCenterSearch(usePanelStore));
     act(() => {
-      useCommandCenterStore.getState().setQuery("hello");
+      usePanelStore.getState().setQuery("hello");
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    expect(useCommandCenterStore.getState().sections).toHaveLength(1);
+    expect(usePanelStore.getState().sections).toHaveLength(1);
 
     act(() => {
-      useCommandCenterStore.getState().setQuery("");
+      usePanelStore.getState().setQuery("");
     });
-    expect(useCommandCenterStore.getState().sections).toEqual([]);
+    expect(usePanelStore.getState().sections).toEqual([]);
   });
 
-  it("skips re-invocation when (query, mode, limit) is unchanged (memoization)", async () => {
+  it("reuses a superset result when limit decreases for the same query", async () => {
     const search = vi.fn<
       (ctx: ProviderSearchContext) => Promise<CommandCenterSection>
     >(async () => ({
@@ -223,36 +209,33 @@ describe("useCommandCenterSearch", () => {
     registerProvider(makeProvider("lexical", { search, hideWhenEmpty: false }));
     const { rerender } = renderHook(
       ({ limit }: { limit: number }) =>
-        useCommandCenterSearch(useCommandCenterStore, { limit }),
+        useCommandCenterSearch(usePanelStore, { limit }),
       { initialProps: { limit: 10 } },
     );
+
     act(() => {
-      useCommandCenterStore.getState().setQuery("hello");
+      usePanelStore.getState().setQuery("hello");
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    expect(search).toHaveBeenCalledTimes(1);
-
-    // re-render with same limit and same query → should not re-invoke
+    rerender({ limit: 50 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
     rerender({ limit: 10 });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    expect(search).toHaveBeenCalledTimes(1);
-
-    // change limit → should re-invoke
     rerender({ limit: 50 });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
+      await vi.advanceTimersByTimeAsync(200);
     });
+
     expect(search).toHaveBeenCalledTimes(2);
-    expect(search.mock.calls[1][0]).toMatchObject({ limit: 50 });
   });
 
-  it("cacheKeyExtras change busts memo only for that provider (not others)", async () => {
-    // Semantic-style provider: cacheKeyExtras depends on an external toggle.
-    // Lexical-style provider: no cacheKeyExtras.
+  it("busts memo only for a provider whose cacheKeyExtras changed", async () => {
     let semanticToggle = false;
     const lexicalSearch = vi.fn<
       (ctx: ProviderSearchContext) => Promise<CommandCenterSection>
@@ -262,7 +245,7 @@ describe("useCommandCenterSearch", () => {
       order: 1,
       items: [],
     }));
-    const semanticSearchFn = vi.fn<
+    const semanticSearch = vi.fn<
       (ctx: ProviderSearchContext) => Promise<CommandCenterSection>
     >(async () => ({
       id: "semantic",
@@ -271,134 +254,40 @@ describe("useCommandCenterSearch", () => {
       items: [],
     }));
     registerProvider(
-      makeProvider("lexical", { search: lexicalSearch, hideWhenEmpty: false }),
+      makeProvider("lexical", {
+        search: lexicalSearch,
+        hideWhenEmpty: false,
+      }),
     );
     registerProvider({
       ...makeProvider("semantic", {
-        search: semanticSearchFn,
+        order: 2,
+        search: semanticSearch,
         hideWhenEmpty: false,
       }),
-      order: 2,
       cacheKeyExtras: () => `t=${semanticToggle ? 1 : 0}`,
     });
-    renderHook(() =>
-      useCommandCenterSearch(useCommandCenterStore, { limit: 10 }),
-    );
+    renderHook(() => useCommandCenterSearch(usePanelStore, { limit: 10 }));
     act(() => {
-      useCommandCenterStore.getState().setQuery("hello");
+      usePanelStore.getState().setQuery("hello");
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
-    expect(lexicalSearch).toHaveBeenCalledTimes(1);
-    expect(semanticSearchFn).toHaveBeenCalledTimes(1);
 
-    // Flip the semantic-only toggle. Since the effect re-runs (deps mocked here
-    // via store setter), only the semantic provider's baseKey changes → only
-    // semantic re-fires; lexical's memo stays hot.
     semanticToggle = true;
     act(() => {
-      // descriptionMode を変えて effect 再評価をトリガする
-      useCommandCenterStore.getState().setDescriptionMode(true);
+      usePanelStore.getState().setDescriptionMode(true);
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
+
     expect(lexicalSearch).toHaveBeenCalledTimes(1);
-    expect(semanticSearchFn).toHaveBeenCalledTimes(2);
+    expect(semanticSearch).toHaveBeenCalledTimes(2);
   });
 
-  it("superset memo: when limit decreases on same query, does NOT re-invoke", async () => {
-    // Advisor verify scenario: panel open (limit 50) → close (limit 10) → open (50).
-    // Single hook ownership + superset memoization should cause exactly 1 re-fetch
-    // (the 10→50 case), and skip both subsequent toggles.
-    const search = vi.fn<
-      (ctx: ProviderSearchContext) => Promise<CommandCenterSection>
-    >(async () => ({
-      id: "lexical",
-      title: "lexical",
-      order: 1,
-      items: [],
-    }));
-    registerProvider(makeProvider("lexical", { search, hideWhenEmpty: false }));
-    const { rerender } = renderHook(
-      ({ limit }: { limit: number }) =>
-        useCommandCenterSearch(useCommandCenterStore, { limit }),
-      { initialProps: { limit: 10 } },
-    );
-
-    // Initial type with bar-only (limit 10)
-    act(() => {
-      useCommandCenterStore.getState().setQuery("邂逅");
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-    expect(search).toHaveBeenCalledTimes(1);
-
-    // Panel opens — limit goes 10 → 50. 50 > 10 → refetch.
-    rerender({ limit: 50 });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-    expect(search).toHaveBeenCalledTimes(2);
-
-    // Panel closes — limit goes 50 → 10. 10 ≤ 50 → skip (we already have 50 items).
-    rerender({ limit: 10 });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-    expect(search).toHaveBeenCalledTimes(2);
-
-    // Panel opens again — 50 ≤ 50 → skip.
-    rerender({ limit: 50 });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-    expect(search).toHaveBeenCalledTimes(2);
-
-    // Query change — base key changes, memo reset → refetch.
-    act(() => {
-      useCommandCenterStore.getState().setQuery("別の語");
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-    expect(search).toHaveBeenCalledTimes(3);
-  });
-
-  it("removes sections of providers that no longer support current mode", async () => {
-    registerProvider(makeProvider("lexical"));
-    registerProvider(
-      makeProvider("command-only", {
-        order: 3,
-        supportsMode: (m) => m === "command",
-      }),
-    );
-    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
-    act(() => {
-      useCommandCenterStore.getState().setQuery("hello");
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-    expect(useCommandCenterStore.getState().sections.map((s) => s.id)).toEqual([
-      "lexical",
-    ]);
-
-    // switch to command mode → lexical drops out, command-only takes over
-    act(() => {
-      useCommandCenterStore.getState().setQuery(">cmd");
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    expect(
-      useCommandCenterStore.getState().sections.map((s) => s.id),
-    ).not.toContain("lexical");
-  });
-
-  it("writes error state when provider throws", async () => {
+  it("writes an error state when a provider throws", async () => {
     registerProvider(
       makeProvider("lexical", {
         hideWhenEmpty: false,
@@ -407,14 +296,17 @@ describe("useCommandCenterSearch", () => {
         },
       }),
     );
-    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
+    renderHook(() => useCommandCenterSearch(usePanelStore));
     act(() => {
-      useCommandCenterStore.getState().setQuery("hello");
+      usePanelStore.getState().setQuery("hello");
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    const sections = useCommandCenterStore.getState().sections;
-    expect(sections[0].state).toEqual({ kind: "error", message: "boom" });
+
+    expect(usePanelStore.getState().sections[0].state).toEqual({
+      kind: "error",
+      message: "boom",
+    });
   });
 });

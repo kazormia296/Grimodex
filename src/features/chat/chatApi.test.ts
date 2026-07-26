@@ -27,6 +27,8 @@ vi.mock("@/db/schema", () => ({
   codexEntries: { id: "id" },
   chatSessionPinnedCodex: {
     sessionId: "sessionId",
+    codexEntryId: "codexEntryId",
+    snippetId: "snippetId",
     stickyId: "stickyId",
   },
 }));
@@ -53,6 +55,7 @@ const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
 
 import {
   listSessions,
+  getSessionForProject,
   createSession,
   deleteSession,
   listMessages,
@@ -61,6 +64,7 @@ import {
   unpinStickyEntry,
   saveMessagePrompt,
   getMessagePrompt,
+  pinCodexEntry,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
 
@@ -79,8 +83,20 @@ function mockInsertChain(rows: Record<string, unknown>[]) {
   const chain = {
     values: vi.fn().mockReturnThis(),
     returning: vi.fn().mockResolvedValue(rows),
+    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+    onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
   };
   mockDb.insert.mockReturnValue(chain as never);
+  return chain;
+}
+
+function mockSelectLimitChain(rows: Record<string, unknown>[]) {
+  const chain = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockResolvedValue(rows),
+  };
+  mockDb.select.mockReturnValue(chain as never);
   return chain;
 }
 
@@ -104,6 +120,20 @@ function mockDeleteChain() {
 describe("chatApi - session/message persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe("pinCodexEntry", () => {
+    it("promotes a legacy chat mention row when Spotlight is selected", async () => {
+      const chain = mockInsertChain([]);
+
+      await pinCodexEntry("session-1", "entry-1", false, "manual", "codex");
+
+      expect(chain.onConflictDoUpdate).toHaveBeenCalledWith({
+        target: ["sessionId", "codexEntryId"],
+        set: { pinSource: "manual", withChildren: 0 },
+      });
+      expect(chain.onConflictDoNothing).not.toHaveBeenCalled();
+    });
   });
 
   describe("listSessions", () => {
@@ -197,6 +227,60 @@ describe("chatApi - session/message persistence", () => {
     });
   });
 
+  describe("getSessionForProject", () => {
+    const session: ChatSession = {
+      id: "session-1",
+      projectId: "proj-1",
+      nodeId: "node-1",
+      codexAnchorId: null,
+      snippetAnchorId: null,
+      title: "会話1",
+      titleManual: 0,
+      model: "openrouter/anthropic/claude-sonnet-4.6",
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
+    };
+
+    it("constrains the lookup by both session and project authority", async () => {
+      const { eq, and } = await import("drizzle-orm");
+      const chain = mockSelectLimitChain([
+        session as unknown as Record<string, unknown>,
+      ]);
+
+      const result = await getSessionForProject("session-1", "proj-1");
+
+      expect(vi.mocked(eq)).toHaveBeenNthCalledWith(1, "id", "session-1");
+      expect(vi.mocked(eq)).toHaveBeenNthCalledWith(2, "projectId", "proj-1");
+      expect(vi.mocked(and)).toHaveBeenCalledWith(
+        { eq: ["id", "session-1"] },
+        { eq: ["projectId", "proj-1"] },
+      );
+      expect(chain.limit).toHaveBeenCalledWith(1);
+      expect(result).toEqual(session);
+    });
+
+    it("returns null when no session belongs to the project", async () => {
+      mockSelectLimitChain([]);
+
+      await expect(
+        getSessionForProject("missing-session", "proj-1"),
+      ).resolves.toBeNull();
+    });
+
+    it("rejects a mismatched row defensively", async () => {
+      mockSelectLimitChain([
+        { ...session, projectId: "proj-2" } as unknown as Record<
+          string,
+          unknown
+        >,
+      ]);
+
+      await expect(
+        getSessionForProject("session-1", "proj-1"),
+      ).resolves.toBeNull();
+    });
+  });
+
   describe("createSession", () => {
     it("creates a session and returns it", async () => {
       const row = {
@@ -211,11 +295,16 @@ describe("chatApi - session/message persistence", () => {
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       };
-      mockInsertChain([row]);
+      const chain = mockInsertChain([row]);
 
       const result = await createSession("proj-1", "新しい会話", "node-1");
 
       expect(mockDb.insert).toHaveBeenCalled();
+      const values = vi.mocked(chain.values).mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(values).not.toHaveProperty("model");
       expect(result.title).toBe("新しい会話");
       expect(result.nodeId).toBe("node-1");
       expect(result.projectId).toBe("proj-1");
@@ -238,6 +327,37 @@ describe("chatApi - session/message persistence", () => {
 
       const result = await createSession("proj-1", "フリー会話");
       expect(result.nodeId).toBeNull();
+    });
+
+    it("persists an explicit empty model instead of using the database default", async () => {
+      const row = {
+        id: "web-session",
+        projectId: "proj-1",
+        nodeId: null,
+        codexAnchorId: null,
+        snippetAnchorId: null,
+        title: "Web session",
+        titleManual: 0,
+        model: "",
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      };
+      const chain = mockInsertChain([row]);
+
+      await createSession(
+        "proj-1",
+        "Web session",
+        undefined,
+        undefined,
+        undefined,
+        "",
+      );
+
+      const values = vi.mocked(chain.values).mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(values).toHaveProperty("model", "");
     });
 
     it("creates a snippet-anchored session", async () => {

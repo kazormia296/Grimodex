@@ -1,6 +1,5 @@
 import { cn } from "@/lib/utils";
-import { LEGACY_SPLITTER_PX, STRIPE_GAP_PX } from "../layoutConstants";
-import { useCardLayout } from "../cardLayout";
+import { STRIPE_GAP_PX } from "../layoutConstants";
 
 /**
  * keyboard-resizable な separator にするための任意プロパティ。
@@ -26,7 +25,7 @@ export interface SplitterChromeProps {
   interactive?: SplitterInteractiveProps;
 }
 
-/** Visual chrome for layout splitters (card gap band or legacy line). */
+/** Visual chrome for layout splitters (card gap band). */
 export function SplitterChrome({
   orientation,
   disabled = false,
@@ -36,8 +35,7 @@ export function SplitterChrome({
   interactive,
 }: SplitterChromeProps) {
   const isColumnDivider = orientation === "horizontal";
-  const cardLayout = useCardLayout();
-  const effectiveThickness = cardLayout ? thickness : LEGACY_SPLITTER_PX;
+  const effectiveThickness = thickness;
 
   return (
     <div
@@ -59,11 +57,8 @@ export function SplitterChrome({
       }}
       className={cn(
         "relative z-20 shrink-0 touch-none select-none transition-colors",
-        cardLayout
-          ? "hover:bg-foreground/[0.06] active:bg-foreground/10"
-          : "bg-border/80 hover:bg-primary/60 active:bg-primary/80",
+        "hover:bg-foreground/[0.06] active:bg-foreground/10",
         disabled && "pointer-events-none",
-        !cardLayout && disabled && "opacity-30",
         isColumnDivider ? "cursor-col-resize" : "cursor-row-resize",
         interactive &&
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
