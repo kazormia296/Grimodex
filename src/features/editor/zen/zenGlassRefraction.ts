@@ -38,9 +38,9 @@ vec2 zenSafeNormalize(vec2 value) {
     : vec2(0.0);
 }
 
-float zenGlassEdgeDistortion(float insideDistancePx, float depthPx) {
+float zenGlassEdgeDistortion(float insideDistanceRatio, float depthRatio) {
   float edgeProximity =
-    1.0 - clamp(insideDistancePx / max(depthPx, 1.0), 0.0, 1.0);
+    1.0 - clamp(insideDistanceRatio / max(depthRatio, 0.0001), 0.0, 1.0);
   return 1.0 - sqrt(max(1.0 - edgeProximity * edgeProximity, 0.0));
 }
 
@@ -72,33 +72,89 @@ vec2 zenGlassRegionOffsetPixels(
   }
   vec2 glassSizePx = glassMaxPx - glassMinPx;
   vec2 glassCenterPx = (glassMinPx + glassMaxPx) * 0.5;
+  vec2 glassHalfSizePx = glassSizePx * 0.5;
+  // Evaluate the SDF in a unit-sized space. ShojiWM uses the same scaling
+  // principle because mediump length() can lose corner precision (or
+  // overflow its squared intermediate) on a large live-background surface.
+  float sdfScale = max(max(glassSizePx.x, glassSizePx.y), 1.0);
+  float surfaceSizePx = max(min(glassSizePx.x, glassSizePx.y), 1.0);
   float cornerRadiusPx = min(
     max(0.0, glassCornerRadius * pixelRatio),
     min(glassSizePx.x, glassSizePx.y) * 0.5
   );
-  float signedDistance = zenRoundedRectSignedDistance(
-    gl_FragCoord.xy - glassCenterPx,
-    glassSizePx * 0.5,
-    cornerRadiusPx
+  vec2 glassCoord = (gl_FragCoord.xy - glassCenterPx) / sdfScale;
+  float normalizedCornerRadius = cornerRadiusPx / sdfScale;
+  float normalizedSignedDistance = zenRoundedRectSignedDistance(
+    glassCoord,
+    glassHalfSizePx / sdfScale,
+    normalizedCornerRadius
   );
-  float antialias = max(fwidth(signedDistance), 0.75);
+  float signedDistancePx = normalizedSignedDistance * sdfScale;
+  float antialias = max(fwidth(normalizedSignedDistance) * sdfScale, 0.75);
   surfaceMask =
-    1.0 - smoothstep(-antialias, antialias, signedDistance);
+    1.0 - smoothstep(-antialias, antialias, signedDistancePx);
   if (
-    signedDistance > 0.0 ||
+    signedDistancePx > 0.0 ||
     u_zenGlassRefraction <= 0.00001
   ) {
     return vec2(0.0);
   }
 
+  // Keep the displacement continuous through the antialiased boundary. The
+  // old hard outside/inside split made the first covered pixel jump from zero
+  // to the full edge distortion, which showed up as a coloured spike at
+  // rounded corners.
+  float insideDistancePx = max(-signedDistancePx, 0.0);
+  float insideDistanceRatio = max(
+    -normalizedSignedDistance * sdfScale / surfaceSizePx,
+    0.0
+  );
+  vec2 cornerDistance =
+    abs(glassCoord) -
+    max(
+      glassHalfSizePx / sdfScale - vec2(normalizedCornerRadius),
+      vec2(0.0)
+    );
+  bool fullyRounded =
+    cornerRadiusPx >= glassHalfSizePx.x - 0.00001 &&
+    cornerRadiusPx >= glassHalfSizePx.y - 0.00001;
+  // Do not switch corner handling on the x/y axes. That boolean split made
+  // the refraction visibly stop at a right angle where the rounded arc meets
+  // a straight edge. Blend the local corner limit in over the arc instead.
+  float cornerWeight = 0.0;
+  if (cornerRadiusPx > 0.00001) {
+    if (fullyRounded) {
+      cornerWeight = 1.0;
+    } else {
+      float cornerTransition = min(cornerDistance.x, cornerDistance.y);
+      float cornerFeather = max(
+        1.0 / sdfScale,
+        normalizedCornerRadius * 0.25
+      );
+      cornerWeight = smoothstep(0.0, cornerFeather, cornerTransition);
+    }
+  }
+  float boundaryFeatherPx = max(
+    1.0,
+    min(2.0 * pixelRatio, antialias)
+  );
+  float boundaryFade = smoothstep(
+    0.0,
+    boundaryFeatherPx,
+    insideDistancePx
+  );
+  // Express the existing pixel depth as a surface-relative value, as in
+  // ShojiWM. Keeping the conversion here avoids large-coordinate precision
+  // loss without changing the configured look of the Glass control.
   float refractionDepthPx = min(
     48.0 * pixelRatio,
     max(glassSizePx.x, glassSizePx.y) * 0.25
   );
-  if (-signedDistance >= refractionDepthPx) return vec2(0.0);
+  float refractionDepthRatio = refractionDepthPx / surfaceSizePx;
+  if (insideDistanceRatio >= refractionDepthRatio) return vec2(0.0);
   float distortion = zenGlassEdgeDistortion(
-    -signedDistance,
-    refractionDepthPx
+    insideDistanceRatio,
+    refractionDepthRatio
   );
   if (distortion <= 0.00001) return vec2(0.0);
 
@@ -106,15 +162,31 @@ vec2 zenGlassRegionOffsetPixels(
   // rectangle centre becomes diagonal on straight edges and can pull a
   // neighbouring colour into the corner as a visible spike.
   vec2 inwardNormal = -zenSafeNormalize(
-    vec2(dFdx(signedDistance), dFdy(signedDistance))
+    vec2(dFdx(normalizedSignedDistance), dFdy(normalizedSignedDistance))
   );
   if (dot(inwardNormal, inwardNormal) <= 0.00001) {
-    inwardNormal = -zenSafeNormalize(gl_FragCoord.xy - glassCenterPx);
+    inwardNormal = -zenSafeNormalize(glassCoord);
   }
-  return inwardNormal *
-    distortion *
-    u_zenGlassRefraction *
-    pixelRatio;
+  // Keep the configured pixel amount for large surfaces. The rounded-corner
+  // band below supplies the size-relative ceiling that prevents a small
+  // circular control from sampling through its opposite side.
+  float maxDisplacementPx = max(u_zenGlassRefraction * pixelRatio, 0.0);
+  float displacementPx = distortion * maxDisplacementPx * boundaryFade;
+  // A small rounded surface can be smaller than the configured refraction
+  // distance. In that case a corner sample can cross its local arc and pull
+  // colour from the opposite side, creating a wedge. Blend the local radial
+  // half-band continuously through the corner instead of switching it on at
+  // a geometric quadrant.
+  float cornerLimitedDisplacement = min(
+    displacementPx,
+    max(0.75, length(cornerDistance) * sdfScale * 0.5)
+  );
+  displacementPx = mix(
+    displacementPx,
+    cornerLimitedDisplacement,
+    cornerWeight
+  );
+  return inwardNormal * displacementPx;
 }
 
 vec2 zenGlassOffsetPixels() {
