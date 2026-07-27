@@ -57,6 +57,8 @@ function RefractionProbe({
   glassCornerRadius = 0,
   uiSurfaces = [],
   maxPixelCount = 24_000,
+  width = 200,
+  height = 120,
 }: {
   name: string;
   refraction: number;
@@ -64,6 +66,8 @@ function RefractionProbe({
   glassCornerRadius?: number;
   uiSurfaces?: readonly ZenGlassLayout[];
   maxPixelCount?: number;
+  width?: number;
+  height?: number;
 }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
@@ -94,8 +98,8 @@ function RefractionProbe({
       data-refraction-probe={name}
       fragmentShader={buildZenPostProcessedFragment(GRADIENT_FRAGMENT)}
       uniforms={uniforms}
-      width={200}
-      height={120}
+      width={width}
+      height={height}
       minPixelRatio={1}
       maxPixelCount={maxPixelCount}
       speed={0}
@@ -371,6 +375,183 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     expect(
       Math.abs(pixelAt(bent, 0.1, 0.5)[0] - pixelAt(flat, 0.1, 0.5)[0]),
     ).toBeGreaterThan(4);
+  });
+
+  it("follows the rounded SDF normal at a corner", async () => {
+    const { container } = render(
+      <div>
+        <RefractionProbe
+          name="normal-flat"
+          refraction={0}
+          glassCornerRadius={20}
+        />
+        <RefractionProbe
+          name="normal-bent"
+          refraction={24}
+          glassCornerRadius={20}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(
+        container.querySelector<HTMLCanvasElement>(
+          '[data-refraction-probe="normal-bent"] canvas',
+        )?.width,
+      ).toBeGreaterThan(0);
+    });
+
+    const flat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="normal-flat"] canvas',
+    )!;
+    const bent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="normal-bent"] canvas',
+    )!;
+    const flatCorner = pixelAt(flat, 0.25, 0.25);
+    const bentCorner = pixelAt(bent, 0.25, 0.25);
+    const redDelta = bentCorner[0] - flatCorner[0];
+    const greenDelta = bentCorner[1] - flatCorner[1];
+
+    expect(redDelta).toBeGreaterThan(4);
+    expect(greenDelta).toBeGreaterThan(redDelta);
+  });
+
+  it("keeps the rounded normal non-zero near a large surface's corner core", async () => {
+    const width = 1_000;
+    const height = 600;
+    const { container } = render(
+      <div>
+        <RefractionProbe
+          name="large-normal-flat"
+          refraction={0}
+          glassCornerRadius={20}
+          width={width}
+          height={height}
+          maxPixelCount={width * height}
+        />
+        <RefractionProbe
+          name="large-normal-bent"
+          refraction={75}
+          glassCornerRadius={20}
+          width={width}
+          height={height}
+          maxPixelCount={width * height}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(
+        container.querySelector<HTMLCanvasElement>(
+          '[data-refraction-probe="large-normal-bent"] canvas',
+        )?.width,
+      ).toBe(width);
+    });
+
+    const flat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="large-normal-flat"] canvas',
+    )!;
+    const bent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="large-normal-bent"] canvas',
+    )!;
+    const coreCorner = [0.218, 139 / height] as const;
+
+    expect(bent.width / bent.clientWidth).toBeGreaterThanOrEqual(1);
+    expect(
+      Math.abs(
+        pixelAt(bent, ...coreCorner)[0] - pixelAt(flat, ...coreCorner)[0],
+      ),
+    ).toBeGreaterThan(2);
+  });
+
+  it("softens rounded boundaries and limits small-surface displacement", async () => {
+    const { container } = render(
+      <div>
+        <RefractionProbe
+          name="diagnostic-flat"
+          refraction={0}
+          glassCornerRadius={20}
+        />
+        <RefractionProbe
+          name="diagnostic-bent"
+          refraction={24}
+          glassCornerRadius={20}
+        />
+        <RefractionProbe
+          name="small-flat"
+          refraction={0}
+          glassRect={[0.1, 0.25, 0.25, 0.5]}
+          glassCornerRadius={15}
+        />
+        <RefractionProbe
+          name="small-bent"
+          refraction={24}
+          glassRect={[0.1, 0.25, 0.25, 0.5]}
+          glassCornerRadius={15}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      for (const name of [
+        "diagnostic-flat",
+        "diagnostic-bent",
+        "small-flat",
+        "small-bent",
+      ]) {
+        expect(
+          container.querySelector<HTMLCanvasElement>(
+            `[data-refraction-probe="${name}"] canvas`,
+          )?.width,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    const flat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="diagnostic-flat"] canvas',
+    )!;
+    const bent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="diagnostic-bent"] canvas',
+    )!;
+    const flatCornerBoundary = pixelAt(flat, 0.24, 0.24);
+    const bentCornerBoundary = pixelAt(bent, 0.24, 0.24);
+    expect(
+      Math.max(
+        Math.abs(bentCornerBoundary[0] - flatCornerBoundary[0]),
+        Math.abs(bentCornerBoundary[1] - flatCornerBoundary[1]),
+      ),
+    ).toBeLessThanOrEqual(10);
+    const smallFlat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="small-flat"] canvas',
+    )!;
+    const smallBent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="small-bent"] canvas',
+    )!;
+    const smallSamples = [
+      [0.105, 0.375],
+      [0.115, 0.375],
+      [0.125, 0.375],
+      [0.13, 0.3],
+      [0.14, 0.29],
+      [0.15, 0.28],
+      [0.175, 0.28],
+    ] as const;
+    const smallBoundaryDeltas = smallSamples.map(([u, v]) => {
+      const before = pixelAt(smallFlat, u, v);
+      const after = pixelAt(smallBent, u, v);
+      return Math.abs(after[0] - before[0]);
+    });
+    expect(Math.max(...smallBoundaryDeltas)).toBeLessThanOrEqual(12);
+
+    const cornerTransitionDeltas = [0.34, 0.35, 0.36, 0.37, 0.38].map((v) =>
+      Math.abs(pixelAt(bent, 0.22, v)[0] - pixelAt(flat, 0.22, v)[0]),
+    );
+    const maximumAdjacentStep = Math.max(
+      ...cornerTransitionDeltas
+        .slice(1)
+        .map((value, index) => Math.abs(value - cornerTransitionDeltas[index])),
+    );
+    expect(maximumAdjacentStep).toBeLessThanOrEqual(3);
   });
 
   it("keeps refraction on the rounded Editor perimeter at corners", async () => {

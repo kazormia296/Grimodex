@@ -9,6 +9,7 @@ const shaderLifecycle = vi.hoisted(() => ({
   mounted: [] as string[],
   unmounted: [] as string[],
   props: [] as Array<{ maxPixelCount: number; speed: number }>,
+  antiAliasing: [] as Array<{ minPixelRatio: number; antialias: boolean }>,
   animation: [] as Array<{ playing: boolean; speed: number }>,
 }));
 
@@ -31,13 +32,21 @@ vi.mock("@paper-design/shaders-react", async (importOriginal) => {
       "data-paper-shader": shader,
       maxPixelCount,
       speed,
+      minPixelRatio,
+      webGlContextAttributes,
     }: {
       "data-paper-shader": string;
       maxPixelCount: number;
       speed: number;
+      minPixelRatio: number;
+      webGlContextAttributes?: WebGLContextAttributes;
     }) => {
       const mountedShader = useRef(shader).current;
       shaderLifecycle.props.push({ maxPixelCount, speed });
+      shaderLifecycle.antiAliasing.push({
+        minPixelRatio,
+        antialias: webGlContextAttributes?.antialias ?? false,
+      });
 
       useEffect(() => {
         shaderLifecycle.mounted.push(mountedShader);
@@ -63,6 +72,7 @@ describe("ZenShaderSurface", () => {
     shaderLifecycle.mounted.length = 0;
     shaderLifecycle.unmounted.length = 0;
     shaderLifecycle.props.length = 0;
+    shaderLifecycle.antiAliasing.length = 0;
     shaderLifecycle.animation.length = 0;
   });
 
@@ -115,13 +125,13 @@ describe("ZenShaderSurface", () => {
     ).toHaveAttribute("data-glass-refraction", "0");
   });
 
-  it("uses the capped scheduler and bounded animated pixel budget", () => {
+  it("uses one native pixel per CSS pixel up to Full HD", () => {
     const { rerender } = render(
       <ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />,
     );
 
     expect(shaderLifecycle.props.at(-1)).toEqual({
-      maxPixelCount: 1_000_000,
+      maxPixelCount: 2_073_600,
       speed: 0,
     });
     expect(shaderLifecycle.animation.at(-1)).toMatchObject({
@@ -137,11 +147,24 @@ describe("ZenShaderSurface", () => {
     );
 
     expect(shaderLifecycle.props.at(-1)).toEqual({
-      maxPixelCount: 1_500_000,
+      maxPixelCount: 2_073_600,
       speed: 0,
     });
     expect(shaderLifecycle.animation.at(-1)).toMatchObject({
       playing: false,
+    });
+  });
+
+  it("uses the shader's analytic antialiasing without WebGL MSAA", () => {
+    render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
+
+    expect(shaderLifecycle.antiAliasing.at(-1)).toEqual({
+      minPixelRatio: 1,
+      antialias: false,
+    });
+    expect(shaderLifecycle.props.at(-1)).toEqual({
+      maxPixelCount: 2_073_600,
+      speed: 0,
     });
   });
 

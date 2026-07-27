@@ -412,7 +412,5 @@ export function buildZenShaderProps(
     rotation: config.rotation,
     offsetX: config.offsetX,
     offsetY: config.offsetY,
-    minPixelRatio: 1,
-    maxPixelCount: 1_500_000,
   };
 }

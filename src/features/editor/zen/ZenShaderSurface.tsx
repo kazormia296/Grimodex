@@ -17,8 +17,8 @@ import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
 
 const PREVIEW_PIXEL_BUDGET = 300_000;
-const ANIMATED_PIXEL_BUDGET = 1_000_000;
-const STATIC_PIXEL_BUDGET = 1_500_000;
+const LIVE_BACKGROUND_PIXEL_BUDGET = 1920 * 1080;
+const LIVE_BACKGROUND_MIN_PIXEL_RATIO = 1;
 
 interface ZenShaderSurfaceProps {
   config: ZenShaderConfig;
@@ -88,8 +88,8 @@ export function ZenShaderSurface({
   const maxPixelCount = preview
     ? PREVIEW_PIXEL_BUDGET
     : Math.min(
-        resolvedMaxPixelCount ?? STATIC_PIXEL_BUDGET,
-        definition.animated ? ANIMATED_PIXEL_BUDGET : STATIC_PIXEL_BUDGET,
+        resolvedMaxPixelCount ?? LIVE_BACKGROUND_PIXEL_BUDGET,
+        LIVE_BACKGROUND_PIXEL_BUDGET,
       );
 
   return (
@@ -129,7 +129,7 @@ export function ZenShaderSurface({
           frame={0}
           width="100%"
           height="100%"
-          minPixelRatio={1}
+          minPixelRatio={LIVE_BACKGROUND_MIN_PIXEL_RATIO}
           maxPixelCount={maxPixelCount}
           webGlContextAttributes={{
             alpha: true,
