@@ -102,9 +102,16 @@ vec2 zenGlassRegionOffsetPixels(
   );
   if (distortion <= 0.00001) return vec2(0.0);
 
-  // Shift the sample toward this surface's centre. This keeps the apparent
-  // bend inside each independent Glass card.
-  return -zenSafeNormalize(gl_FragCoord.xy - glassCenterPx) *
+  // Shift along the inward normal of the rounded SDF. A vector toward the
+  // rectangle centre becomes diagonal on straight edges and can pull a
+  // neighbouring colour into the corner as a visible spike.
+  vec2 inwardNormal = -zenSafeNormalize(
+    vec2(dFdx(signedDistance), dFdy(signedDistance))
+  );
+  if (dot(inwardNormal, inwardNormal) <= 0.00001) {
+    inwardNormal = -zenSafeNormalize(gl_FragCoord.xy - glassCenterPx);
+  }
+  return inwardNormal *
     distortion *
     u_zenGlassRefraction *
     pixelRatio;

@@ -373,6 +373,45 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     ).toBeGreaterThan(4);
   });
 
+  it("follows the rounded SDF normal at a corner", async () => {
+    const { container } = render(
+      <div>
+        <RefractionProbe
+          name="normal-flat"
+          refraction={0}
+          glassCornerRadius={20}
+        />
+        <RefractionProbe
+          name="normal-bent"
+          refraction={24}
+          glassCornerRadius={20}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(
+        container.querySelector<HTMLCanvasElement>(
+          '[data-refraction-probe="normal-bent"] canvas',
+        )?.width,
+      ).toBeGreaterThan(0);
+    });
+
+    const flat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="normal-flat"] canvas',
+    )!;
+    const bent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="normal-bent"] canvas',
+    )!;
+    const flatCorner = pixelAt(flat, 0.24, 0.24);
+    const bentCorner = pixelAt(bent, 0.24, 0.24);
+    const redDelta = bentCorner[0] - flatCorner[0];
+    const greenDelta = bentCorner[1] - flatCorner[1];
+
+    expect(redDelta).toBeGreaterThan(6);
+    expect(greenDelta).toBeGreaterThan(redDelta);
+  });
+
   it("keeps refraction on the rounded Editor perimeter at corners", async () => {
     const { container } = render(
       <div>
