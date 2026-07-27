@@ -481,7 +481,7 @@ describe("VivliostyleExportSection", () => {
     expect(buildCalls).toHaveLength(1);
   });
 
-  it("別プロジェクトで開くと前プロジェクトの done（保存ボタン）は破棄される", async () => {
+  it("別プロジェクトで開くと前プロジェクトの done は破棄される", async () => {
     setupInvoke({ path: "/usr/bin/vivliostyle", version: "8.0.0" });
     const first = render(<VivliostyleExportSection />);
 

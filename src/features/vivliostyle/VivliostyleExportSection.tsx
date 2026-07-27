@@ -51,7 +51,6 @@ export function VivliostyleExportSection() {
   const [detected, setDetected] = useState<
     VivliostyleDetectResult | null | undefined
   >(undefined);
-  const [isSaving, setIsSaving] = useState(false);
   // ビルド/プレビューの実行状態はグローバル store（タブ切替 = unmount を
   // 跨いで進捗・中止・停止手段を維持する）。
   const status = useVivliostyleRunStore((s) => s.build);
@@ -82,7 +81,7 @@ export function VivliostyleExportSection() {
 
   // マウント時（タブ表示時）に素材と CLI 検出を初期化する。ビルド/プレビューの
   // 実行状態は runStore がタブ切替を跨いで保持するためここでは触らないが、
-  // 別プロジェクトのビルド状態（stale done の保存ボタン等）だけは破棄する。
+  // 別プロジェクトのビルド状態（stale done 等）だけは破棄する。
   useEffect(() => {
     loadVivliostyleExportSources()
       .then(setSources)
@@ -140,11 +139,14 @@ export function VivliostyleExportSection() {
     if (!canBuild) return;
     const files = assembleFiles();
     if (!files) return;
-    await startBuild({
-      files,
-      format,
-      binaryPath: binaryPath.trim() || null,
-    });
+    await startBuild(
+      {
+        files,
+        format,
+        binaryPath: binaryPath.trim() || null,
+      },
+      saveOutput,
+    );
   }
 
   async function handlePreview() {
@@ -162,19 +164,18 @@ export function VivliostyleExportSection() {
     }
   }
 
-  async function handleSave() {
-    if (status.phase !== "done" || isSaving) return;
-    setIsSaving(true);
-    try {
-      const path = await saveVivliostyleOutput(status.outputToken);
-      // null = ユーザーキャンセル（トーストは出さない）
-      if (path) toast.success(t("vivliostyle.build.saved", { path }));
-    } catch (err) {
-      toast.error(t("vivliostyle.build.saveFailed", { error: String(err) }));
-    } finally {
-      setIsSaving(false);
-    }
-  }
+  const saveOutput = useCallback(
+    async (outputToken: string) => {
+      try {
+        const path = await saveVivliostyleOutput(outputToken);
+        // null = ユーザーキャンセル（トーストは出さない）
+        if (path) toast.success(t("vivliostyle.build.saved", { path }));
+      } catch (err) {
+        toast.error(t("vivliostyle.build.saveFailed", { error: String(err) }));
+      }
+    },
+    [t],
+  );
 
   return (
     <>
@@ -204,8 +205,6 @@ export function VivliostyleExportSection() {
             status={status}
             logs={logs}
             onAbort={() => void abortBuild()}
-            onSave={() => void handleSave()}
-            isSaving={isSaving}
           />
         </div>
       </div>

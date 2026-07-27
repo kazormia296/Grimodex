@@ -4504,8 +4504,6 @@
       "firstRunNote": "初回実行時は Chromium のダウンロードが行われるため、数分かかることがあります。",
       "abort": "中止",
       "done": "組版が完了しました",
-      "save": "保存",
-      "saving": "保存中…",
       "saved": "保存しました: {{path}}",
       "saveFailed": "保存に失敗しました: {{error}}",
       "failed": "書き出しに失敗しました"

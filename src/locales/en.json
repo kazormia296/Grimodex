@@ -4512,8 +4512,6 @@
       "firstRunNote": "The first run downloads Chromium and may take several minutes.",
       "abort": "Abort",
       "done": "Typesetting finished",
-      "save": "Save",
-      "saving": "Saving…",
       "saved": "Saved: {{path}}",
       "saveFailed": "Failed to save: {{error}}",
       "failed": "Export failed"
