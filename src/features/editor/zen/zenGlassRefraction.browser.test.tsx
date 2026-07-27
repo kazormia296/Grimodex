@@ -259,6 +259,23 @@ function pixelAt(canvas: HTMLCanvasElement, u: number, v: number) {
   return pixel;
 }
 
+function expectShaderDrawn(container: HTMLElement, selector: string) {
+  const host = container.querySelector<HTMLElement>(selector);
+  expect(host).not.toBeNull();
+  if (!host) return;
+  expect(isPaperShaderElement(host)).toBe(true);
+  if (!isPaperShaderElement(host)) return;
+  const canvas = host.querySelector("canvas");
+  expect(canvas).not.toBeNull();
+  if (!canvas) return;
+  expect(canvas.width).toBeGreaterThan(0);
+  expect(canvas.height).toBeGreaterThan(0);
+  const mount = host.paperShaderMount;
+  expect(mount).toBeDefined();
+  if (!mount) return;
+  expect(mount.getPerformanceStats().drawCount).toBeGreaterThan(1);
+}
+
 function shaderRgb(
   red: number,
   green: number,
@@ -320,11 +337,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
 
     await waitFor(() => {
       for (const name of ["flat", "bent"]) {
-        const canvas = container.querySelector<HTMLCanvasElement>(
-          `[data-refraction-probe="${name}"] canvas`,
-        );
-        expect(canvas?.width).toBeGreaterThan(0);
-        expect(canvas?.height).toBeGreaterThan(0);
+        expectShaderDrawn(container, `[data-refraction-probe="${name}"]`);
       }
     });
 
@@ -358,11 +371,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
 
     await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-refraction-probe="zen-bent"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+      expectShaderDrawn(container, '[data-refraction-probe="zen-bent"]');
     });
 
     const flat = container.querySelector<HTMLCanvasElement>(
@@ -394,11 +403,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
 
     await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-refraction-probe="normal-bent"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+      expectShaderDrawn(container, '[data-refraction-probe="normal-bent"]');
     });
 
     const flat = container.querySelector<HTMLCanvasElement>(
@@ -441,6 +446,10 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
 
     await waitFor(() => {
+      expectShaderDrawn(
+        container,
+        '[data-refraction-probe="large-normal-bent"]',
+      );
       expect(
         container.querySelector<HTMLCanvasElement>(
           '[data-refraction-probe="large-normal-bent"] canvas',
@@ -499,11 +508,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
         "small-flat",
         "small-bent",
       ]) {
-        expect(
-          container.querySelector<HTMLCanvasElement>(
-            `[data-refraction-probe="${name}"] canvas`,
-          )?.width,
-        ).toBeGreaterThan(0);
+        expectShaderDrawn(container, `[data-refraction-probe="${name}"]`);
       }
     });
 
@@ -572,11 +577,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
 
     await waitFor(() => {
       for (const name of ["round-flat", "round-bent"]) {
-        expect(
-          container.querySelector<HTMLCanvasElement>(
-            `[data-refraction-probe="${name}"] canvas`,
-          )?.width,
-        ).toBeGreaterThan(0);
+        expectShaderDrawn(container, `[data-refraction-probe="${name}"]`);
       }
     });
 
@@ -625,11 +626,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
 
     await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-refraction-probe="ui-bent"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+      expectShaderDrawn(container, '[data-refraction-probe="ui-bent"]');
     });
 
     const flat = container.querySelector<HTMLCanvasElement>(
@@ -673,6 +670,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
 
     await waitFor(() => {
+      expectShaderDrawn(container, '[data-refraction-probe="capped-bent"]');
       expect(
         container.querySelector<HTMLCanvasElement>(
           '[data-refraction-probe="capped-bent"] canvas',
@@ -747,11 +745,16 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
 
     await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-ui-contrast-probe="dark-guarded"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+      for (const name of [
+        "dark-unguarded",
+        "dark-guarded",
+        "dark-tool-off",
+        "dark-tool-max",
+        "light-unguarded",
+        "light-guarded",
+      ]) {
+        expectShaderDrawn(container, `[data-ui-contrast-probe="${name}"]`);
+      }
     });
 
     const cases = [
@@ -855,11 +858,14 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
 
     await waitFor(() => {
       for (const { name } of lightThemes) {
-        expect(
-          container.querySelector<HTMLCanvasElement>(
-            `[data-ui-contrast-probe="${name}-guarded"] canvas`,
-          )?.width,
-        ).toBeGreaterThan(0);
+        expectShaderDrawn(
+          container,
+          `[data-ui-contrast-probe="${name}-unguarded"]`,
+        );
+        expectShaderDrawn(
+          container,
+          `[data-ui-contrast-probe="${name}-guarded"]`,
+        );
       }
     });
 
@@ -906,11 +912,14 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
 
     await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-ui-contrast-probe="black-light-guarded"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+      expectShaderDrawn(
+        container,
+        '[data-ui-contrast-probe="black-light-unguarded"]',
+      );
+      expectShaderDrawn(
+        container,
+        '[data-ui-contrast-probe="black-light-guarded"]',
+      );
     });
 
     const unguarded = container.querySelector<HTMLCanvasElement>(
@@ -934,11 +943,10 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     );
 
     await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-low-opacity-contrast-probe="guarded"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+      expectShaderDrawn(
+        container,
+        '[data-low-opacity-contrast-probe="guarded"]',
+      );
     });
 
     const guarded = container.querySelector<HTMLCanvasElement>(
@@ -950,6 +958,35 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
 
     expect(feather).toBeGreaterThan(outside + 20);
     expect(feather).toBeLessThan(center - 20);
+  });
+
+  it("keeps the patched ShaderMount animation loop running", async () => {
+    const { container } = render(
+      <ShaderMount
+        data-animation-probe
+        fragmentShader={GRADIENT_FRAGMENT}
+        uniforms={SIZING_UNIFORMS}
+        width={64}
+        height={64}
+        minPixelRatio={1}
+        maxPixelCount={4_096}
+        speed={1}
+      />,
+    );
+
+    await waitFor(() => {
+      const host = container.querySelector<HTMLElement>(
+        "[data-animation-probe]",
+      );
+      expect(host).not.toBeNull();
+      if (!host) return;
+      expect(isPaperShaderElement(host)).toBe(true);
+      if (!isPaperShaderElement(host)) return;
+      const mount = host.paperShaderMount;
+      expect(mount).toBeDefined();
+      if (!mount) return;
+      expect(mount.getPerformanceStats().drawCount).toBeGreaterThan(2);
+    });
   });
 
   it("compiles the refraction pass for every Paper background", async () => {

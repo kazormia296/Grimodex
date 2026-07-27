@@ -15,6 +15,10 @@ import { useZenShaderLayouts } from "./useZenShaderLayouts";
 import { useZenShaderAnimation } from "./zenShaderAnimation";
 import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
+import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
+import { ZEN_UI_SURFACE_MAX } from "./zenPostProcessing";
+import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
+import { buildZenGlassMask } from "./zenGlassCompositor";
 
 const PREVIEW_PIXEL_BUDGET = 300_000;
 const LIVE_BACKGROUND_PIXEL_BUDGET = 1920 * 1080;
@@ -33,6 +37,9 @@ export function ZenShaderSurface({
 }: ZenShaderSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const paperMountRef = useRef<PaperShaderElement>(null);
+  const surfaceUniformBufferRef = useRef(
+    new ZenUiSurfaceUniformBuffer(ZEN_UI_SURFACE_MAX),
+  );
   const palette = useZenThemePalette();
   const layouts = useZenShaderLayouts(surfaceRef);
   const resolved = useMemo(
@@ -44,22 +51,30 @@ export function ZenShaderSurface({
     [config, palette],
   );
   const fragmentShader = useMemo(
-    () => buildZenPostProcessedFragment(resolved.fragmentShader),
-    [resolved.fragmentShader],
+    () =>
+      buildZenPostProcessedFragment(
+        resolved.fragmentShader,
+        zenUiSurfaceVariantCapacity(layouts.uiSurfaces.length),
+      ),
+    [layouts.uiSurfaces.length, resolved.fragmentShader],
   );
   const uniforms = useMemo(
     () => ({
       ...resolved.uniforms,
-      ...buildZenPostProcessUniforms(config, {
-        ...layouts.contrast,
-        glassRect: layouts.glass.rect,
-        glassCornerRadius: layouts.glass.cornerRadius,
-        uiSurfaces: layouts.uiSurfaces,
-        textColor: palette.textColor ?? [0.85, 0.85, 0.85],
-        uiTextColor: palette.uiTextColor ??
-          palette.textColor ?? [0.85, 0.85, 0.85],
-        backdropColor: palette.backdropColor ?? [0.063, 0.075, 0.094],
-      }),
+      ...buildZenPostProcessUniforms(
+        config,
+        {
+          ...layouts.contrast,
+          glassRect: layouts.glass.rect,
+          glassCornerRadius: layouts.glass.cornerRadius,
+          uiSurfaces: layouts.uiSurfaces,
+          textColor: palette.textColor ?? [0.85, 0.85, 0.85],
+          uiTextColor: palette.uiTextColor ??
+            palette.textColor ?? [0.85, 0.85, 0.85],
+          backdropColor: palette.backdropColor ?? [0.063, 0.075, 0.094],
+        },
+        surfaceUniformBufferRef.current,
+      ),
     }),
     [config, layouts, palette, resolved.uniforms],
   );
@@ -91,6 +106,8 @@ export function ZenShaderSurface({
         resolvedMaxPixelCount ?? LIVE_BACKGROUND_PIXEL_BUDGET,
         LIVE_BACKGROUND_PIXEL_BUDGET,
       );
+  const useSharedGlassCompositor =
+    !preview && config.glass.enabled && layouts.uiSurfaces.length > 0;
 
   return (
     <div
@@ -134,8 +151,25 @@ export function ZenShaderSurface({
           webGlContextAttributes={{
             alpha: true,
             antialias: false,
-            powerPreference: "low-power",
+            powerPreference: "default",
             premultipliedAlpha: true,
+          }}
+        />
+      )}
+      {useSharedGlassCompositor && (
+        <div
+          data-zen-glass-compositor
+          className="pointer-events-none absolute inset-0"
+          style={{
+            backdropFilter: `blur(${config.glass.blur}px) saturate(${config.glass.saturation}) contrast(1.03)`,
+            maskImage: buildZenGlassMask(
+              layouts.surfaceSize,
+              layouts.glass,
+              layouts.uiSurfaces,
+            ),
+            maskPosition: "0 0",
+            maskRepeat: "no-repeat",
+            maskSize: "100% 100%",
           }}
         />
       )}

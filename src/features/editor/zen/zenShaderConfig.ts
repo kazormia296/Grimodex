@@ -338,11 +338,18 @@ function supportedColor(color: string, fallback: string): string {
   return fallback;
 }
 
-function paletteImageDataUrl(palette: ZenResolvedPalette): string {
+function paletteImageDataUrl(
+  palette: ZenResolvedPalette,
+  preblurEdge: boolean,
+): string {
   const colors = [palette.background, ...palette.colors].map((color) =>
     color.replaceAll("&", "&amp;").replaceAll('"', "&quot;"),
   );
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><radialGradient id="a" cx="20%" cy="15%" r="90%"><stop stop-color="${colors[1]}"/><stop offset="1" stop-color="${colors[0]}"/></radialGradient><radialGradient id="b" cx="80%" cy="85%" r="75%"><stop stop-color="${colors[2]}"/><stop offset="1" stop-color="${colors[3]}" stop-opacity="0"/></radialGradient></defs><rect width="512" height="512" fill="url(#a)"/><rect width="512" height="512" fill="url(#b)"/><circle cx="256" cy="256" r="132" fill="${colors[4]}" fill-opacity=".55"/></svg>`;
+  const filter = preblurEdge
+    ? '<filter id="edge"><feGaussianBlur stdDeviation="6"/></filter>'
+    : "";
+  const filterAttribute = preblurEdge ? ' filter="url(#edge)"' : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><radialGradient id="a" cx="20%" cy="15%" r="90%"><stop stop-color="${colors[1]}"/><stop offset="1" stop-color="${colors[0]}"/></radialGradient><radialGradient id="b" cx="80%" cy="85%" r="75%"><stop stop-color="${colors[2]}"/><stop offset="1" stop-color="${colors[3]}" stop-opacity="0"/></radialGradient>${filter}</defs><g${filterAttribute}><rect width="512" height="512" fill="url(#a)"/><rect width="512" height="512" fill="url(#b)"/><circle cx="256" cy="256" r="132" fill="${colors[4]}" fill-opacity=".55"/></g></svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
@@ -401,7 +408,11 @@ export function buildZenShaderProps(
   return {
     ...definition.defaults,
     ...colorProps(definition.defaults, palette),
-    ...(definition.imageSource ? { image: paletteImageDataUrl(palette) } : {}),
+    ...(definition.imageSource
+      ? {
+          image: paletteImageDataUrl(palette, config.shader === "liquid-metal"),
+        }
+      : {}),
     ...config.shaderProps[config.shader],
     width: "100%",
     height: "100%",

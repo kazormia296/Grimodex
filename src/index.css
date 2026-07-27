@@ -557,6 +557,13 @@ button[role="switch"][aria-checked="true"] {
     saturate(var(--workspace-fluid-glass-saturate, 1.16)) contrast(1.03);
 }
 
+/* When Editor plus one or more tool surfaces are visible, one masked
+   compositor layer owns the expensive backdrop sampling for all of them. */
+#main-content:has([data-zen-glass-compositor]) [data-editor-fluid-glass-filter],
+#main-content:has([data-zen-glass-compositor]) [data-ambient-glass-surface] {
+  backdrop-filter: none;
+}
+
 /* `--flat` variant: a card with a uniform fill instead of the dome
    gradient. Used by the editor, whose chrome (breadcrumb / tab bar /
    toolbar) mixes transparent and opaque `bg-background` bands — a
