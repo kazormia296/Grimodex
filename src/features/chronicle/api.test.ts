@@ -6,7 +6,9 @@ import type { BindParams } from "sql.js";
 const chronicleTestDb = vi.hoisted(
   () =>
     ({ runBatch: undefined }) as {
-      runBatch?: (statements: { sql: string; params: unknown[] }[]) => void;
+      runBatch?: (
+        statements: { sql: string; params: unknown[]; method?: string }[],
+      ) => { rows: Array<Record<string, unknown>> };
     },
 );
 
@@ -17,7 +19,7 @@ const chronicleTestDb = vi.hoisted(
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "db_execute_batch") {
-      chronicleTestDb.runBatch?.(
+      return chronicleTestDb.runBatch?.(
         (args?.statements as { sql: string; params: unknown[] }[]) ?? [],
       );
     }
@@ -54,6 +56,7 @@ vi.mock("@/db/client", async () => {
       kind TEXT NOT NULL DEFAULT 'generic',
       secret INTEGER NOT NULL DEFAULT 0,
       reveal_scene_id TEXT,
+      version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -125,12 +128,15 @@ vi.mock("@/db/client", async () => {
   );
   // Route db_execute_batch (setEventParticipants) to the same sqldb.
   chronicleTestDb.runBatch = (statements) => {
+    let rows: Array<Record<string, unknown>> = [];
     sqldb.run("BEGIN");
     try {
       for (const s of statements) {
         const st = sqldb.prepare(s.sql);
         st.bind(s.params as BindParams);
-        st.step();
+        const currentRows: Array<Record<string, unknown>> = [];
+        while (st.step()) currentRows.push(st.getAsObject());
+        if (s.method === "all") rows = currentRows;
         st.free();
       }
       sqldb.run("COMMIT");
@@ -138,6 +144,7 @@ vi.mock("@/db/client", async () => {
       sqldb.run("ROLLBACK");
       throw e;
     }
+    return { rows };
   };
   return { db };
 });
@@ -170,6 +177,7 @@ import {
   listSceneEventsForProject,
   calendarFromRow,
 } from "./api";
+import { EventVersionConflictError } from "./eventOcc";
 
 const NOW = "2026-06-27T00:00:00.000Z";
 
@@ -207,6 +215,7 @@ describe("normalizeEvent", () => {
       kind: "birth",
       secret: 1,
       reveal_scene_id: "s3",
+      version: 4,
       created_at: NOW,
       updated_at: NOW,
     };
@@ -230,6 +239,7 @@ describe("normalizeEvent", () => {
       kind: "birth",
       secret: true,
       revealSceneId: "s3",
+      version: 4,
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -340,9 +350,22 @@ describe("updateEvent (fail-closed scoping)", () => {
 
   it("projectId が一致すれば更新される", async () => {
     await seed("e1", "p1", "a0", "orig");
-    await updateEvent("e1", "p1", { title: "ok" });
+    const updated = await updateEvent("e1", "p1", { title: "ok" });
     const [row] = await listEvents("p1");
     expect(row.title).toBe("ok");
+    expect(updated?.version).toBe(1);
+  });
+
+  it("古い baseVersion は拒否し、現行行を上書きしない", async () => {
+    await seed("e1", "p1", "a0", "orig");
+    await updateEvent("e1", "p1", { title: "fresh" }, { baseVersion: 0 });
+
+    await expect(
+      updateEvent("e1", "p1", { title: "stale" }, { baseVersion: 0 }),
+    ).rejects.toBeInstanceOf(EventVersionConflictError);
+    const row = await getEvent("p1", "e1");
+    expect(row?.title).toBe("fresh");
+    expect(row?.version).toBe(1);
   });
 });
 
@@ -600,6 +623,21 @@ describe("setEventParticipants (fail-closed scoping)", () => {
     expect(await listEventParticipants("e1")).toEqual([
       { eventId: "e1", codexEntryId: "keep", role: null },
     ]);
+  });
+
+  it("participants は event aggregate version を進め、古い base を拒否する", async () => {
+    await seed("e1", "p1", "a0");
+    await expect(
+      setEventParticipants("e1", "p1", ["fresh"], { baseVersion: 0 }),
+    ).resolves.toBe(1);
+
+    await expect(
+      setEventParticipants("e1", "p1", ["stale"], { baseVersion: 0 }),
+    ).rejects.toBeInstanceOf(EventVersionConflictError);
+    expect(await listEventParticipants("e1")).toEqual([
+      { eventId: "e1", codexEntryId: "fresh", role: null },
+    ]);
+    expect((await getEvent("p1", "e1"))?.version).toBe(1);
   });
 });
 

@@ -9,6 +9,8 @@ import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 import { markCodexContentAsAi } from "./codex";
 import { applyUndoJournal } from "./undoJournal";
 import type { EventKind, EventPrecision, EventGranularity } from "@/db/schema";
+import { getEventVersion } from "@/features/chronicle/version";
+import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
 
 /**
  * 作中年表 (Chronicle) の tracked-write（undo_journal + change_events）。
@@ -17,7 +19,7 @@ import type { EventKind, EventPrecision, EventGranularity } from "@/db/schema";
  * （素の Drizzle CRUD は UI/抽出ウィザード用に残るが、tracked ではない）。
  */
 
-interface AgentWriteResult {
+export interface AgentWriteResult {
   entityId: string;
   version: number;
   changeEventUid: string;
@@ -31,10 +33,45 @@ export interface TrackedWriteOpts {
   surface?: string;
   /** AI 書き込みポリシー(knowledgeWrite)の対象外にする（UI 手動編集など）。 */
   skipPolicyGate?: boolean;
+  /** Loaded Event aggregate version; omitted callers resolve it before IPC. */
+  baseVersion?: number;
+  /** Suppress only when the originating Editor session owns this exact save. */
+  suppressDocumentNotification?: boolean;
 }
 
 function bump(): void {
   useChronicleStore.getState().bumpRevision();
+}
+
+type EventDocumentOp =
+  | "event.create"
+  | "event.update"
+  | "event.delete"
+  | "event.participants";
+
+function eventDocumentOp(
+  command: string,
+  replayDirection?: "undo" | "redo",
+): EventDocumentOp | null {
+  if (command === "agent_event_create") {
+    return replayDirection === "undo" ? "event.delete" : "event.create";
+  }
+  if (command === "agent_event_delete") {
+    return replayDirection === "undo" ? "event.create" : "event.delete";
+  }
+  if (command === "agent_event_update") return "event.update";
+  if (command === "agent_event_set_participants") return "event.participants";
+  return null;
+}
+
+function notifyEventDocumentWrite(
+  entityId: string,
+  opType: EventDocumentOp,
+): void {
+  notifySameRendererDocumentWrite(
+    { kind: "chronicle-event", id: entityId },
+    { domain: "event", opType, entityId },
+  );
 }
 
 /** Rust write を実行し、globalHistoryStore に undo/redo を積む共通処理。 */
@@ -56,6 +93,10 @@ async function trackedEventWrite(
       ...payload,
     },
   });
+  const documentOp = eventDocumentOp(command);
+  if (!opts?.suppressDocumentNotification && documentOp) {
+    notifyEventDocumentWrite(result.entityId, documentOp);
+  }
   bump();
   // 作中年表 RAG (Phase 3): 出来事の本文/参加者を変える書き込みのみ意味検索
   // index に投入する。delete / scene 橋 / relation は埋め込み対象フィールドを
@@ -73,12 +114,18 @@ async function trackedEventWrite(
       kind: "chronicle",
       label: i18next.t(historyLabelKey),
       entityId: result.entityId,
+      documentKey: { kind: "chronicle-event", id: result.entityId },
+      retainOnVersionConflict: true,
       async undo() {
         await applyUndoJournal(journalId, "undo");
+        const replayOp = eventDocumentOp(command, "undo");
+        if (replayOp) notifyEventDocumentWrite(result.entityId, replayOp);
         bump();
       },
       async redo() {
         await applyUndoJournal(journalId, "redo");
+        const replayOp = eventDocumentOp(command, "redo");
+        if (replayOp) notifyEventDocumentWrite(result.entityId, replayOp);
         bump();
       },
     });
@@ -157,6 +204,8 @@ export async function agentCreateEvent(
 
 export interface AgentEventUpdateInput {
   eventId: string;
+  /** Version observed when this editing session loaded the event. */
+  baseVersion?: number;
   title?: string;
   laneGroup?: string | null;
   note?: string | null;
@@ -182,16 +231,24 @@ export interface AgentEventUpdateInput {
 export async function agentUpdateEvent(
   input: AgentEventUpdateInput,
   opts?: TrackedWriteOpts,
-): Promise<void> {
-  const { eventId, ...patch } = input;
+): Promise<AgentWriteResult> {
+  const { eventId, baseVersion: suppliedBaseVersion, ...patch } = input;
+  const projectId = getCurrentProjectId();
+  const baseVersion =
+    suppliedBaseVersion ??
+    opts?.baseVersion ??
+    (await getEventVersion(projectId, eventId));
+  if (baseVersion === null) {
+    throw new Error(`Event '${eventId}' not found in project '${projectId}'`);
+  }
   // create と同じ理由で AI 経路の detail 更新に AI 帰属マークを焼き込む
   // （set-if-present なので detail 未指定の更新は触らない）。
   if (patch.detail && opts?.surface !== "manual") {
     patch.detail = markCodexContentAsAi(patch.detail);
   }
-  await trackedEventWrite(
+  return trackedEventWrite(
     "agent_event_update",
-    { eventId, ...patch },
+    { eventId, baseVersion, ...patch },
     "chronicle.agentHistoryUpdate",
     opts,
   );
@@ -200,10 +257,16 @@ export async function agentUpdateEvent(
 export async function agentDeleteEvent(
   eventId: string,
   opts?: TrackedWriteOpts,
-): Promise<void> {
-  await trackedEventWrite(
+): Promise<AgentWriteResult> {
+  const projectId = getCurrentProjectId();
+  const baseVersion =
+    opts?.baseVersion ?? (await getEventVersion(projectId, eventId));
+  if (baseVersion === null) {
+    throw new Error(`Event '${eventId}' not found in project '${projectId}'`);
+  }
+  return trackedEventWrite(
     "agent_event_delete",
-    { eventId },
+    { eventId, baseVersion },
     "chronicle.agentHistoryDelete",
     opts,
   );
@@ -213,10 +276,16 @@ export async function agentSetEventParticipants(
   eventId: string,
   codexEntryIds: string[],
   opts?: TrackedWriteOpts,
-): Promise<void> {
-  await trackedEventWrite(
+): Promise<AgentWriteResult> {
+  const projectId = getCurrentProjectId();
+  const baseVersion =
+    opts?.baseVersion ?? (await getEventVersion(projectId, eventId));
+  if (baseVersion === null) {
+    throw new Error(`Event '${eventId}' not found in project '${projectId}'`);
+  }
+  return trackedEventWrite(
     "agent_event_set_participants",
-    { eventId, codexEntryIds },
+    { eventId, codexEntryIds, baseVersion },
     "chronicle.agentHistoryUpdate",
     opts,
   );
@@ -289,20 +358,44 @@ export function uiCreateEvent(
   return agentCreateEvent(input, UI_WRITE_OPTS);
 }
 
-export function uiUpdateEvent(input: AgentEventUpdateInput): Promise<void> {
-  return agentUpdateEvent(input, UI_WRITE_OPTS);
+export function uiUpdateEvent(
+  input: AgentEventUpdateInput,
+  options?: { suppressDocumentNotification?: boolean },
+): Promise<AgentWriteResult> {
+  return agentUpdateEvent(input, {
+    ...UI_WRITE_OPTS,
+    suppressDocumentNotification: options?.suppressDocumentNotification,
+  });
 }
 
-export function uiDeleteEvent(eventId: string): Promise<void> {
-  return agentDeleteEvent(eventId, UI_WRITE_OPTS);
+export function uiDeleteEvent(
+  eventId: string,
+  options?: {
+    baseVersion?: number;
+    suppressDocumentNotification?: boolean;
+  },
+): Promise<AgentWriteResult> {
+  return agentDeleteEvent(eventId, {
+    ...UI_WRITE_OPTS,
+    baseVersion: options?.baseVersion,
+    suppressDocumentNotification: options?.suppressDocumentNotification,
+  });
 }
 
 /** 出来事の参加者（追加レーン=複数 Codex 所属）を置換する。tracked-write。 */
 export function uiSetEventParticipants(
   eventId: string,
   codexEntryIds: string[],
-): Promise<void> {
-  return agentSetEventParticipants(eventId, codexEntryIds, UI_WRITE_OPTS);
+  options?: {
+    baseVersion?: number;
+    suppressDocumentNotification?: boolean;
+  },
+): Promise<AgentWriteResult> {
+  return agentSetEventParticipants(eventId, codexEntryIds, {
+    ...UI_WRITE_OPTS,
+    baseVersion: options?.baseVersion,
+    suppressDocumentNotification: options?.suppressDocumentNotification,
+  });
 }
 
 export function uiAddEventRelation(

@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useTreeStore } from "./treeStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 // Mock the API module
 vi.mock("./api", () => ({
@@ -17,6 +19,15 @@ function resetStore() {
     filterQuery: "",
     expandedIds: [],
   });
+  useTabStore.setState({
+    tabs: [],
+    activeTabId: null,
+    secondaryTabs: [],
+    secondaryActiveTabId: null,
+    secondaryGroupOpen: false,
+    isLinearMode: false,
+  });
+  useExternalWriteStore.getState().clear();
 }
 
 const NODE_DEFAULTS = {
@@ -120,6 +131,27 @@ describe("treeStore multi-selection", () => {
       useTreeStore.setState({ nodes: NODES });
       useTreeStore.getState().selectNode("scene-2", false);
       expect(useTreeStore.getState().activeSceneId).toBe("scene-2");
+    });
+
+    it("does not navigate away from the conflict UI via the scene tree", () => {
+      useTreeStore.setState({
+        nodes: NODES,
+        activeSceneId: "scene-1",
+        selectedIds: ["scene-1"],
+      });
+      useTabStore.getState().openPinned("scene-1");
+      useExternalWriteStore.getState().pushConflict({
+        documentKey: { kind: "tree", id: "scene-1", storage: "database" },
+        sceneId: "scene-1",
+        domain: "scene",
+        opType: "update",
+        entityId: "scene-1",
+      });
+
+      useTreeStore.getState().selectNode("scene-2", false);
+
+      expect(useTreeStore.getState().activeSceneId).toBe("scene-1");
+      expect(useTreeStore.getState().selectedIds).toEqual(["scene-1"]);
     });
   });
 

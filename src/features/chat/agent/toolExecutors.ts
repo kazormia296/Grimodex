@@ -32,6 +32,7 @@ import {
   agentUpdateCodexEntry,
 } from "@/features/agent-writes/codex";
 import { agentCreateSnippet } from "@/features/agent-writes/snippet";
+import { agentMarkdownToProseMirrorJson } from "@/features/agent-writes/richTextInput";
 import {
   agentCreateForeshadow,
   agentUpdateForeshadow,
@@ -1215,6 +1216,33 @@ async function getSceneTimelineNeighbors(
 // Mutating executors (knowledgeWrite policy gated)
 // ---------------------------------------------------------------------------
 
+const MAX_CODEX_ALIASES = 100;
+const MAX_CODEX_ALIAS_BYTES = 64_000;
+
+function optionalMarkdownBody(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error("content must be a Markdown string");
+  }
+  return agentMarkdownToProseMirrorJson(value);
+}
+
+function optionalAliases(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error("aliases must be an array of strings");
+  }
+  if (value.length > MAX_CODEX_ALIASES) {
+    throw new Error(`aliases must contain at most ${MAX_CODEX_ALIASES} items`);
+  }
+  const aliases = value.map((item) => item.trim()).filter(Boolean);
+  const serialized = JSON.stringify(aliases);
+  if (new TextEncoder().encode(serialized).byteLength > MAX_CODEX_ALIAS_BYTES) {
+    throw new Error(`aliases exceed ${MAX_CODEX_ALIAS_BYTES} bytes`);
+  }
+  return serialized;
+}
+
 async function createCodexEntryTool(
   params: Record<string, unknown>,
 ): Promise<Omit<ToolResult, "toolCallId">> {
@@ -1234,8 +1262,8 @@ async function createCodexEntryTool(
       type,
       name,
       summary: params["summary"] ? String(params["summary"]) : undefined,
-      content: params["content"] ? String(params["content"]) : undefined,
-      aliases: params["aliases"] ? String(params["aliases"]) : undefined,
+      content: optionalMarkdownBody(params["content"]),
+      aliases: optionalAliases(params["aliases"]),
       parentId: params["parentId"] ? String(params["parentId"]) : undefined,
     });
     const content = { id: entry.id, name: entry.name, type: entry.type };
@@ -1281,9 +1309,10 @@ async function updateCodexEntryTool(
       summary:
         params["summary"] !== undefined ? String(params["summary"]) : undefined,
       content:
-        params["content"] !== undefined ? String(params["content"]) : undefined,
-      aliases:
-        params["aliases"] !== undefined ? String(params["aliases"]) : undefined,
+        params["content"] !== undefined
+          ? optionalMarkdownBody(params["content"])
+          : undefined,
+      aliases: optionalAliases(params["aliases"]),
     });
     const content = { id: entry.id, name: entry.name, type: entry.type };
     const json = JSON.stringify(content);
@@ -1606,7 +1635,7 @@ async function createSnippetTool(
   try {
     const snippet = await agentCreateSnippet({
       title,
-      content: params["content"] ? String(params["content"]) : undefined,
+      content: optionalMarkdownBody(params["content"]),
       sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
     });
     const content = { id: snippet.id, title: snippet.title };

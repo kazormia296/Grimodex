@@ -3,6 +3,7 @@ import {
   useGlobalHistoryStore,
   setHistoryReplayGuard,
 } from "./globalHistoryStore";
+import { PhaseVersionConflictError } from "@/features/codex/phaseOcc";
 
 describe("useGlobalHistoryStore", () => {
   beforeEach(() => {
@@ -162,6 +163,63 @@ describe("useGlobalHistoryStore", () => {
     expect(s.past).toEqual([]);
     expect(s.future).toEqual([]);
     expect(s.canRedo).toBe(false);
+  });
+
+  it("retains an opted-in Phase command on the undo stack after a version conflict", async () => {
+    const command = {
+      kind: "phase" as const,
+      label: "stale phase",
+      entityId: "phase-1",
+      documentKey: {
+        kind: "codex" as const,
+        id: "entry-1",
+        phaseId: "phase-1",
+      },
+      retainOnVersionConflict: true,
+      undo: async () => {
+        throw new PhaseVersionConflictError("phase-1");
+      },
+      redo: async () => {},
+    };
+    useGlobalHistoryStore.getState().push(command);
+
+    await useGlobalHistoryStore.getState().undo();
+
+    const state = useGlobalHistoryStore.getState();
+    expect(state.past).toEqual([command]);
+    expect(state.future).toEqual([]);
+    expect(state.canUndo).toBe(true);
+    expect(state.canRedo).toBe(false);
+    expect(state.isReplaying).toBe(false);
+  });
+
+  it("retains an opted-in Phase command on the redo stack after a version conflict", async () => {
+    const command = {
+      kind: "phase" as const,
+      label: "stale phase",
+      entityId: "phase-1",
+      documentKey: {
+        kind: "codex" as const,
+        id: "entry-1",
+        phaseId: "phase-1",
+      },
+      retainOnVersionConflict: true,
+      undo: async () => {},
+      redo: async () => {
+        throw new PhaseVersionConflictError("phase-1");
+      },
+    };
+    useGlobalHistoryStore.getState().push(command);
+    await useGlobalHistoryStore.getState().undo();
+
+    await useGlobalHistoryStore.getState().redo();
+
+    const state = useGlobalHistoryStore.getState();
+    expect(state.past).toEqual([]);
+    expect(state.future).toEqual([command]);
+    expect(state.canUndo).toBe(false);
+    expect(state.canRedo).toBe(true);
+    expect(state.isReplaying).toBe(false);
   });
 
   it("redo throwing clears history and rethrows", async () => {

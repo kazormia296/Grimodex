@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useWorkspaceStore } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
+import {
+  createAutoSave,
+  registerAutoSaveForQuiesce,
+} from "@/hooks/useAutoSave";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { createEditorInstanceId } from "@/features/editor/document/documentKey";
+import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
 
 const cancelScheduledImeExportsMock = vi.hoisted(() => vi.fn());
 
@@ -34,6 +41,7 @@ function resetStore() {
 describe("useWorkspaceStore", () => {
   beforeEach(() => {
     resetStore();
+    useEditorSessionStore.getState().resetForProject();
     vi.clearAllMocks();
   });
 
@@ -207,6 +215,104 @@ describe("useWorkspaceStore", () => {
       expect(state.workspaceOpenRevision).toBe(3);
       expect(state.workspaceHydrated).toBe(true);
       expect(state.workspaceSwitchInProgress).toBe(false);
+    });
+
+    it("pre-switch save が失敗したら native open を呼ばず旧 workspace を維持する", async () => {
+      const previousPath = "D:\\Novels\\Existing";
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: previousPath,
+        activeWorkspaceName: "Existing",
+        workspaceOpenRevision: 3,
+        workspaceHydrated: true,
+      });
+      const save = vi.fn().mockRejectedValue(new Error("disk full"));
+      const autoSave = createAutoSave(save, 2000);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+
+      try {
+        await useWorkspaceStore
+          .getState()
+          .openWorkspace("D:\\Novels\\Replacement");
+
+        const state = useWorkspaceStore.getState();
+        expect(save).toHaveBeenCalledOnce();
+        expect(mockInvoke).not.toHaveBeenCalledWith(
+          "open_workspace",
+          expect.anything(),
+        );
+        expect(state.view).toBe("editor");
+        expect(state.activeWorkspacePath).toBe(previousPath);
+        expect(state.activeWorkspaceName).toBe("Existing");
+        expect(state.workspaceOpenRevision).toBe(3);
+        expect(state.workspaceHydrated).toBe(true);
+        expect(state.workspaceSwitchInProgress).toBe(false);
+        expect(state.error).toBe("disk full");
+      } finally {
+        unregister();
+        autoSave.cancel();
+      }
+    });
+
+    it("dirty が解消しない文書があれば native open 前に切替を中断する", async () => {
+      const previousPath = "D:\\Novels\\Existing";
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: previousPath,
+        activeWorkspaceName: "Existing",
+        workspaceOpenRevision: 3,
+        workspaceHydrated: true,
+      });
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(
+          { kind: "snippet", id: "snippet-1" },
+          true,
+          createEditorInstanceId("test-editor"),
+        );
+
+      await useWorkspaceStore
+        .getState()
+        .openWorkspace("D:\\Novels\\Replacement");
+
+      const state = useWorkspaceStore.getState();
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "open_workspace",
+        expect.anything(),
+      );
+      expect(state.view).toBe("editor");
+      expect(state.activeWorkspacePath).toBe(previousPath);
+      expect(state.workspaceOpenRevision).toBe(3);
+      expect(state.workspaceHydrated).toBe(true);
+      expect(state.error).toBe(
+        "未保存または競合中の変更があるため、ワークスペースを切り替えませんでした",
+      );
+    });
+
+    it("本文外のtracked writeも完了するまでnative swapを待つ", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tracked = trackPendingEditorWrite(gate);
+      mockInvoke.mockResolvedValue({ name: "Replacement" });
+
+      const opening = useWorkspaceStore
+        .getState()
+        .openWorkspace("D:\\Novels\\Replacement");
+      await Promise.resolve();
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "open_workspace",
+        expect.anything(),
+      );
+
+      release();
+      await tracked;
+      await opening;
+      expect(mockInvoke).toHaveBeenCalledWith("open_workspace", {
+        path: "D:\\Novels\\Replacement",
+      });
     });
 
     // R4-1 系列A: 同一パス再オープン (例: チュートリアル再実行) では

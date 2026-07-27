@@ -145,6 +145,11 @@ export async function autoApplyProseProposal(
   if (isFileBackedNode(node.sourceUri)) {
     return { applied: false, reason: "file-backed" };
   }
+  const documentKey = {
+    kind: "tree" as const,
+    id: sceneId,
+    storage: "database" as const,
+  };
 
   const schema = getDocSchema();
   // Flush any pending debounced autosave BEFORE reading the DB: if the scene is
@@ -184,6 +189,7 @@ export async function autoApplyProseProposal(
           "leaving proposal for manual review",
       );
       useExternalWriteStore.getState().pushConflict({
+        documentKey,
         sceneId,
         domain: "prose",
         opType: "prose.stale",
@@ -260,10 +266,10 @@ export async function autoApplyProseProposal(
   // mirror the persisted doc into it so its next autosave does not clobber
   // this write (lost-update guard). Subscriber check, NOT a tab-list check:
   // linear-mode editors have no tab.
-  if (hasLiveContentSubscriber(sceneId)) {
+  if (hasLiveContentSubscriber(documentKey)) {
     useSceneContentStore
       .getState()
-      .setLiveContent(sceneId, nextDoc.toJSON(), RESYNC_GROUP);
+      .setLiveContent(documentKey, nextDoc.toJSON(), RESYNC_GROUP);
   }
 
   return { applied: true };

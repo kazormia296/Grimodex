@@ -99,6 +99,13 @@ import {
 import { useExternalWriteStore } from "./externalWriteStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import {
+  encodeDocumentKey,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
+import { PhaseVersionConflictError } from "@/features/codex/phaseOcc";
+
+const editorStateKey = (key: DocumentKey): string => encodeDocumentKey(key);
 
 const ev = (
   partial: Partial<{
@@ -108,6 +115,7 @@ const ev = (
     entityType: string | null;
     entityId: string | null;
     opType: string;
+    payload: string;
   }>,
 ) => ({
   id: 1,
@@ -120,7 +128,7 @@ const ev = (
   entityType: partial.entityType ?? null,
   entityId: partial.entityId ?? null,
   sceneId: partial.sceneId ?? null,
-  payload: "{}",
+  payload: partial.payload ?? "{}",
   timestamp: Date.now(),
   prevHash: "0",
   hash: "1",
@@ -138,6 +146,7 @@ describe("externalWriteFeed fan-out", () => {
     h.loadLabels.mockClear();
     h.dirtyTabs = new Set();
     useExternalWriteStore.getState().clear();
+    useGlobalHistoryStore.getState().clear();
     useInlineAiStore.getState().reset();
   });
 
@@ -213,7 +222,13 @@ describe("externalWriteFeed fan-out", () => {
     );
     expect(useExternalWriteStore.getState().conflicts).toHaveLength(1);
     expect(
-      useExternalWriteStore.getState().reloadNonce["scene-1"],
+      useExternalWriteStore.getState().reloadNonce[
+        editorStateKey({
+          kind: "tree",
+          id: "scene-1",
+          storage: "database",
+        })
+      ],
     ).toBeUndefined();
   });
 
@@ -229,7 +244,15 @@ describe("externalWriteFeed fan-out", () => {
       ],
       "p1",
     );
-    expect(useExternalWriteStore.getState().reloadNonce["scene-2"]).toBe(1);
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        editorStateKey({
+          kind: "tree",
+          id: "scene-2",
+          storage: "database",
+        })
+      ],
+    ).toBe(1);
   });
 
   it("pushes conflict instead of reloading clean editor scene while inline AI is pending", async () => {
@@ -264,7 +287,13 @@ describe("externalWriteFeed fan-out", () => {
       entityId: "scene-pending",
     });
     expect(
-      useExternalWriteStore.getState().reloadNonce["scene-pending"],
+      useExternalWriteStore.getState().reloadNonce[
+        editorStateKey({
+          kind: "tree",
+          id: "scene-pending",
+          storage: "database",
+        })
+      ],
     ).toBeUndefined();
   });
 
@@ -299,7 +328,243 @@ describe("externalWriteFeed fan-out", () => {
       ],
       "p1",
     );
-    expect(useExternalWriteStore.getState().reloadNonce["snippet-2"]).toBe(1);
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        editorStateKey({ kind: "snippet", id: "snippet-2" })
+      ],
+    ).toBe(1);
+  });
+
+  it("pushes a conflict for a dirty Chronicle Event editor", async () => {
+    h.dirtyTabs.add("event-1");
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          entityType: "event",
+          entityId: "event-1",
+          opType: "event.update",
+        }),
+      ],
+      "p1",
+    );
+
+    expect(useExternalWriteStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        documentKey: { kind: "chronicle-event", id: "event-1" },
+        sceneId: "event-1",
+      }),
+    ]);
+  });
+
+  it("reloads a clean Chronicle Event editor", async () => {
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          entityType: "event",
+          entityId: "event-2",
+          opType: "event.update",
+        }),
+      ],
+      "p1",
+    );
+
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        editorStateKey({ kind: "chronicle-event", id: "event-2" })
+      ],
+    ).toBe(1);
+  });
+
+  it("does not treat event relation metadata as a document-body change", async () => {
+    h.dirtyTabs.add("event-relation");
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          entityType: "event",
+          entityId: "event-relation",
+          opType: "event.relation_add",
+        }),
+      ],
+      "p1",
+    );
+
+    expect(h.bumpChronicle).toHaveBeenCalledOnce();
+    expect(useExternalWriteStore.getState().conflicts).toHaveLength(0);
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        editorStateKey({ kind: "chronicle-event", id: "event-relation" })
+      ],
+    ).toBeUndefined();
+  });
+
+  it("invalidates stale Chronicle history for an externally updated event", async () => {
+    useGlobalHistoryStore.getState().push({
+      kind: "chronicle",
+      label: "stale event edit",
+      entityId: "event-history",
+      undo: async () => {},
+      redo: async () => {},
+    });
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          entityType: "event",
+          entityId: "event-history",
+          opType: "event.update",
+        }),
+      ],
+      "p1",
+    );
+
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+  });
+
+  it("invalidates both event histories for an external causal relation change", async () => {
+    for (const entityId of ["cause-event", "effect-event", "other-event"]) {
+      useGlobalHistoryStore.getState().push({
+        kind: "chronicle",
+        label: entityId,
+        entityId,
+        undo: async () => {},
+        redo: async () => {},
+      });
+    }
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          entityType: "event",
+          entityId: "cause-event",
+          opType: "event.relation_add",
+          payload: JSON.stringify({
+            causeEventId: "cause-event",
+            effectEventId: "effect-event",
+          }),
+        }),
+      ],
+      "p1",
+    );
+
+    expect(
+      useGlobalHistoryStore.getState().past.map((command) => command.entityId),
+    ).toEqual(["other-event"]);
+    expect(useExternalWriteStore.getState().conflicts).toHaveLength(0);
+  });
+
+  it("invalidates counterpart relation history when an external event delete cascades relations", async () => {
+    for (const entityId of ["deleted-event", "relation-cause", "other-event"]) {
+      useGlobalHistoryStore.getState().push({
+        kind: "chronicle",
+        label: entityId,
+        entityId,
+        undo: async () => {},
+        redo: async () => {},
+      });
+    }
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          entityType: "event",
+          entityId: "deleted-event",
+          opType: "event.delete",
+          payload: JSON.stringify({
+            relatedEventIds: ["relation-cause"],
+          }),
+        }),
+      ],
+      "p1",
+    );
+
+    expect(
+      useGlobalHistoryStore.getState().past.map((command) => command.entityId),
+    ).toEqual(["other-event"]);
+  });
+
+  it("invalidates the event and scene histories for an external stamp change", async () => {
+    useGlobalHistoryStore.getState().push({
+      kind: "chronicle",
+      label: "event edit",
+      entityId: "stamped-event",
+      undo: async () => {},
+      redo: async () => {},
+    });
+    useGlobalHistoryStore.getState().push({
+      kind: "scenes",
+      label: "scene edit",
+      entityId: "stamped-scene",
+      undo: async () => {},
+      redo: async () => {},
+    });
+    useGlobalHistoryStore.getState().push({
+      kind: "scenes",
+      label: "unrelated scene edit",
+      entityId: "other-scene",
+      undo: async () => {},
+      redo: async () => {},
+    });
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          sceneId: "stamped-scene",
+          entityType: "event",
+          entityId: "stamped-event",
+          opType: "event.stamp",
+          payload: JSON.stringify({
+            eventId: "stamped-event",
+            sceneId: "stamped-scene",
+          }),
+        }),
+      ],
+      "p1",
+    );
+
+    expect(
+      useGlobalHistoryStore.getState().past.map((command) => command.entityId),
+    ).toEqual(["other-scene"]);
+    expect(useExternalWriteStore.getState().conflicts).toHaveLength(0);
+  });
+
+  it("degrades safely when external relation payload JSON is malformed", async () => {
+    for (const entityId of ["cause-event", "effect-event"]) {
+      useGlobalHistoryStore.getState().push({
+        kind: "chronicle",
+        label: entityId,
+        entityId,
+        undo: async () => {},
+        redo: async () => {},
+      });
+    }
+
+    await expect(
+      processExternalEventsForTest(
+        [
+          ev({
+            domain: "event",
+            entityType: "event",
+            entityId: "cause-event",
+            opType: "event.relation_remove",
+            payload: "{not-json",
+          }),
+        ],
+        "p1",
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(
+      useGlobalHistoryStore.getState().past.map((command) => command.entityId),
+    ).toEqual(["effect-event"]);
   });
 });
 
@@ -353,6 +618,20 @@ describe("undo version-conflict surfacing (registered handler)", () => {
     });
   }
 
+  function pushConflictingChronicle(entityId: string) {
+    useGlobalHistoryStore.getState().push({
+      kind: "chronicle",
+      label: "stale event",
+      entityId,
+      undo: async () => {
+        throw new Error(
+          `event '${entityId}' version 2 conflict during journal restore`,
+        );
+      },
+      redo: async () => {},
+    });
+  }
+
   it("pushes a conflict banner when the entity's tab is dirty", async () => {
     h.dirtyTabs.add("entry-1");
     pushConflicting("entry-1");
@@ -375,6 +654,59 @@ describe("undo version-conflict surfacing (registered handler)", () => {
     await useGlobalHistoryStore.getState().undo();
 
     expect(useExternalWriteStore.getState().conflicts).toHaveLength(0);
-    expect(useExternalWriteStore.getState().reloadNonce["entry-2"]).toBe(1);
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        editorStateKey({ kind: "codex", id: "entry-2", phaseId: null })
+      ],
+    ).toBe(1);
+  });
+
+  it("surfaces a Chronicle undo conflict against the exact event document", async () => {
+    h.dirtyTabs.add("event-undo");
+    pushConflictingChronicle("event-undo");
+    await useGlobalHistoryStore.getState().undo();
+
+    expect(useExternalWriteStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        documentKey: { kind: "chronicle-event", id: "event-undo" },
+        sceneId: "event-undo",
+        domain: "event",
+        opType: "undo.version_conflict",
+      }),
+    ]);
+  });
+
+  it("surfaces and retains a Phase undo conflict against the exact Phase document", async () => {
+    const documentKey: DocumentKey = {
+      kind: "codex",
+      id: "entry-phase",
+      phaseId: "phase-undo",
+    };
+    h.dirtyTabs.add("entry-phase");
+    useGlobalHistoryStore.getState().push({
+      kind: "phase",
+      label: "stale phase",
+      entityId: "phase-undo",
+      documentKey,
+      retainOnVersionConflict: true,
+      undo: async () => {
+        throw new PhaseVersionConflictError("phase-undo");
+      },
+      redo: async () => {},
+    });
+
+    await useGlobalHistoryStore.getState().undo();
+
+    expect(useExternalWriteStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        documentKey,
+        sceneId: "entry-phase",
+        domain: "codex",
+        opType: "undo.version_conflict",
+        entityId: "phase-undo",
+      }),
+    ]);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+    expect(useGlobalHistoryStore.getState().future).toEqual([]);
   });
 });

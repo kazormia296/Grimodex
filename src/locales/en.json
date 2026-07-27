@@ -4341,6 +4341,10 @@
     "aiExposureHidden": "Never show to AI (hidden)",
     "aiExposureHint": "suppress is injected only when explicitly selected via Spotlight/Codex scope; hidden never reaches AI through any path. Both are excluded from normal automatic injection.",
     "saving": "Saving...",
+    "updateFailed": "Failed to update Phase",
+    "deleteFailed": "Failed to delete Phase",
+    "updateMissing": "Could not save because this Phase was deleted or could not be found.",
+    "editConflict": "This Phase was updated in another window. Reload the latest version before editing it again.",
     "history": {
       "created": "Phase created",
       "updated": "Phase updated",
@@ -4435,7 +4439,8 @@
   "autoSave": {
     "failed": "Auto-save failed: {{reason}}",
     "recovered": "Auto-save recovered; your changes are saved",
-    "workspaceSwitching": "Could not save while switching workspaces (your changes are kept and will be re-saved automatically)"
+    "workspaceSwitching": "Could not save while switching workspaces (your changes are kept and will be re-saved automatically)",
+    "unresolvedChanges": "The workspace was not switched because some changes are unsaved or still in conflict"
   },
   "sceneLoad": {
     "failed": "Failed to load scene content (saving paused for this scene): {{reason}}"

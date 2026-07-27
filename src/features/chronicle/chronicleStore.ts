@@ -1,5 +1,11 @@
 import { create } from "zustand";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import { hasExternalEditConflictForStateKey } from "@/lib/externalEditConflictRegistry";
+import { isSceneEventId, sceneIdFromEventId } from "./sceneEventAdapter";
+import {
+  encodeDocumentKey,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
 
 export interface ChronicleSettings {
   zoom: number;
@@ -87,7 +93,24 @@ interface ChronicleState {
   loadFromSettings: (settings: Partial<ChronicleSettings>) => void;
 }
 
-export const useChronicleStore = create<ChronicleState>((set) => ({
+function chronicleSelectionDocumentKey(id: string): DocumentKey {
+  return isSceneEventId(id)
+    ? {
+        kind: "tree",
+        id: sceneIdFromEventId(id),
+        storage: "database",
+      }
+    : { kind: "chronicle-event", id };
+}
+
+function selectionOwnsExternalConflict(id: string | null): boolean {
+  if (!id) return false;
+  return hasExternalEditConflictForStateKey(
+    encodeDocumentKey(chronicleSelectionDocumentKey(id)),
+  );
+}
+
+export const useChronicleStore = create<ChronicleState>((set, get) => ({
   zoom: 1,
   scrollOffset: 0,
   showOffpage: true,
@@ -103,15 +126,33 @@ export const useChronicleStore = create<ChronicleState>((set) => ({
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
   setChronicleView: (pxPerDay, viewStartDay) => set({ pxPerDay, viewStartDay }),
   toggleShowOffpage: () => set((s) => ({ showOffpage: !s.showOffpage })),
-  setSelectedEventId: (selectedEventId) =>
+  setSelectedEventId: (selectedEventId) => {
+    const current = get().selectedEventId;
+    if (selectedEventId !== current && selectionOwnsExternalConflict(current)) {
+      return;
+    }
     set({
       selectedEventId,
       selectedEventIds: selectedEventId ? [selectedEventId] : [],
-    }),
-  setSelection: (selectedEventIds, primary) =>
-    set({ selectedEventIds, selectedEventId: primary }),
+    });
+  },
+  setSelection: (selectedEventIds, primary) => {
+    const current = get().selectedEventId;
+    if (primary !== current && selectionOwnsExternalConflict(current)) return;
+    set({ selectedEventIds, selectedEventId: primary });
+  },
   sanitizeSelection: (existing) =>
     set((s) => {
+      // External deletion can remove the selected row before its dirty draft
+      // resolves. Keep the inspector owner mounted so Reload can explicitly
+      // discard that draft; otherwise a paused retired AutoSave has no UI left.
+      if (
+        s.selectedEventId &&
+        !existing.has(s.selectedEventId) &&
+        selectionOwnsExternalConflict(s.selectedEventId)
+      ) {
+        return {};
+      }
       const ids = s.selectedEventIds.filter((id) => existing.has(id));
       // 何も落ちなければ参照を据え置き（無駄な再レンダ回避）。
       if (ids.length === s.selectedEventIds.length) return {};

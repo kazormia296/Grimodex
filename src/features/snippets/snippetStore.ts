@@ -13,6 +13,11 @@ import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { notifySnippetDeleted } from "./anchorNotify";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
+import {
+  SAVE_NOT_PERSISTED,
+  persistedVersion,
+  type VersionedSaveOutcome,
+} from "@/lib/saveOutcome";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
 import {
@@ -97,7 +102,8 @@ interface SnippetState {
     data: Partial<
       Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
     >,
-  ) => Promise<boolean>;
+    options?: { baseVersion?: number },
+  ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
   incrementUsageCount: (id: string) => Promise<void>;
 }
@@ -250,42 +256,44 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     }
   },
 
-  update: async (id, data) => {
+  update: async (id, data, options) => {
     const before = get().entries.find((e) => e.id === id);
+    let updated: Snippet | undefined;
 
     try {
       // OCC: 読み込み時点の version を baseVersion として渡す。別窓 / 別プロセスが
       // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
       // 成功時は .returning() の行 (version = base + 1) で entries を置き換える
       // ので、in-memory の version が DB に追従し、連続保存でも自己衝突しない。
-      const updated = await snippetApi.updateSnippet(
+      const saved = await snippetApi.updateSnippet(
         getCurrentProjectId(),
         id,
         data,
-        { baseVersion: before?.version ?? 0 },
+        { baseVersion: options?.baseVersion ?? before?.version ?? 0 },
       );
       // 行なし (スコープ miss / 削除済み) = 保存されていない。
       // false の全経路はここで必ず通知する契約 (衝突=conflict handler /
       // 失敗・行なし=toast)。EditorPane は false を「通知済み」marker
       // (AlreadyNotifiedSaveError) で throw し autoSave.failed を重ねない
       // ため、無通知の false 経路を作ると保存失敗が完全無音になる。
-      if (!updated) {
+      if (!saved) {
         toast.error(i18next.t("snippets.store.updateMissing"));
         debugLog.warn("SnippetStore", `update target missing: ${id}`);
-        return false;
+        return SAVE_NOT_PERSISTED;
       }
+      updated = saved;
       set((state) => ({
-        entries: state.entries.map((e) => (e.id === id ? updated : e)),
+        entries: state.entries.map((e) => (e.id === id ? saved : e)),
       }));
     } catch (e) {
       if (e instanceof SnippetVersionConflictError) {
         // 非破壊: store も timelapse も触らず、呼び出し側に再読み込みを促す。
         snippetEditConflictHandler(id);
-        return false;
+        return SAVE_NOT_PERSISTED;
       }
       toast.error(i18next.t("snippets.store.updateFailed"));
       debugLog.error("SnippetStore", "update", errorDetail(e));
-      return false;
+      return SAVE_NOT_PERSISTED;
     }
 
     // 本文 (content, ProseMirror JSON) の変更差分を timelapse に記録する。
@@ -307,8 +315,10 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     });
 
     // ここから先は保存成功 (undo 履歴の登録可否は成否と無関係)
-    if (!before) return true;
-    if (useGlobalHistoryStore.getState().isReplaying) return true;
+    if (!before) return persistedVersion(updated.version);
+    if (useGlobalHistoryStore.getState().isReplaying) {
+      return persistedVersion(updated.version);
+    }
 
     const undoPatch: Record<string, unknown> = {};
     for (const key of Object.keys(data)) {
@@ -348,7 +358,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         }
       },
     });
-    return true;
+    return persistedVersion(updated.version);
   },
 
   remove: async (id) => {

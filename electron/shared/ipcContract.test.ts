@@ -2148,6 +2148,83 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(linked.ok).toBe(true);
   });
 
+  it.each([
+    "agent_event_update",
+    "agent_event_delete",
+    "agent_event_set_participants",
+  ])("%s: baseVersion 欠落は N-API を呼ばず拒否する", async (command) => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      command,
+      {
+        payload: {
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          ...(command === "agent_event_set_participants"
+            ? { codexEntryIds: [] }
+            : {}),
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    if (!env.ok) expect(env.error).toContain("baseVersion");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("agent_event_update: 非負整数 baseVersion を N-API へ渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      projectId: "p1",
+      sessionId: "s1",
+      eventId: "e1",
+      baseVersion: 7,
+      title: "updated",
+    };
+    const env = await dispatchInvoke(
+      "agent_event_update",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(calls).toContainEqual({
+      method: "agentEventUpdate",
+      args: [payload],
+    });
+  });
+
+  it.each([
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["unsafe", Number.MAX_SAFE_INTEGER + 1],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+  ])(
+    "agent_event_update: %s baseVersion は N-API を呼ばず拒否する",
+    async (_label, baseVersion) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "agent_event_update",
+        {
+          payload: {
+            projectId: "p1",
+            sessionId: "s1",
+            eventId: "e1",
+            baseVersion,
+          },
+        },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      if (!env.ok) expect(env.error).toContain("baseVersion");
+      expect(calls).toHaveLength(0);
+    },
+  );
+
   it("agent_propose_scene_body: payload 欠落は invalid args（backend 未呼び出し）", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(

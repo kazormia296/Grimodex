@@ -87,29 +87,43 @@ describe("phaseApi query generation", () => {
       expect(queries[0].params).toContain(now);
     });
 
-    it("updatePhase: UPDATEとupdatedAt含むことを検証", async () => {
+    it("updatePhase: version の CAS とインクリメントを検証", async () => {
       const { db, queries } = createQueryCapture();
       const updatedAt = new Date().toISOString();
       await db
         .update(codexEntryPhases)
-        .set({ label: "新しいラベル", updatedAt })
-        .where(eq(codexEntryPhases.id, "phase-1"))
+        .set({ label: "新しいラベル", version: 4, updatedAt })
+        .where(
+          and(
+            eq(codexEntryPhases.id, "phase-1"),
+            eq(codexEntryPhases.version, 3),
+          ),
+        )
         .returning();
       expect(queries).toHaveLength(1);
       expect(queries[0].sql).toContain("update");
       expect(queries[0].params).toContain("新しいラベル");
       expect(queries[0].params).toContain(updatedAt);
       expect(queries[0].params).toContain("phase-1");
+      expect(queries[0].params).toContain(3);
+      expect(queries[0].params).toContain(4);
     });
 
-    it("deletePhase: DELETEを検証", async () => {
+    it("deletePhase: id + expected version のCAS DELETEを検証", async () => {
       const { db, queries } = createQueryCapture();
       await db
         .delete(codexEntryPhases)
-        .where(eq(codexEntryPhases.id, "phase-1"));
+        .where(
+          and(
+            eq(codexEntryPhases.id, "phase-1"),
+            eq(codexEntryPhases.version, 3),
+          ),
+        )
+        .returning({ id: codexEntryPhases.id });
       expect(queries).toHaveLength(1);
       expect(queries[0].sql).toContain("delete");
       expect(queries[0].params).toContain("phase-1");
+      expect(queries[0].params).toContain(3);
     });
   });
 

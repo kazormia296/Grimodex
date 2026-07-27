@@ -24,7 +24,10 @@ import {
 } from "@/features/editor/editorSaveRegistry";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { subscribeLiveContentRafCoalesced } from "@/features/editor/sceneContentStore";
-import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
@@ -65,6 +68,10 @@ import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import { shouldHandleEditorUpdate } from "@/features/editor/editorEventPolicy";
+import {
+  createEditorInstanceId,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -128,12 +135,30 @@ function MountedSceneBlock({
   const filterSource = useAttributionStore((s) => s.filterSource);
   const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
   const title = activeNode?.title ?? "";
+  const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
+  const documentKey = useMemo<DocumentKey>(
+    () => ({
+      kind: "tree",
+      id: sceneId,
+      storage: isFileBacked ? "file" : "database",
+    }),
+    [isFileBacked, sceneId],
+  );
+  const editorInstanceIdRef = useRef(createEditorInstanceId("linear"));
+  const isDirtyRef = useRef(false);
   // 外部 write feed (別プロセスの MCP 等) が「dirty でない scene の外部更新」
   // を検知すると nonce を進める。dep に入れて DB から再ロードする
   // (EditorPane の externalReloadNonce と同じ契約)。conflict バナーの
   // "Reload" もこの nonce 経由で再ロードに到達する。
   const externalReloadNonce = useExternalWriteStore(
-    (s) => s.reloadNonce[sceneId] ?? 0,
+    (s) => s.reloadNonce[externalDocumentStateKey(documentKey)] ?? 0,
+  );
+  const hasExternalConflict = useExternalWriteStore((state) =>
+    state.conflicts.some(
+      (conflict) =>
+        externalDocumentStateKey(conflict.documentKey ?? conflict.sceneId) ===
+        externalDocumentStateKey(documentKey),
+    ),
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -162,7 +187,6 @@ function MountedSceneBlock({
 
   // EditorPane と同じスキーマ選択。file-backed scene に full schema を使うと
   // (逆方向も同様に) 未知ノードで setContent が空 doc に化ける。
-  const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
   const editorExtensions = useMemo(
     () =>
       isFileBacked ? getFileBackedEditorExtensions() : getEditorExtensions(),
@@ -194,22 +218,34 @@ function MountedSceneBlock({
     // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
     // (editGenerationRef のコメント参照)。
     if (editGenerationRef.current === editGenAtStart) {
-      useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
+      isDirtyRef.current = false;
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
     }
-  }, [sceneId]);
+  }, [documentKey, sceneId]);
 
   const saveFn = useCallback(async () => {
-    try {
-      await coreSave();
-    } catch (e) {
-      debugLog.error("LinearSceneBlock", "save failed", errorDetail(e));
-    }
+    await coreSave();
   }, [coreSave]);
 
-  const { schedule, cancel } = useAutoSave(
+  const { schedule, cancel, pause, resume } = useAutoSave(
     saveFn,
     editorSettings.autoSaveDelay,
   );
+
+  useEffect(() => {
+    if (hasExternalConflict) pause();
+    else resume();
+  }, [hasExternalConflict, pause, resume]);
+
+  const handleKeepExternalEdit = useCallback(() => {
+    schedule();
+  }, [schedule]);
+
+  const handleReloadExternalEdit = useCallback(() => {
+    cancel();
+  }, [cancel]);
 
   const editor = useEditor(
     {
@@ -283,7 +319,10 @@ function MountedSceneBlock({
         // 上書きする。解除は coreSave 成功時と unmount cleanup。
         // 世代カウンタは dirty 立てと同時に ++ (coreSave の条件付き解除用)。
         editGenerationRef.current += 1;
-        useEditorSessionStore.getState().setDocumentDirty(sceneId, true);
+        isDirtyRef.current = true;
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, true, editorInstanceIdRef.current);
 
         // Auto-transition outline → draft: wasEmptyRef が true の間だけ
         // 全文 walk する (EditorPane.onUpdate と同じ制限 — 一度本文を観測
@@ -392,21 +431,24 @@ function MountedSceneBlock({
   // dirtyGatedSaveHandler)。リニアの dirty 正本は dirtyTabIds
   // (onUpdate で同期セット / coreSave 成功時とunmount で解除)。
   useEffect(() => {
-    const handler = dirtyGatedSaveHandler(
-      () => useEditorSessionStore.getState().dirtyDocumentIds.has(sceneId),
-      saveFn,
-    );
-    registerSaveHandler(sceneId, handler);
-    return () => unregisterSaveHandler(sceneId, handler);
-  }, [sceneId, saveFn]);
+    const instanceId = editorInstanceIdRef.current;
+    const handler = dirtyGatedSaveHandler(() => isDirtyRef.current, saveFn);
+    registerSaveHandler(documentKey, instanceId, handler);
+    return () => unregisterSaveHandler(documentKey, instanceId, handler);
+  }, [documentKey, saveFn]);
 
   // unmount 時に dirty を確実に解除する (EditorPane の cleanup と同じ)。
   // unmount flush (useAutoSave cleanup) が保存を引き受けるため、残った
   // dirty フラグは「閉じたエディタの幽霊 dirty」になる。
   useEffect(() => {
-    return () =>
-      useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
-  }, [sceneId]);
+    const instanceId = editorInstanceIdRef.current;
+    return () => {
+      isDirtyRef.current = false;
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(documentKey, false, instanceId);
+    };
+  }, [documentKey]);
 
   // 打鍵 debounce タイマーの後始末 (unmount 後の setState を防ぐ)。
   useEffect(() => {
@@ -424,7 +466,7 @@ function MountedSceneBlock({
   useEffect(() => {
     if (!editor) return;
     return subscribeLiveContentRafCoalesced(
-      sceneId,
+      documentKey,
       LINEAR_LIVE_GROUP,
       (next) => {
         isApplyingExternalUpdate.current = true;
@@ -441,7 +483,7 @@ function MountedSceneBlock({
         useTreeStore.getState().setCharCount(sceneId, count);
       },
     );
-  }, [sceneId, editor]);
+  }, [documentKey, editor, sceneId]);
 
   // 外部ファイル変更の取り込み反映 (EditorPane と同じリスナー)。これが無いと
   // file-backed scene の外部編集取り込み後も editor が古い doc を保持し、
@@ -464,7 +506,10 @@ function MountedSceneBlock({
             : "";
         ed.commands.setContent(parsed, { emitUpdate: false });
         resetEditorHistory(ed.view);
-        useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
+        isDirtyRef.current = false;
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
       } finally {
         isApplyingExternalUpdate.current = false;
       }
@@ -478,7 +523,7 @@ function MountedSceneBlock({
         "external-mount:reload-scene",
         onExternalReload,
       );
-  }, [sceneId, cancel]);
+  }, [cancel, documentKey, sceneId]);
 
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });
@@ -596,6 +641,11 @@ function MountedSceneBlock({
 
       if (!cancelled) {
         resetEditorHistory(editor!.view);
+        isDirtyRef.current = false;
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+        useExternalWriteStore.getState().shiftConflict(documentKey);
       }
     }
 
@@ -603,7 +653,7 @@ function MountedSceneBlock({
     return () => {
       cancelled = true;
     };
-  }, [sceneId, editor, cancel, isFileBacked, externalReloadNonce]);
+  }, [sceneId, editor, cancel, isFileBacked, externalReloadNonce, documentKey]);
 
   // Report block-axis size changes. contentBoxSize is logical (resolved
   // against the element's writing-mode), so the same code measures height
@@ -646,7 +696,13 @@ function MountedSceneBlock({
       {/* 外部 write conflict の解決 UI (タブモードは EditorPane が表示)。
           conflict が無ければ null を返すだけ。Reload は reloadNonce 経由で
           上の load effect に届く。 */}
-      <ExternalEditConflictBanner nodeId={sceneId} />
+      <ExternalEditConflictBanner
+        nodeId={sceneId}
+        documentKey={documentKey}
+        editorInstanceId={editorInstanceIdRef.current}
+        onKeepMine={handleKeepExternalEdit}
+        onReload={handleReloadExternalEdit}
+      />
       <div
         className={cn(
           editorSettings.showLineNumbers && "editor-line-numbers",

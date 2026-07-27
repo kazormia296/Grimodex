@@ -195,7 +195,8 @@ vi.mock("@/features/external-mount/externalRootStore", () => ({
 // ため、setTabDirty の呼び出しを反映する実 Set として維持する。
 const mockDirtyTabIds = vi.hoisted(() => new Set<string>());
 const mockSetTabDirty = vi.hoisted(() =>
-  vi.fn((id: string, dirty: boolean) => {
+  vi.fn((document: string | { id: string }, dirty: boolean) => {
+    const id = typeof document === "string" ? document : document.id;
     if (dirty) mockDirtyTabIds.add(id);
     else mockDirtyTabIds.delete(id);
   }),
@@ -333,7 +334,9 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     // ユーザー編集 → autosave pending → unmount flush → 保存正本へ
     lastEditor().commands.insertContentAt(1, "追記");
     unmount();
-    expect(mockPersist).toHaveBeenCalledWith("scene-0001", expect.anything());
+    await waitFor(() => {
+      expect(mockPersist).toHaveBeenCalledWith("scene-0001", expect.anything());
+    });
   });
 
   it("スキーマ未知ノードで読み込み失敗したら editable を落とし、保存をスキップする", async () => {
@@ -513,18 +516,39 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
 
   it("編集で dirty を立て、保存成功と unmount で解除する (dirtyTabIds 配線)", async () => {
     const { unmount } = await renderLoaded();
-    expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", true);
+    const documentKey = {
+      kind: "tree",
+      id: "scene-0001",
+      storage: "database",
+    };
+    expect(mockSetTabDirty).not.toHaveBeenCalledWith(
+      documentKey,
+      true,
+      expect.any(String),
+    );
 
     lastEditor().commands.insertContentAt(1, "追記");
-    expect(mockSetTabDirty).toHaveBeenCalledWith("scene-0001", true);
+    expect(mockSetTabDirty).toHaveBeenCalledWith(
+      documentKey,
+      true,
+      expect.any(String),
+    );
 
     mockSetTabDirty.mockClear();
     await saveScene("scene-0001");
-    expect(mockSetTabDirty).toHaveBeenCalledWith("scene-0001", false);
+    expect(mockSetTabDirty).toHaveBeenCalledWith(
+      documentKey,
+      false,
+      expect.any(String),
+    );
 
     mockSetTabDirty.mockClear();
     unmount();
-    expect(mockSetTabDirty).toHaveBeenCalledWith("scene-0001", false);
+    expect(mockSetTabDirty).toHaveBeenCalledWith(
+      documentKey,
+      false,
+      expect.any(String),
+    );
   });
 
   it("保存スキップ時 (未ロード窓) は dirty を解除しない", async () => {
@@ -535,7 +559,11 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     });
     await saveScene("scene-0001");
     expect(mockPersist).not.toHaveBeenCalled();
-    expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", false);
+    expect(mockSetTabDirty).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "scene-0001" }),
+      false,
+      expect.any(String),
+    );
   });
 
   it("inline-AI がこのエディタで非 idle になったら armed 済み autosave を解除する", async () => {
@@ -598,7 +626,11 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     await saveScene("scene-0001");
     expect(mockPersist).toHaveBeenCalledTimes(1);
     // 世代不一致 → dirty は維持 (解除しない)
-    expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", false);
+    expect(mockSetTabDirty).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "scene-0001" }),
+      false,
+      expect.any(String),
+    );
     expect(mockDirtyTabIds.has("scene-0001")).toBe(true);
   });
 
@@ -606,7 +638,7 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     await renderLoaded();
     const RESYNC_GROUP = -1; // autoApplyProse / renameEngine の sentinel
     useSceneContentStore.getState().setLiveContent(
-      "scene-0001",
+      { kind: "tree", id: "scene-0001", storage: "database" },
       {
         type: "doc",
         content: [
@@ -650,7 +682,15 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
         "外部エディタで書き換えた本文",
       );
     });
-    expect(mockSetTabDirty).toHaveBeenCalledWith("scene-0001", false);
+    expect(mockSetTabDirty).toHaveBeenCalledWith(
+      {
+        kind: "tree",
+        id: "scene-0001",
+        storage: "database",
+      },
+      false,
+      expect.any(String),
+    );
   });
 
   it("別シーン宛の reload-scene は無視する", async () => {
@@ -666,7 +706,11 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
   it("reloadNonce が進んだら DB から再ロードする (外部 write feed 配線)", async () => {
     await renderLoaded();
     expect(mockLoadSceneFull).toHaveBeenCalledTimes(1);
-    useExternalWriteStore.getState().bumpReloadNonce("scene-0001");
+    useExternalWriteStore.getState().bumpReloadNonce({
+      kind: "tree",
+      id: "scene-0001",
+      storage: "database",
+    });
     await waitFor(() => {
       expect(mockLoadSceneFull).toHaveBeenCalledTimes(2);
     });

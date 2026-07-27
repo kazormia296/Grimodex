@@ -49,6 +49,7 @@ function makePhase(
     summaryOverride: null,
     contentOverride: null,
     contextModeOverride: null,
+    version: 0,
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,

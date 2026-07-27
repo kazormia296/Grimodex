@@ -13,6 +13,10 @@ import {
   TAB_STATE_KEY,
 } from "./tabPersistence";
 import { useEditorSessionStore } from "./editorSessionStore";
+import {
+  hasExternalEditConflictForId,
+  hasExternalEditConflictForKind,
+} from "@/lib/externalEditConflictRegistry";
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -262,6 +266,18 @@ function reduceTabs(state: TabState, action: TabAction): TabReducerState {
   return reduceTabState(tabReducerState(state), action);
 }
 
+function activeDocumentHasExternalConflict(
+  state: TabState,
+  group: GroupIndex,
+): boolean {
+  const activeId = group === 0 ? state.activeTabId : state.secondaryActiveTabId;
+  return activeId !== null && hasExternalEditConflictForId(activeId);
+}
+
+function hasAnyTreeExternalConflict(): boolean {
+  return hasExternalEditConflictForKind("tree", { includeLegacy: true });
+}
+
 export const useTabStore = create<TabState>()((set, get) => {
   return {
     tabs: [],
@@ -291,6 +307,17 @@ export const useTabStore = create<TabState>()((set, get) => {
     },
     toggleLinearMode() {
       const { isLinearMode, secondaryGroupOpen } = get();
+      // Entering replaces the active EditorPane; leaving destroys every
+      // mounted LinearSceneBlock. Keep the surface that owns a conflicted
+      // local draft alive until the banner resolves it.
+      if (
+        (isLinearMode && hasAnyTreeExternalConflict()) ||
+        (!isLinearMode &&
+          (activeDocumentHasExternalConflict(get(), 0) ||
+            activeDocumentHasExternalConflict(get(), 1)))
+      ) {
+        return;
+      }
       if (!isLinearMode && secondaryGroupOpen) {
         // Close split view before entering linear mode
         get().closeSecondaryGroup();
@@ -311,6 +338,11 @@ export const useTabStore = create<TabState>()((set, get) => {
       // EditorPane は activeTabId で本文をロードする。pending 中に別 node へ
       // 切り替えると owner エディタが reload され未確定/未保存テキストが喪失する。
       if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
+      if (
+        nodeId !== get().activeTabId &&
+        activeDocumentHasExternalConflict(get(), 0)
+      )
+        return;
       markStart("tabStore.openPreview");
       try {
         set(reduceTabs(get(), { type: "preview/open", nodeId }));
@@ -321,6 +353,11 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     openPinned(nodeId) {
       if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
+      if (
+        nodeId !== get().activeTabId &&
+        activeDocumentHasExternalConflict(get(), 0)
+      )
+        return;
       set(reduceTabs(get(), { type: "pinned/open", nodeId }));
     },
 
@@ -340,6 +377,8 @@ export const useTabStore = create<TabState>()((set, get) => {
       const { tabs, activeTabId } = get();
       // 表示中 (= owner エディタ) のタブを閉じると本文が切り替わり pending 喪失。
       if (nodeId === activeTabId && guardInlineAiPending()) return;
+      if (nodeId === activeTabId && activeDocumentHasExternalConflict(get(), 0))
+        return;
       const idx = tabs.findIndex((t) => t.nodeId === nodeId);
       if (idx === -1) return;
 
@@ -362,11 +401,21 @@ export const useTabStore = create<TabState>()((set, get) => {
       const { tabs } = get();
       if (!tabs.find((t) => t.nodeId === nodeId)) return;
       if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
+      if (
+        nodeId !== get().activeTabId &&
+        activeDocumentHasExternalConflict(get(), 0)
+      )
+        return;
       set({ activeTabId: nodeId, activeGroupIndex: 0 });
     },
 
     ensureTab(nodeId) {
       if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
+      if (
+        nodeId !== get().activeTabId &&
+        activeDocumentHasExternalConflict(get(), 0)
+      )
+        return;
       const { tabs } = get();
       if (tabs.find((t) => t.nodeId === nodeId)) {
         set({ activeTabId: nodeId });
@@ -379,17 +428,41 @@ export const useTabStore = create<TabState>()((set, get) => {
     },
 
     openCodexTab(entryId, phaseId) {
-      if (entryId !== get().activeTabId && guardInlineAiPending()) return;
-      set(reduceTabs(get(), { type: "codex/open", entryId, phaseId }));
+      const current = get();
+      const currentTab = current.tabs.find(
+        (tab) => tab.nodeId === current.activeTabId,
+      );
+      const changesDisplayedDocument =
+        entryId !== current.activeTabId ||
+        (entryId === current.activeTabId &&
+          currentTab?.contentType === "codex" &&
+          (currentTab.overridePhaseId ?? null) !== (phaseId ?? null));
+      if (changesDisplayedDocument && guardInlineAiPending()) return;
+      if (
+        changesDisplayedDocument &&
+        activeDocumentHasExternalConflict(current, 0)
+      )
+        return;
+      set(reduceTabs(current, { type: "codex/open", entryId, phaseId }));
     },
 
     openSnippetTab(snippetId) {
       if (snippetId !== get().activeTabId && guardInlineAiPending()) return;
+      if (
+        snippetId !== get().activeTabId &&
+        activeDocumentHasExternalConflict(get(), 0)
+      )
+        return;
       set(reduceTabs(get(), { type: "snippet/open", snippetId }));
     },
 
     openChronicleEventTab(eventId, label) {
       if (eventId !== get().activeTabId && guardInlineAiPending()) return;
+      if (
+        eventId !== get().activeTabId &&
+        activeDocumentHasExternalConflict(get(), 0)
+      )
+        return;
       set(reduceTabs(get(), { type: "chronicle-event/open", eventId, label }));
     },
 
@@ -397,6 +470,11 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     openInSecondaryGroup(nodeId) {
       if (nodeId !== get().secondaryActiveTabId && guardInlineAiPending())
+        return;
+      if (
+        nodeId !== get().secondaryActiveTabId &&
+        activeDocumentHasExternalConflict(get(), 1)
+      )
         return;
       set(reduceTabs(get(), { type: "secondary/open", nodeId }));
     },
@@ -412,6 +490,11 @@ export const useTabStore = create<TabState>()((set, get) => {
     closeSecondaryTab(nodeId) {
       const { secondaryTabs, secondaryActiveTabId } = get();
       if (nodeId === secondaryActiveTabId && guardInlineAiPending()) return;
+      if (
+        nodeId === secondaryActiveTabId &&
+        activeDocumentHasExternalConflict(get(), 1)
+      )
+        return;
       const idx = secondaryTabs.findIndex((t) => t.nodeId === nodeId);
       if (idx === -1) return;
 
@@ -436,6 +519,7 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     closeSecondaryGroup() {
       if (guardInlineAiPending()) return;
+      if (activeDocumentHasExternalConflict(get(), 1)) return;
       set({
         secondaryTabs: [],
         secondaryActiveTabId: null,
@@ -448,6 +532,11 @@ export const useTabStore = create<TabState>()((set, get) => {
       const { secondaryTabs } = get();
       if (!secondaryTabs.find((t) => t.nodeId === nodeId)) return;
       if (nodeId !== get().secondaryActiveTabId && guardInlineAiPending())
+        return;
+      if (
+        nodeId !== get().secondaryActiveTabId &&
+        activeDocumentHasExternalConflict(get(), 1)
+      )
         return;
       set({ secondaryActiveTabId: nodeId });
     },
@@ -495,6 +584,11 @@ export const useTabStore = create<TabState>()((set, get) => {
       createDirection,
     ) {
       if (guardInlineAiPending()) return;
+      if (
+        activeDocumentHasExternalConflict(get(), fromGroup) ||
+        activeDocumentHasExternalConflict(get(), toGroup)
+      )
+        return;
       const { tabs, secondaryTabs, activeTabId, secondaryActiveTabId } = get();
       const srcArr = fromGroup === 0 ? tabs : secondaryTabs;
       const dstArr = toGroup === 0 ? tabs : secondaryTabs;
@@ -640,6 +734,11 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     openInSecondaryGroupDirectional(nodeId, direction) {
       if (nodeId !== get().secondaryActiveTabId && guardInlineAiPending())
+        return;
+      if (
+        nodeId !== get().secondaryActiveTabId &&
+        activeDocumentHasExternalConflict(get(), 1)
+      )
         return;
       set(
         reduceTabs(get(), {

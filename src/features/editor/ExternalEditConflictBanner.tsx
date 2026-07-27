@@ -1,32 +1,75 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle } from "lucide-react";
-import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
-import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { toast } from "sonner";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import {
+  type DocumentKey,
+  type EditorInstanceId,
+} from "@/features/editor/document/documentKey";
+import { rootCause } from "@/lib/debugLog";
 
 interface Props {
   nodeId: string;
+  documentKey?: DocumentKey | null;
+  editorInstanceId?: EditorInstanceId;
+  onKeepMine?: () => void | Promise<void>;
+  onReload?: () => void | Promise<void>;
 }
 
-export function ExternalEditConflictBanner({ nodeId }: Props) {
+export function ExternalEditConflictBanner({
+  nodeId,
+  documentKey,
+  onKeepMine,
+  onReload,
+}: Props) {
   const { t } = useTranslation();
+  const [resolving, setResolving] = useState(false);
+  const document = documentKey ?? nodeId;
+  const stateKey = externalDocumentStateKey(document);
   const conflict = useExternalWriteStore((s) =>
-    s.conflicts.find((c) => c.sceneId === nodeId),
+    s.conflicts.find(
+      (candidate) =>
+        externalDocumentStateKey(candidate.documentKey ?? candidate.sceneId) ===
+        stateKey,
+    ),
   );
   const shiftConflict = useExternalWriteStore((s) => s.shiftConflict);
   const bumpReloadNonce = useExternalWriteStore((s) => s.bumpReloadNonce);
 
   if (!conflict) return null;
 
-  const handleReload = () => {
+  const handleReload = async () => {
     if (guardInlineAiPending()) return;
-    useEditorSessionStore.getState().setDocumentDirty(nodeId, false);
-    bumpReloadNonce(nodeId);
-    shiftConflict(nodeId);
+    setResolving(true);
+    try {
+      await onReload?.();
+      // Reload completion is owned by the document surface. It clears dirty
+      // and the conflict only after persisted content was actually applied;
+      // doing so here would turn a failed/asynchronous reload into data loss.
+      bumpReloadNonce(document);
+    } catch (error) {
+      toast.error(t("autoSave.failed", { reason: rootCause(error) }));
+    } finally {
+      setResolving(false);
+    }
   };
 
-  const handleKeep = () => {
-    shiftConflict(nodeId);
+  const handleKeep = async () => {
+    if (guardInlineAiPending()) return;
+    setResolving(true);
+    try {
+      await onKeepMine?.();
+      shiftConflict(document);
+    } catch (error) {
+      toast.error(t("autoSave.failed", { reason: rootCause(error) }));
+    } finally {
+      setResolving(false);
+    }
   };
 
   return (
@@ -42,14 +85,16 @@ export function ExternalEditConflictBanner({ nodeId }: Props) {
         <button
           type="button"
           className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
-          onClick={handleKeep}
+          onClick={() => void handleKeep()}
+          disabled={resolving}
         >
           {t("externalWrite.keepMine")}
         </button>
         <button
           type="button"
           className="rounded bg-primary px-2 py-1 text-xs text-primary-foreground"
-          onClick={handleReload}
+          onClick={() => void handleReload()}
+          disabled={resolving}
         >
           {t("externalWrite.reload")}
         </button>

@@ -658,6 +658,21 @@ function requireNumber(args: CommandArgs, key: string, cmd: string): number {
   return value;
 }
 
+/** Event aggregate mutations must carry the renderer's loaded OCC token. */
+function requireEventMutationPayload(
+  args: CommandArgs,
+  cmd: string,
+): CommandArgs {
+  const payload = requireRecord(args, "payload", cmd);
+  const baseVersion = requireNumber(payload, "baseVersion", cmd);
+  if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${cmd}\`: expected a non-negative safe integer`,
+    );
+  }
+  return payload;
+}
+
 /** Tauri の usize を napi の u32 へ安全に写像する（必須引数）。 */
 function requireUnsignedInteger(
   args: CommandArgs,
@@ -1803,7 +1818,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentEventUpdate(
-          requirePresent(a, "payload", "agent_event_update"),
+          requireEventMutationPayload(a, "agent_event_update"),
         ),
       ),
   },
@@ -1811,7 +1826,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentEventDelete(
-          requirePresent(a, "payload", "agent_event_delete"),
+          requireEventMutationPayload(a, "agent_event_delete"),
         ),
       ),
   },
@@ -1819,7 +1834,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentEventSetParticipants(
-          requirePresent(a, "payload", "agent_event_set_participants"),
+          requireEventMutationPayload(a, "agent_event_set_participants"),
         ),
       ),
   },

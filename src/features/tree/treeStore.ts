@@ -32,6 +32,10 @@ import { createTreeNode } from "@/application/tree/createTreeNode";
 import { deleteTreeSubtree } from "@/application/tree/deleteTreeSubtree";
 import { requestOpenEditorDocument } from "@/application/editor/editorNavigationRegistry";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  hasExternalEditConflictForId,
+  hasExternalEditConflictForKind,
+} from "@/lib/externalEditConflictRegistry";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -40,6 +44,16 @@ export type SceneStatus =
   | "complete"
   | "revision"
   | "final";
+
+function activeEditorHasExternalConflict(): boolean {
+  const tabs = useTabStore.getState();
+  if (tabs.isLinearMode) {
+    return hasExternalEditConflictForKind("tree", { includeLegacy: true });
+  }
+  return [tabs.activeTabId, tabs.secondaryActiveTabId].some(
+    (id) => id !== null && hasExternalEditConflictForId(id),
+  );
+}
 
 export interface TreeNodeData {
   id: string;
@@ -720,6 +734,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // 二重防御。TabBar 系の主防御 (tabStore guard) を素通りした直接呼び出しや、
     // activeSceneId 起点の ensure-tab → openPreview 経路を pending 中に止める。
     if (id !== get().activeSceneId && guardInlineAiPending()) return;
+    if (id !== get().activeSceneId && activeEditorHasExternalConflict()) return;
     markStart("treeStore.setActiveScene");
     try {
       set({ activeSceneId: id });
@@ -732,6 +747,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   selectNode(id, extend) {
     // selectNode は activeSceneId=id を必ずセットする (= owner エディタが reload)。
     if (id !== get().activeSceneId && guardInlineAiPending()) return;
+    if (id !== get().activeSceneId && activeEditorHasExternalConflict()) return;
     if (extend) {
       set((state) => {
         const already = state.selectedIds.includes(id);

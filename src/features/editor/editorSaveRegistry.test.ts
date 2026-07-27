@@ -5,9 +5,22 @@ import {
   registerSaveHandler,
   unregisterSaveHandler,
   saveScene,
+  saveDocument,
   registeredSaveHandlerIds,
   dirtyGatedSaveHandler,
+  announcePersistedBinding,
+  registerPersistedBindingHandler,
+  unregisterPersistedBindingHandler,
+  discardDocumentInGroup,
+  registerDiscardHandler,
+  unregisterDiscardHandler,
 } from "./editorSaveRegistry";
+import {
+  createEditorInstanceId,
+  type DocumentKey,
+} from "./document/documentKey";
+import { createEditorMutationGate } from "./document/mutationGate";
+import type { LoadedEditorBinding } from "./document/types";
 
 beforeEach(() => {
   // モジュールシングルトンの Map を空にする (テスト間リーク防止)
@@ -54,6 +67,128 @@ describe("editorSaveRegistry", () => {
     registerSaveHandler("n1", async () => {});
     unregisterSaveHandler("n1");
     expect(registeredSaveHandlerIds()).toEqual([]);
+  });
+
+  it("同じ文書の複数 editor instance を個別に登録・解除する", async () => {
+    const key: DocumentKey = {
+      kind: "codex",
+      id: "entry-1",
+      phaseId: "phase-1",
+    };
+    const firstId = createEditorInstanceId("test");
+    const secondId = createEditorInstanceId("test");
+    const first = vi.fn(async () => {});
+    const second = vi.fn(async () => {});
+
+    registerSaveHandler(key, firstId, first);
+    registerSaveHandler(key, secondId, second);
+    await saveDocument(key);
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+
+    unregisterSaveHandler(key, firstId, first);
+    await saveDocument(key);
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledTimes(2);
+  });
+
+  it("Codex base と Phase の exact flush を混線させない", async () => {
+    const base: DocumentKey = {
+      kind: "codex",
+      id: "entry-1",
+      phaseId: null,
+    };
+    const phase: DocumentKey = {
+      kind: "codex",
+      id: "entry-1",
+      phaseId: "phase-1",
+    };
+    const baseSave = vi.fn(async () => {});
+    const phaseSave = vi.fn(async () => {});
+    registerSaveHandler(base, createEditorInstanceId("base"), baseSave);
+    registerSaveHandler(phase, createEditorInstanceId("phase"), phaseSave);
+
+    await saveDocument(base);
+    expect(baseSave).toHaveBeenCalledOnce();
+    expect(phaseSave).not.toHaveBeenCalled();
+
+    // Legacy entity flush intentionally drains every variant for that id.
+    await saveScene("entry-1");
+    expect(baseSave).toHaveBeenCalledTimes(2);
+    expect(phaseSave).toHaveBeenCalledOnce();
+  });
+
+  it("explicit discard targets only the closing split-view group", () => {
+    const key: DocumentKey = { kind: "snippet", id: "snippet-1" };
+    const primaryId = createEditorInstanceId("primary");
+    const secondaryId = createEditorInstanceId("secondary");
+    const primaryDiscard = vi.fn();
+    const secondaryDiscard = vi.fn();
+    registerDiscardHandler(key, primaryId, primaryDiscard, 0);
+    registerDiscardHandler(key, secondaryId, secondaryDiscard, 1);
+
+    discardDocumentInGroup("snippet-1", 0);
+
+    expect(primaryDiscard).toHaveBeenCalledOnce();
+    expect(secondaryDiscard).not.toHaveBeenCalled();
+    unregisterDiscardHandler(key, primaryId, primaryDiscard);
+    unregisterDiscardHandler(key, secondaryId, secondaryDiscard);
+  });
+
+  it("一方のpane保存versionを同じ文書のpeerだけへ伝播する", () => {
+    const key: DocumentKey = { kind: "snippet", id: "snippet-1" };
+    const otherKey: DocumentKey = { kind: "snippet", id: "snippet-2" };
+    const firstId = createEditorInstanceId("first");
+    const peerId = createEditorInstanceId("peer");
+    const otherId = createEditorInstanceId("other");
+    const peerGate = createEditorMutationGate();
+    const otherGate = createEditorMutationGate();
+    const initial: LoadedEditorBinding = {
+      kind: "snippet",
+      id: "snippet-1",
+      loadedVersion: 3,
+    };
+    peerGate.commitLoad(initial);
+    otherGate.commitLoad({
+      kind: "snippet",
+      id: "snippet-2",
+      loadedVersion: 9,
+    });
+    const peerHandler = (binding: LoadedEditorBinding) => {
+      peerGate.advancePeerSave(binding);
+    };
+    const originHandler = vi.fn();
+    const otherHandler = (binding: LoadedEditorBinding) => {
+      otherGate.advancePeerSave(binding);
+    };
+    registerPersistedBindingHandler(key, firstId, originHandler);
+    registerPersistedBindingHandler(key, peerId, peerHandler);
+    registerPersistedBindingHandler(otherKey, otherId, otherHandler);
+
+    announcePersistedBinding(key, firstId, {
+      ...initial,
+      loadedVersion: 4,
+    });
+
+    expect(peerGate.captureSave()?.binding).toMatchObject({
+      id: "snippet-1",
+      loadedVersion: 4,
+    });
+    peerGate.markEdited();
+    expect(peerGate.captureSave()?.binding).toMatchObject({
+      id: "snippet-1",
+      loadedVersion: 4,
+    });
+    expect(originHandler).not.toHaveBeenCalled();
+    expect(otherGate.captureSave()?.binding).toMatchObject({
+      id: "snippet-2",
+      loadedVersion: 9,
+    });
+
+    unregisterPersistedBindingHandler(key, firstId, originHandler);
+    unregisterPersistedBindingHandler(key, peerId, peerHandler);
+    unregisterPersistedBindingHandler(otherKey, otherId, otherHandler);
   });
 });
 

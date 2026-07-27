@@ -4,6 +4,7 @@ import {
   loadAndSyncChronicleSettings,
 } from "./chronicleStore";
 import { invoke } from "@/lib/tauri";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
@@ -70,6 +71,10 @@ describe("chronicleStore persistent subscriber", () => {
 describe("chronicleStore 選択（単一/複数）", () => {
   beforeEach(() => {
     useChronicleStore.setState({ selectedEventId: null, selectedEventIds: [] });
+    useExternalWriteStore.getState().clear();
+  });
+  afterEach(() => {
+    useExternalWriteStore.getState().clear();
   });
 
   it("setSelectedEventId は集合 [id] と同期、null で全解除", () => {
@@ -116,5 +121,39 @@ describe("chronicleStore 選択（単一/複数）", () => {
     const before = useChronicleStore.getState().selectedEventIds;
     useChronicleStore.getState().sanitizeSelection(new Set(["a", "b"]));
     expect(useChronicleStore.getState().selectedEventIds).toBe(before);
+  });
+
+  it("dirty Event の外部競合中は選択変更と sanitize による owner unmount を拒否する", () => {
+    useChronicleStore.getState().setSelectedEventId("event-a");
+    useExternalWriteStore.getState().pushConflict({
+      documentKey: { kind: "chronicle-event", id: "event-a" },
+      sceneId: "event-a",
+      domain: "event",
+      opType: "event.delete",
+      entityId: "event-a",
+    });
+
+    useChronicleStore.getState().setSelectedEventId("event-b");
+    useChronicleStore.getState().sanitizeSelection(new Set(["event-b"]));
+
+    expect(useChronicleStore.getState().selectedEventId).toBe("event-a");
+    expect(useChronicleStore.getState().selectedEventIds).toEqual(["event-a"]);
+  });
+
+  it("scene:* 選択も canonical tree conflict が解決するまで維持する", () => {
+    useChronicleStore.getState().setSelectedEventId("scene:scene-a");
+    useExternalWriteStore.getState().pushConflict({
+      documentKey: { kind: "tree", id: "scene-a", storage: "database" },
+      sceneId: "scene-a",
+      domain: "grid",
+      opType: "tree.update",
+      entityId: "scene-a",
+    });
+
+    useChronicleStore
+      .getState()
+      .setSelection(["scene:scene-b"], "scene:scene-b");
+
+    expect(useChronicleStore.getState().selectedEventId).toBe("scene:scene-a");
   });
 });

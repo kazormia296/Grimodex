@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type { BeatMention } from "@/features/editor/beat/extractBeatMentions";
 
 /**
  * Behavioral contract for persistSceneBody — the single source of truth for the
@@ -27,8 +28,14 @@ const h = vi.hoisted(() => ({
   saveAuthorshipSpans: vi.fn(async () => {}),
   saveForeshadowAnchors: vi.fn(async () => {}),
   saveAnnotationAnchors: vi.fn(async () => {}),
-  upsertSceneBeatMentions: vi.fn(() => Promise.resolve()),
-  upsertSceneBeatPovOverrides: vi.fn(() => Promise.resolve()),
+  extractBeatMentions: vi.fn<(doc: ProseMirrorNode) => BeatMention[]>(() => []),
+  upsertSceneBeatMentions: vi.fn<
+    (sceneId: string, mentions: BeatMention[]) => Promise<void>
+  >(() => Promise.resolve()),
+  extractBeatPovOverrides: vi.fn<(doc: ProseMirrorNode) => string[]>(() => []),
+  upsertSceneBeatPovOverrides: vi.fn<
+    (sceneId: string, povs: string[]) => Promise<void>
+  >(() => Promise.resolve()),
   upsertSceneBodyMentions: vi.fn(() => Promise.resolve()),
   recordBodyMentionScans: vi.fn(() => Promise.resolve()),
   scheduleSceneIndex: vi.fn(),
@@ -84,13 +91,13 @@ vi.mock("@/features/post-effect/syncAnnotations", () => ({
   saveAnnotationAnchors: h.saveAnnotationAnchors,
 }));
 vi.mock("@/features/editor/beat/extractBeatMentions", () => ({
-  extractBeatMentions: () => [],
+  extractBeatMentions: h.extractBeatMentions,
 }));
 vi.mock("@/features/editor/beat/mentionApi", () => ({
   upsertSceneBeatMentions: h.upsertSceneBeatMentions,
 }));
 vi.mock("@/features/editor/beat/extractBeatPovOverrides", () => ({
-  extractBeatPovOverrides: () => [],
+  extractBeatPovOverrides: h.extractBeatPovOverrides,
 }));
 vi.mock("@/features/editor/beat/beatPovCacheApi", () => ({
   upsertSceneBeatPovOverrides: h.upsertSceneBeatPovOverrides,
@@ -295,5 +302,115 @@ describe("persistSceneBody — write-write serialization (M3 review I1)", () => 
     releaseA();
     await Promise.all([pA, pB]);
     expect(order).toEqual(["content_A", "spans_A", "content_B", "spans_B"]);
+  });
+
+  it("古い保存の Beat mention / POV cache が完了するまで後続保存を開始しない", async () => {
+    const mentionsA = [
+      { beatId: "beat-a", codexId: "codex-a", role: "actor" as const },
+    ];
+    const mentionsB = [
+      { beatId: "beat-b", codexId: "codex-b", role: "target" as const },
+    ];
+    const povsA = ["character-a"];
+    const povsB = ["character-b"];
+    const docA = {
+      toJSON: () => ({ type: "doc", content: [{ text: "first" }] }),
+    } as unknown as ProseMirrorNode;
+    const docB = {
+      toJSON: () => ({ type: "doc", content: [{ text: "second" }] }),
+    } as unknown as ProseMirrorNode;
+    h.extractBeatMentions.mockImplementation((doc) =>
+      doc === docA ? mentionsA : mentionsB,
+    );
+    h.extractBeatPovOverrides.mockImplementation((doc) =>
+      doc === docA ? povsA : povsB,
+    );
+
+    let releaseMentionA!: () => void;
+    const mentionGateA = new Promise<void>((resolve) => {
+      releaseMentionA = resolve;
+    });
+    let releasePovA!: () => void;
+    const povGateA = new Promise<void>((resolve) => {
+      releasePovA = resolve;
+    });
+    let mentionHead: BeatMention[] = [];
+    let povHead: string[] = [];
+    const order: string[] = [];
+
+    h.saveSceneContent
+      .mockImplementationOnce(async () => {
+        order.push("content_A");
+        return {
+          placedBeatPreview: null,
+          unplacedBeatPreview: null,
+          contentVersion: 1,
+          contentUpdatedAt: "2026-07-13T00:00:01.000Z",
+        };
+      })
+      .mockImplementationOnce(async () => {
+        order.push("content_B");
+        return {
+          placedBeatPreview: null,
+          unplacedBeatPreview: null,
+          contentVersion: 2,
+          contentUpdatedAt: "2026-07-13T00:00:02.000Z",
+        };
+      });
+    h.upsertSceneBeatMentions
+      .mockImplementationOnce(async (_sceneId, mentions) => {
+        order.push("mentions_A:start");
+        await mentionGateA;
+        mentionHead = mentions;
+        order.push("mentions_A:end");
+      })
+      .mockImplementationOnce(async (_sceneId, mentions) => {
+        mentionHead = mentions;
+        order.push("mentions_B");
+      });
+    h.upsertSceneBeatPovOverrides
+      .mockImplementationOnce(async (_sceneId, povs) => {
+        order.push("pov_A:start");
+        await povGateA;
+        povHead = povs;
+        order.push("pov_A:end");
+      })
+      .mockImplementationOnce(async (_sceneId, povs) => {
+        povHead = povs;
+        order.push("pov_B");
+      });
+
+    const saveA = persistSceneBody("scene-1", docA);
+    const saveB = persistSceneBody("scene-1", docB);
+
+    await flushTasks();
+    expect(order).toEqual(["content_A", "mentions_A:start"]);
+    expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
+
+    releaseMentionA();
+    await flushTasks();
+    expect(order).toEqual([
+      "content_A",
+      "mentions_A:start",
+      "mentions_A:end",
+      "pov_A:start",
+    ]);
+    expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
+
+    releasePovA();
+    await Promise.all([saveA, saveB]);
+
+    expect(order).toEqual([
+      "content_A",
+      "mentions_A:start",
+      "mentions_A:end",
+      "pov_A:start",
+      "pov_A:end",
+      "content_B",
+      "mentions_B",
+      "pov_B",
+    ]);
+    expect(mentionHead).toEqual(mentionsB);
+    expect(povHead).toEqual(povsB);
   });
 });

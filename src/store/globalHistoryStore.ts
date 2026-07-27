@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { isVersionConflictError } from "@/lib/versionConflict";
+import type { DocumentKey } from "@/features/editor/document/documentKey";
 
 type AsyncFn = () => Promise<void>;
 
@@ -20,6 +21,14 @@ export interface HistoryCommand {
   label: string;
   /** Entity id for per-entry invalidation on external writes. */
   entityId?: string;
+  /** Exact editor document affected by the command, when one exists. */
+  documentKey?: DocumentKey;
+  /**
+   * Keep this command on its source stack when replay hits a version conflict.
+   * Phase replay uses this so a failed CAS is visible and does not silently
+   * consume the user's undo/redo entry.
+   */
+  retainOnVersionConflict?: boolean;
   undo: AsyncFn;
   redo: AsyncFn;
 }
@@ -33,8 +42,10 @@ const MAX_HISTORY = 50;
  * (treeStore's createStore calls getCurrentProjectId(), which reads
  * useProjectStore before it is initialized → TDZ ReferenceError). Dependency
  * injection via registration keeps globalHistoryStore free of feature-store
- * imports. When no handler is registered, conflict surfacing is a no-op (the
- * failed entry is still dropped from history by undo/redo).
+ * imports. When no handler is registered, conflict surfacing is a no-op.
+ * Commands opt into retaining their source-stack entry with
+ * `retainOnVersionConflict`; other commands keep the legacy drop-on-conflict
+ * behavior.
  */
 let undoConflictHandler: ((cmd: HistoryCommand) => void) | null = null;
 
@@ -161,6 +172,9 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
       set((state) => {
         if (state.isReplaying === false) return state;
         if (versionConflict) {
+          if (cmd.retainOnVersionConflict) {
+            return { ...state, isReplaying: false };
+          }
           const newPast = state.past.slice(0, -1);
           return {
             past: newPast,
@@ -205,6 +219,9 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
       set((state) => {
         if (state.isReplaying === false) return state;
         if (versionConflict) {
+          if (cmd.retainOnVersionConflict) {
+            return { ...state, isReplaying: false };
+          }
           const newFuture = state.future.slice(1);
           return {
             past: state.past,

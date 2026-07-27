@@ -943,6 +943,8 @@ export const codexEntryPhases = sqliteTable(
     contextModeOverride: text("context_mode_override"),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    /** Optimistic-lock version shared by editor, history, and external writers. */
+    version: integer("version").notNull().default(0),
   },
   (table) => [
     index("idx_codex_phases_entry").on(table.entryId),
@@ -1366,6 +1368,8 @@ export const events = sqliteTable(
     }),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    /** Aggregate optimistic-lock version for the event row and participants. */
+    version: integer("version").notNull().default(0),
   },
   (table) => [
     index("idx_events_project").on(table.projectId),

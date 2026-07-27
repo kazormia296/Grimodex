@@ -4,6 +4,7 @@ import {
   subscribeLiveContentRafCoalesced,
   hasLiveContentSubscriber,
 } from "./sceneContentStore";
+import { encodeDocumentKey, type DocumentKey } from "./document/documentKey";
 
 function resetStore() {
   useSceneContentStore.setState({ liveContent: {} });
@@ -37,6 +38,36 @@ describe("sceneContentStore", () => {
       .getState()
       .setLiveContent("scene-2", { type: "doc", content: [] }, 0);
     expect(cb).not.toHaveBeenCalled();
+  });
+
+  it("does not mix a Codex base body with a Phase body sharing the entry id", () => {
+    const base: DocumentKey = {
+      kind: "codex",
+      id: "entry-1",
+      phaseId: null,
+    };
+    const phase: DocumentKey = {
+      kind: "codex",
+      id: "entry-1",
+      phaseId: "phase-1",
+    };
+    const baseListener = vi.fn();
+    const phaseListener = vi.fn();
+    useSceneContentStore.getState().subscribe(base, baseListener);
+    useSceneContentStore.getState().subscribe(phase, phaseListener);
+
+    useSceneContentStore
+      .getState()
+      .setLiveContent(phase, { type: "doc", phase: true }, "phase-editor");
+
+    expect(phaseListener).toHaveBeenCalledOnce();
+    expect(baseListener).not.toHaveBeenCalled();
+    expect(
+      useSceneContentStore.getState().liveContent[encodeDocumentKey(phase)],
+    ).toEqual({ type: "doc", phase: true });
+    expect(
+      useSceneContentStore.getState().liveContent[encodeDocumentKey(base)],
+    ).toBeUndefined();
   });
 
   it("supports multiple subscribers for the same scene", () => {

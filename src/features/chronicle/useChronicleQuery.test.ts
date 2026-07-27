@@ -34,6 +34,7 @@ function event(id: string, projectId: string): EventRow {
     secret: false,
     revealSceneId: null,
     laneGroup: null,
+    version: 0,
     createdAt: "now",
     updatedAt: "now",
   };

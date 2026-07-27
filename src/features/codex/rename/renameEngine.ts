@@ -51,6 +51,10 @@ import {
   applyReplacementsToString,
   type FlatSpan,
 } from "./applyReplacementsToDoc";
+import {
+  encodeDocumentKey,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
 
 /**
  * Rename propagation engine (Item C apply layer).
@@ -452,8 +456,8 @@ export async function applyRenamePropagation(
   // direction. Subscriber check, NOT a tab-list check: linear-mode editors
   // have no tab but must still be resynced or their next autosave clobbers
   // the propagated rename.
-  const liveNew = new Map<string, object>();
-  const liveOld = new Map<string, object>();
+  const liveNew = new Map<string, { key: DocumentKey; content: object }>();
+  const liveOld = new Map<string, { key: DocumentKey; content: object }>();
   let applied = 0;
 
   for (const { source, spans } of groups.values()) {
@@ -471,9 +475,19 @@ export async function applyRenamePropagation(
       const nextJson = res.doc.toJSON();
       newValue = JSON.stringify(nextJson);
       applied += res.applied;
-      if (hasLiveContentSubscriber(source.refId)) {
-        liveNew.set(source.refId, nextJson);
-        liveOld.set(source.refId, JSON.parse(oldValue));
+      const documentKey: DocumentKey | null =
+        source.kind === "scene-body"
+          ? { kind: "tree", id: source.refId, storage: "database" }
+          : source.kind === "codex-content"
+            ? { kind: "codex", id: source.refId, phaseId: null }
+            : null;
+      if (documentKey && hasLiveContentSubscriber(documentKey)) {
+        const encoded = encodeDocumentKey(documentKey);
+        liveNew.set(encoded, { key: documentKey, content: nextJson });
+        liveOld.set(encoded, {
+          key: documentKey,
+          content: JSON.parse(oldValue) as object,
+        });
       }
     } else {
       oldValue = source.text;
@@ -495,7 +509,9 @@ export async function applyRenamePropagation(
 
   if (forward.length === 0) return { applied: 0 };
 
-  const resync = async (live: Map<string, object>) => {
+  const resync = async (
+    live: Map<string, { key: DocumentKey; content: object }>,
+  ) => {
     try {
       await useTreeStore.getState().reloadTreeOrThrow(projectId);
     } catch (e) {
@@ -507,7 +523,9 @@ export async function applyRenamePropagation(
       console.error("[codexRename] codex reload failed (change committed)", e);
     }
     const setLive = useSceneContentStore.getState().setLiveContent;
-    for (const [id, content] of live) setLive(id, content, RESYNC_GROUP);
+    for (const { key, content } of live.values()) {
+      setLive(key, content, RESYNC_GROUP);
+    }
     // Re-establish body-mention rows/highlights stripped by the rename commit's
     // own enqueueRescan (which ran with the NEW name before the prose existed).
     void enqueueRescan(entryId);

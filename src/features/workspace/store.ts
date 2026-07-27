@@ -28,6 +28,10 @@ import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
+import {
+  awaitPendingEditorWrites,
+  hasUnresolvedEditorChanges,
+} from "@/lib/editorQuiescence";
 
 export type {
   GlobalSettings,
@@ -197,20 +201,16 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // swap を跨いだ in-flight write が旧 workspace の内容を新 workspace の
       // DB に落とさないよう、切替前に書き込みを静止させる:
       // (a) マウント中の全 AutoSave を flush、(b) pending scene write の完了
-      // 待ち、(c) timelapse recorder の flush。ここで save が失敗しても既存の
-      // 失敗 toast + dirty 維持 (リトライ) に任せ、切替自体は続行する
-      // (Rust 側の switching ガードが最後の砦)。
-      try {
-        await flushAllAutoSaves();
-        await awaitAllPendingSceneWrites();
-        await flushTimelapseRecorder();
-      } catch (e) {
-        debugLog.warn(
-          "workspaceStore",
-          "pre-switch quiesce failed; proceeding with switch",
-          errorDetail(e),
-        );
+      // 待ち、(c) timelapse recorder の flush。1 件でも失敗した場合は例外を
+      // outer catch へ伝え、native open_workspace より前に切替を中断する。
+      // 旧 DB/UI binding と dirty editor はそのまま維持される。
+      await flushAllAutoSaves();
+      await awaitPendingEditorWrites();
+      if (hasUnresolvedEditorChanges()) {
+        throw new Error(i18next.t("autoSave.unresolvedChanges"));
       }
+      await awaitAllPendingSceneWrites();
+      await flushTimelapseRecorder();
       // 切替開始 (r5 状態機械): recorder のキュー破棄 + 束縛無効化。切替中の
       // flush 再試行が open 完了後に新 workspace の hash chain へ旧イベントを
       // 混入させるのを防ぐ (C1)。記録の再開は「命令」ではなく、正規 rebind

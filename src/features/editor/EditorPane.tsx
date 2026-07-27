@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useEditor } from "@tiptap/react";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
@@ -14,9 +15,11 @@ import {
   extractPlacedBeatPreviewFromDoc,
 } from "@/features/editor/beat/placedBeatPreview";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
+import { transactionTouchesSceneBeat } from "@/features/editor/beat/transactionTouchesSceneBeat";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { uiUpdateEvent } from "@/features/agent-writes/event";
+import { getEventVersion } from "@/features/chronicle/version";
 import type {
   CodexMentionPopupState,
   MentionItem,
@@ -31,7 +34,10 @@ import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
 } from "@/features/project/projectStore";
-import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import {
@@ -48,6 +54,11 @@ import {
 } from "@/features/editor/document/sceneSidecars";
 import { type SaveSnapshot } from "@/features/editor/document/mutationGate";
 import { useEditorDocumentSession } from "@/features/editor/document/useEditorDocumentSession";
+import {
+  createEditorInstanceId,
+  documentKeyFromBinding,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -107,8 +118,13 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useRequestedEditorFocus } from "@/features/editor/useRequestedEditorFocus";
 import {
+  announcePersistedBinding,
   registerSaveHandler,
+  registerPersistedBindingHandler,
+  registerDiscardHandler,
   unregisterSaveHandler,
+  unregisterPersistedBindingHandler,
+  unregisterDiscardHandler,
   dirtyGatedSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
 import {
@@ -127,6 +143,7 @@ import { findChunkInDoc } from "@/features/semantic-search/findChunkInDoc";
 import { usePendingSemanticJump } from "@/features/semantic-search/usePendingSemanticJump";
 import { toast } from "sonner";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
+import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
@@ -238,9 +255,6 @@ export function EditorPane({
   // count 系 state (charCount/beat) は EditorStatsFooter に分離済み。本体に
   // 置くとタイピング休止ごとの stat 更新で 2200 行ペイン全体が再レンダー
   // されるため、footer が editor の update イベントを自前購読して再計算する。
-  const externalReloadNonce = useExternalWriteStore(
-    (s) => s.reloadNonce[nodeId] ?? 0,
-  );
   const [isSceneContentLoading, setIsSceneContentLoading] = useState(true);
   const workspaceViewportProfile = useWorkspaceViewportProfile();
   const phoneWorkspace = workspaceViewportProfile === "phone";
@@ -273,6 +287,7 @@ export function EditorPane({
   const activeNode = useTreeStore((s) =>
     isEntryMode ? null : s.nodes.find((n) => n.id === nodeId),
   );
+  const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
   const activeCodexEntry = useCodexStore((s) =>
     isCodexMode ? s.entries.find((e) => e.id === nodeId) : null,
   );
@@ -321,6 +336,10 @@ export function EditorPane({
 
   const paneRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const editorInstanceIdRef = useRef(createEditorInstanceId("pane"));
+  const [loadedDocumentKey, setLoadedDocumentKey] =
+    useState<DocumentKey | null>(null);
+  const loadedDocumentKeyRef = useRef<DocumentKey | null>(null);
 
   // Trash Bin drop target: scene-editor / codex-editor / snippet-editor。
   // ペインごとにユニーク id を振り、kind は contentType で決まる。
@@ -352,6 +371,7 @@ export function EditorPane({
   } = useBeatDragDrop({ editorRef, nodeId });
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const titleSaveInFlightRef = useRef<Promise<void> | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -377,6 +397,36 @@ export function EditorPane({
     setSaving: setIsSaving,
     setLoadedPhaseId,
   } = useEditorDocumentSession();
+  const activeLoadedDocumentKey =
+    loadedDocumentKey?.id === nodeId ? loadedDocumentKey : null;
+  const activeDocumentStateKey = activeLoadedDocumentKey
+    ? externalDocumentStateKey(activeLoadedDocumentKey)
+    : null;
+  const externalReloadNonce = useExternalWriteStore((state) =>
+    activeDocumentStateKey
+      ? (state.reloadNonce[activeDocumentStateKey] ?? 0)
+      : 0,
+  );
+  const hasExternalConflict = useExternalWriteStore((state) =>
+    activeDocumentStateKey
+      ? state.conflicts.some(
+          (conflict) =>
+            externalDocumentStateKey(
+              conflict.documentKey ?? conflict.sceneId,
+            ) === activeDocumentStateKey,
+        )
+      : false,
+  );
+  const externalReloadRef = useRef({
+    key: activeDocumentStateKey,
+    nonce: externalReloadNonce,
+  });
+  if (externalReloadRef.current.key !== activeDocumentStateKey) {
+    externalReloadRef.current = {
+      key: activeDocumentStateKey,
+      nonce: externalReloadNonce,
+    };
+  }
 
   const saveSceneIdRef = useRef(nodeId);
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
@@ -404,25 +454,26 @@ export function EditorPane({
     }
   }, [activeStatus, nodeId, isEntryMode]);
 
-  const coreSave = useCallback(async (snapshot: SaveSnapshot) => {
-    const ed = editorRef.current;
-    if (!ed) {
-      debugLog.warn("EditorPane", "save skipped: document is not loaded");
-      return;
-    }
-    markStart("editor.coreSave");
-    await saveEditorDocument(snapshot.binding, ed.state.doc, {
-      ...defaultEditorDocumentServices,
-      // TipTap's live serializer preserves the exact HTML representation used
-      // by the existing snippet editor.
-      serializeSnippet: () => ed.getHTML(),
-    });
-    markEnd("editor.coreSave");
-  }, []);
+  const coreSave = useCallback(
+    async (snapshot: SaveSnapshot, doc: ProseMirrorNode) => {
+      markStart("editor.coreSave");
+      try {
+        return await saveEditorDocument(
+          snapshot.binding,
+          doc,
+          defaultEditorDocumentServices,
+        );
+      } finally {
+        markEnd("editor.coreSave");
+      }
+    },
+    [],
+  );
 
   const saveFn = useCallback(async () => {
     const snapshot = mutationGate.captureSave();
-    if (!snapshot) {
+    const doc = editorRef.current?.state.doc;
+    if (!snapshot || !doc) {
       // coreSave 側でも skip するが、ここで弾かないと後続の auto-revision が
       // 未ロードの空 doc を getJSON してリビジョン履歴に書き込んでしまう
       // (実機ログで確認: save skipped 直後に空 doc の revision insert)。
@@ -431,29 +482,45 @@ export function EditorPane({
       return;
     }
     setIsSaving(true);
+    let result: Awaited<ReturnType<typeof coreSave>>;
     try {
-      await coreSave(snapshot);
+      result = await coreSave(snapshot, doc);
     } finally {
       setIsSaving(false);
     }
-    // coreSave の await 中に編集や文書切替が入った場合は dirty を維持する。
-    if (mutationGate.mayClearDirty(snapshot)) {
+    // Persisted version always advances for the same loaded document. Edits
+    // that arrived while the write was in flight keep dirty set and will use
+    // the new baseVersion on the coalesced follow-up save.
+    if (mutationGate.commitSave(snapshot, result.binding)) {
       setIsDirtyRef.current(false);
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(
+          documentKeyFromBinding(result.binding),
+          false,
+          editorInstanceIdRef.current,
+        );
     }
+    announcePersistedBinding(
+      documentKeyFromBinding(result.binding),
+      editorInstanceIdRef.current,
+      result.binding,
+    );
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
     // Codex/snippet tabs don't use the revision system
     if (snapshot.binding.kind === "tree") {
       try {
         const id = snapshot.binding.id;
-        const ed = editorRef.current;
-        if (!id || !ed) return;
+        if (!id) return;
         const intervalMs =
           useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
           60 *
           1000;
         if (shouldAutoRevision(id, intervalMs)) {
-          const content = JSON.stringify(ed.getJSON());
+          // Revision content must match the immutable document that actually
+          // reached persistence, not newer keystrokes that arrived meanwhile.
+          const content = JSON.stringify(doc.toJSON());
           const rev = await createRevision({
             entityType: "scene",
             entityId: id,
@@ -491,23 +558,73 @@ export function EditorPane({
   // agent writes, rename cascade, …) can flush it. dirty ゲート付き:
   // clean な editor への外部 flush は no-op (詳細は dirtyGatedSaveHandler)。
   useEffect(() => {
+    if (!activeLoadedDocumentKey) return;
+    const editorInstanceId = editorInstanceIdRef.current;
     const handler = dirtyGatedSaveHandler(() => isDirtyRef.current, saveFn);
-    registerSaveHandler(nodeId, handler);
-    return () => unregisterSaveHandler(nodeId, handler);
-  }, [nodeId, saveFn, isDirtyRef]);
+    registerSaveHandler(activeLoadedDocumentKey, editorInstanceId, handler);
+    const persistedBindingHandler = (
+      binding: Parameters<typeof mutationGate.advancePeerSave>[0],
+    ) => {
+      mutationGate.advancePeerSave(binding);
+    };
+    registerPersistedBindingHandler(
+      activeLoadedDocumentKey,
+      editorInstanceId,
+      persistedBindingHandler,
+    );
+    return () => {
+      unregisterSaveHandler(activeLoadedDocumentKey, editorInstanceId, handler);
+      unregisterPersistedBindingHandler(
+        activeLoadedDocumentKey,
+        editorInstanceId,
+        persistedBindingHandler,
+      );
+    };
+  }, [activeLoadedDocumentKey, saveFn, isDirtyRef, mutationGate]);
 
   // Sync isDirty to the tab store for unsaved-changes detection
   useEffect(() => {
-    useEditorSessionStore.getState().setDocumentDirty(nodeId, isDirty);
+    if (!activeLoadedDocumentKey) return;
+    const editorInstanceId = editorInstanceIdRef.current;
+    useEditorSessionStore
+      .getState()
+      .setDocumentDirty(activeLoadedDocumentKey, isDirty, editorInstanceId);
     return () =>
-      useEditorSessionStore.getState().setDocumentDirty(nodeId, false);
-  }, [nodeId, isDirty]);
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(activeLoadedDocumentKey, false, editorInstanceId);
+  }, [activeLoadedDocumentKey, isDirty]);
 
   const editorSettings = useEditorSettings();
-  const { schedule, cancel, flush } = useAutoSave(
+  const { schedule, cancel, pause, resume, flush } = useAutoSave(
     saveFn,
     editorSettings.autoSaveDelay,
   );
+
+  // "Close without saving" is the one lifecycle path allowed to destroy a
+  // dirty/conflicted EditorPane. Cancel its queued AutoSave synchronously
+  // before the tab disappears; otherwise the hook cleanup sees a paused
+  // pending edit and retains a detached instance that no UI can resume.
+  useEffect(() => {
+    if (!activeLoadedDocumentKey) return;
+    const instanceId = editorInstanceIdRef.current;
+    const discard = () => {
+      cancel();
+      setIsDirtyRef.current(false);
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(activeLoadedDocumentKey, false, instanceId);
+      useExternalWriteStore.getState().shiftConflict(activeLoadedDocumentKey);
+    };
+    registerDiscardHandler(
+      activeLoadedDocumentKey,
+      instanceId,
+      discard,
+      groupIndex,
+    );
+    return () =>
+      unregisterDiscardHandler(activeLoadedDocumentKey, instanceId, discard);
+  }, [activeLoadedDocumentKey, cancel, groupIndex, setIsDirtyRef]);
 
   const filterSource = useAttributionStore((s) => s.filterSource);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
@@ -522,7 +639,6 @@ export function EditorPane({
   // Built once: a fresh extensions array on every render makes TipTap's
   // useEditor onRender effect call editor.setOptions each render (schema/
   // plugin churn). setMentionPopupState/setMentionIndex are stable setters.
-  const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
   const canEditCodexSemanticLink =
     contentType === "scene" &&
     activeNode?.nodeType === "scene" &&
@@ -732,11 +848,16 @@ export function EditorPane({
           // expensive `e.getJSON()` deep-clone when no Codex/Snippet mini-editor
           // or second EditorPane group is subscribed for this scene id — the
           // common case during normal scene editing.
-          if (hasOtherLiveContentSubscriber(sid)) {
+          const documentKey = loadedDocumentKeyRef.current;
+          if (documentKey && hasOtherLiveContentSubscriber(documentKey)) {
             markStart("editor.setLiveContent");
             useSceneContentStore
               .getState()
-              .setLiveContent(sid, e.getJSON(), groupIndex);
+              .setLiveContent(
+                documentKey,
+                e.getJSON(),
+                editorInstanceIdRef.current,
+              );
             markEnd("editor.setLiveContent");
           }
         }
@@ -793,6 +914,10 @@ export function EditorPane({
         }
         if (isEntryMode) return;
         if (!sid) return;
+        // Ordinary paragraph edits cannot change placed Beat membership or its
+        // preview. Avoid three whole-document walks on every keystroke; the
+        // detector remains conservative for unknown ProseMirror step shapes.
+        if (!transactionTouchesSceneBeat(transaction)) return;
         markStart("editor.onTransaction");
 
         // Reconcile sceneBeat ↔ unplacedBeatsStore for transactions that
@@ -1348,6 +1473,64 @@ export function EditorPane({
       cancel();
     }
   }, [inlineAiStatus, inlineAiOwnerEditor, editor, cancel]);
+  useEffect(() => {
+    if (hasExternalConflict) pause();
+    else resume();
+  }, [hasExternalConflict, pause, resume]);
+
+  const handleKeepExternalEdit = useCallback(async () => {
+    const snapshot = mutationGate.captureSave();
+    if (!snapshot) {
+      throw new Error("The editor document is not loaded");
+    }
+
+    let persistedBinding = snapshot.binding;
+    if (snapshot.binding.kind === "codex") {
+      const binding = snapshot.binding;
+      const version =
+        binding.phaseId === null
+          ? useCodexStore
+              .getState()
+              .entries.find((entry) => entry.id === binding.id)?.version
+          : usePhaseStore
+              .getState()
+              .phasesByEntry[
+                binding.id
+              ]?.find((phase) => phase.id === binding.phaseId)?.version;
+      if (version === undefined) {
+        throw new Error(`Codex document '${binding.id}' no longer exists`);
+      }
+      persistedBinding = { ...binding, loadedVersion: version };
+    } else if (snapshot.binding.kind === "snippet") {
+      const version = useSnippetStore
+        .getState()
+        .entries.find((entry) => entry.id === snapshot.binding.id)?.version;
+      if (version === undefined) {
+        throw new Error(`Snippet '${snapshot.binding.id}' no longer exists`);
+      }
+      persistedBinding = { ...snapshot.binding, loadedVersion: version };
+    } else if (snapshot.binding.kind === "chronicle-event") {
+      const version = await getEventVersion(
+        getCurrentProjectId(),
+        snapshot.binding.id,
+      );
+      if (version === null) {
+        throw new Error(`Event '${snapshot.binding.id}' no longer exists`);
+      }
+      persistedBinding = { ...snapshot.binding, loadedVersion: version };
+    }
+
+    if (!mutationGate.advancePeerSave(persistedBinding)) {
+      throw new Error(
+        "The editor document changed while resolving the conflict",
+      );
+    }
+    schedule();
+  }, [mutationGate, schedule]);
+
+  const handleReloadExternalEdit = useCallback(() => {
+    cancel();
+  }, [cancel]);
 
   useCursorOverlay(mountedEditor);
   useImeDiagnostics(mountedEditor);
@@ -1423,23 +1606,27 @@ export function EditorPane({
   // Apply is rAF-coalesced: a typing burst on the peer pane collapses to at most
   // one full-doc setContent per frame on the mirror, instead of one per keystroke.
   useEffect(() => {
-    if (!editor) return;
-    return subscribeLiveContentRafCoalesced(nodeId, groupIndex, (next) => {
-      isApplyingExternalUpdate.current = true;
-      try {
-        mutationGate.runProgrammatic(() => {
-          markStart("editor.externalSync.setContent");
-          editor.commands.setContent(
-            next as Parameters<typeof editor.commands.setContent>[0],
-            { emitUpdate: false },
-          );
-          markEnd("editor.externalSync.setContent");
-        });
-      } finally {
-        isApplyingExternalUpdate.current = false;
-      }
-    });
-  }, [nodeId, groupIndex, editor, mutationGate]);
+    if (!editor || !activeLoadedDocumentKey) return;
+    return subscribeLiveContentRafCoalesced(
+      activeLoadedDocumentKey,
+      editorInstanceIdRef.current,
+      (next) => {
+        isApplyingExternalUpdate.current = true;
+        try {
+          mutationGate.runProgrammatic(() => {
+            markStart("editor.externalSync.setContent");
+            editor.commands.setContent(
+              next as Parameters<typeof editor.commands.setContent>[0],
+              { emitUpdate: false },
+            );
+            markEnd("editor.externalSync.setContent");
+          });
+        } finally {
+          isApplyingExternalUpdate.current = false;
+        }
+      },
+    );
+  }, [activeLoadedDocumentKey, editor, mutationGate]);
 
   // Subscribe to unplaced beats changes → mark dirty and schedule save,
   // and live-sync the Grid preview cache for immediate UI feedback.
@@ -1477,7 +1664,22 @@ export function EditorPane({
       markStart("editor.switchScene");
       try {
         const prevId = prevSceneIdRef.current;
-        if (prevId && prevId !== nodeId) {
+        // The render-time key reset above keeps this ref aligned with the
+        // currently loaded canonical document without making this load effect
+        // re-run merely because commitLoad published its key.
+        const currentDocumentStateKey = externalReloadRef.current.key;
+        const externalReloadRequested =
+          currentDocumentStateKey !== null &&
+          externalReloadRef.current.nonce !== externalReloadNonce;
+        externalReloadRef.current = {
+          key: currentDocumentStateKey,
+          nonce: externalReloadNonce,
+        };
+        if (externalReloadRequested) {
+          // The reload action chooses the persisted external version. Do not
+          // flush the stale local buffer immediately before replacing it.
+          cancel();
+        } else if (prevId && prevId !== nodeId) {
           // Save current cursor/scroll state before leaving this scene
           const ed = editorRef.current;
           if (ed) {
@@ -1503,6 +1705,8 @@ export function EditorPane({
         // Invalidate the save binding before loading the next document. The
         // old binding remains valid only until the pre-switch flush completes.
         mutationGate.beginLoad();
+        loadedDocumentKeyRef.current = null;
+        setLoadedDocumentKey(null);
         // ここから新コンテンツの適用が成功するまで、エディタ内の doc は
         // 保存禁止 (coreSave が skip)。途中失敗した doc を autosave が
         // 書き戻すと本文消失になるため。
@@ -1590,6 +1794,9 @@ export function EditorPane({
           // ここで初めて保存を解禁する。
           if (cancelled) return;
           mutationGate.commitLoad(loadedBinding);
+          const nextDocumentKey = documentKeyFromBinding(loadedBinding);
+          loadedDocumentKeyRef.current = nextDocumentKey;
+          setLoadedDocumentKey(nextDocumentKey);
 
           if (!cancelled) {
             setIsSceneContentLoading(false);
@@ -1724,9 +1931,22 @@ export function EditorPane({
             });
           }
         }
+        if (externalReloadRequested && loadedDocumentKeyRef.current) {
+          const reloadedDocumentKey = loadedDocumentKeyRef.current;
+          useEditorSessionStore
+            .getState()
+            .setDocumentDirty(
+              reloadedDocumentKey,
+              false,
+              editorInstanceIdRef.current,
+            );
+          useExternalWriteStore.getState().shiftConflict(reloadedDocumentKey);
+        }
       } catch (err) {
         if (!cancelled) {
           mutationGate.failLoad();
+          loadedDocumentKeyRef.current = null;
+          setLoadedDocumentKey(null);
           setIsSceneContentLoading(false);
           // mutation gate は未ロード状態のまま = この doc は保存されない。無言で
           // rethrow すると「空のエディタが出て本文が消えた」ようにしか見えない
@@ -1838,19 +2058,166 @@ export function EditorPane({
 
   const handleTitleSave = () => {
     const trimmed = titleDraft.trim();
-    if (trimmed && trimmed !== editorTitle) {
-      if (isCodexMode) {
-        updateCodexEntryStore(nodeId, { name: trimmed }).catch(() => {});
-      } else if (isSnippetMode) {
-        updateSnippetEntryStore(nodeId, { title: trimmed }).catch(() => {});
-      } else if (isChronicleEventMode) {
-        setChronicleEventTitle(trimmed);
-        uiUpdateEvent({ eventId: nodeId, title: trimmed }).catch(() => {});
-      } else {
-        updateNodeTitle(nodeId, trimmed).catch(() => {});
-      }
+    if (!trimmed || trimmed === editorTitle) {
+      setTitleEditing(false);
+      return;
     }
-    setTitleEditing(false);
+    if (titleSaveInFlightRef.current) return;
+
+    const documentKey = activeLoadedDocumentKey;
+    if (!documentKey) return;
+    const instanceId = editorInstanceIdRef.current;
+    // Title writes are not driven by TipTap's update event, but they are still
+    // part of the same document aggregate. Keep the exact session dirty until
+    // the tracked write succeeds so workspace switching cannot discard it.
+    useEditorSessionStore
+      .getState()
+      .setDocumentDirty(documentKey, true, instanceId);
+
+    const write = trackPendingEditorWrite(
+      (async () => {
+        try {
+          // Title and body share one aggregate version for Codex base,
+          // Snippet, and Chronicle Event. Drain a pending body write first,
+          // then advance the same session binding with the title write result.
+          await flush();
+          const snapshot = mutationGate.captureSave();
+
+          if (isCodexMode) {
+            if (
+              snapshot?.binding.kind !== "codex" ||
+              snapshot.binding.id !== nodeId
+            ) {
+              throw new Error("Codex title save target is no longer loaded");
+            }
+            const outcome = await updateCodexEntryStore(
+              nodeId,
+              { name: trimmed },
+              // A Phase body has its own version row; renaming the parent entry
+              // must not use the Phase version as the Codex base version.
+              snapshot.binding.phaseId === null
+                ? { baseVersion: snapshot.binding.loadedVersion }
+                : undefined,
+            );
+            if (!outcome.persisted) {
+              throw new Error(`Codex title was not persisted: ${nodeId}`);
+            }
+            if (outcome.persisted && snapshot.binding.phaseId === null) {
+              const binding = {
+                ...snapshot.binding,
+                loadedVersion: outcome.version,
+              } as const;
+              mutationGate.commitSave(snapshot, binding);
+              announcePersistedBinding(
+                documentKeyFromBinding(binding),
+                editorInstanceIdRef.current,
+                binding,
+              );
+            } else if (outcome.persisted) {
+              const binding = {
+                kind: "codex",
+                id: nodeId,
+                phaseId: null,
+                loadedVersion: outcome.version,
+              } as const;
+              announcePersistedBinding(
+                documentKeyFromBinding(binding),
+                editorInstanceIdRef.current,
+                binding,
+              );
+            }
+          } else if (isSnippetMode) {
+            if (
+              snapshot?.binding.kind !== "snippet" ||
+              snapshot.binding.id !== nodeId
+            ) {
+              throw new Error("Snippet title save target is no longer loaded");
+            }
+            const outcome = await updateSnippetEntryStore(
+              nodeId,
+              { title: trimmed },
+              { baseVersion: snapshot.binding.loadedVersion },
+            );
+            if (!outcome.persisted) {
+              throw new Error(`Snippet title was not persisted: ${nodeId}`);
+            }
+            if (outcome.persisted) {
+              const binding = {
+                ...snapshot.binding,
+                loadedVersion: outcome.version,
+              } as const;
+              mutationGate.commitSave(snapshot, binding);
+              announcePersistedBinding(
+                documentKeyFromBinding(binding),
+                editorInstanceIdRef.current,
+                binding,
+              );
+            }
+          } else if (isChronicleEventMode) {
+            if (
+              snapshot?.binding.kind !== "chronicle-event" ||
+              snapshot.binding.id !== nodeId
+            ) {
+              throw new Error(
+                "Chronicle title save target is no longer loaded",
+              );
+            }
+            const result = await uiUpdateEvent(
+              {
+                eventId: nodeId,
+                title: trimmed,
+                baseVersion: snapshot.binding.loadedVersion,
+              },
+              { suppressDocumentNotification: true },
+            );
+            const binding = {
+              ...snapshot.binding,
+              loadedVersion: result.version,
+            } as const;
+            mutationGate.commitSave(snapshot, binding);
+            announcePersistedBinding(
+              documentKeyFromBinding(binding),
+              editorInstanceIdRef.current,
+              binding,
+            );
+            if (
+              loadedDocumentKeyRef.current?.kind === "chronicle-event" &&
+              loadedDocumentKeyRef.current.id === nodeId
+            ) {
+              setChronicleEventTitle(trimmed);
+            }
+          } else {
+            await updateNodeTitle(nodeId, trimmed);
+          }
+          if (!isDirtyRef.current) {
+            useEditorSessionStore
+              .getState()
+              .setDocumentDirty(documentKey, false, instanceId);
+          }
+          setTitleEditing(false);
+        } catch (error) {
+          debugLog.warn("EditorPane", "title save failed", errorDetail(error));
+          useEditorSessionStore
+            .getState()
+            .setDocumentDirty(documentKey, true, instanceId);
+          if (isChronicleEventMode) {
+            toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+          }
+          throw error;
+        }
+      })(),
+    );
+    titleSaveInFlightRef.current = write;
+    void write
+      .catch(() => {
+        // Persistence owners already emitted the actionable notification.
+        // Keeping the input open and the document dirty is the recovery path.
+      })
+      .finally(() => {
+        if (titleSaveInFlightRef.current === write) {
+          titleSaveInFlightRef.current = null;
+        }
+      });
   };
 
   const handleTitleCancel = () => {
@@ -2050,6 +2417,10 @@ export function EditorPane({
           activeSnippetEntry={activeSnippetEntry}
           loadedPhaseLabel={loadedPhaseLabel}
           chronicleEventTitle={chronicleEventTitle}
+          documentKey={activeLoadedDocumentKey}
+          editorInstanceId={editorInstanceIdRef.current}
+          onKeepExternalEdit={handleKeepExternalEdit}
+          onReloadExternalEdit={handleReloadExternalEdit}
         />
         <EditorPaneViewport
           isPanelVisible={!phoneWorkspace && isPanelVisible}

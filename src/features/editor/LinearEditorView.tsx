@@ -44,6 +44,8 @@ import {
 import type { Editor } from "@tiptap/core";
 import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
 import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
+import { useEditorSessionStore } from "./editorSessionStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 const DEFAULT_HEIGHT = 300;
 const DEBOUNCE_ACTIVE_MS = 100;
@@ -54,6 +56,22 @@ export function LinearEditorView() {
   const verticalMode = editorSettings.verticalMode;
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
+  const dirtyDocumentIds = useEditorSessionStore(
+    (state) => state.dirtyDocumentIds,
+  );
+  const externalConflicts = useExternalWriteStore((state) => state.conflicts);
+  const conflictedSceneIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const conflict of externalConflicts) {
+      if (
+        conflict.documentKey === undefined ||
+        conflict.documentKey.kind === "tree"
+      ) {
+        ids.add(conflict.documentKey?.id ?? conflict.sceneId);
+      }
+    }
+    return ids;
+  }, [externalConflicts]);
 
   const focusedEditor = useLinearEditorStore((s) => s.focusedEditor);
   const focusedSceneId = useLinearEditorStore((s) => s.focusedSceneId);
@@ -470,7 +488,16 @@ export function LinearEditorView() {
             {i > 0 && <div className="editor-scene-separator" />}
             <LinearSceneBlock
               sceneId={scene.id}
-              isMounted={mountedSet.has(scene.id)}
+              // A dirty/conflicted linear editor is the only owner of its
+              // local TipTap draft. IntersectionObserver virtualization must
+              // not destroy it while AutoSave is paused by a conflict;
+              // otherwise the detached AutoSave can never be resolved and
+              // workspace quiesce remains blocked forever.
+              isMounted={
+                mountedSet.has(scene.id) ||
+                dirtyDocumentIds.has(scene.id) ||
+                conflictedSceneIds.has(scene.id)
+              }
               isActive={scene.id === activeId}
               placeholderHeight={
                 heightMapRef.current.get(scene.id) ?? DEFAULT_HEIGHT

@@ -5,10 +5,81 @@
  * propagation, post-effect flush, …) can trigger saves without accessing
  * editor component state directly.
  */
-const handlers = new Map<string, () => Promise<void>>();
+import {
+  documentIdFromKey,
+  encodeDocumentKey,
+  type DocumentKey,
+  type EditorInstanceId,
+} from "./document/documentKey";
+import type { LoadedEditorBinding } from "./document/types";
 
-export function registerSaveHandler(nodeId: string, fn: () => Promise<void>) {
-  handlers.set(nodeId, fn);
+type SaveHandler = () => Promise<void>;
+type DiscardHandler = () => void;
+type DocumentReference = string | DocumentKey;
+
+interface HandlerBucket {
+  documentId: string;
+  handlers: Map<string, SaveHandler>;
+}
+
+const LEGACY_INSTANCE = "__legacy__";
+const handlers = new Map<string, HandlerBucket>();
+const persistedBindingHandlers = new Map<
+  string,
+  Map<string, (binding: LoadedEditorBinding) => void>
+>();
+const discardHandlers = new Map<
+  string,
+  {
+    documentId: string;
+    handlers: Map<
+      string,
+      { groupIndex: number | null; handler: DiscardHandler }
+    >;
+  }
+>();
+
+function referenceIdentity(reference: DocumentReference): {
+  encoded: string;
+  documentId: string;
+} {
+  if (typeof reference === "string") {
+    return {
+      encoded: `legacy:${encodeURIComponent(reference)}`,
+      documentId: reference,
+    };
+  }
+  return {
+    encoded: encodeDocumentKey(reference),
+    documentId: documentIdFromKey(reference),
+  };
+}
+
+export function registerSaveHandler(
+  reference: DocumentReference,
+  fn: SaveHandler,
+): void;
+export function registerSaveHandler(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+  fn: SaveHandler,
+): void;
+export function registerSaveHandler(
+  reference: DocumentReference,
+  instanceOrFn: EditorInstanceId | SaveHandler,
+  maybeFn?: SaveHandler,
+): void {
+  const { encoded, documentId } = referenceIdentity(reference);
+  const instanceId =
+    typeof instanceOrFn === "function" ? LEGACY_INSTANCE : instanceOrFn;
+  const fn = typeof instanceOrFn === "function" ? instanceOrFn : maybeFn;
+  if (!fn) return;
+  const bucket = handlers.get(encoded) ?? {
+    documentId,
+    handlers: new Map<string, SaveHandler>(),
+  };
+  bucket.handlers.set(instanceId, fn);
+  handlers.set(encoded, bucket);
 }
 
 /**
@@ -18,17 +89,153 @@ export function registerSaveHandler(nodeId: string, fn: () => Promise<void>) {
  * cleanup — an unconditional delete would drop the live handler).
  */
 export function unregisterSaveHandler(
-  nodeId: string,
-  fn?: () => Promise<void>,
-) {
-  if (fn !== undefined && handlers.get(nodeId) !== fn) return;
-  handlers.delete(nodeId);
+  reference: DocumentReference,
+  fn?: SaveHandler,
+): void;
+export function unregisterSaveHandler(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+  fn?: SaveHandler,
+): void;
+export function unregisterSaveHandler(
+  reference: DocumentReference,
+  instanceOrFn?: EditorInstanceId | SaveHandler,
+  maybeFn?: SaveHandler,
+): void {
+  if (typeof reference === "string" && instanceOrFn === undefined) {
+    for (const [encoded, bucket] of handlers) {
+      if (bucket.documentId === reference) handlers.delete(encoded);
+    }
+    return;
+  }
+  const { encoded } = referenceIdentity(reference);
+  const bucket = handlers.get(encoded);
+  if (!bucket) return;
+
+  if (typeof instanceOrFn === "string") {
+    const current = bucket.handlers.get(instanceOrFn);
+    if (maybeFn !== undefined && current !== maybeFn) return;
+    bucket.handlers.delete(instanceOrFn);
+  } else {
+    const current = bucket.handlers.get(LEGACY_INSTANCE);
+    if (instanceOrFn !== undefined && current !== instanceOrFn) return;
+    bucket.handlers.delete(LEGACY_INSTANCE);
+  }
+
+  if (bucket.handlers.size === 0) handlers.delete(encoded);
 }
 
-/** Save a scene by nodeId. No-op if no handler is registered. */
+/**
+ * Register the per-instance OCC-base listener for one exact document. Local
+ * mirrored panes already receive each other's content through the live-content
+ * channel; after one pane persists that shared snapshot, peers must also adopt
+ * the returned version before their next edit.
+ */
+export function registerPersistedBindingHandler(
+  documentKey: DocumentKey,
+  instanceId: EditorInstanceId,
+  handler: (binding: LoadedEditorBinding) => void,
+): void {
+  const encoded = encodeDocumentKey(documentKey);
+  const bucket = persistedBindingHandlers.get(encoded) ?? new Map();
+  bucket.set(instanceId, handler);
+  persistedBindingHandlers.set(encoded, bucket);
+}
+
+export function unregisterPersistedBindingHandler(
+  documentKey: DocumentKey,
+  instanceId: EditorInstanceId,
+  handler?: (binding: LoadedEditorBinding) => void,
+): void {
+  const encoded = encodeDocumentKey(documentKey);
+  const bucket = persistedBindingHandlers.get(encoded);
+  if (!bucket) return;
+  if (handler !== undefined && bucket.get(instanceId) !== handler) return;
+  bucket.delete(instanceId);
+  if (bucket.size === 0) persistedBindingHandlers.delete(encoded);
+}
+
+/**
+ * Register the explicit-discard path for one editor instance. This is kept
+ * separate from save handlers: "Close without saving" must cancel a paused
+ * AutoSave before React unmounts the conflict surface, otherwise its cleanup
+ * retains a permanently unresolvable retired instance.
+ */
+export function registerDiscardHandler(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+  handler: DiscardHandler,
+  groupIndex: number | null = null,
+): void {
+  const { encoded, documentId } = referenceIdentity(reference);
+  const bucket = discardHandlers.get(encoded) ?? {
+    documentId,
+    handlers: new Map(),
+  };
+  bucket.handlers.set(instanceId, { groupIndex, handler });
+  discardHandlers.set(encoded, bucket);
+}
+
+export function unregisterDiscardHandler(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+  handler?: DiscardHandler,
+): void {
+  const { encoded } = referenceIdentity(reference);
+  const bucket = discardHandlers.get(encoded);
+  if (!bucket) return;
+  const current = bucket.handlers.get(instanceId);
+  if (handler !== undefined && current?.handler !== handler) return;
+  bucket.handlers.delete(instanceId);
+  if (bucket.handlers.size === 0) discardHandlers.delete(encoded);
+}
+
+/**
+ * Explicitly abandon the live draft displayed in one editor group.
+ *
+ * The group filter matters in split view: closing one copy must not cancel the
+ * other pane's independent dirty instance for the same document.
+ */
+export function discardDocumentInGroup(
+  documentId: string,
+  groupIndex: number,
+): void {
+  for (const bucket of discardHandlers.values()) {
+    if (bucket.documentId !== documentId) continue;
+    for (const registered of bucket.handlers.values()) {
+      if (registered.groupIndex === groupIndex) registered.handler();
+    }
+  }
+}
+
+/** Fan out a successful local save to every peer instance except its origin. */
+export function announcePersistedBinding(
+  documentKey: DocumentKey,
+  originInstanceId: EditorInstanceId,
+  binding: LoadedEditorBinding,
+): void {
+  const bucket = persistedBindingHandlers.get(encodeDocumentKey(documentKey));
+  if (!bucket) return;
+  for (const [instanceId, handler] of bucket) {
+    if (instanceId !== originInstanceId) handler(binding);
+  }
+}
+
+/** Save every mounted editor for a raw entity id. No-op when none is open. */
 export async function saveScene(nodeId: string): Promise<void> {
-  const fn = handlers.get(nodeId);
-  if (fn) await fn();
+  const pending: Promise<void>[] = [];
+  for (const bucket of handlers.values()) {
+    if (bucket.documentId !== nodeId) continue;
+    for (const fn of bucket.handlers.values()) pending.push(fn());
+  }
+  await Promise.all(pending);
+}
+
+/** Save only instances that display the exact canonical document. */
+export async function saveDocument(key: DocumentKey): Promise<void> {
+  const bucket = handlers.get(encodeDocumentKey(key));
+  if (!bucket) return;
+  await Promise.all([...bucket.handlers.values()].map((fn) => fn()));
 }
 
 /**
@@ -38,7 +245,7 @@ export async function saveScene(nodeId: string): Promise<void> {
  * editors, which have no tab.
  */
 export function registeredSaveHandlerIds(): string[] {
-  return [...handlers.keys()];
+  return [...new Set([...handlers.values()].map((entry) => entry.documentId))];
 }
 
 /**

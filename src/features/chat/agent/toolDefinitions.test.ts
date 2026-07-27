@@ -72,6 +72,30 @@ describe("toolDefinitions", () => {
         .sort(),
     );
   });
+
+  it("declares write-tool bodies as Markdown and aliases as string arrays", () => {
+    for (const name of ["create_codex_entry", "update_codex_entry"]) {
+      const tool = AGENT_TOOLS.find((candidate) => candidate.name === name);
+      expect(tool).toBeDefined();
+      expect(tool!.inputSchema.properties.content).toMatchObject({
+        type: "string",
+        description: expect.stringContaining("Markdown"),
+      });
+      expect(tool!.inputSchema.properties.aliases).toMatchObject({
+        type: "array",
+        items: { type: "string" },
+      });
+    }
+
+    const snippet = AGENT_TOOLS.find(
+      (candidate) => candidate.name === "create_snippet",
+    );
+    expect(snippet).toBeDefined();
+    expect(snippet!.inputSchema.properties.content).toMatchObject({
+      type: "string",
+      description: expect.stringContaining("Markdown"),
+    });
+  });
 });
 
 describe("getResearchSubagentTools — read-only subset (depth=1)", () => {

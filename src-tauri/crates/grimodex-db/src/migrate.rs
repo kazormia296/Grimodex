@@ -371,7 +371,8 @@ impl Database {
                                         CHECK(context_mode_override IS NULL OR
                                               context_mode_override IN ('always','mentioned','suppress','hidden')),
                 created_at            TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+                version               INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_codex_phases_entry
                 ON codex_entry_phases(entry_id);
@@ -1806,13 +1807,18 @@ impl Database {
                 secret           INTEGER NOT NULL DEFAULT 0,
                 reveal_scene_id  TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                version          INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_events_project
                 ON events(project_id);
             CREATE INDEX IF NOT EXISTS idx_events_ordinal
                 ON events(project_id, ordinal);",
         )?;
+        // Existing Chronicle databases predate aggregate OCC. This rescue must
+        // run after the CREATE above because fresh migrations reach Chronicle
+        // after the general AI-write infrastructure migration.
+        Self::add_column_if_missing(&conn, "events", "version", "INTEGER NOT NULL DEFAULT 0")?;
         // 既存 DB（P0 で events 作成済）への列追加。CHECK 無しの素 ALTER。
         Self::add_column_if_missing(&conn, "events", "kind", "TEXT NOT NULL DEFAULT 'generic'")?;
         Self::add_column_if_missing(
@@ -2010,11 +2016,21 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_chat_summaries_last_msg ON chat_summaries(last_msg_id);",
         )?;
 
+        // Stamp only after every fresh/rescue migration above has succeeded.
+        // Headless MCP uses this as its schema-skew gate; advancing earlier
+        // could make a partially migrated database look compatible after a
+        // crash or later migration failure.
+        const SCHEMA_VERSION: i32 = grimodex_core::SCHEMA_VERSION;
+        let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
+
         Ok(())
     }
 
-    /// AI write infrastructure: undo-journal, entity version counters,
-    /// prose staging table, and PRAGMA user_version schema skew guard.
+    /// AI write infrastructure: undo-journal, entity version counters, and
+    /// prose staging. `migrate()` stamps `user_version` after later migrations.
     pub(super) fn migrate_ai_write_infrastructure(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS undo_journal (
@@ -2064,14 +2080,12 @@ impl Database {
         Self::add_column_if_missing(conn, "codex_entries", "readings", "TEXT")?;
         Self::add_column_if_missing(conn, "snippets", "version", "INTEGER NOT NULL DEFAULT 0")?;
         Self::add_column_if_missing(conn, "tree_nodes", "version", "INTEGER NOT NULL DEFAULT 0")?;
-
-        // Schema skew guard for headless MCP binaries (Phase 4 reads this).
-        const SCHEMA_VERSION: i32 = grimodex_core::SCHEMA_VERSION;
-        let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        }
-
+        Self::add_column_if_missing(
+            conn,
+            "codex_entry_phases",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         Ok(())
     }
 
@@ -3200,9 +3214,10 @@ mod tests {
     #[test]
     fn migrate_backfills_chronicle_columns_on_legacy_events() {
         // Regression: a P0-era Chronicle install has events WITHOUT the
-        // kind / location_codex_id columns. migrate() must backfill both via
-        // add_column_if_missing — the fresh-DB CREATE TABLE already includes
-        // them, so the legacy ALTER path is otherwise never exercised.
+        // kind / location_codex_id / aggregate version columns. migrate() must
+        // backfill them via add_column_if_missing — the fresh-DB CREATE TABLE
+        // already includes them, so the legacy ALTER path is otherwise never
+        // exercised.
         let db = Database::new(std::path::Path::new(":memory:")).unwrap();
         db.with_conn(|conn| {
             // P0 events table (pre kind / location_codex_id).
@@ -3243,14 +3258,93 @@ mod tests {
                 cols.iter().any(|c| c == "location_codex_id"),
                 "location_codex_id column should be backfilled"
             );
+            assert!(
+                cols.iter().any(|c| c == "version"),
+                "version column should be backfilled"
+            );
             // The pre-existing legacy row picks up the DEFAULT backfill value.
-            let kind: String =
-                conn.query_row("SELECT kind FROM events WHERE id = 'e1'", [], |row| {
-                    row.get(0)
-                })?;
+            let (kind, version): (String, i64) = conn.query_row(
+                "SELECT kind, version FROM events WHERE id = 'e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
             assert_eq!(
                 kind, "generic",
                 "legacy row kind should default to 'generic'"
+            );
+            assert_eq!(version, 0, "legacy event version should default to zero");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_backfills_version_on_legacy_codex_entry_phases() {
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE codex_entry_phases (
+                    id                    TEXT PRIMARY KEY,
+                    entry_id              TEXT NOT NULL,
+                    anchor_node_id         TEXT,
+                    label                 TEXT NOT NULL DEFAULT '',
+                    summary_override      TEXT,
+                    content_override      TEXT,
+                    context_mode_override TEXT,
+                    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO codex_entry_phases (id, entry_id)
+                 VALUES ('phase-1', 'entry-1');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        db.migrate().unwrap();
+
+        db.with_conn(|conn| {
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(codex_entry_phases)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            assert!(
+                cols.iter().any(|c| c == "version"),
+                "version column should be backfilled"
+            );
+            let version: i64 = conn.query_row(
+                "SELECT version FROM codex_entry_phases WHERE id = 'phase-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(version, 0, "legacy phase version should default to zero");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_stamps_schema_version_only_after_all_steps_succeed() {
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.with_conn(|conn| {
+            // A deliberately malformed legacy table makes the later Chronicle
+            // index creation fail, after AI-write infrastructure has migrated.
+            conn.execute_batch(
+                "CREATE TABLE events (id TEXT PRIMARY KEY);
+                 PRAGMA user_version = 0;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        db.migrate()
+            .expect_err("incomplete Chronicle schema must fail migration");
+
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(
+                version, 0,
+                "failed migration must not advertise the new schema version"
             );
             Ok(())
         })

@@ -16,6 +16,8 @@ import type { CodexEntry } from "@/features/codex/api";
 import { getCodexEntryVersion } from "@/features/codex/version";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
+import { validateAgentProseMirrorJson } from "./richTextInput";
 
 export interface AgentCodexCreateInput {
   type: string;
@@ -77,19 +79,15 @@ export function markCodexContentAsAi(
     traceId?: string | null;
   } = {},
 ): string {
-  if (!contentJson || contentJson === "{}") return contentJson;
-  try {
-    const doc = JSON.parse(contentJson) as Record<string, unknown>;
-    const attrs = aiAuthorshipAttrs({
-      model: opts.model,
-      chatMessageId: opts.chatMessageId,
-      traceId: opts.traceId,
-    });
-    applyAiMarkToDoc(doc, attrs);
-    return JSON.stringify(doc);
-  } catch {
-    return contentJson;
-  }
+  const normalized = validateAgentProseMirrorJson(contentJson);
+  const doc = JSON.parse(normalized) as Record<string, unknown>;
+  const attrs = aiAuthorshipAttrs({
+    model: opts.model,
+    chatMessageId: opts.chatMessageId,
+    traceId: opts.traceId,
+  });
+  applyAiMarkToDoc(doc, attrs);
+  return validateAgentProseMirrorJson(JSON.stringify(doc));
 }
 
 function applyAiMarkToDoc(
@@ -250,6 +248,14 @@ export async function agentUpdateCodexEntry(
   });
 
   await useCodexStore.getState().loadEntries();
+  notifySameRendererDocumentWrite(
+    { kind: "codex", id: result.entityId, phaseId: null },
+    {
+      domain: "codex",
+      opType: "entry.update",
+      entityId: result.entityId,
+    },
+  );
 
   // 段階3: agent 経路の codex 更新も semantic index へ (api.ts は通らない)。
   scheduleCodexIndex(result.entityId);

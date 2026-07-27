@@ -197,6 +197,42 @@ export async function persistSceneBody(
       markStart("editor.coreSave.saveAnnotations");
       await saveAnnotationAnchors(projectId, id, doc);
       markEnd("editor.coreSave.saveAnnotations");
+
+      // Beat-derived caches are whole-set replacements (insert desired rows,
+      // then prune stale rows). They must settle inside the same per-scene
+      // chain as content: otherwise an older save can finish pruning after a
+      // newer save and restore the old mention / POV set.
+      markStart("editor.coreSave.extractBeatMentions");
+      const beatMentions = extractBeatMentions(doc);
+      markEnd("editor.coreSave.extractBeatMentions");
+      markStart("editor.coreSave.upsertBeatMentions");
+      try {
+        await upsertSceneBeatMentions(id, beatMentions);
+      } catch (e) {
+        debugLog.error(
+          "persistSceneBody",
+          "upsertSceneBeatMentions failed",
+          errorDetail(e),
+        );
+      } finally {
+        markEnd("editor.coreSave.upsertBeatMentions");
+      }
+
+      markStart("editor.coreSave.extractBeatPovOverrides");
+      const beatPovOverrides = extractBeatPovOverrides(doc);
+      markEnd("editor.coreSave.extractBeatPovOverrides");
+      markStart("editor.coreSave.upsertBeatPovOverrides");
+      try {
+        await upsertSceneBeatPovOverrides(id, beatPovOverrides);
+      } catch (e) {
+        debugLog.error(
+          "persistSceneBody",
+          "upsertSceneBeatPovOverrides failed",
+          errorDetail(e),
+        );
+      } finally {
+        markEnd("editor.coreSave.upsertBeatPovOverrides");
+      }
     }
     return previews;
   });
@@ -234,32 +270,6 @@ export async function persistSceneBody(
     unplaced: unplacedBeatPreview ?? null,
   });
   markEnd("editor.coreSave.treeMirror");
-  markStart("editor.coreSave.extractBeatMentions");
-  const beatMentions = extractBeatMentions(doc);
-  markEnd("editor.coreSave.extractBeatMentions");
-  markStart("editor.coreSave.upsertBeatMentions");
-  upsertSceneBeatMentions(id, beatMentions)
-    .catch((e) => {
-      debugLog.error(
-        "persistSceneBody",
-        "upsertSceneBeatMentions failed",
-        errorDetail(e),
-      );
-    })
-    .finally(() => markEnd("editor.coreSave.upsertBeatMentions"));
-  markStart("editor.coreSave.extractBeatPovOverrides");
-  const beatPovOverrides = extractBeatPovOverrides(doc);
-  markEnd("editor.coreSave.extractBeatPovOverrides");
-  markStart("editor.coreSave.upsertBeatPovOverrides");
-  upsertSceneBeatPovOverrides(id, beatPovOverrides)
-    .catch((e) => {
-      debugLog.error(
-        "persistSceneBody",
-        "upsertSceneBeatPovOverrides failed",
-        errorDetail(e),
-      );
-    })
-    .finally(() => markEnd("editor.coreSave.upsertBeatPovOverrides"));
   // Deferred body-mention scan — does not block the save response
   scheduleCurrentBodyMentionScan(
     projectId,

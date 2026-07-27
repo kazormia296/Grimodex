@@ -43,6 +43,12 @@ import {
   serializeReadings,
 } from "./reading";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  SAVE_NOT_PERSISTED,
+  persistedVersion,
+  type VersionedSaveOutcome,
+} from "@/lib/saveOutcome";
+import { hasExternalEditConflictForId } from "@/lib/externalEditConflictRegistry";
 
 export type CodexSortOrder =
   | "category"
@@ -201,7 +207,11 @@ interface CodexState {
   /**
    * Structural / deliberate user edits. Pushes a history entry.
    */
-  update: (id: string, data: StructuralPatch) => Promise<void>;
+  update: (
+    id: string,
+    data: StructuralPatch,
+    options?: { baseVersion?: number },
+  ) => Promise<VersionedSaveOutcome>;
   /**
    * Type + summary detail form save. Persists both fields in one OCC-protected
    * write and reports whether the complete save was committed.
@@ -223,7 +233,11 @@ interface CodexState {
    * Auto-save path for TipTap-driven text fields. Does NOT push history;
    * TipTap's built-in undo handles text-level reversal.
    */
-  updateText: (id: string, data: TextPatch) => Promise<void>;
+  updateText: (
+    id: string,
+    data: TextPatch,
+    options?: { baseVersion?: number },
+  ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
   requestSelectEntry: (id: string) => void;
@@ -291,11 +305,27 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   isLoading: false,
   pendingEntryId: null,
   selectedEntry: null,
-  setSelectedEntry: (entry) => set({ selectedEntry: entry }),
+  setSelectedEntry: (entry) => {
+    const current = get().selectedEntry;
+    if (
+      current &&
+      current.id !== entry?.id &&
+      hasExternalEditConflictForId(current.id)
+    ) {
+      return;
+    }
+    set({ selectedEntry: entry });
+  },
   previewPhaseByEntry: {},
 
   setPreviewPhase: (entryId, phaseId) => {
     set((s) => {
+      if (
+        s.previewPhaseByEntry[entryId] !== phaseId &&
+        hasExternalEditConflictForId(entryId)
+      ) {
+        return s;
+      }
       if (phaseId == null) {
         if (!(entryId in s.previewPhaseByEntry)) return s;
         const next = { ...s.previewPhaseByEntry };
@@ -484,29 +514,43 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     }
   },
 
-  update: async (id, data) => {
+  update: async (id, data, options) => {
     const snapshot = get();
     const before =
       snapshot.entries.find((e) => e.id === id) ??
       (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
+    let updated: CodexEntry | undefined;
 
     try {
-      const updated = await updateCodexEntry(getCurrentProjectId(), id, data);
-      if (updated) {
-        set((state) => ({
-          entries: state.entries.map((e) => (e.id === id ? updated : e)),
-          completionTargets: upsertCompletionTarget(
-            state.completionTargets,
-            updated,
-          ),
-          selectedEntry:
-            state.selectedEntry?.id === id ? updated : state.selectedEntry,
-        }));
+      updated =
+        options?.baseVersion === undefined
+          ? await updateCodexEntry(getCurrentProjectId(), id, data)
+          : await updateCodexEntry(getCurrentProjectId(), id, data, {
+              baseVersion: options.baseVersion,
+            });
+      if (!updated) {
+        toast.error(i18next.t("codex.store.updateFailed"));
+        debugLog.warn("CodexStore", `update target missing: ${id}`);
+        return SAVE_NOT_PERSISTED;
       }
+      const saved = updated;
+      set((state) => ({
+        entries: state.entries.map((e) => (e.id === id ? saved : e)),
+        completionTargets: upsertCompletionTarget(
+          state.completionTargets,
+          saved,
+        ),
+        selectedEntry:
+          state.selectedEntry?.id === id ? saved : state.selectedEntry,
+      }));
     } catch (e) {
+      if (e instanceof CodexVersionConflictError) {
+        codexEditConflictHandler(id);
+        return SAVE_NOT_PERSISTED;
+      }
       toast.error(i18next.t("codex.store.updateFailed"));
       debugLog.error("CodexStore", `update: ${rootCause(e)}`, errorDetail(e));
-      return;
+      return SAVE_NOT_PERSISTED;
     }
 
     recordChangeEvent({
@@ -521,8 +565,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       },
     });
 
-    if (!before) return;
-    if (useGlobalHistoryStore.getState().isReplaying) return;
+    if (!before) return persistedVersion(updated.version);
+    if (useGlobalHistoryStore.getState().isReplaying) {
+      return persistedVersion(updated.version);
+    }
 
     const undoPatch: Record<string, unknown> = {};
     for (const key of Object.keys(data)) {
@@ -574,6 +620,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         }
       },
     });
+    return persistedVersion(updated.version);
   },
 
   saveTypeAndSummary: async (id, data) => {
@@ -822,29 +869,33 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     }
   },
 
-  updateText: async (id, data) => {
+  updateText: async (id, data, options) => {
     const snapshot = get();
     const before =
       snapshot.entries.find((e) => e.id === id) ??
       (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
+    let updated: CodexEntry | undefined;
     try {
       // OCC: 読み込み時点の version を base_version として渡す。別窓 / 別プロセスが
       // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
-      const updated = await updateCodexEntry(getCurrentProjectId(), id, data, {
-        baseVersion: before?.version ?? 0,
+      updated = await updateCodexEntry(getCurrentProjectId(), id, data, {
+        baseVersion: options?.baseVersion ?? before?.version ?? 0,
       });
-      if (updated) {
-        set((state) => ({
-          entries: state.entries.map((e) => (e.id === id ? updated : e)),
-          selectedEntry:
-            state.selectedEntry?.id === id ? updated : state.selectedEntry,
-        }));
+      if (!updated) {
+        toast.error(i18next.t("codex.store.updateFailed"));
+        debugLog.warn("CodexStore", `updateText target missing: ${id}`);
+        return SAVE_NOT_PERSISTED;
       }
+      set((state) => ({
+        entries: state.entries.map((e) => (e.id === id ? updated! : e)),
+        selectedEntry:
+          state.selectedEntry?.id === id ? updated! : state.selectedEntry,
+      }));
     } catch (e) {
       if (e instanceof CodexVersionConflictError) {
         // 非破壊: store も timelapse も触らず、呼び出し側に再読み込みを促す。
         codexEditConflictHandler(id);
-        return;
+        return SAVE_NOT_PERSISTED;
       }
       toast.error(i18next.t("codex.store.updateFailed"));
       debugLog.error(
@@ -852,7 +903,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         `updateText: ${rootCause(e)}`,
         errorDetail(e),
       );
-      return;
+      return SAVE_NOT_PERSISTED;
     }
 
     // 本文系 (content / summary) の変更差分を timelapse に記録する。notes は
@@ -878,6 +929,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         payload: { fields, diffs },
       });
     }
+    return persistedVersion(updated.version);
   },
 
   remove: async (id) => {

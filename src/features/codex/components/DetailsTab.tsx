@@ -22,6 +22,24 @@ import {
   resolvePhaseEditState,
 } from "../context/resolveApplicablePhases";
 import { useAutoSave } from "@/hooks/useAutoSave";
+import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
+import {
+  createEditorInstanceId,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
+import type { LoadedEditorBinding } from "@/features/editor/document/types";
+import {
+  announcePersistedBinding,
+  registerPersistedBindingHandler,
+  unregisterPersistedBindingHandler,
+} from "@/features/editor/editorSaveRegistry";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
+import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
+import { rootCause } from "@/lib/debugLog";
 
 interface DetailsTabProps {
   entry: CodexEntry;
@@ -29,6 +47,7 @@ interface DetailsTabProps {
   onSummaryChange: (value: string) => void;
   onContentChange: (content: string) => void;
   onExternalSync?: (content: string) => void;
+  contentReloadToken?: number;
   /** 別窓が同一 entry を編集中なら本文エディタを read-only にする。 */
   readOnly?: boolean;
 }
@@ -39,6 +58,7 @@ export function DetailsTab({
   onSummaryChange,
   onContentChange,
   onExternalSync,
+  contentReloadToken = 0,
   readOnly = false,
 }: DetailsTabProps) {
   const { t } = useTranslation();
@@ -60,6 +80,7 @@ export function DetailsTab({
   const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
   const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const updatePhase = usePhaseStore((s) => s.updatePhase);
+  const loadPhasesForEntry = usePhaseStore((s) => s.loadPhasesForEntry);
 
   // アクティブシーン変更時にプレビューをリセット
   useEffect(() => {
@@ -149,14 +170,214 @@ export function DetailsTab({
   const isPreviewMode = previewPhaseId != null;
   const isActivePhaseSummaryMode = !isPreviewMode && activePhase !== null;
   const isActivePhaseContentMode = !isPreviewMode && activePhase !== null;
+  const [phaseContentReloadToken, setPhaseContentReloadToken] = useState(0);
+  const phaseVersionsRef = useRef(new Map<string, number>());
+  const phaseWriteTailsRef = useRef(new Map<string, Promise<void>>());
+  const phaseQueuedWritesRef = useRef(new Map<string, number>());
+  const phaseEditorInstanceIdRef = useRef(createEditorInstanceId("phase-mini"));
+  const pendingPhaseSummariesRef = useRef(
+    new Map<string, { value: string; initialVersion: number }>(),
+  );
+  const pendingPhaseContentsRef = useRef(
+    new Map<string, { value: string; initialVersion: number }>(),
+  );
+  const activePhaseId = isActivePhaseContentMode
+    ? (activePhase?.id ?? null)
+    : null;
+  const activePhaseDocumentKey = useMemo<DocumentKey | null>(
+    () =>
+      activePhaseId
+        ? { kind: "codex", id: entry.id, phaseId: activePhaseId }
+        : null,
+    [activePhaseId, entry.id],
+  );
+  const entryPhaseConflict = useExternalWriteStore((state) =>
+    state.conflicts.find(
+      (conflict) =>
+        conflict.documentKey?.kind === "codex" &&
+        conflict.documentKey.id === entry.id &&
+        conflict.documentKey.phaseId !== null,
+    ),
+  );
+  // Keep a conflict-staged Phase as the session owner even if scene/preview
+  // navigation changes which Phase is currently rendered. Otherwise the old
+  // paused drafts remain queued with no banner capable of resolving them.
+  const phaseSessionDocumentKey =
+    entryPhaseConflict?.documentKey?.kind === "codex"
+      ? entryPhaseConflict.documentKey
+      : activePhaseDocumentKey;
+  const phaseSessionId =
+    phaseSessionDocumentKey?.kind === "codex"
+      ? phaseSessionDocumentKey.phaseId
+      : null;
+  const phaseSessionDocumentStateKey = phaseSessionDocumentKey
+    ? externalDocumentStateKey(phaseSessionDocumentKey)
+    : null;
+  const phaseSessionReloadNonce = useExternalWriteStore((state) =>
+    phaseSessionDocumentStateKey
+      ? (state.reloadNonce[phaseSessionDocumentStateKey] ?? 0)
+      : 0,
+  );
+  const hasEntryPhaseConflict = entryPhaseConflict !== undefined;
+  const seenPhaseReloadRef = useRef({
+    stateKey: phaseSessionDocumentStateKey,
+    nonce: phaseSessionReloadNonce,
+  });
+
+  const documentKeyForPhase = useCallback(
+    (phaseId: string): DocumentKey => ({
+      kind: "codex",
+      id: entry.id,
+      phaseId,
+    }),
+    [entry.id],
+  );
+
+  const markPhaseDirty = useCallback(
+    (phaseId: string) => {
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(
+          documentKeyForPhase(phaseId),
+          true,
+          phaseEditorInstanceIdRef.current,
+        );
+    },
+    [documentKeyForPhase],
+  );
+
+  const clearPhaseDirtyIfSettled = useCallback(
+    (phaseId: string) => {
+      if (pendingPhaseSummariesRef.current.has(phaseId)) return;
+      if (pendingPhaseContentsRef.current.has(phaseId)) return;
+      if ((phaseQueuedWritesRef.current.get(phaseId) ?? 0) > 0) return;
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(
+          documentKeyForPhase(phaseId),
+          false,
+          phaseEditorInstanceIdRef.current,
+        );
+    },
+    [documentKeyForPhase],
+  );
+
+  useEffect(() => {
+    if (!activePhase || !activePhaseId) return;
+    // Capture the version when this Phase editor session becomes active.
+    // Same-id store refreshes must not advance the base under a stale buffer.
+    phaseVersionsRef.current.set(activePhaseId, activePhase.version ?? 0);
+    // intentional: reset only when the active Phase identity changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePhaseId]);
+
+  useEffect(() => {
+    if (!activePhaseDocumentKey || !activePhaseId) return;
+    const instanceId = phaseEditorInstanceIdRef.current;
+    const handlePeerSave = (binding: LoadedEditorBinding) => {
+      if (
+        binding.kind === "codex" &&
+        binding.id === entry.id &&
+        binding.phaseId === activePhaseId
+      ) {
+        phaseVersionsRef.current.set(
+          activePhaseId,
+          Math.max(
+            phaseVersionsRef.current.get(activePhaseId) ?? 0,
+            binding.loadedVersion,
+          ),
+        );
+        clearPhaseDirtyIfSettled(activePhaseId);
+      }
+    };
+    registerPersistedBindingHandler(
+      activePhaseDocumentKey,
+      instanceId,
+      handlePeerSave,
+    );
+    return () =>
+      unregisterPersistedBindingHandler(
+        activePhaseDocumentKey,
+        instanceId,
+        handlePeerSave,
+      );
+  }, [
+    activePhaseDocumentKey,
+    activePhaseId,
+    clearPhaseDirtyIfSettled,
+    entry.id,
+  ]);
+
+  const persistPhasePatch = useCallback(
+    (
+      phaseId: string,
+      initialVersion: number,
+      data: Parameters<typeof updatePhase>[1],
+    ) => {
+      if (!phaseVersionsRef.current.has(phaseId)) {
+        phaseVersionsRef.current.set(phaseId, initialVersion);
+      }
+      phaseQueuedWritesRef.current.set(
+        phaseId,
+        (phaseQueuedWritesRef.current.get(phaseId) ?? 0) + 1,
+      );
+      const prior =
+        phaseWriteTailsRef.current.get(phaseId) ?? Promise.resolve();
+      const run = prior
+        .catch(() => {})
+        .then(async () => {
+          const updated = await updatePhase(phaseId, data, {
+            baseVersion:
+              phaseVersionsRef.current.get(phaseId) ?? initialVersion,
+          });
+          if (!updated) {
+            throw new AlreadyNotifiedSaveError(
+              `phase save not persisted: ${phaseId}`,
+            );
+          }
+          phaseVersionsRef.current.set(phaseId, updated.version ?? 0);
+          const documentKey: DocumentKey = {
+            kind: "codex",
+            id: updated.entryId,
+            phaseId,
+          };
+          announcePersistedBinding(
+            documentKey,
+            phaseEditorInstanceIdRef.current,
+            {
+              kind: "codex",
+              id: updated.entryId,
+              phaseId,
+              loadedVersion: updated.version ?? 0,
+            },
+          );
+          return updated;
+        })
+        .finally(() => {
+          const remaining =
+            (phaseQueuedWritesRef.current.get(phaseId) ?? 1) - 1;
+          if (remaining > 0) {
+            phaseQueuedWritesRef.current.set(phaseId, remaining);
+          } else {
+            phaseQueuedWritesRef.current.delete(phaseId);
+          }
+        });
+      phaseWriteTailsRef.current.set(
+        phaseId,
+        run.then(
+          () => {},
+          () => {},
+        ),
+      );
+      return run;
+    },
+    [updatePhase],
+  );
 
   // フェーズsummaryのローカル状態（入力ラグ防止）
   const [phaseSummaryLocal, setPhaseSummaryLocal] = useState(
     activePhaseEditState?.summary ?? "",
   );
-  const phaseSummaryRef = useRef(phaseSummaryLocal);
-  phaseSummaryRef.current = phaseSummaryLocal;
-
   // アクティブフェーズが変わったときにローカル状態を同期
   useEffect(() => {
     setPhaseSummaryLocal(activePhaseEditState?.summary ?? "");
@@ -165,20 +386,182 @@ export function DetailsTab({
   }, [activePhase?.id]);
 
   // Phase summaryの自動保存（1秒デバウンス）
-  const { schedule: schedulePhaseSummarySave } = useAutoSave(
-    useCallback(
-      async () => {
-        if (!activePhase) return;
-        await updatePhase(activePhase.id, {
-          summaryOverride: phaseSummaryRef.current,
+  const {
+    schedule: schedulePhaseSummarySave,
+    cancel: cancelPhaseSummarySave,
+    pause: pausePhaseSummarySave,
+    resume: resumePhaseSummarySave,
+  } = useAutoSave(
+    useCallback(async () => {
+      const pending = [...pendingPhaseSummariesRef.current.entries()];
+      for (const [phaseId, snapshot] of pending) {
+        await persistPhasePatch(phaseId, snapshot.initialVersion, {
+          summaryOverride: snapshot.value,
         });
-      },
-      // intentional: phaseSummaryRef used for latest value, identity tracked via .id
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      [activePhase?.id, updatePhase],
-    ),
+        if (pendingPhaseSummariesRef.current.get(phaseId) === snapshot) {
+          pendingPhaseSummariesRef.current.delete(phaseId);
+        }
+        clearPhaseDirtyIfSettled(phaseId);
+      }
+    }, [clearPhaseDirtyIfSettled, persistPhasePatch]),
     1000,
   );
+
+  // Phase content uses the same per-Phase write chain and loaded version as
+  // summary, so the two debounce lanes cannot issue parallel CAS writes.
+  const {
+    schedule: schedulePhaseContentSave,
+    cancel: cancelPhaseContentSave,
+    pause: pausePhaseContentSave,
+    resume: resumePhaseContentSave,
+  } = useAutoSave(
+    useCallback(async () => {
+      const pending = [...pendingPhaseContentsRef.current.entries()];
+      for (const [phaseId, snapshot] of pending) {
+        await persistPhasePatch(phaseId, snapshot.initialVersion, {
+          contentOverride: snapshot.value,
+        });
+        if (pendingPhaseContentsRef.current.get(phaseId) === snapshot) {
+          pendingPhaseContentsRef.current.delete(phaseId);
+        }
+        clearPhaseDirtyIfSettled(phaseId);
+      }
+    }, [clearPhaseDirtyIfSettled, persistPhasePatch]),
+    2000,
+  );
+
+  useEffect(() => {
+    if (hasEntryPhaseConflict) {
+      pausePhaseSummarySave();
+      pausePhaseContentSave();
+    } else {
+      resumePhaseSummarySave();
+      resumePhaseContentSave();
+    }
+  }, [
+    hasEntryPhaseConflict,
+    pausePhaseContentSave,
+    pausePhaseSummarySave,
+    resumePhaseContentSave,
+    resumePhaseSummarySave,
+  ]);
+
+  const refreshPhaseBinding = useCallback(
+    async (phaseId: string, allowMissing = false) => {
+      await (phaseWriteTailsRef.current.get(phaseId) ?? Promise.resolve());
+      await loadPhasesForEntry(entry.id);
+
+      const phaseState = usePhaseStore.getState();
+      const latest = phaseState.phasesByEntry[entry.id]?.find(
+        (phase) => phase.id === phaseId,
+      );
+      if (!latest) {
+        if (allowMissing) {
+          return { latest: null, editState: null };
+        }
+        throw new Error(`Phase '${phaseId}' no longer exists`);
+      }
+      phaseVersionsRef.current.set(phaseId, latest.version ?? 0);
+
+      const resolution = activeSceneId
+        ? resolveApplicablePhases({
+            phases: phaseState.phasesByEntry[entry.id] ?? [],
+            index: phaseState.sceneTimeIndex,
+            mode: phaseState.resolutionMode,
+            anchor: { kind: "scene", sceneId: activeSceneId },
+          })
+        : null;
+      return {
+        latest,
+        editState: resolution
+          ? resolvePhaseEditState(resolution, {
+              summary: entry.summary ?? null,
+              content: entry.content ?? "{}",
+            })
+          : null,
+      };
+    },
+    [activeSceneId, entry.content, entry.id, entry.summary, loadPhasesForEntry],
+  );
+
+  useEffect(() => {
+    if (seenPhaseReloadRef.current.stateKey !== phaseSessionDocumentStateKey) {
+      seenPhaseReloadRef.current = {
+        stateKey: phaseSessionDocumentStateKey,
+        nonce: phaseSessionReloadNonce,
+      };
+      return;
+    }
+    if (!phaseSessionDocumentKey || !phaseSessionId) return;
+    if (seenPhaseReloadRef.current.nonce === phaseSessionReloadNonce) return;
+    seenPhaseReloadRef.current.nonce = phaseSessionReloadNonce;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { latest, editState } = await refreshPhaseBinding(
+          phaseSessionId,
+          true,
+        );
+        if (cancelled) return;
+
+        pendingPhaseSummariesRef.current.delete(phaseSessionId);
+        pendingPhaseContentsRef.current.delete(phaseSessionId);
+        if (latest && activePhaseId === phaseSessionId) {
+          setPhaseSummaryLocal(
+            editState?.targetPhase?.id === phaseSessionId
+              ? (editState.summary ?? "")
+              : (latest.summaryOverride ?? ""),
+          );
+          setPhaseContentReloadToken((token) => token + 1);
+        }
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(
+            phaseSessionDocumentKey,
+            false,
+            phaseEditorInstanceIdRef.current,
+          );
+        useExternalWriteStore.getState().shiftConflict(phaseSessionDocumentKey);
+      } catch (error) {
+        if (cancelled) return;
+        toast.error(t("autoSave.failed", { reason: rootCause(error) }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activePhaseId,
+    phaseSessionDocumentKey,
+    phaseSessionDocumentStateKey,
+    phaseSessionId,
+    phaseSessionReloadNonce,
+    refreshPhaseBinding,
+    t,
+  ]);
+
+  const handlePhaseKeepMine = useCallback(async () => {
+    if (!phaseSessionId) return;
+    await refreshPhaseBinding(phaseSessionId);
+    if (pendingPhaseSummariesRef.current.has(phaseSessionId)) {
+      schedulePhaseSummarySave();
+    }
+    if (pendingPhaseContentsRef.current.has(phaseSessionId)) {
+      schedulePhaseContentSave();
+    }
+  }, [
+    phaseSessionId,
+    refreshPhaseBinding,
+    schedulePhaseContentSave,
+    schedulePhaseSummarySave,
+  ]);
+
+  const handlePhaseReload = useCallback(() => {
+    cancelPhaseSummarySave();
+    cancelPhaseContentSave();
+  }, [cancelPhaseContentSave, cancelPhaseSummarySave]);
 
   // Base contentを表示の折りたたみ状態
   const [showBaseContent, setShowBaseContent] = useState(false);
@@ -196,10 +579,10 @@ export function DetailsTab({
   // - previewMode: ベースcontentで初期化、externalContentでオーバーライド
   // - base: entry.content
   const contentEditorKey = isActivePhaseContentMode
-    ? `phase-${activePhase?.id ?? "none"}`
+    ? `phase-${activePhase?.id ?? "none"}-${phaseContentReloadToken}`
     : isPreviewMode
       ? `preview-${previewPhaseId}`
-      : "base";
+      : `base-${contentReloadToken}`;
 
   const contentForEditor = isActivePhaseContentMode
     ? (activePhaseEditState?.content ?? "")
@@ -220,6 +603,14 @@ export function DetailsTab({
     if (isPreviewMode) return;
     if (isActivePhaseSummaryMode && activePhase) {
       setPhaseSummaryLocal(value);
+      markPhaseDirty(activePhase.id);
+      pendingPhaseSummariesRef.current.set(activePhase.id, {
+        value,
+        initialVersion:
+          phaseVersionsRef.current.get(activePhase.id) ??
+          activePhase.version ??
+          0,
+      });
       schedulePhaseSummarySave();
     } else {
       onSummaryChange(value);
@@ -230,7 +621,15 @@ export function DetailsTab({
   const handleContentChange = (newContent: string) => {
     if (isPreviewMode) return;
     if (isActivePhaseContentMode && activePhase) {
-      void updatePhase(activePhase.id, { contentOverride: newContent });
+      markPhaseDirty(activePhase.id);
+      pendingPhaseContentsRef.current.set(activePhase.id, {
+        value: newContent,
+        initialVersion:
+          phaseVersionsRef.current.get(activePhase.id) ??
+          activePhase.version ??
+          0,
+      });
+      schedulePhaseContentSave();
     } else {
       onContentChange(newContent);
     }
@@ -240,12 +639,37 @@ export function DetailsTab({
   const contentEntryId =
     isActivePhaseContentMode || isPreviewMode ? undefined : entry.id;
 
-  // ContentのexternalSync（フェーズ/プレビューモード時は無効化）
-  const contentExternalSync =
-    isActivePhaseContentMode || isPreviewMode ? undefined : onExternalSync;
+  const handlePhaseExternalSync = useCallback(() => {
+    if (!activePhaseId) return;
+    // The peer EditorPane now owns persistence of the body it just broadcast.
+    // Drop an older mini-editor debounce snapshot so it cannot overwrite that
+    // newer full document after adopting the peer's advanced version.
+    pendingPhaseContentsRef.current.delete(activePhaseId);
+    clearPhaseDirtyIfSettled(activePhaseId);
+  }, [activePhaseId, clearPhaseDirtyIfSettled]);
+
+  const contentExternalSync = isPreviewMode
+    ? undefined
+    : isActivePhaseContentMode
+      ? handlePhaseExternalSync
+      : onExternalSync;
+  const contentLiveDocumentKey = isPreviewMode
+    ? null
+    : isActivePhaseContentMode
+      ? activePhaseDocumentKey
+      : undefined;
 
   return (
     <div className="space-y-3">
+      {phaseSessionDocumentKey && (
+        <ExternalEditConflictBanner
+          nodeId={entry.id}
+          documentKey={phaseSessionDocumentKey}
+          editorInstanceId={phaseEditorInstanceIdRef.current}
+          onKeepMine={handlePhaseKeepMine}
+          onReload={handlePhaseReload}
+        />
+      )}
       <PhaseIndicator
         entry={entry}
         previewPhaseId={previewPhaseId}
@@ -391,6 +815,7 @@ export function DetailsTab({
             content={contentForEditor}
             onContentChange={isPreviewMode ? () => {} : handleContentChange}
             entryId={contentEntryId}
+            liveDocumentKey={contentLiveDocumentKey}
             onExternalSync={contentExternalSync}
             externalContent={contentExternalContent}
             readOnly={readOnly || isPreviewMode}

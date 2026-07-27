@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   isReplaying: false,
   applyUndoJournal: vi.fn().mockResolvedValue(undefined),
   scheduleEventIndex: vi.fn(),
+  notifySameRendererDocumentWrite: vi.fn(),
 }));
 
 vi.mock("i18next", () => ({ default: { t: (k: string) => k } }));
@@ -29,6 +30,9 @@ vi.mock("@/features/chronicle/chronicleStore", () => ({
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleEventIndex: h.scheduleEventIndex,
 }));
+vi.mock("@/features/concurrency/documentWriteNotification", () => ({
+  notifySameRendererDocumentWrite: h.notifySameRendererDocumentWrite,
+}));
 vi.mock("@/store/globalHistoryStore", () => ({
   useGlobalHistoryStore: {
     getState: () => ({ isReplaying: h.isReplaying, push: h.push }),
@@ -42,7 +46,11 @@ import {
   agentLinkSceneEvent,
   agentCreateEvent,
   agentUpdateEvent,
+  agentDeleteEvent,
   uiCreateEvent,
+  uiUpdateEvent,
+  uiDeleteEvent,
+  uiSetEventParticipants,
 } from "./event";
 
 const writeResult = {
@@ -57,9 +65,12 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     h.blockIfPolicyOff.mockClear();
     h.blockIfPolicyOff.mockReturnValue(false);
     h.invoke.mockClear();
-    h.invoke.mockResolvedValue(writeResult);
+    h.invoke.mockImplementation(async (command: string) =>
+      command === "db_execute" ? { rows: [{ version: 0 }] } : writeResult,
+    );
     h.bumpRevision.mockClear();
     h.push.mockClear();
+    h.notifySameRendererDocumentWrite.mockClear();
     h.isReplaying = false;
   });
 
@@ -81,6 +92,8 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     expect(h.push.mock.calls[0][0]).toMatchObject({
       kind: "chronicle",
       entityId: "e1",
+      documentKey: { kind: "chronicle-event", id: "e1" },
+      retainOnVersionConflict: true,
     });
   });
 
@@ -160,9 +173,12 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     h.blockIfPolicyOff.mockClear();
     h.blockIfPolicyOff.mockReturnValue(false);
     h.invoke.mockClear();
-    h.invoke.mockResolvedValue(writeResult);
+    h.invoke.mockImplementation(async (command: string) =>
+      command === "db_execute" ? { rows: [{ version: 0 }] } : writeResult,
+    );
     h.bumpRevision.mockClear();
     h.push.mockClear();
+    h.notifySameRendererDocumentWrite.mockClear();
     h.isReplaying = false;
   });
 
@@ -174,6 +190,120 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
   it("AI 経路 agentUpdateEvent も detail 更新に authorship マークを焼き込む", async () => {
     await agentUpdateEvent({ eventId: "e1", detail: DETAIL_DOC });
     expect(hasAuthorshipMark(lastDetailDoc())).toBe(true);
+  });
+
+  it("読み込み時点の baseVersion を update payload に通す", async () => {
+    await agentUpdateEvent({
+      eventId: "e1",
+      baseVersion: 7,
+      title: "new",
+    });
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_update", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 7,
+        title: "new",
+      }),
+    });
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenCalledWith(
+      { kind: "chronicle-event", id: "e1" },
+      {
+        domain: "event",
+        opType: "event.update",
+        entityId: "e1",
+      },
+    );
+  });
+
+  it("ChroniclePanel の手動 UI 更新も open Editor session へ通知する", async () => {
+    await uiUpdateEvent({ eventId: "e1", baseVersion: 0, title: "manual" });
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it("起点 Editor 自身の保存だけ document notification を抑止できる", async () => {
+    await uiUpdateEvent(
+      { eventId: "e1", baseVersion: 0, title: "editor" },
+      { suppressDocumentNotification: true },
+    );
+    expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
+  });
+
+  it("delete は読み込み時点の aggregate version をCAS payloadへ渡す", async () => {
+    await agentDeleteEvent("e1", { baseVersion: 7 });
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_delete", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 7,
+      }),
+    });
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenCalledWith(
+      { kind: "chronicle-event", id: "e1" },
+      {
+        domain: "event",
+        opType: "event.delete",
+        entityId: "e1",
+      },
+    );
+  });
+
+  it("手動 delete も選択行の version を伝播する", async () => {
+    await uiDeleteEvent("e1", { baseVersion: 4 });
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_delete", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 4,
+        surface: "manual",
+      }),
+    });
+  });
+
+  it("起点 UI は delete と participants の document notification を抑止できる", async () => {
+    await uiDeleteEvent("e1", {
+      baseVersion: 4,
+      suppressDocumentNotification: true,
+    });
+    await uiSetEventParticipants("e1", ["c1"], {
+      baseVersion: 4,
+      suppressDocumentNotification: true,
+    });
+
+    expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
+    expect(h.invoke).toHaveBeenNthCalledWith(1, "agent_event_delete", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 4,
+      }),
+    });
+    expect(h.invoke).toHaveBeenNthCalledWith(
+      2,
+      "agent_event_set_participants",
+      {
+        payload: expect.objectContaining({
+          eventId: "e1",
+          codexEntryIds: ["c1"],
+          baseVersion: 4,
+        }),
+      },
+    );
+  });
+
+  it("Event row undo/redo も同一rendererのDocument Sessionへ通知する", async () => {
+    await agentUpdateEvent({ eventId: "e1", baseVersion: 0, title: "tracked" });
+    const command = h.push.mock.calls[0][0];
+    h.notifySameRendererDocumentWrite.mockClear();
+
+    await command.undo();
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenLastCalledWith(
+      { kind: "chronicle-event", id: "e1" },
+      {
+        domain: "event",
+        opType: "event.update",
+        entityId: "e1",
+      },
+    );
+
+    await command.redo();
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenCalledTimes(2);
   });
 
   it("手動 UI 経路 uiCreateEvent は detail に AI マークを足さない (surface=manual)", async () => {

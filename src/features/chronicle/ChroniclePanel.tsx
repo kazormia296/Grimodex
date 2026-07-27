@@ -58,6 +58,8 @@ import {
 } from "./chronicleLaneOrder";
 import { formatChronicleDate } from "./chronicleTime";
 import type { ChronicleCalendar, DateLang } from "./chronicleTime";
+import { createEditorInstanceId } from "@/features/editor/document/documentKey";
+import { announcePersistedBinding } from "@/features/editor/editorSaveRegistry";
 import { MIN_PER_DAY, splitDayMinute, shiftEventPatch } from "./chronicleShift";
 import type { MarkerEvent } from "./EventMarker";
 import { ChronicleViewport } from "./ChronicleViewport";
@@ -74,6 +76,34 @@ import { useSeasonConflicts } from "./useSeasonConflicts";
 import { useChronicleQuery } from "./useChronicleQuery";
 import { useChronicleViewportController } from "./useChronicleViewportController";
 import { announce } from "@/lib/a11y/announcer";
+import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
+import { AlreadyNotifiedSaveError } from "@/hooks/useAutoSave";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
+
+type EventAggregateWriteResult = { version: number };
+
+function rollbackOptimisticEventPatch(
+  current: EventRow,
+  before: EventRow,
+  patch: Partial<EventRow>,
+): EventRow {
+  const restored = { ...current };
+  for (const rawKey of Object.keys(patch)) {
+    const key = rawKey as keyof EventRow;
+    // A newer optimistic edit of the same field wins. Only restore the value
+    // installed by this failed write.
+    if (Object.is(current[key], patch[key])) {
+      Object.assign(restored, { [key]: before[key] });
+    }
+  }
+  // A failed older write must never move the aggregate version behind a
+  // successful write that completed while it was pending.
+  restored.version = Math.max(current.version, before.version);
+  return restored;
+}
 
 /**
  * 作中年表(Chronicle)パネル — 人物/場所レーン×作中時間軸の pan/zoom 年表。
@@ -105,17 +135,135 @@ export function ChroniclePanel() {
   const updateLocation = useTreeStore((s) => s.updateLocation);
   const updateChronicleDate = useTreeStore((s) => s.updateChronicleDate);
   const timelineSelected = useTimelineStore((s) => s.selectedNodeIds);
+  const documentVersionOriginRef = useRef(
+    createEditorInstanceId("chronicle-panel"),
+  );
+  const eventVersionProjectRef = useRef<string | null>(projectId);
+  const eventVersionsRef = useRef(new Map<string, number>());
+  const eventWriteChainsRef = useRef(new Map<string, Promise<unknown>>());
+
+  if (eventVersionProjectRef.current !== projectId) {
+    eventVersionProjectRef.current = projectId;
+    eventVersionsRef.current.clear();
+  }
+
+  /**
+   * EventRow と participants は同じ Event aggregate version を共有する。
+   * 同一 event の書き込みを直列化し、各ジョブは実行直前の latest version を使う。
+   */
+  const enqueueEventAggregateWrite = useCallback(
+    <T extends EventAggregateWriteResult>(
+      eventId: string,
+      suggestedBaseVersion: number | undefined,
+      write: (baseVersion: number) => Promise<T>,
+    ): Promise<T> => {
+      const writeProjectId = projectId;
+      const chainKey = `${writeProjectId ?? ""}\u0000${eventId}`;
+      const previous =
+        eventWriteChainsRef.current.get(chainKey) ?? Promise.resolve();
+      const run = previous
+        .catch(() => undefined)
+        .then(async () => {
+          const knownVersion = eventVersionsRef.current.get(eventId);
+          const baseVersion =
+            knownVersion === undefined
+              ? suggestedBaseVersion
+              : suggestedBaseVersion === undefined
+                ? knownVersion
+                : Math.max(knownVersion, suggestedBaseVersion);
+          if (baseVersion === undefined) {
+            throw new Error(`Event version is unavailable: ${eventId}`);
+          }
+          const result = await write(baseVersion);
+          if (eventVersionProjectRef.current === writeProjectId) {
+            eventVersionsRef.current.set(
+              eventId,
+              Math.max(
+                eventVersionsRef.current.get(eventId) ?? baseVersion,
+                result.version,
+              ),
+            );
+          }
+          return result;
+        });
+      trackPendingEditorWrite(run);
+      eventWriteChainsRef.current.set(chainKey, run);
+      void run
+        .finally(() => {
+          if (eventWriteChainsRef.current.get(chainKey) === run) {
+            eventWriteChainsRef.current.delete(chainKey);
+          }
+        })
+        .catch(() => {
+          // The caller owns persistence failure handling.
+        });
+      return run;
+    },
+    [projectId],
+  );
 
   const chronicleCommandPorts = useMemo<ChronicleCommandPorts>(
     () => ({
       event: {
         create: (input) => uiCreateEvent(input),
         update: (input) =>
-          uiUpdateEvent(input as Parameters<typeof uiUpdateEvent>[0]),
-        delete: uiDeleteEvent,
+          enqueueEventAggregateWrite(
+            input.eventId,
+            input.baseVersion,
+            async (baseVersion) => {
+              const result = await uiUpdateEvent(
+                {
+                  ...(input as Parameters<typeof uiUpdateEvent>[0]),
+                  baseVersion,
+                },
+                { suppressDocumentNotification: true },
+              );
+              announcePersistedBinding(
+                { kind: "chronicle-event", id: input.eventId },
+                documentVersionOriginRef.current,
+                {
+                  kind: "chronicle-event",
+                  id: input.eventId,
+                  loadedVersion: result.version,
+                },
+              );
+              return result;
+            },
+          ),
+        delete: (eventId, options) =>
+          enqueueEventAggregateWrite(
+            eventId,
+            options?.baseVersion,
+            (baseVersion) => uiDeleteEvent(eventId, { baseVersion }),
+          ),
         addRelation: uiAddEventRelation,
         removeRelation: uiRemoveEventRelation,
-        setParticipants: uiSetEventParticipants,
+        setParticipants: (eventId, codexEntryIds, options) =>
+          enqueueEventAggregateWrite(
+            eventId,
+            options?.baseVersion,
+            async (baseVersion) => {
+              const result = await uiSetEventParticipants(
+                eventId,
+                codexEntryIds,
+                {
+                  ...options,
+                  baseVersion,
+                  suppressDocumentNotification: true,
+                },
+              );
+              announcePersistedBinding(
+                { kind: "chronicle-event", id: eventId },
+                documentVersionOriginRef.current,
+                {
+                  kind: "chronicle-event",
+                  id: eventId,
+                  loadedVersion: result.version,
+                },
+              );
+              return result;
+            },
+          ),
         linkScene: uiLinkSceneEvent,
         unlinkScene: uiUnlinkSceneEvent,
       },
@@ -128,6 +276,7 @@ export function ChroniclePanel() {
       },
     }),
     [
+      enqueueEventAggregateWrite,
       updateNodeTitle,
       updateSynopsis,
       updatePovCharacter,
@@ -188,6 +337,82 @@ export function ChroniclePanel() {
       onProjectLoaded: handleProjectLoaded,
       onEventsLoaded: handleProjectEventsLoaded,
     });
+
+  const latestEventsRef = useRef<EventRow[]>(events);
+  latestEventsRef.current = events;
+  for (const event of events) {
+    if (event.projectId !== projectId) continue;
+    eventVersionsRef.current.set(
+      event.id,
+      Math.max(
+        eventVersionsRef.current.get(event.id) ?? event.version,
+        event.version,
+      ),
+    );
+  }
+
+  const mutateEvents = useCallback(
+    (mutate: (current: EventRow[]) => EventRow[]) => {
+      const next = mutate(latestEventsRef.current);
+      latestEventsRef.current = next;
+      setEvents(next);
+    },
+    [setEvents],
+  );
+
+  const patchRealEvent = useCallback(
+    async (
+      id: string,
+      patch: Partial<EventRow>,
+      options?: { propagateFailure?: boolean; baseVersion?: number },
+    ) => {
+      const before = latestEventsRef.current.find((event) => event.id === id);
+      if (!before) return;
+      mutateEvents((current) =>
+        current.map((event) =>
+          event.id === id ? { ...event, ...patch } : event,
+        ),
+      );
+      try {
+        const result = await patchChronicleItem(
+          { kind: "event", id },
+          patch,
+          chronicleCommandPorts,
+          { baseVersion: options?.baseVersion ?? before.version },
+        );
+        if (result) {
+          mutateEvents((current) =>
+            current.map((event) =>
+              event.id === id
+                ? {
+                    ...event,
+                    version: Math.max(event.version, result.version),
+                  }
+                : event,
+            ),
+          );
+        }
+        return result;
+      } catch (error) {
+        mutateEvents((current) =>
+          current.map((event) =>
+            event.id === id
+              ? rollbackOptimisticEventPatch(event, before, patch)
+              : event,
+          ),
+        );
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+        if (options?.propagateFailure) {
+          throw error instanceof AlreadyNotifiedSaveError
+            ? error
+            : new AlreadyNotifiedSaveError(
+                error instanceof Error ? error.message : String(error),
+              );
+        }
+      }
+    },
+    [chronicleCommandPorts, mutateEvents, t],
+  );
 
   // 表示オプション（ローカル・非永続）。
   const [density, setDensity] = useState<LaneDensity>("standard");
@@ -549,10 +774,40 @@ export function ChroniclePanel() {
     return m;
   }, [renderEvents, scenedEventIds]);
 
-  const selected = useMemo(
+  const selectedFromRows = useMemo(
     () => renderEvents.find((e) => e.id === selectedEventId) ?? null,
     [renderEvents, selectedEventId],
   );
+  const selectedSnapshotRef = useRef<EventRow | null>(selectedFromRows);
+  if (selectedFromRows) selectedSnapshotRef.current = selectedFromRows;
+  const selectedDocumentStateKey =
+    selectedEventId === null
+      ? null
+      : externalDocumentStateKey(
+          isSceneEventId(selectedEventId)
+            ? {
+                kind: "tree",
+                id: sceneIdFromEventId(selectedEventId),
+                storage: "database",
+              }
+            : { kind: "chronicle-event", id: selectedEventId },
+        );
+  const selectedHasExternalConflict = useExternalWriteStore((state) =>
+    selectedDocumentStateKey === null
+      ? false
+      : state.conflicts.some(
+          (conflict) =>
+            externalDocumentStateKey(
+              conflict.documentKey ?? conflict.sceneId,
+            ) === selectedDocumentStateKey,
+        ),
+  );
+  const selected =
+    selectedFromRows ??
+    (selectedHasExternalConflict &&
+    selectedSnapshotRef.current?.id === selectedEventId
+      ? selectedSnapshotRef.current
+      : null);
   const selectedIsScene = selected != null && isSceneEventId(selected.id);
 
   // 複数選択集合（存在する出来事のみ＝削除済み id を除く）。ハイライト/一括操作に使う。
@@ -722,19 +977,9 @@ export function ChroniclePanel() {
         }
         return;
       }
-      const prev = events.find((e) => e.id === id);
-      if (!prev) return;
-      setEvents((evs) =>
-        evs.map((e) => (e.id === id ? { ...e, ...patch } : e)),
-      );
-      try {
-        await patchChronicleItem(target, patch, chronicleCommandPorts);
-      } catch {
-        setEvents((evs) => evs.map((e) => (e.id === id ? prev : e)));
-        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
-      }
+      await patchRealEvent(id, patch);
     },
-    [projectId, events, setEvents, t, chronicleCommandPorts],
+    [projectId, t, chronicleCommandPorts, patchRealEvent],
   );
 
   // マーカー再配置（横=startTime / 縦=レーン再割当。interval は期間維持）。
@@ -773,7 +1018,12 @@ export function ChroniclePanel() {
         rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
       if (!subDay && Math.round(deltaDays) === 0) return;
       for (const id of selectedIdSet) {
-        const e = renderEvents.find((x) => x.id === id);
+        // A rapid key repeat can enqueue another nudge before React rerenders.
+        // Real events therefore read the synchronously maintained optimistic
+        // snapshot; scene projections continue to use renderEvents.
+        const e = isSceneEventId(id)
+          ? renderEvents.find((x) => x.id === id)
+          : latestEventsRef.current.find((x) => x.id === id);
         if (!e || e.startTime == null) continue;
         void patchById(
           id,
@@ -913,11 +1163,17 @@ export function ChroniclePanel() {
     async (id: string) => {
       if (!projectId) return;
       try {
+        const sceneEvent = isSceneEventId(id);
+        const event = sceneEvent
+          ? null
+          : events.find((candidate) => candidate.id === id);
+        if (!sceneEvent && !event) throw new Error(`Event not found: ${id}`);
         await deleteChronicleItem(
-          isSceneEventId(id)
+          sceneEvent
             ? { kind: "scene", id: sceneIdFromEventId(id) }
             : { kind: "event", id },
           chronicleCommandPorts,
+          event ? { baseVersion: event.version } : undefined,
         );
         if (useChronicleStore.getState().selectedEventId === id)
           setSelectedEventId(null);
@@ -926,7 +1182,7 @@ export function ChroniclePanel() {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [projectId, refresh, setSelectedEventId, t, chronicleCommandPorts],
+    [projectId, events, refresh, setSelectedEventId, t, chronicleCommandPorts],
   );
 
   // 範囲選択(Shift)用の時間順 id 列（startDay 昇順, 同値は id）。
@@ -1042,6 +1298,7 @@ export function ChroniclePanel() {
               { kind: "event", id: e.id },
               { primaryCodexId: codexId, laneGroup: "" },
               chronicleCommandPorts,
+              { baseVersion: e.version },
             ),
           ),
         );
@@ -1074,14 +1331,21 @@ export function ChroniclePanel() {
     try {
       // 対象は互いに独立なので並列に消す（undo journal は 1 件=1 エントリのまま）。
       await Promise.all(
-        [...selectedIdSet].map((id) =>
-          deleteChronicleItem(
-            isSceneEventId(id)
-              ? { kind: "scene", id: sceneIdFromEventId(id) }
-              : { kind: "event", id },
+        [...selectedIdSet].map((id) => {
+          if (isSceneEventId(id)) {
+            return deleteChronicleItem(
+              { kind: "scene", id: sceneIdFromEventId(id) },
+              chronicleCommandPorts,
+            );
+          }
+          const event = events.find((candidate) => candidate.id === id);
+          if (!event) throw new Error(`Event not found: ${id}`);
+          return deleteChronicleItem(
+            { kind: "event", id },
             chronicleCommandPorts,
-          ),
-        ),
+            { baseVersion: event.version },
+          );
+        }),
       );
       setSelectedEventId(null);
       refresh();
@@ -1091,6 +1355,7 @@ export function ChroniclePanel() {
   }, [
     projectId,
     selectedIdSet,
+    events,
     setSelectedEventId,
     refresh,
     t,
@@ -1105,28 +1370,38 @@ export function ChroniclePanel() {
       try {
         // 対象は互いに独立なので並列に書く（undo journal は 1 件=1 エントリのまま）。
         await Promise.all(
-          [...selectedIdSet].map((id) =>
-            patchChronicleItem(
-              isSceneEventId(id)
+          [...selectedIdSet].map((id) => {
+            const sceneEvent = isSceneEventId(id);
+            return patchChronicleItem(
+              sceneEvent
                 ? { kind: "scene", id: sceneIdFromEventId(id) }
                 : { kind: "event", id },
-              isSceneEventId(id)
+              sceneEvent
                 ? { primaryCodexId: codexId || null }
                 : { primaryCodexId: codexId, laneGroup: "" },
               chronicleCommandPorts,
-            ),
-          ),
+              sceneEvent
+                ? undefined
+                : {
+                    baseVersion: events.find((event) => event.id === id)
+                      ?.version,
+                  },
+            );
+          }),
         );
         refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [projectId, selectedIdSet, refresh, t, chronicleCommandPorts],
+    [projectId, selectedIdSet, events, refresh, t, chronicleCommandPorts],
   );
 
-  const handlePatch = useCallback(
-    async (patch: Partial<EventRow>) => {
+  const patchSelected = useCallback(
+    async (
+      patch: Partial<EventRow>,
+      options?: { propagateFailure?: boolean; baseVersion?: number },
+    ) => {
       if (!selected || !projectId) return;
       const id = selected.id;
       if (isSceneEventId(id)) {
@@ -1136,27 +1411,44 @@ export function ChroniclePanel() {
             patch,
             chronicleCommandPorts,
           );
-        } catch {
+        } catch (error) {
           toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+          if (options?.propagateFailure) {
+            throw error instanceof AlreadyNotifiedSaveError
+              ? error
+              : new AlreadyNotifiedSaveError(
+                  error instanceof Error ? error.message : String(error),
+                );
+          }
         }
         return;
       }
-      const prev = selected;
-      setEvents((evs) =>
-        evs.map((e) => (e.id === id ? { ...e, ...patch } : e)),
-      );
-      try {
-        await patchChronicleItem(
-          { kind: "event", id },
-          patch,
-          chronicleCommandPorts,
-        );
-      } catch {
-        setEvents((evs) => evs.map((e) => (e.id === id ? prev : e)));
-        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
-      }
+      return patchRealEvent(id, patch, options);
     },
-    [selected, projectId, setEvents, t, chronicleCommandPorts],
+    [selected, projectId, t, chronicleCommandPorts, patchRealEvent],
+  );
+  const handlePatch = useCallback(
+    async (patch: Partial<EventRow>) => {
+      await patchSelected(patch);
+    },
+    [patchSelected],
+  );
+  const handlePatchDraft = useCallback(
+    async (patch: Partial<EventRow>) => {
+      await patchSelected(patch, { propagateFailure: true });
+    },
+    [patchSelected],
+  );
+  const handlePatchDetail = useCallback(
+    async (detail: string, baseVersion: number) => {
+      const result = await patchSelected(
+        { detail },
+        { propagateFailure: true, baseVersion },
+      );
+      if (!result) throw new Error("Chronicle detail save returned no version");
+      return result;
+    },
+    [patchSelected],
   );
 
   const handleDelete = useCallback(async () => {
@@ -1167,6 +1459,9 @@ export function ChroniclePanel() {
           ? { kind: "scene", id: sceneIdFromEventId(selected.id) }
           : { kind: "event", id: selected.id },
         chronicleCommandPorts,
+        isSceneEventId(selected.id)
+          ? undefined
+          : { baseVersion: selected.version },
       );
       setSelectedEventId(null);
       refresh();
@@ -1280,29 +1575,8 @@ export function ChroniclePanel() {
       .find((o): o is string => o != null);
     if (!order) return;
     const id = selected.id;
-    const prev = selected;
-    setEvents((evs) =>
-      evs.map((e) => (e.id === id ? { ...e, ordinal: order } : e)),
-    );
-    try {
-      await patchChronicleItem(
-        { kind: "event", id },
-        { ordinal: order },
-        chronicleCommandPorts,
-      );
-    } catch {
-      setEvents((evs) => evs.map((e) => (e.id === id ? prev : e)));
-      toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
-    }
-  }, [
-    selected,
-    projectId,
-    selectedSceneIds,
-    nodes,
-    setEvents,
-    t,
-    chronicleCommandPorts,
-  ]);
+    await patchRealEvent(id, { ordinal: order });
+  }, [selected, projectId, selectedSceneIds, nodes, patchRealEvent]);
 
   const selectedCauseIds = useMemo(
     () =>
@@ -1397,16 +1671,27 @@ export function ChroniclePanel() {
     async (codexEntryIds: string[]) => {
       if (!selected || !projectId || isSceneEventId(selected.id)) return;
       try {
-        await chronicleCommandPorts.event.setParticipants(
+        const result = await chronicleCommandPorts.event.setParticipants(
           selected.id,
           codexEntryIds,
+          { baseVersion: selected.version },
+        );
+        mutateEvents((current) =>
+          current.map((event) =>
+            event.id === selected.id
+              ? {
+                  ...event,
+                  version: Math.max(event.version, result.version),
+                }
+              : event,
+          ),
         );
         refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [selected, projectId, refresh, t, chronicleCommandPorts],
+    [selected, projectId, refresh, mutateEvents, t, chronicleCommandPorts],
   );
 
   const n = renderEvents.length;
@@ -1585,6 +1870,17 @@ export function ChroniclePanel() {
             onStamp={handleStamp}
             onPull={handlePull}
             onPatch={handlePatch}
+            onPatchDraft={handlePatchDraft}
+            onPatchDetail={handlePatchDetail}
+            onResolveExternalVersion={(version) => {
+              eventVersionsRef.current.set(
+                selected.id,
+                Math.max(
+                  eventVersionsRef.current.get(selected.id) ?? selected.version,
+                  version,
+                ),
+              );
+            }}
             onDelete={handleDelete}
             onClose={() => setSelectedEventId(null)}
             lang={lang}

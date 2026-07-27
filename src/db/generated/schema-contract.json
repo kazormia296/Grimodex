@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -1954,6 +1954,13 @@
           "notNull": true,
           "default": "datetime('now')",
           "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 9,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
         }
       },
       "foreignKeys": [
@@ -1979,7 +1986,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE codex_entry_phases ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, anchor_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, label TEXT NOT NULL DEFAULT '', summary_override TEXT, content_override TEXT, context_mode_override TEXT CHECK(context_mode_override IS NULL OR context_mode_override IN ('always','mentioned','suppress','hidden')), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      "createSql": "CREATE TABLE codex_entry_phases ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, anchor_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, label TEXT NOT NULL DEFAULT '', summary_override TEXT, content_override TEXT, context_mode_override TEXT CHECK(context_mode_override IS NULL OR context_mode_override IN ('always','mentioned','suppress','hidden')), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), version INTEGER NOT NULL DEFAULT 0 )"
     },
     "codex_entry_tags": {
       "kind": "table",
@@ -2790,7 +2797,7 @@
           "primaryKey": 0
         },
         "lane_group": {
-          "ordinal": 20,
+          "ordinal": 21,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -2886,6 +2893,13 @@
           "notNull": true,
           "default": "datetime('now')",
           "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 20,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
         }
       },
       "foreignKeys": [
@@ -2931,7 +2945,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE events ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL DEFAULT '', note TEXT, detail TEXT, ordinal TEXT NOT NULL DEFAULT 'a0', primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL, location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL, start_time INTEGER, end_time INTEGER, start_minute INTEGER, end_minute INTEGER, start_granularity TEXT NOT NULL DEFAULT 'none' CHECK(start_granularity IN ('none','season','year','month','day','time')), end_granularity TEXT NOT NULL DEFAULT 'none' CHECK(end_granularity IN ('none','season','year','month','day','time')), precision TEXT NOT NULL DEFAULT 'exact' CHECK(precision IN ('exact','approx','unknown')), kind TEXT NOT NULL DEFAULT 'generic' CHECK(kind IN ('generic','birth','death')), secret INTEGER NOT NULL DEFAULT 0, reveal_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) , lane_group TEXT)"
+      "createSql": "CREATE TABLE events ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL DEFAULT '', note TEXT, detail TEXT, ordinal TEXT NOT NULL DEFAULT 'a0', primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL, location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL, start_time INTEGER, end_time INTEGER, start_minute INTEGER, end_minute INTEGER, start_granularity TEXT NOT NULL DEFAULT 'none' CHECK(start_granularity IN ('none','season','year','month','day','time')), end_granularity TEXT NOT NULL DEFAULT 'none' CHECK(end_granularity IN ('none','season','year','month','day','time')), precision TEXT NOT NULL DEFAULT 'exact' CHECK(precision IN ('exact','approx','unknown')), kind TEXT NOT NULL DEFAULT 'generic' CHECK(kind IN ('generic','birth','death')), secret INTEGER NOT NULL DEFAULT 0, reveal_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), version INTEGER NOT NULL DEFAULT 0 , lane_group TEXT)"
     },
     "foreshadow_codex_links": {
       "kind": "table",

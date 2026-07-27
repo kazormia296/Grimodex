@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Trash2,
@@ -18,6 +18,18 @@ import { ChronicleDetailField } from "./ChronicleDetailField";
 import { CodexEntryPicker } from "./CodexEntryPicker";
 import { SceneLinkField, type SceneLinkMode } from "./SceneLinkField";
 import { lunarInfoForDay } from "./chronicleLunar";
+import {
+  createEditorInstanceId,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { AlreadyNotifiedSaveError, useAutoSave } from "@/hooks/useAutoSave";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
+import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
+import { sceneIdFromEventId } from "./sceneEventAdapter";
 
 // narrow（＝インスペクタ幅が狭い）ときに下部アクションのラベルを畳んでアイコンのみに
 // する。アクション行を `@container` にして各ラベル span に付ける（Tailwind v4 CQ・調整可）。
@@ -57,7 +69,16 @@ export interface ChronicleInspectorProps {
   onRemoveCause?: (causeId: string) => void;
   onStamp?: () => void;
   onPull?: () => void;
-  onPatch: (patch: Partial<EventRow>) => void;
+  onPatch: (patch: Partial<EventRow>) => void | Promise<void>;
+  /** Debounced drafts need the rejection to preserve their dirty session. */
+  onPatchDraft?: (patch: Partial<EventRow>) => void | Promise<void>;
+  /** Rich body save propagates persistence failure to useAutoSave/quiesce. */
+  onPatchDetail?: (
+    detail: string,
+    baseVersion: number,
+  ) => Promise<{ version: number }>;
+  /** Seed the Event aggregate coordinator before conflict-staged drafts resume. */
+  onResolveExternalVersion?: (version: number) => void;
   onDelete: () => void;
   onClose: () => void;
   lang?: DateLang;
@@ -76,7 +97,8 @@ const labelCls =
 
 interface DraftTextFieldProps {
   value: string;
-  onCommit: (v: string) => void;
+  onCommit: (v: string) => void | Promise<void>;
+  documentKey: DocumentKey;
   placeholder?: string;
   className?: string;
   multiline?: boolean;
@@ -95,6 +117,7 @@ interface DraftTextFieldProps {
 export function DraftTextField({
   value,
   onCommit,
+  documentKey,
   placeholder,
   className,
   multiline = false,
@@ -102,43 +125,124 @@ export function DraftTextField({
   delayMs = 500,
 }: DraftTextFieldProps) {
   const [draft, setDraft] = useState(value);
+  const editorInstanceIdRef = useRef(createEditorInstanceId("chronicle-draft"));
+  const editGenerationRef = useRef(0);
   const pendingRef = useRef<{
-    commit: (v: string) => void;
+    commit: (v: string) => void | Promise<void>;
     value: string;
   } | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 外部更新（undo / 他ビュー編集）は未編集（pending なし）のときだけ取り込む。
   const lastValueRef = useRef(value);
+  const documentStateKey = externalDocumentStateKey(documentKey);
+  const hasExternalConflict = useExternalWriteStore((state) =>
+    state.conflicts.some(
+      (conflict) =>
+        externalDocumentStateKey(conflict.documentKey ?? conflict.sceneId) ===
+        documentStateKey,
+    ),
+  );
+  const externalReloadNonce = useExternalWriteStore(
+    (state) => state.reloadNonce[documentStateKey] ?? 0,
+  );
+  const seenExternalReloadRef = useRef(externalReloadNonce);
   if (value !== lastValueRef.current) {
     lastValueRef.current = value;
     if (pendingRef.current == null) setDraft(value);
   }
-  const flush = useCallback(() => {
-    if (timerRef.current != null) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
+  const persistPending = useCallback(async () => {
     const p = pendingRef.current;
-    pendingRef.current = null;
+    if (!p) return;
+    const generation = editGenerationRef.current;
+
     // 打ち消し合って元の値へ戻った下書きは書き込まない（無駄な再取得を防ぐ）。
-    if (p && p.value !== lastValueRef.current) p.commit(p.value);
-  }, []);
+    if (p.value === lastValueRef.current) {
+      if (pendingRef.current === p) pendingRef.current = null;
+      if (
+        editGenerationRef.current === generation &&
+        pendingRef.current === null
+      ) {
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+      }
+      return;
+    }
+
+    try {
+      await p.commit(p.value);
+    } catch (error) {
+      // ChroniclePanel already owns the user-facing toast. Keep `p` intact so
+      // the next blur/manual quiesce retries the exact draft, including after
+      // this component unmounts.
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(documentKey, true, editorInstanceIdRef.current);
+      throw error instanceof AlreadyNotifiedSaveError
+        ? error
+        : new AlreadyNotifiedSaveError(
+            error instanceof Error ? error.message : String(error),
+          );
+    }
+
+    if (pendingRef.current === p) pendingRef.current = null;
+    if (
+      editGenerationRef.current === generation &&
+      pendingRef.current === null
+    ) {
+      lastValueRef.current = p.value;
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+    }
+  }, [documentKey]);
+  const { schedule, cancel, pause, resume, flush } = useAutoSave(
+    persistPending,
+    delayMs,
+  );
+  useEffect(() => {
+    if (hasExternalConflict) pause();
+    else resume();
+  }, [hasExternalConflict, pause, resume]);
+  useEffect(() => {
+    if (seenExternalReloadRef.current === externalReloadNonce) return;
+    seenExternalReloadRef.current = externalReloadNonce;
+    cancel();
+    pendingRef.current = null;
+    lastValueRef.current = value;
+    setDraft(value);
+    useEditorSessionStore
+      .getState()
+      .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+    // Scene fan-out reloads the tree store before publishing the nonce, so the
+    // draft itself is the reload owner. Event drafts share one aggregate with
+    // ChronicleDetailField; that field fetches the authoritative row/version
+    // and clears the conflict only after the fetch succeeds.
+    if (documentKey.kind === "tree") {
+      useExternalWriteStore.getState().shiftConflict(documentKey);
+    }
+  }, [cancel, documentKey, externalReloadNonce, value]);
   const handleChange = useCallback(
     (v: string) => {
       setDraft(v);
+      editGenerationRef.current += 1;
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(documentKey, true, editorInstanceIdRef.current);
       pendingRef.current = { commit: onCommit, value: v };
-      if (timerRef.current != null) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(flush, delayMs);
+      schedule();
     },
-    [onCommit, flush, delayMs],
+    [onCommit, schedule, documentKey],
   );
-  // unmount（選択切替の remount / インスペクタを閉じる）時に pending を flush。
-  useEffect(() => flush, [flush]);
   const common = {
     value: draft,
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       handleChange(e.target.value),
-    onBlur: flush,
+    onBlur: () => {
+      void flush().catch(() => {
+        // AutoSave owns logging and notification. The retained draft remains
+        // registered for a later blur or workspace-quiesce retry.
+      });
+    },
     placeholder,
     className,
   };
@@ -183,6 +287,9 @@ export function ChronicleInspector({
   onStamp,
   onPull,
   onPatch,
+  onPatchDraft,
+  onPatchDetail,
+  onResolveExternalVersion,
   onDelete,
   onClose,
   lang,
@@ -192,6 +299,17 @@ export function ChronicleInspector({
   onSetParticipants,
 }: ChronicleInspectorProps) {
   const { t } = useTranslation();
+  const inspectorDocumentKey = useMemo<DocumentKey>(
+    () =>
+      isScene
+        ? {
+            kind: "tree",
+            id: sceneIdFromEventId(event.id),
+            storage: "database",
+          }
+        : { kind: "chronicle-event", id: event.id },
+    [event.id, isScene],
+  );
   const laneLabel = (o: { name: string; type: string }) =>
     o.type && o.type !== "character"
       ? `${o.name}（${t(`chronicle.laneType.${o.type}`, o.type)}）`
@@ -246,6 +364,12 @@ export function ChronicleInspector({
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="flex flex-col gap-3 p-3.5">
+          {isScene && (
+            <ExternalEditConflictBanner
+              nodeId={inspectorDocumentKey.id}
+              documentKey={inspectorDocumentKey}
+            />
+          )}
           {/* タイトル */}
           <div className="flex items-center gap-2.5">
             <span
@@ -262,7 +386,8 @@ export function ChronicleInspector({
             <DraftTextField
               key={`title-${event.id}`}
               value={event.title}
-              onCommit={(v) => onPatch({ title: v })}
+              documentKey={inspectorDocumentKey}
+              onCommit={(v) => (onPatchDraft ?? onPatch)({ title: v })}
               placeholder={t("chronicle.untitled", "無題のイベント")}
               className="min-w-0 flex-1 bg-transparent text-base font-semibold text-foreground outline-none"
             />
@@ -594,7 +719,8 @@ export function ChronicleInspector({
                   key={`note-${event.id}`}
                   multiline
                   value={event.note ?? ""}
-                  onCommit={(v) => onPatch({ note: v })}
+                  documentKey={inspectorDocumentKey}
+                  onCommit={(v) => (onPatchDraft ?? onPatch)({ note: v })}
                   rows={3}
                   className="min-h-16 rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground"
                   placeholder={t(
@@ -611,7 +737,14 @@ export function ChronicleInspector({
             <ChronicleDetailField
               key={`detail-${event.id}`}
               event={event}
-              onPatchDetail={(detail) => onPatch({ detail })}
+              onResolveExternalVersion={onResolveExternalVersion}
+              onPatchDetail={
+                onPatchDetail ??
+                (async (detail) => {
+                  await onPatch({ detail });
+                  return { version: event.version };
+                })
+              }
             />
           )}
 

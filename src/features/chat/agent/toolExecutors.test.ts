@@ -7,12 +7,27 @@ const {
   mockTreeProjectId,
   mockAgentCreateForeshadow,
   mockAgentUpdateForeshadow,
+  mockAgentCreateCodexEntry,
+  mockAgentUpdateCodexEntry,
+  mockAgentCreateSnippet,
 } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
   mockListOpenForeshadows: vi.fn(),
   mockTreeProjectId: vi.fn<() => string | null>(),
   mockAgentCreateForeshadow: vi.fn(),
   mockAgentUpdateForeshadow: vi.fn(),
+  mockAgentCreateCodexEntry: vi.fn(),
+  mockAgentUpdateCodexEntry: vi.fn(),
+  mockAgentCreateSnippet: vi.fn(),
+}));
+
+vi.mock("@/features/agent-writes/codex", () => ({
+  agentCreateCodexEntry: mockAgentCreateCodexEntry,
+  agentUpdateCodexEntry: mockAgentUpdateCodexEntry,
+}));
+
+vi.mock("@/features/agent-writes/snippet", () => ({
+  agentCreateSnippet: mockAgentCreateSnippet,
 }));
 
 vi.mock("@/features/agent-writes/foreshadow", () => ({
@@ -339,6 +354,87 @@ describe("foreshadow write executors", () => {
         payoffConfirmed: true,
       }),
     );
+  });
+});
+
+describe("Codex and Snippet rich-text write executors", () => {
+  beforeEach(() => {
+    mockAgentCreateCodexEntry.mockReset();
+    mockAgentUpdateCodexEntry.mockReset();
+    mockAgentCreateSnippet.mockReset();
+  });
+
+  it("converts Markdown and serializes structured aliases before creating Codex", async () => {
+    mockAgentCreateCodexEntry.mockResolvedValue({
+      id: "entry-1",
+      name: "Akane",
+      type: "character",
+    });
+
+    const result = await executeTool("create_codex_entry", "call-c1", {
+      type: "character",
+      name: "Akane",
+      content: "# Profile\n\nMain character.",
+      aliases: ["Hero", "  Protagonist  "],
+    });
+
+    expect(result.error).toBeUndefined();
+    const input = mockAgentCreateCodexEntry.mock.calls[0]![0] as {
+      content: string;
+      aliases: string;
+    };
+    expect(input.aliases).toBe(JSON.stringify(["Hero", "Protagonist"]));
+    expect(JSON.parse(input.content)).toMatchObject({
+      type: "doc",
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: "heading" }),
+        expect.objectContaining({ type: "paragraph" }),
+      ]),
+    });
+  });
+
+  it("rejects malformed aliases without calling a Codex writer", async () => {
+    const result = await executeTool("update_codex_entry", "call-c2", {
+      id: "entry-1",
+      aliases: ["valid", 42],
+    });
+
+    expect(result.error).toContain("array of strings");
+    expect(mockAgentUpdateCodexEntry).not.toHaveBeenCalled();
+  });
+
+  it("rejects excessive aliases without calling a Codex writer", async () => {
+    const result = await executeTool("create_codex_entry", "call-c3", {
+      type: "character",
+      name: "Akane",
+      aliases: Array.from({ length: 101 }, (_, index) => `alias-${index}`),
+    });
+
+    expect(result.error).toContain("at most 100");
+    expect(mockAgentCreateCodexEntry).not.toHaveBeenCalled();
+  });
+
+  it("converts Snippet Markdown into schema-valid ProseMirror JSON", async () => {
+    mockAgentCreateSnippet.mockResolvedValue({
+      id: "snippet-1",
+      title: "Opening",
+    });
+
+    const result = await executeTool("create_snippet", "call-s1", {
+      title: "Opening",
+      content: "**Storm** at midnight.",
+    });
+
+    expect(result.error).toBeUndefined();
+    const input = mockAgentCreateSnippet.mock.calls[0]![0] as {
+      content: string;
+    };
+    expect(JSON.parse(input.content)).toMatchObject({
+      type: "doc",
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: "paragraph" }),
+      ]),
+    });
   });
 });
 

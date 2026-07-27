@@ -8,8 +8,18 @@ import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 // 付きの軽い div に差し替える。LinearEditorView 側の `<div key>` ラッパは
 // querySelectorAll('[data-scene-id]') が無視する。
 vi.mock("./LinearSceneBlock", () => ({
-  LinearSceneBlock: ({ sceneId }: { sceneId: string }) => (
-    <div data-scene-id={sceneId} data-testid={`scene-${sceneId}`} />
+  LinearSceneBlock: ({
+    sceneId,
+    isMounted,
+  }: {
+    sceneId: string;
+    isMounted: boolean;
+  }) => (
+    <div
+      data-scene-id={sceneId}
+      data-mounted={isMounted ? "true" : "false"}
+      data-testid={`scene-${sceneId}`}
+    />
   ),
 }));
 
@@ -80,6 +90,8 @@ import { LinearEditorView } from "./LinearEditorView";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useSlashCommandStore } from "./inlineAi/slashCommandStore";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
+import { useEditorSessionStore } from "./editorSessionStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import type { Editor } from "@tiptap/core";
 
 const NODE_DEFAULTS = {
@@ -119,6 +131,8 @@ beforeEach(() => {
     pendingScrollToId: null,
     editorsById: {},
   });
+  useEditorSessionStore.getState().resetForProject();
+  useExternalWriteStore.getState().clear();
   settingsOverride.current = {};
 });
 
@@ -272,6 +286,50 @@ describe("LinearEditorView — scene ordering", () => {
     expect(order).toContain("cyc-scene");
     expect(order[0]).toBe("A1");
     expect(order).toHaveLength(3);
+  });
+});
+
+describe("LinearEditorView — conflict-safe virtualization", () => {
+  it("keeps an offscreen dirty scene mounted until its draft is resolved", () => {
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+    const { getByTestId } = render(<LinearEditorView />);
+
+    expect(getByTestId("scene-S1")).toHaveAttribute("data-mounted", "false");
+
+    act(() => {
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(
+          { kind: "tree", id: "S1", storage: "database" },
+          true,
+          "linear:test" as never,
+        );
+    });
+
+    expect(getByTestId("scene-S1")).toHaveAttribute("data-mounted", "true");
+  });
+
+  it("keeps an offscreen conflicted scene mounted even if dirty projection lags", () => {
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+    const { getByTestId } = render(<LinearEditorView />);
+
+    act(() => {
+      useExternalWriteStore.getState().pushConflict({
+        documentKey: { kind: "tree", id: "S1", storage: "database" },
+        sceneId: "S1",
+        domain: "scene",
+        opType: "update",
+        entityId: "S1",
+      });
+    });
+
+    expect(getByTestId("scene-S1")).toHaveAttribute("data-mounted", "true");
   });
 });
 

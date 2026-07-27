@@ -24,6 +24,7 @@ import {
 } from "@/features/agent-writes/proseStagingStore";
 import { loadLatestProposedProse } from "@/features/agent-writes/prose";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import type { DocumentKey } from "@/features/editor/document/documentKey";
 
 const POLL_MS = 750;
 
@@ -58,10 +59,14 @@ function domainForHistoryKind(kind: HistoryKind): string | null {
   switch (kind) {
     case "codex":
       return "codex";
+    case "phase":
+      return "codex";
     case "snippets":
       return "snippet";
     case "scenes":
       return "grid";
+    case "chronicle":
+      return "event";
     default:
       return null;
   }
@@ -72,16 +77,33 @@ function handleUndoConflict(cmd: HistoryCommand): void {
   const domain = domainForHistoryKind(cmd.kind);
   if (!entityId || !domain) return;
   const extStore = useExternalWriteStore.getState();
-  const dirtyTabIds = useEditorSessionStore.getState().dirtyDocumentIds;
-  if (dirtyTabIds.has(entityId) || isInlineAiPending()) {
+  const documentKey: DocumentKey | null =
+    cmd.documentKey ??
+    (cmd.kind === "codex"
+      ? { kind: "codex", id: entityId, phaseId: null }
+      : cmd.kind === "snippets"
+        ? { kind: "snippet", id: entityId }
+        : cmd.kind === "chronicle"
+          ? { kind: "chronicle-event", id: entityId }
+          : cmd.kind === "scenes"
+            ? { kind: "tree", id: entityId, storage: "database" }
+            : null);
+  if (!documentKey) return;
+  const editorState = useEditorSessionStore.getState();
+  const dirty =
+    typeof editorState.isDocumentDirty === "function"
+      ? editorState.isDocumentDirty(documentKey)
+      : editorState.dirtyDocumentIds.has(documentKey.id);
+  if (dirty || isInlineAiPending()) {
     extStore.pushConflict({
-      sceneId: entityId,
+      documentKey,
+      sceneId: documentKey.id,
       domain,
       opType: "undo.version_conflict",
       entityId,
     });
   } else {
-    extStore.bumpReloadNonce(entityId);
+    extStore.bumpReloadNonce(documentKey);
   }
 }
 
@@ -134,9 +156,129 @@ function invalidateHistoryForEntity(
         ? "snippets"
         : entityType === "tree_batch"
           ? "scenes"
-          : null;
+          : entityType === "event"
+            ? "chronicle"
+            : null;
   if (!kind) return;
   history.invalidateForEntity(kind, entityId);
+}
+
+function parseChangePayload(payload: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    return parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function payloadString(
+  payload: Record<string, unknown> | null,
+  key: string,
+): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function payloadStringArray(
+  payload: Record<string, unknown> | null,
+  key: string,
+): string[] {
+  const value = payload?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+}
+
+/**
+ * Relation/stamp change rows represent aggregate metadata, not an editor
+ * document-body update. They therefore must not enter notifyEditorDocument,
+ * but they still invalidate every local undo closure whose assumptions the
+ * metadata write changed.
+ *
+ * The tracked writers store the cause/event in entity_id and the stamped scene
+ * in scene_id. Their JSON payload carries the otherwise-unaddressable relation
+ * effect. Prefer those typed columns and use payload only for missing metadata;
+ * a malformed payload must never stop the external-write poll.
+ */
+function invalidateEventMetadataHistory(event: ChangeEventRow): void {
+  if (event.domain !== "event") return;
+
+  if (event.opType === "event.create" || event.opType === "event.delete") {
+    const payload = parseChangePayload(event.payload);
+    const eventIds = new Set([
+      event.entityId,
+      ...payloadStringArray(payload, "relatedEventIds"),
+    ]);
+    for (const eventId of eventIds) {
+      invalidateHistoryForEntity("event", eventId);
+    }
+    return;
+  }
+
+  if (
+    event.opType === "event.relation_add" ||
+    event.opType === "event.relation_remove"
+  ) {
+    const payload = parseChangePayload(event.payload);
+    const causeEventId =
+      event.entityId ?? payloadString(payload, "causeEventId");
+    const effectEventId = payloadString(payload, "effectEventId");
+    const eventIds = new Set([causeEventId, effectEventId]);
+    for (const eventId of eventIds) {
+      invalidateHistoryForEntity("event", eventId);
+    }
+    return;
+  }
+
+  if (event.opType === "event.stamp" || event.opType === "event.unstamp") {
+    const payload = parseChangePayload(event.payload);
+    const eventId = event.entityId ?? payloadString(payload, "eventId");
+    const sceneId = event.sceneId ?? payloadString(payload, "sceneId");
+    invalidateHistoryForEntity("event", eventId);
+    invalidateHistoryForEntity("tree_batch", sceneId);
+  }
+}
+
+function isDocumentDirty(documentKey: DocumentKey): boolean {
+  const state = useEditorSessionStore.getState();
+  return typeof state.isDocumentDirty === "function"
+    ? state.isDocumentDirty(documentKey)
+    : state.dirtyDocumentIds.has(documentKey.id);
+}
+
+function notifyEditorDocument(
+  documentKey: DocumentKey,
+  event: ChangeEventRow,
+  inlineAiPending: boolean,
+): void {
+  const extStore = useExternalWriteStore.getState();
+  if (isDocumentDirty(documentKey) || inlineAiPending) {
+    extStore.pushConflict({
+      documentKey,
+      sceneId: documentKey.id,
+      domain: event.domain,
+      opType: event.opType,
+      entityId: event.entityId,
+    });
+  } else {
+    extStore.bumpReloadNonce(documentKey);
+  }
+}
+
+function eventChangesDocumentAggregate(event: ChangeEventRow): boolean {
+  return (
+    event.entityType === "event" &&
+    (event.opType === "event.create" ||
+      event.opType === "event.update" ||
+      event.opType === "event.participants" ||
+      event.opType === "event.delete")
+  );
 }
 
 async function fanOut(events: ChangeEventRow[]): Promise<void> {
@@ -187,23 +329,16 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   const editorEvents = events.filter(
     (e) => e.domain === "editor" && e.sceneId != null,
   );
-  const dirtyTabIds = useEditorSessionStore.getState().dirtyDocumentIds;
-  const extStore = useExternalWriteStore.getState();
   const inlineAiPending = isInlineAiPending();
 
   for (const ev of editorEvents) {
     const sceneId = ev.sceneId!;
     invalidateHistoryForEntity(ev.entityType, ev.entityId);
-    if (dirtyTabIds.has(sceneId) || inlineAiPending) {
-      extStore.pushConflict({
-        sceneId,
-        domain: ev.domain,
-        opType: ev.opType,
-        entityId: ev.entityId,
-      });
-    } else {
-      extStore.bumpReloadNonce(sceneId);
-    }
+    notifyEditorDocument(
+      { kind: "tree", id: sceneId, storage: "database" },
+      ev,
+      inlineAiPending,
+    );
   }
 
   const proseProposals = events.filter(
@@ -231,31 +366,30 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
 
   // Non-editor entity events may still target codex/snippet tabs open in editor.
   for (const ev of events) {
+    invalidateEventMetadataHistory(ev);
     if (ev.entityType === "codex_entry" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);
-      if (dirtyTabIds.has(ev.entityId) || inlineAiPending) {
-        extStore.pushConflict({
-          sceneId: ev.entityId,
-          domain: ev.domain,
-          opType: ev.opType,
-          entityId: ev.entityId,
-        });
-      } else {
-        extStore.bumpReloadNonce(ev.entityId);
-      }
+      notifyEditorDocument(
+        { kind: "codex", id: ev.entityId, phaseId: null },
+        ev,
+        inlineAiPending,
+      );
     }
     if (ev.entityType === "snippet" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);
-      if (dirtyTabIds.has(ev.entityId) || inlineAiPending) {
-        extStore.pushConflict({
-          sceneId: ev.entityId,
-          domain: ev.domain,
-          opType: ev.opType,
-          entityId: ev.entityId,
-        });
-      } else {
-        extStore.bumpReloadNonce(ev.entityId);
-      }
+      notifyEditorDocument(
+        { kind: "snippet", id: ev.entityId },
+        ev,
+        inlineAiPending,
+      );
+    }
+    if (eventChangesDocumentAggregate(ev) && ev.entityId) {
+      invalidateHistoryForEntity(ev.entityType, ev.entityId);
+      notifyEditorDocument(
+        { kind: "chronicle-event", id: ev.entityId },
+        ev,
+        inlineAiPending,
+      );
     }
   }
 }
