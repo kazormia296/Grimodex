@@ -184,7 +184,7 @@ describe("VivliostyleExportSection", () => {
     expect(css?.contents).toContain("@page");
   });
 
-  it("done イベントで保存ボタンが現れ、save_output が invoke される", async () => {
+  it("done イベントで save_output が自動 invoke され、保存ボタンは表示しない", async () => {
     setupInvoke({ path: "/usr/bin/vivliostyle", version: "8.0.0" });
     render(<VivliostyleExportSection />);
 
@@ -203,13 +203,12 @@ describe("VivliostyleExportSection", () => {
       emitEvent("vivliostyle:done", { runId: "run-1", outputToken: "tok-1" });
     });
 
-    const saveButton = await screen.findByTestId("vivliostyle-save");
-    fireEvent.click(saveButton);
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("vivliostyle_save_output", {
         outputToken: "tok-1",
       });
     });
+    expect(screen.queryByTestId("vivliostyle-save")).toBeNull();
   });
 
   it("error イベントでエラーメッセージを表示する", async () => {
@@ -348,7 +347,7 @@ describe("VivliostyleExportSection", () => {
     });
   });
 
-  it("タブ非表示中に done が届いても、再マウント時に保存ボタンが表示される", async () => {
+  it("タブ非表示中に done が届いても、自動保存を取りこぼさない", async () => {
     setupInvoke({ path: "/usr/bin/vivliostyle", version: "8.0.0" });
     const first = render(<VivliostyleExportSection />);
 
@@ -369,8 +368,14 @@ describe("VivliostyleExportSection", () => {
       emitEvent("vivliostyle:done", { runId: "run-1", outputToken: "tok-1" });
     });
 
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("vivliostyle_save_output", {
+        outputToken: "tok-1",
+      });
+    });
+
     render(<VivliostyleExportSection />);
-    expect(await screen.findByTestId("vivliostyle-save")).toBeVisible();
+    expect(screen.queryByTestId("vivliostyle-save")).toBeNull();
   });
 
   it("プレビュー実行状態はタブ切替（unmount→remount）後も維持され停止できる", async () => {
@@ -420,7 +425,11 @@ describe("VivliostyleExportSection", () => {
     await act(async () => {
       emitEvent("vivliostyle:done", { runId: "run-1", outputToken: "tok-1" });
     });
-    await screen.findByTestId("vivliostyle-save");
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("vivliostyle_save_output", {
+        outputToken: "tok-1",
+      });
+    });
 
     // 2 回目の書き出し（中止ボタン = running 状態のみの UI で判定）
     fireEvent.click(screen.getByTestId("vivliostyle-build"));
@@ -472,7 +481,7 @@ describe("VivliostyleExportSection", () => {
     expect(buildCalls).toHaveLength(1);
   });
 
-  it("別プロジェクトで開くと前プロジェクトの done（保存ボタン）は破棄される", async () => {
+  it("別プロジェクトで開くと前プロジェクトの done は破棄される", async () => {
     setupInvoke({ path: "/usr/bin/vivliostyle", version: "8.0.0" });
     const first = render(<VivliostyleExportSection />);
 
@@ -489,7 +498,11 @@ describe("VivliostyleExportSection", () => {
     await act(async () => {
       emitEvent("vivliostyle:done", { runId: "run-1", outputToken: "tok-1" });
     });
-    await screen.findByTestId("vivliostyle-save");
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("vivliostyle_save_output", {
+        outputToken: "tok-1",
+      });
+    });
 
     // プロジェクト切替後に再マウント（別プロジェクトでタブを開いた状況）
     first.unmount();
