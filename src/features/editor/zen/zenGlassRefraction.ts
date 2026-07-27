@@ -31,11 +31,32 @@ float zenRoundedRectSignedDistance(
     cornerRadius;
 }
 
-vec2 zenSafeNormalize(vec2 value) {
-  float lengthSquared = dot(value, value);
-  return lengthSquared > 0.00001
-    ? value * inversesqrt(lengthSquared)
-    : vec2(0.0);
+vec2 zenRoundedRectOutwardNormal(
+  vec2 point,
+  vec2 halfSize,
+  float cornerRadius
+) {
+  vec2 distanceFromStraightEdges =
+    abs(point) - max(halfSize - vec2(cornerRadius), vec2(0.0));
+  vec2 cornerVector = max(distanceFromStraightEdges, vec2(0.0));
+  vec2 pointSign = mix(
+    vec2(-1.0),
+    vec2(1.0),
+    step(vec2(0.0), point)
+  );
+  // Scale before normalizing so mediump precision cannot turn a small but
+  // valid corner vector into a zero normal on large surfaces.
+  float cornerScale = max(cornerVector.x, cornerVector.y);
+  if (cornerScale > 0.0) {
+    vec2 scaledCornerVector = cornerVector / cornerScale;
+    return
+      pointSign *
+      scaledCornerVector *
+      inversesqrt(dot(scaledCornerVector, scaledCornerVector));
+  }
+  return distanceFromStraightEdges.x > distanceFromStraightEdges.y
+    ? vec2(pointSign.x, 0.0)
+    : vec2(0.0, pointSign.y);
 }
 
 float zenGlassEdgeDistortion(float insideDistanceRatio, float depthRatio) {
@@ -84,13 +105,23 @@ vec2 zenGlassRegionOffsetPixels(
   );
   vec2 glassCoord = (gl_FragCoord.xy - glassCenterPx) / sdfScale;
   float normalizedCornerRadius = cornerRadiusPx / sdfScale;
+  vec2 normalizedHalfSize = glassHalfSizePx / sdfScale;
   float normalizedSignedDistance = zenRoundedRectSignedDistance(
     glassCoord,
-    glassHalfSizePx / sdfScale,
+    normalizedHalfSize,
     normalizedCornerRadius
   );
   float signedDistancePx = normalizedSignedDistance * sdfScale;
-  float antialias = max(fwidth(normalizedSignedDistance) * sdfScale, 0.75);
+  vec2 outwardNormal = zenRoundedRectOutwardNormal(
+    glassCoord,
+    normalizedHalfSize,
+    normalizedCornerRadius
+  );
+  // This SDF is measured in framebuffer pixels, so the L1 norm of its
+  // analytic unit normal is the exact one-pixel footprint approximation that
+  // fwidth would produce without relying on derivatives in divergent flow.
+  float antialias =
+    max(abs(outwardNormal.x) + abs(outwardNormal.y), 0.75);
   surfaceMask =
     1.0 - smoothstep(-antialias, antialias, signedDistancePx);
   if (
@@ -135,8 +166,8 @@ vec2 zenGlassRegionOffsetPixels(
     }
   }
   float boundaryFeatherPx = max(
-    1.0,
-    min(2.0 * pixelRatio, antialias)
+    0.75,
+    min(1.5 * pixelRatio, antialias)
   );
   float boundaryFade = smoothstep(
     0.0,
@@ -161,12 +192,7 @@ vec2 zenGlassRegionOffsetPixels(
   // Shift along the inward normal of the rounded SDF. A vector toward the
   // rectangle centre becomes diagonal on straight edges and can pull a
   // neighbouring colour into the corner as a visible spike.
-  vec2 inwardNormal = -zenSafeNormalize(
-    vec2(dFdx(normalizedSignedDistance), dFdy(normalizedSignedDistance))
-  );
-  if (dot(inwardNormal, inwardNormal) <= 0.00001) {
-    inwardNormal = -zenSafeNormalize(glassCoord);
-  }
+  vec2 inwardNormal = -outwardNormal;
   // Keep the configured pixel amount for large surfaces. The rounded-corner
   // band below supplies the size-relative ceiling that prevents a small
   // circular control from sampling through its opposite side.

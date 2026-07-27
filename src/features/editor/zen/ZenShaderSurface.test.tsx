@@ -125,13 +125,13 @@ describe("ZenShaderSurface", () => {
     ).toHaveAttribute("data-glass-refraction", "0");
   });
 
-  it("uses the capped scheduler and bounded animated pixel budget", () => {
+  it("uses one native pixel per CSS pixel up to Full HD", () => {
     const { rerender } = render(
       <ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />,
     );
 
     expect(shaderLifecycle.props.at(-1)).toEqual({
-      maxPixelCount: 1_000_000,
+      maxPixelCount: 2_073_600,
       speed: 0,
     });
     expect(shaderLifecycle.animation.at(-1)).toMatchObject({
@@ -147,7 +147,7 @@ describe("ZenShaderSurface", () => {
     );
 
     expect(shaderLifecycle.props.at(-1)).toEqual({
-      maxPixelCount: 1_500_000,
+      maxPixelCount: 2_073_600,
       speed: 0,
     });
     expect(shaderLifecycle.animation.at(-1)).toMatchObject({
@@ -155,15 +155,15 @@ describe("ZenShaderSurface", () => {
     });
   });
 
-  it("uses light antialiasing without changing the existing pixel budgets", () => {
+  it("uses the shader's analytic antialiasing without WebGL MSAA", () => {
     render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
 
     expect(shaderLifecycle.antiAliasing.at(-1)).toEqual({
-      minPixelRatio: 1.25,
-      antialias: true,
+      minPixelRatio: 1,
+      antialias: false,
     });
     expect(shaderLifecycle.props.at(-1)).toEqual({
-      maxPixelCount: 1_000_000,
+      maxPixelCount: 2_073_600,
       speed: 0,
     });
   });

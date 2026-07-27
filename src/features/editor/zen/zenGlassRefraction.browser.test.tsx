@@ -57,6 +57,8 @@ function RefractionProbe({
   glassCornerRadius = 0,
   uiSurfaces = [],
   maxPixelCount = 24_000,
+  width = 200,
+  height = 120,
 }: {
   name: string;
   refraction: number;
@@ -64,6 +66,8 @@ function RefractionProbe({
   glassCornerRadius?: number;
   uiSurfaces?: readonly ZenGlassLayout[];
   maxPixelCount?: number;
+  width?: number;
+  height?: number;
 }) {
   const config = {
     ...ZEN_SHADER_DEFAULTS,
@@ -94,8 +98,8 @@ function RefractionProbe({
       data-refraction-probe={name}
       fragmentShader={buildZenPostProcessedFragment(GRADIENT_FRAGMENT)}
       uniforms={uniforms}
-      width={200}
-      height={120}
+      width={width}
+      height={height}
       minPixelRatio={1}
       maxPixelCount={maxPixelCount}
       speed={0}
@@ -410,6 +414,54 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
 
     expect(redDelta).toBeGreaterThan(4);
     expect(greenDelta).toBeGreaterThan(redDelta);
+  });
+
+  it("keeps the rounded normal non-zero near a large surface's corner core", async () => {
+    const width = 1_000;
+    const height = 600;
+    const { container } = render(
+      <div>
+        <RefractionProbe
+          name="large-normal-flat"
+          refraction={0}
+          glassCornerRadius={20}
+          width={width}
+          height={height}
+          maxPixelCount={width * height}
+        />
+        <RefractionProbe
+          name="large-normal-bent"
+          refraction={75}
+          glassCornerRadius={20}
+          width={width}
+          height={height}
+          maxPixelCount={width * height}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(
+        container.querySelector<HTMLCanvasElement>(
+          '[data-refraction-probe="large-normal-bent"] canvas',
+        )?.width,
+      ).toBe(width);
+    });
+
+    const flat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="large-normal-flat"] canvas',
+    )!;
+    const bent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="large-normal-bent"] canvas',
+    )!;
+    const coreCorner = [0.218, 139 / height] as const;
+
+    expect(bent.width / bent.clientWidth).toBeGreaterThanOrEqual(1);
+    expect(
+      Math.abs(
+        pixelAt(bent, ...coreCorner)[0] - pixelAt(flat, ...coreCorner)[0],
+      ),
+    ).toBeGreaterThan(2);
   });
 
   it("softens rounded boundaries and limits small-surface displacement", async () => {
