@@ -99,6 +99,14 @@ function ChatMessageImpl({
   const { t } = useTranslation();
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
+  // 生成中本文は確定 messages 配列から分離されている。各行が自分の id だけを
+  // selector で購読するため、draft 更新で再描画されるのは末尾 assistant 1 行だけ。
+  const streamingContent = useChatStore((state) =>
+    state.streamingDraft?.messageId === msg.id
+      ? state.streamingDraft.content
+      : null,
+  );
+  const messageContent = streamingContent ?? msg.content;
   const parsedMeta = useMemo(() => parseMetadata(msg.metadata), [msg.metadata]);
   const isSummary = "summary_id" in parsedMeta;
   // 一部モデルが本文に吐き出す擬似ツール記法 (<tool_call>/<tool_response>) を
@@ -106,8 +114,10 @@ function ChatMessageImpl({
   // assistant 本文のみ対象（user 投稿やサマリは原文のまま）。
   const safeContent = useMemo(
     () =>
-      isAssistant && !isSummary ? stripToolProtocol(msg.content) : msg.content,
-    [isAssistant, isSummary, msg.content],
+      isAssistant && !isSummary
+        ? stripToolProtocol(messageContent)
+        : messageContent,
+    [isAssistant, isSummary, messageContent],
   );
   const showActions = !isStreaming && safeContent.length > 0 && !isSummary;
   const toolCalls =
@@ -176,7 +186,7 @@ function ChatMessageImpl({
         onContextMenu={handleContextMenu}
       >
         {isAssistant && isSummary ? (
-          <SummaryBlock summary={msg.content} />
+          <SummaryBlock summary={messageContent} />
         ) : isAssistant ? (
           <>
             {thinkingBlocks.length > 0 && (
@@ -296,7 +306,7 @@ function ChatMessageImpl({
                 remarkPlugins={[remarkGfm]}
                 components={codexComponents}
               >
-                {msg.content}
+                {messageContent}
               </ReactMarkdown>
             </div>
             {showActions && (
@@ -311,7 +321,7 @@ function ChatMessageImpl({
           </>
         ) : (
           <p className="text-center text-xs text-muted-foreground">
-            {msg.content}
+            {messageContent}
           </p>
         )}
         {(isAssistant || isUser) && <MessageBadge messageId={msg.id} />}
@@ -326,9 +336,6 @@ function ChatMessageImpl({
   return __renderResult;
 }
 
-// ストリーミング中は messages 配列が delta 毎に新参照になるが、確定済みの
-// 過去メッセージは msg 参照が保たれる。memo 化しておくと streaming bubble
-// 以外は再レンダー（= ReactMarkdown 再パース + codex matcher 再走査）を
-// スキップできる。前提として ChatPanel 側で渡すコールバックが安定参照で
-// あること（handleExtract*/handleSaveSnippet* は messages 依存を外し済み）。
+// 確定 messages 配列は streaming draft の更新では変わらない。memo と行内の
+// id selector により、再パース対象は生成中 assistant 1 行だけに閉じる。
 export const ChatMessage = memo(ChatMessageImpl);

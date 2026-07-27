@@ -1,10 +1,13 @@
 import { useTranslation } from "react-i18next";
+import type { Ref } from "react";
 import type { RulerTicks } from "./chronicleTicks";
 
 export interface ChronicleRulerProps {
   gutterX: number;
   unitLabel: string;
   ticks: RulerTicks;
+  /** Pan preview writes translateX here without a React render. */
+  contentRef?: Ref<HTMLDivElement>;
 }
 
 /**
@@ -16,6 +19,7 @@ export function ChronicleRuler({
   gutterX,
   unitLabel,
   ticks,
+  contentRef,
 }: ChronicleRulerProps) {
   const { t } = useTranslation();
   return (
@@ -42,29 +46,38 @@ export function ChronicleRuler({
         data-testid="chronicle-ruler-track"
         className="relative flex-1 overflow-hidden"
       >
-        {ticks.major.map((tk, i) => (
-          <div
-            key={`maj-${i}`}
-            className="absolute whitespace-nowrap text-xs font-semibold text-foreground/70"
-            style={{ left: Math.max(tk.x, 4), top: 8 }}
-          >
-            {tk.label}
-          </div>
-        ))}
-        {ticks.minor.map((tk, i) => (
-          <div key={`min-${i}`}>
+        <div
+          ref={contentRef}
+          className="absolute inset-0 will-change-transform"
+        >
+          {ticks.major.map((tk, i) => (
             <div
-              className="absolute bg-border"
-              style={{ left: tk.x, top: 34, width: 1, height: 8 }}
-            />
-            <div
-              className="absolute whitespace-nowrap text-[11px] text-muted-foreground"
-              style={{ left: tk.x + 5, top: 30, fontFeatureSettings: "'tnum'" }}
+              key={`maj-${i}`}
+              className="absolute whitespace-nowrap text-xs font-semibold text-foreground/70"
+              style={{ left: tk.x < 0 ? tk.x : Math.max(tk.x, 4), top: 8 }}
             >
               {tk.label}
             </div>
-          </div>
-        ))}
+          ))}
+          {ticks.minor.map((tk, i) => (
+            <div key={`min-${i}`}>
+              <div
+                className="absolute bg-border"
+                style={{ left: tk.x, top: 34, width: 1, height: 8 }}
+              />
+              <div
+                className="absolute whitespace-nowrap text-[11px] text-muted-foreground"
+                style={{
+                  left: tk.x + 5,
+                  top: 30,
+                  fontFeatureSettings: "'tnum'",
+                }}
+              >
+                {tk.label}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

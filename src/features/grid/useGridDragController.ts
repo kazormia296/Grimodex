@@ -172,7 +172,16 @@ export function useGridDragController({
         }
         siblingRects[sibling.id] = { top: rect.top, bottom };
       }
-      if (!siblingRects[sceneId]) return;
+      // A virtualized column intentionally mounts only its visible cards.
+      // Axis-lock math needs every sibling rect; using a partial set maps the
+      // pointer to the wrong predecessor. Fall back to regular DnD whenever
+      // the complete sibling set is not currently measurable.
+      if (
+        !siblingRects[sceneId] ||
+        Object.keys(siblingRects).length !== siblings.length
+      ) {
+        return;
+      }
       const activeEl = document.querySelector(
         `[data-grid-scene-id="${sceneId}"]`,
       );
@@ -217,7 +226,12 @@ export function useGridDragController({
         const rect = el.getBoundingClientRect();
         siblingRects[sibling.id] = { left: rect.left, right: rect.right };
       }
-      if (!siblingRects[folderId]) return;
+      if (
+        !siblingRects[folderId] ||
+        Object.keys(siblingRects).length !== siblings.length
+      ) {
+        return;
+      }
       const activeEl = document.querySelector(
         `[data-grid-folder-id="${folderId}"]`,
       );

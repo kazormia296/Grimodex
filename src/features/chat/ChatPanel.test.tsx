@@ -234,6 +234,7 @@ const mockSendChatMessage = vi.mocked(chatApi.sendChatMessage);
 function resetStore() {
   useChatStore.setState({
     messages: [],
+    streamingDraft: null,
     sessions: [],
     isStreaming: false,
     error: null,

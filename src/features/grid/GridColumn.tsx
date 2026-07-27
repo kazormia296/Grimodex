@@ -11,6 +11,7 @@ import { GridFolderCard } from "./GridFolderCard";
 import { GridColumnLabelBar } from "./GridColumnLabelBar";
 import { GridChapterColumnContextMenu } from "./GridChapterColumnContextMenu";
 import { GridChapterColumnMenu } from "./GridChapterColumnMenu";
+import { GridVirtualList } from "./GridVirtualList";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import {
   columnDraggableId,
@@ -47,6 +48,8 @@ interface Props {
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order across all columns, for range selection. */
   flatOrder?: string[];
+  /** Keep only the active DnD source mounted when it leaves this viewport. */
+  pinnedItemId?: string | null;
 }
 
 export function GridColumn({
@@ -61,6 +64,7 @@ export function GridColumn({
   columnAxisLockOffsetPx,
   onRequestDeleteConfirm,
   flatOrder,
+  pinnedItemId,
 }: Props) {
   const { t } = useTranslation();
   const reducedMotion = useReducedMotion();
@@ -162,6 +166,20 @@ export function GridColumn({
     .map((d) => d.node);
   const visibleScenes = sceneItems.filter(
     (s) => visibility.get(s.id)?.passesFilter !== false,
+  );
+  const renderedDescendants = useMemo(
+    () =>
+      descendants
+        .filter(
+          ({ node }) =>
+            node.nodeType === "folder" ||
+            visibility.get(node.id)?.passesFilter !== false,
+        )
+        .map((descendant) => ({
+          ...descendant,
+          id: descendant.node.id,
+        })),
+    [descendants, visibility],
   );
   const INDENT_PX = 12;
 
@@ -295,74 +313,74 @@ export function GridColumn({
           </div>
 
           {/* Items: scenes (cards) + nested folders (folder cards), recursively flattened */}
-          <div className="flex flex-col gap-2 p-2 flex-1 min-h-0 overflow-y-auto">
-            {descendants.length === 0 ? (
+          {descendants.length === 0 ? (
+            <div className="flex min-h-0 flex-1 p-2">
               <div
                 ref={setEmptyRef}
                 className={cn(
-                  "flex-1 rounded-md border-2 border-dashed border-border min-h-16",
-                  "flex items-center justify-center text-[11px] text-muted-foreground",
+                  "flex min-h-16 flex-1 items-center justify-center rounded-md border-2 border-dashed border-border",
+                  "text-[11px] text-muted-foreground",
                   isEmptyOver && "border-primary bg-primary/5",
                 )}
               >
                 {t("grid.column.dropHere", "ここにドロップ")}
               </div>
-            ) : (
-              <>
-                {descendants.map(({ node, depth }) => {
-                  const indentStyle =
-                    depth > 0 ? { paddingLeft: depth * INDENT_PX } : undefined;
-                  if (node.nodeType === "folder") {
-                    return (
-                      <div key={node.id} style={indentStyle}>
-                        <GridFolderCard
-                          folder={node}
-                          compact={display.compactCards}
-                          columnDropIndicator={columnDropIndicator}
-                          axisLockOffsetPx={effectiveAxisLockOffsets.get(
-                            node.id,
-                          )}
-                        />
-                      </div>
-                    );
-                  }
-                  const vis = visibility.get(node.id);
-                  if (vis && !vis.passesFilter) return null;
-                  const isDropBefore =
-                    (dropIndicator?.targetId === node.id &&
-                      dropIndicator.position === "before") ||
-                    (columnDropIndicator?.targetId === node.id &&
-                      columnDropIndicator.position === "before");
-                  const isDropAfter =
-                    (dropIndicator?.targetId === node.id &&
-                      dropIndicator.position === "after") ||
-                    (columnDropIndicator?.targetId === node.id &&
-                      columnDropIndicator.position === "after");
+            </div>
+          ) : (
+            <GridVirtualList
+              items={renderedDescendants}
+              pinnedItemId={pinnedItemId}
+              compact={display.compactCards}
+              endRef={setEndRef}
+              endClassName={cn(
+                "rounded transition-colors",
+                isEndOver && "bg-primary/20",
+              )}
+              testId={`grid-column-list-${folder.id}`}
+              renderItem={({ node, depth }) => {
+                const indentStyle =
+                  depth > 0 ? { paddingLeft: depth * INDENT_PX } : undefined;
+                if (node.nodeType === "folder") {
                   return (
                     <div key={node.id} style={indentStyle}>
-                      <GridSceneCard
-                        scene={node}
-                        display={display}
-                        dimmed={vis !== undefined && !vis.matchesSearch}
-                        isDropBefore={isDropBefore}
-                        isDropAfter={isDropAfter}
+                      <GridFolderCard
+                        folder={node}
+                        compact={display.compactCards}
+                        columnDropIndicator={columnDropIndicator}
                         axisLockOffsetPx={effectiveAxisLockOffsets.get(node.id)}
-                        onRequestDeleteConfirm={onRequestDeleteConfirm}
-                        flatOrder={flatOrder}
                       />
                     </div>
                   );
-                })}
-                <div
-                  ref={setEndRef}
-                  className={cn(
-                    "h-4 rounded transition-colors",
-                    isEndOver && "bg-primary/20",
-                  )}
-                />
-              </>
-            )}
-          </div>
+                }
+                const vis = visibility.get(node.id);
+                if (vis && !vis.passesFilter) return null;
+                const isDropBefore =
+                  (dropIndicator?.targetId === node.id &&
+                    dropIndicator.position === "before") ||
+                  (columnDropIndicator?.targetId === node.id &&
+                    columnDropIndicator.position === "before");
+                const isDropAfter =
+                  (dropIndicator?.targetId === node.id &&
+                    dropIndicator.position === "after") ||
+                  (columnDropIndicator?.targetId === node.id &&
+                    columnDropIndicator.position === "after");
+                return (
+                  <div style={indentStyle}>
+                    <GridSceneCard
+                      scene={node}
+                      display={display}
+                      dimmed={vis !== undefined && !vis.matchesSearch}
+                      isDropBefore={isDropBefore}
+                      isDropAfter={isDropAfter}
+                      axisLockOffsetPx={effectiveAxisLockOffsets.get(node.id)}
+                      onRequestDeleteConfirm={onRequestDeleteConfirm}
+                      flatOrder={flatOrder}
+                    />
+                  </div>
+                );
+              }}
+            />
+          )}
 
           <button
             className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"

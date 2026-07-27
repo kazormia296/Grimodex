@@ -90,6 +90,84 @@ test("cycle graph includes relative imports and index.tsx targets", async () => 
   ]);
 });
 
+test("scene load rule rejects array loops but permits legitimate single loads", async () => {
+  const fixture = await fixtureRepo();
+  await writeSource(
+    fixture.root,
+    "src/features/example/bad-map.ts",
+    [
+      'import { loadSceneContent as loadBody } from "@/features/tree/api";',
+      "export async function loadAll(ids: string[]) {",
+      "  return Promise.all(ids.map(async (id) => loadBody(id)));",
+      "}",
+    ].join("\n"),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/bad-for.ts",
+    [
+      'import { loadSceneFull } from "@/features/tree/api";',
+      "export async function loadAll(ids: string[]) {",
+      "  const rows = [];",
+      "  for (const id of ids) rows.push(await loadSceneFull(id));",
+      "  return rows;",
+      "}",
+    ].join("\n"),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/nested/bad-relative.ts",
+    [
+      'import { loadSceneContent } from "../../tree/api";',
+      "export async function loadAll(ids: string[]) {",
+      "  for (let i = 0; i < ids.length; i++) {",
+      "    await loadSceneContent(ids[i]);",
+      "  }",
+      "}",
+    ].join("\n"),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/bad-direct-callback.ts",
+    [
+      'import { loadSceneContent } from "@/features/tree/api";',
+      "export async function loadAll(ids: string[]) {",
+      "  return Promise.all(ids.map(loadSceneContent));",
+      "}",
+    ].join("\n"),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/good.ts",
+    [
+      'import { loadSceneContent, loadSceneContents } from "@/features/tree/api";',
+      "export const loadOne = (id: string) => loadSceneContent(id);",
+      "export const loadAll = (ids: string[]) => loadSceneContents(ids);",
+    ].join("\n"),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/tree/api.ts",
+    [
+      "export async function loadSceneContent(id: string) { return id; }",
+      "export async function loadSceneFull(id: string) { return { id }; }",
+      "export async function loadSceneContents(ids: string[]) { return ids; }",
+    ].join("\n"),
+  );
+
+  const findings = await collectFindings({
+    repoRoot: fixture.root,
+    sourceRoot: fixture.source,
+  });
+
+  assert.deepEqual(findings["single-scene-load-in-array-loop"], [
+    "src/features/example/bad-direct-callback.ts:loadSceneContent:map",
+    "src/features/example/bad-for.ts:loadSceneFull:for-of",
+    "src/features/example/bad-map.ts:loadSceneContent:map",
+    "src/features/example/nested/bad-relative.ts:loadSceneContent:for",
+  ]);
+});
+
 test("the local frontend gate includes architecture validation", async () => {
   const packageJson = JSON.parse(
     await readFile(new URL("../package.json", import.meta.url), "utf8"),

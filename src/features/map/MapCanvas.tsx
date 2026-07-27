@@ -1697,6 +1697,14 @@ export function MapCanvas() {
   useMapExport(pendingExport, setPendingExport, getNodes, getEdges);
 
   const isCorkboard = visualTheme === "corkboard";
+  const stickyCountByBranchId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const sticky of stickies) {
+      if (!sticky.aiBranchId) continue;
+      counts.set(sticky.aiBranchId, (counts.get(sticky.aiBranchId) ?? 0) + 1);
+    }
+    return counts;
+  }, [stickies]);
 
   // Trash Bin の Map ペインへの drop ターゲット登録。
   // PhysicsView から渡される client 座標を screenToFlowPosition で flow 座標に変換し、
@@ -1716,6 +1724,7 @@ export function MapCanvas() {
     <div
       ref={setRootRef}
       data-droptarget-id="map-panel"
+      data-map-rendered-node-count={nodes.length}
       className={`${isCorkboard ? "map-corkboard " : ""}data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset`}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
@@ -1911,11 +1920,9 @@ export function MapCanvas() {
           }
           derivedStickyCount={
             contextMenu.nodeId.startsWith("ai_branch:")
-              ? stickies.filter(
-                  (s) =>
-                    s.aiBranchId ===
-                    contextMenu.nodeId.slice("ai_branch:".length),
-                ).length
+              ? (stickyCountByBranchId.get(
+                  contextMenu.nodeId.slice("ai_branch:".length),
+                ) ?? 0)
               : 0
           }
         />

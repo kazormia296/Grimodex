@@ -122,6 +122,7 @@ describe("ChatPanel virtualization contract", () => {
   beforeEach(() => {
     useChatStore.setState({
       messages: [],
+      streamingDraft: null,
       sessions: [],
       isStreaming: false,
       isLoadingMessages: false,
@@ -162,7 +163,7 @@ describe("ChatPanel virtualization contract", () => {
     expect(opts!.getItemKey?.(1)).toBe("a1");
   });
 
-  it("ストリーミング delta では ChatPanel が 1 回だけ render される", async () => {
+  it("メッセージ更新では ChatPanel 本体を再レンダーしない", async () => {
     useChatStore.setState({
       messages: [msg("u1", "user"), msg("a1", "assistant")],
     });
@@ -175,10 +176,11 @@ describe("ChatPanel virtualization contract", () => {
       growLastMessage();
     });
 
-    // entranceAnim の render-phase setState が delta 毎に発火すると 2 になる
+    // message store / virtualizer は ChatMessageViewport 内に閉じる。履歴の更新で
+    // Header / ContextBar / Composer を含む ChatPanel 本体を巻き込まない。
     expect(
       perfCapture.marks.filter((m) => m === "chatPanel.render").length,
-    ).toBe(1);
+    ).toBe(0);
   });
 
   it("delta で変化していない行の ChatMessage は再レンダーされない", async () => {
@@ -200,6 +202,30 @@ describe("ChatPanel virtualization contract", () => {
 
     // memo + 安定コールバック契約: 再パース (ReactMarkdown) は伸長中の
     // 末尾行 1 件に閉じる
+    expect(
+      perfCapture.marks.filter((m) => m === "chatMessage.render").length,
+    ).toBe(1);
+  });
+
+  it("streaming draft 更新は ChatPanel を再実行せず末尾行だけ再描画する", async () => {
+    useChatStore.setState({
+      messages: [msg("u1", "user"), msg("a1", "assistant", "")],
+      streamingDraft: { messageId: "a1", content: "" },
+      isStreaming: true,
+    });
+    render(<ChatPanel />);
+    await act(async () => {});
+
+    perfCapture.marks.length = 0;
+    await act(async () => {
+      useChatStore.setState({
+        streamingDraft: { messageId: "a1", content: "生成中 **本文**" },
+      });
+    });
+
+    expect(
+      perfCapture.marks.filter((m) => m === "chatPanel.render").length,
+    ).toBe(0);
     expect(
       perfCapture.marks.filter((m) => m === "chatMessage.render").length,
     ).toBe(1);

@@ -6,6 +6,7 @@ import type {
   Diagnostic,
   DisableDirective,
   LintConfig,
+  LintInputRevisions,
   LintLanguage,
   LintResponse,
   LintScope,
@@ -70,6 +71,7 @@ interface LintState {
     language: LintLanguage,
     sceneText: string,
     disables: DisableDirective[],
+    inputRevisions?: LintInputRevisions,
   ) => Promise<void>;
 
   /**
@@ -218,8 +220,8 @@ export const useLintStore = create<LintState>()((set, get) => {
    */
   let blockDiagCache = new Map<string, Diagnostic[]>();
   /**
-   * JSON snapshot of { config, language } from the last runLint call.
-   * When this changes the entire block cache is invalidated.
+   * JSON snapshot of rules, language, disables, and project-input revisions
+   * from the last runLint call. When it changes the block cache is invalidated.
    */
   let lastConfigKey = "";
   /**
@@ -302,7 +304,15 @@ export const useLintStore = create<LintState>()((set, get) => {
       set({ diagnostics: filtered });
     },
 
-    runLint: async (sceneId, blocks, config, language, sceneText, disables) => {
+    runLint: async (
+      sceneId,
+      blocks,
+      config,
+      language,
+      sceneText,
+      disables,
+      inputRevisions,
+    ) => {
       const requestId = get().pendingRequestId + 1;
 
       // Invalidate block cache when config, language, or disables change.
@@ -315,8 +325,14 @@ export const useLintStore = create<LintState>()((set, get) => {
         if (a.range.end !== b.range.end) return a.range.end - b.range.end;
         return a.rules.join(",").localeCompare(b.rules.join(","));
       });
+      const { codex_entries: codexEntries, ...configWithoutCodexEntries } =
+        config;
       const configKey = JSON.stringify({
-        config,
+        config: configWithoutCodexEntries,
+        codexInput:
+          inputRevisions?.codex === undefined
+            ? codexEntries
+            : { revision: inputRevisions.codex },
         language,
         disables: sortedDisables,
       });

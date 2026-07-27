@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
@@ -175,6 +182,10 @@ export function ChronicleViewport({
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const trackElRef = useRef<HTMLDivElement | null>(null);
+  const rulerContentRef = useRef<HTMLDivElement | null>(null);
+  const projectionLayerRef = useRef<HTMLDivElement | null>(null);
+  const panPreviewFrameRef = useRef<number | null>(null);
+  const pendingPanDxRef = useRef(0);
   // 縦スクロール領域（中ボタンドラッグの縦パン用に scrollTop を直接いじる）。
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   // 因果ホバー強調: ホバー中の出来事に連なるチェーン以外を dim する。
@@ -207,6 +218,50 @@ export function ChronicleViewport({
   const cleanupRef = useRef<(() => void) | null>(null);
   // 進行中のドラッグの document リスナ撤去関数（アンマウント時の取りこぼし防止）。
   const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  const flushPanPreview = useCallback(() => {
+    if (panPreviewFrameRef.current !== null) {
+      cancelAnimationFrame(panPreviewFrameRef.current);
+      panPreviewFrameRef.current = null;
+    }
+    const dx = pendingPanDxRef.current;
+    const track = trackElRef.current;
+    track
+      ?.querySelectorAll<HTMLElement>("[data-chronicle-world-layer]")
+      .forEach((element) => {
+        element.style.transform = `translateX(${layoutRef.current.worldOffsetX + dx}px)`;
+      });
+    if (projectionLayerRef.current) {
+      projectionLayerRef.current.style.transform = dx
+        ? `translateX(${dx}px)`
+        : "";
+    }
+    if (rulerContentRef.current) {
+      rulerContentRef.current.style.transform = dx ? `translateX(${dx}px)` : "";
+    }
+  }, []);
+  const previewPanBy = useCallback(
+    (dx: number) => {
+      pendingPanDxRef.current = dx;
+      if (panPreviewFrameRef.current !== null) return;
+      if (typeof requestAnimationFrame !== "function") {
+        flushPanPreview();
+        return;
+      }
+      panPreviewFrameRef.current = requestAnimationFrame(() => {
+        panPreviewFrameRef.current = null;
+        flushPanPreview();
+      });
+    },
+    [flushPanPreview],
+  );
+  const resetPanPreview = useCallback(() => {
+    pendingPanDxRef.current = 0;
+    flushPanPreview();
+  }, [flushPanPreview]);
+  useLayoutEffect(() => {
+    resetPanPreview();
+  }, [resetPanPreview, layout.worldOffsetX]);
 
   // ドラッグ中の縦ガイド（content px）とコンテキストメニュー。
   const [ghostX, setGhostX] = useState<number | null>(null);
@@ -358,6 +413,9 @@ export function ChronicleViewport({
     () => () => {
       cleanupRef.current?.();
       dragCleanupRef.current?.();
+      if (panPreviewFrameRef.current !== null) {
+        cancelAnimationFrame(panPreviewFrameRef.current);
+      }
     },
     [],
   );
@@ -377,16 +435,22 @@ export function ChronicleViewport({
       const startView = viewRef.current;
       const scrollEl = scrollAreaRef.current;
       const startScrollTop = scrollEl?.scrollTop ?? 0;
+      let pendingView = startView;
       setMiddlePanning(true);
       bindDrag(
         (ev) => {
-          onViewChangeRef.current(
-            panByPx({ view: startView, dx: ev.clientX - startX }),
-          );
+          const dx = ev.clientX - startX;
+          pendingView = panByPx({ view: startView, dx });
+          viewRef.current = pendingView;
+          previewPanBy(dx);
           if (scrollEl)
             scrollEl.scrollTop = startScrollTop - (ev.clientY - startY);
         },
-        () => setMiddlePanning(false),
+        () => {
+          flushPanPreview();
+          onViewChangeRef.current(pendingView);
+          setMiddlePanning(false);
+        },
       );
       return;
     }
@@ -412,7 +476,10 @@ export function ChronicleViewport({
     if (edgeHandleEl && eventId && !cb.locked && cb.onCreateEdge) {
       const center = layoutRef.current.pack.centers.get(eventId);
       // ガイドはハンドル(末尾の●)位置＝末尾 outX から引く（描画エッジと整合）。
-      const fromX = center?.outX ?? center?.cx ?? e.clientX - rect.left;
+      const fromX =
+        (center?.outX ?? center?.cx) != null
+          ? (center?.outX ?? center!.cx) + layoutRef.current.worldOffsetX
+          : e.clientX - rect.left;
       const fromY = center?.cy ?? e.clientY - rect.top;
       bindDrag(
         (ev) => {
@@ -492,7 +559,11 @@ export function ChronicleViewport({
         // 挿入位置はカーソルではなくイベントの先端（開始＝centers.cx）を基準にする。
         // バー中ほどを掴むとカーソルへ開始が飛びドラッグ中とドロップ後がズレる問題への対策。
         // grabOffsetX=掴んだ点と先端の距離。マーカー追従(dx)と整合し、先端が吸着先になる。
-        const startAnchorX = layoutRef.current.pack.centers.get(eventId)?.cx;
+        const worldAnchorX = layoutRef.current.pack.centers.get(eventId)?.cx;
+        const startAnchorX =
+          worldAnchorX == null
+            ? undefined
+            : worldAnchorX + layoutRef.current.worldOffsetX;
         const grabOffsetX =
           startAnchorX != null ? startX - rect.left - startAnchorX : 0;
         // 掴んだマーカーが複数選択の一部なら選択全件を一括移動（=先端の差分を全件へ）。
@@ -575,6 +646,7 @@ export function ChronicleViewport({
     const startView = viewRef.current;
     const scrollEl = scrollAreaRef.current;
     const startScrollTop = scrollEl?.scrollTop ?? 0;
+    let pendingView = startView;
     bindDrag(
       (ev) => {
         const dx = ev.clientX - startX;
@@ -582,10 +654,20 @@ export function ChronicleViewport({
         // 縦だけのドラッグもドラッグ扱い（=クリック位置選択を抑止）にするため dy も見る。
         if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)
           draggedRef.current = true;
-        onViewChangeRef.current(panByPx({ view: startView, dx }));
+        pendingView = panByPx({ view: startView, dx });
+        viewRef.current = pendingView;
+        previewPanBy(dx);
         if (scrollEl) scrollEl.scrollTop = startScrollTop - dy;
       },
       (ev) => {
+        if (draggedRef.current) {
+          flushPanPreview();
+          onViewChangeRef.current(pendingView);
+        } else {
+          // preview は閾値判定より先に軽量 DOM transform へ反映される。
+          // クリック相当の微小移動では view 更新が発生しないため、ここで明示的に戻す。
+          resetPanPreview();
+        }
         if (!draggedRef.current && cb.onSelectPosition) {
           // 位置選択の縦ラインは表示中ルーラー解像度のグリッドへ必ず吸着。
           const day = cb.hasCalendarAxis
@@ -917,6 +999,7 @@ export function ChronicleViewport({
         gutterX={spacing.gutterX}
         unitLabel={ticks.unitLabel}
         ticks={ticks}
+        contentRef={rulerContentRef}
       />
 
       <div
@@ -955,20 +1038,50 @@ export function ChronicleViewport({
           role="application"
           aria-label={t("chronicle.viewportLabel", "作中年表")}
         >
-          {/* 選択位置ガイド（accent 実線）＋ドラッグ中ガイド（破線） */}
-          {selectedDay != null && hasCalendarAxis && (
-            <div
-              data-testid="chronicle-position-guide"
-              className="pointer-events-none absolute top-0 z-[4]"
-              style={{
-                left: dayToX(view, selectedDay),
-                width: 0,
-                height: contentHeight,
-                borderLeft: "1.5px solid var(--primary)",
-                opacity: 0.7,
-              }}
-            />
-          )}
+          {/* viewport projection: pan preview はこの軽量 layer と ruler/world の
+              transform だけを rAF で更新し、event/lane layout は再構築しない。 */}
+          <div
+            ref={projectionLayerRef}
+            className="pointer-events-none absolute inset-0 will-change-transform"
+          >
+            {selectedDay != null && hasCalendarAxis && (
+              <div
+                data-testid="chronicle-position-guide"
+                className="absolute top-0 z-[4]"
+                style={{
+                  left: dayToX(view, selectedDay),
+                  width: 0,
+                  height: contentHeight,
+                  borderLeft: "1.5px solid var(--primary)",
+                  opacity: 0.7,
+                }}
+              />
+            )}
+
+            {/* グリッド線 */}
+            {minorGridX.map((x, i) => (
+              <div
+                key={`gmin-${i}`}
+                className="absolute top-0 z-[2]"
+                style={{
+                  left: x,
+                  width: 1,
+                  height: contentHeight,
+                  background:
+                    "color-mix(in oklch, var(--border) 45%, transparent)",
+                }}
+              />
+            ))}
+            {majorGridX.map((x, i) => (
+              <div
+                key={`gmaj-${i}`}
+                className="absolute top-0 z-[2] bg-border"
+                style={{ left: x, width: 1, height: contentHeight }}
+              />
+            ))}
+          </div>
+
+          {/* ドラッグ中ガイド（viewport px） */}
           {ghostX != null && (
             <div
               className="pointer-events-none absolute top-0 z-[8]"
@@ -981,27 +1094,6 @@ export function ChronicleViewport({
             />
           )}
 
-          {/* グリッド線 */}
-          {minorGridX.map((x, i) => (
-            <div
-              key={`gmin-${i}`}
-              className="absolute top-0 z-[2]"
-              style={{
-                left: x,
-                width: 1,
-                height: contentHeight,
-                background:
-                  "color-mix(in oklch, var(--border) 45%, transparent)",
-              }}
-            />
-          ))}
-          {majorGridX.map((x, i) => (
-            <div
-              key={`gmaj-${i}`}
-              className="absolute top-0 z-[2] bg-border"
-              style={{ left: x, width: 1, height: contentHeight }}
-            />
-          ))}
           {pack.laneSepTops.map((top, i) => {
             if (top <= 0) return null;
             // 区切り線は対応レーン（同 index）の入れ替えオフセットで追従。
@@ -1026,11 +1118,14 @@ export function ChronicleViewport({
           {/* 因果エッジ（ドラッグ中は liveEdges で動いた端点に追従） */}
           {showEdges && liveEdges.length > 0 && (
             <svg
+              data-chronicle-world-layer
               className="pointer-events-none absolute left-0 top-0 z-[3]"
               style={{
                 width: "100%",
                 height: contentHeight,
                 overflow: "visible",
+                transform: `translateX(${layout.worldOffsetX}px)`,
+                willChange: "transform",
               }}
             >
               {liveEdges.map((e) => (
@@ -1083,81 +1178,90 @@ export function ChronicleViewport({
               挿入/削除は AnimatePresence の opacity フェードで見せる。追従(dragOffset)や
               レーン入れ替え(offsetY)の transform は EventMarker 側の inline のままなので、
               ラッパーの opacity は座標系(containing block)や静止時 z-index に干渉しない。 */}
-          <AnimatePresence initial={false}>
-            {pack.lanes.flatMap((lane) => {
-              const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
-              return lane.markers.map((m) => {
-                const realId = realEventId(m.eventId);
-                const ev = eventsById.get(realId);
-                const render = markerById.get(m.eventId);
-                if (!ev || !render) return null;
-                const isSelected = selectedIds
-                  ? selectedIds.has(realId)
-                  : selectedEventId === realId;
-                const isDragging = !!dragPreview?.ids.includes(realId);
-                // フェード中は wrapper の opacity<1 が stacking context を作り、子の
-                // z-index が wrapper 内に閉じてしまう。wrapper 自身に実効 z（ドラッグ30/
-                // 選択9/通常5）を持たせ、エッジ(z3)やグリッド(z2)より前面を保つ。position:
-                // relative でも wrapper は (0,0) の 0 高ブロックなので絶対配置の子は動かない。
-                return (
-                  <motion.div
-                    key={m.eventId}
-                    style={{
-                      position: "relative",
-                      zIndex: isDragging ? 30 : isSelected ? 9 : 5,
-                    }}
-                    initial={reducedMotion ? false : { opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{
-                      opacity: 0,
-                      transition: reducedMotion
-                        ? { duration: 0 }
-                        : { duration: DURATIONS.fast, ease: EASINGS.easeOut },
-                    }}
-                    transition={
-                      reducedMotion
-                        ? { duration: 0 }
-                        : { duration: DURATIONS.normal, ease: EASINGS.easeOut }
-                    }
-                  >
-                    <EventMarker
-                      event={ev}
-                      left={render.left}
-                      top={render.top}
-                      offsetY={laneOffsetY}
-                      tokenH={spacing.tokenH}
-                      maxTok={spacing.maxTok}
-                      isInterval={render.isInterval}
-                      barWidth={render.barWidth}
-                      selected={isSelected}
-                      conflict={conflictIds.has(realId)}
-                      related={relatedIds.has(realId)}
-                      labelsOn={labelsOn}
-                      resizable={!locked && render.isInterval}
-                      cursor={locked ? "default" : "grab"}
-                      dimmed={causalChain ? !causalChain.has(realId) : false}
-                      onHover={markerHover}
-                      edgeHandle={
-                        // 因果エッジハンドルは単一選択時のプライマリのみ。
-                        // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
-                        selectedEventId === realId &&
-                        !ev.isScene &&
-                        (!selectedIds || selectedIds.size <= 1) &&
-                        !locked &&
-                        !!onCreateEdge
+          <div
+            data-chronicle-world-layer
+            className="absolute inset-0 z-[5] will-change-transform"
+            style={{ transform: `translateX(${layout.worldOffsetX}px)` }}
+          >
+            <AnimatePresence initial={false}>
+              {pack.lanes.flatMap((lane) => {
+                const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
+                return lane.markers.map((m) => {
+                  const realId = realEventId(m.eventId);
+                  const ev = eventsById.get(realId);
+                  const render = markerById.get(m.eventId);
+                  if (!ev || !render) return null;
+                  const isSelected = selectedIds
+                    ? selectedIds.has(realId)
+                    : selectedEventId === realId;
+                  const isDragging = !!dragPreview?.ids.includes(realId);
+                  // フェード中は wrapper の opacity<1 が stacking context を作り、子の
+                  // z-index が wrapper 内に閉じてしまう。wrapper 自身に実効 z（ドラッグ30/
+                  // 選択9/通常5）を持たせ、エッジ(z3)やグリッド(z2)より前面を保つ。position:
+                  // relative でも wrapper は (0,0) の 0 高ブロックなので絶対配置の子は動かない。
+                  return (
+                    <motion.div
+                      key={m.eventId}
+                      style={{
+                        position: "relative",
+                        zIndex: isDragging ? 30 : isSelected ? 9 : 5,
+                      }}
+                      initial={reducedMotion ? false : { opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{
+                        opacity: 0,
+                        transition: reducedMotion
+                          ? { duration: 0 }
+                          : { duration: DURATIONS.fast, ease: EASINGS.easeOut },
+                      }}
+                      transition={
+                        reducedMotion
+                          ? { duration: 0 }
+                          : {
+                              duration: DURATIONS.normal,
+                              ease: EASINGS.easeOut,
+                            }
                       }
-                      dragOffset={
-                        isDragging && dragPreview
-                          ? { dx: dragPreview.dx, dy: dragPreview.dy }
-                          : null
-                      }
-                      onSelect={handleSelect}
-                    />
-                  </motion.div>
-                );
-              });
-            })}
-          </AnimatePresence>
+                    >
+                      <EventMarker
+                        event={ev}
+                        left={render.left}
+                        top={render.top}
+                        offsetY={laneOffsetY}
+                        tokenH={spacing.tokenH}
+                        maxTok={spacing.maxTok}
+                        isInterval={render.isInterval}
+                        barWidth={render.barWidth}
+                        selected={isSelected}
+                        conflict={conflictIds.has(realId)}
+                        related={relatedIds.has(realId)}
+                        labelsOn={labelsOn}
+                        resizable={!locked && render.isInterval}
+                        cursor={locked ? "default" : "grab"}
+                        dimmed={causalChain ? !causalChain.has(realId) : false}
+                        onHover={markerHover}
+                        edgeHandle={
+                          // 因果エッジハンドルは単一選択時のプライマリのみ。
+                          // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
+                          selectedEventId === realId &&
+                          !ev.isScene &&
+                          (!selectedIds || selectedIds.size <= 1) &&
+                          !locked &&
+                          !!onCreateEdge
+                        }
+                        dragOffset={
+                          isDragging && dragPreview
+                            ? { dx: dragPreview.dx, dy: dragPreview.dy }
+                            : null
+                        }
+                        onSelect={handleSelect}
+                      />
+                    </motion.div>
+                  );
+                });
+              })}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
 

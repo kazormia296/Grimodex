@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { getTreeIndex } from "@/features/tree/treeIndex";
 import { useGridStore } from "./gridStore";
 
 export interface GridDescendant {
@@ -37,36 +38,25 @@ export type GridColumnEntry =
   | { kind: "loose"; scenes: TreeNodeData[]; sortOrder: string };
 
 export interface GridDerivedData {
+  nodeById: ReadonlyMap<string, TreeNodeData>;
   chapters: GridChapterData[];
   looseScenes: TreeNodeData[];
   /** Chapters + loose group merged and sorted by sortOrder, ready for rendering. */
   orderedColumns: GridColumnEntry[];
   totalScenes: number;
   totalChapters: number;
+  /** Scene ids in the exact rendered column/row order. */
+  flatOrder: string[];
+  /** Nested folders below the rendered chapter roots (chapter roots excluded). */
+  nestedFolderIds: string[];
+  /** Scene metadata used by drag calculations, derived with flatOrder. */
+  orderedScenes: Array<{ id: string; parentId: string | null }>;
+  /** Visible scene rows used by filtering and the status bar. */
+  allDisplayedScenes: TreeNodeData[];
 }
 
 function sortByOrder(a: TreeNodeData, b: TreeNodeData) {
   return cmpKeys(a.sortOrder, b.sortOrder);
-}
-
-function flattenSubtree(
-  parentId: string,
-  nodes: TreeNodeData[],
-  depth: number,
-  collapsedFolderIds: Set<string>,
-  acc: GridDescendant[],
-): void {
-  const children = nodes
-    .filter((n) => n.parentId === parentId)
-    .sort(sortByOrder);
-  for (const child of children) {
-    acc.push({ node: child, depth });
-    // Default-expanded: recurse unless the user explicitly collapsed this folder.
-    // Top-level chapter folders are entered unconditionally by the caller.
-    if (child.nodeType === "folder" && !collapsedFolderIds.has(child.id)) {
-      flattenSubtree(child.id, nodes, depth + 1, collapsedFolderIds, acc);
-    }
-  }
 }
 
 export function useGridDerivedData(
@@ -76,34 +66,47 @@ export function useGridDerivedData(
   const collapsedFolderIds = useGridStore((s) => s.collapsedFolderIds);
 
   return useMemo(() => {
-    const containerChildren = nodes
-      .filter((n) => n.parentId === containerId)
-      .sort(sortByOrder);
+    const index = getTreeIndex(nodes);
+    const containerChildren = index.childrenByParent.get(containerId) ?? [];
 
     const chapterFolders = containerChildren.filter(
       (n) => n.nodeType === "folder",
     );
     const looseScenes = containerChildren.filter((n) => n.nodeType === "scene");
 
+    const nestedFolderIds: string[] = [];
     const chapters: GridChapterData[] = chapterFolders.map((folder) => {
       const descendants: GridDescendant[] = [];
-      flattenSubtree(folder.id, nodes, 0, collapsedFolderIds, descendants);
+      const visiting = new Set<string>();
+      const walk = (
+        parentId: string,
+        depth: number,
+        visible: boolean,
+      ): void => {
+        if (visiting.has(parentId)) return;
+        visiting.add(parentId);
+        for (const child of index.childrenByParent.get(parentId) ?? []) {
+          if (visible) descendants.push({ node: child, depth });
+          if (child.nodeType !== "folder") continue;
+          nestedFolderIds.push(child.id);
+          walk(
+            child.id,
+            depth + 1,
+            visible && !collapsedFolderIds.has(child.id),
+          );
+        }
+        visiting.delete(parentId);
+      };
+      walk(folder.id, 0, true);
       return { folder, descendants };
     });
 
     // Count ALL scene descendants for status (not just expanded ones), so the
     // total stays meaningful regardless of expand state.
-    const countAllSceneDescendants = (folderId: string): number => {
-      let n = 0;
-      for (const child of nodes.filter((c) => c.parentId === folderId)) {
-        if (child.nodeType === "scene") n++;
-        else n += countAllSceneDescendants(child.id);
-      }
-      return n;
-    };
     const totalScenes =
       chapterFolders.reduce(
-        (acc, ch) => acc + countAllSceneDescendants(ch.id),
+        (total, chapter) =>
+          total + (index.descendantSceneCount.get(chapter.id) ?? 0),
         0,
       ) + looseScenes.length;
 
@@ -121,10 +124,8 @@ export function useGridDerivedData(
     // - containerId === null (project root) のとき: orphan シーンを "loose"
     //   列として点線で表示。chapter のみで orphan が無い場合は何も足さない。
     const containerNode =
-      containerId !== null
-        ? nodes.find((n) => n.id === containerId && n.nodeType === "folder")
-        : null;
-    if (containerNode) {
+      containerId !== null ? index.nodeById.get(containerId) : null;
+    if (containerNode?.nodeType === "folder") {
       const shouldEmit = looseScenes.length > 0 || chapterFolders.length === 0;
       if (shouldEmit) {
         orderedColumns.push({
@@ -143,36 +144,37 @@ export function useGridDerivedData(
     }
     orderedColumns.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
+    const flatOrder: string[] = [];
+    const allDisplayedScenes: TreeNodeData[] = [];
+    for (const column of orderedColumns) {
+      const scenes =
+        column.kind === "chapter"
+          ? column.data.descendants
+              .filter((descendant) => descendant.node.nodeType === "scene")
+              .map((descendant) => descendant.node)
+          : column.scenes;
+      for (const scene of scenes) {
+        flatOrder.push(scene.id);
+        allDisplayedScenes.push(scene);
+      }
+    }
+
     return {
+      nodeById: index.nodeById,
       chapters,
       looseScenes,
       orderedColumns,
       totalScenes,
       totalChapters: chapters.length,
+      flatOrder,
+      nestedFolderIds,
+      orderedScenes: flatOrder.map((id) => {
+        const scene = index.nodeById.get(id);
+        return { id, parentId: scene?.parentId ?? null };
+      }),
+      allDisplayedScenes,
     };
   }, [nodes, containerId, collapsedFolderIds]);
-}
-
-/**
- * Flat list of scene IDs in Grid display order:
- * chapter columns (top-to-bottom) → loose column last.
- * Used as the flat order for Shift+Click range selection and Cmd+A.
- */
-export function useGridFlatSceneOrder(containerId: string | null): string[] {
-  const { orderedColumns } = useGridDerivedData(containerId);
-  return useMemo(() => {
-    const ids: string[] = [];
-    for (const col of orderedColumns) {
-      if (col.kind === "chapter") {
-        for (const d of col.data.descendants) {
-          if (d.node.nodeType === "scene") ids.push(d.node.id);
-        }
-      } else {
-        for (const s of col.scenes) ids.push(s.id);
-      }
-    }
-    return ids;
-  }, [orderedColumns]);
 }
 
 /** Flat ordered list of all folder nodes for the container selector dropdown */

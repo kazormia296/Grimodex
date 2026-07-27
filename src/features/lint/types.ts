@@ -145,3 +145,12 @@ export interface LintConfig {
   codex_entries?: LintCodexEntry[];
   term_dictionary?: LintTermEntry[];
 }
+
+/**
+ * Stable revisions for large project-level inputs attached to LintConfig.
+ * The engine still receives the concrete arrays; these keys let the renderer
+ * invalidate its block cache without serialising those arrays on every pass.
+ */
+export interface LintInputRevisions {
+  codex?: number;
+}

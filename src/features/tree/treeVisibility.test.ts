@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { isNodeVisible, flattenVisible } from "./treeVisibility";
+import {
+  deriveVisibleTreeRows,
+  isNodeVisible,
+  flattenVisible,
+} from "./treeVisibility";
+import { getTreeIndex } from "./treeIndex";
 import type { TreeNodeData } from "./treeStore";
 
 function node(over: Partial<TreeNodeData> & { id: string }): TreeNodeData {
@@ -227,5 +232,23 @@ describe("treeVisibility threadFilter", () => {
     const ids = flat.map((n) => n.id);
     // folderA(s2) and folderB(s3) both contain t2; collapsed but auto-expanded
     expect(ids).toEqual(["folderA", "s2", "folderB", "s3"]);
+  });
+
+  it("indexed derivation propagates search/thread matches once and preserves depth", () => {
+    const rows = deriveVisibleTreeRows(
+      getTreeIndex([folderA, folderB, s1, s2, s3, s4]),
+      {
+        expandedIds: [],
+        query: "",
+        threadFilter: ["t2"],
+        nodeThreadIds,
+      },
+    );
+    expect(rows.map(({ node: item, depth }) => [item.id, depth])).toEqual([
+      ["folderA", 0],
+      ["s2", 1],
+      ["folderB", 0],
+      ["s3", 1],
+    ]);
   });
 });

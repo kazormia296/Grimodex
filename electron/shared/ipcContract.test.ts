@@ -69,6 +69,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "dbExecuteBatch",
       Promise.resolve('{"rows":[]}'),
     ) as never,
+    saveSceneBodyBundle: record(
+      "saveSceneBodyBundle",
+      Promise.resolve(
+        '{"placedBeatPreview":null,"unplacedBeatPreview":null,"contentVersion":2,"contentUpdatedAt":"2026-07-28T00:00:00.000Z","dbTransactionCount":1}',
+      ),
+    ) as never,
     vacuumDatabase: record(
       "vacuumDatabase",
       Promise.resolve(undefined),
@@ -724,6 +730,111 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({ ok: true, value: { rows: [] } });
   });
 
+  it("save_scene_body_bundle: typed snapshot を1 payloadで渡して結果をparseする", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      sceneId: "s1",
+      projectId: "p1",
+      includeSidecars: true,
+      contentJson: '{"type":"doc"}',
+      charCount: 3,
+      placedBeatPreview: null,
+      unplacedBeatsDoc: "[]",
+      unplacedBeatPreview: null,
+      authorshipSpans: [],
+      foreshadowSetups: [],
+      foreshadowPayoffs: [],
+      annotationAnchors: [],
+      beatMentions: [],
+      beatPovOverrides: [],
+      docContentSize: 2,
+    };
+    const env = await dispatchInvoke(
+      "save_scene_body_bundle",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([{ method: "saveSceneBodyBundle", args: [payload] }]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        placedBeatPreview: null,
+        unplacedBeatPreview: null,
+        contentVersion: 2,
+        contentUpdatedAt: "2026-07-28T00:00:00.000Z",
+        dbTransactionCount: 1,
+      },
+    });
+  });
+
+  it("save_scene_body_bundle: malformed arrays are rejected before native", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "save_scene_body_bundle",
+      {
+        payload: {
+          sceneId: "s1",
+          projectId: "p1",
+          includeSidecars: true,
+          contentJson: "{}",
+          charCount: 0,
+          placedBeatPreview: null,
+          unplacedBeatsDoc: "[]",
+          unplacedBeatPreview: null,
+          authorshipSpans: "not-an-array",
+          foreshadowSetups: [],
+          foreshadowPayoffs: [],
+          annotationAnchors: [],
+          beatMentions: [],
+          beatPovOverrides: [],
+          docContentSize: 2,
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("save_scene_body_bundle: malformed nested sidecars are rejected before native", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "save_scene_body_bundle",
+      {
+        payload: {
+          sceneId: "s1",
+          projectId: "p1",
+          includeSidecars: true,
+          contentJson: "{}",
+          charCount: 0,
+          placedBeatPreview: null,
+          unplacedBeatsDoc: "[]",
+          unplacedBeatPreview: null,
+          authorshipSpans: [
+            {
+              fromPos: 4,
+              toPos: 2,
+              source: "human",
+              model: null,
+              timestamp: null,
+              chatMsgId: null,
+              traceId: null,
+            },
+          ],
+          foreshadowSetups: [],
+          foreshadowPayoffs: [],
+          annotationAnchors: [],
+          beatMentions: [],
+          beatPovOverrides: [],
+          docContentSize: 2,
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   it("vacuum_database: renderer 引数を native へ渡さず null を返す", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -1310,6 +1421,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_ai_settings",
       "save_global_settings",
       "save_post_effect_annotations",
+      "save_scene_body_bundle",
       "seed_sample_workspace",
       "segment_bunsetsu",
       "semantic_chunk_context",
@@ -3126,9 +3238,9 @@ describe("Post-effect Phase 3d コマンド", () => {
 
     expect(env.ok).toBe(false);
     expect(methods.startPostEffectRun).not.toHaveBeenCalled();
-    expect(calls.filter((call) => call.method === "getAiSettings")).toHaveLength(
-      0,
-    );
+    expect(
+      calls.filter((call) => call.method === "getAiSettings"),
+    ).toHaveLength(0);
     expect(keyStore.getApiKeyForRequest).not.toHaveBeenCalled();
   });
 

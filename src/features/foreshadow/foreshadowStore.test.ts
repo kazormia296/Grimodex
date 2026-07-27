@@ -71,7 +71,7 @@ vi.mock("@/features/tree/store", () => ({
 }));
 
 vi.mock("@/features/tree/api", () => ({
-  loadSceneContent: vi.fn(),
+  loadSceneContents: vi.fn(),
   saveSceneContent: vi.fn(),
 }));
 
@@ -105,7 +105,7 @@ import {
   auditChapter,
   detectRelatedCodex,
 } from "./api";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
@@ -120,7 +120,7 @@ const mockReinsertOrphanSetup = vi.mocked(reinsertOrphanSetup);
 const mockProposePastSetups = vi.mocked(proposePastSetups);
 const mockAuditChapter = vi.mocked(auditChapter);
 const mockDetectRelatedCodex = vi.mocked(detectRelatedCodex);
-const mockLoadSceneContent = vi.mocked(loadSceneContent);
+const mockLoadSceneContents = vi.mocked(loadSceneContents);
 const mockSaveScene = vi.mocked(saveScene);
 const mockUseEditorStore = vi.mocked(useEditorStore);
 const mockUseSceneStore = vi.mocked(useSceneStore);
@@ -624,8 +624,8 @@ describe("foreshadowStore", () => {
         ],
         proposeResults: {},
       });
-      mockLoadSceneContent.mockImplementation(
-        async (id: string) => `body-${id}`,
+      mockLoadSceneContents.mockImplementation((ids: string[]) =>
+        Promise.resolve(new Map(ids.map((id) => [id, `body-${id}`]))),
       );
       mockDetectRelatedCodex.mockResolvedValue([]);
       mockProposePastSetups.mockResolvedValue([]);
@@ -656,6 +656,13 @@ describe("foreshadowStore", () => {
         { sceneId: "scene-a", orderIndex: 1 },
         { sceneId: "scene-b", orderIndex: 2 },
         { sceneId: "scene-c", orderIndex: 3 },
+      ]);
+      expect(mockLoadSceneContents).toHaveBeenCalledOnce();
+      expect(mockLoadSceneContents).toHaveBeenCalledWith([
+        "scene-a",
+        "scene-b",
+        "scene-c",
+        "scene-payoff",
       ]);
     });
 
@@ -698,7 +705,7 @@ describe("foreshadowStore", () => {
 
       expect(mockSaveScene).toHaveBeenCalledWith("scene-a");
       expect(mockSaveScene.mock.invocationCallOrder[0]).toBeLessThan(
-        mockLoadSceneContent.mock.invocationCallOrder[0],
+        mockLoadSceneContents.mock.invocationCallOrder[0],
       );
     });
 
@@ -729,8 +736,8 @@ describe("foreshadowStore", () => {
 
     beforeEach(() => {
       useForeshadowStore.setState({ items: [], auditResults: {} });
-      mockLoadSceneContent.mockImplementation(
-        async (id: string) => `body-${id}`,
+      mockLoadSceneContents.mockImplementation((ids: string[]) =>
+        Promise.resolve(new Map(ids.map((id) => [id, `body-${id}`]))),
       );
       mockDetectRelatedCodex.mockResolvedValue([]);
       mockAuditChapter.mockResolvedValue([]);
@@ -750,7 +757,7 @@ describe("foreshadowStore", () => {
 
       expect(mockSaveScene).toHaveBeenCalledWith("s-1");
       expect(mockSaveScene.mock.invocationCallOrder[0]).toBeLessThan(
-        mockLoadSceneContent.mock.invocationCallOrder[0],
+        mockLoadSceneContents.mock.invocationCallOrder[0],
       );
       expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
         expect.stringContaining("body-s-1"),
@@ -760,6 +767,8 @@ describe("foreshadowStore", () => {
         { id: "c-1", name: "王家の印章", summary: "失われた紋章" },
       ]);
       expect(req.scenes.map((s) => s.sceneId)).toEqual(["s-1", "s-2"]);
+      expect(mockLoadSceneContents).toHaveBeenCalledOnce();
+      expect(mockLoadSceneContents).toHaveBeenCalledWith(["s-1", "s-2"]);
     });
   });
 });

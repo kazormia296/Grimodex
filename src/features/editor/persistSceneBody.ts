@@ -1,8 +1,11 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { markStart, markEnd, recordCounter } from "@/lib/perfLog";
 import { countSceneBodyChars } from "@/features/editor/charCountForBody";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
-import { saveSceneContentInner } from "@/features/tree/api";
+import {
+  saveSceneContentInner,
+  type DerivedPreviews,
+} from "@/features/tree/api";
 import { serializeSceneWrite } from "@/features/tree/pendingSceneWrites";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
@@ -21,6 +24,10 @@ import { useChatStore } from "@/features/chat/chatStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { recordBodyMentionScans } from "@/features/codex/bodyMentionIndexState";
+import { isElectron } from "@/lib/shell";
+import { deriveSceneBodySnapshot } from "./sceneBodySnapshot";
+import { saveSceneBodyBundle } from "./sceneBodyBundleApi";
+import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
 
 interface PendingBodyMentionScan {
   projectId: string;
@@ -151,20 +158,37 @@ export async function persistSceneBody(
   id: string,
   doc: ProseMirrorNode,
 ): Promise<void> {
-  markStart("editor.coreSave.countChars");
-  const charCount = countSceneBodyChars(doc);
-  markEnd("editor.coreSave.countChars");
   const beats = useUnplacedBeatsStore.getState().getBeats(id);
-  const unplacedBeatsDoc = JSON.stringify(beats);
-  markStart("editor.coreSave.getJSON");
-  const sceneJsonStr = JSON.stringify(doc.toJSON());
-  markEnd("editor.coreSave.getJSON");
   const projectId = useTreeStore.getState().projectId;
 
   const fileBackedUri = useTreeStore
     .getState()
     .nodes.find((n) => n.id === id)?.sourceUri;
   const isFileBacked = !!fileBackedUri && isFileBackedNode(fileBackedUri);
+  const useNativeBundle = isElectron();
+
+  let nativeSnapshot: ReturnType<typeof deriveSceneBodySnapshot> | null = null;
+  let charCount: number;
+  let unplacedBeatsDoc: string;
+  let sceneJsonStr: string;
+  if (useNativeBundle) {
+    markStart("editor.coreSave.deriveSnapshot");
+    nativeSnapshot = deriveSceneBodySnapshot(doc, beats, !isFileBacked);
+    markEnd("editor.coreSave.deriveSnapshot");
+    charCount = nativeSnapshot.charCount;
+    unplacedBeatsDoc = nativeSnapshot.unplacedBeatsDoc;
+    sceneJsonStr = nativeSnapshot.contentJson;
+  } else {
+    // Browser fallback and the frozen Tauri compatibility shell retain the
+    // existing per-service path. Electron uses the domain bundle below.
+    markStart("editor.coreSave.countChars");
+    charCount = countSceneBodyChars(doc);
+    markEnd("editor.coreSave.countChars");
+    unplacedBeatsDoc = JSON.stringify(beats);
+    markStart("editor.coreSave.getJSON");
+    sceneJsonStr = JSON.stringify(doc.toJSON());
+    markEnd("editor.coreSave.getJSON");
+  }
 
   // content 書き込みと full-replace cascade (authorship / foreshadow /
   // annotation anchors) を **単一のチェーン単位** として実行する。cascade を
@@ -181,13 +205,33 @@ export async function persistSceneBody(
     contentUpdatedAt,
   } = await serializeSceneWrite(id, async () => {
     markStart("editor.coreSave.invokeSave");
-    const previews = await saveSceneContentInner(id, {
-      content: sceneJsonStr,
-      unplacedBeatsDoc,
-      charCount,
-    });
+    let previews: DerivedPreviews;
+    if (nativeSnapshot) {
+      recordCounter("editor.coreSave.domainIpc");
+      const bundledPreviews = await saveSceneBodyBundle({
+        ...nativeSnapshot,
+        sceneId: id,
+        projectId,
+        includeSidecars: !isFileBacked,
+      });
+      recordCounter(
+        "editor.coreSave.dbTransaction",
+        bundledPreviews.dbTransactionCount,
+      );
+      previews = bundledPreviews;
+    } else {
+      previews = await saveSceneContentInner(id, {
+        content: sceneJsonStr,
+        unplacedBeatsDoc,
+        charCount,
+      });
+    }
     markEnd("editor.coreSave.invokeSave");
-    if (!isFileBacked) {
+    if (nativeSnapshot && !isFileBacked) {
+      // The former POV cache helper bumped this revision after its DB writes.
+      // The bundle owns those writes now, so publish once after commit.
+      bumpMatrixDataVersion();
+    } else if (!nativeSnapshot && !isFileBacked) {
       markStart("editor.coreSave.saveAuthorship");
       await saveAuthorshipSpans(id, doc);
       markEnd("editor.coreSave.saveAuthorship");

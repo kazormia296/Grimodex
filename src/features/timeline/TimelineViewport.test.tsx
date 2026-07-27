@@ -17,6 +17,12 @@ function setReduceMotion(on: boolean) {
   }));
 }
 
+function svgTranslateY(element: Element): number {
+  const transform = element.getAttribute("transform") ?? "";
+  const match = /translate\(0[ ,](-?\d+(?:\.\d+)?)\)/.exec(transform);
+  return match ? Number(match[1]) : 0;
+}
+
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
 
 // buildPlotLaneModel を実装そのままの spy でラップする（挙動は actual と同一）。
@@ -1526,11 +1532,16 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     // t1(行0,y158) を y200 へドラッグ（2スレッドの帯 [158,214] 内）。mouseup 前を検証。
     fireEvent.mouseDown(l1, { clientX: 70, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 70, clientY: 200 });
-    // 左ガターのラベルの丸がカーソル Y へ即時追従。
-    const circle = getByTestId("plot-lane-label-t1").querySelector("circle");
-    expect(circle?.getAttribute("cy")).toBe("200");
-    // グラフ側のレーン（ヒット領域 = lane.y - LANE_HEIGHT/2 = 200-28）も一緒に動く。
-    expect(getByTestId("plot-lane-hit-t1").getAttribute("y")).toBe("172");
+    // topology 座標は不変のまま、ラベル/グラフ双方の group transform が同じ
+    // display Y を与える（rAF で React 全体を render しない）。
+    const labelGroup = getByTestId("plot-lane-label-t1");
+    const circle = labelGroup.querySelector("circle");
+    expect(Number(circle?.getAttribute("cy")) + svgTranslateY(labelGroup)).toBe(
+      200,
+    );
+    const hit = getByTestId("plot-lane-hit-t1");
+    const laneGroup = hit.closest("[data-lane-transform-id]")!;
+    expect(Number(hit.getAttribute("y")) + svgTranslateY(laneGroup)).toBe(172);
     fireEvent.mouseUp(document, { clientX: 70, clientY: 200 });
   });
 
@@ -1544,11 +1555,10 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     // 2スレッドの最終行 Y = 158 + 56 = 214。はるか下(2000)へドラッグ。
     fireEvent.mouseDown(l1, { clientX: 70, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 70, clientY: 2000 });
-    const cy = Number(
-      getByTestId("plot-lane-label-t1")
-        .querySelector("circle")
-        ?.getAttribute("cy"),
-    );
+    const labelGroup = getByTestId("plot-lane-label-t1");
+    const cy =
+      Number(labelGroup.querySelector("circle")?.getAttribute("cy")) +
+      svgTranslateY(labelGroup);
     expect(cy).toBe(214); // 最終行へクランプ（2000 まで追従しない）
     fireEvent.mouseUp(document, { clientX: 70, clientY: 2000 });
   });

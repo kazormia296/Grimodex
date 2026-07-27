@@ -19,7 +19,7 @@ import {
   detectRelatedCodex,
   type SceneForeshadowInfo,
 } from "./api";
-import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
+import { loadSceneContents, saveSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
@@ -773,20 +773,22 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         )
         .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
-      const pastScenes = await Promise.all(
-        sceneNodes.slice(0, 30).map(async (n, idx) => {
-          const content = await loadSceneContent(n.id);
-          const bodyText = prosemirrorToText(content);
-          return {
-            sceneId: n.id,
-            title: n.title,
-            excerpt: bodyText.slice(0, 3000),
-            orderIndex: idx + 1,
-          };
-        }),
-      );
+      const selectedSceneNodes = sceneNodes.slice(0, 30);
+      const sceneContents = await loadSceneContents([
+        ...selectedSceneNodes.map((scene) => scene.id),
+        foreshadow.payoffSceneId,
+      ]);
+      const pastScenes = selectedSceneNodes.map((scene, idx) => {
+        const bodyText = prosemirrorToText(sceneContents.get(scene.id) ?? "");
+        return {
+          sceneId: scene.id,
+          title: scene.title,
+          excerpt: bodyText.slice(0, 3000),
+          orderIndex: idx + 1,
+        };
+      });
 
-      const payoffContent = await loadSceneContent(foreshadow.payoffSceneId);
+      const payoffContent = sceneContents.get(foreshadow.payoffSceneId) ?? "";
       const payoffText = prosemirrorToText(payoffContent);
 
       const relatedCodex = await detectRelatedCodex(
@@ -1109,13 +1111,15 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         .filter((n) => n.nodeType === "scene" && n.parentId === chapterId)
         .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
 
-      const scenes = await Promise.all(
-        sceneNodes.map(async (n, i) => {
-          const content = await loadSceneContent(n.id);
-          const bodyText = prosemirrorToText(content);
-          return { sceneId: n.id, title: n.title, bodyText, orderIndex: i };
-        }),
+      const sceneContents = await loadSceneContents(
+        sceneNodes.map((scene) => scene.id),
       );
+      const scenes = sceneNodes.map((scene, orderIndex) => ({
+        sceneId: scene.id,
+        title: scene.title,
+        bodyText: prosemirrorToText(sceneContents.get(scene.id) ?? ""),
+        orderIndex,
+      }));
 
       const relatedCodex = await detectRelatedCodex(
         scenes.map((s) => s.bodyText).join("\n"),

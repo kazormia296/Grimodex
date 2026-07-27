@@ -39,7 +39,8 @@ import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
 import { effectiveDays } from "./chronicleAxis";
 import {
-  buildChronicleLayout,
+  buildChronicleWorldGeometry,
+  projectChronicleWorldGeometry,
   causalConflictPairSet,
   laneDupId,
   decodeLaneTarget,
@@ -692,40 +693,61 @@ export function ChroniclePanel() {
     () => causalConflictPairSet(causalConflicts),
     [causalConflicts],
   );
-
-  const layout = useMemo(
+  const layoutRelations = useMemo(
     () =>
-      buildChronicleLayout({
+      relations.map((relation) => ({
+        causeId: relation.causeId,
+        effectId: relation.effectId,
+      })),
+    [relations],
+  );
+
+  // event/lane/causal geometry is independent from horizontal pan. Zoom still
+  // changes pixel widths and lane packing, but viewStartDay only reprojects the
+  // already-built world plus the lightweight ruler/scroll geometry.
+  const worldLayout = useMemo(
+    () =>
+      buildChronicleWorldGeometry({
         events: layoutEvents,
         lanes,
-        view,
-        trackW,
+        pxPerDay: view.pxPerDay,
+        originDay: eff.dataStart,
         density,
         labelsOn,
-        calendar: cal,
-        hasCalendarAxis: eff.hasCalendarAxis,
-        dataStart: eff.dataStart,
-        dataEnd: eff.dataEnd,
-        relations: relations.map((r) => ({
-          causeId: r.causeId,
-          effectId: r.effectId,
-        })),
+        relations: layoutRelations,
         causalConflictPairs: causalPairs,
-        lang,
       }),
     [
       layoutEvents,
       lanes,
-      view,
-      trackW,
+      view.pxPerDay,
+      eff.dataStart,
       density,
       labelsOn,
+      layoutRelations,
+      causalPairs,
+    ],
+  );
+  const layout = useMemo(
+    () =>
+      projectChronicleWorldGeometry({
+        world: worldLayout,
+        view,
+        trackW,
+        calendar: cal,
+        hasCalendarAxis: eff.hasCalendarAxis,
+        dataStart: eff.dataStart,
+        dataEnd: eff.dataEnd,
+        lang,
+      }),
+    [
+      worldLayout,
+      view,
+      trackW,
       cal,
       eff.hasCalendarAxis,
       eff.dataStart,
       eff.dataEnd,
-      relations,
-      causalPairs,
       lang,
     ],
   );

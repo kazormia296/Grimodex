@@ -13,7 +13,8 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { type PlotPhaseType } from "@/db/schema";
 import { usePlotThreadStore } from "./plotThreadStore";
@@ -22,6 +23,21 @@ import {
   proposePlotThreads,
   type PlotThreadProposal,
 } from "./extractThreadsApi";
+
+export async function loadPlotThreadExtractionScenes(
+  sceneNodes: readonly Pick<TreeNodeData, "id" | "title">[],
+  loadContents: typeof loadSceneContents = loadSceneContents,
+) {
+  const contents = await loadContents(sceneNodes.map((scene) => scene.id));
+  return sceneNodes.map((scene, orderIndex) => ({
+    sceneId: scene.id,
+    title: scene.title,
+    // loadSceneContent returned "" for a missing row; keep that exact
+    // extraction input instead of silently dropping the scene.
+    bodyText: prosemirrorToText(contents.get(scene.id) ?? ""),
+    orderIndex,
+  }));
+}
 
 /**
  * Phase 4a: 既存本文（章/フォルダ）から LLM でプロットスレッド候補を抽出し、
@@ -77,14 +93,7 @@ export function PlotThreadExtractDialog({
         .getState()
         .nodes.filter((n) => n.nodeType === "scene" && n.parentId === folderId)
         .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
-      const scenes = await Promise.all(
-        sceneNodes.map(async (n, i) => ({
-          sceneId: n.id,
-          title: n.title,
-          bodyText: prosemirrorToText(await loadSceneContent(n.id)),
-          orderIndex: i,
-        })),
-      );
+      const scenes = await loadPlotThreadExtractionScenes(sceneNodes);
       const result = await proposePlotThreads({
         scenes,
         existingThreads: threads.map((th) => ({ name: th.name })),

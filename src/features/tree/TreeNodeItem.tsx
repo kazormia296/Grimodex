@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, memo } from "react";
-import type { RefObject } from "react";
+import type { CSSProperties, RefObject } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { useTranslation } from "react-i18next";
@@ -36,6 +36,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { getLiveFolderCharCount } from "./treeIndex";
 
 const STATUS_OPTIONS: SceneStatus[] = [
   "outline",
@@ -85,9 +86,8 @@ interface TreeNodeItemProps {
   isSelected: boolean;
   isExpanded: boolean;
   children?: React.ReactNode;
-  /** For folders, the flat list of leaf descendant ids whose charCount should
-   *  be summed for the running total. Undefined for leaves. */
-  leafDescendants?: string[];
+  /** Outline-mode synopsis, kept inside the measured virtual row. */
+  outlineSynopsis?: React.ReactNode;
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
@@ -109,11 +109,15 @@ interface TreeNodeItemProps {
   dragInProgress: boolean;
   /** Current view mode — synopsis tooltip shown only in "tree" mode */
   viewMode?: string;
+  /** TanStack Virtual positioning/measurement. Omitted by legacy renderers. */
+  virtualIndex?: number;
+  virtualStart?: number;
+  measureElement?: (element: HTMLLIElement | null) => void;
 }
 
 /** memo 化の前提: 全 props がスカラーか安定参照であること。
- *  node/leafDescendants は useScenesDerivedData の useMemo 産物、
- *  orderedNodesRef は ref。folder 行だけは children (毎 render 新規の
+ *  node は useScenesDerivedData の useMemo 産物、orderedNodesRef は ref。
+ *  folder 行だけは children (毎 render 新規の
  *  JSX element) を受けるため親の再レンダーに常に追従する (許容済み)。
  *  ドロップ指示 (data-drop-*) は props でなく useScenesDnd が DOM 属性を
  *  直接トグルし、ここでは data-[drop-*] variant で見た目だけ持つ。 */
@@ -124,7 +128,7 @@ function TreeNodeItemImpl({
   isSelected,
   isExpanded,
   children,
-  leafDescendants,
+  outlineSynopsis,
   showWordCounts,
   showStatusDots,
   showLabelDots,
@@ -136,6 +140,9 @@ function TreeNodeItemImpl({
   orderedNodesRef,
   dragInProgress,
   viewMode,
+  virtualIndex,
+  virtualStart,
+  measureElement,
 }: TreeNodeItemProps) {
   const __perfStart = performance.now();
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
@@ -151,10 +158,7 @@ function TreeNodeItemImpl({
   const fallbackCharCount = node.charCount ?? 0;
   const charCount = useTreeStore((s) => {
     if (isLeafForCount) return s.charCounts[node.id] ?? fallbackCharCount;
-    if (!leafDescendants) return 0;
-    let total = 0;
-    for (const id of leafDescendants) total += s.charCounts[id] ?? 0;
-    return total;
+    return getLiveFolderCharCount(s.nodes, s.charCounts, node.id);
   });
   const aiRatio = useTreeStore((s) => s.aiRatios[node.id] ?? 0);
 
@@ -187,8 +191,9 @@ function TreeNodeItemImpl({
     (el: HTMLLIElement | null) => {
       setDragRef(el);
       setDropRef(el);
+      measureElement?.(el);
     },
-    [setDragRef, setDropRef],
+    [setDragRef, setDropRef, measureElement],
   );
 
   // DragOverlay handles the visual ghost, so suppress transform on the original.
@@ -197,9 +202,17 @@ function TreeNodeItemImpl({
   // useScenesDnd が書く data-drop-* 属性 + className の data-[drop-*]
   // variant が担う。React の style オブジェクトに padding を含めると
   // ドラッグ中の再レンダーで直書き属性側の見た目と競合するため持たない。
-  const style = {
+  const style: CSSProperties = {
     opacity: isDragging ? 0.3 : 1,
     transition: "padding 100ms ease-out",
+    ...(virtualStart !== undefined
+      ? {
+          position: "absolute",
+          insetInline: 0,
+          top: 0,
+          transform: `translateY(${virtualStart}px)`,
+        }
+      : {}),
   };
 
   const focusEditorPanel = useCallback(() => {
@@ -313,6 +326,7 @@ function TreeNodeItemImpl({
       // ドラッグ中に直接トグルする (28px の隙間で挿入位置を示す)
       className="list-none data-[drop-before=true]:pt-7 data-[drop-after=true]:pb-7"
       data-node-id={node.id}
+      data-index={virtualIndex}
     >
       <ContextMenu>
         <ContextMenuTrigger asChild>
@@ -531,6 +545,8 @@ function TreeNodeItemImpl({
         </ContextMenuTrigger>
         <TreeContextMenu node={node} onStartRename={startEdit} />
       </ContextMenu>
+
+      {outlineSynopsis}
 
       {/* Children */}
       <AnimatePresence initial={false}>

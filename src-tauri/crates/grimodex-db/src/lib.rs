@@ -329,6 +329,7 @@ pub mod plot_threads;
 pub mod post_effect;
 pub mod runtime_threads;
 pub mod sample_seed;
+pub mod scene_body;
 pub mod schema_contract;
 pub mod trash_bin;
 pub mod undo_journal;

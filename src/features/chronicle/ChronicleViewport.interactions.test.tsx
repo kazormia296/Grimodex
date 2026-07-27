@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import type { ComponentProps } from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { ChronicleViewport } from "./ChronicleViewport";
 import {
@@ -116,6 +116,7 @@ function track(container: HTMLElement) {
 
 describe("ChronicleViewport interactions (happy-dom math)", () => {
   beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
 
   it("空白ダブルクリックで onCreateAt(day, codexId)", () => {
     const props = makeProps();
@@ -845,6 +846,38 @@ describe("ChronicleViewport — キーボード代替（a11y: ズーム/パン/�
 });
 
 describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライブエッジ", () => {
+  it("閾値未満の空白パン preview は mouseup で解除される", () => {
+    let frame: FrameRequestCallback = () => {};
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frame = callback;
+        return 1;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const onViewChange = vi.fn();
+    const props = makeProps({ onViewChange });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    const world = tr.querySelector(
+      "[data-chronicle-world-layer]",
+    ) as HTMLElement;
+    const initialTransform = world.style.transform;
+
+    fireEvent.mouseDown(tr, { button: 0, clientX: 300, clientY: 100 });
+    fireEvent.mouseMove(document, { clientX: 302, clientY: 100 });
+    frame(0);
+    expect(world.style.transform).not.toBe(initialTransform);
+
+    fireEvent.mouseUp(document, { clientX: 302, clientY: 100 });
+
+    expect(onViewChange).not.toHaveBeenCalled();
+    expect(world.style.transform).toBe(initialTransform);
+  });
+
   it("中ボタンドラッグで横パン（onViewChange）＋トラックが grabbing", () => {
     const onViewChange = vi.fn();
     const props = makeProps({ onViewChange });
@@ -855,12 +888,14 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
     expect(tr.style.cursor).toBe("grabbing");
     fireEvent.mouseMove(document, { clientX: 160, clientY: 20 });
+    // pointermove 中は DOM transform のみ。global/local view 通知は操作終了時に集約。
+    expect(onViewChange).not.toHaveBeenCalled();
+    fireEvent.mouseUp(document, { clientX: 160, clientY: 20 });
     // panByPx(dx=60): viewStartDay = 0 - 60/2 = -30
     const lastCall = onViewChange.mock.calls.at(-1)![0] as {
       viewStartDay: number;
     };
     expect(lastCall.viewStartDay).toBeCloseTo(-30);
-    fireEvent.mouseUp(document, { clientX: 160, clientY: 20 });
     expect(tr.style.cursor).not.toBe("grabbing");
   });
 
@@ -892,9 +927,10 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     // 斜めドラッグ: 横 +60 / 縦 上へ 60。縦: 100 - (40 - 100) = 160
     fireEvent.mouseMove(document, { clientX: 360, clientY: 40 });
     expect(scrollArea.scrollTop).toBe(160);
-    // 横パン（従来挙動）も維持される
-    expect(onViewChange).toHaveBeenCalled();
+    expect(onViewChange).not.toHaveBeenCalled();
     fireEvent.mouseUp(document, { clientX: 360, clientY: 40 });
+    // 横パンは mouseup で 1 回だけ確定される。
+    expect(onViewChange).toHaveBeenCalledTimes(1);
     // ドラッグ扱いなので位置選択は発火しない
     expect(props.onSelectPosition).not.toHaveBeenCalled();
   });

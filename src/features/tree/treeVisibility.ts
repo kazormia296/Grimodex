@@ -1,4 +1,125 @@
 import type { TreeNodeData } from "./treeStore";
+import type { TreeIndex } from "./treeIndex";
+
+export interface VisibleTreeRow {
+  node: TreeNodeData;
+  depth: number;
+}
+
+export interface VisibleTreeOptions {
+  expandedIds: readonly string[];
+  query: string;
+  statusFilter?: string | null;
+  labelFilter?: readonly string[];
+  nodeLabels?: Record<string, string[]>;
+  threadFilter?: readonly string[];
+  nodeThreadIds?: Record<string, string[]>;
+}
+
+/**
+ * Calculate every visibility propagation bit once, then flatten in one DFS.
+ * This is the indexed path used by ScenesPanel. The legacy per-node helpers
+ * below remain exported for small standalone consumers and compatibility.
+ */
+export function deriveVisibleTreeRows(
+  index: TreeIndex,
+  options: VisibleTreeOptions,
+): VisibleTreeRow[] {
+  const {
+    expandedIds,
+    query,
+    statusFilter,
+    labelFilter = [],
+    nodeLabels = {},
+    threadFilter = [],
+    nodeThreadIds = {},
+  } = options;
+  const normalizedQuery = query.toLowerCase();
+  const expanded = new Set(expandedIds);
+  const labelIds = new Set(labelFilter);
+  const threadIds = new Set(threadFilter);
+  const queryActive = normalizedQuery.length > 0;
+  const threadActive = threadIds.size > 0;
+  const subtreeTitleMatch = new Map<string, boolean>();
+  const subtreeThreadMatch = new Map<string, boolean>();
+  const visiting = new Set<string>();
+
+  const assignedMatches = (
+    assignments: readonly string[] | undefined,
+    selected: ReadonlySet<string>,
+  ): boolean => assignments?.some((id) => selected.has(id)) ?? false;
+
+  const collectPropagation = (node: TreeNodeData): void => {
+    if (subtreeTitleMatch.has(node.id) || visiting.has(node.id)) return;
+    visiting.add(node.id);
+
+    let titleMatch =
+      queryActive && node.title.toLowerCase().includes(normalizedQuery);
+    let threadMatch =
+      (node.nodeType === "scene" || node.nodeType === "note") &&
+      threadActive &&
+      assignedMatches(nodeThreadIds[node.id], threadIds);
+
+    if (node.nodeType === "folder") {
+      for (const child of index.childrenByParent.get(node.id) ?? []) {
+        collectPropagation(child);
+        titleMatch ||= subtreeTitleMatch.get(child.id) ?? false;
+        threadMatch ||= subtreeThreadMatch.get(child.id) ?? false;
+      }
+    }
+
+    visiting.delete(node.id);
+    subtreeTitleMatch.set(node.id, titleMatch);
+    subtreeThreadMatch.set(node.id, threadMatch);
+  };
+
+  for (const node of index.nodeById.values()) collectPropagation(node);
+
+  const isVisible = (node: TreeNodeData): boolean => {
+    if (
+      statusFilter &&
+      node.nodeType === "scene" &&
+      node.status !== statusFilter
+    ) {
+      return false;
+    }
+    const isLeaf = node.nodeType === "scene" || node.nodeType === "note";
+    if (
+      labelIds.size > 0 &&
+      isLeaf &&
+      !assignedMatches(nodeLabels[node.id], labelIds)
+    ) {
+      return false;
+    }
+    if (threadActive) {
+      if (isLeaf) {
+        if (!assignedMatches(nodeThreadIds[node.id], threadIds)) return false;
+      } else if (!(subtreeThreadMatch.get(node.id) ?? false)) {
+        return false;
+      }
+    }
+    return !queryActive || (subtreeTitleMatch.get(node.id) ?? false);
+  };
+
+  const rows: VisibleTreeRow[] = [];
+  const walkedFolders = new Set<string>();
+  const flatten = (parentId: string | null, depth: number): void => {
+    for (const node of index.childrenByParent.get(parentId) ?? []) {
+      if (!isVisible(node)) continue;
+      rows.push({ node, depth });
+      if (
+        node.nodeType === "folder" &&
+        !walkedFolders.has(node.id) &&
+        (expanded.has(node.id) || queryActive || threadActive)
+      ) {
+        walkedFolders.add(node.id);
+        flatten(node.id, depth + 1);
+      }
+    }
+  };
+  flatten(null, 0);
+  return rows;
+}
 
 function hasMatchingDescendant(
   id: string,

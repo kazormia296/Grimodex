@@ -8,7 +8,8 @@ import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
-import { listNodes, loadSceneContent } from "@/features/tree/api";
+import { listNodes, loadSceneContents } from "@/features/tree/api";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 
@@ -17,11 +18,36 @@ import { useLintProjectStore } from "./lintProjectStore";
 import { buildBlocksFromJson } from "./projectScan";
 import type { LintDisableRange } from "./lintDisableWalker";
 
-interface SceneDisables {
+export interface SceneDisables {
   sceneId: string;
   sceneTitle: string;
   sceneText: string;
   disables: LintDisableRange[];
+}
+
+export async function collectStoredSceneDisables(
+  scenes: readonly Pick<TreeNodeData, "id" | "title">[],
+  loadContents: typeof loadSceneContents = loadSceneContents,
+): Promise<SceneDisables[]> {
+  // Preserve the old per-scene best-effort behavior: a failed batch behaves
+  // like every individual scene load failed, while missing rows remain empty.
+  const contents = await loadContents(scenes.map((scene) => scene.id)).catch(
+    () => new Map<string, string>(),
+  );
+  const result: SceneDisables[] = [];
+  for (const scene of scenes) {
+    const { sceneText, disables } = buildBlocksFromJson(
+      contents.get(scene.id) ?? "",
+    );
+    if (disables.length === 0) continue;
+    result.push({
+      sceneId: scene.id,
+      sceneTitle: scene.title,
+      sceneText,
+      disables,
+    });
+  }
+  return result;
 }
 
 /**
@@ -135,24 +161,7 @@ export function DisablesView() {
       const scenes = nodes
         .filter((n) => n.nodeType === "scene" && n.id !== currentSceneId)
         .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-      const result: SceneDisables[] = [];
-      for (const node of scenes) {
-        try {
-          const content = await loadSceneContent(node.id);
-          const { sceneText, disables } = buildBlocksFromJson(content);
-          if (disables.length > 0) {
-            result.push({
-              sceneId: node.id,
-              sceneTitle: node.title,
-              sceneText,
-              disables,
-            });
-          }
-        } catch {
-          // Skip scenes we couldn't load — don't block the whole list
-          // on a single failure.
-        }
-      }
+      const result = await collectStoredSceneDisables(scenes);
       setOtherScenes(result);
     } finally {
       setLoading(false);

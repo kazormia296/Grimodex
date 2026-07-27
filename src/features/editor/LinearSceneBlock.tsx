@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
@@ -59,7 +59,7 @@ import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
 import i18next from "@/lib/i18n";
 import { useTranslation } from "react-i18next";
-import type { SceneStatus } from "@/features/tree/treeStore";
+import type { SceneStatus, TreeNodeData } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useLinearInlineAi } from "./useLinearInlineAi";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
@@ -72,6 +72,7 @@ import {
   createEditorInstanceId,
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
+import { getTreeIndex } from "@/features/tree/treeIndex";
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -80,6 +81,8 @@ const LINEAR_LIVE_GROUP = 2;
 
 interface LinearSceneBlockProps {
   sceneId: string;
+  /** Parent-derived metadata avoids a nodes.find() selector in every block. */
+  scene?: TreeNodeData;
   isMounted: boolean;
   isActive: boolean;
   placeholderHeight: number;
@@ -87,8 +90,9 @@ interface LinearSceneBlockProps {
   onFocus: (sceneId: string, editor: Editor) => void;
 }
 
-export function LinearSceneBlock({
+function LinearSceneBlockImpl({
   sceneId,
+  scene,
   isMounted,
   isActive,
   placeholderHeight,
@@ -101,6 +105,7 @@ export function LinearSceneBlock({
       {isMounted ? (
         <MountedSceneBlock
           sceneId={sceneId}
+          scene={scene}
           isActive={isActive}
           placeholderHeight={placeholderHeight}
           onHeightChange={onHeightChange}
@@ -113,8 +118,11 @@ export function LinearSceneBlock({
   );
 }
 
+export const LinearSceneBlock = memo(LinearSceneBlockImpl);
+
 interface MountedSceneBlockProps {
   sceneId: string;
+  scene?: TreeNodeData;
   isActive: boolean;
   /** ロード中に skeleton を placeholder と同寸で出すための推定 block size。 */
   placeholderHeight: number;
@@ -124,6 +132,7 @@ interface MountedSceneBlockProps {
 
 function MountedSceneBlock({
   sceneId,
+  scene,
   isActive,
   placeholderHeight,
   onHeightChange,
@@ -133,7 +142,15 @@ function MountedSceneBlock({
   const lang = useCurrentProject()?.language;
   const isEnglish = lang === "en";
   const filterSource = useAttributionStore((s) => s.filterSource);
-  const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
+  const fallbackNode = useTreeStore((s) =>
+    scene ? null : (getTreeIndex(s.nodes).nodeById.get(sceneId) ?? null),
+  );
+  const activeNode = scene ?? fallbackNode;
+  const nodeStatusRef = useRef<SceneStatus | null>(
+    (activeNode?.status as SceneStatus | null | undefined) ?? null,
+  );
+  nodeStatusRef.current =
+    (activeNode?.status as SceneStatus | null | undefined) ?? null;
   const title = activeNode?.title ?? "";
   const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
   const documentKey = useMemo<DocumentKey>(
@@ -331,13 +348,7 @@ function MountedSceneBlock({
           const count = getDocText(e.state.doc).length;
           if (count > 0) {
             wasEmptyRef.current = false;
-            const nodeStatus = useTreeStore
-              .getState()
-              .nodes.find((n) => n.id === sceneId)?.status as
-              | SceneStatus
-              | null
-              | undefined;
-            if (shouldAutoDraftTransition(count, true, nodeStatus ?? null)) {
+            if (shouldAutoDraftTransition(count, true, nodeStatusRef.current)) {
               useTreeStore
                 .getState()
                 .setStatus(sceneId, "draft")

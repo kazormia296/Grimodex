@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
     codexEntries: [] as unknown[],
     activeChatSceneId: null as string | null,
     fileBacked: false,
+    electron: false,
   },
   saveSceneContent: vi.fn(async () => ({
     placedBeatPreview: null,
@@ -44,9 +45,36 @@ const h = vi.hoisted(() => ({
   setNodePreview: vi.fn(),
   refreshAiRatio: vi.fn(() => Promise.resolve()),
   refreshContextLayers: vi.fn(() => Promise.resolve()),
+  deriveSceneBodySnapshot: vi.fn(() => ({
+    contentJson: JSON.stringify({ type: "doc", content: [] }),
+    charCount: 42,
+    placedBeatPreview: null,
+    unplacedBeatsDoc: "[]",
+    unplacedBeatPreview: null,
+    authorshipSpans: [],
+    foreshadowSetups: [],
+    foreshadowPayoffs: [],
+    annotationAnchors: [],
+    beatMentions: [],
+    beatPovOverrides: [],
+    docContentSize: 2,
+  })),
+  saveSceneBodyBundle: vi.fn(async () => ({
+    placedBeatPreview: null,
+    unplacedBeatPreview: null,
+    contentVersion: 2,
+    contentUpdatedAt: "2026-07-28T00:00:00.000Z",
+    dbTransactionCount: 1,
+  })),
+  bumpMatrixDataVersion: vi.fn(),
+  recordCounter: vi.fn(),
 }));
 
-vi.mock("@/lib/perfLog", () => ({ markStart: vi.fn(), markEnd: vi.fn() }));
+vi.mock("@/lib/perfLog", () => ({
+  markStart: vi.fn(),
+  markEnd: vi.fn(),
+  recordCounter: h.recordCounter,
+}));
 vi.mock("@/lib/debugLog", () => ({
   debugLog: { error: vi.fn(), warn: vi.fn() },
   errorDetail: (e: unknown) => e,
@@ -122,6 +150,18 @@ vi.mock("@/features/chat/chatStore", () => ({
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleSceneIndex: h.scheduleSceneIndex,
 }));
+vi.mock("@/lib/shell", () => ({
+  isElectron: () => h.state.electron,
+}));
+vi.mock("@/features/editor/sceneBodySnapshot", () => ({
+  deriveSceneBodySnapshot: h.deriveSceneBodySnapshot,
+}));
+vi.mock("@/features/editor/sceneBodyBundleApi", () => ({
+  saveSceneBodyBundle: h.saveSceneBodyBundle,
+}));
+vi.mock("@/features/matrix/matrixDataVersion", () => ({
+  bumpMatrixDataVersion: h.bumpMatrixDataVersion,
+}));
 
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
 
@@ -134,9 +174,40 @@ beforeEach(() => {
   h.state.codexEntries = [];
   h.state.activeChatSceneId = null;
   h.state.fileBacked = false;
+  h.state.electron = false;
 });
 
 describe("persistSceneBody — DB-native scene", () => {
+  it("Electron uses one derived snapshot and one domain IPC for content + sidecars", async () => {
+    h.state.electron = true;
+
+    await persistSceneBody("scene-1", fakeDoc);
+
+    expect(h.deriveSceneBodySnapshot).toHaveBeenCalledWith(fakeDoc, [], true);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledTimes(1);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sceneId: "scene-1",
+        projectId: "proj-1",
+        includeSidecars: true,
+        contentJson: JSON.stringify(DOC_JSON),
+        charCount: 42,
+      }),
+    );
+    expect(h.saveSceneContent).not.toHaveBeenCalled();
+    expect(h.saveAuthorshipSpans).not.toHaveBeenCalled();
+    expect(h.saveForeshadowAnchors).not.toHaveBeenCalled();
+    expect(h.saveAnnotationAnchors).not.toHaveBeenCalled();
+    expect(h.upsertSceneBeatMentions).not.toHaveBeenCalled();
+    expect(h.upsertSceneBeatPovOverrides).not.toHaveBeenCalled();
+    expect(h.bumpMatrixDataVersion).toHaveBeenCalledTimes(1);
+    expect(h.recordCounter).toHaveBeenCalledWith("editor.coreSave.domainIpc");
+    expect(h.recordCounter).toHaveBeenCalledWith(
+      "editor.coreSave.dbTransaction",
+      1,
+    );
+  });
+
   it("saves content with serialized doc JSON + char count", async () => {
     await persistSceneBody("scene-1", fakeDoc);
     expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
@@ -246,6 +317,28 @@ describe("persistSceneBody — file-backed scene", () => {
     expect(h.saveAuthorshipSpans).not.toHaveBeenCalled();
     expect(h.saveForeshadowAnchors).not.toHaveBeenCalled();
     expect(h.saveAnnotationAnchors).not.toHaveBeenCalled();
+  });
+
+  it("uses the Electron bundle without sidecars and preserves write-back", async () => {
+    h.state.electron = true;
+
+    await persistSceneBody("scene-1", fakeDoc);
+
+    expect(h.deriveSceneBodySnapshot).toHaveBeenCalledWith(fakeDoc, [], false);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledTimes(1);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sceneId: "scene-1",
+        includeSidecars: false,
+      }),
+    );
+    expect(h.saveSceneContent).not.toHaveBeenCalled();
+    expect(h.bumpMatrixDataVersion).not.toHaveBeenCalled();
+    expect(h.scheduleWriteBack).toHaveBeenCalledWith(
+      "scene-1",
+      "file:///x.md",
+      JSON.stringify(DOC_JSON),
+    );
   });
 });
 

@@ -10,12 +10,16 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { savePlacedBeatPreviewOnly } from "@/features/tree/api";
-import {
-  extractPlacedBeatPreview,
-  extractPlacedBeatPreviewFromDoc,
-} from "@/features/editor/beat/placedBeatPreview";
+import { extractPlacedBeatPreview } from "@/features/editor/beat/placedBeatPreview";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { transactionTouchesSceneBeat } from "@/features/editor/beat/transactionTouchesSceneBeat";
+import {
+  buildSceneBeatIndex,
+  mapSceneBeatIndex,
+  placedBeatPreviewFromIndex,
+  updateSceneBeatIndex,
+  type SceneBeatIndex,
+} from "@/features/editor/beat/sceneBeatIndex";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { uiUpdateEvent } from "@/features/agent-writes/event";
@@ -658,6 +662,10 @@ export function EditorPane({
           }),
     [isFileBacked],
   );
+  const sceneBeatIndexRef = useRef<{
+    sceneId: string;
+    index: SceneBeatIndex;
+  } | null>(null);
   const editor = useEditor(
     {
       extensions: editorExtensions,
@@ -867,7 +875,7 @@ export function EditorPane({
         // state に置くとペイン全体が再レンダーされるため分離した）。
         markEnd("editor.onUpdate");
       },
-      onTransaction({ editor: e, transaction }) {
+      onTransaction({ transaction }) {
         if (!transaction.docChanged) return;
         const sid = saveSceneIdRef.current;
         // 執筆タイムラプス: scene/codex/snippet いずれの body 編集も capture する。
@@ -914,10 +922,52 @@ export function EditorPane({
         }
         if (isEntryMode) return;
         if (!sid) return;
+
+        const existingIndex = sceneBeatIndexRef.current;
+        // A scene load replaces the entire document. Build the new scene's
+        // index once instead of first scanning the previous scene merely to
+        // apply the replacement transaction.
+        if (
+          isApplyingExternalUpdate.current &&
+          existingIndex?.sceneId !== sid
+        ) {
+          sceneBeatIndexRef.current = {
+            sceneId: sid,
+            index: buildSceneBeatIndex(transaction.doc),
+          };
+          return;
+        }
+
+        const sourceIndex =
+          existingIndex?.sceneId === sid &&
+          existingIndex.index.doc === transaction.before
+            ? existingIndex.index
+            : buildSceneBeatIndex(transaction.before);
+
         // Ordinary paragraph edits cannot change placed Beat membership or its
-        // preview. Avoid three whole-document walks on every keystroke; the
-        // detector remains conservative for unknown ProseMirror step shapes.
-        if (!transactionTouchesSceneBeat(transaction)) return;
+        // preview. Keep Beat positions current through the StepMap, but perform
+        // no document traversal.
+        if (!transactionTouchesSceneBeat(transaction)) {
+          sceneBeatIndexRef.current = {
+            sceneId: sid,
+            index: mapSceneBeatIndex(
+              sourceIndex,
+              transaction.mapping,
+              transaction.doc,
+            ),
+          };
+          return;
+        }
+
+        const beatUpdate = updateSceneBeatIndex(sourceIndex, transaction);
+        sceneBeatIndexRef.current = {
+          sceneId: sid,
+          index: beatUpdate.index,
+        };
+        // Peer sync, document load, and sidecar mark application must update
+        // the local index but never reconcile persisted unplaced state.
+        if (isApplyingExternalUpdate.current) return;
+
         markStart("editor.onTransaction");
 
         // Reconcile sceneBeat ↔ unplacedBeatsStore for transactions that
@@ -926,59 +976,25 @@ export function EditorPane({
         //   Appear in doc + still in store    → drop from store (Unplace → Undo,
         //                                       prevents the same id showing up
         //                                       in both lists in the Grid).
-        markStart("editor.onTransaction.beatScan");
-        const oldBeats = new Map<
-          string,
-          {
-            beatType: string;
-            pov: string | null;
-            content: unknown[];
-          }
-        >();
-        transaction.before.descendants((node) => {
-          if (node.type.name === "sceneBeat") {
-            const id = node.attrs.id as string | null;
-            if (id) {
-              oldBeats.set(id, {
-                beatType: (node.attrs.beatType ?? "free") as string,
-                pov: (node.attrs.pov ?? null) as string | null,
-                content: node.content.toJSON() as unknown[],
-              });
-            }
-            return false;
-          }
-          return true;
-        });
-
-        const newIds = new Set<string>();
-        e.state.doc.descendants((node) => {
-          if (node.type.name === "sceneBeat") {
-            const id = node.attrs.id as string | null;
-            if (id) newIds.add(id);
-            return false;
-          }
-          return true;
-        });
-        markEnd("editor.onTransaction.beatScan");
-
         const store = useUnplacedBeatsStore.getState();
+        const unplacedIds = new Set(store.getBeats(sid).map((beat) => beat.id));
 
-        for (const [id, snap] of oldBeats) {
-          if (newIds.has(id)) continue;
-          if (store.getBeats(sid).some((b) => b.id === id)) continue;
+        for (const snap of beatUpdate.removed) {
+          if (unplacedIds.has(snap.id)) continue;
           store.addBeat(sid, {
-            id,
+            id: snap.id,
             beatType: snap.beatType as UnplacedBeat["beatType"],
             pov: snap.pov,
             collapsed: false,
             content: snap.content as UnplacedBeat["content"],
           });
+          unplacedIds.add(snap.id);
         }
 
-        for (const id of newIds) {
-          if (oldBeats.has(id)) continue;
-          if (!store.getBeats(sid).some((b) => b.id === id)) continue;
+        for (const id of beatUpdate.addedIds) {
+          if (!unplacedIds.has(id)) continue;
           store.removeBeat(sid, id);
+          unplacedIds.delete(id);
         }
 
         // Live-sync the Grid preview cache (treeStore) so the Grid panel sees
@@ -986,7 +1002,7 @@ export function EditorPane({
         // Phase 4: 打鍵 50/s の経路。setNodePreview が同値 skip + nodes[] 非更新
         // なので、whole-array selector 29 サイトは notify されない。
         markStart("editor.onTransaction.treeMirror");
-        const placed = extractPlacedBeatPreviewFromDoc(e.state.doc);
+        const placed = placedBeatPreviewFromIndex(beatUpdate.index);
         const unplaced = extractUnplacedBeatPreview(store.getBeats(sid));
         useTreeStore.getState().setNodePreview(sid, {
           placed: placed === "[]" ? null : placed,

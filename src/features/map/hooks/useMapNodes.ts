@@ -44,6 +44,67 @@ export function stickyRotation(id: string): number {
   return ((Math.abs(hash) % 1000) / 1000) * 5 - 2.5;
 }
 
+export function countStickiesByBranch(
+  stickies: readonly MapSticky[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const sticky of stickies) {
+    if (!sticky.aiBranchId) continue;
+    counts.set(sticky.aiBranchId, (counts.get(sticky.aiBranchId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function shallowRecordEqual(
+  a: Record<string, unknown> | undefined,
+  b: Record<string, unknown> | undefined,
+  ignoreFunctions = false,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    const av = a[key];
+    const bv = b[key];
+    if (
+      ignoreFunctions &&
+      typeof av === "function" &&
+      typeof bv === "function"
+    ) {
+      continue;
+    }
+    if (!Object.is(av, bv)) return false;
+  }
+  return true;
+}
+
+/**
+ * React Flow は node object identity が変わると node component を再評価する。
+ * builder が作る callback は再構築ごとに新参照になるため、表示データと座標が同じ
+ * node は callback の参照差だけを理由に差し替えない。
+ */
+export function mapNodePresentationEqual(previous: Node, next: Node): boolean {
+  return (
+    previous.type === next.type &&
+    previous.className === next.className &&
+    previous.zIndex === next.zIndex &&
+    previous.selected === next.selected &&
+    previous.dragging === next.dragging &&
+    previous.measured === next.measured &&
+    previous.position.x === next.position.x &&
+    previous.position.y === next.position.y &&
+    shallowRecordEqual(
+      previous.style as Record<string, unknown> | undefined,
+      next.style as Record<string, unknown> | undefined,
+    ) &&
+    shallowRecordEqual(
+      previous.data as Record<string, unknown>,
+      next.data as Record<string, unknown>,
+      true,
+    )
+  );
+}
+
 interface UseMapNodesInput {
   boardId: string | null;
   positions: MapNodePositionRecord[];
@@ -122,6 +183,34 @@ export function useMapNodes({
 
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
+
+  // 表示が同一の node は object identity を再利用するため、node.data 内の
+  // callback closure 自体も再利用される。外部 callback/setter は ref 経由で
+  // 最新値へ委譲し、再描画を増やさず stale callback を防ぐ。
+  const nodeCallbacksRef = useRef({
+    setFrames,
+    setStickies,
+    setAiBranches,
+    setPositions,
+    updateNodeTitle,
+    updateSynopsis,
+    onStickyExitComplete,
+    onBranchFrom,
+    onAdopt,
+    onReject,
+  });
+  nodeCallbacksRef.current = {
+    setFrames,
+    setStickies,
+    setAiBranches,
+    setPositions,
+    updateNodeTitle,
+    updateSynopsis,
+    onStickyExitComplete,
+    onBranchFrom,
+    onAdopt,
+    onReject,
+  };
 
   // buildNodes は座標 drag のたび re-run したくないので positions そのものを
   // deps に入れていない。が、picker 経由で新規 entity を Map に追加する経路は
@@ -274,14 +363,16 @@ export function useMapNodes({
                 borderColor: f.borderColor,
                 onTitleChange: async (title: string) => {
                   await updateFrame(f.id, { title });
-                  setFrames((prev) =>
+                  nodeCallbacksRef.current.setFrames((prev) =>
                     prev.map((fr) => (fr.id === f.id ? { ...fr, title } : fr)),
                   );
                 },
                 onDelete: async () => {
                   const cap = { ...f };
                   await deleteFrame(f.id);
-                  setFrames((prev) => prev.filter((fr) => fr.id !== f.id));
+                  nodeCallbacksRef.current.setFrames((prev) =>
+                    prev.filter((fr) => fr.id !== f.id),
+                  );
 
                   if (!useGlobalHistoryStore.getState().isReplaying) {
                     useGlobalHistoryStore.getState().push({
@@ -299,11 +390,14 @@ export function useMapNodes({
                           background: cap.background ?? undefined,
                           borderColor: cap.borderColor ?? undefined,
                         });
-                        setFrames((prev) => [...prev, recreated]);
+                        nodeCallbacksRef.current.setFrames((prev) => [
+                          ...prev,
+                          recreated,
+                        ]);
                       },
                       async redo() {
                         await deleteFrame(cap.id);
-                        setFrames((prev) =>
+                        nodeCallbacksRef.current.setFrames((prev) =>
                           prev.filter((fr) => fr.id !== cap.id),
                         );
                       },
@@ -357,10 +451,10 @@ export function useMapNodes({
                 corkboardFeel,
                 rotation,
                 onTitleChange: async (title: string) => {
-                  await updateNodeTitle(n.id, title);
+                  await nodeCallbacksRef.current.updateNodeTitle(n.id, title);
                 },
                 onSynopsisChange: async (synopsis: string) => {
-                  await updateSynopsis(n.id, synopsis);
+                  await nodeCallbacksRef.current.updateSynopsis(n.id, synopsis);
                 },
                 onOpen: () => {
                   openEditorDocument(
@@ -375,7 +469,7 @@ export function useMapNodes({
                   );
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
@@ -403,7 +497,7 @@ export function useMapNodes({
                   void requestOpenInCodex(e.id);
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
@@ -432,7 +526,7 @@ export function useMapNodes({
                 title: s.title || null,
                 content: s.content,
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
@@ -472,7 +566,7 @@ export function useMapNodes({
                   );
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
@@ -511,9 +605,10 @@ export function useMapNodes({
                 // branchAttached: まだ branch に属するか (採用で外れる) = 採用/不採用 UI の表示条件。
                 aiDerived: st.aiDerived === 1,
                 branchAttached: st.aiBranchId !== null,
-                onAdopt: () => onAdopt?.(st.id),
-                onReject: () => onReject?.(st.id),
-                onExitComplete: onStickyExitComplete,
+                onAdopt: () => nodeCallbacksRef.current.onAdopt?.(st.id),
+                onReject: () => nodeCallbacksRef.current.onReject?.(st.id),
+                onExitComplete: (id: string) =>
+                  nodeCallbacksRef.current.onStickyExitComplete?.(id),
                 onUpdate: async (updates: {
                   title?: string;
                   body?: string;
@@ -529,7 +624,7 @@ export function useMapNodes({
                     ...updates,
                     previewText: preview ?? updates.previewText,
                   });
-                  setStickies((prev) =>
+                  nodeCallbacksRef.current.setStickies((prev) =>
                     prev.map((s) =>
                       s.id === st.id
                         ? {
@@ -543,13 +638,14 @@ export function useMapNodes({
                   );
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
         : [];
 
       // AI Branch nodes
+      const stickyCountByBranchId = countStickiesByBranch(stickies);
       const aiBranchPosMap = new Map<string, { x: number; y: number }>();
       for (const p of currentPositions) {
         if (p.aiBranchId) {
@@ -562,9 +658,6 @@ export function useMapNodes({
       const aiBranchNodes: Node[] = show.aiBranch
         ? aiBranches.map((ab, idx) => {
             const key = `ai_branch:${ab.id}`;
-            const derivedStickyCount = stickies.filter(
-              (s) => s.aiBranchId === ab.id,
-            ).length;
             return {
               id: key,
               type: "ai_branch",
@@ -577,7 +670,7 @@ export function useMapNodes({
               data: {
                 prompt: ab.prompt,
                 sessionId: ab.sessionId,
-                derivedStickyCount,
+                derivedStickyCount: stickyCountByBranchId.get(ab.id) ?? 0,
                 onOpenChat: () => {
                   if (ab.sessionId) {
                     useChatStore.getState().selectSession(ab.sessionId);
@@ -588,9 +681,11 @@ export function useMapNodes({
                     ? await getAiBranchSnapshot(ab.id)
                     : null;
                   await deleteAiBranch(ab.id);
-                  setAiBranches((prev) => prev.filter((b) => b.id !== ab.id));
+                  nodeCallbacksRef.current.setAiBranches((prev) =>
+                    prev.filter((b) => b.id !== ab.id),
+                  );
                   if (snapshot) {
-                    setPositions((prev) =>
+                    nodeCallbacksRef.current.setPositions((prev) =>
                       prev.filter((p) => p.id !== snapshot.branchPosition.id),
                     );
                   }
@@ -603,18 +698,21 @@ export function useMapNodes({
                       label: i18next.t("map.history.aiBranchDelete"),
                       async undo() {
                         await restoreAiBranchSnapshot(cap);
-                        setAiBranches((prev) => [...prev, cap.branch]);
-                        setPositions((prev) => [
+                        nodeCallbacksRef.current.setAiBranches((prev) => [
+                          ...prev,
+                          cap.branch,
+                        ]);
+                        nodeCallbacksRef.current.setPositions((prev) => [
                           ...prev,
                           cap.branchPosition as MapNodePositionRecord,
                         ]);
                       },
                       async redo() {
                         await deleteAiBranch(cap.branch.id);
-                        setAiBranches((prev) =>
+                        nodeCallbacksRef.current.setAiBranches((prev) =>
                           prev.filter((b) => b.id !== cap.branch.id),
                         );
-                        setPositions((prev) =>
+                        nodeCallbacksRef.current.setPositions((prev) =>
                           prev.filter((p) => p.id !== cap.branchPosition.id),
                         );
                       },
@@ -622,7 +720,7 @@ export function useMapNodes({
                   }
                 },
                 onBranchFrom: (dir: "left" | "right") =>
-                  onBranchFrom?.(key, dir),
+                  nodeCallbacksRef.current.onBranchFrom?.(key, dir),
               },
             };
           })
@@ -651,12 +749,14 @@ export function useMapNodes({
             dragging: p.dragging,
           };
           if (p.dragging || groupDragging.has(n.id)) {
-            return { ...base, position: p.position };
+            const candidate = { ...base, position: p.position };
+            return mapNodePresentationEqual(p, candidate) ? p : candidate;
           }
           if (persisting.has(n.id)) {
-            return { ...base, position: p.position };
+            const candidate = { ...base, position: p.position };
+            return mapNodePresentationEqual(p, candidate) ? p : candidate;
           }
-          return base;
+          return mapNodePresentationEqual(p, base) ? p : base;
         });
         if (groupDragging.size > 0) {
           const nextIds = new Set(nextNodes.map((n) => n.id));
@@ -698,22 +798,12 @@ export function useMapNodes({
     colorBy,
     visualTheme,
     frames,
-    setFrames,
-    setStickies,
     setNodes,
     setForceLayoutRunning,
     setForceAlpha,
-    updateNodeTitle,
-    updateSynopsis,
     groupDraggingRef,
     persistingRef,
     deletingStickyIds,
-    onStickyExitComplete,
-    onBranchFrom,
-    onAdopt,
-    onReject,
-    setAiBranches,
-    setPositions,
   ]);
 
   // Apply the mode-transition CSS class directly to already-built nodes when

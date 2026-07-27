@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from "vitest";
-import { Editor } from "@tiptap/core";
+import { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { Editor, type Content } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "./AuthorshipMark";
 import { attributionKey, createAttributionPlugin } from "./AttributionPlugin";
 import { useAttributionStore } from "./attributionStore";
 
-function createTestEditor(content = "") {
+function createTestEditor(content: Content = "") {
   const editor = new Editor({
     extensions: [StarterKit, AuthorshipMark],
     content,
@@ -261,6 +262,73 @@ describe("AttributionPlugin", () => {
     expect(getDecoAttrs(overrideDeco!).class).toContain(
       "attribution-manual-override",
     );
+    editor.destroy();
+  });
+
+  it("rebuilds only the changed textblock on ordinary typing", () => {
+    useAttributionStore.setState({
+      showAttribution: true,
+      filterSource: null,
+    });
+    const editor = createTestEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "first AI paragraph",
+              marks: [{ type: "authorship", attrs: { source: "ai" } }],
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "second AI paragraph",
+              marks: [{ type: "authorship", attrs: { source: "ai" } }],
+            },
+          ],
+        },
+      ],
+    });
+    const before = attributionKey.getState(editor.state).find();
+    expect(before).toHaveLength(2);
+    const secondBefore = before[1];
+    const descendants = vi.spyOn(ProseMirrorNode.prototype, "descendants");
+
+    editor.view.dispatch(editor.state.tr.insertText("!", 2));
+
+    const after = attributionKey.getState(editor.state).find();
+    expect(after).toHaveLength(2);
+    expect(getDecoAttrs(after[0]).class).toBe("attribution-ai");
+    expect(getDecoAttrs(after[1]).class).toBe("attribution-ai");
+    expect(after[1].from).toBe(secondBefore.from + 1);
+    expect(after[1].to).toBe(secondBefore.to + 1);
+    expect(descendants).not.toHaveBeenCalled();
+    descendants.mockRestore();
+    editor.destroy();
+  });
+
+  it("handles mapless authorship mark changes without a full rebuild", () => {
+    useAttributionStore.setState({
+      showAttribution: true,
+      filterSource: null,
+    });
+    const editor = createTestEditor("<p>human paragraph</p><p>untouched</p>");
+    const authorship = editor.schema.marks.authorship.create({ source: "ai" });
+    const descendants = vi.spyOn(ProseMirrorNode.prototype, "descendants");
+
+    editor.view.dispatch(editor.state.tr.addMark(1, 6, authorship));
+
+    const decorations = attributionKey.getState(editor.state).find();
+    expect(decorations).toHaveLength(1);
+    expect(getDecoAttrs(decorations[0]).class).toBe("attribution-ai");
+    expect(descendants).not.toHaveBeenCalled();
+    descendants.mockRestore();
     editor.destroy();
   });
 });

@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import ts from "typescript";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const sourceRoot = path.join(repoRoot, "src");
@@ -96,6 +97,117 @@ function importedStoreBindings(source) {
   return bindings;
 }
 
+const SINGLE_SCENE_LOADERS = new Set(["loadSceneContent", "loadSceneFull"]);
+const ARRAY_CALLBACK_METHODS = new Set(["map", "forEach", "flatMap"]);
+
+function importedSingleSceneLoaderBindings(
+  sourceFile,
+  importer,
+  currentSourceRoot,
+) {
+  const bindings = new Map();
+  const treeApi = path.join(currentSourceRoot, "features/tree/api.ts");
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    if (
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      resolveImport(
+        importer,
+        statement.moduleSpecifier.text,
+        currentSourceRoot,
+      ) !== treeApi
+    ) {
+      continue;
+    }
+    const namedBindings = statement.importClause?.namedBindings;
+    if (!namedBindings || !ts.isNamedImports(namedBindings)) continue;
+    for (const element of namedBindings.elements) {
+      const imported = (element.propertyName ?? element.name).text;
+      if (!SINGLE_SCENE_LOADERS.has(imported)) continue;
+      bindings.set(element.name.text, imported);
+    }
+  }
+  return bindings;
+}
+
+function enclosingArrayLoopKind(node) {
+  let current = node.parent;
+  while (current) {
+    if (ts.isForOfStatement(current)) return "for-of";
+    if (ts.isForInStatement(current)) return "for-in";
+    if (ts.isForStatement(current)) return "for";
+
+    if (ts.isFunctionLike(current)) {
+      const callbackCall = current.parent;
+      if (
+        ts.isCallExpression(callbackCall) &&
+        callbackCall.arguments.some((argument) => argument === current) &&
+        ts.isPropertyAccessExpression(callbackCall.expression) &&
+        ARRAY_CALLBACK_METHODS.has(callbackCall.expression.name.text)
+      ) {
+        return callbackCall.expression.name.text;
+      }
+      // Do not attribute a deferred nested function to a loop outside it.
+      return null;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+function singleSceneLoadLoopFindings(
+  source,
+  relative,
+  absolute,
+  currentSourceRoot,
+) {
+  const sourceFile = ts.createSourceFile(
+    relative,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    relative.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const bindings = importedSingleSceneLoaderBindings(
+    sourceFile,
+    absolute,
+    currentSourceRoot,
+  );
+  if (bindings.size === 0) return [];
+
+  const findings = [];
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ARRAY_CALLBACK_METHODS.has(node.expression.name.text)
+    ) {
+      for (const argument of node.arguments) {
+        if (!ts.isIdentifier(argument) || !bindings.has(argument.text)) {
+          continue;
+        }
+        findings.push(
+          `${relative}:${bindings.get(argument.text)}:${node.expression.name.text}`,
+        );
+      }
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      bindings.has(node.expression.text)
+    ) {
+      const loopKind = enclosingArrayLoopKind(node);
+      if (loopKind) {
+        const loader = bindings.get(node.expression.text);
+        findings.push(`${relative}:${loader}:${loopKind}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return [...new Set(findings)];
+}
+
 function isFile(candidate) {
   try {
     return existsSync(candidate) && statSync(candidate).isFile();
@@ -187,6 +299,7 @@ export async function collectFindings(options = {}) {
     "cross-feature-store-mutation": [],
     "dynamic-store-import": [],
     "application-component-import": [],
+    "single-scene-load-in-array-loop": [],
     "feature-cycle": [],
   };
   const graph = new Map(files.map((file) => [file, new Set()]));
@@ -245,6 +358,10 @@ export async function collectFindings(options = {}) {
         }
       }
     }
+
+    findings["single-scene-load-in-array-loop"].push(
+      ...singleSceneLoadLoopFindings(source, relative, file, currentSourceRoot),
+    );
   }
 
   findings["feature-cycle"] = findCycles(graph, currentRepoRoot);

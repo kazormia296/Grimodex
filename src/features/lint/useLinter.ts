@@ -16,12 +16,14 @@ import { useLintIgnoreStore } from "./lintIgnoreStore";
 import { useLintProjectStore } from "./lintProjectStore";
 import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
-import type { LintCodexEntry, LintConfig, WireLintBlock } from "./types";
-import { listCodexMatchTargets } from "@/features/codex/api";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import type { LintConfig, LintInputRevisions, WireLintBlock } from "./types";
 import { useTermDictionaryStore } from "./termDictionaryStore";
 import { markStart, markEnd } from "@/lib/perfLog";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
+import {
+  getCodexLintInputSnapshot,
+  subscribeCodexLintInput,
+} from "./codexLintInputCache";
 
 /**
  * Imperative trigger used when an action must bypass the normal debounce
@@ -37,13 +39,16 @@ export async function runLintNow(
   const blocks = toWire(map.blocks);
   const sceneText = map.blocks.map((b) => b.text).join("\n");
   const config = configOverride ?? resolveEffectiveConfig();
+  let inputRevisions: LintInputRevisions | undefined;
   // Mirror the debounced path: attach Codex entries when the
   // name-inconsistency rule is enabled.
   if (!configOverride) {
     const eff = useLintConfigStore.getState().getEffective();
     const codexRule = eff.rules["codex/name-inconsistency"];
     if (codexRule && codexRule.enabled !== false) {
-      (config as LintConfig).codex_entries = await fetchCodexEntriesForLint();
+      const codexInput = getCodexLintInputSnapshot();
+      (config as LintConfig).codex_entries = codexInput.entries;
+      inputRevisions = { codex: codexInput.codexRevision };
     }
     const termRule = eff.rules["project/term-consistency"];
     if (termRule && termRule.enabled !== false) {
@@ -60,6 +65,7 @@ export async function runLintNow(
       resolveLintLanguage(),
       sceneText,
       map.disables,
+      inputRevisions,
     );
 }
 
@@ -69,55 +75,12 @@ export async function runLintNow(
  * store has not finished loading yet (first-render safety).
  *
  * Codex entries are attached separately by the caller when the
- * `codex/name-inconsistency` rule is enabled (see `fetchCodexEntries`).
+ * `codex/name-inconsistency` rule is enabled.
  */
 function resolveEffectiveConfig(): LintConfig {
   const store = useLintConfigStore.getState();
   if (!store.isLoaded) return {};
   return store.getWireConfig();
-}
-
-/**
- * Load Codex entries from the project DB and flatten into the wire
- * shape expected by Rust. Returns `[]` when the rule is disabled or
- * nothing is loaded — cheap no-op for the engine either way.
- *
- * Failures (e.g. DB closed during shutdown) return `[]` silently;
- * losing Codex data for a single lint pass is preferable to crashing
- * the pipeline.
- */
-async function fetchCodexEntriesForLint(): Promise<LintCodexEntry[]> {
-  try {
-    const rows = await listCodexMatchTargets(getCurrentProjectId());
-    const out: LintCodexEntry[] = [];
-    for (const r of rows) {
-      if (!r.name || !r.name.trim()) continue;
-      let aliases: string[] = [];
-      if (r.aliases) {
-        try {
-          const parsed = JSON.parse(r.aliases);
-          if (Array.isArray(parsed)) {
-            aliases = parsed.filter(
-              (x): x is string => typeof x === "string" && x.length > 0,
-            );
-          }
-        } catch {
-          // Stored JSON corruption — skip this entry's aliases only.
-        }
-      }
-      // Include the canonical itself as a no-op alias position; the
-      // Rust rule filters out matches equal to canonical. This lets
-      // the engine build a single matcher without extra bookkeeping.
-      out.push({
-        entry_id: r.id,
-        canonical: r.name,
-        aliases,
-      });
-    }
-    return out;
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -223,20 +186,30 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
         const blocks = toWire(map.blocks);
         const sceneText = map.blocks.map((b) => b.text).join("\n");
         const wire = cfgStore.getWireConfig();
-        // Fetch Codex entries only if a Codex-linked rule is enabled —
-        // keeps the hot path free of a DB hit when users aren't using
-        // F-group rules.
+        let inputRevisions: LintInputRevisions | undefined;
+        // Attach cached Codex entries only if a Codex-linked rule is enabled —
+        // keeps parsing and cache bookkeeping out of the path when users
+        // aren't using F-group rules.
         const codexRule = effective.rules["codex/name-inconsistency"];
         if (codexRule && codexRule.enabled !== false) {
-          const codex_entries = await fetchCodexEntriesForLint();
-          (wire as LintConfig).codex_entries = codex_entries;
+          const codexInput = getCodexLintInputSnapshot();
+          (wire as LintConfig).codex_entries = codexInput.entries;
+          inputRevisions = { codex: codexInput.codexRevision };
         }
         const termRule = effective.rules["project/term-consistency"];
         if (termRule && termRule.enabled !== false) {
           (wire as LintConfig).term_dictionary =
             await fetchTermDictionaryForLint();
         }
-        void runLint(sceneId, blocks, wire, lang, sceneText, map.disables);
+        void runLint(
+          sceneId,
+          blocks,
+          wire,
+          lang,
+          sceneText,
+          map.disables,
+          inputRevisions,
+        );
         markEnd("linter.scheduledAnalyze");
       }, delay);
     }
@@ -366,11 +339,18 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
       onSelectionUpdate();
       schedule(0);
     });
+    const unsubscribeCodexInput = subscribeCodexLintInput(() => {
+      const codexRule = useLintConfigStore.getState().getEffective().rules[
+        "codex/name-inconsistency"
+      ];
+      if (codexRule && codexRule.enabled !== false) schedule(0);
+    });
 
     return () => {
       editor.off("transaction", onTransaction);
       editor.off("selectionUpdate", onSelectionUpdate);
       unsubscribeConfig();
+      unsubscribeCodexInput();
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [editor, sceneId, runLint, setCurrentScene]);

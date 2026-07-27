@@ -250,6 +250,7 @@ export function clampZoomFactor(factor: unknown): number {
 export interface NapiBackendLike {
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
+  saveSceneBodyBundle?(payload: unknown): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
   validateWorkspacePath(path: string): boolean;
@@ -658,6 +659,149 @@ function requireNumber(args: CommandArgs, key: string, cmd: string): number {
   return value;
 }
 
+function requireBoolean(args: CommandArgs, key: string, cmd: string): boolean {
+  const value = args[key];
+  if (typeof value !== "boolean") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a boolean`,
+    );
+  }
+  return value;
+}
+
+function requireArray(args: CommandArgs, key: string, cmd: string): unknown[] {
+  const value = requirePresent(args, key, cmd);
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected an array`,
+    );
+  }
+  return value;
+}
+
+function requireSceneBundleRecord(
+  value: unknown,
+  key: string,
+  command: string,
+): CommandArgs {
+  return requireRecord({ [key]: value }, key, command);
+}
+
+function requireSceneBundleRange(
+  value: CommandArgs,
+  prefix: string,
+  fromKey: string,
+  toKey: string,
+  command: string,
+): void {
+  const from = requireNumber(value, fromKey, command);
+  const to = requireNumber(value, toKey, command);
+  if (
+    !Number.isSafeInteger(from) ||
+    !Number.isSafeInteger(to) ||
+    from < 0 ||
+    to < from
+  ) {
+    throw new Error(
+      `invalid args \`${prefix}\` for command \`${command}\`: expected a non-negative ordered integer range`,
+    );
+  }
+}
+
+function requireNullableSceneBundleString(
+  value: CommandArgs,
+  key: string,
+  command: string,
+): void {
+  const field = requirePresent(value, key, command);
+  if (field !== null && typeof field !== "string") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a string or null`,
+    );
+  }
+}
+
+function requireSceneBodyBundlePayload(args: CommandArgs): CommandArgs {
+  const command = "save_scene_body_bundle";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["sceneId", "projectId"] as const) {
+    if (requireString(payload, key, command).length === 0) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  }
+  requireBoolean(payload, "includeSidecars", command);
+  requireString(payload, "contentJson", command);
+  requireString(payload, "unplacedBeatsDoc", command);
+  for (const key of ["charCount", "docContentSize"] as const) {
+    const value = requireNumber(payload, key, command);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
+  }
+  for (const key of ["placedBeatPreview", "unplacedBeatPreview"]) {
+    requireNullableSceneBundleString(payload, key, command);
+  }
+
+  requireArray(payload, "authorshipSpans", command).forEach((item, index) => {
+    const prefix = `authorshipSpans[${index}]`;
+    const span = requireSceneBundleRecord(item, prefix, command);
+    requireSceneBundleRange(span, prefix, "fromPos", "toPos", command);
+    const source = requireString(span, "source", command);
+    if (!["human", "ai", "unknown"].includes(source)) {
+      throw new Error(
+        `invalid args \`${prefix}.source\` for command \`${command}\`: invalid authorship source`,
+      );
+    }
+    for (const key of ["model", "timestamp", "chatMsgId", "traceId"]) {
+      requireNullableSceneBundleString(span, key, command);
+    }
+  });
+  requireArray(payload, "foreshadowSetups", command).forEach((item, index) => {
+    const prefix = `foreshadowSetups[${index}]`;
+    const setup = requireSceneBundleRecord(item, prefix, command);
+    requireString(setup, "id", command);
+    requireString(setup, "foreshadowId", command);
+    requireSceneBundleRange(setup, prefix, "fromPos", "toPos", command);
+  });
+  requireArray(payload, "foreshadowPayoffs", command).forEach((item, index) => {
+    const prefix = `foreshadowPayoffs[${index}]`;
+    const payoff = requireSceneBundleRecord(item, prefix, command);
+    requireString(payoff, "foreshadowId", command);
+    requireSceneBundleRange(payoff, prefix, "fromPos", "toPos", command);
+  });
+  requireArray(payload, "annotationAnchors", command).forEach((item, index) => {
+    const prefix = `annotationAnchors[${index}]`;
+    const anchor = requireSceneBundleRecord(item, prefix, command);
+    requireString(anchor, "id", command);
+    requireString(anchor, "textSnapshot", command);
+    requireSceneBundleRange(anchor, prefix, "rangeStart", "rangeEnd", command);
+  });
+  requireArray(payload, "beatMentions", command).forEach((item, index) => {
+    const prefix = `beatMentions[${index}]`;
+    const mention = requireSceneBundleRecord(item, prefix, command);
+    requireString(mention, "beatId", command);
+    requireString(mention, "codexId", command);
+    const role = requireString(mention, "role", command);
+    if (!["actor", "target", "mentioned"].includes(role)) {
+      throw new Error(
+        `invalid args \`${prefix}.role\` for command \`${command}\`: invalid mention role`,
+      );
+    }
+  });
+  requireArray(payload, "beatPovOverrides", command).forEach((item, index) => {
+    if (typeof item !== "string" || item.length === 0) {
+      throw new Error(
+        `invalid args \`beatPovOverrides[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  return payload;
+}
+
 /** Event aggregate mutations must carry the renderer's loaded OCC token. */
 function requireEventMutationPayload(
   args: CommandArgs,
@@ -979,6 +1123,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.dbExecuteBatch(
           requirePresent(a, "statements", "db_execute_batch"),
         ),
+      ),
+  },
+  save_scene_body_bundle: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.saveSceneBodyBundle,
+          "saveSceneBodyBundle",
+        )(requireSceneBodyBundlePayload(a)),
       ),
   },
   vacuum_database: {

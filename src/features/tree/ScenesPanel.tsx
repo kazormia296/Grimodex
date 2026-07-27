@@ -30,7 +30,7 @@ import type { NodeType } from "./treeStore";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { BottomDropZone } from "./BottomDropZone";
-import { TreeRenderer } from "./TreeRenderer";
+import { VirtualTree } from "./VirtualTree";
 import { RootContextMenu } from "./RootContextMenu";
 import { ScenesToolbar } from "./ScenesToolbar";
 import { ScenesFilterBar } from "./ScenesFilterBar";
@@ -174,19 +174,18 @@ export function ScenesPanel() {
     };
   }, [mountInitialized]);
 
-  const { childMap, nodeMap, leafDescendantsByFolder, flatNodes } =
-    useScenesDerivedData({
-      nodes,
-      sortMode,
-      charCounts,
-      expandedIds,
-      filterQuery,
-      statusFilter,
-      labelFilter,
-      nodeLabels,
-      threadFilter,
-      nodeThreadIds,
-    });
+  const { childMap, nodeMap, flatRows, flatNodes } = useScenesDerivedData({
+    nodes,
+    sortMode,
+    charCounts,
+    expandedIds,
+    filterQuery,
+    statusFilter,
+    labelFilter,
+    nodeLabels,
+    threadFilter,
+    nodeThreadIds,
+  });
 
   // 縦版ミニ・タイムラインのトラックモデル（可視行の並び flatNodes に従う）。
   const trackModel = useMemo(
@@ -209,34 +208,9 @@ export function ScenesPanel() {
   const trackCellByNode = trackModel.cellByNode;
   const trackConnectorByNode = trackModel.connectorByNode;
 
-  // Auto-reveal active scene: scroll it into view when activeSceneId changes
-  useEffect(() => {
-    if (!autoRevealActiveScene || !treeRef.current) return;
-    const el = treeRef.current.querySelector(
-      `[data-node-id="${activeSceneId}"]`,
-    );
-    if (el) {
-      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
-  }, [activeSceneId, autoRevealActiveScene]);
-
-  // Force-reveal when requested from outside (e.g. "Show in Scenes" tab context menu)
-  useEffect(() => {
-    if (!pendingRevealId || !treeRef.current) return;
-    const id = pendingRevealId;
+  const handlePendingRevealHandled = useCallback(() => {
     useTreeStore.setState({ pendingRevealId: null });
-    // Retry scroll until the element appears in the DOM (panel may still be mounting)
-    let attempts = 0;
-    const tryScroll = () => {
-      const el = treeRef.current?.querySelector(`[data-node-id="${id}"]`);
-      if (el) {
-        el.scrollIntoView({ block: "center", behavior: "smooth" });
-      } else if (attempts++ < 10) {
-        requestAnimationFrame(tryScroll);
-      }
-    };
-    requestAnimationFrame(tryScroll);
-  }, [pendingRevealId]);
+  }, []);
 
   const handleToggleAll = useCallback(() => {
     const folderIds = nodes
@@ -424,35 +398,30 @@ export function ScenesPanel() {
                   </div>
                 ) : (
                   <>
-                    <ul className="list-none">
-                      <TreeRenderer
-                        parentId={null}
-                        childMap={childMap}
-                        nodeMap={nodeMap}
-                        depth={0}
-                        activeSceneId={activeSceneId}
-                        selectedIds={selectedIds}
-                        expandedIds={expandedIds}
-                        filterQuery={filterQuery}
-                        statusFilter={statusFilter}
-                        labelFilter={labelFilter}
-                        nodeLabels={nodeLabels}
-                        threadFilter={threadFilter}
-                        nodeThreadIds={nodeThreadIds}
-                        trackColumns={trackColumns}
-                        cellByNode={trackCellByNode}
-                        connectorByNode={trackConnectorByNode}
-                        viewMode={viewMode}
-                        showWordCounts={showWordCounts}
-                        showStatusDots={showStatusDots}
-                        showLabelDots={showLabelDots}
-                        showPlotThreadTrack={showPlotThreadTrack}
-                        showAiAttribution={showAiAttribution}
-                        leafDescendantsByFolder={leafDescendantsByFolder}
-                        orderedNodesRef={flatNodesRef}
-                        dragInProgress={draggingId !== null}
-                      />
-                    </ul>
+                    <VirtualTree
+                      rows={flatRows}
+                      treeRef={treeRef}
+                      activeSceneId={activeSceneId}
+                      selectedIds={selectedIds}
+                      expandedIds={expandedIds}
+                      trackColumns={trackColumns}
+                      cellByNode={trackCellByNode}
+                      connectorByNode={trackConnectorByNode}
+                      viewMode={viewMode}
+                      showWordCounts={showWordCounts}
+                      showStatusDots={showStatusDots}
+                      showLabelDots={showLabelDots}
+                      showPlotThreadTrack={showPlotThreadTrack}
+                      showAiAttribution={showAiAttribution}
+                      orderedNodesRef={flatNodesRef}
+                      draggingId={draggingId}
+                      autoRevealActiveScene={autoRevealActiveScene}
+                      pendingRevealId={pendingRevealId}
+                      onPendingRevealHandled={handlePendingRevealHandled}
+                      autoExpandFolders={
+                        filterQuery.length > 0 || threadFilter.length > 0
+                      }
+                    />
                     <BottomDropZone />
                   </>
                 )}

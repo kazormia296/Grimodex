@@ -229,6 +229,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       beginWorkspaceSwitch();
       let result: OpenWorkspaceResult;
       try {
+        // Runtime benchmark origin: native workspace open starts here. The
+        // consumer ends the interval only after a seeded scene is visible, so
+        // this cannot accidentally regress to measuring bridge/header readiness.
+        performance.mark("grimodex.workspaceOpen.start");
         result = await invoke<OpenWorkspaceResult>("open_workspace", {
           path,
         });

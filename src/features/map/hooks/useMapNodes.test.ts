@@ -3,7 +3,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { Node } from "@xyflow/react";
 
-import { corkRotation, useMapNodes } from "./useMapNodes";
+import {
+  corkRotation,
+  countStickiesByBranch,
+  mapNodePresentationEqual,
+  useMapNodes,
+} from "./useMapNodes";
 import { layoutForAsync } from "../layouts";
 import { layoutFingerprint } from "../layouts/layoutFingerprint";
 import type { MapNodePositionRecord } from "../types";
@@ -25,6 +30,127 @@ describe("corkRotation", () => {
     const r1 = corkRotation("id-alpha");
     const r2 = corkRotation("id-beta");
     expect(r1).not.toBe(r2);
+  });
+});
+
+describe("map node incremental rebuild helpers", () => {
+  it("counts branch stickies in one pass", () => {
+    const counts = countStickiesByBranch([
+      { id: "s1", aiBranchId: "b1" },
+      { id: "s2", aiBranchId: "b1" },
+      { id: "s3", aiBranchId: "b2" },
+      { id: "s4", aiBranchId: null },
+    ] as unknown as Parameters<typeof countStickiesByBranch>[0]);
+
+    expect(counts).toEqual(
+      new Map([
+        ["b1", 2],
+        ["b2", 1],
+      ]),
+    );
+  });
+
+  it("preserves identity when only rebuilt callback references differ", () => {
+    const previous: Node = {
+      id: "scene:s1",
+      type: "scene",
+      position: { x: 10, y: 20 },
+      data: { title: "Scene", onOpen: () => "old" },
+    };
+    const rebuilt: Node = {
+      ...previous,
+      data: { title: "Scene", onOpen: () => "new" },
+    };
+
+    expect(mapNodePresentationEqual(previous, rebuilt)).toBe(true);
+    expect(
+      mapNodePresentationEqual(previous, {
+        ...rebuilt,
+        data: { ...rebuilt.data, title: "Changed" },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("useMapNodes — reused node callbacks", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("node identity を維持したまま最新の onBranchFrom を呼ぶ", async () => {
+    let nodes: Node[] = [];
+    const setNodes = vi.fn((update: React.SetStateAction<Node[]>) => {
+      nodes = typeof update === "function" ? update(nodes) : update;
+    });
+    const firstOnBranchFrom = vi.fn();
+    const latestOnBranchFrom = vi.fn();
+    const positions = [makePosition("pos1", "s1")];
+    const treeNodes = [
+      {
+        id: "s1",
+        nodeType: "scene",
+        title: "Scene",
+        synopsis: null,
+        status: "outline",
+        sortOrder: "a0",
+      },
+    ] as Parameters<typeof useMapNodes>[0]["treeNodes"];
+    const baseProps: Parameters<typeof useMapNodes>[0] = {
+      boardId: "b1",
+      positions,
+      treeNodes,
+      codexEntries: [],
+      snippets: [],
+      stickies: [],
+      aiBranches: [],
+      frames: [],
+      show: {
+        scenes: true,
+        codex: false,
+        notes: false,
+        userEdges: false,
+        derivedEdges: false,
+        stickies: false,
+        aiBranch: false,
+        frames: false,
+        snippets: false,
+      },
+      mode: "free",
+      userEdges: [],
+      colorBy: "none",
+      visualTheme: "default",
+      modeTransitionActive: false,
+      setFrames: vi.fn(),
+      setStickies: vi.fn(),
+      setAiBranches: vi.fn(),
+      setPositions: vi.fn(),
+      setNodes,
+      setForceLayoutRunning: vi.fn(),
+      setForceAlpha: vi.fn(),
+      updateNodeTitle: vi.fn(),
+      updateSynopsis: vi.fn(),
+      groupDraggingRef: NOOP_REF,
+      persistingRef: NOOP_REF,
+      onBranchFrom: firstOnBranchFrom,
+    };
+
+    const { rerender } = renderHook((props) => useMapNodes(props), {
+      initialProps: baseProps,
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const originalNode = nodes[0];
+
+    rerender({ ...baseProps, onBranchFrom: latestOnBranchFrom });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(nodes[0]).toBe(originalNode);
+    (nodes[0].data.onBranchFrom as (direction: "left" | "right") => void)(
+      "right",
+    );
+    expect(firstOnBranchFrom).not.toHaveBeenCalled();
+    expect(latestOnBranchFrom).toHaveBeenCalledWith("scene:s1", "right");
   });
 });
 

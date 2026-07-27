@@ -52,6 +52,7 @@ use grimodex_db::plot_threads::{
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::sample_seed;
+use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
 };
@@ -479,6 +480,22 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let rows = db.execute_batch_tx_renderer(&statements)?;
                 Ok(serde_json::to_string(&QueryResult { rows })?)
+            })
+        })
+        .await
+    }
+
+    /// Scene content and every document-derived sidecar are committed in one
+    /// SQLite transaction. The renderer performs one PM traversal and passes
+    /// the typed snapshot as camelCase JSON.
+    #[napi]
+    pub async fn save_scene_body_bundle(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SaveSceneBodyBundlePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = scene_body::save_scene_body_bundle(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
             })
         })
         .await

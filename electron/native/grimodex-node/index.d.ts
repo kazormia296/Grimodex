@@ -55,6 +55,12 @@ export declare class Backend {
    */
   dbExecuteBatch(statements: any): Promise<string>
   /**
+   * Scene content and every document-derived sidecar are committed in one
+   * SQLite transaction. The renderer performs one PM traversal and passes
+   * the typed snapshot as camelCase JSON.
+   */
+  saveSceneBodyBundle(payload: any): Promise<string>
+  /**
    * Compact the active workspace in place. Unlike raw renderer SQL, this
    * command accepts no destination path and cannot become `VACUUM INTO`.
    */

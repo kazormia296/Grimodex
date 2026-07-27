@@ -1,4 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+  type ReactNode,
+} from "react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
@@ -148,15 +155,150 @@ export async function declineCodexApprovals(
   );
 }
 
+interface ChatMessageViewportProps {
+  activeSessionId: string | null;
+  codexApproval: CodexApproval | null;
+  onCodexApprovalDecision: (decision: "accept" | "decline") => Promise<void>;
+  renderMessage: (message: ChatMessageType, isStreaming: boolean) => ReactNode;
+}
+
+/**
+ * Message store + virtualizer の接続境界。row measurement や streaming draft が
+ * 更新しても Header / ContextBar / Composer を含む ChatPanel 本体は再評価しない。
+ */
+function ChatMessageViewport({
+  activeSessionId,
+  codexApproval,
+  onCodexApprovalDecision,
+  renderMessage,
+}: ChatMessageViewportProps) {
+  const { t } = useTranslation();
+  const reduced = useReducedMotion();
+  const messages = useChatStore((state) => state.messages);
+  const isLoadingMessages = useChatStore((state) => state.isLoadingMessages);
+  const isStreaming = useChatStore((state) => state.isStreaming);
+  const pendingUserQuestion = useChatStore(
+    (state) => state.pendingUserQuestion,
+  );
+  const resolveUserQuestion = useChatStore(
+    (state) => state.resolveUserQuestion,
+  );
+  const dismissUserQuestion = useChatStore(
+    (state) => state.dismissUserQuestion,
+  );
+  const [messagesContainerEl, setMessagesContainerEl] =
+    useState<HTMLElement | null>(null);
+  const {
+    bottomRef,
+    scrollContainerRef,
+    visibleMessages,
+    virtualizer,
+    entranceAnim,
+    handleListScroll,
+  } = useChatMessageViewport({
+    messages,
+    isLoadingMessages,
+    activeSessionId,
+  });
+
+  return (
+    <>
+      <CodexPopover containerEl={messagesContainerEl} />
+      <div
+        ref={scrollContainerRef}
+        data-testid="chat-scroll-container"
+        onScroll={handleListScroll}
+        className="flex-1 overflow-y-auto px-4 py-3 [overflow-anchor:none]"
+      >
+        {isLoadingMessages ? (
+          <MessageBubbleSkeletonList testId="chat-messages-loading" />
+        ) : messages.length === 0 ? (
+          <div className="mt-8 text-center">
+            <p className="text-sm text-muted-foreground">
+              {t("chat.noMessages")}
+            </p>
+            <p className="mt-2 text-[11px] leading-tight text-muted-foreground/70">
+              {t("chat.disclaimer")}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div
+              data-testid="chat-virtual-list"
+              className="relative w-full"
+              style={{ height: `${virtualizer.getTotalSize()}px` }}
+              ref={setMessagesContainerEl}
+            >
+              {virtualizer.getVirtualItems().map((virtualItem) => {
+                const message = visibleMessages[virtualItem.index];
+                if (!message) return null;
+                const animateIn = entranceAnim.animateIds.has(message.id);
+                return (
+                  <div
+                    key={message.id}
+                    data-index={virtualItem.index}
+                    ref={virtualizer.measureElement}
+                    className="absolute left-0 top-0 w-full pb-4"
+                    style={{
+                      transform: `translateY(${virtualItem.start}px)`,
+                    }}
+                  >
+                    <motion.div
+                      data-animate-in={animateIn || undefined}
+                      initial={animateIn ? { opacity: 0, x: 20 } : false}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={
+                        reduced
+                          ? { duration: 0 }
+                          : { type: "spring", stiffness: 260, damping: 22 }
+                      }
+                    >
+                      {renderMessage(message, isStreaming)}
+                    </motion.div>
+                  </div>
+                );
+              })}
+            </div>
+            {codexApproval && (
+              <CodexApprovalCard
+                key={codexApprovalKey(codexApproval)}
+                request={codexApproval.request}
+                onDecision={onCodexApprovalDecision}
+              />
+            )}
+            {pendingUserQuestion &&
+              pendingUserQuestion.sessionId === activeSessionId && (
+                <UserQuestionCard
+                  key={pendingUserQuestion.toolCallId}
+                  spec={pendingUserQuestion.spec}
+                  onSubmit={resolveUserQuestion}
+                  onSkip={dismissUserQuestion}
+                />
+              )}
+            {isStreaming && !pendingUserQuestion && (
+              <div
+                data-testid="streaming-indicator"
+                className="flex items-center gap-1 text-muted-foreground"
+              >
+                <span className="animate-pulse text-xs">
+                  {t("chat.generating")}
+                </span>
+              </div>
+            )}
+          </>
+        )}
+        <div ref={bottomRef} />
+      </div>
+    </>
+  );
+}
+
 export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const runtimeCapabilities = useRuntimeCapabilities();
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  const reduced = useReducedMotion();
   const chatGate = useAiGate("chat");
   useMapBoardAutoActivate();
-  const messages = useChatStore((s) => s.messages);
-  const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
@@ -187,8 +329,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const agentContinuation = useChatStore((s) => s.agentContinuation);
   const continueAgentRun = useChatStore((s) => s.continueAgentRun);
   const pendingUserQuestion = useChatStore((s) => s.pendingUserQuestion);
-  const resolveUserQuestion = useChatStore((s) => s.resolveUserQuestion);
-  const dismissUserQuestion = useChatStore((s) => s.dismissUserQuestion);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
@@ -270,10 +410,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [inputHasText, setInputHasText] = useState(false);
   const chatEditorRef = useRef<Editor | null>(null);
-  // メッセージリストコンテナの DOM 要素（Codex ポップオーバー用）
-  const [messagesContainerEl, setMessagesContainerEl] =
-    useState<HTMLElement | null>(null);
-
   const allCodexEntries = useCodexStore((s) => s.entries);
 
   const {
@@ -305,6 +441,30 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     clearAutoExclusion,
     refreshContextLayers,
   });
+  const contextBarProjection = useMemo(() => {
+    const detected = showDetectedEntries
+      ? detectedEntries.filter((entry) => !inputPinnedIds.has(entry.id))
+      : [];
+    const always = alwaysEntries.filter(
+      (entry) => !inputPinnedIds.has(entry.id),
+    );
+    const allPinnedIds = new Set([...pinnedIds, ...inputPinnedIds]);
+    return {
+      detected,
+      always,
+      spotlightCandidateIds: computeSpotlightCandidates(
+        showDetectedEntries ? detectedEntries : [],
+        alwaysEntries,
+        allPinnedIds,
+      ),
+    };
+  }, [
+    alwaysEntries,
+    detectedEntries,
+    inputPinnedIds,
+    pinnedIds,
+    showDetectedEntries,
+  ]);
 
   useChatSessionLifecycle({
     isActive,
@@ -326,18 +486,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     refreshContextLayers,
   });
 
-  const {
-    bottomRef,
-    scrollContainerRef,
-    visibleMessages,
-    virtualizer,
-    entranceAnim,
-    handleListScroll,
-  } = useChatMessageViewport({
-    messages,
-    isLoadingMessages,
-    activeSessionId,
-  });
   const {
     extractionDialog,
     snippetDialog,
@@ -408,13 +556,15 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const handleContextCopy = useCallback(
     (text: string, messageId: string) => {
-      const msg = messages.find((m) => m.id === messageId);
+      const msg = useChatStore
+        .getState()
+        .messages.find((message) => message.id === messageId);
       const source = msg?.role === "assistant" ? "ai" : "human";
       copyWithAttribution(text, source)
         .then(() => toast.success(t("chat.copied")))
         .catch(() => toast.error(t("chat.copyFailed")));
     },
-    [messages, t],
+    [t],
   );
 
   const handleSend = useCallback(
@@ -584,6 +734,38 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     },
     [codexApproval, updateCodexApprovals],
   );
+  const renderViewportMessage = useCallback(
+    (message: ChatMessageType, streaming: boolean) => (
+      <ChatMessage
+        msg={message}
+        isStreaming={streaming}
+        onInsert={insertFromChat}
+        onExtractCodexQuick={handleExtractCodexQuick}
+        onExtractCodexDetailed={handleExtractCodexDetailed}
+        onSaveSnippetQuick={handleSaveSnippetQuick}
+        onSaveSnippetDetailed={handleSaveSnippetDetailed}
+        onEdit={handleEditMessage}
+        onDelete={handleDeleteMessage}
+        onRegenerate={handleRegenerate}
+        onRetryWithAgent={handleRetryWithAgent}
+        onViewPrompt={handleViewPrompt}
+        onContextMenu={handleContextMenu}
+      />
+    ),
+    [
+      handleContextMenu,
+      handleDeleteMessage,
+      handleEditMessage,
+      handleExtractCodexDetailed,
+      handleExtractCodexQuick,
+      handleRegenerate,
+      handleRetryWithAgent,
+      handleSaveSnippetDetailed,
+      handleSaveSnippetQuick,
+      handleViewPrompt,
+      insertFromChat,
+    ],
+  );
 
   const handleToggleMapOverlay = useCallback(() => {
     const next = !includeMapBoard;
@@ -604,9 +786,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const __renderResult = (
     <div className="chat-panel-surface relative flex h-full flex-col bg-background">
-      {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
-      <CodexPopover containerEl={messagesContainerEl} />
-
       <ChatPanelHeader
         sessionsPanelOpen={sessionsPanelOpen}
         setSessionsPanelOpen={setSessionsPanelOpen}
@@ -646,17 +825,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
           await chatApi.unpinStickyEntry(activeSessionId, stickyId);
           await useChatStore.getState().refreshContextLayers();
         }}
-        detectedEntries={
-          showDetectedEntries
-            ? detectedEntries.filter((e) => !inputPinnedIds.has(e.id))
-            : []
-        }
-        alwaysEntries={alwaysEntries.filter((e) => !inputPinnedIds.has(e.id))}
-        spotlightCandidateIds={computeSpotlightCandidates(
-          showDetectedEntries ? detectedEntries : [],
-          alwaysEntries,
-          new Set([...pinnedIds, ...inputPinnedIds]),
-        )}
+        detectedEntries={contextBarProjection.detected}
+        alwaysEntries={contextBarProjection.always}
+        spotlightCandidateIds={contextBarProjection.spotlightCandidateIds}
         onReturnToAuto={handleReturnToAuto}
         onRemove={handleRemoveEntry}
         onRemoveAuto={handleRemoveAuto}
@@ -684,115 +855,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onDismissCacheInvalidated={dismissCacheInvalidated}
       />
 
-      <div
-        ref={scrollContainerRef}
-        data-testid="chat-scroll-container"
-        onScroll={handleListScroll}
-        // overflow-anchor: ブラウザ自身の scroll anchoring も stick 判定を汚す
-        // プログラム起因 scrollTop 移動源になるため切る (アンカーは自前管理)
-        className="flex-1 overflow-y-auto px-4 py-3 [overflow-anchor:none]"
-      >
-        {isLoadingMessages ? (
-          <MessageBubbleSkeletonList testId="chat-messages-loading" />
-        ) : messages.length === 0 ? (
-          <div className="mt-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              {t("chat.noMessages")}
-            </p>
-            {/* AI ミス免責: 常設だと狭いパネルで邪魔なので空状態にのみ表示。
-                会話が始まると消える（期待値調整は開封時で十分）。 */}
-            <p className="mt-2 text-[11px] leading-tight text-muted-foreground/70">
-              {t("chat.disclaimer")}
-            </p>
-          </div>
-        ) : (
-          <>
-            {/* 行は absolute + translateY 配置なので、行間 (旧 space-y-4) は
-                各行の pb-4 として測定高さに含める */}
-            <div
-              data-testid="chat-virtual-list"
-              className="relative w-full"
-              style={{ height: `${virtualizer.getTotalSize()}px` }}
-              // ref はインライン関数にしない: render 毎に identity が変わると
-              // React が commit 毎に null→el で呼び直し、setState(null) 経由の
-              // 余剰 render が毎 delta に乗る (gate: virtualization.test.tsx)
-              ref={setMessagesContainerEl}
-            >
-              {virtualizer.getVirtualItems().map((vItem) => {
-                const msg = visibleMessages[vItem.index];
-                if (!msg) return null;
-                const animateIn = entranceAnim.animateIds.has(msg.id);
-                return (
-                  <div
-                    key={msg.id}
-                    data-index={vItem.index}
-                    ref={virtualizer.measureElement}
-                    className="absolute left-0 top-0 w-full pb-4"
-                    style={{ transform: `translateY(${vItem.start}px)` }}
-                  >
-                    <motion.div
-                      data-animate-in={animateIn || undefined}
-                      initial={animateIn ? { opacity: 0, x: 20 } : false}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={
-                        reduced
-                          ? { duration: 0 }
-                          : { type: "spring", stiffness: 260, damping: 22 }
-                      }
-                    >
-                      <ChatMessage
-                        msg={msg}
-                        isStreaming={isStreaming}
-                        onInsert={insertFromChat}
-                        onExtractCodexQuick={handleExtractCodexQuick}
-                        onExtractCodexDetailed={handleExtractCodexDetailed}
-                        onSaveSnippetQuick={handleSaveSnippetQuick}
-                        onSaveSnippetDetailed={handleSaveSnippetDetailed}
-                        onEdit={handleEditMessage}
-                        onDelete={handleDeleteMessage}
-                        onRegenerate={handleRegenerate}
-                        onRetryWithAgent={handleRetryWithAgent}
-                        onViewPrompt={handleViewPrompt}
-                        onContextMenu={handleContextMenu}
-                      />
-                    </motion.div>
-                  </div>
-                );
-              })}
-            </div>
-            {/* 質問カード / streaming indicator はスペーサ外の通常フロー。
-                高さは virtualizer の totalSize に乗らないが、scrollToBottom
-                が bottomRef (全兄弟の後) に着地するため末尾はズレない。 */}
-            {codexApproval && (
-              <CodexApprovalCard
-                key={codexApprovalKey(codexApproval)}
-                request={codexApproval.request}
-                onDecision={handleCodexApprovalDecision}
-              />
-            )}
-            {pendingUserQuestion &&
-              pendingUserQuestion.sessionId === activeSessionId && (
-                <UserQuestionCard
-                  key={pendingUserQuestion.toolCallId}
-                  spec={pendingUserQuestion.spec}
-                  onSubmit={resolveUserQuestion}
-                  onSkip={dismissUserQuestion}
-                />
-              )}
-            {isStreaming && !pendingUserQuestion && (
-              <div
-                data-testid="streaming-indicator"
-                className="flex items-center gap-1 text-muted-foreground"
-              >
-                <span className="animate-pulse text-xs">
-                  {t("chat.generating")}
-                </span>
-              </div>
-            )}
-          </>
-        )}
-        <div ref={bottomRef} />
-      </div>
+      <ChatMessageViewport
+        activeSessionId={activeSessionId}
+        codexApproval={codexApproval}
+        onCodexApprovalDecision={handleCodexApprovalDecision}
+        renderMessage={renderViewportMessage}
+      />
 
       {error && (
         <div className="border-t border-destructive bg-destructive/10 px-4 py-2">

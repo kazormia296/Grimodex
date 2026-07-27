@@ -1,7 +1,6 @@
 import {
   useRef,
   useState,
-  useReducer,
   useEffect,
   useLayoutEffect,
   useCallback,
@@ -318,10 +317,15 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         homeY: l.y,
       }));
       if (labelDragActive) {
+        const lastRowY =
+          threadsTop + Math.max(0, order.length - 1) * LANE_HEIGHT;
         return computeLaneDragTargets({
           order,
           draggedId: labelDragActive.threadId,
-          currentY: labelDragActive.currentY,
+          currentY: Math.max(
+            threadsTop,
+            Math.min(lastRowY, labelDragActive.currentY),
+          ),
           laneTop: threadsTop,
           laneHeight: LANE_HEIGHT,
         });
@@ -335,12 +339,20 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const tweenRef = useRef<
       Map<string, { from: number; to: number; start: number }>
     >(new Map());
-    const [, forceTick] = useReducer((x: number) => x + 1, 0);
+    const applyLanePresentationRef = useRef<
+      (positions: ReadonlyMap<string, number>) => void
+    >(() => {});
     // ループは常に最新の target / dragged を ref から読む（再起動なしで追従）。
     const targetYRef = useRef(targetY);
     targetYRef.current = targetY;
     const draggedIdRef = useRef<string | null>(null);
     draggedIdRef.current = labelDragActive?.threadId ?? null;
+    if (labelDragActive) {
+      const immediateY = targetY.get(labelDragActive.threadId);
+      if (immediateY !== undefined) {
+        animatedYRef.current.set(labelDragActive.threadId, immediateY);
+      }
+    }
 
     // 目標が変わったらイージングループを（再）起動。raf id はエフェクト closure ローカルに
     // 持ち、cleanup で必ず cancel する（共有 ref を残さない＝StrictMode の mount/unmount/
@@ -357,7 +369,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         if (!targetYRef.current.has(id)) a.delete(id);
       if (reducedMotion) {
         for (const [id, ty] of targetYRef.current) a.set(id, ty);
-        forceTick();
+        applyLanePresentationRef.current(a);
         return;
       }
       let raf = 0;
@@ -393,7 +405,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           if (p >= 1) tweens.delete(id);
           else moving = true;
         }
-        forceTick();
+        // React を frame clock にせず、既存 SVG group の transform と connector
+        // path だけを直接更新する。topology/model の再構築はデータ変更時に限定。
+        applyLanePresentationRef.current(cur);
         // ドラッグ中は掴んでいる間ループを維持。退避が落ち着いたら停止。
         raf = moving || draggedId ? requestAnimationFrame(step) : 0;
       };
@@ -403,48 +417,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       };
     }, [targetKey, reducedMotion]);
 
-    // 表示モデル: animatedYRef がホームから乖離している（イージング中）か、ドラッグ中なら
-    // ホーム Y を displayY で上書きして再計算する。乖離が無ければ homeLaneModel をそのまま
-    // 使う（毎 render の再計算を避ける）。判定は実状態（乖離 / drag）に基づき、rAF id の
-    // ような揮発フラグは見ない＝ループが止まっても順序が固まらない。
-    let needsOverride = !!labelDragActive;
-    if (!needsOverride) {
-      for (const l of homeLaneModel.lanes) {
-        const a = animatedYRef.current.get(l.thread.id);
-        if (a !== undefined && Math.abs(a - l.y) > 0.5) {
-          needsOverride = true;
-          break;
-        }
-      }
-    }
+    // topology は常にホーム座標で保持し、表示上の lane Y は SVG transform で
+    // 適用する。これにより rAF 中の buildPlotLaneModel と reconciliation を廃止。
     let laneModel = homeLaneModel;
-    if (needsOverride) {
-      // ドラッグ点の表示 Y はレーン帯 [先頭行, 最終行] にクランプする。ドロップ先
-      // (targetRow) も同じ範囲にクランプ済みなので、列の外までは追従させない
-      // （contentHeight は件数ベースで cursorY に追従しないため、外へ出すと
-      //   ドラッグ中レーン/ラベルが SVG 下端で見切れる）。
-      const lastRowY =
-        threadsTop + Math.max(0, homeLaneModel.lanes.length - 1) * LANE_HEIGHT;
-      const laneYByThread = new Map<string, number>();
-      for (const l of homeLaneModel.lanes) {
-        const id = l.thread.id;
-        const y =
-          labelDragActive && id === labelDragActive.threadId
-            ? Math.max(threadsTop, Math.min(lastRowY, labelDragActive.currentY)) // ドラッグ点は即時追従（帯内にクランプ）
-            : (animatedYRef.current.get(id) ?? l.y);
-        laneYByThread.set(id, y);
-      }
-      laneModel = buildPlotLaneModel({
-        threads,
-        links,
-        sceneX,
-        laneTop: threadsTop,
-        branches,
-        scheduledCount: scheduledCountForLanes,
-        subwaySort: plotSubwaySort,
-        laneYByThread,
-      });
-    }
     // マーカードラッグ中のライブ・プレビューは scheduledCount/nearestSceneIndex に依存する
     // ため、それらが初期化される後段（xOf 群の後）で laneModel を差し替える。
 
@@ -752,7 +727,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         }
         // from レーン(X-ramp) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
         const d = `M ${X - ramp} ${c.fromY} C ${X - ramp * 0.4} ${c.fromY}, ${X - ramp * 0.6} ${c.toY}, ${X} ${c.toY}`;
-        return { ...c, d };
+        return { ...c, d, xPx: X, ramp };
       });
     }, [
       showThreads,
@@ -764,6 +739,54 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       STEP,
       zoom,
     ]);
+
+    const laneHomeYById = useMemo(
+      () =>
+        new Map(
+          laneModel.lanes.map((lane) => [lane.thread.id, lane.y] as const),
+        ),
+      [laneModel.lanes],
+    );
+    const connectorGeometryById = useMemo(
+      () =>
+        new Map(
+          connectorGeometry.map((connector) => [connector.id, connector]),
+        ),
+      [connectorGeometry],
+    );
+    applyLanePresentationRef.current = (positions) => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      const offsets = new Map<string, number>();
+      for (const [id, homeY] of laneHomeYById) {
+        offsets.set(id, (positions.get(id) ?? homeY) - homeY);
+      }
+      svg
+        .querySelectorAll<SVGGElement>("[data-lane-transform-id]")
+        .forEach((element) => {
+          const id = element.getAttribute("data-lane-transform-id");
+          const offset = id ? (offsets.get(id) ?? 0) : 0;
+          if (Math.abs(offset) < 0.01) element.removeAttribute("transform");
+          else element.setAttribute("transform", `translate(0 ${offset})`);
+        });
+      svg
+        .querySelectorAll<SVGPathElement>("[data-lane-animated-connector]")
+        .forEach((element) => {
+          const id = element.getAttribute("data-lane-animated-connector");
+          const geometry = id ? connectorGeometryById.get(id) : undefined;
+          const ends = id ? branchEnds.get(id) : undefined;
+          if (!geometry || !ends) return;
+          const fromY = geometry.fromY + (offsets.get(ends.from) ?? 0);
+          const toY = geometry.toY + (offsets.get(ends.to) ?? 0);
+          element.setAttribute(
+            "d",
+            `M ${geometry.xPx - geometry.ramp} ${fromY} C ${geometry.xPx - geometry.ramp * 0.4} ${fromY}, ${geometry.xPx - geometry.ramp * 0.6} ${toY}, ${geometry.xPx} ${toY}`,
+          );
+        });
+    };
+    useLayoutEffect(() => {
+      applyLanePresentationRef.current(animatedYRef.current);
+    }, [laneHomeYById, connectorGeometryById, targetKey]);
 
     function handleLaneDoubleClick(
       e: React.MouseEvent<SVGRectElement>,
@@ -1805,6 +1828,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 <g
                   key={lane.thread.id}
                   data-plot-lane={lane.thread.id}
+                  data-lane-transform-id={lane.thread.id}
                   style={threadDimStyle(lane.thread.id)}
                 >
                   {/* レーン行のヒット領域（ダブルクリックで最寄りシーンにマーカー追加） */}
@@ -1931,6 +1955,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               connectorGeometry.map((c) => (
                 <path
                   key={`conn-${c.id}`}
+                  data-lane-animated-connector={c.id}
                   data-testid="plot-thread-connector"
                   data-kind={c.kind}
                   d={c.d}
@@ -1953,6 +1978,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               laneModel.lanes.map((lane) => (
                 <g
                   key={`markers-${lane.thread.id}`}
+                  data-lane-transform-id={lane.thread.id}
                   style={threadDimStyle(lane.thread.id)}
                 >
                   {lane.markers.map((mk) => {
@@ -2163,6 +2189,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         key={`label-${lane.thread.id}`}
                         className="cursor-pointer"
                         data-testid={`plot-lane-label-${lane.thread.id}`}
+                        data-lane-transform-id={lane.thread.id}
                         style={{
                           opacity: isDragged
                             ? 0.7

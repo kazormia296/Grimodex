@@ -69,13 +69,27 @@ vi.mock("@/components/ui/resizable", () => ({
   ResizableHandle: () => null,
 }));
 
-// happy-dom には IntersectionObserver / ResizeObserver が無いので minimal stub
+// happy-dom には IntersectionObserver / ResizeObserver が無いので controllable stub
+const intersectionObservers: StubIntersectionObserver[] = [];
 class StubIntersectionObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  readonly targets = new Set<Element>();
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    intersectionObservers.push(this);
+  }
+  observe(target: Element) {
+    this.targets.add(target);
+  }
+  unobserve(target: Element) {
+    this.targets.delete(target);
+  }
+  disconnect() {
+    this.targets.clear();
+  }
   takeRecords() {
     return [];
+  }
+  trigger(entries: IntersectionObserverEntry[]) {
+    this.callback(entries, this as unknown as IntersectionObserver);
   }
 }
 class StubResizeObserver {
@@ -93,6 +107,8 @@ import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useEditorSessionStore } from "./editorSessionStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import type { Editor } from "@tiptap/core";
+
+const DEBOUNCE_TEST_WAIT_MS = 120;
 
 const NODE_DEFAULTS = {
   projectId: "p",
@@ -123,6 +139,7 @@ function makeNode(
 }
 
 beforeEach(() => {
+  intersectionObservers.length = 0;
   useTreeStore.setState({ nodes: [], activeSceneId: "" });
   useCursorSettingsStore.setState({ zenMode: false });
   useLinearEditorStore.setState({
@@ -290,14 +307,14 @@ describe("LinearEditorView — scene ordering", () => {
 });
 
 describe("LinearEditorView — conflict-safe virtualization", () => {
-  it("keeps an offscreen dirty scene mounted until its draft is resolved", () => {
+  it("keeps a dirty scene mounted while the virtual row remains rendered", () => {
     useTreeStore.setState({
       nodes: [makeNode({ id: "S1" })],
       activeSceneId: "S1",
     });
     const { getByTestId } = render(<LinearEditorView />);
 
-    expect(getByTestId("scene-S1")).toHaveAttribute("data-mounted", "false");
+    expect(getByTestId("scene-S1")).toHaveAttribute("data-mounted", "true");
 
     act(() => {
       useEditorSessionStore
@@ -312,12 +329,14 @@ describe("LinearEditorView — conflict-safe virtualization", () => {
     expect(getByTestId("scene-S1")).toHaveAttribute("data-mounted", "true");
   });
 
-  it("keeps an offscreen conflicted scene mounted even if dirty projection lags", () => {
+  it("keeps a conflicted scene mounted even if dirty projection lags", () => {
     useTreeStore.setState({
       nodes: [makeNode({ id: "S1" })],
       activeSceneId: "S1",
     });
     const { getByTestId } = render(<LinearEditorView />);
+
+    expect(getByTestId("scene-S1")).toHaveAttribute("data-mounted", "true");
 
     act(() => {
       useExternalWriteStore.getState().pushConflict({
@@ -330,6 +349,52 @@ describe("LinearEditorView — conflict-safe virtualization", () => {
     });
 
     expect(getByTestId("scene-S1")).toHaveAttribute("data-mounted", "true");
+  });
+});
+
+describe("LinearEditorView — visible rect active detection", () => {
+  it("uses IntersectionObserver rects without reading every scene wrapper", async () => {
+    useTreeStore.setState({
+      nodes: [
+        makeNode({ id: "S1", sortOrder: "a0" }),
+        makeNode({ id: "S2", sortOrder: "a1" }),
+        makeNode({ id: "S3", sortOrder: "a2" }),
+      ],
+      activeSceneId: "",
+    });
+    const { container } = render(<LinearEditorView />);
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-linear-scene-id]"),
+    );
+    expect(rows).toHaveLength(3);
+    const rowRectReads = rows.map((row) =>
+      vi.spyOn(row, "getBoundingClientRect"),
+    );
+    const scrollContainer =
+      container.querySelector<HTMLElement>(".glass-editor-body");
+    vi.spyOn(scrollContainer!, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 500, 500),
+    );
+
+    const observer = intersectionObservers.at(-1);
+    expect(observer).toBeDefined();
+    act(() => {
+      observer!.trigger([
+        {
+          target: rows[1],
+          isIntersecting: true,
+          boundingClientRect: new DOMRect(0, 20, 400, 200),
+        } as unknown as IntersectionObserverEntry,
+      ]);
+    });
+    await act(async () => {
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEBOUNCE_TEST_WAIT_MS),
+      );
+    });
+
+    expect(useTreeStore.getState().activeSceneId).toBe("S2");
+    expect(rowRectReads.every((spy) => spy.mock.calls.length === 0)).toBe(true);
   });
 });
 

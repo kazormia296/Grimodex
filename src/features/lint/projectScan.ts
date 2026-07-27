@@ -14,7 +14,7 @@
  */
 
 import { invoke } from "@/lib/tauri";
-import { listNodes, loadSceneContent } from "@/features/tree/api";
+import { listNodes, loadSceneContents } from "@/features/tree/api";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { listCodexMatchTargets } from "@/features/codex/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -310,6 +310,12 @@ export async function scanProject(
   const codexEntries = opts.includeCodex ? await fetchCodexEntries() : [];
   const total = sceneNodes.length;
   let completed = 0;
+  // One projection query replaces N sqlite-proxy round-trips. A batch-level
+  // read failure keeps the previous best-effort contract: every unavailable
+  // scene is skipped and the project scan continues to completion.
+  const sceneContents = await loadSceneContents(
+    sceneNodes.map((node) => node.id),
+  ).catch(() => new Map<string, string>());
 
   opts.onProgress?.({
     completed: 0,
@@ -329,15 +335,7 @@ export async function scanProject(
       currentSceneTitle: node.title,
     });
 
-    let content: string;
-    try {
-      content = await loadSceneContent(node.id);
-    } catch {
-      // Couldn't load this one scene; skip but continue (don't abort
-      // the whole run on a single-scene failure).
-      completed += 1;
-      continue;
-    }
+    const content = sceneContents.get(node.id) ?? "";
     const { blocks, sceneText, disables } = buildBlocksFromJson(content);
     if (blocks.length === 0) {
       completed += 1;

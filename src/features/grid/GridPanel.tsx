@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -16,7 +16,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { useEnsureCodexTypeColors } from "@/features/codex/useEnsureCodexTypeColors";
 import { useGridStore } from "./gridStore";
-import { useGridDerivedData, useGridFlatSceneOrder } from "./gridSelectors";
+import { useGridDerivedData } from "./gridSelectors";
 import { useGridCardVisibility } from "./useGridCardVisibility";
 import { GridHeader } from "./GridHeader";
 import { GridContainerOutline } from "./GridContainerOutline";
@@ -93,26 +93,18 @@ export function GridPanel() {
 
   const pinsByScene = useSceneCodexPinsStore((s) => s.pinsByScene);
 
-  const { chapters, looseScenes, orderedColumns, totalChapters, totalScenes } =
-    useGridDerivedData(containerId);
-  const flatOrder = useGridFlatSceneOrder(containerId);
-  const orderedScenes = useMemo(
-    () => [
-      ...chapters.flatMap((chapter) =>
-        chapter.descendants
-          .filter((descendant) => descendant.node.nodeType === "scene")
-          .map((descendant) => ({
-            id: descendant.node.id,
-            parentId: descendant.node.parentId,
-          })),
-      ),
-      ...looseScenes.map((scene) => ({
-        id: scene.id,
-        parentId: scene.parentId,
-      })),
-    ],
-    [chapters, looseScenes],
-  );
+  const {
+    nodeById,
+    chapters,
+    looseScenes,
+    orderedColumns,
+    totalChapters,
+    totalScenes,
+    flatOrder,
+    nestedFolderIds,
+    orderedScenes,
+    allDisplayedScenes,
+  } = useGridDerivedData(containerId);
 
   const toolbarOpen = useGridStore((s) => s.toolbarOpen);
   const setToolbarOpen = useGridStore((s) => s.setToolbarOpen);
@@ -172,7 +164,7 @@ export function GridPanel() {
     (ids: string[]) => {
       const charCounts = useTreeStore.getState().charCounts;
       const anyHasContent = ids.some((id) => {
-        const n = nodes.find((node) => node.id === id);
+        const n = nodeById.get(id);
         return n && ((charCounts[id] ?? n.charCount ?? 0) > 0 || !!n.synopsis);
       });
       if (anyHasContent) {
@@ -182,37 +174,12 @@ export function GridPanel() {
         for (const id of ids) void deleteNode(id);
       }
     },
-    [nodes, clearSelection, deleteNode],
+    [nodeById, clearSelection, deleteNode],
   );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor),
-  );
-
-  const nestedFolderIds = useMemo(() => {
-    const ids: string[] = [];
-    const walk = (parentId: string) => {
-      for (const n of nodes) {
-        if (n.parentId !== parentId || n.nodeType !== "folder") continue;
-        ids.push(n.id);
-        walk(n.id);
-      }
-    };
-    for (const ch of chapters) walk(ch.folder.id);
-    return ids;
-  }, [nodes, chapters]);
-
-  const allDisplayedScenes = useMemo(
-    () => [
-      ...chapters.flatMap((ch) =>
-        ch.descendants
-          .filter((d) => d.node.nodeType === "scene")
-          .map((d) => d.node),
-      ),
-      ...looseScenes,
-    ],
-    [chapters, looseScenes],
   );
 
   const visibility = useGridCardVisibility({
@@ -282,6 +249,7 @@ export function GridPanel() {
                   )}
                   onRequestDeleteConfirm={handleDeleteScenes}
                   flatOrder={flatOrder}
+                  pinnedItemId={activeDragNode?.id}
                 />
               );
             }
@@ -299,6 +267,7 @@ export function GridPanel() {
                   axisLockOffsets={axisLockOffsets}
                   onRequestDeleteConfirm={handleDeleteScenes}
                   flatOrder={flatOrder}
+                  pinnedItemId={activeDragNode?.id}
                 />
               );
             }
@@ -315,6 +284,7 @@ export function GridPanel() {
                 axisLockOffsets={axisLockOffsets}
                 onRequestDeleteConfirm={handleDeleteScenes}
                 flatOrder={flatOrder}
+                pinnedItemId={activeDragNode?.id}
               />
             );
           })}

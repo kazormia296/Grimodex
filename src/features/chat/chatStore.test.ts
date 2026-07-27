@@ -95,11 +95,27 @@ vi.mock("@/features/tree/treeStore", async (importOriginal) => {
 });
 
 vi.mock("@/features/tree/api", () => {
+  const loadSceneContent = vi.fn((_id: string) =>
+    Promise.resolve("シーン本文"),
+  );
   const loadSceneFull = vi.fn((_id: string) =>
     Promise.resolve({ content: "{}", unplacedBeatsDoc: "[]" }),
   );
   return {
-    loadSceneContent: vi.fn(() => Promise.resolve("シーン本文")),
+    loadSceneContent,
+    // Batch consumers preserve successfully loaded rows when a fixture marks
+    // another id as unavailable, matching loadSceneContents' sparse Map.
+    loadSceneContents: vi.fn(async (ids: string[]) => {
+      const settled = await Promise.allSettled(
+        ids.map((id) => loadSceneContent(id)),
+      );
+      const map = new Map<string, string>();
+      for (let i = 0; i < ids.length; i++) {
+        const result = settled[i];
+        if (result.status === "fulfilled") map.set(ids[i], result.value);
+      }
+      return map;
+    }),
     loadSceneFull,
     // バッチ版は per-scene の loadSceneFull mock に fan-out させ、既存テストの
     // mockImplementation / mockResolvedValue / call-count アサートをそのまま活かす。
@@ -270,6 +286,7 @@ function resetStore() {
     isLoadingSessions: false,
     isLoadingMessages: false,
     messages: [],
+    streamingDraft: null,
     isStreaming: false,
     error: null,
     activeSceneId: "scene-1",
@@ -1590,6 +1607,49 @@ describe("useChatStore", () => {
       expect(messages[1].content).toBe("あいう");
     });
 
+    it("publishes streaming draft without replacing the confirmed messages array", async () => {
+      let frame: FrameRequestCallback | null = null;
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        vi.fn((callback: FrameRequestCallback) => {
+          frame = callback;
+          return 1;
+        }),
+      );
+      vi.stubGlobal("cancelAnimationFrame", vi.fn());
+      let callbacks!: StreamCallbacks;
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, capturedCallbacks) => {
+          callbacks = capturedCallbacks;
+          return () => {};
+        },
+      );
+
+      try {
+        const send = useChatStore.getState().sendMessage("テスト");
+        await vi.waitFor(() => expect(callbacks).toBeDefined());
+        const confirmedMessages = useChatStore.getState().messages;
+
+        callbacks.onTextDelta("生成中");
+        expect(frame).not.toBeNull();
+        (frame as unknown as FrameRequestCallback)(16);
+
+        expect(useChatStore.getState().messages).toBe(confirmedMessages);
+        expect(useChatStore.getState().streamingDraft).toEqual({
+          messageId: confirmedMessages[1].id,
+          content: "生成中",
+        });
+
+        callbacks.onDone({ stopReason: "end_turn" });
+        await send;
+        expect(useChatStore.getState().messages).not.toBe(confirmedMessages);
+        expect(useChatStore.getState().messages[1].content).toBe("生成中");
+        expect(useChatStore.getState().streamingDraft).toBeNull();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
     it("flushes the coalesced tail on error so partial content is preserved", async () => {
       // chatStore.ts onError は flushDelta() を同期実行し、rAF にバッファ済みの
       // delta を取りこぼさず assistant メッセージに反映してから reject する。
@@ -2280,6 +2340,7 @@ describe("useChatStore", () => {
 
       expect(mockSendChatMessageStream).not.toHaveBeenCalled();
       expect(useChatStore.getState().messages).toEqual([]);
+      expect(useChatStore.getState().streamingDraft).toBeNull();
       expect(useChatStore.getState().isStreaming).toBe(false);
     });
 
@@ -3298,7 +3359,8 @@ describe("useChatStore", () => {
       const { listCodexEntriesForContext } =
         await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
-      const { loadSceneContent } = await import("@/features/tree/api");
+      const { loadSceneContent, loadSceneContents } =
+        await import("@/features/tree/api");
       const mockTreeState = vi.mocked(useTreeStore.getState);
       const capturedScene = {
         id: "mentioned-scene",
@@ -3345,6 +3407,9 @@ describe("useChatStore", () => {
           content: "captured body",
         },
       ]);
+      expect(vi.mocked(loadSceneContents)).toHaveBeenCalledWith([
+        capturedScene.id,
+      ]);
     });
   });
 
@@ -3355,12 +3420,14 @@ describe("useChatStore", () => {
       const { listCodexEntriesForContext } =
         await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
-      const { loadSceneContent } = await import("@/features/tree/api");
+      const { loadSceneContent, loadSceneContents } =
+        await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
 
       const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockLoadScenes = vi.mocked(loadSceneContents);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
@@ -3463,6 +3530,8 @@ describe("useChatStore", () => {
       expect(content.indexOf("シーンA")).toBeLessThan(
         content.indexOf("シーンB"),
       );
+      expect(mockLoadScenes).toHaveBeenCalledOnce();
+      expect(mockLoadScenes).toHaveBeenCalledWith(["sA", "sB"]);
 
       // 検出された codex が detectedEntries に乗っている
       const state = useChatStore.getState();
@@ -5109,14 +5178,14 @@ describe("useChatStore", () => {
       expect(args?.scene.content).toBe("");
     });
 
-    it("Tier 1: single scene load failure does not kill the aggregate", async () => {
+    it("Tier 1: a sparse batch does not kill the aggregate", async () => {
       const { listCodexEntriesForContext } =
         await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
-      const { loadSceneContent } = await import("@/features/tree/api");
+      const { loadSceneContents } = await import("@/features/tree/api");
 
       const mockListCodex = vi.mocked(listCodexEntriesForContext);
-      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockLoadScenes = vi.mocked(loadSceneContents);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
       const f1 = makeFolder("act1", "a0", null, "Act 1");
@@ -5130,10 +5199,11 @@ describe("useChatStore", () => {
         projectId: "proj-1",
       });
       mockListCodex.mockResolvedValue([]);
-      mockLoadScene.mockImplementation((id) =>
-        id === "s1"
-          ? Promise.reject(new Error("boom"))
-          : Promise.resolve(`body:${id}`),
+      mockLoadScenes.mockResolvedValue(
+        new Map([
+          ["s0", "body:s0"],
+          ["s2", "body:s2"],
+        ]),
       );
       mockBuildSystemPrompt.mockReturnValue({
         prompt: "project-tier1-partial-fail",
@@ -5156,6 +5226,8 @@ describe("useChatStore", () => {
       expect(content).toContain("body:s2");
       expect(content).toContain("--- S1 ---");
       expect(content).not.toContain("body:s1");
+      expect(mockLoadScenes).toHaveBeenCalledOnce();
+      expect(mockLoadScenes).toHaveBeenCalledWith(["s0", "s1", "s2"]);
       expect(useChatStore.getState().lastSystemPrompt).toBe(
         "project-tier1-partial-fail",
       );

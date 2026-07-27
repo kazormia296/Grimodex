@@ -327,7 +327,12 @@ export interface PendingUserQuestion {
 }
 import { useTreeStore } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import { loadSceneContent, loadScenesFull, getNode } from "@/features/tree/api";
+import {
+  loadSceneContent,
+  loadSceneContents,
+  loadScenesFull,
+  getNode,
+} from "@/features/tree/api";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { computeSceneThreadContext } from "@/features/plot-threads/sceneThreadTracks";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
@@ -663,6 +668,11 @@ interface ChatState {
 
   // Messages & streaming
   messages: ChatMessage[];
+  /**
+   * 生成中 assistant の本文だけを確定済み messages から分離する。
+   * delta publish で messages の配列参照と過去 message の identity を維持する。
+   */
+  streamingDraft: { messageId: string; content: string } | null;
   isStreaming: boolean;
   error: string | null;
   activeSceneId: string;
@@ -1186,11 +1196,11 @@ async function maybeRunSummarization(
 
 /**
  * `@シーン名` メンションで per-message pin される scene の本文をまとめて
- * 読み込むヘルパー。tree store から title を引いてから loadSceneContent
- * で本文を取り、prosemirrorToText で plain text 化する。
+ * 読み込むヘルパー。tree store から title を引き、対象 id を1回の batch
+ * load にまとめてから prosemirrorToText で plain text 化する。
  *
  * - currentSceneId と一致する id は除外（buildSystemPrompt 側でも除外しているが、
- *   loadSceneContent の二重呼び出しを避けるためここでも省く）。
+ *   本文の二重ロードを避けるためここでも省く）。
  * - 存在しない id・scene 以外の id・読み込み失敗は単に黙って除外する
  *   (一時 pin の性質上、エラーで送信を止めない方が望ましい)。
  */
@@ -1201,22 +1211,26 @@ async function loadMentionedScenes(
 ): Promise<Array<{ id: string; title: string; content: string }>> {
   if (!ids || ids.length === 0) return [];
   const allNodes = treeNodesSnapshot ?? useTreeStore.getState().nodes;
-  const out: Array<{ id: string; title: string; content: string }> = [];
+  const nodesById = new Map(allNodes.map((node) => [node.id, node]));
+  const candidates: Array<{ id: string; title: string }> = [];
   const seen = new Set<string>();
   for (const id of ids) {
     if (seen.has(id)) continue;
     seen.add(id);
     if (currentSceneId && id === currentSceneId) continue;
-    const node = allNodes.find((n) => n.id === id);
+    const node = nodesById.get(id);
     if (!node || node.nodeType !== "scene") continue;
-    try {
-      const raw = await loadSceneContent(id);
-      const text = prosemirrorToText(raw ?? "");
-      if (text) {
-        out.push({ id, title: node.title, content: text });
-      }
-    } catch {
-      // 取得失敗は除外 (送信を止めない)
+    candidates.push({ id, title: node.title });
+  }
+  if (candidates.length === 0) return [];
+  const contents = await loadSceneContents(
+    candidates.map((candidate) => candidate.id),
+  ).catch(() => new Map<string, string>());
+  const out: Array<{ id: string; title: string; content: string }> = [];
+  for (const candidate of candidates) {
+    const text = prosemirrorToText(contents.get(candidate.id) ?? "");
+    if (text) {
+      out.push({ ...candidate, content: text });
     }
   }
   return out;
@@ -1586,7 +1600,6 @@ async function buildAggregatedScene(opts: {
   const MAX_BODY_TIER_SCENES = 30;
   const MAX_BODY_TIER_CHARS = 100_000;
   const MAX_SYNOPSIS_TIER_SCENES = 200;
-  const LOAD_CHUNK = 8;
 
   const {
     anchorId,
@@ -1694,32 +1707,27 @@ async function buildAggregatedScene(opts: {
   }
 
   if (canTier1) {
-    // 1 scene のロード失敗が aggregate 全体を破棄しないよう、各 scene を
-    // 個別 try/catch で safe load する（失敗時は空文字扱い）。
-    const safeLoadSceneText = async (sceneId: string): Promise<string> => {
-      try {
-        return prosemirrorToText((await loadSceneContent(sceneId)) ?? "");
-      } catch (e) {
-        debugLog.warn(
-          "ChatStore",
-          `loadSceneContent failed in aggregate (sceneId=${sceneId})`,
-          errorDetail(e),
-        );
-        return "";
-      }
-    };
+    // Missing rows stay empty so a partial batch still produces the aggregate.
+    // A batch-level DB failure likewise degrades to empty bodies instead of
+    // aborting the prompt build, matching the former best-effort behavior.
+    const rawBodies = await loadSceneContents(
+      descendants.map((scene) => scene.id),
+    ).catch((e) => {
+      debugLog.warn(
+        "ChatStore",
+        "loadSceneContents failed in aggregate",
+        errorDetail(e),
+      );
+      return new Map<string, string>();
+    });
 
     if (isProjectGrouped) {
-      const bodyBySceneId = new Map<string, string>();
-      for (let i = 0; i < descendants.length; i += LOAD_CHUNK) {
-        const slice = descendants.slice(i, i + LOAD_CHUNK);
-        const loaded = await Promise.all(
-          slice.map((s) => safeLoadSceneText(s.id)),
-        );
-        for (let j = 0; j < slice.length; j++) {
-          bodyBySceneId.set(slice[j].id, loaded[j] ?? "");
-        }
-      }
+      const bodyBySceneId = new Map(
+        descendants.map((scene) => [
+          scene.id,
+          prosemirrorToText(rawBodies.get(scene.id) ?? ""),
+        ]),
+      );
       const parts = buildProjectParts("tier1", bodyBySceneId, new Map());
       if (parts.length === 0) return null;
       const joined = `${tier1Preface}\n\n${parts.join("\n\n")}`;
@@ -1735,16 +1743,9 @@ async function buildAggregatedScene(opts: {
     }
 
     const ordered = descendants;
-    const bodies: string[] = new Array(ordered.length);
-    for (let i = 0; i < ordered.length; i += LOAD_CHUNK) {
-      const slice = ordered.slice(i, i + LOAD_CHUNK);
-      const loaded = await Promise.all(
-        slice.map((s) => safeLoadSceneText(s.id)),
-      );
-      for (let j = 0; j < slice.length; j++) {
-        bodies[i + j] = loaded[j];
-      }
-    }
+    const bodies = ordered.map((scene) =>
+      prosemirrorToText(rawBodies.get(scene.id) ?? ""),
+    );
     const parts: string[] = [];
     for (let i = 0; i < ordered.length; i++) {
       parts.push(
@@ -2896,6 +2897,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   isLoadingSessions: false,
   isLoadingMessages: false,
   messages: [],
+  streamingDraft: null,
   isStreaming: false,
   error: null,
   activeSceneId: "",
@@ -2944,6 +2946,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       isLoadingSessions: false,
       isLoadingMessages: false,
       messages: [],
+      streamingDraft: null,
       sessions: [],
       isStreaming: false,
       activeProjectId: projectId,
@@ -3938,6 +3941,35 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content: "",
       createdAt: new Date().toISOString(),
     };
+    const finalizeStreamingDraft = (metadata?: string): void => {
+      set((state) => {
+        const draft =
+          state.streamingDraft?.messageId === assistantMsg.id
+            ? state.streamingDraft
+            : null;
+        let changed = draft !== null;
+        const messages = state.messages.map((message) => {
+          if (message.id !== assistantMsg.id) return message;
+          const content = draft?.content ?? message.content;
+          if (
+            content === message.content &&
+            (metadata === undefined || metadata === message.metadata)
+          ) {
+            return message;
+          }
+          changed = true;
+          return {
+            ...message,
+            content,
+            ...(metadata !== undefined ? { metadata } : {}),
+          };
+        });
+        return {
+          messages: changed ? messages : state.messages,
+          streamingDraft: null,
+        };
+      });
+    };
     const capturedNonSceneAuthority = effectiveSceneId
       ? undefined
       : captureNonSceneContextAuthority({
@@ -4014,6 +4046,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           (message) =>
             message.id !== userMsg.id && message.id !== assistantMsg.id,
         ),
+        streamingDraft:
+          state.streamingDraft?.messageId === assistantMsg.id
+            ? null
+            : state.streamingDraft,
       }));
     };
     const cancelBeforeTransport = (): boolean => {
@@ -4048,6 +4084,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // Guard concurrent sends before tokenizer initialization yields control.
     set({
       messages: [...prevMessages, userMsg, assistantMsg],
+      streamingDraft: useAgentPath
+        ? null
+        : { messageId: assistantMsg.id, content: "" },
       isStreaming: true,
       error: null,
     });
@@ -4058,6 +4097,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (isCurrentTurn()) {
         set({
           messages: prevMessages,
+          streamingDraft: null,
           isStreaming: false,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -5391,19 +5431,25 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // Start streaming — returns a Promise<cleanup_fn>
       await new Promise<void>((resolve, reject) => {
         // delta coalesce: provider が 1:1 で emit する SSE delta(秒間 20〜40)を
-        // requestAnimationFrame でまとめて flush し、streaming bubble の
-        // ReactMarkdown 再パース頻度を frame rate に抑える（所見#1b）。
+        // requestAnimationFrame でまとめ、Markdown publish は最大約 30Hz に抑える。
+        // messages 本体は触らず末尾 draft だけを更新するため static chrome / 過去行 /
+        // virtualizer の配列 identity は生成完了まで安定する。
         // onDone/onError/stop では必ず同期 flush して末尾を取りこぼさない。
         let pendingDelta = "";
         let flushHandle: number | null = null;
+        let lastDraftPublishAt = Number.NEGATIVE_INFINITY;
         let callbacksSettled = false;
         let turnStreamCleanup: (() => void) | null = null;
-        const flushDelta = () => {
+        const flushDelta = (frameTime?: number) => {
           if (flushHandle !== null) {
             if (typeof cancelAnimationFrame === "function") {
               cancelAnimationFrame(flushHandle);
             }
             flushHandle = null;
+          }
+          if (frameTime !== undefined && frameTime - lastDraftPublishAt < 30) {
+            flushHandle = requestAnimationFrame(flushDelta);
+            return;
           }
           if (!isCurrentTurn()) {
             pendingDelta = "";
@@ -5412,16 +5458,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           if (!pendingDelta) return;
           const chunk = pendingDelta;
           pendingDelta = "";
+          lastDraftPublishAt = frameTime ?? performance.now();
           set((s) => {
-            const msgs = [...s.messages];
-            const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
-            if (idx >= 0) {
-              msgs[idx] = {
-                ...msgs[idx],
-                content: msgs[idx].content + chunk,
-              };
-            }
-            return { messages: msgs };
+            if (s.streamingDraft?.messageId !== assistantMsg.id) return {};
+            return {
+              streamingDraft: {
+                messageId: assistantMsg.id,
+                content: s.streamingDraft.content + chunk,
+              },
+            };
           });
         };
         const scheduleFlush = () => {
@@ -5551,15 +5596,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 ? JSON.stringify(metadataObj)
                 : undefined;
 
-            // Update final assistant message state
-            set((s) => {
-              const msgs = [...s.messages];
-              const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
-              if (idx >= 0 && chatMetadata) {
-                msgs[idx] = { ...msgs[idx], metadata: chatMetadata };
-              }
-              return { messages: msgs };
-            });
+            // draft を一度だけ確定 messages へ移し、以後は通常 message として扱う。
+            finalizeStreamingDraft(chatMetadata);
 
             // A binding stores the history that existed before this turn. Once
             // both messages are durable, advance it to the exact active-history
@@ -5779,6 +5817,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             }
             // エラー時も partial content を保持するため同期 flush。
             flushDelta();
+            finalizeStreamingDraft();
             if (_flushPendingDelta === flushDelta) {
               _flushPendingDelta = null;
             }
@@ -5927,6 +5966,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
       const kind = classifyError(e);
       const msg = e instanceof Error ? e.message : String(e);
+      if (transportStarted) finalizeStreamingDraft();
       if (!transportStarted) removeOwnedTurnMessages();
 
       if (kind === "auth") {
@@ -5952,6 +5992,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           messages: s.messages.filter(
             (m) => m.id !== userMsg.id && m.id !== assistantMsg.id,
           ),
+          streamingDraft:
+            s.streamingDraft?.messageId === assistantMsg.id
+              ? null
+              : s.streamingDraft,
           isStreaming: false,
         }));
         // 永続 429 での無限リトライ（10 秒ごとに API を叩き続け、messages が
@@ -6513,6 +6557,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               message.id !== stoppedControl.userMessageId &&
               message.id !== stoppedControl.assistantMessageId,
           ),
+          streamingDraft:
+            state.streamingDraft?.messageId ===
+            stoppedControl.assistantMessageId
+              ? null
+              : state.streamingDraft,
         }));
       }
     }

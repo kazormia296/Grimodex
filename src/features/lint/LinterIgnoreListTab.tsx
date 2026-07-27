@@ -4,17 +4,17 @@ import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { useLintIgnoreStore, type LintIgnoreEntry } from "./lintIgnoreStore";
 import { buildBlocksFromJson } from "./projectScan";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useTranslation } from "react-i18next";
 import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import { formatInstant } from "@/lib/time";
 
-interface EntryRow extends LintIgnoreEntry {
+export interface EntryRow extends LintIgnoreEntry {
   sceneTitle: string | null;
 }
 
-type StalenessStatus = "active" | "stale" | "orphan" | "unknown";
+export type StalenessStatus = "active" | "stale" | "orphan" | "unknown";
 
 interface QueryResult {
   rows: Record<string, unknown>[];
@@ -45,8 +45,9 @@ async function fetchAllEntries(): Promise<EntryRow[]> {
   }));
 }
 
-async function computeStaleness(
+export async function computeStaleness(
   entries: EntryRow[],
+  loadContents: typeof loadSceneContents = loadSceneContents,
 ): Promise<Map<string, StalenessStatus>> {
   const result = new Map<string, StalenessStatus>();
   const byScene = new Map<string, EntryRow[]>();
@@ -61,23 +62,26 @@ async function computeStaleness(
     byScene.set(e.scene_id, group);
   }
 
-  await Promise.all(
-    Array.from(byScene.entries()).map(async ([sceneId, sceneEntries]) => {
-      try {
-        const content = await loadSceneContent(sceneId);
-        const { sceneText } = buildBlocksFromJson(content);
-        for (const e of sceneEntries) {
-          const byBefore = sceneText.includes(
-            e.context_before + e.text_snippet,
-          );
-          const byAfter = sceneText.includes(e.text_snippet + e.context_after);
-          result.set(e.id, byBefore || byAfter ? "active" : "stale");
-        }
-      } catch {
-        for (const e of sceneEntries) result.set(e.id, "unknown");
-      }
-    }),
-  );
+  const sceneEntries = Array.from(byScene.entries());
+  const contents = await loadContents(
+    sceneEntries.map(([sceneId]) => sceneId),
+  ).catch(() => null);
+  for (const [sceneId, entriesForScene] of sceneEntries) {
+    if (!contents) {
+      for (const entry of entriesForScene) result.set(entry.id, "unknown");
+      continue;
+    }
+    const { sceneText } = buildBlocksFromJson(contents.get(sceneId) ?? "");
+    for (const entry of entriesForScene) {
+      const byBefore = sceneText.includes(
+        entry.context_before + entry.text_snippet,
+      );
+      const byAfter = sceneText.includes(
+        entry.text_snippet + entry.context_after,
+      );
+      result.set(entry.id, byBefore || byAfter ? "active" : "stale");
+    }
+  }
 
   return result;
 }

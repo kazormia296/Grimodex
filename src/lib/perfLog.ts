@@ -22,6 +22,7 @@ type SessionState = {
   longtasks: { startTime: number; duration: number }[];
   slowEvents: { duration: number }[];
   marks: MarkRecord[];
+  counters: Map<string, number>;
   eventObserver: PerformanceObserver | null;
 };
 
@@ -34,6 +35,16 @@ export type PerfSessionResult = {
   // does not emit entries, by design.
   slowEvent: { count: number; p95Ms: number; maxMs: number };
   topMarks: { label: string; totalMs: number; count: number }[];
+  markStats: {
+    label: string;
+    count: number;
+    totalMs: number;
+    p50Ms: number;
+    p95Ms: number;
+    p99Ms: number;
+    maxMs: number;
+  }[];
+  counters: Record<string, number>;
 };
 
 const STORAGE_KEY = "grimodex.perfLog";
@@ -76,6 +87,39 @@ export function recordMark(
   recentMarks.push(record);
   if (recentMarks.length > MAX_MARKS) recentMarks.shift();
   if (session) session.marks.push(record);
+}
+
+/** Count discrete operations while a performance session is active. */
+export function recordCounter(label: string, increment = 1): void {
+  if (!session || !Number.isFinite(increment)) return;
+  session.counters.set(label, (session.counters.get(label) ?? 0) + increment);
+}
+
+function collectLongtaskEntries(
+  entries: PerformanceEntry[],
+  target: SessionState | null,
+): void {
+  for (const entry of entries) {
+    if (entry.entryType !== "longtask") continue;
+    if (target) {
+      target.longtasks.push({
+        startTime: entry.startTime,
+        duration: entry.duration,
+      });
+    }
+    if (enabled) attributeLongtaskToConsole(entry);
+  }
+}
+
+function collectEventEntries(
+  entries: PerformanceEntry[],
+  target: SessionState | null,
+): void {
+  if (!target) return;
+  for (const entry of entries) {
+    if (entry.entryType !== "event") continue;
+    target.slowEvents.push({ duration: entry.duration });
+  }
 }
 
 function attributeLongtaskToConsole(entry: PerformanceEntry): void {
@@ -130,16 +174,7 @@ function ensureLongtaskObserver(): void {
   if (typeof PerformanceObserver === "undefined") return;
   try {
     longtaskObserver = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        if (entry.entryType !== "longtask") continue;
-        if (session) {
-          session.longtasks.push({
-            startTime: entry.startTime,
-            duration: entry.duration,
-          });
-        }
-        if (enabled) attributeLongtaskToConsole(entry);
-      }
+      collectLongtaskEntries(list.getEntries(), session);
     });
     longtaskObserver.observe({ entryTypes: ["longtask"] });
   } catch (e) {
@@ -200,17 +235,14 @@ export function startPerfSession(): void {
     longtasks: [],
     slowEvents: [],
     marks: [],
+    counters: new Map(),
     eventObserver: null,
   };
   ensureLongtaskObserver();
   if (typeof PerformanceObserver !== "undefined") {
     try {
       const obs = new PerformanceObserver((list) => {
-        if (!session) return;
-        for (const entry of list.getEntries()) {
-          if (entry.entryType !== "event") continue;
-          session.slowEvents.push({ duration: entry.duration });
-        }
+        collectEventEntries(list.getEntries(), session);
       });
       obs.observe({
         type: "event",
@@ -228,6 +260,12 @@ export function startPerfSession(): void {
 export function endPerfSession(): PerfSessionResult | null {
   const s = session;
   if (!s) return null;
+  if (longtaskObserver) {
+    collectLongtaskEntries(longtaskObserver.takeRecords(), s);
+  }
+  if (s.eventObserver) {
+    collectEventEntries(s.eventObserver.takeRecords(), s);
+  }
   session = null;
   s.eventObserver?.disconnect();
   maybeStopLongtaskObserver();
@@ -249,23 +287,45 @@ export function endPerfSession(): PerfSessionResult | null {
     ? evDurations[Math.min(evCount - 1, Math.floor(evCount * 0.95))]
     : 0;
 
-  const byLabel = new Map<string, { totalMs: number; count: number }>();
+  const byLabel = new Map<string, number[]>();
   for (const m of s.marks) {
-    const cur = byLabel.get(m.label) ?? { totalMs: 0, count: 0 };
-    cur.totalMs += m.duration;
-    cur.count += 1;
-    byLabel.set(m.label, cur);
+    const durations = byLabel.get(m.label) ?? [];
+    durations.push(m.duration);
+    byLabel.set(m.label, durations);
   }
-  const topMarks = Array.from(byLabel.entries())
-    .map(([label, v]) => ({ label, totalMs: v.totalMs, count: v.count }))
-    .sort((a, b) => b.totalMs - a.totalMs)
-    .slice(0, 10);
+  const percentile = (values: number[], ratio: number): number =>
+    values[
+      Math.min(
+        values.length - 1,
+        Math.max(0, Math.ceil(values.length * ratio) - 1),
+      )
+    ] ?? 0;
+  const markStats = Array.from(byLabel.entries())
+    .map(([label, unsorted]) => {
+      const durations = [...unsorted].sort((a, b) => a - b);
+      const totalMs = durations.reduce((sum, duration) => sum + duration, 0);
+      return {
+        label,
+        count: durations.length,
+        totalMs,
+        p50Ms: percentile(durations, 0.5),
+        p95Ms: percentile(durations, 0.95),
+        p99Ms: percentile(durations, 0.99),
+        maxMs: durations[durations.length - 1] ?? 0,
+      };
+    })
+    .sort((a, b) => b.totalMs - a.totalMs);
+  const topMarks = markStats
+    .slice(0, 10)
+    .map(({ label, totalMs, count }) => ({ label, totalMs, count }));
 
   return {
     durationMs,
     longtask: { count: ltCount, totalMs: ltTotal, maxMs: ltMax },
     slowEvent: { count: evCount, p95Ms: evP95, maxMs: evMax },
     topMarks,
+    markStats,
+    counters: Object.fromEntries(s.counters),
   };
 }
 
