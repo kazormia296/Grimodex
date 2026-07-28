@@ -323,7 +323,7 @@ function expectShaderDrawn(container: HTMLElement, selector: string) {
   const mount = host.paperShaderMount;
   expect(mount).toBeDefined();
   if (!mount) return;
-  expect(mount.getPerformanceStats().drawCount).toBeGreaterThan(1);
+  expect(mount.getPerformanceStats().isStaticFrameReady).toBe(true);
 }
 
 function shaderRgb(

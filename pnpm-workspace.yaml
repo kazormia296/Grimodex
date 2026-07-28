@@ -17,5 +17,5 @@ overrides:
   "miniflare>sharp": 0.35.3
 
 patchedDependencies:
-  "@paper-design/shaders@0.0.77": patches/paper-design-shaders@0.0.77.patch
+  "@paper-design/shaders@0.0.77": patches/@paper-design__shaders@0.0.77.patch
   "@paper-design/shaders-react@0.0.77": patches/paper-design-shaders-react@0.0.77.patch
