@@ -123,8 +123,13 @@ function elementIsFullyVisible(element: HTMLElement) {
   return true;
 }
 
-function visibleElements(selector: string): VisibleElement[] {
-  const elements = document.querySelectorAll<HTMLElement>(selector);
+function candidateElements(selector: string): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(selector));
+}
+
+function visibleCandidateElements(
+  elements: readonly HTMLElement[],
+): VisibleElement[] {
   const visible: VisibleElement[] = [];
   for (const element of elements) {
     if (!elementIsFullyVisible(element)) continue;
@@ -253,8 +258,8 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
     let resizeTargets = new Set<HTMLElement>();
     let scrollTargets = new Set<HTMLElement>();
     let mutationObserver: MutationObserver | null = null;
-    let paperCandidates: VisibleElement[] = [];
-    let visibleEditors: VisibleElement[] = [];
+    let paperCandidates: HTMLElement[] = [];
+    let editorCandidates: HTMLElement[] = [];
     let uiSurfaceCandidates: HTMLElement[] = [];
     let cachedUiLayouts: readonly ZenGlassLayout[] = [];
     let fullLayoutPending = true;
@@ -338,17 +343,14 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
         uiSurfaceCandidates = Array.from(
           document.querySelectorAll<HTMLElement>(UI_SURFACE_SELECTOR),
         );
-        paperCandidates = visibleElements(".zen-editor-paper");
-        visibleEditors = visibleElements("[data-editor-area]");
-      } else {
-        paperCandidates = paperCandidates.map(({ element }) => ({
-          element,
-          rect: element.getBoundingClientRect(),
-        }));
+        paperCandidates = candidateElements(".zen-editor-paper");
+        editorCandidates = candidateElements("[data-editor-area]");
       }
-      const visiblePapers = clipPapersToScrollports(paperCandidates);
+      const visiblePaperCandidates = visibleCandidateElements(paperCandidates);
+      const visibleEditors = visibleCandidateElements(editorCandidates);
+      const visiblePapers = clipPapersToScrollports(visiblePaperCandidates);
       const visibleUiSurfaces = refreshTargets
-        ? visibleElements(UI_SURFACE_SELECTOR)
+        ? visibleCandidateElements(uiSurfaceCandidates)
         : [];
       const glassRoots = refreshTargets
         ? Array.from(
@@ -357,16 +359,24 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
             ),
           )
         : [];
-      const uiVisibilityTargets = new Set<HTMLElement>();
-      for (const candidate of uiSurfaceCandidates) {
+      // Visibility-changing ancestors must remain observed even while their
+      // Editor/Paper/UI descendants are currently transparent. Otherwise an
+      // enter animation can exclude a target before it ever becomes an
+      // observer candidate, leaving the shader mask empty after opacity=1.
+      const visibilityTargets = new Set<HTMLElement>();
+      for (const candidate of [
+        ...paperCandidates,
+        ...editorCandidates,
+        ...uiSurfaceCandidates,
+      ]) {
         let target: HTMLElement | null = candidate;
         while (target && target !== mutationRoot) {
-          uiVisibilityTargets.add(target);
+          visibilityTargets.add(target);
           target = target.parentElement;
         }
       }
       const nextScrollTargets = new Set(
-        paperCandidates.flatMap(({ element }) => {
+        paperCandidates.flatMap((element) => {
           const target = element.closest<HTMLElement>(".glass-editor-body");
           return target ? [target] : [];
         }),
@@ -375,23 +385,21 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
         syncResizeTargets(
           new Set([
             surface,
-            ...paperCandidates.map(({ element }) => element),
-            ...visibleEditors.map(({ element }) => element),
+            ...paperCandidates,
+            ...editorCandidates,
             ...uiSurfaceCandidates,
             ...nextScrollTargets,
           ]),
         );
       if (refreshTargets) syncScrollTargets(nextScrollTargets);
       if (refreshTargets)
-        syncMutationTargets([
-          ...glassRoots,
-          ...visibleEditors.map(({ element }) => element),
-          ...uiVisibilityTargets,
-        ]);
+        syncMutationTargets([...glassRoots, ...visibilityTargets]);
 
       const surfaceRect = surface.getBoundingClientRect();
       const paperRect = unionRect(visiblePapers);
-      const paperScrollportRect = unionPaperScrollportRect(paperCandidates);
+      const paperScrollportRect = unionPaperScrollportRect(
+        visiblePaperCandidates,
+      );
       const editorRect = unionRect(visibleEditors);
       if (refreshTargets) {
         cachedUiLayouts = visibleUiSurfaces.map(({ element, rect }) => ({
