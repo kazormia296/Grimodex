@@ -29,6 +29,7 @@ import { registerImeShutdown } from "./imeShutdown.js";
 import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
+import { configureLinuxGraphics } from "./linuxGraphics.js";
 import {
   buildMcpConfigShellHandlers,
   prepareMcpSidecarForStartup,
@@ -86,6 +87,9 @@ function acceptWebEditorHandoffProtocolRequest(
   flushPendingWebEditorHandoff();
   return true;
 }
+
+// Chromium の GPU process 初期化より前に Linux 固有の graphics policy を確定する。
+configureLinuxGraphics(app);
 
 // Phase 4: packaged版は既存Tauriのdata_dirをそのまま正本にし、dev版は
 // GrimodexElectronDevへ隔離する。スモークの絶対overrideもここで処理する。
