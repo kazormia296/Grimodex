@@ -326,6 +326,11 @@ function expectShaderDrawn(container: HTMLElement, selector: string) {
   expect(mount.getPerformanceStats().isStaticFrameReady).toBe(true);
 }
 
+function waitForShaderState(assertion: () => void) {
+  // GitHub's software WebGL can take longer than Testing Library's 1s default.
+  return waitFor(assertion, { timeout: 5_000 });
+}
+
 function shaderRgb(
   red: number,
   green: number,
@@ -385,7 +390,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const name of ["flat", "bent"]) {
         expectShaderDrawn(container, `[data-refraction-probe="${name}"]`);
       }
@@ -420,7 +425,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectShaderDrawn(container, '[data-refraction-probe="zen-bent"]');
     });
 
@@ -452,7 +457,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectShaderDrawn(container, '[data-refraction-probe="normal-bent"]');
     });
 
@@ -495,7 +500,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectShaderDrawn(
         container,
         '[data-refraction-probe="large-normal-bent"]',
@@ -551,7 +556,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const name of [
         "diagnostic-flat",
         "diagnostic-bent",
@@ -625,7 +630,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const name of ["round-flat", "round-bent"]) {
         expectShaderDrawn(container, `[data-refraction-probe="${name}"]`);
       }
@@ -675,7 +680,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectShaderDrawn(container, '[data-refraction-probe="ui-bent"]');
     });
 
@@ -719,7 +724,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectShaderDrawn(container, '[data-refraction-probe="capped-bent"]');
       expect(
         container.querySelector<HTMLCanvasElement>(
@@ -794,7 +799,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const name of [
         "dark-unguarded",
         "dark-guarded",
@@ -903,7 +908,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     const view = render(probes(EIGHT_UI_SURFACES_WITH_BOTTOM_LAST.slice(0, 1)));
     view.rerender(probes(EIGHT_UI_SURFACES_WITH_BOTTOM_LAST));
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectShaderDrawn(
         view.container,
         '[data-ui-contrast-probe="bottom-stripe-guarded"]',
@@ -983,17 +988,17 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     };
     const transientPanelPoint = [0.575, 0.8] as const;
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectBottomStripeGuarded();
       expect(surfaceDeltaAt(...transientPanelPoint)).toBeLessThan(5);
     });
     view.rerender(probes(openSurfaces));
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectBottomStripeGuarded();
       expect(surfaceDeltaAt(...transientPanelPoint)).toBeGreaterThan(20);
     });
     view.rerender(probes(closedSurfaces));
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expect(surfaceDeltaAt(...transientPanelPoint)).toBeLessThan(5);
       expectBottomStripeGuarded();
     });
@@ -1036,7 +1041,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const { name } of lightThemes) {
         expectShaderDrawn(
           container,
@@ -1091,7 +1096,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectShaderDrawn(
         container,
         '[data-ui-contrast-probe="black-light-unguarded"]',
@@ -1122,7 +1127,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       expectShaderDrawn(
         container,
         '[data-low-opacity-contrast-probe="guarded"]',
@@ -1154,7 +1159,7 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       />,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       const host = container.querySelector<HTMLElement>(
         "[data-animation-probe]",
       );
