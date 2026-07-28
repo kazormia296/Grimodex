@@ -301,6 +301,14 @@ beforeEach(() => {
 });
 
 describe("ChroniclePanel keepalive activity", () => {
+  it("通常表示の塗りをトップレベルの一面へ集約する", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent()]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("chronicle-panel")).toHaveClass("bg-card");
+  });
+
   it("isActive を viewport へ伝播する", async () => {
     apiMocks.listEvents.mockResolvedValue([makeEvent()]);
     useProjectStore.setState({ currentProjectId: "p1" });

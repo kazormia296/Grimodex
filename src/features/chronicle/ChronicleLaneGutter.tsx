@@ -146,12 +146,12 @@ export function ChronicleLaneGutter({
       // 位置指定要素にしか効かない）、マーカーがレーンヘッダーに重なる（再発防止）。
       // minHeight (明示 px) も必須: 親スクロール領域（flex row・高さ確定）の
       // flex line は可視高さで固まるため、stretch だけだとガターの箱が初期可視
-      // 高さで止まり、それより下のレーンセルは箱の外へオーバーフローする。その
-      // 領域には不透明背景 (bg-card) が塗られず、横スクロールで負 left になった
-      // マーカーがヘッダー上に透けて見える。min-h-max (max-content) は Chromium
-      // でしか効かず WebKit では可視高さのままなので、track と同じ contentHeight
-      // を明示 px で受け取り、箱をコンテンツ全高まで伸ばして遮蔽を全レーンに効かせる。
-      className="relative z-20 flex-none border-r border-border bg-card"
+      // 高さで止まり、それより下のレーンセルは箱の外へオーバーフローする。
+      // track 側の overflow-x: clip と組み合わせ、負 left のマーカーを Glass の
+      // 透明なガターへ描画漏れさせない。min-h-max (max-content) は Chromium でしか
+      // 効かず WebKit では可視高さのままなので、track と同じ contentHeight を明示
+      // px で受け取り、ガターの操作面を全レーン高まで維持する。
+      className="relative z-20 flex-none border-r border-border"
       style={{ width: gutterX, minHeight }}
     >
       {lanes.map((lane) => {

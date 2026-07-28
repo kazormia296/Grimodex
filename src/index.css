@@ -614,6 +614,18 @@ button[role="switch"][aria-checked="true"] {
   background-color: transparent;
 }
 
+/* Matrix keeps its column and row labels sticky while the body scrolls. A
+   completely clear sticky layer would let cells and glyphs pass visibly
+   underneath, so Glass mode keeps a readable translucent veil instead of a
+   backdrop-filter per virtual row. Controls and popovers are intentionally
+   outside this opt-in selector and retain their solid fills. */
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-workspace-glass-root][data-workspace-fluid-glass="true"]
+  [data-ambient-glass-surface="panel"]
+  [data-matrix-sticky-surface] {
+  background-color: color-mix(in oklch, var(--background) 70%, transparent);
+}
+
 /* Dragging a panel lifts the card — a touch more shadow + scale.
    Hover is intentionally left alone (the user rejected hover motion). */
 .app-shell .gx-panel--dragging {

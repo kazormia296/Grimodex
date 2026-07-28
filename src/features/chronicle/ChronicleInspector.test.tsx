@@ -395,6 +395,15 @@ describe("ChronicleInspector — 子要素の React key", () => {
   });
 });
 
+describe("ChronicleInspector — Workspace Glass", () => {
+  it("外枠は透過し、内部の操作面だけはカード塗りを維持する", () => {
+    const { getByTestId } = renderInspector();
+    const inspector = getByTestId("chronicle-inspector");
+    expect(inspector.className).not.toContain("bg-card");
+    expect(inspector.querySelector('[class*="bg-card"]')).not.toBeNull();
+  });
+});
+
 describe("ChronicleInspector — 下部アクションの narrow 縮退", () => {
   it("アクション行は @container（コンテナクエリの基準）", () => {
     const { getByTestId } = renderInspector();

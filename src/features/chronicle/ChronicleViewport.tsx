@@ -1514,7 +1514,10 @@ export function ChronicleViewport({
   ]);
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card">
+    <div
+      data-testid="chronicle-viewport"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+    >
       <ChronicleRuler
         gutterX={spacing.gutterX}
         unitLabel={ticks.unitLabel}
@@ -1557,7 +1560,7 @@ export function ChronicleViewport({
           onContextMenu={onTrackContextMenu}
           onKeyDown={onTrackKeyDown}
           tabIndex={0}
-          className="relative flex-1 select-none outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+          className="relative flex-1 select-none overflow-x-clip outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           // minHeight=コンテンツ高、flex stretch で残り高さまで伸ばしレーン外も操作可能に。
           // 本体ドラッグ追従中（dragPreview）/ 中ボタンパン中はトラック全体を grabbing に。
           style={{
@@ -1787,7 +1790,10 @@ export function ChronicleViewport({
       </div>
 
       {/* スクロールバー */}
-      <div className="flex h-4 flex-none border-t border-border/60 bg-card">
+      <div
+        data-testid="chronicle-scrollbar"
+        className="flex h-4 flex-none border-t border-border/60"
+      >
         <div
           className="flex-none border-r border-border"
           style={{ width: spacing.gutterX }}

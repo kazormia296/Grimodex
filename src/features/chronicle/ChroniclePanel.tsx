@@ -1764,7 +1764,10 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div
+      data-testid="chronicle-panel"
+      className="flex h-full flex-col overflow-hidden bg-card"
+    >
       <PanelHeader
         panelId="chronicle"
         count={t("chronicle.count", "{{count}} 件", { count: n })}
@@ -1933,7 +1936,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       )}
 
       {multiCount > 1 && (
-        <div className="flex h-[60px] flex-none items-center gap-2.5 border-t border-border bg-card px-4.5">
+        <div className="flex h-[60px] flex-none items-center gap-2.5 border-t border-border px-4.5">
           <span className="text-[13px] font-medium text-foreground">
             {t("chronicle.multiSelected", "{{count}} 件を選択中", {
               count: multiCount,

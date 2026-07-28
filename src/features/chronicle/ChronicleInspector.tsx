@@ -349,7 +349,8 @@ export function ChronicleInspector({
 
   return (
     <div
-      className="flex h-full shrink-0 flex-row border-l border-border bg-card"
+      data-testid="chronicle-inspector"
+      className="flex h-full shrink-0 flex-row border-l border-border"
       style={{ width }}
     >
       {/* リサイズグリップ（左端ドラッグで幅変更） */}

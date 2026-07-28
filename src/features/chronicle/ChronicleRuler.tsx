@@ -25,7 +25,7 @@ export function ChronicleRuler({
   return (
     <div
       data-testid="chronicle-ruler"
-      className="flex h-[54px] flex-none border-b border-border bg-card"
+      className="flex h-[54px] flex-none border-b border-border"
     >
       <div
         data-testid="chronicle-ruler-gutter"
