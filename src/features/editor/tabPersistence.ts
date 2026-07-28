@@ -13,6 +13,26 @@ export interface TabPersistenceSnapshot {
   isLinearMode: boolean;
 }
 
+/**
+ * Resolve the scene that owns the persisted active editor projection.
+ *
+ * Non-scene tabs intentionally return null: codex/snippet/event editors keep
+ * the surrounding scene context, which is not encoded in the tab snapshot.
+ */
+export function getPersistedActiveSceneId(
+  snapshot: TabPersistenceSnapshot,
+): string | null {
+  const useSecondary =
+    snapshot.secondaryGroupOpen && snapshot.activeGroupIndex === 1;
+  const tabs = useSecondary ? snapshot.secondaryTabs : snapshot.tabs;
+  const activeTabId = useSecondary
+    ? snapshot.secondaryActiveTabId
+    : snapshot.activeTabId;
+  if (!activeTabId) return null;
+  const activeTab = tabs.find((tab) => tab.nodeId === activeTabId);
+  return activeTab?.contentType === "scene" ? activeTab.nodeId : null;
+}
+
 function normalizeTabs(
   tabs: TabEntry[] | undefined,
   validNodeIds?: Set<string>,

@@ -49,6 +49,7 @@ export function ChronicleRuler({
         <div
           ref={contentRef}
           className="absolute inset-0 will-change-transform"
+          style={{ transformOrigin: "0 0" }}
         >
           {ticks.major.map((tk, i) => (
             <div

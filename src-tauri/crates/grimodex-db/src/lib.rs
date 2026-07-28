@@ -9,8 +9,44 @@
 
 use rusqlite::{config::DbConfig, Connection};
 use serde_json::Value;
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Mutex, MutexGuard, TryLockError,
+};
+use std::time::Duration;
+
+thread_local! {
+    static BACKGROUND_CONNECTION_PRIORITY_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct BackgroundConnectionPriorityGuard;
+
+impl Drop for BackgroundConnectionPriorityGuard {
+    fn drop(&mut self) {
+        BACKGROUND_CONNECTION_PRIORITY_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_sub(1));
+        });
+    }
+}
+
+struct ForegroundConnectionWaiter<'a> {
+    count: &'a AtomicUsize,
+}
+
+impl<'a> ForegroundConnectionWaiter<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::AcqRel);
+        Self { count }
+    }
+}
+
+impl Drop for ForegroundConnectionWaiter<'_> {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct BatchStatement {
@@ -21,6 +57,7 @@ pub struct BatchStatement {
 
 pub struct Database {
     conn: Mutex<Connection>,
+    foreground_connection_waiters: AtomicUsize,
 }
 
 /// Connection-local token used to prove that a renderer snapshot and a
@@ -198,7 +235,68 @@ impl Database {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            foreground_connection_waiters: AtomicUsize::new(0),
         })
+    }
+
+    fn background_connection_priority_active() -> bool {
+        BACKGROUND_CONNECTION_PRIORITY_DEPTH.with(|depth| depth.get() > 0)
+    }
+
+    pub(crate) fn lock_conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
+        if !Self::background_connection_priority_active() {
+            let waiter = ForegroundConnectionWaiter::new(&self.foreground_connection_waiters);
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            // Keep the waiter published until this caller owns the connection.
+            // A background contender then observes either a waiting foreground
+            // caller or the foreground-owned mutex, never an empty hand-off gap.
+            drop(waiter);
+            return Ok(conn);
+        }
+
+        loop {
+            if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            match self.conn.try_lock() {
+                Ok(conn) => {
+                    // Close the observation-to-lock race. A foreground caller
+                    // that announced itself while try_lock succeeded gets the
+                    // next hand-off instead of sitting behind another bulk item.
+                    if self.foreground_connection_waiters.load(Ordering::Acquire) == 0 {
+                        return Ok(conn);
+                    }
+                    drop(conn);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(TryLockError::Poisoned(error)) => {
+                    return Err(anyhow::anyhow!("{error}"));
+                }
+            }
+        }
+    }
+
+    /**
+     * Mark connection acquisitions on the current worker as rebuildable
+     * background work.
+     *
+     * Bulk semantic indexing releases the SQLite mutex between items, but a
+     * hot worker can otherwise reacquire it repeatedly before an Editor read
+     * wakes. Within this scope, each acquisition yields to already-announced
+     * foreground waiters. The marker is thread-local because the native bulk
+     * operation and every nested `with_conn` call run on the same blocking
+     * worker.
+     */
+    pub fn with_background_connection_priority<T>(&self, operation: impl FnOnce() -> T) -> T {
+        BACKGROUND_CONNECTION_PRIORITY_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_add(1));
+        });
+        let _guard = BackgroundConnectionPriorityGuard;
+        operation()
     }
 
     /// Update the query planner's statistics (`sqlite_stat1`). Cheap because
@@ -206,7 +304,7 @@ impl Database {
     /// migrate and periodically — without it SQLite never gathers stats and the
     /// planner can pick poor plans as tables grow (DB health audit 2026-07).
     pub fn optimize(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         conn.execute_batch("PRAGMA optimize;")?;
         Ok(())
     }
@@ -214,7 +312,7 @@ impl Database {
     /// Compact the active workspace in place. This trusted, argument-free API
     /// is the only renderer-reachable replacement for raw `VACUUM` SQL.
     pub fn vacuum(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         conn.execute_batch("VACUUM")?;
         Ok(())
     }
@@ -237,7 +335,7 @@ impl Database {
         // 1. `VACUUM INTO` a plain sqlite temp (consistent, compacted, no sidecars).
         let sqlite_tmp = with_suffix(dest, ".sqlite.tmp");
         {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            let conn = self.lock_conn()?;
             if sqlite_tmp.exists() {
                 std::fs::remove_file(&sqlite_tmp)?;
             }
@@ -278,7 +376,7 @@ impl Database {
     /// compaction pass. undo_journal / chat_message_prompts / generation_logs
     /// past the retention window are safe to drop. Returns rows deleted.
     pub fn prune_old_logs(&self, retain_days: i64) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         let cutoff = format!("-{retain_days} days");
         let mut total = 0usize;
         // Table names are fixed literals (no injection); created_at is stored in
@@ -295,7 +393,7 @@ impl Database {
     /// with the first errors. Cheaper than `integrity_check`; used by the
     /// backup path to refuse snapshotting a corrupt DB (DB health audit 2026-07).
     pub fn quick_check(&self) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         let first: String = conn.query_row("PRAGMA quick_check(1)", [], |r| r.get(0))?;
         if first == "ok" {
             Ok(None)
@@ -311,7 +409,7 @@ impl Database {
     where
         F: FnOnce(&Connection) -> anyhow::Result<T>,
     {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         f(&conn)
     }
 }
@@ -322,6 +420,7 @@ pub mod change_events;
 mod execute;
 pub mod foreshadow;
 mod fts;
+mod idempotency;
 pub mod ime_export;
 mod integrity;
 mod migrate;

@@ -68,7 +68,7 @@ interface SnippetState {
     next: Snippet | null | ((prev: Snippet | null) => Snippet | null),
   ) => void;
 
-  loadEntries: () => Promise<void>;
+  loadEntries: (options?: { propagateError?: boolean }) => Promise<void>;
   /** mount 用の dedup 付きロード。同一 projectId のロードが進行中なら
    *  それに相乗りする。settle 後は毎回ロードする (remount での再フェッチ =
    *  外部書き込み追従は維持)。 */
@@ -110,6 +110,15 @@ interface SnippetState {
 
 // mount eager load の in-flight dedup (詳細は ensureEntriesLoaded の docs)
 const entriesLoadTracker = createInFlightTracker();
+let entriesLoadGeneration = 0;
+
+function entriesLoadKey(projectId: string): string {
+  return projectId;
+}
+
+function swallowEntriesLoadFailure(promise: Promise<void>): Promise<void> {
+  return promise.catch(() => undefined);
+}
 
 export const useSnippetStore = create<SnippetState>()((set, get) => ({
   entries: [],
@@ -129,35 +138,54 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   setSortOrder: (order) => set({ sortOrder: order }),
   requestSelectEntry: (id) => set({ pendingEntryId: id }),
   clearPendingEntry: () => set({ pendingEntryId: null }),
-  resetForProject: () =>
+  resetForProject: () => {
+    entriesLoadGeneration++;
+    entriesLoadTracker.clear();
     set({
       entries: [],
       searchQuery: "",
       pendingEntryId: null,
       selectedSnippet: null,
-    }),
+      isLoading: false,
+    });
+  },
 
-  loadEntries: async () => {
+  loadEntries: (options) => {
+    const projectId = getCurrentProjectId();
+    const key = entriesLoadKey(projectId);
+    const inFlight = entriesLoadTracker.peek(key);
+    if (inFlight) {
+      return options?.propagateError
+        ? inFlight
+        : swallowEntriesLoadFailure(inFlight);
+    }
+    const generation = ++entriesLoadGeneration;
     const run = (async () => {
       set({ isLoading: true });
       try {
-        const entries = await snippetApi.listSnippets(getCurrentProjectId());
+        const entries = await snippetApi.listSnippets(projectId);
+        if (generation !== entriesLoadGeneration) return;
         set({ entries, isLoading: false });
       } catch (e) {
-        set({ isLoading: false });
-        toast.error(i18next.t("snippets.store.loadFailed"));
-        debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
+        if (generation === entriesLoadGeneration) {
+          set({ isLoading: false });
+          toast.error(i18next.t("snippets.store.loadFailed"));
+          debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
+        }
+        throw e;
       }
     })();
-    // mutation 後の直接 loadEntries も in-flight として記録し、直後に
-    // mount する ensureEntriesLoaded がこの (最新の) ロードに相乗りする
-    entriesLoadTracker.track(getCurrentProjectId(), run);
-    return run;
+    // canonical promise は rejection を保持する。lifecycle はその rejection
+    // を degraded state へ伝播し、通常 UI caller は従来どおり吸収する。
+    entriesLoadTracker.track(key, run);
+    return options?.propagateError ? run : swallowEntriesLoadFailure(run);
   },
 
   ensureEntriesLoaded: () => {
-    const inFlight = entriesLoadTracker.peek(getCurrentProjectId());
-    if (inFlight) return inFlight;
+    const inFlight = entriesLoadTracker.peek(
+      entriesLoadKey(getCurrentProjectId()),
+    );
+    if (inFlight) return swallowEntriesLoadFailure(inFlight);
     return get().loadEntries();
   },
 

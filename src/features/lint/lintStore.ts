@@ -6,6 +6,7 @@ import type {
   Diagnostic,
   DisableDirective,
   LintConfig,
+  LintIncrementalScope,
   LintInputRevisions,
   LintLanguage,
   LintResponse,
@@ -60,9 +61,11 @@ interface LintState {
    * any stale response is dropped on arrival.
    *
    * Implements incremental lint: only blocks whose `kind + text` changed
-   * since the last run are sent to Rust. Cached relative-offset diagnostics
-   * are shifted by the block's current `str_offset_start` and merged with
-   * the fresh results.
+   * since the last run are recomputed. Rust reports the maximum context scope
+   * required by enabled rules, so a cross-block target receives its required
+   * neighbour(s) without treating context-only diagnostics as fresh results.
+   * Cached relative-offset diagnostics are shifted by the block's current
+   * `str_offset_start` and merged with the fresh results.
    */
   runLint: (
     sceneId: string,
@@ -159,10 +162,64 @@ function applyIgnoreFilter(
 
 /**
  * Cache key for one block. Captures content identity: same kind + same text
- * means the same diagnostics (all current rules are block-internal).
+ * means the same diagnostics for block-local rules.
  */
 export function blockCacheKey(block: WireLintBlock): string {
   return `${block.kind}\0${block.text}`;
+}
+
+function sceneContentKey(blocks: WireLintBlock[]): string {
+  return JSON.stringify(
+    blocks.map((block) => [
+      block.id,
+      block.kind,
+      block.text,
+      block.str_offset_start,
+    ]),
+  );
+}
+
+function responseIncrementalScope(
+  scope: LintResponse["incremental_scope"],
+): LintIncrementalScope {
+  switch (scope) {
+    case "block":
+    case "nextBlock":
+    case "scene":
+      return scope;
+    default:
+      // Backward compatibility with pre-contract backends. The initial pass
+      // already contains every block; retaining that correct result under a
+      // scene-wide key is safer than assuming unknown rules are block-local.
+      return "scene";
+  }
+}
+
+/**
+ * Key one target by the context Rust says its enabled rules consume.
+ * `nextBlock` includes the successor's content identity, so changing only the
+ * successor invalidates the preceding target. Scene-scoped entries are keyed
+ * by index after the whole cache has been invalidated on a scene-key change.
+ */
+function scopedBlockCacheKey(
+  blocks: WireLintBlock[],
+  index: number,
+  scope: LintIncrementalScope,
+): string {
+  const block = blocks[index];
+  if (!block) return `missing:${index}`;
+  const own = blockCacheKey(block);
+  switch (scope) {
+    case "nextBlock":
+      return JSON.stringify([
+        own,
+        blocks[index + 1] ? blockCacheKey(blocks[index + 1]) : null,
+      ]);
+    case "scene":
+      return JSON.stringify([index, own]);
+    case "block":
+      return own;
+  }
 }
 
 /**
@@ -216,9 +273,17 @@ export const useLintStore = create<LintState>()((set, get) => {
    * detail, not UI state). Values are relative-offset Diagnostics so they
    * survive block repositioning without a full cache bust.
    *
-   * Key: blockCacheKey(block) = `kind\0text`
+   * Keys include the neighbouring context declared by Rust when required.
    */
   let blockDiagCache = new Map<string, Diagnostic[]>();
+  /**
+   * Engine-owned context contract from the last successful response. `null`
+   * means the cache is empty and the next request necessarily contains every
+   * block, allowing Rust to establish the contract safely.
+   */
+  let lastIncrementalScope: LintIncrementalScope | null = null;
+  /** Last successful scene content sequence, used by `scene` scope. */
+  let lastSceneContentKey = "";
   /**
    * JSON snapshot of rules, language, disables, and project-input revisions
    * from the last runLint call. When it changes the block cache is invalidated.
@@ -265,6 +330,8 @@ export const useLintStore = create<LintState>()((set, get) => {
     setCurrentScene: (sceneId) => {
       blockDiagCache = new Map();
       lastConfigKey = "";
+      lastIncrementalScope = null;
+      lastSceneContentKey = "";
       lastAnnouncedCount = null;
       lastAnnouncedError = null;
       set({
@@ -280,6 +347,8 @@ export const useLintStore = create<LintState>()((set, get) => {
     clear: () => {
       blockDiagCache = new Map();
       lastConfigKey = "";
+      lastIncrementalScope = null;
+      lastSceneContentKey = "";
       lastAnnouncedCount = null;
       lastAnnouncedError = null;
       set({
@@ -339,6 +408,8 @@ export const useLintStore = create<LintState>()((set, get) => {
       if (configKey !== lastConfigKey) {
         blockDiagCache = new Map();
         lastConfigKey = configKey;
+        lastIncrementalScope = null;
+        lastSceneContentKey = "";
       }
 
       set({
@@ -349,24 +420,63 @@ export const useLintStore = create<LintState>()((set, get) => {
 
       const scope: LintScope = { kind: "scene", scene_id: sceneId };
 
-      // Split blocks: hits come from cache, misses go to Rust.
-      const hitBlocks: WireLintBlock[] = [];
-      const missBlocks: WireLintBlock[] = [];
-      for (const block of blocks) {
-        if (blockDiagCache.has(blockCacheKey(block))) {
-          hitBlocks.push(block);
+      const currentSceneContentKey =
+        lastIncrementalScope === "scene" ? sceneContentKey(blocks) : null;
+      if (
+        lastIncrementalScope === "scene" &&
+        currentSceneContentKey !== lastSceneContentKey
+      ) {
+        blockDiagCache = new Map();
+      }
+
+      // Split target blocks: hits come from cache, misses are recomputed.
+      // Before the first response the cache is empty, so using block scope
+      // here still sends the complete scene and lets Rust establish the
+      // engine-owned scope contract.
+      const requestScope = lastIncrementalScope ?? "block";
+      const hitTargets: Array<{
+        block: WireLintBlock;
+        cacheKey: string;
+      }> = [];
+      const missTargets: Array<{
+        block: WireLintBlock;
+        index: number;
+      }> = [];
+      for (const [index, block] of blocks.entries()) {
+        const cacheKey = scopedBlockCacheKey(blocks, index, requestScope);
+        if (blockDiagCache.has(cacheKey)) {
+          hitTargets.push({ block, cacheKey });
         } else {
-          missBlocks.push(block);
+          missTargets.push({ block, index });
         }
       }
 
       try {
         const freshDiagnostics: Diagnostic[] = [];
         let freshWarnings: RuleWarning[] = [];
+        let responseScope = lastIncrementalScope;
 
-        if (missBlocks.length > 0) {
+        if (missTargets.length > 0) {
+          const requestIndices = new Set(
+            missTargets.map((target) => target.index),
+          );
+          if (requestScope === "nextBlock") {
+            // Context blocks let Rust evaluate a target against its immediate
+            // successor. They are deliberately not cache targets: their own
+            // diagnostics may require a successor not present in this request.
+            for (const target of missTargets) {
+              if (target.index + 1 < blocks.length) {
+                requestIndices.add(target.index + 1);
+              }
+            }
+          } else if (requestScope === "scene") {
+            for (const index of blocks.keys()) requestIndices.add(index);
+          }
+          const requestBlocks = blocks.filter((_, index) =>
+            requestIndices.has(index),
+          );
           const resp = await invoke<LintResponse>("lint_text", {
-            blocks: missBlocks,
+            blocks: requestBlocks,
             language,
             scope,
             config,
@@ -376,11 +486,18 @@ export const useLintStore = create<LintState>()((set, get) => {
           if (get().pendingRequestId !== requestId) return;
 
           freshWarnings = resp.warnings;
+          const resolvedResponseScope = responseIncrementalScope(
+            resp.incremental_scope,
+          );
+          responseScope = resolvedResponseScope;
 
           // Attribute each returned diagnostic to its source block by
-          // range interval, then cache as relative offsets.
+          // range interval, then cache as relative offsets. Only miss targets
+          // are cached; diagnostics belonging to context-only blocks are
+          // intentionally ignored.
           const attributedIndices = new Set<number>();
-          for (const block of missBlocks) {
+          for (const target of missTargets) {
+            const { block, index } = target;
             const blockEnd = block.str_offset_start + block.text.length;
             const blockDiags = resp.diagnostics.filter((d, i) => {
               if (
@@ -393,14 +510,22 @@ export const useLintStore = create<LintState>()((set, get) => {
               return false;
             });
             blockDiagCache.set(
-              blockCacheKey(block),
+              scopedBlockCacheKey(blocks, index, resolvedResponseScope),
               blockDiags.map((d) => toRelative(d, block.str_offset_start)),
             );
             freshDiagnostics.push(...blockDiags);
           }
           if (import.meta.env.DEV) {
             const orphans = resp.diagnostics.filter(
-              (_, i) => !attributedIndices.has(i),
+              (diagnostic, i) =>
+                !attributedIndices.has(i) &&
+                !requestBlocks.some((block) => {
+                  const blockEnd = block.str_offset_start + block.text.length;
+                  return (
+                    diagnostic.range.start >= block.str_offset_start &&
+                    diagnostic.range.start < blockEnd
+                  );
+                }),
             );
             if (orphans.length > 0) {
               console.warn(
@@ -415,8 +540,8 @@ export const useLintStore = create<LintState>()((set, get) => {
         }
 
         // Reconstruct absolute diagnostics from cache hits.
-        for (const block of hitBlocks) {
-          const cached = blockDiagCache.get(blockCacheKey(block)) ?? [];
+        for (const { block, cacheKey } of hitTargets) {
+          const cached = blockDiagCache.get(cacheKey) ?? [];
           freshDiagnostics.push(
             ...cached.map((d) => toAbsolute(d, block.str_offset_start)),
           );
@@ -436,6 +561,11 @@ export const useLintStore = create<LintState>()((set, get) => {
           freshDiagnostics,
           sceneText,
         );
+        lastIncrementalScope = responseScope;
+        lastSceneContentKey =
+          responseScope === "scene"
+            ? (currentSceneContentKey ?? sceneContentKey(blocks))
+            : "";
         set((s) => ({
           rawDiagnostics: freshDiagnostics,
           diagnostics: filtered,
@@ -461,6 +591,8 @@ export const useLintStore = create<LintState>()((set, get) => {
         // cause on the next successful run.
         blockDiagCache = new Map();
         lastConfigKey = "";
+        lastIncrementalScope = null;
+        lastSceneContentKey = "";
         const message = formatLintError(err);
         set({
           rawDiagnostics: [],

@@ -358,7 +358,7 @@ impl Database {
         renderer_origin: bool,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
         let lock_started = Instant::now();
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
@@ -511,7 +511,7 @@ impl Database {
         renderer_origin: bool,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
         let lock_started = Instant::now();
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();

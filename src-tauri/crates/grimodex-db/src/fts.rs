@@ -5,7 +5,7 @@ use super::Database;
 
 impl Database {
     pub fn fts_optimize(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         conn.execute_batch(
             "INSERT INTO codex_fts(codex_fts) VALUES('optimize');
              INSERT INTO snippets_fts(snippets_fts) VALUES('optimize');
@@ -33,7 +33,7 @@ impl Database {
         scope: &str,
         limit: u32,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         let mut results: Vec<serde_json::Value> = Vec::new();
         let lim = limit.min(50) as i64;
 
@@ -282,7 +282,7 @@ impl Database {
     }
 
     pub fn fts_rebuild(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         conn.execute_batch(
             "INSERT INTO codex_fts(codex_fts) VALUES('rebuild');
              INSERT INTO snippets_fts(snippets_fts) VALUES('rebuild');
@@ -324,7 +324,7 @@ impl Database {
     /// Rebuild all `_en` FTS tables from English-project content. Used on a
     /// project language change and as a manual repair.
     pub fn rebuild_en_fts(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         rebuild_en_fts_sql(&conn)?;
         Ok(())
     }

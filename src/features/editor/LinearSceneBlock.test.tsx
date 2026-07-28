@@ -14,17 +14,20 @@ import { getDocText } from "@/features/editor/RubyNode";
 
 const {
   mockLoadSceneFull,
+  mockLoadAuthorshipSpans,
   mockPersist,
   mockToastError,
   mockToastInfo,
   createdEditors,
 } = vi.hoisted(() => ({
   mockLoadSceneFull: vi.fn(),
+  mockLoadAuthorshipSpans: vi.fn().mockResolvedValue([]),
   mockPersist: vi.fn().mockResolvedValue(undefined),
   mockToastError: vi.fn(),
   mockToastInfo: vi.fn(),
   createdEditors: [] as unknown[],
 }));
+const mockMarkEditorInputReady = vi.hoisted(() => vi.fn(() => true));
 
 // 実 Editor (headless) を使う: スキーマ選択と setContent の挙動こそが
 // テスト対象。useEditor / EditorContent (PM view の DOM mount) だけ
@@ -58,8 +61,26 @@ vi.mock("@/features/tree/api", () => ({
 vi.mock("@/features/editor/persistSceneBody", () => ({
   persistSceneBody: mockPersist,
 }));
+vi.mock("@/features/editor/editorInputReady", () => ({
+  createEditorInputScopeKey: ({
+    projectId,
+    workspacePath,
+    workspaceOpenRevision,
+  }: {
+    projectId: string | null;
+    workspacePath: string | null;
+    workspaceOpenRevision: number;
+  }) =>
+    JSON.stringify([
+      "editor-input-v1",
+      workspacePath,
+      workspaceOpenRevision,
+      projectId,
+    ]),
+  markEditorInputReady: mockMarkEditorInputReady,
+}));
 vi.mock("@/features/attribution/api", () => ({
-  loadAuthorshipSpans: vi.fn().mockResolvedValue([]),
+  loadAuthorshipSpans: mockLoadAuthorshipSpans,
   spansToMarkData: vi.fn().mockReturnValue([]),
 }));
 vi.mock("@/features/editor/useCodexHighlight", () => ({
@@ -71,8 +92,20 @@ vi.mock("@/features/attribution/useAttribution", () => ({
 vi.mock("@/features/editor/useCharacterFade", () => ({
   useCharacterFade: vi.fn(),
 }));
+const mockUseLicenseEditableSync = vi.hoisted(() =>
+  vi.fn(
+    (
+      editor: {
+        setEditable: (editable: boolean, emitUpdate: boolean) => void;
+      } | null,
+      forceReadOnly = false,
+    ) => {
+      editor?.setEditable(!forceReadOnly, false);
+    },
+  ),
+);
 vi.mock("@/features/license/useLicenseEditableSync", () => ({
-  useLicenseEditableSync: vi.fn(),
+  useLicenseEditableSync: mockUseLicenseEditableSync,
 }));
 vi.mock("sonner", () => ({
   toast: { error: mockToastError, info: mockToastInfo },
@@ -160,8 +193,12 @@ vi.mock("@/hooks/useAutoSave", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/hooks/useAutoSave")>();
   return {
     ...actual,
-    useAutoSave: (saveFn: () => Promise<void>, delayMs?: number) => {
-      const inst = actual.useAutoSave(saveFn, delayMs);
+    useAutoSave: (
+      saveFn: () => Promise<void>,
+      delayMs?: number,
+      lifecycle?: Parameters<typeof actual.useAutoSave>[2],
+    ) => {
+      const inst = actual.useAutoSave(saveFn, delayMs, lifecycle);
       autoSaveCtl.last = inst;
       return inst;
     },
@@ -283,7 +320,13 @@ function lastEditor(): Editor {
   return createdEditors[createdEditors.length - 1] as Editor;
 }
 
-function renderBlock({ isActive = false }: { isActive?: boolean } = {}) {
+function renderBlock({
+  isActive = false,
+  onFocus = () => {},
+}: {
+  isActive?: boolean;
+  onFocus?: (sceneId: string, editor: Editor) => void;
+} = {}) {
   return render(
     <LinearSceneBlock
       sceneId="scene-0001"
@@ -291,16 +334,19 @@ function renderBlock({ isActive = false }: { isActive?: boolean } = {}) {
       isActive={isActive}
       placeholderHeight={300}
       onHeightChange={() => {}}
-      onFocus={() => {}}
+      onFocus={onFocus}
     />,
   );
 }
 
 beforeEach(() => {
   mockLoadSceneFull.mockReset();
+  mockLoadAuthorshipSpans.mockReset();
+  mockLoadAuthorshipSpans.mockResolvedValue([]);
   mockPersist.mockClear();
   mockToastError.mockClear();
   mockToastInfo.mockClear();
+  mockUseLicenseEditableSync.mockClear();
   mockSetTabDirty.mockClear();
   mockDirtyTabIds.clear();
   isFileBackedNodeMock.mockReturnValue(false);
@@ -312,6 +358,7 @@ beforeEach(() => {
   inlineAiSpies.rejectOrAbort.mockClear();
   inlineAiSpies.retry.mockClear();
   mockBuildContext.mockClear();
+  mockMarkEditorInputReady.mockClear();
   // グローバル単一 store / オーナーはテスト間で漏らさない。
   useInlineAiStore.getState().reset();
   useLinearEditorStore.getState().setInlineAiOwner(null);
@@ -329,6 +376,16 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
       expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
     });
     expect(lastEditor().isEditable).toBe(true);
+    expect(
+      mockUseLicenseEditableSync.mock.calls.some(
+        ([, forceReadOnly]) => forceReadOnly === true,
+      ),
+    ).toBe(true);
+    expect(mockUseLicenseEditableSync).toHaveBeenLastCalledWith(
+      lastEditor(),
+      false,
+      { kind: "tree", id: "scene-0001", storage: "database" },
+    );
     expect(mockToastError).not.toHaveBeenCalled();
 
     // ユーザー編集 → autosave pending → unmount flush → 保存正本へ
@@ -350,6 +407,11 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
       expect(mockToastError).toHaveBeenCalled();
     });
     expect(lastEditor().isEditable).toBe(false);
+    expect(mockUseLicenseEditableSync).toHaveBeenLastCalledWith(
+      lastEditor(),
+      true,
+      { kind: "tree", id: "scene-0001", storage: "database" },
+    );
 
     // 仮に doc が編集されても (commands は editable を無視する)、
     // 失敗 doc の保存 = 本文の空上書きなので flush は skip される。
@@ -410,6 +472,99 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
       ).toBeNull();
     });
     expect(container.textContent).toContain("字");
+  });
+
+  it("本文取得後も sidecar hydration 完了までは編集対象として公開しない", async () => {
+    let resolveAuthorship!: (value: []) => void;
+    const onFocus = vi.fn();
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    mockLoadAuthorshipSpans.mockReturnValue(
+      new Promise<[]>((resolve) => {
+        resolveAuthorship = resolve;
+      }),
+    );
+    renderBlock({ onFocus });
+
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+    });
+    expect(lastEditor().isEditable).toBe(false);
+    expect(
+      useLinearEditorStore.getState().editorsById["scene-0001"],
+    ).toBeUndefined();
+    (lastEditor().options.onFocus as ((event: unknown) => void) | undefined)?.(
+      {},
+    );
+    expect(onFocus).not.toHaveBeenCalled();
+
+    resolveAuthorship([]);
+    await waitFor(() => {
+      expect(lastEditor().isEditable).toBe(true);
+      expect(useLinearEditorStore.getState().editorsById["scene-0001"]).toBe(
+        lastEditor(),
+      );
+    });
+    (lastEditor().options.onFocus as ((event: unknown) => void) | undefined)?.(
+      {},
+    );
+    expect(onFocus).toHaveBeenCalledWith("scene-0001", lastEditor());
+  });
+
+  it("active blockだけがcanonical key付きのlinear foreground readyを公開する", async () => {
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    const view = renderBlock({ isActive: false });
+
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+    });
+    expect(mockMarkEditorInputReady).not.toHaveBeenCalled();
+
+    view.rerender(
+      <LinearSceneBlock
+        sceneId="scene-0001"
+        isMounted
+        isActive
+        placeholderHeight={300}
+        onHeightChange={() => {}}
+        onFocus={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockMarkEditorInputReady).toHaveBeenCalledWith(
+        { kind: "tree", id: "scene-0001", storage: "database" },
+        expect.anything(),
+        true,
+        {
+          authority: "linear",
+          groupIndex: null,
+          foreground: true,
+          scopeKey: expect.any(String),
+        },
+      );
+    });
+    const surface = view.container.querySelector(
+      '[data-editor-input-authority="linear"]',
+    );
+    expect(surface).toHaveAttribute("data-editor-input-group", "none");
+    expect(surface).toHaveAttribute(
+      "data-editor-loaded-document-key",
+      "tree:database:scene-0001",
+    );
+    expect(surface).toHaveAttribute(
+      "data-editor-target-document-key",
+      "tree:database:scene-0001",
+    );
+    expect(surface?.getAttribute("data-editor-input-scope-key")).toBe(
+      surface?.getAttribute("data-editor-loaded-scope-key"),
+    );
+    expect(surface).toHaveAttribute("data-editor-input-foreground", "true");
   });
 
   it("editor.spellCheck 設定が本文ラッパーの spellcheck 属性に届く", async () => {
@@ -706,13 +861,39 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
   it("reloadNonce が進んだら DB から再ロードする (外部 write feed 配線)", async () => {
     await renderLoaded();
     expect(mockLoadSceneFull).toHaveBeenCalledTimes(1);
-    useExternalWriteStore.getState().bumpReloadNonce({
-      kind: "tree",
-      id: "scene-0001",
-      storage: "database",
+    let releaseReload!: (value: {
+      content: string;
+      unplacedBeatsDoc: string;
+    }) => void;
+    mockLoadSceneFull.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseReload = resolve;
+      }),
+    );
+
+    act(() => {
+      useExternalWriteStore.getState().bumpReloadNonce({
+        kind: "tree",
+        id: "scene-0001",
+        storage: "database",
+      });
     });
     await waitFor(() => {
       expect(mockLoadSceneFull).toHaveBeenCalledTimes(2);
+      expect(lastEditor().isEditable).toBe(false);
+    });
+
+    releaseReload({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    await waitFor(() => {
+      expect(lastEditor().isEditable).toBe(true);
+      expect(mockUseLicenseEditableSync).toHaveBeenLastCalledWith(
+        lastEditor(),
+        false,
+        { kind: "tree", id: "scene-0001", storage: "database" },
+      );
     });
   });
 });

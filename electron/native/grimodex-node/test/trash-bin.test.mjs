@@ -66,16 +66,31 @@ test("trashBinCreate → trashBinList roundtrip (日本語 preview_text)", async
   const opened = JSON.parse(await backend.openWorkspace(join(root, "ws")));
   assert.equal(opened.isExisting, false);
 
-  const created = JSON.parse(
-    await backend.trashBinCreate(
-      makePayload("消した文字屑（日本語・絵文字🗑）", "2026-07-10T00:00:00.000Z"),
-    ),
+  const createPayload = makePayload(
+    "消した文字屑（日本語・絵文字🗑）",
+    "2026-07-10T00:00:00.000Z",
+    { id: "trash-napi-request-1" },
   );
+  const created = JSON.parse(await backend.trashBinCreate(createPayload));
   // 作成行は SELECT * の生行 (列名 snake_case) — FE normalizeTrashItem が両対応。
   assert.equal(created.preview_text, "消した文字屑（日本語・絵文字🗑）");
   assert.equal(created.project_id, PROJECT);
   assert.equal(created.is_interesting, 0);
-  assert.ok(typeof created.id === "string" && created.id.length > 0);
+  assert.equal(created.id, createPayload.id);
+  assert.deepEqual(created.__idempotency, {
+    replayed: false,
+    entityPresent: true,
+  });
+  const replay = JSON.parse(await backend.trashBinCreate(createPayload));
+  assert.equal(replay.id, created.id);
+  assert.deepEqual(replay.__idempotency, {
+    replayed: true,
+    entityPresent: true,
+  });
+  await assert.rejects(
+    backend.trashBinCreate({ ...createPayload, previewText: "別の屑" }),
+    /TRASH_BIN_CREATE_IDEMPOTENCY_CONFLICT/,
+  );
 
   const rows = await listRows();
   assert.equal(rows.length, 1);
@@ -104,13 +119,27 @@ test("trashBinDelete は 1 件だけ消す", async () => {
 });
 
 test("trashBinClearAll で project の屑が全て消える", async () => {
+  const durablePayload = makePayload("SECRET_NAPI_TRASH_SENTINEL", undefined, {
+    id: "trash-napi-cleared-request",
+  });
+  await backend.trashBinCreate(durablePayload);
   await backend.trashBinClearAll(PROJECT);
+  assert.deepEqual(await listRows(), []);
+
+  const replay = JSON.parse(await backend.trashBinCreate(durablePayload));
+  assert.equal(replay.id, durablePayload.id);
+  assert.deepEqual(replay.__idempotency, {
+    replayed: true,
+    entityPresent: false,
+  });
   assert.deepEqual(await listRows(), []);
 });
 
 test("trashBinPrune は期日切れ + 件数超過を刈り取り残件数を返す", async () => {
   // 期日切れ 1 件 (retention 60 日を大きく超える古さ) + 新しい 3 件
-  await backend.trashBinCreate(makePayload("期日切れ", "2020-01-01T00:00:00.000Z"));
+  await backend.trashBinCreate(
+    makePayload("期日切れ", "2020-01-01T00:00:00.000Z"),
+  );
   await backend.trashBinCreate(makePayload("i1", "2026-07-01T00:00:00.000Z"));
   await backend.trashBinCreate(makePayload("i2", "2026-07-02T00:00:00.000Z"));
   await backend.trashBinCreate(makePayload("i3", "2026-07-03T00:00:00.000Z"));

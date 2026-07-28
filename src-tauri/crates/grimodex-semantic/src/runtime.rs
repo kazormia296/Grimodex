@@ -54,7 +54,7 @@ use crate::events_index::{
 use crate::events_search::{run_events_search, EventSearchHit};
 #[cfg(feature = "semantic-embedding")]
 use crate::index::{
-    embed_scene_payloads, list_scene_ids_in_project, project_language_for_scene,
+    embed_scene_payloads_cancellable, list_scene_ids_in_project, project_language_for_scene,
     read_scene_for_index, upsert_scene_chunks, UpsertOutcome,
 };
 #[cfg(feature = "semantic-embedding")]
@@ -70,6 +70,8 @@ use std::sync::Condvar;
 
 pub const REINDEX_PROGRESS_EVENT: &str = "semantic:reindex_progress";
 pub const MODEL_DOWNLOAD_PROGRESS_EVENT: &str = "semantic:model_download_progress";
+const BACKGROUND_CANCELLED_MESSAGE: &str =
+    "IPC_DERIVED_CANCELLED: semantic background indexing was cancelled";
 
 #[derive(Debug, Clone)]
 pub struct SemanticPaths {
@@ -332,6 +334,18 @@ impl SemanticRuntime {
             .generation
     }
 
+    fn request_is_current(&self, request: &SemanticRequest) -> bool {
+        self.current_generation() == request.epoch.generation
+    }
+
+    fn ensure_background_request_current(&self, request: &SemanticRequest) -> Result<()> {
+        if self.request_is_current(request) {
+            Ok(())
+        } else {
+            Err(anyhow!(BACKGROUND_CANCELLED_MESSAGE))
+        }
+    }
+
     /// Atomically replace all four caches with a fresh generation.
     ///
     /// Old requests retain their old `Arc<SemanticCaches>`; late puts from an
@@ -347,6 +361,16 @@ impl SemanticRuntime {
             generation: state.generation,
             caches: Arc::clone(&state.caches),
         }
+    }
+
+    /// Cooperatively stop rebuildable semantic indexing work.
+    ///
+    /// Rotating the epoch makes already-pinned background requests stale and
+    /// simultaneously replaces all four derived-data caches. Indexing loops
+    /// observe the generation change between items/chunks, discard incomplete
+    /// payloads, and the public command returns `IPC_DERIVED_CANCELLED`.
+    pub fn semantic_cancel_background(&self) -> u64 {
+        self.rotate_workspace_epoch().generation()
     }
 
     /// Pin a consistent database/cache pair without holding the epoch mutex
@@ -812,18 +836,23 @@ impl SemanticRuntime {
     }
 
     pub fn semantic_index_scene(&self, request: &SemanticRequest, scene_id: &str) -> Result<usize> {
+        self.ensure_background_request_current(request)?;
         let language = project_language_for_scene(request.db(), scene_id)?;
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let outcome = self.with_embedder(spec, |embedder| {
-            index_scene(request.db(), embedder, scene_id, &model_id, spec)
+            index_scene(request.db(), embedder, scene_id, &model_id, spec, || {
+                self.request_is_current(request)
+            })
         })?;
+        self.ensure_background_request_current(request)?;
         match outcome {
-            UpsertOutcome::Indexed(count) => {
+            Some(UpsertOutcome::Indexed(count)) => {
                 request.epoch.caches.scene.invalidate(scene_id)?;
                 Ok(count)
             }
-            UpsertOutcome::SkippedHashMismatch | UpsertOutcome::SkippedNotScene => Ok(0),
+            Some(UpsertOutcome::SkippedHashMismatch | UpsertOutcome::SkippedNotScene) => Ok(0),
+            None => Err(anyhow!(BACKGROUND_CANCELLED_MESSAGE)),
         }
     }
 
@@ -858,12 +887,14 @@ impl SemanticRuntime {
     }
 
     pub fn codex_index_entry(&self, request: &SemanticRequest, entry_id: &str) -> Result<usize> {
+        self.ensure_background_request_current(request)?;
         let language = project_language_for_codex_entry(request.db(), entry_id)?;
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let outcome = self.with_embedder(spec, |embedder| {
             index_codex(request.db(), embedder, entry_id, &model_id, spec)
         })?;
+        self.ensure_background_request_current(request)?;
         match outcome {
             CodexUpsertOutcome::Indexed(count) => {
                 request.epoch.caches.codex.invalidate(entry_id)?;
@@ -899,12 +930,14 @@ impl SemanticRuntime {
     }
 
     pub fn events_index_entry(&self, request: &SemanticRequest, event_id: &str) -> Result<usize> {
+        self.ensure_background_request_current(request)?;
         let language = project_language_for_event(request.db(), event_id)?;
         let spec = spec_for_language(&language);
         let model_id = spec.full_model_id();
         let outcome = self.with_embedder(spec, |embedder| {
             index_event(request.db(), embedder, event_id, &model_id, spec)
         })?;
+        self.ensure_background_request_current(request)?;
         match outcome {
             EventUpsertOutcome::Indexed(count) => {
                 request.epoch.caches.events.invalidate(event_id)?;
@@ -940,6 +973,7 @@ impl SemanticRuntime {
     }
 
     pub fn chat_index_message(&self, request: &SemanticRequest, message_id: &str) -> Result<usize> {
+        self.ensure_background_request_current(request)?;
         if read_chat_message_for_index(request.db(), message_id)?.is_none() {
             return Ok(0);
         }
@@ -949,6 +983,7 @@ impl SemanticRuntime {
         let outcome = self.with_embedder(spec, |embedder| {
             index_chat(request.db(), embedder, message_id, &model_id, spec)
         })?;
+        self.ensure_background_request_current(request)?;
         match outcome {
             ChatUpsertOutcome::Indexed(count) => {
                 request.epoch.caches.chat.invalidate(message_id)?;
@@ -994,6 +1029,7 @@ impl SemanticRuntime {
             Some(_) => anyhow::bail!("run_id must contain 1..=256 characters"),
             None => uuid::Uuid::new_v4().to_string(),
         };
+        self.ensure_background_request_current(request)?;
         let language = project_language(request.db(), project_id)?;
         let requested_spec = spec_for_language(&language);
         let completion = self.run_reindex_singleflight(
@@ -1007,63 +1043,120 @@ impl SemanticRuntime {
                 Ok(spec_for_language(&current_language))
             },
             |spec| {
-                let model_id = spec.full_model_id();
-                let scene_ids = list_scene_ids_in_project(request.db(), project_id)?;
-                let total_scenes = scene_ids.len();
-                if total_scenes == 0 {
-                    self.emit(
-                        REINDEX_PROGRESS_EVENT,
-                        &SemanticReindexProgress {
-                            scene_index: 0,
-                            scene_id: String::new(),
-                            total_scenes: 0,
+                request.db().with_background_connection_priority(|| {
+                    if !self.request_is_current(request) {
+                        return Ok(ReindexOutcome {
                             chunks_indexed: 0,
-                            done: true,
-                            project_id: project_id.to_string(),
-                            run_id: run_id.clone(),
-                        },
-                    );
-                    return Ok(ReindexOutcome {
-                        chunks_indexed: 0,
-                        total_items: 0,
-                        last_item_id: String::new(),
-                    });
-                }
-                self.with_embedder(spec, |embedder| {
-                    let mut total = 0_usize;
-                    for (index, scene_id) in scene_ids.iter().enumerate() {
-                        if let UpsertOutcome::Indexed(count) =
-                            index_scene(request.db(), embedder, scene_id, &model_id, spec)?
-                        {
-                            request.epoch.caches.scene.invalidate(scene_id)?;
-                            total += count;
-                        }
+                            total_items: 0,
+                            last_item_id: String::new(),
+                        });
+                    }
+                    let model_id = spec.full_model_id();
+                    let scene_ids = list_scene_ids_in_project(request.db(), project_id)?;
+                    let total_scenes = scene_ids.len();
+                    if total_scenes == 0 {
                         self.emit(
                             REINDEX_PROGRESS_EVENT,
                             &SemanticReindexProgress {
-                                scene_index: index + 1,
-                                scene_id: scene_id.clone(),
-                                total_scenes,
-                                chunks_indexed: total,
-                                done: index + 1 == total_scenes,
+                                scene_index: 0,
+                                scene_id: String::new(),
+                                total_scenes: 0,
+                                chunks_indexed: 0,
+                                done: true,
                                 project_id: project_id.to_string(),
                                 run_id: run_id.clone(),
                             },
                         );
+                        return Ok(ReindexOutcome {
+                            chunks_indexed: 0,
+                            total_items: 0,
+                            last_item_id: String::new(),
+                        });
                     }
-                    Ok(ReindexOutcome {
-                        chunks_indexed: total,
-                        total_items: total_scenes,
-                        last_item_id: scene_ids.last().cloned().unwrap_or_default(),
+                    self.with_embedder(spec, |embedder| {
+                        let mut total = 0_usize;
+                        let mut last_item_id = String::new();
+                        for (index, scene_id) in scene_ids.iter().enumerate() {
+                            if !self.request_is_current(request) {
+                                self.emit(
+                                    REINDEX_PROGRESS_EVENT,
+                                    &SemanticReindexProgress {
+                                        scene_index: index,
+                                        scene_id: last_item_id.clone(),
+                                        total_scenes,
+                                        chunks_indexed: total,
+                                        done: true,
+                                        project_id: project_id.to_string(),
+                                        run_id: run_id.clone(),
+                                    },
+                                );
+                                return Ok(ReindexOutcome {
+                                    chunks_indexed: total,
+                                    total_items: total_scenes,
+                                    last_item_id,
+                                });
+                            }
+                            let Some(outcome) = index_scene(
+                                request.db(),
+                                embedder,
+                                scene_id,
+                                &model_id,
+                                spec,
+                                || self.request_is_current(request),
+                            )?
+                            else {
+                                self.emit(
+                                    REINDEX_PROGRESS_EVENT,
+                                    &SemanticReindexProgress {
+                                        scene_index: index,
+                                        scene_id: last_item_id.clone(),
+                                        total_scenes,
+                                        chunks_indexed: total,
+                                        done: true,
+                                        project_id: project_id.to_string(),
+                                        run_id: run_id.clone(),
+                                    },
+                                );
+                                return Ok(ReindexOutcome {
+                                    chunks_indexed: total,
+                                    total_items: total_scenes,
+                                    last_item_id,
+                                });
+                            };
+                            if let UpsertOutcome::Indexed(count) = outcome {
+                                request.epoch.caches.scene.invalidate(scene_id)?;
+                                total += count;
+                            }
+                            last_item_id = scene_id.clone();
+                            self.emit(
+                                REINDEX_PROGRESS_EVENT,
+                                &SemanticReindexProgress {
+                                    scene_index: index + 1,
+                                    scene_id: scene_id.clone(),
+                                    total_scenes,
+                                    chunks_indexed: total,
+                                    done: index + 1 == total_scenes,
+                                    project_id: project_id.to_string(),
+                                    run_id: run_id.clone(),
+                                },
+                            );
+                        }
+                        Ok(ReindexOutcome {
+                            chunks_indexed: total,
+                            total_items: total_scenes,
+                            last_item_id,
+                        })
                     })
                 })
             },
         )?;
+        self.ensure_background_request_current(request)?;
         self.emit_joined_scene_completion(&completion, project_id, &run_id);
         Ok(completion.outcome.chunks_indexed)
     }
 
     pub fn codex_reindex_all(&self, request: &SemanticRequest, project_id: &str) -> Result<usize> {
+        self.ensure_background_request_current(request)?;
         let language = project_language(request.db(), project_id)?;
         let requested_spec = spec_for_language(&language);
         let completion = self.run_reindex_singleflight(
@@ -1077,39 +1170,53 @@ impl SemanticRuntime {
                 Ok(spec_for_language(&current_language))
             },
             |spec| {
-                let model_id = spec.full_model_id();
-                let ids = list_entry_ids_in_project(request.db(), project_id)?;
-                let total_items = ids.len();
-                let last_item_id = ids.last().cloned().unwrap_or_default();
-                if ids.is_empty() {
-                    return Ok(ReindexOutcome {
-                        chunks_indexed: 0,
-                        total_items,
-                        last_item_id,
-                    });
-                }
-                self.with_embedder(spec, |embedder| {
-                    let mut total = 0;
-                    for id in ids {
-                        if let CodexUpsertOutcome::Indexed(count) =
-                            index_codex(request.db(), embedder, &id, &model_id, spec)?
-                        {
-                            request.epoch.caches.codex.invalidate(&id)?;
-                            total += count;
-                        }
+                request.db().with_background_connection_priority(|| {
+                    if !self.request_is_current(request) {
+                        return Ok(ReindexOutcome {
+                            chunks_indexed: 0,
+                            total_items: 0,
+                            last_item_id: String::new(),
+                        });
                     }
-                    Ok(ReindexOutcome {
-                        chunks_indexed: total,
-                        total_items,
-                        last_item_id,
+                    let model_id = spec.full_model_id();
+                    let ids = list_entry_ids_in_project(request.db(), project_id)?;
+                    let total_items = ids.len();
+                    let last_item_id = ids.last().cloned().unwrap_or_default();
+                    if ids.is_empty() {
+                        return Ok(ReindexOutcome {
+                            chunks_indexed: 0,
+                            total_items,
+                            last_item_id,
+                        });
+                    }
+                    self.with_embedder(spec, |embedder| {
+                        let mut total = 0;
+                        for id in ids {
+                            if !self.request_is_current(request) {
+                                break;
+                            }
+                            if let CodexUpsertOutcome::Indexed(count) =
+                                index_codex(request.db(), embedder, &id, &model_id, spec)?
+                            {
+                                request.epoch.caches.codex.invalidate(&id)?;
+                                total += count;
+                            }
+                        }
+                        Ok(ReindexOutcome {
+                            chunks_indexed: total,
+                            total_items,
+                            last_item_id,
+                        })
                     })
                 })
             },
         )?;
+        self.ensure_background_request_current(request)?;
         Ok(completion.outcome.chunks_indexed)
     }
 
     pub fn events_reindex_all(&self, request: &SemanticRequest, project_id: &str) -> Result<usize> {
+        self.ensure_background_request_current(request)?;
         let language = project_language(request.db(), project_id)?;
         let requested_spec = spec_for_language(&language);
         let completion = self.run_reindex_singleflight(
@@ -1123,39 +1230,53 @@ impl SemanticRuntime {
                 Ok(spec_for_language(&current_language))
             },
             |spec| {
-                let model_id = spec.full_model_id();
-                let ids = list_event_ids_in_project(request.db(), project_id)?;
-                let total_items = ids.len();
-                let last_item_id = ids.last().cloned().unwrap_or_default();
-                if ids.is_empty() {
-                    return Ok(ReindexOutcome {
-                        chunks_indexed: 0,
-                        total_items,
-                        last_item_id,
-                    });
-                }
-                self.with_embedder(spec, |embedder| {
-                    let mut total = 0;
-                    for id in ids {
-                        if let EventUpsertOutcome::Indexed(count) =
-                            index_event(request.db(), embedder, &id, &model_id, spec)?
-                        {
-                            request.epoch.caches.events.invalidate(&id)?;
-                            total += count;
-                        }
+                request.db().with_background_connection_priority(|| {
+                    if !self.request_is_current(request) {
+                        return Ok(ReindexOutcome {
+                            chunks_indexed: 0,
+                            total_items: 0,
+                            last_item_id: String::new(),
+                        });
                     }
-                    Ok(ReindexOutcome {
-                        chunks_indexed: total,
-                        total_items,
-                        last_item_id,
+                    let model_id = spec.full_model_id();
+                    let ids = list_event_ids_in_project(request.db(), project_id)?;
+                    let total_items = ids.len();
+                    let last_item_id = ids.last().cloned().unwrap_or_default();
+                    if ids.is_empty() {
+                        return Ok(ReindexOutcome {
+                            chunks_indexed: 0,
+                            total_items,
+                            last_item_id,
+                        });
+                    }
+                    self.with_embedder(spec, |embedder| {
+                        let mut total = 0;
+                        for id in ids {
+                            if !self.request_is_current(request) {
+                                break;
+                            }
+                            if let EventUpsertOutcome::Indexed(count) =
+                                index_event(request.db(), embedder, &id, &model_id, spec)?
+                            {
+                                request.epoch.caches.events.invalidate(&id)?;
+                                total += count;
+                            }
+                        }
+                        Ok(ReindexOutcome {
+                            chunks_indexed: total,
+                            total_items,
+                            last_item_id,
+                        })
                     })
                 })
             },
         )?;
+        self.ensure_background_request_current(request)?;
         Ok(completion.outcome.chunks_indexed)
     }
 
     pub fn chat_reindex_all(&self, request: &SemanticRequest, project_id: &str) -> Result<usize> {
+        self.ensure_background_request_current(request)?;
         let language = project_language(request.db(), project_id)?;
         let requested_spec = spec_for_language(&language);
         let completion = self.run_reindex_singleflight(
@@ -1169,35 +1290,48 @@ impl SemanticRuntime {
                 Ok(spec_for_language(&current_language))
             },
             |spec| {
-                let model_id = spec.full_model_id();
-                let ids = list_message_ids_in_project(request.db(), project_id)?;
-                let total_items = ids.len();
-                let last_item_id = ids.last().cloned().unwrap_or_default();
-                if ids.is_empty() {
-                    return Ok(ReindexOutcome {
-                        chunks_indexed: 0,
-                        total_items,
-                        last_item_id,
-                    });
-                }
-                self.with_embedder(spec, |embedder| {
-                    let mut total = 0;
-                    for id in ids {
-                        if let ChatUpsertOutcome::Indexed(count) =
-                            index_chat(request.db(), embedder, &id, &model_id, spec)?
-                        {
-                            request.epoch.caches.chat.invalidate(&id)?;
-                            total += count;
-                        }
+                request.db().with_background_connection_priority(|| {
+                    if !self.request_is_current(request) {
+                        return Ok(ReindexOutcome {
+                            chunks_indexed: 0,
+                            total_items: 0,
+                            last_item_id: String::new(),
+                        });
                     }
-                    Ok(ReindexOutcome {
-                        chunks_indexed: total,
-                        total_items,
-                        last_item_id,
+                    let model_id = spec.full_model_id();
+                    let ids = list_message_ids_in_project(request.db(), project_id)?;
+                    let total_items = ids.len();
+                    let last_item_id = ids.last().cloned().unwrap_or_default();
+                    if ids.is_empty() {
+                        return Ok(ReindexOutcome {
+                            chunks_indexed: 0,
+                            total_items,
+                            last_item_id,
+                        });
+                    }
+                    self.with_embedder(spec, |embedder| {
+                        let mut total = 0;
+                        for id in ids {
+                            if !self.request_is_current(request) {
+                                break;
+                            }
+                            if let ChatUpsertOutcome::Indexed(count) =
+                                index_chat(request.db(), embedder, &id, &model_id, spec)?
+                            {
+                                request.epoch.caches.chat.invalidate(&id)?;
+                                total += count;
+                            }
+                        }
+                        Ok(ReindexOutcome {
+                            chunks_indexed: total,
+                            total_items,
+                            last_item_id,
+                        })
                     })
                 })
             },
         )?;
+        self.ensure_background_request_current(request)?;
         Ok(completion.outcome.chunks_indexed)
     }
 
@@ -1234,11 +1368,22 @@ fn index_scene(
     scene_id: &str,
     model_id: &str,
     spec: &'static EmbeddingModelSpec,
-) -> Result<UpsertOutcome> {
+    mut should_continue: impl FnMut() -> bool,
+) -> Result<Option<UpsertOutcome>> {
+    if !should_continue() {
+        return Ok(None);
+    }
     let Some((content, initial_hash)) = read_scene_for_index(db, scene_id)? else {
-        return Ok(UpsertOutcome::SkippedNotScene);
+        return Ok(Some(UpsertOutcome::SkippedNotScene));
     };
-    let payloads = embed_scene_payloads(embedder, scene_id, &content, spec)?;
+    let Some(payloads) =
+        embed_scene_payloads_cancellable(embedder, scene_id, &content, spec, &mut should_continue)?
+    else {
+        return Ok(None);
+    };
+    if !should_continue() {
+        return Ok(None);
+    }
     upsert_scene_chunks(
         db,
         scene_id,
@@ -1248,6 +1393,7 @@ fn index_scene(
         embedder.embedding_dim(),
         spec.chunker_version,
     )
+    .map(Some)
 }
 
 #[cfg(feature = "semantic-embedding")]
@@ -1480,6 +1626,47 @@ mod tests {
         assert_eq!(old.caches.scene.len(), 1);
         assert!(current.caches.scene.is_empty());
         assert!(!Arc::ptr_eq(&old.caches, &current.caches));
+    }
+
+    #[test]
+    fn cancel_background_rotates_epoch_and_stales_pinned_requests() {
+        let runtime = runtime(Arc::new(RecordingEvents::default()));
+        let db = database("p1");
+        let request = runtime
+            .pin_request(|| Ok::<_, anyhow::Error>(Arc::clone(&db)))
+            .unwrap();
+
+        assert!(runtime.request_is_current(&request));
+        assert_eq!(runtime.semantic_cancel_background(), 1);
+        assert!(!runtime.request_is_current(&request));
+        assert_eq!(runtime.snapshot_epoch().generation(), 1);
+    }
+
+    #[cfg(feature = "semantic-embedding")]
+    #[test]
+    fn stale_index_requests_report_cancellation_without_loading_a_model() {
+        let runtime = runtime(Arc::new(RecordingEvents::default()));
+        let db = database("p1");
+        let request = runtime
+            .pin_request(|| Ok::<_, anyhow::Error>(Arc::clone(&db)))
+            .unwrap();
+        runtime.semantic_cancel_background();
+
+        for result in [
+            runtime.semantic_index_scene(&request, "missing"),
+            runtime.semantic_reindex_all(&request, "p1", Some("cancelled")),
+            runtime.codex_index_entry(&request, "missing"),
+            runtime.codex_reindex_all(&request, "p1"),
+            runtime.events_index_entry(&request, "missing"),
+            runtime.events_reindex_all(&request, "p1"),
+            runtime.chat_index_message(&request, "missing"),
+            runtime.chat_reindex_all(&request, "p1"),
+        ] {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("IPC_DERIVED_CANCELLED"));
+        }
     }
 
     #[test]

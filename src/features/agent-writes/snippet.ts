@@ -14,6 +14,10 @@ import { applyUndoJournal } from "./undoJournal";
 import type { Snippet } from "@/features/snippets/api";
 
 export interface AgentSnippetCreateInput {
+  /** Stable identity of the logical request; distinct from the created entity. */
+  requestId?: string;
+  /** Reuse this domain ID when retrying the same logical create. */
+  snippetId?: string;
   title: string;
   content?: string;
   sceneId?: string;
@@ -38,6 +42,7 @@ export async function agentCreateSnippet(
   }
 
   const projectId = getCurrentProjectId();
+  const snippetId = input.snippetId ?? crypto.randomUUID();
   const content = input.content
     ? markCodexContentAsAi(input.content, {
         model: input.model,
@@ -56,6 +61,8 @@ export async function agentCreateSnippet(
 
   const result = await invoke<AgentWriteResult>("agent_snippet_create", {
     payload: {
+      requestId: input.requestId ?? null,
+      snippetId,
       projectId,
       sessionId: getRecorderSessionId(),
       title: input.title,
@@ -86,6 +93,7 @@ export async function agentCreateSnippet(
     useGlobalHistoryStore.getState().push({
       kind: "snippets",
       label: i18next.t("snippets.store.agentHistoryCreate"),
+      operationId: journalId,
       entityId,
       async undo() {
         await applyUndoJournal(journalId, "undo");

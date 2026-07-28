@@ -8,7 +8,6 @@ import "./lib/i18n";
 import "./lib/perfLog";
 import "./lib/imeLog";
 import "./index.css";
-import { ensureTokenizer } from "./features/chat/contextBuilder";
 import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
 import { isElectron, isTauri, listen } from "./lib/tauri";
 import { installDefaultEditorNavigation } from "./features/editor/editorNavigationPorts";
@@ -188,15 +187,3 @@ async function bootstrapRenderer(): Promise<void> {
 }
 
 void bootstrapRenderer().catch(renderBrowserBootstrapFailure);
-
-// Warm up tiktoken WASM during idle so the first chat-flow `await
-// ensureTokenizer()` returns immediately instead of paying ~30ms init cost
-// on the click critical path.
-const __idle =
-  (window as Window & { requestIdleCallback?: typeof requestIdleCallback })
-    .requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 0));
-__idle(() => {
-  void ensureTokenizer().catch(() => {
-    // Failures are already logged by ensureTokenizer itself.
-  });
-});

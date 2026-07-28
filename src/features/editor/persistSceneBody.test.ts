@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   state: {
     treeNodes: [] as Array<{ id: string; sourceUri?: string }>,
     codexEntries: [] as unknown[],
+    hasCompletionTargets: false,
     activeChatSceneId: null as string | null,
     fileBacked: false,
     electron: false,
@@ -38,6 +39,7 @@ const h = vi.hoisted(() => ({
     (sceneId: string, povs: string[]) => Promise<void>
   >(() => Promise.resolve()),
   upsertSceneBodyMentions: vi.fn(() => Promise.resolve()),
+  listCodexMatchTargets: vi.fn(async () => [] as Array<{ id: string }>),
   recordBodyMentionScans: vi.fn(() => Promise.resolve()),
   scheduleSceneIndex: vi.fn(),
   scheduleWriteBack: vi.fn(),
@@ -68,12 +70,14 @@ const h = vi.hoisted(() => ({
   })),
   bumpMatrixDataVersion: vi.fn(),
   recordCounter: vi.fn(),
+  recordSerializedByteCounter: vi.fn(),
 }));
 
 vi.mock("@/lib/perfLog", () => ({
   markStart: vi.fn(),
   markEnd: vi.fn(),
   recordCounter: h.recordCounter,
+  recordSerializedByteCounter: h.recordSerializedByteCounter,
 }));
 vi.mock("@/lib/debugLog", () => ({
   debugLog: { error: vi.fn(), warn: vi.fn() },
@@ -137,7 +141,15 @@ vi.mock("@/features/codex/bodyMentionIndexState", () => ({
   recordBodyMentionScans: h.recordBodyMentionScans,
 }));
 vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: { getState: () => ({ entries: h.state.codexEntries }) },
+  useCodexStore: {
+    getState: () => ({
+      entries: h.state.codexEntries,
+      ...(h.state.hasCompletionTargets ? { completionTargets: [] } : {}),
+    }),
+  },
+}));
+vi.mock("@/features/codex/api", () => ({
+  listCodexMatchTargets: h.listCodexMatchTargets,
 }));
 vi.mock("@/features/chat/chatStore", () => ({
   useChatStore: {
@@ -172,6 +184,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
   h.state.codexEntries = [];
+  h.state.hasCompletionTargets = false;
   h.state.activeChatSceneId = null;
   h.state.fileBacked = false;
   h.state.electron = false;
@@ -216,6 +229,28 @@ describe("persistSceneBody — DB-native scene", () => {
       unplacedBeatsDoc: "[]",
       charCount: 42,
     });
+  });
+
+  it("records the serialized scene payload as UTF-8 bytes", async () => {
+    const localizedJson = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "日本語の本文" }],
+        },
+      ],
+    };
+    const serialized = JSON.stringify(localizedJson);
+
+    await persistSceneBody("scene-1", {
+      toJSON: () => localizedJson,
+    } as unknown as ProseMirrorNode);
+
+    expect(h.recordSerializedByteCounter).toHaveBeenCalledWith(
+      "editor.coreSave.serializeBytes",
+      serialized,
+    );
   });
 
   it("reuses the save serialization for deferred body mention indexing", async () => {
@@ -267,6 +302,17 @@ describe("persistSceneBody — DB-native scene", () => {
       JSON.stringify({ type: "doc", content: [{ text: "second" }] }),
       h.state.codexEntries,
     );
+  });
+
+  it("skips body parsing and scan-state writes when the project has no match targets", async () => {
+    h.state.hasCompletionTargets = true;
+
+    await persistSceneBody("scene-1", fakeDoc);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(h.listCodexMatchTargets).toHaveBeenCalledWith("proj-1");
+    expect(h.upsertSceneBodyMentions).not.toHaveBeenCalled();
+    expect(h.recordBodyMentionScans).not.toHaveBeenCalled();
   });
 
   it("runs the schema-dependent anchor/provenance cascade against the doc", async () => {

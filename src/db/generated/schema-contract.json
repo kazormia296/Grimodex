@@ -1024,10 +1024,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "runtime",
-            "external_thread_id"
-          ]
+          "columns": ["runtime", "external_thread_id"]
         }
       ],
       "createSql": "CREATE TABLE chat_runtime_threads ( session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, runtime TEXT NOT NULL, external_thread_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, history_revision TEXT, last_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, runtime), UNIQUE (runtime, external_thread_id) )"
@@ -1581,11 +1578,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "type_slug",
-            "name"
-          ]
+          "columns": ["project_id", "type_slug", "name"]
         }
       ],
       "createSql": "CREATE TABLE codex_detail_definitions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, type_slug TEXT NOT NULL, name TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text' CHECK(field_type IN ('text', 'dropdown', 'codex_reference')), field_config TEXT, sort_order REAL NOT NULL DEFAULT 0.0, include_in_context INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, type_slug, name), -- Composite FK: (project_id, type_slug) must reference a row in codex_types. FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
@@ -1646,10 +1639,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "entry_id",
-            "definition_id"
-          ]
+          "columns": ["entry_id", "definition_id"]
         }
       ],
       "createSql": "CREATE TABLE codex_detail_values ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE, value TEXT, UNIQUE(entry_id, definition_id) )"
@@ -2369,10 +2359,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "name"
-          ]
+          "columns": ["project_id", "name"]
         }
       ],
       "createSql": "CREATE TABLE codex_tags ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT, type_filter TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -2465,10 +2452,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "slug"
-          ]
+          "columns": ["project_id", "slug"]
         }
       ],
       "createSql": "CREATE TABLE codex_types ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, slug TEXT NOT NULL, label TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#888888', palette_index INTEGER, icon TEXT, is_builtin INTEGER NOT NULL DEFAULT 0, sort_order REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, slug) )"
@@ -2529,11 +2513,7 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": [
-            "entity_type",
-            "entity_id",
-            "version_number"
-          ]
+          "columns": ["entity_type", "entity_id", "version_number"]
         }
       ],
       "createSql": "CREATE TABLE content_versions ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), entity_type TEXT NOT NULL CHECK(entity_type IN ('scene', 'note', 'codex_entry', 'snippet')), entity_id TEXT NOT NULL, content TEXT NOT NULL, version_number INTEGER NOT NULL, snapshot_type TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto', 'manual')), created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entity_type, entity_id, version_number) )"
@@ -3378,12 +3358,71 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "trace_id"
-          ]
+          "columns": ["trace_id"]
         }
       ],
       "createSql": "CREATE TABLE generation_logs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')), command_id TEXT, instruction TEXT, prompt_full TEXT, model TEXT, trace_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+    },
+    "idempotency_requests": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "datetime('now')",
+          "primaryKey": 0
+        },
+        "domain": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "payload_hash": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "request_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "tombstone_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE idempotency_requests ( domain TEXT NOT NULL, request_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, payload_hash TEXT NOT NULL, tombstone_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (domain, request_id) )"
     },
     "impact_review_baselines": {
       "kind": "table",
@@ -3509,10 +3548,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "name"
-          ]
+          "columns": ["project_id", "name"]
         }
       ],
       "createSql": "CREATE TABLE labels ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, sort_order REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -5919,10 +5955,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "name"
-          ]
+          "columns": ["project_id", "name"]
         }
       ],
       "createSql": "CREATE TABLE project_snapshots ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -8353,6 +8386,22 @@
         }
       ],
       "createSql": "CREATE INDEX idx_generation_logs_scene ON generation_logs(scene_node_id)"
+    },
+    "idx_idempotency_requests_project_created": {
+      "table": "idempotency_requests",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "created_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_idempotency_requests_project_created ON idempotency_requests(project_id, created_at)"
     },
     "idx_impact_baselines_project": {
       "table": "impact_review_baselines",

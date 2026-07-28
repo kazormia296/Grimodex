@@ -1,7 +1,24 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, act } from "@testing-library/react";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import {
+  render,
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
+import { expectNoA11yViolations } from "@/test-utils/axe";
+
+const mockLoadSceneContents = vi.hoisted(() => vi.fn());
+vi.mock("@/features/tree/api", () => ({
+  loadSceneContents: mockLoadSceneContents,
+}));
 
 // LinearSceneBlock は TipTap / API / 多数の hooks に依存して mount コストが高い。
 // scenes memo (DFS pre-order) の DOM 順だけ assert したいので、`data-scene-id`
@@ -107,6 +124,7 @@ import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useEditorSessionStore } from "./editorSessionStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import type { Editor } from "@tiptap/core";
+import { endPerfSession, startPerfSession } from "@/lib/perfLog";
 
 const DEBOUNCE_TEST_WAIT_MS = 120;
 
@@ -151,6 +169,12 @@ beforeEach(() => {
   useEditorSessionStore.getState().resetForProject();
   useExternalWriteStore.getState().clear();
   settingsOverride.current = {};
+  mockLoadSceneContents.mockReset();
+  mockLoadSceneContents.mockResolvedValue(new Map());
+});
+
+afterEach(() => {
+  _resetQuiescenceLeasesForTests();
 });
 
 describe("LinearEditorView — background boundary", () => {
@@ -306,6 +330,222 @@ describe("LinearEditorView — scene ordering", () => {
   });
 });
 
+describe("LinearEditorView — accessible all-scenes reader", () => {
+  it("batch loads every scene and prefers dirty mounted editor content", async () => {
+    useTreeStore.setState({
+      nodes: [
+        makeNode({ id: "S1", title: "第一場", sortOrder: "a0" }),
+        makeNode({ id: "S2", title: "第二場", sortOrder: "a1" }),
+      ],
+      activeSceneId: "S1",
+    });
+    mockLoadSceneContents.mockResolvedValue(
+      new Map([
+        [
+          "S1",
+          JSON.stringify({
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "古い保存本文" }],
+              },
+            ],
+          }),
+        ],
+        [
+          "S2",
+          JSON.stringify({
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "保存済み第二場" }],
+              },
+            ],
+          }),
+        ],
+      ]),
+    );
+    const liveEditor = {
+      getText: vi.fn(() => "未保存の最新本文"),
+    } as unknown as Editor;
+    useLinearEditorStore.getState().registerEditor("S1", liveEditor);
+    useEditorSessionStore
+      .getState()
+      .setDocumentDirty(
+        { kind: "tree", id: "S1", storage: "database" },
+        true,
+        "linear:reader-test" as never,
+      );
+
+    render(<LinearEditorView />);
+    fireEvent.click(screen.getByRole("button", { name: "全シーンを読む" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "全シーン読み上げビュー",
+    });
+    await waitFor(() =>
+      expect(mockLoadSceneContents).toHaveBeenCalledWith(["S1", "S2"]),
+    );
+    const items = await within(dialog).findAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("第一場");
+    expect(items[0]).toHaveTextContent("未保存の最新本文");
+    expect(items[0]).not.toHaveTextContent("古い保存本文");
+    expect(items[0]).toHaveTextContent("未保存の変更を含みます");
+    expect(items[1]).toHaveTextContent("保存済み第二場");
+    expect(liveEditor.getText).toHaveBeenCalledTimes(1);
+    await expectNoA11yViolations(dialog);
+  });
+
+  it("Project/scenes scope が変わると旧 batch の遅延結果を commit せず最新 scope を再読込する", async () => {
+    let resolveOldScope!: (contents: Map<string, string>) => void;
+    mockLoadSceneContents
+      .mockImplementationOnce(
+        () =>
+          new Promise<Map<string, string>>((resolve) => {
+            resolveOldScope = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(
+        new Map([
+          [
+            "B1",
+            JSON.stringify({
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "Project B latest" }],
+                },
+              ],
+            }),
+          ],
+        ]),
+      );
+    useTreeStore.setState({
+      nodes: [
+        makeNode({
+          id: "A1",
+          projectId: "project-a",
+          title: "Project A scene",
+        }),
+      ],
+      activeSceneId: "A1",
+    });
+
+    render(<LinearEditorView />);
+    fireEvent.click(screen.getByRole("button", { name: "全シーンを読む" }));
+    await waitFor(() =>
+      expect(mockLoadSceneContents).toHaveBeenCalledWith(["A1"]),
+    );
+
+    act(() => {
+      useTreeStore.setState({
+        nodes: [
+          makeNode({
+            id: "B1",
+            projectId: "project-b",
+            title: "Project B scene",
+          }),
+        ],
+        activeSceneId: "B1",
+      });
+    });
+    await waitFor(() =>
+      expect(mockLoadSceneContents).toHaveBeenLastCalledWith(["B1"]),
+    );
+    const dialog = screen.getByRole("dialog", {
+      name: "全シーン読み上げビュー",
+    });
+    expect(await within(dialog).findByText("Project B latest")).toBeTruthy();
+
+    await act(async () => {
+      resolveOldScope(
+        new Map([
+          [
+            "A1",
+            JSON.stringify({
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "stale Project A" }],
+                },
+              ],
+            }),
+          ],
+        ]),
+      );
+      await Promise.resolve();
+    });
+
+    expect(within(dialog).queryByText("stale Project A")).toBeNull();
+    expect(within(dialog).getByText("Project B latest")).toBeTruthy();
+  });
+
+  it("lifecycle lease 中は portal を閉じ、開始前の batch 結果を commit しない", async () => {
+    let resolveLoad!: (contents: Map<string, string>) => void;
+    mockLoadSceneContents.mockImplementationOnce(
+      () =>
+        new Promise<Map<string, string>>((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1", title: "Scene before lifecycle" })],
+      activeSceneId: "S1",
+    });
+
+    render(<LinearEditorView />);
+    const trigger = screen.getByRole("button", { name: "全シーンを読む" });
+    fireEvent.click(trigger);
+    await waitFor(() =>
+      expect(mockLoadSceneContents).toHaveBeenCalledWith(["S1"]),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "全シーン読み上げビュー" }),
+    ).toBeTruthy();
+
+    let lease!: ReturnType<typeof acquireQuiescenceLease>;
+    act(() => {
+      lease = acquireQuiescenceLease("project-load");
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "全シーン読み上げビュー" }),
+      ).toBeNull(),
+    );
+    expect(trigger).toBeDisabled();
+
+    await act(async () => {
+      resolveLoad(
+        new Map([
+          [
+            "S1",
+            JSON.stringify({
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "stale lifecycle body" }],
+                },
+              ],
+            }),
+          ],
+        ]),
+      );
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("stale lifecycle body")).toBeNull();
+    expect(mockLoadSceneContents).toHaveBeenCalledTimes(1);
+
+    act(() => lease.release());
+    expect(trigger).not.toBeDisabled();
+  });
+});
+
 describe("LinearEditorView — conflict-safe virtualization", () => {
   it("keeps a dirty scene mounted while the virtual row remains rendered", () => {
     useTreeStore.setState({
@@ -378,6 +618,7 @@ describe("LinearEditorView — visible rect active detection", () => {
 
     const observer = intersectionObservers.at(-1);
     expect(observer).toBeDefined();
+    startPerfSession();
     act(() => {
       observer!.trigger([
         {
@@ -395,6 +636,12 @@ describe("LinearEditorView — visible rect active detection", () => {
 
     expect(useTreeStore.getState().activeSceneId).toBe("S2");
     expect(rowRectReads.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+    expect(endPerfSession()?.counters).toMatchObject({
+      "linear.activeDetection.count": 1,
+      "linear.activeDetection.maxVisibleRects": 1,
+      "linear.activeDetection.containerRectReads": 1,
+      "linear.activeDetection.sceneRectReads": 0,
+    });
   });
 });
 

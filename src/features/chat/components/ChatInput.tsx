@@ -69,19 +69,18 @@ import {
 } from "@/features/project/projectStore";
 import { buildChatCommandInstruction } from "../extensions/chatCommandInstruction";
 
+interface ChatSendOptions {
+  overrideAgentMode?: boolean;
+  /** @ で指定された scene ID 一覧（送信時に context へ一時 pin される） */
+  mentionedSceneIds?: string[];
+  /** @ で指定された人物(codex) ID 一覧（作中年表スナップショットの人物 seed） */
+  mentionedCodexIds?: string[];
+  /** スラッシュコマンド由来の一回限りの指示 (L6 へ注入)。例: /brainstorm の VS。 */
+  commandInstruction?: string;
+}
+
 interface ChatInputProps {
-  onSend: (
-    markdown: string,
-    options?: {
-      overrideAgentMode?: boolean;
-      /** @ で指定された scene ID 一覧（送信時に context へ一時 pin される） */
-      mentionedSceneIds?: string[];
-      /** @ で指定された人物(codex) ID 一覧（作中年表スナップショットの人物 seed） */
-      mentionedCodexIds?: string[];
-      /** スラッシュコマンド由来の一回限りの指示 (L6 へ注入)。例: /brainstorm の VS。 */
-      commandInstruction?: string;
-    },
-  ) => void;
+  onSend: (markdown: string, options?: ChatSendOptions) => Promise<boolean>;
   disabled?: boolean;
   /** AIポリシーまたはプロバイダ未設定により送信不可の場合 true */
   policyDisabled?: boolean;
@@ -316,28 +315,48 @@ export function ChatInput({
               : t("chat.placeholderScene");
 
   // /コマンド選択後の「次の送信」に対して一回限りの指示 (L6) を作る。
-  // 読み取り時にクリアするので、送信ごとに高々1回適用される。
+  // 送信先の保存・authority 検証が成功するまでは消費せず、失敗時に
+  // composer 本文と一緒に再送できるよう保持する。
   const pendingCommandRef = useRef<string | null>(null);
-  const consumePendingCommandInstruction = useCallback(():
-    | string
-    | undefined => {
-    const cmdId = pendingCommandRef.current;
-    pendingCommandRef.current = null;
-    const lang = getCurrentProjectLanguage().startsWith("en") ? "en" : "ja";
-    // CoT 前置きは小型/ローカル (cli) では認知負荷で品質が落ちうるため切る。
-    return buildChatCommandInstruction(cmdId, lang, {
-      cot: aiSettings?.provider !== "cli",
-    });
-  }, [aiSettings]);
+  const submissionPendingRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitDraft = useCallback(
+    async (
+      markdown: string,
+      options?: Omit<ChatSendOptions, "commandInstruction">,
+    ): Promise<boolean> => {
+      if (isStreaming || submissionPendingRef.current) return false;
+      submissionPendingRef.current = true;
+      setIsSubmitting(true);
+      const commandId = pendingCommandRef.current;
+      const lang = getCurrentProjectLanguage().startsWith("en") ? "en" : "ja";
+      const commandInstruction = buildChatCommandInstruction(commandId, lang, {
+        cot: aiSettings?.provider !== "cli",
+      });
+      try {
+        const accepted = await onSend(markdown, {
+          ...options,
+          commandInstruction,
+        });
+        if (accepted && pendingCommandRef.current === commandId) {
+          pendingCommandRef.current = null;
+        }
+        return accepted;
+      } catch {
+        return false;
+      } finally {
+        submissionPendingRef.current = false;
+        setIsSubmitting(false);
+      }
+    },
+    [aiSettings?.provider, isStreaming, onSend],
+  );
 
   const handleSubmit = useCallback(
-    (markdown: string) => {
-      if (isStreaming) return;
-      onSend(markdown, {
-        commandInstruction: consumePendingCommandInstruction(),
-      });
+    (markdown: string): Promise<boolean> => {
+      return submitDraft(markdown);
     },
-    [isStreaming, onSend, consumePendingCommandInstruction],
+    [submitDraft],
   );
 
   const handleStop = () => {
@@ -507,11 +526,12 @@ export function ChatInput({
     if (!hasText) setSuggestionDismissed(false);
   }, [hasText]);
 
-  // ストリーミング中は編集不可
+  // 保存 preflight 中とストリーミング中は編集不可。成功後だけ本文を消すため、
+  // preflight 中の追加入力・二重送信で別 draft を巻き込まない。
   useEffect(() => {
     if (!isEditorViewReady(mountedEditor)) return;
-    mountedEditor.setEditable(!isStreaming);
-  }, [mountedEditor, isStreaming]);
+    mountedEditor.setEditable(!isStreaming && !isSubmitting);
+  }, [mountedEditor, isStreaming, isSubmitting]);
 
   const modelLabel = (() => {
     if (!currentModel) {
@@ -702,8 +722,10 @@ export function ChatInput({
     collectMentionedCodexIds,
   ]);
 
-  const handleSendClick = (options?: { overrideAgentMode?: boolean }) => {
-    if (!editor || isStreaming) return;
+  const handleSendClick = async (options?: {
+    overrideAgentMode?: boolean;
+  }): Promise<void> => {
+    if (!editor || isStreaming || isSubmitting) return;
     const text = editor.getText().trim();
     if (!text) return;
     const markdownStorage = editor.storage as unknown as Record<
@@ -713,13 +735,12 @@ export function ChatInput({
     const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
     const mentionedSceneIds = collectMentionedSceneIds();
     const mentionedCodexIds = collectMentionedCodexIds();
-    onSend(markdown, {
+    const accepted = await submitDraft(markdown, {
       ...options,
       mentionedSceneIds,
       mentionedCodexIds,
-      commandInstruction: consumePendingCommandInstruction(),
     });
-    editor.commands.clearContent();
+    if (accepted) editor.commands.clearContent();
   };
 
   const handleSendWithAgent = () => {
@@ -1030,7 +1051,7 @@ export function ChatInput({
           <button
             type="button"
             onClick={() => void handleOpenAbCompare()}
-            disabled={!editor || !hasText || isStreaming}
+            disabled={!editor || !hasText || isStreaming || isSubmitting}
             title={t("abTest.chatMenuLabel")}
             className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:text-muted-foreground/40"
           >
@@ -1056,9 +1077,14 @@ export function ChatInput({
               <Button
                 type="button"
                 size="icon"
-                onClick={() => handleSendClick()}
+                onClick={() => void handleSendClick()}
                 onContextMenu={handleSendContextMenu}
-                disabled={!editor || !hasText || (policyDisabled ?? false)}
+                disabled={
+                  !editor ||
+                  !hasText ||
+                  isSubmitting ||
+                  (policyDisabled ?? false)
+                }
                 aria-label={t("chat.sendAriaLabel")}
                 title={t("chat.sendTitle")}
                 className="size-8 rounded-full active:scale-95 transition-transform duration-75"

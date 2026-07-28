@@ -12,8 +12,16 @@ import {
   registerPersistedBindingHandler,
   unregisterPersistedBindingHandler,
   discardDocumentInGroup,
+  discardRegisteredDocumentDrafts,
+  clearRetainedEditorRecoveryDraft,
+  clearRetainedEditorRecoveryDraftsForScopeChange,
+  collectEditorRecoveryDrafts,
+  registerRecoveryDraftProvider,
   registerDiscardHandler,
+  retainEditorRecoveryDraft,
   unregisterDiscardHandler,
+  unregisterRecoveryDraftProvider,
+  _resetRetainedEditorRecoveryDraftsForTests,
 } from "./editorSaveRegistry";
 import {
   createEditorInstanceId,
@@ -27,6 +35,7 @@ beforeEach(() => {
   for (const id of registeredSaveHandlerIds()) {
     unregisterSaveHandler(id);
   }
+  _resetRetainedEditorRecoveryDraftsForTests();
 });
 
 describe("editorSaveRegistry", () => {
@@ -134,6 +143,116 @@ describe("editorSaveRegistry", () => {
     expect(secondaryDiscard).not.toHaveBeenCalled();
     unregisterDiscardHandler(key, primaryId, primaryDiscard);
     unregisterDiscardHandler(key, secondaryId, secondaryDiscard);
+  });
+
+  it("external reload discards every instance and retained snapshot of only the exact document", () => {
+    const key: DocumentKey = {
+      kind: "tree",
+      id: "scene-reload",
+      storage: "file",
+    };
+    const otherKey: DocumentKey = {
+      kind: "tree",
+      id: "scene-other",
+      storage: "file",
+    };
+    const firstId = createEditorInstanceId("reload-first");
+    const secondId = createEditorInstanceId("reload-second");
+    const otherId = createEditorInstanceId("reload-other");
+    const firstDiscard = vi.fn();
+    const secondDiscard = vi.fn();
+    const otherDiscard = vi.fn();
+    registerDiscardHandler(key, firstId, firstDiscard);
+    registerDiscardHandler(key, secondId, secondDiscard);
+    registerDiscardHandler(otherKey, otherId, otherDiscard);
+    retainEditorRecoveryDraft(key, firstId, {
+      plainText: "discard me",
+      prosemirror: { type: "doc" },
+    });
+    retainEditorRecoveryDraft(otherKey, otherId, {
+      plainText: "keep me",
+      prosemirror: { type: "doc" },
+    });
+
+    discardRegisteredDocumentDrafts(key);
+
+    expect(firstDiscard).toHaveBeenCalledOnce();
+    expect(secondDiscard).toHaveBeenCalledOnce();
+    expect(otherDiscard).not.toHaveBeenCalled();
+    expect(collectEditorRecoveryDrafts()).toEqual([
+      expect.objectContaining({
+        documentId: "scene-other",
+        plainText: "keep me",
+      }),
+    ]);
+
+    unregisterDiscardHandler(key, firstId, firstDiscard);
+    unregisterDiscardHandler(key, secondId, secondDiscard);
+    unregisterDiscardHandler(otherKey, otherId, otherDiscard);
+  });
+
+  it("keeps an unmounted dirty draft recoverable until its save succeeds", () => {
+    const key: DocumentKey = {
+      kind: "tree",
+      id: "scene-recovery",
+      storage: "database",
+    };
+    const instanceId = createEditorInstanceId("recovery");
+    const liveDraft = {
+      plainText: "latest manuscript",
+      prosemirror: { type: "doc", content: [] },
+    };
+    const provider = () => liveDraft;
+    registerRecoveryDraftProvider(key, instanceId, provider);
+
+    retainEditorRecoveryDraft(key, instanceId, liveDraft);
+    unregisterRecoveryDraftProvider(key, instanceId, provider);
+
+    expect(collectEditorRecoveryDrafts()).toEqual([
+      expect.objectContaining({
+        documentId: "scene-recovery",
+        instanceId,
+        plainText: "latest manuscript",
+      }),
+    ]);
+
+    clearRetainedEditorRecoveryDraft(key, instanceId);
+    expect(collectEditorRecoveryDrafts()).toEqual([]);
+  });
+
+  it("drops only old-scope retained drafts after successful lifecycle quiescence", () => {
+    const oldKey: DocumentKey = {
+      kind: "tree",
+      id: "old-workspace-scene",
+      storage: "database",
+    };
+    const liveKey: DocumentKey = {
+      kind: "tree",
+      id: "live-scene",
+      storage: "database",
+    };
+    const oldInstance = createEditorInstanceId("old-scope");
+    const liveInstance = createEditorInstanceId("live-scope");
+    retainEditorRecoveryDraft(oldKey, oldInstance, {
+      plainText: "old workspace",
+      prosemirror: { type: "doc" },
+    });
+    const liveProvider = () => ({
+      plainText: "still mounted",
+      prosemirror: { type: "doc" },
+    });
+    registerRecoveryDraftProvider(liveKey, liveInstance, liveProvider);
+
+    clearRetainedEditorRecoveryDraftsForScopeChange();
+
+    expect(collectEditorRecoveryDrafts()).toEqual([
+      expect.objectContaining({
+        documentId: "live-scene",
+        instanceId: liveInstance,
+        plainText: "still mounted",
+      }),
+    ]);
+    unregisterRecoveryDraftProvider(liveKey, liveInstance, liveProvider);
   });
 
   it("一方のpane保存versionを同じ文書のpeerだけへ伝播する", () => {
@@ -263,6 +382,33 @@ describe("エディタの save handler 登録 (ソース invariant)", () => {
     const src = readFileSync(resolve(__dirname, "./EditorPane.tsx"), "utf-8");
     expect(src).toMatch(
       /inlineAiStatus !== "idle" && inlineAiOwnerEditor === editor[\s\S]{0,120}?cancel\(\)/,
+    );
+  });
+
+  it("EditorPane の切替前 save は旧 loaded key の retained draft も掃除する", () => {
+    const src = readFileSync(resolve(__dirname, "./EditorPane.tsx"), "utf-8");
+    expect(src).toMatch(
+      /const saveKey =\s*activeLoadedDocumentKey \?\? loadedDocumentKeyRef\.current/,
+    );
+    expect(src).toMatch(
+      /clearRetainedEditorRecoveryDraft\(\s*saveKey,\s*editorInstanceIdRef\.current/,
+    );
+  });
+
+  it("Project/Workspace authority switch は旧 scope の retained drafts を掃除する", () => {
+    const projectStore = readFileSync(
+      resolve(__dirname, "../project/projectStore.ts"),
+      "utf-8",
+    );
+    const workspaceStore = readFileSync(
+      resolve(__dirname, "../workspace/store.ts"),
+      "utf-8",
+    );
+    expect(projectStore).toMatch(
+      /flushProjectStrictQuiescence\(\);[\s\S]{0,160}?clearRetainedEditorRecoveryDraftsForScopeChange\(\)/,
+    );
+    expect(workspaceStore).toMatch(
+      /flushStrictQuiescence\(\);[\s\S]{0,160}?clearRetainedEditorRecoveryDraftsForScopeChange\(\)/,
     );
   });
 });

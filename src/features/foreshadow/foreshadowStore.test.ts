@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useForeshadowStore } from "./foreshadowStore";
 import type { ForeshadowRow, ForeshadowSetupRow } from "./types";
+import { attachCreateResultMetadata } from "@/lib/createResultMetadata";
+import { IpcInvokeError } from "@/lib/tauri";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
@@ -45,6 +48,15 @@ function makeSetup(
     updatedAt: new Date("2024-01-01"),
     ...overrides,
   };
+}
+
+function unknownCreateError(): IpcInvokeError {
+  return new IpcInvokeError("foreshadow_create", {
+    code: "IPC_TIMEOUT",
+    message: "IPC timeout: foreshadow_create",
+    retryable: true,
+    outcome: "unknown",
+  });
 }
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -92,6 +104,9 @@ vi.mock("@/lib/debugLog", () => ({
   errorDetail: vi.fn(),
   rootCause: vi.fn((e: unknown) => String(e)),
 }));
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: vi.fn(),
+}));
 
 import {
   listForeshadowsWithLabels,
@@ -109,6 +124,7 @@ import { loadSceneContents } from "@/features/tree/api";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 const mockListForeshadowsWithLabels = vi.mocked(listForeshadowsWithLabels);
 const mockCreateForeshadow = vi.mocked(createForeshadow);
@@ -142,11 +158,9 @@ function makeEditorChainMock() {
 describe("foreshadowStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useForeshadowStore.setState({
-      items: [],
-      isLoading: false,
-      sceneInfoBySceneId: {},
-    });
+    mockCreateForeshadow.mockReset();
+    useGlobalHistoryStore.getState().clear();
+    useForeshadowStore.getState().resetForProject();
   });
 
   // ── load ──────────────────────────────────────────────────────────
@@ -175,6 +189,83 @@ describe("foreshadowStore", () => {
       await useForeshadowStore.getState().load("proj-1");
 
       expect(useForeshadowStore.getState().items).toEqual([]);
+      expect(useForeshadowStore.getState().isLoading).toBe(false);
+    });
+
+    it("lets lifecycle strict callers observe a shared load failure", async () => {
+      const failure = new Error("foreshadow optional hydrate failed");
+      mockListForeshadowsWithLabels.mockRejectedValueOnce(failure);
+
+      const compatibleUiLoad = useForeshadowStore.getState().load("proj-1");
+      const strictLifecycleLoad = useForeshadowStore
+        .getState()
+        .load("proj-1", { propagateError: true });
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+
+      await Promise.all([compatibleExpectation, strictExpectation]);
+      expect(mockListForeshadowsWithLabels).toHaveBeenCalledTimes(1);
+      expect(useForeshadowStore.getState().isLoading).toBe(false);
+    });
+
+    it("keeps a strict-first load authoritative when an ordinary caller joins", async () => {
+      const failure = new Error("foreshadow strict-first hydrate failed");
+      mockListForeshadowsWithLabels.mockRejectedValueOnce(failure);
+
+      const strictLifecycleLoad = useForeshadowStore
+        .getState()
+        .load("proj-1", { propagateError: true });
+      const compatibleUiLoad = useForeshadowStore.getState().load("proj-1");
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+
+      await Promise.all([strictExpectation, compatibleExpectation]);
+      expect(mockListForeshadowsWithLabels).toHaveBeenCalledTimes(1);
+      expect(useForeshadowStore.getState().isLoading).toBe(false);
+    });
+
+    it("does not publish a load invalidated by a Project reset", async () => {
+      let resolveOldLoad!: (
+        value: Awaited<ReturnType<typeof listForeshadowsWithLabels>>,
+      ) => void;
+      const currentItem = {
+        ...makeRow({ id: "current-foreshadow" }),
+        label: "planned" as const,
+        setupCount: 0,
+      };
+      mockListForeshadowsWithLabels
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveOldLoad = resolve;
+          }),
+        )
+        .mockResolvedValueOnce({
+          items: [currentItem],
+          sceneInfoBySceneId: {},
+          setupScenesByForeshadowId: {},
+        });
+
+      const oldLoad = useForeshadowStore.getState().load("proj-old");
+      useForeshadowStore.getState().resetForProject();
+      await useForeshadowStore.getState().load("proj-current");
+      resolveOldLoad({
+        items: [
+          {
+            ...makeRow({ id: "old-foreshadow" }),
+            label: "planned",
+            setupCount: 0,
+          },
+        ],
+        sceneInfoBySceneId: {},
+        setupScenesByForeshadowId: {},
+      });
+      await oldLoad;
+
+      expect(useForeshadowStore.getState().items).toEqual([currentItem]);
       expect(useForeshadowStore.getState().isLoading).toBe(false);
     });
   });
@@ -221,6 +312,236 @@ describe("foreshadowStore", () => {
 
       expect(useForeshadowStore.getState().items).toEqual([]);
     });
+
+    it("削除済み request replay を items/history に幽霊復活させない", async () => {
+      const existing = {
+        ...makeRow({ id: "f-existing" }),
+        label: "planned" as const,
+        setupCount: 0,
+      };
+      useForeshadowStore.setState({ items: [existing] });
+      mockCreateForeshadow.mockResolvedValue(
+        attachCreateResultMetadata(makeRow(), {
+          __idempotency: { replayed: true, entityPresent: false },
+        }),
+      );
+
+      await useForeshadowStore.getState().create({
+        projectId: "proj-1",
+        title: "遅延リトライ",
+        intent: null,
+        loadBearing: null,
+      });
+
+      expect(useForeshadowStore.getState().items).toEqual([existing]);
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+    });
+
+    it("現存する exact replay は既存 item/history を重複させない", async () => {
+      const existing = {
+        ...makeRow(),
+        label: "planned" as const,
+        setupCount: 0,
+      };
+      useForeshadowStore.setState({ items: [existing] });
+      mockCreateForeshadow.mockResolvedValue(
+        attachCreateResultMetadata(makeRow(), {
+          __idempotency: { replayed: true, entityPresent: true },
+        }),
+      );
+
+      await useForeshadowStore.getState().create({
+        projectId: "proj-1",
+        title: "同一リトライ",
+        intent: null,
+        loadBearing: null,
+      });
+
+      expect(useForeshadowStore.getState().items).toEqual([existing]);
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+    });
+
+    it("lost response の現存 replay は未掲載 item だけ公開し history は増やさない", async () => {
+      mockCreateForeshadow.mockResolvedValue(
+        attachCreateResultMetadata(makeRow(), {
+          __idempotency: { replayed: true, entityPresent: true },
+        }),
+      );
+
+      await useForeshadowStore.getState().create({
+        projectId: "proj-1",
+        title: "応答喪失リトライ",
+        intent: null,
+        loadBearing: null,
+      });
+
+      expect(useForeshadowStore.getState().items.map(({ id }) => id)).toEqual([
+        "f-1",
+      ]);
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+      expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it("unknown 後の明示リトライは同じ request ID を再利用し、成功後は解放する", async () => {
+      mockCreateForeshadow
+        .mockRejectedValueOnce(unknownCreateError())
+        .mockImplementationOnce(async (data) =>
+          attachCreateResultMetadata(
+            makeRow({ id: data.id, title: data.title }),
+            {
+              __idempotency: { replayed: true, entityPresent: true },
+            },
+          ),
+        )
+        .mockImplementationOnce(async (data) =>
+          makeRow({ id: data.id, title: data.title }),
+        );
+      const input = {
+        projectId: "proj-1",
+        title: "応答喪失",
+        intent: null,
+        loadBearing: null,
+      };
+
+      await expect(
+        useForeshadowStore.getState().create(input),
+      ).rejects.toBeInstanceOf(IpcInvokeError);
+      await useForeshadowStore.getState().create(input);
+
+      const [firstPayload] = mockCreateForeshadow.mock.calls[0];
+      const [retryPayload] = mockCreateForeshadow.mock.calls[1];
+      expect(retryPayload).toEqual(firstPayload);
+      expect(firstPayload.id).toBeTruthy();
+      expect(
+        useForeshadowStore
+          .getState()
+          .items.filter(({ id }) => id === firstPayload.id),
+      ).toHaveLength(1);
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+      expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+
+      await useForeshadowStore.getState().create(input);
+      const [afterSuccessPayload] = mockCreateForeshadow.mock.calls[2];
+      expect(afterSuccessPayload.id).not.toBe(firstPayload.id);
+    });
+
+    it("unknown 後に payload を変更すると保留 request ID を解放する", async () => {
+      mockCreateForeshadow
+        .mockRejectedValueOnce(unknownCreateError())
+        .mockImplementationOnce(async (data) =>
+          makeRow({ id: data.id, title: data.title }),
+        );
+
+      await expect(
+        useForeshadowStore.getState().create({
+          projectId: "proj-1",
+          title: "変更前",
+          intent: null,
+          loadBearing: null,
+        }),
+      ).rejects.toBeInstanceOf(IpcInvokeError);
+      await useForeshadowStore.getState().create({
+        projectId: "proj-1",
+        title: "変更後",
+        intent: null,
+        loadBearing: null,
+      });
+
+      const [firstPayload] = mockCreateForeshadow.mock.calls[0];
+      const [changedPayload] = mockCreateForeshadow.mock.calls[1];
+      expect(changedPayload.title).toBe("変更後");
+      expect(changedPayload.id).not.toBe(firstPayload.id);
+    });
+
+    it("異なる unknown create を並べても各 Foreshadow の retry ID を保持する", async () => {
+      mockCreateForeshadow
+        .mockRejectedValueOnce(unknownCreateError())
+        .mockRejectedValueOnce(unknownCreateError())
+        .mockImplementationOnce(async (data) =>
+          attachCreateResultMetadata(
+            makeRow({ id: data.id, title: data.title }),
+            {
+              __idempotency: { replayed: true, entityPresent: true },
+            },
+          ),
+        );
+      const first = {
+        projectId: "proj-1",
+        title: "first",
+        intent: null,
+        loadBearing: null,
+      };
+      const second = { ...first, title: "second" };
+
+      await expect(
+        useForeshadowStore.getState().create(first),
+      ).rejects.toBeInstanceOf(IpcInvokeError);
+      await expect(
+        useForeshadowStore.getState().create(second),
+      ).rejects.toBeInstanceOf(IpcInvokeError);
+      await useForeshadowStore.getState().create(first);
+
+      const [firstPayload] = mockCreateForeshadow.mock.calls[0];
+      const [secondPayload] = mockCreateForeshadow.mock.calls[1];
+      const [firstRetryPayload] = mockCreateForeshadow.mock.calls[2];
+      expect(firstRetryPayload).toEqual(firstPayload);
+      expect(secondPayload.id).not.toBe(firstPayload.id);
+    });
+
+    it("create history は deliberate redo cycle ごとに fresh request ID を使う", async () => {
+      mockCreateForeshadow.mockImplementation(async (data) =>
+        makeRow({ id: data.id, title: data.title }),
+      );
+      mockDeleteForeshadow.mockResolvedValue(undefined);
+
+      await useForeshadowStore.getState().create({
+        projectId: "proj-1",
+        title: "redo cycle",
+        intent: null,
+        loadBearing: null,
+      });
+      const history = useGlobalHistoryStore.getState();
+      await history.undo();
+      await history.redo();
+      await history.undo();
+      await history.redo();
+
+      const firstRedoOptions = mockCreateForeshadow.mock.calls[1][1];
+      const secondRedoOptions = mockCreateForeshadow.mock.calls[2][1];
+      expect(firstRedoOptions?.requestId).toBeTruthy();
+      expect(secondRedoOptions?.requestId).toBeTruthy();
+      expect(secondRedoOptions?.requestId).not.toBe(
+        firstRedoOptions?.requestId,
+      );
+      expect(useForeshadowStore.getState().items).toHaveLength(1);
+    });
+
+    it("create history redo は削除済み replay を UI に復元しない", async () => {
+      mockCreateForeshadow
+        .mockImplementationOnce(async (data) =>
+          makeRow({ id: data.id, title: data.title }),
+        )
+        .mockImplementationOnce(async (data) =>
+          attachCreateResultMetadata(
+            makeRow({ id: data.id, title: data.title }),
+            {
+              __idempotency: { replayed: true, entityPresent: false },
+            },
+          ),
+        );
+      mockDeleteForeshadow.mockResolvedValue(undefined);
+
+      await useForeshadowStore.getState().create({
+        projectId: "proj-1",
+        title: "deleted replay",
+        intent: null,
+        loadBearing: null,
+      });
+      await useGlobalHistoryStore.getState().undo();
+      await useGlobalHistoryStore.getState().redo();
+
+      expect(useForeshadowStore.getState().items).toEqual([]);
+    });
   });
 
   // ── remove ────────────────────────────────────────────────────────
@@ -251,6 +572,64 @@ describe("foreshadowStore", () => {
       await useForeshadowStore.getState().remove("f-1");
 
       expect(useForeshadowStore.getState().items).toHaveLength(1);
+    });
+
+    it("delete history は deliberate undo cycle ごとに fresh request ID を使う", async () => {
+      const codexLinkDirtyAt = new Date("2024-01-02T03:04:05.000Z");
+      const existing = {
+        ...makeRow({
+          intent: "restore me",
+          secret: false,
+          codexLinkDirtyAt,
+        }),
+        label: "planned" as const,
+        setupCount: 0,
+      };
+      useForeshadowStore.setState({ items: [existing] });
+      mockDeleteForeshadow.mockResolvedValue(undefined);
+      mockCreateForeshadow.mockImplementation(async (data) =>
+        makeRow({ id: data.id, title: data.title, intent: data.intent }),
+      );
+
+      await useForeshadowStore.getState().remove(existing.id);
+      const history = useGlobalHistoryStore.getState();
+      await history.undo();
+      await history.redo();
+      await history.undo();
+
+      const firstUndoOptions = mockCreateForeshadow.mock.calls[0][1];
+      const secondUndoOptions = mockCreateForeshadow.mock.calls[1][1];
+      const firstUndoPayload = mockCreateForeshadow.mock.calls[0][0];
+      expect(firstUndoOptions?.requestId).toBeTruthy();
+      expect(secondUndoOptions?.requestId).toBeTruthy();
+      expect(secondUndoOptions?.requestId).not.toBe(
+        firstUndoOptions?.requestId,
+      );
+      expect(firstUndoPayload).toMatchObject({
+        secret: false,
+        codexLinkDirtyAt,
+      });
+      expect(useForeshadowStore.getState().items).toHaveLength(1);
+    });
+
+    it("delete history undo は削除済み replay を UI に復元しない", async () => {
+      const existing = {
+        ...makeRow({ intent: "restore me" }),
+        label: "planned" as const,
+        setupCount: 0,
+      };
+      useForeshadowStore.setState({ items: [existing] });
+      mockDeleteForeshadow.mockResolvedValue(undefined);
+      mockCreateForeshadow.mockResolvedValue(
+        attachCreateResultMetadata(makeRow(), {
+          __idempotency: { replayed: true, entityPresent: false },
+        }),
+      );
+
+      await useForeshadowStore.getState().remove(existing.id);
+      await useGlobalHistoryStore.getState().undo();
+
+      expect(useForeshadowStore.getState().items).toEqual([]);
     });
   });
 

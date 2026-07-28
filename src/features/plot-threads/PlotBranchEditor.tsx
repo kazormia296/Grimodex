@@ -125,22 +125,29 @@ export function PlotBranchEditor({
                   kind: "plot",
                   label: t("plotThread.history.addBranch", "分岐 / 合流を追加"),
                 },
-                async () => {
+                async (history) => {
                   const ops: Array<Promise<void>> = [
-                    addBranch({
-                      projectId: getCurrentProjectId(),
-                      fromThreadId: thread.id,
-                      toThreadId: targetId,
-                      atNodeId,
-                      kind,
-                    }),
+                    addBranch(
+                      {
+                        projectId: getCurrentProjectId(),
+                        fromThreadId: thread.id,
+                        toThreadId: targetId,
+                        atNodeId,
+                        kind,
+                      },
+                      history,
+                    ),
                   ];
                   if (linkId) {
                     ops.push(
-                      updateMarker(linkId, {
-                        threadId: targetId,
-                        nodeId: atNodeId,
-                      }),
+                      updateMarker(
+                        linkId,
+                        {
+                          threadId: targetId,
+                          nodeId: atNodeId,
+                        },
+                        history,
+                      ),
                     );
                   }
                   await Promise.all(ops);

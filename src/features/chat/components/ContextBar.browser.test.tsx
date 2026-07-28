@@ -67,6 +67,7 @@ function makePinnedEntry(
 }
 
 const defaultProps = {
+  previewAuthorityKey: "browser-test-authority",
   onReturnToAuto: vi.fn(),
   onRemove: vi.fn(),
   onRemoveAuto: vi.fn(),

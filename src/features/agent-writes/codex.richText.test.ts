@@ -80,7 +80,11 @@ vi.mock("@/features/concurrency/documentWriteNotification", () => ({
   notifySameRendererDocumentWrite: mockNotifySameRendererDocumentWrite,
 }));
 
-import { agentUpdateCodexEntry, markCodexContentAsAi } from "./codex";
+import {
+  agentCreateCodexEntry,
+  agentUpdateCodexEntry,
+  markCodexContentAsAi,
+} from "./codex";
 import { validateAgentProseMirrorJson } from "./richTextInput";
 
 const paragraphDoc = JSON.stringify({
@@ -177,5 +181,25 @@ describe("agentUpdateCodexEntry document notification", () => {
         entityId: "entry-1",
       },
     );
+  });
+
+  it("passes a caller-reusable entryId through the create payload", async () => {
+    await agentCreateCodexEntry({
+      requestId: "agent-tool:codex-request",
+      entryId: "entry-1",
+      type: "character",
+      name: "Before",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("agent_codex_create", {
+      payload: expect.objectContaining({
+        requestId: "agent-tool:codex-request",
+        entryId: "entry-1",
+        projectId: "project-1",
+        sessionId: "session-1",
+        typeSlug: "character",
+        name: "Before",
+      }),
+    });
   });
 });

@@ -11,6 +11,12 @@ import { applyUndoJournal } from "./undoJournal";
 import type { EventKind, EventPrecision, EventGranularity } from "@/db/schema";
 import { getEventVersion } from "@/features/chronicle/version";
 import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+  runAuthoritativeMutation,
+  type MutationAuthority,
+} from "@/features/concurrency/mutationAuthority";
 
 /**
  * 作中年表 (Chronicle) の tracked-write（undo_journal + change_events）。
@@ -37,6 +43,10 @@ export interface TrackedWriteOpts {
   baseVersion?: number;
   /** Suppress only when the originating Editor session owns this exact save. */
   suppressDocumentNotification?: boolean;
+  /** Reuse for association mutations whose tables only have natural keys. */
+  requestId?: string;
+  /** Registered local draft draining across an active lifecycle lease. */
+  preexistingDraft?: boolean;
 }
 
 function bump(): void {
@@ -80,19 +90,49 @@ async function trackedEventWrite(
   payload: Record<string, unknown>,
   historyLabelKey: string,
   opts?: TrackedWriteOpts,
+  capturedAuthority?: MutationAuthority,
 ): Promise<AgentWriteResult> {
   // 手動 UI 編集はユーザーの直接操作なので AI 書き込みポリシーで弾かない。
   if (!opts?.skipPolicyGate && blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
   }
-  const result = await invoke<AgentWriteResult>(command, {
-    payload: {
-      projectId: getCurrentProjectId(),
-      sessionId: getRecorderSessionId(),
-      ...(opts?.surface ? { surface: opts.surface } : {}),
-      ...payload,
+  const authority =
+    capturedAuthority ??
+    captureMutationAuthority(getCurrentProjectId(), getCurrentProjectId);
+  const { projectId } = authority;
+  const outcome = await runAuthoritativeMutation(
+    authority,
+    async () => {
+      const result = await invoke<AgentWriteResult>(command, {
+        payload: {
+          projectId,
+          sessionId: getRecorderSessionId(),
+          ...(opts?.surface ? { surface: opts.surface } : {}),
+          ...payload,
+        },
+      });
+      // An idempotent create replay deliberately returns its original journal
+      // even after the row was deleted. Verify the canonical entity before any
+      // renderer notification, revision bump, index scheduling, or history push.
+      if (
+        command === "agent_event_create" &&
+        isCurrentMutationAuthority(authority)
+      ) {
+        const version = await getEventVersion(projectId, result.entityId);
+        if (version === null) {
+          throw new Error(
+            `Created event '${result.entityId}' not found after replay`,
+          );
+        }
+      }
+      return result;
     },
-  });
+    { preexistingDraft: opts?.preexistingDraft },
+  );
+  if (outcome.status === "stale" || !isCurrentMutationAuthority(authority)) {
+    throw new Error("event write authority changed");
+  }
+  const result = outcome.value;
   const documentOp = eventDocumentOp(command);
   if (!opts?.suppressDocumentNotification && documentOp) {
     notifyEventDocumentWrite(result.entityId, documentOp);
@@ -113,6 +153,7 @@ async function trackedEventWrite(
     useGlobalHistoryStore.getState().push({
       kind: "chronicle",
       label: i18next.t(historyLabelKey),
+      operationId: journalId,
       entityId: result.entityId,
       documentKey: { kind: "chronicle-event", id: result.entityId },
       retainOnVersionConflict: true,
@@ -134,6 +175,10 @@ async function trackedEventWrite(
 }
 
 export interface AgentEventCreateInput {
+  /** Stable identity of the logical request; distinct from the created entity. */
+  requestId?: string;
+  /** Reuse this domain ID when retrying the same logical create. */
+  eventId?: string;
   title?: string;
   note?: string | null;
   /** 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。 */
@@ -173,9 +218,12 @@ export async function agentCreateEvent(
     input.detail && opts?.surface !== "manual"
       ? markCodexContentAsAi(input.detail)
       : (input.detail ?? null);
+  const eventId = input.eventId ?? crypto.randomUUID();
   const result = await trackedEventWrite(
     "agent_event_create",
     {
+      requestId: input.requestId ?? null,
+      eventId,
       title: input.title ?? "",
       note: input.note ?? null,
       detail,
@@ -233,7 +281,11 @@ export async function agentUpdateEvent(
   opts?: TrackedWriteOpts,
 ): Promise<AgentWriteResult> {
   const { eventId, baseVersion: suppliedBaseVersion, ...patch } = input;
-  const projectId = getCurrentProjectId();
+  const authority = captureMutationAuthority(
+    getCurrentProjectId(),
+    getCurrentProjectId,
+  );
+  const { projectId } = authority;
   const baseVersion =
     suppliedBaseVersion ??
     opts?.baseVersion ??
@@ -251,6 +303,7 @@ export async function agentUpdateEvent(
     { eventId, baseVersion, ...patch },
     "chronicle.agentHistoryUpdate",
     opts,
+    authority,
   );
 }
 
@@ -258,7 +311,11 @@ export async function agentDeleteEvent(
   eventId: string,
   opts?: TrackedWriteOpts,
 ): Promise<AgentWriteResult> {
-  const projectId = getCurrentProjectId();
+  const authority = captureMutationAuthority(
+    getCurrentProjectId(),
+    getCurrentProjectId,
+  );
+  const { projectId } = authority;
   const baseVersion =
     opts?.baseVersion ?? (await getEventVersion(projectId, eventId));
   if (baseVersion === null) {
@@ -269,6 +326,7 @@ export async function agentDeleteEvent(
     { eventId, baseVersion },
     "chronicle.agentHistoryDelete",
     opts,
+    authority,
   );
 }
 
@@ -277,7 +335,11 @@ export async function agentSetEventParticipants(
   codexEntryIds: string[],
   opts?: TrackedWriteOpts,
 ): Promise<AgentWriteResult> {
-  const projectId = getCurrentProjectId();
+  const authority = captureMutationAuthority(
+    getCurrentProjectId(),
+    getCurrentProjectId,
+  );
+  const { projectId } = authority;
   const baseVersion =
     opts?.baseVersion ?? (await getEventVersion(projectId, eventId));
   if (baseVersion === null) {
@@ -288,6 +350,7 @@ export async function agentSetEventParticipants(
     { eventId, codexEntryIds, baseVersion },
     "chronicle.agentHistoryUpdate",
     opts,
+    authority,
   );
 }
 
@@ -298,7 +361,7 @@ export async function agentLinkSceneEvent(
 ): Promise<void> {
   await trackedEventWrite(
     "agent_scene_event_link",
-    { sceneId, eventId },
+    { requestId: opts?.requestId ?? crypto.randomUUID(), sceneId, eventId },
     "chronicle.agentHistoryUpdate",
     opts,
   );
@@ -311,7 +374,7 @@ export async function agentUnlinkSceneEvent(
 ): Promise<void> {
   await trackedEventWrite(
     "agent_scene_event_unlink",
-    { sceneId, eventId },
+    { requestId: opts?.requestId ?? crypto.randomUUID(), sceneId, eventId },
     "chronicle.agentHistoryUpdate",
     opts,
   );
@@ -324,7 +387,11 @@ export async function agentAddEventRelation(
 ): Promise<void> {
   await trackedEventWrite(
     "agent_event_relation_add",
-    { causeEventId, effectEventId },
+    {
+      requestId: opts?.requestId ?? crypto.randomUUID(),
+      causeEventId,
+      effectEventId,
+    },
     "chronicle.agentHistoryUpdate",
     opts,
   );
@@ -337,7 +404,11 @@ export async function agentRemoveEventRelation(
 ): Promise<void> {
   await trackedEventWrite(
     "agent_event_relation_remove",
-    { causeEventId, effectEventId },
+    {
+      requestId: opts?.requestId ?? crypto.randomUUID(),
+      causeEventId,
+      effectEventId,
+    },
     "chronicle.agentHistoryUpdate",
     opts,
   );
@@ -360,11 +431,15 @@ export function uiCreateEvent(
 
 export function uiUpdateEvent(
   input: AgentEventUpdateInput,
-  options?: { suppressDocumentNotification?: boolean },
+  options?: {
+    suppressDocumentNotification?: boolean;
+    preexistingDraft?: boolean;
+  },
 ): Promise<AgentWriteResult> {
   return agentUpdateEvent(input, {
     ...UI_WRITE_OPTS,
     suppressDocumentNotification: options?.suppressDocumentNotification,
+    preexistingDraft: options?.preexistingDraft,
   });
 }
 

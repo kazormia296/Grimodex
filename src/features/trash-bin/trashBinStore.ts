@@ -16,10 +16,27 @@ import type {
   TrashItemInput,
 } from "./types";
 import { UNDO_ABSORB_WINDOW_MS } from "./types";
+import { isCreateResultEntityPresent } from "@/lib/createResultMetadata";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+  runAuthoritativeMutation,
+  type MutationAuthority,
+  type MutationOutcome,
+} from "@/features/concurrency/mutationAuthority";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 
 interface EnqueueOptions {
   /** Backspace バッファのフラッシュ起源など、識別子に使う一時 ID */
   tempId: string;
+  /**
+   * The deletion happened before a destructive lifecycle lease. Its
+   * component-local capture buffer is being drained by a registered
+   * quiescence participant, so moving it into this provider-owned queue is
+   * persistence of existing work rather than admission of a new mutation.
+   */
+  preexistingDraft?: boolean;
 }
 
 /**
@@ -35,18 +52,29 @@ export type PickupResult =
     };
 
 interface TrashBinStore {
+  /** Project whose rows and delayed captures are currently authoritative. */
+  activeProjectId: string | null;
   items: Map<string, TrashItemData>;
   selectedItemId: string | null;
   isCapturing: boolean;
   isLoading: boolean;
   pendingQueue: PendingTrashItem[];
 
+  /**
+   * Synchronous Project-commit boundary. Old rows and timers must disappear
+   * before optional hydration of the replacement Project starts.
+   */
+  resetForProject(projectId: string): void;
   loadItems(projectId: string): Promise<void>;
   /**
    * 文字屑のキャプチャを保留キューに入れる。
    * 1500ms 以内に `cancelPending(tempId)` が呼ばれなければ DB へ書き込む。
    */
-  enqueuePending(data: TrashItemInput, options: EnqueueOptions): void;
+  /**
+   * Returns false only when authority/admission rejected the pending capture;
+   * callers retaining a pre-store draft must keep it retryable in that case.
+   */
+  enqueuePending(data: TrashItemInput, options: EnqueueOptions): boolean;
   /** Undo 1500ms 内吸収。エディタ単位で全保留を破棄するときも使う。 */
   cancelPending(filter: {
     tempId?: string;
@@ -70,6 +98,14 @@ interface TrashBinStore {
 
 // store 外で保持するタイマー (再描画を起こさないため state には含めない)
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const inFlightFlushes = new Map<string, Promise<void>>();
+const pendingAuthorities = new Map<string, MutationAuthority>();
+const MAX_PENDING_DRAIN_ROUNDS = 50;
+let trashLoadGeneration = 0;
+
+function getActiveTrashProjectId(): string {
+  return useTrashBinStore.getState().activeProjectId ?? "";
+}
 
 function clearFlushTimer(tempId: string) {
   const t = flushTimers.get(tempId);
@@ -79,7 +115,34 @@ function clearFlushTimer(tempId: string) {
   }
 }
 
+function captureBoundTrashAuthority(
+  state: TrashBinStore,
+  projectId = state.activeProjectId ?? "",
+): MutationAuthority | null {
+  if (state.activeProjectId !== projectId) {
+    return null;
+  }
+  return captureMutationAuthority(projectId, getActiveTrashProjectId);
+}
+
+function removePendingCapture(tempId: string): void {
+  clearFlushTimer(tempId);
+  pendingAuthorities.delete(tempId);
+  useTrashBinStore.setState((state) => ({
+    pendingQueue: state.pendingQueue.filter(
+      (pending) => pending.tempId !== tempId,
+    ),
+  }));
+}
+
+function discardPendingTrashCaptures(): void {
+  for (const tempId of flushTimers.keys()) clearFlushTimer(tempId);
+  pendingAuthorities.clear();
+  useTrashBinStore.setState({ pendingQueue: [] });
+}
+
 export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
+  activeProjectId: null,
   items: new Map(),
   selectedItemId: null,
   isCapturing: true,
@@ -89,30 +152,65 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
   setSelectedItem: (id) => set({ selectedItemId: id }),
   setCapturing: (value) => set({ isCapturing: value }),
 
+  resetForProject: (projectId) => {
+    trashLoadGeneration++;
+    for (const tempId of flushTimers.keys()) clearFlushTimer(tempId);
+    pendingAuthorities.clear();
+    set({
+      activeProjectId: projectId,
+      items: new Map(),
+      selectedItemId: null,
+      isLoading: false,
+      pendingQueue: [],
+    });
+  },
+
   loadItems: async (projectId) => {
+    const authority = captureBoundTrashAuthority(get(), projectId);
+    if (!authority) return;
+    const generation = ++trashLoadGeneration;
     set({ isLoading: true });
     try {
       const list = await trashApi.listTrashItems(projectId);
+      if (
+        generation !== trashLoadGeneration ||
+        get().activeProjectId !== projectId ||
+        !isCurrentMutationAuthority(authority)
+      ) {
+        return;
+      }
       const items = new Map<string, TrashItemData>();
       for (const item of list) items.set(item.id, item);
       set({ items, isLoading: false });
     } catch (e) {
-      set({ isLoading: false });
-      toast.error(i18next.t("trashBin.loadFailed"));
-      debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
+      if (
+        generation === trashLoadGeneration &&
+        get().activeProjectId === projectId &&
+        isCurrentMutationAuthority(authority)
+      ) {
+        set({ isLoading: false });
+        toast.error(i18next.t("trashBin.loadFailed"));
+        debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
+      }
+      throw e;
     }
   },
 
   enqueuePending: (data, options) => {
-    if (!get().isCapturing) return;
+    if (!get().isCapturing) return true;
+    if (!options.preexistingDraft && !canScheduleQuiescenceMutation()) {
+      return false;
+    }
     // プロジェクト設定 (`trashBin.enabled`) で無効化されているなら何もしない
     // (設計書 §3.5)。デフォルト ON。
     const enabled = useSettingsStore
       .getState()
       .getBoolean("trashBin.enabled", true);
-    if (!enabled) return;
+    if (!enabled) return true;
 
     const { tempId } = options;
+    const authority = captureBoundTrashAuthority(get(), data.projectId);
+    if (!authority) return false;
     const expireAt = Date.now() + UNDO_ABSORB_WINDOW_MS;
     const pending: PendingTrashItem = {
       tempId,
@@ -121,7 +219,15 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
       originSceneId: data.originSceneId,
       originCodexId: data.originCodexId,
     };
-    set((s) => ({ pendingQueue: [...s.pendingQueue, pending] }));
+    pendingAuthorities.set(tempId, authority);
+    set((state) => ({
+      pendingQueue: [
+        ...state.pendingQueue.filter(
+          (candidate) => candidate.tempId !== tempId,
+        ),
+        pending,
+      ],
+    }));
 
     clearFlushTimer(tempId);
     const timer = setTimeout(() => {
@@ -131,6 +237,7 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
       );
     }, UNDO_ABSORB_WINDOW_MS);
     flushTimers.set(tempId, timer);
+    return true;
   },
 
   cancelPending: ({ tempId, originSceneId, originCodexId }) => {
@@ -145,6 +252,7 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
         const shouldCancel = matchTemp || matchScene || matchCodex;
         if (shouldCancel) {
           clearFlushTimer(p.tempId);
+          pendingAuthorities.delete(p.tempId);
         } else {
           remaining.push(p);
         }
@@ -154,8 +262,15 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
   },
 
   removeItem: async (id) => {
+    const item = get().items.get(id);
+    if (!item) return;
+    const authority = captureBoundTrashAuthority(get(), item.projectId);
+    if (!authority) return;
     try {
-      await trashApi.deleteTrashItem(id);
+      const outcome = await runAuthoritativeMutation(authority, () =>
+        trashApi.deleteTrashItem(id),
+      );
+      if (outcome.status !== "current") return;
     } catch (e) {
       toast.error(i18next.t("trashBin.deleteFailed"));
       debugLog.error("TrashBinStore", "removeItem", errorDetail(e));
@@ -170,8 +285,13 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
   },
 
   clearAll: async (projectId) => {
+    const authority = captureBoundTrashAuthority(get(), projectId);
+    if (!authority) return;
     try {
-      await trashApi.clearAllTrashItems(projectId);
+      const outcome = await runAuthoritativeMutation(authority, () =>
+        trashApi.clearAllTrashItems(projectId),
+      );
+      if (outcome.status !== "current") return;
     } catch (e) {
       toast.error(i18next.t("trashBin.clearFailed"));
       debugLog.error("TrashBinStore", "clearAll", errorDetail(e));
@@ -185,9 +305,50 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
     if (!item) {
       return { ok: false, reason: "no-target", message: "item not found" };
     }
-    let result: PickupResult;
+    const authority = captureBoundTrashAuthority(get(), item.projectId);
+    if (!authority) {
+      return {
+        ok: false,
+        reason: "rejected",
+        message: "project changed",
+      };
+    }
+    let outcome: MutationOutcome<PickupResult>;
     try {
-      result = await onRestore();
+      outcome = await runAuthoritativeMutation(authority, async () => {
+        let result: PickupResult;
+        try {
+          result = await onRestore();
+        } catch (e) {
+          return {
+            ok: false,
+            reason: "internal-error",
+            message: e instanceof Error ? e.message : String(e),
+          } satisfies PickupResult;
+        }
+        if (!result.ok) return result;
+
+        // The delete side was already recorded (grid.node.delete etc.); the
+        // restore is a distinct durable event that would otherwise be
+        // invisible. Metadata domain — no rebaseline (the restored body
+        // re-enters via its own path).
+        recordChangeEvent({
+          domain: "trash",
+          opType: "restore",
+          entityType: "trash_item",
+          entityId: itemId,
+          payload: { itemId, kind: item.kind },
+        });
+
+        // 復元成功 → trash 側から削除 (DB + store)。失敗時は trash に残す。
+        try {
+          await trashApi.deleteTrashItem(itemId);
+        } catch (e) {
+          debugLog.error("TrashBinStore", "pickup/delete", errorDetail(e));
+          // 復元自体は成功しているので呼び出し側には ok を返す
+        }
+        return result;
+      });
     } catch (e) {
       return {
         ok: false,
@@ -195,26 +356,16 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
         message: e instanceof Error ? e.message : String(e),
       };
     }
+    if (outcome.status !== "current") {
+      return {
+        ok: false,
+        reason: "rejected",
+        message: "project changed",
+      };
+    }
+    const result = outcome.value;
     if (!result.ok) return result;
 
-    // The delete side was already recorded (grid.node.delete etc.); the restore
-    // is a distinct durable event that would otherwise be invisible. Metadata
-    // domain — no rebaseline (the restored body re-enters via its own path).
-    recordChangeEvent({
-      domain: "trash",
-      opType: "restore",
-      entityType: "trash_item",
-      entityId: itemId,
-      payload: { itemId, kind: item.kind },
-    });
-
-    // 復元成功 → trash 側から削除 (DB + store)。失敗時は trash に残す。
-    try {
-      await trashApi.deleteTrashItem(itemId);
-    } catch (e) {
-      debugLog.error("TrashBinStore", "pickup/delete", errorDetail(e));
-      // 復元自体は成功しているので呼び出し側には ok を返す
-    }
     set((s) => {
       if (!s.items.has(itemId)) return s;
       const next = new Map(s.items);
@@ -228,15 +379,21 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
 /**
  * 保留キューから tempId を取り出し、DB に書き込む。
  */
-async function flushPending(tempId: string): Promise<void> {
+async function performFlushPending(tempId: string): Promise<void> {
   const store = useTrashBinStore.getState();
   const target = store.pendingQueue.find((p) => p.tempId === tempId);
   if (!target) return;
-
-  // 先にキューから抜く（再フラッシュ防止）
-  useTrashBinStore.setState((s) => ({
-    pendingQueue: s.pendingQueue.filter((p) => p.tempId !== tempId),
-  }));
+  const authority = pendingAuthorities.get(tempId);
+  if (
+    !authority ||
+    store.activeProjectId !== target.data.projectId ||
+    !isCurrentMutationAuthority(authority)
+  ) {
+    // A stale delayed callback must never target an id-only native API after
+    // Project/Workspace authority has moved on.
+    removePendingCapture(tempId);
+    return;
+  }
 
   const { data } = target;
   const isInteresting =
@@ -253,17 +410,100 @@ async function flushPending(tempId: string): Promise<void> {
       ? [...((data.payload as TextFragmentPayload).text ?? "")].length
       : [...data.previewText].length;
 
-  try {
-    const created = await trashApi.createTrashItem(data, {
-      charCount,
-      isInteresting,
-    });
-    useTrashBinStore.setState((s) => {
-      const next = new Map(s.items);
-      next.set(created.id, created);
-      return { items: next };
-    });
-  } catch (e) {
-    debugLog.error("TrashBinStore", "flushPending/create", errorDetail(e));
+  const created = await trashApi.createTrashItem(data, {
+    charCount,
+    isInteresting,
+    id: target.tempId,
+  });
+
+  // Remove only after the durable create resolves. A rejection remains queued
+  // so the lifecycle can veto the scope change and retry without data loss.
+  removePendingCapture(tempId);
+  if (
+    !isCreateResultEntityPresent(created) ||
+    useTrashBinStore.getState().activeProjectId !== data.projectId ||
+    !isCurrentMutationAuthority(authority)
+  ) {
+    return;
   }
+  useTrashBinStore.setState((state) => {
+    const next = new Map(state.items);
+    next.set(created.id, created);
+    return { items: next };
+  });
+}
+
+function flushPending(tempId: string): Promise<void> {
+  const existing = inFlightFlushes.get(tempId);
+  if (existing) return existing;
+  const pending = performFlushPending(tempId).finally(() => {
+    if (inFlightFlushes.get(tempId) === pending) {
+      inFlightFlushes.delete(tempId);
+    }
+  });
+  inFlightFlushes.set(tempId, pending);
+  return pending;
+}
+
+/**
+ * Forces every delayed capture to durable storage before a destructive
+ * Project/Workspace/window boundary. A failed create stays queued and rejects
+ * the boundary; it is retried only by a later strict-quiescence attempt.
+ */
+export async function flushPendingTrashItemsStrict(): Promise<void> {
+  const failures: unknown[] = [];
+  const failedIds = new Set<string>();
+
+  for (let round = 0; round < MAX_PENDING_DRAIN_ROUNDS; round++) {
+    const ids = new Set([
+      ...useTrashBinStore
+        .getState()
+        .pendingQueue.map((pending) => pending.tempId),
+      ...inFlightFlushes.keys(),
+    ]);
+    for (const id of failedIds) ids.delete(id);
+
+    if (ids.size === 0) {
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          "One or more pending Trash Bin captures failed",
+        );
+      }
+      return;
+    }
+
+    for (const id of ids) clearFlushTimer(id);
+    const attempts = [...ids].map(async (id) => {
+      try {
+        await flushPending(id);
+      } catch (error) {
+        failures.push(error);
+        failedIds.add(id);
+      }
+    });
+    await Promise.all(attempts);
+  }
+
+  throw new Error("Pending Trash Bin captures did not reach quiescence");
+}
+
+registerQuiescenceProvider({
+  id: "trash-bin-pending-captures",
+  stage: "scoped-mutations",
+  flush: flushPendingTrashItemsStrict,
+  discard: discardPendingTrashCaptures,
+  recovery: () =>
+    useTrashBinStore.getState().pendingQueue.map((pending) => ({
+      kind: "trash-bin-pending",
+      id: pending.tempId,
+      data: pending.data,
+    })),
+});
+
+/** Test helper for module-owned timers and authorities. */
+export function _resetTrashBinLifecycleForTests(): void {
+  discardPendingTrashCaptures();
+  inFlightFlushes.clear();
+  trashLoadGeneration++;
 }

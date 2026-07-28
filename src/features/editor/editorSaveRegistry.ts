@@ -16,8 +16,20 @@ import type { LoadedEditorBinding } from "./document/types";
 type SaveHandler = () => Promise<void>;
 type DiscardHandler = () => void;
 type DocumentReference = string | DocumentKey;
+export interface EditorRecoveryDraft {
+  documentId: string;
+  documentKey: string;
+  instanceId: string;
+  plainText: string;
+  prosemirror: unknown;
+}
+type RecoveryDraftProvider = () => Omit<
+  EditorRecoveryDraft,
+  "documentId" | "documentKey" | "instanceId"
+> | null;
 
 interface HandlerBucket {
+  documentKind: DocumentKey["kind"] | null;
   documentId: string;
   handlers: Map<string, SaveHandler>;
 }
@@ -38,19 +50,30 @@ const discardHandlers = new Map<
     >;
   }
 >();
+const recoveryDraftProviders = new Map<
+  string,
+  {
+    documentId: string;
+    providers: Map<string, RecoveryDraftProvider>;
+  }
+>();
+const retainedRecoveryDrafts = new Map<string, EditorRecoveryDraft>();
 
 function referenceIdentity(reference: DocumentReference): {
   encoded: string;
+  documentKind: DocumentKey["kind"] | null;
   documentId: string;
 } {
   if (typeof reference === "string") {
     return {
       encoded: `legacy:${encodeURIComponent(reference)}`,
+      documentKind: null,
       documentId: reference,
     };
   }
   return {
     encoded: encodeDocumentKey(reference),
+    documentKind: reference.kind,
     documentId: documentIdFromKey(reference),
   };
 }
@@ -69,12 +92,13 @@ export function registerSaveHandler(
   instanceOrFn: EditorInstanceId | SaveHandler,
   maybeFn?: SaveHandler,
 ): void {
-  const { encoded, documentId } = referenceIdentity(reference);
+  const { encoded, documentKind, documentId } = referenceIdentity(reference);
   const instanceId =
     typeof instanceOrFn === "function" ? LEGACY_INSTANCE : instanceOrFn;
   const fn = typeof instanceOrFn === "function" ? instanceOrFn : maybeFn;
   if (!fn) return;
   const bucket = handlers.get(encoded) ?? {
+    documentKind,
     documentId,
     handlers: new Map<string, SaveHandler>(),
   };
@@ -190,6 +214,143 @@ export function unregisterDiscardHandler(
   if (bucket.handlers.size === 0) discardHandlers.delete(encoded);
 }
 
+export function registerRecoveryDraftProvider(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+  provider: RecoveryDraftProvider,
+): void {
+  const { encoded, documentId } = referenceIdentity(reference);
+  const bucket = recoveryDraftProviders.get(encoded) ?? {
+    documentId,
+    providers: new Map<string, RecoveryDraftProvider>(),
+  };
+  bucket.providers.set(instanceId, provider);
+  recoveryDraftProviders.set(encoded, bucket);
+}
+
+export function unregisterRecoveryDraftProvider(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+  provider?: RecoveryDraftProvider,
+): void {
+  const { encoded } = referenceIdentity(reference);
+  const bucket = recoveryDraftProviders.get(encoded);
+  if (!bucket) return;
+  if (provider !== undefined && bucket.providers.get(instanceId) !== provider) {
+    return;
+  }
+  bucket.providers.delete(instanceId);
+  if (bucket.providers.size === 0) recoveryDraftProviders.delete(encoded);
+}
+
+function recoveryDraftIdentity(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+): string {
+  return `${referenceIdentity(reference).encoded}\u0000${instanceId}`;
+}
+
+/**
+ * Preserve the last dirty editor snapshot across unmount. The retiring
+ * AutoSave still owns its save closure and clears this snapshot after a
+ * successful retry; until then recovery export must not depend on a mounted
+ * TipTap instance.
+ */
+export function retainEditorRecoveryDraft(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+  draft: Omit<EditorRecoveryDraft, "documentId" | "documentKey" | "instanceId">,
+): void {
+  const { encoded, documentId } = referenceIdentity(reference);
+  retainedRecoveryDrafts.set(recoveryDraftIdentity(reference, instanceId), {
+    documentId,
+    documentKey: encoded,
+    instanceId,
+    ...draft,
+  });
+}
+
+export function clearRetainedEditorRecoveryDraft(
+  reference: DocumentReference,
+  instanceId: EditorInstanceId,
+): void {
+  retainedRecoveryDrafts.delete(recoveryDraftIdentity(reference, instanceId));
+}
+
+/**
+ * A successful Project/Workspace quiescence proves that every drainable
+ * detached draft has either persisted or vetoed the boundary. Once it
+ * succeeds, retained snapshots belong only to the old authority scope and
+ * must not appear in a later workspace's recovery export.
+ *
+ * Live providers are intentionally preserved until React unmount cleanup.
+ */
+export function clearRetainedEditorRecoveryDraftsForScopeChange(): void {
+  retainedRecoveryDrafts.clear();
+}
+
+export function collectEditorRecoveryDrafts(): EditorRecoveryDraft[] {
+  const drafts: EditorRecoveryDraft[] = [];
+  const liveDraftKeys = new Set<string>();
+  for (const [documentKey, bucket] of recoveryDraftProviders) {
+    for (const [instanceId, provider] of bucket.providers) {
+      try {
+        const draft = provider();
+        if (!draft) continue;
+        liveDraftKeys.add(`${documentKey}\u0000${instanceId}`);
+        drafts.push({
+          documentId: bucket.documentId,
+          documentKey,
+          instanceId,
+          ...draft,
+        });
+      } catch {
+        // One destroyed editor must not prevent recovery of the other drafts.
+      }
+    }
+  }
+  for (const [key, draft] of retainedRecoveryDrafts) {
+    if (!liveDraftKeys.has(key)) drafts.push(draft);
+  }
+  return drafts;
+}
+
+/** Explicit destructive path used only after user confirmation. */
+export function discardAllRegisteredEditorDrafts(): void {
+  for (const bucket of discardHandlers.values()) {
+    for (const registered of bucket.handlers.values()) {
+      registered.handler();
+    }
+  }
+  retainedRecoveryDrafts.clear();
+}
+
+/**
+ * Explicitly discard every mounted or retained draft for one canonical
+ * document. External reload uses this only after the user selected the disk
+ * version, so clearing all split/linear instances of that exact file is
+ * intentional while unrelated documents remain untouched.
+ */
+export function discardRegisteredDocumentDrafts(
+  reference: DocumentReference,
+): void {
+  const { encoded } = referenceIdentity(reference);
+  const bucket = discardHandlers.get(encoded);
+  if (bucket) {
+    for (const registered of [...bucket.handlers.values()]) {
+      registered.handler();
+    }
+  }
+  const prefix = `${encoded}\u0000`;
+  for (const key of [...retainedRecoveryDrafts.keys()]) {
+    if (key.startsWith(prefix)) retainedRecoveryDrafts.delete(key);
+  }
+}
+
+export function _resetRetainedEditorRecoveryDraftsForTests(): void {
+  retainedRecoveryDrafts.clear();
+}
+
 /**
  * Explicitly abandon the live draft displayed in one editor group.
  *
@@ -236,6 +397,33 @@ export async function saveDocument(key: DocumentKey): Promise<void> {
   const bucket = handlers.get(encodeDocumentKey(key));
   if (!bucket) return;
   await Promise.all([...bucket.handlers.values()].map((fn) => fn()));
+}
+
+/** Save every mounted variant of one entity without crossing document kinds. */
+export async function saveDocumentsForEntity(
+  kind: DocumentKey["kind"],
+  documentId: string,
+): Promise<void> {
+  const pending: Promise<void>[] = [];
+  for (const bucket of handlers.values()) {
+    if (bucket.documentKind !== kind || bucket.documentId !== documentId) {
+      continue;
+    }
+    for (const fn of bucket.handlers.values()) pending.push(fn());
+  }
+  await Promise.all(pending);
+}
+
+/** Save every mounted document of one kind in the current Project scope. */
+export async function saveDocumentsForKind(
+  kind: DocumentKey["kind"],
+): Promise<void> {
+  const pending: Promise<void>[] = [];
+  for (const bucket of handlers.values()) {
+    if (bucket.documentKind !== kind) continue;
+    for (const fn of bucket.handlers.values()) pending.push(fn());
+  }
+  await Promise.all(pending);
 }
 
 /**

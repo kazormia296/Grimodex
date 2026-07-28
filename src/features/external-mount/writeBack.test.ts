@@ -32,11 +32,22 @@ vi.mock("./markdownBridge", () => ({
 }));
 
 import { useExternalRootStore } from "./externalRootStore";
-import { _resetWriteBackTimers, scheduleWriteBack } from "./writeBack";
+import {
+  _resetWriteBackTimers,
+  cancelWriteBack,
+  flushAllWriteBacksStrict,
+  hasPendingWriteBack,
+  scheduleWriteBack,
+} from "./writeBack";
 
 describe("writeBack mute", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    mockWriteExternalFile.mockReset().mockResolvedValue(undefined);
+    mockSaveSceneContent.mockReset().mockResolvedValue({
+      placedBeatPreview: null,
+    });
+    mockUpdateNode.mockReset().mockResolvedValue(undefined);
     useExternalRootStore.setState({ mutedWrites: [] });
     _resetWriteBackTimers();
   });
@@ -72,5 +83,168 @@ describe("writeBack mute", () => {
     expect(
       useExternalRootStore.getState().isMuted("root-1", "chapter/01.md"),
     ).toBe(true);
+  });
+
+  it("strict flush runs a debounced write immediately and propagates failure", async () => {
+    mockWriteExternalFile.mockRejectedValueOnce(new Error("read-only mount"));
+    scheduleWriteBack(
+      "scene-2",
+      "external-root://root-1/chapter/02.md",
+      JSON.stringify({
+        type: "doc",
+        content: [{ type: "paragraph", content: [] }],
+      }),
+    );
+
+    await expect(flushAllWriteBacksStrict()).rejects.toThrow(
+      "external write-backs failed",
+    );
+    expect(mockWriteExternalFile).toHaveBeenCalledOnce();
+
+    mockWriteExternalFile.mockResolvedValue(undefined);
+    await expect(flushAllWriteBacksStrict()).resolves.toBeUndefined();
+    expect(mockWriteExternalFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("strict flush drains a write scheduled while an earlier write is in flight", async () => {
+    let releaseFirst!: () => void;
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    mockWriteExternalFile
+      .mockImplementationOnce(() => firstWrite)
+      .mockResolvedValueOnce(undefined);
+
+    const document = JSON.stringify({
+      type: "doc",
+      content: [{ type: "paragraph", content: [] }],
+    });
+    scheduleWriteBack(
+      "scene-first",
+      "external-root://root-1/chapter/first.md",
+      document,
+    );
+    const flush = flushAllWriteBacksStrict();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockWriteExternalFile).toHaveBeenCalledTimes(1);
+
+    scheduleWriteBack(
+      "scene-late",
+      "external-root://root-1/chapter/late.md",
+      document,
+    );
+    releaseFirst();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(flush).resolves.toBeUndefined();
+
+    expect(mockWriteExternalFile).toHaveBeenCalledTimes(2);
+    expect(mockWriteExternalFile).toHaveBeenLastCalledWith(
+      "root-1",
+      "chapter/late.md",
+      "",
+    );
+  });
+
+  it("cancels a scheduled draft before it can overwrite an external reload", async () => {
+    scheduleWriteBack(
+      "scene-cancel",
+      "external-root://root-1/chapter/cancel.md",
+      JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "stale local" }],
+          },
+        ],
+      }),
+    );
+    expect(hasPendingWriteBack("scene-cancel")).toBe(true);
+
+    await cancelWriteBack("scene-cancel");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(hasPendingWriteBack("scene-cancel")).toBe(false);
+    expect(mockWriteExternalFile).not.toHaveBeenCalled();
+  });
+
+  it("waits for an in-flight native write before cancellation resolves", async () => {
+    let releaseWrite!: () => void;
+    const nativeWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    mockWriteExternalFile.mockReturnValueOnce(nativeWrite);
+    scheduleWriteBack(
+      "scene-in-flight",
+      "external-root://root-1/chapter/in-flight.md",
+      JSON.stringify({
+        type: "doc",
+        content: [{ type: "paragraph", content: [] }],
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    expect(mockWriteExternalFile).toHaveBeenCalledOnce();
+
+    let cancelled = false;
+    const cancellation = cancelWriteBack("scene-in-flight").then(() => {
+      cancelled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancelled).toBe(false);
+
+    releaseWrite();
+    await cancellation;
+    expect(cancelled).toBe(true);
+    expect(hasPendingWriteBack("scene-in-flight")).toBe(false);
+  });
+
+  it("does not let an older disk write revert a newer DB snapshot", async () => {
+    let releaseDisk!: () => void;
+    const diskWrite = new Promise<void>((resolve) => {
+      releaseDisk = resolve;
+    });
+    mockWriteExternalFile.mockReturnValueOnce(diskWrite);
+    const oldPmJson = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "old local snapshot" }],
+        },
+      ],
+    });
+    const newerPmJson = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "newer local snapshot" }],
+        },
+      ],
+    });
+
+    scheduleWriteBack(
+      "scene-order",
+      "external-root://root-1/chapter/order.md",
+      oldPmJson,
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    expect(mockWriteExternalFile).toHaveBeenCalledOnce();
+
+    // This represents the next editor save, which already owns DB
+    // persistence before its own OUT draft is scheduled.
+    await mockSaveSceneContent("scene-order", newerPmJson);
+    releaseDisk();
+    await expect(flushAllWriteBacksStrict()).resolves.toBeUndefined();
+
+    expect(mockSaveSceneContent).toHaveBeenCalledOnce();
+    expect(mockSaveSceneContent).toHaveBeenCalledWith(
+      "scene-order",
+      newerPmJson,
+    );
+    expect(mockSaveSceneContent).not.toHaveBeenCalledWith(
+      "scene-order",
+      oldPmJson,
+    );
   });
 });

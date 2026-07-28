@@ -60,6 +60,41 @@ type BrowserSchemaContract = {
   triggers: Record<string, string>;
 };
 
+type BrowserPlotThreadSnapshot = {
+  id: string;
+  projectId: string;
+  name: string;
+  color: string | null;
+  description: string | null;
+  sortOrder: string;
+  startNodeId: string | null;
+  endNodeId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type BrowserPlotLinkSnapshot = {
+  id: string;
+  threadId: string;
+  nodeId: string;
+  phaseType: string;
+  note: string | null;
+  sortOrder: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type BrowserPlotBranchSnapshot = {
+  id: string;
+  projectId: string;
+  fromThreadId: string;
+  toThreadId: string;
+  atNodeId: string;
+  kind: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 // Keep this list aligned with the native-only contract surfaces asserted by
 // src/db/schema.contract.test.ts. BrowserMock uses every other canonical
 // CREATE statement so browser editing exercises the same renderer schema.
@@ -165,6 +200,19 @@ function methodAssumesMutation(method: unknown): boolean {
 const SCHEMA_DDL = buildBrowserSchemaDdl(
   schemaContract as unknown as BrowserSchemaContract,
 );
+const IDEMPOTENCY_LEDGER_MIGRATION_DDL = `
+  CREATE TABLE IF NOT EXISTS idempotency_requests (
+    domain TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    payload_hash TEXT NOT NULL,
+    tombstone_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (domain, request_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_idempotency_requests_project_created
+    ON idempotency_requests(project_id, created_at);
+`;
 const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";
 const ROLE_PROVIDERS_SETTING_KEY = "aiModel.roleProviders";
 const ROLE_MODEL_SETTING_PREFIX = "aiModel.role.";
@@ -580,6 +628,32 @@ interface TimelapseAppendEvent {
   timestamp: number;
 }
 
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalizeJson(child)]),
+    );
+  }
+  return value;
+}
+
+async function browserPayloadFingerprint(
+  domain: string,
+  payload: Record<string, unknown>,
+): Promise<string> {
+  const canonical = JSON.stringify(canonicalizeJson([domain, payload]));
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(canonical),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export async function createBrowserMock(
   options: BrowserMockOptions = {},
 ): Promise<PersistentBrowserMock> {
@@ -593,6 +667,20 @@ export async function createBrowserMock(
     // complete renderer schema.
     db.run("PRAGMA page_size = 1024;");
     db.run(SCHEMA_DDL);
+  }
+  const ledgerTableExists =
+    db.exec(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'idempotency_requests'",
+    ).length > 0;
+  const ledgerIndexExists =
+    db.exec(
+      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_idempotency_requests_project_created'",
+    ).length > 0;
+  if (!ledgerTableExists || !ledgerIndexExists) {
+    // Persisted Browser workspaces predate the durable create ledger. Keep
+    // this migration content-free and idempotent, mirroring native migrate.rs.
+    db.run(IDEMPOTENCY_LEDGER_MIGRATION_DDL);
+    options.onDatabaseDirty?.();
   }
   db.run(`CREATE TEMP TABLE grimodex_connection_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -1164,6 +1252,1162 @@ export async function createBrowserMock(
     return row;
   }
 
+  function queryAll(
+    sql: string,
+    params: SqlValue[],
+  ): Record<string, SqlValue>[] {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const rows: Record<string, SqlValue>[] = [];
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return rows;
+  }
+
+  function browserCommandPayload(
+    command: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const payload = args.payload;
+    if (
+      payload === null ||
+      typeof payload !== "object" ||
+      Array.isArray(payload)
+    ) {
+      throw new Error(`${command}: payload must be an object`);
+    }
+    return payload as Record<string, unknown>;
+  }
+
+  function requiredBrowserString(
+    command: string,
+    payload: Record<string, unknown>,
+    key: string,
+  ): string {
+    const value = payload[key];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(`${command}: ${key} must be a non-empty string`);
+    }
+    return value;
+  }
+
+  function nullableBrowserString(
+    command: string,
+    payload: Record<string, unknown>,
+    key: string,
+  ): string | null {
+    const value = payload[key];
+    if (value === null || value === undefined) return null;
+    if (typeof value !== "string") {
+      throw new Error(`${command}: ${key} must be a string or null`);
+    }
+    return value;
+  }
+
+  function optionalBrowserString(
+    command: string,
+    payload: Record<string, unknown>,
+    key: string,
+  ): string | null {
+    const value = payload[key];
+    if (value === null || value === undefined) return null;
+    if (typeof value !== "string") {
+      throw new Error(`${command}: ${key} must be a string or null`);
+    }
+    return value;
+  }
+
+  function nullableBrowserInteger(
+    command: string,
+    payload: Record<string, unknown>,
+    key: string,
+  ): number | null {
+    const value = payload[key];
+    if (value === null || value === undefined) return null;
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+      throw new Error(`${command}: ${key} must be an integer or null`);
+    }
+    return value;
+  }
+
+  function browserBoolean(
+    command: string,
+    payload: Record<string, unknown>,
+    key: string,
+    fallback: boolean,
+  ): boolean {
+    const value = payload[key];
+    if (value === undefined) return fallback;
+    if (typeof value !== "boolean") {
+      throw new Error(`${command}: ${key} must be a boolean`);
+    }
+    return value;
+  }
+
+  function rowMatches(
+    row: Record<string, SqlValue>,
+    expected: Record<string, SqlValue>,
+  ): boolean {
+    return Object.entries(expected).every(
+      ([key, value]) => (row[key] ?? null) === value,
+    );
+  }
+
+  async function runBrowserIdempotentCreate(request: {
+    domain: string;
+    requestId: string | null;
+    entityId: string;
+    projectId: string;
+    fingerprintPayload: Record<string, unknown>;
+    conflictMarker: string;
+    loadEntity: () => Record<string, SqlValue> | null;
+    createEntity: () => Record<string, SqlValue>;
+  }): Promise<Record<string, unknown>> {
+    const payloadHash = await browserPayloadFingerprint(
+      request.domain,
+      request.fingerprintPayload,
+    );
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const ledger =
+        request.requestId === null
+          ? null
+          : queryOne(
+              `SELECT payload_hash, tombstone_json
+           FROM idempotency_requests
+          WHERE domain = ? AND request_id = ?`,
+              [request.domain, request.requestId],
+            );
+      if (ledger) {
+        if (String(ledger.payload_hash) !== payloadHash) {
+          throw new Error(
+            `${request.conflictMarker}: request id reused with different payload`,
+          );
+        }
+        const current = request.loadEntity();
+        const tombstone = JSON.parse(String(ledger.tombstone_json)) as {
+          id?: unknown;
+        };
+        const replayEntityId =
+          typeof tombstone.id === "string" ? tombstone.id : request.entityId;
+        db.run("COMMIT");
+        return {
+          ...(current ?? { id: replayEntityId }),
+          __idempotency: {
+            replayed: true,
+            entityPresent: current !== null,
+          },
+        };
+      }
+
+      const created = request.createEntity();
+      if (request.requestId !== null) {
+        db.run(
+          `INSERT INTO idempotency_requests
+           (domain, request_id, project_id, payload_hash, tombstone_json)
+         VALUES (?, ?, ?, ?, ?)`,
+          [
+            request.domain,
+            request.requestId,
+            request.projectId,
+            payloadHash,
+            JSON.stringify({ id: request.entityId }),
+          ],
+        );
+      }
+      db.run("COMMIT");
+      options.onDatabaseDirty?.();
+      return {
+        ...created,
+        __idempotency: { replayed: false, entityPresent: true },
+      };
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        /* noop */
+      }
+      throw error;
+    }
+  }
+
+  async function handlePlotThreadCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "plot_thread_create";
+    const payload = browserCommandPayload(command, args);
+    const id = requiredBrowserString(command, payload, "id");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const name = requiredBrowserString(command, payload, "name");
+    const color = nullableBrowserString(command, payload, "color");
+    const description = nullableBrowserString(command, payload, "description");
+    const sortOrder = requiredBrowserString(command, payload, "sortOrder");
+    const fingerprintPayload = {
+      id,
+      projectId,
+      name,
+      color,
+      description,
+      sortOrder,
+    };
+    const loadEntity = () =>
+      queryOne("SELECT * FROM plot_threads WHERE id = ?", [id]);
+
+    return runBrowserIdempotentCreate({
+      domain: command,
+      requestId: id,
+      entityId: id,
+      projectId,
+      fingerprintPayload,
+      conflictMarker: "PLOT_THREAD_IDEMPOTENCY_CONFLICT",
+      loadEntity,
+      createEntity: () => {
+        try {
+          db.run(
+            `INSERT INTO plot_threads
+               (id, project_id, name, color, description, sort_order)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [id, projectId, name, color, description, sortOrder],
+          );
+        } catch (error) {
+          const existing = loadEntity();
+          if (!existing) throw error;
+          if (
+            !rowMatches(existing, {
+              project_id: projectId,
+              name,
+              color,
+              description,
+              sort_order: sortOrder,
+            })
+          ) {
+            throw new Error(
+              "PLOT_THREAD_IDEMPOTENCY_CONFLICT: request id reused with different payload",
+              { cause: error },
+            );
+          }
+        }
+        const created = loadEntity();
+        if (!created) {
+          throw new Error(
+            "plot thread create completed without a persisted row",
+          );
+        }
+        return created;
+      },
+    });
+  }
+
+  async function handlePlotThreadLinkCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "plot_thread_link_create";
+    const payload = browserCommandPayload(command, args);
+    const id = requiredBrowserString(command, payload, "id");
+    const threadId = requiredBrowserString(command, payload, "threadId");
+    const nodeId = requiredBrowserString(command, payload, "nodeId");
+    const phaseType = requiredBrowserString(command, payload, "phaseType");
+    const note = nullableBrowserString(command, payload, "note");
+    const sortOrder = nullableBrowserString(command, payload, "sortOrder");
+    const fingerprintPayload = {
+      id,
+      threadId,
+      nodeId,
+      phaseType,
+      note,
+      sortOrder,
+    };
+    const loadEntity = () =>
+      queryOne("SELECT * FROM plot_thread_scene_links WHERE id = ?", [id]);
+
+    const thread = queryOne(
+      "SELECT project_id FROM plot_threads WHERE id = ?",
+      [threadId],
+    );
+    const projectId = String(thread?.project_id ?? "");
+    return runBrowserIdempotentCreate({
+      domain: command,
+      requestId: id,
+      entityId: id,
+      projectId,
+      fingerprintPayload,
+      conflictMarker: "PLOT_THREAD_LINK_IDEMPOTENCY_CONFLICT",
+      loadEntity,
+      createEntity: () => {
+        if (
+          !["introduce", "develop", "turn", "climax", "resolve"].includes(
+            phaseType,
+          )
+        ) {
+          throw new Error(`invalid phase_type: ${phaseType}`);
+        }
+        const currentThread = queryOne(
+          "SELECT project_id FROM plot_threads WHERE id = ?",
+          [threadId],
+        );
+        const node = queryOne(
+          "SELECT project_id FROM tree_nodes WHERE id = ?",
+          [nodeId],
+        );
+        if (
+          !currentThread ||
+          !node ||
+          currentThread.project_id !== node.project_id
+        ) {
+          throw new Error(
+            "plot thread link must reference a thread and scene in the same project",
+          );
+        }
+        try {
+          db.run(
+            `INSERT INTO plot_thread_scene_links
+               (id, thread_id, node_id, phase_type, note, sort_order)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [id, threadId, nodeId, phaseType, note, sortOrder],
+          );
+        } catch (error) {
+          const existing = loadEntity();
+          if (!existing) throw error;
+          if (
+            !rowMatches(existing, {
+              thread_id: threadId,
+              node_id: nodeId,
+              phase_type: phaseType,
+              note,
+              sort_order: sortOrder,
+            })
+          ) {
+            throw new Error(
+              "PLOT_THREAD_LINK_IDEMPOTENCY_CONFLICT: request id reused with different payload",
+              { cause: error },
+            );
+          }
+        }
+        const created = loadEntity();
+        if (!created) {
+          throw new Error(
+            "plot thread link create completed without a persisted row",
+          );
+        }
+        return created;
+      },
+    });
+  }
+
+  async function handlePlotThreadBranchCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "plot_thread_branch_create";
+    const payload = browserCommandPayload(command, args);
+    const id = requiredBrowserString(command, payload, "id");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const fromThreadId = requiredBrowserString(
+      command,
+      payload,
+      "fromThreadId",
+    );
+    const toThreadId = requiredBrowserString(command, payload, "toThreadId");
+    const atNodeId = requiredBrowserString(command, payload, "atNodeId");
+    const kind = requiredBrowserString(command, payload, "kind");
+    const fingerprintPayload = {
+      id,
+      projectId,
+      fromThreadId,
+      toThreadId,
+      atNodeId,
+      kind,
+    };
+    const loadEntity = () =>
+      queryOne("SELECT * FROM plot_thread_branches WHERE id = ?", [id]);
+
+    return runBrowserIdempotentCreate({
+      domain: command,
+      requestId: id,
+      entityId: id,
+      projectId,
+      fingerprintPayload,
+      conflictMarker: "PLOT_THREAD_BRANCH_IDEMPOTENCY_CONFLICT",
+      loadEntity,
+      createEntity: () => {
+        if (!["branch", "merge"].includes(kind)) {
+          throw new Error(`invalid plot branch kind: ${kind}`);
+        }
+        if (fromThreadId === toThreadId) {
+          throw new Error(
+            "plot thread branch cannot reference the same thread twice",
+          );
+        }
+        const from = queryOne(
+          "SELECT project_id FROM plot_threads WHERE id = ?",
+          [fromThreadId],
+        );
+        const to = queryOne(
+          "SELECT project_id FROM plot_threads WHERE id = ?",
+          [toThreadId],
+        );
+        const node = queryOne(
+          "SELECT project_id FROM tree_nodes WHERE id = ?",
+          [atNodeId],
+        );
+        if (
+          from?.project_id !== projectId ||
+          to?.project_id !== projectId ||
+          node?.project_id !== projectId
+        ) {
+          throw new Error(
+            "plot thread branch must reference a project, threads, and scene in the same project",
+          );
+        }
+        try {
+          db.run(
+            `INSERT INTO plot_thread_branches
+               (id, project_id, from_thread_id, to_thread_id, at_node_id, kind)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [id, projectId, fromThreadId, toThreadId, atNodeId, kind],
+          );
+        } catch (error) {
+          const existing = loadEntity();
+          if (!existing) throw error;
+          if (
+            !rowMatches(existing, {
+              project_id: projectId,
+              from_thread_id: fromThreadId,
+              to_thread_id: toThreadId,
+              at_node_id: atNodeId,
+              kind,
+            })
+          ) {
+            throw new Error(
+              "PLOT_THREAD_BRANCH_IDEMPOTENCY_CONFLICT: request id reused with different payload",
+              { cause: error },
+            );
+          }
+        }
+        const created = loadEntity();
+        if (!created) {
+          throw new Error(
+            "plot thread branch create completed without a persisted row",
+          );
+        }
+        return created;
+      },
+    });
+  }
+
+  function browserSnapshotRecord(
+    command: string,
+    value: unknown,
+    key: string,
+  ): Record<string, unknown> {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`${command}: ${key} must be an object`);
+    }
+    return value as Record<string, unknown>;
+  }
+
+  function browserSnapshotArray(
+    command: string,
+    payload: Record<string, unknown>,
+    key: string,
+  ): Record<string, unknown>[] {
+    const value = payload[key];
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) {
+      throw new Error(`${command}: ${key} must be an array`);
+    }
+    return value.map((entry, index) =>
+      browserSnapshotRecord(command, entry, `${key}[${index}]`),
+    );
+  }
+
+  function parseBrowserThreadSnapshot(
+    command: string,
+    raw: Record<string, unknown>,
+  ): BrowserPlotThreadSnapshot {
+    return {
+      id: requiredBrowserString(command, raw, "id"),
+      projectId: requiredBrowserString(command, raw, "projectId"),
+      name: requiredBrowserString(command, raw, "name"),
+      color: nullableBrowserString(command, raw, "color"),
+      description: nullableBrowserString(command, raw, "description"),
+      sortOrder: requiredBrowserString(command, raw, "sortOrder"),
+      startNodeId: nullableBrowserString(command, raw, "startNodeId"),
+      endNodeId: nullableBrowserString(command, raw, "endNodeId"),
+      createdAt: requiredBrowserString(command, raw, "createdAt"),
+      updatedAt: requiredBrowserString(command, raw, "updatedAt"),
+    };
+  }
+
+  function parseBrowserLinkSnapshot(
+    command: string,
+    raw: Record<string, unknown>,
+  ): BrowserPlotLinkSnapshot {
+    return {
+      id: requiredBrowserString(command, raw, "id"),
+      threadId: requiredBrowserString(command, raw, "threadId"),
+      nodeId: requiredBrowserString(command, raw, "nodeId"),
+      phaseType: requiredBrowserString(command, raw, "phaseType"),
+      note: nullableBrowserString(command, raw, "note"),
+      sortOrder: nullableBrowserString(command, raw, "sortOrder"),
+      createdAt: requiredBrowserString(command, raw, "createdAt"),
+      updatedAt: requiredBrowserString(command, raw, "updatedAt"),
+    };
+  }
+
+  function parseBrowserBranchSnapshot(
+    command: string,
+    raw: Record<string, unknown>,
+  ): BrowserPlotBranchSnapshot {
+    return {
+      id: requiredBrowserString(command, raw, "id"),
+      projectId: requiredBrowserString(command, raw, "projectId"),
+      fromThreadId: requiredBrowserString(command, raw, "fromThreadId"),
+      toThreadId: requiredBrowserString(command, raw, "toThreadId"),
+      atNodeId: requiredBrowserString(command, raw, "atNodeId"),
+      kind: requiredBrowserString(command, raw, "kind"),
+      createdAt: requiredBrowserString(command, raw, "createdAt"),
+      updatedAt: requiredBrowserString(command, raw, "updatedAt"),
+    };
+  }
+
+  function browserThreadSnapshotMatches(
+    row: Record<string, SqlValue>,
+    expected: BrowserPlotThreadSnapshot,
+  ): boolean {
+    return rowMatches(row, {
+      id: expected.id,
+      project_id: expected.projectId,
+      name: expected.name,
+      color: expected.color,
+      description: expected.description,
+      sort_order: expected.sortOrder,
+      start_node_id: expected.startNodeId,
+      end_node_id: expected.endNodeId,
+      created_at: expected.createdAt,
+      updated_at: expected.updatedAt,
+    });
+  }
+
+  function browserLinkSnapshotMatches(
+    row: Record<string, SqlValue>,
+    expected: BrowserPlotLinkSnapshot,
+  ): boolean {
+    return rowMatches(row, {
+      id: expected.id,
+      thread_id: expected.threadId,
+      node_id: expected.nodeId,
+      phase_type: expected.phaseType,
+      note: expected.note,
+      sort_order: expected.sortOrder,
+      created_at: expected.createdAt,
+      updated_at: expected.updatedAt,
+    });
+  }
+
+  function browserBranchSnapshotMatches(
+    row: Record<string, SqlValue>,
+    expected: BrowserPlotBranchSnapshot,
+  ): boolean {
+    return rowMatches(row, {
+      id: expected.id,
+      project_id: expected.projectId,
+      from_thread_id: expected.fromThreadId,
+      to_thread_id: expected.toThreadId,
+      at_node_id: expected.atNodeId,
+      kind: expected.kind,
+      created_at: expected.createdAt,
+      updated_at: expected.updatedAt,
+    });
+  }
+
+  function requireBrowserProjectMember(
+    table: "plot_threads" | "tree_nodes",
+    id: string,
+    projectId: string,
+    message: string,
+  ): void {
+    const row = queryOne(`SELECT project_id FROM ${table} WHERE id = ?`, [id]);
+    if (row?.project_id !== projectId) {
+      throw new Error(message);
+    }
+  }
+
+  async function handlePlotThreadRestoreSnapshot(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "plot_thread_restore_snapshot";
+    const payload = browserCommandPayload(command, args);
+    const requestId = requiredBrowserString(command, payload, "requestId");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const rawThread = payload.thread;
+    const thread =
+      rawThread === null || rawThread === undefined
+        ? null
+        : parseBrowserThreadSnapshot(
+            command,
+            browserSnapshotRecord(command, rawThread, "thread"),
+          );
+    const links = browserSnapshotArray(command, payload, "links").map((row) =>
+      parseBrowserLinkSnapshot(command, row),
+    );
+    const branches = browserSnapshotArray(command, payload, "branches").map(
+      (row) => parseBrowserBranchSnapshot(command, row),
+    );
+    if (thread === null && links.length === 0 && branches.length === 0) {
+      throw new Error(
+        "plot_thread_restore_snapshot: snapshot must contain at least one row",
+      );
+    }
+    if (new Set(links.map((row) => row.id)).size !== links.length) {
+      throw new Error(
+        "plot_thread_restore_snapshot: snapshot contains duplicate link ids",
+      );
+    }
+    if (new Set(branches.map((row) => row.id)).size !== branches.length) {
+      throw new Error(
+        "plot_thread_restore_snapshot: snapshot contains duplicate branch ids",
+      );
+    }
+    const response = () => ({
+      id: requestId,
+      thread,
+      links,
+      branches,
+    });
+    const loadEntity = (): Record<string, SqlValue> | null => {
+      if (thread !== null) {
+        const row = queryOne("SELECT * FROM plot_threads WHERE id = ?", [
+          thread.id,
+        ]);
+        if (!row || !browserThreadSnapshotMatches(row, thread)) return null;
+      }
+      for (const expected of links) {
+        const row = queryOne(
+          "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+          [expected.id],
+        );
+        if (!row || !browserLinkSnapshotMatches(row, expected)) return null;
+      }
+      for (const expected of branches) {
+        const row = queryOne(
+          "SELECT * FROM plot_thread_branches WHERE id = ?",
+          [expected.id],
+        );
+        if (!row || !browserBranchSnapshotMatches(row, expected)) return null;
+      }
+      return response() as unknown as Record<string, SqlValue>;
+    };
+
+    return runBrowserIdempotentCreate({
+      domain: command,
+      requestId,
+      entityId: requestId,
+      projectId,
+      fingerprintPayload: { projectId, thread, links, branches },
+      conflictMarker: "PLOT_THREAD_RESTORE_IDEMPOTENCY_CONFLICT",
+      loadEntity,
+      createEntity: () => {
+        if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
+          throw new Error("plot snapshot project does not exist");
+        }
+        if (thread !== null) {
+          if (thread.projectId !== projectId) {
+            throw new Error(
+              "plot restore thread must belong to the snapshot project",
+            );
+          }
+          for (const nodeId of [thread.startNodeId, thread.endNodeId]) {
+            if (nodeId !== null) {
+              requireBrowserProjectMember(
+                "tree_nodes",
+                nodeId,
+                projectId,
+                "plot restore thread boundary scene must belong to the snapshot project",
+              );
+            }
+          }
+          const existing = queryOne("SELECT * FROM plot_threads WHERE id = ?", [
+            thread.id,
+          ]);
+          if (existing) {
+            if (!browserThreadSnapshotMatches(existing, thread)) {
+              throw new Error(
+                "PLOT_THREAD_RESTORE_CONFLICT: thread id already has different content",
+              );
+            }
+          } else {
+            db.run(
+              `INSERT INTO plot_threads
+                 (id, project_id, name, color, description, sort_order,
+                  start_node_id, end_node_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                thread.id,
+                thread.projectId,
+                thread.name,
+                thread.color,
+                thread.description,
+                thread.sortOrder,
+                thread.startNodeId,
+                thread.endNodeId,
+                thread.createdAt,
+                thread.updatedAt,
+              ],
+            );
+          }
+        }
+        for (const link of links) {
+          if (
+            !["introduce", "develop", "turn", "climax", "resolve"].includes(
+              link.phaseType,
+            )
+          ) {
+            throw new Error(`invalid phase_type: ${link.phaseType}`);
+          }
+          requireBrowserProjectMember(
+            "plot_threads",
+            link.threadId,
+            projectId,
+            "plot restore link thread must belong to the snapshot project",
+          );
+          requireBrowserProjectMember(
+            "tree_nodes",
+            link.nodeId,
+            projectId,
+            "plot restore link scene must belong to the snapshot project",
+          );
+          const existing = queryOne(
+            "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+            [link.id],
+          );
+          if (existing) {
+            if (!browserLinkSnapshotMatches(existing, link)) {
+              throw new Error(
+                "PLOT_THREAD_RESTORE_CONFLICT: link id already has different content",
+              );
+            }
+          } else {
+            db.run(
+              `INSERT INTO plot_thread_scene_links
+                 (id, thread_id, node_id, phase_type, note, sort_order,
+                  created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                link.id,
+                link.threadId,
+                link.nodeId,
+                link.phaseType,
+                link.note,
+                link.sortOrder,
+                link.createdAt,
+                link.updatedAt,
+              ],
+            );
+          }
+        }
+        for (const branch of branches) {
+          if (!["branch", "merge"].includes(branch.kind)) {
+            throw new Error(`invalid plot branch kind: ${branch.kind}`);
+          }
+          if (branch.projectId !== projectId) {
+            throw new Error(
+              "plot restore branch must belong to the snapshot project",
+            );
+          }
+          if (branch.fromThreadId === branch.toThreadId) {
+            throw new Error(
+              "plot thread branch cannot reference the same thread twice",
+            );
+          }
+          requireBrowserProjectMember(
+            "plot_threads",
+            branch.fromThreadId,
+            projectId,
+            "plot restore branch source thread must belong to the snapshot project",
+          );
+          requireBrowserProjectMember(
+            "plot_threads",
+            branch.toThreadId,
+            projectId,
+            "plot restore branch target thread must belong to the snapshot project",
+          );
+          requireBrowserProjectMember(
+            "tree_nodes",
+            branch.atNodeId,
+            projectId,
+            "plot restore branch scene must belong to the snapshot project",
+          );
+          const existing = queryOne(
+            "SELECT * FROM plot_thread_branches WHERE id = ?",
+            [branch.id],
+          );
+          if (existing) {
+            if (!browserBranchSnapshotMatches(existing, branch)) {
+              throw new Error(
+                "PLOT_THREAD_RESTORE_CONFLICT: branch id already has different content",
+              );
+            }
+          } else {
+            db.run(
+              `INSERT INTO plot_thread_branches
+                 (id, project_id, from_thread_id, to_thread_id, at_node_id, kind,
+                  created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                branch.id,
+                branch.projectId,
+                branch.fromThreadId,
+                branch.toThreadId,
+                branch.atNodeId,
+                branch.kind,
+                branch.createdAt,
+                branch.updatedAt,
+              ],
+            );
+          }
+        }
+        return response() as unknown as Record<string, SqlValue>;
+      },
+    });
+  }
+
+  async function handlePlotThreadDeleteSnapshot(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "plot_thread_delete_snapshot";
+    const payload = browserCommandPayload(command, args);
+    const requestId = requiredBrowserString(command, payload, "requestId");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const link = parseBrowserLinkSnapshot(
+      command,
+      browserSnapshotRecord(command, payload.link, "link"),
+    );
+    const branches = browserSnapshotArray(command, payload, "branches").map(
+      (row) => parseBrowserBranchSnapshot(command, row),
+    );
+    if (new Set(branches.map((branch) => branch.id)).size !== branches.length) {
+      throw new Error(`${command}: branches contains duplicate ids`);
+    }
+    const loadEntity = (): Record<string, SqlValue> | null => {
+      if (
+        queryOne("SELECT id FROM plot_thread_scene_links WHERE id = ?", [
+          link.id,
+        ])
+      ) {
+        return null;
+      }
+      if (
+        branches.some((branch) =>
+          queryOne("SELECT id FROM plot_thread_branches WHERE id = ?", [
+            branch.id,
+          ]),
+        )
+      ) {
+        return null;
+      }
+      return { id: requestId, deleted: 1 };
+    };
+
+    return runBrowserIdempotentCreate({
+      domain: command,
+      requestId,
+      entityId: requestId,
+      projectId,
+      fingerprintPayload: { projectId, link, branches },
+      conflictMarker: "PLOT_THREAD_DELETE_IDEMPOTENCY_CONFLICT",
+      loadEntity,
+      createEntity: () => {
+        if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
+          throw new Error("plot snapshot project does not exist");
+        }
+        const currentLink = queryOne(
+          "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+          [link.id],
+        );
+        if (!currentLink) {
+          throw new Error("plot delete snapshot link does not exist");
+        }
+        if (!browserLinkSnapshotMatches(currentLink, link)) {
+          throw new Error(
+            "PLOT_THREAD_DELETE_PRECONDITION_FAILED: link changed since snapshot",
+          );
+        }
+        if (
+          !["introduce", "develop", "turn", "climax", "resolve"].includes(
+            link.phaseType,
+          )
+        ) {
+          throw new Error(`invalid phase_type: ${link.phaseType}`);
+        }
+        requireBrowserProjectMember(
+          "plot_threads",
+          link.threadId,
+          projectId,
+          "plot delete snapshot link thread must belong to the snapshot project",
+        );
+        requireBrowserProjectMember(
+          "tree_nodes",
+          link.nodeId,
+          projectId,
+          "plot delete snapshot link scene must belong to the snapshot project",
+        );
+        const otherLinks = Number(
+          queryOne(
+            `SELECT COUNT(*) AS count
+               FROM plot_thread_scene_links
+              WHERE id <> ? AND thread_id = ? AND node_id = ?`,
+            [link.id, link.threadId, link.nodeId],
+          )?.count ?? 0,
+        );
+        const expected =
+          otherLinks > 0
+            ? []
+            : queryAll(
+                `SELECT id, project_id
+                  FROM plot_thread_branches
+                  WHERE to_thread_id = ? AND at_node_id = ?
+                  ORDER BY id`,
+                [link.threadId, link.nodeId],
+              ).map((row) => {
+                if (row.project_id !== projectId) {
+                  throw new Error(
+                    "plot delete snapshot branch must belong to the snapshot project",
+                  );
+                }
+                return String(row.id);
+              });
+        if (
+          [...expected].sort().join("\u0000") !==
+          branches
+            .map((branch) => branch.id)
+            .sort()
+            .join("\u0000")
+        ) {
+          throw new Error(
+            "plot delete snapshot branch ids do not match the marker dependencies",
+          );
+        }
+        for (const branch of branches) {
+          if (!["branch", "merge"].includes(branch.kind)) {
+            throw new Error(`invalid plot branch kind: ${branch.kind}`);
+          }
+          if (branch.projectId !== projectId) {
+            throw new Error(
+              "plot delete snapshot branch must belong to the snapshot project",
+            );
+          }
+          if (branch.fromThreadId === branch.toThreadId) {
+            throw new Error(
+              "plot thread branch cannot reference the same thread twice",
+            );
+          }
+          requireBrowserProjectMember(
+            "plot_threads",
+            branch.fromThreadId,
+            projectId,
+            "plot delete snapshot branch source thread must belong to the snapshot project",
+          );
+          requireBrowserProjectMember(
+            "plot_threads",
+            branch.toThreadId,
+            projectId,
+            "plot delete snapshot branch target thread must belong to the snapshot project",
+          );
+          requireBrowserProjectMember(
+            "tree_nodes",
+            branch.atNodeId,
+            projectId,
+            "plot delete snapshot branch scene must belong to the snapshot project",
+          );
+          const currentBranch = queryOne(
+            "SELECT * FROM plot_thread_branches WHERE id = ?",
+            [branch.id],
+          );
+          if (
+            !currentBranch ||
+            !browserBranchSnapshotMatches(currentBranch, branch)
+          ) {
+            throw new Error(
+              "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch changed since snapshot",
+            );
+          }
+          db.run("DELETE FROM plot_thread_branches WHERE id = ?", [branch.id]);
+        }
+        db.run("DELETE FROM plot_thread_scene_links WHERE id = ?", [link.id]);
+        return { id: requestId, deleted: 1 };
+      },
+    });
+  }
+
+  async function handleForeshadowCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "foreshadow_create";
+    const payload = browserCommandPayload(command, args);
+    const suppliedId = optionalBrowserString(command, payload, "id");
+    const suppliedRequestId = optionalBrowserString(
+      command,
+      payload,
+      "requestId",
+    );
+    const requestId = suppliedRequestId ?? suppliedId;
+    const id = suppliedId ?? requestId ?? crypto.randomUUID();
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const title = requiredBrowserString(command, payload, "title");
+    const intent = nullableBrowserString(command, payload, "intent");
+    const notes = nullableBrowserString(command, payload, "notes");
+    const payoffSceneId = nullableBrowserString(
+      command,
+      payload,
+      "payoffSceneId",
+    );
+    const payoffFromPos = nullableBrowserInteger(
+      command,
+      payload,
+      "payoffFromPos",
+    );
+    const payoffToPos = nullableBrowserInteger(command, payload, "payoffToPos");
+    const payoffConfirmed = browserBoolean(
+      command,
+      payload,
+      "payoffConfirmed",
+      false,
+    );
+    const abandoned = browserBoolean(command, payload, "abandoned", false);
+    const secret = browserBoolean(command, payload, "secret", true);
+    const loadBearing = nullableBrowserString(command, payload, "loadBearing");
+    const codexLinkDirtyAt = nullableBrowserInteger(
+      command,
+      payload,
+      "codexLinkDirtyAt",
+    );
+    const fingerprintPayload = {
+      id: suppliedId,
+      projectId,
+      title,
+      intent,
+      notes,
+      payoffSceneId,
+      payoffFromPos,
+      payoffToPos,
+      payoffConfirmed,
+      abandoned,
+      secret,
+      loadBearing,
+      codexLinkDirtyAt,
+    };
+    const loadEntity = () =>
+      queryOne("SELECT * FROM foreshadows WHERE id = ?", [id]);
+
+    return runBrowserIdempotentCreate({
+      domain: command,
+      requestId,
+      entityId: id,
+      projectId,
+      fingerprintPayload,
+      conflictMarker: "FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT",
+      loadEntity,
+      createEntity: () => {
+        if (
+          loadBearing !== null &&
+          !["critical", "supporting", "optional"].includes(loadBearing)
+        ) {
+          throw new Error(`invalid load_bearing value: ${loadBearing}`);
+        }
+        if (payoffSceneId === null) {
+          if (payoffFromPos !== null || payoffToPos !== null) {
+            throw new Error(
+              "foreshadow payoff positions require a payoff scene",
+            );
+          }
+        } else if (
+          !(
+            (payoffFromPos === null && payoffToPos === null) ||
+            (payoffFromPos !== null &&
+              payoffToPos !== null &&
+              0 <= payoffFromPos &&
+              payoffFromPos <= payoffToPos)
+          )
+        ) {
+          throw new Error(
+            "foreshadow payoff positions must both be null or satisfy 0 <= from <= to",
+          );
+        }
+        if (payoffSceneId !== null) {
+          const payoffScene = queryOne(
+            "SELECT project_id FROM tree_nodes WHERE id = ?",
+            [payoffSceneId],
+          );
+          if (payoffScene?.project_id !== projectId) {
+            throw new Error(
+              "foreshadow payoff scene must belong to the same project",
+            );
+          }
+        }
+        const timestamp = Date.now();
+        try {
+          db.run(
+            `INSERT INTO foreshadows
+               (id, project_id, title, intent, notes, payoff_scene_id,
+                payoff_from_pos, payoff_to_pos, payoff_confirmed, abandoned,
+                secret, load_bearing, codex_link_dirty_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              id,
+              projectId,
+              title,
+              intent,
+              notes,
+              payoffSceneId,
+              payoffFromPos,
+              payoffToPos,
+              payoffConfirmed ? 1 : 0,
+              abandoned ? 1 : 0,
+              secret ? 1 : 0,
+              loadBearing,
+              codexLinkDirtyAt,
+              timestamp,
+              timestamp,
+            ],
+          );
+        } catch (error) {
+          const existing = loadEntity();
+          if (!existing) throw error;
+          if (
+            !rowMatches(existing, {
+              project_id: projectId,
+              title,
+              intent,
+              notes,
+              payoff_scene_id: payoffSceneId,
+              payoff_from_pos: payoffFromPos,
+              payoff_to_pos: payoffToPos,
+              payoff_confirmed: payoffConfirmed ? 1 : 0,
+              abandoned: abandoned ? 1 : 0,
+              secret: secret ? 1 : 0,
+              load_bearing: loadBearing,
+              codex_link_dirty_at: codexLinkDirtyAt,
+            })
+          ) {
+            throw new Error(
+              "FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: request id reused with different payload",
+              { cause: error },
+            );
+          }
+        }
+        const created = loadEntity();
+        if (!created) {
+          throw new Error(
+            "foreshadow create completed without a persisted row",
+          );
+        }
+        return created;
+      },
+    });
+  }
+
   function readTimelapseTail(projectId: string): {
     sequence: number;
     hash: string;
@@ -1419,6 +2663,18 @@ export async function createBrowserMock(
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "plot_thread_create":
+        return (await handlePlotThreadCreate(args)) as T;
+      case "plot_thread_link_create":
+        return (await handlePlotThreadLinkCreate(args)) as T;
+      case "plot_thread_branch_create":
+        return (await handlePlotThreadBranchCreate(args)) as T;
+      case "plot_thread_restore_snapshot":
+        return (await handlePlotThreadRestoreSnapshot(args)) as T;
+      case "plot_thread_delete_snapshot":
+        return (await handlePlotThreadDeleteSnapshot(args)) as T;
+      case "foreshadow_create":
+        return (await handleForeshadowCreate(args)) as T;
       case "vacuum_database":
         db.run("VACUUM");
         options.onDatabaseDirty?.();
@@ -1434,6 +2690,7 @@ export async function createBrowserMock(
         return [] as T;
       case "semantic_index_scene":
       case "semantic_reindex_all":
+      case "semantic_cancel_background":
       case "codex_index_entry":
       case "codex_reindex_all":
       case "events_index_entry":
@@ -2272,7 +3529,8 @@ async function seedScreenshotWorkspace(
   );
 
   db.run(
-    `INSERT OR REPLACE INTO app_settings (key, value) VALUES ('editor.tabState', ?)`,
+    `INSERT OR REPLACE INTO project_settings (project_id, key, value)
+      VALUES ('default-project', 'editor.tabState', ?)`,
     [
       JSON.stringify({
         tabs: [

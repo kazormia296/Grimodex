@@ -7,8 +7,8 @@ use crate::dialogue::{analyze_dialogue, DialogueScope};
 use crate::error::LintError;
 use crate::morph::tokenize_blocks;
 use crate::rule::{
-    Diagnostic, DisableDirective, Language, LintBlock, LintConfig, LintContext, LintInput,
-    LintScope, RuleWarning, SelectorKind, TermEntry, Utf16Range, WarningKind,
+    Diagnostic, DisableDirective, IncrementalScope, Language, LintBlock, LintConfig, LintContext,
+    LintInput, LintScope, RuleWarning, SelectorKind, TermEntry, Utf16Range, WarningKind,
 };
 use crate::rules::build_ruleset;
 
@@ -19,6 +19,9 @@ pub const MAX_INPUT_BYTES: usize = 500 * 1024;
 pub struct LintResponse {
     pub diagnostics: Vec<Diagnostic>,
     pub warnings: Vec<RuleWarning>,
+    /// Maximum neighbouring context required by the enabled rules. The
+    /// renderer uses this engine-owned contract for safe incremental caching.
+    pub incremental_scope: IncrementalScope,
     /// Wall-clock epoch milliseconds when the response was produced. Phase
     /// 1 uses this only for debug logging; UI does not surface it.
     pub computed_at: i64,
@@ -50,6 +53,18 @@ pub fn lint(
     }
 
     let (rules, mut warnings) = build_ruleset(language);
+    let incremental_scope = rules
+        .iter()
+        .filter(|rule| {
+            let enabled = config
+                .rule(rule.id())
+                .map(|rule| rule.enabled)
+                .unwrap_or(true);
+            enabled && rule.supported_languages().contains(&language)
+        })
+        .map(|rule| rule.incremental_scope())
+        .max()
+        .unwrap_or(IncrementalScope::Block);
 
     // Resolve incoming directives. Invalid ones are dropped with a
     // warning so the author knows their directive had no effect — the
@@ -172,6 +187,7 @@ pub fn lint(
     Ok(LintResponse {
         diagnostics,
         warnings,
+        incremental_scope,
         computed_at: now_millis(),
     })
 }
@@ -340,6 +356,42 @@ mod tests {
         )
         .expect("ok");
         assert!(r.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn response_reports_enabled_cross_block_scope() {
+        let english = lint(
+            &[],
+            Language::English,
+            scene_scope(),
+            &LintConfig::default(),
+            &[],
+        )
+        .expect("english lint");
+        assert_eq!(english.incremental_scope, IncrementalScope::NextBlock);
+        assert_eq!(
+            serde_json::to_value(english.incremental_scope).expect("serialize scope"),
+            serde_json::json!("nextBlock")
+        );
+
+        let mut without_unclosed_quote = LintConfig::default();
+        without_unclosed_quote.rules.insert(
+            "en/unclosed-quote".into(),
+            crate::rule::RuleConfig {
+                enabled: false,
+                severity: None,
+                options: serde_json::Value::Null,
+            },
+        );
+        let block_local = lint(
+            &[],
+            Language::English,
+            scene_scope(),
+            &without_unclosed_quote,
+            &[],
+        )
+        .expect("english lint without cross-block rule");
+        assert_eq!(block_local.incremental_scope, IncrementalScope::Block);
     }
 
     #[test]

@@ -48,7 +48,7 @@ export interface EditorContentAreaProps {
   titleEditing: boolean;
   titleDraft: string;
   setTitleDraft: (value: string) => void;
-  handleTitleSave: () => void;
+  handleTitleSave: () => Promise<void>;
   handleTitleCancel: () => void;
   handleTitleEditStart: () => void;
   isSceneContentLoading: boolean;
@@ -183,11 +183,12 @@ export function EditorContentArea({
                   type="text"
                   value={titleDraft}
                   onChange={(e) => setTitleDraft(e.target.value)}
-                  onBlur={handleTitleSave}
+                  onBlur={() => void handleTitleSave().catch(() => {})}
                   onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return;
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      handleTitleSave();
+                      void handleTitleSave().catch(() => {});
                     } else if (e.key === "Escape") {
                       e.preventDefault();
                       handleTitleCancel();

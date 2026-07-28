@@ -24,6 +24,10 @@ import {
   getCodexLintInputSnapshot,
   subscribeCodexLintInput,
 } from "./codexLintInputCache";
+import {
+  cancelEditorAnalysisTask,
+  scheduleEditorAnalysisTask,
+} from "@/lib/editorAnalysisScheduler";
 
 /**
  * Imperative trigger used when an action must bypass the normal debounce
@@ -101,6 +105,7 @@ async function fetchTermDictionaryForLint() {
 }
 
 const DEBOUNCE_MS = 500;
+let nextLintSchedulerId = 0;
 
 function toWire(blocks: OffsetLintBlock[]): WireLintBlock[] {
   return blocks.map((b) => ({
@@ -126,7 +131,11 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
   const runLint = useLintStore((s) => s.runLint);
   const setCurrentScene = useLintStore((s) => s.setCurrentScene);
 
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedulerKeyRef = useRef<string | null>(null);
+  if (schedulerKeyRef.current === null) {
+    schedulerKeyRef.current = `lint:${nextLintSchedulerId++}`;
+  }
+  const schedulerKey = schedulerKeyRef.current;
 
   // Push diagnostics → editor decorations whenever they change.
   useEffect(() => {
@@ -168,50 +177,56 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     }
 
     function schedule(delay: number) {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(async () => {
-        if (!editor || !sceneId) return;
-        markStart("linter.scheduledAnalyze");
-        const cfgStore = useLintConfigStore.getState();
-        const lang = resolveLintLanguage();
-        const effective = cfgStore.getEffective();
-        // Respect the Linter-wide toggle. Per-language gating is implicit:
-        // the engine only runs the active language's rules.
-        if (!effective.enabled) {
-          useLintStore.getState().clear();
-          markEnd("linter.scheduledAnalyze");
-          return;
-        }
-        const map = buildOffsetMap(editor.state.doc);
-        const blocks = toWire(map.blocks);
-        const sceneText = map.blocks.map((b) => b.text).join("\n");
-        const wire = cfgStore.getWireConfig();
-        let inputRevisions: LintInputRevisions | undefined;
-        // Attach cached Codex entries only if a Codex-linked rule is enabled —
-        // keeps parsing and cache bookkeeping out of the path when users
-        // aren't using F-group rules.
-        const codexRule = effective.rules["codex/name-inconsistency"];
-        if (codexRule && codexRule.enabled !== false) {
-          const codexInput = getCodexLintInputSnapshot();
-          (wire as LintConfig).codex_entries = codexInput.entries;
-          inputRevisions = { codex: codexInput.codexRevision };
-        }
-        const termRule = effective.rules["project/term-consistency"];
-        if (termRule && termRule.enabled !== false) {
-          (wire as LintConfig).term_dictionary =
-            await fetchTermDictionaryForLint();
-        }
-        void runLint(
-          sceneId,
-          blocks,
-          wire,
-          lang,
-          sceneText,
-          map.disables,
-          inputRevisions,
-        );
-        markEnd("linter.scheduledAnalyze");
-      }, delay);
+      scheduleEditorAnalysisTask({
+        key: schedulerKey,
+        kind: "lint",
+        delayMs: delay,
+        run: async () => {
+          if (!editor || !sceneId) return;
+          markStart("linter.scheduledAnalyze");
+          try {
+            const cfgStore = useLintConfigStore.getState();
+            const lang = resolveLintLanguage();
+            const effective = cfgStore.getEffective();
+            // Respect the Linter-wide toggle. Per-language gating is implicit:
+            // the engine only runs the active language's rules.
+            if (!effective.enabled) {
+              useLintStore.getState().clear();
+              return;
+            }
+            const map = buildOffsetMap(editor.state.doc);
+            const blocks = toWire(map.blocks);
+            const sceneText = map.blocks.map((b) => b.text).join("\n");
+            const wire = cfgStore.getWireConfig();
+            let inputRevisions: LintInputRevisions | undefined;
+            // Attach cached Codex entries only if a Codex-linked rule is
+            // enabled — keeps parsing and cache bookkeeping out of the path
+            // when users aren't using F-group rules.
+            const codexRule = effective.rules["codex/name-inconsistency"];
+            if (codexRule && codexRule.enabled !== false) {
+              const codexInput = getCodexLintInputSnapshot();
+              (wire as LintConfig).codex_entries = codexInput.entries;
+              inputRevisions = { codex: codexInput.codexRevision };
+            }
+            const termRule = effective.rules["project/term-consistency"];
+            if (termRule && termRule.enabled !== false) {
+              (wire as LintConfig).term_dictionary =
+                await fetchTermDictionaryForLint();
+            }
+            await runLint(
+              sceneId,
+              blocks,
+              wire,
+              lang,
+              sceneText,
+              map.disables,
+              inputRevisions,
+            );
+          } finally {
+            markEnd("linter.scheduledAnalyze");
+          }
+        },
+      });
     }
 
     setCurrentScene(sceneId);
@@ -351,7 +366,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
       editor.off("selectionUpdate", onSelectionUpdate);
       unsubscribeConfig();
       unsubscribeCodexInput();
-      if (timerRef.current) clearTimeout(timerRef.current);
+      cancelEditorAnalysisTask(schedulerKey);
     };
-  }, [editor, sceneId, runLint, setCurrentScene]);
+  }, [editor, sceneId, runLint, schedulerKey, setCurrentScene]);
 }

@@ -4,7 +4,7 @@ use super::Database;
 
 impl Database {
     pub fn migrate(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS projects (
                 id                     TEXT PRIMARY KEY,
@@ -1602,6 +1602,7 @@ impl Database {
         Self::migrate_ai_usage_cache_tokens(&conn)?;
 
         Self::migrate_ai_write_infrastructure(&conn)?;
+        Self::migrate_idempotency_ledger(&conn)?;
 
         // Index codex body `content` in codex_fts (legacy DBs indexed only
         // name/aliases/summary/tags_cache). Fresh DBs already get the new schema
@@ -2085,6 +2086,26 @@ impl Database {
             "codex_entry_phases",
             "version",
             "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Ok(())
+    }
+
+    /// Durable create-request tombstones. These rows deliberately do not
+    /// reference the created entity: entity delete/cascade/prune must not erase
+    /// the replay proof and allow a delayed request to resurrect that entity.
+    pub(super) fn migrate_idempotency_ledger(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS idempotency_requests (
+                domain       TEXT NOT NULL,
+                request_id   TEXT NOT NULL,
+                project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                payload_hash TEXT NOT NULL,
+                tombstone_json TEXT NOT NULL,
+                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (domain, request_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_idempotency_requests_project_created
+                ON idempotency_requests(project_id, created_at);",
         )?;
         Ok(())
     }

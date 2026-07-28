@@ -1,5 +1,10 @@
 import type { TreeNodeData } from "./treeStore";
 import type { TreeIndex } from "./treeIndex";
+import {
+  measurePerfSync,
+  recordCounter,
+  recordMaxCounter,
+} from "@/lib/perfLog";
 
 export interface VisibleTreeRow {
   node: TreeNodeData;
@@ -21,7 +26,7 @@ export interface VisibleTreeOptions {
  * This is the indexed path used by ScenesPanel. The legacy per-node helpers
  * below remain exported for small standalone consumers and compatibility.
  */
-export function deriveVisibleTreeRows(
+function deriveVisibleTreeRowsImpl(
   index: TreeIndex,
   options: VisibleTreeOptions,
 ): VisibleTreeRow[] {
@@ -43,6 +48,8 @@ export function deriveVisibleTreeRows(
   const subtreeTitleMatch = new Map<string, boolean>();
   const subtreeThreadMatch = new Map<string, boolean>();
   const visiting = new Set<string>();
+  let propagationVisits = 0;
+  let flattenVisits = 0;
 
   const assignedMatches = (
     assignments: readonly string[] | undefined,
@@ -51,6 +58,7 @@ export function deriveVisibleTreeRows(
 
   const collectPropagation = (node: TreeNodeData): void => {
     if (subtreeTitleMatch.has(node.id) || visiting.has(node.id)) return;
+    propagationVisits += 1;
     visiting.add(node.id);
 
     let titleMatch =
@@ -105,6 +113,7 @@ export function deriveVisibleTreeRows(
   const walkedFolders = new Set<string>();
   const flatten = (parentId: string | null, depth: number): void => {
     for (const node of index.childrenByParent.get(parentId) ?? []) {
+      flattenVisits += 1;
       if (!isVisible(node)) continue;
       rows.push({ node, depth });
       if (
@@ -118,7 +127,20 @@ export function deriveVisibleTreeRows(
     }
   };
   flatten(null, 0);
+  const nodeVisits = propagationVisits + flattenVisits;
+  recordCounter("tree.visibility.nodesVisited", nodeVisits);
+  recordMaxCounter("tree.visibility.maxNodesVisited", nodeVisits);
+  recordCounter("tree.visibility.visibleRows", rows.length);
   return rows;
+}
+
+export function deriveVisibleTreeRows(
+  index: TreeIndex,
+  options: VisibleTreeOptions,
+): VisibleTreeRow[] {
+  return measurePerfSync("tree.visibility.derive", () =>
+    deriveVisibleTreeRowsImpl(index, options),
+  );
 }
 
 function hasMatchingDescendant(

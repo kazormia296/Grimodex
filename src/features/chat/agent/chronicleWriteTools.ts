@@ -94,11 +94,13 @@ function coerceGranularity(v: unknown): EventGranularity | undefined {
 /** 作中年表に出来事を作成（tracked-write・undo 可）。 */
 export async function createEventTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<ToolReturn> {
   const title = str(params["title"]);
   if (!title) return fail("create_event", "title is required");
   try {
     const input: AgentEventCreateInput = {
+      requestId,
       title,
       note: params["note"] ? str(params["note"]) : null,
       kind: coerceKind(params["kind"]) ?? "generic",

@@ -5,6 +5,18 @@ import type { NodeProps } from "@xyflow/react";
 import { formatShortcut, matchesMod } from "@/lib/platform";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
+import {
+  cancelPendingSynopsisSave,
+  flushPendingSynopsisSave,
+  schedulePendingSynopsisSave,
+} from "@/features/editor/pendingSynopsisSaves";
+import { toast } from "sonner";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import {
+  useLatestValueDraftController,
+  type LatestValueDraftPersistContext,
+} from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 export interface SceneNodeData {
   title: string;
@@ -16,8 +28,12 @@ export interface SceneNodeData {
   colorBy: "none" | "status";
   corkboardFeel?: boolean;
   rotation?: number;
-  onTitleChange?: (title: string) => void;
-  onSynopsisChange?: (synopsis: string) => void;
+  treeNodeId?: string;
+  onTitleChange?: (
+    title: string,
+    context?: LatestValueDraftPersistContext,
+  ) => void | Promise<void>;
+  onSynopsisChange?: (synopsis: string) => void | Promise<void>;
   onOpen?: () => void;
   onBranchFrom?: (dir: "left" | "right") => void;
   [key: string]: unknown;
@@ -327,34 +343,95 @@ function CardScene({
 // ── Title inline editor ────────────────────────────────────────────────────
 
 function TitleEditor({
+  nodeId,
   d,
   selected,
   borderColor,
-  onCommit,
+  onPersist,
+  onFinish,
   onCancel,
   onTab,
 }: {
+  nodeId: string;
   d: SceneNodeData;
   selected: boolean;
   borderColor: string;
-  onCommit: (title: string) => void;
+  onPersist: (
+    title: string,
+    context?: LatestValueDraftPersistContext,
+  ) => Promise<void>;
+  onFinish: () => void;
   onCancel: () => void;
   onTab?: () => void;
 }) {
   const { t } = useTranslation();
   const [value, setValue] = useState(d.title);
   const inputRef = useRef<HTMLInputElement>(null);
-  const cancelledRef = useRef(false);
+  const editingRef = useRef(true);
+  const mountedRef = useRef(true);
+  const titleController = useLatestValueDraftController(
+    `map-scene-title:${nodeId}`,
+    d.title,
+    async (next, context) => {
+      const trimmed = next.trim() || d.title;
+      if (trimmed !== d.title) {
+        if (context.preexistingDraft) {
+          await onPersist(trimmed, context);
+        } else {
+          await onPersist(trimmed);
+        }
+      }
+    },
+  );
 
   useEffect(() => {
+    mountedRef.current = true;
     inputRef.current?.focus();
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
-  const commit = useCallback(() => {
-    if (cancelledRef.current) return;
-    const trimmed = value.trim();
-    onCommit(trimmed || d.title);
-  }, [value, d.title, onCommit]);
+  const commit = useCallback(
+    async (
+      afterPersist: () => void = onFinish,
+      options?: QuiescenceParticipantFlushOptions,
+    ): Promise<void> => {
+      if (!editingRef.current) return;
+      if (!titleController.latestValue.trim()) {
+        titleController.reset(d.title);
+      } else {
+        await titleController.save(options);
+      }
+      if (editingRef.current) {
+        editingRef.current = false;
+        if (mountedRef.current) afterPersist();
+      }
+    },
+    [d.title, onFinish, titleController],
+  );
+
+  const cancel = useCallback(() => {
+    editingRef.current = false;
+    titleController.reset(d.title);
+    if (mountedRef.current) onCancel();
+  }, [d.title, onCancel, titleController]);
+
+  useQuiescentDraftParticipant({
+    id: `map-scene-title:${nodeId}`,
+    enabled: true,
+    isDirty: () => editingRef.current && titleController.dirty,
+    flush: (options) => commit(onFinish, options),
+    discard: cancel,
+    recovery: () =>
+      editingRef.current && titleController.dirty
+        ? {
+            kind: "map-scene-title",
+            sceneId: nodeId,
+            title: titleController.latestValue,
+          }
+        : null,
+  });
 
   return (
     <div
@@ -375,24 +452,30 @@ function TitleEditor({
         <input
           ref={inputRef}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            titleController.markDirty(
+              e.target.value.trim() ? e.target.value : d.title,
+            );
+            setValue(e.target.value);
+          }}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
             if (e.key === "Enter") {
               e.preventDefault();
-              commit();
+              void commit().catch(() => inputRef.current?.focus());
             }
             if (e.key === "Tab") {
               e.preventDefault();
-              commit();
-              onTab?.();
+              void commit(onTab ?? onFinish).catch(() =>
+                inputRef.current?.focus(),
+              );
             }
             if (e.key === "Escape") {
               e.preventDefault();
-              cancelledRef.current = true;
-              onCancel();
+              cancel();
             }
           }}
-          onBlur={commit}
+          onBlur={() => void commit().catch(() => inputRef.current?.focus())}
           onPointerDown={(e) => e.stopPropagation()}
           style={{
             width: "100%",
@@ -435,52 +518,75 @@ function TitleEditor({
 // ── Synopsis inline editor ─────────────────────────────────────────────────
 
 function SynopsisEditor({
+  nodeId,
   d,
   selected,
   borderColor,
   onCommit,
   onCancel,
 }: {
+  nodeId: string;
   d: SceneNodeData;
   selected: boolean;
   borderColor: string;
-  onCommit: (synopsis: string) => void;
+  onCommit: (synopsis: string) => Promise<void>;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
   const [value, setValue] = useState(d.synopsis ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cancelledRef = useRef(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const valueRef = useRef(d.synopsis ?? "");
+  const dirtyRef = useRef(false);
+  const saveOwnerRef = useRef(Symbol(`map-scene-synopsis:${nodeId}`));
+  const saveKey = `map-scene-synopsis\u0000${nodeId}`;
   const statusColor =
     STATUS_COLORS[d.status ?? "outline"] ?? STATUS_COLORS.outline;
   const statusCode = STATUS_CODES[d.status ?? "outline"] ?? "OU";
 
   useEffect(() => {
     textareaRef.current?.focus();
-  }, []);
+    return () => {
+      // React cleanup cannot await. The shared synopsis registry starts the
+      // pending write immediately and exposes it to strict quiescence.
+      void flushPendingSynopsisSave(saveKey).catch(() => {});
+    };
+  }, [saveKey]);
 
-  const commit = useCallback(() => {
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-      debounceRef.current = null;
-    }
+  const commit = useCallback(async () => {
     if (cancelledRef.current) return;
-    onCommit(valueRef.current);
-  }, [onCommit]);
+    if (!dirtyRef.current) {
+      onCancel();
+      return;
+    }
+    try {
+      await flushPendingSynopsisSave(saveKey);
+    } catch {
+      textareaRef.current?.focus();
+    }
+  }, [onCancel, saveKey]);
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const v = e.target.value;
       setValue(v);
-      valueRef.current = v;
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => {
-        if (!cancelledRef.current) onCommit(v);
-      }, 2000);
+      dirtyRef.current = true;
+      schedulePendingSynopsisSave({
+        key: saveKey,
+        owner: saveOwnerRef.current,
+        value: v,
+        delayMs: 2000,
+        persist: async (synopsis) => {
+          await onCommit(synopsis);
+          dirtyRef.current = false;
+        },
+        onError: () => {
+          toast.error(
+            t("tree.synopsis.saveFailed", "Synopsis の保存に失敗しました"),
+          );
+        },
+      });
     },
-    [onCommit],
+    [onCommit, saveKey, t],
   );
 
   return (
@@ -568,18 +674,19 @@ function SynopsisEditor({
         value={value}
         onChange={handleChange}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return;
           if (e.key === "Escape") {
             e.preventDefault();
-            if (debounceRef.current) clearTimeout(debounceRef.current);
             cancelledRef.current = true;
+            cancelPendingSynopsisSave(saveKey, saveOwnerRef.current);
             onCancel();
           }
           if (e.key === "Enter" && matchesMod(e)) {
             e.preventDefault();
-            commit();
+            void commit();
           }
         }}
-        onBlur={commit}
+        onBlur={() => void commit()}
         onPointerDown={(e) => e.stopPropagation()}
         placeholder={t("map.sceneNode.synopsisPlaceholder")}
         style={{
@@ -621,6 +728,7 @@ function SynopsisEditor({
 type EditMode = "none" | "title" | "synopsis";
 
 export const SceneNode = memo(function SceneNode({
+  id,
   data,
   selected,
   isConnectable,
@@ -640,17 +748,16 @@ export const SceneNode = memo(function SceneNode({
       : {};
 
   const handleTitleCommit = useCallback(
-    (title: string) => {
-      setEditMode("none");
-      d.onTitleChange?.(title);
+    async (title: string, context?: LatestValueDraftPersistContext) => {
+      await d.onTitleChange?.(title, context);
     },
     [d],
   );
 
   const handleSynopsisCommit = useCallback(
-    (synopsis: string) => {
+    async (synopsis: string) => {
+      await d.onSynopsisChange?.(synopsis);
       setEditMode("none");
-      d.onSynopsisChange?.(synopsis);
     },
     [d],
   );
@@ -693,10 +800,16 @@ export const SceneNode = memo(function SceneNode({
 
       {d.variant === "card" && editMode === "title" && (
         <TitleEditor
+          nodeId={
+            typeof d.treeNodeId === "string"
+              ? d.treeNodeId
+              : id.replace(/^scene:/, "")
+          }
           d={d}
           selected={!!selected}
           borderColor={borderColor}
-          onCommit={handleTitleCommit}
+          onPersist={handleTitleCommit}
+          onFinish={() => setEditMode("none")}
           onCancel={() => setEditMode("none")}
           onTab={() => setEditMode("synopsis")}
         />
@@ -704,6 +817,11 @@ export const SceneNode = memo(function SceneNode({
 
       {d.variant === "card" && editMode === "synopsis" && (
         <SynopsisEditor
+          nodeId={
+            typeof d.treeNodeId === "string"
+              ? d.treeNodeId
+              : id.replace(/^scene:/, "")
+          }
           d={d}
           selected={!!selected}
           borderColor={borderColor}

@@ -1,5 +1,10 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { markStart, markEnd, recordCounter } from "@/lib/perfLog";
+import {
+  markStart,
+  markEnd,
+  recordCounter,
+  recordSerializedByteCounter,
+} from "@/lib/perfLog";
 import { countSceneBodyChars } from "@/features/editor/charCountForBody";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import {
@@ -73,6 +78,10 @@ function scheduleBodyMentionScan(
       // completion cache can be empty/stale during a project switch.
       const allEntries =
         scan.allEntries ?? (await listCodexMatchTargets(scan.projectId));
+      // With no match targets there can be no derived mention rows. The index
+      // readiness contract already treats an empty project as ready, so avoid
+      // parsing the 50k document or recording a redundant scan revision.
+      if (allEntries.length === 0) return;
       await upsertSceneBodyMentions(id, scan.docJsonStr, allEntries);
       await recordBodyMentionScans(scan.projectId, allEntries, [
         {
@@ -189,6 +198,10 @@ export async function persistSceneBody(
     sceneJsonStr = JSON.stringify(doc.toJSON());
     markEnd("editor.coreSave.getJSON");
   }
+  // Payload size is recorded separately from elapsed serialization time. UTF-8
+  // bytes match the bridge/SQLite payload more closely than JavaScript UTF-16
+  // code units, especially for the canonical Japanese long-scene fixture.
+  recordSerializedByteCounter("editor.coreSave.serializeBytes", sceneJsonStr);
 
   // content 書き込みと full-replace cascade (authorship / foreshadow /
   // annotation anchors) を **単一のチェーン単位** として実行する。cascade を

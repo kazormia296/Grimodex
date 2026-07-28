@@ -6,6 +6,7 @@ import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import type { VisibleTreeRow } from "./treeVisibility";
 import type { PlotThreadRow } from "@/features/plot-threads/api";
 import type { TreeNodeData } from "./treeStore";
+import { useTreeVirtualEditingStore } from "./treeVirtualEditingStore";
 
 const EMPTY_CELLS: Record<string, string> = {};
 
@@ -41,24 +42,22 @@ interface VirtualRange {
 
 export function extractTreeVirtualIndexes(
   range: VirtualRange,
-  pinnedIndex: number | null,
+  pinnedIndexes: readonly number[],
 ): number[] {
   const start = Math.max(0, range.startIndex - range.overscan);
   const end = Math.min(range.count - 1, range.endIndex + range.overscan);
-  const indexes = Array.from(
-    { length: Math.max(0, end - start + 1) },
-    (_, offset) => start + offset,
+  const indexes = new Set(
+    Array.from(
+      { length: Math.max(0, end - start + 1) },
+      (_, offset) => start + offset,
+    ),
   );
-  if (
-    pinnedIndex !== null &&
-    pinnedIndex >= 0 &&
-    pinnedIndex < range.count &&
-    !indexes.includes(pinnedIndex)
-  ) {
-    indexes.push(pinnedIndex);
-    indexes.sort((a, b) => a - b);
+  for (const pinnedIndex of pinnedIndexes) {
+    if (pinnedIndex >= 0 && pinnedIndex < range.count) {
+      indexes.add(pinnedIndex);
+    }
   }
-  return indexes;
+  return Array.from(indexes).sort((a, b) => a - b);
 }
 
 /**
@@ -87,6 +86,7 @@ export function VirtualTree({
   onPendingRevealHandled,
   autoExpandFolders,
 }: VirtualTreeProps) {
+  const editingRowIds = useTreeVirtualEditingStore((s) => s.editingRowIds);
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
   const expanded = useMemo(() => new Set(expandedIds), [expandedIds]);
   const indexById = useMemo(
@@ -95,9 +95,18 @@ export function VirtualTree({
   );
   const draggingIndex =
     draggingId === null ? null : (indexById.get(draggingId) ?? null);
+  const pinnedIndexes = useMemo(() => {
+    const indexes = new Set<number>();
+    if (draggingIndex !== null) indexes.add(draggingIndex);
+    for (const rowId of editingRowIds) {
+      const index = indexById.get(rowId);
+      if (index !== undefined) indexes.add(index);
+    }
+    return Array.from(indexes);
+  }, [draggingIndex, editingRowIds, indexById]);
   const rangeExtractor = useCallback(
-    (range: VirtualRange) => extractTreeVirtualIndexes(range, draggingIndex),
-    [draggingIndex],
+    (range: VirtualRange) => extractTreeVirtualIndexes(range, pinnedIndexes),
+    [pinnedIndexes],
   );
   const virtualizer = useVirtualizer({
     count: rows.length,

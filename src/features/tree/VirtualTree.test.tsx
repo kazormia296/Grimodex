@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { useRef } from "react";
 import { makeNodeData } from "@/test-utils/nodeFixture";
@@ -50,6 +50,14 @@ vi.mock("@/features/editor/InlineSynopsisEditor", () => ({
 }));
 
 import { extractTreeVirtualIndexes, VirtualTree } from "./VirtualTree";
+import {
+  beginTreeVirtualRowEditing,
+  resetTreeVirtualEditingForTests,
+} from "./treeVirtualEditingStore";
+
+afterEach(() => {
+  resetTreeVirtualEditingForTests();
+});
 
 function Harness({
   rows,
@@ -98,11 +106,12 @@ describe("VirtualTree", () => {
     expect(container.querySelectorAll("[data-node-id]")).toHaveLength(2);
   });
 
-  it("pins only the drag source while keeping the tree windowed", () => {
+  it("pins drag and editing rows while keeping the tree windowed", () => {
     const rows = Array.from({ length: 10_000 }, (_, index) => ({
       node: makeNodeData({ id: `scene-${index}` }),
       depth: 0,
     }));
+    const releaseEditing = beginTreeVirtualRowEditing("scene-8000");
     render(<Harness rows={rows} dragging />);
     expect(
       capture.options?.rangeExtractor({
@@ -111,7 +120,7 @@ describe("VirtualTree", () => {
         overscan: 2,
         count: 10_000,
       }),
-    ).toEqual([98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 9_000]);
+    ).toEqual([98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 8_000, 9_000]);
     expect(
       extractTreeVirtualIndexes(
         {
@@ -120,8 +129,9 @@ describe("VirtualTree", () => {
           overscan: 2,
           count: 10_000,
         },
-        9_000,
+        [9_000, 8_000, 9_000, -1, 10_000],
       ),
-    ).toEqual([98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 9_000]);
+    ).toEqual([98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 8_000, 9_000]);
+    releaseEditing();
   });
 });

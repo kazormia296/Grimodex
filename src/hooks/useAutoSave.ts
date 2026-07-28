@@ -5,10 +5,25 @@ import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import {
+  documentIdFromKey,
+  encodeDocumentKey,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
+import {
+  cancelEditorAnalysisTask,
+  scheduleEditorAnalysisTask,
+} from "@/lib/editorAnalysisScheduler";
 export { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
 
 export interface AutoSave {
-  schedule: () => void;
+  /**
+   * Queues a new user mutation. Returns false while a destructive lifecycle
+   * lease is active; already-pending persistence remains drainable by flush().
+   */
+  schedule: () => boolean;
   cancel: () => void;
   /**
    * Stop background persistence without discarding the queued edit. Explicit
@@ -21,6 +36,15 @@ export interface AutoSave {
   setDelay: (delayMs: number) => void;
 }
 
+export interface AutoSaveLifecycle {
+  /** Effect setup, including React StrictMode's post-cleanup reactivation. */
+  onActivate?: () => void;
+  /** Runs synchronously before the unmount flush starts. */
+  onRetire?: () => void;
+  /** Exact persistence target used by explicit per-document discard. */
+  documentKey?: () => DocumentKey | null;
+}
+
 /**
  * 生存中の AutoSave インスタンスの registry。workspace 切替 (open_workspace)
  * の直前に、マウント中の全エディタ/パネルの未保存 debounce を強制 flush する
@@ -30,17 +54,29 @@ export interface AutoSave {
  */
 const activeAutoSaves = new Map<AutoSave, number>();
 const retiringAutoSaves = new Map<AutoSave, Set<() => void>>();
+const autoSaveDocumentKeyProviders = new WeakMap<
+  AutoSave,
+  () => DocumentKey | null
+>();
+let autoSaveRegistryRevision = 0;
+const MAX_REGISTRY_DRAIN_ROUNDS = 50;
+
+function markAutoSaveRegistryChanged(): void {
+  autoSaveRegistryRevision++;
+}
 
 function finalizeRetiringAutoSave(instance: AutoSave): void {
   const unregisters = retiringAutoSaves.get(instance);
   if (!unregisters) return;
   retiringAutoSaves.delete(instance);
+  markAutoSaveRegistryChanged();
   for (const unregister of unregisters) unregister();
 }
 
 /** useAutoSave がマウント時に登録する。戻り値は登録解除関数。 */
 export function registerAutoSaveForQuiesce(instance: AutoSave): () => void {
   activeAutoSaves.set(instance, (activeAutoSaves.get(instance) ?? 0) + 1);
+  markAutoSaveRegistryChanged();
   let registered = true;
   return () => {
     if (!registered) return;
@@ -48,6 +84,7 @@ export function registerAutoSaveForQuiesce(instance: AutoSave): () => void {
     const remaining = (activeAutoSaves.get(instance) ?? 1) - 1;
     if (remaining > 0) activeAutoSaves.set(instance, remaining);
     else activeAutoSaves.delete(instance);
+    markAutoSaveRegistryChanged();
   };
 }
 
@@ -57,16 +94,131 @@ export function registerAutoSaveForQuiesce(instance: AutoSave): () => void {
  * workspace 切替前の明示的な flush は失敗を呼び出し元へ伝播する。1 件でも
  * 永続化できなければ切替側が native swap を中断できる。
  */
+async function flushMatchingAutoSaves(
+  matches: (documentKey: DocumentKey | null) => boolean,
+): Promise<void> {
+  const failures: unknown[] = [];
+  const failedInstances = new Set<AutoSave>();
+
+  for (let round = 0; round < MAX_REGISTRY_DRAIN_ROUNDS; round++) {
+    const revisionAtStart = autoSaveRegistryRevision;
+    const instances = new Set([
+      ...activeAutoSaves.keys(),
+      ...retiringAutoSaves.keys(),
+    ]);
+    const candidates = [...instances].filter((instance) => {
+      if (failedInstances.has(instance)) return false;
+      let documentKey: DocumentKey | null;
+      try {
+        documentKey = autoSaveDocumentKeyProviders.get(instance)?.() ?? null;
+      } catch {
+        // A detached editor whose identity getter broke may still own stale
+        // manuscript content. Conservatively drain it for scoped boundaries;
+        // ordinary non-editor AutoSaves return null without throwing.
+        return true;
+      }
+      return matches(documentKey);
+    });
+    const results = await Promise.allSettled(
+      candidates.map(async (autoSave) => {
+        await autoSave.flush();
+        finalizeRetiringAutoSave(autoSave);
+      }),
+    );
+    results.forEach((result, index) => {
+      if (result.status !== "rejected") return;
+      const instance = candidates[index];
+      if (instance) failedInstances.add(instance);
+      failures.push(result.reason);
+    });
+
+    // Mount/StrictMode/virtualization cleanup may mutate the registry while
+    // an earlier snapshot is awaiting persistence. Re-snapshot until one full
+    // round observes no registration/retirement/finalization changes.
+    if (autoSaveRegistryRevision !== revisionAtStart) continue;
+    if (failures.length > 0) {
+      const message =
+        failures.length === 1 && failures[0] instanceof Error
+          ? failures[0].message
+          : "One or more AutoSave flushes failed";
+      throw new AggregateError(failures, message);
+    }
+    return;
+  }
+
+  throw new Error("AutoSave registry did not reach quiescence");
+}
+
 export async function flushAllAutoSaves(): Promise<void> {
-  await Promise.all(
-    [...activeAutoSaves.keys()].map(async (autoSave) => {
-      await autoSave.flush();
-      finalizeRetiringAutoSave(autoSave);
-    }),
+  await flushMatchingAutoSaves(() => true);
+}
+
+/** Drain active and retiring AutoSaves for every variant of one entity. */
+export async function flushAutoSavesForEntity(
+  kind: DocumentKey["kind"],
+  documentId: string,
+): Promise<void> {
+  await flushMatchingAutoSaves(
+    (key) => key?.kind === kind && documentIdFromKey(key) === documentId,
   );
 }
 
+/** Drain active and retiring AutoSaves of one document kind. */
+export async function flushAutoSavesForKind(
+  kind: DocumentKey["kind"],
+): Promise<void> {
+  await flushMatchingAutoSaves((key) => key?.kind === kind);
+}
+
+/** Explicit destructive lifecycle path used only after user confirmation. */
+export function discardAllAutoSaves(): void {
+  const instances = new Set([
+    ...activeAutoSaves.keys(),
+    ...retiringAutoSaves.keys(),
+  ]);
+  for (const autoSave of instances) {
+    autoSave.cancel();
+    finalizeRetiringAutoSave(autoSave);
+  }
+}
+
+/**
+ * Explicitly abandon pending/failed AutoSave work for one exact document.
+ *
+ * Retiring instances remain in the global registry after an unmount failure
+ * even though their component-level discard handler is gone. Keeping this
+ * document-key provider beside the AutoSave closes that gap for an external
+ * Reload choice without touching drafts for other scenes.
+ */
+export function discardAutoSavesForDocument(documentKey: DocumentKey): void {
+  const target = encodeDocumentKey(documentKey);
+  const instances = new Set([
+    ...activeAutoSaves.keys(),
+    ...retiringAutoSaves.keys(),
+  ]);
+  for (const autoSave of instances) {
+    let current: DocumentKey | null = null;
+    try {
+      current = autoSaveDocumentKeyProviders.get(autoSave)?.() ?? null;
+    } catch {
+      // A destroyed component getter cannot identify this instance. Leave it
+      // to global recovery rather than discarding an uncertain target.
+    }
+    if (!current || encodeDocumentKey(current) !== target) continue;
+    autoSave.cancel();
+    finalizeRetiringAutoSave(autoSave);
+  }
+}
+
+registerQuiescenceProvider({
+  id: "mounted-auto-saves",
+  stage: "autosave",
+  flush: flushAllAutoSaves,
+  discard: discardAllAutoSaves,
+});
+
 const MAX_DRAIN_RUNS = 20;
+let nextAutoSaveSchedulerId = 0;
 
 function normalizeDelay(delayMs: number): number {
   return Number.isFinite(delayMs) ? Math.max(0, delayMs) : 0;
@@ -76,7 +228,8 @@ export function createAutoSave(
   saveFn: () => Promise<void>,
   initialDelayMs: number,
 ): AutoSave {
-  let timerId: ReturnType<typeof setTimeout> | null = null;
+  const schedulerKey = `autosave:${nextAutoSaveSchedulerId++}`;
+  let timerArmed = false;
   let delayMs = normalizeDelay(initialDelayMs);
   let pending = false;
   let lastFailed = false;
@@ -161,29 +314,34 @@ export function createAutoSave(
         // drain の終了判定と finally の間に schedule が入る競合でも request を
         // 失わない。flush 待機中なら flush 側がこの timer を消して即時 drain
         // し、background なら通常どおり debounce する。
-        if (pending && timerId === null) armTimer();
+        if (pending && !timerArmed) armTimer();
       });
     inFlight = run;
     return run;
   }
 
   function clearTimer() {
-    if (timerId !== null) {
-      clearTimeout(timerId);
-      timerId = null;
-    }
+    if (!timerArmed) return;
+    cancelEditorAnalysisTask(schedulerKey);
+    timerArmed = false;
   }
 
   function armTimer() {
     clearTimer();
     if (paused) return;
-    timerId = setTimeout(() => {
-      timerId = null;
-      // runSave が toast / debugLog を担当済み。background debounce は
-      // fire-and-forget なので reject を必ず終端し、Global unhandled rejection
-      // にしない。
-      void startDrain("save").catch(() => {});
-    }, delayMs);
+    timerArmed = true;
+    scheduleEditorAnalysisTask({
+      key: schedulerKey,
+      kind: "save",
+      delayMs,
+      run: async () => {
+        timerArmed = false;
+        // runSave が toast / debugLog を担当済み。共有 scheduler も reject を
+        // 終端するため、background debounce は Global unhandled rejection に
+        // ならない。
+        await startDrain("save");
+      },
+    });
   }
 
   function cancel() {
@@ -203,19 +361,21 @@ export function createAutoSave(
     if (pending && !inFlight) armTimer();
   }
 
-  function schedule() {
+  function schedule(): boolean {
+    if (!canScheduleQuiescenceMutation()) return false;
     clearTimer();
     pending = true;
     // 実行中なら drain が pending を観測して直列 rerun する。別 timer を
     // 作らないため saveFn は決して並行しない。
     if (!inFlight && !paused) armTimer();
+    return true;
   }
 
   function setDelay(nextDelayMs: number) {
     delayMs = normalizeDelay(nextDelayMs);
     // 設定変更時点から新しい delay で再武装する。実行中の rerun request は
     // 現在の drain が直列に処理するため timer は不要。
-    if (timerId !== null && pending && !inFlight) armTimer();
+    if (timerArmed && pending && !inFlight) armTimer();
   }
 
   async function flush() {
@@ -248,10 +408,13 @@ export function createAutoSave(
 export function useAutoSave(
   saveFn: () => Promise<void>,
   delayMs = 2000,
+  lifecycle?: AutoSaveLifecycle,
 ): AutoSave {
   const autoSaveRef = useRef<AutoSave | null>(null);
   const latestSaveFnRef = useRef(saveFn);
+  const lifecycleRef = useRef(lifecycle);
   latestSaveFnRef.current = saveFn;
+  lifecycleRef.current = lifecycle;
 
   if (autoSaveRef.current === null) {
     autoSaveRef.current = createAutoSave(
@@ -259,9 +422,13 @@ export function useAutoSave(
       delayMs,
     );
   }
+  autoSaveDocumentKeyProviders.set(
+    autoSaveRef.current,
+    () => lifecycleRef.current?.documentKey?.() ?? null,
+  );
 
-  const schedule = useCallback(() => {
-    autoSaveRef.current?.schedule();
+  const schedule = useCallback((): boolean => {
+    return autoSaveRef.current?.schedule() ?? false;
   }, []);
 
   const cancel = useCallback(() => {
@@ -290,8 +457,12 @@ export function useAutoSave(
 
   useEffect(() => {
     const instance = autoSaveRef.current;
+    lifecycleRef.current?.onActivate?.();
     const unregister = instance ? registerAutoSaveForQuiesce(instance) : null;
     return () => {
+      // A retiring document save session must freeze its freshness boundary
+      // before flush() can invoke the detached editor closure.
+      lifecycleRef.current?.onRetire?.();
       // unmount cleanup は background lifecycle。失敗通知は runSave の toast
       // 契約に任せ、reject は終端して未処理 Promise にしない。flush が完了
       // するまでは registry に残し、直後の workspace 切替がこの書き込みを
@@ -300,9 +471,14 @@ export function useAutoSave(
         unregister?.();
         return;
       }
-      const unregisters = retiringAutoSaves.get(instance) ?? new Set();
+      const existingUnregisters = retiringAutoSaves.get(instance);
+      const unregisters = existingUnregisters ?? new Set();
+      const previousSize = unregisters.size;
       if (unregister) unregisters.add(unregister);
       retiringAutoSaves.set(instance, unregisters);
+      if (!existingUnregisters || unregisters.size !== previousSize) {
+        markAutoSaveRegistryChanged();
+      }
       void instance
         .flush()
         .then(() => finalizeRetiringAutoSave(instance))

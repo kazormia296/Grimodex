@@ -25,6 +25,11 @@ import { eq, inArray, and } from "drizzle-orm";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { countTokens } from "../contextBuilder";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+} from "@/features/concurrency/mutationAuthority";
 import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
 import type { ToolResult } from "./agentTypes";
 import {
@@ -1245,6 +1250,7 @@ function optionalAliases(value: unknown): string | undefined {
 
 async function createCodexEntryTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const type = String(params["type"] ?? "").trim();
   const name = String(params["name"] ?? "").trim();
@@ -1259,6 +1265,7 @@ async function createCodexEntryTool(
   }
   try {
     const entry = await agentCreateCodexEntry({
+      requestId,
       type,
       name,
       summary: params["summary"] ? String(params["summary"]) : undefined,
@@ -1575,6 +1582,7 @@ async function getThreadScenes(
 
 type Executor = (
   params: Record<string, unknown>,
+  requestId?: string,
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
 /**
@@ -1621,6 +1629,7 @@ Object.freeze(READ_ONLY_EXECUTORS);
 
 async function createSnippetTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1634,6 +1643,7 @@ async function createSnippetTool(
   }
   try {
     const snippet = await agentCreateSnippet({
+      requestId,
       title,
       content: optionalMarkdownBody(params["content"]),
       sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
@@ -1757,6 +1767,7 @@ async function proposeSceneBodyTool(
 
 async function createForeshadowTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1770,6 +1781,7 @@ async function createForeshadowTool(
   }
   try {
     const item = await agentCreateForeshadow({
+      requestId,
       title,
       intent: params["intent"] ? String(params["intent"]) : undefined,
       notes: params["notes"] ? String(params["notes"]) : undefined,
@@ -1888,6 +1900,28 @@ export const EXECUTORS: Record<string, Executor> = {
 // 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
 Object.freeze(EXECUTORS);
 
+const IDEMPOTENT_CREATE_TOOLS: ReadonlySet<string> = new Set([
+  "create_codex_entry",
+  "create_snippet",
+  "create_foreshadow",
+  "create_event",
+]);
+
+async function toolCreateRequestId(
+  toolName: string,
+  toolCallId: string,
+  projectId: string,
+): Promise<string> {
+  const bytes = new TextEncoder().encode(
+    `${toolName}\0${projectId}\0${toolCallId}`,
+  );
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `agent-tool:${hex}`;
+}
+
 /** Execute a named tool and return a ToolResult (always succeeds — errors are wrapped). */
 export async function executeTool(
   name: string,
@@ -1907,7 +1941,18 @@ export async function executeTool(
     };
   }
   try {
-    const result = await executor(params);
+    const createAuthority = IDEMPOTENT_CREATE_TOOLS.has(name)
+      ? captureMutationAuthority(getCurrentProjectId(), getCurrentProjectId)
+      : null;
+    const requestId = createAuthority
+      ? await toolCreateRequestId(name, toolCallId, createAuthority.projectId)
+      : undefined;
+    // SHA-256 yields before the domain writer captures its own Project. Do not
+    // let a pre-switch tool call resume against a replacement Project/Workspace.
+    if (createAuthority && !isCurrentMutationAuthority(createAuthority)) {
+      throw new Error("agent tool create authority changed");
+    }
+    const result = await executor(params, requestId);
     return { toolCallId, ...result };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

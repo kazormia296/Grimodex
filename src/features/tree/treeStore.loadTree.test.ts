@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockListNodes = vi.fn();
 const mockListNoteContents = vi.fn();
+const mockListPinnedCodexIds = vi.fn();
+const mockLoadBatchAiRatio = vi.hoisted(() => vi.fn());
 
 vi.mock("./api", () => ({
   listNodes: (...args: unknown[]) => mockListNodes(...args),
@@ -18,7 +20,13 @@ vi.mock("@/features/settings/api", () => ({
 }));
 
 vi.mock("@/features/attribution/api", () => ({
-  loadBatchAiRatio: vi.fn().mockResolvedValue({}),
+  loadBatchAiRatio: (...args: unknown[]) => mockLoadBatchAiRatio(...args),
+}));
+
+vi.mock("./codexQuickPinApi", () => ({
+  listPinnedCodexIds: (...args: unknown[]) => mockListPinnedCodexIds(...args),
+  addPinnedCodex: vi.fn(),
+  removePinnedCodex: vi.fn(),
 }));
 
 vi.mock("@/features/codex/phaseStore", () => ({
@@ -29,6 +37,7 @@ vi.mock("@/features/codex/phaseStore", () => ({
   },
 }));
 
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { useTreeStore } from "./treeStore";
 
 // listNodes は H4 projection で content / unplacedBeatsDoc を返さない
@@ -61,7 +70,10 @@ function sceneNode(id: string, sortOrder: string) {
 describe("loadTree activeSceneId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setCurrentWorkspaceIdentity(null);
     mockListNoteContents.mockResolvedValue(new Map<string, string>());
+    mockListPinnedCodexIds.mockResolvedValue([]);
+    mockLoadBatchAiRatio.mockResolvedValue({});
     useTreeStore.setState({
       activeSceneId: "scene-b",
       nodes: [],
@@ -69,6 +81,8 @@ describe("loadTree activeSceneId", () => {
       isLoading: false,
       hydratedProjectId: null,
       hydratedWorkspaceOpenRevision: null,
+      showAiAttribution: false,
+      aiRatios: {},
     });
   });
 
@@ -81,6 +95,7 @@ describe("loadTree activeSceneId", () => {
     await useTreeStore.getState().loadTree("p1");
 
     expect(useTreeStore.getState().activeSceneId).toBe("scene-b");
+    expect(mockLoadBatchAiRatio).toHaveBeenCalledExactlyOnceWith(["scene-b"]);
   });
 
   it("keeps scene bodies out of store but loads note content", async () => {
@@ -139,7 +154,23 @@ describe("loadTree activeSceneId", () => {
     });
   });
 
-  it("clears the hydration identity when the scoped load fails", async () => {
+  it("publishes target-revision sidecars before Workspace identity publication", async () => {
+    mockListNodes.mockResolvedValue([sceneNode("scene-a", "a0")]);
+    mockLoadBatchAiRatio.mockResolvedValue({ "scene-a": 72 });
+    mockListPinnedCodexIds.mockResolvedValue(["codex-1"]);
+
+    await useTreeStore.getState().loadTree("p1", 27);
+
+    expect(mockLoadBatchAiRatio).toHaveBeenCalledWith(["scene-a"]);
+    expect(useTreeStore.getState()).toMatchObject({
+      hydratedProjectId: "p1",
+      hydratedWorkspaceOpenRevision: 27,
+      aiRatios: { "scene-a": 72 },
+      pinnedCodexIds: ["codex-1"],
+    });
+  });
+
+  it("preserves the previous hydration identity when a two-phase load fails", async () => {
     useTreeStore.setState({
       hydratedProjectId: "p1",
       hydratedWorkspaceOpenRevision: 26,
@@ -149,9 +180,59 @@ describe("loadTree activeSceneId", () => {
     await useTreeStore.getState().loadTree("p1", 27);
 
     expect(useTreeStore.getState()).toMatchObject({
-      hydratedProjectId: null,
-      hydratedWorkspaceOpenRevision: null,
+      hydratedProjectId: "p1",
+      hydratedWorkspaceOpenRevision: 26,
       isLoading: false,
     });
+  });
+
+  it("does not publish pinned Codex IDs from a stale hydration", async () => {
+    let resolvePins!: (ids: string[]) => void;
+    mockListPinnedCodexIds.mockReturnValueOnce(
+      new Promise<string[]>((resolve) => {
+        resolvePins = resolve;
+      }),
+    );
+    useTreeStore.setState({
+      hydratedProjectId: "p1",
+      hydratedWorkspaceOpenRevision: null,
+      pinnedCodexIds: [],
+    });
+
+    const staleLoad = useTreeStore.getState().loadPinnedCodexIds();
+    useTreeStore.setState({
+      hydratedProjectId: "p2",
+      hydratedWorkspaceOpenRevision: null,
+      pinnedCodexIds: ["p2-pin"],
+    });
+    resolvePins(["p1-pin"]);
+    await staleLoad;
+
+    expect(useTreeStore.getState().pinnedCodexIds).toEqual(["p2-pin"]);
+  });
+
+  it("loads all Scene attribution ratios only when the badge is enabled", async () => {
+    mockListNodes.mockResolvedValue([
+      sceneNode("scene-a", "a0"),
+      sceneNode("scene-b", "a1"),
+    ]);
+    mockLoadBatchAiRatio
+      .mockResolvedValueOnce({ "scene-b": 12 })
+      .mockResolvedValueOnce({ "scene-a": 25, "scene-b": 12 });
+
+    await useTreeStore.getState().loadTree("p1");
+    mockLoadBatchAiRatio.mockClear();
+    useTreeStore.getState().setShowAiAttribution(true);
+
+    await vi.waitFor(() =>
+      expect(useTreeStore.getState().aiRatios).toEqual({
+        "scene-a": 25,
+        "scene-b": 12,
+      }),
+    );
+    expect(mockLoadBatchAiRatio).toHaveBeenCalledExactlyOnceWith([
+      "scene-a",
+      "scene-b",
+    ]);
   });
 });

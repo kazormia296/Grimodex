@@ -4204,6 +4204,8 @@ pub(crate) mod tests {
                 notes: None,
                 load_bearing: Some("critical"),
                 secret: false,
+                request_id: None,
+                request_hash: None,
             },
         )
         .unwrap();
@@ -4235,6 +4237,8 @@ pub(crate) mod tests {
                 notes: None,
                 load_bearing: None,
                 secret: true,
+                request_id: None,
+                request_hash: None,
             },
         )
         .unwrap();

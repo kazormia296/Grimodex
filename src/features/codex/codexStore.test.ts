@@ -244,6 +244,62 @@ describe("codexStore", () => {
       await loadPromise;
       expect(useCodexStore.getState().isLoading).toBe(false);
     });
+
+    it("lets lifecycle strict callers observe a shared load failure", async () => {
+      const failure = new Error("codex optional hydrate failed");
+      mockListCodexEntries.mockRejectedValueOnce(failure);
+
+      const compatibleUiLoad = useCodexStore.getState().loadEntries();
+      const strictLifecycleLoad = useCodexStore
+        .getState()
+        .loadEntries({ propagateError: true });
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+
+      await Promise.all([compatibleExpectation, strictExpectation]);
+      expect(mockListCodexEntries).toHaveBeenCalledTimes(1);
+      expect(useCodexStore.getState().isLoading).toBe(false);
+    });
+
+    it("keeps a strict-first load authoritative when an ordinary caller joins", async () => {
+      const failure = new Error("codex strict-first hydrate failed");
+      mockListCodexEntries.mockRejectedValueOnce(failure);
+
+      const strictLifecycleLoad = useCodexStore
+        .getState()
+        .loadEntries({ propagateError: true });
+      const compatibleUiLoad = useCodexStore.getState().loadEntries();
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+
+      await Promise.all([strictExpectation, compatibleExpectation]);
+      expect(mockListCodexEntries).toHaveBeenCalledTimes(1);
+      expect(useCodexStore.getState().isLoading).toBe(false);
+    });
+
+    it("does not publish a load invalidated by a Project reset", async () => {
+      let resolveOldLoad!: (value: CodexEntry[]) => void;
+      mockListCodexEntries
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveOldLoad = resolve;
+          }),
+        )
+        .mockResolvedValueOnce([mockEntry2]);
+
+      const oldLoad = useCodexStore.getState().loadEntries();
+      useCodexStore.getState().resetForProject();
+      await useCodexStore.getState().loadEntries();
+      resolveOldLoad([mockEntry]);
+      await oldLoad;
+
+      expect(useCodexStore.getState().entries).toEqual([mockEntry2]);
+      expect(useCodexStore.getState().isLoading).toBe(false);
+    });
   });
 
   describe("search", () => {

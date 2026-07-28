@@ -25,6 +25,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntry } from "@/features/codex/api";
 import type { MapAiBranch, MapFrame, MapSticky } from "@/db/schema";
 import type { Snippet } from "@/features/snippets/api";
+import { projectMapPositions } from "./mapPositionProjection";
 
 // Deterministic rotation from node id for corkboard feel (±0.5deg)
 export function corkRotation(id: string): number {
@@ -108,6 +109,8 @@ export function mapNodePresentationEqual(previous: Node, next: Node): boolean {
 interface UseMapNodesInput {
   boardId: string | null;
   positions: MapNodePositionRecord[];
+  positionsStructureRevision: number;
+  positionsLayoutRevision: number;
   userEdges: LayoutUserEdge[];
   treeNodes: TreeNodeData[];
   codexEntries: CodexEntry[];
@@ -145,6 +148,8 @@ interface UseMapNodesInput {
 export function useMapNodes({
   boardId,
   positions,
+  positionsStructureRevision,
+  positionsLayoutRevision,
   userEdges,
   treeNodes,
   codexEntries,
@@ -212,25 +217,16 @@ export function useMapNodes({
     onReject,
   };
 
-  // buildNodes は座標 drag のたび re-run したくないので positions そのものを
-  // deps に入れていない。が、picker 経由で新規 entity を Map に追加する経路は
-  // positions に行が増えるだけで他の deps が動かず、新規ノードが画面に出ない。
-  // entity ID 集合の fingerprint だけを deps にして、座標変動は無視・構造変化
-  // だけ pickup する。
-  const positionsStructureFingerprint = useMemo(() => {
-    return positions
-      .map(
-        (p) =>
-          p.treeNodeId ??
-          p.codexEntryId ??
-          p.snippetId ??
-          p.stickyId ??
-          p.aiBranchId ??
-          p.id,
-      )
-      .sort()
-      .join("|");
-  }, [positions]);
+  // The board-data owner advances these revisions only for structural/layout
+  // mutations. Coordinate-only drag persistence changes `positions` without
+  // touching them, so render-time map/sort/join fingerprints disappear.
+  const positionProjection = useMemo(
+    () => projectMapPositions(positions),
+    // `positions` is deliberately represented by the owner-controlled
+    // revisions so coordinate-only row replacement does not execute the scan.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [boardId, positionsStructureRevision, positionsLayoutRevision],
+  );
 
   const layoutCacheRef = useRef<{
     boardId: string | null;
@@ -240,26 +236,23 @@ export function useMapNodes({
 
   const themeLayoutFingerprint = useMemo(() => {
     if (!boardId) return "";
-    const positionedTreeNodeIds = new Set(
-      positions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
-    );
-    const positionedCodexIds = new Set(
-      positions.filter((p) => p.codexEntryId).map((p) => p.codexEntryId!),
-    );
     const scenes = treeNodes.filter(
-      (n) => n.nodeType === "scene" && positionedTreeNodeIds.has(n.id),
+      (n) =>
+        n.nodeType === "scene" &&
+        positionProjection.positionedTreeNodeIds.has(n.id),
     );
     const visibleCodex = codexEntries.filter((e) =>
-      positionedCodexIds.has(e.id),
+      positionProjection.positionedCodexIds.has(e.id),
     );
     return layoutFingerprint({
       boardId,
       scenes,
       codexEntries: visibleCodex,
-      positions,
+      positions: positionProjection.source,
       userEdges,
+      positionProjection,
     });
-  }, [boardId, treeNodes, codexEntries, positions, userEdges]);
+  }, [boardId, treeNodes, codexEntries, userEdges, positionProjection]);
 
   useEffect(() => {
     if (!boardId) return;
@@ -267,30 +260,29 @@ export function useMapNodes({
 
     async function buildNodes() {
       const currentPositions = positionsRef.current;
+      // A coordinate-only update normally cannot trigger this effect. If a
+      // separate presentation dependency changes later, refresh the projection
+      // once from the latest rows so the rebuild uses the persisted x/y.
+      const currentPositionProjection =
+        positionProjection.source === currentPositions
+          ? positionProjection
+          : projectMapPositions(currentPositions);
       // ── Manual curation: only entities that have a position row ───────────
-      const positionedTreeNodeIds = new Set(
-        currentPositions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
-      );
-      const positionedCodexIds = new Set(
-        currentPositions
-          .filter((p) => p.codexEntryId)
-          .map((p) => p.codexEntryId!),
-      );
-      const positionedSnippetIds = new Set(
-        currentPositions.filter((p) => p.snippetId).map((p) => p.snippetId!),
-      );
-
       const scenes = treeNodes.filter(
-        (n) => n.nodeType === "scene" && positionedTreeNodeIds.has(n.id),
+        (n) =>
+          n.nodeType === "scene" &&
+          currentPositionProjection.positionedTreeNodeIds.has(n.id),
       );
       const notes = treeNodes.filter(
-        (n) => n.nodeType === "note" && positionedTreeNodeIds.has(n.id),
+        (n) =>
+          n.nodeType === "note" &&
+          currentPositionProjection.positionedTreeNodeIds.has(n.id),
       );
       const visibleCodex = codexEntries.filter((e) =>
-        positionedCodexIds.has(e.id),
+        currentPositionProjection.positionedCodexIds.has(e.id),
       );
       const visibleSnippets = snippets.filter((s) =>
-        positionedSnippetIds.has(s.id),
+        currentPositionProjection.positionedSnippetIds.has(s.id),
       );
 
       let computedPositions;
@@ -414,21 +406,7 @@ export function useMapNodes({
 
       const corkboardFeel = visualTheme === "corkboard";
 
-      const zIndexMap = new Map<string, number>();
-      for (const p of currentPositions) {
-        if (p.treeNodeId && p.nodeRefType === "scene")
-          zIndexMap.set(`scene:${p.treeNodeId}`, p.zIndex ?? 0);
-        else if (p.treeNodeId && p.nodeRefType === "note")
-          zIndexMap.set(`note:${p.treeNodeId}`, p.zIndex ?? 0);
-        else if (p.codexEntryId)
-          zIndexMap.set(`codex:${p.codexEntryId}`, p.zIndex ?? 0);
-        else if (p.snippetId)
-          zIndexMap.set(`snippet:${p.snippetId}`, p.zIndex ?? 0);
-        else if (p.stickyId)
-          zIndexMap.set(`sticky:${p.stickyId}`, p.zIndex ?? 0);
-        else if (p.aiBranchId)
-          zIndexMap.set(`ai_branch:${p.aiBranchId}`, p.zIndex ?? 0);
-      }
+      const zIndexMap = currentPositionProjection.zIndexByNodeKey;
 
       const sceneNodes: Node[] = show.scenes
         ? scenes.map((n) => {
@@ -442,6 +420,7 @@ export function useMapNodes({
               className: transitionClass,
               zIndex: zIndexMap.get(key) ?? 0,
               data: {
+                treeNodeId: n.id,
                 title: n.title,
                 synopsis: n.synopsis ?? null,
                 status: n.status ?? "outline",
@@ -504,12 +483,7 @@ export function useMapNodes({
         : [];
 
       // Snippet positions from positions array
-      const snippetPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of currentPositions) {
-        if (p.snippetId) {
-          snippetPosMap.set(`snippet:${p.snippetId}`, { x: p.x, y: p.y });
-        }
-      }
+      const snippetPosMap = currentPositionProjection.snippetPositions;
       const snippetNodes: Node[] = show.snippets
         ? visibleSnippets.map((s, idx) => {
             const key = `snippet:${s.id}`;
@@ -532,12 +506,7 @@ export function useMapNodes({
           })
         : [];
 
-      const notePosMap = new Map<string, { x: number; y: number }>();
-      for (const p of currentPositions) {
-        if (p.treeNodeId && p.nodeRefType === "note") {
-          notePosMap.set(`note:${p.treeNodeId}`, { x: p.x, y: p.y });
-        }
-      }
+      const notePosMap = currentPositionProjection.notePositions;
       const noteNodes: Node[] = show.notes
         ? notes.map((n, idx) => {
             const key = `note:${n.id}`;
@@ -573,12 +542,7 @@ export function useMapNodes({
         : [];
 
       // Sticky nodes: positions from positions array
-      const stickyPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of currentPositions) {
-        if (p.stickyId) {
-          stickyPosMap.set(`sticky:${p.stickyId}`, { x: p.x, y: p.y });
-        }
-      }
+      const stickyPosMap = currentPositionProjection.stickyPositions;
       const stickyNodes: Node[] = show.stickies
         ? stickies.map((st, idx) => {
             const key = `sticky:${st.id}`;
@@ -646,15 +610,7 @@ export function useMapNodes({
 
       // AI Branch nodes
       const stickyCountByBranchId = countStickiesByBranch(stickies);
-      const aiBranchPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of currentPositions) {
-        if (p.aiBranchId) {
-          aiBranchPosMap.set(`ai_branch:${p.aiBranchId}`, {
-            x: p.x,
-            y: p.y,
-          });
-        }
-      }
+      const aiBranchPosMap = currentPositionProjection.aiBranchPositions;
       const aiBranchNodes: Node[] = show.aiBranch
         ? aiBranches.map((ab, idx) => {
             const key = `ai_branch:${ab.id}`;
@@ -790,7 +746,7 @@ export function useMapNodes({
     snippets,
     stickies,
     aiBranches,
-    positionsStructureFingerprint,
+    positionProjection,
     show,
     mode,
     themeLayoutFingerprint,

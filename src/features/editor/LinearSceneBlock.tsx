@@ -1,4 +1,12 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  memo,
+} from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
@@ -18,7 +26,13 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneFull } from "@/features/tree/api";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import {
+  registerDiscardHandler,
+  registerRecoveryDraftProvider,
   registerSaveHandler,
+  retainEditorRecoveryDraft,
+  clearRetainedEditorRecoveryDraft,
+  unregisterDiscardHandler,
+  unregisterRecoveryDraftProvider,
   unregisterSaveHandler,
   dirtyGatedSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
@@ -45,7 +59,11 @@ import {
   spansToMarkData,
 } from "@/features/attribution/api";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
-import { useCurrentProject } from "@/features/project/projectStore";
+import {
+  useCurrentProject,
+  useCurrentProjectId,
+} from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getDocText } from "@/features/editor/RubyNode";
@@ -56,6 +74,7 @@ import {
 } from "@/features/editor/charCountStats";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
+import { summarizeTransactionSteps } from "@/features/editor/transactionLogSummary";
 import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
 import i18next from "@/lib/i18n";
 import { useTranslation } from "react-i18next";
@@ -70,9 +89,22 @@ import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSyn
 import { shouldHandleEditorUpdate } from "@/features/editor/editorEventPolicy";
 import {
   createEditorInstanceId,
+  encodeDocumentKey,
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
+import {
+  createEditorInputScopeKey,
+  markEditorInputReady,
+} from "@/features/editor/editorInputReady";
 import { getTreeIndex } from "@/features/tree/treeIndex";
+import {
+  createDocumentSaveSession,
+  runCoordinatedDocumentSave,
+} from "@/features/editor/document/documentSaveCoordinator";
+import {
+  handleSceneEditorTransaction,
+  type SceneBeatIndexState,
+} from "@/features/editor/sceneEditorTransactionPipeline";
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -139,7 +171,18 @@ function MountedSceneBlock({
   onFocus,
 }: MountedSceneBlockProps) {
   const editorSettings = useEditorSettings();
-  const lang = useCurrentProject()?.language;
+  const currentProject = useCurrentProject();
+  const currentProjectId = useCurrentProjectId();
+  const lang = currentProject?.language;
+  const workspacePath = useWorkspaceStore((state) => state.activeWorkspacePath);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (state) => state.workspaceOpenRevision,
+  );
+  const inputScopeKey = createEditorInputScopeKey({
+    projectId: currentProjectId,
+    workspacePath,
+    workspaceOpenRevision,
+  });
   const isEnglish = lang === "en";
   const filterSource = useAttributionStore((s) => s.filterSource);
   const fallbackNode = useTreeStore((s) =>
@@ -162,6 +205,7 @@ function MountedSceneBlock({
     [isFileBacked, sceneId],
   );
   const editorInstanceIdRef = useRef(createEditorInstanceId("linear"));
+  const [documentSaveSession] = useState(createDocumentSaveSession);
   const isDirtyRef = useRef(false);
   // 外部 write feed (別プロセスの MCP 等) が「dirty でない scene の外部更新」
   // を検知すると nonce を進める。dep に入れて DB から再ロードする
@@ -170,6 +214,11 @@ function MountedSceneBlock({
   const externalReloadNonce = useExternalWriteStore(
     (s) => s.reloadNonce[externalDocumentStateKey(documentKey)] ?? 0,
   );
+  const inputTargetProjectionKey = JSON.stringify([
+    inputScopeKey,
+    encodeDocumentKey(documentKey),
+    externalReloadNonce,
+  ]);
   const hasExternalConflict = useExternalWriteStore((state) =>
     state.conflicts.some(
       (conflict) =>
@@ -181,6 +230,22 @@ function MountedSceneBlock({
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const isApplyingExternalUpdate = useRef(false);
+  const externalUpdateDepthRef = useRef(0);
+  const beginApplyingExternalUpdate = useCallback(() => {
+    externalUpdateDepthRef.current += 1;
+    isApplyingExternalUpdate.current = true;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      externalUpdateDepthRef.current = Math.max(
+        0,
+        externalUpdateDepthRef.current - 1,
+      );
+      isApplyingExternalUpdate.current = externalUpdateDepthRef.current > 0;
+    };
+  }, []);
+  const sceneBeatIndexRef = useRef<SceneBeatIndexState | null>(null);
   const wasEmptyRef = useRef(false);
   // 「ロードに成功した本物の doc」以外は保存禁止 — 空/欠損 doc の autosave が
   // DB の本文を上書きする本文消失の最終防衛線。**初期値は true**: mount 直後は
@@ -201,6 +266,13 @@ function MountedSceneBlock({
   // ロード完了まで skeleton を placeholder と同寸で表示する (空エディタ +
   // 「0 chars」の一瞬の表示と、高さ崩壊によるスクロールのガタつきを防ぐ)。
   const [isLoading, setIsLoading] = useState(true);
+  const [loadReady, setLoadReady] = useState(false);
+  const [loadedInputProjectionKey, setLoadedInputProjectionKey] = useState("");
+  const loadReadyRef = useRef(false);
+  const publishLoadReady = useCallback((ready: boolean) => {
+    loadReadyRef.current = ready;
+    setLoadReady(ready);
+  }, []);
 
   // EditorPane と同じスキーマ選択。file-backed scene に full schema を使うと
   // (逆方向も同様に) 未知ノードで setContent が空 doc に化ける。
@@ -210,15 +282,15 @@ function MountedSceneBlock({
     [isFileBacked],
   );
 
-  const coreSave = useCallback(async () => {
+  const coreSave = useCallback(async (): Promise<boolean> => {
     const ed = editorRef.current;
-    if (!ed) return;
+    if (!ed) return false;
     if (loadFailedRef.current) {
       debugLog.warn(
         "LinearSceneBlock",
         `save skipped: load failed ${sceneId.slice(0, 8)}`,
       );
-      return;
+      return false;
     }
     debugLog.info(
       "LinearSceneBlock",
@@ -240,15 +312,30 @@ function MountedSceneBlock({
         .getState()
         .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
     }
+    return true;
   }, [documentKey, sceneId]);
 
   const saveFn = useCallback(async () => {
-    await coreSave();
-  }, [coreSave]);
+    const persisted = await runCoordinatedDocumentSave(documentKey, coreSave, {
+      session: documentSaveSession,
+      didPersist: Boolean,
+    });
+    if (persisted) {
+      clearRetainedEditorRecoveryDraft(
+        documentKey,
+        editorInstanceIdRef.current,
+      );
+    }
+  }, [coreSave, documentKey, documentSaveSession]);
 
   const { schedule, cancel, pause, resume } = useAutoSave(
     saveFn,
     editorSettings.autoSaveDelay,
+    {
+      onActivate: documentSaveSession.activate,
+      onRetire: () => documentSaveSession.retire(documentKey),
+      documentKey: () => documentKey,
+    },
   );
 
   useEffect(() => {
@@ -318,16 +405,20 @@ function MountedSceneBlock({
         // 実行中でも当シーンの通常編集は通常どおり保存される (リニアは複数
         // エディタがグローバル単一 store を共有するため status だけでは不可)。
         if (loadFailedRef.current) {
-          // 調査ログ: 未ロード窓で doc を変更している犯人の特定用。
-          // 保存自体は coreSave 側 guard で skip される。
+          // The shared editable gate and registry projection exclude this
+          // surface while loading/failed. Reject any programmatic bystander
+          // that still reaches onUpdate instead of arming an unsaveable draft.
           debugLog.warn(
             "LinearSceneBlock",
             `doc changed while unloaded ${sceneId.slice(0, 8)}`,
-            JSON.stringify(transaction.steps.map((s) => s.toJSON())).slice(
-              0,
-              300,
-            ),
+            {
+              sensitivity: "content-derived",
+              fields: {
+                steps: summarizeTransactionSteps(transaction.steps),
+              },
+            },
           );
+          return;
         }
         schedule();
         // 未保存編集の検出は dirtyTabIds が正本 (external-mount の conflict
@@ -372,9 +463,23 @@ function MountedSceneBlock({
           useTreeStore.getState().setCharCount(sceneId, count);
         }, 200);
       },
+      onTransaction({ transaction }) {
+        handleSceneEditorTransaction({
+          transaction,
+          id: sceneId,
+          isEntryMode: false,
+          isCodexMode: false,
+          isSnippetMode: false,
+          isChronicleEventMode: false,
+          isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+          beatIndexRef: sceneBeatIndexRef,
+        });
+      },
       onFocus() {
         const ed = editorRef.current;
-        if (ed) onFocus(sceneId, ed);
+        // useEditor callback configuration is stable across renders, so avoid
+        // capturing the initial `loadReady=false` state forever.
+        if (ed && loadReadyRef.current) onFocus(sceneId, ed);
       },
     },
     [editorExtensions],
@@ -403,12 +508,12 @@ function MountedSceneBlock({
   // active シーンの editor を Toolbar / SceneMetaPanel がフォーカス無しで
   // 参照できるよう registry へ登録する (linearEditorStore.editorsById)。
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || !loadReady) return;
     useLinearEditorStore.getState().registerEditor(sceneId, editor);
     return () => {
       useLinearEditorStore.getState().unregisterEditor(sceneId, editor);
     };
-  }, [sceneId, editor]);
+  }, [sceneId, editor, loadReady]);
 
   // contenteditable の accessible name。editorProps.attributes は生成時に固定
   // されるため、リネームに追従できるよう view.dom へ動的に付与する
@@ -441,12 +546,48 @@ function MountedSceneBlock({
   // dirty ゲート付き: clean な editor への外部 flush は no-op (詳細は
   // dirtyGatedSaveHandler)。リニアの dirty 正本は dirtyTabIds
   // (onUpdate で同期セット / coreSave 成功時とunmount で解除)。
-  useEffect(() => {
+  useLayoutEffect(() => {
     const instanceId = editorInstanceIdRef.current;
     const handler = dirtyGatedSaveHandler(() => isDirtyRef.current, saveFn);
+    const recoveryProvider = () => {
+      const currentEditor = editorRef.current;
+      if (!isDirtyRef.current || !currentEditor || currentEditor.isDestroyed) {
+        return null;
+      }
+      return {
+        plainText: currentEditor.getText(),
+        prosemirror: currentEditor.getJSON(),
+      };
+    };
     registerSaveHandler(documentKey, instanceId, handler);
-    return () => unregisterSaveHandler(documentKey, instanceId, handler);
+    registerRecoveryDraftProvider(documentKey, instanceId, recoveryProvider);
+    return () => {
+      const draft = recoveryProvider();
+      if (draft) {
+        retainEditorRecoveryDraft(documentKey, instanceId, draft);
+      }
+      unregisterSaveHandler(documentKey, instanceId, handler);
+      unregisterRecoveryDraftProvider(
+        documentKey,
+        instanceId,
+        recoveryProvider,
+      );
+    };
   }, [documentKey, saveFn]);
+
+  useEffect(() => {
+    const instanceId = editorInstanceIdRef.current;
+    const discard = () => {
+      cancel();
+      isDirtyRef.current = false;
+      useEditorSessionStore
+        .getState()
+        .setDocumentDirty(documentKey, false, instanceId);
+      useExternalWriteStore.getState().shiftConflict(documentKey);
+    };
+    registerDiscardHandler(documentKey, instanceId, discard);
+    return () => unregisterDiscardHandler(documentKey, instanceId, discard);
+  }, [cancel, documentKey]);
 
   // unmount 時に dirty を確実に解除する (EditorPane の cleanup と同じ)。
   // unmount flush (useAutoSave cleanup) が保存を引き受けるため、残った
@@ -480,21 +621,21 @@ function MountedSceneBlock({
       documentKey,
       LINEAR_LIVE_GROUP,
       (next) => {
-        isApplyingExternalUpdate.current = true;
+        const finishExternalUpdate = beginApplyingExternalUpdate();
         try {
           editor.commands.setContent(
             next as Parameters<typeof editor.commands.setContent>[0],
             { emitUpdate: false },
           );
         } finally {
-          isApplyingExternalUpdate.current = false;
+          finishExternalUpdate();
         }
         const count = getDocText(editor.state.doc).length;
         setCharCount(count);
         useTreeStore.getState().setCharCount(sceneId, count);
       },
     );
-  }, [documentKey, editor, sceneId]);
+  }, [beginApplyingExternalUpdate, documentKey, editor, sceneId]);
 
   // 外部ファイル変更の取り込み反映 (EditorPane と同じリスナー)。これが無いと
   // file-backed scene の外部編集取り込み後も editor が古い doc を保持し、
@@ -509,7 +650,7 @@ function MountedSceneBlock({
       if (detail.sceneId !== sceneId || !ed) return;
       if (guardInlineAiPending()) return;
       cancel();
-      isApplyingExternalUpdate.current = true;
+      const finishExternalUpdate = beginApplyingExternalUpdate();
       try {
         const parsed =
           detail.content && detail.content !== "{}"
@@ -522,7 +663,7 @@ function MountedSceneBlock({
           .getState()
           .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
       } finally {
-        isApplyingExternalUpdate.current = false;
+        finishExternalUpdate();
       }
       const count = getDocText(ed.state.doc).length;
       setCharCount(count);
@@ -534,14 +675,67 @@ function MountedSceneBlock({
         "external-mount:reload-scene",
         onExternalReload,
       );
-  }, [cancel, documentKey, sceneId]);
+  }, [beginApplyingExternalUpdate, cancel, documentKey, sceneId]);
 
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });
   // EditorPane と同じく帰属系は DB-native 限定 (file-backed schema に
   // authorship mark が無い)。
   useAttribution(isFileBacked ? null : editor);
-  useLicenseEditableSync(editor);
+  const editorReadOnly = useLicenseEditableSync(
+    editor,
+    !loadReady,
+    documentKey,
+  );
+  const inputReadyMarkedRef = useRef(false);
+  useEffect(() => {
+    if (
+      !isActive ||
+      !loadReady ||
+      loadedInputProjectionKey !== inputTargetProjectionKey ||
+      !editor ||
+      editorReadOnly
+    ) {
+      if (
+        !isActive ||
+        !loadReady ||
+        loadedInputProjectionKey !== inputTargetProjectionKey
+      ) {
+        inputReadyMarkedRef.current = false;
+      }
+      return;
+    }
+    if (inputReadyMarkedRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      if (
+        editor.isDestroyed ||
+        inputReadyMarkedRef.current ||
+        !editor.isEditable
+      ) {
+        return;
+      }
+      if (
+        markEditorInputReady(documentKey, editor.view.dom, editor.isEditable, {
+          authority: "linear",
+          groupIndex: null,
+          foreground: isActive,
+          scopeKey: inputScopeKey,
+        })
+      ) {
+        inputReadyMarkedRef.current = true;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    documentKey,
+    editor,
+    editorReadOnly,
+    inputScopeKey,
+    inputTargetProjectionKey,
+    isActive,
+    loadedInputProjectionKey,
+    loadReady,
+  ]);
   useCharacterFade(editor);
   // スムースキャレット (EditorPane と同じ overlay)。focus 中の block でのみ
   // 表示される (overlay は view.hasFocus() でゲートされる)。
@@ -562,7 +756,13 @@ function MountedSceneBlock({
       // 初回 mount は初期値 true なので no-op。ロード成功時のみ false に戻る。
       // 「未ロード/再ロード窓の保存禁止」は本文消失の最終防衛線 (59ab7c94)。
       loadFailedRef.current = true;
-      isApplyingExternalUpdate.current = true;
+      publishLoadReady(false);
+      setLoadedInputProjectionKey("");
+      // State/effect propagation is asynchronous. Close the native input
+      // window synchronously before the first await on both initial load and
+      // external reload; only the shared hook may re-enable after success.
+      editor.setEditable(false, false);
+      const finishExternalUpdate = beginApplyingExternalUpdate();
       try {
         const full = await loadSceneFull(sceneId);
         if (cancelled) return;
@@ -583,7 +783,6 @@ function MountedSceneBlock({
           emitUpdate: false,
           errorOnInvalidContent: true,
         });
-        loadFailedRef.current = false;
         debugLog.info(
           "LinearSceneBlock",
           `load ${sceneId.slice(0, 8)}`,
@@ -596,7 +795,7 @@ function MountedSceneBlock({
       } catch (e) {
         if (!cancelled) {
           loadFailedRef.current = true;
-          editor!.setEditable(false, false);
+          publishLoadReady(false);
           setIsLoading(false);
           debugLog.error(
             "LinearSceneBlock",
@@ -607,7 +806,7 @@ function MountedSceneBlock({
         }
         return;
       } finally {
-        isApplyingExternalUpdate.current = false;
+        finishExternalUpdate();
       }
 
       const text = getDocText(editor!.state.doc);
@@ -617,36 +816,47 @@ function MountedSceneBlock({
       wasEmptyRef.current = count === 0;
       useTreeStore.getState().setCharCount(sceneId, count);
 
-      // Load authorship spans
-      const spans = await loadAuthorshipSpans(sceneId);
-      if (!cancelled && spans.length > 0) {
-        const markData = spansToMarkData(spans);
-        const authorshipType = editor!.schema.marks["authorship"];
-        if (authorshipType) {
-          isApplyingExternalUpdate.current = true;
-          try {
-            editor!
-              .chain()
-              .command(({ tr }) => {
-                tr.setMeta("programmaticInsert", true);
-                for (const { from, to, attrs } of markData) {
-                  const docSize = tr.doc.content.size;
-                  const clampedFrom = Math.min(from, docSize);
-                  const clampedTo = Math.min(to, docSize);
-                  if (clampedFrom < clampedTo) {
-                    tr.addMark(
-                      clampedFrom,
-                      clampedTo,
-                      authorshipType.create(attrs),
-                    );
+      // Load authorship spans. This sidecar is optional: failure must not leave
+      // a successfully loaded body permanently read-only.
+      try {
+        const spans = await loadAuthorshipSpans(sceneId);
+        if (!cancelled && spans.length > 0) {
+          const markData = spansToMarkData(spans);
+          const authorshipType = editor!.schema.marks["authorship"];
+          if (authorshipType) {
+            const finishExternalUpdate = beginApplyingExternalUpdate();
+            try {
+              editor!
+                .chain()
+                .command(({ tr }) => {
+                  tr.setMeta("programmaticInsert", true);
+                  for (const { from, to, attrs } of markData) {
+                    const docSize = tr.doc.content.size;
+                    const clampedFrom = Math.min(from, docSize);
+                    const clampedTo = Math.min(to, docSize);
+                    if (clampedFrom < clampedTo) {
+                      tr.addMark(
+                        clampedFrom,
+                        clampedTo,
+                        authorshipType.create(attrs),
+                      );
+                    }
                   }
-                }
-                return true;
-              })
-              .run();
-          } finally {
-            isApplyingExternalUpdate.current = false;
+                  return true;
+                })
+                .run();
+            } finally {
+              finishExternalUpdate();
+            }
           }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          debugLog.error(
+            "LinearSceneBlock",
+            `load authorship failed ${sceneId.slice(0, 8)}`,
+            errorDetail(error),
+          );
         }
       }
 
@@ -657,6 +867,12 @@ function MountedSceneBlock({
           .getState()
           .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
         useExternalWriteStore.getState().shiftConflict(documentKey);
+        // Re-enable input only after authorship application and history/dirty
+        // reset. Earlier publication creates a window where user edits are
+        // later cleared as if they belonged to document hydration.
+        loadFailedRef.current = false;
+        setLoadedInputProjectionKey(inputTargetProjectionKey);
+        publishLoadReady(true);
       }
     }
 
@@ -664,7 +880,17 @@ function MountedSceneBlock({
     return () => {
       cancelled = true;
     };
-  }, [sceneId, editor, cancel, isFileBacked, externalReloadNonce, documentKey]);
+  }, [
+    sceneId,
+    editor,
+    cancel,
+    isFileBacked,
+    externalReloadNonce,
+    documentKey,
+    inputTargetProjectionKey,
+    publishLoadReady,
+    beginApplyingExternalUpdate,
+  ]);
 
   // Report block-axis size changes. contentBoxSize is logical (resolved
   // against the element's writing-mode), so the same code measures height
@@ -703,7 +929,29 @@ function MountedSceneBlock({
   const primaryUnitLabel = i18next.t(countUnitLabelKey(primaryUnit));
 
   return (
-    <div ref={containerRef}>
+    <div
+      ref={containerRef}
+      data-editor-target-document-id={sceneId}
+      data-editor-target-document-kind="tree"
+      data-editor-target-document-key={encodeDocumentKey(documentKey)}
+      data-editor-target-projection-key={inputTargetProjectionKey}
+      data-editor-loaded-document-id={loadReady ? sceneId : ""}
+      data-editor-loaded-document-key={
+        loadReady ? encodeDocumentKey(documentKey) : ""
+      }
+      data-editor-loaded-document-kind={loadReady ? "tree" : ""}
+      data-editor-loaded-projection-key={loadedInputProjectionKey}
+      data-editor-document-loading={isLoading ? "true" : "false"}
+      data-editor-input-authority="linear"
+      data-editor-input-group="none"
+      data-editor-input-scope-key={inputScopeKey}
+      data-editor-loaded-scope-key={
+        loadReady && loadedInputProjectionKey === inputTargetProjectionKey
+          ? inputScopeKey
+          : ""
+      }
+      data-editor-input-foreground={isActive ? "true" : "false"}
+    >
       {/* 外部 write conflict の解決 UI (タブモードは EditorPane が表示)。
           conflict が無ければ null を返すだけ。Reload は reloadNonce 経由で
           上の load effect に届く。 */}

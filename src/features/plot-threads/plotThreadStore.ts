@@ -2,7 +2,10 @@ import { create } from "zustand";
 import i18next from "i18next";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import {
+  useGlobalHistoryStore,
+  type HistoryCollector,
+} from "@/store/globalHistoryStore";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
   PLOT_PHASE_TYPES,
@@ -16,19 +19,35 @@ import {
   createPlotThread,
   updatePlotThread,
   deletePlotThread,
-  restorePlotThread,
   createPlotThreadLink,
   updatePlotThreadLink,
   deletePlotThreadLink,
-  restorePlotThreadLink,
   createPlotThreadBranch,
   updatePlotThreadBranch,
   deletePlotThreadBranch,
-  restorePlotThreadBranch,
+  restorePlotThreadSnapshot,
+  deletePlotThreadSnapshot,
   type PlotThreadRow,
   type PlotThreadLinkRow,
   type PlotThreadBranchRow,
 } from "./api";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+  runAuthoritativeMutation,
+  type MutationAuthority,
+  type MutationOutcome,
+} from "@/features/concurrency/mutationAuthority";
+import {
+  getCreateResultMetadata,
+  isCreateResultEntityPresent,
+} from "@/lib/createResultMetadata";
+import {
+  createPendingCreateRequestRegistry,
+  type PendingCreateRequest,
+  type PendingCreateRequestRegistry,
+} from "@/lib/pendingCreateRequestRegistry";
+import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
 
 /**
  * Undo/Redo: プロットスレッド操作を globalHistoryStore に1エントリ積む。
@@ -38,15 +57,33 @@ import {
  * を1ユーザー操作にまとめたい経路（マーカードラッグ）は呼び出し側で
  * useGlobalHistoryStore.runAsTransaction で包む。
  */
-function recordPlotHistory(cmd: {
-  label: string;
-  entityId?: string;
-  undo: () => Promise<void>;
-  redo: () => Promise<void>;
-}): void {
+function recordPlotHistory(
+  cmd: {
+    label: string;
+    entityId?: string;
+    undo: () => Promise<void>;
+    redo: () => Promise<void>;
+  },
+  collector?: HistoryCollector,
+  authority: MutationAuthority = captureMutationAuthority(
+    getCurrentProjectId(),
+    getCurrentProjectId,
+  ),
+): void {
   const history = useGlobalHistoryStore.getState();
-  if (history.isReplaying) return;
-  history.push({ kind: "plot", ...cmd });
+  if (history.isReplaying || !isCurrentMutationAuthority(authority)) return;
+  (collector ?? history).push({
+    kind: "plot",
+    ...cmd,
+    undo: async () => {
+      if (!isCurrentMutationAuthority(authority)) return;
+      await cmd.undo();
+    },
+    redo: async () => {
+      if (!isCurrentMutationAuthority(authority)) return;
+      await cmd.redo();
+    },
+  });
   // Single timelapse chokepoint for every plot mutation (thread / marker /
   // branch). `label` is already the human-readable action string, so it doubles
   // as the caption. Metadata domain — no rebaseline. no-op when recording off.
@@ -59,18 +96,75 @@ function recordPlotHistory(cmd: {
   });
 }
 
+async function replayPlotMutation<T>(
+  authority: MutationAuthority,
+  mutation: () => Promise<T>,
+  publish: (value: T) => void,
+): Promise<void> {
+  const outcome = await runAuthoritativeMutation(authority, mutation);
+  if (outcome.status === "current") publish(outcome.value);
+}
+
+export type PlotThreadImportIssueCode =
+  | "INVALID_PROPOSAL"
+  | "INVALID_PHASE"
+  | "MISSING_NODE"
+  | "DUPLICATE"
+  | "CREATE_FAILED";
+
+export interface PlotThreadImportIssue {
+  kind: "thread" | "marker";
+  proposalIndex: number;
+  markerIndex?: number;
+  label: string;
+  code: PlotThreadImportIssueCode;
+}
+
+export interface PlotThreadImportResult {
+  createdThreads: PlotThreadRow[];
+  createdMarkers: PlotThreadLinkRow[];
+  skipped: PlotThreadImportIssue[];
+  failed: PlotThreadImportIssue[];
+  aborted: boolean;
+}
+
+export interface PlotThreadImportProposal {
+  /** Stable identity for retries of one extracted candidate. */
+  retryKey?: string;
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  markers: Array<{
+    nodeId: string;
+    phaseType: PlotPhaseType;
+    note?: string | null;
+  }>;
+}
+
 interface PlotThreadState {
+  /** Project whose rows are currently allowed to be displayed or mutated. */
+  activeProjectId: string | null;
   threads: PlotThreadRow[];
   links: PlotThreadLinkRow[];
   branches: PlotThreadBranchRow[];
   loading: boolean;
+  /**
+   * Synchronous Project-commit boundary. Old rows must disappear before the
+   * best-effort optional hydrate starts, otherwise stale UI callbacks can call
+   * the id-only mutation APIs against the previous Project.
+   */
+  resetForProject: (projectId: string) => void;
   load: (projectId: string) => Promise<void>;
   addThread: (
     projectId: string,
     name: string,
     color?: string | null,
   ) => Promise<void>;
-  renameThread: (id: string, name: string) => Promise<void>;
+  renameThread: (
+    id: string,
+    name: string,
+    options?: { preexistingDraft?: boolean },
+  ) => Promise<void>;
   setThreadColor: (id: string, color: string | null) => Promise<void>;
   /** ヘッダーのドラッグ並べ替え用。sortOrder を更新して行順を変える。 */
   reorderThread: (id: string, sortOrder: string) => Promise<void>;
@@ -87,61 +181,209 @@ interface PlotThreadState {
    */
   importPlotThreads: (
     projectId: string,
-    proposals: Array<{
-      name: string;
-      description?: string | null;
-      color?: string | null;
-      markers: Array<{
-        nodeId: string;
-        phaseType: PlotPhaseType;
-        note?: string | null;
-      }>;
-    }>,
-  ) => Promise<void>;
+    proposals: PlotThreadImportProposal[],
+  ) => Promise<PlotThreadImportResult>;
   updateMarker: (
     id: string,
     patch: Partial<
       Pick<PlotThreadLinkRow, "threadId" | "nodeId" | "phaseType" | "note">
     >,
+    history?: HistoryCollector,
+    options?: { preexistingDraft?: boolean },
   ) => Promise<void>;
   deleteMarker: (id: string) => Promise<void>;
-  addBranch: (data: {
-    projectId: string;
-    fromThreadId: string;
-    toThreadId: string;
-    atNodeId: string;
-    kind: PlotBranchKind;
-  }) => Promise<void>;
+  addBranch: (
+    data: {
+      projectId: string;
+      fromThreadId: string;
+      toThreadId: string;
+      atNodeId: string;
+      kind: PlotBranchKind;
+    },
+    history?: HistoryCollector,
+  ) => Promise<void>;
   updateBranch: (
     id: string,
     patch: Partial<
       Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
     >,
+    history?: HistoryCollector,
   ) => Promise<void>;
-  deleteBranch: (id: string) => Promise<void>;
+  deleteBranch: (id: string, history?: HistoryCollector) => Promise<void>;
+}
+
+let plotLoadGeneration = 0;
+const pendingThreadCreates =
+  createPendingCreateRequestRegistry<Parameters<typeof createPlotThread>[0]>();
+const pendingLinkCreates =
+  createPendingCreateRequestRegistry<
+    Parameters<typeof createPlotThreadLink>[0]
+  >();
+const pendingBranchCreates =
+  createPendingCreateRequestRegistry<
+    Parameters<typeof createPlotThreadBranch>[0]
+  >();
+const pendingPlotDeleteSnapshots =
+  createPendingCreateRequestRegistry<
+    Parameters<typeof deletePlotThreadSnapshot>[0]
+  >();
+const pendingPlotImportThreads = new Map<string, string>();
+
+function shouldRetainPendingCreate(error: unknown): boolean {
+  return isUnknownIpcOutcomeError(error);
+}
+
+function releasePlotCreateRequests(): void {
+  pendingThreadCreates.clear();
+  pendingLinkCreates.clear();
+  pendingBranchCreates.clear();
+  pendingPlotDeleteSnapshots.clear();
+  pendingPlotImportThreads.clear();
+}
+
+async function runRetainedPlotCreate<TPayload, TResult>(
+  authority: MutationAuthority,
+  requests: PendingCreateRequestRegistry<TPayload>,
+  pending: PendingCreateRequest<TPayload>,
+  createEntity: (payload: TPayload) => Promise<TResult>,
+): Promise<MutationOutcome<TResult>> {
+  try {
+    const outcome = await runAuthoritativeMutation(authority, () =>
+      createEntity(pending.payload),
+    );
+    requests.release(pending);
+    return outcome;
+  } catch (error) {
+    if (!shouldRetainPendingCreate(error)) {
+      requests.release(pending);
+    }
+    throw error;
+  }
+}
+
+type PlotRestoreSnapshotPayload = Parameters<
+  typeof restorePlotThreadSnapshot
+>[0];
+type PlotDeleteSnapshotPayload = Parameters<typeof deletePlotThreadSnapshot>[0];
+
+async function runRetainedPlotRestore(
+  requests: PendingCreateRequestRegistry<PlotRestoreSnapshotPayload>,
+  snapshot: Omit<PlotRestoreSnapshotPayload, "requestId">,
+): Promise<void> {
+  const signature = JSON.stringify(snapshot);
+  const pending = requests.acquire("restore", signature, (requestId) => ({
+    ...snapshot,
+    requestId,
+  }));
+  try {
+    const result = await restorePlotThreadSnapshot(pending.payload);
+    requests.release(pending);
+    if (!isCreateResultEntityPresent(result)) {
+      throw new Error(
+        "plot restore replay refers to rows that are no longer present",
+      );
+    }
+  } catch (error) {
+    if (!shouldRetainPendingCreate(error)) {
+      requests.release(pending);
+    }
+    throw error;
+  }
+}
+
+async function runRetainedPlotDelete(
+  requests: PendingCreateRequestRegistry<PlotDeleteSnapshotPayload>,
+  key: string,
+  snapshot: Omit<PlotDeleteSnapshotPayload, "requestId">,
+): Promise<void> {
+  const signature = JSON.stringify(snapshot);
+  const pending = requests.acquire(key, signature, (requestId) => ({
+    ...snapshot,
+    requestId,
+  }));
+  try {
+    const result = await deletePlotThreadSnapshot(pending.payload);
+    requests.release(pending);
+    if (!isCreateResultEntityPresent(result)) {
+      throw new Error(
+        "plot delete replay no longer matches the current marker rows",
+      );
+    }
+  } catch (error) {
+    if (!shouldRetainPendingCreate(error)) {
+      requests.release(pending);
+    }
+    throw error;
+  }
+}
+
+function captureBoundPlotAuthority(
+  state: PlotThreadState,
+  projectId = getCurrentProjectId(),
+): MutationAuthority | null {
+  if (
+    state.activeProjectId !== projectId ||
+    getCurrentProjectId() !== projectId
+  ) {
+    return null;
+  }
+  return captureMutationAuthority(projectId, getCurrentProjectId);
 }
 
 export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
+  activeProjectId: null,
   threads: [],
   links: [],
   branches: [],
   loading: false,
 
+  resetForProject: (projectId) => {
+    plotLoadGeneration++;
+    releasePlotCreateRequests();
+    set({
+      activeProjectId: projectId,
+      threads: [],
+      links: [],
+      branches: [],
+      loading: false,
+    });
+  },
+
   load: async (projectId) => {
-    // 前プロジェクトのレーンを即座にクリア（切替時に一瞬残骸を見せない）。
-    set({ threads: [], links: [], branches: [], loading: true });
-    const [threads, links, branches] = await Promise.all([
-      listPlotThreads(projectId),
-      listPlotThreadLinks(projectId),
-      listPlotThreadBranches(projectId),
-    ]);
-    // stale ガード: async 中にプロジェクトが切り替わっていたら破棄
-    // （Grimodex 頻出のストア汚染対策）。より新しい load が状態を所有する。
-    if (getCurrentProjectId() !== projectId) return;
-    set({ threads, links, branches, loading: false });
+    const authority = captureBoundPlotAuthority(get(), projectId);
+    if (!authority) return;
+    const generation = ++plotLoadGeneration;
+    set({ loading: true });
+    try {
+      const [threads, links, branches] = await Promise.all([
+        listPlotThreads(projectId),
+        listPlotThreadLinks(projectId),
+        listPlotThreadBranches(projectId),
+      ]);
+      // Project IDだけでなく、同一pathを開き直したworkspace revisionも照合する。
+      if (
+        generation !== plotLoadGeneration ||
+        get().activeProjectId !== projectId ||
+        !isCurrentMutationAuthority(authority)
+      ) {
+        return;
+      }
+      set({ threads, links, branches, loading: false });
+    } catch (error) {
+      if (
+        generation === plotLoadGeneration &&
+        get().activeProjectId === projectId &&
+        isCurrentMutationAuthority(authority)
+      ) {
+        set({ loading: false });
+      }
+      throw error;
+    }
   },
 
   addThread: async (projectId, name, color = null) => {
+    const authority = captureBoundPlotAuthority(get(), projectId);
+    if (!authority) return;
     // sortOrder は「末尾」ではなく実際の最大キーの後に置く
     // （listPlotThreads の返却順に依存しないため）。
     const maxKey = get().threads.reduce<string | null>(
@@ -149,88 +391,174 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
       null,
     );
     const sortOrder = generateKeyBetween(maxKey, null);
-    const created = await createPlotThread({
-      projectId,
-      name,
-      color,
-      sortOrder,
-    });
-    if (getCurrentProjectId() !== projectId) return;
-    set({ threads: [...get().threads, created] });
+    const signature = JSON.stringify({ projectId, name, color });
+    const pending = pendingThreadCreates.acquire(
+      `thread:${signature}`,
+      signature,
+      (id) => ({ id, projectId, name, color, sortOrder }),
+    );
+    const outcome = await runRetainedPlotCreate(
+      authority,
+      pendingThreadCreates,
+      pending,
+      createPlotThread,
+    );
+    if (outcome.status !== "current") return;
+    const created = outcome.value;
+    if (!isCreateResultEntityPresent(created)) return;
+    if (getCreateResultMetadata(created)?.replayed) {
+      if (get().threads.some((thread) => thread.id === created.id)) return;
+      set({ threads: [...get().threads, created] });
+    } else {
+      set({ threads: [...get().threads, created] });
+    }
     const captured = { ...created };
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.addThread", "スレッド追加"),
-      entityId: captured.id,
-      undo: async () => {
-        await deletePlotThread(captured.id);
-        set({ threads: get().threads.filter((t) => t.id !== captured.id) });
+    const redoRestoreRequests =
+      createPendingCreateRequestRegistry<PlotRestoreSnapshotPayload>();
+    recordPlotHistory(
+      {
+        label: i18next.t("plotThread.history.addThread", "スレッド追加"),
+        entityId: captured.id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => deletePlotThread(captured.id),
+            () =>
+              set({
+                threads: get().threads.filter((t) => t.id !== captured.id),
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotRestore(redoRestoreRequests, {
+                projectId: captured.projectId,
+                thread: captured,
+                links: [],
+                branches: [],
+              }),
+            () => set({ threads: [...get().threads, captured] }),
+          );
+        },
       },
-      redo: async () => {
-        await restorePlotThread(captured);
-        set({ threads: [...get().threads, captured] });
-      },
-    });
+      undefined,
+      authority,
+    );
   },
 
-  renameThread: async (id, name) => {
+  renameThread: async (id, name, options) => {
     const before = get().threads.find((t) => t.id === id)?.name;
-    await updatePlotThread(id, { name });
+    if (before === undefined) {
+      if (options?.preexistingDraft) {
+        throw new Error(`Plot thread draft target is unavailable: ${id}`);
+      }
+      return;
+    }
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) {
+      if (options?.preexistingDraft) {
+        throw new Error(`Plot thread draft authority is stale: ${id}`);
+      }
+      return;
+    }
+    const outcome = await runAuthoritativeMutation(
+      authority,
+      () => updatePlotThread(id, { name }),
+      options,
+    );
+    if (outcome.status !== "current") {
+      if (options?.preexistingDraft) {
+        throw new Error(`Plot thread draft authority changed: ${id}`);
+      }
+      return;
+    }
     set({
-      threads: get().threads.map((t) => (t.id === id ? { ...t, name } : t)),
+      threads: get().threads.map((thread) =>
+        thread.id === id ? outcome.value : thread,
+      ),
     });
-    if (before === undefined) return;
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.renameThread", "スレッド名変更"),
-      entityId: id,
-      undo: async () => {
-        await updatePlotThread(id, { name: before });
-        set({
-          threads: get().threads.map((t) =>
-            t.id === id ? { ...t, name: before } : t,
-          ),
-        });
+    recordPlotHistory(
+      {
+        label: i18next.t("plotThread.history.renameThread", "スレッド名変更"),
+        entityId: id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThread(id, { name: before }),
+            (updated) =>
+              set({
+                threads: get().threads.map((t) => (t.id === id ? updated : t)),
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThread(id, { name }),
+            (updated) =>
+              set({
+                threads: get().threads.map((t) => (t.id === id ? updated : t)),
+              }),
+          );
+        },
       },
-      redo: async () => {
-        await updatePlotThread(id, { name });
-        set({
-          threads: get().threads.map((t) => (t.id === id ? { ...t, name } : t)),
-        });
-      },
-    });
+      undefined,
+      authority,
+    );
   },
 
   setThreadColor: async (id, color) => {
     const before = get().threads.find((t) => t.id === id);
-    await updatePlotThread(id, { color });
-    set({
-      threads: get().threads.map((t) => (t.id === id ? { ...t, color } : t)),
-    });
     if (!before) return;
-    const prevColor = before.color;
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.colorThread", "スレッド色変更"),
-      entityId: id,
-      undo: async () => {
-        await updatePlotThread(id, { color: prevColor });
-        set({
-          threads: get().threads.map((t) =>
-            t.id === id ? { ...t, color: prevColor } : t,
-          ),
-        });
-      },
-      redo: async () => {
-        await updatePlotThread(id, { color });
-        set({
-          threads: get().threads.map((t) =>
-            t.id === id ? { ...t, color } : t,
-          ),
-        });
-      },
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) return;
+    const outcome = await runAuthoritativeMutation(authority, () =>
+      updatePlotThread(id, { color }),
+    );
+    if (outcome.status !== "current") return;
+    set({
+      threads: get().threads.map((thread) =>
+        thread.id === id ? outcome.value : thread,
+      ),
     });
+    const prevColor = before.color;
+    recordPlotHistory(
+      {
+        label: i18next.t("plotThread.history.colorThread", "スレッド色変更"),
+        entityId: id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThread(id, { color: prevColor }),
+            (updated) =>
+              set({
+                threads: get().threads.map((t) => (t.id === id ? updated : t)),
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThread(id, { color }),
+            (updated) =>
+              set({
+                threads: get().threads.map((t) => (t.id === id ? updated : t)),
+              }),
+          );
+        },
+      },
+      undefined,
+      authority,
+    );
   },
 
   reorderThread: async (id, sortOrder) => {
     const before = get().threads.find((t) => t.id === id)?.sortOrder;
+    if (before === undefined) return;
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) return;
     // 楽観更新: ドロップ直後にアニメの目標が新ホーム順になるよう、IPC await の前に
     // store の順序を先に反映する（失敗時のみ元へ戻す）。これをしないと await の間
     // homeLaneModel が旧順序のままで、掴んでいたスレッドが旧位置へ逆向きにイージング
@@ -241,9 +569,26 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
       ),
     });
     try {
-      await updatePlotThread(id, { sortOrder });
+      const outcome = await runAuthoritativeMutation(authority, () =>
+        updatePlotThread(id, { sortOrder }),
+      );
+      if (outcome.status !== "current") {
+        if (isCurrentMutationAuthority(authority)) {
+          set({
+            threads: get().threads.map((thread) =>
+              thread.id === id ? { ...thread, sortOrder: before } : thread,
+            ),
+          });
+        }
+        return;
+      }
+      set({
+        threads: get().threads.map((thread) =>
+          thread.id === id ? outcome.value : thread,
+        ),
+      });
     } catch (e) {
-      if (before !== undefined)
+      if (before !== undefined && isCurrentMutationAuthority(authority))
         set({
           threads: get().threads.map((t) =>
             t.id === id ? { ...t, sortOrder: before } : t,
@@ -251,31 +596,44 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
         });
       throw e;
     }
-    if (before === undefined) return;
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.reorderThread", "スレッド並べ替え"),
-      entityId: id,
-      undo: async () => {
-        await updatePlotThread(id, { sortOrder: before });
-        set({
-          threads: get().threads.map((t) =>
-            t.id === id ? { ...t, sortOrder: before } : t,
-          ),
-        });
+    recordPlotHistory(
+      {
+        label: i18next.t(
+          "plotThread.history.reorderThread",
+          "スレッド並べ替え",
+        ),
+        entityId: id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThread(id, { sortOrder: before }),
+            (updated) =>
+              set({
+                threads: get().threads.map((t) => (t.id === id ? updated : t)),
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThread(id, { sortOrder }),
+            (updated) =>
+              set({
+                threads: get().threads.map((t) => (t.id === id ? updated : t)),
+              }),
+          );
+        },
       },
-      redo: async () => {
-        await updatePlotThread(id, { sortOrder });
-        set({
-          threads: get().threads.map((t) =>
-            t.id === id ? { ...t, sortOrder } : t,
-          ),
-        });
-      },
-    });
+      undefined,
+      authority,
+    );
   },
 
   deleteThread: async (id) => {
     const thread = get().threads.find((t) => t.id === id);
+    if (!thread) return;
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) return;
     const removedLinks = get().links.filter((l) => l.threadId === id);
     // from/to どちらかが消えた分岐エッジも CASCADE で消える。
     const removedBranches = get().branches.filter(
@@ -289,263 +647,668 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
           (b) => b.fromThreadId !== id && b.toThreadId !== id,
         ),
       });
-    await deletePlotThread(id);
+    const outcome = await runAuthoritativeMutation(authority, () =>
+      deletePlotThread(id),
+    );
+    if (outcome.status !== "current") return;
     applyDelete();
-    if (!thread) return;
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.deleteThread", "スレッド削除"),
-      entityId: id,
-      undo: async () => {
-        // 親(thread)を先に復元してから子(links/branches)を FK 順に戻す。
-        await restorePlotThread(thread);
-        for (const l of removedLinks) await restorePlotThreadLink(l);
-        for (const b of removedBranches) await restorePlotThreadBranch(b);
-        set({
-          threads: [...get().threads, thread],
-          links: [...get().links, ...removedLinks],
-          branches: [...get().branches, ...removedBranches],
-        });
+    const undoRestoreRequests =
+      createPendingCreateRequestRegistry<PlotRestoreSnapshotPayload>();
+    recordPlotHistory(
+      {
+        label: i18next.t("plotThread.history.deleteThread", "スレッド削除"),
+        entityId: id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotRestore(undoRestoreRequests, {
+                projectId: thread.projectId,
+                thread,
+                links: removedLinks,
+                branches: removedBranches,
+              }),
+            () =>
+              set({
+                threads: [...get().threads, thread],
+                links: [...get().links, ...removedLinks],
+                branches: [...get().branches, ...removedBranches],
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => deletePlotThread(id),
+            applyDelete,
+          );
+        },
       },
-      redo: async () => {
-        await deletePlotThread(id); // DB 側で links/branches も CASCADE 削除
-        applyDelete();
-      },
-    });
+      undefined,
+      authority,
+    );
   },
 
   addMarker: async (threadId, nodeId, phaseType) => {
-    // stale ガード: await 中にプロジェクトが切り替わったら反映しない
-    // （他メソッドと同じ XPROJ 不変条件を守る）。
-    const pid = getCurrentProjectId();
-    const created = await createPlotThreadLink({ threadId, nodeId, phaseType });
-    if (getCurrentProjectId() !== pid) return;
-    set({ links: [...get().links, created] });
-    const captured = { ...created };
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.addMarker", "マーカー追加"),
-      entityId: captured.id,
-      undo: async () => {
-        await deletePlotThreadLink(captured.id);
-        set({ links: get().links.filter((l) => l.id !== captured.id) });
-      },
-      redo: async () => {
-        await restorePlotThreadLink(captured);
-        set({ links: [...get().links, captured] });
-      },
+    if (!get().threads.some((thread) => thread.id === threadId)) return;
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) return;
+    const signature = JSON.stringify({
+      projectId: authority.projectId,
+      threadId,
+      nodeId,
+      phaseType,
     });
+    const pending = pendingLinkCreates.acquire(
+      `link:${signature}`,
+      signature,
+      (id) => ({ id, threadId, nodeId, phaseType }),
+    );
+    const outcome = await runRetainedPlotCreate(
+      authority,
+      pendingLinkCreates,
+      pending,
+      createPlotThreadLink,
+    );
+    if (outcome.status !== "current") return;
+    const created = outcome.value;
+    if (!isCreateResultEntityPresent(created)) return;
+    if (getCreateResultMetadata(created)?.replayed) {
+      if (get().links.some((link) => link.id === created.id)) return;
+      set({ links: [...get().links, created] });
+    } else {
+      set({ links: [...get().links, created] });
+    }
+    const captured = { ...created };
+    const redoRestoreRequests =
+      createPendingCreateRequestRegistry<PlotRestoreSnapshotPayload>();
+    recordPlotHistory(
+      {
+        label: i18next.t("plotThread.history.addMarker", "マーカー追加"),
+        entityId: captured.id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => deletePlotThreadLink(captured.id),
+            () =>
+              set({
+                links: get().links.filter((link) => link.id !== captured.id),
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotRestore(redoRestoreRequests, {
+                projectId: authority.projectId,
+                thread: null,
+                links: [captured],
+                branches: [],
+              }),
+            () => set({ links: [...get().links, captured] }),
+          );
+        },
+      },
+      undefined,
+      authority,
+    );
   },
 
   importPlotThreads: async (projectId, proposals) => {
-    const valid = proposals.filter(
-      (p) => p.name.trim().length > 0 && p.markers.length > 0,
-    );
-    if (valid.length === 0) return;
-    // 全提案を 1 history エントリにまとめる（各 create 内の push が activeBatch へ
-    // 集約される＝1 confirm = 1 undo）。各 mutation を await してから fn を抜けるのが
-    // グルーピングの生命線（fire-and-forget だと push が frame 外に零れる）。
+    const result: PlotThreadImportResult = {
+      createdThreads: [],
+      createdMarkers: [],
+      skipped: [],
+      failed: [],
+      aborted: false,
+    };
+    const authority = captureBoundPlotAuthority(get(), projectId);
+    if (!authority) {
+      result.aborted = true;
+      return result;
+    }
+    const importProgressKeys = new Set<string>();
+
+    // 成功した mutation だけを明示 collector へ入れ、部分失敗時にも正確な
+    // composite Undo と項目別結果を返す。ambient な async batch は使わない。
     await useGlobalHistoryStore.getState().runAsTransaction(
       {
         kind: "plot",
         label: i18next.t("plotThread.history.importThreads", "スレッド取込"),
-        // await 中にプロジェクトが切り替わったら合成 undo エントリを破棄する
-        // （旧プロジェクトの行参照クロージャを新プロジェクト履歴へ載せない）。
-        shouldCommit: () => getCurrentProjectId() === projectId,
+        shouldCommit: () =>
+          !result.aborted && isCurrentMutationAuthority(authority),
       },
-      async () => {
-        for (const p of valid) {
-          if (getCurrentProjectId() !== projectId) return;
+      async (collector) => {
+        for (const [proposalIndex, proposal] of proposals.entries()) {
+          const name = proposal.name.trim();
+          if (name.length === 0 || proposal.markers.length === 0) {
+            result.skipped.push({
+              kind: "thread",
+              proposalIndex,
+              label: name || proposal.name,
+              code: "INVALID_PROPOSAL",
+            });
+            continue;
+          }
+          if (!isCurrentMutationAuthority(authority)) {
+            result.aborted = true;
+            return;
+          }
+
           // --- thread ---
-          let thread: PlotThreadRow;
-          try {
+          const color = proposal.color ?? null;
+          const description = proposal.description?.trim() || null;
+          const threadPayloadSignature = JSON.stringify({
+            projectId,
+            name,
+            color,
+            description,
+          });
+          const proposalRetryKey =
+            proposal.retryKey ??
+            JSON.stringify({
+              proposalIndex,
+              projectId,
+              name,
+              color,
+              description,
+            });
+          const importProgressKey = `${projectId}:${proposalRetryKey}`;
+          importProgressKeys.add(importProgressKey);
+          const resumedThreadId =
+            pendingPlotImportThreads.get(importProgressKey);
+          let thread = resumedThreadId
+            ? get().threads.find(
+                (candidate) => candidate.id === resumedThreadId,
+              )
+            : undefined;
+          const resumedImportThread = thread !== undefined;
+          if (resumedThreadId && !thread) {
+            pendingPlotImportThreads.delete(importProgressKey);
+          }
+
+          if (!thread) {
             const maxKey = get().threads.reduce<string | null>(
-              (m, t) =>
-                m === null || cmpKeys(t.sortOrder, m) > 0 ? t.sortOrder : m,
+              (max, candidate) =>
+                max === null || cmpKeys(candidate.sortOrder, max) > 0
+                  ? candidate.sortOrder
+                  : max,
               null,
             );
             const sortOrder = generateKeyBetween(maxKey, null);
-            thread = await createPlotThread({
-              projectId,
-              name: p.name.trim(),
-              color: p.color ?? null,
-              description: p.description?.trim() || null,
-              sortOrder,
-            });
-          } catch {
-            continue; // このスレッドは諦めて次へ（batch は壊さない）
-          }
-          if (getCurrentProjectId() !== projectId) return;
-          set({ threads: [...get().threads, thread] });
-          const capturedThread = { ...thread };
-          recordPlotHistory({
-            label: i18next.t("plotThread.history.addThread", "スレッド追加"),
-            entityId: capturedThread.id,
-            undo: async () => {
-              await deletePlotThread(capturedThread.id);
-              set({
-                threads: get().threads.filter(
-                  (t) => t.id !== capturedThread.id,
-                ),
+            const pendingThread = pendingThreadCreates.acquire(
+              `import-thread:${proposalRetryKey}:${threadPayloadSignature}`,
+              threadPayloadSignature,
+              (id) => ({
+                id,
+                projectId,
+                name,
+                color,
+                description,
+                sortOrder,
+              }),
+            );
+            let threadOutcome;
+            try {
+              threadOutcome = await runRetainedPlotCreate(
+                authority,
+                pendingThreadCreates,
+                pendingThread,
+                createPlotThread,
+              );
+            } catch {
+              result.failed.push({
+                kind: "thread",
+                proposalIndex,
+                label: name,
+                code: "CREATE_FAILED",
               });
-            },
-            redo: async () => {
-              await restorePlotThread(capturedThread);
-              set({ threads: [...get().threads, capturedThread] });
-            },
-          });
+              continue;
+            }
+            if (threadOutcome.status !== "current") {
+              result.aborted = true;
+              return;
+            }
+            thread = threadOutcome.value;
+            if (!isCreateResultEntityPresent(thread)) {
+              result.failed.push({
+                kind: "thread",
+                proposalIndex,
+                label: name,
+                code: "CREATE_FAILED",
+              });
+              continue;
+            }
+            const threadAlreadyPresent = get().threads.some(
+              (candidate) => candidate.id === thread?.id,
+            );
+            if (!threadAlreadyPresent) {
+              set({ threads: [...get().threads, thread] });
+            }
+            result.createdThreads.push(thread);
+            pendingPlotImportThreads.set(importProgressKey, thread.id);
+
+            if (
+              !getCreateResultMetadata(thread)?.replayed ||
+              !threadAlreadyPresent
+            ) {
+              const capturedThread = { ...thread };
+              const redoRestoreRequests =
+                createPendingCreateRequestRegistry<PlotRestoreSnapshotPayload>();
+              recordPlotHistory(
+                {
+                  label: i18next.t(
+                    "plotThread.history.addThread",
+                    "スレッド追加",
+                  ),
+                  entityId: capturedThread.id,
+                  undo: async () => {
+                    await replayPlotMutation(
+                      authority,
+                      () => deletePlotThread(capturedThread.id),
+                      () =>
+                        set({
+                          threads: get().threads.filter(
+                            (candidate) => candidate.id !== capturedThread.id,
+                          ),
+                        }),
+                    );
+                  },
+                  redo: async () => {
+                    await replayPlotMutation(
+                      authority,
+                      () =>
+                        runRetainedPlotRestore(redoRestoreRequests, {
+                          projectId: capturedThread.projectId,
+                          thread: capturedThread,
+                          links: [],
+                          branches: [],
+                        }),
+                      () =>
+                        set({
+                          threads: [...get().threads, capturedThread],
+                        }),
+                    );
+                  },
+                },
+                collector,
+                authority,
+              );
+            }
+          }
+
+          if (!thread) {
+            result.failed.push({
+              kind: "thread",
+              proposalIndex,
+              label: name,
+              code: "CREATE_FAILED",
+            });
+            continue;
+          }
+
           // --- markers（phase 検証 + dedup）---
           const seen = new Set<string>();
-          for (const mk of p.markers) {
-            if (!(PLOT_PHASE_TYPES as readonly string[]).includes(mk.phaseType))
+          for (const [markerIndex, marker] of proposal.markers.entries()) {
+            const markerLabel = marker.nodeId || name;
+            if (
+              !(PLOT_PHASE_TYPES as readonly string[]).includes(
+                marker.phaseType,
+              )
+            ) {
+              result.skipped.push({
+                kind: "marker",
+                proposalIndex,
+                markerIndex,
+                label: markerLabel,
+                code: "INVALID_PHASE",
+              });
               continue;
-            if (!mk.nodeId) continue;
-            const key = `${mk.nodeId}::${mk.phaseType}`;
-            if (seen.has(key)) continue;
+            }
+            if (!marker.nodeId) {
+              result.skipped.push({
+                kind: "marker",
+                proposalIndex,
+                markerIndex,
+                label: name,
+                code: "MISSING_NODE",
+              });
+              continue;
+            }
+            const key = `${marker.nodeId}::${marker.phaseType}`;
+            if (seen.has(key)) {
+              result.skipped.push({
+                kind: "marker",
+                proposalIndex,
+                markerIndex,
+                label: markerLabel,
+                code: "DUPLICATE",
+              });
+              continue;
+            }
             seen.add(key);
             if (
               get().links.some(
-                (l) =>
-                  l.threadId === thread.id &&
-                  l.nodeId === mk.nodeId &&
-                  l.phaseType === mk.phaseType,
+                (link) =>
+                  link.threadId === thread.id &&
+                  link.nodeId === marker.nodeId &&
+                  link.phaseType === marker.phaseType,
               )
-            )
-              continue;
-            let link: PlotThreadLinkRow;
-            try {
-              link = await createPlotThreadLink({
-                threadId: thread.id,
-                nodeId: mk.nodeId,
-                phaseType: mk.phaseType,
-                note: mk.note?.trim() || null,
+            ) {
+              if (resumedImportThread) {
+                continue;
+              }
+              result.skipped.push({
+                kind: "marker",
+                proposalIndex,
+                markerIndex,
+                label: markerLabel,
+                code: "DUPLICATE",
               });
-            } catch {
               continue;
             }
-            if (getCurrentProjectId() !== projectId) return;
-            set({ links: [...get().links, link] });
-            const capturedLink = { ...link };
-            recordPlotHistory({
-              label: i18next.t("plotThread.history.addMarker", "マーカー追加"),
-              entityId: capturedLink.id,
-              undo: async () => {
-                await deletePlotThreadLink(capturedLink.id);
-                set({
-                  links: get().links.filter((l) => l.id !== capturedLink.id),
-                });
-              },
-              redo: async () => {
-                await restorePlotThreadLink(capturedLink);
-                set({ links: [...get().links, capturedLink] });
-              },
+            if (!isCurrentMutationAuthority(authority)) {
+              result.aborted = true;
+              return;
+            }
+
+            const note = marker.note?.trim() || null;
+            const linkSignature = JSON.stringify({
+              projectId,
+              threadId: thread.id,
+              nodeId: marker.nodeId,
+              phaseType: marker.phaseType,
+              note,
             });
+            const pendingLink = pendingLinkCreates.acquire(
+              `import-link:${proposalRetryKey}:${markerIndex}:${linkSignature}`,
+              linkSignature,
+              (id) => ({
+                id,
+                threadId: thread.id,
+                nodeId: marker.nodeId,
+                phaseType: marker.phaseType,
+                note,
+              }),
+            );
+            let linkOutcome;
+            try {
+              linkOutcome = await runRetainedPlotCreate(
+                authority,
+                pendingLinkCreates,
+                pendingLink,
+                createPlotThreadLink,
+              );
+            } catch {
+              result.failed.push({
+                kind: "marker",
+                proposalIndex,
+                markerIndex,
+                label: markerLabel,
+                code: "CREATE_FAILED",
+              });
+              continue;
+            }
+            if (linkOutcome.status !== "current") {
+              result.aborted = true;
+              return;
+            }
+            const link = linkOutcome.value;
+            if (!isCreateResultEntityPresent(link)) {
+              result.failed.push({
+                kind: "marker",
+                proposalIndex,
+                markerIndex,
+                label: markerLabel,
+                code: "CREATE_FAILED",
+              });
+              continue;
+            }
+            const linkAlreadyPresent = get().links.some(
+              (candidate) => candidate.id === link.id,
+            );
+            if (!linkAlreadyPresent) {
+              set({ links: [...get().links, link] });
+            }
+            result.createdMarkers.push(link);
+            if (getCreateResultMetadata(link)?.replayed && linkAlreadyPresent) {
+              continue;
+            }
+            const capturedLink = { ...link };
+            const redoRestoreRequests =
+              createPendingCreateRequestRegistry<PlotRestoreSnapshotPayload>();
+            recordPlotHistory(
+              {
+                label: i18next.t(
+                  "plotThread.history.addMarker",
+                  "マーカー追加",
+                ),
+                entityId: capturedLink.id,
+                undo: async () => {
+                  await replayPlotMutation(
+                    authority,
+                    () => deletePlotThreadLink(capturedLink.id),
+                    () =>
+                      set({
+                        links: get().links.filter(
+                          (candidate) => candidate.id !== capturedLink.id,
+                        ),
+                      }),
+                  );
+                },
+                redo: async () => {
+                  await replayPlotMutation(
+                    authority,
+                    () =>
+                      runRetainedPlotRestore(redoRestoreRequests, {
+                        projectId: authority.projectId,
+                        thread: null,
+                        links: [capturedLink],
+                        branches: [],
+                      }),
+                    () => set({ links: [...get().links, capturedLink] }),
+                  );
+                },
+              },
+              collector,
+              authority,
+            );
           }
         }
       },
     );
+    if (
+      !result.aborted &&
+      result.skipped.length === 0 &&
+      result.failed.length === 0
+    ) {
+      for (const key of importProgressKeys) {
+        pendingPlotImportThreads.delete(key);
+      }
+    }
+    return result;
   },
 
-  updateMarker: async (id, patch) => {
-    const pid = getCurrentProjectId();
+  updateMarker: async (id, patch, history, options) => {
     const before = get().links.find((l) => l.id === id);
-    await updatePlotThreadLink(id, patch);
-    if (getCurrentProjectId() !== pid) return;
+    if (!before) {
+      if (options?.preexistingDraft) {
+        throw new Error(`Plot marker draft target is unavailable: ${id}`);
+      }
+      return;
+    }
+    if (
+      patch.threadId !== undefined &&
+      !get().threads.some((thread) => thread.id === patch.threadId)
+    ) {
+      if (options?.preexistingDraft) {
+        throw new Error(`Plot marker draft thread is unavailable: ${id}`);
+      }
+      return;
+    }
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) {
+      if (options?.preexistingDraft) {
+        throw new Error(`Plot marker draft authority is stale: ${id}`);
+      }
+      return;
+    }
+    const outcome = await runAuthoritativeMutation(
+      authority,
+      () => updatePlotThreadLink(id, patch),
+      options,
+    );
+    if (outcome.status !== "current") {
+      if (options?.preexistingDraft) {
+        throw new Error(`Plot marker draft authority changed: ${id}`);
+      }
+      return;
+    }
     set({
-      links: get().links.map((l) => (l.id === id ? { ...l, ...patch } : l)),
+      links: get().links.map((link) => (link.id === id ? outcome.value : link)),
     });
-    if (!before) return;
     // patch で触れたキーだけ元値を控える before patch を作る。
     const beforePatch: typeof patch = {};
     if ("threadId" in patch) beforePatch.threadId = before.threadId;
     if ("nodeId" in patch) beforePatch.nodeId = before.nodeId;
     if ("phaseType" in patch) beforePatch.phaseType = before.phaseType;
     if ("note" in patch) beforePatch.note = before.note;
-    recordPlotHistory({
-      label: markerPatchLabel(patch),
-      entityId: id,
-      undo: async () => {
-        await updatePlotThreadLink(id, beforePatch);
-        set({
-          links: get().links.map((l) =>
-            l.id === id ? { ...l, ...beforePatch } : l,
-          ),
-        });
+    recordPlotHistory(
+      {
+        label: markerPatchLabel(patch),
+        entityId: id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThreadLink(id, beforePatch),
+            (updated) =>
+              set({
+                links: get().links.map((link) =>
+                  link.id === id ? updated : link,
+                ),
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThreadLink(id, patch),
+            (updated) =>
+              set({
+                links: get().links.map((link) =>
+                  link.id === id ? updated : link,
+                ),
+              }),
+          );
+        },
       },
-      redo: async () => {
-        await updatePlotThreadLink(id, patch);
-        set({
-          links: get().links.map((l) => (l.id === id ? { ...l, ...patch } : l)),
-        });
-      },
-    });
+      history,
+      authority,
+    );
   },
 
   deleteMarker: async (id) => {
-    const pid = getCurrentProjectId();
     const link = get().links.find((l) => l.id === id);
-    await deletePlotThreadLink(id);
-    if (getCurrentProjectId() !== pid) return;
+    if (!link) return;
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) return;
     // アンカー側のエッジをカスケード削除。統一モデル: branch も merge も
     // マーカーは移動先 = to 側に乗る（PlotBranchEditor / D&D 共通）。よってアンカー =
     // to===threadId && atNodeId===nodeId のエッジ。
     // ただし同一(thread,scene)に別 phase のマーカーが残るなら、そのエッジは
     // まだアンカーされているので消さない（複数 phase の取り残し防止）。
     const orphanIds = new Set<string>();
-    if (link) {
-      const stillAnchored = get().links.some(
-        (l) =>
-          l.id !== id &&
-          l.threadId === link.threadId &&
-          l.nodeId === link.nodeId,
-      );
-      if (!stillAnchored) {
-        for (const b of get().branches) {
-          if (b.atNodeId === link.nodeId && b.toThreadId === link.threadId) {
-            orphanIds.add(b.id);
-          }
+    const stillAnchored = get().links.some(
+      (l) =>
+        l.id !== id && l.threadId === link.threadId && l.nodeId === link.nodeId,
+    );
+    if (!stillAnchored) {
+      for (const b of get().branches) {
+        if (b.atNodeId === link.nodeId && b.toThreadId === link.threadId) {
+          orphanIds.add(b.id);
         }
-        for (const bid of orphanIds) {
-          await deletePlotThreadBranch(bid);
-        }
-        if (getCurrentProjectId() !== pid) return;
       }
     }
     // set より前（まだ存在するうち）に消えるエッジの完全な行を控える。
     const removedBranches = get().branches.filter((b) => orphanIds.has(b.id));
+    const deleteSnapshot = {
+      projectId: authority.projectId,
+      link,
+      branches: removedBranches,
+    };
+    const outcome = await runAuthoritativeMutation(authority, () =>
+      runRetainedPlotDelete(
+        pendingPlotDeleteSnapshots,
+        `marker:${authority.projectId}:${id}`,
+        deleteSnapshot,
+      ),
+    );
+    if (outcome.status !== "current") return;
     set({
       links: get().links.filter((l) => l.id !== id),
       branches: get().branches.filter((b) => !orphanIds.has(b.id)),
     });
-    if (!link) return;
     const removedLink = link;
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.deleteMarker", "マーカー削除"),
-      entityId: id,
-      undo: async () => {
-        await restorePlotThreadLink(removedLink);
-        for (const b of removedBranches) await restorePlotThreadBranch(b);
-        set({
-          links: [...get().links, removedLink],
-          branches: [...get().branches, ...removedBranches],
-        });
+    const undoRestoreRequests =
+      createPendingCreateRequestRegistry<PlotRestoreSnapshotPayload>();
+    const redoDeleteRequests =
+      createPendingCreateRequestRegistry<PlotDeleteSnapshotPayload>();
+    recordPlotHistory(
+      {
+        label: i18next.t("plotThread.history.deleteMarker", "マーカー削除"),
+        entityId: id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotRestore(undoRestoreRequests, {
+                projectId: authority.projectId,
+                thread: null,
+                links: [removedLink],
+                branches: removedBranches,
+              }),
+            () =>
+              set({
+                links: [...get().links, removedLink],
+                branches: [...get().branches, ...removedBranches],
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotDelete(
+                redoDeleteRequests,
+                "delete",
+                deleteSnapshot,
+              ),
+            () =>
+              set({
+                links: get().links.filter((candidate) => candidate.id !== id),
+                branches: get().branches.filter(
+                  (candidate) =>
+                    !removedBranches.some(
+                      (removed) => removed.id === candidate.id,
+                    ),
+                ),
+              }),
+          );
+        },
       },
-      redo: async () => {
-        await deletePlotThreadLink(id);
-        for (const b of removedBranches) await deletePlotThreadBranch(b.id);
-        set({
-          links: get().links.filter((l) => l.id !== id),
-          branches: get().branches.filter(
-            (b) => !removedBranches.some((r) => r.id === b.id),
-          ),
-        });
-      },
-    });
+      undefined,
+      authority,
+    );
   },
 
-  addBranch: async (data) => {
+  addBranch: async (data, history) => {
+    const authority = captureBoundPlotAuthority(get(), data.projectId);
     // 自己参照を弾く。
     if (data.fromThreadId === data.toThreadId) return;
-    // XPROJ ガード: from/to は現在ロード中（＝同一 project）のスレッドのみ許可。
-    // branch は Rust コマンドを経由せず Drizzle 直書きのため、ここで不変条件を守る。
+    if (!authority || !isCurrentMutationAuthority(authority)) return;
+    // UX 向け XPROJ preflight: from/to は現在ロード中（＝同一 project）の
+    // スレッドのみ許可。native create transaction でも最終的に再検証する。
     const threads = get().threads;
     const known = (id: string) => threads.some((t) => t.id === id);
     if (!known(data.fromThreadId) || !known(data.toThreadId)) return;
@@ -558,78 +1321,174 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
         b.kind === data.kind,
     );
     if (dup) return;
-    const created = await createPlotThreadBranch(data);
-    if (getCurrentProjectId() !== data.projectId) return;
-    set({ branches: [...get().branches, created] });
+    const signature = JSON.stringify(data);
+    const pending = pendingBranchCreates.acquire(
+      `branch:${signature}`,
+      signature,
+      (id) => ({ id, ...data }),
+    );
+    const outcome = await runRetainedPlotCreate(
+      authority,
+      pendingBranchCreates,
+      pending,
+      createPlotThreadBranch,
+    );
+    if (outcome.status !== "current") return;
+    const created = outcome.value;
+    if (!isCreateResultEntityPresent(created)) return;
+    if (getCreateResultMetadata(created)?.replayed) {
+      if (get().branches.some((branch) => branch.id === created.id)) return;
+      set({ branches: [...get().branches, created] });
+    } else {
+      set({ branches: [...get().branches, created] });
+    }
     const captured = { ...created };
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.addBranch", "分岐 / 合流を追加"),
-      entityId: captured.id,
-      undo: async () => {
-        await deletePlotThreadBranch(captured.id);
-        set({ branches: get().branches.filter((b) => b.id !== captured.id) });
+    const redoRestoreRequests =
+      createPendingCreateRequestRegistry<PlotRestoreSnapshotPayload>();
+    recordPlotHistory(
+      {
+        label: i18next.t("plotThread.history.addBranch", "分岐 / 合流を追加"),
+        entityId: captured.id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => deletePlotThreadBranch(captured.id),
+            () =>
+              set({
+                branches: get().branches.filter(
+                  (candidate) => candidate.id !== captured.id,
+                ),
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotRestore(redoRestoreRequests, {
+                projectId: captured.projectId,
+                thread: null,
+                links: [],
+                branches: [captured],
+              }),
+            () => set({ branches: [...get().branches, captured] }),
+          );
+        },
       },
-      redo: async () => {
-        await restorePlotThreadBranch(captured);
-        set({ branches: [...get().branches, captured] });
-      },
-    });
+      history,
+      authority,
+    );
   },
 
-  updateBranch: async (id, patch) => {
-    const pid = getCurrentProjectId();
+  updateBranch: async (id, patch, history) => {
     const before = get().branches.find((b) => b.id === id);
-    await updatePlotThreadBranch(id, patch);
-    if (getCurrentProjectId() !== pid) return;
+    if (!before) return;
+    const nextFromThreadId = patch.fromThreadId ?? before.fromThreadId;
+    const nextToThreadId = patch.toThreadId ?? before.toThreadId;
+    if (
+      !get().threads.some((thread) => thread.id === nextFromThreadId) ||
+      !get().threads.some((thread) => thread.id === nextToThreadId)
+    ) {
+      return;
+    }
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) return;
+    const outcome = await runAuthoritativeMutation(authority, () =>
+      updatePlotThreadBranch(id, patch),
+    );
+    if (outcome.status !== "current") return;
     set({
-      branches: get().branches.map((b) =>
-        b.id === id ? { ...b, ...patch } : b,
+      branches: get().branches.map((branch) =>
+        branch.id === id ? outcome.value : branch,
       ),
     });
-    if (!before) return;
     const beforePatch: typeof patch = {};
     if ("fromThreadId" in patch) beforePatch.fromThreadId = before.fromThreadId;
     if ("toThreadId" in patch) beforePatch.toThreadId = before.toThreadId;
     if ("atNodeId" in patch) beforePatch.atNodeId = before.atNodeId;
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.updateBranch", "分岐 / 合流を変更"),
-      entityId: id,
-      undo: async () => {
-        await updatePlotThreadBranch(id, beforePatch);
-        set({
-          branches: get().branches.map((b) =>
-            b.id === id ? { ...b, ...beforePatch } : b,
-          ),
-        });
+    recordPlotHistory(
+      {
+        label: i18next.t(
+          "plotThread.history.updateBranch",
+          "分岐 / 合流を変更",
+        ),
+        entityId: id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThreadBranch(id, beforePatch),
+            (updated) =>
+              set({
+                branches: get().branches.map((branch) =>
+                  branch.id === id ? updated : branch,
+                ),
+              }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => updatePlotThreadBranch(id, patch),
+            (updated) =>
+              set({
+                branches: get().branches.map((branch) =>
+                  branch.id === id ? updated : branch,
+                ),
+              }),
+          );
+        },
       },
-      redo: async () => {
-        await updatePlotThreadBranch(id, patch);
-        set({
-          branches: get().branches.map((b) =>
-            b.id === id ? { ...b, ...patch } : b,
-          ),
-        });
-      },
-    });
+      history,
+      authority,
+    );
   },
 
-  deleteBranch: async (id) => {
+  deleteBranch: async (id, history) => {
     const removed = get().branches.find((b) => b.id === id);
-    await deletePlotThreadBranch(id);
-    set({ branches: get().branches.filter((b) => b.id !== id) });
     if (!removed) return;
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.deleteBranch", "分岐 / 合流を削除"),
-      entityId: id,
-      undo: async () => {
-        await restorePlotThreadBranch(removed);
-        set({ branches: [...get().branches, removed] });
+    const authority = captureBoundPlotAuthority(get());
+    if (!authority) return;
+    const outcome = await runAuthoritativeMutation(authority, () =>
+      deletePlotThreadBranch(id),
+    );
+    if (outcome.status !== "current") return;
+    set({ branches: get().branches.filter((b) => b.id !== id) });
+    const undoRestoreRequests =
+      createPendingCreateRequestRegistry<PlotRestoreSnapshotPayload>();
+    recordPlotHistory(
+      {
+        label: i18next.t(
+          "plotThread.history.deleteBranch",
+          "分岐 / 合流を削除",
+        ),
+        entityId: id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotRestore(undoRestoreRequests, {
+                projectId: removed.projectId,
+                thread: null,
+                links: [],
+                branches: [removed],
+              }),
+            () => set({ branches: [...get().branches, removed] }),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () => deletePlotThreadBranch(id),
+            () =>
+              set({
+                branches: get().branches.filter((branch) => branch.id !== id),
+              }),
+          );
+        },
       },
-      redo: async () => {
-        await deletePlotThreadBranch(id);
-        set({ branches: get().branches.filter((b) => b.id !== id) });
-      },
-    });
+      history,
+      authority,
+    );
   },
 }));
 

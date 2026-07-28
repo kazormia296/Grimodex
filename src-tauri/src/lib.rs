@@ -279,6 +279,9 @@ pub fn run() {
             commands::plot_threads::plot_thread_link_update,
             commands::plot_threads::plot_thread_link_delete,
             commands::plot_threads::plot_thread_list_links,
+            commands::plot_threads::plot_thread_branch_create,
+            commands::plot_threads::plot_thread_restore_snapshot,
+            commands::plot_threads::plot_thread_delete_snapshot,
             commands::lint::lint_text,
             commands::reorder::segment_bunsetsu,
             commands::post_effect::start_post_effect_run,
@@ -294,6 +297,8 @@ pub fn run() {
             commands::onboarding::seed_sample_workspace,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_index_scene,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::semantic_cancel_background,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_search,
             #[cfg(feature = "semantic-embedding")]

@@ -101,6 +101,9 @@ export async function planNonSceneChatContext(
     .reduce((sum, message) => sum + countTokens(message.content), 0);
   const rendered = deps.renderPrompt({
     ...collected.promptInput,
+    // Live data is a UI cache. Send/copy/preview requests remain exact and are
+    // rebuilt independently before any provider payload is materialized.
+    tokenCountingMode: request.purpose === "live" ? "live-estimate" : "exact",
     contextRequestId: request.requestId,
     commandInstruction: request.commandInstruction,
     agentMode: request.mode === "agent",

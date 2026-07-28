@@ -133,6 +133,63 @@ describe("snippetStore", () => {
       await promise;
       expect(useSnippetStore.getState().isLoading).toBe(false);
     });
+
+    it("lets lifecycle strict callers observe a shared load failure", async () => {
+      const failure = new Error("snippet optional hydrate failed");
+      mockListSnippets.mockRejectedValueOnce(failure);
+
+      const compatibleUiLoad = useSnippetStore.getState().loadEntries();
+      const strictLifecycleLoad = useSnippetStore
+        .getState()
+        .loadEntries({ propagateError: true });
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+
+      await Promise.all([compatibleExpectation, strictExpectation]);
+      expect(mockListSnippets).toHaveBeenCalledTimes(1);
+      expect(useSnippetStore.getState().isLoading).toBe(false);
+    });
+
+    it("keeps a strict-first load authoritative when an ordinary caller joins", async () => {
+      const failure = new Error("snippet strict-first hydrate failed");
+      mockListSnippets.mockRejectedValueOnce(failure);
+
+      const strictLifecycleLoad = useSnippetStore
+        .getState()
+        .loadEntries({ propagateError: true });
+      const compatibleUiLoad = useSnippetStore.getState().loadEntries();
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+
+      await Promise.all([strictExpectation, compatibleExpectation]);
+      expect(mockListSnippets).toHaveBeenCalledTimes(1);
+      expect(useSnippetStore.getState().isLoading).toBe(false);
+    });
+
+    it("does not publish a load invalidated by a Project reset", async () => {
+      let resolveOldLoad!: (value: snippetApi.Snippet[]) => void;
+      const newSnippet = fakeSnippet({ id: "snippet-new" });
+      mockListSnippets
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveOldLoad = resolve;
+          }),
+        )
+        .mockResolvedValueOnce([newSnippet]);
+
+      const oldLoad = useSnippetStore.getState().loadEntries();
+      useSnippetStore.getState().resetForProject();
+      await useSnippetStore.getState().loadEntries();
+      resolveOldLoad([fakeSnippet({ id: "snippet-old" })]);
+      await oldLoad;
+
+      expect(useSnippetStore.getState().entries).toEqual([newSnippet]);
+      expect(useSnippetStore.getState().isLoading).toBe(false);
+    });
   });
 
   describe("search", () => {

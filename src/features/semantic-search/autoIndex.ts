@@ -6,6 +6,10 @@ import {
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
+  isQuiescenceLeaseActive,
+  isRendererTeardownStarted,
+} from "@/application/lifecycle/quiescenceLease";
+import {
   chatIndexStatus,
   chatReindexAll,
   codexIndexStatus,
@@ -47,6 +51,8 @@ export function captureCurrentSemanticScope(
   expectedWorkspaceKey?: string,
 ): SemanticIndexScope | null {
   if (
+    isQuiescenceLeaseActive() ||
+    isRendererTeardownStarted() ||
     useWorkspaceStore.getState().workspaceSwitchInProgress ||
     !useWorkspaceStore.getState().workspaceHydrated
   ) {
@@ -78,6 +84,8 @@ export function captureCurrentSemanticScope(
 /** Re-check a captured scope after every await before starting the next stage. */
 export function isSemanticScopeCurrent(scope: SemanticIndexScope): boolean {
   return (
+    !isQuiescenceLeaseActive() &&
+    !isRendererTeardownStarted() &&
     useWorkspaceStore.getState().workspaceHydrated &&
     !useWorkspaceStore.getState().workspaceSwitchInProgress &&
     useWorkspaceStore.getState().activeWorkspacePath === scope.workspaceKey &&

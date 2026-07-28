@@ -1,17 +1,50 @@
 export interface ProjectLifecycleContext {
   projectId: string;
+  /**
+   * Target Workspace generation for a pre-publication replacement hydrate.
+   * Ordinary Project switches omit this and use the currently published
+   * runtime identity.
+   */
+  workspaceOpenRevision?: number;
 }
 
 export interface ProjectLifecycleParticipant {
   id: string;
-  reset?: (context: ProjectLifecycleContext) => void | Promise<void>;
+  /**
+   * Load critical data without mutating singleton stores. The returned commit
+   * is executed synchronously only after every preparation succeeds.
+   */
+  prepareCritical?: (
+    context: ProjectLifecycleContext,
+  ) => void | (() => void) | Promise<void | (() => void)>;
+  reset?: (context: ProjectLifecycleContext) => void;
+  commitCritical?: (context: ProjectLifecycleContext) => void;
+  /** Legacy critical hook. Prefer prepareCritical for stateful hydration. */
   hydrateCritical?: (context: ProjectLifecycleContext) => void | Promise<void>;
   hydrateOptional?: (context: ProjectLifecycleContext) => void | Promise<void>;
   activate?: (context: ProjectLifecycleContext) => void | Promise<void>;
 }
 
 export interface ProjectLifecycleRegistry {
-  reload(context: ProjectLifecycleContext): Promise<void>;
+  reload(
+    context: ProjectLifecycleContext,
+    options?: {
+      /** Runs in the same synchronous commit stack, before resets/publish. */
+      beforeCommit?: () => boolean | void;
+      /** Runs after every synchronous critical publish, before async hydrates. */
+      afterCommit?: () => void;
+    },
+  ): Promise<ProjectLifecycleReloadResult>;
+}
+
+export interface ProjectLifecycleFailure {
+  participantId: string;
+  error: unknown;
+}
+
+export interface ProjectLifecycleReloadResult {
+  cancelled: boolean;
+  degraded: ProjectLifecycleFailure[];
 }
 
 export interface ProjectLifecycleRegistryOptions {
@@ -41,7 +74,8 @@ async function runInBatches(
   context: ProjectLifecycleContext,
   concurrency: number,
   onFailure: ProjectLifecycleRegistryOptions["onOptionalFailure"],
-): Promise<void> {
+): Promise<ProjectLifecycleFailure[]> {
+  const failures: ProjectLifecycleFailure[] = [];
   const batchSize = Math.max(1, Math.floor(concurrency));
   for (let i = 0; i < participants.length; i += batchSize) {
     const batch = participants.slice(i, i + batchSize);
@@ -50,10 +84,13 @@ async function runInBatches(
     );
     results.forEach((result, index) => {
       if (result.status === "rejected") {
-        onFailure?.(batch[index]!, result.reason);
+        const participant = batch[index]!;
+        failures.push({ participantId: participant.id, error: result.reason });
+        onFailure?.(participant, result.reason);
       }
     });
   }
+  return failures;
 }
 
 /**
@@ -70,6 +107,12 @@ export function createProjectLifecycleRegistry(
   const resetParticipants = participants.filter(
     (participant) => participant.reset,
   );
+  const prepareParticipants = participants.filter(
+    (participant) => participant.prepareCritical,
+  );
+  const commitParticipants = participants.filter(
+    (participant) => participant.commitCritical,
+  );
   const criticalParticipants = participants.filter(
     (participant) => participant.hydrateCritical,
   );
@@ -81,25 +124,56 @@ export function createProjectLifecycleRegistry(
   );
 
   return {
-    async reload(context) {
-      for (const participant of resetParticipants) {
-        await participant.reset!(context);
+    async reload(context, reloadOptions) {
+      const preparedCommits: Array<() => void> = [];
+      // Phase A: no externally visible state is mutated. A failure leaves the
+      // old Project fully operational.
+      for (const participant of prepareParticipants) {
+        const commit = await participant.prepareCritical!(context);
+        if (commit) preparedCommits.push(commit);
       }
+
+      if (reloadOptions?.beforeCommit?.() === false) {
+        return { cancelled: true, degraded: [] };
+      }
+
+      // Phase B: no await until all critical snapshots and singleton resets
+      // have been published. UI events cannot observe an old/new mixture.
+      for (const participant of resetParticipants) {
+        participant.reset!(context);
+      }
+      for (const commit of preparedCommits) commit();
+      for (const participant of commitParticipants) {
+        participant.commitCritical!(context);
+      }
+      reloadOptions?.afterCommit?.();
 
       for (const participant of criticalParticipants) {
         await participant.hydrateCritical!(context);
       }
 
-      await runInBatches(
+      const degraded = await runInBatches(
         optionalParticipants,
         context,
         options.optionalConcurrency ?? 3,
         options.onOptionalFailure,
       );
 
-      for (const participant of activationParticipants) {
-        await participant.activate!(context);
-      }
+      const activationResults = await Promise.allSettled(
+        activationParticipants.map((participant) =>
+          participant.activate!(context),
+        ),
+      );
+      activationResults.forEach((result, index) => {
+        if (result.status !== "rejected") return;
+        const participant = activationParticipants[index]!;
+        degraded.push({
+          participantId: participant.id,
+          error: result.reason,
+        });
+        options.onOptionalFailure?.(participant, result.reason);
+      });
+      return { cancelled: false, degraded };
     },
   };
 }

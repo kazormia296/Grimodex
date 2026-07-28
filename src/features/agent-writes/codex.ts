@@ -20,6 +20,10 @@ import { notifySameRendererDocumentWrite } from "@/features/concurrency/document
 import { validateAgentProseMirrorJson } from "./richTextInput";
 
 export interface AgentCodexCreateInput {
+  /** Stable identity of the logical request; distinct from the created entity. */
+  requestId?: string;
+  /** Reuse this domain ID when retrying the same logical create. */
+  entryId?: string;
   type: string;
   name: string;
   summary?: string;
@@ -116,6 +120,7 @@ export async function agentCreateCodexEntry(
   }
 
   const projectId = getCurrentProjectId();
+  const entryId = input.entryId ?? crypto.randomUUID();
   const content = input.content
     ? markCodexContentAsAi(input.content, {
         model: input.model,
@@ -135,6 +140,8 @@ export async function agentCreateCodexEntry(
 
   const result = await invoke<AgentWriteResult>("agent_codex_create", {
     payload: {
+      requestId: input.requestId ?? null,
+      entryId,
       projectId,
       sessionId: getRecorderSessionId(),
       typeSlug: input.type,
@@ -173,6 +180,7 @@ export async function agentCreateCodexEntry(
     useGlobalHistoryStore.getState().push({
       kind: "codex",
       label: i18next.t("codex.store.agentHistoryCreate"),
+      operationId: journalId,
       entityId,
       async undo() {
         await applyUndoJournal(journalId, "undo");
@@ -278,6 +286,7 @@ export async function agentUpdateCodexEntry(
     useGlobalHistoryStore.getState().push({
       kind: "codex",
       label: i18next.t("codex.store.agentHistoryUpdate"),
+      operationId: journalId,
       entityId,
       async undo() {
         await applyUndoJournal(journalId, "undo");

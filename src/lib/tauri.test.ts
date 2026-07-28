@@ -36,7 +36,7 @@ describe("invoke wrapper", () => {
     expect(result).toBe("tauri-result");
   });
 
-  it("rejects with timeout when tauri invoke never settles", async () => {
+  it("rejects with timeout when a verified read-only invoke never settles", async () => {
     vi.useFakeTimers();
 
     (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
@@ -48,7 +48,7 @@ describe("invoke wrapper", () => {
     }));
 
     const { invoke } = await import("./tauri");
-    const promise = invoke("hanging_command");
+    const promise = invoke("get_global_settings");
 
     // Attach rejection handler BEFORE advancing timers to avoid unhandled rejection
     const expectation = expect(promise).rejects.toThrow(/IPC timeout/);

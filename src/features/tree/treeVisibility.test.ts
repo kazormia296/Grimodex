@@ -6,6 +6,7 @@ import {
 } from "./treeVisibility";
 import { getTreeIndex } from "./treeIndex";
 import type { TreeNodeData } from "./treeStore";
+import { endPerfSession, startPerfSession } from "@/lib/perfLog";
 
 function node(over: Partial<TreeNodeData> & { id: string }): TreeNodeData {
   return {
@@ -250,5 +251,40 @@ describe("treeVisibility threadFilter", () => {
       ["folderB", 0],
       ["s3", 1],
     ]);
+  });
+
+  it("records a linear visit bound for a 10k-node search without timing assertions", () => {
+    const folder = node({
+      id: "large-folder",
+      nodeType: "folder",
+      sortOrder: "a0",
+    });
+    const scenes = Array.from({ length: 10_000 }, (_, index) =>
+      node({
+        id: `large-scene-${index}`,
+        parentId: folder.id,
+        title: index === 9_999 ? "unique search target" : `scene ${index}`,
+        sortOrder: `a${String(index).padStart(5, "0")}`,
+      }),
+    );
+    const totalNodes = scenes.length + 1;
+
+    startPerfSession();
+    const rows = deriveVisibleTreeRows(getTreeIndex([folder, ...scenes]), {
+      expandedIds: [],
+      query: "unique search target",
+    });
+    const result = endPerfSession();
+
+    expect(rows.map((row) => row.node.id)).toEqual([
+      folder.id,
+      "large-scene-9999",
+    ]);
+    expect(result?.counters).toMatchObject({
+      "tree.visibility.derive.count": 1,
+      "tree.visibility.nodesVisited": totalNodes * 2,
+      "tree.visibility.maxNodesVisited": totalNodes * 2,
+      "tree.visibility.visibleRows": 2,
+    });
   });
 });

@@ -18,14 +18,22 @@ import { toast } from "sonner";
 import { announce } from "@/lib/a11y/announcer";
 import i18next from "@/lib/i18n";
 import { debugLog } from "@/lib/debugLog";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
+import { _resetEditorAnalysisSchedulerForTests } from "@/lib/editorAnalysisScheduler";
 
 describe("createAutoSave", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    _resetEditorAnalysisSchedulerForTests();
   });
 
   afterEach(() => {
+    _resetQuiescenceLeasesForTests();
+    _resetEditorAnalysisSchedulerForTests();
     vi.useRealTimers();
   });
 
@@ -73,6 +81,21 @@ describe("createAutoSave", () => {
     vi.advanceTimersByTime(3000);
 
     expect(saveFn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a new schedule while a destructive lifecycle lease is active", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 500);
+    const lease = acquireQuiescenceLease("workspace-open");
+
+    expect(autoSave.schedule()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(saveFn).not.toHaveBeenCalled();
+
+    lease.release();
+    expect(autoSave.schedule()).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledOnce();
   });
 
   it("pause keeps the queued edit, blocks quiesce, and resume persists it", async () => {
@@ -358,8 +381,11 @@ describe("createAutoSave", () => {
     const saveFn = vi
       .fn()
       .mockRejectedValue(
-        new Error(
-          "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
+        Object.assign(
+          new Error(
+            "workspace is switching; DB access is temporarily rejected",
+          ),
+          { code: "WORKSPACE_SWITCHING" },
         ),
       );
     const autoSave = createAutoSave(saveFn, 500);
@@ -377,9 +403,11 @@ describe("flushAllAutoSaves (workspace 切替前 quiesce)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    _resetEditorAnalysisSchedulerForTests();
   });
 
   afterEach(() => {
+    _resetEditorAnalysisSchedulerForTests();
     vi.useRealTimers();
   });
 
@@ -440,5 +468,37 @@ describe("flushAllAutoSaves (workspace 切替前 quiesce)", () => {
     expect(toast.error).toHaveBeenCalled();
 
     unregister();
+  });
+
+  it("失敗があっても全instanceのsettleを待ってからrejectする", async () => {
+    let release!: () => void;
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const failed = createAutoSave(
+      vi.fn().mockRejectedValue(new Error("disk full")),
+      2000,
+    );
+    const slowSave = vi.fn(() => delayed);
+    const slow = createAutoSave(slowSave, 2000);
+    const unregisterFailed = registerAutoSaveForQuiesce(failed);
+    const unregisterSlow = registerAutoSaveForQuiesce(slow);
+    failed.schedule();
+    slow.schedule();
+
+    let settled = false;
+    const quiesce = flushAllAutoSaves().finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(slowSave).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    release();
+    await expect(quiesce).rejects.toThrow("disk full");
+
+    unregisterFailed();
+    unregisterSlow();
   });
 });

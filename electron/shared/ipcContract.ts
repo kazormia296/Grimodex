@@ -4,10 +4,9 @@
  * - **envelope 方式**: Electron の `ipcMain.handle` の throw は
  *   `"Error invoking remote method …"` プレフィックスでワイヤを汚すため、
  *   main は決して throw せず `{ ok, value | error }` を resolve する。
- *   renderer 側（src/lib/tauri.ts の electron 分岐、S5）が
- *   `if (!res.ok) throw res.error;` で**生文字列 reject** に解封する —
- *   Tauri のエラー文字列契約（`WORKSPACE_SWITCHING` / `No workspace is open`
- *   マーカーの部分一致判定 126 箇所）の保存が最重要。
+ *   renderer 側（src/lib/tauri.ts の electron 分岐、S5）が typed
+ *   `IpcInvokeError` に解封する。`message` / `toString()` は旧 `error`
+ *   文字列を維持し、`WORKSPACE_SWITCHING` 等の既存部分一致判定を保存する。
  * - **コマンド表**: Phase 2 の napi 垂直スライス 12 コマンドを起点に、Phase 3 の
  *   バッチごとに段階拡張する。引数アダプタ（Tauri の camelCase→snake_case
  *   自動変換の写像）はコマンドごとに明示する。この表が実装済みコマンド写像の
@@ -24,16 +23,42 @@
 // envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
+export type IpcErrorCode =
+  | "WORKSPACE_SWITCHING"
+  | "NO_WORKSPACE_OPEN"
+  | "IPC_UNIMPLEMENTED"
+  | "IPC_BACKEND_UNAVAILABLE"
+  | "IPC_SECRETS_UNAVAILABLE"
+  | "IPC_DERIVED_CANCELLED"
+  | "UNKNOWN";
+
+export type IpcErrorOutcome = "failed" | "unknown";
+
+export interface IpcErrorInfo {
+  code: IpcErrorCode;
+  message: string;
+  retryable: boolean;
+  /**
+   * `unknown` means the caller stopped waiting but the native operation may
+   * still complete. Main-process failures are always `failed`; renderer-side
+   * IPC timeouts use `unknown`.
+   */
+  outcome: IpcErrorOutcome;
+  details?: Record<string, unknown>;
+}
+
 export type Envelope<T = unknown> =
   | { ok: true; value: T }
   | {
       ok: false;
       error: string;
+      /** Typed wire for new callers; `error` remains for legacy substring checks. */
+      errorInfo?: IpcErrorInfo;
       /**
        * Tauri がエラーを **object** で serialize するコマンド（現状 lint_text の
        * `LintError` = `{type, data}` のみ）の reject 値。renderer 側の解封は
-       * `errorValue ?? error` を throw する — FE `formatLintError` の
-       * `{type, data}` 分岐を保存するため（§5.2 の例外規定）。
+       * `errorValue` は raw object のまま throw する — FE `formatLintError`
+       * の `{type, data}` 分岐を保存するため（§5.2 の例外規定）。
        */
       errorValue?: unknown;
     };
@@ -74,6 +99,52 @@ export function unimplementedError(cmd: string): string {
 export function toErrorString(e: unknown): string {
   if (e instanceof Error) return e.message;
   return typeof e === "string" ? e : String(e);
+}
+
+/**
+ * Derive typed information only for stable, public error markers. Unknown
+ * backend prose remains on the legacy wire and is normalized by the renderer
+ * to `UNKNOWN` without guessing from unstable wording.
+ */
+export function classifyKnownIpcError(
+  message: string,
+): IpcErrorInfo | undefined {
+  const base = {
+    message,
+    outcome: "failed" as const,
+  };
+  if (message.includes("WORKSPACE_SWITCHING")) {
+    return { ...base, code: "WORKSPACE_SWITCHING", retryable: true };
+  }
+  if (/No workspace is open/i.test(message)) {
+    return { ...base, code: "NO_WORKSPACE_OPEN", retryable: true };
+  }
+  if (message.includes(IPC_UNIMPLEMENTED_MARKER)) {
+    return { ...base, code: "IPC_UNIMPLEMENTED", retryable: false };
+  }
+  if (message.includes(IPC_BACKEND_UNAVAILABLE_MARKER)) {
+    return { ...base, code: "IPC_BACKEND_UNAVAILABLE", retryable: false };
+  }
+  if (message.includes("IPC_SECRETS_UNAVAILABLE")) {
+    return { ...base, code: "IPC_SECRETS_UNAVAILABLE", retryable: false };
+  }
+  if (message.includes("IPC_DERIVED_CANCELLED:")) {
+    return { ...base, code: "IPC_DERIVED_CANCELLED", retryable: true };
+  }
+  return undefined;
+}
+
+function failureEnvelope(
+  error: string,
+  errorValue?: unknown,
+): Extract<Envelope, { ok: false }> {
+  const errorInfo = classifyKnownIpcError(error);
+  return {
+    ok: false,
+    error,
+    ...(errorInfo ? { errorInfo } : {}),
+    ...(errorValue !== undefined ? { errorValue } : {}),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -356,6 +427,7 @@ export interface NapiBackendLike {
   // Semantic Phase 3 Batch 4。optional は旧 .node とのversion skewを
   // requireNapiMethodで明示エラーにするため。usize相当はIPCでu32へ狭める。
   semanticDownloadModel?(language: string): Promise<string>;
+  semanticCancelBackground?(): Promise<string>;
   semanticIndexScene?(sceneId: string): Promise<string>;
   semanticSearch?(
     projectId: string,
@@ -409,6 +481,9 @@ export interface NapiBackendLike {
   plotThreadDelete(id: string): Promise<void>;
   plotThreadList(projectId: string): Promise<string>;
   plotThreadLinkCreate(payload: unknown): Promise<string>;
+  plotThreadBranchCreate?(payload: unknown): Promise<string>;
+  plotThreadRestoreSnapshot?(payload: unknown): Promise<string>;
+  plotThreadDeleteSnapshot?(payload: unknown): Promise<string>;
   plotThreadLinkUpdate(id: string, patch: unknown): Promise<string>;
   plotThreadLinkDelete(id: string): Promise<void>;
   plotThreadListLinks(projectId: string): Promise<string>;
@@ -646,6 +721,270 @@ function requireRecord(
     );
   }
   return value as CommandArgs;
+}
+
+function requirePlotThreadBranchCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "plot_thread_branch_create";
+  const payload = requireRecord(args, "payload", command);
+  const requiredStringKeys = [
+    "projectId",
+    "fromThreadId",
+    "toThreadId",
+    "atNodeId",
+  ] as const;
+  for (const key of requiredStringKeys) {
+    if (requireString(payload, key, command).length === 0) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  }
+  if (Object.hasOwn(payload, "id")) {
+    if (requireString(payload, "id", command).length === 0) {
+      throw new Error(
+        `invalid args \`id\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  }
+  const kind = requireString(payload, "kind", command);
+  if (kind !== "branch" && kind !== "merge") {
+    throw new Error(
+      `invalid args \`kind\` for command \`${command}\`: expected branch or merge`,
+    );
+  }
+  return payload;
+}
+
+function requireNonEmptyString(
+  args: CommandArgs,
+  key: string,
+  command: string,
+): string {
+  const value = requireString(args, key, command);
+  if (value.length === 0) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a non-empty string`,
+    );
+  }
+  return value;
+}
+
+function requirePlotSnapshotRecord(
+  value: unknown,
+  key: string,
+  command: string,
+): CommandArgs {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected an object`,
+    );
+  }
+  return value as CommandArgs;
+}
+
+function validateOptionalPlotSnapshotId(
+  row: CommandArgs,
+  key: string,
+  command: string,
+): void {
+  const value = nullableString(row, key, command);
+  if (value === "") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a non-empty string or null`,
+    );
+  }
+}
+
+function requirePlotThreadRestoreSnapshotPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "plot_thread_restore_snapshot";
+  const payload = requireRecord(args, "payload", command);
+  const requestId = requireNonEmptyString(payload, "requestId", command);
+  const projectId = requireNonEmptyString(payload, "projectId", command);
+  void requestId;
+
+  if (!Object.hasOwn(payload, "thread")) {
+    throw new Error(
+      `invalid args \`thread\` for command \`${command}\`: missing required key thread`,
+    );
+  }
+  const threadValue = payload.thread;
+  if (threadValue !== null) {
+    const thread = requirePlotSnapshotRecord(threadValue, "thread", command);
+    for (const key of [
+      "id",
+      "projectId",
+      "name",
+      "sortOrder",
+      "createdAt",
+      "updatedAt",
+    ] as const) {
+      requireNonEmptyString(thread, key, command);
+    }
+    nullableString(thread, "color", command);
+    nullableString(thread, "description", command);
+    validateOptionalPlotSnapshotId(thread, "startNodeId", command);
+    validateOptionalPlotSnapshotId(thread, "endNodeId", command);
+    if (thread.projectId !== projectId) {
+      throw new Error(
+        `invalid args \`thread.projectId\` for command \`${command}\`: expected snapshot projectId`,
+      );
+    }
+  }
+
+  const links = requireArray(payload, "links", command).map((value, index) => {
+    const link = requirePlotSnapshotRecord(value, `links[${index}]`, command);
+    for (const key of [
+      "id",
+      "threadId",
+      "nodeId",
+      "phaseType",
+      "createdAt",
+      "updatedAt",
+    ] as const) {
+      requireNonEmptyString(link, key, command);
+    }
+    nullableString(link, "note", command);
+    nullableString(link, "sortOrder", command);
+    if (
+      !["introduce", "develop", "turn", "climax", "resolve"].includes(
+        String(link.phaseType),
+      )
+    ) {
+      throw new Error(
+        `invalid args \`phaseType\` for command \`${command}\`: invalid plot phase`,
+      );
+    }
+    return link;
+  });
+  const branches = requireArray(payload, "branches", command).map(
+    (value, index) => {
+      const branch = requirePlotSnapshotRecord(
+        value,
+        `branches[${index}]`,
+        command,
+      );
+      for (const key of [
+        "id",
+        "projectId",
+        "fromThreadId",
+        "toThreadId",
+        "atNodeId",
+        "kind",
+        "createdAt",
+        "updatedAt",
+      ] as const) {
+        requireNonEmptyString(branch, key, command);
+      }
+      if (branch.projectId !== projectId) {
+        throw new Error(
+          `invalid args \`branch.projectId\` for command \`${command}\`: expected snapshot projectId`,
+        );
+      }
+      if (branch.fromThreadId === branch.toThreadId) {
+        throw new Error(
+          `invalid args for command \`${command}\`: branch cannot self-reference`,
+        );
+      }
+      if (branch.kind !== "branch" && branch.kind !== "merge") {
+        throw new Error(
+          `invalid args \`kind\` for command \`${command}\`: expected branch or merge`,
+        );
+      }
+      return branch;
+    },
+  );
+  if (threadValue === null && links.length === 0 && branches.length === 0) {
+    throw new Error(
+      `invalid args for command \`${command}\`: snapshot must contain at least one row`,
+    );
+  }
+  if (new Set(links.map((row) => row.id)).size !== links.length) {
+    throw new Error(
+      `invalid args for command \`${command}\`: duplicate link ids`,
+    );
+  }
+  if (new Set(branches.map((row) => row.id)).size !== branches.length) {
+    throw new Error(
+      `invalid args for command \`${command}\`: duplicate branch ids`,
+    );
+  }
+  return payload;
+}
+
+function requirePlotThreadDeleteSnapshotPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "plot_thread_delete_snapshot";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "requestId", command);
+  const projectId = requireNonEmptyString(payload, "projectId", command);
+  const link = requirePlotSnapshotRecord(payload.link, "link", command);
+  for (const key of [
+    "id",
+    "threadId",
+    "nodeId",
+    "phaseType",
+    "createdAt",
+    "updatedAt",
+  ] as const) {
+    requireNonEmptyString(link, key, command);
+  }
+  nullableString(link, "note", command);
+  nullableString(link, "sortOrder", command);
+  if (
+    !["introduce", "develop", "turn", "climax", "resolve"].includes(
+      String(link.phaseType),
+    )
+  ) {
+    throw new Error(
+      `invalid args \`phaseType\` for command \`${command}\`: invalid plot phase`,
+    );
+  }
+  const branches = requireArray(payload, "branches", command).map(
+    (value, index) => {
+      const branch = requirePlotSnapshotRecord(
+        value,
+        `branches[${index}]`,
+        command,
+      );
+      for (const key of [
+        "id",
+        "projectId",
+        "fromThreadId",
+        "toThreadId",
+        "atNodeId",
+        "kind",
+        "createdAt",
+        "updatedAt",
+      ] as const) {
+        requireNonEmptyString(branch, key, command);
+      }
+      if (branch.projectId !== projectId) {
+        throw new Error(
+          `invalid args \`branch.projectId\` for command \`${command}\`: expected snapshot projectId`,
+        );
+      }
+      if (branch.fromThreadId === branch.toThreadId) {
+        throw new Error(
+          `invalid args for command \`${command}\`: branch cannot self-reference`,
+        );
+      }
+      if (branch.kind !== "branch" && branch.kind !== "merge") {
+        throw new Error(
+          `invalid args \`kind\` for command \`${command}\`: expected branch or merge`,
+        );
+      }
+      return branch;
+    },
+  );
+  if (new Set(branches.map((branch) => branch.id)).size !== branches.length) {
+    throw new Error(
+      `invalid args \`branches\` for command \`${command}\`: duplicate ids`,
+    );
+  }
+  return payload;
 }
 
 /** Tauri の i64 引数の写像（非 number は deserialize 失敗と同等に扱う）。 */
@@ -1061,8 +1400,10 @@ function broadcastBestEffort(
 ): void {
   try {
     deps.broadcast?.(channel, payload);
-  } catch (error) {
-    console.warn(`[ipc] ${channel} broadcast failed:`, error);
+  } catch {
+    // Do not send thrown values to the production console: they may contain
+    // payload fragments, SQL params, or a stack with workspace paths.
+    console.warn(`[ipc] ${channel} broadcast failed`);
   }
 }
 
@@ -1081,11 +1422,8 @@ async function broadcastCurrentLicenseStateBestEffort(
       )(),
     );
     broadcastBestEffort(deps, "license:state_changed", state);
-  } catch (error) {
-    console.warn(
-      "[ipc] failed to read license state after revalidate error:",
-      error,
-    );
+  } catch {
+    console.warn("[ipc] failed to read license state after revalidate error");
   }
 }
 
@@ -1434,6 +1772,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requireString(a, "language", "semantic_download_model")),
       ),
   },
+  semantic_cancel_background: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticCancelBackground,
+          "semanticCancelBackground",
+        )(),
+      ),
+  },
   semantic_index_scene: {
     run: async (b, a) =>
       parseWire(
@@ -1676,6 +2024,36 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.plotThreadLinkCreate(
           requirePresent(a, "payload", "plot_thread_link_create"),
         ),
+      ),
+  },
+  plot_thread_branch_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.plotThreadBranchCreate,
+          "plotThreadBranchCreate",
+        )(requirePlotThreadBranchCreatePayload(a)),
+      ),
+  },
+  plot_thread_restore_snapshot: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.plotThreadRestoreSnapshot,
+          "plotThreadRestoreSnapshot",
+        )(requirePlotThreadRestoreSnapshotPayload(a)),
+      ),
+  },
+  plot_thread_delete_snapshot: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.plotThreadDeleteSnapshot,
+          "plotThreadDeleteSnapshot",
+        )(requirePlotThreadDeleteSnapshotPayload(a)),
       ),
   },
   plot_thread_link_update: {
@@ -2598,10 +2976,7 @@ export async function dispatchInvoke(
   try {
     if (Object.hasOwn(NAPI_COMMANDS, cmd)) {
       if (!deps.backend) {
-        return {
-          ok: false,
-          error: `${IPC_BACKEND_UNAVAILABLE_MARKER} ${cmd}`,
-        };
+        return failureEnvelope(`${IPC_BACKEND_UNAVAILABLE_MARKER} ${cmd}`);
       }
       return {
         ok: true,
@@ -2611,11 +2986,11 @@ export async function dispatchInvoke(
     if (Object.hasOwn(deps.shell, cmd)) {
       return { ok: true, value: await deps.shell[cmd](args) };
     }
-    return { ok: false, error: unimplementedError(cmd) };
+    return failureEnvelope(unimplementedError(cmd));
   } catch (e) {
     if (e instanceof WireErrorValue) {
-      return { ok: false, error: e.message, errorValue: e.value };
+      return failureEnvelope(e.message, e.value);
     }
-    return { ok: false, error: toErrorString(e) };
+    return failureEnvelope(toErrorString(e));
   }
 }

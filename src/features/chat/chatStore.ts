@@ -405,6 +405,7 @@ import {
 } from "@/features/codex/codexCrossMentions";
 import {
   resolveScopeSessionKey,
+  scopeSessionKeysEqual,
   type ChatScope,
   type ScopeSessionKey,
 } from "./chatScope";
@@ -659,6 +660,36 @@ interface CapturedNonSceneContextAuthority {
   };
 }
 
+export type ChatPromptPreviewResult =
+  | {
+      status: "ready";
+      prompt: string;
+      layers: LayerBreakdown[];
+      totalTokens: number;
+      /** プレビューに描画する「これから送る入力メッセージ」。空文字なら非表示。 */
+      userMessage: string;
+    }
+  | {
+      /** Exact prompt construction failed; live-estimate cache must not escape here. */
+      status: "unavailable";
+      prompt: "";
+      layers: [];
+      totalTokens: 0;
+      userMessage: string;
+    };
+
+function unavailablePromptPreview(
+  userMessage: string,
+): Extract<ChatPromptPreviewResult, { status: "unavailable" }> {
+  return {
+    status: "unavailable",
+    prompt: "",
+    layers: [],
+    totalTokens: 0,
+    userMessage,
+  };
+}
+
 interface ChatState {
   // Session management
   sessions: ChatSession[];
@@ -701,14 +732,8 @@ interface ChatState {
    * プレビュー専用のプロンプト再構築（store は変更しない）。seed 優先順位:
    * registerInputDraftProvider 経由の入力ドラフト → 直近ユーザー発話 → シーン本文末尾。
    * 返す userMessage はプレビューに表示する「入力中の未送信テキスト」。
-   * scene スコープ以外は RAG 対象外のためライブ値をそのまま返す。 */
-  buildPreviewPrompt: () => Promise<{
-    prompt: string;
-    layers: LayerBreakdown[];
-    totalTokens: number;
-    /** プレビューに描画する「これから送る入力メッセージ」。空文字なら非表示。 */
-    userMessage: string;
-  }>;
+   * exact 構築に失敗した場合は live cache へフォールバックせず unavailable を返す。 */
+  buildPreviewPrompt: () => Promise<ChatPromptPreviewResult>;
   /**
    * Monotonic counter bumped each time refreshContextLayers completes.
    * Subscribers (e.g. ContextBar's pinnedStickies list) can watch this to
@@ -1900,6 +1925,10 @@ let _activeSendControl: SendTurnControl | null = null;
 // newest request for each surface may publish its result.
 let _sessionListGeneration = 0;
 let _sessionSelectionGeneration = 0;
+// Exact session authority epoch. Unlike the list/selection generations this is
+// captured by every queued mutation, so an A -> B -> A round trip with reused
+// Project/scope ids cannot make an operation from the first A current again.
+let _sessionScopeGeneration = 0;
 let _contextRefreshGeneration = 0;
 // Session create/select/delete operations cross IPC and can otherwise finish
 // after a later Send has captured the old session. Serialize those mutations,
@@ -1910,6 +1939,7 @@ let _sessionMutationTail: Promise<void> = Promise.resolve();
 let _pendingSessionMutationCount = 0;
 
 interface SessionMutationAuthority {
+  scopeGeneration: number;
   workspaceIdentity: ImeWorkspaceIdentity | null;
   projectId: string;
   chatScope: ChatScope;
@@ -1923,6 +1953,7 @@ function captureSessionMutationAuthority(
   >,
 ): SessionMutationAuthority {
   return {
+    scopeGeneration: _sessionScopeGeneration,
     workspaceIdentity: getCurrentImeWorkspaceIdentity(),
     projectId: state.activeProjectId ?? getCurrentProjectId(),
     chatScope: state.chatScope,
@@ -1932,17 +1963,6 @@ function captureSessionMutationAuthority(
       state.scopeAnchorId,
     ),
   };
-}
-
-function sameScopeSessionKey(
-  left: ScopeSessionKey,
-  right: ScopeSessionKey,
-): boolean {
-  return (
-    left.nodeId === right.nodeId &&
-    left.codexAnchorId === right.codexAnchorId &&
-    left.snippetAnchorId === right.snippetAnchorId
-  );
 }
 
 function isCapturedWorkspaceCurrent(
@@ -1961,6 +1981,7 @@ function isSessionMutationAuthorityCurrent(
     "activeProjectId" | "activeSceneId" | "chatScope" | "scopeAnchorId"
   >,
 ): boolean {
+  if (authority.scopeGeneration !== _sessionScopeGeneration) return false;
   if (!isCapturedWorkspaceCurrent(authority.workspaceIdentity)) return false;
   if (
     (state.activeProjectId ?? getCurrentProjectId()) !== authority.projectId
@@ -1968,13 +1989,98 @@ function isSessionMutationAuthorityCurrent(
     return false;
   }
   if (state.chatScope !== authority.chatScope) return false;
-  return sameScopeSessionKey(
+  return scopeSessionKeysEqual(
     resolveScopeSessionKey(
       state.chatScope,
       state.activeSceneId,
       state.scopeAnchorId,
     ),
     authority.scopeKey,
+  );
+}
+
+function invalidateSessionScopeAuthority(): void {
+  _sessionScopeGeneration += 1;
+  _sessionListGeneration += 1;
+  _sessionSelectionGeneration += 1;
+}
+
+function sessionScopeChanged(
+  current: Pick<ChatState, "activeSceneId" | "chatScope" | "scopeAnchorId">,
+  next: {
+    activeSceneId: string | null | undefined;
+    chatScope: ChatScope;
+    scopeAnchorId: string | null | undefined;
+  },
+): boolean {
+  return (
+    current.chatScope !== next.chatScope ||
+    !scopeSessionKeysEqual(
+      resolveScopeSessionKey(
+        current.chatScope,
+        current.activeSceneId,
+        current.scopeAnchorId,
+      ),
+      resolveScopeSessionKey(
+        next.chatScope,
+        next.activeSceneId,
+        next.scopeAnchorId,
+      ),
+    )
+  );
+}
+
+function clearedSessionScopeState(): Partial<ChatState> {
+  return {
+    sessions: [],
+    activeSessionId: null,
+    messages: [],
+    streamingDraft: null,
+    isLoadingSessions: false,
+    isLoadingMessages: false,
+    summaryCount: 0,
+    maxSummaryGeneration: 0,
+    sessionStableCodexIds: [],
+    sessionStableContextInitialized: false,
+    sessionAgentToolsSnapshot: null,
+    cacheInvalidatedReason: null,
+    excludedAutoEntryIds: [],
+    threadFocusOverride: null,
+    chatRecallPromoteSuggestion: null,
+    agentProgress: null,
+    agentContinuation: null,
+    subAgentProgress: null,
+    pendingUserQuestion: null,
+  };
+}
+
+interface SessionListLoadAuthority {
+  generation: number;
+  session: SessionMutationAuthority;
+}
+
+function requestedSessionListScopeKey(
+  nodeId?: string | null,
+  codexAnchorId?: string | null,
+  snippetAnchorId?: string | null,
+): ScopeSessionKey {
+  return {
+    nodeId,
+    codexAnchorId: codexAnchorId ?? undefined,
+    snippetAnchorId: snippetAnchorId ?? undefined,
+  };
+}
+
+function isSessionListLoadAuthorityCurrent(
+  authority: SessionListLoadAuthority,
+  state: Pick<
+    ChatState,
+    "activeProjectId" | "activeSceneId" | "chatScope" | "scopeAnchorId"
+  >,
+): boolean {
+  return (
+    authority.generation === _sessionListGeneration &&
+    isSessionMutationAuthorityCurrent(authority.session, state)
   );
 }
 
@@ -2043,6 +2149,41 @@ function enqueueSessionMutation<T>(operation: () => Promise<T>): Promise<T> {
     },
   );
   return pending;
+}
+
+export interface ChatComposerAuthority {
+  activeSessionId: string | null;
+  sessionMutation: SessionMutationAuthority;
+}
+
+/** Capture the exact Project/scope/session that owns the current composer. */
+export function captureChatComposerAuthority(): ChatComposerAuthority {
+  const state = useChatStore.getState();
+  return {
+    activeSessionId: state.activeSessionId,
+    sessionMutation: captureSessionMutationAuthority(state),
+  };
+}
+
+/**
+ * Wait for every session mutation requested before this check, then prove the
+ * composer still belongs to the captured authority. The fixed-point loop also
+ * covers a mutation queued while an earlier one is settling.
+ */
+export async function awaitChatComposerAuthority(
+  authority: ChatComposerAuthority,
+): Promise<boolean> {
+  while (_pendingSessionMutationCount > 0) {
+    const tail = _sessionMutationTail;
+    await tail;
+    if (tail === _sessionMutationTail) break;
+  }
+  const state = useChatStore.getState();
+  return (
+    _pendingSessionMutationCount === 0 &&
+    state.activeSessionId === authority.activeSessionId &&
+    isSessionMutationAuthorityCurrent(authority.sessionMutation, state)
+  );
 }
 
 // Stop must target the transport selected for the in-flight turn, not mutable
@@ -2941,6 +3082,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   resetForProject: (projectId) => {
     if (get().isStreaming) get().stopGeneration();
+    invalidateSessionScopeAuthority();
     set({
       activeSessionId: null,
       isLoadingSessions: false,
@@ -3133,14 +3275,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   onCodexAnchorDeleted: (entryId: string) => {
     const { chatScope, scopeAnchorId } = get();
     if (chatScope === "codex" && scopeAnchorId === entryId) {
-      set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
+      get().setChatScope("scene");
     }
   },
 
   onSnippetAnchorDeleted: (snippetId: string) => {
     const { chatScope, scopeAnchorId } = get();
     if (chatScope === "snippet" && scopeAnchorId === snippetId) {
-      set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
+      get().setChatScope("scene");
     }
   },
 
@@ -3180,8 +3322,24 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     codexAnchorId?: string | null,
     snippetAnchorId?: string | null,
   ) => {
-    const generation = ++_sessionListGeneration;
-    const projectId = get().activeProjectId ?? getCurrentProjectId();
+    const invocationState = get();
+    const sessionAuthority = captureSessionMutationAuthority(invocationState);
+    const requestedScopeKey = requestedSessionListScopeKey(
+      nodeId,
+      codexAnchorId,
+      snippetAnchorId,
+    );
+    // A deferred panel mutation can resume with its old closure after the
+    // active Chat scope changed. Reject that stale request before it clears
+    // the replacement scope's already-published list/loading state.
+    if (!scopeSessionKeysEqual(requestedScopeKey, sessionAuthority.scopeKey)) {
+      return false;
+    }
+    const authority: SessionListLoadAuthority = {
+      generation: ++_sessionListGeneration,
+      session: sessionAuthority,
+    };
+    const { projectId } = sessionAuthority;
     set({ sessions: [], isLoadingSessions: true });
     try {
       const sessions = await chatApi.listSessions(
@@ -3190,22 +3348,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         codexAnchorId,
         snippetAnchorId,
       );
-      if (
-        generation !== _sessionListGeneration ||
-        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
-      ) {
+      if (!isSessionListLoadAuthorityCurrent(authority, get())) {
         return false;
       }
-      if (sessions.some((session) => session.projectId !== projectId)) {
-        throw new Error("chat session project mismatch");
+      if (
+        sessions.some(
+          (session) => !isSessionTargetForAuthority(session, sessionAuthority),
+        )
+      ) {
+        throw new Error("chat session scope mismatch");
       }
       set({ sessions, isLoadingSessions: false });
       return true;
     } catch (e) {
-      if (
-        generation !== _sessionListGeneration ||
-        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
-      ) {
+      if (!isSessionListLoadAuthorityCurrent(authority, get())) {
         return false;
       }
       set({ isLoadingSessions: false });
@@ -3216,7 +3372,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   selectSession: async (sessionId: string | null) => {
-    const authority = captureSessionMutationAuthority(get());
+    const invocationState = get();
+    const authority = captureSessionMutationAuthority(invocationState);
+    const capturedSession =
+      sessionId === null
+        ? undefined
+        : invocationState.sessions.find((session) => session.id === sessionId);
+    if (
+      capturedSession &&
+      !isSessionTargetForAuthority(capturedSession, authority)
+    ) {
+      return;
+    }
     const { projectId } = authority;
     return enqueueSessionMutation(async () => {
       const generation = ++_sessionSelectionGeneration;
@@ -3272,8 +3439,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         ) {
           return;
         }
-        if (!session) {
-          throw new Error("chat session project mismatch");
+        if (
+          !session ||
+          !isSessionTargetForAuthority(session, authority) ||
+          (capturedSession && !isSameCapturedSession(session, capturedSession))
+        ) {
+          throw new Error("chat session scope mismatch");
         }
         if (!isSessionMutationAuthorityCurrent(authority, get())) return;
         const [messages, summaries] = await Promise.all([
@@ -3377,8 +3548,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           threadFocusOverride: null,
         }));
       } catch (e) {
-        toast.error(i18next.t("chat.createSessionFailed"));
         debugLog.error("ChatStore", "createNewSession", errorDetail(e));
+        if (isSessionMutationAuthorityCurrent(authority, get())) {
+          toast.error(i18next.t("chat.createSessionFailed"));
+        }
       }
     });
   },
@@ -3516,8 +3689,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             : {}),
         }));
       } catch (e) {
-        toast.error(i18next.t("chat.deleteSessionFailed"));
         debugLog.error("ChatStore", "deleteSession", errorDetail(e));
+        if (isSessionMutationAuthorityCurrent(authority, get())) {
+          toast.error(i18next.t("chat.deleteSessionFailed"));
+        }
       }
     });
   },
@@ -6106,6 +6281,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         contextPromptKey(current) === promptKey
       );
     };
+    const mayPublishRefreshResult = (): boolean =>
+      opts?.purpose !== "preview" && refreshAuthorityIsCurrent();
     const activeSessionAtRefresh = activeSessionId
       ? sessions.find((session) => session.id === activeSessionId)
       : undefined;
@@ -6114,15 +6291,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSessionAtRefresh.projectId !== refreshProjectId
     ) {
       const error = new Error("chat session project mismatch");
-      set({
-        contextTokenCount: 0,
-        contextWindowSize: null,
-        contextModel: null,
-        contextLayers: [],
-        contextPlan: null,
-        lastSystemPrompt: "",
-        lastSystemPromptKey: null,
-      });
+      if (opts?.purpose !== "preview") {
+        set({
+          contextTokenCount: 0,
+          contextWindowSize: null,
+          contextModel: null,
+          contextLayers: [],
+          contextPlan: null,
+          lastSystemPrompt: "",
+          lastSystemPromptKey: null,
+        });
+      }
       if (opts?.strict) throw error;
       return null;
     }
@@ -6213,7 +6392,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             },
           }),
         );
-        if (refreshAuthorityIsCurrent()) {
+        if (mayPublishRefreshResult()) {
           const initializeStableContext =
             opts?.purpose === "send" && !get().sessionStableContextInitialized;
           set({
@@ -6239,7 +6418,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
         return planned;
       } catch (error) {
-        if (refreshAuthorityIsCurrent()) {
+        if (mayPublishRefreshResult()) {
           set({
             contextTokenCount: 0,
             contextWindowSize: null,
@@ -6290,7 +6469,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         semanticRecallSeedMessage: opts?.outgoingUserMessage,
       });
 
-      if (refreshAuthorityIsCurrent()) {
+      if (mayPublishRefreshResult()) {
         set({
           contextTokenCount: ctxResult.totalTokens,
           contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
@@ -6309,7 +6488,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
       return ctxResult;
     } catch (error) {
-      if (refreshAuthorityIsCurrent()) {
+      if (mayPublishRefreshResult()) {
         set({
           contextTokenCount: 0,
           contextWindowSize: null,
@@ -6326,14 +6505,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   buildPreviewPrompt: async () => {
-    const {
-      activeSceneId,
-      chatScope,
-      threadFocusOverride,
-      lastSystemPrompt,
-      contextLayers,
-      contextTokenCount,
-    } = get();
+    const { activeSceneId, chatScope, threadFocusOverride } = get();
     let draft: {
       markdown: string;
       mentionedSceneIds: string[];
@@ -6348,13 +6520,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } catch {
       // provider getter が throw(エディタ teardown 中など)した場合は空ドラフトで継続。
     }
-    // ライブ値フォールバック(RAG 非対象スコープ / 取得失敗時)。
-    const live = {
-      prompt: lastSystemPrompt,
-      layers: contextLayers,
-      totalTokens: contextTokenCount,
-      userMessage: draft.markdown,
-    };
     // semantic recall は scene スコープ限定。非 scene でも preview 固有の
     // immutable TurnRequest を作り、UI cache の stale prompt は使わない。
     const effectiveSceneId =
@@ -6383,20 +6548,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           mentionedCodexIds: draft.mentionedCodexIds,
           strict: true,
         });
+        if (!refreshed) {
+          return unavailablePromptPreview(draft.markdown);
+        }
         return {
-          prompt: refreshed?.prompt ?? "",
-          layers: refreshed?.layers ?? [],
-          totalTokens: refreshed?.totalTokens ?? 0,
+          status: "ready",
+          prompt: refreshed.prompt,
+          layers: refreshed.layers,
+          totalTokens: refreshed.totalTokens,
           userMessage: draft.markdown,
         };
       } catch {
-        // refresh clears stale prompt state before rethrowing.
-        return {
-          prompt: "",
-          layers: [],
-          totalTokens: 0,
-          userMessage: draft.markdown,
-        };
+        // Exact preview is an isolated snapshot and never falls back to cache.
+        return unavailablePromptPreview(draft.markdown);
       }
     }
 
@@ -6407,15 +6571,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         mentionedSceneIds: draft.mentionedSceneIds,
         mentionedCodexIds: draft.mentionedCodexIds,
       });
-      if (!built) return live;
+      if (!built) return unavailablePromptPreview(draft.markdown);
       return {
+        status: "ready",
         prompt: built.prompt,
         layers: built.layers,
         totalTokens: built.totalTokens,
         userMessage: draft.markdown,
       };
     } catch {
-      return live;
+      return unavailablePromptPreview(draft.markdown);
     }
   },
 
@@ -6490,33 +6655,40 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setChatScope: (scope, anchorId) => {
-    if (get().isStreaming) get().stopGeneration();
+    const current = get();
+    if (current.isStreaming) current.stopGeneration();
     // scope === "folder" / "codex" / "snippet" のとき anchorId 必須。空指定なら scene に fallback。
     // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, それ以外=false。
     // project では本文集約しないので値自体は影響しないが false に揃える。
     // スコープ切替で非永続のスレッド focus はクリア（別スコープへ leak させない）。
+    let nextScope = scope;
+    let nextAnchorId: string | null = null;
+    let nextIncludeBodies = scope === "scene";
     if (scope === "folder" || scope === "codex" || scope === "snippet") {
       if (!anchorId) {
-        set({
-          chatScope: "scene",
-          scopeAnchorId: null,
-          includeBodies: true,
-          threadFocusOverride: null,
-        });
-        return;
+        nextScope = "scene";
+        nextIncludeBodies = true;
+      } else {
+        nextAnchorId = anchorId;
+        nextIncludeBodies = false;
       }
-      set({
-        chatScope: scope,
-        scopeAnchorId: anchorId,
-        includeBodies: false,
-        threadFocusOverride: null,
-      });
-      return;
+    }
+
+    const boundaryChanged = sessionScopeChanged(current, {
+      activeSceneId: current.activeSceneId,
+      chatScope: nextScope,
+      scopeAnchorId: nextAnchorId,
+    });
+    if (boundaryChanged) {
+      invalidateSessionScopeAuthority();
+      get()._cancelPendingUserQuestion();
+      resetRecallPromote(recallPromoteTracker);
     }
     set({
-      chatScope: scope,
-      scopeAnchorId: null,
-      includeBodies: scope === "scene",
+      ...(boundaryChanged ? clearedSessionScopeState() : {}),
+      chatScope: nextScope,
+      scopeAnchorId: nextAnchorId,
+      includeBodies: nextIncludeBodies,
       threadFocusOverride: null,
     });
   },
@@ -6738,28 +6910,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         chatScope === "scene" &&
         (id !== activeSceneId || !activeSessionTargetsScene);
       if (resetSceneScope) {
-        _sessionListGeneration += 1;
-        _sessionSelectionGeneration += 1;
+        invalidateSessionScopeAuthority();
         if (get().isStreaming) get().stopGeneration();
         get()._cancelPendingUserQuestion();
         resetRecallPromote(recallPromoteTracker);
         set({
+          ...clearedSessionScopeState(),
           activeSceneId: id,
-          sessions: [],
-          activeSessionId: null,
-          messages: [],
-          isLoadingSessions: false,
-          isLoadingMessages: false,
-          summaryCount: 0,
-          maxSummaryGeneration: 0,
-          sessionStableCodexIds: [],
-          sessionStableContextInitialized: false,
-          sessionAgentToolsSnapshot: null,
-          excludedAutoEntryIds: [],
-          threadFocusOverride: null,
-          chatRecallPromoteSuggestion: null,
-          agentContinuation: null,
-          subAgentProgress: null,
         });
       } else {
         set({ activeSceneId: id });
@@ -6769,8 +6926,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
   setActiveProjectId: (id: string | null) => {
-    if (get().activeProjectId !== id && get().isStreaming) {
-      get().stopGeneration();
+    const current = get();
+    if (current.activeProjectId !== id) {
+      if (current.isStreaming) current.stopGeneration();
+      invalidateSessionScopeAuthority();
+      get()._cancelPendingUserQuestion();
+      resetRecallPromote(recallPromoteTracker);
+      set({ ...clearedSessionScopeState(), activeProjectId: id });
+      return;
     }
     set({ activeProjectId: id });
   },

@@ -1,6 +1,13 @@
-import { useCallback, useRef, type ReactNode, type RefCallback } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  type ReactNode,
+  type RefCallback,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "@/lib/utils";
+import { useGridVirtualEditingStore } from "./gridVirtualEditingStore";
 
 interface VirtualRange {
   startIndex: number;
@@ -10,30 +17,28 @@ interface VirtualRange {
 }
 
 /**
- * Keep the visible window plus the active draggable row. Pinning one row avoids
- * unmounting the drag source without synchronously mounting every card in a
- * large column.
+ * Keep the visible window plus active draggable and editing rows. Pinning the
+ * small active set avoids unmounting local interaction state without
+ * synchronously mounting every card in a large column.
  */
 export function extractGridVirtualIndexes(
   range: VirtualRange,
-  pinnedIndex: number | null,
+  pinnedIndexes: readonly number[],
 ): number[] {
   const start = Math.max(0, range.startIndex - range.overscan);
   const end = Math.min(range.count - 1, range.endIndex + range.overscan);
-  const indexes = Array.from(
-    { length: Math.max(0, end - start + 1) },
-    (_, offset) => start + offset,
+  const indexes = new Set(
+    Array.from(
+      { length: Math.max(0, end - start + 1) },
+      (_, offset) => start + offset,
+    ),
   );
-  if (
-    pinnedIndex !== null &&
-    pinnedIndex >= 0 &&
-    pinnedIndex < range.count &&
-    !indexes.includes(pinnedIndex)
-  ) {
-    indexes.push(pinnedIndex);
-    indexes.sort((a, b) => a - b);
+  for (const pinnedIndex of pinnedIndexes) {
+    if (pinnedIndex >= 0 && pinnedIndex < range.count) {
+      indexes.add(pinnedIndex);
+    }
   }
-  return indexes;
+  return Array.from(indexes).sort((a, b) => a - b);
 }
 
 interface GridVirtualListProps<T extends { id: string }> {
@@ -63,13 +68,26 @@ export function GridVirtualList<T extends { id: string }>({
   testId,
 }: GridVirtualListProps<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const pinnedIndex = pinnedItemId
-    ? items.findIndex((item) => item.id === pinnedItemId)
-    : -1;
+  const editingRowIds = useGridVirtualEditingStore((s) => s.editingRowIds);
+  const indexById = useMemo(
+    () => new Map(items.map((item, index) => [item.id, index])),
+    [items],
+  );
+  const pinnedIndexes = useMemo(() => {
+    const indexes = new Set<number>();
+    if (pinnedItemId) {
+      const index = indexById.get(pinnedItemId);
+      if (index !== undefined) indexes.add(index);
+    }
+    for (const rowId of editingRowIds) {
+      const index = indexById.get(rowId);
+      if (index !== undefined) indexes.add(index);
+    }
+    return Array.from(indexes);
+  }, [editingRowIds, indexById, pinnedItemId]);
   const rangeExtractor = useCallback(
-    (range: VirtualRange) =>
-      extractGridVirtualIndexes(range, pinnedIndex >= 0 ? pinnedIndex : null),
-    [pinnedIndex],
+    (range: VirtualRange) => extractGridVirtualIndexes(range, pinnedIndexes),
+    [pinnedIndexes],
   );
   const virtualizer = useVirtualizer({
     count: items.length,

@@ -48,6 +48,31 @@ export const projects = sqliteTable("projects", {
   updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
 });
 
+/**
+ * Durable create-request tombstones shared by native SQLite and the browser
+ * editor. `tombstoneJson` is intentionally content-free (`{"id":"…"}`).
+ */
+export const idempotencyRequests = sqliteTable(
+  "idempotency_requests",
+  {
+    domain: text("domain").notNull(),
+    requestId: text("request_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    payloadHash: text("payload_hash").notNull(),
+    tombstoneJson: text("tombstone_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    primaryKey({ columns: [table.domain, table.requestId] }),
+    index("idx_idempotency_requests_project_created").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
+
 export const treeNodes = sqliteTable(
   "tree_nodes",
   {

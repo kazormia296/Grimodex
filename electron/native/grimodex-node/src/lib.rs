@@ -47,8 +47,9 @@ use grimodex_db::ime_export::{
 };
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
-    self, PlotThreadCreatePayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
-    PlotThreadPatch,
+    self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
+    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadPatch,
+    PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::sample_seed;
@@ -1285,6 +1286,20 @@ impl Backend {
     // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
     // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。
 
+    /// Rebuild可能なsemantic background indexingを協調停止する。
+    /// 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で
+    /// `IPC_DERIVED_CANCELLED` を返す。途中生成したindex payloadはcommitしない。
+    /// 返り値は新generationのJSON数値。
+    #[napi]
+    pub async fn semantic_cancel_background(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let generation = state.semantic.semantic_cancel_background();
+            Ok(serde_json::to_string(&generation).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     /// モデルが無ければbackground downloadを開始し、状態文字列を即返す。
     /// resource欠落はBackend constructorを失敗させず、このsemantic surfaceでのみ
     /// installed/unavailable/downloading または明示エラーとして扱う。
@@ -1577,6 +1592,50 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let row = plot_threads::link_create(db, payload)?;
                 Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// プロットスレッド分岐/合流作成。request ledger・XPROJ 検証・entity
+    /// insert を共有 Rust の単一 transaction で実行する。
+    #[napi]
+    pub async fn plot_thread_branch_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadBranchCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::branch_create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// History snapshot restore. Parent/children and request ledger commit in
+    /// one shared-Rust transaction.
+    #[napi]
+    pub async fn plot_thread_restore_snapshot(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadRestoreSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = plot_threads::restore_snapshot(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
+    /// Atomic marker + dependent-branch delete with durable replay identity.
+    #[napi]
+    pub async fn plot_thread_delete_snapshot(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadDeleteSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = plot_threads::delete_snapshot(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
             })
         })
         .await

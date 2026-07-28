@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -8,6 +8,7 @@ import {
   MiniMap,
   ViewportPortal,
   type Node,
+  type NodeProps,
   BackgroundVariant,
   useReactFlow,
   ConnectionMode,
@@ -111,6 +112,14 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
+import {
+  hasRuntimePerformanceCapability,
+  registerRuntimePerformanceControl,
+} from "@/lib/perfLog";
+import {
+  createRuntimeMapDragIdentityControl,
+  recordRuntimeMapNodeRender,
+} from "./runtimeMapPerformance";
 
 /** Pure classification used by onDeleteSelected — exported for tests. */
 export function partitionDeletableNodes(nodes: Node[]) {
@@ -145,6 +154,18 @@ const NODE_TYPES = {
   ai_branch: AIBranchNode,
 };
 
+const RuntimePerformanceSceneNode = memo(function RuntimePerformanceSceneNode(
+  props: NodeProps,
+) {
+  recordRuntimeMapNodeRender(props.id);
+  return <SceneNode {...props} />;
+});
+
+const RUNTIME_PERFORMANCE_NODE_TYPES = {
+  ...NODE_TYPES,
+  scene: RuntimePerformanceSceneNode,
+};
+
 const EDGE_TYPES = {
   user: UserEdge,
 };
@@ -153,6 +174,7 @@ type PaletteMode = "default" | "frame" | "connect";
 
 // Must be rendered inside ReactFlowProvider
 export function MapCanvas() {
+  const runtimePerformanceEnabled = hasRuntimePerformanceCapability();
   const { t } = useTranslation();
   const treeNodes = useTreeStore((s) => s.nodes);
   const codexEntries = useCodexStore((s) => s.entries);
@@ -204,6 +226,9 @@ export function MapCanvas() {
     boardId,
     positions,
     setPositions,
+    setPositionCoordinates,
+    positionsStructureRevision,
+    positionsLayoutRevision,
     userEdges,
     setUserEdges,
     frames,
@@ -544,6 +569,8 @@ export function MapCanvas() {
   useMapNodes({
     boardId,
     positions,
+    positionsStructureRevision,
+    positionsLayoutRevision,
     userEdges: layoutUserEdges,
     treeNodes,
     codexEntries,
@@ -625,6 +652,7 @@ export function MapCanvas() {
       mode,
       getNodes,
       setPositions,
+      setPositionCoordinates,
       setFrames,
       setNodes,
       setUserEdges,
@@ -893,6 +921,22 @@ export function MapCanvas() {
     setViewport,
     fitView,
   });
+  const runtimeMapNodesRef = useRef<readonly Node[]>(nodesWithFocus);
+  runtimeMapNodesRef.current = nodesWithFocus;
+  useEffect(() => {
+    if (!runtimePerformanceEnabled) return;
+    const control = createRuntimeMapDragIdentityControl(
+      () => runtimeMapNodesRef.current,
+    );
+    const unregister = registerRuntimePerformanceControl(
+      "map.dragIdentity",
+      control.invoke,
+    );
+    return () => {
+      unregister();
+      control.dispose();
+    };
+  }, [runtimePerformanceEnabled]);
 
   // Map 専属エンティティ（Sticky / AI Branch）の本体削除。
   // Scene / Note / Codex / Snippet はマップ外に存在するため Delete キー
@@ -1725,6 +1769,7 @@ export function MapCanvas() {
       ref={setRootRef}
       data-droptarget-id="map-panel"
       data-map-rendered-node-count={nodes.length}
+      data-map-rendered-edge-count={edges.length}
       className={`${isCorkboard ? "map-corkboard " : ""}data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset`}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
@@ -1734,7 +1779,11 @@ export function MapCanvas() {
       <ReactFlow
         nodes={nodesWithFocus}
         edges={edges}
-        nodeTypes={NODE_TYPES}
+        nodeTypes={
+          runtimePerformanceEnabled
+            ? RUNTIME_PERFORMANCE_NODE_TYPES
+            : NODE_TYPES
+        }
         edgeTypes={EDGE_TYPES}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}

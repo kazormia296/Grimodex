@@ -95,7 +95,9 @@ async function recordEntityBaseline(
   payload: string,
   anchorSequence: number,
   anchorTimestamp: number,
+  isAuthoritative: () => boolean = () => true,
 ): Promise<void> {
+  if (!isAuthoritative()) return;
   const spec = KIND_SNAPSHOT[kind];
   await recordStateSnapshot({
     projectId,
@@ -165,6 +167,7 @@ const ALL_KINDS: BaselineKindFilter = {
 async function stampEntityBaselines(
   projectId: string,
   which: BaselineKindFilter = ALL_KINDS,
+  isAuthoritative: () => boolean = () => true,
 ): Promise<void> {
   const anchorTimestamp = Date.now();
 
@@ -186,6 +189,7 @@ async function stampEntityBaselines(
           payload,
           0,
           anchorTimestamp,
+          isAuthoritative,
         );
       } catch (err) {
         console.warn("[timelapse] baseline failed for scene", scene.id, err);
@@ -205,6 +209,7 @@ async function stampEntityBaselines(
           entry.content,
           0,
           anchorTimestamp,
+          isAuthoritative,
         );
       } catch (err) {
         console.warn("[timelapse] baseline failed for codex", entry.id, err);
@@ -223,6 +228,7 @@ async function stampEntityBaselines(
           snippet.content,
           0,
           anchorTimestamp,
+          isAuthoritative,
         );
       } catch (err) {
         console.warn(
@@ -281,15 +287,21 @@ async function hasBodySteps(projectId: string): Promise<boolean> {
  *    genesis pass (scenes stay skipped, the new kind gets stamped) — otherwise a
  *    single editor-only guard would leave the fresh codex/snippet unbaselined.
  */
-export async function ensureGenesisBaselines(projectId: string): Promise<void> {
+export async function ensureGenesisBaselines(
+  projectId: string,
+  isAuthoritative: () => boolean = () => true,
+): Promise<void> {
+  if (!isAuthoritative()) return;
   if (await hasBodySteps(projectId)) return; // past genesis
+  if (!isAuthoritative()) return;
   const which: BaselineKindFilter = {
     scene: !(await loadLatestSnapshot({ projectId, domain: "editor" })),
     codex: !(await loadLatestSnapshot({ projectId, domain: "codex" })),
     snippet: !(await loadLatestSnapshot({ projectId, domain: "snippet" })),
   };
+  if (!isAuthoritative()) return;
   if (!which.scene && !which.codex && !which.snippet) return; // all baked
-  await stampEntityBaselines(projectId, which);
+  await stampEntityBaselines(projectId, which, isAuthoritative);
 }
 
 /**

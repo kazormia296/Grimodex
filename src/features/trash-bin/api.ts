@@ -4,6 +4,7 @@ import { invoke, isTauri } from "@/lib/tauri";
 // も undefined 呼び出しにならないため（panelWindow.ts の supportsPanelWindows
 // と同じ作法 — 設計書 §6.5 改訂注記）。
 import { isElectron } from "@/lib/shell";
+import { attachCreateResultMetadata } from "@/lib/createResultMetadata";
 import type {
   TrashItemData,
   TrashItemInput,
@@ -41,44 +42,48 @@ function normalizeTrashItem(raw: unknown): TrashItemData {
   const row = (raw ?? {}) as Record<string, unknown>;
   const payloadRaw = row.payload ?? "{}";
   const previewMetaRaw = row.previewMeta ?? row.preview_meta ?? null;
-  return {
-    id: String(row.id ?? ""),
-    projectId: String(row.projectId ?? row.project_id ?? ""),
-    kind: String(row.kind ?? "text-fragment") as TrashKind,
-    subKind: String(
-      row.subKind ?? row.sub_kind ?? "text-fragment",
-    ) as TrashSubKind,
-    originSceneId:
-      (row.originSceneId as string | null | undefined) ??
-      (row.origin_scene_id as string | null | undefined) ??
-      null,
-    originCodexId:
-      (row.originCodexId as string | null | undefined) ??
-      (row.origin_codex_id as string | null | undefined) ??
-      null,
-    previewText: String(row.previewText ?? row.preview_text ?? ""),
-    previewMeta:
-      previewMetaRaw == null
-        ? null
-        : safeJsonParse<Record<string, unknown>>(previewMetaRaw, {}),
-    payload: safeJsonParse<TrashPayload>(payloadRaw, {} as TrashPayload),
-    charCount: Number(row.charCount ?? row.char_count ?? 0),
-    isInteresting: toBool(row.isInteresting ?? row.is_interesting),
-    deletedAt: String(
-      row.deletedAt ?? row.deleted_at ?? new Date().toISOString(),
-    ),
-  };
+  return attachCreateResultMetadata(
+    {
+      id: String(row.id ?? ""),
+      projectId: String(row.projectId ?? row.project_id ?? ""),
+      kind: String(row.kind ?? "text-fragment") as TrashKind,
+      subKind: String(
+        row.subKind ?? row.sub_kind ?? "text-fragment",
+      ) as TrashSubKind,
+      originSceneId:
+        (row.originSceneId as string | null | undefined) ??
+        (row.origin_scene_id as string | null | undefined) ??
+        null,
+      originCodexId:
+        (row.originCodexId as string | null | undefined) ??
+        (row.origin_codex_id as string | null | undefined) ??
+        null,
+      previewText: String(row.previewText ?? row.preview_text ?? ""),
+      previewMeta:
+        previewMetaRaw == null
+          ? null
+          : safeJsonParse<Record<string, unknown>>(previewMetaRaw, {}),
+      payload: safeJsonParse<TrashPayload>(payloadRaw, {} as TrashPayload),
+      charCount: Number(row.charCount ?? row.char_count ?? 0),
+      isInteresting: toBool(row.isInteresting ?? row.is_interesting),
+      deletedAt: String(
+        row.deletedAt ?? row.deleted_at ?? new Date().toISOString(),
+      ),
+    },
+    raw,
+  );
 }
 
 interface CreatePayload extends Omit<
   TrashItemInput,
   "previewMeta" | "payload"
 > {
+  id: string;
   previewMeta: string | null;
   payload: string;
   charCount: number;
   isInteresting: boolean;
-  deletedAt: string;
+  deletedAt?: string;
 }
 
 export async function listTrashItems(
@@ -91,12 +96,19 @@ export async function listTrashItems(
 
 export async function createTrashItem(
   input: TrashItemInput,
-  options: { charCount: number; isInteresting: boolean; deletedAt?: string },
+  options: {
+    charCount: number;
+    isInteresting: boolean;
+    deletedAt?: string;
+    /** Reuse this domain ID when retrying the same logical create. */
+    id?: string;
+  },
 ): Promise<TrashItemData> {
   if (!supportsTrashBin()) {
     throw new Error("trash_bin_create: native shell (tauri/electron) required");
   }
   const payload: CreatePayload = {
+    id: options.id ?? crypto.randomUUID(),
     projectId: input.projectId,
     kind: input.kind,
     subKind: input.subKind,
@@ -108,7 +120,9 @@ export async function createTrashItem(
     payload: JSON.stringify(input.payload),
     charCount: options.charCount,
     isInteresting: options.isInteresting,
-    deletedAt: options.deletedAt ?? new Date().toISOString(),
+    ...(options.deletedAt === undefined
+      ? {}
+      : { deletedAt: options.deletedAt }),
   };
   const created = await invoke<unknown>("trash_bin_create", { payload });
   return normalizeTrashItem(created);

@@ -2,7 +2,7 @@ use super::Database;
 
 impl Database {
     pub fn integrity_check(&self) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         let mut report = serde_json::Map::new();
 
         let orphaned_codex_sources: i64 = conn.query_row(
@@ -36,7 +36,7 @@ impl Database {
     }
 
     pub fn repair_integrity(&self) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let conn = self.lock_conn()?;
         let mut report = serde_json::Map::new();
 
         let codex_fixed = conn.execute(

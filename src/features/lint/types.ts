@@ -49,9 +49,20 @@ export interface RuleWarning {
   message: string;
 }
 
+/**
+ * Minimum context required to recompute diagnostics for one target block.
+ * Rust derives this from the enabled rules and returns the maximum scope.
+ */
+export type LintIncrementalScope = "block" | "nextBlock" | "scene";
+
 export interface LintResponse {
   diagnostics: Diagnostic[];
   warnings: RuleWarning[];
+  /**
+   * Added after the original LintResponse wire contract. An older backend may
+   * omit it; callers must conservatively fall back to scene-wide invalidation.
+   */
+  incremental_scope?: LintIncrementalScope;
   computed_at: number;
 }
 

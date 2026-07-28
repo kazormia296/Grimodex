@@ -16,6 +16,12 @@ const cases = [
     nativeArgs: ["ja"],
   },
   {
+    cmd: "semantic_cancel_background",
+    method: "semanticCancelBackground",
+    args: {},
+    nativeArgs: [],
+  },
+  {
     cmd: "semantic_index_scene",
     method: "semanticIndexScene",
     args: { sceneId: "scene-1" },
@@ -163,6 +169,12 @@ describe("Semantic Phase 3 Batch 4 N-API commands", () => {
       expect(env).toEqual({
         ok: false,
         error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${method}`,
+        errorInfo: {
+          code: "IPC_BACKEND_UNAVAILABLE",
+          message: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${method}`,
+          retryable: false,
+          outcome: "failed",
+        },
       });
     },
   );

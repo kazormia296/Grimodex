@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 
@@ -120,6 +120,10 @@ function renderArea(
     profile?: "wide" | "compact" | "phone";
     gutterReserve?: string | null;
     showLineNumbers?: boolean;
+    titleEditing?: boolean;
+    titleDraft?: string;
+    editorTitle?: string;
+    handleTitleSave?: () => Promise<void>;
   } = {},
 ) {
   const settings = makeSettings(spellCheck);
@@ -140,12 +144,12 @@ function renderArea(
         typewriterMode={false}
         filterSource={filterSource}
         editorSettings={settings}
-        editorTitle=""
+        editorTitle={options.editorTitle ?? ""}
         loadedPhaseLabel={null}
-        titleEditing={false}
-        titleDraft=""
+        titleEditing={options.titleEditing ?? false}
+        titleDraft={options.titleDraft ?? ""}
         setTitleDraft={() => {}}
-        handleTitleSave={() => {}}
+        handleTitleSave={options.handleTitleSave ?? (() => Promise.resolve())}
         handleTitleCancel={() => {}}
         handleTitleEditStart={() => {}}
         isSceneContentLoading={false}
@@ -224,5 +228,24 @@ describe("EditorContentArea phone projection", () => {
       "editor-gutter-reserve",
     );
     expect(paper.style.getPropertyValue("--gutter-reserve")).toBe("");
+  });
+});
+
+describe("EditorContentArea title IME boundary", () => {
+  it("does not commit or blur the title on composition Enter", () => {
+    const handleTitleSave = vi.fn().mockResolvedValue(undefined);
+    renderArea(false, null, false, {
+      titleEditing: true,
+      titleDraft: "変換中",
+      editorTitle: "元の題",
+      handleTitleSave,
+    });
+    const input = screen.getByRole("textbox");
+    input.focus();
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+
+    expect(handleTitleSave).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
   });
 });

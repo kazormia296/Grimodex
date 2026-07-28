@@ -76,16 +76,20 @@ describe("createEventTool", () => {
   });
 
   it("入力を parse して agentCreateEvent を呼び id を返す", async () => {
-    const r = await createEventTool({
-      title: "戴冠",
-      kind: "generic",
-      primaryCodexId: "c1",
-      startTime: 12,
-      participantCodexIds: ["c2", "c3"],
-      sceneIds: ["s1"],
-    });
+    const r = await createEventTool(
+      {
+        title: "戴冠",
+        kind: "generic",
+        primaryCodexId: "c1",
+        startTime: 12,
+        participantCodexIds: ["c2", "c3"],
+        sceneIds: ["s1"],
+      },
+      "agent-tool:event-request",
+    );
     expect(m.agentCreateEvent).toHaveBeenCalledWith(
       expect.objectContaining({
+        requestId: "agent-tool:event-request",
         title: "戴冠",
         kind: "generic",
         primaryCodexId: "c1",

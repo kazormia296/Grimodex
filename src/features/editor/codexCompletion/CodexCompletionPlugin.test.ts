@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EditorState, TextSelection } from "@tiptap/pm/state";
 import { Schema } from "@tiptap/pm/model";
 import { history, undo } from "@tiptap/pm/history";
 import {
+  buildCodexCompletionTextblockPrefix,
   codexCompletionKey,
   createCodexCompletionPlugin,
 } from "./CodexCompletionPlugin";
@@ -83,6 +84,77 @@ describe("Codex completion ProseMirror plugin", () => {
       candidate: { surface: "Setsuna" },
       suffix: "suna",
     });
+  });
+
+  it("reads only the bounded suffix of a long textblock", () => {
+    const content = `${"本文".repeat(25_000)} Set`;
+    const { state } = createState(content);
+    const prefix = buildCodexCompletionTextblockPrefix(state.selection.$from);
+
+    expect(prefix.text).toBe(content.slice(-128));
+    expect(prefix.positions).toHaveLength(128);
+    expect(prefix.positions.at(-1)).toBe(state.selection.from - 1);
+  });
+
+  it("maps a completion in a long textblock back to its absolute position", () => {
+    const leading = `${"本文".repeat(25_000)} `;
+    const initial = createState(`${leading}Se`);
+    const state = focusAndType(initial.state, "t");
+
+    expect(codexCompletionKey.getState(state)).toMatchObject({
+      prefix: "Set",
+      prefixFrom: leading.length + 1,
+      prefixTo: leading.length + 4,
+      candidate: { surface: "Setsuna" },
+    });
+  });
+
+  it("classifies direct typing without reading whole-document textContent", () => {
+    const { state } = createState("Se");
+    const focused = state.apply(
+      state.tr.setMeta(codexCompletionKey, { type: "focus" }),
+    );
+    const nodePrototype = Object.getPrototypeOf(focused.doc) as {
+      readonly textContent: string;
+    };
+    const textContent = vi.spyOn(nodePrototype, "textContent", "get");
+
+    try {
+      const typed = focused.apply(focused.tr.insertText("t"));
+      expect(codexCompletionKey.getState(typed)).toMatchObject({
+        prefix: "Set",
+        candidate: { surface: "Setsuna" },
+      });
+      expect(textContent).not.toHaveBeenCalled();
+    } finally {
+      textContent.mockRestore();
+    }
+  });
+
+  it("recomputes after same-size text replacement and deletion", () => {
+    let replacement = createState("Sez").state;
+    replacement = replacement.apply(
+      replacement.tr.setMeta(codexCompletionKey, { type: "focus" }),
+    );
+    replacement = replacement.apply(
+      replacement.tr
+        .setSelection(TextSelection.create(replacement.doc, 3, 4))
+        .insertText("t"),
+    );
+    expect(replacement.doc.textContent).toBe("Set");
+    expect(codexCompletionKey.getState(replacement)?.candidate?.surface).toBe(
+      "Setsuna",
+    );
+
+    let deletion = createState("Setx").state;
+    deletion = deletion.apply(
+      deletion.tr.setMeta(codexCompletionKey, { type: "focus" }),
+    );
+    deletion = deletion.apply(deletion.tr.delete(4, 5));
+    expect(deletion.doc.textContent).toBe("Set");
+    expect(codexCompletionKey.getState(deletion)?.candidate?.surface).toBe(
+      "Setsuna",
+    );
   });
 
   it("accepts the whole surface with Tab in one transaction", () => {

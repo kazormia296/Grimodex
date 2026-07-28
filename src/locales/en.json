@@ -388,6 +388,10 @@
       "fallback": "Project"
     },
     "switchFailed": "Failed to switch project",
+    "loadDegraded": "The project opened, but some data could not be loaded",
+    "loadDegradedCount_one": "{{count}} component needs to be reloaded",
+    "loadDegradedCount_other": "{{count}} components need to be reloaded",
+    "recovering": "Project recovery is in progress.",
     "import": {
       "action": "Import…"
     },
@@ -648,6 +652,7 @@
   },
   "app": {
     "loading": "Loading…",
+    "lifecycleBusy": "Saving changes. Please wait for switching or closing to finish…",
     "invalidLayout": "Saved layout was invalid and has been reset to default. ({{reason}})",
     "degenLayout": "Layout was degenerate and has been reset to default. ({{reason}})",
     "exportTitle": "Export (Ctrl+Shift+E)",
@@ -2070,6 +2075,7 @@
     "agentFailed": "Agent execution failed: {{message}}",
     "rateLimited": "Rate limited. Retrying in 10 seconds…",
     "sendFailed": "Send failed: {{message}}",
+    "sendCancelledScopeChanged": "The destination changed, so sending was cancelled and the draft was kept.",
     "openSettings": "Open Settings",
     "deleteMessageFailed": "Failed to delete message",
     "linkedSessionReference": "Started a new session referencing \"{{title}}\" (ID: {{sessionId}}).",
@@ -2080,6 +2086,16 @@
     },
     "copied": "Copied",
     "noMessages": "No messages yet",
+    "transcript": {
+      "open": "Read full transcript",
+      "title": "Full chat transcript",
+      "description": "{{count}} loaded messages, in conversation order.",
+      "listLabel": "Full loaded chat transcript",
+      "virtualListLabel": "Chat messages",
+      "user": "You",
+      "assistant": "Assistant",
+      "system": "System"
+    },
     "actions": {
       "insertToEditor": "Insert to editor",
       "extractCodexQuick": "Quick extract to Codex",
@@ -2183,6 +2199,7 @@
         "CONVERSATION": "Conversation history"
       },
       "promptPreviewLoading": "Building prompt…",
+      "promptPreviewUnavailable": "The exact prompt could not be built. Check the current context and reopen the preview.",
       "promptSnapshotMissing": "No sent-prompt record for this message (it was sent before this feature was added).",
       "promptSnapshotError": "Failed to load the prompt record",
       "projectLabel": "Project",
@@ -3985,7 +4002,17 @@
     "bodyPlaceholder": "Write whatever comes to mind…",
     "a11y": {
       "editorBody": "Editor body: {{title}}",
-      "editorBodyUntitled": "Editor body"
+      "editorBodyUntitled": "Editor body",
+      "openLinearReader": "Read all scenes",
+      "linearReaderTitle": "All scenes — reading view",
+      "linearReaderDescription": "{{count}} scenes in manuscript order. This static view does not mount additional editors.",
+      "linearReaderLoading": "Loading all scenes…",
+      "linearReaderFailed": "Could not load the all-scenes reading view.",
+      "linearReaderRetry": "Retry",
+      "linearReaderListLabel": "All manuscript scenes",
+      "untitledScene": "Untitled scene",
+      "emptyScene": "Empty scene",
+      "unsavedContent": "Includes unsaved changes"
     }
   },
   "inlineAi": {
@@ -4441,6 +4468,14 @@
     "recovered": "Auto-save recovered; your changes are saved",
     "workspaceSwitching": "Could not save while switching workspaces (your changes are kept and will be re-saved automatically)",
     "unresolvedChanges": "The workspace was not switched because some changes are unsaved or still in conflict"
+  },
+  "closeSaveFailure": {
+    "title": "Closing was stopped because changes could not be saved",
+    "description": "Retry saving or export a recovery file. Discarding and closing will lose unsaved changes.",
+    "retry": "Retry saving",
+    "export": "Export recovery file",
+    "discard": "Discard and close",
+    "exportFailed": "Could not export the recovery file"
   },
   "sceneLoad": {
     "failed": "Failed to load scene content (saving paused for this scene): {{reason}}"
@@ -5607,6 +5642,17 @@
       "analyze": "Analyze",
       "import": "Import",
       "imported": "Imported {{n}} thread(s)",
+      "importPartial": "Imported {{created}} thread(s), skipped {{skipped}} item(s), and failed {{failed}} item(s)",
+      "importFailed": "The import could not be completed",
+      "importResult": "Created {{created}} / skipped {{skipped}} / failed {{failed}}",
+      "importAborted": "Import stopped because the project or workspace changed.",
+      "issue": {
+        "INVALID_PROPOSAL": "Invalid thread proposal",
+        "INVALID_PHASE": "Invalid narrative phase",
+        "MISSING_NODE": "Scene is missing",
+        "DUPLICATE": "Duplicate marker",
+        "CREATE_FAILED": "Could not create this item"
+      },
       "failed": "Extraction failed",
       "none": "No sub-plots could be extracted."
     },
@@ -5659,6 +5705,8 @@
     "zoomOut": "Zoom out",
     "unassigned": "Unassigned",
     "viewportLabel": "Story chronicle",
+    "scrollbarLabel": "Horizontal story chronicle scroll",
+    "scrollbarValue": "View starts at story day {{day}}",
     "tieView": "Reading × story time",
     "readingOrder": "Reading order",
     "storyTime": "Story time",

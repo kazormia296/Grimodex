@@ -23,7 +23,14 @@ export function trackPendingEditorWrite<T>(write: Promise<T>): Promise<T> {
 
 /** Wait until writes present now, and writes spawned by them, have settled. */
 export async function awaitPendingEditorWrites(): Promise<void> {
+  const failures: unknown[] = [];
   while (pendingEditorWrites.size > 0) {
-    await Promise.all([...pendingEditorWrites]);
+    const results = await Promise.allSettled([...pendingEditorWrites]);
+    for (const result of results) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "One or more editor writes failed");
   }
 }

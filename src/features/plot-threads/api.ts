@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { invoke, isTauri } from "@/lib/tauri";
+import { invoke, IpcInvokeError, isTauri } from "@/lib/tauri";
 import {
   plotThreads,
   plotThreadSceneLinks,
@@ -7,6 +7,7 @@ import {
 } from "@/db/schema";
 import type { PlotPhaseType, PlotBranchKind } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
+import { attachCreateResultMetadata } from "@/lib/createResultMetadata";
 
 /**
  * ネイティブホスト（Tauri or Electron/napi）では Rust コマンドへ invoke する。
@@ -62,46 +63,56 @@ function nullable(v: unknown): string | null {
 /** DB 行（snake_case）/ invoke 戻り値（camelCase）の双方を PlotThreadRow へ正規化。 */
 export function normalizeThread(raw: unknown): PlotThreadRow {
   const r = (raw ?? {}) as Record<string, unknown>;
-  return {
-    id: s(r.id),
-    projectId: s(r.projectId ?? r.project_id),
-    name: s(r.name),
-    color: nullable(r.color),
-    description: nullable(r.description),
-    sortOrder: s(r.sortOrder ?? r.sort_order, "a0"),
-    startNodeId: nullable(r.startNodeId ?? r.start_node_id),
-    endNodeId: nullable(r.endNodeId ?? r.end_node_id),
-    createdAt: s(r.createdAt ?? r.created_at),
-    updatedAt: s(r.updatedAt ?? r.updated_at),
-  };
+  return attachCreateResultMetadata(
+    {
+      id: s(r.id),
+      projectId: s(r.projectId ?? r.project_id),
+      name: s(r.name),
+      color: nullable(r.color),
+      description: nullable(r.description),
+      sortOrder: s(r.sortOrder ?? r.sort_order, "a0"),
+      startNodeId: nullable(r.startNodeId ?? r.start_node_id),
+      endNodeId: nullable(r.endNodeId ?? r.end_node_id),
+      createdAt: s(r.createdAt ?? r.created_at),
+      updatedAt: s(r.updatedAt ?? r.updated_at),
+    },
+    raw,
+  );
 }
 
 export function normalizeLink(raw: unknown): PlotThreadLinkRow {
   const r = (raw ?? {}) as Record<string, unknown>;
-  return {
-    id: s(r.id),
-    threadId: s(r.threadId ?? r.thread_id),
-    nodeId: s(r.nodeId ?? r.node_id),
-    phaseType: s(r.phaseType ?? r.phase_type, "develop") as PlotPhaseType,
-    note: nullable(r.note),
-    sortOrder: nullable(r.sortOrder ?? r.sort_order),
-    createdAt: s(r.createdAt ?? r.created_at),
-    updatedAt: s(r.updatedAt ?? r.updated_at),
-  };
+  return attachCreateResultMetadata(
+    {
+      id: s(r.id),
+      threadId: s(r.threadId ?? r.thread_id),
+      nodeId: s(r.nodeId ?? r.node_id),
+      phaseType: s(r.phaseType ?? r.phase_type, "develop") as PlotPhaseType,
+      note: nullable(r.note),
+      sortOrder: nullable(r.sortOrder ?? r.sort_order),
+      createdAt: s(r.createdAt ?? r.created_at),
+      updatedAt: s(r.updatedAt ?? r.updated_at),
+    },
+    raw,
+  );
 }
 
 // ───────── threads ─────────
 
 export async function createPlotThread(data: {
+  /** Reuse this domain ID when retrying the same logical create. */
+  id?: string;
   projectId: string;
   name: string;
   color?: string | null;
   description?: string | null;
   sortOrder: string;
 }): Promise<PlotThreadRow> {
-  if (nativeBackend()) {
+  const id = data.id ?? crypto.randomUUID();
+  try {
     const created = await invoke("plot_thread_create", {
       payload: {
+        id,
         projectId: data.projectId,
         name: data.name,
         color: data.color ?? null,
@@ -110,24 +121,30 @@ export async function createPlotThread(data: {
       },
     });
     return normalizeThread(created);
+  } catch (error) {
+    if (error instanceof IpcInvokeError && error.outcome === "unknown") {
+      // The same domain ID can be supplied to a deliberate retry. Surface it
+      // without claiming that the first native create failed.
+      throw new IpcInvokeError(
+        error.command,
+        {
+          code: error.code,
+          message: error.message,
+          // Unlike generic mutations, this create is retry-safe when the
+          // caller reuses the domain ID included below.
+          retryable: true,
+          outcome: error.outcome,
+          details: {
+            ...error.details,
+            requestId: id,
+            idempotencyDomain: "plot-thread-create",
+          },
+        },
+        error,
+      );
+    }
+    throw error;
   }
-  const now = new Date().toISOString();
-  const id = crypto.randomUUID();
-  await db.insert(plotThreads).values({
-    id,
-    projectId: data.projectId,
-    name: data.name,
-    color: data.color ?? null,
-    description: data.description ?? null,
-    sortOrder: data.sortOrder,
-    createdAt: now,
-    updatedAt: now,
-  });
-  const [row] = await db
-    .select()
-    .from(plotThreads)
-    .where(eq(plotThreads.id, id));
-  return normalizeThread(row);
 }
 
 export async function updatePlotThread(
@@ -135,20 +152,27 @@ export async function updatePlotThread(
   patch: Partial<
     Pick<PlotThreadRow, "name" | "color" | "description" | "sortOrder">
   >,
-): Promise<void> {
+): Promise<PlotThreadRow> {
   if (nativeBackend()) {
     const p: Record<string, unknown> = {};
     if (patch.name !== undefined) p.name = patch.name;
     if (patch.color !== undefined) p.color = patch.color;
     if (patch.description !== undefined) p.description = patch.description;
     if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
-    await invoke("plot_thread_update", { id, patch: p });
-    return;
+    return normalizeThread(
+      await invoke("plot_thread_update", { id, patch: p }),
+    );
   }
   await db
     .update(plotThreads)
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(eq(plotThreads.id, id));
+  const [updated] = await db
+    .select()
+    .from(plotThreads)
+    .where(eq(plotThreads.id, id));
+  if (!updated) throw new Error(`plot thread not found after update: ${id}`);
+  return normalizeThread(updated);
 }
 
 export async function deletePlotThread(id: string): Promise<void> {
@@ -157,28 +181,6 @@ export async function deletePlotThread(id: string): Promise<void> {
     return;
   }
   await db.delete(plotThreads).where(eq(plotThreads.id, id));
-}
-
-/**
- * Undo/Redo 専用: 削除/作成した行を **同じ id で** 復元する。create 系は id を
- * 新規採番する（Rust / Drizzle とも）ため、履歴の逆操作で id を保つには専用の
- * id 保存 insert が要る。branch CRUD と同じく Drizzle 直書きで Tauri / テスト共通
- * （単一 DB を db_execute 経由で叩く）。復元データは過去に検証済みの行なので XPROJ
- * 再検証は行わない（履歴は project 切替で clear される）。
- */
-export async function restorePlotThread(row: PlotThreadRow): Promise<void> {
-  await db.insert(plotThreads).values({
-    id: row.id,
-    projectId: row.projectId,
-    name: row.name,
-    color: row.color,
-    description: row.description,
-    sortOrder: row.sortOrder,
-    startNodeId: row.startNodeId,
-    endNodeId: row.endNodeId,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  });
 }
 
 export async function listPlotThreads(
@@ -199,15 +201,19 @@ export async function listPlotThreads(
 // ───────── links ─────────
 
 export async function createPlotThreadLink(data: {
+  /** Reuse this domain ID when retrying the same logical create. */
+  id?: string;
   threadId: string;
   nodeId: string;
   phaseType: PlotPhaseType;
   note?: string | null;
   sortOrder?: string | null;
 }): Promise<PlotThreadLinkRow> {
-  if (nativeBackend()) {
+  const id = data.id ?? crypto.randomUUID();
+  try {
     const created = await invoke("plot_thread_link_create", {
       payload: {
+        id,
         threadId: data.threadId,
         nodeId: data.nodeId,
         phaseType: data.phaseType,
@@ -216,24 +222,26 @@ export async function createPlotThreadLink(data: {
       },
     });
     return normalizeLink(created);
+  } catch (error) {
+    if (error instanceof IpcInvokeError && error.outcome === "unknown") {
+      throw new IpcInvokeError(
+        error.command,
+        {
+          code: error.code,
+          message: error.message,
+          retryable: true,
+          outcome: error.outcome,
+          details: {
+            ...error.details,
+            requestId: id,
+            idempotencyDomain: "plot-thread-link-create",
+          },
+        },
+        error,
+      );
+    }
+    throw error;
   }
-  const now = new Date().toISOString();
-  const id = crypto.randomUUID();
-  await db.insert(plotThreadSceneLinks).values({
-    id,
-    threadId: data.threadId,
-    nodeId: data.nodeId,
-    phaseType: data.phaseType,
-    note: data.note ?? null,
-    sortOrder: data.sortOrder ?? null,
-    createdAt: now,
-    updatedAt: now,
-  });
-  const [row] = await db
-    .select()
-    .from(plotThreadSceneLinks)
-    .where(eq(plotThreadSceneLinks.id, id));
-  return normalizeLink(row);
 }
 
 export async function updatePlotThreadLink(
@@ -244,7 +252,7 @@ export async function updatePlotThreadLink(
       "threadId" | "nodeId" | "phaseType" | "note" | "sortOrder"
     >
   >,
-): Promise<void> {
+): Promise<PlotThreadLinkRow> {
   if (nativeBackend()) {
     const p: Record<string, unknown> = {};
     if (patch.threadId !== undefined) p.threadId = patch.threadId;
@@ -252,13 +260,21 @@ export async function updatePlotThreadLink(
     if (patch.phaseType !== undefined) p.phaseType = patch.phaseType;
     if (patch.note !== undefined) p.note = patch.note;
     if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
-    await invoke("plot_thread_link_update", { id, patch: p });
-    return;
+    return normalizeLink(
+      await invoke("plot_thread_link_update", { id, patch: p }),
+    );
   }
   await db
     .update(plotThreadSceneLinks)
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(eq(plotThreadSceneLinks.id, id));
+  const [updated] = await db
+    .select()
+    .from(plotThreadSceneLinks)
+    .where(eq(plotThreadSceneLinks.id, id));
+  if (!updated)
+    throw new Error(`plot thread link not found after update: ${id}`);
+  return normalizeLink(updated);
 }
 
 export async function deletePlotThreadLink(id: string): Promise<void> {
@@ -267,22 +283,6 @@ export async function deletePlotThreadLink(id: string): Promise<void> {
     return;
   }
   await db.delete(plotThreadSceneLinks).where(eq(plotThreadSceneLinks.id, id));
-}
-
-/** Undo/Redo 専用: link を同じ id で復元する（{@link restorePlotThread} 参照）。 */
-export async function restorePlotThreadLink(
-  row: PlotThreadLinkRow,
-): Promise<void> {
-  await db.insert(plotThreadSceneLinks).values({
-    id: row.id,
-    threadId: row.threadId,
-    nodeId: row.nodeId,
-    phaseType: row.phaseType,
-    note: row.note,
-    sortOrder: row.sortOrder,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  });
 }
 
 export async function listPlotThreadLinks(
@@ -309,8 +309,6 @@ export async function listPlotThreadLinks(
 }
 
 // ───────── branches (分岐 / 合流) ─────────
-// 専用 Rust コマンドは設けず、db_execute 経由の Drizzle で CRUD する
-// （在 Tauri / テスト共通。codexRelationApi など多数の feature と同方針）。
 
 export interface PlotThreadBranchRow {
   id: string;
@@ -325,42 +323,181 @@ export interface PlotThreadBranchRow {
 
 export function normalizeBranch(raw: unknown): PlotThreadBranchRow {
   const r = (raw ?? {}) as Record<string, unknown>;
-  return {
-    id: s(r.id),
-    projectId: s(r.projectId ?? r.project_id),
-    fromThreadId: s(r.fromThreadId ?? r.from_thread_id),
-    toThreadId: s(r.toThreadId ?? r.to_thread_id),
-    atNodeId: s(r.atNodeId ?? r.at_node_id),
-    kind: s(r.kind, "branch") as PlotBranchKind,
-    createdAt: s(r.createdAt ?? r.created_at),
-    updatedAt: s(r.updatedAt ?? r.updated_at),
-  };
+  return attachCreateResultMetadata(
+    {
+      id: s(r.id),
+      projectId: s(r.projectId ?? r.project_id),
+      fromThreadId: s(r.fromThreadId ?? r.from_thread_id),
+      toThreadId: s(r.toThreadId ?? r.to_thread_id),
+      atNodeId: s(r.atNodeId ?? r.at_node_id),
+      kind: s(r.kind, "branch") as PlotBranchKind,
+      createdAt: s(r.createdAt ?? r.created_at),
+      updatedAt: s(r.updatedAt ?? r.updated_at),
+    },
+    raw,
+  );
+}
+
+export interface PlotThreadRestoreSnapshot {
+  requestId?: string;
+  projectId: string;
+  thread?: PlotThreadRow | null;
+  links?: PlotThreadLinkRow[];
+  branches?: PlotThreadBranchRow[];
+}
+
+export interface PlotThreadRestoreSnapshotResult {
+  id: string;
+  thread: PlotThreadRow | null;
+  links: PlotThreadLinkRow[];
+  branches: PlotThreadBranchRow[];
+}
+
+export interface PlotThreadDeleteSnapshot {
+  requestId?: string;
+  projectId: string;
+  link: PlotThreadLinkRow;
+  branches: PlotThreadBranchRow[];
+}
+
+export interface PlotThreadDeleteSnapshotResult {
+  id: string;
+  deleted: boolean;
+}
+
+function retryableSnapshotError(
+  error: unknown,
+  requestId: string,
+  idempotencyDomain: string,
+): never {
+  if (error instanceof IpcInvokeError && error.outcome === "unknown") {
+    throw new IpcInvokeError(
+      error.command,
+      {
+        code: error.code,
+        message: error.message,
+        retryable: true,
+        outcome: error.outcome,
+        details: {
+          ...error.details,
+          requestId,
+          idempotencyDomain,
+        },
+      },
+      error,
+    );
+  }
+  throw error;
+}
+
+/**
+ * Undo/Redo 専用の atomic restore。thread と CASCADE で消えた child rows、
+ * または marker と依存 branches を request ledger と同じ transaction で戻す。
+ */
+export async function restorePlotThreadSnapshot(
+  data: PlotThreadRestoreSnapshot,
+): Promise<PlotThreadRestoreSnapshotResult> {
+  const requestId = data.requestId ?? crypto.randomUUID();
+  try {
+    const raw = await invoke("plot_thread_restore_snapshot", {
+      payload: {
+        requestId,
+        projectId: data.projectId,
+        thread: data.thread ?? null,
+        links: data.links ?? [],
+        branches: data.branches ?? [],
+      },
+    });
+    const row = (raw ?? {}) as Record<string, unknown>;
+    return attachCreateResultMetadata(
+      {
+        id: s(row.id, requestId),
+        thread: row.thread == null ? null : normalizeThread(row.thread),
+        links: Array.isArray(row.links) ? row.links.map(normalizeLink) : [],
+        branches: Array.isArray(row.branches)
+          ? row.branches.map(normalizeBranch)
+          : [],
+      },
+      raw,
+    );
+  } catch (error) {
+    retryableSnapshotError(error, requestId, "plot-thread-restore-snapshot");
+  }
+}
+
+/**
+ * marker と、その marker だけを anchor にする branches を atomic に削除する。
+ * full persisted rows は native 側で現在値と照合され、unknown retry が同一 ID の
+ * 更新済み／再作成済み row を消すことを防ぐ。
+ */
+export async function deletePlotThreadSnapshot(
+  data: PlotThreadDeleteSnapshot,
+): Promise<PlotThreadDeleteSnapshotResult> {
+  const requestId = data.requestId ?? crypto.randomUUID();
+  try {
+    const raw = await invoke("plot_thread_delete_snapshot", {
+      payload: {
+        requestId,
+        projectId: data.projectId,
+        link: data.link,
+        branches: data.branches,
+      },
+    });
+    const row = (raw ?? {}) as Record<string, unknown>;
+    return attachCreateResultMetadata(
+      {
+        id: s(row.id, requestId),
+        deleted: row.deleted === true || row.deleted === 1,
+      },
+      raw,
+    );
+  } catch (error) {
+    retryableSnapshotError(error, requestId, "plot-thread-delete-snapshot");
+  }
 }
 
 export async function createPlotThreadBranch(data: {
+  /** Reuse this domain ID when retrying the same logical create. */
+  id?: string;
   projectId: string;
   fromThreadId: string;
   toThreadId: string;
   atNodeId: string;
   kind: PlotBranchKind;
 }): Promise<PlotThreadBranchRow> {
-  const now = new Date().toISOString();
-  const id = crypto.randomUUID();
-  await db.insert(plotThreadBranches).values({
-    id,
-    projectId: data.projectId,
-    fromThreadId: data.fromThreadId,
-    toThreadId: data.toThreadId,
-    atNodeId: data.atNodeId,
-    kind: data.kind,
-    createdAt: now,
-    updatedAt: now,
-  });
-  const [row] = await db
-    .select()
-    .from(plotThreadBranches)
-    .where(eq(plotThreadBranches.id, id));
-  return normalizeBranch(row);
+  const id = data.id ?? crypto.randomUUID();
+  try {
+    const created = await invoke("plot_thread_branch_create", {
+      payload: {
+        id,
+        projectId: data.projectId,
+        fromThreadId: data.fromThreadId,
+        toThreadId: data.toThreadId,
+        atNodeId: data.atNodeId,
+        kind: data.kind,
+      },
+    });
+    return normalizeBranch(created);
+  } catch (error) {
+    if (error instanceof IpcInvokeError && error.outcome === "unknown") {
+      throw new IpcInvokeError(
+        error.command,
+        {
+          code: error.code,
+          message: error.message,
+          retryable: true,
+          outcome: error.outcome,
+          details: {
+            ...error.details,
+            requestId: id,
+            idempotencyDomain: "plot-thread-branch-create",
+          },
+        },
+        error,
+      );
+    }
+    throw error;
+  }
 }
 
 export async function updatePlotThreadBranch(
@@ -368,31 +505,23 @@ export async function updatePlotThreadBranch(
   patch: Partial<
     Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
   >,
-): Promise<void> {
+): Promise<PlotThreadBranchRow> {
   await db
     .update(plotThreadBranches)
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(eq(plotThreadBranches.id, id));
+  const [updated] = await db
+    .select()
+    .from(plotThreadBranches)
+    .where(eq(plotThreadBranches.id, id));
+  if (!updated) {
+    throw new Error(`plot thread branch not found after update: ${id}`);
+  }
+  return normalizeBranch(updated);
 }
 
 export async function deletePlotThreadBranch(id: string): Promise<void> {
   await db.delete(plotThreadBranches).where(eq(plotThreadBranches.id, id));
-}
-
-/** Undo/Redo 専用: branch を同じ id で復元する（{@link restorePlotThread} 参照）。 */
-export async function restorePlotThreadBranch(
-  row: PlotThreadBranchRow,
-): Promise<void> {
-  await db.insert(plotThreadBranches).values({
-    id: row.id,
-    projectId: row.projectId,
-    fromThreadId: row.fromThreadId,
-    toThreadId: row.toThreadId,
-    atNodeId: row.atNodeId,
-    kind: row.kind,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  });
 }
 
 export async function listPlotThreadBranches(

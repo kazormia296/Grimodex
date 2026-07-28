@@ -191,6 +191,57 @@ describe("autoApplyProseProposal — append", () => {
   });
 });
 
+describe("autoApplyProseProposal — authority", () => {
+  it("rechecks authority after the editor flush before reading or writing", async () => {
+    let releaseSave!: () => void;
+    h.saveScene.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSave = resolve;
+        }),
+    );
+    let authoritative = true;
+
+    const applying = autoApplyProseProposal(proposal(), () => authoritative);
+    await vi.waitFor(() => expect(h.saveScene).toHaveBeenCalledOnce());
+    authoritative = false;
+    releaseSave();
+
+    await expect(applying).resolves.toEqual({
+      applied: false,
+      reason: "authority-changed",
+    });
+    expect(h.loadSceneContent).not.toHaveBeenCalled();
+    expect(h.agentAcceptProseStage).not.toHaveBeenCalled();
+    expect(h.persistSceneBody).not.toHaveBeenCalled();
+  });
+
+  it("rechecks authority immediately before the scene-body write", async () => {
+    let releaseAccept!: () => void;
+    h.agentAcceptProseStage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseAccept = () => resolve({});
+        }),
+    );
+    let authoritative = true;
+
+    const applying = autoApplyProseProposal(proposal(), () => authoritative);
+    await vi.waitFor(() =>
+      expect(h.agentAcceptProseStage).toHaveBeenCalledOnce(),
+    );
+    authoritative = false;
+    releaseAccept();
+
+    await expect(applying).resolves.toEqual({
+      applied: false,
+      reason: "authority-changed",
+    });
+    expect(h.persistSceneBody).not.toHaveBeenCalled();
+    expect(h.recordChangeEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe("autoApplyProseProposal — unsaved live-edit flush", () => {
   it("flushes the scene's pending save BEFORE reading the DB body", async () => {
     const order: string[] = [];

@@ -47,6 +47,7 @@ function scene(id: string, title: string, sortOrder: string) {
 const emptyLintResponse: LintResponse = {
   diagnostics: [],
   warnings: [],
+  incremental_scope: "block",
   computed_at: 1,
 };
 

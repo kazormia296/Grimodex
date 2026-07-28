@@ -19,9 +19,14 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { recordStateSnapshot } from "./snapshots";
 import { getRecorderChainHead } from "./recorder";
 
-export async function seedWorkspaceSnapshot(projectId: string): Promise<void> {
+export async function seedWorkspaceSnapshot(
+  projectId: string,
+  isAuthoritative: () => boolean = () => true,
+): Promise<void> {
+  if (!isAuthoritative()) return;
   const { layout, activePresetId, hiddenStripePanels } =
     useLayoutStore.getState();
+  if (!isAuthoritative()) return;
   await recordStateSnapshot({
     projectId,
     domain: "layout",

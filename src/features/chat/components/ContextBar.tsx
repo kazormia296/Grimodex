@@ -5,6 +5,7 @@ import {
   useEffect,
   useCallback,
 } from "react";
+import { recordCounter } from "@/lib/perfLog";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { useTranslation } from "react-i18next";
@@ -37,7 +38,7 @@ import { PromptPreviewModal } from "./PromptPreviewModal";
 import { ContextCreatorButton } from "./ContextCreatorButton";
 import { ContextCreatorDialog } from "./ContextCreatorDialog";
 import { runContextCreator, type SuggestedEntry } from "../contextCreatorApi";
-import { useChatStore } from "../chatStore";
+import { useChatStore, type ChatPromptPreviewResult } from "../chatStore";
 import { useAiSettingsStore } from "../store";
 import {
   getModelCapabilities,
@@ -72,6 +73,11 @@ type ViaChild = {
 };
 
 interface ContextBarProps {
+  /**
+   * プレビューを所有する workspace / project / scope / session の immutable
+   * snapshot。値が変わった時点で、構築中・表示中の旧プレビューを失効させる。
+   */
+  previewAuthorityKey: string;
   /**
    * codex/snippet スコープのアンカー (= この会話の主題)。固定・削除不可の
    * 専用チップとして先頭付近に表示し、プロンプトの <focus_subject> 注入対象と
@@ -132,6 +138,7 @@ interface ContextBarProps {
 }
 
 export function ContextBar({
+  previewAuthorityKey,
   scopeAnchor = null,
   pinnedEntries: candidatePinnedEntries,
   contextPlan = null,
@@ -166,32 +173,73 @@ export function ContextBar({
   onDismissCacheInvalidated,
 }: ContextBarProps) {
   const { t } = useTranslation();
+  useEffect(() => {
+    recordCounter("chat.contextBar.commit");
+  });
   const reduced = useReducedMotion();
   // 動的 capability レジストリ更新時に contextWindow 表示を再計算する
   useAiSettingsStore((s) => s.modelCapsRevision);
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   // プレビューを開いたときに related_scenes（意味検索）込みでプロンプトを
-  // 組み直した結果。null = まだ構築前（ライブ値で代替表示）。
-  const [previewData, setPreviewData] = useState<{
-    prompt: string;
-    layers: LayerBreakdown[];
-    totalTokens: number;
-    userMessage: string;
-  } | null>(null);
+  // 組み直した結果。null = まだ構築前。exact 構築不能時は unavailable を保持し、
+  // live-estimate cache をプレビューへ流用しない。
+  const [previewData, setPreviewData] =
+    useState<ChatPromptPreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const buildPreviewPrompt = useChatStore((s) => s.buildPreviewPrompt);
+  const previewRequestGenerationRef = useRef(0);
+  const latestPreviewAuthorityKeyRef = useRef(previewAuthorityKey);
+  latestPreviewAuthorityKeyRef.current = previewAuthorityKey;
+
+  const closePreview = useCallback(() => {
+    previewRequestGenerationRef.current += 1;
+    setPreviewOpen(false);
+    setPreviewData(null);
+    setPreviewLoading(false);
+  }, []);
+
+  useLayoutEffect(() => {
+    previewRequestGenerationRef.current += 1;
+    setPreviewOpen(false);
+    setPreviewData(null);
+    setPreviewLoading(false);
+    return () => {
+      // unmount と authority change の cleanup は、未解決 request の callback
+      // より先に ownership を破棄する。state は cleanup では更新しない。
+      previewRequestGenerationRef.current += 1;
+    };
+  }, [previewAuthorityKey]);
 
   // プレビューを開く: related_scenes はメッセージ依存で送信時のみ計算される
   // ため、開いた瞬間に1回検索を走らせて RAG 込みのプロンプトを構築する。
   const openPreview = useCallback(() => {
+    const requestGeneration = ++previewRequestGenerationRef.current;
+    const requestAuthorityKey = previewAuthorityKey;
+    const ownsPreview = () =>
+      previewRequestGenerationRef.current === requestGeneration &&
+      latestPreviewAuthorityKeyRef.current === requestAuthorityKey;
     setPreviewData(null);
     setPreviewLoading(true);
     setPreviewOpen(true);
     void buildPreviewPrompt()
-      .then((data) => setPreviewData(data))
-      .finally(() => setPreviewLoading(false));
-  }, [buildPreviewPrompt]);
+      .then((data) => {
+        if (ownsPreview()) setPreviewData(data);
+      })
+      .catch(() => {
+        if (!ownsPreview()) return;
+        setPreviewData({
+          status: "unavailable",
+          prompt: "",
+          layers: [],
+          totalTokens: 0,
+          userMessage: "",
+        });
+      })
+      .finally(() => {
+        if (ownsPreview()) setPreviewLoading(false);
+      });
+  }, [buildPreviewPrompt, previewAuthorityKey]);
 
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
@@ -398,23 +446,24 @@ export function ContextBar({
         data-testid="context-bar"
         data-tour-target="chat-context-bar"
       >
-        {/* ヘッダー行: クリックで折りたたみ */}
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => setCollapsed((v) => !v)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setCollapsed((v) => !v);
-            }
-          }}
-          aria-expanded={!collapsed}
-          className="flex w-full cursor-pointer items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30"
-        >
-          <span className="flex items-center gap-1.5 font-medium">
-            {t("chat.context.heading")}
-          </span>
+        {/* ヘッダー行: 左側の独立ボタンで折りたたみ */}
+        <div className="flex w-full items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30">
+          <button
+            type="button"
+            data-testid="context-bar-toggle"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-expanded={!collapsed}
+            className="flex min-w-0 flex-1 items-center justify-between self-stretch pr-2 text-left hover:text-foreground"
+          >
+            <span className="flex items-center gap-1.5 font-medium">
+              {t("chat.context.heading")}
+            </span>
+            {collapsed ? (
+              <ChevronDown className="h-3 w-3" aria-hidden />
+            ) : (
+              <ChevronUp className="h-3 w-3" aria-hidden />
+            )}
+          </button>
           <div className="flex items-center gap-2">
             {(summaryCount > 3 || maxSummaryGeneration > 3) &&
               onCreateLinkedSession && (
@@ -605,11 +654,6 @@ export function ContextBar({
                   </div>
                 );
               })()}
-            {collapsed ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronUp className="h-3 w-3" />
-            )}
           </div>
         </div>
 
@@ -1086,7 +1130,8 @@ export function ContextBar({
           model={model}
           contextWindow={contextWindow}
           loading={previewLoading}
-          onClose={() => setPreviewOpen(false)}
+          unavailable={previewData?.status === "unavailable"}
+          onClose={closePreview}
         />
       )}
     </>

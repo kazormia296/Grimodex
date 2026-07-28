@@ -55,7 +55,83 @@ let enabled = false;
 let longtaskObserver: PerformanceObserver | null = null;
 let session: SessionState | null = null;
 const startTimes = new Map<string, number>();
+const animationFrameTimestamps = new Map<string, number>();
 const recentMarks: MarkRecord[] = [];
+let utf8Encoder: TextEncoder | null = null;
+
+export type RuntimePerformanceControlName =
+  | "chat.streamingDraft"
+  | "map.dragIdentity";
+type RuntimePerformanceControl = (payload: unknown) => unknown;
+interface RuntimePerformanceControlRegistration {
+  control: RuntimePerformanceControl;
+}
+const runtimePerformanceControlAllowlist =
+  new Set<RuntimePerformanceControlName>([
+    "chat.streamingDraft",
+    "map.dragIdentity",
+  ]);
+const runtimePerformanceControls = new Map<
+  RuntimePerformanceControlName,
+  RuntimePerformanceControlRegistration
+>();
+const runtimePerformanceOwnerToken =
+  typeof window !== "undefined" &&
+  typeof window.grimodex?.runtimePerformance?.ownerToken === "string"
+    ? window.grimodex.runtimePerformance.ownerToken
+    : null;
+
+export function hasRuntimePerformanceCapability(): boolean {
+  return runtimePerformanceOwnerToken !== null;
+}
+
+/**
+ * Register an in-renderer control for deterministic runtime benchmarks.
+ * Controls are fixed-name, in-memory callbacks. They are callable only while
+ * an explicit perf session is active and have no persistence or IPC transport.
+ */
+export function registerRuntimePerformanceControl(
+  name: RuntimePerformanceControlName,
+  control: RuntimePerformanceControl,
+): () => void {
+  if (!runtimePerformanceControlAllowlist.has(name)) {
+    throw new Error(`runtime performance control is not allowed: ${name}`);
+  }
+  if (!runtimePerformanceOwnerToken) {
+    return () => {};
+  }
+  const registration = { control };
+  runtimePerformanceControls.set(name, registration);
+  return () => {
+    if (runtimePerformanceControls.get(name) === registration) {
+      runtimePerformanceControls.delete(name);
+    }
+  };
+}
+
+export function invokeRuntimePerformanceControl(
+  ownerToken: string,
+  name: RuntimePerformanceControlName,
+  payload: unknown,
+): unknown {
+  if (!runtimePerformanceOwnerToken) {
+    throw new Error("runtime performance control is unavailable");
+  }
+  if (ownerToken !== runtimePerformanceOwnerToken) {
+    throw new Error("runtime performance control owner token is invalid");
+  }
+  if (!session) {
+    throw new Error("runtime performance control requires an active session");
+  }
+  if (!runtimePerformanceControlAllowlist.has(name)) {
+    throw new Error(`runtime performance control is not allowed: ${name}`);
+  }
+  const registration = runtimePerformanceControls.get(name);
+  if (!registration) {
+    throw new Error(`runtime performance control is not registered: ${name}`);
+  }
+  return registration.control(payload);
+}
 
 export function markStart(label: string): void {
   if (!enabled && !session) return;
@@ -93,6 +169,70 @@ export function recordMark(
 export function recordCounter(label: string, increment = 1): void {
   if (!session || !Number.isFinite(increment)) return;
   session.counters.set(label, (session.counters.get(label) ?? 0) + increment);
+}
+
+/** Retain the largest observed cardinality during the active session. */
+export function recordMaxCounter(label: string, value: number): void {
+  if (!session || !Number.isFinite(value)) return;
+  session.counters.set(
+    label,
+    Math.max(session.counters.get(label) ?? 0, value),
+  );
+}
+
+/**
+ * Count UTF-8 bytes only while automation is actively collecting evidence.
+ * The TextEncoder allocation and O(n) encode must never enter the normal save
+ * path merely because instrumentation exists.
+ */
+export function recordSerializedByteCounter(
+  label: string,
+  serialized: string,
+): void {
+  if (!session) return;
+  utf8Encoder ??= new TextEncoder();
+  recordCounter(label, utf8Encoder.encode(serialized).byteLength);
+}
+
+/**
+ * Measure synchronous rAF/interaction work without paying for performance.now
+ * in normal sessions. The paired counter is deterministic evidence that a
+ * runtime gesture actually exercised the measured frame path.
+ */
+export function measurePerfSync<T>(label: string, work: () => T): T {
+  if (!enabled && !session) return work();
+  const start = performance.now();
+  try {
+    return work();
+  } finally {
+    recordMark(label, performance.now() - start, start);
+    recordCounter(`${label}.count`);
+  }
+}
+
+/**
+ * Record the wall-clock interval between consecutive rAF callbacks.
+ *
+ * This is deliberately separate from `measurePerfSync`: callback CPU time
+ * ends before style/layout/paint/composite, while the next rAF timestamp
+ * reflects a frame that missed its presentation deadline. The first sample is
+ * only an anchor and therefore does not manufacture a zero-duration frame.
+ */
+export function recordAnimationFrameInterval(
+  label: string,
+  frameTimestamp: number,
+): void {
+  // Intervals need an explicit session boundary; otherwise two unrelated
+  // gestures minutes apart would look like one catastrophically missed frame.
+  if (!session) return;
+  if (!Number.isFinite(frameTimestamp)) return;
+  const previous = animationFrameTimestamps.get(label);
+  animationFrameTimestamps.set(label, frameTimestamp);
+  if (previous === undefined || frameTimestamp <= previous) {
+    return;
+  }
+  recordMark(label, frameTimestamp - previous, previous);
+  recordCounter(`${label}.count`);
 }
 
 function collectLongtaskEntries(
@@ -218,6 +358,7 @@ export function disablePerfLog(): void {
   // Keep mark/buffer state if a session is still running; otherwise clear.
   if (!session) {
     startTimes.clear();
+    animationFrameTimestamps.clear();
     recentMarks.length = 0;
   }
   maybeStopLongtaskObserver();
@@ -238,6 +379,7 @@ export function startPerfSession(): void {
     counters: new Map(),
     eventObserver: null,
   };
+  animationFrameTimestamps.clear();
   ensureLongtaskObserver();
   if (typeof PerformanceObserver !== "undefined") {
     try {
@@ -257,21 +399,19 @@ export function startPerfSession(): void {
   session = next;
 }
 
-export function endPerfSession(): PerfSessionResult | null {
-  const s = session;
-  if (!s) return null;
+function flushPerfSessionObservers(s: SessionState): void {
   if (longtaskObserver) {
     collectLongtaskEntries(longtaskObserver.takeRecords(), s);
   }
   if (s.eventObserver) {
     collectEventEntries(s.eventObserver.takeRecords(), s);
   }
-  session = null;
-  s.eventObserver?.disconnect();
-  maybeStopLongtaskObserver();
+}
 
-  const durationMs = performance.now() - s.startedAt;
-
+function summarizePerfSession(
+  s: SessionState,
+  sampledAt: number,
+): PerfSessionResult {
   const ltCount = s.longtasks.length;
   let ltTotal = 0;
   let ltMax = 0;
@@ -320,7 +460,7 @@ export function endPerfSession(): PerfSessionResult | null {
     .map(({ label, totalMs, count }) => ({ label, totalMs, count }));
 
   return {
-    durationMs,
+    durationMs: sampledAt - s.startedAt,
     longtask: { count: ltCount, totalMs: ltTotal, maxMs: ltMax },
     slowEvent: { count: evCount, p95Ms: evP95, maxMs: evMax },
     topMarks,
@@ -329,12 +469,41 @@ export function endPerfSession(): PerfSessionResult | null {
   };
 }
 
+/**
+ * Read the current session without ending it. The runtime harness snapshots
+ * the exact typing window here, while the same session remains active to
+ * capture autosave counters and long tasks that settle afterwards.
+ */
+export function snapshotPerfSession(): PerfSessionResult | null {
+  const s = session;
+  if (!s) return null;
+  flushPerfSessionObservers(s);
+  return summarizePerfSession(s, performance.now());
+}
+
+export function endPerfSession(): PerfSessionResult | null {
+  const s = session;
+  if (!s) return null;
+  flushPerfSessionObservers(s);
+  session = null;
+  animationFrameTimestamps.clear();
+  s.eventObserver?.disconnect();
+  maybeStopLongtaskObserver();
+  return summarizePerfSession(s, performance.now());
+}
+
 declare global {
   interface Window {
     enablePerfLog?: () => void;
     disablePerfLog?: () => void;
     startPerfSession?: () => void;
+    snapshotPerfSession?: () => PerfSessionResult | null;
     endPerfSession?: () => PerfSessionResult | null;
+    invokeRuntimePerformanceControl?: (
+      ownerToken: string,
+      name: RuntimePerformanceControlName,
+      payload: unknown,
+    ) => unknown;
   }
 }
 
@@ -342,7 +511,13 @@ if (typeof window !== "undefined") {
   window.enablePerfLog = enablePerfLog;
   window.disablePerfLog = disablePerfLog;
   window.startPerfSession = startPerfSession;
+  window.snapshotPerfSession = snapshotPerfSession;
   window.endPerfSession = endPerfSession;
+  if (runtimePerformanceOwnerToken) {
+    window.invokeRuntimePerformanceControl = invokeRuntimePerformanceControl;
+  } else {
+    delete window.invokeRuntimePerformanceControl;
+  }
   try {
     if (localStorage.getItem(STORAGE_KEY) === "1") {
       enablePerfLog();

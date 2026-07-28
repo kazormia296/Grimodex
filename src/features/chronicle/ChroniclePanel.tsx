@@ -83,6 +83,7 @@ import {
   externalDocumentStateKey,
   useExternalWriteStore,
 } from "@/features/concurrency/externalWriteStore";
+import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 
 type EventAggregateWriteResult = { version: number };
 
@@ -111,7 +112,7 @@ function rollbackOptimisticEventPatch(
  * 座標数学は chronicleAxis/Ticks/LanePack/CausalBezier（純関数）に委譲し、
  * 本コンポーネントはデータロード・状態・CRUD と各サブビューの配線を担う。
  */
-export function ChroniclePanel() {
+export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const { t, i18n } = useTranslation();
   const lang: DateLang = i18n.language?.startsWith("en") ? "en" : "ja";
   const projectId = useProjectStore((s) => s.currentProjectId);
@@ -1815,6 +1816,7 @@ export function ChroniclePanel() {
           </div>
         ) : (
           <ChronicleViewport
+            isActive={isActive}
             view={view}
             onViewChange={applyView}
             onMeasureTrack={setTrackW}

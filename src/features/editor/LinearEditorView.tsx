@@ -5,6 +5,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { flattenSceneNodes, getTreeIndex } from "@/features/tree/treeIndex";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { LinearSceneBlock } from "./LinearSceneBlock";
+import { AccessibleLinearReaderDialog } from "./AccessibleLinearReaderDialog";
 import { Toolbar } from "@/features/editor/Toolbar";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { CodexPopover } from "@/features/editor/CodexPopover";
@@ -50,6 +51,11 @@ import {
   buildLinearPinnedIndexes,
   extractLinearVirtualIndexes,
 } from "./linearVirtualization";
+import {
+  measurePerfSync,
+  recordCounter,
+  recordMaxCounter,
+} from "@/lib/perfLog";
 
 const DEFAULT_HEIGHT = 300;
 const DEBOUNCE_ACTIVE_MS = 100;
@@ -184,11 +190,25 @@ export function LinearEditorView() {
     if (activeDebounceRef.current) clearTimeout(activeDebounceRef.current);
     activeDebounceRef.current = setTimeout(() => {
       if (navigatingRef.current) return;
-      const closestId = pickActiveSceneId(
-        container.getBoundingClientRect(),
-        [...visibleRectsRef.current].map(([id, rect]) => ({ id, rect })),
-        verticalMode,
-      );
+      const closestId = measurePerfSync("linear.activeDetection", () => {
+        const visibleRects = [...visibleRectsRef.current].map(([id, rect]) => ({
+          id,
+          rect,
+        }));
+        recordMaxCounter(
+          "linear.activeDetection.maxVisibleRects",
+          visibleRects.length,
+        );
+        // The application reads one container rect and zero scene rects.
+        // Scene geometry comes from IntersectionObserver entries.
+        recordCounter("linear.activeDetection.containerRectReads");
+        recordCounter("linear.activeDetection.sceneRectReads", 0);
+        return pickActiveSceneId(
+          container.getBoundingClientRect(),
+          visibleRects,
+          verticalMode,
+        );
+      });
       if (!closestId || closestId === activeIdRef.current) return;
       setActiveId(closestId);
       isScrollDetectionRef.current = true;
@@ -528,6 +548,7 @@ export function LinearEditorView() {
         sceneId={activeId ?? undefined}
         nodeType="scene"
       />
+      {scenes.length > 0 && <AccessibleLinearReaderDialog scenes={scenes} />}
       <FindReplaceBar
         editor={activeEditor}
         open={findOpen}

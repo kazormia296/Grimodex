@@ -1,5 +1,9 @@
 import { create } from "zustand";
-import { getSetting, setSetting } from "@/features/settings/api";
+import {
+  getProjectSetting,
+  getSetting,
+  setProjectSetting,
+} from "@/features/settings/api";
 import { markStart, markEnd } from "@/lib/perfLog";
 import { guardInlineAiPending } from "./inlineAi/pendingGuard";
 import {
@@ -11,6 +15,7 @@ import {
   parseTabPersistence,
   serializeTabPersistence,
   TAB_STATE_KEY,
+  type TabPersistenceSnapshot,
 } from "./tabPersistence";
 import { useEditorSessionStore } from "./editorSessionStore";
 import {
@@ -19,6 +24,7 @@ import {
 } from "@/lib/externalEditConflictRegistry";
 
 const SAVE_DEBOUNCE_MS = 500;
+let tabStateAuthorityEpoch = 0;
 
 export type TabContentType = "scene" | "codex" | "snippet" | "chronicle_event";
 
@@ -229,21 +235,74 @@ interface TabState {
 
   // ---- Persistence ----
 
+  /**
+   * True after the current project's persisted tab state has either been
+   * applied or found unreadable/missing. Starts true for isolated consumers;
+   * resetForProject establishes the real project-boundary loading state.
+   */
+  tabStateHydrated: boolean;
+  /** Project that owns the currently hydrated tab snapshot. */
+  tabStateProjectId: string | null;
+
   /** Load tab state from workspace settings. If validNodeIds is provided,
-   *  tabs referencing unknown IDs are filtered out. */
-  loadTabState: (validNodeIds?: Set<string>) => Promise<void>;
+   *  tabs referencing unknown IDs are filtered out. beforeApply runs
+   *  synchronously after parsing and authority validation, but before Zustand
+   *  publishes the restored snapshot. Returns false when superseded. */
+  loadTabState: (
+    projectId: string,
+    validNodeIds?: Set<string>,
+    beforeApply?: (snapshot: TabPersistenceSnapshot) => boolean | void,
+  ) => Promise<boolean>;
 
   /** Save current tab state to workspace settings. */
-  saveTabState: () => Promise<void>;
+  saveTabState: (projectId: string) => Promise<void>;
 
   /** Start auto-saving tab state on changes (debounced). */
-  initAutoSave: () => void;
+  initAutoSave: (projectId: string) => void;
 
   /** Stop auto-saving (cleanup subscription). */
   disposeAutoSave?: () => void;
 
   /** Clear all editor session state when switching projects. */
   resetForProject: () => void;
+}
+
+async function saveTabStateForAuthority(
+  projectId: string,
+  expectedAuthorityEpoch: number,
+): Promise<void> {
+  try {
+    const state = useTabStore.getState();
+    if (
+      !state.tabStateHydrated ||
+      state.tabStateProjectId !== projectId ||
+      expectedAuthorityEpoch !== tabStateAuthorityEpoch
+    ) {
+      return;
+    }
+    const serialized = serializeTabPersistence({
+      tabs: state.tabs,
+      activeTabId: state.activeTabId,
+      secondaryTabs: state.secondaryTabs,
+      secondaryActiveTabId: state.secondaryActiveTabId,
+      secondaryGroupOpen: state.secondaryGroupOpen,
+      activeGroupIndex: state.activeGroupIndex,
+      splitDirection: state.splitDirection,
+      isLinearMode: state.isLinearMode,
+    });
+    // Serialization is synchronous, but keep the authority check next to the
+    // persistence boundary so a stale timer can never target the newly bound DB.
+    if (
+      !useTabStore.getState().tabStateHydrated ||
+      useTabStore.getState().tabStateProjectId !== projectId ||
+      expectedAuthorityEpoch !== tabStateAuthorityEpoch
+    ) {
+      return;
+    }
+    await setProjectSetting(projectId, TAB_STATE_KEY, serialized);
+  } catch {
+    // Ignore save errors
+  }
 }
 
 /** Secondary group へ追加するエントリを、既存タブ(primary/secondary)の
@@ -289,7 +348,14 @@ export const useTabStore = create<TabState>()((set, get) => {
     splitDirection: "right",
     isLinearMode: false,
     isDraggingTab: false,
+    tabStateHydrated: true,
+    tabStateProjectId: null,
     resetForProject() {
+      // Stop the old Project subscriber/timer before publishing the empty
+      // reset snapshot. Otherwise that reset is observed as a tab change and
+      // can be debounced into the newly bound Workspace DB.
+      get().disposeAutoSave?.();
+      tabStateAuthorityEpoch += 1;
       useEditorSessionStore.getState().resetForProject();
       set({
         tabs: [],
@@ -300,6 +366,8 @@ export const useTabStore = create<TabState>()((set, get) => {
         activeGroupIndex: 0,
         isDraggingTab: false,
         dirtyTabIds: new Set<string>(),
+        tabStateHydrated: false,
+        tabStateProjectId: null,
       });
     },
     setIsDraggingTab(v) {
@@ -767,55 +835,94 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     // ---- Persistence ----
 
-    async loadTabState(validNodeIds) {
+    async loadTabState(projectId, validNodeIds, beforeApply) {
+      const authorityEpoch = ++tabStateAuthorityEpoch;
       try {
-        const json = await getSetting(TAB_STATE_KEY);
-        if (!json) {
-          // New workspace has no persisted state — reset to empty
-          set({
-            tabs: [],
-            activeTabId: null,
-            secondaryTabs: [],
-            secondaryActiveTabId: null,
-            secondaryGroupOpen: false,
-            activeGroupIndex: 0,
-            splitDirection: "right",
-            isLinearMode: false,
-          });
-          return;
+        const projectJson = await getProjectSetting(projectId, TAB_STATE_KEY);
+        const legacyJson =
+          projectJson === null ? await getSetting(TAB_STATE_KEY) : null;
+        const json = projectJson ?? legacyJson;
+        const snapshot: TabPersistenceSnapshot = json
+          ? parseTabPersistence(json, validNodeIds)
+          : {
+              tabs: [],
+              activeTabId: null,
+              secondaryTabs: [],
+              secondaryActiveTabId: null,
+              secondaryGroupOpen: false,
+              activeGroupIndex: 0,
+              splitDirection: "right",
+              isLinearMode: false,
+            };
+
+        if (authorityEpoch !== tabStateAuthorityEpoch) return false;
+        if (beforeApply?.(snapshot) === false) return false;
+        // The callback may synchronously reset the project or begin a newer
+        // load. Revalidate before publishing in that case as well.
+        if (authorityEpoch !== tabStateAuthorityEpoch) return false;
+        set({
+          ...snapshot,
+          tabStateHydrated: true,
+          tabStateProjectId: projectId,
+        });
+        if (projectJson === null && legacyJson !== null) {
+          // Keep the global value for downgrade/other-workspace compatibility,
+          // but make the filtered project snapshot canonical from now on.
+          try {
+            if (
+              authorityEpoch === tabStateAuthorityEpoch &&
+              get().tabStateProjectId === projectId
+            ) {
+              await setProjectSetting(
+                projectId,
+                TAB_STATE_KEY,
+                serializeTabPersistence(snapshot),
+              );
+            }
+          } catch {
+            // A failed compatibility migration must not discard a valid
+            // in-memory restore. The next activation can retry it.
+          }
         }
-
-        set(parseTabPersistence(json, validNodeIds));
-      } catch {
-        // Corrupted or missing — keep current state
-      }
-    },
-
-    async saveTabState() {
-      try {
-        const state = get();
-        await setSetting(
-          TAB_STATE_KEY,
-          serializeTabPersistence({
-            tabs: state.tabs,
-            activeTabId: state.activeTabId,
-            secondaryTabs: state.secondaryTabs,
-            secondaryActiveTabId: state.secondaryActiveTabId,
-            secondaryGroupOpen: state.secondaryGroupOpen,
-            activeGroupIndex: state.activeGroupIndex,
-            splitDirection: state.splitDirection,
-            isLinearMode: state.isLinearMode,
-          }),
+        return (
+          authorityEpoch === tabStateAuthorityEpoch &&
+          get().tabStateProjectId === projectId
         );
       } catch {
-        // Ignore save errors
+        // Corrupted or missing — keep current state, but do not leave the
+        // current project permanently blocked behind the hydration gate.
+        if (authorityEpoch !== tabStateAuthorityEpoch) return false;
+        set({ tabStateHydrated: true, tabStateProjectId: projectId });
+        return true;
       }
     },
 
-    initAutoSave() {
+    async saveTabState(projectId) {
+      await saveTabStateForAuthority(projectId, tabStateAuthorityEpoch);
+    },
+
+    initAutoSave(projectId) {
+      // StrictMode, Project activation, and a queued replacement init may all
+      // converge here. Exactly one subscriber owns persistence at a time.
+      get().disposeAutoSave?.();
+      const authorityEpoch = tabStateAuthorityEpoch;
+      if (!get().tabStateHydrated || get().tabStateProjectId !== projectId) {
+        return;
+      }
       let timer: ReturnType<typeof setTimeout> | null = null;
 
       const unsubscribe = useTabStore.subscribe((state, prev) => {
+        if (
+          !state.tabStateHydrated ||
+          state.tabStateProjectId !== projectId ||
+          authorityEpoch !== tabStateAuthorityEpoch
+        ) {
+          if (timer !== null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          return;
+        }
         // Only save when tab-related state changes
         if (
           state.tabs === prev.tabs &&
@@ -832,17 +939,22 @@ export const useTabStore = create<TabState>()((set, get) => {
 
         if (timer !== null) clearTimeout(timer);
         timer = setTimeout(() => {
-          useTabStore.getState().saveTabState();
+          timer = null;
+          void saveTabStateForAuthority(projectId, authorityEpoch);
         }, SAVE_DEBOUNCE_MS);
       });
 
-      set({
-        disposeAutoSave: () => {
-          if (timer !== null) clearTimeout(timer);
-          unsubscribe();
+      const disposeAutoSave = () => {
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        unsubscribe();
+        if (get().disposeAutoSave === disposeAutoSave) {
           set({ disposeAutoSave: undefined });
-        },
-      });
+        }
+      };
+      set({ disposeAutoSave });
     },
   };
 });

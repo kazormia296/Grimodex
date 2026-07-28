@@ -5,6 +5,14 @@ import { useProjectStore } from "@/features/project/projectStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { setCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import type { ChatMessage, ChatSession } from "./chatTypes";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
 
 vi.mock("./chatApi", () => ({
   sendChatMessage: vi.fn(),
@@ -279,6 +287,16 @@ const mockDeleteSession = vi.mocked(chatApi.deleteSession);
 const mockListMessages = vi.mocked(chatApi.listMessages);
 const mockAddMessage = vi.mocked(chatApi.addMessage);
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function resetStore() {
   useChatStore.setState({
     sessions: [],
@@ -425,17 +443,46 @@ describe("useChatStore", () => {
       );
     });
 
-    it("loads all sessions when no nodeId given", async () => {
-      mockListSessions.mockResolvedValueOnce([session1]);
+    it("rejects a list key that does not match the active scope without touching state", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        isLoadingSessions: false,
+      });
 
-      await useChatStore.getState().loadSessions();
+      await expect(
+        useChatStore
+          .getState()
+          .loadSessions(undefined, undefined, "stale-snippet"),
+      ).resolves.toBe(false);
+
+      expect(mockListSessions).not.toHaveBeenCalled();
+      expect(useChatStore.getState().sessions).toEqual([session1]);
+      expect(useChatStore.getState().isLoadingSessions).toBe(false);
+    });
+
+    it("loads the null-node session list for the active project scope", async () => {
+      const projectSession = {
+        ...session1,
+        id: "project-session",
+        nodeId: null,
+      };
+      useChatStore.setState({
+        chatScope: "project",
+        scopeAnchorId: null,
+      });
+      mockListSessions.mockResolvedValueOnce([projectSession]);
+
+      await expect(useChatStore.getState().loadSessions(null)).resolves.toBe(
+        true,
+      );
 
       expect(mockListSessions).toHaveBeenCalledWith(
         "proj-1",
-        undefined,
+        null,
         undefined,
         undefined,
       );
+      expect(useChatStore.getState().sessions).toEqual([projectSession]);
     });
 
     it("sets isLoadingSessions during load", async () => {
@@ -444,6 +491,13 @@ describe("useChatStore", () => {
         resolvePromise = resolve;
       });
       mockListSessions.mockReturnValueOnce(promise);
+      useChatStore.setState({
+        summaryCount: 2,
+        maxSummaryGeneration: 1,
+        sessionStableCodexIds: ["codex-scene-1"],
+        sessionStableContextInitialized: true,
+        sessionAgentToolsSnapshot: [],
+      });
 
       const loadPromise = useChatStore.getState().loadSessions("scene-1");
       expect(useChatStore.getState().isLoadingSessions).toBe(true);
@@ -473,6 +527,50 @@ describe("useChatStore", () => {
       expect(state.messages).toEqual([]);
       expect(state.isLoadingSessions).toBe(false);
       expect(state.isLoadingMessages).toBe(false);
+      expect(state.summaryCount).toBe(0);
+      expect(state.maxSummaryGeneration).toBe(0);
+      expect(state.sessionStableCodexIds).toEqual([]);
+      expect(state.sessionStableContextInitialized).toBe(false);
+      expect(state.sessionAgentToolsSnapshot).toBeNull();
+    });
+
+    it("does not publish scope A list completion over scope B state", async () => {
+      const scopeA = {
+        ...session1,
+        id: "session-scope-a",
+        nodeId: null,
+        snippetAnchorId: "snip-a",
+      };
+      const scopeB = {
+        ...session2,
+        id: "session-scope-b",
+        nodeId: null,
+        snippetAnchorId: "snip-b",
+      };
+      const pending = deferred<ChatSession[]>();
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-a",
+        sessions: [scopeA],
+      });
+      mockListSessions.mockReturnValueOnce(pending.promise);
+
+      const loading = useChatStore
+        .getState()
+        .loadSessions(undefined, undefined, "snip-a");
+      expect(useChatStore.getState().isLoadingSessions).toBe(true);
+
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-b",
+        sessions: [scopeB],
+        isLoadingSessions: false,
+      });
+      pending.resolve([scopeA]);
+
+      await expect(loading).resolves.toBe(false);
+      expect(useChatStore.getState().sessions).toEqual([scopeB]);
+      expect(useChatStore.getState().isLoadingSessions).toBe(false);
     });
 
     it("reports a failed history load without treating stale sessions as fresh", async () => {
@@ -538,6 +636,161 @@ describe("useChatStore", () => {
 
       expect(mockGetSessionForProject).not.toHaveBeenCalled();
       expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+    });
+
+    it("does not publish a deferred scope A selection after moving to scope B", async () => {
+      const scopeA = {
+        ...session1,
+        id: "session-scope-a",
+        nodeId: null,
+        snippetAnchorId: "snip-a",
+      };
+      const scopeB = {
+        ...session2,
+        id: "session-scope-b",
+        nodeId: null,
+        snippetAnchorId: "snip-b",
+      };
+      const pending = deferred<ChatSession | null>();
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-a",
+        sessions: [scopeA],
+        activeSessionId: null,
+      });
+      mockGetSessionForProject.mockReturnValueOnce(pending.promise);
+
+      const selection = useChatStore.getState().selectSession(scopeA.id);
+      await vi.waitFor(() =>
+        expect(mockGetSessionForProject).toHaveBeenCalledOnce(),
+      );
+
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-b",
+        sessions: [scopeB],
+        activeSessionId: null,
+        messages: [msg2],
+        isLoadingMessages: false,
+      });
+      pending.resolve(scopeA);
+      await selection;
+
+      expect(mockListMessages).not.toHaveBeenCalled();
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [scopeB],
+        activeSessionId: null,
+        messages: [msg2],
+        isLoadingMessages: false,
+      });
+    });
+
+    it("synchronously clears scope A session state when a deferred selection crosses into scope B", async () => {
+      const scopeA = {
+        ...session1,
+        id: "same-session-id",
+        nodeId: null,
+        snippetAnchorId: "snip-a",
+      };
+      const pending = deferred<ChatSession | null>();
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-a",
+        sessions: [scopeA],
+        activeSessionId: null,
+        messages: [msg2],
+        summaryCount: 3,
+        maxSummaryGeneration: 2,
+        sessionStableCodexIds: ["codex-a"],
+        sessionStableContextInitialized: true,
+        sessionAgentToolsSnapshot: [],
+        excludedAutoEntryIds: ["codex-excluded"],
+        isLoadingSessions: true,
+      });
+      mockGetSessionForProject.mockReturnValueOnce(pending.promise);
+
+      const selection = useChatStore.getState().selectSession(scopeA.id);
+      await vi.waitFor(() =>
+        expect(mockGetSessionForProject).toHaveBeenCalledOnce(),
+      );
+      expect(useChatStore.getState()).toMatchObject({
+        activeSessionId: scopeA.id,
+        isLoadingMessages: true,
+      });
+
+      useChatStore.getState().setChatScope("snippet", "snip-b");
+
+      expect(useChatStore.getState()).toMatchObject({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-b",
+        sessions: [],
+        activeSessionId: null,
+        messages: [],
+        isLoadingSessions: false,
+        isLoadingMessages: false,
+        summaryCount: 0,
+        maxSummaryGeneration: 0,
+        sessionStableCodexIds: [],
+        sessionStableContextInitialized: false,
+        sessionAgentToolsSnapshot: null,
+        excludedAutoEntryIds: [],
+      });
+
+      pending.resolve(scopeA);
+      await selection;
+
+      expect(mockListMessages).not.toHaveBeenCalled();
+      expect(useChatStore.getState()).toMatchObject({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-b",
+        sessions: [],
+        activeSessionId: null,
+        messages: [],
+        isLoadingSessions: false,
+        isLoadingMessages: false,
+      });
+    });
+
+    it("does not select a listed session outside the current scope key", async () => {
+      const scopeA = {
+        ...session1,
+        id: "session-scope-a",
+        nodeId: null,
+        snippetAnchorId: "snip-a",
+      };
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-b",
+        sessions: [scopeA],
+        activeSessionId: null,
+      });
+
+      await useChatStore.getState().selectSession(scopeA.id);
+
+      expect(mockGetSessionForProject).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBeNull();
+    });
+
+    it("rejects a fetched same-project session outside the current scope key", async () => {
+      const scopeA = {
+        ...session1,
+        id: "unlisted-scope-a",
+        nodeId: null,
+        snippetAnchorId: "snip-a",
+      };
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-b",
+        sessions: [],
+        activeSessionId: null,
+      });
+      mockGetSessionForProject.mockResolvedValueOnce(scopeA);
+
+      await useChatStore.getState().selectSession(scopeA.id);
+
+      expect(mockListMessages).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBeNull();
+      expect(useChatStore.getState().messages).toEqual([]);
     });
   });
 
@@ -769,6 +1022,27 @@ describe("useChatStore", () => {
       expect(useChatStore.getState().activeSessionId).toBeNull();
       expect(useChatStore.getState().sessions).toEqual([]);
     });
+
+    it("does not publish a stale create error after a same-path workspace reopen", async () => {
+      const pending = deferred<ChatSession>();
+      mockCreateSession.mockReturnValueOnce(pending.promise);
+
+      const creation = useChatStore
+        .getState()
+        .createNewSession("proj-1", "stale", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+
+      setCurrentImeWorkspaceIdentity({
+        path: "/workspace/chat-store-test",
+        openRevision: 2,
+      });
+      pending.reject(new Error("workspace A create failed"));
+      await creation;
+
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBeNull();
+      expect(useChatStore.getState().sessions).toEqual([]);
+    });
   });
 
   describe("createLinkedSession", () => {
@@ -945,6 +1219,30 @@ describe("useChatStore", () => {
 
       expect(mockDeleteSession).not.toHaveBeenCalled();
       expect(codexAppApi.archiveCodexSessionThread).not.toHaveBeenCalled();
+    });
+
+    it("does not publish a stale delete error after a same-path workspace reopen", async () => {
+      const pending = deferred<void>();
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      mockDeleteSession.mockReturnValueOnce(pending.promise);
+
+      const deletion = useChatStore.getState().deleteSession(session1.id);
+      await vi.waitFor(() =>
+        expect(mockDeleteSession).toHaveBeenCalledWith(session1.id),
+      );
+      setCurrentImeWorkspaceIdentity({
+        path: "/workspace/chat-store-test",
+        openRevision: 2,
+      });
+      pending.reject(new Error("workspace A delete failed"));
+      await deletion;
+
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(useChatStore.getState().sessions).toEqual([session1]);
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
     });
   });
 
@@ -4295,6 +4593,7 @@ describe("useChatStore", () => {
         totalTokens: 8,
         layers: [],
       });
+      const liveContextPlan = { requestId: "live-context-plan" } as never;
 
       useChatStore.setState({
         activeSceneId: "",
@@ -4304,17 +4603,83 @@ describe("useChatStore", () => {
         lastSystemPrompt: "LIVE PROJECT PROMPT",
         contextLayers: [],
         contextTokenCount: 99,
+        contextPlan: liveContextPlan,
       });
 
       const result = await useChatStore.getState().buildPreviewPrompt();
 
       expect(mockSearch).not.toHaveBeenCalled();
       expect(result).toEqual({
+        status: "ready",
         prompt: "PREVIEW PROJECT PROMPT",
         layers: [],
         totalTokens: 8,
         userMessage: "",
       });
+      expect(useChatStore.getState().lastSystemPrompt).toBe(
+        "LIVE PROJECT PROMPT",
+      );
+      expect(useChatStore.getState().contextPlan).toBe(liveContextPlan);
+    });
+
+    it("scene が取得不能なら live-estimate cache を返さず unavailable にする", async () => {
+      const { getNode } = await import("@/features/tree/api");
+      vi.mocked(getNode).mockResolvedValueOnce(undefined);
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        lastSystemPrompt: "STALE LIVE ESTIMATE PROMPT",
+        contextLayers: [],
+        contextTokenCount: 999,
+      });
+      useChatStore.getState().registerInputDraftProvider(() => ({
+        markdown: "未送信の入力",
+        mentionedSceneIds: [],
+        mentionedCodexIds: [],
+      }));
+
+      const result = await useChatStore.getState().buildPreviewPrompt();
+
+      expect(result).toEqual({
+        status: "unavailable",
+        prompt: "",
+        layers: [],
+        totalTokens: 0,
+        userMessage: "未送信の入力",
+      });
+      expect(result.prompt).not.toContain("STALE LIVE ESTIMATE PROMPT");
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    });
+
+    it("exact preview の構築例外時も live-estimate cache を返さない", async () => {
+      vi.mocked(contextBuilder.ensureTokenizer).mockRejectedValueOnce(
+        new Error("tokenizer unavailable"),
+      );
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        lastSystemPrompt: "STALE LIVE ESTIMATE PROMPT",
+        contextLayers: [],
+        contextTokenCount: 999,
+      });
+
+      const result = await useChatStore.getState().buildPreviewPrompt();
+
+      expect(result).toEqual({
+        status: "unavailable",
+        prompt: "",
+        layers: [],
+        totalTokens: 0,
+        userMessage: "",
+      });
+      expect(result.prompt).not.toContain("STALE LIVE ESTIMATE PROMPT");
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
     });
 
     it("scene スコープ: 入力ドラフトを seed に使い userMessage を返す", async () => {
@@ -5252,6 +5617,10 @@ describe("useChatStore", () => {
 
     it("loadSessions passes codexAnchorId to chatApi", async () => {
       mockListSessions.mockResolvedValueOnce([]);
+      useChatStore.setState({
+        chatScope: "codex",
+        scopeAnchorId: "codex-1",
+      });
       await useChatStore.getState().loadSessions(undefined, "codex-1");
       expect(mockListSessions).toHaveBeenCalledWith(
         "proj-1",
@@ -5309,6 +5678,33 @@ describe("useChatStore", () => {
       expect(s.includeBodies).toBe(false);
     });
 
+    it("preserves session state when the exact scope and anchor are unchanged", () => {
+      const snippetSession = {
+        ...session1,
+        nodeId: null,
+        snippetAnchorId: "snip-1",
+      };
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-1",
+        sessions: [snippetSession],
+        activeSessionId: snippetSession.id,
+        messages: [msg1],
+        summaryCount: 2,
+        maxSummaryGeneration: 1,
+      });
+
+      useChatStore.getState().setChatScope("snippet", "snip-1");
+
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [snippetSession],
+        activeSessionId: snippetSession.id,
+        messages: [msg1],
+        summaryCount: 2,
+        maxSummaryGeneration: 1,
+      });
+    });
+
     it("falls back to scene when snippet anchor is missing", () => {
       useChatStore.getState().setChatScope("snippet");
       const s = useChatStore.getState();
@@ -5318,6 +5714,10 @@ describe("useChatStore", () => {
 
     it("loadSessions passes snippetAnchorId to chatApi", async () => {
       mockListSessions.mockResolvedValueOnce([]);
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "sn-1",
+      });
       await useChatStore.getState().loadSessions(undefined, undefined, "sn-1");
       expect(mockListSessions).toHaveBeenCalledWith(
         "proj-1",
@@ -5421,16 +5821,29 @@ describe("useChatStore", () => {
 
   describe("onSnippetAnchorDeleted", () => {
     it("falls back to scene scope when deleted snippet matches anchor", () => {
+      const snippetSession = {
+        ...session1,
+        nodeId: null,
+        snippetAnchorId: "snip-1",
+      };
       useChatStore.setState({
         chatScope: "snippet",
         scopeAnchorId: "snip-1",
         includeBodies: false,
+        sessions: [snippetSession],
+        activeSessionId: snippetSession.id,
+        messages: [msg1],
+        summaryCount: 1,
       });
       useChatStore.getState().onSnippetAnchorDeleted("snip-1");
       const s = useChatStore.getState();
       expect(s.chatScope).toBe("scene");
       expect(s.scopeAnchorId).toBeNull();
       expect(s.includeBodies).toBe(true);
+      expect(s.sessions).toEqual([]);
+      expect(s.activeSessionId).toBeNull();
+      expect(s.messages).toEqual([]);
+      expect(s.summaryCount).toBe(0);
     });
 
     it("no-op when deleted snippet does not match anchor", () => {
@@ -5543,16 +5956,29 @@ describe("useChatStore", () => {
 
   describe("onCodexAnchorDeleted", () => {
     it("falls back to scene scope when deleted entry matches codex anchor", () => {
+      const codexSession = {
+        ...session1,
+        nodeId: null,
+        codexAnchorId: "codex-hero",
+      };
       useChatStore.setState({
         chatScope: "codex",
         scopeAnchorId: "codex-hero",
         includeBodies: false,
+        sessions: [codexSession],
+        activeSessionId: codexSession.id,
+        messages: [msg1],
+        maxSummaryGeneration: 2,
       });
       useChatStore.getState().onCodexAnchorDeleted("codex-hero");
       const s = useChatStore.getState();
       expect(s.chatScope).toBe("scene");
       expect(s.scopeAnchorId).toBeNull();
       expect(s.includeBodies).toBe(true);
+      expect(s.sessions).toEqual([]);
+      expect(s.activeSessionId).toBeNull();
+      expect(s.messages).toEqual([]);
+      expect(s.maxSummaryGeneration).toBe(0);
     });
 
     it("no-op when deleted entry does not match codex anchor", () => {

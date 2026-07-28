@@ -13,7 +13,11 @@ import { Play } from "lucide-react";
 import { useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
-import { useChatStore } from "./chatStore";
+import {
+  awaitChatComposerAuthority,
+  captureChatComposerAuthority,
+  useChatStore,
+} from "./chatStore";
 import { useMapBoardAutoActivate } from "./useMapBoardAutoActivate";
 import { useMapStore } from "@/features/map/mapStore";
 import { getMapBoard } from "@/features/map/mapApi";
@@ -23,6 +27,7 @@ import { ChatMessage } from "./components/ChatMessage";
 import type { ChatContextMenuState } from "./components/ChatDialogs";
 import { ChatDialogs } from "./components/ChatDialogs";
 import { ChatPanelHeader } from "./components/ChatPanelHeader";
+import { AccessibleChatTranscriptDialog } from "./components/AccessibleChatTranscriptDialog";
 import { ChatInput } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
 import { UserQuestionCard } from "./components/UserQuestionCard";
@@ -43,12 +48,21 @@ import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { openAiPolicySettings } from "@/features/ai-policy/openAiPolicySettings";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useChronicleStore } from "@/features/chronicle/chronicleStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { saveScene } from "@/features/editor/editorSaveRegistry";
+import {
+  saveDocumentsForEntity,
+  saveDocumentsForKind,
+} from "@/features/editor/editorSaveRegistry";
+import {
+  flushAutoSavesForEntity,
+  flushAutoSavesForKind,
+} from "@/hooks/useAutoSave";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
-import { recordMark } from "@/lib/perfLog";
+import { recordMark, registerRuntimePerformanceControl } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { MessagePromptSnapshot } from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
@@ -129,6 +143,43 @@ export function removeCodexApproval(
   return current.filter((item) => codexApprovalKey(item) !== key);
 }
 
+export async function saveChatScopeBeforeSend(
+  scope: ChatScope,
+  activeSceneId: string | null | undefined,
+  scopeAnchorId: string | null | undefined,
+): Promise<void> {
+  switch (scope) {
+    case "scene":
+      if (activeSceneId) {
+        await saveDocumentsForEntity("tree", activeSceneId);
+        await flushAutoSavesForEntity("tree", activeSceneId);
+      }
+      return;
+    case "codex":
+      if (scopeAnchorId) {
+        await saveDocumentsForEntity("codex", scopeAnchorId);
+        await flushAutoSavesForEntity("codex", scopeAnchorId);
+      }
+      return;
+    case "snippet":
+      if (scopeAnchorId) {
+        await saveDocumentsForEntity("snippet", scopeAnchorId);
+        await flushAutoSavesForEntity("snippet", scopeAnchorId);
+      }
+      return;
+    case "folder":
+    case "project":
+      // Aggregated prompts and project-agent tools read Scene bodies from the
+      // database. Every unsaved body is necessarily owned by a mounted tree
+      // editor, so flush all current-Project tree variants before snapshotting.
+      await saveDocumentsForKind("tree");
+      await flushAutoSavesForKind("tree");
+      return;
+    default:
+      scope satisfies never;
+  }
+}
+
 export function removeCodexApprovalsForTurn(
   current: CodexApproval[],
   grimodexTurnId: string,
@@ -160,6 +211,137 @@ interface ChatMessageViewportProps {
   codexApproval: CodexApproval | null;
   onCodexApprovalDecision: (decision: "accept" | "decline") => Promise<void>;
   renderMessage: (message: ChatMessageType, isStreaming: boolean) => ReactNode;
+}
+
+type RuntimeChatStreamingDraftControl =
+  | {
+      action: "prepare";
+      messageId: string;
+      content: string;
+    }
+  | {
+      action: "delta";
+      messageId: string;
+      delta: string;
+    }
+  | {
+      action: "cleanup";
+      messageId: string;
+    };
+
+function parseRuntimeChatStreamingDraftControl(
+  payload: unknown,
+): RuntimeChatStreamingDraftControl {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("chat streaming draft control payload is invalid");
+  }
+  const value = payload as Record<string, unknown>;
+  if (
+    typeof value.messageId !== "string" ||
+    value.messageId.length === 0 ||
+    !["prepare", "delta", "cleanup"].includes(String(value.action))
+  ) {
+    throw new Error("chat streaming draft control payload is invalid");
+  }
+  if (value.action === "prepare" && typeof value.content === "string") {
+    return {
+      action: "prepare",
+      messageId: value.messageId,
+      content: value.content,
+    };
+  }
+  if (value.action === "delta" && typeof value.delta === "string") {
+    return {
+      action: "delta",
+      messageId: value.messageId,
+      delta: value.delta,
+    };
+  }
+  if (value.action === "cleanup") {
+    return { action: "cleanup", messageId: value.messageId };
+  }
+  throw new Error("chat streaming draft control payload is invalid");
+}
+
+export function createRuntimeChatStreamingDraftControl() {
+  let ownedDraft: { messageId: string; content: string } | null = null;
+
+  const releaseOwnedDraft = () => {
+    if (!ownedDraft) return;
+    const current = useChatStore.getState();
+    // A genuine stream may have started after benchmark preparation. Only
+    // release the exact object installed by this controller; never clear or
+    // stop a draft now owned by the user/provider path.
+    if (current.isStreaming && current.streamingDraft === ownedDraft) {
+      useChatStore.setState({
+        isStreaming: false,
+        streamingDraft: null,
+      });
+    }
+    ownedDraft = null;
+  };
+
+  return {
+    invoke(payload: unknown) {
+      const control = parseRuntimeChatStreamingDraftControl(payload);
+      const state = useChatStore.getState();
+
+      if (control.action === "cleanup") {
+        if (!ownedDraft || ownedDraft.messageId !== control.messageId) {
+          throw new Error("chat streaming draft control is not prepared");
+        }
+        releaseOwnedDraft();
+        return null;
+      }
+
+      if (
+        !state.messages.some(
+          (message) =>
+            message.id === control.messageId && message.role === "assistant",
+        )
+      ) {
+        throw new Error("chat streaming draft control message is not loaded");
+      }
+
+      if (control.action === "prepare") {
+        if (ownedDraft) {
+          throw new Error("chat streaming draft control is already prepared");
+        }
+        if (state.isStreaming || state.streamingDraft !== null) {
+          throw new Error(
+            "chat streaming draft control refused because a real chat stream is active",
+          );
+        }
+        ownedDraft = {
+          messageId: control.messageId,
+          content: control.content,
+        };
+        useChatStore.setState({
+          isStreaming: true,
+          streamingDraft: ownedDraft,
+        });
+        return control.content;
+      }
+
+      if (
+        !ownedDraft ||
+        ownedDraft.messageId !== control.messageId ||
+        !state.isStreaming ||
+        state.streamingDraft !== ownedDraft
+      ) {
+        throw new Error(
+          "chat streaming draft control lost ownership of the prepared draft",
+        );
+      }
+      ownedDraft = {
+        messageId: control.messageId,
+        content: ownedDraft.content + control.delta,
+      };
+      useChatStore.setState({ streamingDraft: ownedDraft });
+      return ownedDraft.content;
+    },
+    dispose: releaseOwnedDraft,
+  };
 }
 
 /**
@@ -200,10 +382,24 @@ function ChatMessageViewport({
     isLoadingMessages,
     activeSessionId,
   });
+  const transcriptMessages = useMemo(
+    () => messages.filter((message) => message.role !== "system"),
+    [messages],
+  );
+  const transcriptPositionById = useMemo(
+    () =>
+      new Map(
+        transcriptMessages.map((message, index) => [message.id, index + 1]),
+      ),
+    [transcriptMessages],
+  );
 
   return (
     <>
       <CodexPopover containerEl={messagesContainerEl} />
+      {!isLoadingMessages && transcriptMessages.length > 0 && (
+        <AccessibleChatTranscriptDialog messages={transcriptMessages} />
+      )}
       <div
         ref={scrollContainerRef}
         data-testid="chat-scroll-container"
@@ -225,6 +421,8 @@ function ChatMessageViewport({
           <>
             <div
               data-testid="chat-virtual-list"
+              role="list"
+              aria-label={t("chat.transcript.virtualListLabel")}
               className="relative w-full"
               style={{ height: `${virtualizer.getTotalSize()}px` }}
               ref={setMessagesContainerEl}
@@ -236,6 +434,12 @@ function ChatMessageViewport({
                 return (
                   <div
                     key={message.id}
+                    role="listitem"
+                    aria-posinset={
+                      transcriptPositionById.get(message.id) ??
+                      virtualItem.index + 1
+                    }
+                    aria-setsize={transcriptMessages.length}
                     data-index={virtualItem.index}
                     ref={virtualizer.measureElement}
                     className="absolute left-0 top-0 w-full pb-4"
@@ -298,6 +502,11 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const chatGate = useAiGate("chat");
+  const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (s) => s.workspaceOpenRevision,
+  );
+  const chronicleRevision = useChronicleStore((s) => s.revisionCounter);
   useMapBoardAutoActivate();
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
@@ -336,6 +545,14 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const activeProjectId = useChatStore((s) => s.activeProjectId);
   const chatScope = useChatStore((s) => s.chatScope);
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
+  const threadFocusAuthority = useChatStore((s) =>
+    s.threadFocusOverride
+      ? JSON.stringify([
+          s.threadFocusOverride.threadId,
+          s.threadFocusOverride.title,
+        ])
+      : null,
+  );
   const setChatScope = useChatStore((s) => s.setChatScope);
   const includeBodies = useChatStore((s) => s.includeBodies);
   const setIncludeBodies = useChatStore((s) => s.setIncludeBodies);
@@ -348,6 +565,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const [codexApprovals, setCodexApprovals] = useState<CodexApproval[]>([]);
   const codexApprovalsRef = useRef<CodexApproval[]>([]);
   const codexApprovalEpochRef = useRef(0);
+  const sendPreparationRef = useRef(false);
   const updateCodexApprovals = useCallback(
     (update: (current: CodexApproval[]) => CodexApproval[]) => {
       const next = update(codexApprovalsRef.current);
@@ -366,6 +584,17 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   );
   const summaryCount = useChatStore((s) => s.summaryCount);
   const maxSummaryGeneration = useChatStore((s) => s.maxSummaryGeneration);
+  useEffect(() => {
+    const control = createRuntimeChatStreamingDraftControl();
+    const unregister = registerRuntimePerformanceControl(
+      "chat.streamingDraft",
+      control.invoke,
+    );
+    return () => {
+      unregister();
+      control.dispose();
+    };
+  }, []);
   const cacheInvalidatedReason = useChatStore((s) => s.cacheInvalidatedReason);
 
   // Phase 2: scene と folder スコープでは本文（または集約本文）が context に
@@ -392,6 +621,47 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   useAiSettingsStore((s) => s.modelCapsRevision);
   const currentModel =
     contextModel ?? chatModelOverride ?? aiSettings?.model ?? "";
+  const contextPreviewAuthorityKey = useMemo(
+    () =>
+      JSON.stringify([
+        isActive,
+        activeWorkspacePath,
+        workspaceOpenRevision,
+        activeProjectId,
+        activeSessionId,
+        chatSceneId,
+        chatScope,
+        scopeAnchorId,
+        threadFocusAuthority,
+        chronicleRevision,
+        contextPlan?.requestId ?? null,
+        currentModel,
+        agentMode,
+        ragEnabled,
+        includeBodies,
+        includeMapBoard,
+        mapBoardIdFromStore,
+      ]),
+    [
+      isActive,
+      activeWorkspacePath,
+      workspaceOpenRevision,
+      activeProjectId,
+      activeSessionId,
+      chatSceneId,
+      chatScope,
+      scopeAnchorId,
+      threadFocusAuthority,
+      chronicleRevision,
+      contextPlan?.requestId,
+      currentModel,
+      agentMode,
+      ragEnabled,
+      includeBodies,
+      includeMapBoard,
+      mapBoardIdFromStore,
+    ],
+  );
 
   // Context Creator（AIコンテキスト提案）は Codex/Snippet 検索ツールを使う
   // エージェント実行のため、現在のモデル/プロバイダが Tool Use 対応のときだけ
@@ -568,33 +838,74 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   );
 
   const handleSend = useCallback(
-    (
+    async (
       markdown: string,
       options?: {
         overrideAgentMode?: boolean;
         mentionedSceneIds?: string[];
         commandInstruction?: string;
       },
-    ) => {
+    ): Promise<boolean> => {
       const trimmed = markdown.trim();
-      if (!trimmed || isStreaming) return;
+      if (
+        !trimmed ||
+        useChatStore.getState().isStreaming ||
+        sendPreparationRef.current
+      ) {
+        return false;
+      }
+      sendPreparationRef.current = true;
+      const authority = captureChatComposerAuthority();
       // スラッシュコマンド由来の一回限りの指示 (/brainstorm の VS 等) は
       // sendMessage の commandInstruction (L6) へ。残りは送信オプションとして渡す。
       const { commandInstruction, ...rest } = options ?? {};
-      // Flush any pending editor save so sendMessage reads latest scene content from DB.
-      const flushAndSend = async () => {
-        try {
-          if (chatSceneId) await saveScene(chatSceneId);
-          await sendMessage(trimmed, commandInstruction, rest);
-        } finally {
-          // Keep current-input dismissals in the send authority snapshot. They
-          // become eligible for detection again only after this turn finishes.
-          resetInputDismissed();
+      // Flush the active scope document so prompt construction reads the
+      // latest Scene, Codex, or Snippet content from persistence.
+      try {
+        await saveChatScopeBeforeSend(chatScope, chatSceneId, scopeAnchorId);
+        if (!(await awaitChatComposerAuthority(authority))) {
+          toast.warning(t("chat.sendCancelledScopeChanged"));
+          return false;
         }
-      };
-      void flushAndSend();
+        const send = sendMessage(trimmed, commandInstruction, rest);
+        // sendMessage publishes its owned placeholders and isStreaming before
+        // its first asynchronous context/tokenizer boundary. A false value here
+        // means policy/loading/concurrent-send guards declined this draft.
+        if (!useChatStore.getState().isStreaming) {
+          await send;
+          return false;
+        }
+        void send.then(
+          () => resetInputDismissed(),
+          (cause: unknown) => {
+            resetInputDismissed();
+            toast.error(
+              t("chat.sendFailed", {
+                message: cause instanceof Error ? cause.message : String(cause),
+              }),
+            );
+          },
+        );
+        return true;
+      } catch (cause) {
+        toast.error(
+          t("chat.sendFailed", {
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
+        );
+        return false;
+      } finally {
+        sendPreparationRef.current = false;
+      }
     },
-    [isStreaming, sendMessage, chatSceneId, resetInputDismissed],
+    [
+      sendMessage,
+      chatScope,
+      chatSceneId,
+      scopeAnchorId,
+      resetInputDismissed,
+      t,
+    ],
   );
 
   const handleScopeChange = useCallback(
@@ -815,6 +1126,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       />
 
       <ContextBar
+        previewAuthorityKey={contextPreviewAuthorityKey}
         scopeAnchor={scopeAnchor}
         contextPlan={contextPlan}
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}

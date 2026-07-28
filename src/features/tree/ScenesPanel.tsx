@@ -19,7 +19,6 @@ import type { OpenAiTreeArgs } from "./ScenesPanelContext";
 import { AiTreeDialog } from "./aiScaffold/AiTreeDialog";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useTabStore } from "@/features/editor/tabStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { NodeIcon } from "./TreeNodeItem";
@@ -38,7 +37,6 @@ import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { recordMark } from "@/lib/perfLog";
-import { useExternalRootStore } from "@/features/external-mount/externalRootStore";
 import { TreeRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import {
   selectProviderReadiness,
@@ -78,7 +76,6 @@ export function ScenesPanel() {
   const projectId = useTreeStore((s) => s.projectId);
   const aiReadiness = useAiSettingsStore(selectProviderReadiness);
   const loadLens = useLensStore((s) => s.load);
-  const mountInitialized = useExternalRootStore((s) => s.isInitialized);
   const createNode = useTreeStore((s) => s.createNode);
   const expandAll = useTreeStore((s) => s.expandAll);
   const collapseAll = useTreeStore((s) => s.collapseAll);
@@ -157,22 +154,6 @@ export function ScenesPanel() {
     [],
   );
   const [deleteConfirm, setDeleteConfirm] = useState<string[] | null>(null);
-
-  // Tab restore runs after external-mount reconcile so node IDs in the tree
-  // match persisted tab nodeIds (initializeExternalMounts → loadTree in App).
-  useEffect(() => {
-    if (!mountInitialized) return;
-    const nodeIds = new Set(useTreeStore.getState().nodes.map((n) => n.id));
-    void useTabStore
-      .getState()
-      .loadTabState(nodeIds)
-      .then(() => {
-        useTabStore.getState().initAutoSave();
-      });
-    return () => {
-      useTabStore.getState().disposeAutoSave?.();
-    };
-  }, [mountInitialized]);
 
   const { childMap, nodeMap, flatRows, flatNodes } = useScenesDerivedData({
     nodes,

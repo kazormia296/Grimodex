@@ -138,6 +138,8 @@ pub async fn create_foreshadow(
             notes: notes.as_deref(),
             load_bearing: params.load_bearing.as_deref(),
             secret,
+            request_id: None,
+            request_hash: None,
         },
     )
     .map_err(internal_err)?;

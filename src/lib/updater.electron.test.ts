@@ -157,7 +157,12 @@ describe("updater Electron abstraction", () => {
 
     await expect(
       update?.downloadAndInstall((event) => events.push(event)),
-    ).rejects.toBe("download failed");
+    ).rejects.toMatchObject({
+      name: "IpcInvokeError",
+      command: "updater_download",
+      message: "download failed",
+      outcome: "failed",
+    });
 
     expect(events).not.toContainEqual({ event: "Finished" });
     expect(h.unlisten).toHaveBeenCalledOnce();

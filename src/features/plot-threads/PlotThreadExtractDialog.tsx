@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Loader2, Sparkles } from "lucide-react";
@@ -17,7 +17,11 @@ import { loadSceneContents } from "@/features/tree/api";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { type PlotPhaseType } from "@/db/schema";
-import { usePlotThreadStore } from "./plotThreadStore";
+import {
+  usePlotThreadStore,
+  type PlotThreadImportProposal,
+  type PlotThreadImportResult,
+} from "./plotThreadStore";
 import { spreadThreadColors } from "./threadColors";
 import {
   proposePlotThreads,
@@ -72,18 +76,29 @@ export function PlotThreadExtractDialog({
   const [candidates, setCandidates] = useState<PlotThreadProposal[] | null>(
     null,
   );
+  const [importResult, setImportResult] =
+    useState<PlotThreadImportResult | null>(null);
+  const preparedImportRef = useRef<{
+    candidates: PlotThreadProposal[];
+    projectId: string;
+    proposals: PlotThreadImportProposal[];
+  } | null>(null);
 
   const phaseLabel = (p: PlotPhaseType) => t(`plotThread.phaseType.${p}`);
 
   const handleSelectFolder = (id: string) => {
     setFolderId(id);
     setCandidates(null);
+    setImportResult(null);
+    preparedImportRef.current = null;
   };
 
   const handleAnalyze = async () => {
     if (!folderId || analyzing) return;
     setAnalyzing(true);
     setCandidates(null);
+    setImportResult(null);
+    preparedImportRef.current = null;
     try {
       // DB content を読む前に編集中シーンの未 flush 保存を確定（stale 本文回避）。
       const activeId = useTreeStore.getState().activeSceneId;
@@ -112,34 +127,73 @@ export function PlotThreadExtractDialog({
     if (!projectId) return;
     setImporting(true);
     try {
-      // 色を散らして割り当てる（全部 null だと描画時に同一の --primary へ潰れて
-      // 見分けが付かないため）。既存スレッド数を起点にバッチ内で重複しない色を配る。
-      const colors = spreadThreadColors(
-        candidates.length,
-        usePlotThreadStore.getState().threads.length,
-        colorTheme,
-        typeof document !== "undefined" &&
-          document.documentElement.classList.contains("dark"),
-      );
-      await importPlotThreads(
-        projectId,
-        candidates.map((c, i) => ({
-          name: c.name,
-          description: c.description ?? null,
-          color: colors[i] ?? null,
-          markers: c.markers.map((m) => ({
-            nodeId: m.sceneId,
-            phaseType: m.phaseType,
-            note: m.note ?? null,
+      let prepared = preparedImportRef.current;
+      if (
+        !prepared ||
+        prepared.candidates !== candidates ||
+        prepared.projectId !== projectId
+      ) {
+        // 色と retryKey は最初のクリック時に固定する。partial result 後の
+        // 再クリックで既存 thread 数が増えても、同じ候補を別 create と誤認しない。
+        const colors = spreadThreadColors(
+          candidates.length,
+          usePlotThreadStore.getState().threads.length,
+          colorTheme,
+          typeof document !== "undefined" &&
+            document.documentElement.classList.contains("dark"),
+        );
+        prepared = {
+          candidates,
+          projectId,
+          proposals: candidates.map((c, i) => ({
+            retryKey: crypto.randomUUID(),
+            name: c.name,
+            description: c.description ?? null,
+            color: colors[i] ?? null,
+            markers: c.markers.map((m) => ({
+              nodeId: m.sceneId,
+              phaseType: m.phaseType,
+              note: m.note ?? null,
+            })),
           })),
-        })),
+        };
+        preparedImportRef.current = prepared;
+      }
+      const result = await importPlotThreads(projectId, prepared.proposals);
+      setImportResult(result);
+      const complete =
+        !result.aborted &&
+        result.skipped.length === 0 &&
+        result.failed.length === 0;
+      if (complete) {
+        preparedImportRef.current = null;
+        toast.success(
+          t(
+            "plotThread.extract.imported",
+            "{{n}}本のスレッドを取り込みました",
+            {
+              n: result.createdThreads.length,
+            },
+          ),
+        );
+        onOpenChange(false);
+      } else {
+        toast.warning(
+          t(
+            "plotThread.extract.importPartial",
+            "{{created}}本を取り込み、{{skipped}}件をスキップ、{{failed}}件が失敗しました",
+            {
+              created: result.createdThreads.length,
+              skipped: result.skipped.length,
+              failed: result.failed.length,
+            },
+          ),
+        );
+      }
+    } catch {
+      toast.error(
+        t("plotThread.extract.importFailed", "取り込みを完了できませんでした"),
       );
-      toast.success(
-        t("plotThread.extract.imported", "{{n}}本のスレッドを取り込みました", {
-          n: candidates.length,
-        }),
-      );
-      onOpenChange(false);
     } finally {
       setImporting(false);
     }
@@ -231,6 +285,50 @@ export function PlotThreadExtractDialog({
                       </div>
                     </li>
                   ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {importResult && (
+            <div
+              role="status"
+              className="rounded border border-border bg-muted/40 px-3 py-2 text-xs"
+            >
+              <p className="font-medium text-foreground">
+                {t(
+                  "plotThread.extract.importResult",
+                  "作成 {{created}}本 / スキップ {{skipped}}件 / 失敗 {{failed}}件",
+                  {
+                    created: importResult.createdThreads.length,
+                    skipped: importResult.skipped.length,
+                    failed: importResult.failed.length,
+                  },
+                )}
+              </p>
+              {importResult.aborted && (
+                <p className="mt-1 text-destructive">
+                  {t(
+                    "plotThread.extract.importAborted",
+                    "プロジェクトまたはワークスペースが切り替わったため、取り込みを中断しました。",
+                  )}
+                </p>
+              )}
+              {importResult.skipped.length + importResult.failed.length > 0 && (
+                <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">
+                  {[...importResult.skipped, ...importResult.failed].map(
+                    (issue, index) => (
+                      <li
+                        key={`${issue.kind}-${issue.proposalIndex}-${issue.markerIndex ?? "thread"}-${index}`}
+                      >
+                        {issue.label || t("plotThread.unnamed", "（無名）")} —{" "}
+                        {t(
+                          `plotThread.extract.issue.${issue.code}`,
+                          issue.code,
+                        )}
+                      </li>
+                    ),
+                  )}
                 </ul>
               )}
             </div>

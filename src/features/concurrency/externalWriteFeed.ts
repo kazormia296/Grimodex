@@ -39,6 +39,7 @@ const POLL_MS = 750;
 type ProseProposalHandler = (
   proposal: PendingProseProposal,
   projectId: string,
+  isAuthoritative: () => boolean,
 ) => boolean | Promise<boolean>;
 
 let proseProposalHandler: ProseProposalHandler | null = null;
@@ -120,17 +121,37 @@ interface PollerState {
   projectId: string | null;
   cursor: number;
   timer: ReturnType<typeof setInterval> | null;
+  generation: number;
 }
 
 const state: PollerState = {
   projectId: null,
   cursor: 0,
   timer: null,
+  generation: 0,
 };
 
-let pollInFlight = false;
+interface FeedAuthority {
+  projectId: string;
+  generation: number;
+}
+
+let pollInFlightToken: symbol | null = null;
 
 type ChangeEventRow = typeof changeEvents.$inferSelect;
+
+function captureFeedAuthority(): FeedAuthority | null {
+  return state.projectId
+    ? { projectId: state.projectId, generation: state.generation }
+    : null;
+}
+
+function isCurrentFeedAuthority(authority: FeedAuthority): boolean {
+  return (
+    state.projectId === authority.projectId &&
+    state.generation === authority.generation
+  );
+}
 
 async function readTailSequence(projectId: string): Promise<number> {
   const rows = await db
@@ -281,20 +302,26 @@ function eventChangesDocumentAggregate(event: ChangeEventRow): boolean {
   );
 }
 
-async function fanOut(events: ChangeEventRow[]): Promise<void> {
+async function fanOut(
+  events: ChangeEventRow[],
+  projectId: string,
+  isAuthoritative: () => boolean,
+): Promise<void> {
+  if (!isAuthoritative()) return;
   const domains = new Set(events.map((e) => e.domain));
-  const projectId = state.projectId;
-  if (!projectId) return;
 
   if (domains.has("grid")) {
     await useTreeStore.getState().reloadTreeOrThrow(projectId);
+    if (!isAuthoritative()) return;
   }
   if (domains.has("codex")) {
     await useCodexStore.getState().loadEntries();
+    if (!isAuthoritative()) return;
     scheduleImeExportRefresh(projectId);
   }
   if (domains.has("snippet")) {
     await useSnippetStore.getState().loadEntries();
+    if (!isAuthoritative()) return;
   }
   if (domains.has("foreshadow")) {
     // Dynamic import: foreshadowStore pulls in the editor/scene graph, and
@@ -302,7 +329,9 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
     // regrow the module-init chain that broke browser-mode vi.mock linking.
     const { useForeshadowStore } =
       await import("@/features/foreshadow/foreshadowStore");
+    if (!isAuthoritative()) return;
     await useForeshadowStore.getState().load(projectId);
+    if (!isAuthoritative()) return;
   }
   // 以下 3 ドメインは metadata 系（Rust agent_writes / MCP が記録する）。
   // 従来 fanOut は grid/codex/snippet/foreshadow の 4 ドメインしか反映せず、
@@ -314,24 +343,31 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
     // bumpRevision が再ロードのトリガ（ChroniclePanel useEffect deps）。
     const { useChronicleStore } =
       await import("@/features/chronicle/chronicleStore");
+    if (!isAuthoritative()) return;
     useChronicleStore.getState().bumpRevision();
   }
   if (domains.has("plot")) {
     const { usePlotThreadStore } =
       await import("@/features/plot-threads/plotThreadStore");
+    if (!isAuthoritative()) return;
     await usePlotThreadStore.getState().load(projectId);
+    if (!isAuthoritative()) return;
   }
   if (domains.has("labels")) {
     const { useLabelStore } = await import("@/features/labels/labelStore");
+    if (!isAuthoritative()) return;
     await useLabelStore.getState().load(projectId);
+    if (!isAuthoritative()) return;
   }
 
+  if (!isAuthoritative()) return;
   const editorEvents = events.filter(
     (e) => e.domain === "editor" && e.sceneId != null,
   );
   const inlineAiPending = isInlineAiPending();
 
   for (const ev of editorEvents) {
+    if (!isAuthoritative()) return;
     const sceneId = ev.sceneId!;
     invalidateHistoryForEntity(ev.entityType, ev.entityId);
     notifyEditorDocument(
@@ -346,18 +382,27 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   );
   const proseSceneIds = [...new Set(proseProposals.map((e) => e.sceneId!))];
   for (const sceneId of proseSceneIds) {
+    if (!isAuthoritative()) return;
     try {
       const proposal = await loadLatestProposedProse(sceneId);
+      if (!isAuthoritative()) return;
       if (!proposal) continue;
       if (proseProposalHandler) {
         let consumed = false;
         try {
-          consumed = await proseProposalHandler(proposal, projectId);
+          consumed = await proseProposalHandler(
+            proposal,
+            projectId,
+            isAuthoritative,
+          );
+          if (!isAuthoritative()) return;
         } catch (err) {
           console.warn("[externalWriteFeed] prose auto-apply failed", err);
         }
+        if (!isAuthoritative()) return;
         if (consumed) continue;
       }
+      if (!isAuthoritative()) return;
       useProseStagingStore.getState().enqueue(proposal);
     } catch {
       // ignore load failures; user can reopen scene to retry
@@ -366,6 +411,7 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
 
   // Non-editor entity events may still target codex/snippet tabs open in editor.
   for (const ev of events) {
+    if (!isAuthoritative()) return;
     invalidateEventMetadataHistory(ev);
     if (ev.entityType === "codex_entry" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);
@@ -412,12 +458,24 @@ async function fetchExternalRows(
     .orderBy(asc(changeEvents.sequence));
 }
 
-async function pollTick(): Promise<void> {
-  const projectId = state.projectId;
-  if (!projectId) return;
+async function pollTick(
+  requestedAuthority: FeedAuthority | null = captureFeedAuthority(),
+): Promise<void> {
+  if (
+    !requestedAuthority ||
+    !isCurrentFeedAuthority(requestedAuthority) ||
+    pollInFlightToken
+  ) {
+    return;
+  }
 
-  if (pollInFlight) return; // skip overlapping tick; cursor retained, next interval retries
-  pollInFlight = true;
+  const authority = requestedAuthority;
+  const { projectId } = authority;
+  const cursor = state.cursor;
+  const inFlightToken = Symbol("external-write-poll");
+  pollInFlightToken = inFlightToken;
+  const isAuthoritative = (): boolean =>
+    pollInFlightToken === inFlightToken && isCurrentFeedAuthority(authority);
 
   // Everything below runs inside one try/catch. pollTick is fired via
   // `void pollTick()` in setInterval, so ANY throw here (including the DB reads,
@@ -428,42 +486,60 @@ async function pollTick(): Promise<void> {
   // retries the same range instead of crashing the poll or dropping events.
   try {
     const sessionId = getRecorderSessionId();
-    let rows = await fetchExternalRows(projectId, state.cursor, sessionId);
+    let rows = await fetchExternalRows(projectId, cursor, sessionId);
+    if (!isAuthoritative()) return;
 
     if (rows.length === 0) {
       const tail = await readTailSequence(projectId);
-      if (tail > state.cursor) {
+      if (!isAuthoritative()) return;
+      if (tail > cursor) {
         // Re-fetch once: events may have landed between the first query and tail read.
-        rows = await fetchExternalRows(projectId, state.cursor, sessionId);
+        rows = await fetchExternalRows(projectId, cursor, sessionId);
+        if (!isAuthoritative()) return;
         if (rows.length === 0) {
+          if (!isAuthoritative()) return;
           state.cursor = tail;
         }
       }
       if (rows.length === 0) return;
     }
 
-    await fanOut(rows);
+    await fanOut(rows, projectId, isAuthoritative);
+    if (!isAuthoritative()) return;
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
     console.warn("[externalWriteFeed] poll failed; cursor retained", err);
   } finally {
-    pollInFlight = false;
+    if (pollInFlightToken === inFlightToken) {
+      pollInFlightToken = null;
+    }
   }
 }
 
 /** Start polling external change_events for the given project. */
 export async function startExternalWriteFeed(projectId: string): Promise<void> {
   stopExternalWriteFeed();
+  const authority: FeedAuthority = {
+    projectId,
+    generation: state.generation,
+  };
   state.projectId = projectId;
-  state.cursor = await readTailSequence(projectId);
+  const cursor = await readTailSequence(projectId);
+  if (!isCurrentFeedAuthority(authority)) return;
+  state.cursor = cursor;
   useExternalWriteStore.getState().clear();
   state.timer = setInterval(() => {
-    void pollTick();
+    void pollTick(authority);
   }, POLL_MS);
 }
 
 /** Stop polling (project switch / workspace close). */
 export function stopExternalWriteFeed(): void {
+  state.generation += 1;
+  // The transport read cannot be aborted, but relinquishing this ownership
+  // token lets the replacement feed poll immediately. The old tick's finally
+  // block cannot clear a newer tick's token.
+  pollInFlightToken = null;
   if (state.timer) {
     clearInterval(state.timer);
     state.timer = null;
@@ -479,7 +555,9 @@ export async function processExternalEventsForTest(
   projectId: string,
 ): Promise<void> {
   state.projectId = projectId;
-  await fanOut(events);
+  const authority = captureFeedAuthority();
+  if (!authority) return;
+  await fanOut(events, projectId, () => isCurrentFeedAuthority(authority));
 }
 
 /** Test hook: run one poll cycle synchronously. */

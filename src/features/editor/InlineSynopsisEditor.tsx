@@ -9,6 +9,11 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
+import {
+  cancelPendingSynopsisSave,
+  flushPendingSynopsisSave,
+  schedulePendingSynopsisSave,
+} from "./pendingSynopsisSaves";
 
 export interface InlineSynopsisEditorHandle {
   startEditing: () => void;
@@ -53,96 +58,98 @@ export const InlineSynopsisEditor = forwardRef<
 ) {
   const { t } = useTranslation();
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
+  const saveOwnerRef = useRef(Symbol(`inline-synopsis:${nodeId}`));
+  const latestScheduledValueRef = useRef<string | null>(null);
+  const hasQueuedSaveRef = useRef(false);
   const persist = useCallback(
-    (text: string) => (onSave ? onSave(text) : updateSynopsis(nodeId, text)),
+    async (text: string) => {
+      await (onSave ? onSave(text) : updateSynopsis(nodeId, text));
+      if (latestScheduledValueRef.current === text) {
+        latestScheduledValueRef.current = null;
+        hasQueuedSaveRef.current = false;
+      }
+    },
     [onSave, updateSynopsis, nodeId],
   );
+  const saveKey = [
+    onSave ? "custom-inline-synopsis" : "tree-synopsis",
+    nodeId,
+  ].join("\u0000");
 
   const [isEditing, setIsEditing] = useState(alwaysEditing);
   const [editText, setEditText] = useState(synopsis ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Refs for unmount-flush (avoid stale closures)
-  const editTextRef = useRef(editText);
   const synopsisRef = useRef(synopsis);
-  const isEditingRef = useRef(isEditing);
-  editTextRef.current = editText;
+  const mountedRef = useRef(false);
+  const activeSaveKeyRef = useRef(saveKey);
   synopsisRef.current = synopsis;
-  isEditingRef.current = isEditing;
+  activeSaveKeyRef.current = saveKey;
 
   // Sync when synopsis changes externally (also in alwaysEditing mode for AI-generated values)
   useEffect(() => {
-    if (!isEditing || alwaysEditing) {
+    const shouldSyncExternalValue =
+      !isEditing || (alwaysEditing && !hasQueuedSaveRef.current);
+    if (shouldSyncExternalValue) {
+      cancelPendingSynopsisSave(saveKey, saveOwnerRef.current);
+      latestScheduledValueRef.current = null;
+      hasQueuedSaveRef.current = false;
       setEditText(synopsis ?? "");
     }
-  }, [synopsis, isEditing, alwaysEditing]);
+  }, [synopsis, isEditing, alwaysEditing, saveKey]);
 
   // Notify host of editing state changes
   useEffect(() => {
     onEditingChange?.(isEditing);
   }, [isEditing, onEditingChange]);
 
-  // Flush pending save on unmount (e.g. card collapsed while editing)
-  useEffect(() => {
-    return () => {
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
+  const reportSaveFailure = useCallback(
+    (_error: unknown) => {
+      if (!mountedRef.current || activeSaveKeyRef.current !== saveKey) {
+        return;
       }
-      if (isEditingRef.current && !alwaysEditing) {
-        const trimmed = editTextRef.current.trim();
-        const original = (synopsisRef.current ?? "").trim();
-        if (trimmed !== original) {
-          persist(trimmed).catch(() => {});
+      toast.error(
+        saveFailedLabel ??
+          t("tree.synopsis.saveFailed", "Synopsis の保存に失敗しました"),
+      );
+      // Keep the active editor focused so the draft remains recoverable.
+      setTimeout(() => {
+        if (mountedRef.current && activeSaveKeyRef.current === saveKey) {
+          textareaRef.current?.focus();
         }
-      }
-    };
-  }, [nodeId, persist, alwaysEditing]);
-
-  const clearSaveTimer = useCallback(() => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
-  }, []);
-
-  const doSave = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim();
-      const original = (synopsis ?? "").trim();
-      if (trimmed === original) return;
-      try {
-        await persist(trimmed);
-      } catch {
-        toast.error(
-          saveFailedLabel ??
-            t("tree.synopsis.saveFailed", "Synopsis の保存に失敗しました"),
-        );
-        // Keep in editing state on failure (re-focus textarea)
-        setTimeout(() => textareaRef.current?.focus(), 0);
-        throw new Error("save failed");
-      }
+      }, 0);
     },
-    [synopsis, persist, saveFailedLabel, t],
+    [saveFailedLabel, saveKey, t],
   );
 
+  // React cleanup cannot await, but the registry starts the write
+  // synchronously and exposes it to strict lifecycle quiescence.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      void flushPendingSynopsisSave(saveKey).catch(() => {});
+    };
+  }, [saveKey]);
+
   const saveAndExit = useCallback(async () => {
-    clearSaveTimer();
     try {
-      await doSave(editText);
+      await flushPendingSynopsisSave(saveKey);
     } catch {
       return; // stay in editing mode
     }
+    latestScheduledValueRef.current = null;
+    hasQueuedSaveRef.current = false;
     setIsEditing(false);
-  }, [editText, doSave, clearSaveTimer]);
+  }, [saveKey]);
 
   const cancelEdit = useCallback(() => {
-    clearSaveTimer();
+    cancelPendingSynopsisSave(saveKey, saveOwnerRef.current);
+    latestScheduledValueRef.current = null;
+    hasQueuedSaveRef.current = false;
     setEditText(synopsis ?? "");
     setIsEditing(false);
-  }, [synopsis, clearSaveTimer]);
+  }, [synopsis, saveKey]);
 
   const startEditing = useCallback(() => {
     setEditText(synopsis ?? "");
@@ -162,16 +169,23 @@ export const InlineSynopsisEditor = forwardRef<
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const value = e.target.value;
       setEditText(value);
-      clearSaveTimer();
-      saveTimerRef.current = setTimeout(() => {
-        const trimmed = value.trim();
-        const original = (synopsis ?? "").trim();
-        if (trimmed !== original) {
-          persist(trimmed).catch(() => {});
-        }
-      }, 1000);
+      const trimmed = value.trim();
+      const original = (synopsisRef.current ?? "").trim();
+      if (trimmed === original && !hasQueuedSaveRef.current) {
+        cancelPendingSynopsisSave(saveKey, saveOwnerRef.current);
+        return;
+      }
+      latestScheduledValueRef.current = trimmed;
+      hasQueuedSaveRef.current = true;
+      schedulePendingSynopsisSave({
+        key: saveKey,
+        owner: saveOwnerRef.current,
+        value: trimmed,
+        persist,
+        onError: reportSaveFailure,
+      });
     },
-    [synopsis, persist, clearSaveTimer],
+    [persist, reportSaveFailure, saveKey],
   );
 
   const handleKeyDown = useCallback(
@@ -193,16 +207,11 @@ export const InlineSynopsisEditor = forwardRef<
   const handleBlur = useCallback(() => {
     if (alwaysEditing) {
       // Flush pending debounce immediately on blur (no exit)
-      clearSaveTimer();
-      const trimmed = editText.trim();
-      const original = (synopsis ?? "").trim();
-      if (trimmed !== original) {
-        persist(trimmed).catch(() => {});
-      }
+      void flushPendingSynopsisSave(saveKey).catch(() => {});
       return;
     }
-    saveAndExit();
-  }, [alwaysEditing, editText, synopsis, persist, clearSaveTimer, saveAndExit]);
+    void saveAndExit();
+  }, [alwaysEditing, saveAndExit, saveKey]);
 
   const handleTriggerEvent = useCallback(
     (e: React.MouseEvent) => {

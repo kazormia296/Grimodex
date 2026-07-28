@@ -15,6 +15,7 @@
  * 失敗時は一時ディレクトリを残して exit 1（調査用にパスを表示する）。
  */
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -24,27 +25,65 @@ import path from "node:path";
 import { _electron } from "playwright";
 
 import { rootDir } from "./build.mjs";
-import { extractAutosaveMetrics } from "../../scripts/runtime-performance-budget.mjs";
+import { closeElectronAppWithDiagnostics } from "./close-electron-app.mjs";
+import {
+  aggregateAppProcessMemory,
+  appMemoryMeasurement,
+} from "./process-memory.mjs";
+import {
+  RUNTIME_PERFORMANCE_INPUT_TEXT,
+  buildRuntimePerformanceFixtureForReview,
+  buildRuntimeFixtureActualCardinalityQuery,
+  buildRuntimeFixtureStatements,
+  parseRuntimeFixtureActualCardinality,
+} from "./runtime-performance-fixture.mjs";
+import {
+  extractAutosaveMetrics,
+  extractInteractionFrameMetrics,
+} from "../../scripts/runtime-performance-budget.mjs";
 
 const require = createRequire(import.meta.url);
 
 // ── 定数 / 前提チェック ──────────────────────────────────────────────────────
 
+const RUNTIME_REVIEW_FIXTURE_ID =
+  process.env.GRIMODEX_PERF_REVIEW_FIXTURE ?? null;
+const RUNTIME_BENCHMARK_FIXTURE = buildRuntimePerformanceFixtureForReview(
+  RUNTIME_REVIEW_FIXTURE_ID,
+);
 const SMOKE_TEXT = `SMOKE-${Date.now()}-スモーク本文`;
-const PERF_SCENE_ID = "grimodex-runtime-perf-seeded-scene";
-const PERF_FOLDER_ID = "grimodex-runtime-perf-scenes";
-const PERF_BOARD_ID = "grimodex-runtime-perf-board";
-const PERF_SCENE_TITLE = "PERF READY SCENE";
-const PERF_SCENE_COUNT = 500;
-const PERF_SCENE_TEXT = "本文".repeat(25_000);
-const PERF_BEAT_COUNT = 20;
+const PERF_INPUT_TEXT = RUNTIME_PERFORMANCE_INPUT_TEXT;
+const PERF_INPUT_ANCHOR_TEXT = RUNTIME_BENCHMARK_FIXTURE.inputAnchorText;
+const PERF_SCENE_ID = RUNTIME_BENCHMARK_FIXTURE.sceneId;
+const PERF_FOLDER_ID = RUNTIME_BENCHMARK_FIXTURE.folderId;
+const PERF_SCENE_COUNT = RUNTIME_BENCHMARK_FIXTURE.collectionSceneCount;
+const PERF_MAP_NODE_COUNT = RUNTIME_BENCHMARK_FIXTURE.mapNodeCount;
+const PERF_TIMELINE_MARKER_LINK_COUNT =
+  RUNTIME_BENCHMARK_FIXTURE.timelineMarkerLinkCount;
+const PERF_CHRONICLE_EVENT_COUNT =
+  RUNTIME_BENCHMARK_FIXTURE.chronicleEventCount;
+const PERF_FILTER_TARGET_ID = `grimodex-runtime-perf-scene-${String(
+  PERF_SCENE_COUNT - 1,
+).padStart(3, "0")}`;
+const PERF_FILTER_TARGET_TITLE = `PERF SCENE ${String(
+  PERF_SCENE_COUNT,
+).padStart(3, "0")}`;
 const SCENES_PANEL_TITLE = "シーン"; // ja.json layout.panel.scenes
 const CREATE_BUTTON_TITLE = "新規作成"; // ja.json scenes.create
 const NEW_SCENE_MENU_ITEM = "New scene"; // ja.json scenes.newScene
 const DEFAULT_SCENE_TITLE = "シーン 1"; // ja.json tree.defaultScene + 連番
 const LAUNCH_TIMEOUT_MS = 60_000;
 const MEMORY_SAMPLE_INTERVAL_MS = 100;
+const INTERACTION_FRAME_SAMPLE_COUNT = 120;
+const RUNTIME_PERFORMANCE_FOREGROUND_SWITCHES = [
+  "--disable-background-timer-throttling",
+  "--disable-renderer-backgrounding",
+  "--disable-backgrounding-occluded-windows",
+];
 const WORKSPACE_OPEN_START_MARK = "grimodex.workspaceOpen.start";
+const EDITOR_INPUT_READY_MARK = `grimodex.editorInputReady:${encodeURIComponent(
+  PERF_SCENE_ID,
+)}`;
 const GLOBAL_WATCHDOG_MS = Number(process.env.SMOKE_TIMEOUT_MS ?? 300_000);
 
 function log(step) {
@@ -108,64 +147,107 @@ const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "grimodex-smoke-"));
 const userDataDir = path.join(tmpRoot, "user-data");
 const workspaceDir = path.join(tmpRoot, "workspace");
 const performanceOutputPath = process.env.GRIMODEX_PERF_OUTPUT;
+const runtimePerformanceOwnerToken = performanceOutputPath
+  ? randomUUID()
+  : null;
+const performanceCpuProfilePath = process.env.GRIMODEX_PERF_CPU_PROFILE
+  ? path.resolve(rootDir, process.env.GRIMODEX_PERF_CPU_PROFILE)
+  : null;
 const performanceMetrics = {
+  fixture: {
+    id: RUNTIME_BENCHMARK_FIXTURE.id,
+    reviewFixtureId: RUNTIME_BENCHMARK_FIXTURE.reviewFixtureId,
+    reviewScenario: RUNTIME_BENCHMARK_FIXTURE.reviewScenario,
+    reviewCardinalityJson: RUNTIME_BENCHMARK_FIXTURE.reviewCardinalityJson,
+    sceneId: RUNTIME_BENCHMARK_FIXTURE.sceneId,
+    seededTextChars: RUNTIME_BENCHMARK_FIXTURE.seededTextChars,
+    seededBeatCount: RUNTIME_BENCHMARK_FIXTURE.seededBeatCount,
+    collectionSceneCount: RUNTIME_BENCHMARK_FIXTURE.collectionSceneCount,
+    timelineThreadCount: RUNTIME_BENCHMARK_FIXTURE.timelineThreadCount,
+    timelineMarkerLinkCount: RUNTIME_BENCHMARK_FIXTURE.timelineMarkerLinkCount,
+    chronicleEventCount: RUNTIME_BENCHMARK_FIXTURE.chronicleEventCount,
+    mapNodeCount: RUNTIME_BENCHMARK_FIXTURE.mapNodeCount,
+    mapEdgeCount: RUNTIME_BENCHMARK_FIXTURE.mapEdgeCount,
+    chatMessageCount: RUNTIME_BENCHMARK_FIXTURE.chatMessageCount,
+    chatSessionId: RUNTIME_BENCHMARK_FIXTURE.chatSessionId,
+    editorInputSceneId: null,
+    autosaveSceneId: null,
+    editorInputTargetVerified: false,
+    editorInputParagraphCharsBefore: null,
+    actualCardinality: null,
+  },
   coldStartMs: null,
   projectOpenMs: null,
   editorInput: null,
   autosave: null,
   memory: {
+    platform: process.platform,
     startupBytes: null,
+    startupProcessCount: null,
+    startupProcesses: null,
+    startupFallbackProcessCount: null,
     peakBytes: 0,
-    measurement: "sumProcessPrivateBytes",
+    peakProcessCount: null,
+    peakProcesses: null,
+    peakFallbackProcessCount: null,
+    measurement: appMemoryMeasurement(),
     sampleIntervalMs: MEMORY_SAMPLE_INTERVAL_MS,
     samples: [],
     peakByViewBytes: {
       map: null,
       timeline: null,
       linear: null,
+      chat: null,
     },
   },
   longTask: null,
+  interactions: {
+    treeFilter: null,
+    linearScroll: null,
+    timelineDrag: null,
+    chroniclePan: null,
+    chatScroll: null,
+    chatDraft: null,
+    mapDrag: null,
+  },
+  diagnostics: null,
 };
 
 async function appMemorySnapshot(app) {
-  return app.evaluate(({ app: electronApp }) =>
-    electronApp.getAppMetrics().reduce(
-      (total, metric) => ({
-        // Private bytes avoid double-counting shared Chromium pages once for
-        // every renderer/GPU/utility process in the app-wide sum.
-        privateBytes:
-          total.privateBytes +
-          Number(
-            metric.memory?.private ??
-              metric.memory?.privateBytes ??
-              metric.memory?.workingSetSize ??
-              0,
-          ) *
-            1_024,
-        workingSetBytes:
-          total.workingSetBytes +
-          Number(
-            metric.memory?.residentSet ?? metric.memory?.workingSetSize ?? 0,
-          ) *
-            1_024,
-      }),
-      { privateBytes: 0, workingSetBytes: 0 },
-    ),
+  const processMetrics = await app.evaluate(({ app: electronApp }) =>
+    electronApp.getAppMetrics().map((metric) => ({
+      pid: metric.pid,
+      type: metric.type,
+      creationTime: metric.creationTime,
+      memory: {
+        privateBytes: metric.memory?.privateBytes,
+        workingSetSize: metric.memory?.workingSetSize,
+      },
+    })),
   );
+  return aggregateAppProcessMemory(processMetrics);
 }
 
 function recordMemorySample(sample) {
-  performanceMetrics.memory.samples.push(sample);
-  performanceMetrics.memory.peakBytes = Math.max(
-    performanceMetrics.memory.peakBytes,
-    sample.privateBytes,
-  );
+  if (sample.measurement !== performanceMetrics.memory.measurement) {
+    throw new Error(
+      `memory measurement changed within benchmark: ${performanceMetrics.memory.measurement} -> ${sample.measurement}`,
+    );
+  }
+  const { processes, ...artifactSample } = sample;
+  performanceMetrics.memory.samples.push(artifactSample);
+  if (sample.measuredBytes > performanceMetrics.memory.peakBytes) {
+    performanceMetrics.memory.peakBytes = sample.measuredBytes;
+    performanceMetrics.memory.peakProcessCount = sample.processCount;
+    performanceMetrics.memory.peakProcesses = processes;
+    performanceMetrics.memory.peakFallbackProcessCount =
+      sample.fallbackProcessCount;
+  }
   for (const view of sample.views) {
     const current = performanceMetrics.memory.peakByViewBytes[view] ?? 0;
     performanceMetrics.memory.peakByViewBytes[view] = Math.max(
       current,
-      sample.privateBytes,
+      sample.measuredBytes,
     );
   }
 }
@@ -175,20 +257,21 @@ function recordMemorySample(sample) {
  * sample to avoid making the measurement itself a material main-thread load;
  * intervening samples retain the last observed view state.
  */
-function startMemorySampler(app, phase) {
+function startMemorySampler(app, phase, initialPage = null) {
   const startedAt = performance.now();
-  let page = null;
+  let page = initialPage;
   let stopped = false;
+  let paused = false;
   let inFlight = null;
   let sampleIndex = 0;
   let lastViews = [];
 
   const sample = async (forceViewDetection = false) => {
-    if (stopped) return null;
+    if (stopped || paused) return null;
     if (inFlight) return inFlight;
     inFlight = (async () => {
       try {
-        const { privateBytes, workingSetBytes } = await appMemorySnapshot(app);
+        const memory = await appMemorySnapshot(app);
         if (page && (forceViewDetection || sampleIndex % 5 === 0)) {
           try {
             lastViews = await page.evaluate(() => {
@@ -202,6 +285,9 @@ function startMemorySampler(app, phase) {
               if (document.querySelector("[data-linear-virtual-row]")) {
                 views.push("linear");
               }
+              if (document.querySelector('[data-testid="chat-virtual-list"]')) {
+                views.push("chat");
+              }
               return views;
             });
           } catch {
@@ -211,8 +297,7 @@ function startMemorySampler(app, phase) {
         const result = {
           phase,
           elapsedMs: performance.now() - startedAt,
-          privateBytes,
-          workingSetBytes,
+          ...memory,
           views: [...lastViews],
         };
         sampleIndex += 1;
@@ -239,6 +324,15 @@ function startMemorySampler(app, phase) {
       page = nextPage;
     },
     sample,
+    async pause() {
+      paused = true;
+      if (inFlight) await inFlight;
+    },
+    resume() {
+      if (stopped || !paused) return;
+      paused = false;
+      void sample();
+    },
     async sampleFresh(forceViewDetection = false) {
       for (let attempt = 0; attempt < 5; attempt += 1) {
         if (inFlight) await inFlight;
@@ -251,6 +345,7 @@ function startMemorySampler(app, phase) {
     async stop() {
       clearInterval(timer);
       if (inFlight) await inFlight;
+      paused = false;
       const finalSample = await sample();
       stopped = true;
       return finalSample;
@@ -258,22 +353,58 @@ function startMemorySampler(app, phase) {
   };
 }
 
+async function pauseMemorySamplerForInteraction(memorySampler) {
+  const before = await memorySampler.sampleFresh(true);
+  if (!before) {
+    throw new Error("memory sample failed before interaction measurement");
+  }
+  await memorySampler.pause();
+  let resumed = false;
+  return async () => {
+    if (resumed) return;
+    resumed = true;
+    memorySampler.resume();
+    const after = await memorySampler.sampleFresh(true);
+    if (!after) {
+      throw new Error("memory sample failed after interaction measurement");
+    }
+  };
+}
+
 /** アプリを 1 回起動して main window の bridge が生きるまで待つ。 */
-async function launchApp(phase) {
-  const launchStarted = performance.now();
+async function launchApp(phase, { deferMemorySampler = false } = {}) {
   const env = { ...process.env };
   delete env.ELECTRON_RENDERER_URL; // 本番経路（app://）を強制
   env.GRIMODEX_USER_DATA_DIR = userDataDir;
+  if (runtimePerformanceOwnerToken) {
+    env.GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN = runtimePerformanceOwnerToken;
+  } else {
+    delete env.GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN;
+  }
+  const args = [mainCjs];
+  if (performanceOutputPath) {
+    // Runtime frame budgets model an active foreground editor. Codex or another
+    // host window may cover the benchmark window while automation is running;
+    // Chromium otherwise throttles occluded renderer rAF to 1Hz, which measures
+    // background policy rather than Timeline/Chronicle frame work.
+    args.push(...RUNTIME_PERFORMANCE_FOREGROUND_SWITCHES);
+  }
+  if (performanceOutputPath && process.platform === "linux") {
+    // The CI gate runs under Xvfb. Pin the local measured path to the same
+    // backend instead of letting a Wayland host select a different GPU stack.
+    args.push("--ozone-platform=x11");
+  }
 
   const app = await _electron.launch({
     executablePath: electronBin,
-    args: [mainCjs],
+    args,
     env,
     timeout: LAUNCH_TIMEOUT_MS,
   });
-  const memorySampler = performanceOutputPath
-    ? startMemorySampler(app, phase)
-    : null;
+  const memorySampler =
+    performanceOutputPath && !deferMemorySampler
+      ? startMemorySampler(app, phase)
+      : null;
   // main プロセスの標準出力を prefix 付きで透過（CI 調査用）
   app.process().stdout?.on("data", (d) => {
     process.stdout.write(`  [main] ${String(d)}`);
@@ -283,20 +414,51 @@ async function launchApp(phase) {
   });
 
   const page = await app.firstWindow({ timeout: LAUNCH_TIMEOUT_MS });
+  page.on("console", (message) => {
+    if (!["warning", "error"].includes(message.type())) return;
+    process.stderr.write(`  [renderer:${message.type()}] ${message.text()}\n`);
+  });
+  page.on("pageerror", (error) => {
+    process.stderr.write(`  [renderer:pageerror] ${error.message}\n`);
+  });
+  if (performanceOutputPath) {
+    await ensureBenchmarkPageForeground(page);
+  }
   memorySampler?.setPage(page);
   await page.waitForFunction(
     () => globalThis.grimodex?.shell === "electron",
     undefined,
     { timeout: LAUNCH_TIMEOUT_MS },
   );
+  if (runtimePerformanceOwnerToken) {
+    await page.waitForFunction(
+      (ownerToken) =>
+        globalThis.grimodex?.runtimePerformance?.ownerToken === ownerToken &&
+        typeof globalThis.invokeRuntimePerformanceControl === "function",
+      runtimePerformanceOwnerToken,
+      { timeout: LAUNCH_TIMEOUT_MS },
+    );
+  }
   const bridgeMemorySample = await memorySampler?.sampleFresh();
   return {
     app,
     page,
-    launchStarted,
     bridgeMemorySample,
     memorySampler,
   };
+}
+
+async function closeAppWithDiagnostics(app, page, phase) {
+  await closeElectronAppWithDiagnostics(app, page, phase);
+}
+
+async function ensureBenchmarkPageForeground(page) {
+  await page.bringToFront();
+  await page.waitForFunction(
+    () => document.visibilityState === "visible" && document.hidden === false,
+    undefined,
+    { timeout: 10_000 },
+  );
 }
 
 /** ブリッジ invoke（envelope 解封。ok:false は throw）。 */
@@ -307,136 +469,6 @@ async function invokeOk(page, cmd, args) {
   );
   if (!envelope.ok) throw new Error(`${cmd} rejected: ${envelope.error}`);
   return envelope.value;
-}
-
-function buildRuntimeFixtureStatements() {
-  const longContent = [];
-  const paragraphSize = 1_000;
-  const paragraphCount = Math.ceil(PERF_SCENE_TEXT.length / paragraphSize);
-  for (
-    let paragraphIndex = 0;
-    paragraphIndex < paragraphCount;
-    paragraphIndex += 1
-  ) {
-    const start = paragraphIndex * paragraphSize;
-    longContent.push({
-      type: "paragraph",
-      content: [
-        {
-          type: "text",
-          text: PERF_SCENE_TEXT.slice(start, start + paragraphSize),
-        },
-      ],
-    });
-    const beatsThroughThisParagraph = Math.floor(
-      ((paragraphIndex + 1) * PERF_BEAT_COUNT) / paragraphCount,
-    );
-    const beatsThroughPreviousParagraph = Math.floor(
-      (paragraphIndex * PERF_BEAT_COUNT) / paragraphCount,
-    );
-    for (
-      let beatIndex = beatsThroughPreviousParagraph;
-      beatIndex < beatsThroughThisParagraph;
-      beatIndex += 1
-    ) {
-      longContent.push({
-        type: "sceneBeat",
-        attrs: {
-          id: `runtime-perf-beat-${beatIndex}`,
-          collapsed: false,
-          beatType: "free",
-          pov: null,
-        },
-        content: [{ type: "text", text: `Beat ${beatIndex}` }],
-      });
-    }
-  }
-  const longDocument = JSON.stringify({
-    type: "doc",
-    content: longContent,
-  });
-  const statements = [
-    {
-      sql: `INSERT INTO tree_nodes
-        (id, project_id, node_type, title, content, char_count, sort_order)
-        VALUES (?, 'default-project', 'scene', ?, ?, ?, 'a0')`,
-      params: [
-        PERF_SCENE_ID,
-        PERF_SCENE_TITLE,
-        longDocument,
-        PERF_SCENE_TEXT.length,
-      ],
-      method: "run",
-    },
-    {
-      sql: `INSERT INTO tree_nodes
-        (id, project_id, node_type, title, sort_order)
-        VALUES (?, 'default-project', 'folder', 'PERF LARGE FIXTURE', 'a1')`,
-      params: [PERF_FOLDER_ID],
-      method: "run",
-    },
-    {
-      sql: `INSERT INTO map_boards
-        (id, project_id, title, sort_order, mode, show_config)
-        VALUES (?, 'default-project', 'PERF LARGE BOARD', 0, 'free', '{}')`,
-      params: [PERF_BOARD_ID],
-      method: "run",
-    },
-  ];
-
-  const sceneIds = [PERF_SCENE_ID];
-  for (let index = 0; index < PERF_SCENE_COUNT; index += 1) {
-    const sceneId = `grimodex-runtime-perf-scene-${String(index).padStart(3, "0")}`;
-    const sceneText =
-      `PERF scene ${String(index + 1).padStart(3, "0")} virtualized body. `.repeat(
-        20,
-      );
-    const sceneDocument = JSON.stringify({
-      type: "doc",
-      content: [
-        {
-          type: "paragraph",
-          content: [{ type: "text", text: sceneText }],
-        },
-      ],
-    });
-    sceneIds.push(sceneId);
-    statements.push({
-      sql: `INSERT INTO tree_nodes
-        (id, project_id, parent_id, node_type, title, content, char_count, sort_order, story_time_order)
-        VALUES (?, 'default-project', ?, 'scene', ?, ?, ?, 'a0', ?)`,
-      params: [
-        sceneId,
-        PERF_FOLDER_ID,
-        `PERF SCENE ${String(index + 1).padStart(3, "0")}`,
-        sceneDocument,
-        sceneText.length,
-        String(index).padStart(4, "0"),
-      ],
-      method: "run",
-    });
-  }
-
-  for (let index = 0; index < sceneIds.length; index += 1) {
-    const sceneId = sceneIds[index];
-    statements.push({
-      sql: `INSERT INTO map_node_positions
-        (id, board_id, node_ref_type, tree_node_id, x, y, z_index)
-        SELECT ? || '-' || id, id, 'scene', ?, ?, ?, ?
-        FROM map_boards
-        WHERE project_id = 'default-project'`,
-      params: [
-        `grimodex-runtime-perf-position-${String(index).padStart(3, "0")}`,
-        sceneId,
-        (index % 18) * 240,
-        Math.floor(index / 18) * 140,
-        index,
-      ],
-      method: "run",
-    });
-  }
-
-  return statements;
 }
 
 /** fn() が truthy を返すまでポーリング（fn の throw はリトライ扱い）。 */
@@ -462,14 +494,37 @@ async function waitUntil(fn, label, timeoutMs = 30_000, intervalMs = 500) {
   }
 }
 
-/** scene 本文が DB に残っているか（ブリッジ経由 SELECT — Tauri と同一ワイヤ）。 */
-async function sceneContentInDb(page) {
+/** 指定 scene の本文が DB に残っているか（ブリッジ経由 SELECT）。 */
+async function sceneContainsTextInDb(page, sceneId, expectedText) {
+  const result = await invokeOk(page, "db_execute", {
+    sql: "SELECT content FROM tree_nodes WHERE id = ? AND node_type = 'scene'",
+    params: [sceneId],
+    method: "all",
+  });
+  return JSON.stringify(result?.rows ?? []).includes(expectedText);
+}
+
+async function findSceneByIdInDb(page, sceneId) {
+  const result = await invokeOk(page, "db_execute", {
+    sql: "SELECT id, title, content FROM tree_nodes WHERE id = ? AND node_type = 'scene'",
+    params: [sceneId],
+    method: "all",
+  });
+  return result?.rows?.[0] ?? null;
+}
+
+/** UI で作成した smoke scene を、永続化された本文から一意に引き直す。 */
+async function findSmokeSceneInDb(page) {
   const result = await invokeOk(page, "db_execute", {
     sql: "SELECT id, title, content FROM tree_nodes WHERE node_type = 'scene'",
     params: [],
     method: "all",
   });
-  return JSON.stringify(result?.rows ?? []).includes(SMOKE_TEXT);
+  return (
+    (result?.rows ?? []).find((row) =>
+      String(row?.content ?? "").includes(SMOKE_TEXT),
+    ) ?? null
+  );
 }
 
 /** シーン一覧パネルのヘッダ（editor ビュー到達の目印に使う）。 */
@@ -491,19 +546,49 @@ async function togglePanel(page, panelId) {
   await page.keyboard.press("Escape");
 }
 
+async function setPanelActive(page, panelId, active) {
+  await page.getByTestId("panel-toggle-root").getByRole("button").click();
+  const item = page.getByTestId(`panel-toggle-item-${panelId}`);
+  await item.waitFor({ state: "visible", timeout: 5_000 });
+  const current = await item.getAttribute("aria-pressed");
+  if (current === null) {
+    throw new Error(`Panel toggle ${panelId} does not expose aria-pressed`);
+  }
+  if ((current === "true") !== active) {
+    await item.evaluate((element) => element.focus());
+    await page.keyboard.press("Enter");
+  }
+  await page.keyboard.press("Escape");
+}
+
 async function showPanel(page, panelId, readyLocator) {
   if (await readyLocator.isVisible()) return;
-  await togglePanel(page, panelId);
-  const becameVisible = await readyLocator
-    .waitFor({ state: "visible", timeout: 5_000 })
-    .then(() => true)
-    .catch(() => false);
-  if (becameVisible) return;
-  // A panel can remain active while its persisted region is out of view. The
-  // first toggle then disables it; a second toggle re-adds it to a visible
-  // region. Do not accept either path until the panel's own readiness is seen.
-  await togglePanel(page, panelId);
+  // Heavy lazy panels can need more than five seconds to hydrate their full
+  // fixture. Observe the toggle's canonical active state so a slow first open
+  // is not mistaken for a failed open and immediately toggled closed again.
+  await setPanelActive(page, panelId, true);
   await readyLocator.waitFor({ state: "visible", timeout: 30_000 });
+}
+
+async function hidePanelIfVisible(page, panelId, readyLocator) {
+  const wasVisible = await readyLocator.isVisible();
+  await setPanelActive(page, panelId, false);
+  if (wasVisible) {
+    await readyLocator.waitFor({ state: "hidden", timeout: 30_000 });
+  }
+}
+
+function activePanelsInPersistedLayout(settings) {
+  const active = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (typeof value.activePanel === "string") {
+      active.add(value.activePanel);
+    }
+    for (const nested of Object.values(value)) visit(nested);
+  };
+  visit(settings?.layout);
+  return active;
 }
 
 async function captureViewMemoryWindow(page, memorySampler, view) {
@@ -521,6 +606,169 @@ async function captureViewMemoryWindow(page, memorySampler, view) {
     throw new Error(`${view} memory peak was not recorded`);
   }
   log(`  ${view} sampled peak: ${peak} bytes`);
+}
+
+async function waitForRuntimeEditorIdle(page) {
+  // Cold-start owns scene mount and initial analysis cost. Start the steady
+  // editor-input window only after delayed mount work and two paint frames have
+  // drained, so CI variance cannot reclassify startup work as a typing longtask.
+  await page.waitForTimeout(1_000);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const afterIdle = () =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        if (typeof requestIdleCallback === "function") {
+          requestIdleCallback(afterIdle, { timeout: 2_000 });
+        } else {
+          afterIdle();
+        }
+      }),
+  );
+}
+
+async function drivePointerMoveFrames(
+  page,
+  {
+    startX,
+    clientY,
+    baseOffset,
+    verticalBaseOffset = 0,
+    verticalStep = 0,
+    button,
+    buttons,
+  },
+) {
+  await page.evaluate(
+    async ({
+      startX,
+      clientY,
+      baseOffset,
+      verticalBaseOffset,
+      verticalStep,
+      button,
+      buttons,
+      frameCount,
+    }) => {
+      for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        document.dispatchEvent(
+          new MouseEvent("mousemove", {
+            button,
+            buttons,
+            clientX: startX + baseOffset + (frameIndex % 32),
+            clientY: clientY + verticalBaseOffset + frameIndex * verticalStep,
+            bubbles: true,
+          }),
+        );
+        // The component registers its preview callback from the move above
+        // before this waiter. Continuing from the waiter schedules the next
+        // move before the following paint, so each measured component rAF has
+        // real dirty transform work rather than an idle clock callback.
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    },
+    {
+      startX,
+      clientY,
+      baseOffset,
+      verticalBaseOffset,
+      verticalStep,
+      button,
+      buttons,
+      frameCount: INTERACTION_FRAME_SAMPLE_COUNT,
+    },
+  );
+}
+
+async function focusRuntimeInputAnchor(page) {
+  const result = await page.evaluate(async (anchorText) => {
+    const paragraphs = Array.from(
+      document.querySelectorAll('.ProseMirror[contenteditable="true"] > p'),
+    ).filter((paragraph) => paragraph.textContent === anchorText);
+    if (paragraphs.length !== 1) {
+      return {
+        ok: false,
+        reason: `expected one input anchor, found ${paragraphs.length}`,
+      };
+    }
+
+    const paragraph = paragraphs[0];
+    const editor = paragraph.parentElement;
+    if (!(editor instanceof HTMLElement) || !editor.isContentEditable) {
+      return { ok: false, reason: "input anchor editor is not editable" };
+    }
+    if (paragraph.querySelectorAll(".lint-deco").length !== 0) {
+      return { ok: false, reason: "input anchor contains lint decorations" };
+    }
+
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+    let textNode = walker.nextNode();
+    let lastTextNode = null;
+    while (textNode) {
+      lastTextNode = textNode;
+      textNode = walker.nextNode();
+    }
+    if (!(lastTextNode instanceof Text)) {
+      return { ok: false, reason: "input anchor has no text node" };
+    }
+
+    editor.focus({ preventScroll: true });
+    const range = document.createRange();
+    range.setStart(lastTextNode, lastTextNode.data.length);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
+
+    const activeSelection = window.getSelection();
+    return {
+      ok:
+        (document.activeElement === editor ||
+          editor.contains(document.activeElement)) &&
+        activeSelection?.isCollapsed === true &&
+        paragraph.contains(activeSelection.anchorNode) &&
+        activeSelection.anchorNode === lastTextNode &&
+        activeSelection.anchorOffset === lastTextNode.data.length,
+      reason: "selection did not remain at the input anchor end",
+      initialChars: paragraph.textContent?.length ?? 0,
+    };
+  }, PERF_INPUT_ANCHOR_TEXT);
+
+  if (!result.ok) {
+    throw new Error(`runtime input target is invalid: ${result.reason}`);
+  }
+  return result;
+}
+
+async function assertRuntimeInputLandedInAnchor(page) {
+  const result = await page.evaluate(
+    ({ anchorText, inputText }) => {
+      const expected = `${anchorText}${inputText}`;
+      const matches = Array.from(
+        document.querySelectorAll('.ProseMirror[contenteditable="true"] > p'),
+      ).filter((paragraph) => paragraph.textContent === expected);
+      return {
+        ok: matches.length === 1,
+        matches: matches.length,
+        expectedChars: expected.length,
+      };
+    },
+    {
+      anchorText: PERF_INPUT_ANCHOR_TEXT,
+      inputText: PERF_INPUT_TEXT,
+    },
+  );
+  if (!result.ok) {
+    throw new Error(
+      `runtime input did not land in the anchor paragraph (matches=${result.matches})`,
+    );
+  }
+  return result;
 }
 
 async function assertTreeAndGridVirtualization(page) {
@@ -560,6 +808,51 @@ async function assertTreeAndGridVirtualization(page) {
     `  Tree virtualization: ${treeRendered} rendered / ${PERF_SCENE_COUNT} fixture scenes`,
   );
 
+  const filterInput = scenesPanel.getByTestId("scenes-filter-input");
+  const filterTarget = scenesPanel.locator(
+    `li[data-node-id="${PERF_FILTER_TARGET_ID}"]`,
+  );
+  let treeFilterSession = null;
+  let filterTargetVisible = false;
+  await page.evaluate(() => globalThis.startPerfSession?.());
+  try {
+    await filterInput.fill(PERF_FILTER_TARGET_TITLE);
+    await filterTarget.waitFor({ state: "visible", timeout: 10_000 });
+    filterTargetVisible =
+      (await filterTarget.count()) === 1 &&
+      (await filterTarget.textContent())?.includes(PERF_FILTER_TARGET_TITLE) ===
+        true;
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+  } finally {
+    treeFilterSession = await page.evaluate(() =>
+      globalThis.endPerfSession?.(),
+    );
+  }
+  const derivationCount =
+    treeFilterSession?.counters?.["tree.visibility.derive.count"] ?? null;
+  const maxNodesVisited =
+    treeFilterSession?.counters?.["tree.visibility.maxNodesVisited"] ?? null;
+  performanceMetrics.interactions.treeFilter = {
+    targetVerified:
+      filterTargetVisible &&
+      Number.isFinite(derivationCount) &&
+      derivationCount >= 1,
+    derivationCount,
+    maxNodesVisited,
+    longTaskCount: treeFilterSession?.longtask?.count ?? null,
+    longTaskMaxMs: treeFilterSession?.longtask?.maxMs ?? null,
+  };
+  log(
+    `  Tree filter: ${derivationCount} derive(s), max ${maxNodesVisited} node visits, ${treeFilterSession?.longtask?.count ?? "missing"} long task(s)`,
+  );
+  await filterInput.fill("");
+  await fixtureFolder.waitFor({ state: "visible", timeout: 10_000 });
+
   const firstGridRow = page.locator("[data-grid-virtual-row]").first();
   await showPanel(page, "grid", firstGridRow);
   const gridRendered = await page.waitForFunction(
@@ -575,21 +868,741 @@ async function assertTreeAndGridVirtualization(page) {
   );
 }
 
-async function sampleLargeFixtureViews(page, memorySampler) {
+async function measureTimelineDrag(page, memorySampler) {
+  const timelinePanel = page.getByTestId("timeline-panel");
+  const axisMode = timelinePanel.locator("select").first();
+  if ((await axisMode.inputValue()) !== "story") {
+    await axisMode.selectOption("story");
+  }
+  await page.waitForFunction(() => {
+    const target = document.querySelector(
+      '[data-testid^="timeline-scene-dot-"]',
+    );
+    return target?.classList.contains("cursor-grab") === true;
+  });
+  const dot = page.locator('[data-testid^="timeline-scene-dot-"]').first();
+  await dot.waitFor({ state: "visible", timeout: 10_000 });
+  await dot.scrollIntoViewIfNeeded();
+  const box = await dot.boundingBox();
+  if (!box) throw new Error("Timeline drag target has no bounding box");
+  const beforeX = box.x + box.width / 2;
+  await ensureBenchmarkPageForeground(page);
+
+  let timelineSession = null;
+  let afterX = beforeX;
+  let dragArmed = false;
+  const resumeMemorySampler =
+    await pauseMemorySamplerForInteraction(memorySampler);
+  let timelineSessionStarted = false;
+  try {
+    await page.evaluate(() => globalThis.startPerfSession?.());
+    timelineSessionStarted = true;
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    // Dispatch to the SVG target directly. Coordinate mouse input can land on
+    // an overlapping Timeline label even though the circle itself is visible.
+    await dot.dispatchEvent("mousedown", {
+      button: 0,
+      buttons: 1,
+      clientX: x,
+      clientY: y,
+    });
+    dragArmed = true;
+    await page
+      .getByTestId("timeline-scene-drag-ghost")
+      .waitFor({ state: "attached", timeout: 10_000 });
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(resolve)),
+    );
+    // Keep the real pointer/imperative presentation path active for enough
+    // independently presented frames to make p95 meaningful. One callback
+    // duration only measures JavaScript; consecutive rAF timestamp deltas also
+    // include style/layout/paint/composite deadline misses.
+    await drivePointerMoveFrames(page, {
+      startX: x,
+      clientY: y,
+      baseOffset: 24,
+      button: 0,
+      buttons: 1,
+    });
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(resolve)),
+    );
+    const previewBox = await page
+      .getByTestId("timeline-scene-drag-dot-preview")
+      .boundingBox();
+    afterX = previewBox ? previewBox.x + previewBox.width / 2 : null;
+    // Cancel instead of committing a story-order mutation in the smoke fixture.
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    dragArmed = false;
+  } finally {
+    try {
+      if (dragArmed) {
+        await page
+          .evaluate(() => window.dispatchEvent(new Event("blur")))
+          .catch(() => {});
+      }
+      if (timelineSessionStarted) {
+        timelineSession = await page.evaluate(() =>
+          globalThis.endPerfSession?.(),
+        );
+      }
+    } finally {
+      await resumeMemorySampler();
+    }
+  }
+  const frameMetrics = extractInteractionFrameMetrics(
+    timelineSession,
+    "timeline.pointerFrame.interval",
+    "timeline.pointerFrame.work",
+  );
+  const timelineRender = timelineSession?.markStats?.find(
+    (entry) => entry.label === "timelineViewport.render",
+  );
+  const timelineRenderCount = timelineRender?.count ?? 0;
+  const timelineRenderMaxMs = timelineRender?.maxMs ?? 0;
+  performanceMetrics.interactions.timelineDrag = {
+    targetVerified:
+      Number.isFinite(beforeX) &&
+      Number.isFinite(afterX) &&
+      beforeX !== afterX &&
+      frameMetrics !== null &&
+      Number.isFinite(timelineRenderMaxMs),
+    gestureLongTaskCount: timelineSession?.longtask?.count ?? null,
+    gestureLongTaskMaxMs: timelineSession?.longtask?.maxMs ?? null,
+    gestureSlowEvent: timelineSession?.slowEvent ?? null,
+    gestureTopMarks: timelineSession?.topMarks ?? [],
+    gestureMarkStats: timelineSession?.markStats ?? [],
+    // A zero count is the preferred path: scene drag is mounted ahead of time
+    // and must not reconcile the 5k-marker Timeline tree on pointer down.
+    dragStartRenderCount: timelineRenderCount,
+    dragStartRenderMaxMs: timelineRenderMaxMs,
+    frameCount: frameMetrics?.frameCount ?? null,
+    workFrameCount: frameMetrics?.workFrameCount ?? null,
+    workCoverage: frameMetrics?.workCoverage ?? null,
+    p50FrameMs: frameMetrics?.p50FrameMs ?? null,
+    p95FrameMs: frameMetrics?.p95FrameMs ?? null,
+    meanFrameMs: frameMetrics?.meanFrameMs ?? null,
+    maxFrameMs: frameMetrics?.maxFrameMs ?? null,
+  };
+  log(
+    `  Timeline drag: ${frameMetrics?.frameCount ?? "missing"} frame(s), p95 ${frameMetrics?.p95FrameMs ?? "missing"} ms, max ${frameMetrics?.maxFrameMs ?? "missing"} ms`,
+  );
+}
+
+async function measureChroniclePan(page, memorySampler) {
+  const track = page.locator("#chronicle-track:visible").first();
+  await showPanel(page, "chronicle", track);
+  await page.waitForFunction(
+    (minimumEvents) => {
+      const chronicleTrack = document.querySelector("#chronicle-track");
+      const totalEvents = Number(
+        chronicleTrack?.getAttribute("data-chronicle-total-event-count") ?? 0,
+      );
+      const renderedMarkers = Number(
+        chronicleTrack?.getAttribute("data-chronicle-rendered-marker-count") ??
+          0,
+      );
+      const totalEdges = Number(
+        chronicleTrack?.getAttribute("data-chronicle-total-edge-count") ?? 0,
+      );
+      const renderedEdges = Number(
+        chronicleTrack?.getAttribute("data-chronicle-rendered-edge-count") ?? 0,
+      );
+      return (
+        totalEvents >= minimumEvents &&
+        renderedMarkers > 0 &&
+        renderedMarkers < totalEvents &&
+        totalEdges >= Math.min(Math.max(minimumEvents - 1, 0), 1_000) &&
+        renderedEdges > 0
+      );
+    },
+    PERF_CHRONICLE_EVENT_COUNT,
+    { timeout: 30_000 },
+  );
+  const markerProjection = await track.evaluate((element) => ({
+    totalEventCount: Number(
+      element.getAttribute("data-chronicle-total-event-count") ?? 0,
+    ),
+    renderedMarkerCount: Number(
+      element.getAttribute("data-chronicle-rendered-marker-count") ?? 0,
+    ),
+    totalEdgeCount: Number(
+      element.getAttribute("data-chronicle-total-edge-count") ?? 0,
+    ),
+    renderedEdgeCount: Number(
+      element.getAttribute("data-chronicle-rendered-edge-count") ?? 0,
+    ),
+    renderWindowTop: Number(
+      element.getAttribute("data-chronicle-render-window-top") ?? 0,
+    ),
+    renderedMarkerIds: Array.from(
+      element.querySelectorAll("[data-event-id]"),
+      (marker) => marker.getAttribute("data-event-id"),
+    ).filter(Boolean),
+  }));
+  const scrollArea = page.getByTestId("chronicle-scroll-area");
+  const initialScrollTop = await scrollArea.evaluate(
+    (element) => element.scrollTop,
+  );
+  const scrollViewportHeight = await scrollArea.evaluate(
+    (element) => element.clientHeight,
+  );
+  const projection = page.getByTestId("chronicle-viewport-projection");
+  await projection.waitFor({ state: "attached", timeout: 10_000 });
+  const box = await track.boundingBox();
+  if (!box) throw new Error("Chronicle pan target has no bounding box");
+  await ensureBenchmarkPageForeground(page);
+
+  let chronicleSession = null;
+  let previewTransform = "";
+  let finalScrollTop = initialScrollTop;
+  let finalRenderedMarkerCount = markerProjection.renderedMarkerCount;
+  let finalRenderWindowTop = markerProjection.renderWindowTop;
+  let finalRenderedMarkerIds = markerProjection.renderedMarkerIds;
+  let pointerHeld = false;
+  const resumeMemorySampler =
+    await pauseMemorySamplerForInteraction(memorySampler);
+  let chronicleSessionStarted = false;
+  try {
+    const x = box.x + box.width / 2;
+    const y = box.y + Math.min(box.height / 2, 80);
+    // Target acquisition can trigger marker hover state and the first
+    // compositing pass for this large keepalive panel. Those are setup work,
+    // not middle-button pan frames. Settle them before opening the scoped
+    // session; the session still begins before pointer-down and therefore
+    // retains every gesture/preview/paint interval.
+    await page.mouse.move(x, y);
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    await page.evaluate(() => globalThis.startPerfSession?.());
+    chronicleSessionStarted = true;
+    await page.mouse.down({ button: "middle" });
+    pointerHeld = true;
+    // Playwright `steps` emits one burst, which Chronicle intentionally
+    // coalesces into a single rAF. Keep distinct real pointer previews active
+    // for a statistically meaningful interval sample rather than measuring
+    // driver cadence or one incidental frame.
+    await drivePointerMoveFrames(page, {
+      startX: x,
+      clientY: y,
+      baseOffset: 12,
+      // Exercise the native vertical scroll and marker-window replacement
+      // path as part of the same diagonal pan, rather than benchmarking only
+      // a static horizontal world transform.
+      verticalBaseOffset: -12,
+      // Move beyond one full viewport so the top overscan must be evicted.
+      // A fixed 480px gesture could leave the initial projection intact on a
+      // tall CI display and would not prove the window listener works.
+      verticalStep: -Math.max(
+        8,
+        Math.ceil(
+          (scrollViewportHeight * 1.5) / INTERACTION_FRAME_SAMPLE_COUNT,
+        ),
+      ),
+      button: 1,
+      buttons: 4,
+    });
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    previewTransform = await projection.evaluate(
+      (element) => element.style.transform,
+    );
+    finalScrollTop = await scrollArea.evaluate((element) => element.scrollTop);
+    const finalMarkerProjection = await track.evaluate((element) => ({
+      renderedMarkerCount: Number(
+        element.getAttribute("data-chronicle-rendered-marker-count") ?? 0,
+      ),
+      renderWindowTop: Number(
+        element.getAttribute("data-chronicle-render-window-top") ?? 0,
+      ),
+      renderedMarkerIds: Array.from(
+        element.querySelectorAll("[data-event-id]"),
+        (marker) => marker.getAttribute("data-event-id"),
+      ).filter(Boolean),
+    }));
+    finalRenderedMarkerCount = finalMarkerProjection.renderedMarkerCount;
+    finalRenderWindowTop = finalMarkerProjection.renderWindowTop;
+    finalRenderedMarkerIds = finalMarkerProjection.renderedMarkerIds;
+    await page.mouse.up({ button: "middle" });
+    pointerHeld = false;
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(resolve)),
+    );
+  } finally {
+    try {
+      if (pointerHeld) {
+        await page
+          .evaluate(() => window.dispatchEvent(new Event("blur")))
+          .catch(() => {});
+        await page.mouse.up({ button: "middle" }).catch(() => {});
+      }
+      if (chronicleSessionStarted) {
+        chronicleSession = await page.evaluate(() =>
+          globalThis.endPerfSession?.(),
+        );
+      }
+    } finally {
+      await resumeMemorySampler();
+    }
+  }
+  const frameMetrics = extractInteractionFrameMetrics(
+    chronicleSession,
+    "chronicle.viewportFrame.interval",
+    "chronicle.viewportFrame.work",
+  );
+  const initialMarkerIdSet = new Set(markerProjection.renderedMarkerIds);
+  const finalMarkerIdSet = new Set(finalRenderedMarkerIds);
+  const markerWindowReplaced =
+    markerProjection.renderedMarkerIds.some(
+      (markerId) => !finalMarkerIdSet.has(markerId),
+    ) &&
+    finalRenderedMarkerIds.some(
+      (markerId) => !initialMarkerIdSet.has(markerId),
+    );
+  performanceMetrics.interactions.chroniclePan = {
+    targetVerified:
+      previewTransform !== "" &&
+      frameMetrics !== null &&
+      markerProjection.totalEventCount >= PERF_CHRONICLE_EVENT_COUNT &&
+      markerProjection.renderedMarkerCount > 0 &&
+      markerProjection.renderedMarkerCount < markerProjection.totalEventCount &&
+      markerProjection.totalEdgeCount >=
+        Math.min(Math.max(PERF_CHRONICLE_EVENT_COUNT - 1, 0), 1_000) &&
+      markerProjection.renderedEdgeCount > 0 &&
+      finalScrollTop > initialScrollTop &&
+      finalRenderWindowTop > markerProjection.renderWindowTop &&
+      markerWindowReplaced &&
+      finalRenderedMarkerCount > 0 &&
+      finalRenderedMarkerCount < markerProjection.totalEventCount,
+    gestureLongTaskCount: chronicleSession?.longtask?.count ?? null,
+    gestureLongTaskMaxMs: chronicleSession?.longtask?.maxMs ?? null,
+    gestureSlowEvent: chronicleSession?.slowEvent ?? null,
+    gestureTopMarks: chronicleSession?.topMarks ?? [],
+    gestureMarkStats: chronicleSession?.markStats ?? [],
+    totalEventCount: markerProjection.totalEventCount,
+    renderedMarkerCount: markerProjection.renderedMarkerCount,
+    finalRenderedMarkerCount,
+    totalEdgeCount: markerProjection.totalEdgeCount,
+    renderedEdgeCount: markerProjection.renderedEdgeCount,
+    horizontalPreviewVerified: previewTransform !== "",
+    markerWindowReplaced,
+    initialRenderWindowTop: markerProjection.renderWindowTop,
+    finalRenderWindowTop,
+    initialScrollTop,
+    finalScrollTop,
+    frameCount: frameMetrics?.frameCount ?? null,
+    workFrameCount: frameMetrics?.workFrameCount ?? null,
+    workCoverage: frameMetrics?.workCoverage ?? null,
+    p50FrameMs: frameMetrics?.p50FrameMs ?? null,
+    p95FrameMs: frameMetrics?.p95FrameMs ?? null,
+    meanFrameMs: frameMetrics?.meanFrameMs ?? null,
+    maxFrameMs: frameMetrics?.maxFrameMs ?? null,
+  };
+  log(
+    `  Chronicle pan: ${frameMetrics?.frameCount ?? "missing"} frame(s), p95 ${frameMetrics?.p95FrameMs ?? "missing"} ms, max ${frameMetrics?.maxFrameMs ?? "missing"} ms`,
+  );
+
+  await togglePanel(page, "chronicle");
+  await track.waitFor({ state: "detached", timeout: 10_000 });
+}
+
+function shouldMeasureReviewScenario(scenario) {
+  return (
+    RUNTIME_BENCHMARK_FIXTURE.reviewScenario === null ||
+    RUNTIME_BENCHMARK_FIXTURE.reviewScenario === scenario
+  );
+}
+
+async function measureMapView(page, memorySampler) {
   const mapPanel = page.locator('[data-droptarget-id="map-panel"]');
   await showPanel(page, "map", mapPanel);
   await page.waitForFunction(
-    (minimumNodes) =>
-      Number(
-        document
-          .querySelector("[data-map-rendered-node-count]")
-          ?.getAttribute("data-map-rendered-node-count") ?? 0,
-      ) >= minimumNodes,
-    PERF_SCENE_COUNT + 1,
+    ({ minimumNodes, minimumEdges }) => {
+      const map = document.querySelector("[data-map-rendered-node-count]");
+      const stateNodes = Number(
+        map?.getAttribute("data-map-rendered-node-count") ?? 0,
+      );
+      const stateEdges = Number(
+        map?.getAttribute("data-map-rendered-edge-count") ?? 0,
+      );
+      const renderedNodes =
+        map?.querySelectorAll(".react-flow__node").length ?? 0;
+      const renderedEdges =
+        map?.querySelectorAll(".react-flow__edge").length ?? 0;
+      return (
+        stateNodes >= minimumNodes &&
+        stateEdges >= minimumEdges &&
+        renderedNodes >= minimumNodes &&
+        renderedEdges >= minimumEdges
+      );
+    },
+    {
+      minimumNodes: PERF_MAP_NODE_COUNT,
+      minimumEdges: RUNTIME_BENCHMARK_FIXTURE.mapEdgeCount,
+    },
     { timeout: 30_000 },
   );
-  await captureViewMemoryWindow(page, memorySampler, "map");
 
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  const targetNodeId = await page.evaluate(() => {
+    const flow = document.querySelector(".react-flow");
+    if (!(flow instanceof HTMLElement)) return null;
+    const flowRect = flow.getBoundingClientRect();
+    for (const node of document.querySelectorAll(
+      '.react-flow__node[data-id^="scene:"]',
+    )) {
+      const rect = node.getBoundingClientRect();
+      const center = {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      };
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        center.x <= flowRect.left ||
+        center.x >= flowRect.right ||
+        center.y <= flowRect.top ||
+        center.y >= flowRect.bottom
+      ) {
+        continue;
+      }
+      const hit = document.elementFromPoint(center.x, center.y);
+      if (hit?.closest(".react-flow__node[data-id]") === node) {
+        return node.getAttribute("data-id");
+      }
+    }
+    return null;
+  });
+  if (!targetNodeId?.startsWith("scene:")) {
+    throw new Error("Map drag has no visible, hit-testable scene target");
+  }
+  const targetNode = page.locator(
+    `.react-flow__node[data-id="${targetNodeId}"]`,
+  );
+  await targetNode.waitFor({ state: "visible", timeout: 10_000 });
+  const targetTreeNodeId = targetNodeId.slice("scene:".length);
+  const readPersistedPosition = async () => {
+    const result = await invokeOk(page, "db_execute", {
+      sql: `SELECT id, x, y
+        FROM map_node_positions
+        WHERE board_id = ? AND tree_node_id = ?`,
+      params: [RUNTIME_BENCHMARK_FIXTURE.boardId, targetTreeNodeId],
+      method: "all",
+    });
+    return result?.rows?.[0] ?? null;
+  };
+  const persistedBefore = await readPersistedPosition();
+  if (
+    !persistedBefore ||
+    !Number.isFinite(Number(persistedBefore.x)) ||
+    !Number.isFinite(Number(persistedBefore.y))
+  ) {
+    throw new Error("Map drag target has no persisted position");
+  }
+  const targetBox = await targetNode.boundingBox();
+  const targetTransformBefore = await targetNode.evaluate(
+    (element) => element.style.transform,
+  );
+  if (!targetBox) throw new Error("Map drag target has no bounding box");
+
+  await page.evaluate((draggedNodeId) => {
+    const nodes = Array.from(
+      document.querySelectorAll(".react-flow__node[data-id]"),
+    );
+    const unrelated = nodes.filter(
+      (node) => node.getAttribute("data-id") !== draggedNodeId,
+    );
+    const state = {
+      draggedNodeId,
+      elements: new Map(
+        unrelated.map((node) => [node.getAttribute("data-id"), node]),
+      ),
+      transforms: new Map(
+        unrelated.map((node) => [
+          node.getAttribute("data-id"),
+          node instanceof HTMLElement ? node.style.transform : "",
+        ]),
+      ),
+      childListReplacements: 0,
+      attributeMutations: 0,
+      observer: null,
+    };
+    const nodesRoot = document.querySelector(".react-flow__nodes");
+    if (!(nodesRoot instanceof HTMLElement)) {
+      throw new Error("Map React Flow node container is missing");
+    }
+    const affectedNodeIds = (node) => {
+      if (!(node instanceof Element)) return [];
+      const ids = [];
+      if (node.matches(".react-flow__node[data-id]")) {
+        ids.push(node.getAttribute("data-id"));
+      }
+      for (const nested of node.querySelectorAll(
+        ".react-flow__node[data-id]",
+      )) {
+        ids.push(nested.getAttribute("data-id"));
+      }
+      return ids.filter(Boolean);
+    };
+    state.observer = new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === "childList") {
+          const changedIds = [
+            ...Array.from(record.addedNodes).flatMap(affectedNodeIds),
+            ...Array.from(record.removedNodes).flatMap(affectedNodeIds),
+          ];
+          state.childListReplacements += changedIds.filter(
+            (id) => id !== draggedNodeId,
+          ).length;
+        } else if (record.type === "attributes") {
+          const element = record.target;
+          const owner =
+            element instanceof Element
+              ? element.closest(".react-flow__node[data-id]")
+              : null;
+          const ownerId = owner?.getAttribute("data-id");
+          if (ownerId && ownerId !== draggedNodeId) {
+            state.attributeMutations += 1;
+          }
+        }
+      }
+    });
+    state.observer.observe(nodesRoot, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["class", "style", "transform"],
+    });
+    globalThis.__grimodexMapDragPerfState = state;
+  }, targetNodeId);
+
+  const dragStart = {
+    x: targetBox.x + targetBox.width / 2,
+    y: targetBox.y + targetBox.height / 2,
+  };
+  let pointerHeld = false;
+  let persistedAfter = null;
+  let mapDragEvidence = null;
+  let mapNodeIdentityEvidence = null;
+  let mapNodeIdentityPrepared = false;
+  try {
+    const preparedIdentity = await page.evaluate(
+      ({ ownerToken, nodeId }) => {
+        globalThis.startPerfSession?.();
+        try {
+          return globalThis.invokeRuntimePerformanceControl?.(
+            ownerToken,
+            "map.dragIdentity",
+            { action: "prepare", nodeId },
+          );
+        } finally {
+          globalThis.endPerfSession?.();
+        }
+      },
+      {
+        ownerToken: runtimePerformanceOwnerToken,
+        nodeId: targetNodeId,
+      },
+    );
+    mapNodeIdentityPrepared = true;
+    if (
+      preparedIdentity?.unrelatedNodeCount !==
+      RUNTIME_BENCHMARK_FIXTURE.mapNodeCount - 1
+    ) {
+      throw new Error(
+        `Map identity control prepared ${preparedIdentity?.unrelatedNodeCount} unrelated nodes`,
+      );
+    }
+
+    await page.mouse.move(dragStart.x, dragStart.y);
+    await page.mouse.down();
+    pointerHeld = true;
+    await page.mouse.move(dragStart.x + 48, dragStart.y + 32, { steps: 4 });
+    await page.mouse.up();
+    pointerHeld = false;
+
+    persistedAfter = await waitUntil(
+      async () => {
+        const position = await readPersistedPosition();
+        return position &&
+          (Number(position.x) !== Number(persistedBefore.x) ||
+            Number(position.y) !== Number(persistedBefore.y))
+          ? position
+          : false;
+      },
+      "Map drag persists changed x/y",
+      30_000,
+      100,
+    );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+  } finally {
+    if (pointerHeld) {
+      await page.mouse.up().catch(() => {});
+    }
+    mapDragEvidence = await page.evaluate((draggedNodeId) => {
+      const state = globalThis.__grimodexMapDragPerfState;
+      if (!state) return null;
+      const affectedNodeIds = (node) => {
+        if (!(node instanceof Element)) return [];
+        const ids = [];
+        if (node.matches(".react-flow__node[data-id]")) {
+          ids.push(node.getAttribute("data-id"));
+        }
+        for (const nested of node.querySelectorAll(
+          ".react-flow__node[data-id]",
+        )) {
+          ids.push(nested.getAttribute("data-id"));
+        }
+        return ids.filter(Boolean);
+      };
+      for (const record of state.observer.takeRecords()) {
+        if (record.type === "childList") {
+          const changedIds = [
+            ...Array.from(record.addedNodes).flatMap(affectedNodeIds),
+            ...Array.from(record.removedNodes).flatMap(affectedNodeIds),
+          ];
+          state.childListReplacements += changedIds.filter(
+            (id) => id !== draggedNodeId,
+          ).length;
+        } else if (record.type === "attributes") {
+          const element = record.target;
+          const owner =
+            element instanceof Element
+              ? element.closest(".react-flow__node[data-id]")
+              : null;
+          const ownerId = owner?.getAttribute("data-id");
+          if (ownerId && ownerId !== draggedNodeId) {
+            state.attributeMutations += 1;
+          }
+        }
+      }
+      state.observer.disconnect();
+      const current = new Map(
+        Array.from(document.querySelectorAll(".react-flow__node[data-id]")).map(
+          (node) => [node.getAttribute("data-id"), node],
+        ),
+      );
+      let identityChanges = 0;
+      let transformChanges = 0;
+      for (const [id, element] of state.elements) {
+        const latest = current.get(id);
+        if (latest !== element) identityChanges += 1;
+        if (
+          latest instanceof HTMLElement &&
+          latest.style.transform !== state.transforms.get(id)
+        ) {
+          transformChanges += 1;
+        }
+      }
+      const target = current.get(draggedNodeId);
+      const result = {
+        unrelatedNodeCount: state.elements.size,
+        unrelatedIdentityChanges: identityChanges,
+        unrelatedTransformChanges: transformChanges,
+        unrelatedChildListReplacements: state.childListReplacements,
+        unrelatedAttributeMutations: state.attributeMutations,
+        targetTransform:
+          target instanceof HTMLElement ? target.style.transform : null,
+      };
+      delete globalThis.__grimodexMapDragPerfState;
+      return result;
+    }, targetNodeId);
+    if (mapNodeIdentityPrepared) {
+      try {
+        mapNodeIdentityEvidence = await page.evaluate(
+          ({ ownerToken, nodeId }) => {
+            globalThis.startPerfSession?.();
+            try {
+              return globalThis.invokeRuntimePerformanceControl?.(
+                ownerToken,
+                "map.dragIdentity",
+                { action: "finish", nodeId },
+              );
+            } finally {
+              globalThis.endPerfSession?.();
+            }
+          },
+          {
+            ownerToken: runtimePerformanceOwnerToken,
+            nodeId: targetNodeId,
+          },
+        );
+      } finally {
+        await page.evaluate(
+          ({ ownerToken, nodeId }) => {
+            globalThis.startPerfSession?.();
+            try {
+              globalThis.invokeRuntimePerformanceControl?.(
+                ownerToken,
+                "map.dragIdentity",
+                { action: "cleanup", nodeId },
+              );
+            } finally {
+              globalThis.endPerfSession?.();
+            }
+          },
+          {
+            ownerToken: runtimePerformanceOwnerToken,
+            nodeId: targetNodeId,
+          },
+        );
+      }
+    }
+  }
+  performanceMetrics.interactions.mapDrag = {
+    targetVerified:
+      persistedAfter !== null &&
+      mapDragEvidence !== null &&
+      mapDragEvidence.targetTransform !== targetTransformBefore &&
+      (Number(persistedAfter.x) !== Number(persistedBefore.x) ||
+        Number(persistedAfter.y) !== Number(persistedBefore.y)),
+    persistedPositionId: persistedAfter.id ?? null,
+    unrelatedNodeCount: mapNodeIdentityEvidence?.unrelatedNodeCount ?? null,
+    targetNodeObjectIdentityChanged:
+      mapNodeIdentityEvidence?.targetNodeObjectIdentityChanged ?? null,
+    targetNodeRenderCount:
+      mapNodeIdentityEvidence?.targetNodeRenderCount ?? null,
+    unrelatedNodeObjectIdentityChanges:
+      mapNodeIdentityEvidence?.unrelatedNodeObjectIdentityChanges ?? null,
+    unrelatedNodeRenderCount:
+      mapNodeIdentityEvidence?.unrelatedNodeRenderCount ?? null,
+    unrelatedRenderedNodeCount:
+      mapNodeIdentityEvidence?.unrelatedRenderedNodeCount ?? null,
+    unrelatedDomIdentityChanges:
+      mapDragEvidence?.unrelatedIdentityChanges ?? null,
+    unrelatedTransformChanges:
+      mapDragEvidence?.unrelatedTransformChanges ?? null,
+    unrelatedChildListReplacements:
+      mapDragEvidence?.unrelatedChildListReplacements ?? null,
+    unrelatedAttributeMutations:
+      mapDragEvidence?.unrelatedAttributeMutations ?? null,
+  };
+  log(
+    `  Map drag: target=${performanceMetrics.interactions.mapDrag.targetNodeRenderCount} render(s), ${performanceMetrics.interactions.mapDrag.unrelatedNodeCount} unrelated nodes, ${performanceMetrics.interactions.mapDrag.unrelatedNodeObjectIdentityChanges} object identity / ${performanceMetrics.interactions.mapDrag.unrelatedNodeRenderCount} render / ${performanceMetrics.interactions.mapDrag.unrelatedChildListReplacements} DOM replacement churn`,
+  );
+  await captureViewMemoryWindow(page, memorySampler, "map");
+}
+
+async function measureTimelineView(page, memorySampler) {
   const timelinePanel = page.getByTestId("timeline-panel");
   await showPanel(page, "timeline", timelinePanel);
   await page.waitForFunction(
@@ -600,8 +1613,18 @@ async function sampleLargeFixtureViews(page, memorySampler) {
     PERF_SCENE_COUNT + 1,
     { timeout: 30_000 },
   );
+  await page.waitForFunction(
+    (minimumMarkers) =>
+      document.querySelectorAll('[data-testid^="plot-marker-"]').length >=
+      minimumMarkers,
+    PERF_TIMELINE_MARKER_LINK_COUNT,
+    { timeout: 30_000 },
+  );
+  await measureTimelineDrag(page, memorySampler);
   await captureViewMemoryWindow(page, memorySampler, "timeline");
+}
 
+async function measureLinearView(page, memorySampler) {
   const linearToggle = page.locator(
     'span[title="リニアモード"] > button:not([disabled])',
   );
@@ -623,25 +1646,357 @@ async function sampleLargeFixtureViews(page, memorySampler) {
     undefined,
     { timeout: 30_000 },
   );
+  // Initial active-scene navigation owns scroll detection for at most two
+  // seconds. Measure only after that bounded re-anchor phase has settled.
+  await page.waitForTimeout(2_100);
+  // Phase 1 seeds primary + collection (= selected matrix cardinality).
+  // Phase 2 then creates one independent persistence-smoke scene before this
+  // interaction, so the actual Linear DOM owns collection + 2 scenes.
+  const linearRuntimeSceneCount = PERF_SCENE_COUNT + 2;
+  let linearSession = null;
+  let linearScrollChanged = false;
+  let renderedRows = await page.locator("[data-linear-virtual-row]").count();
+  await page.evaluate(() => globalThis.startPerfSession?.());
+  try {
+    linearScrollChanged = await page.evaluate(() => {
+      const row = document.querySelector("[data-linear-virtual-row]");
+      const scroller = row?.closest(".overflow-auto");
+      if (!(scroller instanceof HTMLElement)) return false;
+      const before = scroller.scrollTop;
+      const maxScroll = Math.max(
+        0,
+        scroller.scrollHeight - scroller.clientHeight,
+      );
+      const target = before > maxScroll / 2 ? 0 : maxScroll;
+      scroller.scrollTop = target;
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+      return scroller.scrollTop !== before;
+    });
+    await page.waitForFunction(
+      () =>
+        Number(
+          globalThis.snapshotPerfSession?.()?.counters?.[
+            "linear.activeDetection.maxVisibleRects"
+          ] ?? 0,
+        ) > 0,
+      undefined,
+      { timeout: 5_000 },
+    );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    renderedRows = Math.max(
+      renderedRows,
+      await page.locator("[data-linear-virtual-row]").count(),
+    );
+  } finally {
+    linearSession = await page.evaluate(() => globalThis.endPerfSession?.());
+  }
+  const detectionCount =
+    linearSession?.counters?.["linear.activeDetection.count"] ?? null;
+  const maxVisibleRects =
+    linearSession?.counters?.["linear.activeDetection.maxVisibleRects"] ?? null;
+  const containerRectReads =
+    linearSession?.counters?.["linear.activeDetection.containerRectReads"] ??
+    null;
+  const sceneRectReads =
+    linearSession?.counters?.["linear.activeDetection.sceneRectReads"] ?? null;
+  performanceMetrics.interactions.linearScroll = {
+    targetVerified:
+      linearScrollChanged &&
+      renderedRows > 0 &&
+      renderedRows < linearRuntimeSceneCount &&
+      Number.isFinite(detectionCount) &&
+      detectionCount >= 1 &&
+      Number.isFinite(maxVisibleRects) &&
+      maxVisibleRects > 0 &&
+      maxVisibleRects < linearRuntimeSceneCount &&
+      containerRectReads === detectionCount &&
+      sceneRectReads === 0,
+    sceneCount: linearRuntimeSceneCount,
+    renderedRows,
+    detectionCount,
+    maxVisibleRects,
+    containerRectReads,
+    sceneRectReads,
+  };
+  log(
+    `  Linear scroll: ${renderedRows}/${linearRuntimeSceneCount} rows, ${maxVisibleRects ?? "missing"} visible rect(s), ${sceneRectReads ?? "missing"} scene rect read(s)`,
+  );
   await captureViewMemoryWindow(page, memorySampler, "linear");
   await linearToggle.click();
   await page
     .locator("[data-linear-virtual-row]")
     .first()
     .waitFor({ state: "detached", timeout: 10_000 });
+}
 
-  // Restore the minimal editor layout before closing phase 2. Panel enablement
-  // is persisted; leaving the three benchmark views active can crowd Scenes
-  // out of the next launch and would make the persistence smoke test a layout
-  // test instead.
-  for (const panelId of ["timeline", "map", "grid"]) {
-    await togglePanel(page, panelId);
+async function measureChatVirtualization(page, memorySampler) {
+  const virtualList = page.getByTestId("chat-virtual-list");
+  await showPanel(page, "chat", virtualList);
+  await page.waitForFunction(
+    (messageCount) => {
+      const list = document.querySelector('[data-testid="chat-virtual-list"]');
+      const rows = list?.querySelectorAll('[role="listitem"]') ?? [];
+      return (
+        list instanceof HTMLElement &&
+        rows.length > 0 &&
+        rows.length < messageCount &&
+        Number(rows[0]?.getAttribute("aria-setsize")) === messageCount
+      );
+    },
+    RUNTIME_BENCHMARK_FIXTURE.chatMessageCount,
+    { timeout: 30_000 },
+  );
+
+  const result = await page.evaluate((messageCount) => {
+    const list = document.querySelector('[data-testid="chat-virtual-list"]');
+    const scroller = document.querySelector(
+      '[data-testid="chat-scroll-container"]',
+    );
+    if (!(list instanceof HTMLElement) || !(scroller instanceof HTMLElement)) {
+      return null;
+    }
+    const rows = list.querySelectorAll('[role="listitem"]');
+    const before = scroller.scrollTop;
+    const maxScroll = Math.max(
+      0,
+      scroller.scrollHeight - scroller.clientHeight,
+    );
+    const target = before > maxScroll / 2 ? 0 : maxScroll;
+    scroller.scrollTop = target;
+    scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    return {
+      messageCount,
+      renderedRows: rows.length,
+      virtualHeight: list.getBoundingClientRect().height,
+      scrollChanged: scroller.scrollTop !== before,
+    };
+  }, RUNTIME_BENCHMARK_FIXTURE.chatMessageCount);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  const renderedAfterScroll = await virtualList
+    .locator('[role="listitem"]')
+    .count();
+  performanceMetrics.interactions.chatScroll = {
+    targetVerified:
+      result !== null &&
+      result.scrollChanged &&
+      result.renderedRows > 0 &&
+      result.renderedRows < RUNTIME_BENCHMARK_FIXTURE.chatMessageCount &&
+      renderedAfterScroll > 0 &&
+      renderedAfterScroll < RUNTIME_BENCHMARK_FIXTURE.chatMessageCount,
+    messageCount: result?.messageCount ?? null,
+    renderedRows: Math.max(result?.renderedRows ?? 0, renderedAfterScroll),
+    virtualHeight: result?.virtualHeight ?? null,
+  };
+  log(
+    `  Chat virtualization: ${performanceMetrics.interactions.chatScroll.renderedRows}/${RUNTIME_BENCHMARK_FIXTURE.chatMessageCount} rows`,
+  );
+
+  const targetMessageIndex = RUNTIME_BENCHMARK_FIXTURE.chatMessageCount - 1;
+  const targetMessageId = `grimodex-runtime-perf-chat-message-${String(
+    targetMessageIndex,
+  ).padStart(5, "0")}`;
+  const targetMessage = page.getByTestId(`chat-message-${targetMessageId}`);
+  await page.evaluate(() => {
+    const scroller = document.querySelector(
+      '[data-testid="chat-scroll-container"]',
+    );
+    if (scroller instanceof HTMLElement) {
+      scroller.scrollTop = scroller.scrollHeight;
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+  });
+  await targetMessage.waitFor({ state: "visible", timeout: 10_000 });
+
+  const draftDelta = " RUNTIME-STREAMING-DRAFT-DELTA";
+  let draftSession = null;
+  let draftTargetVisible = false;
+  let prepared = false;
+  try {
+    await page.evaluate(
+      ({ ownerToken, messageId }) => {
+        globalThis.startPerfSession?.();
+        try {
+          globalThis.invokeRuntimePerformanceControl?.(
+            ownerToken,
+            "chat.streamingDraft",
+            {
+              action: "prepare",
+              messageId,
+              content: "",
+            },
+          );
+        } finally {
+          globalThis.endPerfSession?.();
+        }
+      },
+      {
+        ownerToken: runtimePerformanceOwnerToken,
+        messageId: targetMessageId,
+      },
+    );
+    prepared = true;
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+
+    await page.evaluate(() => globalThis.startPerfSession?.());
+    try {
+      const published = await page.evaluate(
+        ({ ownerToken, messageId, delta }) =>
+          globalThis.invokeRuntimePerformanceControl?.(
+            ownerToken,
+            "chat.streamingDraft",
+            {
+              action: "delta",
+              messageId,
+              delta,
+            },
+          ),
+        {
+          ownerToken: runtimePerformanceOwnerToken,
+          messageId: targetMessageId,
+          delta: draftDelta,
+        },
+      );
+      if (published !== draftDelta) {
+        throw new Error("Chat runtime draft control returned stale content");
+      }
+      await targetMessage
+        .getByText("RUNTIME-STREAMING-DRAFT-DELTA", { exact: false })
+        .waitFor({ state: "visible", timeout: 10_000 });
+      draftTargetVisible = true;
+      await page.evaluate(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          ),
+      );
+    } finally {
+      draftSession = await page.evaluate(() => globalThis.endPerfSession?.());
+    }
+  } finally {
+    if (prepared) {
+      await page.evaluate(
+        ({ ownerToken, messageId }) => {
+          globalThis.startPerfSession?.();
+          try {
+            globalThis.invokeRuntimePerformanceControl?.(
+              ownerToken,
+              "chat.streamingDraft",
+              {
+                action: "cleanup",
+                messageId,
+              },
+            );
+          } finally {
+            globalThis.endPerfSession?.();
+          }
+        },
+        {
+          ownerToken: runtimePerformanceOwnerToken,
+          messageId: targetMessageId,
+        },
+      );
+    }
   }
+  const chatMessageRender =
+    draftSession?.markStats?.find(
+      (entry) => entry.label === "chatMessage.render",
+    )?.count ?? 0;
+  const chatPanelRender =
+    draftSession?.markStats?.find((entry) => entry.label === "chatPanel.render")
+      ?.count ?? 0;
+  performanceMetrics.interactions.chatDraft = {
+    targetVerified: draftSession !== null && draftTargetVisible,
+    headerCommitCount: draftSession?.counters?.["chat.header.commit"] ?? 0,
+    contextBarCommitCount:
+      draftSession?.counters?.["chat.contextBar.commit"] ?? 0,
+    chatPanelRenderCount: chatPanelRender,
+    chatMessageRenderCount: chatMessageRender,
+  };
+  log(
+    `  Chat streaming draft: header ${performanceMetrics.interactions.chatDraft.headerCommitCount}, context ${performanceMetrics.interactions.chatDraft.contextBarCommitCount}, panel ${chatPanelRender}, message ${chatMessageRender} commit(s)`,
+  );
+  await captureViewMemoryWindow(page, memorySampler, "chat");
+  await hidePanelIfVisible(page, "chat", virtualList);
+}
+
+async function sampleLargeFixtureViews(page, memorySampler) {
+  if (shouldMeasureReviewScenario("map")) {
+    await measureMapView(page, memorySampler);
+    await hidePanelIfVisible(
+      page,
+      "map",
+      page.locator('[data-droptarget-id="map-panel"]'),
+    );
+  }
+  if (shouldMeasureReviewScenario("timeline")) {
+    await measureTimelineView(page, memorySampler);
+    await hidePanelIfVisible(
+      page,
+      "timeline",
+      page.getByTestId("timeline-panel"),
+    );
+  }
+  if (shouldMeasureReviewScenario("chronicle")) {
+    await measureChroniclePan(page, memorySampler);
+    await hidePanelIfVisible(
+      page,
+      "chronicle",
+      page.locator("#chronicle-track:visible").first(),
+    );
+  }
+  if (shouldMeasureReviewScenario("linear")) {
+    await measureLinearView(page, memorySampler);
+  }
+
+  // Restore the minimal editor layout before closing phase 2. Toggling an
+  // inactive panel opens it, so only close panels whose own surface is
+  // currently visible.
+  await hidePanelIfVisible(
+    page,
+    "timeline",
+    page.getByTestId("timeline-panel"),
+  );
+  await hidePanelIfVisible(
+    page,
+    "map",
+    page.locator('[data-droptarget-id="map-panel"]'),
+  );
+  await hidePanelIfVisible(
+    page,
+    "grid",
+    page.locator("[data-grid-virtual-row]").first(),
+  );
   await scenesPanelHeader(page).waitFor({
     state: "visible",
     timeout: 30_000,
   });
-  await page.waitForTimeout(1_000);
+  await waitUntil(
+    async () => {
+      const settings = await invokeOk(page, "get_global_settings", {});
+      const active = activePanelsInPersistedLayout(settings);
+      return ["timeline", "map", "grid"].every(
+        (panelId) => !active.has(panelId),
+      );
+    },
+    "benchmark panels are closed in persisted layout",
+    30_000,
+    100,
+  );
 }
 
 // ── フェーズ 1: seed（workspace 作成 + global settings 準備） ─────────────────
@@ -685,15 +2040,27 @@ async function phaseSeed() {
     // from the scene created in phase 2 and asserted after restart in phase 3.
     if (performanceOutputPath) {
       await invokeOk(page, "db_execute_batch", {
-        statements: buildRuntimeFixtureStatements(),
+        statements: buildRuntimeFixtureStatements(RUNTIME_BENCHMARK_FIXTURE),
       });
+      const actualCardinalityQuery = buildRuntimeFixtureActualCardinalityQuery(
+        RUNTIME_BENCHMARK_FIXTURE,
+      );
+      const actualCardinalityResult = await invokeOk(
+        page,
+        "db_execute",
+        actualCardinalityQuery,
+      );
+      performanceMetrics.fixture.actualCardinality =
+        parseRuntimeFixtureActualCardinality(
+          actualCardinalityResult?.rows ?? [],
+        );
       log(
-        `  runtime performance fixture seeded (${PERF_SCENE_COUNT + 1} scenes / ${PERF_SCENE_COUNT + 1} map nodes / ${PERF_SCENE_TEXT.length} chars + ${PERF_BEAT_COUNT} Beats)`,
+        `  runtime performance fixture ${RUNTIME_BENCHMARK_FIXTURE.id} seeded (${PERF_SCENE_COUNT + 1} scenes / ${RUNTIME_BENCHMARK_FIXTURE.timelineThreadCount} threads / ${PERF_TIMELINE_MARKER_LINK_COUNT} marker-links / ${PERF_CHRONICLE_EVENT_COUNT} events / ${PERF_MAP_NODE_COUNT} map nodes + ${RUNTIME_BENCHMARK_FIXTURE.mapEdgeCount} edges / ${RUNTIME_BENCHMARK_FIXTURE.chatMessageCount} chat messages / ${RUNTIME_BENCHMARK_FIXTURE.seededTextChars} chars + ${RUNTIME_BENCHMARK_FIXTURE.seededBeatCount} Beats)`,
       );
     }
   } finally {
     await memorySampler?.stop();
-    await app.close();
+    await closeAppWithDiagnostics(app, page, "seed");
   }
 }
 
@@ -701,16 +2068,12 @@ async function phaseSeed() {
 
 async function phaseWrite() {
   log("phase 2/3: write — シーン作成と本文入力");
-  const { app, page, launchStarted, bridgeMemorySample, memorySampler } =
-    await launchApp("write");
+  const launched = await launchApp("write", {
+    deferMemorySampler: Boolean(performanceOutputPath),
+  });
+  const { app, page } = launched;
+  let { memorySampler } = launched;
   try {
-    if (performanceOutputPath) {
-      // Preserve startup-memory semantics at bridge readiness. coldStart itself
-      // continues through seeded editor input readiness; the 100ms peak sampler
-      // captures all memory growth between those two points and during autosave.
-      performanceMetrics.memory.startupBytes =
-        bridgeMemorySample?.privateBytes ?? null;
-    }
     const header = scenesPanelHeader(page);
     await header.waitFor({ state: "visible", timeout: LAUNCH_TIMEOUT_MS });
 
@@ -735,16 +2098,24 @@ async function phaseWrite() {
     log("  layout hydration完了（全レイヤー opacity=1）");
 
     if (performanceOutputPath) {
-      const perfScene = page
-        .getByText(PERF_SCENE_TITLE, { exact: true })
+      // Tree rows are virtualized, so the active Scene can legitimately be
+      // outside the visible Tree window. Project-open readiness belongs to the
+      // exact loaded Editor surface, not to a sidebar row.
+      const perfEditorSurface = page
+        .locator(
+          `[data-editor-loaded-document-id="${PERF_SCENE_ID}"][data-editor-document-loading="false"]`,
+        )
         .first();
-      await perfScene.waitFor({ state: "visible", timeout: LAUNCH_TIMEOUT_MS });
+      await perfEditorSurface.waitFor({
+        state: "visible",
+        timeout: LAUNCH_TIMEOUT_MS,
+      });
       const projectOpenTiming = await page.evaluate((markName) => {
         const marks = performance.getEntriesByName(markName, "mark");
         const startedAt = marks.at(-1)?.startTime;
         return {
           startedAt: startedAt ?? null,
-          sceneVisibleAt: performance.now(),
+          editorReadyAt: performance.now(),
         };
       }, WORKSPACE_OPEN_START_MARK);
       if (projectOpenTiming.startedAt == null) {
@@ -753,25 +2124,127 @@ async function phaseWrite() {
         );
       }
       performanceMetrics.projectOpenMs =
-        projectOpenTiming.sceneVisibleAt - projectOpenTiming.startedAt;
-      log("  seed scene がシーン一覧に表示（projectOpen完了）");
+        projectOpenTiming.editorReadyAt - projectOpenTiming.startedAt;
+      log("  seed scene の Editor surface を確認（projectOpen完了）");
 
-      await perfScene.click();
-      const perfEditor = page
+      const perfEditor = perfEditorSurface
         .locator('.ProseMirror[contenteditable="true"]')
+        .filter({ hasText: PERF_INPUT_ANCHOR_TEXT })
         .first();
       await perfEditor.waitFor({ state: "visible", timeout: 30_000 });
-      const perfEditorReady = await perfEditor.evaluate(
-        (element) =>
-          element.isContentEditable &&
-          getComputedStyle(element).pointerEvents !== "none",
+      log("  seed scene の canonical editor を確認");
+      const editorReadyHandle = await page.waitForFunction(
+        (markName) => {
+          const mark = performance.getEntriesByName(markName, "mark").at(-1);
+          return mark ? { startTime: mark.startTime } : false;
+        },
+        EDITOR_INPUT_READY_MARK,
+        { timeout: 30_000 },
       );
-      if (!perfEditorReady) {
-        throw new Error("seed scene editor is not contenteditable/input-ready");
+      const editorReadyTiming = await editorReadyHandle.jsonValue();
+      if (!Number.isFinite(editorReadyTiming?.startTime)) {
+        throw new Error("seed scene editor input-ready mark is invalid");
       }
-      await perfEditor.click();
-      performanceMetrics.coldStartMs = performance.now() - launchStarted;
+      performanceMetrics.coldStartMs = editorReadyTiming.startTime;
       log("  seed scene editor が入力可能（coldStart完了）");
+
+      memorySampler = startMemorySampler(app, "write", page);
+      const startupMemorySample = await memorySampler.sampleFresh(true);
+      performanceMetrics.memory.startupBytes =
+        startupMemorySample?.measuredBytes ?? null;
+      performanceMetrics.memory.startupProcessCount =
+        startupMemorySample?.processCount ?? null;
+      performanceMetrics.memory.startupProcesses =
+        startupMemorySample?.processes ?? null;
+      performanceMetrics.memory.startupFallbackProcessCount =
+        startupMemorySample?.fallbackProcessCount ?? null;
+
+      await waitForRuntimeEditorIdle(page);
+      // Pause process/renderer inspection for the complete interaction window.
+      // Memory resumes after autosave; otherwise the benchmark would include
+      // its own getAppMetrics/page.evaluate polling in input and long-task data.
+      await memorySampler.pause();
+      const inputTarget = await focusRuntimeInputAnchor(page);
+      performanceMetrics.fixture.editorInputParagraphCharsBefore =
+        inputTarget.initialChars;
+      await page.evaluate(() => globalThis.startPerfSession?.());
+      performanceMetrics.fixture.editorInputSceneId = PERF_SCENE_ID;
+      const cpuProfiler = performanceCpuProfilePath
+        ? await page.context().newCDPSession(page)
+        : null;
+      if (cpuProfiler) {
+        await cpuProfiler.send("Profiler.enable");
+        await cpuProfiler.send("Profiler.setSamplingInterval", {
+          interval: 1_000,
+        });
+        await cpuProfiler.send("Profiler.start");
+      }
+      try {
+        await page.keyboard.type(PERF_INPUT_TEXT, { delay: 10 });
+      } finally {
+        if (cpuProfiler && performanceCpuProfilePath) {
+          const { profile } = await cpuProfiler.send("Profiler.stop");
+          await mkdir(path.dirname(performanceCpuProfilePath), {
+            recursive: true,
+          });
+          await writeFile(
+            performanceCpuProfilePath,
+            `${JSON.stringify(profile)}\n`,
+          );
+          await cpuProfiler.detach();
+          log(`  input CPU profile: ${performanceCpuProfilePath}`);
+        }
+      }
+      await assertRuntimeInputLandedInAnchor(page);
+      performanceMetrics.fixture.editorInputTargetVerified = true;
+      const editorInputSession = await page.evaluate(() =>
+        globalThis.snapshotPerfSession?.(),
+      );
+      const inputDispatch = editorInputSession?.markStats?.find(
+        (entry) => entry.label === "editor.viewDispatch",
+      );
+      performanceMetrics.editorInput = inputDispatch
+        ? {
+            p50Ms: inputDispatch.p50Ms,
+            p95Ms: inputDispatch.p95Ms,
+            p99Ms: inputDispatch.p99Ms,
+          }
+        : null;
+      log(
+        `  ${RUNTIME_BENCHMARK_FIXTURE.seededTextChars}文字 / ${RUNTIME_BENCHMARK_FIXTURE.seededBeatCount} Beat scene の本文入力完了`,
+      );
+
+      await waitUntil(
+        () => sceneContainsTextInDb(page, PERF_SCENE_ID, PERF_INPUT_TEXT),
+        "長文 scene のオートセーブが tree_nodes.content に着弾する",
+        30_000,
+      );
+      performanceMetrics.fixture.autosaveSceneId = PERF_SCENE_ID;
+      const perfSession = await page.evaluate(() =>
+        globalThis.endPerfSession?.(),
+      );
+      performanceMetrics.autosave = extractAutosaveMetrics(perfSession);
+      performanceMetrics.longTask = perfSession?.longtask ?? null;
+      performanceMetrics.diagnostics = perfSession
+        ? {
+            durationMs: perfSession.durationMs,
+            slowEvent: perfSession.slowEvent,
+            topMarks: perfSession.topMarks,
+            markStats: perfSession.markStats,
+            counters: perfSession.counters,
+          }
+        : null;
+      memorySampler.resume();
+      await memorySampler.sampleFresh(true);
+      log("  長文 scene の入力 / autosave metrics を記録");
+      // Chat fixtures are scene-scoped to the seeded editor document. Exercise
+      // them before the independent persistence scenario changes activeSceneId.
+      if (
+        RUNTIME_BENCHMARK_FIXTURE.chatMessageCount > 0 &&
+        shouldMeasureReviewScenario("chat")
+      ) {
+        await measureChatVirtualization(page, memorySampler);
+      }
     }
 
     // A1 相当の最小確認: windowControls ブリッジが応答する
@@ -798,53 +2271,70 @@ async function phaseWrite() {
       .then(() => true)
       .catch(() => false);
     if (renameVisible) await page.keyboard.press("Enter");
-    await page
-      .getByText(DEFAULT_SCENE_TITLE, { exact: true })
-      .first()
-      .waitFor({ state: "visible", timeout: 10_000 });
+
+    // The newly created Scene becomes the active Editor document even when
+    // its virtualized Tree row is outside the mounted viewport. Capture that
+    // exact ID from the Editor boundary, then prove the row exists in SQLite.
+    const smokeEditorSurface = page
+      .locator(
+        `[data-editor-loaded-document-id][data-editor-document-loading="false"]:not([data-editor-loaded-document-id="${PERF_SCENE_ID}"]):visible`,
+      )
+      .first();
+    await smokeEditorSurface.waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
+    const smokeSceneId = await smokeEditorSurface.getAttribute(
+      "data-editor-loaded-document-id",
+    );
+    if (!smokeSceneId) {
+      throw new Error("新規 Scene の loaded document ID を取得できません");
+    }
+    const createdSmokeScene = await waitUntil(
+      () => findSceneByIdInDb(page, smokeSceneId),
+      "新規 Scene が tree_nodes に存在する",
+      10_000,
+    );
+    if (createdSmokeScene.title !== DEFAULT_SCENE_TITLE) {
+      throw new Error(
+        `新規 Scene の既定タイトルが不正です: ${String(createdSmokeScene.title)}`,
+      );
+    }
     log(`  シーン作成（既定タイトル: ${DEFAULT_SCENE_TITLE}）`);
 
-    // シーンを開いて本文を入力
-    await page.getByText(DEFAULT_SCENE_TITLE, { exact: true }).first().click();
-    const editor = page.locator('.ProseMirror[contenteditable="true"]').first();
+    // 新規 Scene の canonical Editor に本文を入力
+    const editor = smokeEditorSurface
+      .locator('.ProseMirror[contenteditable="true"]')
+      .first();
     await editor.waitFor({ state: "visible", timeout: 30_000 });
     await editor.click();
-    if (performanceOutputPath) {
-      await page.evaluate(() => globalThis.startPerfSession?.());
-    }
     await page.keyboard.type(SMOKE_TEXT, { delay: 10 });
     log("  本文入力完了 — オートセーブ着弾を待機");
 
     // オートセーブ（2s debounce → db_execute_batch）の DB 着弾を待つ
     await waitUntil(
-      () => sceneContentInDb(page),
+      () => findSmokeSceneInDb(page),
       "オートセーブが tree_nodes.content に着弾する",
       30_000,
     );
     log("  DB 着弾確認");
 
     if (performanceOutputPath && memorySampler) {
-      const perfSession = await page.evaluate(() =>
-        globalThis.endPerfSession?.(),
-      );
-      const dispatch = perfSession?.markStats?.find(
-        (entry) => entry.label === "editor.viewDispatch",
-      );
-      performanceMetrics.editorInput = dispatch
-        ? {
-            p50Ms: dispatch.p50Ms,
-            p95Ms: dispatch.p95Ms,
-            p99Ms: dispatch.p99Ms,
-          }
-        : null;
-      performanceMetrics.autosave = extractAutosaveMetrics(perfSession);
-      performanceMetrics.longTask = perfSession?.longtask ?? null;
-      await assertTreeAndGridVirtualization(page);
-      await sampleLargeFixtureViews(page, memorySampler);
+      if (shouldMeasureReviewScenario("treeGrid")) {
+        await assertTreeAndGridVirtualization(page);
+      }
+      if (
+        RUNTIME_BENCHMARK_FIXTURE.reviewScenario === null ||
+        ["map", "timeline", "chronicle", "linear"].includes(
+          RUNTIME_BENCHMARK_FIXTURE.reviewScenario,
+        )
+      ) {
+        await sampleLargeFixtureViews(page, memorySampler);
+      }
     }
   } finally {
     await memorySampler?.stop();
-    await app.close();
+    await closeAppWithDiagnostics(app, page, "write");
   }
 }
 
@@ -858,23 +2348,61 @@ async function phaseAssertAfterRestart() {
     await showPanel(page, "scenes", header);
 
     // DB レベル（再オープン = 既存 DB の migrate 経路も踏む）
-    await waitUntil(
-      () => sceneContentInDb(page),
+    const persistedSmokeScene = await waitUntil(
+      () => findSmokeSceneInDb(page),
       "再起動後の DB に本文が残存する",
       30_000,
     );
     log("  DB 残存確認");
 
-    // UI レベル: シーンを開いてエディタに本文が出る
-    await page.getByText(DEFAULT_SCENE_TITLE, { exact: true }).first().click();
-    await page
+    // Let the startup-selected tab finish its own canonical load before
+    // issuing another navigation. Clicking a Tree row while that load is still
+    // binding sidecars can manufacture an overlapping switch that no user
+    // reaches after the editor becomes interactive.
+    const initialEditorPane = page
+      .locator(
+        '[data-editor-loaded-document-id]:not([data-editor-loaded-document-id=""])[data-editor-document-loading="false"]:visible',
+      )
+      .first();
+    await initialEditorPane.waitFor({ state: "visible", timeout: 30_000 });
+    const initialDocumentId = await initialEditorPane.getAttribute(
+      "data-editor-loaded-document-id",
+    );
+
+    // UI レベル: タイトル文字列の重複やタブ見出しに依存せず、DBで残存を
+    // 証明した同じ Scene ID を開いて本文表示を確認する。通常はpersist済みのtabが
+    // 直接復元されるため、別文書が復元された場合だけ仮想Treeのfilterを使う。
+    let persistedEditorPane = initialEditorPane;
+    if (initialDocumentId !== persistedSmokeScene.id) {
+      const scenesPanel = page.locator(
+        '[data-droptarget-id="scenes-panel"]:visible',
+      );
+      await scenesPanel
+        .getByTestId("scenes-filter-input")
+        .fill(String(persistedSmokeScene.title ?? DEFAULT_SCENE_TITLE));
+      const persistedSceneRow = page
+        .locator(`li[data-node-id="${persistedSmokeScene.id}"]`)
+        .first();
+      await persistedSceneRow.waitFor({ state: "visible", timeout: 30_000 });
+      await persistedSceneRow.click();
+      persistedEditorPane = page
+        .locator(
+          `[data-editor-loaded-document-id="${persistedSmokeScene.id}"][data-editor-document-loading="false"]`,
+        )
+        .first();
+    }
+    await persistedEditorPane.waitFor({ state: "visible", timeout: 30_000 });
+    await persistedEditorPane
+      .getByTestId("editor-content-loading")
+      .waitFor({ state: "detached", timeout: 30_000 });
+    await persistedEditorPane
       .locator(`.ProseMirror:has-text("${SMOKE_TEXT}")`)
       .first()
       .waitFor({ state: "visible", timeout: 30_000 });
     log("  UI 残存確認（エディタに本文表示）");
   } finally {
     await memorySampler?.stop();
-    await app.close();
+    await closeAppWithDiagnostics(app, page, "restart");
   }
 }
 

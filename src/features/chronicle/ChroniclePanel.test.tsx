@@ -66,6 +66,7 @@ vi.mock("./useSeasonConflicts", () => ({
 // ── 重い子コンポーネントは観測しやすいテストダブルへ差し替える ──
 vi.mock("./ChronicleViewport", () => ({
   ChronicleViewport: ({
+    isActive,
     eventsById,
     onMoveEvent,
     onDeleteEvent,
@@ -73,6 +74,7 @@ vi.mock("./ChronicleViewport", () => ({
     onNudgeSelected,
     onResizeSelectedBy,
   }: {
+    isActive?: boolean;
     eventsById: Map<string, unknown>;
     onMoveEvent?: (
       id: string,
@@ -84,7 +86,11 @@ vi.mock("./ChronicleViewport", () => ({
     onNudgeSelected?: (deltaDays: number) => void;
     onResizeSelectedBy?: (edge: "start" | "end", deltaDays: number) => void;
   }) => (
-    <div data-testid="viewport" data-n={eventsById.size}>
+    <div
+      data-testid="viewport"
+      data-n={eventsById.size}
+      data-is-active={isActive}
+    >
       <button
         data-testid="move-scene-btn"
         onClick={() => onMoveEvent?.("scene:sc1", 200, null)}
@@ -292,6 +298,19 @@ beforeEach(() => {
   eventMocks.uiRemoveEventRelation.mockResolvedValue(undefined);
   eventMocks.uiLinkSceneEvent.mockResolvedValue(undefined);
   eventMocks.uiUnlinkSceneEvent.mockResolvedValue(undefined);
+});
+
+describe("ChroniclePanel keepalive activity", () => {
+  it("isActive を viewport へ伝播する", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent()]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel isActive={false} />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-is-active",
+      "false",
+    );
+  });
 });
 
 describe("ChroniclePanel project switch", () => {

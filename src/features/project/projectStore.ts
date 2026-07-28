@@ -16,6 +16,25 @@ import {
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
+import { toast } from "sonner";
+import i18next from "@/lib/i18n";
+import { debugLog } from "@/lib/debugLog";
+import { withProjectLoad, type ProjectLoadContext } from "./projectLoadGate";
+import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
+import { clearRetainedEditorRecoveryDraftsForScopeChange } from "@/features/editor/editorSaveRegistry";
+import {
+  getCurrentWorkspaceIdentity,
+  subscribeCurrentWorkspaceIdentity,
+  type WorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+  type MutationAuthority,
+} from "@/features/concurrency/mutationAuthority";
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import { runProjectLoadWithFailureToast } from "./projectLoadFailure";
 
 interface CreateProjectInput {
   title: string;
@@ -29,30 +48,217 @@ interface CreateProjectInput {
   seedTypeSlugs?: string[];
 }
 
+interface ProjectLoadLifecycleOptions {
+  /**
+   * Workspace replacement already flushed the old database before swapping.
+   * Re-flushing mounted old-scope editors after the native swap could write
+   * their content into the replacement database, so only a Workspace-owned
+   * gate context may use this path.
+   */
+  skipStrictQuiescence?: boolean;
+  /** Generation that the prepared critical snapshots will belong to. */
+  workspaceOpenRevision?: number;
+}
+
 interface ProjectState {
   /** The Project currently open in the editor. `null` until initCurrentProject resolves. */
   currentProjectId: string | null;
   /** Cached project list for switcher UI. */
   projects: Project[];
+  projectLoadStatus: "idle" | "loading" | "ready" | "degraded" | "recovering";
+  degradedParticipants: string[];
   /** Resolve which Project is current from the DB. Called once on workspace open. */
   initCurrentProject: () => Promise<void>;
   /** Refresh cached project list from DB. */
   refreshProjects: () => Promise<void>;
   /** Make a Project active: set it as current, apply metadata, reload panels. */
   loadProject: (projectId: string) => Promise<void>;
+  /** Internal re-entrant phase used by create/delete while they own the gate. */
+  loadProjectWithinLifecycle: (
+    projectId: string,
+    context: ProjectLoadContext,
+    options?: ProjectLoadLifecycleOptions,
+  ) => Promise<void>;
   /** Create a new Project and switch to it. */
   createNewProject: (input: CreateProjectInput) => Promise<Project>;
   /** Delete a Project. Switches away if deleting the current one. */
   deleteProjectById: (projectId: string) => Promise<void>;
 }
 
+function applyProjectMetadata(project: Project): void {
+  if (project.language && typeof document !== "undefined") {
+    document.documentElement.lang = project.language;
+  }
+  if (project.language) {
+    useSettingsStore.getState().applyProjectLanguage(project.language);
+  }
+  if (project.phaseResolutionMode) {
+    usePhaseStore.getState().setResolutionMode(project.phaseResolutionMode);
+  }
+}
+
 let loadProjectGeneration = 0;
+let projectStrictQuiescenceTail: Promise<void> = Promise.resolve();
 let projectLoadCommitTail: Promise<void> = Promise.resolve();
 let timelapseInitTail: Promise<void> = Promise.resolve();
 let externalWriteFeedStartTail: Promise<void> = Promise.resolve();
+let refreshProjectsGeneration = 0;
+let lastNonLoadingProjectPresentation: {
+  projectLoadStatus: Exclude<ProjectState["projectLoadStatus"], "loading">;
+  degradedParticipants: string[];
+} | null = null;
+const pendingProjectBackgroundMutations = new Set<Promise<void>>();
+const projectBackgroundMutationFailures: unknown[] = [];
+const deletedProjectIds = new Set<string>();
+let deferredProjectBackgroundActivation: {
+  projectId: string;
+  generation: number;
+} | null = null;
 
 function isCurrentProjectLoad(generation: number): boolean {
   return generation === loadProjectGeneration;
+}
+
+/**
+ * Overlapping loads may supersede an earlier request after it published the
+ * transient `loading` state. Preserve the last non-loading presentation so a
+ * newer request that fails before commit restores a usable old Project status
+ * instead of treating the superseded request's spinner as stable state.
+ */
+function capturePreviousProjectState(state: ProjectState): {
+  currentProjectId: string | null;
+  projectLoadStatus: ProjectState["projectLoadStatus"];
+  degradedParticipants: string[];
+} {
+  if (state.projectLoadStatus !== "loading") {
+    lastNonLoadingProjectPresentation = {
+      projectLoadStatus: state.projectLoadStatus,
+      degradedParticipants: [...state.degradedParticipants],
+    };
+  }
+  const presentation = lastNonLoadingProjectPresentation ?? {
+    projectLoadStatus: "idle" as const,
+    degradedParticipants: [],
+  };
+  return {
+    currentProjectId: state.currentProjectId,
+    projectLoadStatus:
+      state.projectLoadStatus === "loading"
+        ? presentation.projectLoadStatus
+        : state.projectLoadStatus,
+    degradedParticipants:
+      state.projectLoadStatus === "loading"
+        ? [...presentation.degradedParticipants]
+        : [...state.degradedParticipants],
+  };
+}
+
+interface ProjectBackgroundAuthority {
+  generation: number;
+  mutation: MutationAuthority;
+}
+
+function captureProjectBackgroundAuthority(
+  projectId: string,
+  generation: number,
+): ProjectBackgroundAuthority {
+  return {
+    generation,
+    mutation: captureMutationAuthority(projectId, getCurrentProjectId),
+  };
+}
+
+function canStartProjectBackgroundMutation(
+  authority: ProjectBackgroundAuthority,
+): boolean {
+  return (
+    isCurrentProjectLoad(authority.generation) &&
+    isCurrentMutationAuthority(authority.mutation)
+  );
+}
+
+function trackProjectBackgroundMutation(task: Promise<void>): void {
+  pendingProjectBackgroundMutations.add(task);
+  void task.then(
+    () => pendingProjectBackgroundMutations.delete(task),
+    (error: unknown) => {
+      pendingProjectBackgroundMutations.delete(task);
+      projectBackgroundMutationFailures.push(error);
+    },
+  );
+}
+
+async function awaitPendingProjectBackgroundMutations(): Promise<void> {
+  while (pendingProjectBackgroundMutations.size > 0) {
+    await Promise.allSettled([...pendingProjectBackgroundMutations]);
+  }
+  // Report each completed failure once. Stateful writers retain their own
+  // retry material (notably recorder.queue), and later quiescence stages retry
+  // it; permanently replaying this historical error would make retry/close
+  // impossible even after that retry succeeds.
+  const failures = projectBackgroundMutationFailures.splice(0);
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      failures.length === 1 && failures[0] instanceof Error
+        ? failures[0].message
+        : "One or more Project background mutations failed",
+    );
+  }
+}
+
+registerQuiescenceProvider({
+  id: "project-background-mutations",
+  stage: "scoped-mutations",
+  flush: awaitPendingProjectBackgroundMutations,
+});
+
+/** Invalidates every async Project load/list refresh before a Workspace swap. */
+export function invalidateProjectLoadsForWorkspaceSwitch(): void {
+  loadProjectGeneration++;
+  refreshProjectsGeneration++;
+  deletedProjectIds.clear();
+  deferredProjectBackgroundActivation = null;
+}
+
+function isCurrentWorkspaceRefresh(
+  generation: number,
+  identity: WorkspaceIdentity | null,
+): boolean {
+  if (generation !== refreshProjectsGeneration) return false;
+  const current = getCurrentWorkspaceIdentity();
+  if (identity === null || current === null) return identity === current;
+  return (
+    identity.path === current.path &&
+    identity.openRevision === current.openRevision
+  );
+}
+
+class ProjectLifecycleAuthorityChangedError extends Error {
+  constructor() {
+    super("Project lifecycle authority changed");
+    this.name = "ProjectLifecycleAuthorityChangedError";
+  }
+}
+
+function assertProjectLifecycleAuthority(
+  generation: number,
+  authority: MutationAuthority,
+): void {
+  if (
+    !isCurrentProjectLoad(generation) ||
+    !isCurrentMutationAuthority(authority)
+  ) {
+    throw new ProjectLifecycleAuthorityChangedError();
+  }
+}
+
+function isCurrentLifecycleWorkspace(authority: MutationAuthority): boolean {
+  const workspace = getCurrentWorkspaceIdentity();
+  return (
+    (workspace?.path ?? null) === authority.workspacePath &&
+    (workspace?.openRevision ?? null) === authority.workspaceOpenRevision
+  );
 }
 
 /**
@@ -65,6 +271,22 @@ function isCurrentProjectLoad(generation: number): boolean {
 async function commitProjectLoad<T>(operation: () => Promise<T>): Promise<T> {
   const run = projectLoadCommitTail.then(operation);
   projectLoadCommitTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
+ * Serialize the destructive preflush phase across overlapping Project
+ * requests. A newer request receives its generation before joining this tail,
+ * so it still supersedes the older request immediately. It opens target reads
+ * only after every older flush — including its read-cancelling final IPC stage
+ * — has settled.
+ */
+async function flushProjectStrictQuiescence(): Promise<void> {
+  const run = projectStrictQuiescenceTail.then(() => flushStrictQuiescence());
+  projectStrictQuiescenceTail = run.then(
     () => undefined,
     () => undefined,
   );
@@ -109,14 +331,15 @@ function scheduleTimelapseInitialization(
   projectId: string,
   generation: number,
 ): void {
+  const authority = captureProjectBackgroundAuthority(projectId, generation);
   const run = timelapseInitTail.then(async () => {
-    if (!isCurrentProjectLoad(generation)) return;
+    if (!canStartProjectBackgroundMutation(authority)) return;
 
     const [toggle, recorder] = await Promise.all([
       import("@/features/timelapse/toggle"),
       import("@/features/timelapse/recorder"),
     ]);
-    if (!isCurrentProjectLoad(generation)) return;
+    if (!canStartProjectBackgroundMutation(authority)) return;
 
     // Drain the previous project's pending queue BEFORE calling
     // setRecorderEnabled so the flush still runs with the old project's
@@ -124,35 +347,51 @@ function scheduleTimelapseInitialization(
     // workspace 切替後 (束縛無効中) はこの drain 自体が no-op — 旧
     // キューは beginWorkspaceSwitch で破棄済みで、ここで流すと旧
     // イベントが新 workspace の chain に混入する (M3 review C1)。
-    await recorder.flushNow().catch(() => {});
-    if (!isCurrentProjectLoad(generation)) return;
+    if (!isCurrentMutationAuthority(authority.mutation)) return;
+    // Do not rebind after a failed old-Project drain. recorder retains the
+    // queue, its timelapse quiescence provider retries/reports it, and this
+    // tracked task makes an overlapping strict boundary fail immediately.
+    await recorder.flushNow();
+    if (!isCurrentMutationAuthority(authority.mutation)) return;
 
     const enabled = await toggle.isTimelapseEnabled(projectId);
-    if (!isCurrentProjectLoad(generation)) return;
+    if (!isCurrentMutationAuthority(authority.mutation)) return;
 
     // setRecorderEnabled must precede init: when disabled, init only binds
     // projectId and skips the chain-tail read (recorder.ts).
     recorder.setRecorderEnabled(enabled);
+    if (!isCurrentMutationAuthority(authority.mutation)) return;
     const bound = await recorder.initRecorderForProject(projectId);
-    if (!isCurrentProjectLoad(generation)) return;
+    if (!isCurrentMutationAuthority(authority.mutation)) return;
 
     if (enabled && bound) {
       // default-ON 経路では明示トグルが無く scene baseline が焼かれない
       // ため、genesis (記録履歴が空) のとき一度だけ焼く。
-      await toggle.ensureGenesisBaselines(projectId);
-      if (!isCurrentProjectLoad(generation)) return;
+      await toggle.ensureGenesisBaselines(projectId, () =>
+        isCurrentMutationAuthority(authority.mutation),
+      );
+      if (!isCurrentMutationAuthority(authority.mutation)) return;
 
       const { seedWorkspaceSnapshot } =
         await import("@/features/timelapse/seedSession");
-      if (!isCurrentProjectLoad(generation)) return;
-      await seedWorkspaceSnapshot(projectId);
+      if (!isCurrentMutationAuthority(authority.mutation)) return;
+      await seedWorkspaceSnapshot(projectId, () =>
+        isCurrentMutationAuthority(authority.mutation),
+      );
     }
   });
+  trackProjectBackgroundMutation(run);
 
   // Rebinds are serialized so an already-started stale init must finish before
   // the latest project binds.  This keeps the latest project authoritative.
-  timelapseInitTail = run.catch((err) => {
-    console.warn("[timelapse] recorder init failed", err);
+  timelapseInitTail = run.catch((_error) => {
+    debugLog.warn("timelapse", "recorder init failed", {
+      sensitivity: "safe",
+      fields: {
+        operation: "initializeRecorder",
+        outcome: "failed",
+      },
+    });
   });
 }
 
@@ -160,14 +399,15 @@ function scheduleExternalWriteFeedStart(
   projectId: string,
   generation: number,
 ): void {
+  const authority = captureProjectBackgroundAuthority(projectId, generation);
   const run = externalWriteFeedStartTail.then(async () => {
-    if (!isCurrentProjectLoad(generation)) return;
+    if (!canStartProjectBackgroundMutation(authority)) return;
 
     const feed = await import("@/features/concurrency/externalWriteFeed");
-    if (!isCurrentProjectLoad(generation)) return;
+    if (!canStartProjectBackgroundMutation(authority)) return;
 
     await feed.startExternalWriteFeed(projectId);
-    if (!isCurrentProjectLoad(generation)) {
+    if (!isCurrentMutationAuthority(authority.mutation)) {
       // A newer load has already stopped the previous feed. start may have
       // resumed after that stop while reading its cursor, so close it again;
       // the serialized latest start runs immediately after this task.
@@ -177,48 +417,112 @@ function scheduleExternalWriteFeedStart(
 
     const { setupAutoAcceptProseConsumer, drainProposedProse } =
       await import("@/features/agent-writes/autoAcceptFeed");
-    if (!isCurrentProjectLoad(generation)) {
+    if (!isCurrentMutationAuthority(authority.mutation)) {
       feed.stopExternalWriteFeed();
       return;
     }
 
     setupAutoAcceptProseConsumer();
-    await drainProposedProse(projectId);
-    if (!isCurrentProjectLoad(generation)) {
+    await drainProposedProse(projectId, () =>
+      isCurrentMutationAuthority(authority.mutation),
+    );
+    if (!isCurrentMutationAuthority(authority.mutation)) {
       feed.stopExternalWriteFeed();
     }
   });
+  trackProjectBackgroundMutation(run);
 
   // startExternalWriteFeed reads its initial cursor asynchronously. Serialize
   // starts so a late cursor read from A can never finish after B's start.
-  externalWriteFeedStartTail = run.catch((err) => {
-    console.warn("[externalWriteFeed] start failed", err);
+  externalWriteFeedStartTail = run.catch((_error) => {
+    debugLog.warn("externalWriteFeed", "start failed", {
+      sensitivity: "safe",
+      fields: {
+        operation: "start",
+        outcome: "failed",
+      },
+    });
   });
+}
+
+function activateProjectBackgroundIntegrations(
+  projectId: string,
+  generation: number,
+): void {
+  if (
+    !isCurrentProjectLoad(generation) ||
+    getCurrentProjectId() !== projectId
+  ) {
+    return;
+  }
+  // A same-path Workspace reopen performs its explicit Project hydrate before
+  // publishing the new openRevision. Capturing null here would make both tails
+  // stale immediately after publication, so defer activation to the identity
+  // publication boundary.
+  if (getCurrentWorkspaceIdentity() === null) {
+    deferredProjectBackgroundActivation = { projectId, generation };
+    return;
+  }
+  deferredProjectBackgroundActivation = null;
+  scheduleTimelapseInitialization(projectId, generation);
+  scheduleExternalWriteFeedStart(projectId, generation);
+}
+
+/** Test hooks for the browser-only background integration path. */
+export function _scheduleExternalWriteFeedStartForTests(
+  projectId: string,
+): void {
+  scheduleExternalWriteFeedStart(projectId, loadProjectGeneration);
+}
+
+export function _scheduleTimelapseInitializationForTests(
+  projectId: string,
+): void {
+  scheduleTimelapseInitialization(projectId, loadProjectGeneration);
+}
+
+export function _activateProjectBackgroundIntegrationsForTests(
+  projectId: string,
+): void {
+  activateProjectBackgroundIntegrations(projectId, loadProjectGeneration);
+}
+
+export function _resetProjectBackgroundMutationsForTests(): void {
+  pendingProjectBackgroundMutations.clear();
+  projectBackgroundMutationFailures.length = 0;
+  deferredProjectBackgroundActivation = null;
+  timelapseInitTail = Promise.resolve();
+  externalWriteFeedStartTail = Promise.resolve();
+  projectStrictQuiescenceTail = Promise.resolve();
+  projectLoadCommitTail = Promise.resolve();
+  lastNonLoadingProjectPresentation = null;
 }
 
 export const useProjectStore = create<ProjectState>()((set, get) => ({
   currentProjectId: null,
   projects: [],
+  projectLoadStatus: "idle",
+  degradedParticipants: [],
 
   initCurrentProject: async () => {
-    try {
-      const projectRows = await listProjects();
-      const savedId = await readLastActiveProjectId();
-      const projectId = resolveInitialProjectId(projectRows, savedId);
-      set({
-        projects: projectRows,
-        currentProjectId: projectId,
-      });
-    } catch {
-      // A failed lookup must not block workspace open — fall back so the
-      // editor still has a Project id to work with.
-      set({ currentProjectId: FALLBACK_PROJECT_ID, projects: [] });
-    }
+    // A Workspace rebind is authoritative over every Project lookup or
+    // hydration started against the previous database.
+    invalidateProjectLoadsForWorkspaceSwitch();
+    const projectRows = await listProjects();
+    const savedId = await readLastActiveProjectId();
+    const projectId = resolveInitialProjectId(projectRows, savedId);
+    set({
+      projects: projectRows,
+      currentProjectId: projectId,
+    });
   },
 
   refreshProjects: async () => {
+    const generation = ++refreshProjectsGeneration;
+    const workspaceIdentity = getCurrentWorkspaceIdentity();
     try {
       const projectRows = await listProjects();
+      if (!isCurrentWorkspaceRefresh(generation, workspaceIdentity)) return;
       set({ projects: projectRows });
     } catch {
       // 一覧の一時的な取得失敗で切替 UI を空にしない。前回の一覧を保持する。
@@ -226,143 +530,403 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 
   loadProject: async (projectId) => {
-    // プロジェクト切替は reloadProjectData で tab/chat/map 等の in-memory 状態を
-    // 破棄し owner エディタを作り替えるため、pending 中は止める (唯一の入口)。
-    if (guardInlineAiPending()) {
-      // 早期 return = project はロードされない = recorder の有効な束縛が
-      // 存在しない。この場合「記録しない (warn 付き破棄)」が正しい挙動 —
-      // ここで旧束縛のまま記録を再開すると、workspace 切替直後なら旧
-      // イベントが新 workspace の hash chain へ混入する (r5 で命令的
-      // resume を廃止した理由)。記録は次の正規 rebind
-      // (initRecorderForProject) 完了で自動的に再開する。
-      return;
-    }
-    const generation = ++loadProjectGeneration;
-    const previousId = get().currentProjectId;
-    const realBrowserRuntime = isRealBrowserRuntime();
-    if (realBrowserRuntime) {
-      const { stopExternalWriteFeed } =
-        await import("@/features/concurrency/externalWriteFeed");
-      if (!isCurrentProjectLoad(generation)) return;
-      stopExternalWriteFeed();
-    }
-    try {
-      const p = await getProject(projectId);
-      if (!isCurrentProjectLoad(generation)) return;
+    return withProjectLoad((context) =>
+      get().loadProjectWithinLifecycle(projectId, context),
+    );
+  },
 
-      const [{ reloadProjectData }, { setSetting }] = await Promise.all([
-        import("./reloadProjectData"),
-        import("@/features/settings/api"),
-      ]);
-      if (!isCurrentProjectLoad(generation)) return;
-
-      await commitProjectLoad(async () => {
+  loadProjectWithinLifecycle: async (projectId, context, options) => {
+    return withProjectLoad(async () => {
+      if (options?.skipStrictQuiescence && context.owner !== "workspace") {
+        throw new Error(
+          "Only a Workspace-owned Project load may skip strict quiescence",
+        );
+      }
+      const quiescenceLease = acquireQuiescenceLease("project-load");
+      try {
+        // プロジェクト切替は reloadProjectData で tab/chat/map 等の in-memory 状態を
+        // 破棄し owner エディタを作り替えるため、pending 中は止める (唯一の入口)。
+        if (guardInlineAiPending()) {
+          if (context.owner === "workspace") {
+            throw new Error(
+              "Inline AI became pending during Workspace Project hydration",
+            );
+          }
+          // 早期 return = project はロードされない = recorder の有効な束縛が
+          // 存在しない。この場合「記録しない (warn 付き破棄)」が正しい挙動 —
+          // ここで旧束縛のまま記録を再開すると、workspace 切替直後なら旧
+          // イベントが新 workspace の hash chain へ混入する (r5 で命令的
+          // resume を廃止した理由)。記録は次の正規 rebind
+          // (initRecorderForProject) 完了で自動的に再開する。
+          return;
+        }
+        const generation = ++loadProjectGeneration;
+        // Project reload destroys every project-scoped editor/store. Treat it like
+        // Workspace replacement: a failed persistence surface vetoes the switch
+        // while the old Project is still fully authoritative.
+        if (!options?.skipStrictQuiescence) {
+          await flushProjectStrictQuiescence();
+          clearRetainedEditorRecoveryDraftsForScopeChange();
+        }
+        quiescenceLease.openTargetReadPhase();
         if (!isCurrentProjectLoad(generation)) return;
+        const previousState = capturePreviousProjectState(get());
+        const previousId = previousState.currentProjectId;
+        const realBrowserRuntime = isRealBrowserRuntime();
+        set({ projectLoadStatus: "loading", degradedParticipants: [] });
+        let committed = false;
+        try {
+          const p = await getProject(projectId);
+          if (!isCurrentProjectLoad(generation)) return;
+          if (!p) throw new Error(`Project not found: ${projectId}`);
 
-        useGlobalHistoryStore.getState().clear();
-        // reloadProjectData 内の各ストアは getCurrentProjectId() を読むため、
-        // serialized commit の直前に currentProjectId を確定させる。
-        set({ currentProjectId: projectId });
+          const [{ reloadProjectData }, { setSetting }, externalWriteFeed] =
+            await Promise.all([
+              import("./reloadProjectData"),
+              import("@/features/settings/api"),
+              realBrowserRuntime
+                ? import("@/features/concurrency/externalWriteFeed")
+                : Promise.resolve(null),
+            ]);
+          if (!isCurrentProjectLoad(generation)) return;
 
-        if (p?.language && typeof document !== "undefined") {
-          document.documentElement.lang = p.language;
+          await commitProjectLoad(async () => {
+            if (!isCurrentProjectLoad(generation)) return;
+            if (deletedProjectIds.has(projectId)) {
+              throw new Error(`Project not found: ${projectId}`);
+            }
+
+            const commitPreparedProject = () => {
+              if (!isCurrentProjectLoad(generation)) return false;
+              quiescenceLease.sealReadsForAuthorityCommit();
+              committed = true;
+              externalWriteFeed?.stopExternalWriteFeed();
+              useGlobalHistoryStore.getState().clear();
+              set({ currentProjectId: projectId });
+              applyProjectMetadata(p);
+              return true;
+            };
+            const result = await reloadProjectData(
+              projectId,
+              commitPreparedProject,
+              options?.workspaceOpenRevision,
+              () => quiescenceLease.openTargetReadPhase(),
+            );
+            if (result?.cancelled) return;
+            if (!isCurrentProjectLoad(generation)) return;
+
+            const degraded = [...(result?.degraded ?? [])].map(
+              ({ participantId }) => participantId,
+            );
+            try {
+              await setSetting(LAST_ACTIVE_PROJECT_KEY, projectId);
+            } catch {
+              degraded.push("last-active-project");
+            }
+            if (!isCurrentProjectLoad(generation)) return;
+            set({
+              projectLoadStatus: degraded.length > 0 ? "degraded" : "ready",
+              degradedParticipants: degraded,
+            });
+            if (degraded.length > 0) {
+              toast.warning(i18next.t("project.loadDegraded"), {
+                action: {
+                  label: i18next.t("common.retry"),
+                  onClick: () =>
+                    void runProjectLoadWithFailureToast(() =>
+                      get().loadProject(projectId),
+                    ),
+                },
+              });
+            }
+
+            // Both integrations have serialized, quiescence-tracked tails.
+            // Stale queued starts use the load generation; an already-started
+            // task revalidates Workspace + Project authority at write boundaries.
+            if (realBrowserRuntime) {
+              activateProjectBackgroundIntegrations(projectId, generation);
+            }
+          });
+        } catch (e) {
+          quiescenceLease.openTargetReadPhase();
+          // A superseded load is cancellation, not a failure. In particular it
+          // must not roll currentProjectId back after the newer load has committed.
+          if (!isCurrentProjectLoad(generation)) return;
+          if (!committed) {
+            // Critical preparation failed before the commit boundary. Every old
+            // Project store and feed is still authoritative; no rollback needed.
+            set({
+              projectLoadStatus: previousState.projectLoadStatus,
+              degradedParticipants: previousState.degradedParticipants,
+            });
+            throw e;
+          }
+
+          // An unexpected synchronous commit/legacy critical failure happened
+          // after publication. Roll back by fully preparing and hydrating the old
+          // Project; restoring only its id would create mixed singleton state.
+          set({ projectLoadStatus: "recovering" });
+          if (previousId) {
+            try {
+              const previousProject = await getProject(previousId);
+              if (!previousProject) {
+                throw new Error(`Previous Project not found: ${previousId}`, {
+                  cause: e,
+                });
+              }
+              const { reloadProjectData } = await import("./reloadProjectData");
+              const commitPreviousProject = () => {
+                if (!isCurrentProjectLoad(generation)) return false;
+                quiescenceLease.sealReadsForAuthorityCommit();
+                set({ currentProjectId: previousId });
+                applyProjectMetadata(previousProject);
+                return true;
+              };
+              const rollbackResult = await reloadProjectData(
+                previousId,
+                commitPreviousProject,
+                options?.workspaceOpenRevision,
+                () => quiescenceLease.openTargetReadPhase(),
+              );
+              if (rollbackResult?.cancelled) {
+                // Workspace acquisition or a newer Project load superseded this
+                // recovery. The newer authority owns the next complete hydration.
+                if (!isCurrentProjectLoad(generation)) return;
+                throw new Error("Project rollback was cancelled", { cause: e });
+              }
+              if (!isCurrentProjectLoad(generation)) return;
+              const rollbackDegraded = [
+                ...(rollbackResult?.degraded ?? []),
+              ].map(({ participantId }) => participantId);
+              set({
+                projectLoadStatus:
+                  rollbackDegraded.length > 0 ? "degraded" : "ready",
+                degradedParticipants: rollbackDegraded,
+              });
+              if (rollbackDegraded.length > 0) {
+                toast.warning(i18next.t("project.loadDegraded"), {
+                  action: {
+                    label: i18next.t("common.retry"),
+                    onClick: () =>
+                      void runProjectLoadWithFailureToast(() =>
+                        get().loadProject(previousId),
+                      ),
+                  },
+                });
+              }
+              if (realBrowserRuntime) {
+                activateProjectBackgroundIntegrations(previousId, generation);
+              }
+            } catch (rollbackError) {
+              set({
+                projectLoadStatus: "recovering",
+                degradedParticipants: ["project-rollback"],
+              });
+              throw new AggregateError(
+                [e, rollbackError],
+                "Project switch and rollback both failed",
+                { cause: rollbackError },
+              );
+            }
+          }
+          throw e;
         }
-        if (p?.language) {
-          // Re-point settings defaults at the project's language (en gets
-          // Literata / 1.6 line-height / smart quotes etc. for *unset* keys).
-          useSettingsStore.getState().applyProjectLanguage(p.language);
-        }
-        if (p?.phaseResolutionMode) {
-          usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
-        }
-
-        await reloadProjectData(projectId);
-        if (!isCurrentProjectLoad(generation)) return;
-
-        await setSetting(LAST_ACTIVE_PROJECT_KEY, projectId);
-        if (!isCurrentProjectLoad(generation)) return;
-
-        // Both background integrations have their own serialized tails and
-        // repeat this generation check after every await. A late A task cannot
-        // finish after (or overwrite) B's authoritative binding.
-        if (realBrowserRuntime) {
-          scheduleTimelapseInitialization(projectId, generation);
-          scheduleExternalWriteFeedStart(projectId, generation);
-        }
-      });
-    } catch (e) {
-      // A superseded load is cancellation, not a failure. In particular it
-      // must not roll currentProjectId back after the newer load has committed.
-      if (!isCurrentProjectLoad(generation)) return;
-      // 切替失敗 — パネルがロードされていない Project を指したままにしない。
-      set({ currentProjectId: previousId });
-      // recorder はここで触らない (r5): project がロードされていない =
-      // 有効な束縛が存在しないので「記録しない (warn 付き破棄)」が正しい。
-      // 記録は次の正規 rebind (initRecorderForProject) 完了で自動再開する。
-      throw e;
-    }
+      } finally {
+        quiescenceLease.release();
+      }
+    }, context);
   },
 
   createNewProject: async (input) => {
     if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
-    const created = await createProjectRow({
-      id: crypto.randomUUID(),
-      title: input.title.trim(),
-      genre: input.genre || undefined,
-      language: input.language || undefined,
-      pov: input.pov || undefined,
-      tense: input.tense || undefined,
-    });
-    try {
-      // 組み込み Codex タイプを project 言語でシード (en=英語ラベル)。
-      await ensureBuiltinTypes(created.id, created.language);
-      const { seedProjectSettingsFromDefaults } =
-        await import("@/features/settings/migration");
-      await seedProjectSettingsFromDefaults(created.id);
-      // 執筆タイムラプスの記録可否を明示保存。seedProjectSettingsFromDefaults は
-      // global default からのシードでフォーム入力を拾わないため、作成フォームの
-      // 値はここで直接書く (canonical key: timelapse.enabled, 既定 ON)。
-      const { setProjectSetting } = await import("@/features/settings/api");
-      await setProjectSetting(
-        created.id,
-        "timelapse.enabled",
-        String(input.timelapseEnabled ?? true),
+    return withProjectLoad(async (context) => {
+      const quiescenceLease = acquireQuiescenceLease("project-load");
+      const authority = captureMutationAuthority(
+        getCurrentProjectId(),
+        getCurrentProjectId,
       );
-      if (input.seedFromProjectId && input.seedTypeSlugs?.length) {
-        const { seedCodexTypesFromProject } = await import("./seedCodexTypes");
-        await seedCodexTypesFromProject(
-          input.seedFromProjectId,
-          created.id,
-          input.seedTypeSlugs,
-        );
+      const generation = ++loadProjectGeneration;
+      try {
+        await flushProjectStrictQuiescence();
+        quiescenceLease.openTargetReadPhase();
+        assertProjectLifecycleAuthority(generation, authority);
+
+        const created = await commitProjectLoad(async () => {
+          // Project publication is serialized by the same commit tail used by
+          // loadProject. Once this check passes, a newer load may queue, but it
+          // cannot replace currentProjectId until this initialization either
+          // completes or rolls back.
+          assertProjectLifecycleAuthority(generation, authority);
+          const createdRow = await createProjectRow({
+            id: crypto.randomUUID(),
+            title: input.title.trim(),
+            genre: input.genre || undefined,
+            language: input.language || undefined,
+            pov: input.pov || undefined,
+            tense: input.tense || undefined,
+          });
+          deletedProjectIds.delete(createdRow.id);
+          try {
+            if (!isCurrentMutationAuthority(authority)) {
+              throw new ProjectLifecycleAuthorityChangedError();
+            }
+            // 組み込み Codex タイプを project 言語でシード (en=英語ラベル)。
+            await ensureBuiltinTypes(createdRow.id, createdRow.language);
+            if (!isCurrentMutationAuthority(authority)) {
+              throw new ProjectLifecycleAuthorityChangedError();
+            }
+            const { seedProjectSettingsFromDefaults } =
+              await import("@/features/settings/migration");
+            if (!isCurrentMutationAuthority(authority)) {
+              throw new ProjectLifecycleAuthorityChangedError();
+            }
+            await seedProjectSettingsFromDefaults(createdRow.id);
+            // 執筆タイムラプスの記録可否を明示保存。seedProjectSettingsFromDefaults は
+            // global default からのシードでフォーム入力を拾わないため、作成フォームの
+            // 値はここで直接書く (canonical key: timelapse.enabled, 既定 ON)。
+            const { setProjectSetting } =
+              await import("@/features/settings/api");
+            if (!isCurrentMutationAuthority(authority)) {
+              throw new ProjectLifecycleAuthorityChangedError();
+            }
+            await setProjectSetting(
+              createdRow.id,
+              "timelapse.enabled",
+              String(input.timelapseEnabled ?? true),
+            );
+            if (input.seedFromProjectId && input.seedTypeSlugs?.length) {
+              const { seedCodexTypesFromProject } =
+                await import("./seedCodexTypes");
+              if (!isCurrentMutationAuthority(authority)) {
+                throw new ProjectLifecycleAuthorityChangedError();
+              }
+              await seedCodexTypesFromProject(
+                input.seedFromProjectId,
+                createdRow.id,
+                input.seedTypeSlugs,
+              );
+            }
+          } catch (error) {
+            // 初期化途中で失敗したら projects 行ごと巻き戻し、半端な Project を
+            // 残さない。FK ON DELETE CASCADE が部分コピーされた codex 行も除去する。
+            // Authority が既に別 Workspace を指す異常経路では、同じ id の行を
+            // replacement DB から消し得るため rollback 書込み自体を行わない。
+            if (isCurrentMutationAuthority(authority)) {
+              await deleteProjectRow(createdRow.id).catch(() => {});
+            }
+            throw error;
+          }
+          return createdRow;
+        });
+
+        await get().refreshProjects();
+        // A later explicit Project selection wins over the create-and-switch
+        // convenience. The new row remains valid and visible in the switcher.
+        if (
+          isCurrentProjectLoad(generation) &&
+          isCurrentMutationAuthority(authority)
+        ) {
+          await get().loadProjectWithinLifecycle(created.id, context);
+        }
+        return created;
+      } finally {
+        quiescenceLease.release();
       }
-    } catch (e) {
-      // 初期化途中で失敗したら projects 行ごと巻き戻し、半端な Project を
-      // 残さない。FK ON DELETE CASCADE が部分コピーされた codex 行も除去する。
-      await deleteProjectRow(created.id).catch(() => {});
-      throw e;
-    }
-    await get().refreshProjects();
-    await get().loadProject(created.id);
-    return created;
+    });
   },
 
   deleteProjectById: async (projectId) => {
-    const { projects, currentProjectId } = get();
-    if (projects.length <= 1) {
-      throw new Error("Cannot delete the last project in the workspace");
-    }
+    return withProjectLoad(async (context) => {
+      const quiescenceLease = acquireQuiescenceLease("project-load");
+      const authority = captureMutationAuthority(
+        getCurrentProjectId(),
+        getCurrentProjectId,
+      );
+      const generation = ++loadProjectGeneration;
+      try {
+        await flushProjectStrictQuiescence();
+        quiescenceLease.openTargetReadPhase();
+        assertProjectLifecycleAuthority(generation, authority);
 
-    const deletingCurrent = currentProjectId === projectId;
-    await deleteProjectRow(projectId);
-    await get().refreshProjects();
+        const plan = await commitProjectLoad(async () => {
+          assertProjectLifecycleAuthority(generation, authority);
+          const projectRows = await listProjects();
+          if (!isCurrentMutationAuthority(authority)) {
+            throw new ProjectLifecycleAuthorityChangedError();
+          }
+          if (projectRows.length <= 1) {
+            throw new Error("Cannot delete the last project in the workspace");
+          }
+          if (!projectRows.some((project) => project.id === projectId)) {
+            throw new Error(`Project not found: ${projectId}`);
+          }
 
-    if (deletingCurrent) {
-      const nextId = get().projects[0]?.id ?? FALLBACK_PROJECT_ID;
-      await get().loadProject(nextId);
-    }
+          const deletingCurrent = get().currentProjectId === projectId;
+          if (deletingCurrent) {
+            const nextId =
+              projectRows.find((project) => project.id !== projectId)?.id ??
+              FALLBACK_PROJECT_ID;
+            return { kind: "switch-before-delete" as const, nextId };
+          }
+          if (!isCurrentMutationAuthority(authority)) {
+            throw new ProjectLifecycleAuthorityChangedError();
+          }
+          await deleteProjectRow(projectId);
+          deletedProjectIds.add(projectId);
+          return { kind: "deleted" as const };
+        });
+
+        if (plan.kind === "switch-before-delete") {
+          // Two-phase delete: fully hydrate and publish a surviving Project
+          // while the old row still exists. If preparation, commit, or rollback
+          // fails, loadProject throws and this destructive phase is never run.
+          await get().loadProjectWithinLifecycle(plan.nextId, context);
+          // loadProject publishes the critical Project state before scheduling
+          // recorder/feed tails. Those tails can still touch the old Project
+          // (recorder drain), so they are part of phase one for deletion.
+          await awaitPendingProjectBackgroundMutations();
+          if (
+            !isCurrentLifecycleWorkspace(authority) ||
+            get().currentProjectId === projectId ||
+            get().projectLoadStatus === "loading" ||
+            get().projectLoadStatus === "recovering"
+          ) {
+            throw new ProjectLifecycleAuthorityChangedError();
+          }
+          const replacementAuthority = captureMutationAuthority(
+            getCurrentProjectId(),
+            getCurrentProjectId,
+          );
+
+          await commitProjectLoad(async () => {
+            if (
+              !isCurrentLifecycleWorkspace(authority) ||
+              get().currentProjectId === projectId ||
+              !isCurrentMutationAuthority(replacementAuthority)
+            ) {
+              throw new ProjectLifecycleAuthorityChangedError();
+            }
+            await deleteProjectRow(projectId);
+            deletedProjectIds.add(projectId);
+          });
+        }
+        await get().refreshProjects();
+      } finally {
+        quiescenceLease.release();
+      }
+    });
   },
 }));
+
+subscribeCurrentWorkspaceIdentity((identity) => {
+  if (!identity || !deferredProjectBackgroundActivation) return;
+  const activation = deferredProjectBackgroundActivation;
+  deferredProjectBackgroundActivation = null;
+  activateProjectBackgroundIntegrations(
+    activation.projectId,
+    activation.generation,
+  );
+});
 
 /**
  * Current Project id for non-React modules. Falls back to the bootstrap

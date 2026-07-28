@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type {
   OnNodesChange,
   OnEdgesChange,
@@ -16,15 +16,22 @@ import {
 } from "../mapApi";
 import type { MapNodePositionRecord } from "../types";
 import type { MapEdge, MapFrame } from "@/db/schema";
-import { useKeyedDebouncedCallback } from "@/lib/useDebounce";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import i18next from "@/lib/i18n";
+import { useCurrentProjectId } from "@/features/project/projectStore";
+import {
+  flushMapPersistenceWritesInBackground,
+  scheduleMapFrameResizeWrite,
+} from "./mapPersistenceWriteQueue";
 
 interface UseMapPositionPersistenceInput {
   boardId: string | null;
   mode: string;
   getNodes: () => Node[];
   setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
+  setPositionCoordinates: React.Dispatch<
+    React.SetStateAction<MapNodePositionRecord[]>
+  >;
   setFrames: React.Dispatch<React.SetStateAction<MapFrame[]>>;
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
   setUserEdges: React.Dispatch<React.SetStateAction<MapEdge[]>>;
@@ -36,9 +43,6 @@ interface UseMapPositionPersistenceInput {
   userEdgesRef: React.MutableRefObject<MapEdge[]>;
   persistingRef: React.MutableRefObject<Set<string>>;
 }
-
-// Hoisted to keep `useKeyedDebouncedCallback`'s deps stable across renders.
-const identityKey = (nodeId: string) => nodeId;
 
 function reportPersistError(err: unknown) {
   // Unhandled IPC errors would otherwise surface as unhandledrejection and
@@ -55,12 +59,40 @@ export function useMapPositionPersistence({
   mode,
   getNodes,
   setPositions,
+  setPositionCoordinates,
   setFrames,
   setNodes,
   setUserEdges,
   userEdgesRef,
   persistingRef,
 }: UseMapPositionPersistenceInput) {
+  const projectId = useCurrentProjectId();
+
+  useEffect(
+    () => () => {
+      flushMapPersistenceWritesInBackground();
+    },
+    [projectId],
+  );
+
+  const publishPersistedPosition = useCallback(
+    (updated: MapNodePositionRecord, invalidatesLayout = false) => {
+      // Pure x/y/updatedAt writes keep the structural/layout revisions stable.
+      // The invalidating publisher is reserved for an actual auto-pin.
+      const publish = invalidatesLayout ? setPositions : setPositionCoordinates;
+      publish((previous) => {
+        const index = previous.findIndex(
+          (position) => position.id === updated.id,
+        );
+        if (index < 0) return [...previous, updated];
+        const next = [...previous];
+        next[index] = updated;
+        return next;
+      });
+    },
+    [setPositionCoordinates, setPositions],
+  );
+
   // persistPosition fires once per drag stop (per node). No debouncing here —
   // debouncing would delay setPositions/setFrames and create a window where
   // the `nodes` state (updated synchronously by applyNodeChanges) and the
@@ -91,18 +123,14 @@ export function useMapPositionPersistence({
             y,
           });
           // Hybrid: dragging in non-free mode auto-pins the node
-          if (mode !== "free" && updated.pinned !== 1) {
+          const autoPinned = mode !== "free" && updated.pinned !== 1;
+          if (autoPinned) {
             updated = (await setNodePinned(updated.id, true)) ?? updated;
           }
-          setPositions((prev) => {
-            const idx = prev.findIndex((p) => p.id === updated.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = updated as MapNodePositionRecord;
-              return next;
-            }
-            return [...prev, updated as MapNodePositionRecord];
-          });
+          publishPersistedPosition(
+            updated as MapNodePositionRecord,
+            autoPinned,
+          );
         } else if (nodeId.startsWith("codex:")) {
           const codexEntryId = nodeId.slice("codex:".length);
           let updated = await upsertNodePosition({
@@ -112,18 +140,14 @@ export function useMapPositionPersistence({
             x,
             y,
           });
-          if (mode !== "free" && updated.pinned !== 1) {
+          const autoPinned = mode !== "free" && updated.pinned !== 1;
+          if (autoPinned) {
             updated = (await setNodePinned(updated.id, true)) ?? updated;
           }
-          setPositions((prev) => {
-            const idx = prev.findIndex((p) => p.id === updated.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = updated as MapNodePositionRecord;
-              return next;
-            }
-            return [...prev, updated as MapNodePositionRecord];
-          });
+          publishPersistedPosition(
+            updated as MapNodePositionRecord,
+            autoPinned,
+          );
         } else if (nodeId.startsWith("note:")) {
           const treeNodeId = nodeId.slice("note:".length);
           const updated = await upsertNodePosition({
@@ -133,15 +157,7 @@ export function useMapPositionPersistence({
             x,
             y,
           });
-          setPositions((prev) => {
-            const idx = prev.findIndex((p) => p.id === updated.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = updated as MapNodePositionRecord;
-              return next;
-            }
-            return [...prev, updated as MapNodePositionRecord];
-          });
+          publishPersistedPosition(updated as MapNodePositionRecord);
         } else if (nodeId.startsWith("snippet:")) {
           const snippetId = nodeId.slice("snippet:".length);
           const updated = await upsertNodePosition({
@@ -151,15 +167,7 @@ export function useMapPositionPersistence({
             x,
             y,
           });
-          setPositions((prev) => {
-            const idx = prev.findIndex((p) => p.id === updated.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = updated as MapNodePositionRecord;
-              return next;
-            }
-            return [...prev, updated as MapNodePositionRecord];
-          });
+          publishPersistedPosition(updated as MapNodePositionRecord);
         } else if (nodeId.startsWith("sticky:")) {
           const stickyId = nodeId.slice("sticky:".length);
           const updated = await upsertNodePosition({
@@ -169,15 +177,7 @@ export function useMapPositionPersistence({
             x,
             y,
           });
-          setPositions((prev) => {
-            const idx = prev.findIndex((p) => p.id === updated.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = updated as MapNodePositionRecord;
-              return next;
-            }
-            return [...prev, updated as MapNodePositionRecord];
-          });
+          publishPersistedPosition(updated as MapNodePositionRecord);
         } else if (nodeId.startsWith("ai_branch:")) {
           const aiBranchId = nodeId.slice("ai_branch:".length);
           const updated = await upsertNodePosition({
@@ -187,15 +187,7 @@ export function useMapPositionPersistence({
             x,
             y,
           });
-          setPositions((prev) => {
-            const idx = prev.findIndex((p) => p.id === updated.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = updated as MapNodePositionRecord;
-              return next;
-            }
-            return [...prev, updated as MapNodePositionRecord];
-          });
+          publishPersistedPosition(updated as MapNodePositionRecord);
         } else if (nodeId.startsWith("frame:")) {
           const frameId = nodeId.slice("frame:".length);
           // Read nodes at call time (not render time) so we always see the
@@ -301,15 +293,7 @@ export function useMapPositionPersistence({
           })();
           if (!args) return;
           const updated = await upsertNodePosition(args);
-          setPositions((prev) => {
-            const idx = prev.findIndex((p) => p.id === updated.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = updated as MapNodePositionRecord;
-              return next;
-            }
-            return [...prev, updated as MapNodePositionRecord];
-          });
+          publishPersistedPosition(updated as MapNodePositionRecord);
         };
         useGlobalHistoryStore.getState().push({
           kind: "map",
@@ -323,12 +307,19 @@ export function useMapPositionPersistence({
         });
       }
     },
-    [boardId, mode, getNodes, setFrames, setPositions, persistingRef],
+    [
+      boardId,
+      mode,
+      getNodes,
+      setFrames,
+      persistingRef,
+      publishPersistedPosition,
+    ],
   );
 
-  const persistFrameResizeImpl = useCallback(
-    async (nodeId: string, width: number, height: number) => {
-      if (!nodeId.startsWith("frame:")) return;
+  const persistFrameResize = useCallback(
+    (nodeId: string, width: number, height: number) => {
+      if (!boardId || !nodeId.startsWith("frame:")) return;
       const frameId = nodeId.slice("frame:".length);
       // Skip the IPC/setFrames write when dimensions already match what's
       // rendered. React Flow emits `dim` changes whenever it reasserts a
@@ -340,22 +331,22 @@ export function useMapPositionPersistence({
       const currentW = rfNode?.style?.width as number | undefined;
       const currentH = rfNode?.style?.height as number | undefined;
       if (currentW === width && currentH === height) return;
-      try {
-        await updateFrame(frameId, { width, height });
-        setFrames((prev) =>
-          prev.map((f) => (f.id === frameId ? { ...f, width, height } : f)),
-        );
-      } catch (err) {
-        reportPersistError(err);
-      }
-    },
-    [getNodes, setFrames],
-  );
 
-  const persistFrameResize = useKeyedDebouncedCallback(
-    persistFrameResizeImpl,
-    500,
-    identityKey,
+      scheduleMapFrameResizeWrite({
+        projectId,
+        boardId,
+        frameId,
+        width,
+        height,
+        onPersist: () => {
+          setFrames((prev) =>
+            prev.map((f) => (f.id === frameId ? { ...f, width, height } : f)),
+          );
+        },
+        onBackgroundError: reportPersistError,
+      });
+    },
+    [boardId, getNodes, projectId, setFrames],
   );
 
   const dragStartPositionsRef = useRef(

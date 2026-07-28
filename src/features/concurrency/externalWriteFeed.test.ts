@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   // When true, the mocked drizzle query rejects like a stalled db_execute
   // (e.g. blocked behind the native save dialog during timelapse export).
   dbReject: false,
+  dbResponses: [] as Array<unknown[] | Promise<unknown[]>>,
 }));
 
 // pollTick() reads change_events via the drizzle proxy (db.select()...). Mock it
@@ -24,10 +25,13 @@ vi.mock("@/db/client", () => {
       where: () => q,
       orderBy: () => q,
       limit: () => q,
-      then: (resolve: (v: unknown[]) => void, reject: (e: unknown) => void) =>
-        h.dbReject
-          ? reject(new Error("IPC timeout after 10000ms: db_execute"))
-          : resolve([]),
+      then: (resolve: (v: unknown[]) => void, reject: (e: unknown) => void) => {
+        if (h.dbReject) {
+          reject(new Error("IPC timeout after 10000ms: db_execute"));
+          return;
+        }
+        void Promise.resolve(h.dbResponses.shift() ?? []).then(resolve, reject);
+      },
     };
     return q;
   };
@@ -93,6 +97,7 @@ vi.mock("@/features/labels/labelStore", () => ({
 import {
   processExternalEventsForTest,
   stopExternalWriteFeed,
+  startExternalWriteFeed,
   pollExternalWritesForTest,
   getExternalWriteCursorForTest,
 } from "./externalWriteFeed";
@@ -133,6 +138,20 @@ const ev = (
   prevHash: "0",
   hash: "1",
 });
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("externalWriteFeed fan-out", () => {
   beforeEach(() => {
@@ -577,6 +596,7 @@ describe("externalWriteFeed pollTick resilience", () => {
   beforeEach(() => {
     stopExternalWriteFeed();
     h.dbReject = false;
+    h.dbResponses = [];
   });
 
   it("does not reject when the poll's DB read fails (IPC timeout)", async () => {
@@ -588,6 +608,69 @@ describe("externalWriteFeed pollTick resilience", () => {
     await expect(pollExternalWritesForTest()).resolves.toBeUndefined();
     // Cursor is never advanced on the failing path, so the next tick retries.
     expect(getExternalWriteCursorForTest()).toBe(0);
+  });
+
+  it("drops an old Project poll after stop/start without fan-out or cursor corruption", async () => {
+    const oldRows = deferred<ReturnType<typeof ev>[]>();
+    let oldPoll: Promise<void> | null = null;
+    try {
+      h.dbResponses.push([]);
+      await startExternalWriteFeed("project-a");
+
+      h.dbResponses.push(oldRows.promise);
+      oldPoll = pollExternalWritesForTest();
+      await vi.waitFor(() => expect(h.dbResponses).toHaveLength(0));
+
+      h.dbResponses.push([{ sequence: 4 }]);
+      await startExternalWriteFeed("project-b");
+      h.dbResponses.push([
+        {
+          ...ev({ sequence: 5, domain: "codex" }),
+          projectId: "project-b",
+        },
+      ]);
+      await pollExternalWritesForTest();
+
+      expect(h.loadCodex).toHaveBeenCalledOnce();
+      expect(getExternalWriteCursorForTest()).toBe(5);
+
+      oldRows.resolve([
+        {
+          ...ev({ sequence: 99, domain: "grid" }),
+          projectId: "project-a",
+        },
+      ]);
+      await oldPoll;
+
+      expect(h.reloadTree).not.toHaveBeenCalled();
+      expect(getExternalWriteCursorForTest()).toBe(5);
+    } finally {
+      oldRows.resolve([]);
+      await Promise.allSettled(oldPoll ? [oldPoll] : []);
+      stopExternalWriteFeed();
+    }
+  });
+
+  it("ignores a stale initial cursor read after a later feed start wins", async () => {
+    const oldTail = deferred<Array<{ sequence: number }>>();
+    let oldStart: Promise<void> | null = null;
+    try {
+      h.dbResponses.push(oldTail.promise);
+      oldStart = startExternalWriteFeed("project-a");
+      await vi.waitFor(() => expect(h.dbResponses).toHaveLength(0));
+
+      h.dbResponses.push([{ sequence: 7 }]);
+      await startExternalWriteFeed("project-b");
+      expect(getExternalWriteCursorForTest()).toBe(7);
+
+      oldTail.resolve([{ sequence: 99 }]);
+      await oldStart;
+      expect(getExternalWriteCursorForTest()).toBe(7);
+    } finally {
+      oldTail.resolve([]);
+      await Promise.allSettled(oldStart ? [oldStart] : []);
+      stopExternalWriteFeed();
+    }
   });
 });
 

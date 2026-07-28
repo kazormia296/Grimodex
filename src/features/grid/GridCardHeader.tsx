@@ -1,9 +1,12 @@
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import { useLatestValueDraftController } from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 interface Props {
   nodeId: string;
@@ -15,6 +18,7 @@ interface Props {
    *  dnd-kit attributes/listeners). Placed before the title so the drag
    *  affordance is explicit and never overlaps the action buttons. */
   dragHandleSlot?: React.ReactNode;
+  onEditingChange?: (editing: boolean) => void;
 }
 
 export function GridCardHeader({
@@ -23,36 +27,101 @@ export function GridCardHeader({
   onOpenInEditor,
   menuSlot,
   dragHandleSlot,
+  onEditingChange,
 }: Props) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const editingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const onEditingChangeRef = useRef(onEditingChange);
+  onEditingChangeRef.current = onEditingChange;
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
+  const draftController = useLatestValueDraftController(
+    `grid-card-title:${nodeId}`,
+    title,
+    async (next) => {
+      const trimmed = next.trim();
+      if (trimmed && trimmed !== title) {
+        await updateNodeTitle(nodeId, trimmed);
+      }
+    },
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (!editingRef.current) return;
+      onEditingChangeRef.current?.(false);
+    };
+  }, []);
 
   function startEdit(e: React.MouseEvent) {
     e.stopPropagation();
+    if (editingRef.current) return;
+    editingRef.current = true;
+    draftController.reset(title);
     setDraft(title);
     setEditing(true);
+    onEditingChangeRef.current?.(true);
     setTimeout(() => {
       inputRef.current?.select();
     }, 0);
   }
 
-  function commitEdit() {
-    const trimmed = draft.trim();
-    if (trimmed && trimmed !== title) {
-      void updateNodeTitle(nodeId, trimmed);
+  async function commitEdit(
+    options?: QuiescenceParticipantFlushOptions,
+  ): Promise<void> {
+    if (!editingRef.current) return;
+    if (!draftController.latestValue.trim()) {
+      draftController.reset(title);
+    } else {
+      await draftController.save(options);
     }
-    setEditing(false);
+    editingRef.current = false;
+    if (mountedRef.current) {
+      setEditing(false);
+      onEditingChangeRef.current?.(false);
+    }
   }
 
+  function cancelEdit() {
+    if (!editingRef.current) return;
+    editingRef.current = false;
+    draftController.reset(title);
+    if (mountedRef.current) {
+      setDraft(title);
+      setEditing(false);
+      onEditingChangeRef.current?.(false);
+    }
+  }
+
+  useQuiescentDraftParticipant({
+    id: `grid-card-title:${nodeId}`,
+    enabled: editing,
+    isDirty: () => editingRef.current && draftController.dirty,
+    flush: commitEdit,
+    discard: cancelEdit,
+    recovery: () =>
+      editingRef.current
+        ? {
+            kind: "grid-card-title",
+            nodeId,
+            title: draftController.latestValue,
+          }
+        : null,
+  });
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter") {
       e.preventDefault();
-      commitEdit();
+      void commitEdit().catch(() => {});
     } else if (e.key === "Escape") {
-      setEditing(false);
+      e.preventDefault();
+      cancelEdit();
     }
   }
 
@@ -64,8 +133,13 @@ export function GridCardHeader({
           ref={inputRef}
           className="flex-1 min-w-0 rounded bg-accent px-1 py-0.5 text-[12px] font-medium outline-none"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitEdit}
+          onChange={(e) => {
+            draftController.markDirty(
+              e.target.value.trim() ? e.target.value : title,
+            );
+            setDraft(e.target.value);
+          }}
+          onBlur={() => void commitEdit().catch(() => {})}
           onKeyDown={handleKeyDown}
           onClick={(e) => e.stopPropagation()}
         />
