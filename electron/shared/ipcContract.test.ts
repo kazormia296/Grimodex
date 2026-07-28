@@ -2954,6 +2954,7 @@ describe("AI チャットコマンド", () => {
     const args = {
       messages: [{ role: "user", content: "hi" }],
       provider: "openai",
+      expectedOllamaEndpoint: null,
     };
     const env = await dispatchInvoke("send_chat_message", args, {
       backend,
@@ -2987,6 +2988,7 @@ describe("AI チャットコマンド", () => {
       messages: [{ role: "user", content: "yo" }],
       endpointId: "ep2",
       requestMaxOutputTokens: 32_000,
+      expectedOllamaEndpoint: "http://127.0.0.1:11434",
     };
     const env = await dispatchInvoke("send_chat_message_stream", args, {
       backend,
@@ -3223,6 +3225,7 @@ describe("AI Phase 3b コマンド", () => {
       ],
       webSearch: { enabled: true, agentic: true },
       resolvedToolProtocol: "hermes",
+      expectedOllamaEndpoint: "http://127.0.0.1:11434",
     };
     const env = await dispatchInvoke("send_agent_message", args, {
       backend,
@@ -3262,10 +3265,54 @@ describe("AI Phase 3b コマンド", () => {
     expect(methods.sendAgentMessage).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      "send_chat_message",
+      { messages: [], expectedOllamaEndpoint: 42 },
+      "sendChatMessage",
+    ],
+    [
+      "send_chat_message_stream",
+      { messages: [], expectedOllamaEndpoint: 42 },
+      "sendChatMessageStream",
+    ],
+    [
+      "send_agent_message",
+      { messages: [], tools: [], expectedOllamaEndpoint: 42 },
+      "sendAgentMessage",
+    ],
+    [
+      "list_ai_models",
+      { provider: "ollama", expectedOllamaEndpoint: 42 },
+      "listAiModels",
+    ],
+  ] as const)(
+    "%s は不正な expectedOllamaEndpoint を main 境界で拒否する",
+    async (command, args, method) => {
+      const { backend, calls } = makeBackend();
+      const env = await dispatchInvoke(command, args, {
+        backend,
+        shell: noShell,
+        secrets: secrets(),
+      });
+
+      expect(env).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/expectedOllamaEndpoint/),
+      });
+      expect(calls.some((call) => call.method === method)).toBe(false);
+    },
+  );
+
   it("list_ai_models はキー未設定を空文字にし、必須キー解決を使わない", async () => {
     const { backend, methods } = makeBackend();
     const keyStore = secrets("must-not-use", null);
-    const args = { provider: "anthropic", endpointId: null };
+    const args = {
+      provider: "anthropic",
+      endpointId: null,
+      selectedModelId: "gemma4:latest",
+      expectedOllamaEndpoint: "http://127.0.0.1:11434",
+    };
     const env = await dispatchInvoke("list_ai_models", args, {
       backend,
       shell: noShell,

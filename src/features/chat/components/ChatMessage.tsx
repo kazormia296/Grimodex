@@ -12,8 +12,14 @@ import { formatCost } from "../modelPricing";
 import { looksLikeMissingInfo } from "../agentSuggestion";
 import { stripToolProtocol } from "../toolProtocol";
 import { useChatStore } from "../chatStore";
-import { getModelCapabilities } from "../agent/modelLimits";
+import { resolveModelCapabilities } from "../agent/modelLimits";
 import { useAiSettingsStore } from "../store";
+import {
+  resolveRolePathConfig,
+  roleSettingKey,
+  ROLE_PROVIDERS_KEY,
+} from "../modelRouting";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { AnsweredQuestionBlock } from "./AnsweredQuestionBlock";
@@ -136,7 +142,46 @@ function ChatMessageImpl({
 
   // Agent mode 未使用 (toolCalls なし) で「情報が足りない」っぽい応答に
   // 限り、再試行ボタンを表示。永続トグルは変えず一回限りの再生成。
-  const currentModel = useAiSettingsStore((s) => s.settings?.model ?? "");
+  const aiSettings = useAiSettingsStore((s) => s.settings);
+  const chatModelOverride = useAiSettingsStore((s) => s.chatModelOverride);
+  const chatProviderOverride = useAiSettingsStore(
+    (s) => s.chatProviderOverride,
+  );
+  const chatModelVariantOverride = useAiSettingsStore(
+    (s) => s.chatModelVariantOverride,
+  );
+  const chatEndpointIdOverride = useAiSettingsStore(
+    (s) => s.chatEndpointIdOverride,
+  );
+  useAiSettingsStore((s) => s.modelCapsRevision);
+  useSettingsStore((s) => s.get(roleSettingKey("agent"), ""));
+  useSettingsStore((s) => s.get(ROLE_PROVIDERS_KEY, ""));
+  const agentRole = chatModelOverride
+    ? undefined
+    : resolveRolePathConfig("chat_agent_main", undefined, aiSettings?.provider);
+  const agentModel =
+    chatModelOverride ?? agentRole?.model ?? aiSettings?.model ?? "";
+  const agentProvider = chatModelOverride
+    ? (chatProviderOverride ?? aiSettings?.provider)
+    : (agentRole?.provider ?? aiSettings?.provider);
+  const agentCapabilitySettings =
+    aiSettings && agentProvider
+      ? {
+          ...aiSettings,
+          provider: agentProvider,
+          model: agentModel,
+          ...(chatEndpointIdOverride
+            ? { activeOpenaiCompatibleEndpointId: chatEndpointIdOverride }
+            : {}),
+        }
+      : aiSettings;
+  const agentSupportsTools = resolveModelCapabilities(
+    agentModel,
+    agentCapabilitySettings,
+    agentRole?.provider
+      ? agentRole.variant
+      : (chatModelVariantOverride ?? undefined),
+  ).supportsTools;
   const agentMode = useChatStore((s) => s.agentMode);
   const showAgentRetry =
     isAssistant &&
@@ -145,7 +190,7 @@ function ChatMessageImpl({
     !agentMode &&
     toolCalls.length === 0 &&
     !!onRetryWithAgent &&
-    getModelCapabilities(currentModel).supportsTools &&
+    agentSupportsTools &&
     looksLikeMissingInfo(safeContent);
 
   // G2 + G23: Copy with attribution MIME

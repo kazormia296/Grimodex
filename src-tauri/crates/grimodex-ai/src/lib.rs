@@ -1,7 +1,10 @@
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::Path;
 use std::sync::{atomic::Ordering, Arc};
+use std::time::Duration;
 
 pub mod ai_novelist;
 pub mod ai_responses;
@@ -14,7 +17,7 @@ include!(concat!(env!("OUT_DIR"), "/agent_tool_manifest.rs"));
 // 再エクスポート（`grimodex_ai::build_chat_params` 等でアクセス可能にする）。
 pub use params::{
     apply_provider_override, build_ai_novelist_extra_body, build_chat_params,
-    inline_effective_variant, should_retry_429,
+    inline_effective_variant, should_retry_429, validate_expected_ollama_endpoint,
 };
 
 /// Supported AI providers.
@@ -346,6 +349,10 @@ pub struct AiSettings {
     pub provider: AiProvider,
     pub model: String,
     pub ollama_endpoint: String,
+    /// Ollama のモデルごとにユーザーが確認・宣言した実効 context 割り当て。
+    /// `/api/show` のモデル最大値とは別物で、runner 未ロード時の事前判定に使う。
+    #[serde(default)]
+    pub ollama_context_lengths: BTreeMap<String, u64>,
     #[serde(default = "default_thinking_enabled")]
     pub thinking_enabled: bool,
     #[serde(default)]
@@ -459,6 +466,7 @@ impl Default for AiSettings {
             provider: AiProvider::OpenRouter,
             model: String::new(),
             ollama_endpoint: "http://localhost:11434".to_string(),
+            ollama_context_lengths: BTreeMap::new(),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
             openai_compatible_endpoints: Vec::new(),
@@ -485,7 +493,8 @@ pub struct AiModel {
         skip_serializing_if = "Option::is_none"
     )]
     pub api_variant: Option<String>,
-    /// OpenRouter: context window in tokens (context_length)
+    /// Provider-reported model maximum context window in tokens.
+    /// OpenRouter uses `context_length`; Ollama derives it from `/api/show` model_info.
     #[serde(
         default,
         rename = "contextLength",
@@ -499,13 +508,29 @@ pub struct AiModel {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_completion_tokens: Option<u64>,
-    /// OpenRouter: supported parameter names (supported_parameters[])
+    /// Provider-reported supported parameter names.
+    /// Ollama maps `tools` and `thinking` capabilities to `tools` and `reasoning`.
     #[serde(
         default,
         rename = "supportedParameters",
         skip_serializing_if = "Option::is_none"
     )]
     pub supported_parameters: Option<Vec<String>>,
+    /// Ollama: 現在ロード済み runner、または Modelfile の `num_ctx` が示す実効 context。
+    /// `/api/show` のモデル最大値 (`context_length`) とは混同しない。
+    #[serde(
+        default,
+        rename = "effectiveContextLength",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_context_length: Option<u64>,
+    /// Ollama の実効 context の取得元 (`runner` | `model-parameter`)。
+    #[serde(
+        default,
+        rename = "effectiveContextSource",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_context_source: Option<String>,
     /// OpenRouter: pricing.prompt (USD per token as string)
     #[serde(
         default,
@@ -542,9 +567,327 @@ fn parse_openrouter_model(m: &serde_json::Value) -> Option<AiModel> {
         context_length,
         max_completion_tokens,
         supported_parameters,
+        effective_context_length: None,
+        effective_context_source: None,
         pricing_prompt,
         pricing_completion,
     })
+}
+
+const OLLAMA_METADATA_CONCURRENCY: usize = 4;
+const OLLAMA_METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const OLLAMA_SELECTED_METADATA_TIMEOUT: Duration = Duration::from_secs(12);
+const OLLAMA_CATALOG_METADATA_TIMEOUT: Duration = Duration::from_secs(45);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OllamaRunnerContext {
+    name: String,
+    model: String,
+    digest: Option<String>,
+    context_length: u64,
+}
+
+fn ollama_model_name(value: &serde_json::Value) -> Option<&str> {
+    value["name"].as_str().or_else(|| value["model"].as_str())
+}
+
+fn normalize_ollama_model_name(name: &str) -> String {
+    name.trim()
+        .strip_suffix(":latest")
+        .unwrap_or(name.trim())
+        .to_ascii_lowercase()
+}
+
+fn ollama_tag_matches_selected(tag: &serde_json::Value, selected: &str) -> bool {
+    let normalized_selected = normalize_ollama_model_name(selected);
+    ["name", "model"]
+        .into_iter()
+        .filter_map(|key| tag[key].as_str())
+        .any(|candidate| normalize_ollama_model_name(candidate) == normalized_selected)
+}
+
+/// `/api/show` の model_info は architecture ごとに
+/// `<architecture>.context_length` という可変キーを持つ。
+/// `general.architecture` を優先し、古い/独自モデルでは最も浅い suffix match に
+/// フォールバックする。vision/audio 等の下位 architecture を誤採用しないためである。
+fn parse_ollama_model_context_length(show: &serde_json::Value) -> Option<u64> {
+    let info = show["model_info"].as_object()?;
+    if let Some(architecture) = info
+        .get("general.architecture")
+        .and_then(serde_json::Value::as_str)
+    {
+        let key = format!("{architecture}.context_length");
+        if let Some(value) = info.get(&key).and_then(serde_json::Value::as_u64) {
+            return Some(value);
+        }
+    }
+
+    info.iter()
+        .filter_map(|(key, value)| {
+            key.ends_with(".context_length")
+                .then(|| value.as_u64().map(|length| (key, length)))
+                .flatten()
+        })
+        .min_by_key(|(key, _)| key.matches('.').count())
+        .map(|(_, length)| length)
+}
+
+/// `/api/show.parameters` は `key value` の行指向テキスト。
+/// 空白差と `num_ctx = 65536` 形式も許容し、正の整数だけ採用する。
+fn parse_ollama_model_parameter_num_ctx(show: &serde_json::Value) -> Option<u64> {
+    let parameters = show["parameters"].as_str()?;
+    parameters.lines().find_map(|line| {
+        let mut tokens = line.split_whitespace();
+        let key = tokens.next()?;
+        if key != "num_ctx" {
+            return None;
+        }
+        let candidate = tokens.find(|token| *token != "=")?;
+        candidate.parse::<u64>().ok().filter(|value| *value > 0)
+    })
+}
+
+fn parse_ollama_supported_parameters(
+    show: Option<&serde_json::Value>,
+    tag: &serde_json::Value,
+) -> Option<Vec<String>> {
+    let capabilities = show
+        .and_then(|value| value["capabilities"].as_array())
+        .or_else(|| tag["capabilities"].as_array());
+    let Some(capabilities) = capabilities else {
+        // A successful `/api/show` response with no capability list is still
+        // authoritative for Agent gating. Fail closed instead of inheriting
+        // the optimistic unknown-model default.
+        return show.map(|_| Vec::new());
+    };
+    let mut supported = Vec::new();
+    for capability in capabilities.iter().filter_map(|v| v.as_str()) {
+        let parameter = match capability {
+            "tools" => "tools",
+            "thinking" => "reasoning",
+            _ => continue,
+        };
+        if !supported.iter().any(|existing| existing == parameter) {
+            supported.push(parameter.to_string());
+        }
+    }
+    // Presence of an explicit capabilities array is authoritative. Preserve
+    // `Some([])` so callers do not inherit the optimistic unknown-model default.
+    Some(supported)
+}
+
+fn parse_ollama_runner_contexts(body: &serde_json::Value) -> Vec<OllamaRunnerContext> {
+    body["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let context_length = model["context_length"]
+                .as_u64()
+                .filter(|value| *value > 0)?;
+            Some(OllamaRunnerContext {
+                name: model["name"].as_str().unwrap_or_default().to_string(),
+                model: model["model"].as_str().unwrap_or_default().to_string(),
+                digest: model["digest"]
+                    .as_str()
+                    .filter(|digest| !digest.is_empty())
+                    .map(str::to_string),
+                context_length,
+            })
+        })
+        .collect()
+}
+
+fn find_ollama_runner_context(
+    tag: &serde_json::Value,
+    runners: &[OllamaRunnerContext],
+) -> Option<u64> {
+    if let Some(digest) = tag["digest"].as_str().filter(|digest| !digest.is_empty()) {
+        if let Some(runner) = runners
+            .iter()
+            .find(|runner| runner.digest.as_deref() == Some(digest))
+        {
+            return Some(runner.context_length);
+        }
+    }
+
+    let tag_names: Vec<String> = ["name", "model"]
+        .into_iter()
+        .filter_map(|key| tag[key].as_str())
+        .map(normalize_ollama_model_name)
+        .collect();
+    runners
+        .iter()
+        .find(|runner| {
+            [&runner.name, &runner.model]
+                .into_iter()
+                .filter(|name| !name.is_empty())
+                .map(|name| normalize_ollama_model_name(name))
+                .any(|runner_name| tag_names.iter().any(|tag_name| tag_name == &runner_name))
+        })
+        .map(|runner| runner.context_length)
+}
+
+fn build_ollama_model(
+    tag: &serde_json::Value,
+    show: Option<&serde_json::Value>,
+    runners: &[OllamaRunnerContext],
+) -> Option<AiModel> {
+    let name = ollama_model_name(tag)?;
+    let context_length = show.and_then(parse_ollama_model_context_length);
+    let model_parameter_context = show.and_then(parse_ollama_model_parameter_num_ctx);
+    let runner_context = find_ollama_runner_context(tag, runners);
+    let (raw_effective_context, effective_context_source) = if let Some(length) = runner_context {
+        (Some(length), Some("runner".to_string()))
+    } else if let Some(length) = model_parameter_context {
+        (Some(length), Some("model-parameter".to_string()))
+    } else {
+        (None, None)
+    };
+    let effective_context_length = raw_effective_context.map(|length| {
+        context_length
+            .map(|maximum| length.min(maximum))
+            .unwrap_or(length)
+    });
+
+    Some(AiModel {
+        id: name.to_string(),
+        name: name.to_string(),
+        api_variant: None,
+        context_length,
+        max_completion_tokens: None,
+        supported_parameters: parse_ollama_supported_parameters(show, tag),
+        effective_context_length,
+        effective_context_source,
+        pricing_prompt: None,
+        pricing_completion: None,
+    })
+}
+
+async fn fetch_ollama_runner_contexts(
+    client: &reqwest::Client,
+    endpoint: &str,
+) -> Vec<OllamaRunnerContext> {
+    let url = format!("{}/api/ps", endpoint.trim_end_matches('/'));
+    let result = async {
+        let response = client
+            .get(url)
+            .timeout(OLLAMA_METADATA_REQUEST_TIMEOUT)
+            .send()
+            .await?
+            .error_for_status()?;
+        response.json::<serde_json::Value>().await
+    }
+    .await;
+    match result {
+        Ok(body) => parse_ollama_runner_contexts(&body),
+        Err(error) => {
+            tracing::warn!("Ollama /api/ps metadata unavailable: {error}");
+            Vec::new()
+        }
+    }
+}
+
+async fn fetch_ollama_show(
+    client: &reqwest::Client,
+    endpoint: &str,
+    model: &str,
+) -> Option<serde_json::Value> {
+    let url = format!("{}/api/show", endpoint.trim_end_matches('/'));
+    let result = async {
+        let response = client
+            .post(url)
+            .timeout(OLLAMA_METADATA_REQUEST_TIMEOUT)
+            .json(&serde_json::json!({ "model": model, "verbose": false }))
+            .send()
+            .await?
+            .error_for_status()?;
+        response.json::<serde_json::Value>().await
+    }
+    .await;
+    match result {
+        Ok(body) => Some(body),
+        Err(error) => {
+            tracing::warn!("Ollama /api/show metadata unavailable for model={model}: {error}");
+            None
+        }
+    }
+}
+
+async fn enrich_ollama_models(
+    client: &reqwest::Client,
+    endpoint: &str,
+    tags_body: &serde_json::Value,
+    selected_model: Option<&str>,
+) -> anyhow::Result<Vec<AiModel>> {
+    let tags = tags_body["models"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tag| {
+            let Some(selected) = selected_model else {
+                return true;
+            };
+            ollama_tag_matches_selected(tag, selected)
+        })
+        .collect::<Vec<_>>();
+    let runners = Arc::new(fetch_ollama_runner_contexts(client, endpoint).await);
+    let endpoint = endpoint.to_string();
+
+    if selected_model.is_some() {
+        let Some(tag) = tags.into_iter().next() else {
+            return Ok(Vec::new());
+        };
+        let Some(model) = ollama_model_name(&tag).map(str::to_string) else {
+            return Ok(Vec::new());
+        };
+        let show = fetch_ollama_show(client, &endpoint, &model).await;
+        return Ok(build_ollama_model(&tag, show.as_ref(), runners.as_slice())
+            .into_iter()
+            .collect());
+    }
+
+    let models = futures::stream::iter(tags.into_iter().filter_map(|tag| {
+        let model = ollama_model_name(&tag)?.to_string();
+        let client = client.clone();
+        let endpoint = endpoint.clone();
+        let runners = Arc::clone(&runners);
+        Some(async move {
+            let show = fetch_ollama_show(&client, &endpoint, &model).await;
+            build_ollama_model(&tag, show.as_ref(), runners.as_slice())
+        })
+    }))
+    .buffered(OLLAMA_METADATA_CONCURRENCY)
+    .filter_map(|model| async move { model })
+    .collect()
+    .await;
+    Ok(models)
+}
+
+async fn fetch_ollama_models(
+    client: &reqwest::Client,
+    endpoint: &str,
+    selected_model: Option<&str>,
+) -> anyhow::Result<Vec<AiModel>> {
+    let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+    let response = client
+        .get(url)
+        .timeout(OLLAMA_METADATA_REQUEST_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?;
+    let body = response.json::<serde_json::Value>().await?;
+    enrich_ollama_models(client, endpoint, &body, selected_model).await
+}
+
+async fn await_ollama_metadata_probe<F, T>(deadline: Duration, probe: F) -> anyhow::Result<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    tokio::time::timeout(deadline, probe)
+        .await
+        .map_err(|_| anyhow::anyhow!("Ollama model metadata probe timed out after {deadline:?}"))?
 }
 
 fn legacy_ainoverist_model(id: &str, name: &str) -> AiModel {
@@ -555,6 +898,8 @@ fn legacy_ainoverist_model(id: &str, name: &str) -> AiModel {
         context_length: None,
         max_completion_tokens: None,
         supported_parameters: None,
+        effective_context_length: None,
+        effective_context_source: None,
         pricing_prompt: None,
         pricing_completion: None,
     }
@@ -568,6 +913,8 @@ fn v1_ainoverist_model(id: &str, name: &str) -> AiModel {
         context_length: None,
         max_completion_tokens: None,
         supported_parameters: None,
+        effective_context_length: None,
+        effective_context_source: None,
         pricing_prompt: None,
         pricing_completion: None,
     }
@@ -880,6 +1227,17 @@ pub async fn fetch_models(
     api_key: &str,
     endpoints: ProviderEndpoints<'_>,
 ) -> anyhow::Result<Vec<AiModel>> {
+    fetch_models_for(provider, api_key, endpoints, None).await
+}
+
+/// Fetch available models, optionally limiting Ollama metadata enrichment to
+/// one selected model. Other providers retain their existing catalog contract.
+pub async fn fetch_models_for(
+    provider: &AiProvider,
+    api_key: &str,
+    endpoints: ProviderEndpoints<'_>,
+    selected_model: Option<&str>,
+) -> anyhow::Result<Vec<AiModel>> {
     // 静的リストを持つプロバイダは HTTP を叩かずに返す
     match provider {
         AiProvider::Anthropic => {
@@ -891,6 +1249,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -901,6 +1261,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -911,6 +1273,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -921,6 +1285,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -931,6 +1297,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -941,6 +1309,8 @@ pub async fn fetch_models(
                     context_length: None,
                     max_completion_tokens: None,
                     supported_parameters: None,
+                    effective_context_length: None,
+                    effective_context_source: None,
                     pricing_prompt: None,
                     pricing_completion: None,
                 },
@@ -962,6 +1332,19 @@ pub async fn fetch_models(
     }
 
     let client = reqwest::Client::new();
+    if matches!(provider, AiProvider::Ollama) {
+        let deadline = if selected_model.is_some() {
+            OLLAMA_SELECTED_METADATA_TIMEOUT
+        } else {
+            OLLAMA_CATALOG_METADATA_TIMEOUT
+        };
+        return await_ollama_metadata_probe(
+            deadline,
+            fetch_ollama_models(&client, endpoints.ollama, selected_model),
+        )
+        .await;
+    }
+
     let mut req = client.get(&url);
 
     match provider {
@@ -987,27 +1370,6 @@ pub async fn fetch_models(
     let body: serde_json::Value = resp.json().await?;
 
     let models = match provider {
-        AiProvider::Ollama => {
-            // Ollama returns { "models": [{ "name": "...", ... }] }
-            body["models"]
-                .as_array()
-                .unwrap_or(&vec![])
-                .iter()
-                .filter_map(|m| {
-                    let name = m["name"].as_str()?;
-                    Some(AiModel {
-                        id: name.to_string(),
-                        name: name.to_string(),
-                        api_variant: None,
-                        context_length: None,
-                        max_completion_tokens: None,
-                        supported_parameters: None,
-                        pricing_prompt: None,
-                        pricing_completion: None,
-                    })
-                })
-                .collect()
-        }
         AiProvider::OpenRouter => {
             // OpenRouter returns { "data": [{ "id", "name", "context_length",
             //   "top_provider": { "max_completion_tokens" }, "supported_parameters",
@@ -1038,6 +1400,8 @@ pub async fn fetch_models(
                         context_length: None,
                         max_completion_tokens: None,
                         supported_parameters: None,
+                        effective_context_length: None,
+                        effective_context_source: None,
                         pricing_prompt: None,
                         pricing_completion: None,
                     })
@@ -4937,6 +5301,7 @@ mod tests {
             provider: AiProvider::OpenAI,
             model: "gpt-4o".to_string(),
             ollama_endpoint: "http://localhost:11434".to_string(),
+            ollama_context_lengths: BTreeMap::from([("novel-model:latest".to_string(), 65_536)]),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
             openai_compatible_endpoints: Vec::new(),
@@ -4955,6 +5320,13 @@ mod tests {
 
         assert_eq!(loaded.provider, AiProvider::OpenAI);
         assert_eq!(loaded.model, "gpt-4o");
+        assert_eq!(
+            loaded
+                .ollama_context_lengths
+                .get("novel-model:latest")
+                .copied(),
+            Some(65_536)
+        );
         // save 往復で override が消えないこと（SHIP-BREAKER B）。
         assert_eq!(loaded.reasoning_effort_override.as_deref(), Some("high"));
 
@@ -6551,6 +6923,245 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Ollama model metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ollama_metadata_deadlines_bound_selected_and_catalog_probes() {
+        assert!(super::OLLAMA_METADATA_REQUEST_TIMEOUT > Duration::ZERO);
+        assert!(super::OLLAMA_METADATA_REQUEST_TIMEOUT < super::OLLAMA_SELECTED_METADATA_TIMEOUT);
+        assert!(super::OLLAMA_SELECTED_METADATA_TIMEOUT < super::OLLAMA_CATALOG_METADATA_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn ollama_metadata_deadline_cancels_a_pending_probe() {
+        struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe_drop = Arc::clone(&dropped);
+        let result = super::await_ollama_metadata_probe(Duration::from_millis(1), async move {
+            let _drop_flag = DropFlag(probe_drop);
+            futures::future::pending::<()>().await;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn parse_ollama_context_uses_reported_architecture_key() {
+        let show = serde_json::json!({
+            "model_info": {
+                "general.architecture": "novelarch",
+                "novelarch.context_length": 131072,
+                "novelarch.vision.context_length": 8192
+            }
+        });
+        assert_eq!(
+            super::parse_ollama_model_context_length(&show),
+            Some(131_072)
+        );
+    }
+
+    #[test]
+    fn parse_ollama_context_falls_back_to_shallow_suffix_match() {
+        let show = serde_json::json!({
+            "model_info": {
+                "general.architecture": "missing",
+                "custom.vision.context_length": 8192,
+                "custom.context_length": 65536
+            }
+        });
+        assert_eq!(
+            super::parse_ollama_model_context_length(&show),
+            Some(65_536)
+        );
+    }
+
+    #[test]
+    fn parse_ollama_num_ctx_accepts_spacing_and_equals() {
+        let show = serde_json::json!({
+            "parameters": "temperature 0.8\nnum_ctx = 65536\ntop_p 0.9"
+        });
+        assert_eq!(
+            super::parse_ollama_model_parameter_num_ctx(&show),
+            Some(65_536)
+        );
+    }
+
+    #[test]
+    fn parse_ollama_capabilities_maps_tools_and_thinking() {
+        let tag = serde_json::json!({
+            "capabilities": ["completion"]
+        });
+        let show = serde_json::json!({
+            "capabilities": ["completion", "tools", "thinking", "tools"]
+        });
+        assert_eq!(
+            super::parse_ollama_supported_parameters(Some(&show), &tag),
+            Some(vec!["tools".to_string(), "reasoning".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_ollama_capabilities_preserves_authoritative_no_tools() {
+        let tag = serde_json::json!({});
+        let show = serde_json::json!({
+            "capabilities": ["completion"]
+        });
+        assert_eq!(
+            super::parse_ollama_supported_parameters(Some(&show), &tag),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn selected_ollama_model_matches_bare_and_latest_names_only() {
+        let selected = serde_json::json!({
+            "name": "gemma4:latest",
+            "model": "gemma4:latest"
+        });
+        let unrelated = serde_json::json!({ "name": "qwen3:latest" });
+        assert!(super::ollama_tag_matches_selected(&selected, "gemma4"));
+        assert!(super::ollama_tag_matches_selected(
+            &selected,
+            "GEMMA4:latest"
+        ));
+        assert!(!super::ollama_tag_matches_selected(
+            &unrelated,
+            "gemma4:latest"
+        ));
+    }
+
+    #[test]
+    fn find_ollama_runner_prefers_digest_before_name() {
+        let tag = serde_json::json!({
+            "name": "selected:latest",
+            "digest": "digest-selected"
+        });
+        let runners = vec![
+            super::OllamaRunnerContext {
+                name: "different-name".to_string(),
+                model: "different-name".to_string(),
+                digest: Some("digest-selected".to_string()),
+                context_length: 65_536,
+            },
+            super::OllamaRunnerContext {
+                name: "selected:latest".to_string(),
+                model: "selected:latest".to_string(),
+                digest: Some("different-digest".to_string()),
+                context_length: 4_096,
+            },
+        ];
+        assert_eq!(
+            super::find_ollama_runner_context(&tag, &runners),
+            Some(65_536)
+        );
+    }
+
+    #[test]
+    fn find_ollama_runner_matches_bare_and_latest_names() {
+        let tag = serde_json::json!({ "name": "novel-model:latest" });
+        let runners = vec![super::OllamaRunnerContext {
+            name: "novel-model".to_string(),
+            model: "novel-model".to_string(),
+            digest: None,
+            context_length: 32_768,
+        }];
+        assert_eq!(
+            super::find_ollama_runner_context(&tag, &runners),
+            Some(32_768)
+        );
+    }
+
+    #[test]
+    fn build_ollama_model_runner_wins_over_model_parameter() {
+        let tag = serde_json::json!({
+            "name": "novel-model:latest",
+            "digest": "digest-1",
+            "capabilities": ["completion"]
+        });
+        let show = serde_json::json!({
+            "model_info": {
+                "general.architecture": "novelarch",
+                "novelarch.context_length": 131072
+            },
+            "parameters": "num_ctx 32768",
+            "capabilities": ["completion", "tools", "thinking"]
+        });
+        let runners = vec![super::OllamaRunnerContext {
+            name: "novel-model:latest".to_string(),
+            model: "novel-model:latest".to_string(),
+            digest: Some("digest-1".to_string()),
+            context_length: 65_536,
+        }];
+        let model = super::build_ollama_model(&tag, Some(&show), &runners).unwrap();
+        assert_eq!(model.context_length, Some(131_072));
+        assert_eq!(model.effective_context_length, Some(65_536));
+        assert_eq!(model.effective_context_source.as_deref(), Some("runner"));
+        assert_eq!(
+            model.supported_parameters,
+            Some(vec!["tools".to_string(), "reasoning".to_string()])
+        );
+        let json = serde_json::to_value(&model).unwrap();
+        assert_eq!(json["effectiveContextLength"], 65_536);
+        assert_eq!(json["effectiveContextSource"], "runner");
+    }
+
+    #[test]
+    fn build_ollama_model_uses_model_parameter_without_runner() {
+        let tag = serde_json::json!({ "name": "novel-model" });
+        let show = serde_json::json!({
+            "parameters": "num_ctx 32768"
+        });
+        let model = super::build_ollama_model(&tag, Some(&show), &[]).unwrap();
+        assert_eq!(model.effective_context_length, Some(32_768));
+        assert_eq!(
+            model.effective_context_source.as_deref(),
+            Some("model-parameter")
+        );
+    }
+
+    #[test]
+    fn build_ollama_model_keeps_tag_when_optional_metadata_is_unavailable() {
+        let tag = serde_json::json!({
+            "name": "novel-model:latest",
+            "capabilities": ["completion", "tools"]
+        });
+        let model = super::build_ollama_model(&tag, None, &[]).unwrap();
+        assert_eq!(model.id, "novel-model:latest");
+        assert_eq!(model.context_length, None);
+        assert_eq!(model.effective_context_length, None);
+        assert_eq!(model.supported_parameters, Some(vec!["tools".to_string()]));
+    }
+
+    #[test]
+    fn ollama_context_settings_serde_as_camel_case_and_default_empty() {
+        let mut settings = AiSettings::default();
+        settings
+            .ollama_context_lengths
+            .insert("novel-model:latest".to_string(), 65_536);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["ollamaContextLengths"]["novel-model:latest"], 65_536);
+
+        let legacy: AiSettings = serde_json::from_value(serde_json::json!({
+            "provider": "ollama",
+            "model": "novel-model:latest",
+            "ollamaEndpoint": "http://localhost:11434"
+        }))
+        .unwrap();
+        assert!(legacy.ollama_context_lengths.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
     // parse_openrouter_model
     // -----------------------------------------------------------------------
 
@@ -6637,6 +7248,8 @@ mod tests {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             supported_parameters: Some(vec!["reasoning".to_string()]),
+            effective_context_length: None,
+            effective_context_source: None,
             pricing_prompt: None,
             pricing_completion: None,
         };
@@ -6646,6 +7259,8 @@ mod tests {
         assert_eq!(json["maxCompletionTokens"], 128_000);
         // None フィールドは出力されない (skip_serializing_if)
         assert!(json.get("apiVariant").is_none());
+        assert!(json.get("effectiveContextLength").is_none());
+        assert!(json.get("effectiveContextSource").is_none());
         assert!(json.get("pricingPrompt").is_none());
     }
 }

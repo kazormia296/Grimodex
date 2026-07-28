@@ -42,6 +42,8 @@ function lifecycleOptions(
     includeMapBoard: false,
     mapBoardId: null,
     agentMode: false,
+    ragEnabled: false,
+    routeAuthorityKey: "chat:test-model",
     provider: null,
     currentModel: "test-model",
     allCodexEntries: [],
@@ -141,5 +143,39 @@ describe("useChatSessionLifecycle", () => {
     await flushLifecycleLoad();
 
     expect(selectSession).not.toHaveBeenCalled();
+  });
+
+  it("refreshes live context when the RAG policy changes", async () => {
+    const refreshContextLayers = vi.fn(async () => null);
+    const { rerender } = renderHook(
+      ({ ragEnabled }: { ragEnabled: boolean }) =>
+        useChatSessionLifecycle(
+          lifecycleOptions({ ragEnabled, refreshContextLayers }),
+        ),
+      { initialProps: { ragEnabled: false } },
+    );
+
+    await waitFor(() => expect(refreshContextLayers).toHaveBeenCalled());
+    refreshContextLayers.mockClear();
+    rerender({ ragEnabled: true });
+
+    await waitFor(() => expect(refreshContextLayers).toHaveBeenCalledOnce());
+  });
+
+  it("refreshes live context when model capabilities change in-place", async () => {
+    const refreshContextLayers = vi.fn(async () => null);
+    const { rerender } = renderHook(
+      ({ routeAuthorityKey }: { routeAuthorityKey: string }) =>
+        useChatSessionLifecycle(
+          lifecycleOptions({ routeAuthorityKey, refreshContextLayers }),
+        ),
+      { initialProps: { routeAuthorityKey: "ollama:gemma4:tools" } },
+    );
+
+    await waitFor(() => expect(refreshContextLayers).toHaveBeenCalled());
+    refreshContextLayers.mockClear();
+    rerender({ routeAuthorityKey: "ollama:gemma4:no-tools" });
+
+    await waitFor(() => expect(refreshContextLayers).toHaveBeenCalledOnce());
   });
 });

@@ -9,6 +9,12 @@ import type { PinnedCodexEntryWithData } from "../chatApi";
 import type { ChatPromptPreviewResult } from "../chatStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { runContextCreator } from "../contextCreatorApi";
+import { useAiSettingsStore } from "../store";
+import { DEFAULT_AI_SETTINGS } from "../types";
+import {
+  __resetDynamicModelCapsForTests,
+  registerDynamicModelCaps,
+} from "../agent/dynamicModelCaps";
 
 const chatStoreMocks = vi.hoisted(() => ({
   buildPreviewPrompt: vi.fn(),
@@ -58,6 +64,14 @@ afterEach(() => {
   useCodexStore.setState({ entries: [] });
   chatStoreMocks.buildPreviewPrompt.mockReset();
   vi.mocked(runContextCreator).mockReset().mockResolvedValue([]);
+  globalThis.localStorage?.removeItem("grimodex.modelCaps.v2");
+  globalThis.localStorage?.removeItem("grimodex.openrouterModelCaps.v1");
+  __resetDynamicModelCapsForTests();
+  useAiSettingsStore.setState({
+    settings: null,
+    models: [],
+    modelCapsRevision: 0,
+  });
 });
 
 function makeEntry(
@@ -140,6 +154,69 @@ function readyPreview(
     userMessage: "",
   };
 }
+
+describe("ContextBar model capability scope", () => {
+  it("uses the provider-scoped Ollama window while no finalized override exists", () => {
+    registerDynamicModelCaps(
+      "ollama",
+      [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          supportedParameters: ["tools"],
+        },
+      ],
+      { ollamaEndpoint: DEFAULT_AI_SETTINGS.ollamaEndpoint },
+    );
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "ollama",
+        model: "gemma4:latest",
+      },
+      modelCapsRevision: 1,
+    });
+
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        contextTokenCount={1_000}
+        model="gemma4:latest"
+        provider="ollama"
+      />,
+    );
+
+    expect(screen.getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "1",
+    );
+  });
+
+  it("does not reinterpret an explicit unknown window as the generic 8k fallback", () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "ollama",
+        model: "unknown-local:latest",
+      },
+    });
+
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        contextTokenCount={3_282}
+        contextWindowOverride={null}
+        model="unknown-local:latest"
+        provider="ollama"
+      />,
+    );
+
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+});
 
 describe("ContextBar グループ化", () => {
   it("chat_mention は表示中でも picker では未選択で、クリックを onPinEntry へ渡す", async () => {

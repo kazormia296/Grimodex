@@ -13,6 +13,8 @@ export interface ChatSessionLifecycleOptions {
   includeMapBoard: boolean;
   mapBoardId: string | null;
   agentMode: boolean;
+  ragEnabled: boolean;
+  routeAuthorityKey: string;
   provider: string | null | undefined;
   currentModel: string;
   allCodexEntries: readonly unknown[];
@@ -38,6 +40,8 @@ export function useChatSessionLifecycle({
   includeMapBoard,
   mapBoardId,
   agentMode,
+  ragEnabled,
+  routeAuthorityKey,
   provider,
   currentModel,
   allCodexEntries,
@@ -125,6 +129,8 @@ export function useChatSessionLifecycle({
     scopeAnchorId,
     includeBodies,
     agentMode,
+    ragEnabled,
+    routeAuthorityKey,
     provider,
     currentModel,
     includeMapBoard,

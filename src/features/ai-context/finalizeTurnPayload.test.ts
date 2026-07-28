@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ContextWindowExceededError,
   finalizeTurnPayload,
+  OllamaContextWindowTooSmallError,
+  OllamaContextWindowUnknownError,
   type FinalizeTurnPayloadInput,
   type ResolvedTurnRoute,
 } from "./finalizeTurnPayload";
@@ -165,6 +167,161 @@ describe("finalizeTurnPayload", () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: "AI_CONTEXT_WINDOW_EXCEEDED",
+        overflowTokens: 1,
+      });
+    }
+  });
+
+  it("rejects Ollama Agent when only the model maximum is known", () => {
+    const ollamaAgent = input({
+      route: route({
+        surface: "agent",
+        provider: "ollama",
+        model: "gemma4:latest",
+        contextWindow: 131_072,
+        modelContextWindow: 131_072,
+        contextWindowIsEffective: false,
+        contextWindowSource: "model-maximum",
+        wireOutputTokens: 4_096,
+      }),
+    });
+
+    expect(() =>
+      finalizeTurnPayload(ollamaAgent, countCharacters),
+    ).toThrowError(OllamaContextWindowUnknownError);
+    try {
+      finalizeTurnPayload(ollamaAgent, countCharacters);
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "OLLAMA_CONTEXT_WINDOW_UNKNOWN",
+        requiredTokens: 4_113,
+        modelContextWindow: 131_072,
+      });
+      expect(String(error)).toContain("OLLAMA_CONTEXT_LENGTH");
+    }
+  });
+
+  it("rejects normal Ollama chat when the effective allocation is unknown", () => {
+    expect(() =>
+      finalizeTurnPayload(
+        input({
+          route: route({
+            surface: "chat",
+            provider: "ollama",
+            model: "gemma4:latest",
+            contextWindow: 131_072,
+            modelContextWindow: 131_072,
+            contextWindowIsEffective: false,
+            contextWindowSource: "model-maximum",
+            wireOutputTokens: 4_096,
+          }),
+        }),
+        countCharacters,
+      ),
+    ).toThrowError(OllamaContextWindowUnknownError);
+  });
+
+  it("does not report the unknown-model 8k fallback as a real Ollama limit", () => {
+    const unknownDefault = input({
+      route: route({
+        surface: "chat",
+        provider: "ollama",
+        model: "unknown-local:latest",
+        contextWindow: 8_000,
+        modelContextWindow: 8_000,
+        contextWindowIsEffective: false,
+        contextWindowSource: "default",
+        wireOutputTokens: 4_096,
+      }),
+      messages: [{ role: "user", content: "x".repeat(4_000) }],
+    });
+
+    expect(() =>
+      finalizeTurnPayload(unknownDefault, countCharacters),
+    ).toThrowError(OllamaContextWindowUnknownError);
+  });
+
+  it("distinguishes an insufficient Ollama effective allocation", () => {
+    const tooSmall = input({
+      route: route({
+        surface: "agent",
+        provider: "ollama",
+        model: "gemma4:latest",
+        contextWindow: 27,
+        modelContextWindow: 131_072,
+        contextWindowIsEffective: true,
+        contextWindowSource: "runner",
+        wireOutputTokens: 10,
+      }),
+      renderedToolPayloads: ["x"],
+    });
+
+    expect(() => finalizeTurnPayload(tooSmall, countCharacters)).toThrowError(
+      OllamaContextWindowTooSmallError,
+    );
+    try {
+      finalizeTurnPayload(tooSmall, countCharacters);
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "OLLAMA_CONTEXT_WINDOW_TOO_SMALL",
+        limitKind: "effective",
+        overflowTokens: 1,
+        availableContextWindow: 27,
+        modelContextWindow: 131_072,
+      });
+      expect(String(error)).toContain("same verified effective value");
+    }
+  });
+
+  it("uses the same effective-allocation diagnosis for normal Ollama chat", () => {
+    const tooSmall = input({
+      route: route({
+        surface: "chat",
+        provider: "ollama",
+        model: "gemma4:latest",
+        contextWindow: 27,
+        modelContextWindow: 131_072,
+        contextWindowIsEffective: true,
+        contextWindowSource: "runner",
+        wireOutputTokens: 10,
+      }),
+      renderedToolPayloads: ["x"],
+    });
+
+    try {
+      finalizeTurnPayload(tooSmall, countCharacters);
+      throw new Error("expected Ollama context error");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "OLLAMA_CONTEXT_WINDOW_TOO_SMALL",
+        limitKind: "effective",
+        overflowTokens: 1,
+      });
+    }
+  });
+
+  it("distinguishes a payload larger than the Ollama model maximum", () => {
+    const tooLargeForModel = input({
+      route: route({
+        surface: "agent",
+        provider: "ollama",
+        model: "small-local",
+        contextWindow: 27,
+        modelContextWindow: 27,
+        contextWindowIsEffective: false,
+        contextWindowSource: "model-maximum",
+        wireOutputTokens: 10,
+      }),
+      renderedToolPayloads: ["x"],
+    });
+
+    try {
+      finalizeTurnPayload(tooLargeForModel, countCharacters);
+      throw new Error("expected Ollama context error");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "OLLAMA_CONTEXT_WINDOW_TOO_SMALL",
+        limitKind: "model-maximum",
         overflowTokens: 1,
       });
     }

@@ -113,6 +113,45 @@ describe("BrowserMock web AI runtime contract", () => {
     mock.close();
   });
 
+  it("rejects an Ollama route snapshot after the configured endpoint changes", async () => {
+    const complete = vi.fn().mockResolvedValue({
+      blocks: [{ type: "text", content: "must not send" }],
+      stopReason: "end_turn",
+    });
+    const listModels = vi.fn().mockResolvedValue([]);
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete, listModels },
+    });
+    await mock.invoke("save_ai_settings", {
+      settings: {
+        provider: "ollama",
+        model: "shared-model:latest",
+        ollamaEndpoint: "http://127.0.0.1:21434",
+      },
+    });
+
+    await expect(
+      mock.invoke("send_chat_message", {
+        messages: [{ role: "user", content: "hello" }],
+        provider: "ollama",
+        model: "shared-model:latest",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      }),
+    ).rejects.toThrow(/Ollama endpoint changed before request/u);
+    await expect(
+      mock.invoke("list_ai_models", {
+        provider: "ollama",
+        selectedModelId: "shared-model:latest",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      }),
+    ).rejects.toThrow(/Ollama endpoint changed before request/u);
+
+    expect(complete).not.toHaveBeenCalled();
+    expect(listModels).not.toHaveBeenCalled();
+    mock.close();
+  });
+
   it("removes a retired WebGPU preference and uses the HTTP transport", async () => {
     const authorizeAiRequest = vi.fn().mockResolvedValue(undefined);
     const complete = vi.fn().mockResolvedValue({
@@ -143,13 +182,20 @@ describe("BrowserMock web AI runtime contract", () => {
     ).not.toHaveProperty("browserAiMode");
 
     await expect(
-      mock.invoke("list_ai_models", { provider: "ollama" }),
+      mock.invoke("list_ai_models", {
+        provider: "ollama",
+        selectedModelId: "qwen3:8b",
+      }),
     ).resolves.toEqual([{ id: "qwen3:8b", name: "qwen3:8b" }]);
     await mock.invoke("send_chat_message", {
       messages: [{ role: "user", content: "hello" }],
     });
 
     expect(listModels).toHaveBeenCalledOnce();
+    expect(listModels.mock.calls[0]?.[0]).toMatchObject({
+      model: "qwen3:8b",
+      selectedModelId: "qwen3:8b",
+    });
     expect(complete).toHaveBeenCalledOnce();
     expect(listModels.mock.calls[0]?.[0]).not.toHaveProperty("browserAiMode");
     expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("browserAiMode");

@@ -26,6 +26,7 @@ const passage = (overrides: Partial<ResolvedPassage>): ResolvedPassage => ({
 const usage = (overrides: Partial<AiUsageCostRow>): AiUsageCostRow => ({
   surface: "chat",
   model: "claude-sonnet-4-6",
+  provider: "anthropic",
   tokensIn: 1_000_000,
   tokensOut: 0,
   costUsd: null,
@@ -147,6 +148,26 @@ describe("rollupCostByModel", () => {
   it("uses a sentinel for null model", () => {
     const rows = rollupCostByModel([usage({ model: null, costUsd: 0.2 })]);
     expect(rows[0].model).toBe("__unknown_model__");
+  });
+
+  it("does not assign cloud pricing to an Ollama model with the same bare id", () => {
+    const rows = rollupCostByModel([
+      usage({
+        provider: "ollama",
+        model: "claude-sonnet-4-6",
+        tokensIn: 1_000_000,
+        costUsd: null,
+      }),
+    ]);
+
+    expect(rows).toEqual([
+      {
+        model: "claude-sonnet-4-6",
+        costUsd: 0,
+        calls: 1,
+        estimated: false,
+      },
+    ]);
   });
 });
 

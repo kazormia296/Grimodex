@@ -1,15 +1,28 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
+import {
+  blockIfPolicyOff,
+  isAiFeatureBlockedByPolicy,
+} from "@/features/ai-policy/policyGuard";
+import {
+  blockIfUnlicensed,
+  isWriteRestrictedByLicense,
+} from "@/features/license/gate";
 import {
   getCurrentImeWorkspaceIdentity,
   isCurrentImeWorkspaceIdentity,
   type ImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
 import * as chatApi from "./chatApi";
-import { resolveModelForPath, resolveRolePathConfig } from "./modelRouting";
+import {
+  parseRoleProviders,
+  resolveModelForPath,
+  resolveRoleModel,
+  resolveRolePathConfig,
+  roleSettingKey,
+  ROLE_PROVIDERS_KEY,
+} from "./modelRouting";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
 // ---------------------------------------------------------------------------
@@ -28,7 +41,7 @@ function classifyError(
   if (/429|rate.?limit|too.?many.?request/i.test(msg)) return "rate_limit";
   if (/network|connect|timeout|fetch|ECONNREFUSED/i.test(msg)) return "network";
   if (
-    /AI_CONTEXT_WINDOW_EXCEEDED|context.window.exceeded|context.length.exceeded|maximum.context|token.limit|too.long|content.too.large/i.test(
+    /AI_CONTEXT_WINDOW_EXCEEDED|OLLAMA_CONTEXT_WINDOW_(?:UNKNOWN|TOO_SMALL)|OllamaContextWindow(?:Unknown|TooSmall)|context.window.exceeded|context.length.exceeded|context allocation is unknown|effective.context.window|maximum.context|token.limit|too.long|content.too.large/i.test(
       msg,
     )
   )
@@ -66,18 +79,23 @@ import {
   normalizeAskUserSpec,
 } from "./agent/askUser";
 import {
-  getToolTokenBudget,
-  getAgentToolCallBudget,
+  getToolTokenBudgetForContext,
+  getAgentToolCallBudgetForContext,
   buildThinkingParams,
   getEffortForTask,
   resolveModelCapabilities,
 } from "./agent/modelLimits";
-import { useAiSettingsStore, isRagCapableProvider } from "./store";
+import {
+  useAiSettingsStore,
+  isRagCapableProvider,
+  refreshDynamicCapsForProvider,
+} from "./store";
 import type { AiProvider } from "./types";
 import {
   finalizeTurnPayload,
   selectsCacheSystemDelivery,
 } from "@/features/ai-context/finalizeTurnPayload";
+import { createContextPlan } from "@/features/ai-context/types";
 import { planChatContext } from "./context/chatContextPlanner";
 import {
   createNonSceneTurnContextRequest,
@@ -101,6 +119,7 @@ import {
 import { renderLegacyPrompt } from "./context/legacyPromptAdapter";
 import {
   resolveChatTurnRoute,
+  resolvedChatTurnRouteAuthorityKey,
   type ResolvedChatTurnRoute,
 } from "./turn/resolveTurnRoute";
 import {
@@ -214,6 +233,273 @@ function getCrossProviderChatOverride(): {
     variant: st.chatModelVariantOverride ?? undefined,
     endpointId: st.chatEndpointIdOverride ?? undefined,
   };
+}
+
+interface AgentPreflightTarget {
+  provider: AiProvider | undefined;
+  model: string;
+  ollamaEndpoint: string;
+}
+
+interface AgentPreflightAuthority {
+  settings: string;
+  chatModelOverride: string | null;
+  chatProviderOverride: AiProvider | null;
+  chatModelVariantOverride: string | null;
+  chatEndpointIdOverride: string | null;
+  agentRoleModel: string;
+  conversationRoleModel: string;
+  roleProviders: string;
+}
+
+/**
+ * Resolve only the provider/model identity needed by the Ollama metadata
+ * preflight. It is intentionally recomputed after the await so a composer,
+ * settings, or role-route change cannot send with another model's observation.
+ */
+function resolveAgentPreflightTarget(): AgentPreflightTarget {
+  const aiState = useAiSettingsStore.getState();
+  const settings = aiState.settings;
+  const crossProvider = getCrossProviderChatOverride();
+  const composerModel = aiState.chatModelOverride;
+  const agentRole = resolveRolePathConfig(
+    "chat_agent_main",
+    undefined,
+    settings?.provider,
+  );
+  return {
+    provider: composerModel
+      ? (crossProvider?.provider ?? settings?.provider)
+      : (agentRole?.provider ?? settings?.provider),
+    model: composerModel
+      ? composerModel
+      : (agentRole?.model ?? settings?.model ?? ""),
+    ollamaEndpoint: settings?.ollamaEndpoint?.trim() ?? "",
+  };
+}
+
+/**
+ * The first selected-model `/api/show` probe deliberately bypasses the cached
+ * capability gate. A tag may have been replaced since a previous no-tools
+ * observation, and the selected model endpoint is the authority that can make
+ * the Agent role eligible again.
+ */
+function resolveRawAgentPreflightTarget(): AgentPreflightTarget {
+  const aiState = useAiSettingsStore.getState();
+  const settings = aiState.settings;
+  const crossProvider = getCrossProviderChatOverride();
+  const composerModel = aiState.chatModelOverride;
+  if (composerModel) {
+    return {
+      provider: crossProvider?.provider ?? settings?.provider,
+      model: composerModel,
+      ollamaEndpoint: settings?.ollamaEndpoint?.trim() ?? "",
+    };
+  }
+
+  const settingsState = useSettingsStore.getState();
+  const roleModel = resolveRoleModel("agent");
+  const roleProvider = parseRoleProviders(
+    settingsState.get(ROLE_PROVIDERS_KEY, ""),
+  ).agent?.provider?.trim() as AiProvider | undefined;
+  return {
+    provider: roleModel
+      ? (roleProvider ?? settings?.provider)
+      : settings?.provider,
+    model: roleModel ?? settings?.model ?? "",
+    ollamaEndpoint: settings?.ollamaEndpoint?.trim() ?? "",
+  };
+}
+
+function resolveConversationPreflightTarget(): AgentPreflightTarget {
+  const aiState = useAiSettingsStore.getState();
+  const settings = aiState.settings;
+  const crossProvider = getCrossProviderChatOverride();
+  const composerModel = aiState.chatModelOverride;
+  const conversationRole = resolveRolePathConfig(
+    "chat_stream_non_agent",
+    undefined,
+    settings?.provider,
+  );
+  return {
+    provider: composerModel
+      ? (crossProvider?.provider ?? settings?.provider)
+      : (conversationRole?.provider ?? settings?.provider),
+    model: composerModel
+      ? composerModel
+      : (conversationRole?.model ?? settings?.model ?? ""),
+    ollamaEndpoint: settings?.ollamaEndpoint?.trim() ?? "",
+  };
+}
+
+function resolveCurrentPreflightRoute(
+  surface: "chat" | "agent",
+): ResolvedChatTurnRoute | null {
+  const aiState = useAiSettingsStore.getState();
+  if (!aiState.settings) return null;
+  const crossProvider = getCrossProviderChatOverride();
+  const composerModel = aiState.chatModelOverride;
+  const role = resolveRolePathConfig(
+    surface === "agent" ? "chat_agent_main" : "chat_stream_non_agent",
+    undefined,
+    aiState.settings.provider,
+  );
+  return resolveChatTurnRoute({
+    surface,
+    activeSettings: aiState.settings,
+    activeApiVariant: getChatApiVariant(aiState.settings.model),
+    composer: composerModel
+      ? {
+          model: composerModel,
+          provider: crossProvider?.provider ?? null,
+          apiVariant: crossProvider
+            ? (crossProvider.variant ?? null)
+            : (getChatApiVariant(composerModel) ?? null),
+          endpointId: crossProvider?.endpointId ?? null,
+        }
+      : null,
+    role: role
+      ? {
+          model: role.model,
+          provider: role.provider,
+          apiVariant: role.provider
+            ? role.variant
+            : getChatApiVariant(role.model),
+          endpointId: role.endpointId,
+        }
+      : null,
+    taskEffort: getEffortForTask(surface),
+    thinkingDisplay: "summarized",
+    thinkingEnabled: aiState.settings.thinkingEnabled,
+    reasoningEffortOverride:
+      aiState.settings.reasoningEffortOverride ?? undefined,
+  });
+}
+
+interface ChatTurnRoutePolicy {
+  route: ResolvedChatTurnRoute | null;
+  ragActive: boolean;
+  agentToolsSuppressed: boolean;
+  useAgentPath: boolean;
+  publicWebSearchPath: boolean;
+}
+
+function resolveChatTurnRoutePolicy(input: {
+  agentMode: boolean;
+  ragEnabled: boolean;
+  resolveRouteForSurface: (
+    surface: "chat" | "agent",
+  ) => ResolvedChatTurnRoute | null;
+}): ChatTurnRoutePolicy {
+  let route = input.resolveRouteForSurface(input.agentMode ? "agent" : "chat");
+  let ragActive =
+    !input.agentMode &&
+    input.ragEnabled &&
+    isRagCapableProvider(route?.provider) &&
+    route?.model !== "openrouter/fusion";
+  if (ragActive) {
+    const agentCandidate = input.resolveRouteForSurface("agent");
+    if (
+      isRagCapableProvider(agentCandidate?.provider) &&
+      agentCandidate?.model !== "openrouter/fusion"
+    ) {
+      route = agentCandidate;
+    } else {
+      ragActive = false;
+    }
+  }
+  let agentToolsSuppressed = false;
+  if (
+    (input.agentMode || ragActive) &&
+    route?.capabilities.supportsTools === false
+  ) {
+    agentToolsSuppressed = true;
+    route = input.resolveRouteForSurface("chat");
+    if (input.agentMode && route?.provider === "ollama") {
+      route = Object.freeze({
+        ...route,
+        requiresEffectiveOllamaContext: true,
+      });
+    }
+    ragActive = false;
+  }
+  const isFusionModel = route?.model === "openrouter/fusion";
+  const useAgentPath =
+    (input.agentMode || ragActive) &&
+    !agentToolsSuppressed &&
+    route?.provider !== "cli" &&
+    route?.capabilities.supportsTools !== false &&
+    !isFusionModel;
+  return {
+    route,
+    ragActive,
+    agentToolsSuppressed,
+    useAgentPath,
+    publicWebSearchPath: !input.agentMode && ragActive && useAgentPath,
+  };
+}
+
+/** Mirror sendMessage's route policy for ContextBar and prompt previews. */
+function resolveCurrentChatTurnPolicy(input: {
+  agentMode: boolean;
+  ragEnabled: boolean;
+}): ChatTurnRoutePolicy {
+  return resolveChatTurnRoutePolicy({
+    ...input,
+    resolveRouteForSurface: resolveCurrentPreflightRoute,
+  });
+}
+
+export function resolveCurrentChatDisplayRoute(input: {
+  agentMode: boolean;
+  ragEnabled: boolean;
+}): ResolvedChatTurnRoute | null {
+  return resolveCurrentChatTurnPolicy(input).route;
+}
+
+/** Whether enabling RAG would actually select the public Web-search path. */
+export function canUseCurrentChatPublicRag(): boolean {
+  return resolveCurrentChatTurnPolicy({
+    agentMode: false,
+    ragEnabled: true,
+  }).publicWebSearchPath;
+}
+
+function captureAgentPreflightAuthority(): AgentPreflightAuthority {
+  const aiState = useAiSettingsStore.getState();
+  const settingsState = useSettingsStore.getState();
+  return {
+    // Includes the active OpenAI-compatible endpoint id and every endpoint
+    // definition (base URL, variant and custom limits). A same-name model on a
+    // different server is a different send authority.
+    settings: JSON.stringify(aiState.settings) ?? "null",
+    chatModelOverride: aiState.chatModelOverride,
+    chatProviderOverride: aiState.chatProviderOverride,
+    chatModelVariantOverride: aiState.chatModelVariantOverride,
+    chatEndpointIdOverride: aiState.chatEndpointIdOverride,
+    agentRoleModel: settingsState.get(roleSettingKey("agent"), ""),
+    conversationRoleModel: settingsState.get(
+      roleSettingKey("conversation"),
+      "",
+    ),
+    roleProviders: settingsState.get(ROLE_PROVIDERS_KEY, ""),
+  };
+}
+
+function isSameAgentPreflightAuthority(
+  left: AgentPreflightAuthority,
+  right: AgentPreflightAuthority,
+): boolean {
+  return (
+    left.settings === right.settings &&
+    left.chatModelOverride === right.chatModelOverride &&
+    left.chatProviderOverride === right.chatProviderOverride &&
+    left.chatModelVariantOverride === right.chatModelVariantOverride &&
+    left.chatEndpointIdOverride === right.chatEndpointIdOverride &&
+    left.agentRoleModel === right.agentRoleModel &&
+    left.conversationRoleModel === right.conversationRoleModel &&
+    left.roleProviders === right.roleProviders
+  );
 }
 
 /**
@@ -690,6 +976,35 @@ function unavailablePromptPreview(
   };
 }
 
+function buildPublicWebSearchSystemPrompt(input: {
+  language: string;
+  commandInstruction?: string;
+  useHermes: boolean;
+}): string {
+  const control = getPromptCatalog(input.language).agentControl;
+  const ragInstruction = input.useHermes
+    ? control.webSearchInstructionHermes
+    : control.webSearchInstruction;
+  const commandInstruction = input.commandInstruction?.trim();
+  return commandInstruction
+    ? `${commandInstruction}\n\n${ragInstruction}`
+    : ragInstruction;
+}
+
+async function buildPublicWebSearchPromptForProject(input: {
+  projectId: string;
+  route: ResolvedChatTurnRoute | null;
+  agentMode: boolean;
+  commandInstruction?: string;
+}): Promise<string> {
+  const projectCtx = await fetchRequiredProjectContext(input.projectId);
+  return buildPublicWebSearchSystemPrompt({
+    language: projectCtx?.language ?? "ja",
+    commandInstruction: input.commandInstruction,
+    useHermes: input.agentMode && input.route?.toolProtocol === "hermes",
+  });
+}
+
 interface ChatState {
   // Session management
   sessions: ChatSession[];
@@ -713,6 +1028,10 @@ interface ChatState {
   contextWindowSize: number | null;
   /** Model paired with contextTokenCount/contextWindowSize. */
   contextModel: string | null;
+  /** Provider namespace paired with contextModel. */
+  contextProvider: AiProvider | null;
+  /** Exact route/settings identity paired with the materialized context. */
+  contextRouteAuthorityKey: string | null;
   contextLayers: LayerBreakdown[];
   /** Typed selection plan behind contextLayers and the rendered prompt. */
   contextPlan: ChatContextPlan | null;
@@ -919,11 +1238,17 @@ interface ChatState {
       /** 429 リトライの内部カウンタ（外部呼び出しでは指定しない）。
        * 上限は MAX_RATE_LIMIT_RETRIES。 */
       _rateLimitRetry?: number;
+      /** Internal UI handshake fired exactly when this draft is accepted. */
+      _onAccepted?: () => void;
     },
   ) => Promise<void>;
   buildPromptForCopy: (
     userInput: string,
-    options?: { mentionedSceneIds?: string[]; mentionedCodexIds?: string[] },
+    options?: {
+      mentionedSceneIds?: string[];
+      mentionedCodexIds?: string[];
+      commandInstruction?: string;
+    },
   ) => Promise<string>;
   /** ChatInput の入力中テキスト getter を登録 / 解除(null で解除)。
    * buildPreviewPrompt が seed と表示に使う。 */
@@ -933,6 +1258,7 @@ interface ChatState {
           markdown: string;
           mentionedSceneIds: string[];
           mentionedCodexIds: string[];
+          commandInstruction?: string;
         })
       | null,
   ) => void;
@@ -1115,7 +1441,11 @@ async function maybeRunSummarization(
           return Promise.reject(new Error("chat turn authority changed"));
         }
         const aiState = useAiSettingsStore.getState();
-        const role = resolveRolePathConfig("summarization");
+        const role = resolveRolePathConfig(
+          "summarization",
+          undefined,
+          aiState.settings?.provider,
+        );
         const route = aiState.settings
           ? resolveChatTurnRoute({
               surface: "chat",
@@ -1157,6 +1487,7 @@ async function maybeRunSummarization(
           route?.outputBudget.requestMaxOutputTokens ?? null,
           route?.provider ?? null,
           route?.resolvedEndpointId ?? null,
+          route?.resolvedOllamaEndpoint ?? null,
         );
       },
       {
@@ -1914,6 +2245,10 @@ let _resolveUserQuestion: ((result: ToolResult) => void) | null = null;
 // Identity of the send that is still authorized to start a transport. Stop
 // clears it so an older turn cannot resume after tokenizer/context awaits.
 let _activeSendTurnId: string | null = null;
+// Claimed synchronously before any settings/session/Ollama preflight await so
+// two same-tick sends cannot both publish an optimistic turn.
+let _sendPreflightClaimId: string | null = null;
+let _sendPreflightClaimScopeKey: string | null = null;
 interface SendTurnControl {
   id: string;
   projectId: string;
@@ -2159,6 +2494,7 @@ function enqueueSessionMutation<T>(operation: () => Promise<T>): Promise<T> {
 export interface ChatComposerAuthority {
   activeSessionId: string | null;
   sessionMutation: SessionMutationAuthority;
+  aiRoute: string;
 }
 
 /** Capture the exact Project/scope/session that owns the current composer. */
@@ -2167,6 +2503,18 @@ export function captureChatComposerAuthority(): ChatComposerAuthority {
   return {
     activeSessionId: state.activeSessionId,
     sessionMutation: captureSessionMutationAuthority(state),
+    aiRoute:
+      JSON.stringify([
+        state.agentMode,
+        state.ragEnabled,
+        captureAgentPreflightAuthority(),
+        resolvedChatTurnRouteAuthorityKey(
+          resolveCurrentChatTurnPolicy({
+            agentMode: state.agentMode,
+            ragEnabled: state.ragEnabled,
+          }).route,
+        ),
+      ]) ?? "",
   };
 }
 
@@ -2184,10 +2532,12 @@ export async function awaitChatComposerAuthority(
     if (tail === _sessionMutationTail) break;
   }
   const state = useChatStore.getState();
+  const currentAuthority = captureChatComposerAuthority();
   return (
     _pendingSessionMutationCount === 0 &&
     state.activeSessionId === authority.activeSessionId &&
-    isSessionMutationAuthorityCurrent(authority.sessionMutation, state)
+    isSessionMutationAuthorityCurrent(authority.sessionMutation, state) &&
+    currentAuthority.aiRoute === authority.aiRoute
   );
 }
 
@@ -2216,6 +2566,7 @@ let _inputDraftProvider:
       markdown: string;
       mentionedSceneIds: string[];
       mentionedCodexIds: string[];
+      commandInstruction?: string;
     })
   | null = null;
 
@@ -2360,6 +2711,7 @@ async function buildOutgoingScenePrompt(
     inputText: string;
     mentionedSceneIds?: string[];
     mentionedCodexIds?: string[];
+    commandInstruction?: string;
   },
 ): Promise<{
   prompt: string;
@@ -2369,23 +2721,11 @@ async function buildOutgoingScenePrompt(
   const { activeProjectId, activeSessionId, agentMode, ragEnabled, messages } =
     get();
 
-  // send (sendMessage) は agentMode トグル OFF でも web 検索 RAG が有効な対応
-  // プロバイダ時は agent パスに入り agentMode:true で L0 に agentInstruction を足す。
-  // 逆に cli は RAG 非対応かつ agent パス対象外。preview/copy を同じ判定に揃える。
-  const aiState = useAiSettingsStore.getState();
-  const xprov = getCrossProviderChatOverride();
-  const aiProvider = xprov?.provider ?? aiState.settings?.provider;
-  // openrouter/fusion (マルチモデル合議) はツール呼び出しと両立できない。OpenRouter は
-  // tools[] 同梱時にカスタムパネル(analysis_models)を無視して既定パネルに落とすため、
-  // fusion 選択時は常にプレーン経路(非エージェント・Web検索なし)に通し、fusion plugin が
-  // tools 無しで効くようにする(現在の実モデル = 一時オーバーライド優先で判定)。
-  const isFusionModel =
-    (aiState.chatModelOverride ?? aiState.settings?.model) ===
-    "openrouter/fusion";
-  const ragActive =
-    ragEnabled && isRagCapableProvider(aiProvider) && !isFusionModel;
-  const effectiveAgentMode =
-    (agentMode || ragActive) && aiProvider !== "cli" && !isFusionModel;
+  const routePolicy = resolveCurrentChatTurnPolicy({
+    agentMode,
+    ragEnabled,
+  });
+  const effectiveAgentMode = routePolicy.useAgentPath;
   const projectId = activeProjectId ?? getCurrentProjectId();
   const activeSession = activeSessionId
     ? get().sessions.find((session) => session.id === activeSessionId)
@@ -2393,11 +2733,6 @@ async function buildOutgoingScenePrompt(
   if (activeSession && activeSession.projectId !== projectId) {
     throw new Error("chat session project mismatch");
   }
-  const authority = captureSceneTurnAuthority({
-    projectId,
-    sceneId: effectiveSceneId,
-    agentMode: effectiveAgentMode,
-  });
   await ensureTokenizer();
   if (
     activeSessionId &&
@@ -2406,6 +2741,26 @@ async function buildOutgoingScenePrompt(
     throw new Error("chat session project mismatch");
   }
 
+  if (routePolicy.publicWebSearchPath) {
+    const prompt = await buildPublicWebSearchPromptForProject({
+      projectId,
+      route: routePolicy.route,
+      agentMode,
+      commandInstruction: opts.commandInstruction,
+    });
+    return {
+      prompt,
+      layers: [],
+      totalTokens: countTokens(prompt),
+    };
+  }
+
+  const authority = captureSceneTurnAuthority({
+    projectId,
+    sceneId: effectiveSceneId,
+    agentMode: effectiveAgentMode,
+    turnRoute: routePolicy.route ?? undefined,
+  });
   const [sceneCtx, projectCtx] = await Promise.all([
     fetchSceneContext(effectiveSceneId, projectId),
     fetchRequiredProjectContext(projectId),
@@ -2449,6 +2804,7 @@ async function buildOutgoingScenePrompt(
     projectCtx,
     activeSessionId,
     conversationMessages,
+    commandInstruction: opts.commandInstruction,
     mentionedSceneIds: opts.mentionedSceneIds,
     mentionedCodexIds: opts.mentionedCodexIds,
     semanticRecallSeedMessage: seed,
@@ -2604,11 +2960,34 @@ function captureSceneTurnAuthority(input: {
   const aiState = useAiSettingsStore.getState();
   const aiSettings = aiState.settings;
   const xprov = getCrossProviderChatOverride();
-  const chatModel = aiState.chatModelOverride ?? aiSettings?.model ?? "";
-  const apiVariant = xprov ? xprov.variant : getChatApiVariant(chatModel);
+  const role = aiState.chatModelOverride
+    ? undefined
+    : resolveRolePathConfig(
+        input.agentMode ? "chat_agent_main" : "chat_stream_non_agent",
+        undefined,
+        aiSettings?.provider,
+      );
+  const chatModel =
+    aiState.chatModelOverride ?? role?.model ?? aiSettings?.model ?? "";
+  const provider = aiState.chatModelOverride
+    ? (xprov?.provider ?? aiSettings?.provider)
+    : (role?.provider ?? aiSettings?.provider);
+  const apiVariant =
+    xprov?.variant ?? role?.variant ?? getChatApiVariant(chatModel);
+  const capabilitySettings =
+    aiSettings && provider
+      ? {
+          ...aiSettings,
+          provider,
+          model: chatModel,
+          ...(xprov?.endpointId
+            ? { activeOpenaiCompatibleEndpointId: xprov.endpointId }
+            : {}),
+        }
+      : aiSettings;
   const fallbackCapabilities = resolveModelCapabilities(
     chatModel,
-    aiSettings,
+    capabilitySettings,
     apiVariant,
   );
   const chatState = useChatStore.getState();
@@ -2922,12 +3301,42 @@ function captureNonSceneContextAuthority(input: {
   inputOverheadTokens?: number;
 }): CapturedNonSceneContextAuthority {
   const { state, projectId, route } = input;
-  const aiSettings = useAiSettingsStore.getState().settings;
-  const model = route?.model ?? aiSettings?.model ?? "";
+  const aiState = useAiSettingsStore.getState();
+  const aiSettings = aiState.settings;
+  const xprov = getCrossProviderChatOverride();
+  const role = aiState.chatModelOverride
+    ? undefined
+    : resolveRolePathConfig(
+        input.mode === "agent" ? "chat_agent_main" : "chat_stream_non_agent",
+        undefined,
+        aiSettings?.provider,
+      );
+  const model =
+    route?.model ??
+    aiState.chatModelOverride ??
+    role?.model ??
+    aiSettings?.model ??
+    "";
+  const provider =
+    route?.provider ??
+    (aiState.chatModelOverride
+      ? (xprov?.provider ?? aiSettings?.provider)
+      : (role?.provider ?? aiSettings?.provider));
+  const capabilitySettings =
+    aiSettings && provider
+      ? {
+          ...aiSettings,
+          provider,
+          model,
+          ...(xprov?.endpointId
+            ? { activeOpenaiCompatibleEndpointId: xprov.endpointId }
+            : {}),
+        }
+      : aiSettings;
   const fallbackCapabilities = resolveModelCapabilities(
     model,
-    aiSettings,
-    getChatApiVariant(model),
+    capabilitySettings,
+    xprov?.variant ?? role?.variant ?? getChatApiVariant(model),
   );
   const contextWindow =
     route?.contextWindow ?? fallbackCapabilities.contextWindow;
@@ -3065,6 +3474,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   contextTokenCount: 0,
   contextWindowSize: null,
   contextModel: null,
+  contextProvider: null,
+  contextRouteAuthorityKey: null,
   contextLayers: [],
   contextPlan: null,
   lastSystemPrompt: "",
@@ -3116,6 +3527,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       contextTokenCount: 0,
       contextWindowSize: null,
       contextModel: null,
+      contextProvider: null,
+      contextRouteAuthorityKey: null,
       contextLayers: [],
       contextPlan: null,
       lastSystemPrompt: "",
@@ -3849,22 +4262,31 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   buildPromptForCopy: async (
     userInput: string,
-    options?: { mentionedSceneIds?: string[]; mentionedCodexIds?: string[] },
+    options?: {
+      mentionedSceneIds?: string[];
+      mentionedCodexIds?: string[];
+      commandInstruction?: string;
+    },
   ): Promise<string> => {
     const {
       activeSceneId,
       chatScope,
       threadFocusOverride,
       messages: prevMessages,
+      agentMode,
+      ragEnabled,
     } = get();
     // Phase 3b: スレッド focus 中は scene 経路を使わない（refreshContextLayers と整合）。
     const effectiveSceneId =
       chatScope === "scene" && activeSceneId && !threadFocusOverride
         ? activeSceneId
         : null;
+    const routePolicy = resolveCurrentChatTurnPolicy({
+      agentMode,
+      ragEnabled,
+    });
 
     const parts: string[] = [];
-    let needsMentionCleanup = false;
 
     try {
       if (effectiveSceneId) {
@@ -3873,18 +4295,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           inputText: userInput,
           mentionedSceneIds: options?.mentionedSceneIds,
           mentionedCodexIds: options?.mentionedCodexIds,
+          commandInstruction: options?.commandInstruction,
         });
         if (built) {
           parts.push(`[system]\n${built.prompt}`);
         }
+      } else if (routePolicy.publicWebSearchPath) {
+        const prompt = await buildPublicWebSearchPromptForProject({
+          projectId: get().activeProjectId ?? getCurrentProjectId(),
+          route: routePolicy.route,
+          agentMode,
+          commandInstruction: options?.commandInstruction,
+        });
+        parts.push(`[system]\n${prompt}`);
       } else {
         // Every non-scene scope builds a copy-specific immutable TurnRequest.
         // lastSystemPrompt は UI cache であり、copy correctness には流用しない。
-        // mentions 込みで refresh すると lastSystemPrompt に @scene pin が焼き込まれ、
-        // ユーザーが mention を消して送信した次回送信でも古い pin を吸う。Copy 後に
-        // mentions 無しで refresh し直して state を巻き戻す（後段の finally で実行）。
-        const hadMentions =
-          !!options?.mentionedSceneIds && options.mentionedSceneIds.length > 0;
         const refreshed = await get().refreshContextLayers({
           purpose: "copy",
           conversationMessages: [
@@ -3898,11 +4324,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             },
           ],
           outgoingUserMessage: userInput,
+          commandInstruction: options?.commandInstruction,
           mentionedSceneIds: options?.mentionedSceneIds,
           mentionedCodexIds: options?.mentionedCodexIds,
+          agentModeOverride: routePolicy.useAgentPath,
+          turnRoute: routePolicy.route ?? undefined,
           strict: true,
         });
-        needsMentionCleanup = hadMentions;
         const prompt = refreshed?.prompt ?? "";
         if (prompt) {
           parts.push(`[system]\n${prompt}`);
@@ -3912,20 +4340,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       console.error("[buildPromptForCopy] context fetch failed:", e);
     }
 
-    if (needsMentionCleanup) {
-      // Copy 用に mentions 込みで焼き込んだ state を巻き戻す。失敗しても Copy 結果には
-      // 影響しないので個別 catch でログのみ。
-      try {
-        await get().refreshContextLayers();
-      } catch (e) {
-        console.error("[buildPromptForCopy] cleanup refresh failed:", e);
+    // Public Web search sends no private conversation history. Copy must
+    // describe the exact outgoing payload rather than leaking/claiming rows
+    // that the transport intentionally omits.
+    if (!routePolicy.publicWebSearchPath) {
+      for (const msg of prevMessages) {
+        if (msg.role === "system") continue;
+        parts.push(`[${msg.role}]\n${msg.content}`);
       }
-    }
-
-    // 会話履歴
-    for (const msg of prevMessages) {
-      if (msg.role === "system") continue;
-      parts.push(`[${msg.role}]\n${msg.content}`);
     }
 
     // 今回のユーザー入力
@@ -3948,14 +4370,75 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       _replaceAssistantMessageId?: string;
       /** 429 リトライの内部カウンタ（外部呼び出しでは指定しない）。 */
       _rateLimitRetry?: number;
+      /** Internal UI handshake fired after owned placeholders are published. */
+      _onAccepted?: () => void;
     },
   ) => {
+    if (!content.trim()) return;
+    const captureSendPreflightScopeKey = (): string => {
+      const state = get();
+      return JSON.stringify([
+        getCurrentImeWorkspaceIdentity(),
+        state.activeProjectId,
+        state.activeSessionId,
+        state.activeSceneId,
+        state.chatScope,
+        state.scopeAnchorId,
+        state.threadFocusOverride?.threadId ?? null,
+        state.agentMode,
+        state.ragEnabled,
+        state.messages,
+        captureAgentPreflightAuthority(),
+      ]);
+    };
+    const captureSendInvocationAiAuthority = (): string => {
+      const state = get();
+      return (
+        JSON.stringify([
+          state.agentMode,
+          state.ragEnabled,
+          captureAgentPreflightAuthority(),
+          resolvedChatTurnRouteAuthorityKey(
+            resolveCurrentChatTurnPolicy({
+              agentMode: state.agentMode,
+              ragEnabled: state.ragEnabled,
+            }).route,
+          ),
+        ]) ?? ""
+      );
+    };
+    const sendPreflightScopeKey = captureSendPreflightScopeKey();
+    const sendInvocationAiAuthority = captureSendInvocationAiAuthority();
+    if (
+      _sendPreflightClaimId !== null &&
+      _sendPreflightClaimScopeKey === sendPreflightScopeKey
+    ) {
+      return;
+    }
+    const sendPreflightClaimId = crypto.randomUUID();
+    _sendPreflightClaimId = sendPreflightClaimId;
+    _sendPreflightClaimScopeKey = sendPreflightScopeKey;
+    const releaseSendPreflightClaim = (): void => {
+      if (_sendPreflightClaimId === sendPreflightClaimId) {
+        _sendPreflightClaimId = null;
+        _sendPreflightClaimScopeKey = null;
+      }
+    };
     // Preserve Send's synchronous authority snapshot on the normal fast path.
-    // Only yield when a session mutation was already requested; a mutation
-    // requested after this check cannot interleave before `isStreaming` is set
-    // because the code below has no await before publishing the placeholders.
+    // Agent + Ollama additionally performs one metadata preflight before
+    // publishing placeholders; that exceptional await revalidates this complete
+    // snapshot below before any chat state is mutated.
     if (_pendingSessionMutationCount > 0) {
-      await _sessionMutationTail;
+      try {
+        await _sessionMutationTail;
+      } catch (error) {
+        releaseSendPreflightClaim();
+        throw error;
+      }
+      if (captureSendInvocationAiAuthority() !== sendInvocationAiAuthority) {
+        releaseSendPreflightClaim();
+        return;
+      }
     }
     const turnWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
     const {
@@ -3968,11 +4451,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       chatScope,
       scopeAnchorId,
       threadFocusOverride,
+      ragEnabled: capturedRagEnabled,
       messages: capturedMessages,
       sessions: initialSessions,
     } = get();
-    if (isStreaming || isLoadingSessions || isLoadingMessages) return;
-    if (!content.trim()) return;
+    if (isStreaming || isLoadingSessions || isLoadingMessages) {
+      releaseSendPreflightClaim();
+      return;
+    }
     const replacementAssistantMessageId =
       options?._replaceAssistantMessageId ?? null;
     const replacementAssistantMessage = replacementAssistantMessageId
@@ -3985,6 +4471,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       (replacementAssistantMessage?.role !== "assistant" ||
         replacementAssistantMessage.sessionId !== activeSessionId)
     ) {
+      releaseSendPreflightClaim();
       return;
     }
     const initialMessages = replacementAssistantMessageId
@@ -3999,8 +4486,164 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // になるが、Enter / Cmd+Enter / regenerate / agent 再入は全てこの sendMessage
     // に集約されるため、ここで塞げば UI を経由しない送信経路も封じられる。
     // 最初の set() より前に判定する。
-    if (blockIfPolicyOff("chat")) return;
-    if (blockIfUnlicensed()) return;
+    if (blockIfPolicyOff("chat")) {
+      releaseSendPreflightClaim();
+      return;
+    }
+    if (blockIfUnlicensed()) {
+      releaseSendPreflightClaim();
+      return;
+    }
+
+    const agentModeForPreflight = options?.overrideAgentMode ?? get().agentMode;
+    const preflightAuthority = captureAgentPreflightAuthority();
+    let preflightRouteAuthorityKey: string | null;
+    try {
+      const probedOllamaTargets = new Set<string>();
+      const probeOllamaTarget = async (
+        preflightTarget: AgentPreflightTarget,
+        requireCapabilities: boolean,
+      ): Promise<boolean> => {
+        if (
+          preflightTarget.provider !== "ollama" ||
+          !preflightTarget.model ||
+          preflightTarget.model === "openrouter/fusion"
+        ) {
+          return true;
+        }
+        const targetKey = `${preflightTarget.ollamaEndpoint}\u0000${preflightTarget.model}`;
+        if (probedOllamaTargets.has(targetKey)) return true;
+        probedOllamaTargets.add(targetKey);
+        const observedModels = await refreshDynamicCapsForProvider("ollama", {
+          force: true,
+          selectedModelId: preflightTarget.model,
+          ollamaEndpoint: preflightTarget.ollamaEndpoint,
+          requireOllamaCapabilities: requireCapabilities,
+        });
+        if (_pendingSessionMutationCount > 0) {
+          await _sessionMutationTail;
+        }
+        const current = get();
+        const sameAiAuthority = isSameAgentPreflightAuthority(
+          preflightAuthority,
+          captureAgentPreflightAuthority(),
+        );
+        const sameThreadFocus =
+          current.threadFocusOverride?.threadId ===
+          threadFocusOverride?.threadId;
+        const sameRequestedAgentMode =
+          options?.overrideAgentMode !== undefined ||
+          current.agentMode === agentModeForPreflight;
+        if (
+          current.isStreaming ||
+          current.isLoadingSessions ||
+          current.isLoadingMessages ||
+          current.activeSceneId !== activeSceneId ||
+          current.activeProjectId !== activeProjectId ||
+          current.activeSessionId !== activeSessionId ||
+          current.chatScope !== chatScope ||
+          current.scopeAnchorId !== scopeAnchorId ||
+          current.ragEnabled !== capturedRagEnabled ||
+          current.messages !== capturedMessages ||
+          !sameAiAuthority ||
+          !sameThreadFocus ||
+          !sameRequestedAgentMode ||
+          _sendPreflightClaimId !== sendPreflightClaimId ||
+          !isCapturedWorkspaceCurrent(turnWorkspaceIdentity)
+        ) {
+          return false;
+        }
+        // Policy/license may change while the local metadata request is in
+        // flight; re-check before publishing the user/assistant placeholders.
+        if (blockIfPolicyOff("chat")) return false;
+        if (blockIfUnlicensed()) return false;
+        if (observedModels === null || observedModels.length === 0) {
+          const message =
+            observedModels === null
+              ? i18next.t("chat.ollamaMetadataUnavailable", {
+                  model: preflightTarget.model,
+                })
+              : i18next.t("chat.ollamaModelUnavailable", {
+                  model: preflightTarget.model,
+                });
+          set({ error: message });
+          toast.error(i18next.t("chat.sendFailed", { message }));
+          return false;
+        }
+        return true;
+      };
+
+      if (agentModeForPreflight) {
+        // Stage 1: probe the raw Agent assignment even when a cached no-tools
+        // flag currently gates it out. The selected model's `/api/show` result
+        // can make a replaced tag eligible again.
+        const rawAgentTarget = resolveRawAgentPreflightTarget();
+        if (
+          rawAgentTarget.provider === "ollama" &&
+          !(await probeOllamaTarget(rawAgentTarget, true))
+        )
+          return;
+
+        // Stage 2: capability gating may now resolve to the active model. Probe
+        // that eventual Agent route before trusting its tools/context metadata.
+        const agentTarget = resolveAgentPreflightTarget();
+        if (
+          agentTarget.provider === "ollama" &&
+          !(await probeOllamaTarget(agentTarget, true))
+        )
+          return;
+
+        // Stage 3: a no-tools Agent route is deliberately sent as plain chat.
+        // Probe the conversation role as well so the final Ollama context guard
+        // never evaluates (or sends) an unobserved fallback model.
+        const agentRouteAfterProbe = resolveCurrentPreflightRoute("agent");
+        const conversationTarget = resolveConversationPreflightTarget();
+        if (
+          agentRouteAfterProbe?.capabilities.supportsTools === false &&
+          conversationTarget.provider === "ollama" &&
+          !(await probeOllamaTarget(conversationTarget, false))
+        ) {
+          return;
+        }
+
+        const finalAgentRoute = resolveCurrentPreflightRoute("agent");
+        const finalTarget =
+          finalAgentRoute?.capabilities.supportsTools === false
+            ? resolveConversationPreflightTarget()
+            : resolveAgentPreflightTarget();
+        const finalTargetKey = `${finalTarget.ollamaEndpoint}\u0000${finalTarget.model}`;
+        if (
+          finalTarget.provider === "ollama" &&
+          finalTarget.model &&
+          finalTarget.model !== "openrouter/fusion" &&
+          !probedOllamaTargets.has(finalTargetKey)
+        ) {
+          // A route transition outside raw-role → gated-agent → conversation is
+          // not safe to send without another selected-model observation.
+          return;
+        }
+      } else {
+        const conversationTarget = resolveConversationPreflightTarget();
+        if (
+          conversationTarget.provider === "ollama" &&
+          !(await probeOllamaTarget(conversationTarget, false))
+        ) {
+          // Plain Ollama chat also refreshes the selected model so it never uses
+          // the generic unknown-model 8k limit. Small requests remain usable when
+          // only the model maximum is known; exact effective overflows are still
+          // diagnosed by the final payload guard.
+          return;
+        }
+      }
+      preflightRouteAuthorityKey = resolvedChatTurnRouteAuthorityKey(
+        resolveCurrentChatTurnPolicy({
+          agentMode: agentModeForPreflight,
+          ragEnabled: capturedRagEnabled,
+        }).route,
+      );
+    } finally {
+      releaseSendPreflightClaim();
+    }
 
     const aiSettingsEarly = useAiSettingsStore.getState().settings;
     // チャット用一時モデル(あれば)を含めた実効モデル。これでチャットパネルでの
@@ -4046,6 +4689,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (!aiSendState.settings) return null;
       const role = resolveRolePathConfig(
         surface === "agent" ? "chat_agent_main" : "chat_stream_non_agent",
+        undefined,
+        aiSendState.settings.provider,
       );
       return resolveChatTurnRoute({
         surface,
@@ -4079,34 +4724,26 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       });
     };
 
-    // Route selection precedes all mode/transport decisions. RAG first checks
-    // the conversation route, then switches once to the Agent role if that
-    // provider can actually serve Web search.
-    let turnRoute = resolveRouteForSurface(
-      agentModeForThisSend ? "agent" : "chat",
-    );
-    let isFusionModel =
-      (turnRoute?.model ??
-        aiSendState.chatModelOverride ??
-        aiSendState.settings?.model) === "openrouter/fusion";
-    let ragActive =
-      get().ragEnabled &&
-      isRagCapableProvider(turnRoute?.provider) &&
-      !isFusionModel;
-    if (!agentModeForThisSend && ragActive) {
-      turnRoute = resolveRouteForSurface("agent");
-      isFusionModel = turnRoute?.model === "openrouter/fusion";
-      ragActive =
-        get().ragEnabled &&
-        isRagCapableProvider(turnRoute?.provider) &&
-        !isFusionModel;
+    // One policy resolver owns the route and mode decision used by send,
+    // ContextBar, preview, and copy.
+    const turnPolicy = resolveChatTurnRoutePolicy({
+      agentMode: agentModeForThisSend,
+      ragEnabled: capturedRagEnabled,
+      resolveRouteForSurface,
+    });
+    const {
+      route: turnRoute,
+      ragActive,
+      useAgentPath,
+      publicWebSearchPath,
+    } = turnPolicy;
+    if (
+      resolvedChatTurnRouteAuthorityKey(turnRoute) !==
+      preflightRouteAuthorityKey
+    ) {
+      return;
     }
-    // CLI is subprocess-only; Fusion is chat-completions-only. Both stay on
-    // the plain path even when the Agent toggle is enabled.
-    const useAgentPath =
-      (agentModeForThisSend || ragActive) &&
-      turnRoute?.provider !== "cli" &&
-      !isFusionModel;
+    const turnRouteAuthorityKey = resolvedChatTurnRouteAuthorityKey(turnRoute);
     const settingsStateAtTurnStart = useSettingsStore.getState();
     const webSearchControlsAtTurnStart = parseWebSearchControls({
       domainMode: settingsStateAtTurnStart.get(
@@ -4131,7 +4768,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       webSearchConfig: configuredWebSearchConfigAtTurnStart,
     });
     const webSearchConfigAtTurnStart = agentPrivacyPlan.webSearchConfig;
-    const publicWebSearchPath = agentPrivacyPlan.contextMode === "public-web";
+    const privacyPlanUsesPublicWeb =
+      agentPrivacyPlan.contextMode === "public-web";
+    if (privacyPlanUsesPublicWeb !== publicWebSearchPath) {
+      throw new Error("chat route privacy policy mismatch");
+    }
     const useHermesRagInstruction =
       publicWebSearchPath && turnRoute?.toolProtocol === "hermes";
     const ragInstructionTokenReserve = publicWebSearchPath
@@ -4261,6 +4902,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // session it creates below. Any other session transition invalidates it.
     let turnSessionId = activeSessionId;
     let transportStarted = false;
+    let acceptedNotified = false;
+    const notifyAccepted = (): void => {
+      if (acceptedNotified) return;
+      acceptedNotified = true;
+      try {
+        options?._onAccepted?.();
+      } catch (error) {
+        debugLog.warn(
+          "ChatStore",
+          "send acceptance callback",
+          errorDetail(error),
+        );
+      }
+    };
     _activeSendTurnId = sendTurnId;
     _activeSendControl = sendControl;
     _finalizeStoppedStream = null;
@@ -4291,7 +4946,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         current.chatScope === chatScope &&
         current.scopeAnchorId === scopeAnchorId &&
         sameThreadFocus &&
-        sameTemporalAnchor
+        sameTemporalAnchor &&
+        isSameAgentPreflightAuthority(
+          preflightAuthority,
+          captureAgentPreflightAuthority(),
+        ) &&
+        resolvedChatTurnRouteAuthorityKey(
+          resolveCurrentChatTurnPolicy({
+            agentMode: agentModeForThisSend,
+            ragEnabled: capturedRagEnabled,
+          }).route,
+        ) === turnRouteAuthorityKey
       );
     };
     let replacementCommitted = false;
@@ -4339,9 +5004,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       !isCurrentTurn() ||
       !capturedWorkspaceIsCurrent() ||
       !capturedProjectIsCurrent() ||
-      !capturedChatAuthorityIsCurrent();
+      !capturedChatAuthorityIsCurrent() ||
+      isAiFeatureBlockedByPolicy("chat") ||
+      isWriteRestrictedByLicense();
     const assertTurnAuthority = (): void => {
       if (shouldAbortTurn()) {
+        // Emit the specific user-facing reason once at the transport boundary.
+        blockIfPolicyOff("chat");
+        blockIfUnlicensed();
         sendControl.aborted = true;
         throw new Error("chat turn authority changed");
       }
@@ -4550,6 +5220,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                   layers: sentAgentContextLayers,
                   totalTokens: sentAgentContextTokenCount,
                   model: currentAgentModel || null,
+                  provider: turnRoute?.provider ?? null,
+                  contextWindow: turnRoute?.contextWindow ?? null,
                 })
                 .catch((error) =>
                   debugLog.warn(
@@ -4688,6 +5360,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             contextTokenCount: ctxResult.totalTokens,
             contextWindowSize: turnRoute?.contextWindow ?? null,
             contextModel: turnRoute?.model ?? null,
+            contextProvider: turnRoute?.provider ?? null,
+            contextRouteAuthorityKey:
+              resolvedChatTurnRouteAuthorityKey(turnRoute),
             contextLayers: ctxResult.layers,
             contextPlan: ctxResult.contextPlan,
             lastSystemPrompt: ctxResult.prompt,
@@ -4734,27 +5409,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // 再構築するため、安全指示を tail にも付与する。Public RAG は private
         // context を持たず cacheSegments もないので fallback system 本文を使う。
         if (publicWebSearchPath) {
-          // 公開検索へ private scene/history は渡さないが、スラッシュコマンドから
-          // 生成した信頼済みの system 指示はこのターンの意図として保持する。
-          systemPromptForAgent = commandInstruction ?? "";
-          // Public RAG は client tools を宣言しないため、標準版の指示を使う。
-          // Hermes 用指示は private Agent と Web 検索を併用する旧経路を残さないため
-          // 到達しないが、wire 互換のため条件は保持する。
-          const ragAgentControl = getPromptCatalog(
-            projectCtx?.language ?? "ja",
-          ).agentControl;
-          const useHermesRag =
-            agentModeForThisSend && turnRoute?.toolProtocol === "hermes";
-          const ragInstruction = useHermesRag
-            ? ragAgentControl.webSearchInstructionHermes
-            : ragAgentControl.webSearchInstruction;
-          systemPromptForAgent = systemPromptForAgent
-            ? `${systemPromptForAgent}\n\n${ragInstruction}`
-            : ragInstruction;
+          systemPromptForAgent = buildPublicWebSearchSystemPrompt({
+            language: projectCtx?.language ?? "ja",
+            commandInstruction,
+            useHermes:
+              agentModeForThisSend && turnRoute?.toolProtocol === "hermes",
+          });
           if (
             systemCacheSegmentsForAgent &&
             systemCacheSegmentsForAgent.length > 0
           ) {
+            const ragInstruction = buildPublicWebSearchSystemPrompt({
+              language: projectCtx?.language ?? "ja",
+              useHermes:
+                agentModeForThisSend && turnRoute?.toolProtocol === "hermes",
+            });
             systemVolatileTailForAgent = systemVolatileTailForAgent
               ? `${systemVolatileTailForAgent}\n\n${ragInstruction}`
               : ragInstruction;
@@ -4795,7 +5464,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // agent ロールの横断割り当て（別プロバイダ/別エンドポイント）。chat_agent_main /
         // agent_research_subagent は同一 "agent" ロールなので、ここで解決した
         // provider/endpoint/variant をサブエージェント送信にも流用する。
-        const agentRole = resolveRolePathConfig("chat_agent_main");
+        const agentRole = resolveRolePathConfig(
+          "chat_agent_main",
+          undefined,
+          aiSettings?.provider,
+        );
         const currentModel =
           turnRoute?.model ??
           (xprov
@@ -4823,9 +5496,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             : agentRole?.provider
               ? agentRole.variant
               : getChatApiVariant(currentModel);
-        const tokenBudget = getToolTokenBudget(currentModel);
+        const effectiveContextWindow =
+          turnRoute?.contextWindow ??
+          resolveModelCapabilities(currentModel, aiSettings, agentApiVariant)
+            .contextWindow;
+        const tokenBudget = getToolTokenBudgetForContext(
+          effectiveContextWindow,
+        );
         // model-aware なツール呼び出し上限。大窓モデルほど多段探索を許す。
-        const parentMaxToolCalls = getAgentToolCallBudget(currentModel);
+        const parentMaxToolCalls = getAgentToolCallBudgetForContext(
+          effectiveContextWindow,
+        );
         // run_research（サブエージェント）の 1 ターンあたり呼び出し上限。
         // 各サブエージェントは独立したループ（高コスト）なので、親予算とは別枠で
         // 厳しめに絞る。各呼び出しは parentMaxToolCalls も 1 消費する。
@@ -4947,6 +5628,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 callLimitMessage: agentControl.researchLimitMessage,
                 tokenBudgetMessage: agentControl.researchLimitMessage,
                 sendToLLM: async (msgs, tools) => {
+                  assertTurnAuthority();
                   const finalized = turnRoute
                     ? finalizeChatTurnPayload({
                         route: turnRoute,
@@ -4972,7 +5654,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                       (xprov
                         ? xprov.model
                         : (agentRole?.model ??
-                          resolveModelForPath("agent_research_subagent"))),
+                          resolveModelForPath(
+                            "agent_research_subagent",
+                            undefined,
+                            aiSettings?.provider,
+                          ))),
                     turnRoute
                       ? turnRoute.providerOverride
                       : (xprov?.provider ?? agentRole?.provider ?? null),
@@ -4983,6 +5669,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     turnRoute?.provider ?? null,
                     turnRoute?.resolvedEndpointId ?? null,
                     turnRoute?.toolProtocol ?? null,
+                    turnRoute?.resolvedOllamaEndpoint ?? null,
                   );
                   researchInputTokenDrift = accumulateInputTokenDrift(
                     researchInputTokenDrift,
@@ -5141,11 +5828,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                   contextTokenCount: finalized.usage.inputTokens,
                   contextWindowSize: finalized.route.contextWindow,
                   contextModel: finalized.route.model,
+                  contextProvider: finalized.route.provider,
+                  contextRouteAuthorityKey:
+                    resolvedChatTurnRouteAuthorityKey(turnRoute),
                   ...(finalized.cacheDowngradeReason === "budget"
                     ? { cacheInvalidatedReason: "budget" as const }
                     : {}),
                 });
               }
+              notifyAccepted();
               transportStarted = true;
               sendControl.transportStarted = true;
               const response = await chatApi.sendAgentMessage(
@@ -5174,6 +5865,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 turnRoute?.provider ?? null,
                 turnRoute?.resolvedEndpointId ?? null,
                 turnRoute?.toolProtocol ?? null,
+                turnRoute?.resolvedOllamaEndpoint ?? null,
               );
               parentInputTokenDrift = accumulateInputTokenDrift(
                 parentInputTokenDrift,
@@ -5306,6 +5998,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 layers: sentAgentContextLayers,
                 totalTokens: sentAgentContextTokenCount,
                 model: currentModel || null,
+                provider: turnRoute?.provider ?? null,
+                contextWindow: turnRoute?.contextWindow ?? null,
               })
               .catch((e) =>
                 debugLog.warn("ChatStore", "saveMessagePrompt", errorDetail(e)),
@@ -5462,7 +6156,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // conversation ロールの横断割り当て（別プロバイダ/別エンドポイント）。provider
       // 未設定なら従来どおり model のみ（active provider）。composer の一時 override
       // (xprov) が最優先。
-      const convRole = resolveRolePathConfig("chat_stream_non_agent");
+      const convRole = resolveRolePathConfig(
+        "chat_stream_non_agent",
+        undefined,
+        aiSettings?.provider,
+      );
       const chatModel =
         turnRoute?.model ??
         (xprov
@@ -5568,6 +6266,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextTokenCount: ctxResult.totalTokens,
           contextWindowSize: turnRoute?.contextWindow ?? null,
           contextModel: turnRoute?.model ?? null,
+          contextProvider: turnRoute?.provider ?? null,
+          contextRouteAuthorityKey:
+            resolvedChatTurnRouteAuthorityKey(turnRoute),
           contextLayers: ctxResult.layers,
           contextPlan: ctxResult.contextPlan,
           lastSystemPrompt: ctxResult.prompt,
@@ -5695,6 +6396,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextTokenCount: finalized.usage.inputTokens,
           contextWindowSize: finalized.route.contextWindow,
           contextModel: finalized.route.model,
+          contextProvider: finalized.route.provider,
+          contextRouteAuthorityKey:
+            resolvedChatTurnRouteAuthorityKey(turnRoute),
           ...(finalized.cacheDowngradeReason === "budget"
             ? { cacheInvalidatedReason: "budget" as const }
             : {}),
@@ -5974,6 +6678,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     layers: sentContextLayers,
                     totalTokens: sentContextTokenCount,
                     model: chatModel || null,
+                    provider: turnRoute?.provider ?? null,
+                    contextWindow: turnRoute?.contextWindow ?? null,
                   })
                   .catch((e) =>
                     debugLog.warn(
@@ -6182,6 +6888,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         };
         _finalizeStoppedStream = finalizeStoppedStream;
 
+        assertTurnAuthority();
+        notifyAccepted();
         transportStarted = true;
         sendControl.transportStarted = true;
         const streamPromise = isCodexAppServer
@@ -6253,6 +6961,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
                 turnRoute?.provider ?? null,
                 turnRoute?.resolvedEndpointId ?? null,
+                turnRoute?.resolvedOllamaEndpoint ?? null,
               );
 
         streamPromise
@@ -6374,19 +7083,28 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSessionId,
       threadFocusOverride,
     });
-    // 一回限りの Agent mode override（送信経路から渡る）を優先。無ければ永続トグル。
-    const effectiveAgentMode = opts?.agentModeOverride ?? get().agentMode;
-    const refreshTurnRoute = opts?.turnRoute;
-    // synopsis の pull 委譲は「実際にツールループが走る」provider でのみ安全。
-    // CLI はツール無しで非 agent 経路に落ちる（useAgentPath の aiProvider !== "cli"）。
-    // CLI で pull 委譲すると outline + 使えない取得ツール指示 + synopsis 皆無となり、
-    // pull 委譲前（全 synopsis push）より文脈が悪化する。よって CLI では push を維持する。
-    const xprov = getCrossProviderChatOverride();
-    const aiProvider =
-      refreshTurnRoute?.provider ??
-      xprov?.provider ??
-      useAiSettingsStore.getState().settings?.provider;
-    const agentPullWillRunTools = effectiveAgentMode && aiProvider !== "cli";
+    // Live ContextBar must materialize the same route policy as send/preview/copy.
+    // In particular, no-tools/Fusion/CLI fallbacks are plain chat, while public
+    // Web RAG must never plan private scene/history layers.
+    const requestedAgentMode = opts?.agentModeOverride ?? get().agentMode;
+    const inferredRoutePolicy = opts?.turnRoute
+      ? null
+      : resolveCurrentChatTurnPolicy({
+          agentMode: requestedAgentMode,
+          ragEnabled: get().ragEnabled,
+        });
+    const refreshTurnRoute =
+      opts?.turnRoute ?? inferredRoutePolicy?.route ?? undefined;
+    // Settings may still be loading during the first live refresh. Preserve the
+    // requested mode only until a concrete route exists; once resolved, use the
+    // shared policy's exact transport decision.
+    const effectiveAgentMode =
+      inferredRoutePolicy?.route != null
+        ? inferredRoutePolicy.useAgentPath
+        : requestedAgentMode;
+    const publicWebSearchPath =
+      inferredRoutePolicy?.publicWebSearchPath ?? false;
+    const agentPullWillRunTools = effectiveAgentMode;
     // Phase 3b: スレッド focus 中は scene を主題にしない（縦糸を <focus_subject>
     // へ載せる非 scene 枝へ落とす）。chatScope は変えない＝session 保存先不変。
     const effectiveSceneId = opts?.capturedNonSceneAuthority
@@ -6416,8 +7134,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         contextPromptKey(current) === promptKey
       );
     };
+    const purpose = opts?.purpose ?? "live";
     const mayPublishRefreshResult = (): boolean =>
-      opts?.purpose !== "preview" && refreshAuthorityIsCurrent();
+      (purpose === "live" || purpose === "send") && refreshAuthorityIsCurrent();
     const activeSessionAtRefresh = activeSessionId
       ? sessions.find((session) => session.id === activeSessionId)
       : undefined;
@@ -6426,11 +7145,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSessionAtRefresh.projectId !== refreshProjectId
     ) {
       const error = new Error("chat session project mismatch");
-      if (opts?.purpose !== "preview") {
+      if (purpose === "live" || purpose === "send") {
         set({
           contextTokenCount: 0,
           contextWindowSize: null,
           contextModel: null,
+          contextProvider: null,
+          contextRouteAuthorityKey: null,
           contextLayers: [],
           contextPlan: null,
           lastSystemPrompt: "",
@@ -6445,6 +7166,87 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // captured synchronously before this promise is awaited.
     markStart("refreshContextLayers.ensureTokenizer");
     const tokenizerReady = ensureTokenizer();
+    if (publicWebSearchPath) {
+      try {
+        await tokenizerReady;
+        markEnd("refreshContextLayers.ensureTokenizer");
+        if (
+          activeSessionId &&
+          !(await chatApi.getSessionForProject(
+            activeSessionId,
+            refreshProjectId,
+          ))
+        ) {
+          throw new Error("chat session project mismatch");
+        }
+        const prompt = await buildPublicWebSearchPromptForProject({
+          projectId: refreshProjectId,
+          route: refreshTurnRoute ?? null,
+          agentMode: requestedAgentMode,
+          commandInstruction: opts?.commandInstruction,
+        });
+        const totalTokens = countTokens(prompt);
+        const contextPlan = createContextPlan({
+          requestId: crypto.randomUUID(),
+          items: [],
+          decisions: [],
+          usage: {
+            candidateTokens: 0,
+            selectedTokens: 0,
+            trimmedTokens: 0,
+            budgetTokens: null,
+          },
+        }) as ChatContextPlan;
+        const result = {
+          prompt,
+          totalTokens,
+          layers: [],
+          contextPlan,
+          fullyInjectedIds: [],
+        };
+        if (mayPublishRefreshResult()) {
+          set({
+            contextTokenCount: totalTokens,
+            contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
+            contextModel: refreshTurnRoute?.model ?? null,
+            contextProvider: refreshTurnRoute?.provider ?? null,
+            contextRouteAuthorityKey:
+              resolvedChatTurnRouteAuthorityKey(refreshTurnRoute),
+            contextLayers: [],
+            contextPlan,
+            lastSystemPrompt: prompt,
+            lastSystemPromptKey: promptKey,
+            detectedEntries: [],
+            alwaysEntries: [],
+            scopeAnchor: null,
+            projectOutline: undefined,
+            chapterOutlines: [],
+          });
+        }
+        return result;
+      } catch (error) {
+        if (mayPublishRefreshResult()) {
+          set({
+            contextTokenCount: 0,
+            contextWindowSize: null,
+            contextModel: null,
+            contextProvider: null,
+            contextRouteAuthorityKey: null,
+            contextLayers: [],
+            contextPlan: null,
+            lastSystemPrompt: "",
+            lastSystemPromptKey: null,
+            detectedEntries: [],
+            alwaysEntries: [],
+            scopeAnchor: null,
+            projectOutline: undefined,
+            chapterOutlines: [],
+          });
+        }
+        if (opts?.strict) throw error;
+        return null;
+      }
+    }
     if (!effectiveSceneId) {
       const nonSceneAuthority =
         opts?.capturedNonSceneAuthority ??
@@ -6535,6 +7337,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             contextTokenCount: planned.totalTokens,
             contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
             contextModel: refreshTurnRoute?.model ?? null,
+            contextProvider: refreshTurnRoute?.provider ?? null,
+            contextRouteAuthorityKey:
+              resolvedChatTurnRouteAuthorityKey(refreshTurnRoute),
             contextLayers: planned.layers,
             contextPlan: planned.contextPlan,
             lastSystemPrompt: planned.prompt,
@@ -6559,6 +7364,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             contextTokenCount: 0,
             contextWindowSize: null,
             contextModel: null,
+            contextProvider: null,
+            contextRouteAuthorityKey: null,
             contextLayers: [],
             contextPlan: null,
             lastSystemPrompt: "",
@@ -6610,6 +7417,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextTokenCount: ctxResult.totalTokens,
           contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
           contextModel: refreshTurnRoute?.model ?? null,
+          contextProvider: refreshTurnRoute?.provider ?? null,
+          contextRouteAuthorityKey:
+            resolvedChatTurnRouteAuthorityKey(refreshTurnRoute),
           contextLayers: ctxResult.layers,
           contextPlan: ctxResult.contextPlan,
           lastSystemPrompt: ctxResult.prompt,
@@ -6629,6 +7439,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextTokenCount: 0,
           contextWindowSize: null,
           contextModel: null,
+          contextProvider: null,
+          contextRouteAuthorityKey: null,
           contextLayers: [],
           contextPlan: null,
           lastSystemPrompt: "",
@@ -6642,15 +7454,24 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   buildPreviewPrompt: async () => {
-    const { activeSceneId, chatScope, threadFocusOverride } = get();
+    const {
+      activeSceneId,
+      activeProjectId,
+      chatScope,
+      threadFocusOverride,
+      agentMode,
+      ragEnabled,
+    } = get();
     let draft: {
       markdown: string;
       mentionedSceneIds: string[];
       mentionedCodexIds: string[];
+      commandInstruction?: string;
     } = {
       markdown: "",
       mentionedSceneIds: [],
       mentionedCodexIds: [],
+      commandInstruction: undefined,
     };
     try {
       draft = _inputDraftProvider?.() ?? draft;
@@ -6661,8 +7482,27 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // immutable TurnRequest を作り、UI cache の stale prompt は使わない。
     const effectiveSceneId =
       chatScope === "scene" && !threadFocusOverride ? activeSceneId : null;
+    const routePolicy = resolveCurrentChatTurnPolicy({
+      agentMode,
+      ragEnabled,
+    });
     if (!effectiveSceneId) {
       try {
+        if (routePolicy.publicWebSearchPath) {
+          const prompt = await buildPublicWebSearchPromptForProject({
+            projectId: activeProjectId ?? getCurrentProjectId(),
+            route: routePolicy.route,
+            agentMode,
+            commandInstruction: draft.commandInstruction,
+          });
+          return {
+            status: "ready",
+            prompt,
+            layers: [],
+            totalTokens: countTokens(prompt),
+            userMessage: draft.markdown,
+          };
+        }
         const previewMessages = [
           ...get().messages,
           ...(draft.markdown
@@ -6681,8 +7521,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           purpose: "preview",
           conversationMessages: previewMessages,
           outgoingUserMessage: draft.markdown,
+          commandInstruction: draft.commandInstruction,
           mentionedSceneIds: draft.mentionedSceneIds,
           mentionedCodexIds: draft.mentionedCodexIds,
+          agentModeOverride: routePolicy.useAgentPath,
+          turnRoute: routePolicy.route ?? undefined,
           strict: true,
         });
         if (!refreshed) {
@@ -6707,6 +7550,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         inputText: draft.markdown,
         mentionedSceneIds: draft.mentionedSceneIds,
         mentionedCodexIds: draft.mentionedCodexIds,
+        commandInstruction: draft.commandInstruction,
       });
       if (!built) return unavailablePromptPreview(draft.markdown);
       return {
@@ -6858,6 +7702,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- P2-1: ストリーミング中断 ---
   stopGeneration: () => {
+    // A send may still be waiting for Ollama metadata before placeholders are
+    // published. Invalidate that claim so Stop (or a new authority) can recover
+    // without waiting for the endpoint timeout.
+    _sendPreflightClaimId = null;
+    _sendPreflightClaimScopeKey = null;
     // agent ループの中断を要求してから、回答待ちの ask_user を sentinel 解決する。
     // フラグを先に立てるので、resolve で再開したループは shouldAbort を見て
     // tool_result を送らずに即 return する（stop が agent path を止められない

@@ -352,6 +352,71 @@ describe("ChatPanel", () => {
     });
   });
 
+  it.each([false, true])(
+    "clears an accepted draft after delayed preflight (Agent %s)",
+    async (agentMode) => {
+      const user = userEvent.setup();
+      const originalSendMessage = useChatStore.getState().sendMessage;
+      let releasePreflight!: () => void;
+      const preflight = new Promise<void>((resolve) => {
+        releasePreflight = resolve;
+      });
+      const delayedSend = vi.fn(
+        async (
+          _content: string,
+          _commandInstruction?: string,
+          options?: { _onAccepted?: () => void },
+        ) => {
+          await preflight;
+          options?._onAccepted?.();
+        },
+      );
+      useChatStore.setState({
+        agentMode,
+        sendMessage: delayedSend as typeof originalSendMessage,
+      });
+
+      try {
+        render(<ChatPanel />);
+        const input = screen.getByRole("textbox");
+        await user.type(input, "Ollama preflight draft");
+        await user.click(screen.getByRole("button", { name: /送信/i }));
+        await user.click(screen.getByRole("button", { name: /送信/i }));
+
+        await waitFor(() => expect(delayedSend).toHaveBeenCalledOnce());
+        expect(input).toHaveValue("Ollama preflight draft");
+
+        act(() => releasePreflight());
+        await waitFor(() => expect(input).toHaveValue(""));
+      } finally {
+        useChatStore.setState({
+          agentMode: false,
+          sendMessage: originalSendMessage,
+        });
+      }
+    },
+  );
+
+  it("retains a draft when delayed preflight declines it", async () => {
+    const user = userEvent.setup();
+    const originalSendMessage = useChatStore.getState().sendMessage;
+    const declinedSend = vi.fn(async () => {});
+    useChatStore.setState({
+      sendMessage: declinedSend as typeof originalSendMessage,
+    });
+
+    try {
+      render(<ChatPanel />);
+      const input = screen.getByRole("textbox");
+      await user.type(input, "retry this draft{Enter}");
+
+      await waitFor(() => expect(declinedSend).toHaveBeenCalledOnce());
+      expect(input).toHaveValue("retry this draft");
+    } finally {
+      useChatStore.setState({ sendMessage: originalSendMessage });
+    }
+  });
+
   it("flushes every Codex phase or the exact Snippet before a scoped send", async () => {
     const codexSave = vi.fn(async () => {});
     const codexPhaseSave = vi.fn(async () => {});
@@ -511,16 +576,33 @@ describe("ChatPanel", () => {
 
   it("clears input after sending", async () => {
     const user = userEvent.setup();
-    mockSendChatMessage.mockImplementation(async () => {});
-
-    render(<ChatPanel />);
-
-    const input = screen.getByRole("textbox");
-    await user.type(input, "送信テスト{Enter}");
-
-    await waitFor(() => {
-      expect(input).toHaveValue("");
+    const originalSendMessage = useChatStore.getState().sendMessage;
+    const acceptedSend = vi.fn(
+      async (
+        _content: string,
+        _commandInstruction?: string,
+        options?: { _onAccepted?: () => void },
+      ) => {
+        options?._onAccepted?.();
+      },
+    );
+    useChatStore.setState({
+      sendMessage: acceptedSend as typeof originalSendMessage,
     });
+
+    try {
+      render(<ChatPanel />);
+
+      const input = screen.getByRole("textbox");
+      await user.type(input, "送信テスト{Enter}");
+
+      await waitFor(() => {
+        expect(input).toHaveValue("");
+      });
+      expect(acceptedSend).toHaveBeenCalledOnce();
+    } finally {
+      useChatStore.setState({ sendMessage: originalSendMessage });
+    }
   });
 
   it("shows stop button while streaming", () => {

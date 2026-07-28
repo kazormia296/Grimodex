@@ -2588,6 +2588,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   send_chat_message: {
     run: async (b, a, d) => {
+      optionalString(a, "expectedOllamaEndpoint", "send_chat_message");
       validateOptionalPositiveU32(
         a,
         "requestMaxOutputTokens",
@@ -2606,6 +2607,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     // fire-and-forget ストリーム。チャンク/完了/エラーは chat:stream-* イベント経由。
     // Tauri 同様、全ストリーム完了後に resolve（FE は SLOW_COMMANDS で 300s 許容）。
     run: async (b, a, d) => {
+      optionalString(a, "expectedOllamaEndpoint", "send_chat_message_stream");
       validateOptionalPositiveU32(
         a,
         "requestMaxOutputTokens",
@@ -2667,6 +2669,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a, d) => {
       requirePresent(a, "messages", "send_agent_message");
       requirePresent(a, "tools", "send_agent_message");
+      optionalString(a, "expectedOllamaEndpoint", "send_agent_message");
       validateOptionalPositiveU32(
         a,
         "requestMaxOutputTokens",
@@ -2694,6 +2697,8 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   list_ai_models: {
     run: async (b, a, d) => {
       requireString(a, "provider", "list_ai_models");
+      optionalString(a, "selectedModelId", "list_ai_models");
+      optionalString(a, "expectedOllamaEndpoint", "list_ai_models");
       const listAiModels = requireNapiMethod(b, b.listAiModels, "listAiModels");
       const { settings, apiKey } = await resolveOptionalAiKeyAndSettings(
         b,

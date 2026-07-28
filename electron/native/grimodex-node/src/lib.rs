@@ -257,6 +257,7 @@ struct ChatRequest {
     model: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
     request_max_output_tokens: Option<u32>,
 }
 
@@ -294,6 +295,7 @@ struct AgentRequest {
     model: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
     request_max_output_tokens: Option<u32>,
     resolved_tool_protocol: Option<grimodex_ai::ResolvedToolProtocol>,
 }
@@ -305,6 +307,8 @@ struct AgentRequest {
 struct ListAiModelsRequest {
     provider: grimodex_ai::AiProvider,
     endpoint_id: Option<String>,
+    selected_model_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
 }
 
 /// `test_ai_connection` の FE 引数。接続先 provider/model は必須、variant / endpoint
@@ -2443,6 +2447,12 @@ impl Backend {
             req.provider,
             req.endpoint_id.as_deref(),
         );
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &settings_for_call.provider,
+            &settings_for_call.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         let variant = req.api_variant.as_deref();
         let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
@@ -2502,6 +2512,12 @@ impl Backend {
             req.provider,
             req.endpoint_id.as_deref(),
         );
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &settings_for_call.provider,
+            &settings_for_call.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         let variant = req.api_variant.as_deref();
         let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
@@ -2640,6 +2656,12 @@ impl Backend {
             req.provider,
             req.endpoint_id.as_deref(),
         );
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &settings_for_call.provider,
+            &settings_for_call.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         let variant = req.api_variant.as_deref();
         let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
@@ -2688,9 +2710,22 @@ impl Backend {
                 settings.active_openai_compatible_endpoint_id = Some(endpoint_id.to_string());
             }
         }
-        let models = grimodex_ai::fetch_models(&req.provider, &api_key, settings.endpoints())
-            .await
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &req.provider,
+            &settings.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+        let models = grimodex_ai::fetch_models_for(
+            &req.provider,
+            &api_key,
+            settings.endpoints(),
+            req.selected_model_id
+                .as_deref()
+                .filter(|model| !model.trim().is_empty()),
+        )
+        .await
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         serde_json::to_string(&models)
             .map_err(|e| Error::from_reason(format!("failed to serialize AI models: {e}")))
     }

@@ -49,6 +49,7 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
 }));
 
 import { db } from "@/db/client";
+import { invoke } from "@/lib/tauri";
 const mockDb = vi.mocked(db);
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
@@ -65,6 +66,8 @@ import {
   saveMessagePrompt,
   getMessagePrompt,
   pinCodexEntry,
+  sendAgentMessage,
+  sendChatMessageWithThinking,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
 
@@ -531,6 +534,72 @@ describe("chatApi - session/message persistence", () => {
   });
 });
 
+describe("chatApi - Ollama endpoint snapshots", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(invoke).mockResolvedValue({
+      blocks: [],
+      stopReason: "end_turn",
+    });
+  });
+
+  it("passes the finalized endpoint on a plain request", async () => {
+    await sendChatMessageWithThinking(
+      [{ role: "user", content: "hello" }],
+      undefined,
+      undefined,
+      null,
+      undefined,
+      "gemma4:latest",
+      null,
+      null,
+      4_096,
+      "ollama",
+      null,
+      "http://127.0.0.1:11434",
+    );
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      "send_chat_message",
+      expect.objectContaining({
+        provider: "ollama",
+        model: "gemma4:latest",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      }),
+    );
+  });
+
+  it("passes the finalized endpoint on an Agent request", async () => {
+    await sendAgentMessage(
+      [{ role: "user", content: "hello" }],
+      [],
+      undefined,
+      undefined,
+      null,
+      null,
+      undefined,
+      "gemma4:latest",
+      null,
+      null,
+      4_096,
+      "ollama",
+      null,
+      "native",
+      "http://127.0.0.1:11434",
+    );
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      "send_agent_message",
+      expect.objectContaining({
+        provider: "ollama",
+        model: "gemma4:latest",
+        resolvedToolProtocol: "native",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      }),
+    );
+  });
+});
+
 describe("chatApi - message prompt snapshot", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -546,6 +615,8 @@ describe("chatApi - message prompt snapshot", () => {
       layers: [{ layer: "L1", label: "Project", used: 10 } as never],
       totalTokens: 42,
       model: "openrouter/anthropic/claude-sonnet-4.6",
+      provider: "openrouter",
+      contextWindow: 1_000_000,
     });
 
     expect(mockDb.insert).toHaveBeenCalled();
@@ -553,7 +624,11 @@ describe("chatApi - message prompt snapshot", () => {
     expect(inserted.messageId).toBe("msg-1");
     expect(inserted.systemPrompt).toBe("SYSTEM PROMPT BODY");
     expect(inserted.totalTokens).toBe(42);
-    expect(JSON.parse(inserted.layers as string)).toHaveLength(1);
+    expect(JSON.parse(inserted.layers as string)).toEqual({
+      layers: [{ layer: "L1", label: "Project", used: 10 }],
+      provider: "openrouter",
+      contextWindow: 1_000_000,
+    });
     // 同一メッセージの再送で最新内容に上書きされる (upsert) こと。
     expect(onConflictDoUpdate).toHaveBeenCalled();
     const conflictArg = onConflictDoUpdate.mock.calls[0][0] as {
@@ -581,6 +656,33 @@ describe("chatApi - message prompt snapshot", () => {
     expect(snap?.layers).toHaveLength(1);
     expect(snap?.totalTokens).toBe(7);
     expect(snap?.model).toBe("m");
+    expect(snap?.provider).toBeNull();
+    expect(snap?.contextWindow).toBeNull();
+  });
+
+  it("getMessagePrompt reads provider and context window from the v2 payload", async () => {
+    const where = vi.fn().mockResolvedValue([
+      {
+        messageId: "msg-1",
+        systemPrompt: "BODY",
+        layers: JSON.stringify({
+          layers: [{ layer: "L1", label: "Project", used: 5 }],
+          provider: "ollama",
+          contextWindow: 131_072,
+        }),
+        totalTokens: 7,
+        model: "gemma4:latest",
+      },
+    ]);
+    const from = vi.fn().mockReturnValue({ where });
+    mockDb.select.mockReturnValue({ from } as never);
+
+    await expect(getMessagePrompt("msg-1")).resolves.toMatchObject({
+      provider: "ollama",
+      contextWindow: 131_072,
+      model: "gemma4:latest",
+      layers: [{ layer: "L1", label: "Project", used: 5 }],
+    });
   });
 
   it("getMessagePrompt returns null for an unrecorded (pre-feature) message", async () => {
@@ -608,5 +710,7 @@ describe("chatApi - message prompt snapshot", () => {
     const snap = await getMessagePrompt("msg-1");
     expect(snap?.layers).toEqual([]);
     expect(snap?.totalTokens).toBeNull();
+    expect(snap?.provider).toBeNull();
+    expect(snap?.contextWindow).toBeNull();
   });
 });

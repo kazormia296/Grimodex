@@ -18,6 +18,7 @@ export function ContextCreatorDialog({
   const [input, setInput] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<SuggestedEntry[] | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [isAdding, setIsAdding] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -40,6 +41,7 @@ export function ContextCreatorDialog({
     if (!q || isSearching) return;
     setIsSearching(true);
     setResults(null);
+    setSearchError(null);
     try {
       const entries = await onSearch(q);
       setResults(entries);
@@ -47,6 +49,8 @@ export function ContextCreatorDialog({
       setSelected(
         new Set(entries.filter((e) => !e.alreadyPinned).map((e) => e.id)),
       );
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsSearching(false);
     }
@@ -120,6 +124,11 @@ export function ContextCreatorDialog({
       {/* 検索中インジケーター */}
       {isSearching && (
         <p className="mt-2 text-xs text-muted-foreground">Searching...</p>
+      )}
+      {searchError && !isSearching && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {searchError}
+        </p>
       )}
 
       {/* 結果リスト */}

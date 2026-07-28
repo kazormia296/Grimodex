@@ -757,6 +757,29 @@ export async function createBrowserMock(
     return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
+  function validateExpectedOllamaEndpoint(
+    provider: AiProvider,
+    configuredEndpoint: unknown,
+    expectedEndpoint: unknown,
+  ): void {
+    if (provider !== "ollama" || expectedEndpoint == null) return;
+    if (typeof expectedEndpoint !== "string") {
+      throw new Error("expectedOllamaEndpoint must be a string or null");
+    }
+    const expected = expectedEndpoint.trim().replace(/\/+$/u, "");
+    const configured = String(configuredEndpoint ?? "")
+      .trim()
+      .replace(/\/+$/u, "");
+    if (!expected) {
+      throw new Error("expected Ollama endpoint snapshot must not be empty");
+    }
+    if (expected !== configured) {
+      throw new Error(
+        `Ollama endpoint changed before request; expected ${expected}, configured ${configured}`,
+      );
+    }
+  }
+
   function apiKeySlot(provider: string, endpointId?: string | null): string {
     return endpointId ? `${provider}:${endpointId}` : provider;
   }
@@ -869,6 +892,11 @@ export async function createBrowserMock(
     const provider = requireBrowserAiProvider(
       args.resolvedProvider ?? args.provider ?? settings.provider,
     );
+    validateExpectedOllamaEndpoint(
+      provider,
+      settings.ollamaEndpoint,
+      args.expectedOllamaEndpoint,
+    );
     const model =
       optionalString(args.model) ?? optionalString(settings.model) ?? "";
     if (!model) {
@@ -968,7 +996,13 @@ export async function createBrowserMock(
       args.provider ?? settings.provider,
     );
     const endpointId = optionalString(args.endpointId);
+    const selectedModelId = optionalString(args.selectedModelId);
     const ollamaEndpoint = optionalString(settings.ollamaEndpoint);
+    validateExpectedOllamaEndpoint(
+      provider,
+      ollamaEndpoint,
+      args.expectedOllamaEndpoint,
+    );
     const compatibleEndpoint =
       provider === "openai-compatible"
         ? resolveActiveOpenaiCompatibleEndpoint(
@@ -998,10 +1032,11 @@ export async function createBrowserMock(
     const listRequest: BrowserAiRequest = {
       operation: "chat",
       provider,
-      model: "",
+      model: selectedModelId ?? "",
       apiKey,
       messages: [],
       ollamaEndpoint,
+      selectedModelId,
       baseUrl,
       apiVariant: compatibleEndpoint?.apiVariant ?? null,
     };

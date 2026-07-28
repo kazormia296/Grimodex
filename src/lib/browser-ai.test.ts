@@ -426,6 +426,247 @@ describe("fetchModels", () => {
     expect(mockFetch.mock.calls[0][0]).toBe("/api/ollama/api/tags");
   });
 
+  it("keeps the Ollama model maximum separate from the running context", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({
+          models: [
+            {
+              name: "gemma4:latest",
+              model: "gemma4:latest",
+              digest: "sha256:a",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          models: [
+            {
+              name: "gemma4:latest",
+              digest: "sha256:a",
+              context_length: 4096,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          model_info: {
+            "general.architecture": "gemma4",
+            "gemma4.context_length": 131072,
+          },
+          parameters: "num_ctx 32768",
+          capabilities: ["completion", "tools", "thinking"],
+        }),
+      );
+
+    await expect(fetchModels("ollama", "")).resolves.toEqual([
+      {
+        id: "gemma4:latest",
+        name: "gemma4:latest",
+        contextLength: 131072,
+        effectiveContextLength: 4096,
+        effectiveContextSource: "runner",
+        supportedParameters: ["tools", "reasoning"],
+      },
+    ]);
+    expect(mockFetch.mock.calls.map(([url]) => url)).toEqual([
+      "/api/ollama/api/tags",
+      "/api/ollama/api/ps",
+      "/api/ollama/api/show",
+    ]);
+    expect(JSON.parse(mockFetch.mock.calls[2][1].body)).toEqual({
+      model: "gemma4:latest",
+    });
+  });
+
+  it("uses an Ollama model num_ctx when no runner is loaded", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({ models: [{ name: "local-model:latest" }] }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ models: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          model_info: {
+            "general.architecture": "custom",
+            "custom.context_length": 65536,
+          },
+          parameters: "temperature 0.8\nPARAMETER num_ctx = 16384",
+          capabilities: ["tools"],
+        }),
+      );
+
+    await expect(fetchModels("ollama", "")).resolves.toEqual([
+      {
+        id: "local-model:latest",
+        name: "local-model:latest",
+        contextLength: 65536,
+        effectiveContextLength: 16384,
+        effectiveContextSource: "model-parameter",
+        supportedParameters: ["tools"],
+      },
+    ]);
+  });
+
+  it("probes only the selected Ollama model and preserves no-tools capability", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({
+          models: [
+            { name: "gemma4:latest" },
+            { name: "slow-unrelated:latest" },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ models: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          model_info: { "gemma4.context_length": 131072 },
+          capabilities: ["completion"],
+        }),
+      );
+
+    await expect(
+      fetchModels("ollama", "", { selectedModelId: "gemma4:latest" }),
+    ).resolves.toEqual([
+      {
+        id: "gemma4:latest",
+        name: "gemma4:latest",
+        contextLength: 131072,
+        supportedParameters: [],
+      },
+    ]);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(mockFetch.mock.calls[2][1].body)).toEqual({
+      model: "gemma4:latest",
+    });
+  });
+
+  it("aborts a selected Ollama metadata probe at its overall deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let requestSignal: AbortSignal | undefined;
+      mockFetch
+        .mockResolvedValueOnce(
+          jsonResponse({ models: [{ name: "gemma4:latest" }] }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ models: [] }))
+        .mockImplementationOnce(
+          (_url: string, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              requestSignal = init?.signal ?? undefined;
+              requestSignal?.addEventListener(
+                "abort",
+                () =>
+                  reject(
+                    new DOMException("The operation was aborted", "AbortError"),
+                  ),
+                { once: true },
+              );
+            }),
+        );
+
+      const request = fetchModels("ollama", "", {
+        selectedModelId: "gemma4:latest",
+      });
+      const result = expect(request).resolves.toEqual([
+        { id: "gemma4:latest", name: "gemma4:latest" },
+      ]);
+
+      await vi.runAllTimersAsync();
+      await result;
+      expect(requestSignal?.aborted).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      // Completed /tags and /ps requests need not be retroactively aborted;
+      // the pending /show request must be cancelled at the deadline.
+      expect(mockFetch.mock.calls[2]?.[1].signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still reads /api/show when /api/ps reaches its per-request deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let runnerSignal: AbortSignal | undefined;
+      mockFetch
+        .mockResolvedValueOnce(
+          jsonResponse({ models: [{ name: "gemma4:latest" }] }),
+        )
+        .mockImplementationOnce(
+          (_url: string, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              runnerSignal = init?.signal ?? undefined;
+              runnerSignal?.addEventListener(
+                "abort",
+                () =>
+                  reject(
+                    new DOMException("The operation was aborted", "AbortError"),
+                  ),
+                { once: true },
+              );
+            }),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({
+            model_info: { "gemma4.context_length": 131_072 },
+            capabilities: ["completion", "tools"],
+          }),
+        );
+
+      const request = fetchModels("ollama", "", {
+        selectedModelId: "gemma4:latest",
+      });
+      const result = expect(request).resolves.toEqual([
+        {
+          id: "gemma4:latest",
+          name: "gemma4:latest",
+          contextLength: 131_072,
+          supportedParameters: ["tools"],
+        },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await result;
+      expect(runnerSignal?.aborted).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Ollama tags usable when runtime metadata probes fail", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({ models: [{ name: "offline-runner:latest" }] }),
+      )
+      .mockRejectedValueOnce(new TypeError("ps unavailable"))
+      .mockResolvedValueOnce(jsonResponse({ error: "show unavailable" }, 500));
+
+    await expect(fetchModels("ollama", "")).resolves.toEqual([
+      { id: "offline-runner:latest", name: "offline-runner:latest" },
+    ]);
+  });
+
+  it("returns a tag-only selected Ollama row when /api/show is unavailable", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse({ models: [{ name: "offline-runner:latest" }] }),
+      )
+      .mockRejectedValueOnce(new TypeError("ps unavailable"))
+      .mockResolvedValueOnce(jsonResponse({ error: "show unavailable" }, 500));
+
+    await expect(
+      fetchModels("ollama", "", {
+        selectedModelId: "offline-runner:latest",
+      }),
+    ).resolves.toEqual([
+      { id: "offline-runner:latest", name: "offline-runner:latest" },
+    ]);
+  });
+
   it("fetches models from the configured Ollama endpoint", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ models: [] }));
 

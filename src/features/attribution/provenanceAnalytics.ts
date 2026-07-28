@@ -171,6 +171,7 @@ function resolveRowCost(row: AiUsageCostRow): {
     row.model,
     row.tokensIn ?? 0,
     row.tokensOut ?? 0,
+    row.provider,
   );
   if (est != null) return { cost: est, estimated: true };
   return { cost: 0, estimated: false };

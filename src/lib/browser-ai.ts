@@ -76,10 +76,15 @@ export class BrowserAiConnectionError extends Error {
 
 export interface BrowserAiConnectionOptions {
   ollamaEndpoint?: string | null;
+  /** Ollama model-list probe only; omitted means enrich the full catalog. */
+  selectedModelId?: string | null;
   /** OpenAI-compatible only. This is the user-selected endpoint base URL. */
   baseUrl?: string | null;
   apiVariant?: string | null;
 }
+
+const OLLAMA_SELECTED_METADATA_TIMEOUT_MS = 12_000;
+const OLLAMA_CATALOG_METADATA_TIMEOUT_MS = 45_000;
 
 export interface BrowserAiRequest {
   operation: BrowserAiOperation;
@@ -90,6 +95,7 @@ export interface BrowserAiRequest {
   messages: ChatMessage[];
   maxOutputTokens?: number | null;
   ollamaEndpoint?: string | null;
+  selectedModelId?: string | null;
   baseUrl?: string | null;
   apiVariant?: string | null;
   toolProtocolMode?: ToolProtocolMode;
@@ -381,6 +387,132 @@ export function resolveBrowserAiEndpoint(
 export function normalizeOllamaEndpoint(endpoint?: string | null): string {
   const base = endpoint?.trim() || "http://localhost:11434";
   return base.replace(/\/+$/, "");
+}
+
+function ollamaApiEndpoint(
+  path: `/${string}`,
+  options: BrowserAiConnectionOptions,
+): string {
+  const endpoint = normalizeOllamaEndpoint(options.ollamaEndpoint);
+  const useDevelopmentProxy =
+    isViteDevelopment && endpoint === "http://localhost:11434";
+  return useDevelopmentProxy ? `/api/ollama${path}` : `${endpoint}${path}`;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function ollamaModelContextLength(modelInfo: unknown): number | undefined {
+  if (!modelInfo || typeof modelInfo !== "object") return undefined;
+  const info = modelInfo as Record<string, unknown>;
+  const architecture =
+    typeof info["general.architecture"] === "string"
+      ? info["general.architecture"]
+      : undefined;
+  if (architecture) {
+    const declared = positiveInteger(info[`${architecture}.context_length`]);
+    if (declared) return declared;
+  }
+  const suffixMatches = Object.entries(info)
+    .filter(([key]) => key.endsWith(".context_length"))
+    .sort(
+      ([left], [right]) => left.split(".").length - right.split(".").length,
+    );
+  for (const [, value] of suffixMatches) {
+    const declared = positiveInteger(value);
+    if (declared) return declared;
+  }
+  return undefined;
+}
+
+function ollamaNumCtx(parameters: unknown): number | undefined {
+  if (parameters && typeof parameters === "object") {
+    return positiveInteger(
+      (parameters as Record<string, unknown>).num_ctx ??
+        (parameters as Record<string, unknown>).numCtx,
+    );
+  }
+  if (typeof parameters !== "string") return undefined;
+  const match = parameters.match(
+    /(?:^|\n)\s*(?:PARAMETER\s+)?num_ctx\s*(?:=|\s)\s*(\d+)/iu,
+  );
+  return positiveInteger(match?.[1]);
+}
+
+function normalizeOllamaModelName(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/:latest$/u, "");
+}
+
+function ollamaSupportedParameters(
+  capabilities: unknown,
+): string[] | undefined {
+  if (!Array.isArray(capabilities)) return undefined;
+  const result: string[] = [];
+  if (capabilities.includes("tools")) result.push("tools");
+  if (capabilities.includes("thinking")) result.push("reasoning");
+  // An explicit capability list is authoritative even when it advertises no
+  // tool/reasoning support. `[]` must not fall back to supportsTools=true.
+  return result;
+}
+
+async function optionalOllamaJson(
+  url: string,
+  init: RequestInit = {},
+): Promise<unknown | undefined> {
+  const controller = new AbortController();
+  const parentSignal = init.signal;
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const response = await browserAiFetch(
+      url,
+      { ...init, signal: controller.signal },
+      "models",
+    );
+    if (!response.ok) return undefined;
+    return await response.json();
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  limit: number,
+  transform: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const result = new Array<R>(values.length);
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < values.length) {
+      const index = cursor;
+      cursor += 1;
+      result[index] = await transform(values[index]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, values.length) }, () => worker()),
+  );
+  return result;
 }
 
 function chatEndpoint(
@@ -914,6 +1046,35 @@ export async function fetchModels(
   apiKey: string,
   options: BrowserAiConnectionOptions = {},
 ): Promise<AiModel[]> {
+  if (provider !== "ollama") {
+    return fetchModelsInternal(provider, apiKey, options);
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.selectedModelId?.trim()
+      ? OLLAMA_SELECTED_METADATA_TIMEOUT_MS
+      : OLLAMA_CATALOG_METADATA_TIMEOUT_MS,
+  );
+  try {
+    return await fetchModelsInternal(
+      provider,
+      apiKey,
+      options,
+      controller.signal,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchModelsInternal(
+  provider: AiProvider,
+  apiKey: string,
+  options: BrowserAiConnectionOptions,
+  ollamaMetadataSignal?: AbortSignal,
+): Promise<AiModel[]> {
   requireBrowserDirectProvider(provider);
   // Anthropic: static list
   if (provider === "anthropic") {
@@ -949,7 +1110,14 @@ export async function fetchModels(
 
   let resp: Response;
   try {
-    resp = await browserAiFetch(url, { headers }, "models");
+    resp = await browserAiFetch(
+      url,
+      {
+        headers,
+        ...(ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {}),
+      },
+      "models",
+    );
   } catch (error) {
     if (provider === "ai-novelist") {
       return [
@@ -988,11 +1156,123 @@ export async function fetchModels(
   const body = await resp.json();
 
   if (provider === "ollama") {
-    const models = body?.models ?? [];
-    return models.map((m: { name: string }) => ({
-      id: m.name,
-      name: m.name,
-    }));
+    type OllamaTag = {
+      name: string;
+      model?: string;
+      digest?: string;
+      capabilities?: string[];
+    };
+    type OllamaRunner = {
+      name?: string;
+      model?: string;
+      digest?: string;
+      context_length?: number;
+    };
+    const taggedModels: unknown[] = Array.isArray(body?.models)
+      ? body.models
+      : [];
+    const selectedModelId = options.selectedModelId?.trim() ?? "";
+    const normalizedSelectedModel = normalizeOllamaModelName(selectedModelId);
+    const models = taggedModels.filter((model: unknown): model is OllamaTag => {
+      if (
+        !model ||
+        typeof model !== "object" ||
+        typeof (model as OllamaTag).name !== "string"
+      ) {
+        return false;
+      }
+      if (!selectedModelId) return true;
+      const tag = model as OllamaTag;
+      return (
+        tag.name === selectedModelId ||
+        tag.model === selectedModelId ||
+        normalizeOllamaModelName(tag.name) === normalizedSelectedModel ||
+        normalizeOllamaModelName(tag.model) === normalizedSelectedModel
+      );
+    });
+    if (models.length === 0) return [];
+    const runningBodyPromise = optionalOllamaJson(
+      ollamaApiEndpoint("/api/ps", options),
+      ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {},
+    );
+    const modelsWithShowPromise = mapWithConcurrency(
+      models,
+      4,
+      async (model) => {
+        const showBody = await optionalOllamaJson(
+          ollamaApiEndpoint("/api/show", options),
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ model: model.name }),
+            ...(ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {}),
+          },
+        );
+        const show =
+          showBody && typeof showBody === "object"
+            ? (showBody as Record<string, unknown>)
+            : undefined;
+        return { model, show };
+      },
+    );
+    const [runningBody, modelsWithShow] = await Promise.all([
+      runningBodyPromise,
+      modelsWithShowPromise,
+    ]);
+    const runningModels: OllamaRunner[] =
+      runningBody &&
+      typeof runningBody === "object" &&
+      Array.isArray((runningBody as { models?: unknown }).models)
+        ? ((runningBody as { models: OllamaRunner[] }).models ?? [])
+        : [];
+
+    return modelsWithShow.map(({ model, show }) => {
+      const modelMaximum = ollamaModelContextLength(show?.model_info);
+      const modelParameterContext = ollamaNumCtx(show?.parameters);
+      const normalizedName = normalizeOllamaModelName(
+        model.model ?? model.name,
+      );
+      const runner = runningModels.find((candidate) => {
+        if (
+          model.digest &&
+          candidate.digest &&
+          model.digest === candidate.digest
+        ) {
+          return true;
+        }
+        return (
+          normalizedName.length > 0 &&
+          [candidate.model, candidate.name].some(
+            (candidateName) =>
+              normalizeOllamaModelName(candidateName) === normalizedName,
+          )
+        );
+      });
+      const runnerContext = positiveInteger(runner?.context_length);
+      const rawEffectiveContext = runnerContext ?? modelParameterContext;
+      const effectiveContextLength =
+        rawEffectiveContext && modelMaximum
+          ? Math.min(rawEffectiveContext, modelMaximum)
+          : rawEffectiveContext;
+      const supportedParameters =
+        ollamaSupportedParameters(show?.capabilities ?? model.capabilities) ??
+        (show ? [] : undefined);
+
+      return {
+        id: model.name,
+        name: model.name,
+        ...(modelMaximum ? { contextLength: modelMaximum } : {}),
+        ...(effectiveContextLength
+          ? {
+              effectiveContextLength,
+              effectiveContextSource: runnerContext
+                ? ("runner" as const)
+                : ("model-parameter" as const),
+            }
+          : {}),
+        ...(supportedParameters ? { supportedParameters } : {}),
+      };
+    });
   }
 
   const data = body?.data ?? [];

@@ -518,7 +518,8 @@ export const chatMessagePrompts = sqliteTable("chat_message_prompts", {
     .primaryKey()
     .references(() => chatMessages.id, { onDelete: "cascade" }),
   systemPrompt: text("system_prompt").notNull(),
-  layers: text("layers"), // JSON LayerBreakdown[]
+  // JSON { layers: LayerBreakdown[], provider, contextWindow }; legacy rows are arrays.
+  layers: text("layers"),
   totalTokens: integer("total_tokens"),
   model: text("model"),
   createdAt: text("created_at").notNull().$defaultFn(nowInstantString),

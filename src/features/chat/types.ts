@@ -14,6 +14,71 @@ export const AI_PROVIDERS = [
 export type AiProvider = (typeof AI_PROVIDERS)[number];
 
 /**
+ * Ollama treats an omitted tag as `:latest`. Keep the persisted manual-context
+ * namespace aligned with the capability registry so selecting `gemma4` and
+ * receiving `gemma4:latest` from `/api/tags` addresses the same model.
+ */
+export function normalizeOllamaModelId(model: string): string {
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/:latest$/u, "");
+}
+
+function serializeOllamaContextLengthSettingKey(
+  endpoint: string,
+  model: string,
+): string {
+  const normalizedEndpoint = endpoint.trim().replace(/\/+$/u, "");
+  return JSON.stringify([normalizedEndpoint, model]);
+}
+
+/** Scope a manual Ollama allocation by endpoint and canonical model identity. */
+export function ollamaContextLengthSettingKey(
+  endpoint: string,
+  model: string,
+): string {
+  return serializeOllamaContextLengthSettingKey(
+    endpoint,
+    normalizeOllamaModelId(model),
+  );
+}
+
+/**
+ * Read candidates for settings written before model-id normalization.
+ *
+ * The canonical key comes first. Exact legacy spellings and both sides of the
+ * implicit `:latest` alias remain readable so existing settings migrate only
+ * when the user next edits them.
+ */
+export function ollamaContextLengthSettingKeys(
+  endpoint: string,
+  model: string,
+): string[] {
+  const trimmed = model.trim();
+  const normalized = normalizeOllamaModelId(trimmed);
+  const lastSegment = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  const isLatestAlias =
+    /:latest$/iu.test(trimmed) || !lastSegment.includes(":");
+  const modelCandidates = [normalized, trimmed];
+
+  if (isLatestAlias) {
+    modelCandidates.push(`${normalized}:latest`);
+    modelCandidates.push(
+      /:latest$/iu.test(trimmed)
+        ? trimmed.replace(/:latest$/iu, "")
+        : `${trimmed}:latest`,
+    );
+  }
+
+  return [...new Set(modelCandidates)]
+    .filter(Boolean)
+    .map((candidate) =>
+      serializeOllamaContextLengthSettingKey(endpoint, candidate),
+    );
+}
+
+/**
  * Agent ループでツール呼び出しをどのプロトコルで授受するか。
  * - `auto`: HTTP OpenAI 互換プロバイダで、model 名に `hermes` を含む場合のみ Hermes 扱い。
  *   それ以外は native（OpenAI structured `tool_calls`）。
@@ -102,6 +167,14 @@ export interface AiSettings {
   provider: AiProvider;
   model: string;
   ollamaEndpoint: string;
+  /**
+   * Ollama 側でendpoint+modelごとに割り当てた実効 context size の申告値。
+   *
+   * Grimodex の OpenAI 互換経路は runner の context size を変更できないため、
+   * `/api/ps` で実行中の値を取得できない場合にだけローカル事前判定へ使う。
+   * モデル自体の最大 context length (`AiModel.contextLength`) とは別物。
+   */
+  ollamaContextLengths?: Record<string, number>;
   thinkingEnabled: boolean;
   /** legacy 単一 OpenAI 互換設定。複数版へ移行後も round-trip / downgrade 用に保持。 */
   openaiCompatible: OpenaiCompatibleSettings;
@@ -176,6 +249,7 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   provider: "openrouter",
   model: "",
   ollamaEndpoint: "http://localhost:11434",
+  ollamaContextLengths: {},
   thinkingEnabled: true,
   openaiCompatible: DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
   openaiCompatibleEndpoints: [],
@@ -240,8 +314,15 @@ export interface AiModel {
   name: string;
   /** AI のべりすと: "legacy" | "v1" */
   apiVariant?: "legacy" | "v1";
-  // OpenRouter /models から取得したメタデータ（他プロバイダでは未設定）
+  /** プロバイダから取得したモデル自体の最大 context length。 */
   contextLength?: number;
+  /**
+   * 現在の経路で実際に利用できる context length。
+   * Ollama では `/api/ps` の runner 割り当て、または Modelfile の `num_ctx`。
+   */
+  effectiveContextLength?: number;
+  /** `effectiveContextLength` を得た経路。 */
+  effectiveContextSource?: "runner" | "model-parameter";
   maxCompletionTokens?: number;
   supportedParameters?: string[];
   pricingPrompt?: string;

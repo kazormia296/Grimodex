@@ -13,6 +13,8 @@ interface PromptPreviewModalProps {
   totalTokens: number;
   /** 現在のモデル ID。コスト推定に使う。未指定 / 未登録モデルではコスト行を省略 */
   model?: string;
+  /** `model` のprovider namespace。同名bare IDの価格衝突を防ぐ。 */
+  provider?: string | null;
   /** モデルのコンテキストウィンドウ (tokens)。0 / 省略時は fill bar 行も省略 */
   contextWindow?: number;
   /** related_scenes 込みのプレビュー再構築中。true の間はプレースホルダを出す。 */
@@ -33,6 +35,7 @@ export function PromptPreviewModal({
   loading = false,
   unavailable = false,
   userMessage,
+  provider,
   onClose,
 }: PromptPreviewModalProps) {
   const { t } = useTranslation();
@@ -46,7 +49,9 @@ export function PromptPreviewModal({
       ? userMessage
       : systemPrompt;
   const estimatedCost =
-    model && totalTokens > 0 ? estimateInputCost(model, totalTokens) : null;
+    model && totalTokens > 0
+      ? estimateInputCost(model, totalTokens, provider)
+      : null;
   const costLabel = estimatedCost !== null ? formatCost(estimatedCost) : null;
   const fillPct =
     contextWindow && contextWindow > 0

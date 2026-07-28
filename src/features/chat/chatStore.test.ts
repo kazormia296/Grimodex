@@ -1,10 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { useChatStore, contextPromptKey } from "./chatStore";
+import {
+  awaitChatComposerAuthority,
+  captureChatComposerAuthority,
+  contextPromptKey,
+  useChatStore,
+} from "./chatStore";
 import { useAiSettingsStore, DEFAULT_AI_SETTINGS } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { setCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import type { ChatMessage, ChatSession } from "./chatTypes";
+import type { AiModel } from "./types";
 import { toast } from "sonner";
 
 vi.mock("sonner", () => ({
@@ -52,6 +58,10 @@ vi.mock("./chatApi", () => ({
   listPinnedStickyEntries: vi.fn(() => Promise.resolve([])),
   pinCodexEntry: vi.fn(),
   unpinCodexEntry: vi.fn(),
+}));
+
+vi.mock("./api", () => ({
+  listAiModels: vi.fn(),
 }));
 
 vi.mock("./codexAppApi", () => ({
@@ -243,18 +253,25 @@ vi.mock("@/features/semantic-search/api", () => ({
 }));
 
 import * as chatApi from "./chatApi";
+import * as aiApi from "./api";
 import * as codexAppApi from "./codexAppApi";
 import type { ChatMessageResult, StreamCallbacks } from "./chatApi";
 import * as contextBuilder from "./contextBuilder";
+import {
+  __resetDynamicModelCapsForTests,
+  registerDynamicModelCaps,
+} from "./agent/dynamicModelCaps";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import * as projectApi from "@/features/project/api";
 const mockSendChatMessageStream = vi.mocked(chatApi.sendChatMessageStream);
+const mockListAiModels = vi.mocked(aiApi.listAiModels);
 const mockSendCodexAppTurn = vi.mocked(codexAppApi.sendCodexAppTurn);
 const mockAdvanceCodexHistoryRevision = vi.mocked(
   codexAppApi.advanceCodexHistoryRevision,
 );
 const mockSendAgentMessage = vi.mocked(chatApi.sendAgentMessage);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
+const mockCountTokens = vi.mocked(contextBuilder.countTokens);
 const mockRecordAiUsage = vi.mocked(recordAiUsage);
 const mockGetProject = vi.mocked(projectApi.getProject);
 
@@ -313,6 +330,9 @@ function resetStore() {
     activeSceneId: "scene-1",
     activeProjectId: "proj-1",
     contextTokenCount: 0,
+    contextWindowSize: null,
+    contextModel: null,
+    contextProvider: null,
     contextPlan: null,
     // スコープ/プロンプトキーはテスト間で漏れると stale 判定や copy 経路の
     // 分岐が前のテストの構成で動いてしまうため必ず初期化する
@@ -390,7 +410,9 @@ const msg2: ChatMessage = {
 describe("useChatStore", () => {
   beforeEach(() => {
     resetStore();
+    __resetDynamicModelCapsForTests();
     vi.clearAllMocks();
+    mockListAiModels.mockResolvedValue([]);
     setCurrentImeWorkspaceIdentity({
       path: "/workspace/chat-store-test",
       openRevision: 1,
@@ -426,6 +448,116 @@ describe("useChatStore", () => {
           }
         : null,
     );
+  });
+
+  it("invalidates a captured composer when a same-model endpoint changes", async () => {
+    const previousSettings = useAiSettingsStore.getState().settings;
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "openai-compatible",
+        model: "shared-model",
+        openaiCompatibleEndpoints: [
+          {
+            id: "shared",
+            label: "Shared",
+            baseUrl: "https://a.example/v1",
+          },
+        ],
+        activeOpenaiCompatibleEndpointId: "shared",
+      },
+    });
+    try {
+      const authority = captureChatComposerAuthority();
+
+      useAiSettingsStore.setState((state) => ({
+        settings: state.settings
+          ? {
+              ...state.settings,
+              openaiCompatibleEndpoints: [
+                {
+                  id: "shared",
+                  label: "Shared",
+                  baseUrl: "https://b.example/v1",
+                },
+              ],
+            }
+          : null,
+      }));
+
+      await expect(awaitChatComposerAuthority(authority)).resolves.toBe(false);
+    } finally {
+      useAiSettingsStore.setState({ settings: previousSettings });
+    }
+  });
+
+  it("cancels before transport when a same-id endpoint changes during context preparation", async () => {
+    const previousSettings = useAiSettingsStore.getState().settings;
+    let releaseTokenizer!: () => void;
+    vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        releaseTokenizer = resolve;
+      }),
+    );
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "openai-compatible",
+        model: "shared-model",
+        openaiCompatibleEndpoints: [
+          {
+            id: "shared",
+            label: "Shared",
+            baseUrl: "https://a.example/v1",
+          },
+        ],
+        activeOpenaiCompatibleEndpointId: "shared",
+      },
+    });
+    useChatStore.setState({
+      activeProjectId: "proj-1",
+      activeSessionId: session1.id,
+      sessions: [session1],
+      messages: [],
+      agentMode: false,
+      ragEnabled: false,
+    });
+    const onAccepted = vi.fn();
+
+    try {
+      const send = useChatStore
+        .getState()
+        .sendMessage("do not reroute", undefined, {
+          _onAccepted: onAccepted,
+        });
+      await vi.waitFor(() =>
+        expect(useChatStore.getState().isStreaming).toBe(true),
+      );
+      useAiSettingsStore.setState((state) => ({
+        settings: state.settings
+          ? {
+              ...state.settings,
+              openaiCompatibleEndpoints: [
+                {
+                  id: "shared",
+                  label: "Shared",
+                  baseUrl: "https://b.example/v1",
+                },
+              ],
+            }
+          : null,
+      }));
+      releaseTokenizer();
+      await send;
+
+      expect(onAccepted).not.toHaveBeenCalled();
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(mockSendAgentMessage).not.toHaveBeenCalled();
+      expect(chatApi.addMessage).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toEqual([]);
+    } finally {
+      useAiSettingsStore.setState({ settings: previousSettings });
+    }
   });
 
   // --- Session management tests ---
@@ -2483,6 +2615,955 @@ describe("useChatStore", () => {
       }
     });
 
+    describe("Ollama Agent context preflight", () => {
+      const ollamaSettings = {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "ollama" as const,
+        model: "gemma4:latest",
+        ollamaContextLengths: {},
+      };
+
+      afterEach(() => {
+        useChatStore.setState({
+          agentMode: false,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+        useAiSettingsStore.setState({
+          settings: null,
+          models: [],
+          modelCapsRevision: 0,
+          chatModelOverride: null,
+          chatProviderOverride: null,
+          chatModelVariantOverride: null,
+          chatEndpointIdOverride: null,
+        });
+        mockCountTokens.mockReturnValue(42);
+      });
+
+      it("refreshes Agent OFF metadata while keeping a small normal chat send usable", async () => {
+        mockListAiModels.mockResolvedValueOnce([
+          {
+            id: "gemma4:latest",
+            name: "gemma4:latest",
+            contextLength: 131_072,
+            effectiveContextLength: 131_072,
+            effectiveContextSource: "runner",
+            supportedParameters: ["tools"],
+          },
+        ]);
+        useAiSettingsStore.setState({ settings: ollamaSettings, models: [] });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: false,
+          ragEnabled: false,
+        });
+        mockStreamResponse("normal reply");
+
+        await useChatStore.getState().sendMessage("通常チャット");
+
+        expect(mockListAiModels).toHaveBeenCalledWith(
+          "ollama",
+          undefined,
+          "gemma4:latest",
+          ollamaSettings.ollamaEndpoint,
+        );
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+        expect(mockSendChatMessageStream.mock.calls[0]?.[12]).toBe(
+          ollamaSettings.ollamaEndpoint,
+        );
+        expect(mockSendAgentMessage).not.toHaveBeenCalled();
+      });
+
+      it("keeps an Agent OFF draft unaccepted when only the Ollama model maximum is known", async () => {
+        mockListAiModels.mockResolvedValueOnce([
+          {
+            id: "gemma4:latest",
+            name: "gemma4:latest",
+            contextLength: 131_072,
+            supportedParameters: ["tools"],
+          },
+        ]);
+        useAiSettingsStore.setState({ settings: ollamaSettings, models: [] });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: false,
+          ragEnabled: false,
+        });
+        const onAccepted = vi.fn();
+
+        await useChatStore
+          .getState()
+          .sendMessage("通常チャット", undefined, { _onAccepted: onAccepted });
+
+        expect(onAccepted).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(mockSendAgentMessage).not.toHaveBeenCalled();
+        expect(useChatStore.getState().error).toContain(
+          "Ollama context allocation is unknown",
+        );
+      });
+
+      it("stops before transport when the selected Ollama model is unavailable", async () => {
+        mockListAiModels.mockResolvedValueOnce([]);
+        useAiSettingsStore.setState({ settings: ollamaSettings, models: [] });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        await useChatStore.getState().sendMessage("Agentで調べて");
+
+        expect(mockSendAgentMessage).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().error).toContain("gemma4:latest");
+        expect(useChatStore.getState().error).toContain("Ollama");
+      });
+
+      it("keeps the RAG-capable conversation route when the Agent role points to non-RAG Ollama", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "local-agent:latest",
+            "aiModel.roleProviders": JSON.stringify({
+              agent: { provider: "ollama" },
+            }),
+          },
+        }));
+        useAiSettingsStore.setState({
+          settings: {
+            ...DEFAULT_AI_SETTINGS,
+            provider: "openrouter",
+            model: "openai/gpt-4o",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: false,
+          ragEnabled: true,
+        });
+        mockStreamResponse("normal RAG fallback");
+
+        try {
+          await useChatStore.getState().sendMessage("検索して");
+
+          const call = mockSendChatMessageStream.mock.calls.at(-1);
+          expect(mockListAiModels).not.toHaveBeenCalled();
+          expect(call?.[6]).toBe("openai/gpt-4o");
+          expect(call?.[7]).toBeNull();
+          expect(mockSendAgentMessage).not.toHaveBeenCalled();
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.agent": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("refreshes Agent ON metadata and does not misclassify a 131k Ollama model as 8k", async () => {
+        mockListAiModels.mockResolvedValueOnce([
+          {
+            id: "gemma4:latest",
+            name: "gemma4:latest",
+            contextLength: 131_072,
+            effectiveContextLength: 131_072,
+            effectiveContextSource: "runner",
+            supportedParameters: ["tools", "reasoning"],
+          },
+        ]);
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "agent reply" }],
+          stopReason: "end_turn",
+        });
+        useAiSettingsStore.setState({ settings: ollamaSettings, models: [] });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        await useChatStore.getState().sendMessage("Agentで調べて");
+
+        expect(mockListAiModels).toHaveBeenCalledWith(
+          "ollama",
+          undefined,
+          "gemma4:latest",
+          ollamaSettings.ollamaEndpoint,
+        );
+        expect(mockSendAgentMessage).toHaveBeenCalledOnce();
+        expect(mockSendAgentMessage.mock.calls[0]?.[14]).toBe(
+          ollamaSettings.ollamaEndpoint,
+        );
+        expect(useChatStore.getState().error).toBeNull();
+      });
+
+      it("does not continue with another model selected during the metadata await", async () => {
+        let resolveProbe!: (models: AiModel[]) => void;
+        mockListAiModels.mockImplementationOnce(
+          () => new Promise((resolve) => (resolveProbe = resolve)),
+        );
+        useAiSettingsStore.setState({ settings: ollamaSettings, models: [] });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        const send = useChatStore.getState().sendMessage("Agentで調べて");
+        await vi.waitFor(() => expect(mockListAiModels).toHaveBeenCalledOnce());
+        useAiSettingsStore.setState({
+          chatModelOverride: "another-model:latest",
+        });
+        resolveProbe([
+          {
+            id: "gemma4:latest",
+            name: "gemma4:latest",
+            contextLength: 131_072,
+            effectiveContextLength: 131_072,
+            effectiveContextSource: "runner",
+            supportedParameters: ["tools"],
+          },
+        ]);
+        await send;
+
+        expect(mockSendAgentMessage).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(chatApi.addMessage).not.toHaveBeenCalled();
+      });
+
+      it("does not send an Ollama no-tools fallback to a same-model endpoint selected during preflight", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "completion-only:latest",
+            "aiModel.roleProviders": JSON.stringify({
+              agent: { provider: "ollama" },
+            }),
+          },
+        }));
+        let resolveProbe!: (models: AiModel[]) => void;
+        mockListAiModels.mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveProbe = resolve;
+            }),
+        );
+        const endpoints = [
+          {
+            id: "endpoint-a",
+            label: "A",
+            baseUrl: "https://a.example/v1",
+          },
+          {
+            id: "endpoint-b",
+            label: "B",
+            baseUrl: "https://b.example/v1",
+          },
+        ];
+        useAiSettingsStore.setState({
+          settings: {
+            ...DEFAULT_AI_SETTINGS,
+            provider: "openai-compatible",
+            model: "shared-model",
+            openaiCompatibleEndpoints: endpoints,
+            activeOpenaiCompatibleEndpointId: "endpoint-a",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        try {
+          const send = useChatStore
+            .getState()
+            .sendMessage("fallback destination race");
+          await vi.waitFor(() => expect(mockListAiModels).toHaveBeenCalled());
+          useAiSettingsStore.setState((state) => ({
+            settings: state.settings
+              ? {
+                  ...state.settings,
+                  activeOpenaiCompatibleEndpointId: "endpoint-b",
+                }
+              : null,
+          }));
+          resolveProbe([
+            {
+              id: "completion-only:latest",
+              name: "completion-only:latest",
+              contextLength: 131_072,
+              effectiveContextLength: 65_536,
+              effectiveContextSource: "runner",
+              supportedParameters: [],
+            },
+          ]);
+          await send;
+
+          expect(mockSendAgentMessage).not.toHaveBeenCalled();
+          expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+          expect(chatApi.addMessage).not.toHaveBeenCalled();
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.agent": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("keeps chat usable without attaching tools when Ollama explicitly reports no tool capability", async () => {
+        mockListAiModels.mockResolvedValueOnce([
+          {
+            id: "gemma4:latest",
+            name: "gemma4:latest",
+            contextLength: 131_072,
+            effectiveContextLength: 65_536,
+            effectiveContextSource: "runner",
+            supportedParameters: [],
+          },
+        ]);
+        mockStreamResponse("plain reply");
+        useAiSettingsStore.setState({ settings: ollamaSettings, models: [] });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        await useChatStore.getState().sendMessage("通常回答して");
+
+        expect(mockSendAgentMessage).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      });
+
+      it("falls back to the active Agent model when an Ollama role override reports no tools", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "completion-only:latest",
+            "aiModel.roleProviders": JSON.stringify({
+              agent: { provider: "ollama" },
+            }),
+          },
+        }));
+        mockListAiModels.mockResolvedValueOnce([
+          {
+            id: "completion-only:latest",
+            name: "completion-only:latest",
+            contextLength: 32_768,
+            supportedParameters: [],
+          },
+        ]);
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "fallback agent reply" }],
+          stopReason: "end_turn",
+        });
+        useAiSettingsStore.setState({
+          settings: {
+            ...DEFAULT_AI_SETTINGS,
+            provider: "openrouter",
+            model: "anthropic/claude-sonnet-4-6",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        try {
+          await useChatStore.getState().sendMessage("Agentで回答して");
+
+          expect(mockListAiModels).toHaveBeenCalledWith(
+            "ollama",
+            undefined,
+            "completion-only:latest",
+            ollamaSettings.ollamaEndpoint,
+          );
+          expect(mockSendAgentMessage).toHaveBeenCalledOnce();
+          expect(useChatStore.getState().error).toBeNull();
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.agent": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("re-probes the active Ollama model after a no-tools role override falls back", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "completion-only:latest",
+            "aiModel.roleProviders": JSON.stringify({
+              agent: { provider: "ollama" },
+            }),
+          },
+        }));
+        mockListAiModels
+          .mockResolvedValueOnce([
+            {
+              id: "completion-only:latest",
+              name: "completion-only:latest",
+              contextLength: 32_768,
+              supportedParameters: [],
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              id: "active-agent:latest",
+              name: "active-agent:latest",
+              contextLength: 131_072,
+              effectiveContextLength: 65_536,
+              effectiveContextSource: "runner",
+              supportedParameters: ["tools"],
+            },
+          ]);
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "fallback agent reply" }],
+          stopReason: "end_turn",
+        });
+        useAiSettingsStore.setState({
+          settings: {
+            ...ollamaSettings,
+            model: "active-agent:latest",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        try {
+          await useChatStore.getState().sendMessage("Agentで回答して");
+
+          expect(mockListAiModels).toHaveBeenNthCalledWith(
+            1,
+            "ollama",
+            undefined,
+            "completion-only:latest",
+            ollamaSettings.ollamaEndpoint,
+          );
+          expect(mockListAiModels).toHaveBeenNthCalledWith(
+            2,
+            "ollama",
+            undefined,
+            "active-agent:latest",
+            ollamaSettings.ollamaEndpoint,
+          );
+          expect(mockSendAgentMessage).toHaveBeenCalledOnce();
+          expect(useChatStore.getState().error).toBeNull();
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.agent": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("revalidates a cached no-tools same-provider Agent role and restores it when the tag now supports tools", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "replaced-role:latest",
+            "aiModel.roleProviders": "",
+          },
+        }));
+        registerDynamicModelCaps("ollama", [
+          {
+            id: "replaced-role:latest",
+            name: "replaced-role:latest",
+            contextLength: 32_768,
+            supportedParameters: [],
+          },
+        ]);
+        mockListAiModels.mockResolvedValueOnce([
+          {
+            id: "replaced-role:latest",
+            name: "replaced-role:latest",
+            contextLength: 131_072,
+            effectiveContextLength: 65_536,
+            effectiveContextSource: "runner",
+            supportedParameters: ["tools"],
+          },
+        ]);
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "restored role reply" }],
+          stopReason: "end_turn",
+        });
+        useAiSettingsStore.setState({
+          settings: {
+            ...ollamaSettings,
+            model: "active-agent:latest",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        try {
+          await useChatStore.getState().sendMessage("Agentで回答して");
+
+          expect(mockListAiModels).toHaveBeenCalledWith(
+            "ollama",
+            undefined,
+            "replaced-role:latest",
+            ollamaSettings.ollamaEndpoint,
+          );
+          expect(mockSendAgentMessage).toHaveBeenCalledOnce();
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.agent": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("falls back from a no-tools same-provider role to the tools-capable active Ollama model", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "completion-only:latest",
+            "aiModel.roleProviders": "",
+          },
+        }));
+        mockListAiModels
+          .mockResolvedValueOnce([
+            {
+              id: "completion-only:latest",
+              name: "completion-only:latest",
+              contextLength: 32_768,
+              supportedParameters: [],
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              id: "active-agent:latest",
+              name: "active-agent:latest",
+              contextLength: 131_072,
+              effectiveContextLength: 65_536,
+              effectiveContextSource: "runner",
+              supportedParameters: ["tools"],
+            },
+          ]);
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "active fallback reply" }],
+          stopReason: "end_turn",
+        });
+        useAiSettingsStore.setState({
+          settings: {
+            ...ollamaSettings,
+            model: "active-agent:latest",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        try {
+          await useChatStore.getState().sendMessage("Agentで回答して");
+
+          expect(mockListAiModels).toHaveBeenNthCalledWith(
+            1,
+            "ollama",
+            undefined,
+            "completion-only:latest",
+            ollamaSettings.ollamaEndpoint,
+          );
+          expect(mockListAiModels).toHaveBeenNthCalledWith(
+            2,
+            "ollama",
+            undefined,
+            "active-agent:latest",
+            ollamaSettings.ollamaEndpoint,
+          );
+          expect(mockSendAgentMessage).toHaveBeenCalledOnce();
+          expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.agent": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("keeps a no-tools Agent fallback on the plain path even if the conversation role supports tools", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "completion-only:latest",
+            "aiModel.role.conversation": "conversation-tools:latest",
+            "aiModel.roleProviders": JSON.stringify({
+              agent: { provider: "ollama" },
+              conversation: { provider: "ollama" },
+            }),
+          },
+        }));
+        mockListAiModels
+          .mockResolvedValueOnce([
+            {
+              id: "completion-only:latest",
+              name: "completion-only:latest",
+              contextLength: 32_768,
+              supportedParameters: [],
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              id: "active-completion:latest",
+              name: "active-completion:latest",
+              contextLength: 32_768,
+              supportedParameters: [],
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              id: "conversation-tools:latest",
+              name: "conversation-tools:latest",
+              contextLength: 131_072,
+              effectiveContextLength: 65_536,
+              effectiveContextSource: "runner",
+              supportedParameters: ["tools"],
+            },
+          ]);
+        mockStreamResponse("plain fallback");
+        useAiSettingsStore.setState({
+          settings: {
+            ...ollamaSettings,
+            model: "active-completion:latest",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        try {
+          await useChatStore.getState().sendMessage("通常回答して");
+
+          expect(mockListAiModels).toHaveBeenNthCalledWith(
+            3,
+            "ollama",
+            undefined,
+            "conversation-tools:latest",
+            ollamaSettings.ollamaEndpoint,
+          );
+          expect(mockSendAgentMessage).not.toHaveBeenCalled();
+          expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.agent": "",
+              "aiModel.role.conversation": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("aborts when the conversation fallback role changes during its Ollama probe", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        let resolveConversation!: (models: AiModel[]) => void;
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "",
+            "aiModel.role.conversation": "conversation-old:latest",
+            "aiModel.roleProviders": "",
+          },
+        }));
+        mockListAiModels
+          .mockResolvedValueOnce([
+            {
+              id: "active-completion:latest",
+              name: "active-completion:latest",
+              contextLength: 65_536,
+              effectiveContextLength: 65_536,
+              effectiveContextSource: "runner",
+              supportedParameters: [],
+            },
+          ])
+          .mockImplementationOnce(
+            () =>
+              new Promise<AiModel[]>((resolve) => {
+                resolveConversation = resolve;
+              }),
+          );
+        useAiSettingsStore.setState({
+          settings: {
+            ...ollamaSettings,
+            model: "active-completion:latest",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        try {
+          const send = useChatStore.getState().sendMessage("通常回答して");
+          await vi.waitFor(() =>
+            expect(mockListAiModels).toHaveBeenCalledTimes(2),
+          );
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.conversation": "conversation-new:latest",
+            },
+          }));
+          resolveConversation([
+            {
+              id: "conversation-old:latest",
+              name: "conversation-old:latest",
+              contextLength: 131_072,
+              effectiveContextLength: 65_536,
+              effectiveContextSource: "runner",
+              supportedParameters: ["tools"],
+            },
+          ]);
+          await send;
+
+          expect(mockSendAgentMessage).not.toHaveBeenCalled();
+          expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+          expect(chatApi.addMessage).not.toHaveBeenCalled();
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.conversation": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("blocks a no-tools Agent fallback when the conversation Ollama allocation is unknown", async () => {
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.setState((state) => ({
+          cache: {
+            ...state.cache,
+            "aiModel.role.agent": "",
+            "aiModel.role.conversation": "conversation:latest",
+            "aiModel.roleProviders": "",
+          },
+        }));
+        mockListAiModels
+          .mockResolvedValueOnce([
+            {
+              id: "active-completion:latest",
+              name: "active-completion:latest",
+              contextLength: 65_536,
+              effectiveContextLength: 65_536,
+              effectiveContextSource: "runner",
+              supportedParameters: [],
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              id: "conversation:latest",
+              name: "conversation:latest",
+              contextLength: 131_072,
+              supportedParameters: ["tools"],
+            },
+          ]);
+        useAiSettingsStore.setState({
+          settings: {
+            ...ollamaSettings,
+            model: "active-completion:latest",
+          },
+          models: [],
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+        const onAccepted = vi.fn();
+
+        try {
+          await useChatStore.getState().sendMessage("通常回答して", undefined, {
+            _onAccepted: onAccepted,
+          });
+
+          expect(mockSendAgentMessage).not.toHaveBeenCalled();
+          expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+          expect(onAccepted).not.toHaveBeenCalled();
+          expect(useChatStore.getState().error).toContain(
+            "Ollama context allocation is unknown",
+          );
+        } finally {
+          useSettingsStore.setState((state) => ({
+            cache: {
+              ...state.cache,
+              "aiModel.role.conversation": "",
+              "aiModel.roleProviders": "",
+            },
+          }));
+        }
+      });
+
+      it("stops before HTTP and reports effective versus model maximum when the runner is too small", async () => {
+        mockCountTokens.mockImplementation((text) =>
+          Math.max(1, Math.ceil(text.length / 4)),
+        );
+        mockListAiModels.mockResolvedValueOnce([
+          {
+            id: "gemma4:latest",
+            name: "gemma4:latest",
+            contextLength: 131_072,
+            effectiveContextLength: 4_096,
+            effectiveContextSource: "runner",
+            supportedParameters: ["tools", "reasoning"],
+          },
+        ]);
+        useAiSettingsStore.setState({ settings: ollamaSettings, models: [] });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        await useChatStore.getState().sendMessage("Agentで調べて");
+
+        expect(mockSendAgentMessage).not.toHaveBeenCalled();
+        expect(useChatStore.getState().error).toContain(
+          "Ollama effective context window is 4,096 tokens",
+        );
+        expect(useChatStore.getState().error).toContain(
+          "model maximum 131,072",
+        );
+      });
+
+      it("invalidates a stale runner value and stops when selected metadata refresh fails", async () => {
+        registerDynamicModelCaps(
+          "ollama",
+          [
+            {
+              id: "gemma4:latest",
+              name: "gemma4:latest",
+              contextLength: 131_072,
+              effectiveContextLength: 65_536,
+              effectiveContextSource: "runner",
+              supportedParameters: ["tools"],
+            },
+          ],
+          { ollamaEndpoint: ollamaSettings.ollamaEndpoint },
+        );
+        mockListAiModels.mockRejectedValueOnce(new Error("Ollama offline"));
+        useAiSettingsStore.setState({ settings: ollamaSettings, models: [] });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          ragEnabled: false,
+          sessionAgentToolsSnapshot: null,
+        });
+
+        await useChatStore.getState().sendMessage("Agentで調べて");
+
+        expect(mockSendAgentMessage).not.toHaveBeenCalled();
+        expect(useChatStore.getState().error).toContain("gemma4:latest");
+        expect(useChatStore.getState().error).toContain("/api/show");
+      });
+    });
+
     it("preserves a stopped agent turn when the in-flight transport rejects", async () => {
       useAiSettingsStore.setState({
         settings: {
@@ -2807,6 +3888,61 @@ describe("useChatStore", () => {
 
       expect(mockSendChatMessageStream).not.toHaveBeenCalled();
       expect(useChatStore.getState().messages).toHaveLength(0);
+    });
+
+    it("rechecks chat policy after context preparation and before transport", async () => {
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      useProjectStore.setState({
+        currentProjectId: "proj-1",
+        projects: [
+          {
+            id: "proj-1",
+            aiPolicy: JSON.stringify({
+              preset: "full",
+              toggles: { chat: true, bodyWrite: true, analysis: true },
+            }),
+          },
+        ] as never,
+      });
+      useChatStore.setState({
+        activeProjectId: "proj-1",
+        activeSessionId: session1.id,
+        sessions: [session1],
+        messages: [],
+      });
+      const onAccepted = vi.fn();
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("policy race", undefined, { _onAccepted: onAccepted });
+      await vi.waitFor(() =>
+        expect(useChatStore.getState().isStreaming).toBe(true),
+      );
+      useProjectStore.setState({
+        currentProjectId: "proj-1",
+        projects: [
+          {
+            id: "proj-1",
+            aiPolicy: JSON.stringify({
+              preset: "review-only",
+              toggles: { chat: false, bodyWrite: false, analysis: true },
+            }),
+          },
+        ] as never,
+      });
+      releaseTokenizer();
+      await send;
+
+      expect(onAccepted).not.toHaveBeenCalled();
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(mockSendAgentMessage).not.toHaveBeenCalled();
+      expect(chatApi.addMessage).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toEqual([]);
     });
 
     it("passes full message history to API with system prompt prepended", async () => {
@@ -3867,7 +5003,7 @@ describe("useChatStore", () => {
       expect(mockBuildSystemPrompt).toHaveBeenCalled();
     });
 
-    it("buildPromptForCopy with mentions reverts lastSystemPrompt so next send isn't polluted", async () => {
+    it("buildPromptForCopy with mentions does not publish private preview state", async () => {
       const { listCodexEntriesForContext } =
         await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
@@ -3931,9 +5067,9 @@ describe("useChatStore", () => {
 
       // Copy 結果には mention 込みの prompt が乗る
       expect(result).toContain("[system]\nmention付き-");
-      // しかし state 上の lastSystemPrompt は mention 抜きで巻き戻る
-      // (次回 sendMessage が古い pin を吸わない)
-      expect(useChatStore.getState().lastSystemPrompt).toMatch(/^mentionなし-/);
+      // Copy はライブ表示用 state を一切変更しない。
+      expect(useChatStore.getState().lastSystemPrompt).toBe("");
+      expect(refreshCount).toBe(1);
     });
 
     it("buildPromptForCopy scene スコープ: 入力を seed に related_scenes を含め、eco で本文を空にする", async () => {
@@ -5279,7 +6415,7 @@ describe("useChatStore", () => {
       expect(copy).toContain(`[system]\n${preview.prompt}`);
     });
 
-    it("RAG 有効(agentトグルOFF+対応provider)では agentMode:true で組む(送信と一致)", async () => {
+    it("public RAG preview does not build a private scene/history prompt", async () => {
       const { getNode } = await import("@/features/tree/api");
       const { semanticSearch } = await import("@/features/semantic-search/api");
       const { useAiSettingsStore, DEFAULT_AI_SETTINGS } =
@@ -5309,7 +6445,7 @@ describe("useChatStore", () => {
         includeBodies: true,
         agentMode: false, // トグルは OFF
         ragEnabled: true, // だが RAG は ON
-        messages: [],
+        messages: [makeMessage("assistant", "PRIVATE HISTORY")],
       });
       useChatStore.getState().registerInputDraftProvider(() => ({
         markdown: "質問",
@@ -5317,12 +6453,16 @@ describe("useChatStore", () => {
         mentionedCodexIds: [],
       }));
 
-      await useChatStore.getState().buildPreviewPrompt();
+      mockBuildSystemPrompt.mockClear();
+      const preview = await useChatStore.getState().buildPreviewPrompt();
+      const copy = await useChatStore.getState().buildPromptForCopy("質問");
 
-      // send は RAG 有効時 agent パス(agentMode:true)に入るので preview も揃える
-      expect(mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.agentMode).toBe(
-        true,
-      );
+      expect(preview.status).toBe("ready");
+      expect(preview.prompt).toContain("Web 検索ツール");
+      expect(preview.userMessage).toBe("質問");
+      expect(copy).toContain(`[system]\n${preview.prompt}`);
+      expect(copy).not.toContain("PRIVATE HISTORY");
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
 
       // プロバイダ設定を元に戻す(他テストへの漏れ防止)
       useAiSettingsStore.setState({ settings: prevSettings });

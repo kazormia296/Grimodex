@@ -80,13 +80,28 @@ function normalizeModelId(id: string): string {
  */
 export function getModelPricing(
   modelId: string | null | undefined,
+  provider?: string | null,
 ): ModelPricing | null {
   if (!modelId) return null;
 
-  // OpenRouter 動的レジストリを優先参照
-  const dyn = getDynamicModelMeta(modelId);
+  // provider 未指定は既存 API 互換のため従来どおり OpenRouter を参照する。
+  // provider が明示された場合は OpenRouter の名前空間だけを対象にし、
+  // 同じ bare model id を持つ Ollama 等へクラウド料金を漏らさない。
+  const dyn =
+    provider == null || provider === "openrouter"
+      ? getDynamicModelMeta("openrouter", modelId)
+      : null;
   if (dyn?.inPerM != null && dyn.outPerM != null) {
     return { inputPerMillion: dyn.inPerM, outputPerMillion: dyn.outPerM };
+  }
+
+  if (
+    provider != null &&
+    !["openrouter", "openai", "anthropic", "sakana"].includes(provider)
+  ) {
+    // Local/custom providers can use a cloud-looking bare id. Do not assign
+    // cloud catalog pricing unless the provider namespace is actually known.
+    return null;
   }
 
   const key = normalizeModelId(modelId);
@@ -100,8 +115,9 @@ export function getModelPricing(
 export function estimateInputCost(
   modelId: string | null | undefined,
   tokens: number,
+  provider?: string | null,
 ): number | null {
-  const p = getModelPricing(modelId);
+  const p = getModelPricing(modelId, provider);
   if (!p) return null;
   return (tokens / 1_000_000) * p.inputPerMillion;
 }
@@ -115,8 +131,9 @@ export function estimateTotalCost(
   modelId: string | null | undefined,
   tokensIn: number,
   tokensOut: number,
+  provider?: string | null,
 ): number | null {
-  const p = getModelPricing(modelId);
+  const p = getModelPricing(modelId, provider);
   if (!p) return null;
   return (
     (tokensIn / 1_000_000) * p.inputPerMillion +

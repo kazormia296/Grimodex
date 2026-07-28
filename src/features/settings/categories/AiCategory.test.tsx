@@ -1,8 +1,30 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { RuntimeCapabilitiesProvider } from "@/runtime/runtimeCapabilitiesContext";
 import { AiCategory } from "./AiCategory";
+
+const OLLAMA_ENDPOINT = "http://localhost:11434";
+const GEMMA_CONTEXT_KEY = JSON.stringify([OLLAMA_ENDPOINT, "gemma4"]);
+const LEGACY_GEMMA_LATEST_CONTEXT_KEY = JSON.stringify([
+  OLLAMA_ENDPOINT,
+  "gemma4:latest",
+]);
+
+const aiStoreFixture = vi.hoisted(() => ({
+  settings: {
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    thinkingEnabled: false,
+    ollamaEndpoint: "http://localhost:11434",
+    ollamaContextLengths: {} as Record<string, number>,
+    openaiCompatible: { baseUrl: "" },
+    openaiCompatibleEndpoints: [] as unknown[],
+    activeOpenaiCompatibleEndpointId: null,
+  },
+  models: [] as Array<Record<string, unknown>>,
+  saveSettings: vi.fn(),
+}));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -12,22 +34,14 @@ vi.mock("react-i18next", () => ({
 
 vi.mock("@/features/chat/store", () => ({
   useAiSettingsStore: () => ({
-    settings: {
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      thinkingEnabled: false,
-      ollamaEndpoint: "http://localhost:11434",
-      openaiCompatible: { baseUrl: "" },
-      openaiCompatibleEndpoints: [],
-      activeOpenaiCompatibleEndpointId: null,
-    },
+    settings: aiStoreFixture.settings,
     hasApiKey: true,
     isTestingConnection: false,
     connectionTestResult: null,
-    models: [],
+    models: aiStoreFixture.models,
     isLoadingModels: false,
     loadSettings: vi.fn(),
-    saveSettings: vi.fn(),
+    saveSettings: aiStoreFixture.saveSettings,
     saveApiKey: vi.fn(),
     deleteApiKey: vi.fn(),
     testConnection: vi.fn(),
@@ -36,13 +50,39 @@ vi.mock("@/features/chat/store", () => ({
   isRagCapableProvider: (p: string) => p === "openrouter" || p === "anthropic",
 }));
 
-vi.mock("@/features/chat/types", () => ({
-  AI_PROVIDERS: ["anthropic", "openai"],
-  groupModelsByDeveloper: () => [],
-  getOpenaiCompatibleEndpoints: () => [],
-  getOpenrouterProviderPins: () => [],
-  DEFAULT_OPENAI_COMPATIBLE_SETTINGS: { baseUrl: "" },
-}));
+vi.mock("@/features/chat/types", () => {
+  const normalizeOllamaModelId = (model: string) =>
+    model
+      .trim()
+      .toLowerCase()
+      .replace(/:latest$/u, "");
+  const serialize = (endpoint: string, model: string) =>
+    JSON.stringify([endpoint.trim().replace(/\/+$/u, ""), model]);
+  return {
+    AI_PROVIDERS: ["anthropic", "openai", "ollama"],
+    groupModelsByDeveloper: () => [],
+    getOpenaiCompatibleEndpoints: () => [],
+    getOpenrouterProviderPins: () => [],
+    DEFAULT_OPENAI_COMPATIBLE_SETTINGS: { baseUrl: "" },
+    normalizeOllamaModelId,
+    ollamaContextLengthSettingKey: (endpoint: string, model: string) =>
+      serialize(endpoint, normalizeOllamaModelId(model)),
+    ollamaContextLengthSettingKeys: (endpoint: string, model: string) => {
+      const normalized = normalizeOllamaModelId(model);
+      const trimmed = model.trim();
+      return [
+        ...new Set([
+          normalized,
+          trimmed,
+          `${normalized}:latest`,
+          /:latest$/iu.test(trimmed)
+            ? trimmed.replace(/:latest$/iu, "")
+            : `${trimmed}:latest`,
+        ]),
+      ].map((candidate) => serialize(endpoint, candidate));
+    },
+  };
+});
 
 vi.mock("@/features/chat/agent/modelLimits", () => ({
   getModelCapabilities: () => ({
@@ -100,6 +140,17 @@ vi.mock("@/features/settings/settingsStore", () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  aiStoreFixture.settings = {
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    thinkingEnabled: false,
+    ollamaEndpoint: "http://localhost:11434",
+    ollamaContextLengths: {},
+    openaiCompatible: { baseUrl: "" },
+    openaiCompatibleEndpoints: [],
+    activeOpenaiCompatibleEndpointId: null,
+  };
+  aiStoreFixture.models = [];
 });
 
 function renderDesktopAiCategory() {
@@ -171,5 +222,112 @@ describe("AiCategory — Tool call protocol", () => {
   it("Anthropic では Tool call protocol セレクトを表示しない", () => {
     renderDesktopAiCategory();
     expect(screen.queryByText("Tool call protocol")).toBeNull();
+  });
+});
+
+describe("AiCategory — Ollama context diagnostics", () => {
+  it("モデル最大値と実効runner値を別に表示し、手動fallbackを保存する", () => {
+    aiStoreFixture.settings = {
+      ...aiStoreFixture.settings,
+      provider: "ollama",
+      model: "gemma4:latest",
+      ollamaContextLengths: { [GEMMA_CONTEXT_KEY]: 65_536 },
+    };
+    aiStoreFixture.models = [
+      {
+        id: "gemma4:latest",
+        name: "gemma4:latest",
+        contextLength: 131_072,
+        effectiveContextLength: 32_768,
+        effectiveContextSource: "runner",
+      },
+    ];
+
+    renderDesktopAiCategory();
+
+    const input = screen.getByLabelText(
+      "settings.ai.ollamaEffectiveContext",
+    ) as HTMLInputElement;
+    expect(input.value).toBe("65536");
+    expect(
+      screen.getByText("settings.ai.ollamaModelMaximumValue"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("settings.ai.ollamaEffectiveContextValue"),
+    ).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: "98304" } });
+    fireEvent.blur(input);
+    expect(aiStoreFixture.saveSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        ollamaContextLengths: { [GEMMA_CONTEXT_KEY]: 98_304 },
+      }),
+    );
+  });
+
+  it("手動fallbackを取得済みモデル最大値でclampして保存・表示する", () => {
+    aiStoreFixture.settings = {
+      ...aiStoreFixture.settings,
+      provider: "ollama",
+      model: "gemma4:latest",
+      ollamaContextLengths: {},
+    };
+    aiStoreFixture.models = [
+      {
+        id: "gemma4:latest",
+        name: "gemma4:latest",
+        contextLength: 131_072,
+      },
+    ];
+
+    renderDesktopAiCategory();
+    const input = screen.getByLabelText(
+      "settings.ai.ollamaEffectiveContext",
+    ) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "262144" } });
+    expect(input.value).toBe("131072");
+    fireEvent.blur(input);
+
+    expect(aiStoreFixture.saveSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        ollamaContextLengths: { [GEMMA_CONTEXT_KEY]: 131_072 },
+      }),
+    );
+  });
+
+  it("bare選択を:latestモデルと照合し、legacy設定をclampしてcanonical keyへ移す", () => {
+    aiStoreFixture.settings = {
+      ...aiStoreFixture.settings,
+      provider: "ollama",
+      model: "gemma4",
+      ollamaContextLengths: {
+        [LEGACY_GEMMA_LATEST_CONTEXT_KEY]: 262_144,
+      },
+    };
+    aiStoreFixture.models = [
+      {
+        id: "gemma4:latest",
+        name: "gemma4:latest",
+        contextLength: 131_072,
+      },
+    ];
+
+    renderDesktopAiCategory();
+
+    const input = screen.getByLabelText(
+      "settings.ai.ollamaEffectiveContext",
+    ) as HTMLInputElement;
+    expect(input.value).toBe("131072");
+    expect(input.max).toBe("131072");
+
+    fireEvent.blur(input);
+
+    expect(aiStoreFixture.saveSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        ollamaContextLengths: {
+          [GEMMA_CONTEXT_KEY]: 131_072,
+        },
+      }),
+    );
   });
 });

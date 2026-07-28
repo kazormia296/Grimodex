@@ -71,7 +71,27 @@ vi.mock("../chatStore", () => ({
 }));
 vi.mock("../store", () => ({
   useAiSettingsStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ settings: { model: "claude-x" } }),
+    selector({
+      settings: {
+        provider: "anthropic",
+        model: "claude-x",
+        ollamaEndpoint: "http://localhost:11434",
+      },
+      chatModelOverride: null,
+      chatProviderOverride: null,
+      chatModelVariantOverride: null,
+      chatEndpointIdOverride: null,
+      modelCapsRevision: 0,
+    }),
+}));
+vi.mock("../modelRouting", () => ({
+  resolveRolePathConfig: () => undefined,
+  roleSettingKey: (role: string) => `aiModel.role.${role}`,
+  ROLE_PROVIDERS_KEY: "aiModel.roleProviders",
+}));
+vi.mock("@/features/settings/settingsStore", () => ({
+  useSettingsStore: (selector: (s: Record<string, unknown>) => unknown) =>
+    selector({ get: () => "" }),
 }));
 
 const fakeMsg = (

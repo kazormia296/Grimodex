@@ -15,7 +15,9 @@ import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import {
   awaitChatComposerAuthority,
+  canUseCurrentChatPublicRag,
   captureChatComposerAuthority,
+  resolveCurrentChatDisplayRoute,
   useChatStore,
 } from "./chatStore";
 import { useMapBoardAutoActivate } from "./useMapBoardAutoActivate";
@@ -35,15 +37,17 @@ import { CodexApprovalCard } from "./components/CodexApprovalCard";
 import { QuickActionStrip } from "./components/QuickActionStrip";
 import { ChatRecallPromoteBanner } from "./components/ChatRecallPromoteBanner";
 import { ContextBar } from "./components/ContextBar";
-import { resolveModelCapabilities } from "./agent/modelLimits";
-import { resolveAinoveristApiVariant } from "./aiNovelist";
+import { roleSettingKey, ROLE_PROVIDERS_KEY } from "./modelRouting";
+import { canAttemptContextCreator } from "./contextCreatorApi";
+import { resolvedChatTurnRouteAuthorityKey } from "./turn/resolveTurnRoute";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
 import { listen } from "@/lib/tauri";
 import { respondToCodexServerRequest } from "./codexAppApi";
 import type { CodexAppEventEnvelope } from "@/../electron/shared/codexAppProtocol";
-import { useAiSettingsStore, isRagCapableProvider } from "./store";
+import { useAiSettingsStore } from "./store";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { openAiPolicySettings } from "@/features/ai-policy/openAiPolicySettings";
@@ -515,7 +519,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const contextWindowSize = useChatStore((s) => s.contextWindowSize);
-  const contextModel = useChatStore((s) => s.contextModel);
+  const contextRouteAuthorityKey = useChatStore(
+    (s) => s.contextRouteAuthorityKey,
+  );
   const contextLayers = useChatStore((s) => s.contextLayers);
   const contextPlan = useChatStore((s) => s.contextPlan);
   const pinsVersion = useChatStore((s) => s.pinsVersion);
@@ -623,12 +629,48 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const chatModelOverride = useAiSettingsStore((s) => s.chatModelOverride);
+  const chatProviderOverride = useAiSettingsStore(
+    (s) => s.chatProviderOverride,
+  );
+  useAiSettingsStore((s) => s.chatModelVariantOverride);
+  useAiSettingsStore((s) => s.chatEndpointIdOverride);
   const loadAiSettings = useAiSettingsStore((s) => s.loadSettings);
-  const aiModels = useAiSettingsStore((s) => s.models);
   // 動的 capability レジストリ（OpenRouter /models 等）更新時に再計算する。
-  useAiSettingsStore((s) => s.modelCapsRevision);
+  const modelCapsRevision = useAiSettingsStore((s) => s.modelCapsRevision);
+  useSettingsStore((s) => s.get(roleSettingKey("agent"), ""));
+  useSettingsStore((s) => s.get(roleSettingKey("conversation"), ""));
+  useSettingsStore((s) => s.get(ROLE_PROVIDERS_KEY, ""));
+  const intendedRoute = resolveCurrentChatDisplayRoute({
+    agentMode,
+    ragEnabled,
+  });
   const currentModel =
-    contextModel ?? chatModelOverride ?? aiSettings?.model ?? "";
+    intendedRoute?.model ?? chatModelOverride ?? aiSettings?.model ?? "";
+  const currentProvider =
+    intendedRoute?.provider ??
+    (chatModelOverride
+      ? (chatProviderOverride ?? aiSettings?.provider)
+      : aiSettings?.provider) ??
+    null;
+  const intendedRouteAuthorityKey =
+    resolvedChatTurnRouteAuthorityKey(intendedRoute);
+  const liveContextRouteAuthorityKey = JSON.stringify([
+    modelCapsRevision,
+    agentMode,
+    ragEnabled,
+    intendedRouteAuthorityKey,
+  ]);
+  const materializedContextMatchesRoute =
+    contextRouteAuthorityKey !== null &&
+    contextRouteAuthorityKey === intendedRouteAuthorityKey;
+  const ollamaEffectiveContextUnknown =
+    intendedRoute?.provider === "ollama" &&
+    intendedRoute.contextWindowIsEffective === false;
+  const displayedContextWindow = ollamaEffectiveContextUnknown
+    ? null
+    : materializedContextMatchesRoute
+      ? contextWindowSize
+      : (intendedRoute?.contextWindow ?? null);
   const contextPreviewAuthorityKey = useMemo(
     () =>
       JSON.stringify([
@@ -644,6 +686,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         chronicleRevision,
         contextPlan?.requestId ?? null,
         currentModel,
+        currentProvider,
+        intendedRouteAuthorityKey,
         agentMode,
         ragEnabled,
         includeBodies,
@@ -663,6 +707,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       chronicleRevision,
       contextPlan?.requestId,
       currentModel,
+      currentProvider,
+      intendedRouteAuthorityKey,
       agentMode,
       ragEnabled,
       includeBodies,
@@ -671,19 +717,10 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     ],
   );
 
-  // Context Creator（AIコンテキスト提案）は Codex/Snippet 検索ツールを使う
-  // エージェント実行のため、現在のモデル/プロバイダが Tool Use 対応のときだけ
-  // 有効化する。判定は ChatInput の agent ゲートと同じ resolveModelCapabilities
-  // 経路に揃える（CLI / AI のべりすと legacy 等のツール非対応プロバイダも反映）。
-  const canUseCreator = resolveModelCapabilities(
-    currentModel,
-    aiSettings,
-    resolveAinoveristApiVariant(
-      currentModel,
-      aiModels,
-      aiSettings?.modelApiVariant,
-    ),
-  ).supportsTools;
+  // Context Creator has its own Agent role. Gate the button with the same exact
+  // route that runContextCreator will probe and send, not the conversation route
+  // currently displayed by ContextBar.
+  const canUseCreator = canAttemptContextCreator(intendedRoute);
 
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [inputHasText, setInputHasText] = useState(false);
@@ -757,7 +794,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     includeMapBoard,
     mapBoardId: mapBoardIdFromStore,
     agentMode,
-    provider: aiSettings?.provider,
+    ragEnabled,
+    routeAuthorityKey: liveContextRouteAuthorityKey,
+    provider: currentProvider,
     currentModel,
     allCodexEntries,
     loadAiSettings,
@@ -881,12 +920,42 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
           toast.warning(t("chat.sendCancelledScopeChanged"));
           return false;
         }
-        const send = sendMessage(trimmed, commandInstruction, rest);
-        // sendMessage publishes its owned placeholders and isStreaming before
-        // its first asynchronous context/tokenizer boundary. A false value here
-        // means policy/loading/concurrent-send guards declined this draft.
-        if (!useChatStore.getState().isStreaming) {
-          await send;
+        type AcceptanceResult =
+          | { accepted: true }
+          | { accepted: false; cause?: unknown };
+        let settleAcceptance!: (result: AcceptanceResult) => void;
+        let acceptanceSettled = false;
+        const acceptance = new Promise<AcceptanceResult>((resolve) => {
+          settleAcceptance = (result) => {
+            if (acceptanceSettled) return;
+            acceptanceSettled = true;
+            resolve(result);
+          };
+        });
+        const send = sendMessage(trimmed, commandInstruction, {
+          ...rest,
+          _onAccepted: () => settleAcceptance({ accepted: true }),
+        });
+        // Ollama selected-model preflight intentionally awaits before it can
+        // publish placeholders. Wait for the explicit acceptance handshake,
+        // not a same-tick isStreaming snapshot; a declined preflight resolves
+        // send without consuming the draft or pending slash command.
+        void send.then(
+          () => settleAcceptance({ accepted: false }),
+          (cause: unknown) => settleAcceptance({ accepted: false, cause }),
+        );
+        const acceptanceResult = await acceptance;
+        if (!acceptanceResult.accepted) {
+          if (acceptanceResult.cause !== undefined) {
+            toast.error(
+              t("chat.sendFailed", {
+                message:
+                  acceptanceResult.cause instanceof Error
+                    ? acceptanceResult.cause.message
+                    : String(acceptanceResult.cause),
+              }),
+            );
+          }
           return false;
         }
         void send.then(
@@ -1111,8 +1180,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // Direct browser transports do not expose provider-managed Web search.
   // Keep the trial on the explicitly disclosed Local LLM/BYOK request only.
   const ragCapable =
-    !runtimeCapabilities.browserDirectAi &&
-    isRagCapableProvider(aiSettings?.provider);
+    !runtimeCapabilities.browserDirectAi && canUseCurrentChatPublicRag();
   const handleToggleRag = useCallback(() => {
     setRagEnabled(!ragEnabled);
   }, [ragEnabled, setRagEnabled]);
@@ -1173,10 +1241,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onUnpinEntry={handleUnpin}
         onTogglePinChildren={handleTogglePinChildren}
         contextTokenCount={contextTokenCount}
-        contextWindowOverride={contextWindowSize}
+        contextWindowOverride={displayedContextWindow}
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
         model={currentModel}
+        provider={currentProvider}
+        creatorFallbackRoute={intendedRoute}
         canUseCreator={canUseCreator}
         projectOutline={projectOutline}
         chapterOutlines={chapterOutlines}
@@ -1309,6 +1379,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         }}
         promptViewOpen={promptViewOpen}
         promptViewSnapshot={promptViewSnapshot}
+        promptProvider={currentProvider}
         onClosePrompt={() => setPromptViewOpen(false)}
       />
     </div>

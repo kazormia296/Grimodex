@@ -39,11 +39,13 @@ import { ContextCreatorButton } from "./ContextCreatorButton";
 import { ContextCreatorDialog } from "./ContextCreatorDialog";
 import { runContextCreator, type SuggestedEntry } from "../contextCreatorApi";
 import { useChatStore, type ChatPromptPreviewResult } from "../chatStore";
+import type { ResolvedChatTurnRoute } from "../turn/resolveTurnRoute";
 import { useAiSettingsStore } from "../store";
 import {
-  getModelCapabilities,
   formatContextWindow,
+  resolveModelCapabilities,
 } from "../agent/modelLimits";
+import type { AiProvider } from "../types";
 import { estimateInputCost, formatCost } from "../modelPricing";
 import { CircularProgress } from "@/components/ui/circular-progress";
 import { getTypeLabel } from "../utils/typeLabels";
@@ -128,7 +130,11 @@ interface ContextBarProps {
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
   model: string;
+  /** provider namespace paired with model/contextWindowOverride. */
+  provider?: AiProvider | null;
   canUseCreator?: boolean;
+  /** Conversation/composer route used only when the Context Creator role is unset. */
+  creatorFallbackRoute?: ResolvedChatTurnRoute | null;
   /** Phase 4 後続: AI に注入される project outline 全文（trim 済み・空でない場合のみ） */
   projectOutline?: string;
   /** Phase 4 後続: 祖先 chapter の outline（outermost → innermost 順） */
@@ -170,7 +176,9 @@ export function ContextBar({
   contextLayers,
   systemPrompt,
   model,
+  provider = null,
   canUseCreator = false,
+  creatorFallbackRoute = null,
   projectOutline,
   chapterOutlines = EMPTY_CHAPTER_OUTLINES,
   summaryCount = 0,
@@ -187,6 +195,7 @@ export function ContextBar({
   const reduced = useReducedMotion();
   // 動的 capability レジストリ更新時に contextWindow 表示を再計算する
   useAiSettingsStore((s) => s.modelCapsRevision);
+  const aiSettings = useAiSettingsStore((s) => s.settings);
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   // プレビューを開いたときに related_scenes（意味検索）込みでプロンプトを
@@ -392,7 +401,7 @@ export function ContextBar({
   async function handleCreatorSearch(
     instruction: string,
   ): Promise<SuggestedEntry[]> {
-    return runContextCreator(instruction, pinnedIds, model);
+    return runContextCreator(instruction, pinnedIds, creatorFallbackRoute);
   }
 
   async function handleCreatorAddSelected(
@@ -418,11 +427,20 @@ export function ContextBar({
     : null;
 
   const contextWindow =
-    contextWindowOverride ??
-    (model ? getModelCapabilities(model).contextWindow : 0);
-  const ctxWindowLabel = model ? formatContextWindow(contextWindow) : null;
+    contextWindowOverride !== undefined
+      ? contextWindowOverride
+      : model
+        ? resolveModelCapabilities(
+            model,
+            aiSettings && provider
+              ? { ...aiSettings, provider, model }
+              : aiSettings,
+          ).contextWindow
+        : 0;
+  const ctxWindowLabel =
+    model && contextWindow !== null ? formatContextWindow(contextWindow) : null;
   const windowFillPct =
-    contextWindow > 0
+    contextWindow !== null && contextWindow > 0
       ? Math.min(100, Math.round((contextTokenCount / contextWindow) * 100))
       : null;
   const windowFillStroke =
@@ -616,7 +634,11 @@ export function ContextBar({
             )}
             {contextTokenCount > 0 &&
               (() => {
-                const estimated = estimateInputCost(model, contextTokenCount);
+                const estimated = estimateInputCost(
+                  model,
+                  contextTokenCount,
+                  provider,
+                );
                 const costLabel =
                   estimated !== null ? formatCost(estimated) : null;
                 return (
@@ -1147,7 +1169,8 @@ export function ContextBar({
           totalTokens={previewData?.totalTokens ?? contextTokenCount}
           userMessage={previewData?.userMessage ?? ""}
           model={model}
-          contextWindow={contextWindow}
+          provider={provider}
+          contextWindow={contextWindow ?? undefined}
           loading={previewLoading}
           unavailable={previewData?.status === "unavailable"}
           onClose={closePreview}
