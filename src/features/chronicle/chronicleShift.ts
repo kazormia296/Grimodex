@@ -64,3 +64,28 @@ export function shiftEventPatch(
   }
   return patch;
 }
+
+/**
+ * 単独マーカーの先端を newStartDay へ置く patch。
+ *
+ * 日グリッド以上では従来どおり開始日を吸着先へ置き、開始・終了の分は保持する。
+ * hour/minute グリッドでは実効開始時刻との差分を期間両端へ同量適用し、分を含む
+ * 期間長を変えない。
+ */
+export function moveEventToDayPatch(
+  e: ShiftableEvent,
+  newStartDay: number,
+  subDay: boolean,
+): Partial<EventRow> {
+  if (subDay) {
+    const currentStartDay = e.startTime + (e.startMinute ?? 0) / MIN_PER_DAY;
+    return shiftEventPatch(e, newStartDay - currentStartDay, true);
+  }
+
+  const start = splitDayMinute(newStartDay, false, e.startMinute);
+  const patch: Partial<EventRow> = { startTime: start.time };
+  if (e.endTime != null) {
+    patch.endTime = start.time + (e.endTime - e.startTime);
+  }
+  return patch;
+}

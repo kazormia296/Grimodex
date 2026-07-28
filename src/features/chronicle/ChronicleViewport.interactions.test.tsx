@@ -169,6 +169,55 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onViewChange).not.toHaveBeenCalled(); // パンしない
   });
 
+  it("縦だけのマーカードラッグは日付を渡さずレーンだけ移動する", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 100, clientY: 80 });
+    fireEvent.mouseUp(document, { clientX: 100, clientY: 80 });
+
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(props.onMoveEvent.mock.calls[0][0]).toBe("e1");
+    expect(props.onMoveEvent.mock.calls[0][1]).toBeNull();
+  });
+
+  it("レーン deadzone 内の縦操作に伴う小さな横ぶれは日付変更にしない", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 104, clientY: 40 });
+    fireEvent.mouseUp(document, { clientX: 104, clientY: 40 });
+
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(props.onMoveEvent.mock.calls[0][1]).toBeNull();
+  });
+
+  it("X/Y 同量の45度ドラッグは横優勢ではないため日付変更にしない", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 145, clientY: 65 });
+    fireEvent.mouseUp(document, { clientX: 145, clientY: 65 });
+
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(props.onMoveEvent.mock.calls[0][1]).toBeNull();
+  });
+
   it("本体ドラッグの挿入位置はイベント先端基準（掴む位置に依存しない）", () => {
     const props = makeProps();
     const { container } = render(
@@ -387,7 +436,29 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onMoveEvent).not.toHaveBeenCalled(); // 単独移動は呼ばれない
   });
 
-  it("並び順モード(暦軸なし)では一括移動しない（単独扱い・全件追従しない）", () => {
+  it("複数選択の最終 drop が縦移動だけなら一括・単独移動とも発火しない", () => {
+    const onMoveSelected = vi.fn();
+    const props = makeProps({
+      selectedIds: new Set(["e1", "e2"]),
+      selectedEventId: "e1",
+      onMoveSelected,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    // 途中では横 threshold を超えるが、最終 drop は開始 X へ戻す。
+    fireEvent.mouseMove(document, { clientX: 160, clientY: 80 });
+    fireEvent.mouseUp(document, { clientX: 100, clientY: 80 });
+
+    expect(onMoveSelected).not.toHaveBeenCalled();
+    expect(props.onMoveEvent).not.toHaveBeenCalled();
+  });
+
+  it("並び順モードは単独横 drop で実日付候補を渡すが一括移動しない", () => {
     const onMoveSelected = vi.fn();
     const props = makeProps({
       hasCalendarAxis: false,
@@ -411,6 +482,7 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     fireEvent.mouseUp(document, { clientX: 200, clientY: 20 });
     expect(onMoveSelected).not.toHaveBeenCalled();
     expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(typeof props.onMoveEvent.mock.calls[0][1]).toBe("number");
   });
 
   it("非選択マーカーのドラッグは単独移動のまま（onMoveEvent）", () => {

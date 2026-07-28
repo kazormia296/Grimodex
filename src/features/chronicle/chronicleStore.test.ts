@@ -15,7 +15,13 @@ function reset() {
     zoom: 1,
     scrollOffset: 0,
     showOffpage: true,
+    pxPerDay: null,
+    viewStartDay: null,
+    axisMode: null,
+    viewProjectId: null,
+    viewWorkspacePath: null,
     selectedEventId: null,
+    selectedEventIds: [],
   });
 }
 
@@ -65,6 +71,50 @@ describe("chronicleStore persistent subscriber", () => {
     expect(useChronicleStore.getState().zoom).toBe(4);
     useChronicleStore.getState().setZoom(0.01);
     expect(useChronicleStore.getState().zoom).toBe(0.25);
+  });
+
+  it("setChronicleView は view と現在の axisMode を一体で永続化する", async () => {
+    useChronicleStore
+      .getState()
+      .setChronicleView(4, 10, "calendar", "project-a", "/workspace-a");
+
+    expect(useChronicleStore.getState()).toMatchObject({
+      pxPerDay: 4,
+      viewStartDay: 10,
+      axisMode: "calendar",
+      viewProjectId: "project-a",
+      viewWorkspacePath: "/workspace-a",
+    });
+    await vi.runAllTimersAsync();
+    expect(invoke).toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          chronicle: expect.objectContaining({
+            pxPerDay: 4,
+            viewStartDay: 10,
+            axisMode: "calendar",
+            viewProjectId: "project-a",
+            viewWorkspacePath: "/workspace-a",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("axisMode / view owner を持たない legacy view は migration 待ちの null で読む", () => {
+    loadAndSyncChronicleSettings({
+      pxPerDay: 4,
+      viewStartDay: 10,
+    });
+
+    expect(useChronicleStore.getState()).toMatchObject({
+      pxPerDay: 4,
+      viewStartDay: 10,
+      axisMode: null,
+      viewProjectId: null,
+      viewWorkspacePath: null,
+    });
   });
 });
 

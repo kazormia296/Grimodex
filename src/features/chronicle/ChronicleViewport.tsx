@@ -167,7 +167,10 @@ export interface ChronicleViewportProps {
   // ── グラフ操作（任意・ロック時は呼ばれない） ──
   /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
   selectedDay?: number | null;
-  /** 暦軸モードか（false=並び順モードでは時間ドラッグ/位置作成を抑止）。 */
+  /**
+   * 暦軸モードか。false の並び順モードでもマーカーの横 drop は実日付への
+   * 変換に使うが、空白位置の日付作成・期間伸縮・一括時間移動は抑止する。
+   */
   hasCalendarAxis?: boolean;
   /** マーカー再配置（newStartDay=null は時間変更なし。newCodexId でレーン再割当）。 */
   onMoveEvent?: (
@@ -929,12 +932,20 @@ export function ChronicleViewport({
             // 本体ドラッグは常に移動（別マーカーへ落としても因果エッジは作らない。
             // 因果エッジは選択時の末尾●ハンドル D&D のみ）。
             if (draggedRef.current && cb.onMoveEvent) {
-              const newDay = cb.hasCalendarAxis
+              const dx = Math.abs(ev.clientX - startX);
+              const dy = Math.abs(ev.clientY - startY);
+              // 縦操作中の手ぶれを日時変更と誤認しない。斜め gesture は
+              // 横成分が支配的な時だけ時間方向の移動として扱う
+              // （横優勢なら lane + time の同時移動可）。
+              const movedHorizontally = dx > DRAG_THRESHOLD && dx > dy;
+              const newDay = movedHorizontally
                 ? snappedDayAt(ev.clientX - grabOffsetX, rect)
                 : null;
-              if (bulk && newDay != null && cb.onMoveSelected) {
-                // 一括: 先端の差分を選択全件へ適用（レーンは各自保持）。
-                cb.onMoveSelected(eventId, newDay);
+              if (bulk) {
+                // 一括は時間方向だけを動かす。最終 drop が縦移動だけなら完全 no-op。
+                if (newDay != null && cb.onMoveSelected) {
+                  cb.onMoveSelected(eventId, newDay);
+                }
               } else {
                 // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
                 const newCodex =

@@ -7,6 +7,8 @@ import {
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
 
+export type ChronicleAxisMode = "calendar" | "sequence";
+
 export interface ChronicleSettings {
   zoom: number;
   scrollOffset: number;
@@ -18,6 +20,18 @@ export interface ChronicleSettings {
    */
   pxPerDay: number | null;
   viewStartDay: number | null;
+  /**
+   * 永続 view が属する座標ドメイン。null は axisMode 導入前の legacy 値で、
+   * 次回 Chronicle 表示時に一度だけ現在モードへ再フィットして移行する。
+   */
+  axisMode: ChronicleAxisMode | null;
+  /**
+   * 永続 view の所有 Project。null は導入前の legacy 値または未設定で、
+   * 別 Project の座標を誤って復元しないため現在 Project へ再フィットする。
+   */
+  viewProjectId: string | null;
+  /** 永続 view の所有 Workspace path（null=legacy / 未設定）。 */
+  viewWorkspacePath: string | null;
   /**
    * 編集ロック。on でグラフ上の直接操作（マーカーのドラッグ移動・期間端の伸縮・
    * D&D による因果エッジ作成・空白のダブルクリック/右クリック作成）を無効化する。
@@ -38,6 +52,12 @@ interface ChronicleState {
   /** pan/zoom ビューの永続値（null=未設定＝初回フィット）。 */
   pxPerDay: number | null;
   viewStartDay: number | null;
+  /** 永続 view が属する座標ドメイン（null=legacy / 未設定）。 */
+  axisMode: ChronicleAxisMode | null;
+  /** 永続 view の所有 Project（null=legacy / 未設定）。 */
+  viewProjectId: string | null;
+  /** 永続 view の所有 Workspace path（null=legacy / 未設定）。 */
+  viewWorkspacePath: string | null;
   /**
    * 選択中の出来事(events.id)＝プライマリ（最後にクリック＝範囲選択のアンカー）。
    * Inspector が読む（単一選択時のみ詳細編集を出す）。
@@ -66,7 +86,13 @@ interface ChronicleState {
   setZoom: (zoom: number) => void;
   setScrollOffset: (offset: number) => void;
   /** pan/zoom ビューを永続値へ反映する（drag/zoom/fit の各操作で呼ぶ）。 */
-  setChronicleView: (pxPerDay: number, viewStartDay: number) => void;
+  setChronicleView: (
+    pxPerDay: number,
+    viewStartDay: number,
+    axisMode: ChronicleAxisMode,
+    viewProjectId: string,
+    viewWorkspacePath: string,
+  ) => void;
   toggleShowOffpage: () => void;
   /** 単一選択（複数選択も [id] に畳む）。null で全解除。 */
   setSelectedEventId: (id: string | null) => void;
@@ -116,6 +142,9 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
   showOffpage: true,
   pxPerDay: null,
   viewStartDay: null,
+  axisMode: null,
+  viewProjectId: null,
+  viewWorkspacePath: null,
   selectedEventId: null,
   selectedEventIds: [],
   locked: false,
@@ -124,7 +153,20 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
   revisionCounter: 0,
   setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
-  setChronicleView: (pxPerDay, viewStartDay) => set({ pxPerDay, viewStartDay }),
+  setChronicleView: (
+    pxPerDay,
+    viewStartDay,
+    axisMode,
+    viewProjectId,
+    viewWorkspacePath,
+  ) =>
+    set({
+      pxPerDay,
+      viewStartDay,
+      axisMode,
+      viewProjectId,
+      viewWorkspacePath,
+    }),
   toggleShowOffpage: () => set((s) => ({ showOffpage: !s.showOffpage })),
   setSelectedEventId: (selectedEventId) => {
     const current = get().selectedEventId;
@@ -180,6 +222,18 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
       showOffpage: settings.showOffpage ?? true,
       pxPerDay: settings.pxPerDay ?? null,
       viewStartDay: settings.viewStartDay ?? null,
+      axisMode:
+        settings.axisMode === "calendar" || settings.axisMode === "sequence"
+          ? settings.axisMode
+          : null,
+      viewProjectId:
+        typeof settings.viewProjectId === "string"
+          ? settings.viewProjectId
+          : null,
+      viewWorkspacePath:
+        typeof settings.viewWorkspacePath === "string"
+          ? settings.viewWorkspacePath
+          : null,
       locked: settings.locked ?? false,
     }),
 }));
@@ -193,6 +247,9 @@ function snapshotPersistent(
     showOffpage: state.showOffpage,
     pxPerDay: state.pxPerDay,
     viewStartDay: state.viewStartDay,
+    axisMode: state.axisMode,
+    viewProjectId: state.viewProjectId,
+    viewWorkspacePath: state.viewWorkspacePath,
     locked: state.locked,
   };
 }

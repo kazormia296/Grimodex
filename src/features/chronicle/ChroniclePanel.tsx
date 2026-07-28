@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Trash2, X } from "lucide-react";
 import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useProjectStore } from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
@@ -61,7 +62,12 @@ import { formatChronicleDate } from "./chronicleTime";
 import type { ChronicleCalendar, DateLang } from "./chronicleTime";
 import { createEditorInstanceId } from "@/features/editor/document/documentKey";
 import { announcePersistedBinding } from "@/features/editor/editorSaveRegistry";
-import { MIN_PER_DAY, splitDayMinute, shiftEventPatch } from "./chronicleShift";
+import {
+  MIN_PER_DAY,
+  moveEventToDayPatch,
+  splitDayMinute,
+  shiftEventPatch,
+} from "./chronicleShift";
 import type { MarkerEvent } from "./EventMarker";
 import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleToolbar } from "./ChronicleToolbar";
@@ -116,6 +122,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const { t, i18n } = useTranslation();
   const lang: DateLang = i18n.language?.startsWith("en") ? "en" : "ja";
   const projectId = useProjectStore((s) => s.currentProjectId);
+  const workspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const entries = useCodexStore((s) => s.entries);
   const selectedEventId = useChronicleStore((s) => s.selectedEventId);
   const selectedEventIds = useChronicleStore((s) => s.selectedEventIds);
@@ -330,15 +337,21 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     [t],
   );
 
-  const { events, setEvents, sceneLinks, relations, participants } =
-    useChronicleQuery({
-      projectId,
-      reloadKey,
-      revisionCounter,
-      onProjectChanged: resetProjectTransientState,
-      onProjectLoaded: handleProjectLoaded,
-      onEventsLoaded: handleProjectEventsLoaded,
-    });
+  const {
+    events,
+    setEvents,
+    sceneLinks,
+    relations,
+    participants,
+    snapshotProjectId,
+  } = useChronicleQuery({
+    projectId,
+    reloadKey,
+    revisionCounter,
+    onProjectChanged: resetProjectTransientState,
+    onProjectLoaded: handleProjectLoaded,
+    onEventsLoaded: handleProjectEventsLoaded,
+  });
 
   const latestEventsRef = useRef<EventRow[]>(events);
   latestEventsRef.current = events;
@@ -575,11 +588,19 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       .sort((a, b) => a - b);
     return days.length ? days[Math.floor(days.length / 2)] : 0;
   }, [eff]);
+  const chronicleSnapshotReady =
+    projectId !== null && snapshotProjectId === projectId;
   const viewport = useChronicleViewportController({
+    workspacePath,
+    projectId,
+    dataReady: chronicleSnapshotReady,
     dataStart: eff.dataStart,
     dataEnd: eff.dataEnd,
-    eventCount: renderEvents.length,
+    // Project 切替中は Tree の scene-event が先に見えても、実 Event snapshot
+    // 到着前に refit を確定しない。遠方の実 Event を画面外へ残すのを防ぐ。
+    eventCount: chronicleSnapshotReady ? renderEvents.length : 0,
     focusDay: fitFocusDay,
+    hasCalendarAxis: eff.hasCalendarAxis,
   });
   resetViewportForProjectRef.current = viewport.resetForProject;
   const { view, trackW, trackElRef, rulerLevelRef, setTrackW, applyView } =
@@ -936,8 +957,9 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
 
   // ── CRUD ──────────────────────────────────────────────────
   const [creating, setCreating] = useState(false);
-  // 暦モード中は新規イベントに既定の時刻（現在ビュー中央）を付与する。無時刻イベントを
-  // 作ると hasCalendarAxis が false に倒れて全体が並び順(#1)へ落ち、期間が点に化ける。
+  // 暦モード中は新規イベントに既定の時刻（現在ビュー中央）を付与する。
+  // mixed 軸では無時刻イベントも proxy 位置へ表示できるが、新規作成位置を選んだ
+  // ユーザー意図は実日時として保持し、後から proxy へ退行させない。
   const defaultCreateDay = useCallback((): number | null => {
     if (!eff.hasCalendarAxis || trackW <= 0 || !(view.pxPerDay > 0))
       return null;
@@ -1014,15 +1036,32 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       // 移動先レーンを実 codex 割当 or 未割当グループに解く。""=NULL クリア。
       const { primaryCodexId, laneGroup } = decodeLaneTarget(newCodexId);
       const patch: Partial<EventRow> = { primaryCodexId, laneGroup };
-      if (newStartDay != null && e.startTime != null) {
+      if (newStartDay != null) {
         const subDay =
           rulerLevelRef.current === "hour" ||
           rulerLevelRef.current === "minute";
-        const s = splitDayMinute(newStartDay, subDay, e.startMinute);
-        patch.startTime = s.time;
-        if (subDay) patch.startMinute = s.minute;
-        if (e.endTime != null)
-          patch.endTime = s.time + (e.endTime - e.startTime);
+        if (e.startTime == null) {
+          // mixed calendar 軸の proxy は描画専用。横 drop した時点で初めて
+          // 実日時へ変換し、以後は通常の dated event として移動できるようにする。
+          const start = splitDayMinute(newStartDay, subDay, e.startMinute);
+          patch.startTime = start.time;
+          patch.startGranularity = subDay ? "time" : "day";
+          if (subDay) patch.startMinute = start.minute;
+        } else {
+          Object.assign(
+            patch,
+            moveEventToDayPatch(
+              {
+                startTime: e.startTime,
+                startMinute: e.startMinute,
+                endTime: e.endTime,
+                endMinute: e.endMinute,
+              },
+              newStartDay,
+              subDay,
+            ),
+          );
+        }
       }
       void patchById(id, patch);
     },
@@ -1819,7 +1858,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
           </div>
         ) : (
           <ChronicleViewport
-            isActive={isActive}
+            isActive={isActive && chronicleSnapshotReady}
             view={view}
             onViewChange={applyView}
             onMeasureTrack={setTrackW}

@@ -8,6 +8,7 @@ import {
   act,
 } from "@testing-library/react";
 import type { EventRow } from "./api";
+import type { ChronicleLayout } from "./chronicleLayout";
 
 // ── ./api を丸ごとモック（DB に触らせない）。読み取りのみ。 ──
 const apiMocks = vi.hoisted(() => ({
@@ -67,7 +68,9 @@ vi.mock("./useSeasonConflicts", () => ({
 vi.mock("./ChronicleViewport", () => ({
   ChronicleViewport: ({
     isActive,
+    layout,
     eventsById,
+    hasCalendarAxis,
     onMoveEvent,
     onDeleteEvent,
     onViewChange,
@@ -75,7 +78,9 @@ vi.mock("./ChronicleViewport", () => ({
     onResizeSelectedBy,
   }: {
     isActive?: boolean;
+    layout: ChronicleLayout;
     eventsById: Map<string, unknown>;
+    hasCalendarAxis?: boolean;
     onMoveEvent?: (
       id: string,
       newStartDay: number | null,
@@ -90,7 +95,33 @@ vi.mock("./ChronicleViewport", () => ({
       data-testid="viewport"
       data-n={eventsById.size}
       data-is-active={isActive}
+      data-has-calendar-axis={hasCalendarAxis}
+      data-ea-is-interval={layout.markerById.get("ea")?.isInterval}
     >
+      <button
+        data-testid="move-event-btn"
+        onClick={() => onMoveEvent?.("ea", 200, null)}
+      >
+        move-event
+      </button>
+      <button
+        data-testid="move-undated-event-btn"
+        onClick={() => onMoveEvent?.("undated", 220, null)}
+      >
+        move-undated-event
+      </button>
+      <button
+        data-testid="move-undated-lane-btn"
+        onClick={() => onMoveEvent?.("undated", null, "c2")}
+      >
+        move-undated-lane
+      </button>
+      <button
+        data-testid="move-subday-event-btn"
+        onClick={() => onMoveEvent?.("ea", 200.5, null)}
+      >
+        move-subday-event
+      </button>
       <button
         data-testid="move-scene-btn"
         onClick={() => onMoveEvent?.("scene:sc1", 200, null)}
@@ -232,6 +263,7 @@ vi.mock("./ChronicleExtractDialog", () => ({
 
 import { ChroniclePanel } from "./ChroniclePanel";
 import { useProjectStore } from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { useChronicleStore } from "./chronicleStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
@@ -269,12 +301,16 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useWorkspaceStore.setState({ activeWorkspacePath: "/workspace-a" });
   useProjectStore.setState({ currentProjectId: null });
   useChronicleStore.setState({
     selectedEventId: null,
     selectedEventIds: [],
     pxPerDay: null,
     viewStartDay: null,
+    axisMode: null,
+    viewProjectId: null,
+    viewWorkspacePath: null,
   });
   useCodexStore.setState({ entries: [] });
   useTimelineStore.setState({ selectedNodeIds: [] });
@@ -318,6 +354,234 @@ describe("ChroniclePanel keepalive activity", () => {
       "data-is-active",
       "false",
     );
+  });
+
+  it("query snapshot の読込中は viewport 操作を停止し、到着後に再開する", async () => {
+    let resolveEvents: (rows: EventRow[]) => void = () => {};
+    const pendingEvents = new Promise<EventRow[]>((resolve) => {
+      resolveEvents = resolve;
+    });
+    apiMocks.listEvents.mockReturnValue(pendingEvents);
+    useTreeStore.setState({ nodes: [makeScene()] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-is-active",
+      "false",
+    );
+
+    await act(async () => {
+      resolveEvents([]);
+      await pendingEvents;
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("viewport")).toHaveAttribute(
+        "data-is-active",
+        "true",
+      );
+    });
+  });
+});
+
+describe("ChroniclePanel mixed dated/undated axis", () => {
+  it("暦軸と期間表示を維持し、dated interval の横移動で開始・終了を同時にずらす", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        endTime: 110,
+        startGranularity: "day",
+        endGranularity: "day",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+        startTime: null,
+        endTime: null,
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    const viewport = await screen.findByTestId("viewport");
+    expect(viewport).toHaveAttribute("data-has-calendar-axis", "true");
+    expect(viewport).toHaveAttribute("data-ea-is-interval", "true");
+
+    fireEvent.click(screen.getByTestId("move-event-btn"));
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "ea",
+          baseVersion: 0,
+          primaryCodexId: "",
+          laneGroup: "",
+          startTime: 200,
+          endTime: 210,
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+  });
+
+  it("undated proxy の横 drop を実日付へ変換して永続化する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        startGranularity: "day",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+        startTime: null,
+        startGranularity: "none",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-has-calendar-axis",
+      "true",
+    );
+    fireEvent.click(screen.getByTestId("move-undated-event-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "undated",
+          baseVersion: 0,
+          primaryCodexId: "",
+          laneGroup: "",
+          startTime: 220,
+          startGranularity: "day",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+  });
+
+  it("全件 undated の sequence 軸でも単独横 drop を実日付へ変換する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "undated",
+        ordinal: "a0",
+        startTime: null,
+        startGranularity: "none",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-has-calendar-axis",
+      "false",
+    );
+    fireEvent.click(screen.getByTestId("move-undated-event-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "undated",
+          baseVersion: 0,
+          primaryCodexId: "",
+          laneGroup: "",
+          startTime: 220,
+          startGranularity: "day",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+  });
+
+  it("undated proxy の縦レーン移動では日付未設定を維持する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        startGranularity: "day",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+        startTime: null,
+        startGranularity: "none",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    fireEvent.click(screen.getByTestId("move-undated-lane-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "undated",
+          baseVersion: 0,
+          primaryCodexId: "c2",
+          laneGroup: "",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+    expect(eventMocks.uiUpdateEvent.mock.calls[0]?.[0]).not.toHaveProperty(
+      "startTime",
+    );
+    expect(eventMocks.uiUpdateEvent.mock.calls[0]?.[0]).not.toHaveProperty(
+      "startGranularity",
+    );
+  });
+
+  it("hour zoom の単独 interval 移動で開始・終了の分を同量ずらす", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        startMinute: 360,
+        endTime: 102,
+        endMinute: 720,
+        startGranularity: "time",
+        endGranularity: "time",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+      }),
+    ]);
+    useChronicleStore.setState({
+      pxPerDay: 2_000,
+      viewStartDay: 100,
+      axisMode: "calendar",
+      viewProjectId: "p1",
+      viewWorkspacePath: "/workspace-a",
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    fireEvent.click(screen.getByTestId("move-subday-event-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "ea",
+          baseVersion: 0,
+          primaryCodexId: "",
+          laneGroup: "",
+          startTime: 200,
+          startMinute: 720,
+          endTime: 202,
+          endMinute: 1_080,
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
   });
 });
 
