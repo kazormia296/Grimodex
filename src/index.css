@@ -558,9 +558,21 @@ button[role="switch"][aria-checked="true"] {
 }
 
 /* When Editor plus one or more tool surfaces are visible, one masked
-   compositor layer owns the expensive backdrop sampling for all of them. */
-#main-content:has([data-zen-glass-compositor]) [data-editor-fluid-glass-filter],
-#main-content:has([data-zen-glass-compositor]) [data-ambient-glass-surface] {
+   compositor layer owns the expensive backdrop sampling for all of them.
+   Keep the full enabled-Glass context in these selectors so they outrank the
+   per-surface declarations above instead of accidentally double-filtering. */
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"]
+      [data-zen-glass-compositor]
+  )
+  [data-editor-fluid-glass="true"]
+  > [data-editor-fluid-glass-filter],
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"]
+      [data-zen-glass-compositor]
+  )
+  [data-workspace-glass-root][data-workspace-fluid-glass="true"]
+  [data-ambient-glass-surface] {
   backdrop-filter: none;
 }
 

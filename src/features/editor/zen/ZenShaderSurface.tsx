@@ -16,7 +16,6 @@ import { useZenShaderAnimation } from "./zenShaderAnimation";
 import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
 import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
-import { ZEN_UI_SURFACE_MAX } from "./zenPostProcessing";
 import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
 import { buildZenGlassMask } from "./zenGlassCompositor";
 
@@ -37,11 +36,18 @@ export function ZenShaderSurface({
 }: ZenShaderSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const paperMountRef = useRef<PaperShaderElement>(null);
-  const surfaceUniformBufferRef = useRef(
-    new ZenUiSurfaceUniformBuffer(ZEN_UI_SURFACE_MAX),
-  );
   const palette = useZenThemePalette();
   const layouts = useZenShaderLayouts(surfaceRef);
+  // Paper prepares uniforms asynchronously. Keep the program, upload buffer,
+  // and React mount on one capacity so a stale smaller initialization cannot
+  // win while the startup layout expands from one surface to the full shell.
+  const uiSurfaceCapacity = zenUiSurfaceVariantCapacity(
+    layouts.uiSurfaces.length,
+  );
+  const surfaceUniformBuffer = useMemo(
+    () => new ZenUiSurfaceUniformBuffer(uiSurfaceCapacity),
+    [uiSurfaceCapacity],
+  );
   const resolved = useMemo(
     () =>
       resolvePaperShaderMount(
@@ -52,11 +58,8 @@ export function ZenShaderSurface({
   );
   const fragmentShader = useMemo(
     () =>
-      buildZenPostProcessedFragment(
-        resolved.fragmentShader,
-        zenUiSurfaceVariantCapacity(layouts.uiSurfaces.length),
-      ),
-    [layouts.uiSurfaces.length, resolved.fragmentShader],
+      buildZenPostProcessedFragment(resolved.fragmentShader, uiSurfaceCapacity),
+    [resolved.fragmentShader, uiSurfaceCapacity],
   );
   const uniforms = useMemo(
     () => ({
@@ -73,10 +76,10 @@ export function ZenShaderSurface({
             palette.textColor ?? [0.85, 0.85, 0.85],
           backdropColor: palette.backdropColor ?? [0.063, 0.075, 0.094],
         },
-        surfaceUniformBufferRef.current,
+        surfaceUniformBuffer,
       ),
     }),
-    [config, layouts, palette, resolved.uniforms],
+    [config, layouts, palette, resolved.uniforms, surfaceUniformBuffer],
   );
   const preparedUniforms = usePreparedZenShaderUniforms(uniforms);
   const definition = getPaperShaderDefinition(config.shader);
@@ -136,7 +139,7 @@ export function ZenShaderSurface({
     >
       {preparedUniforms && (
         <ShaderMount
-          key={config.shader}
+          key={`${config.shader}:${uiSurfaceCapacity}`}
           {...mountProps}
           ref={paperMountRef}
           data-paper-shader={config.shader}

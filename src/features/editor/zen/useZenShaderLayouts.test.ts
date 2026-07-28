@@ -69,6 +69,22 @@ describe("mutationAffectsZenShaderLayout", () => {
     expect(mutationAffectsZenShaderLayout(unmounted)).toBe(true);
   });
 
+  it("remeasures when removing a sibling moves a surviving layout target", () => {
+    const root = document.createElement("main");
+    const dock = document.createElement("section");
+    const exitingPanel = document.createElement("div");
+    const stripe = document.createElement("nav");
+    stripe.dataset.ambientGlassSurface = "stripe";
+    dock.append(exitingPanel, stripe);
+    root.append(dock);
+
+    const records = mutationRecords(dock, () => {
+      exitingPanel.remove();
+    });
+
+    expect(mutationAffectsZenShaderLayout(records)).toBe(true);
+  });
+
   it("remeasures observed layout attributes", () => {
     const editor = document.createElement("section");
     const records = mutationRecords(

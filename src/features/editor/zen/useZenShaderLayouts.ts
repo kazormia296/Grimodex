@@ -51,6 +51,13 @@ function nodeContainsLayoutTarget(node: Node) {
   );
 }
 
+function nodeHasLayoutTargetDescendant(node: Node) {
+  return (
+    node instanceof Element &&
+    node.querySelector(LAYOUT_TARGET_SELECTOR) !== null
+  );
+}
+
 export function mutationAffectsZenShaderLayout(
   records: readonly MutationRecord[],
 ) {
@@ -58,7 +65,12 @@ export function mutationAffectsZenShaderLayout(
     (record) =>
       record.type === "attributes" ||
       Array.from(record.addedNodes).some(nodeContainsLayoutTarget) ||
-      Array.from(record.removedNodes).some(nodeContainsLayoutTarget),
+      Array.from(record.removedNodes).some(nodeContainsLayoutTarget) ||
+      // Removing an unrelated animated sibling can move a surviving Stripe
+      // without resizing it. The removed node no longer identifies the
+      // affected surface, but the mutation target still contains that surface.
+      (record.type === "childList" &&
+        nodeHasLayoutTargetDescendant(record.target)),
   );
 }
 

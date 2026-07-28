@@ -292,6 +292,70 @@ function TransientWorkspaceSurfaceProbe({
   );
 }
 
+function PositionOnlySettlementProbe({
+  phase,
+}: {
+  phase: "baseline" | "transient" | "settled";
+}) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const layouts = useZenShaderLayouts(surfaceRef);
+
+  return (
+    <div
+      ref={surfaceRef}
+      data-testid="position-only-settlement-layout"
+      data-ui-surface-rects={JSON.stringify(
+        layouts.uiSurfaces.map((surface) => surface.rect),
+      )}
+      style={{ position: "relative", width: 1_000, height: 600 }}
+    >
+      <div
+        className={phase === "baseline" ? undefined : "closing"}
+        data-workspace-glass-root
+        data-workspace-fluid-glass="true"
+        style={{ position: "absolute", inset: 0 }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            width: 1_000,
+            height: 600,
+          }}
+        >
+          {phase === "transient" && (
+            <div
+              data-position-only-exit
+              style={{
+                width: 1_000,
+                height: 180,
+                flexShrink: 0,
+              }}
+            />
+          )}
+          <div
+            data-position-only-spacer
+            style={{
+              width: 1_000,
+              height: 520,
+              flexShrink: 0,
+            }}
+          />
+          <nav
+            data-ambient-glass-surface="stripe"
+            style={{
+              width: 1_000,
+              height: 40,
+              flexShrink: 0,
+              borderRadius: 16,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const parseRect = (value: string | null) => value?.split(" ").map(Number) ?? [];
 
 const parseNumber = (value: string | null) => Number(value);
@@ -600,6 +664,31 @@ describe("Zen shader non-editor Glass geometry (real Chromium)", () => {
     await waitFor(() => {
       expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
         [0.1, 13 / 15, 0.9, 14 / 15],
+      ]);
+    });
+  });
+
+  it("remeasures after removing an animation sibling moves a Stripe without resizing it", async () => {
+    const view = render(<PositionOnlySettlementProbe phase="baseline" />);
+    const probe = view.getByTestId("position-only-settlement-layout");
+
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
+        [0, 1 / 15, 1, 2 / 15],
+      ]);
+    });
+
+    view.rerender(<PositionOnlySettlementProbe phase="transient" />);
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
+        [0, 0, 0, 0],
+      ]);
+    });
+
+    view.rerender(<PositionOnlySettlementProbe phase="settled" />);
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
+        [0, 1 / 15, 1, 2 / 15],
       ]);
     });
   });

@@ -1,6 +1,7 @@
 import { render, waitFor } from "@testing-library/react";
 import { isPaperShaderElement } from "@paper-design/shaders";
 import { ShaderMount } from "@paper-design/shaders-react";
+import { useMemo } from "react";
 import { describe, expect, it } from "vitest";
 import {
   PAPER_SHADER_IDS,
@@ -14,6 +15,8 @@ import {
 import type { ZenContrastGuardRect } from "./zenContrastGuard";
 import type { ZenGlassLayout } from "./useZenShaderLayouts";
 import { ZEN_SHADER_DEFAULTS } from "./zenShaderConfig";
+import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
+import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 
 const GRADIENT_FRAGMENT = `#version 300 es
 precision highp float;
@@ -131,6 +134,8 @@ function UiContrastProbe({
   enabled,
   uiTextColor,
   backdropColor,
+  uiSurfaces = DISJOINT_UI_SURFACES,
+  uiSurfaceCapacity = 32,
   toolMix = 0.5,
   strength = 1,
   opacity = 10,
@@ -140,11 +145,18 @@ function UiContrastProbe({
   enabled: boolean;
   uiTextColor: [number, number, number];
   backdropColor: [number, number, number];
+  uiSurfaces?: readonly ZenGlassLayout[];
+  uiSurfaceCapacity?: number;
   toolMix?: number;
   strength?: number;
   opacity?: number;
   fragmentShader?: string;
 }) {
+  const shaderCapacity = zenUiSurfaceVariantCapacity(uiSurfaceCapacity);
+  const surfaceBuffer = useMemo(
+    () => new ZenUiSurfaceUniformBuffer(shaderCapacity),
+    [shaderCapacity],
+  );
   const config = {
     ...ZEN_SHADER_DEFAULTS,
     opacity,
@@ -161,20 +173,28 @@ function UiContrastProbe({
   };
   return (
     <ShaderMount
+      key={`${name}:${shaderCapacity}`}
       data-ui-contrast-probe={name}
-      fragmentShader={buildZenPostProcessedFragment(fragmentShader)}
+      fragmentShader={buildZenPostProcessedFragment(
+        fragmentShader,
+        shaderCapacity,
+      )}
       uniforms={{
         ...SIZING_UNIFORMS,
-        ...buildZenPostProcessUniforms(config, {
-          rect: [0.45, 0.4, 0.55, 0.6],
-          feather: [0, 0, 0, 0],
-          glassRect: [0, 0, 0, 0],
-          glassCornerRadius: 0,
-          uiSurfaces: DISJOINT_UI_SURFACES,
-          textColor: [0, 0, 0],
-          uiTextColor,
-          backdropColor,
-        }),
+        ...buildZenPostProcessUniforms(
+          config,
+          {
+            rect: [0.45, 0.4, 0.55, 0.6],
+            feather: [0, 0, 0, 0],
+            glassRect: [0, 0, 0, 0],
+            glassCornerRadius: 0,
+            uiSurfaces,
+            textColor: [0, 0, 0],
+            uiTextColor,
+            backdropColor,
+          },
+          surfaceBuffer,
+        ),
       }}
       width={200}
       height={120}
@@ -189,6 +209,36 @@ function UiContrastProbe({
       }}
     />
   );
+}
+
+const EIGHT_UI_SURFACES_WITH_BOTTOM_LAST = Array.from(
+  { length: 8 },
+  (_, index): ZenGlassLayout => ({
+    rect:
+      index === 7
+        ? [0.1, 0, 0.9, 0.1]
+        : [0.05 + index * 0.1, 0.7, 0.1 + index * 0.1, 0.9],
+    feather: [0, 0, 0, 0],
+    cornerRadius: 0,
+  }),
+);
+
+function uiSurfacesWithBottomLast(count: number): ZenGlassLayout[] {
+  return [
+    ...Array.from(
+      { length: count - 1 },
+      (_, index): ZenGlassLayout => ({
+        rect: [0.05 + index * 0.1, 0.7, 0.1 + index * 0.1, 0.9],
+        feather: [0, 0, 0, 0],
+        cornerRadius: 0,
+      }),
+    ),
+    {
+      rect: [0.1, 0, 0.9, 0.1],
+      feather: [0, 0, 0, 0],
+      cornerRadius: 0,
+    },
+  ];
 }
 
 function LowOpacityContrastProbe({
@@ -817,6 +867,136 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
         pixelAt(darkGuarded, 0.5, 0.5)[0] - pixelAt(darkUnguarded, 0.5, 0.5)[0],
       ),
     ).toBeGreaterThan(80);
+  });
+
+  it("keeps BottomStripe guarded when startup expands the shader capacity", async () => {
+    const mutedForeground = shaderRgb(0x88, 0x88, 0x88);
+    const backdropColor = shaderRgb(0xf0, 0xed, 0xe6);
+    const probes = (uiSurfaces: readonly ZenGlassLayout[]) => (
+      <div>
+        <UiContrastProbe
+          name="bottom-stripe-unguarded"
+          enabled={false}
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          uiSurfaces={uiSurfaces}
+          uiSurfaceCapacity={uiSurfaces.length}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+        <UiContrastProbe
+          name="bottom-stripe-guarded"
+          enabled
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          uiSurfaces={uiSurfaces}
+          uiSurfaceCapacity={uiSurfaces.length}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+      </div>
+    );
+    const view = render(probes(EIGHT_UI_SURFACES_WITH_BOTTOM_LAST.slice(0, 1)));
+    view.rerender(probes(EIGHT_UI_SURFACES_WITH_BOTTOM_LAST));
+
+    await waitFor(() => {
+      expectShaderDrawn(
+        view.container,
+        '[data-ui-contrast-probe="bottom-stripe-guarded"]',
+      );
+    });
+
+    const expectBottomStripeGuarded = () => {
+      const unguarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-unguarded"] canvas',
+      )!;
+      const guarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-guarded"] canvas',
+      )!;
+
+      expect(pixelAt(guarded, 0.5, 0.05)[0]).toBeGreaterThan(
+        pixelAt(unguarded, 0.5, 0.05)[0] + 20,
+      );
+    };
+    expectBottomStripeGuarded();
+  });
+
+  it("keeps BottomStripe guarded after a same-capacity panel open-close round trip", async () => {
+    const mutedForeground = shaderRgb(0x88, 0x88, 0x88);
+    const backdropColor = shaderRgb(0xf0, 0xed, 0xe6);
+    const probes = (uiSurfaces: readonly ZenGlassLayout[]) => (
+      <div>
+        <UiContrastProbe
+          name="bottom-stripe-round-trip-unguarded"
+          enabled={false}
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          uiSurfaces={uiSurfaces}
+          uiSurfaceCapacity={8}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+        <UiContrastProbe
+          name="bottom-stripe-round-trip-guarded"
+          enabled
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          uiSurfaces={uiSurfaces}
+          uiSurfaceCapacity={8}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+      </div>
+    );
+    const closedSurfaces = uiSurfacesWithBottomLast(6);
+    const openSurfaces = uiSurfacesWithBottomLast(7);
+    const view = render(probes(closedSurfaces));
+
+    const expectBottomStripeGuarded = () => {
+      const unguarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-round-trip-unguarded"] canvas',
+      )!;
+      const guarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-round-trip-guarded"] canvas',
+      )!;
+
+      expect(pixelAt(guarded, 0.5, 0.05)[0]).toBeGreaterThan(
+        pixelAt(unguarded, 0.5, 0.05)[0] + 20,
+      );
+    };
+    const surfaceDeltaAt = (u: number, v: number) => {
+      const unguarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-round-trip-unguarded"] canvas',
+      )!;
+      const guarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-round-trip-guarded"] canvas',
+      )!;
+      return pixelAt(guarded, u, v)[0] - pixelAt(unguarded, u, v)[0];
+    };
+    const transientPanelPoint = [0.575, 0.8] as const;
+
+    await waitFor(() => {
+      expectBottomStripeGuarded();
+      expect(surfaceDeltaAt(...transientPanelPoint)).toBeLessThan(5);
+    });
+    view.rerender(probes(openSurfaces));
+    await waitFor(() => {
+      expectBottomStripeGuarded();
+      expect(surfaceDeltaAt(...transientPanelPoint)).toBeGreaterThan(20);
+    });
+    view.rerender(probes(closedSurfaces));
+    await waitFor(() => {
+      expect(surfaceDeltaAt(...transientPanelPoint)).toBeLessThan(5);
+      expectBottomStripeGuarded();
+    });
   });
 
   it("keeps every non-Simple light theme on the bright correction branch", async () => {
