@@ -2156,6 +2156,8 @@
       "pinEntry": "Spotlight {{name}}",
       "pinCodexSnippet": "Spotlight Codex/Snippet",
       "pin": "Spotlight",
+      "spotlightUnavailable": "Spotlight could not be changed because the chat session was not ready. Please try again.",
+      "spotlightUpdateFailed": "Failed to update Spotlight. Please try again.",
       "group": "{{label}} group",
       "noResults": "No matching entries found.",
       "inputPlaceholder": "Describe what to add to context...",

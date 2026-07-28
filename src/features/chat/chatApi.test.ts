@@ -130,9 +130,22 @@ describe("chatApi - session/message persistence", () => {
 
       expect(chain.onConflictDoUpdate).toHaveBeenCalledWith({
         target: ["sessionId", "codexEntryId"],
+        targetWhere: { isNotNull: "codexEntryId" },
         set: { pinSource: "manual", withChildren: 0 },
       });
       expect(chain.onConflictDoNothing).not.toHaveBeenCalled();
+    });
+
+    it("matches the partial snippet pin index when promoting Spotlight", async () => {
+      const chain = mockInsertChain([]);
+
+      await pinCodexEntry("session-1", "snippet-1", true, "manual", "snippet");
+
+      expect(chain.onConflictDoUpdate).toHaveBeenCalledWith({
+        target: ["sessionId", "snippetId"],
+        targetWhere: { isNotNull: "snippetId" },
+        set: { pinSource: "manual", withChildren: 1 },
+      });
     });
   });
 

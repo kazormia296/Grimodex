@@ -42,6 +42,7 @@ vi.mock("./chatApi", () => ({
   ),
   markMessagesSummarized: vi.fn(() => Promise.resolve()),
   addMessage: vi.fn(),
+  deleteMessage: vi.fn(() => Promise.resolve()),
   saveMessagePrompt: vi.fn(() => Promise.resolve()),
   getMessagePrompt: vi.fn(() => Promise.resolve(null)),
   updateSessionTitle: vi.fn(),
@@ -246,6 +247,7 @@ import * as codexAppApi from "./codexAppApi";
 import type { ChatMessageResult, StreamCallbacks } from "./chatApi";
 import * as contextBuilder from "./contextBuilder";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+import * as projectApi from "@/features/project/api";
 const mockSendChatMessageStream = vi.mocked(chatApi.sendChatMessageStream);
 const mockSendCodexAppTurn = vi.mocked(codexAppApi.sendCodexAppTurn);
 const mockAdvanceCodexHistoryRevision = vi.mocked(
@@ -254,6 +256,7 @@ const mockAdvanceCodexHistoryRevision = vi.mocked(
 const mockSendAgentMessage = vi.mocked(chatApi.sendAgentMessage);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
 const mockRecordAiUsage = vi.mocked(recordAiUsage);
+const mockGetProject = vi.mocked(projectApi.getProject);
 
 /**
  * Helper: set up sendChatMessageStream mock to immediately call onTextDelta + onDone.
@@ -315,6 +318,7 @@ function resetStore() {
     // 分岐が前のテストの構成で動いてしまうため必ず初期化する
     chatScope: "scene",
     scopeAnchorId: null,
+    scopeAnchor: null,
     includeBodies: true,
     includeMapBoard: false,
     mapBoardId: null,
@@ -426,6 +430,219 @@ describe("useChatStore", () => {
 
   // --- Session management tests ---
 
+  describe("loading-state mutation guards", () => {
+    it.each([
+      ["session list", { isLoadingSessions: true }],
+      ["message list", { isLoadingMessages: true }],
+    ])(
+      "does not delete an answer before regeneration while the %s is loading",
+      async (_label, loadingState) => {
+        useChatStore.setState({
+          activeSessionId: "session-1",
+          sessions: [session1],
+          messages: [msg1, msg2],
+          ...loadingState,
+        });
+
+        await useChatStore.getState().regenerate(msg2.id);
+
+        expect(chatApi.deleteMessage).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toEqual([msg1, msg2]);
+      },
+    );
+
+    it.each([
+      ["session list", { isLoadingSessions: true }],
+      ["message list", { isLoadingMessages: true }],
+    ])(
+      "preserves agent continuation while the %s is loading",
+      async (_label, loadingState) => {
+        const originalSendMessage = useChatStore.getState().sendMessage;
+        const sendMessage = vi.fn();
+        useChatStore.setState({
+          activeSessionId: "session-1",
+          sessions: [session1],
+          agentContinuation: { sessionId: "session-1" },
+          sendMessage,
+          ...loadingState,
+        });
+
+        try {
+          await useChatStore.getState().continueAgentRun();
+
+          expect(sendMessage).not.toHaveBeenCalled();
+          expect(useChatStore.getState().agentContinuation).toEqual({
+            sessionId: "session-1",
+          });
+        } finally {
+          useChatStore.setState({ sendMessage: originalSendMessage });
+        }
+      },
+    );
+  });
+
+  describe("regeneration and continuation authority", () => {
+    const session2Message: ChatMessage = {
+      ...msg1,
+      id: "session-2-message",
+      sessionId: session2.id,
+      content: "session 2",
+    };
+
+    it("starts regeneration as a non-destructive replacement", async () => {
+      const originalSendMessage = useChatStore.getState().sendMessage;
+      const sendMessage = vi.fn(async () => {
+        expect(chatApi.deleteMessage).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toEqual([msg1, msg2]);
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1, msg2],
+        sendMessage,
+      });
+
+      try {
+        await useChatStore.getState().regenerate(msg2.id);
+
+        expect(useChatStore.getState().messages).toEqual([msg1, msg2]);
+        expect(sendMessage).toHaveBeenCalledWith("こんにちは", undefined, {
+          _replaceAssistantMessageId: msg2.id,
+        });
+        expect(chatApi.deleteMessage).not.toHaveBeenCalled();
+      } finally {
+        useChatStore.setState({ sendMessage: originalSendMessage });
+      }
+    });
+
+    it.each([
+      [
+        "the active session changes",
+        () =>
+          useChatStore.setState({
+            sessions: [session1, session2],
+            activeSessionId: session2.id,
+            messages: [session2Message],
+          }),
+      ],
+      [
+        "message loading starts",
+        () => useChatStore.setState({ isLoadingMessages: true }),
+      ],
+      [
+        "the scope changes",
+        () =>
+          useChatStore.setState({
+            chatScope: "project",
+            scopeAnchorId: null,
+          }),
+      ],
+      [
+        "the workspace reopens",
+        () =>
+          setCurrentImeWorkspaceIdentity({
+            path: "/workspace/chat-store-test",
+            openRevision: 2,
+          }),
+      ],
+    ])(
+      "does not start a replacement after regeneration authority is lost because %s",
+      async (_label, loseAuthority) => {
+        const originalSendMessage = useChatStore.getState().sendMessage;
+        const sendMessage = vi.fn(async () => {});
+        useChatStore.setState({
+          sessions: [session1, session2],
+          activeSessionId: session1.id,
+          messages: [msg1, msg2],
+          sendMessage,
+        });
+
+        try {
+          const regeneration = useChatStore.getState().regenerate(msg2.id);
+          loseAuthority();
+          const replacementMessages = useChatStore.getState().messages;
+          await regeneration;
+
+          expect(useChatStore.getState().messages).toEqual(replacementMessages);
+          expect(sendMessage).not.toHaveBeenCalled();
+          expect(chatApi.deleteMessage).not.toHaveBeenCalled();
+        } finally {
+          useChatStore.setState({ sendMessage: originalSendMessage });
+        }
+      },
+    );
+
+    it.each([
+      [
+        "the active session changes",
+        () =>
+          useChatStore.setState({
+            sessions: [session1, session2],
+            activeSessionId: session2.id,
+            messages: [session2Message],
+          }),
+      ],
+      [
+        "session loading starts",
+        () => useChatStore.setState({ isLoadingSessions: true }),
+      ],
+      [
+        "the scope changes",
+        () =>
+          useChatStore.setState({
+            chatScope: "project",
+            scopeAnchorId: null,
+          }),
+      ],
+      [
+        "the workspace reopens",
+        () =>
+          setCurrentImeWorkspaceIdentity({
+            path: "/workspace/chat-store-test",
+            openRevision: 2,
+          }),
+      ],
+    ])(
+      "preserves a continuation when project preparation is delayed and %s",
+      async (_label, loseAuthority) => {
+        type ProjectRow = Awaited<ReturnType<typeof projectApi.getProject>>;
+        const pendingProject = deferred<ProjectRow>();
+        mockGetProject.mockReturnValueOnce(pendingProject.promise);
+        const continuation = { sessionId: session1.id };
+        const originalSendMessage = useChatStore.getState().sendMessage;
+        const sendMessage = vi.fn(async () => {});
+        useChatStore.setState({
+          sessions: [session1, session2],
+          activeSessionId: session1.id,
+          messages: [msg1, msg2],
+          agentContinuation: continuation,
+          sendMessage,
+        });
+
+        try {
+          const continuing = useChatStore.getState().continueAgentRun();
+          await vi.waitFor(() =>
+            expect(mockGetProject).toHaveBeenCalledWith("proj-1"),
+          );
+
+          loseAuthority();
+          pendingProject.resolve({
+            id: "proj-1",
+            title: "テストプロジェクト",
+            genre: "ファンタジー",
+            language: "ja",
+          } as NonNullable<ProjectRow>);
+          await continuing;
+
+          expect(useChatStore.getState().agentContinuation).toBe(continuation);
+          expect(sendMessage).not.toHaveBeenCalled();
+        } finally {
+          useChatStore.setState({ sendMessage: originalSendMessage });
+        }
+      },
+    );
+  });
+
   describe("loadSessions", () => {
     it("loads sessions for a scene", async () => {
       mockListSessions.mockResolvedValueOnce([session1, session2]);
@@ -508,6 +725,102 @@ describe("useChatStore", () => {
       expect(useChatStore.getState().isLoadingSessions).toBe(false);
     });
 
+    it("does not clear an active stream when the panel lifecycle asks to reload sessions", async () => {
+      const streamingDraft = {
+        messageId: "assistant-stream",
+        content: "partial",
+      };
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isStreaming: true,
+        streamingDraft,
+      });
+
+      await expect(
+        useChatStore.getState().loadSessions("scene-1"),
+      ).resolves.toBe(false);
+
+      expect(mockListSessions).not.toHaveBeenCalled();
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isStreaming: true,
+        streamingDraft,
+        isLoadingSessions: false,
+      });
+    });
+
+    it("keeps the active snapshot coherent and refuses ensureSession while the list is loading", async () => {
+      const pending = deferred<ChatSession[]>();
+      mockListSessions.mockReturnValueOnce(pending.promise);
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isLoadingMessages: true,
+        summaryCount: 2,
+        maxSummaryGeneration: 1,
+        sessionStableCodexIds: ["codex-scene-1"],
+        sessionStableContextInitialized: true,
+        sessionAgentToolsSnapshot: [],
+      });
+
+      const loadPromise = useChatStore.getState().loadSessions("scene-1");
+
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isLoadingSessions: true,
+        isLoadingMessages: true,
+        summaryCount: 2,
+        maxSummaryGeneration: 1,
+        sessionStableCodexIds: ["codex-scene-1"],
+        sessionStableContextInitialized: true,
+        sessionAgentToolsSnapshot: [],
+      });
+      await expect(useChatStore.getState().ensureSession()).resolves.toBeNull();
+      expect(mockCreateSession).not.toHaveBeenCalled();
+
+      pending.resolve([session1]);
+      await expect(loadPromise).resolves.toBe(true);
+    });
+
+    it("does not publish an older list result after a stream takes ownership of the active session", async () => {
+      const pending = deferred<ChatSession[]>();
+      mockListSessions.mockReturnValueOnce(pending.promise);
+      const streamingDraft = {
+        messageId: "assistant-stream",
+        content: "partial",
+      };
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+      });
+
+      const loadPromise = useChatStore.getState().loadSessions("scene-1");
+      useChatStore.setState({
+        isStreaming: true,
+        streamingDraft,
+        messages: [msg1, msg2],
+      });
+      pending.resolve([]);
+
+      await expect(loadPromise).resolves.toBe(false);
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1, msg2],
+        isStreaming: true,
+        streamingDraft,
+        isLoadingSessions: false,
+      });
+    });
+
     it("discards an in-flight scene history load after the active scene changes", async () => {
       let resolvePromise: (value: ChatSession[]) => void;
       const promise = new Promise<ChatSession[]>((resolve) => {
@@ -573,16 +886,70 @@ describe("useChatStore", () => {
       expect(useChatStore.getState().isLoadingSessions).toBe(false);
     });
 
-    it("reports a failed history load without treating stale sessions as fresh", async () => {
-      useChatStore.setState({ sessions: [session1] });
+    it("reports a failed history refresh without destroying the active conversation", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        streamingDraft: { messageId: "draft-1", content: "partial" },
+        isLoadingMessages: true,
+        summaryCount: 2,
+        maxSummaryGeneration: 1,
+        sessionStableCodexIds: ["codex-scene-1"],
+        sessionStableContextInitialized: true,
+        sessionAgentToolsSnapshot: [],
+        cacheInvalidatedReason: "model",
+        excludedAutoEntryIds: ["excluded-1"],
+        threadFocusOverride: { threadId: "thread-1", title: "Thread 1" },
+      });
       mockListSessions.mockRejectedValueOnce(new Error("load failed"));
 
       await expect(
         useChatStore.getState().loadSessions("scene-1"),
       ).resolves.toBe(false);
 
-      expect(useChatStore.getState().sessions).toEqual([]);
-      expect(useChatStore.getState().isLoadingSessions).toBe(false);
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        streamingDraft: { messageId: "draft-1", content: "partial" },
+        isLoadingSessions: false,
+        isLoadingMessages: true,
+        summaryCount: 2,
+        maxSummaryGeneration: 1,
+        sessionStableCodexIds: ["codex-scene-1"],
+        sessionStableContextInitialized: true,
+        sessionAgentToolsSnapshot: [],
+        cacheInvalidatedReason: "model",
+        excludedAutoEntryIds: ["excluded-1"],
+        threadFocusOverride: { threadId: "thread-1", title: "Thread 1" },
+      });
+    });
+
+    it("clears the active conversation only when a successful refresh proves it was removed", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        summaryCount: 2,
+        sessionStableCodexIds: ["codex-scene-1"],
+        sessionStableContextInitialized: true,
+      });
+      mockListSessions.mockResolvedValueOnce([session2]);
+
+      await expect(
+        useChatStore.getState().loadSessions("scene-1"),
+      ).resolves.toBe(true);
+
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [session2],
+        activeSessionId: null,
+        messages: [],
+        summaryCount: 0,
+        sessionStableCodexIds: [],
+        sessionStableContextInitialized: false,
+        isLoadingSessions: false,
+      });
     });
   });
 
@@ -1471,6 +1838,100 @@ describe("useChatStore", () => {
       expect(isStreaming).toBe(false);
     });
 
+    it("deletes a regenerated answer only after its replacement persists", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1, msg2],
+      });
+      mockStreamResponse("置き換え回答");
+
+      await useChatStore.getState().sendMessage("こんにちは", undefined, {
+        _replaceAssistantMessageId: msg2.id,
+      });
+
+      const assistantPersistCallIndex = mockAddMessage.mock.calls.findIndex(
+        (call) => call[1] === "assistant" && call[2] === "置き換え回答",
+      );
+      expect(assistantPersistCallIndex).toBeGreaterThanOrEqual(0);
+      expect(chatApi.deleteMessage).toHaveBeenCalledWith(msg2.id);
+      expect(
+        mockAddMessage.mock.invocationCallOrder[assistantPersistCallIndex],
+      ).toBeLessThan(
+        vi.mocked(chatApi.deleteMessage).mock.invocationCallOrder[0],
+      );
+      expect(
+        useChatStore
+          .getState()
+          .messages.some((message) => message.id === msg2.id),
+      ).toBe(false);
+      expect(
+        useChatStore
+          .getState()
+          .messages.some((message) => message.content === "置き換え回答"),
+      ).toBe(true);
+    });
+
+    it("keeps both answers when replacement cleanup fails", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1, msg2],
+      });
+      mockStreamResponse("新しい回答");
+      vi.mocked(chatApi.deleteMessage).mockRejectedValueOnce(
+        new Error("cleanup failed"),
+      );
+
+      await useChatStore.getState().sendMessage("こんにちは", undefined, {
+        _replaceAssistantMessageId: msg2.id,
+      });
+
+      const contents = useChatStore
+        .getState()
+        .messages.map((message) => message.content);
+      expect(contents).toContain(msg2.content);
+      expect(contents).toContain("新しい回答");
+      expect(toast.error).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the old answer when authority changes during replacement generation", async () => {
+      useChatStore.setState({
+        sessions: [session1, session2],
+        activeSessionId: session1.id,
+        messages: [msg1, msg2],
+      });
+      let streamCallbacks: StreamCallbacks | undefined;
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          streamCallbacks = callbacks;
+          return () => {};
+        },
+      );
+
+      const replacement = useChatStore
+        .getState()
+        .sendMessage("こんにちは", undefined, {
+          _replaceAssistantMessageId: msg2.id,
+        });
+      await vi.waitFor(() => expect(streamCallbacks).toBeDefined());
+
+      const session2Message: ChatMessage = {
+        ...msg1,
+        id: "session-2-message",
+        sessionId: session2.id,
+      };
+      useChatStore.setState({
+        activeSessionId: session2.id,
+        messages: [session2Message],
+      });
+      streamCallbacks?.onDone({ stopReason: "end_turn" });
+      await replacement;
+
+      expect(chatApi.deleteMessage).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toEqual([session2Message]);
+    });
+
     it("advances a completed Codex App Server turn only after both messages persist", async () => {
       useAiSettingsStore.setState({
         settings: {
@@ -2306,6 +2767,18 @@ describe("useChatStore", () => {
 
       expect(mockSendChatMessageStream).not.toHaveBeenCalled();
     });
+
+    it.each(["isLoadingSessions", "isLoadingMessages"] as const)(
+      "does not send while %s is true",
+      async (loadingKey) => {
+        useChatStore.setState({ [loadingKey]: true });
+
+        await useChatStore.getState().sendMessage("テスト");
+
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toEqual([]);
+      },
+    );
 
     it("does not send empty messages", async () => {
       await useChatStore.getState().sendMessage("   ");
@@ -5606,6 +6079,18 @@ describe("useChatStore", () => {
       expect(s.chatScope).toBe("codex");
       expect(s.scopeAnchorId).toBe("codex-hero");
       expect(s.includeBodies).toBe(false);
+    });
+
+    it("clears the materialized anchor synchronously when scope authority changes", () => {
+      useChatStore.setState({
+        chatScope: "codex",
+        scopeAnchorId: "codex-old",
+        scopeAnchor: { kind: "codex", id: "codex-old", name: "Old" },
+      });
+
+      useChatStore.getState().setChatScope("codex", "codex-new");
+
+      expect(useChatStore.getState().scopeAnchor).toBeNull();
     });
 
     it("falls back to scene when codex anchor is missing", () => {

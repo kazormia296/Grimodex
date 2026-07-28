@@ -72,6 +72,7 @@ const defaultProps = {
   onRemove: vi.fn(),
   onRemoveAuto: vi.fn(),
   onPin: vi.fn(),
+  pinnedCodexIds: new Set<string>(),
   pinnedSnippetIds: new Set<string>(),
   onPinEntry: vi.fn(),
   onUnpinEntry: vi.fn(),

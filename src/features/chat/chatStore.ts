@@ -914,6 +914,8 @@ interface ChatState {
       /** Chat 入力で `@人物名`(codex) メンションされた codex ID 一覧。
        * 作中年表スナップショットの人物プールへ最優先 seed として渡す。 */
       mentionedCodexIds?: string[];
+      /** 再生成時に、新回答の永続化成功後だけ置換削除する旧回答ID。 */
+      _replaceAssistantMessageId?: string;
       /** 429 リトライの内部カウンタ（外部呼び出しでは指定しない）。
        * 上限は MAX_RATE_LIMIT_RETRIES。 */
       _rateLimitRetry?: number;
@@ -1000,7 +1002,10 @@ interface ChatState {
    * allEntries から無条件再収集されるため、表示除去だけでは次の refresh で
    * プロンプト・ピルとも復活する。 */
   /** Add a session auto-exclusion and report whether this call created it. */
-  excludeEntryFromAuto: (entryId: string) => boolean;
+  excludeEntryFromAuto: (
+    entryId: string,
+    options?: { refreshContext?: boolean },
+  ) => boolean;
   /** auto 除外の解除（pin など、ユーザーがエントリを再び使い始めた経路で呼ぶ） */
   clearAutoExclusion: (entryId: string) => void;
   /** Codex anchor エントリ削除時に codex スコープを scene に戻す */
@@ -2186,6 +2191,20 @@ export async function awaitChatComposerAuthority(
   );
 }
 
+async function awaitWritableChatComposerAuthority(
+  authority: ChatComposerAuthority,
+): Promise<boolean> {
+  if (!(await awaitChatComposerAuthority(authority))) return false;
+  const state = useChatStore.getState();
+  return (
+    !state.isStreaming &&
+    !state.isLoadingSessions &&
+    !state.isLoadingMessages &&
+    state.activeSessionId === authority.activeSessionId &&
+    isSessionMutationAuthorityCurrent(authority.sessionMutation, state)
+  );
+}
+
 // Stop must target the transport selected for the in-flight turn, not mutable
 // settings that may have changed after the request started.
 let _activeTurnRoute: ResolvedChatTurnRoute | null = null;
@@ -3245,7 +3264,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }));
   },
 
-  excludeEntryFromAuto: (entryId: string) => {
+  excludeEntryFromAuto: (
+    entryId: string,
+    options?: { refreshContext?: boolean },
+  ) => {
     const wasExcluded = get().excludedAutoEntryIds.includes(entryId);
     set((state) => ({
       excludedAutoEntryIds: state.excludedAutoEntryIds.includes(entryId)
@@ -3256,7 +3278,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }));
     // 除外を lastSystemPrompt に即時反映する（× の直後に送信しても
     // 旧プロンプト経由で注入されないように）。
-    void get().refreshContextLayers();
+    if (options?.refreshContext !== false) {
+      void get().refreshContextLayers();
+    }
     return !wasExcluded;
   },
 
@@ -3323,6 +3347,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     snippetAnchorId?: string | null,
   ) => {
     const invocationState = get();
+    // Reopening the panel can retrigger the lifecycle effect while a response
+    // is still streaming. Do not clear the stream-owned session/draft merely
+    // to refresh the same scope's history list.
+    if (invocationState.isStreaming) return false;
+    const capturedActiveSessionId = invocationState.activeSessionId;
     const sessionAuthority = captureSessionMutationAuthority(invocationState);
     const requestedScopeKey = requestedSessionListScopeKey(
       nodeId,
@@ -3340,7 +3369,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       session: sessionAuthority,
     };
     const { projectId } = sessionAuthority;
-    set({ sessions: [], isLoadingSessions: true });
+    // A list refresh is not a session switch. Preserve the current
+    // list/selection as one coherent snapshot while the replacement is in
+    // flight; Spotlight mutations are gated by isLoadingSessions below.
+    set({ isLoadingSessions: true });
     try {
       const sessions = await chatApi.listSessions(
         projectId,
@@ -3351,6 +3383,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (!isSessionListLoadAuthorityCurrent(authority, get())) {
         return false;
       }
+      const currentBeforePublish = get();
+      if (
+        currentBeforePublish.isStreaming ||
+        currentBeforePublish.activeSessionId !== capturedActiveSessionId
+      ) {
+        set({ isLoadingSessions: false });
+        return false;
+      }
       if (
         sessions.some(
           (session) => !isSessionTargetForAuthority(session, sessionAuthority),
@@ -3358,10 +3398,32 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ) {
         throw new Error("chat session scope mismatch");
       }
-      set({ sessions, isLoadingSessions: false });
+      const current = get();
+      const activeSessionStillExists =
+        current.activeSessionId === null ||
+        sessions.some((session) => session.id === current.activeSessionId);
+      if (activeSessionStillExists) {
+        set({ sessions, isLoadingSessions: false });
+      } else {
+        // The selected session was removed externally. Publish the refreshed
+        // list and clear its dependent state atomically.
+        set({
+          ...clearedSessionScopeState(),
+          sessions,
+          isLoadingSessions: false,
+        });
+      }
       return true;
     } catch (e) {
       if (!isSessionListLoadAuthorityCurrent(authority, get())) {
+        return false;
+      }
+      const currentBeforeFailure = get();
+      if (
+        currentBeforeFailure.isStreaming ||
+        currentBeforeFailure.activeSessionId !== capturedActiveSessionId
+      ) {
+        set({ isLoadingSessions: false });
         return false;
       }
       set({ isLoadingSessions: false });
@@ -3558,6 +3620,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   ensureSession: async () => {
     const invocationState = get();
+    if (invocationState.isLoadingSessions) return null;
     const authority = captureSessionMutationAuthority(invocationState);
     const capturedSessionId = invocationState.activeSessionId;
     const capturedSession = capturedSessionId
@@ -3575,6 +3638,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     return enqueueSessionMutation(async () => {
       const queuedState = get();
       if (
+        queuedState.isLoadingSessions ||
         queuedState.isStreaming ||
         !isSessionMutationAuthorityCurrent(authority, queuedState) ||
         queuedState.activeSessionId !== capturedSessionId
@@ -3592,6 +3656,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           scopeKey.snippetAnchorId,
         );
         if (
+          get().isLoadingSessions ||
           get().isStreaming ||
           !isSessionTargetForAuthority(session, authority) ||
           !isSessionMutationAuthorityCurrent(authority, get()) ||
@@ -3878,6 +3943,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       overrideAgentMode?: boolean;
       mentionedSceneIds?: string[];
       mentionedCodexIds?: string[];
+      /** Regeneration-only: hide this answer from turn history, then delete it
+       * only after the replacement assistant has been persisted. */
+      _replaceAssistantMessageId?: string;
       /** 429 リトライの内部カウンタ（外部呼び出しでは指定しない）。 */
       _rateLimitRetry?: number;
     },
@@ -3892,6 +3960,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const turnWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
     const {
       isStreaming,
+      isLoadingSessions,
       isLoadingMessages,
       activeSceneId,
       activeProjectId,
@@ -3899,11 +3968,30 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       chatScope,
       scopeAnchorId,
       threadFocusOverride,
-      messages: initialMessages,
+      messages: capturedMessages,
       sessions: initialSessions,
     } = get();
-    if (isStreaming || isLoadingMessages) return;
+    if (isStreaming || isLoadingSessions || isLoadingMessages) return;
     if (!content.trim()) return;
+    const replacementAssistantMessageId =
+      options?._replaceAssistantMessageId ?? null;
+    const replacementAssistantMessage = replacementAssistantMessageId
+      ? capturedMessages.find(
+          (message) => message.id === replacementAssistantMessageId,
+        )
+      : undefined;
+    if (
+      replacementAssistantMessageId &&
+      (replacementAssistantMessage?.role !== "assistant" ||
+        replacementAssistantMessage.sessionId !== activeSessionId)
+    ) {
+      return;
+    }
+    const initialMessages = replacementAssistantMessageId
+      ? capturedMessages.filter(
+          (message) => message.id !== replacementAssistantMessageId,
+        )
+      : capturedMessages;
     // 新規送信が始まったら直前ターンの「続行」ボタンは無効化する
     // （ボタンは常に最新ターンに対してのみ出す）。
     if (get().agentContinuation) set({ agentContinuation: null });
@@ -4186,6 +4274,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ].filter((id): id is string => Boolean(id));
       return liveProjectIds.every((id) => id === turnProjectId);
     };
+    const capturedWorkspaceIsCurrent = (): boolean =>
+      isCapturedWorkspaceCurrent(turnWorkspaceIdentity);
     const capturedChatAuthorityIsCurrent = (): boolean => {
       const current = get();
       const currentProjectId = current.activeProjectId ?? getCurrentProjectId();
@@ -4204,9 +4294,50 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sameTemporalAnchor
       );
     };
+    let replacementCommitted = false;
+    const commitAssistantReplacement = async (): Promise<void> => {
+      if (
+        !replacementAssistantMessageId ||
+        replacementCommitted ||
+        !capturedWorkspaceIsCurrent() ||
+        !capturedProjectIsCurrent() ||
+        !capturedChatAuthorityIsCurrent()
+      ) {
+        return;
+      }
+      try {
+        await chatApi.deleteMessage(replacementAssistantMessageId);
+        replacementCommitted = true;
+        if (
+          capturedWorkspaceIsCurrent() &&
+          capturedProjectIsCurrent() &&
+          capturedChatAuthorityIsCurrent()
+        ) {
+          set((state) => ({
+            messages: state.messages.filter(
+              (message) => message.id !== replacementAssistantMessageId,
+            ),
+          }));
+        }
+      } catch (error) {
+        debugLog.error(
+          "ChatStore",
+          "regenerate replacement cleanup",
+          errorDetail(error),
+        );
+        if (
+          capturedWorkspaceIsCurrent() &&
+          capturedProjectIsCurrent() &&
+          capturedChatAuthorityIsCurrent()
+        ) {
+          toast.error(i18next.t("chat.deleteMessageFailed"));
+        }
+      }
+    };
     const shouldAbortTurn = (): boolean =>
       sendControl.aborted ||
       !isCurrentTurn() ||
+      !capturedWorkspaceIsCurrent() ||
       !capturedProjectIsCurrent() ||
       !capturedChatAuthorityIsCurrent();
     const assertTurnAuthority = (): void => {
@@ -4256,9 +4387,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       _activeSendControl = null;
     };
     const prevMessages = initialMessages;
+    const visiblePrevMessages = capturedMessages;
     // Guard concurrent sends before tokenizer initialization yields control.
     set({
-      messages: [...prevMessages, userMsg, assistantMsg],
+      messages: [...visiblePrevMessages, userMsg, assistantMsg],
       streamingDraft: useAgentPath
         ? null
         : { messageId: assistantMsg.id, content: "" },
@@ -4271,7 +4403,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } catch (error) {
       if (isCurrentTurn()) {
         set({
-          messages: prevMessages,
+          messages: visiblePrevMessages,
           streamingDraft: null,
           isStreaming: false,
           error: error instanceof Error ? error.message : String(error),
@@ -4445,6 +4577,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                   metadata: stoppedMetadata,
                 },
               );
+              await commitAssistantReplacement();
             }
           } catch (error) {
             debugLog.warn(
@@ -5202,6 +5335,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 metadata: finalAgentMetadata,
               },
             );
+            await commitAssistantReplacement();
             // N4: エージェントターンの usage を台帳にも記録 (cost は OpenRouter 実値)。
             void recordAiUsage({
               surface: "agent",
@@ -5863,6 +5997,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     ...(chatMetadata ? { metadata: chatMetadata } : {}),
                   },
                 );
+                await commitAssistantReplacement();
               }
 
               if (completedCodexBinding) {
@@ -6300,6 +6435,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextPlan: null,
           lastSystemPrompt: "",
           lastSystemPromptKey: null,
+          scopeAnchor: null,
         });
       }
       if (opts?.strict) throw error;
@@ -6497,6 +6633,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextPlan: null,
           lastSystemPrompt: "",
           lastSystemPromptKey: null,
+          scopeAnchor: null,
         });
       }
       if (opts?.strict) throw error;
@@ -6591,18 +6728,29 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   setAgentMode: (on: boolean) => set({ agentMode: on }),
 
   continueAgentRun: async () => {
-    const cont = get().agentContinuation;
-    if (!cont || get().isStreaming) return;
+    const invocationState = get();
+    const {
+      agentContinuation: cont,
+      isStreaming,
+      isLoadingSessions,
+      isLoadingMessages,
+    } = invocationState;
+    if (!cont || isStreaming || isLoadingSessions || isLoadingMessages) return;
+    const authority = captureChatComposerAuthority();
     // 続行は別セッションへ切り替わっていたら無効（最新ターン専用）。
-    if (cont.sessionId && cont.sessionId !== get().activeSessionId) {
+    if (cont.sessionId && cont.sessionId !== authority.activeSessionId) {
       set({ agentContinuation: null });
       return;
     }
-    set({ agentContinuation: null });
+    if (!(await awaitWritableChatComposerAuthority(authority))) return;
     const lang =
-      (await fetchProjectContext(get().activeProjectId))?.language ?? "ja";
+      (await fetchProjectContext(authority.sessionMutation.projectId))
+        ?.language ?? "ja";
+    if (!(await awaitWritableChatComposerAuthority(authority))) return;
+    if (get().agentContinuation !== cont) return;
     const continuePrompt = getPromptCatalog(lang).agentControl.continuePrompt;
     // agent パスを強制（続行は常にエージェントターンの再開）。
+    set({ agentContinuation: null });
     await get().sendMessage(continuePrompt, undefined, {
       overrideAgentMode: true,
     });
@@ -6686,6 +6834,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
     set({
       ...(boundaryChanged ? clearedSessionScopeState() : {}),
+      ...(boundaryChanged ? { scopeAnchor: null } : {}),
       chatScope: nextScope,
       scopeAnchorId: nextAnchorId,
       includeBodies: nextIncludeBodies,
@@ -6835,7 +6984,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     assistantMessageId: string,
     options?: { withAgentMode?: boolean },
   ) => {
-    const { messages, activeSessionId } = get();
+    const { messages, isStreaming, isLoadingSessions, isLoadingMessages } =
+      get();
+    // sendMessage rejects while lifecycle reads are in flight. Keep the old
+    // answer intact until its replacement has been persisted.
+    if (isStreaming || isLoadingSessions || isLoadingMessages) return;
+    const authority = captureChatComposerAuthority();
     const assIdx = messages.findIndex((m) => m.id === assistantMessageId);
     if (assIdx === -1) return;
 
@@ -6853,29 +7007,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       userMsg.metadata,
     );
 
-    // アシスタントメッセージを削除
-    if (activeSessionId) {
-      try {
-        await chatApi.deleteMessage(assistantMessageId);
-      } catch (e) {
-        debugLog.error("ChatStore", "regenerate delete", errorDetail(e));
-      }
-    }
-    set({ messages: messages.filter((m) => m.id !== assistantMessageId) });
+    if (!(await awaitWritableChatComposerAuthority(authority))) return;
 
-    // 再送信 (ユーザーメッセージは既にstateにある)
+    // 再送信。旧回答は turn history からだけ除外し、replacement の永続化に
+    // 成功した後で削除する。途中の切替・失敗では旧回答を保全する。
     // withAgentMode: 一回限りの Agent mode 切替で再試行する場合
     const sendOptions: {
       overrideAgentMode?: boolean;
       mentionedSceneIds?: string[];
-    } = {};
+      _replaceAssistantMessageId: string;
+    } = { _replaceAssistantMessageId: assistantMessageId };
     if (options?.withAgentMode) sendOptions.overrideAgentMode = true;
     if (mentionedSceneIds) sendOptions.mentionedSceneIds = mentionedSceneIds;
-    await get().sendMessage(
-      userMsg.content,
-      undefined,
-      Object.keys(sendOptions).length > 0 ? sendOptions : undefined,
-    );
+    await get().sendMessage(userMsg.content, undefined, sendOptions);
   },
 
   clearMessages: () => {
@@ -6916,6 +7060,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         resetRecallPromote(recallPromoteTracker);
         set({
           ...clearedSessionScopeState(),
+          scopeAnchor: null,
           activeSceneId: id,
         });
       } else {
@@ -6932,7 +7077,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       invalidateSessionScopeAuthority();
       get()._cancelPendingUserQuestion();
       resetRecallPromote(recallPromoteTracker);
-      set({ ...clearedSessionScopeState(), activeProjectId: id });
+      set({
+        ...clearedSessionScopeState(),
+        scopeAnchor: null,
+        activeProjectId: id,
+      });
       return;
     }
     set({ activeProjectId: id });

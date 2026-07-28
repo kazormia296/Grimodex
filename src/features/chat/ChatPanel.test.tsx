@@ -242,6 +242,8 @@ function resetStore() {
     streamingDraft: null,
     sessions: [],
     isStreaming: false,
+    isLoadingSessions: false,
+    isLoadingMessages: false,
     error: null,
     chatScope: "scene",
     scopeAnchorId: null,
@@ -264,6 +266,22 @@ describe("ChatPanel", () => {
     render(<ChatPanel />);
     expect(screen.getByRole("textbox")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /送信/i })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["セッション読込中", { isLoadingSessions: true }],
+    ["メッセージ読込中", { isLoadingMessages: true }],
+    ["生成中", { isStreaming: true }],
+  ])("%s は Spotlight trigger を無効化する", (_label, state) => {
+    useChatStore.setState(state);
+
+    render(<ChatPanel />);
+
+    expect(
+      screen.getByRole("button", {
+        name: "Codex/Snippet を Spotlight",
+      }),
+    ).toBeDisabled();
   });
 
   it("renders empty state when no messages", () => {
@@ -429,6 +447,7 @@ describe("ChatPanel", () => {
     try {
       render(<ChatPanel />);
       const input = screen.getByRole("textbox");
+      await waitFor(() => expect(input).toBeEnabled());
       await user.type(input, "失われない下書き{Enter}");
 
       await waitFor(() => {
@@ -461,6 +480,7 @@ describe("ChatPanel", () => {
     try {
       render(<ChatPanel />);
       const input = screen.getByRole("textbox");
+      await waitFor(() => expect(input).toBeEnabled());
       await user.type(input, "旧スコープの下書き{Enter}");
       await waitFor(() => expect(save).toHaveBeenCalledOnce());
 

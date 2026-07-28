@@ -1078,6 +1078,13 @@ export async function pinCodexEntry(
           ];
     await insert.onConflictDoUpdate({
       target: conflictTarget,
+      // The normalized pin table uses partial UNIQUE indexes so nullable
+      // polymorphic columns can coexist. SQLite only matches an UPSERT target
+      // when its predicate matches the index predicate exactly.
+      targetWhere:
+        type === "snippet"
+          ? isNotNull(chatSessionPinnedCodex.snippetId)
+          : isNotNull(chatSessionPinnedCodex.codexEntryId),
       set: {
         pinSource: "manual",
         withChildren: withChildren ? 1 : 0,

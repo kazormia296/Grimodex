@@ -5,7 +5,7 @@ import type { SuggestedEntry } from "../contextCreatorApi";
 
 interface ContextCreatorDialogProps {
   onSearch: (instruction: string) => Promise<SuggestedEntry[]>;
-  onAddSelected: (entries: SuggestedEntry[]) => Promise<void>;
+  onAddSelected: (entries: SuggestedEntry[]) => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -57,8 +57,7 @@ export function ContextCreatorDialog({
     const toAdd = results.filter((e) => selected.has(e.id) && !e.alreadyPinned);
     setIsAdding(true);
     try {
-      await onAddSelected(toAdd);
-      onClose();
+      if (await onAddSelected(toAdd)) onClose();
     } finally {
       setIsAdding(false);
     }

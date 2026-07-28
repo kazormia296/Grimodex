@@ -82,10 +82,22 @@ export function useChatSessionLifecycle({
         markEnd("chatPanel.loadSessions");
       }
       if (stale || !loaded) return;
-      const { sessions } = useChatStore.getState();
+      const { sessions, activeSessionId: currentActiveSessionId } =
+        useChatStore.getState();
+      const targetSessionId =
+        currentActiveSessionId &&
+        sessions.some((session) => session.id === currentActiveSessionId)
+          ? currentActiveSessionId
+          : (sessions[0]?.id ?? null);
+      if (
+        targetSessionId === null ||
+        targetSessionId === currentActiveSessionId
+      ) {
+        return;
+      }
       markStart("chatPanel.selectSessionAfterLoad");
       try {
-        await selectSession(sessions.length > 0 ? sessions[0].id : null);
+        await selectSession(targetSessionId);
       } finally {
         markEnd("chatPanel.selectSessionAfterLoad");
       }

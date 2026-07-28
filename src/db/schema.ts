@@ -9,6 +9,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { isNotNull } from "drizzle-orm";
 import { nowInstantString } from "@/lib/time";
 
 export const projects = sqliteTable("projects", {
@@ -726,9 +727,15 @@ export const chatSessionPinnedCodex = sqliteTable(
   },
   (table) => [
     index("idx_chat_pin_session").on(table.sessionId, table.createdAt),
-    uniqueIndex("uq_chat_pin_codex").on(table.sessionId, table.codexEntryId),
-    uniqueIndex("uq_chat_pin_snippet").on(table.sessionId, table.snippetId),
-    uniqueIndex("uq_chat_pin_sticky").on(table.sessionId, table.stickyId),
+    uniqueIndex("uq_chat_pin_codex")
+      .on(table.sessionId, table.codexEntryId)
+      .where(isNotNull(table.codexEntryId)),
+    uniqueIndex("uq_chat_pin_snippet")
+      .on(table.sessionId, table.snippetId)
+      .where(isNotNull(table.snippetId)),
+    uniqueIndex("uq_chat_pin_sticky")
+      .on(table.sessionId, table.stickyId)
+      .where(isNotNull(table.stickyId)),
   ],
 );
 

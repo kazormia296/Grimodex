@@ -2155,6 +2155,8 @@
       "pinEntry": "{{name}} を Spotlight",
       "pinCodexSnippet": "Codex/Snippet を Spotlight",
       "pin": "Spotlight",
+      "spotlightUnavailable": "チャットセッションを準備できなかったため、Spotlight を変更できませんでした。もう一度お試しください。",
+      "spotlightUpdateFailed": "Spotlight の更新に失敗しました。もう一度お試しください。",
       "group": "{{label}} グループ",
       "noResults": "該当するエントリが見つかりませんでした。",
       "inputPlaceholder": "コンテキストに追加するものを指示...",

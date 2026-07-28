@@ -509,6 +509,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const chronicleRevision = useChronicleStore((s) => s.revisionCounter);
   useMapBoardAutoActivate();
   const isStreaming = useChatStore((s) => s.isStreaming);
+  const isLoadingSessions = useChatStore((s) => s.isLoadingSessions);
+  const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
@@ -545,6 +547,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const activeProjectId = useChatStore((s) => s.activeProjectId);
   const chatScope = useChatStore((s) => s.chatScope);
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
+  const currentScopeAnchor =
+    scopeAnchor &&
+    scopeAnchor.kind === chatScope &&
+    scopeAnchor.id === scopeAnchorId
+      ? scopeAnchor
+      : null;
   const threadFocusAuthority = useChatStore((s) =>
     s.threadFocusOverride
       ? JSON.stringify([
@@ -694,7 +702,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     handleDetectedEntries,
     resetInputDismissed,
     handlePin,
+    handlePinBatch,
     handleUnpin,
+    handleUnpinSticky,
     handleReturnToAuto,
     handleRemoveAuto,
     handleRemoveEntry,
@@ -704,6 +714,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     isActive,
     activeSessionId,
     pinsVersion,
+    mutationsDisabled: isLoadingSessions || isLoadingMessages || isStreaming,
     allCodexEntries,
     ensureSession,
     removeEntryFromAuto,
@@ -847,9 +858,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       },
     ): Promise<boolean> => {
       const trimmed = markdown.trim();
+      const liveChatState = useChatStore.getState();
       if (
         !trimmed ||
-        useChatStore.getState().isStreaming ||
+        liveChatState.isStreaming ||
+        liveChatState.isLoadingSessions ||
+        liveChatState.isLoadingMessages ||
         sendPreparationRef.current
       ) {
         return false;
@@ -1057,8 +1071,14 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onSaveSnippetDetailed={handleSaveSnippetDetailed}
         onEdit={handleEditMessage}
         onDelete={handleDeleteMessage}
-        onRegenerate={handleRegenerate}
-        onRetryWithAgent={handleRetryWithAgent}
+        onRegenerate={
+          isLoadingSessions || isLoadingMessages ? undefined : handleRegenerate
+        }
+        onRetryWithAgent={
+          isLoadingSessions || isLoadingMessages
+            ? undefined
+            : handleRetryWithAgent
+        }
         onViewPrompt={handleViewPrompt}
         onContextMenu={handleContextMenu}
       />
@@ -1071,6 +1091,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       handleExtractCodexQuick,
       handleRegenerate,
       handleRetryWithAgent,
+      isLoadingMessages,
+      isLoadingSessions,
       handleSaveSnippetDetailed,
       handleSaveSnippetQuick,
       handleViewPrompt,
@@ -1127,15 +1149,14 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
       <ContextBar
         previewAuthorityKey={contextPreviewAuthorityKey}
-        scopeAnchor={scopeAnchor}
+        scopeAnchor={currentScopeAnchor}
         contextPlan={contextPlan}
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
+        pinnedCodexIds={pinnedIds}
         pinnedSnippets={pinnedSnippets}
         pinnedStickies={pinnedStickies}
-        onUnpinSticky={async (stickyId) => {
-          if (!activeSessionId) return;
-          await chatApi.unpinStickyEntry(activeSessionId, stickyId);
-          await useChatStore.getState().refreshContextLayers();
+        onUnpinSticky={(stickyId) => {
+          void handleUnpinSticky(stickyId);
         }}
         detectedEntries={contextBarProjection.detected}
         alwaysEntries={contextBarProjection.always}
@@ -1144,6 +1165,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onRemove={handleRemoveEntry}
         onRemoveAuto={handleRemoveAuto}
         onPin={handlePin}
+        onPinBatch={handlePinBatch}
         onDismissViaChild={handleDismissViaChild}
         dismissedViaChildIds={dismissedViaChildIds}
         pinnedSnippetIds={pinnedSnippetIds}
@@ -1162,6 +1184,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         maxSummaryGeneration={maxSummaryGeneration}
         onCreateLinkedSession={
           isStreaming ? undefined : () => void createLinkedSession()
+        }
+        spotlightDisabled={
+          isLoadingSessions || isLoadingMessages || isStreaming
         }
         cacheInvalidatedReason={cacheInvalidatedReason}
         onDismissCacheInvalidated={dismissCacheInvalidated}
@@ -1202,6 +1227,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       {agentContinuation &&
         agentContinuation.sessionId === activeSessionId &&
         !isStreaming &&
+        !isLoadingSessions &&
+        !isLoadingMessages &&
         !pendingUserQuestion && (
           <div className="border-t border-border bg-muted/30 px-4 py-2">
             <button
@@ -1244,7 +1271,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
           <ChatInput
             onSend={handleSend}
-            disabled={isStreaming}
+            disabled={isStreaming || isLoadingSessions || isLoadingMessages}
             policyDisabled={chatGate.presentation !== "enabled"}
             editorRef={chatEditorRef}
             onDetectedEntries={handleDetectedEntries}
@@ -1265,7 +1292,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         activeSceneId={treeActiveSceneId}
         onCloseSessions={() => setSessionsPanelOpen(false)}
         contextMenu={contextMenu}
-        contextMutationsDisabled={isStreaming}
+        contextMutationsDisabled={
+          isLoadingSessions || isLoadingMessages || isStreaming
+        }
         onCloseContextMenu={() => setContextMenu(null)}
         contextActions={{
           onInsert: insertFromChat,

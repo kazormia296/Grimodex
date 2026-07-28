@@ -88,6 +88,8 @@ interface ContextBarProps {
     | { kind: "snippet"; id: string; title: string }
     | null;
   pinnedEntries: PinnedCodexEntryWithData[];
+  /** 永続化済みの manual Codex Spotlight。picker の checked 正本。 */
+  pinnedCodexIds: Set<string>;
   /** Last materialized plan is the display authority. Source arrays describe
    * candidates only and may contain budget-trimmed or policy-excluded rows. */
   contextPlan?: ChatContextPlan | null;
@@ -111,6 +113,7 @@ interface ContextBarProps {
   /** autoエントリをcontextから即時除去 */
   onRemoveAuto: (entryId: string) => void;
   onPin: (entryId: string) => Promise<void>;
+  onPinBatch?: (entryIds: readonly string[]) => Promise<boolean>;
   /** via表示の子エントリを一時的に非表示にする */
   onDismissViaChild?: (childId: string) => void;
   dismissedViaChildIds?: Set<string>;
@@ -133,6 +136,8 @@ interface ContextBarProps {
   summaryCount?: number;
   maxSummaryGeneration?: number;
   onCreateLinkedSession?: () => void;
+  /** セッション切替・メッセージ読込・生成中は Spotlight 変更を禁止する。 */
+  spotlightDisabled?: boolean;
   cacheInvalidatedReason?: "model" | "instructions" | "budget" | null;
   onDismissCacheInvalidated?: () => void;
 }
@@ -141,6 +146,7 @@ export function ContextBar({
   previewAuthorityKey,
   scopeAnchor = null,
   pinnedEntries: candidatePinnedEntries,
+  pinnedCodexIds,
   contextPlan = null,
   detectedEntries: candidateDetectedEntries = [],
   alwaysEntries: candidateAlwaysEntries = [],
@@ -151,6 +157,7 @@ export function ContextBar({
   onRemove,
   onRemoveAuto,
   onPin,
+  onPinBatch,
   onDismissViaChild,
   dismissedViaChildIds,
   pinnedSnippetIds,
@@ -169,6 +176,7 @@ export function ContextBar({
   summaryCount = 0,
   maxSummaryGeneration = 0,
   onCreateLinkedSession,
+  spotlightDisabled = false,
   cacheInvalidatedReason,
   onDismissCacheInvalidated,
 }: ContextBarProps) {
@@ -246,6 +254,12 @@ export function ContextBar({
   const pinContainerRef = useRef<HTMLDivElement>(null);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const allCodexEntries = useCodexStore((s) => s.entries);
+
+  useEffect(() => {
+    if (!spotlightDisabled) return;
+    setPinOpen(false);
+    setCreatorOpen(false);
+  }, [spotlightDisabled]);
 
   const selectedPlanKeys = contextPlan
     ? new Set(contextPlan.items.map((item) => item.key))
@@ -383,10 +397,13 @@ export function ContextBar({
 
   async function handleCreatorAddSelected(
     entries: SuggestedEntry[],
-  ): Promise<void> {
-    for (const entry of entries) {
-      await onPin(entry.id);
+  ): Promise<boolean> {
+    const entryIds = entries.map((entry) => entry.id);
+    if (onPinBatch) {
+      return onPinBatch(entryIds);
     }
+    await Promise.all(entryIds.map((entryId) => onPin(entryId)));
+    return true;
   }
 
   const l3 = contextLayers.find((l) => l.layer === "L3");
@@ -857,6 +874,7 @@ export function ContextBar({
                           onRemoveAuto={onRemoveAuto}
                           onPin={onPin}
                           onDismissVia={onDismissViaChild}
+                          actionsDisabled={spotlightDisabled}
                           resolvedColor={typeColorMap[type]}
                         />
                       </motion.div>
@@ -893,7 +911,8 @@ export function ContextBar({
                                   <button
                                     type="button"
                                     onClick={() => onReturnToAuto(entry.id)}
-                                    className="hover:text-foreground text-muted-foreground/70"
+                                    disabled={spotlightDisabled}
+                                    className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                                     aria-label={t("chat.context.returnToAuto", {
                                       name: entry.name,
                                     })}
@@ -904,7 +923,8 @@ export function ContextBar({
                                 <button
                                   type="button"
                                   onClick={() => onRemove(entry.id)}
-                                  className="hover:text-destructive"
+                                  disabled={spotlightDisabled}
+                                  className="hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                                   aria-label={t("chat.context.unpinEntry", {
                                     name: entry.name,
                                   })}
@@ -935,7 +955,8 @@ export function ContextBar({
                           <button
                             type="button"
                             onClick={() => onPin(child.id)}
-                            className="hover:text-foreground text-muted-foreground/70"
+                            disabled={spotlightDisabled}
+                            className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label={t("chat.context.pinEntry", {
                               name: child.name,
                             })}
@@ -946,7 +967,8 @@ export function ContextBar({
                             <button
                               type="button"
                               onClick={() => onDismissViaChild(child.id)}
-                              className="hover:text-destructive"
+                              disabled={spotlightDisabled}
+                              className="hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                               aria-label={t("chat.context.unpinEntry", {
                                 name: child.name,
                               })}
@@ -985,7 +1007,8 @@ export function ContextBar({
                             <button
                               type="button"
                               onClick={() => onPin(entry.id)}
-                              className="hover:text-foreground text-muted-foreground/70"
+                              disabled={spotlightDisabled}
+                              className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                               aria-label={t("chat.context.pinEntry", {
                                 name: entry.name,
                               })}
@@ -995,7 +1018,8 @@ export function ContextBar({
                             <button
                               type="button"
                               onClick={() => onRemoveAuto(entry.id)}
-                              className="hover:text-destructive text-muted-foreground/70"
+                              disabled={spotlightDisabled}
+                              className="hover:text-destructive text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                               aria-label={t("chat.context.unpinEntry", {
                                 name: entry.name,
                               })}
@@ -1017,7 +1041,8 @@ export function ContextBar({
                     <button
                       type="button"
                       onClick={() => onRemove(snippet.id)}
-                      className="hover:text-destructive"
+                      disabled={spotlightDisabled}
+                      className="hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                       aria-label={t("chat.context.unpinEntry", {
                         name: snippet.title,
                       })}
@@ -1049,7 +1074,8 @@ export function ContextBar({
                       <button
                         type="button"
                         onClick={() => onUnpinSticky?.(sticky.id)}
-                        className="hover:text-destructive"
+                        disabled={spotlightDisabled}
+                        className="hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                         aria-label={t("chat.context.unpinSpotlight", { label })}
                       >
                         <X className="h-3 w-3" />
@@ -1066,7 +1092,8 @@ export function ContextBar({
                 <button
                   type="button"
                   onClick={() => setPinOpen((v) => !v)}
-                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+                  disabled={spotlightDisabled}
+                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
                   aria-label={t("chat.context.pinCodexSnippet")}
                 >
                   <BookOpen className="h-3 w-3" />
@@ -1075,15 +1102,11 @@ export function ContextBar({
                 <PinCodexDialog
                   open={pinOpen}
                   containerRef={pinContainerRef}
-                  // スコープアンカーは既に <focus_subject> で文脈内なので、Pin
-                  // ダイアログでも「ピン済み」扱いにして重複手動ピンを防ぐ。
-                  pinnedIds={
-                    new Set([
-                      ...candidatePinnedEntries.map((e) => e.id),
-                      ...(scopeAnchor?.kind === "codex"
-                        ? [scopeAnchor.id]
-                        : []),
-                    ])
+                  pinnedIds={pinnedCodexIds}
+                  // スコープアンカーは <focus_subject> として固定注入されるため、
+                  // 通常の永続 pin と混ぜず checked + disabled で表示する。
+                  lockedIds={
+                    scopeAnchor ? new Set([scopeAnchor.id]) : undefined
                   }
                   withChildrenIds={
                     new Set(
@@ -1092,11 +1115,7 @@ export function ContextBar({
                         .map((e) => e.id),
                     )
                   }
-                  pinnedSnippetIds={
-                    scopeAnchor?.kind === "snippet"
-                      ? new Set([...pinnedSnippetIds, scopeAnchor.id])
-                      : pinnedSnippetIds
-                  }
+                  pinnedSnippetIds={pinnedSnippetIds}
                   onPin={onPinEntry}
                   onUnpin={onUnpinEntry}
                   onToggleChildren={onTogglePinChildren}
@@ -1105,7 +1124,7 @@ export function ContextBar({
               </div>
               <ContextCreatorButton
                 onClick={() => setCreatorOpen(true)}
-                disabled={!canUseCreator}
+                disabled={!canUseCreator || spotlightDisabled}
               />
             </div>
           </div>
