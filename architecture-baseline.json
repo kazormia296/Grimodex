@@ -1058,7 +1058,9 @@
     "dynamic-store-import": 0,
     "cyclic-modules": 81,
     "largest-scc": 81,
-    "scc-internal-edges": 226
+    "scc-internal-edges": 226,
+    "chat-store-lines": 8269,
+    "chat-store-runtime-imports": 91
   },
   "waivers": []
 }

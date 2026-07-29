@@ -557,7 +557,11 @@ export function findCycles(graph, currentRepoRoot = repoRoot) {
   );
 }
 
-export function createArchitectureMetrics(findings, featureCycles) {
+export function createArchitectureMetrics(
+  findings,
+  featureCycles,
+  trackedMetrics = {},
+) {
   const cyclicModules = new Set(
     featureCycles.flatMap((cycle) => cycle.members),
   );
@@ -578,6 +582,7 @@ export function createArchitectureMetrics(findings, featureCycles) {
     "scc-internal-edges": hasCompleteEdgeData
       ? featureCycles.reduce((total, cycle) => total + cycle.edges.length, 0)
       : null,
+    ...trackedMetrics,
   };
 }
 
@@ -596,12 +601,19 @@ export async function collectArchitectureSnapshot(options = {}) {
     "legacy-ipc-error-text-check": [],
     "feature-cycle": [],
   };
+  const trackedMetrics = {};
   const graph = new Map(files.map((file) => [file, new Set()]));
 
   for (const file of files) {
     const relative = relativeSource(file, currentRepoRoot);
     const fromFeature = featureFromSource(relative);
     const source = await readFile(file, "utf8");
+
+    if (relative === "src/features/chat/chatStore.ts") {
+      trackedMetrics["chat-store-lines"] = source.split(/\r?\n/).length;
+      trackedMetrics["chat-store-runtime-imports"] =
+        runtimeImportSpecifiers(source).length;
+    }
 
     for (const specifier of importSpecifiers(source)) {
       const toFeature = featureFromSpecifier(specifier);
@@ -677,7 +689,7 @@ export async function collectArchitectureSnapshot(options = {}) {
   return {
     findings,
     featureCycles,
-    metrics: createArchitectureMetrics(findings, featureCycles),
+    metrics: createArchitectureMetrics(findings, featureCycles, trackedMetrics),
   };
 }
 
@@ -1104,6 +1116,8 @@ const METRIC_LABELS = {
   "cyclic-modules": "cyclic modules",
   "largest-scc": "largest SCC",
   "scc-internal-edges": "SCC-internal edges",
+  "chat-store-lines": "chatStore.ts lines",
+  "chat-store-runtime-imports": "chatStore.ts runtime imports",
 };
 
 export function formatArchitectureMetrics(metrics) {

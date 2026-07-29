@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   collectFindings,
+  collectArchitectureSnapshot,
   compareArchitectureBaseline,
   createArchitectureBaseline,
   createGenericSqlWriteManifest,
@@ -96,6 +97,27 @@ test("cycle graph includes relative imports and index.tsx targets", async () => 
       "src/features/beta/index.tsx",
     ].join(" -> "),
   ]);
+});
+
+test("architecture snapshot tracks the chat store debt budget", async () => {
+  const fixture = await fixtureRepo();
+  await writeSource(
+    fixture.root,
+    "src/features/chat/chatStore.ts",
+    [
+      'import { useTreeStore } from "@/features/tree/treeStore";',
+      "",
+      "export const chat = true;",
+    ].join("\n"),
+  );
+
+  const snapshot = await collectArchitectureSnapshot({
+    repoRoot: fixture.root,
+    sourceRoot: fixture.source,
+  });
+
+  assert.equal(snapshot.metrics["chat-store-lines"], 3);
+  assert.equal(snapshot.metrics["chat-store-runtime-imports"], 1);
 });
 
 test("architecture baseline permits SCC splitting but rejects new SCC members and edges", () => {
