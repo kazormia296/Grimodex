@@ -3,6 +3,7 @@ import {
   prepareChatContext,
   type ChatContextPreparationInput,
 } from "./chatContextPreparation";
+import type { ChatStoreActionPorts } from "./chatStoreActionPorts";
 import { unavailablePromptPreview, type ChatState } from "./chatStoreTypes";
 import {
   resolveCurrentChatTurnPolicy,
@@ -52,23 +53,91 @@ export function contextPromptKey(
   ].join("\u0000");
 }
 
-type ChatStoreSet = (
-  partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>),
-) => void;
-
-export function createChatContextStoreActions(deps: {
-  set: ChatStoreSet;
-  get: () => ChatState;
-  recallPromoteTracker: RecallPromoteState;
-}): Pick<
+export function createChatContextStoreActions(
+  deps: ChatStoreActionPorts & {
+    recallPromoteTracker: RecallPromoteState;
+    scheduleInputPinnedRefresh: (refresh: () => void) => void;
+  },
+): Pick<
   ChatState,
   | "buildPromptForCopy"
   | "refreshContextLayers"
   | "buildPreviewPrompt"
   | "registerInputDraftProvider"
+  | "removeEntryFromAuto"
+  | "excludeEntryFromAuto"
+  | "clearAutoExclusion"
+  | "setInputPinnedEntryIds"
+  | "setThreadFocusOverride"
+  | "clearThreadFocusOverride"
 > {
   const { set, get } = deps;
   return {
+    removeEntryFromAuto: (entryId: string) => {
+      set((state) => ({
+        detectedEntries: state.detectedEntries.filter(
+          (entry) => entry.id !== entryId,
+        ),
+        alwaysEntries: state.alwaysEntries.filter(
+          (entry) => entry.id !== entryId,
+        ),
+      }));
+    },
+
+    excludeEntryFromAuto: (entryId, options) => {
+      const wasExcluded = get().excludedAutoEntryIds.includes(entryId);
+      set((state) => ({
+        excludedAutoEntryIds: state.excludedAutoEntryIds.includes(entryId)
+          ? state.excludedAutoEntryIds
+          : [...state.excludedAutoEntryIds, entryId],
+        detectedEntries: state.detectedEntries.filter(
+          (entry) => entry.id !== entryId,
+        ),
+        alwaysEntries: state.alwaysEntries.filter(
+          (entry) => entry.id !== entryId,
+        ),
+      }));
+      if (options?.refreshContext !== false) {
+        void get().refreshContextLayers();
+      }
+      return !wasExcluded;
+    },
+
+    clearAutoExclusion: (entryId) => {
+      set((state) =>
+        state.excludedAutoEntryIds.includes(entryId)
+          ? {
+              excludedAutoEntryIds: state.excludedAutoEntryIds.filter(
+                (id) => id !== entryId,
+              ),
+            }
+          : state,
+      );
+    },
+
+    setInputPinnedEntryIds: (ids) => {
+      const { isStreaming, inputPinnedEntryIds } = get();
+      if (isStreaming) return;
+      const sorted = [...ids].sort();
+      const previous = [...inputPinnedEntryIds].sort();
+      if (sorted.join(",") === previous.join(",")) return;
+      set({ inputPinnedEntryIds: ids });
+      deps.scheduleInputPinnedRefresh(() => {
+        void get().refreshContextLayers();
+      });
+    },
+
+    setThreadFocusOverride: (value) => {
+      set({ threadFocusOverride: value });
+      void get().refreshContextLayers();
+    },
+
+    clearThreadFocusOverride: () => {
+      if (!get().threadFocusOverride) return;
+      set({ threadFocusOverride: null });
+      void get().refreshContextLayers();
+    },
+
     // --- Prompt preview for copy ---
 
     buildPromptForCopy: async (

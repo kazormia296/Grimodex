@@ -14,37 +14,27 @@ import * as chatApi from "./chatApi";
 import { resolveModelForPath, resolveRolePathConfig } from "./modelRouting";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
-  captureChatContextPreparationSnapshot,
-  type ChatContextPreparationSnapshotInput,
-} from "@/application/chat/chatContextPreparation";
-import {
   captureAgentPreflightAuthority,
   getChatApiVariant,
   getCrossProviderChatOverride,
   isSameAgentPreflightAuthority,
   resolveAgentPreflightTarget,
-  resolveChatTurnRoutePolicy,
   resolveConversationPreflightTarget,
   resolveCurrentChatDisplayRoute,
   resolveCurrentChatTurnPolicy,
   resolveCurrentPreflightRoute,
   resolveRawAgentPreflightTarget,
   canUseCurrentChatPublicRag,
-  type AgentPreflightTarget,
 } from "@/application/chat/chatTurnRouting";
 export { canUseCurrentChatPublicRag, resolveCurrentChatDisplayRoute };
 import {
   TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
   finalizeChatTurnPayload,
   flattenMessagesForCli,
-  estimateMessageEnvelopeTokens,
   materializeSystemDeliverySnapshot,
   snapshotInputTokenRoute,
 } from "@/application/chat/chatTurnPayload";
-import type {
-  ChatContextTurnSeed,
-  ChatState,
-} from "@/application/chat/chatStoreTypes";
+import type { ChatState } from "@/application/chat/chatStoreTypes";
 export type {
   ChatPromptPreviewResult,
   PendingUserQuestion,
@@ -56,6 +46,7 @@ import {
   createChatContinuationStoreActions,
   createChatPersistenceStoreActions,
   createChatSessionStoreActions,
+  createChatTurnPreflight,
   createChatTurnRuntime,
   createChatUserQuestionRuntime,
   createChatUserQuestionStoreActions,
@@ -87,7 +78,6 @@ import {
 } from "./contextBuilder";
 import type { LayerBreakdown } from "./contextBuilder";
 import { runAgentLoop } from "./agent/agentLoop";
-import { resolveAgentPrivacyPlan } from "./agent/agentPrivacy";
 import { executeTool, executeReadOnlyTool } from "./agent/toolExecutors";
 import {
   snapshotAgentTools,
@@ -109,12 +99,10 @@ import {
   contextWindowUsageFromTurnPayloadUsage,
 } from "@/features/ai-context/contextWindowUsage";
 import {
-  resolveChatTurnRoute,
   resolvedChatTurnRouteAuthorityKey,
   createTurnControl,
   createTurnRequest,
 } from "./turn/resolveTurnRoute";
-import { renderAgentToolPayloads } from "./turn/renderAgentPayload";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import {
   accumulateInputTokenDrift,
@@ -128,10 +116,6 @@ import {
   resetRecallPromote,
 } from "./chatRecallPromote";
 import { stripToolProtocol } from "./toolProtocol";
-import {
-  buildWebSearchConfig,
-  parseWebSearchControls,
-} from "./webSearchConfig";
 import * as cliApi from "./cliApi";
 import * as codexAppApi from "./codexAppApi";
 import {
@@ -140,11 +124,7 @@ import {
 } from "./historyRevision";
 import { createAgentTextBatcher } from "./agent/agentTextBatcher";
 
-import type {
-  AgentMessagePayload,
-  ToolCallRecord,
-  WebSearchConfig,
-} from "./agent/agentTypes";
+import type { AgentMessagePayload, ToolCallRecord } from "./agent/agentTypes";
 
 import {
   getCurrentProjectId,
@@ -160,6 +140,59 @@ import { getPromptCatalog } from "@/prompts/index";
 
 const turnRuntime = createChatTurnRuntime();
 const userQuestionRuntime = createChatUserQuestionRuntime();
+let configuredChatTurnPreflight: ReturnType<
+  typeof createChatTurnPreflight
+> | null = null;
+
+function getConfiguredChatTurnPreflight(
+  set: Parameters<typeof createChatTurnPreflight>[0]["set"],
+  get: Parameters<typeof createChatTurnPreflight>[0]["get"],
+): ReturnType<typeof createChatTurnPreflight> {
+  configuredChatTurnPreflight ??= createChatTurnPreflight({
+    set,
+    get,
+    provider: {
+      getAiState: () => useAiSettingsStore.getState(),
+      getChatApiVariant: (model) => getChatApiVariant(model),
+      getCrossProviderChatOverride: () => getCrossProviderChatOverride(),
+      resolveRolePathConfig: (pathId, activeProvider) =>
+        resolveRolePathConfig(pathId, undefined, activeProvider),
+      captureAgentAuthority: () => captureAgentPreflightAuthority(),
+      isSameAgentAuthority: (left, right) =>
+        isSameAgentPreflightAuthority(left, right),
+      resolveRawAgentTarget: () => resolveRawAgentPreflightTarget(),
+      resolveAgentTarget: () => resolveAgentPreflightTarget(),
+      resolveConversationTarget: () => resolveConversationPreflightTarget(),
+      resolveCurrentPreflightRoute: (surface) =>
+        resolveCurrentPreflightRoute(surface),
+      resolveCurrentTurnPolicy: (input) => resolveCurrentChatTurnPolicy(input),
+      refreshDynamicCapsForProvider: (provider, options) =>
+        refreshDynamicCapsForProvider(provider, options),
+    },
+    runtime: {
+      claimSendPreflight: (scopeKey) =>
+        turnRuntime.claimSendPreflight(scopeKey),
+      releaseSendPreflight: (claimId) =>
+        turnRuntime.releaseSendPreflight(claimId),
+      isSendPreflightCurrent: (claimId) =>
+        turnRuntime.isSendPreflightCurrent(claimId),
+      hasPendingSessionMutations: () => hasPendingSessionMutations(),
+      getSessionMutationTail: () => getSessionMutationTail(),
+      getWorkspaceIdentity: () => getCurrentImeWorkspaceIdentity(),
+      isWorkspaceCurrent: (identity) => isCapturedWorkspaceCurrent(identity),
+      getCurrentProjectId: () => getCurrentProjectId(),
+      blockIfPolicyOff: () => blockIfPolicyOff("chat"),
+      blockIfUnlicensed: () => blockIfUnlicensed(),
+      snapshotAgentTools: () => snapshotAgentTools(),
+      readSetting: (key, defaultValue) => readRuntimeSetting(key, defaultValue),
+      translate: (key, options) => i18next.t(key, options),
+      notifyError: (message) => toast.error(message),
+      randomUuid: () => crypto.randomUUID(),
+      nowIso: () => new Date().toISOString(),
+    },
+  });
+  return configuredChatTurnPreflight;
+}
 
 const composerAuthority = createChatComposerAuthority({
   get: () => useChatStore.getState(),
@@ -334,45 +367,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }));
   },
 
-  removeEntryFromAuto: (entryId: string) => {
-    set((state) => ({
-      detectedEntries: state.detectedEntries.filter((e) => e.id !== entryId),
-      alwaysEntries: state.alwaysEntries.filter((e) => e.id !== entryId),
-    }));
-  },
-
-  excludeEntryFromAuto: (
-    entryId: string,
-    options?: { refreshContext?: boolean },
-  ) => {
-    const wasExcluded = get().excludedAutoEntryIds.includes(entryId);
-    set((state) => ({
-      excludedAutoEntryIds: state.excludedAutoEntryIds.includes(entryId)
-        ? state.excludedAutoEntryIds
-        : [...state.excludedAutoEntryIds, entryId],
-      detectedEntries: state.detectedEntries.filter((e) => e.id !== entryId),
-      alwaysEntries: state.alwaysEntries.filter((e) => e.id !== entryId),
-    }));
-    // 除外を lastSystemPrompt に即時反映する（× の直後に送信しても
-    // 旧プロンプト経由で注入されないように）。
-    if (options?.refreshContext !== false) {
-      void get().refreshContextLayers();
-    }
-    return !wasExcluded;
-  },
-
-  clearAutoExclusion: (entryId: string) => {
-    set((state) =>
-      state.excludedAutoEntryIds.includes(entryId)
-        ? {
-            excludedAutoEntryIds: state.excludedAutoEntryIds.filter(
-              (id) => id !== entryId,
-            ),
-          }
-        : state,
-    );
-  },
-
   onCodexAnchorDeleted: (entryId: string) => {
     const { chatScope, scopeAnchorId } = get();
     if (chatScope === "codex" && scopeAnchorId === entryId) {
@@ -387,31 +381,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
 
-  setInputPinnedEntryIds: (ids: string[]) => {
-    const { isStreaming, inputPinnedEntryIds } = get();
-    if (isStreaming) return;
-    const sorted = [...ids].sort();
-    const prev = [...inputPinnedEntryIds].sort();
-    if (sorted.join(",") === prev.join(",")) return;
-    set({ inputPinnedEntryIds: ids });
-    turnRuntime.scheduleInputPinnedRefresh(() => {
-      void get().refreshContextLayers();
-    });
-  },
-
   setPendingLookupText: (text) => set({ pendingLookupText: text }),
-
-  // Phase 3b: スレッド focus override。設定/解除で即座にプロンプトを再構築する
-  // （chatScope は変えないので ChatPanel の scope-deps effect では拾えないため）。
-  setThreadFocusOverride: (v) => {
-    set({ threadFocusOverride: v });
-    void get().refreshContextLayers();
-  },
-  clearThreadFocusOverride: () => {
-    if (!get().threadFocusOverride) return;
-    set({ threadFocusOverride: null });
-    void get().refreshContextLayers();
-  },
 
   // --- Session management ---
 
@@ -457,7 +427,29 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     },
   }),
 
-  ...createChatPersistenceStoreActions({ set, get }),
+  ...createChatPersistenceStoreActions({
+    set,
+    get,
+    repository: {
+      addMessage: (sessionId, role, content, extra) =>
+        extra === undefined
+          ? chatApi.addMessage(sessionId, role, content)
+          : chatApi.addMessage(sessionId, role, content, extra),
+      saveMessagePrompt: (messageId, snapshot) =>
+        chatApi.saveMessagePrompt(messageId, snapshot),
+      deleteMessage: (messageId) => chatApi.deleteMessage(messageId),
+    },
+    runtime: {
+      notifySaveFailure: () => toast.error(i18next.t("chat.saveMessageFailed")),
+      notifyDeleteFailure: () =>
+        toast.error(i18next.t("chat.deleteMessageFailed")),
+      reportError: (operation, error) =>
+        debugLog.error("ChatStore", operation, errorDetail(error)),
+      reportWarning: (operation, error) =>
+        debugLog.warn("ChatStore", operation, errorDetail(error)),
+      parseMentionedSceneIds: parseMentionedSceneIdsFromMetadata,
+    },
+  }),
 
   // --- Streaming chat ---
 
@@ -479,492 +471,49 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   ) => {
     if (!content.trim()) return;
     const turnCoordinator = turnRuntime.coordinator;
-    const captureSendPreflightScopeKey = (): string => {
-      const state = get();
-      return JSON.stringify([
-        getCurrentImeWorkspaceIdentity(),
-        state.activeProjectId,
-        state.activeSessionId,
-        state.activeSceneId,
-        state.chatScope,
-        state.scopeAnchorId,
-        state.threadFocusOverride?.threadId ?? null,
-        state.agentMode,
-        state.ragEnabled,
-        state.messages,
-        captureAgentPreflightAuthority(),
-      ]);
-    };
-    const captureSendInvocationAiAuthority = (): string => {
-      const state = get();
-      return (
-        JSON.stringify([
-          state.agentMode,
-          state.ragEnabled,
-          captureAgentPreflightAuthority(),
-          resolvedChatTurnRouteAuthorityKey(
-            resolveCurrentChatTurnPolicy({
-              agentMode: state.agentMode,
-              ragEnabled: state.ragEnabled,
-            }).route,
-          ),
-        ]) ?? ""
-      );
-    };
-    const sendPreflightScopeKey = captureSendPreflightScopeKey();
-    const sendInvocationAiAuthority = captureSendInvocationAiAuthority();
-    const sendPreflightClaimId = turnRuntime.claimSendPreflight(
-      sendPreflightScopeKey,
-    );
-    if (sendPreflightClaimId === null) return;
-    const releaseSendPreflightClaim = (): void => {
-      turnRuntime.releaseSendPreflight(sendPreflightClaimId);
-    };
-    // Preserve Send's synchronous authority snapshot on the normal fast path.
-    // Agent + Ollama additionally performs one metadata preflight before
-    // publishing placeholders; that exceptional await revalidates this complete
-    // snapshot below before any chat state is mutated.
-    if (hasPendingSessionMutations()) {
-      try {
-        await getSessionMutationTail();
-      } catch (error) {
-        releaseSendPreflightClaim();
-        throw error;
-      }
-      if (captureSendInvocationAiAuthority() !== sendInvocationAiAuthority) {
-        releaseSendPreflightClaim();
-        return;
-      }
-    }
-    const turnWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
+    const prepareChatTurn = getConfiguredChatTurnPreflight(set, get);
+    const preflightDecision = prepareChatTurn({
+      content,
+      commandInstruction,
+      options,
+    });
+    const preflight =
+      preflightDecision instanceof Promise
+        ? await preflightDecision
+        : preflightDecision;
+    if (!preflight) return;
     const {
-      isStreaming,
-      isLoadingSessions,
-      isLoadingMessages,
+      turnWorkspaceIdentity,
       activeSceneId,
-      activeProjectId,
       activeSessionId,
       chatScope,
       scopeAnchorId,
       threadFocusOverride,
-      ragEnabled: capturedRagEnabled,
-      messages: capturedMessages,
-      sessions: initialSessions,
-    } = get();
-    if (isStreaming || isLoadingSessions || isLoadingMessages) {
-      releaseSendPreflightClaim();
-      return;
-    }
-    const replacementAssistantMessageId =
-      options?._replaceAssistantMessageId ?? null;
-    const replacementAssistantMessage = replacementAssistantMessageId
-      ? capturedMessages.find(
-          (message) => message.id === replacementAssistantMessageId,
-        )
-      : undefined;
-    if (
-      replacementAssistantMessageId &&
-      (replacementAssistantMessage?.role !== "assistant" ||
-        replacementAssistantMessage.sessionId !== activeSessionId)
-    ) {
-      releaseSendPreflightClaim();
-      return;
-    }
-    const initialMessages = replacementAssistantMessageId
-      ? capturedMessages.filter(
-          (message) => message.id !== replacementAssistantMessageId,
-        )
-      : capturedMessages;
-    // 新規送信が始まったら直前ターンの「続行」ボタンは無効化する
-    // （ボタンは常に最新ターンに対してのみ出す）。
-    if (get().agentContinuation) set({ agentContinuation: null });
-    // Defense: chat がポリシーで OFF なら送信を弾く。Send ボタンは hide/disabled
-    // になるが、Enter / Cmd+Enter / regenerate / agent 再入は全てこの sendMessage
-    // に集約されるため、ここで塞げば UI を経由しない送信経路も封じられる。
-    // 最初の set() より前に判定する。
-    if (blockIfPolicyOff("chat")) {
-      releaseSendPreflightClaim();
-      return;
-    }
-    if (blockIfUnlicensed()) {
-      releaseSendPreflightClaim();
-      return;
-    }
-
-    const agentModeForPreflight = options?.overrideAgentMode ?? get().agentMode;
-    const preflightAuthority = captureAgentPreflightAuthority();
-    let preflightRouteAuthorityKey: string | null;
-    try {
-      const probedOllamaTargets = new Set<string>();
-      const probeOllamaTarget = async (
-        preflightTarget: AgentPreflightTarget,
-        requireCapabilities: boolean,
-      ): Promise<boolean> => {
-        if (
-          preflightTarget.provider !== "ollama" ||
-          !preflightTarget.model ||
-          preflightTarget.model === "openrouter/fusion"
-        ) {
-          return true;
-        }
-        const targetKey = `${preflightTarget.ollamaEndpoint}\u0000${preflightTarget.model}`;
-        if (probedOllamaTargets.has(targetKey)) return true;
-        probedOllamaTargets.add(targetKey);
-        const observedModels = await refreshDynamicCapsForProvider("ollama", {
-          force: true,
-          selectedModelId: preflightTarget.model,
-          ollamaEndpoint: preflightTarget.ollamaEndpoint,
-          requireOllamaCapabilities: requireCapabilities,
-        });
-        if (hasPendingSessionMutations()) {
-          await getSessionMutationTail();
-        }
-        const current = get();
-        const sameAiAuthority = isSameAgentPreflightAuthority(
-          preflightAuthority,
-          captureAgentPreflightAuthority(),
-        );
-        const sameThreadFocus =
-          current.threadFocusOverride?.threadId ===
-          threadFocusOverride?.threadId;
-        const sameRequestedAgentMode =
-          options?.overrideAgentMode !== undefined ||
-          current.agentMode === agentModeForPreflight;
-        if (
-          current.isStreaming ||
-          current.isLoadingSessions ||
-          current.isLoadingMessages ||
-          current.activeSceneId !== activeSceneId ||
-          current.activeProjectId !== activeProjectId ||
-          current.activeSessionId !== activeSessionId ||
-          current.chatScope !== chatScope ||
-          current.scopeAnchorId !== scopeAnchorId ||
-          current.ragEnabled !== capturedRagEnabled ||
-          current.messages !== capturedMessages ||
-          !sameAiAuthority ||
-          !sameThreadFocus ||
-          !sameRequestedAgentMode ||
-          !turnRuntime.isSendPreflightCurrent(sendPreflightClaimId) ||
-          !isCapturedWorkspaceCurrent(turnWorkspaceIdentity)
-        ) {
-          return false;
-        }
-        // Policy/license may change while the local metadata request is in
-        // flight; re-check before publishing the user/assistant placeholders.
-        if (blockIfPolicyOff("chat")) return false;
-        if (blockIfUnlicensed()) return false;
-        if (observedModels === null || observedModels.length === 0) {
-          const message =
-            observedModels === null
-              ? i18next.t("chat.ollamaMetadataUnavailable", {
-                  model: preflightTarget.model,
-                })
-              : i18next.t("chat.ollamaModelUnavailable", {
-                  model: preflightTarget.model,
-                });
-          set({ error: message });
-          toast.error(i18next.t("chat.sendFailed", { message }));
-          return false;
-        }
-        return true;
-      };
-
-      if (agentModeForPreflight) {
-        // Stage 1: probe the raw Agent assignment even when a cached no-tools
-        // flag currently gates it out. The selected model's `/api/show` result
-        // can make a replaced tag eligible again.
-        const rawAgentTarget = resolveRawAgentPreflightTarget();
-        if (
-          rawAgentTarget.provider === "ollama" &&
-          !(await probeOllamaTarget(rawAgentTarget, true))
-        )
-          return;
-
-        // Stage 2: capability gating may now resolve to the active model. Probe
-        // that eventual Agent route before trusting its tools/context metadata.
-        const agentTarget = resolveAgentPreflightTarget();
-        if (
-          agentTarget.provider === "ollama" &&
-          !(await probeOllamaTarget(agentTarget, true))
-        )
-          return;
-
-        // Stage 3: a no-tools Agent route is deliberately sent as plain chat.
-        // Probe the conversation role as well so the final Ollama context guard
-        // never evaluates (or sends) an unobserved fallback model.
-        const agentRouteAfterProbe = resolveCurrentPreflightRoute("agent");
-        const conversationTarget = resolveConversationPreflightTarget();
-        if (
-          agentRouteAfterProbe?.capabilities.supportsTools === false &&
-          conversationTarget.provider === "ollama" &&
-          !(await probeOllamaTarget(conversationTarget, false))
-        ) {
-          return;
-        }
-
-        const finalAgentRoute = resolveCurrentPreflightRoute("agent");
-        const finalTarget =
-          finalAgentRoute?.capabilities.supportsTools === false
-            ? resolveConversationPreflightTarget()
-            : resolveAgentPreflightTarget();
-        const finalTargetKey = `${finalTarget.ollamaEndpoint}\u0000${finalTarget.model}`;
-        if (
-          finalTarget.provider === "ollama" &&
-          finalTarget.model &&
-          finalTarget.model !== "openrouter/fusion" &&
-          !probedOllamaTargets.has(finalTargetKey)
-        ) {
-          // A route transition outside raw-role → gated-agent → conversation is
-          // not safe to send without another selected-model observation.
-          return;
-        }
-      } else {
-        const conversationTarget = resolveConversationPreflightTarget();
-        if (
-          conversationTarget.provider === "ollama" &&
-          !(await probeOllamaTarget(conversationTarget, false))
-        ) {
-          // Plain Ollama chat also refreshes the selected model so it never uses
-          // the generic unknown-model 8k limit. Small requests remain usable when
-          // only the model maximum is known; exact effective overflows are still
-          // diagnosed by the final payload guard.
-          return;
-        }
-      }
-      preflightRouteAuthorityKey = resolvedChatTurnRouteAuthorityKey(
-        resolveCurrentChatTurnPolicy({
-          agentMode: agentModeForPreflight,
-          ragEnabled: capturedRagEnabled,
-        }).route,
-      );
-    } finally {
-      releaseSendPreflightClaim();
-    }
-
-    const aiSettingsEarly = useAiSettingsStore.getState().settings;
-    // チャット用一時モデル(あれば)を含めた実効モデル。これでチャットパネルでの
-    // モデル切替も prefix cache 無効化バッジ・予算計算に正しく反映される。
-    const chatModelEarly =
-      useAiSettingsStore.getState().chatModelOverride ??
-      aiSettingsEarly?.model ??
-      "";
-    // モデルが前回送信から変わっていれば prefix cache が無効化されるため
-    // バッジを立て、変わっていなければ消灯する。消灯をここで一元化するのが要点:
-    // agent / RAG / グローバルスコープ経路には後段のコンテキスト再構築 (=従来の
-    // 唯一のクリア箇所) が無く、ここで揃えないとバッジが「1ターン」を超えて
-    // 居座り続ける (同一モデルで送り続けても消えない)。chatModelEarly が空の
-    // ときはモデル未選択でキャッシュの概念が無いので立てない。
-    if (
-      get()._lastCachedModel &&
-      chatModelEarly &&
-      get()._lastCachedModel !== chatModelEarly
-    ) {
-      set({ cacheInvalidatedReason: "model" });
-    } else {
-      set({ cacheInvalidatedReason: null });
-    }
-    const existingAgentToolsSnapshot = get().sessionAgentToolsSnapshot;
-    const turnAgentToolsSnapshot = existingAgentToolsSnapshot
-      ? structuredClone(existingAgentToolsSnapshot)
-      : snapshotAgentTools();
-    if (!existingAgentToolsSnapshot) {
-      set({ sessionAgentToolsSnapshot: turnAgentToolsSnapshot });
-    }
-    set({ _lastCachedModel: chatModelEarly });
-
-    // Phase 3b: スレッド focus 中は scene を主題にしない（非 scene 枝へ）。
-    const effectiveSceneId =
-      chatScope === "scene" && !threadFocusOverride ? activeSceneId : null;
-    // 一回限りの Agent mode override (サジェストチップ / 再試行ボタンから)
-    // ユーザーの永続トグルは変更しない。
-    const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
-    const aiSendState = useAiSettingsStore.getState();
-    const xprov = getCrossProviderChatOverride();
-    const composerModel = aiSendState.chatModelOverride;
-    const resolveRouteForSurface = (surface: "chat" | "agent") => {
-      if (!aiSendState.settings) return null;
-      const role = resolveRolePathConfig(
-        surface === "agent" ? "chat_agent_main" : "chat_stream_non_agent",
-        undefined,
-        aiSendState.settings.provider,
-      );
-      return resolveChatTurnRoute({
-        surface,
-        activeSettings: aiSendState.settings,
-        activeApiVariant: getChatApiVariant(aiSendState.settings.model),
-        composer: composerModel
-          ? {
-              model: composerModel,
-              provider: xprov?.provider ?? null,
-              apiVariant: xprov
-                ? (xprov.variant ?? null)
-                : (getChatApiVariant(composerModel) ?? null),
-              endpointId: xprov?.endpointId ?? null,
-            }
-          : null,
-        role: role
-          ? {
-              model: role.model,
-              provider: role.provider,
-              apiVariant: role.provider
-                ? role.variant
-                : getChatApiVariant(role.model),
-              endpointId: role.endpointId,
-            }
-          : null,
-        taskEffort: getEffortForTask(surface),
-        thinkingDisplay: "summarized",
-        thinkingEnabled: aiSendState.settings.thinkingEnabled,
-        reasoningEffortOverride:
-          aiSendState.settings.reasoningEffortOverride ?? undefined,
-      });
-    };
-
-    // One policy resolver owns the route and mode decision used by send,
-    // ContextBar, preview, and copy.
-    const turnPolicy = resolveChatTurnRoutePolicy({
-      agentMode: agentModeForThisSend,
-      ragEnabled: capturedRagEnabled,
-      resolveRouteForSurface,
-    });
-    const {
-      route: turnRoute,
+      capturedRagEnabled,
+      capturedMessages,
+      initialMessages,
+      replacementAssistantMessageId,
+      preflightAuthority,
+      agentModeForThisSend,
+      turnAgentToolsSnapshot,
+      effectiveSceneId,
+      turnRoute,
       ragActive,
       useAgentPath,
       publicWebSearchPath,
-    } = turnPolicy;
-    if (
-      resolvedChatTurnRouteAuthorityKey(turnRoute) !==
-      preflightRouteAuthorityKey
-    ) {
-      return;
-    }
-    const turnRouteAuthorityKey = resolvedChatTurnRouteAuthorityKey(turnRoute);
-    const webSearchControlsAtTurnStart = parseWebSearchControls({
-      domainMode: readRuntimeSetting("ai.webSearch.domainMode", "off"),
-      domainsJson: readRuntimeSetting("ai.webSearch.domains", "[]"),
-      maxContentTokensRaw: readRuntimeSetting(
-        "ai.webSearch.maxContentTokens",
-        "",
-      ),
-    });
-    const configuredWebSearchConfigAtTurnStart: WebSearchConfig | null =
-      buildWebSearchConfig(
-        ragActive,
-        agentModeForThisSend,
-        webSearchControlsAtTurnStart,
-      );
-    const agentPrivacyPlan = resolveAgentPrivacyPlan({
-      agentMode: agentModeForThisSend,
-      ragActive,
-      webSearchConfig: configuredWebSearchConfigAtTurnStart,
-    });
-    const webSearchConfigAtTurnStart = agentPrivacyPlan.webSearchConfig;
-    const privacyPlanUsesPublicWeb =
-      agentPrivacyPlan.contextMode === "public-web";
-    if (privacyPlanUsesPublicWeb !== publicWebSearchPath) {
-      throw new Error("chat route privacy policy mismatch");
-    }
-    const useHermesRagInstruction =
-      publicWebSearchPath && turnRoute?.toolProtocol === "hermes";
-    const ragInstructionTokenReserve = publicWebSearchPath
-      ? Math.max(
-          ...(["ja", "en"] as const).map((language) => {
-            const control = getPromptCatalog(language).agentControl;
-            const instruction = useHermesRagInstruction
-              ? control.webSearchInstructionHermes
-              : control.webSearchInstruction;
-            return countTokens(`\n\n${instruction}`);
-          }),
-        )
-      : 0;
-    const publicCommandInstructionTokenReserve =
-      publicWebSearchPath && commandInstruction
-        ? countTokens(commandInstruction)
-        : 0;
-    const contextInputOverheadTokens =
-      TURN_PAYLOAD_SAFETY_MARGIN_TOKENS +
-      ragInstructionTokenReserve +
-      publicCommandInstructionTokenReserve +
-      (useAgentPath && turnRoute
-        ? renderAgentToolPayloads(
-            turnRoute,
-            agentModeForThisSend ? turnAgentToolsSnapshot : [],
-            webSearchConfigAtTurnStart,
-          ).reduce((sum, payload) => sum + countTokens(payload), 0)
-        : estimateMessageEnvelopeTokens([
-            { role: "system", content: "" },
-            ...initialMessages
-              .filter((message) => !message.isSummarized)
-              .map((message) => ({
-                role: message.role,
-                content: message.content,
-              })),
-            { role: "user", content },
-          ]));
-    const turnProjectId = activeProjectId ?? getCurrentProjectId();
-    const activeSessionAtTurnStart = activeSessionId
-      ? initialSessions.find((session) => session.id === activeSessionId)
-      : undefined;
-    if (
-      activeSessionAtTurnStart &&
-      activeSessionAtTurnStart.projectId !== turnProjectId
-    ) {
-      set({ error: "chat session project mismatch" });
-      return;
-    }
-    const contextStateAtTurnStart = get();
-    const preparationSeed: ChatContextTurnSeed = {
-      projectId: turnProjectId,
-      effectiveSceneId: publicWebSearchPath ? null : effectiveSceneId,
-      activeSceneId,
-      activeProjectId,
-      chatScope,
-      scopeAnchorId,
-      threadFocus: threadFocusOverride
-        ? {
-            threadId: threadFocusOverride.threadId,
-            title: threadFocusOverride.title,
-          }
-        : null,
-      inputPinnedEntryIds: [...contextStateAtTurnStart.inputPinnedEntryIds],
-      excludedAutoEntryIds: [...contextStateAtTurnStart.excludedAutoEntryIds],
-      sessionStableCodexIds: [...contextStateAtTurnStart.sessionStableCodexIds],
-      sessionStableContextInitialized:
-        contextStateAtTurnStart.sessionStableContextInitialized,
-      includeBodies: contextStateAtTurnStart.includeBodies,
-      includeMapBoard: contextStateAtTurnStart.includeMapBoard,
-      mapBoardId: contextStateAtTurnStart.mapBoardId,
-    };
-    const snapshotInput: ChatContextPreparationSnapshotInput = {
-      privacy: publicWebSearchPath ? "public-web" : "private",
-      projectId: preparationSeed.projectId,
-      effectiveSceneId: preparationSeed.effectiveSceneId,
-      activeSceneId: preparationSeed.activeSceneId,
-      activeProjectId: preparationSeed.activeProjectId,
-      chatScope: preparationSeed.chatScope,
-      scopeAnchorId: preparationSeed.scopeAnchorId,
-      threadFocus: preparationSeed.threadFocus,
-      includeMapBoard: preparationSeed.includeMapBoard,
-      mapBoardId: preparationSeed.mapBoardId,
-    };
-    const preparationSnapshot =
-      captureChatContextPreparationSnapshot(snapshotInput);
-    const sessionId = activeSessionId ?? "";
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
+      turnRouteAuthorityKey,
+      webSearchConfigAtTurnStart,
+      contextInputOverheadTokens,
+      turnProjectId,
+      preparationSeed,
+      preparationSnapshot,
       sessionId,
-      role: "user",
-      content,
-      createdAt: new Date().toISOString(),
-    };
-    const assistantMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      sessionId,
-      role: "assistant",
-      content: "",
-      createdAt: new Date().toISOString(),
-    };
+      userMsg,
+      assistantMsg,
+      aiSettingsEarly,
+      chatModelEarly,
+      xprov,
+    } = preflight;
     const finalizeStreamingDraft = (metadata?: string): void => {
       set((state) => {
         const draft =
@@ -3040,6 +2589,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     set,
     get,
     recallPromoteTracker,
+    scheduleInputPinnedRefresh: (refresh) =>
+      turnRuntime.scheduleInputPinnedRefresh(refresh),
   }),
 
   ...createChatContinuationStoreActions({
@@ -3190,96 +2741,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       isStreaming: agentTransportWillFinalize,
       agentProgress: null,
     });
-  },
-
-  // --- P2-2: メッセージ削除 ---
-  deleteMessage: async (messageId: string) => {
-    const { activeSessionId, messages } = get();
-    const idx = messages.findIndex((m) => m.id === messageId);
-    if (idx === -1) return;
-    const msg = messages[idx];
-    try {
-      if (msg.role === "user") {
-        // ユーザーメッセージ: 以降のメッセージも全削除
-        const toDelete = messages.slice(idx).filter((m) => m.role !== "system");
-        if (activeSessionId) {
-          for (const m of toDelete) {
-            await chatApi.deleteMessage(m.id);
-          }
-        }
-        set({ messages: messages.slice(0, idx) });
-      } else {
-        // AIメッセージ: 単独削除
-        if (activeSessionId) {
-          await chatApi.deleteMessage(messageId);
-        }
-        set({ messages: messages.filter((m) => m.id !== messageId) });
-      }
-    } catch (e) {
-      toast.error(i18next.t("chat.deleteMessageFailed"));
-      debugLog.error("ChatStore", "deleteMessage", errorDetail(e));
-    }
-  },
-
-  // --- P2-2: ユーザーメッセージ編集 (内容を返し、以降を削除) ---
-  editUserMessage: (messageId: string) => {
-    const { activeSessionId, messages } = get();
-    const idx = messages.findIndex((m) => m.id === messageId);
-    if (idx === -1) return { content: "" };
-    const msg = messages[idx];
-    const content = msg.content;
-    const mentionedSceneIds = parseMentionedSceneIdsFromMetadata(msg.metadata);
-    const toDelete = messages.slice(idx).filter((m) => m.role !== "system");
-    if (activeSessionId) {
-      Promise.all(toDelete.map((m) => chatApi.deleteMessage(m.id))).catch((e) =>
-        debugLog.error("ChatStore", "editUserMessage", errorDetail(e)),
-      );
-    }
-    set({ messages: messages.slice(0, idx) });
-    return mentionedSceneIds ? { content, mentionedSceneIds } : { content };
-  },
-
-  // --- P2-2: AIメッセージ再生成 ---
-  regenerate: async (
-    assistantMessageId: string,
-    options?: { withAgentMode?: boolean },
-  ) => {
-    const { messages, isStreaming, isLoadingSessions, isLoadingMessages } =
-      get();
-    // sendMessage rejects while lifecycle reads are in flight. Keep the old
-    // answer intact until its replacement has been persisted.
-    if (isStreaming || isLoadingSessions || isLoadingMessages) return;
-    const authority = captureChatComposerAuthority();
-    const assIdx = messages.findIndex((m) => m.id === assistantMessageId);
-    if (assIdx === -1) return;
-
-    // 直前のユーザーメッセージを探す
-    const userMsg = [...messages]
-      .slice(0, assIdx)
-      .reverse()
-      .find((m) => m.role === "user");
-    if (!userMsg) return;
-
-    // @scene mention の per-message pin は user メッセージの metadata
-    // (`mentioned_scene_ids`) に永続化されている。再生成時に復元しないと
-    // 元の prompt と再生成 prompt で context が食い違うので拾い直す。
-    const mentionedSceneIds = parseMentionedSceneIdsFromMetadata(
-      userMsg.metadata,
-    );
-
-    if (!(await awaitWritableChatComposerAuthority(authority))) return;
-
-    // 再送信。旧回答は turn history からだけ除外し、replacement の永続化に
-    // 成功した後で削除する。途中の切替・失敗では旧回答を保全する。
-    // withAgentMode: 一回限りの Agent mode 切替で再試行する場合
-    const sendOptions: {
-      overrideAgentMode?: boolean;
-      mentionedSceneIds?: string[];
-      _replaceAssistantMessageId: string;
-    } = { _replaceAssistantMessageId: assistantMessageId };
-    if (options?.withAgentMode) sendOptions.overrideAgentMode = true;
-    if (mentionedSceneIds) sendOptions.mentionedSceneIds = mentionedSceneIds;
-    await get().sendMessage(userMsg.content, undefined, sendOptions);
   },
 
   clearMessages: () => {

@@ -10,6 +10,7 @@ export {
 } from "./chatComposerAuthority";
 export { createChatSessionStoreActions } from "./chatSessionStoreActions";
 export { createChatTurnRuntime } from "./chatTurnRuntime";
+export { createChatTurnPreflight } from "./chatTurnPreflight";
 export {
   createChatUserQuestionRuntime,
   createChatUserQuestionStoreActions,

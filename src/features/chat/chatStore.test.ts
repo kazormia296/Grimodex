@@ -2525,6 +2525,33 @@ describe("useChatStore", () => {
       useAiSettingsStore.setState({ settings: null, chatModelOverride: null });
     });
 
+    it("publishes non-Ollama placeholders synchronously before tokenizer initialization", async () => {
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      mockStreamResponse("ok");
+
+      const send = useChatStore.getState().sendMessage("テスト");
+      const published = useChatStore.getState();
+
+      expect(published.isStreaming).toBe(true);
+      expect(published.messages).toHaveLength(2);
+      expect(published.messages.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+      ]);
+      expect(published.streamingDraft).toEqual({
+        messageId: published.messages[1].id,
+        content: "",
+      });
+
+      releaseTokenizer();
+      await send;
+    });
+
     it("coalesces multiple text deltas into the final assistant content without dropping the tail", async () => {
       // perf 所見#1b: onTextDelta は rAF でまとめて flush されるが、onDone で
       // 同期 flush されるため最終 content は全 delta の連結と一致する。

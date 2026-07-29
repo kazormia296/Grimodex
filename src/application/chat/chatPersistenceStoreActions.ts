@@ -1,26 +1,56 @@
+import type { ChatStoreActionPorts } from "./chatStoreActionPorts";
 import type { ChatState } from "./chatStoreTypes";
-import * as chatApi from "@/features/chat/chatApi";
-import type { MessageRole } from "@/features/chat/chatTypes";
-import { debugLog, errorDetail } from "@/lib/debugLog";
-import i18next from "@/lib/i18n";
-import { toast } from "sonner";
+import type { ChatMessage, MessageRole } from "@/features/chat/chatTypes";
 
-type ChatStoreSet = (
-  partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>),
-) => void;
+interface ChatPersistenceRepository {
+  addMessage: (
+    sessionId: string,
+    role: MessageRole,
+    content: string,
+    extra?: {
+      model?: string;
+      metadata?: string;
+    },
+  ) => Promise<ChatMessage>;
+  saveMessagePrompt: (
+    messageId: string,
+    snapshot: {
+      systemPrompt: string;
+      layers: [];
+      totalTokens: null;
+      model: string | null;
+    },
+  ) => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<void>;
+}
 
-export function createChatPersistenceStoreActions(deps: {
-  set: ChatStoreSet;
-  get: () => ChatState;
-}): Pick<ChatState, "persistMessage" | "appendAdoptedAbTurn"> {
-  const { set, get } = deps;
+interface ChatPersistenceRuntime {
+  notifySaveFailure: () => void;
+  notifyDeleteFailure: () => void;
+  reportError: (operation: string, error: unknown) => void;
+  reportWarning: (operation: string, error: unknown) => void;
+  parseMentionedSceneIds: (
+    metadata: string | null | undefined,
+  ) => string[] | undefined;
+}
+
+export function createChatPersistenceStoreActions(
+  deps: ChatStoreActionPorts & {
+    repository: ChatPersistenceRepository;
+    runtime: ChatPersistenceRuntime;
+  },
+): Pick<
+  ChatState,
+  "persistMessage" | "appendAdoptedAbTurn" | "deleteMessage" | "editUserMessage"
+> {
+  const { set, get, repository, runtime } = deps;
   return {
     persistMessage: async (role: MessageRole, content: string) => {
       const { activeSessionId } = get();
       if (!activeSessionId) return;
 
       try {
-        const message = await chatApi.addMessage(
+        const message = await repository.addMessage(
           activeSessionId,
           role,
           content,
@@ -28,9 +58,9 @@ export function createChatPersistenceStoreActions(deps: {
         set((state) => ({
           messages: [...state.messages, message],
         }));
-      } catch (e) {
-        toast.error(i18next.t("chat.saveMessageFailed"));
-        debugLog.error("ChatStore", "persistMessage", errorDetail(e));
+      } catch (error) {
+        runtime.notifySaveFailure();
+        runtime.reportError("persistMessage", error);
       }
     },
 
@@ -45,7 +75,7 @@ export function createChatPersistenceStoreActions(deps: {
       // (scene/folder/project/codex/snippet) に対応する正しいセッションを返す。
       const sessionId = await get().ensureSession();
       if (!sessionId) {
-        toast.error(i18next.t("chat.saveMessageFailed"));
+        runtime.notifySaveFailure();
         return false;
       }
 
@@ -55,33 +85,37 @@ export function createChatPersistenceStoreActions(deps: {
           mentionedSceneIds.length > 0
             ? JSON.stringify({ mentioned_scene_ids: mentionedSceneIds })
             : undefined;
-        const userMsg = await chatApi.addMessage(sessionId, "user", userDraft, {
-          ...(userMetadata ? { metadata: userMetadata } : {}),
-        });
+        const userMsg = await repository.addMessage(
+          sessionId,
+          "user",
+          userDraft,
+          {
+            ...(userMetadata ? { metadata: userMetadata } : {}),
+          },
+        );
 
         // 制作過程開示: A/B 各構成へ実際に送ったフルプロンプトをスナップショット保存
         // (通常送信の saveMessagePrompt と同じ chat_message_prompts へ)。fire-and-forget。
         // 比較は単発 user メッセージで投げているため layers は空・tokens は不明。
         if (basePrompt) {
-          void chatApi
+          void repository
             .saveMessagePrompt(userMsg.id, {
               systemPrompt: basePrompt,
               layers: [],
               totalTokens: null,
               model,
             })
-            .catch((e) =>
-              debugLog.warn(
-                "ChatStore",
+            .catch((error) =>
+              runtime.reportWarning(
                 "appendAdoptedAbTurn:saveMessagePrompt",
-                errorDetail(e),
+                error,
               ),
             );
         }
 
         // 採用応答。ab_adopted で provenance を残す (ライブ生成と区別)。
         // usage は A/B 実行時に recordAiUsage 済みなので二重記録しない。
-        const assistantMsg = await chatApi.addMessage(
+        const assistantMsg = await repository.addMessage(
           sessionId,
           "assistant",
           assistantText,
@@ -95,11 +129,64 @@ export function createChatPersistenceStoreActions(deps: {
           messages: [...state.messages, userMsg, assistantMsg],
         }));
         return true;
-      } catch (e) {
-        toast.error(i18next.t("chat.saveMessageFailed"));
-        debugLog.error("ChatStore", "appendAdoptedAbTurn", errorDetail(e));
+      } catch (error) {
+        runtime.notifySaveFailure();
+        runtime.reportError("appendAdoptedAbTurn", error);
         return false;
       }
+    },
+
+    deleteMessage: async (messageId) => {
+      const { activeSessionId, messages } = get();
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index === -1) return;
+      const message = messages[index];
+      try {
+        if (message.role === "user") {
+          const toDelete = messages
+            .slice(index)
+            .filter((candidate) => candidate.role !== "system");
+          if (activeSessionId) {
+            for (const candidate of toDelete) {
+              await repository.deleteMessage(candidate.id);
+            }
+          }
+          set({ messages: messages.slice(0, index) });
+        } else {
+          if (activeSessionId) {
+            await repository.deleteMessage(messageId);
+          }
+          set({
+            messages: messages.filter(
+              (candidate) => candidate.id !== messageId,
+            ),
+          });
+        }
+      } catch (error) {
+        runtime.notifyDeleteFailure();
+        runtime.reportError("deleteMessage", error);
+      }
+    },
+
+    editUserMessage: (messageId) => {
+      const { activeSessionId, messages } = get();
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index === -1) return { content: "" };
+      const message = messages[index];
+      const content = message.content;
+      const mentionedSceneIds = runtime.parseMentionedSceneIds(
+        message.metadata,
+      );
+      const toDelete = messages
+        .slice(index)
+        .filter((candidate) => candidate.role !== "system");
+      if (activeSessionId) {
+        Promise.all(
+          toDelete.map((candidate) => repository.deleteMessage(candidate.id)),
+        ).catch((error) => runtime.reportError("editUserMessage", error));
+      }
+      set({ messages: messages.slice(0, index) });
+      return mentionedSceneIds ? { content, mentionedSceneIds } : { content };
     },
   };
 }
