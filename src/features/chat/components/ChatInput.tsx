@@ -61,7 +61,10 @@ import {
 import { useChatModelCatalog } from "../useChatModelCatalog";
 import { getProviderLabel } from "../providerLabels";
 import { getOpenaiCompatibleEndpoints } from "../types";
-import { applyModelWhitelist } from "../chatModelCatalog";
+import {
+  applyModelWhitelist,
+  applyModelWhitelistToModels,
+} from "../chatModelCatalog";
 import type { CatalogModel } from "../chatModelCatalog";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -234,8 +237,7 @@ export function ChatInput({
   const models = (() => {
     try {
       const whitelist: string[] = JSON.parse(modelWhitelistRaw || "[]");
-      if (whitelist.length === 0) return allModels;
-      return allModels.filter((m) => whitelist.includes(m.id));
+      return applyModelWhitelistToModels(allModels, whitelist);
     } catch {
       return allModels;
     }
@@ -309,9 +311,8 @@ export function ChatInput({
   // 複数プロバイダ横断のモデルカタログ(ピッカーを開いたら設定済みプロバイダを取得)。
   const { sections: modelSections, loading: catalogLoading } =
     useChatModelCatalog(modelOpen);
-  // モデル whitelist は全プロバイダ横断のグローバルな絞り込み(設定でチェックしたモデルだけ
-  // 表示)。アクティブプロバイダだけに適用すると、別プロバイダのセクションに未チェックの
-  // モデルが残ってしまうため、全セクションに適用する。
+  // 保存先はグローバルだが、チェック操作はプロバイダ単位。各セクションに一致する保存値が
+  // あるときだけ絞り込み、別プロバイダの選択でセクション全体が消えないようにする。
   const displaySections = useMemo(() => {
     let whitelist: string[];
     try {

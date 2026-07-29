@@ -15,8 +15,7 @@ import type { BeatMention } from "@/features/editor/beat/extractBeatMentions";
 const h = vi.hoisted(() => ({
   state: {
     treeNodes: [] as Array<{ id: string; sourceUri?: string }>,
-    codexEntries: [] as unknown[],
-    hasCompletionTargets: false,
+    codexEntries: [] as Array<{ id: string; name?: string }>,
     activeChatSceneId: null as string | null,
     fileBacked: false,
     electron: false,
@@ -140,14 +139,6 @@ vi.mock("@/features/editor/beat/bodyMentionApi", () => ({
 vi.mock("@/features/codex/bodyMentionIndexState", () => ({
   recordBodyMentionScans: h.recordBodyMentionScans,
 }));
-vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: {
-    getState: () => ({
-      entries: h.state.codexEntries,
-      ...(h.state.hasCompletionTargets ? { completionTargets: [] } : {}),
-    }),
-  },
-}));
 vi.mock("@/features/codex/api", () => ({
   listCodexMatchTargets: h.listCodexMatchTargets,
 }));
@@ -175,16 +166,20 @@ vi.mock("@/features/matrix/matrixDataVersion", () => ({
   bumpMatrixDataVersion: h.bumpMatrixDataVersion,
 }));
 
-import { persistSceneBody } from "@/features/editor/persistSceneBody";
+import {
+  _resetBodyMentionScanSchedulerForTests,
+  persistSceneBody,
+} from "@/features/editor/persistSceneBody";
 
 const DOC_JSON = { type: "doc", content: [] };
 const fakeDoc = { toJSON: () => DOC_JSON } as unknown as ProseMirrorNode;
 
 beforeEach(() => {
+  _resetBodyMentionScanSchedulerForTests();
   vi.clearAllMocks();
+  h.listCodexMatchTargets.mockResolvedValue([]);
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
   h.state.codexEntries = [];
-  h.state.hasCompletionTargets = false;
   h.state.activeChatSceneId = null;
   h.state.fileBacked = false;
   h.state.electron = false;
@@ -256,6 +251,7 @@ describe("persistSceneBody — DB-native scene", () => {
   it("reuses the save serialization for deferred body mention indexing", async () => {
     const toJSON = vi.fn(() => DOC_JSON);
     h.state.codexEntries = [{ id: "codex-1" }];
+    h.listCodexMatchTargets.mockResolvedValue(h.state.codexEntries);
 
     await persistSceneBody("scene-1", {
       toJSON,
@@ -283,6 +279,7 @@ describe("persistSceneBody — DB-native scene", () => {
 
   it("coalesces deferred body mention scans to the latest saved document", async () => {
     h.state.codexEntries = [{ id: "codex-1" }];
+    h.listCodexMatchTargets.mockResolvedValue(h.state.codexEntries);
     const firstDoc = {
       toJSON: () => ({ type: "doc", content: [{ text: "first" }] }),
     } as unknown as ProseMirrorNode;
@@ -305,14 +302,28 @@ describe("persistSceneBody — DB-native scene", () => {
   });
 
   it("skips body parsing and scan-state writes when the project has no match targets", async () => {
-    h.state.hasCompletionTargets = true;
-
     await persistSceneBody("scene-1", fakeDoc);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     expect(h.listCodexMatchTargets).toHaveBeenCalledWith("proj-1");
     expect(h.upsertSceneBodyMentions).not.toHaveBeenCalled();
     expect(h.recordBodyMentionScans).not.toHaveBeenCalled();
+  });
+
+  it("uses the complete project target set even while panel entries are filtered", async () => {
+    const character = { id: "character-a", name: "太郎" };
+    const location = { id: "location-b", name: "東京" };
+    h.state.codexEntries = [character];
+    h.listCodexMatchTargets.mockResolvedValue([character, location]);
+
+    await persistSceneBody("scene-1", fakeDoc);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(h.upsertSceneBodyMentions).toHaveBeenCalledWith(
+      "scene-1",
+      JSON.stringify(DOC_JSON),
+      [character, location],
+    );
   });
 
   it("runs the schema-dependent anchor/provenance cascade against the doc", async () => {

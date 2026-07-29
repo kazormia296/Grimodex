@@ -2150,6 +2150,7 @@
       "costNote": "output は含まない概算",
       "windowFill": "コンテキストウィンドウ使用率: {{pct}}%",
       "windowFillOfWindow": "コンテキストウィンドウ使用率: {{pct}}%（容量 {{window}}）",
+      "windowFillUnknown": "実効コンテキスト容量が不明なため、使用率を計算できません",
       "windowFillRow": "ウィンドウ使用率",
       "multiSummaryWarning": "{{count}} 回要約済み — 新セッション推奨",
       "cacheRebuilt": "cache rebuilt",

@@ -4,6 +4,7 @@ import {
   filterCatalog,
   groupCatalogByDeveloper,
   applyModelWhitelist,
+  applyModelWhitelistToModels,
 } from "./chatModelCatalog";
 import type { AiModel } from "./types";
 
@@ -195,21 +196,40 @@ describe("applyModelWhitelist", () => {
     expect(applyModelWhitelist(sections, [])).toEqual(sections);
   });
 
-  it("全プロバイダ横断で適用し、未チェックモデルは別プロバイダでも落とす(回帰 gate)", () => {
-    // active(openrouter)の1件と、別プロバイダ(openai)の1件だけをチェック。
+  it("一致するモデルがあるセクションだけを絞り、未選択プロバイダは全件を保つ", () => {
+    // active(openrouter)の1件と、別プロバイダ(openai)の1件をチェック。
     const out = applyModelWhitelist(sections, [
       "anthropic/claude-opus-4.8",
       "gpt-5.5",
     ]);
-    // active 以外のセクションにも適用される。openai は gpt-5-mini が落ち gpt-5.5 のみ。
-    expect(out.map((s) => s.provider)).toEqual(["openrouter", "openai"]);
+    expect(out.map((s) => s.provider)).toEqual([
+      "openrouter",
+      "openai",
+      "anthropic",
+    ]);
     expect(
       out.find((s) => s.provider === "openrouter")?.models.map((x) => x.id),
     ).toEqual(["anthropic/claude-opus-4.8"]);
     expect(
       out.find((s) => s.provider === "openai")?.models.map((x) => x.id),
     ).toEqual(["gpt-5.5"]);
-    // どのモデルもチェックされていない anthropic セクションは丸ごと落ちる。
-    expect(out.find((s) => s.provider === "anthropic")).toBeUndefined();
+    // このセクションに一致する保存値はないため「未選択」として全件表示。
+    expect(
+      out.find((s) => s.provider === "anthropic")?.models.map((x) => x.id),
+    ).toEqual(["claude-opus-4.8"]);
+  });
+
+  it("ローカルモデルだけの保存値でクラウドの全セクションを消さない(回帰 gate)", () => {
+    expect(applyModelWhitelist(sections, ["gemma4:latest"])).toEqual(sections);
+  });
+
+  it("アクティブプロバイダに一致がなければ capability 用モデルも全件を保つ", () => {
+    const models = [m("claude-opus-4.8"), m("claude-sonnet-4.6")];
+    expect(applyModelWhitelistToModels(models, ["gemma4:latest"])).toBe(models);
+    expect(
+      applyModelWhitelistToModels(models, ["claude-sonnet-4.6"]).map(
+        (model) => model.id,
+      ),
+    ).toEqual(["claude-sonnet-4.6"]);
   });
 });

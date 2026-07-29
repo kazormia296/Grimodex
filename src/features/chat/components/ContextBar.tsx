@@ -690,6 +690,17 @@ export function ContextBar({
                         />
                       </div>
                     )}
+                    {windowFillPct === null && contextWindow === null && (
+                      <div
+                        role="img"
+                        data-testid="context-window-unknown"
+                        aria-label={t("chat.context.windowFillUnknown")}
+                        title={t("chat.context.windowFillUnknown")}
+                        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border-[3px] border-dashed border-amber-500 text-[11px] font-semibold leading-none text-amber-600 dark:text-amber-400"
+                      >
+                        <span aria-hidden="true">?</span>
+                      </div>
+                    )}
                   </div>
                 );
               })()}

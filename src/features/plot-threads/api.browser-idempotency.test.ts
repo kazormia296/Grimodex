@@ -15,6 +15,7 @@ import {
   createPlotThreadBranch,
   createPlotThreadLink,
   deletePlotThreadSnapshot,
+  movePlotMarkerBundle,
   restorePlotThreadSnapshot,
 } from "./api";
 
@@ -373,6 +374,161 @@ describe("plot branch browser durable create", () => {
       method: "all",
     });
     expect(rows.rows).toEqual([]);
+  });
+
+  it("marker move と branch transition を一度だけ atomic commit する", async () => {
+    await invokeMock("db_execute", {
+      sql: `INSERT INTO plot_thread_scene_links
+              (id, thread_id, node_id, phase_type, note, sort_order, created_at, updated_at)
+            VALUES ('move-link', 't1', 's1', 'turn', 'move me', 'a0', 'c1', 'u1')`,
+      params: [],
+      method: "run",
+    });
+    const markerBefore = {
+      id: "move-link",
+      threadId: "t1",
+      nodeId: "s1",
+      phaseType: "turn" as const,
+      note: "move me",
+      sortOrder: "a0",
+      createdAt: "c1",
+      updatedAt: "u1",
+    };
+    const markerAfter = {
+      ...markerBefore,
+      threadId: "t2",
+      updatedAt: "u2",
+    };
+    const branch = {
+      id: "move-branch",
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t2",
+      atNodeId: "s1",
+      kind: "branch" as const,
+      createdAt: "c2",
+      updatedAt: "u2",
+    };
+    const payload = {
+      requestId: "browser-move-request",
+      projectId: "p1",
+      markerBefore,
+      markerAfter,
+      branchTransitions: [{ before: null, after: branch }],
+    };
+
+    const first = await movePlotMarkerBundle(payload);
+    expect(first).toMatchObject({
+      id: payload.requestId,
+      marker: markerAfter,
+      branches: [branch],
+      deletedBranchIds: [],
+    });
+    expect(getCreateResultMetadata(first)).toEqual({
+      replayed: false,
+      entityPresent: true,
+    });
+
+    const exact = await movePlotMarkerBundle(payload);
+    expect(getCreateResultMetadata(exact)).toEqual({
+      replayed: true,
+      entityPresent: true,
+    });
+    const rows = await invokeMock("db_execute", {
+      sql: `SELECT thread_id, updated_at FROM plot_thread_scene_links WHERE id = ?
+            UNION ALL
+            SELECT from_thread_id AS thread_id, updated_at
+              FROM plot_thread_branches WHERE id = ?`,
+      params: [markerAfter.id, branch.id],
+      method: "all",
+    });
+    expect(rows.rows).toEqual([
+      { thread_id: "t2", updated_at: "u2" },
+      { thread_id: "t1", updated_at: "u2" },
+    ]);
+    const ledger = await invokeMock("db_execute", {
+      sql: `SELECT request_id FROM idempotency_requests
+             WHERE domain = 'plot_thread_move_marker_bundle'
+               AND request_id = ?`,
+      params: [payload.requestId],
+      method: "all",
+    });
+    expect(ledger.rows).toEqual([{ request_id: payload.requestId }]);
+  });
+
+  it("branch write 失敗時に marker と ledger をまとめて rollback する", async () => {
+    await invokeMock("db_execute", {
+      sql: `INSERT INTO plot_thread_scene_links
+              (id, thread_id, node_id, phase_type, note, sort_order, created_at, updated_at)
+            VALUES ('rollback-link', 't1', 's1', 'develop', NULL, NULL, 'c1', 'u1')`,
+      params: [],
+      method: "run",
+    });
+    await invokeMock("db_execute", {
+      sql: `CREATE TRIGGER reject_move_branch
+              BEFORE INSERT ON plot_thread_branches
+              WHEN NEW.id = 'rollback-branch'
+              BEGIN
+                SELECT RAISE(ABORT, 'forced branch failure');
+              END`,
+      params: [],
+      method: "run",
+    });
+    const markerBefore = {
+      id: "rollback-link",
+      threadId: "t1",
+      nodeId: "s1",
+      phaseType: "develop" as const,
+      note: null,
+      sortOrder: null,
+      createdAt: "c1",
+      updatedAt: "u1",
+    };
+
+    await expect(
+      movePlotMarkerBundle({
+        requestId: "browser-move-rollback",
+        projectId: "p1",
+        markerBefore,
+        markerAfter: {
+          ...markerBefore,
+          threadId: "t2",
+          updatedAt: "u2",
+        },
+        branchTransitions: [
+          {
+            before: null,
+            after: {
+              id: "rollback-branch",
+              projectId: "p1",
+              fromThreadId: "t1",
+              toThreadId: "t2",
+              atNodeId: "s1",
+              kind: "branch",
+              createdAt: "c2",
+              updatedAt: "u2",
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow("forced branch failure");
+
+    const marker = await invokeMock("db_execute", {
+      sql: "SELECT thread_id, updated_at FROM plot_thread_scene_links WHERE id = ?",
+      params: [markerBefore.id],
+      method: "get",
+    });
+    expect(marker.rows).toEqual([{ thread_id: "t1", updated_at: "u1" }]);
+    const leakedRows = await invokeMock("db_execute", {
+      sql: `SELECT id FROM plot_thread_branches WHERE id = 'rollback-branch'
+            UNION ALL
+            SELECT request_id AS id FROM idempotency_requests
+             WHERE domain = 'plot_thread_move_marker_bundle'
+               AND request_id = 'browser-move-rollback'`,
+      params: [],
+      method: "all",
+    });
+    expect(leakedRows.rows).toEqual([]);
   });
 
   it("marker と依存 branch を atomic delete し、再作成後の replay では消さない", async () => {

@@ -482,6 +482,7 @@ export interface NapiBackendLike {
   plotThreadList(projectId: string): Promise<string>;
   plotThreadLinkCreate(payload: unknown): Promise<string>;
   plotThreadBranchCreate?(payload: unknown): Promise<string>;
+  plotThreadMoveMarkerBundle?(payload: unknown): Promise<string>;
   plotThreadRestoreSnapshot?(payload: unknown): Promise<string>;
   plotThreadDeleteSnapshot?(payload: unknown): Promise<string>;
   plotThreadLinkUpdate(id: string, patch: unknown): Promise<string>;
@@ -984,6 +985,149 @@ function requirePlotThreadDeleteSnapshotPayload(
       `invalid args \`branches\` for command \`${command}\`: duplicate ids`,
     );
   }
+  return payload;
+}
+
+function requirePlotMoveLinkSnapshot(
+  value: unknown,
+  key: string,
+  command: string,
+): CommandArgs {
+  const link = requirePlotSnapshotRecord(value, key, command);
+  for (const field of [
+    "id",
+    "threadId",
+    "nodeId",
+    "phaseType",
+    "createdAt",
+    "updatedAt",
+  ] as const) {
+    requireNonEmptyString(link, field, command);
+  }
+  nullableString(link, "note", command);
+  nullableString(link, "sortOrder", command);
+  if (
+    !["introduce", "develop", "turn", "climax", "resolve"].includes(
+      String(link.phaseType),
+    )
+  ) {
+    throw new Error(
+      `invalid args \`${key}.phaseType\` for command \`${command}\`: invalid plot phase`,
+    );
+  }
+  return link;
+}
+
+function requirePlotMoveBranchSnapshot(
+  value: unknown,
+  key: string,
+  command: string,
+  projectId: string,
+): CommandArgs {
+  const branch = requirePlotSnapshotRecord(value, key, command);
+  for (const field of [
+    "id",
+    "projectId",
+    "fromThreadId",
+    "toThreadId",
+    "atNodeId",
+    "kind",
+    "createdAt",
+    "updatedAt",
+  ] as const) {
+    requireNonEmptyString(branch, field, command);
+  }
+  if (branch.projectId !== projectId) {
+    throw new Error(
+      `invalid args \`${key}.projectId\` for command \`${command}\`: expected bundle projectId`,
+    );
+  }
+  if (branch.fromThreadId === branch.toThreadId) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: branch cannot self-reference`,
+    );
+  }
+  if (branch.kind !== "branch" && branch.kind !== "merge") {
+    throw new Error(
+      `invalid args \`${key}.kind\` for command \`${command}\`: expected branch or merge`,
+    );
+  }
+  return branch;
+}
+
+function requirePlotThreadMoveMarkerBundlePayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "plot_thread_move_marker_bundle";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "requestId", command);
+  const projectId = requireNonEmptyString(payload, "projectId", command);
+  const markerBefore = requirePlotMoveLinkSnapshot(
+    payload.markerBefore,
+    "markerBefore",
+    command,
+  );
+  const markerAfter = requirePlotMoveLinkSnapshot(
+    payload.markerAfter,
+    "markerAfter",
+    command,
+  );
+  if (markerBefore.id !== markerAfter.id) {
+    throw new Error(
+      `invalid args for command \`${command}\`: marker identity cannot change`,
+    );
+  }
+
+  const ids = new Set<string>();
+  requireArray(payload, "branchTransitions", command).forEach(
+    (value, index) => {
+      const key = `branchTransitions[${index}]`;
+      const transition = requirePlotSnapshotRecord(value, key, command);
+      if (
+        !Object.hasOwn(transition, "before") ||
+        !Object.hasOwn(transition, "after")
+      ) {
+        throw new Error(
+          `invalid args \`${key}\` for command \`${command}\`: before and after are required`,
+        );
+      }
+      const before =
+        transition.before === null
+          ? null
+          : requirePlotMoveBranchSnapshot(
+              transition.before,
+              `${key}.before`,
+              command,
+              projectId,
+            );
+      const after =
+        transition.after === null
+          ? null
+          : requirePlotMoveBranchSnapshot(
+              transition.after,
+              `${key}.after`,
+              command,
+              projectId,
+            );
+      if (before === null && after === null) {
+        throw new Error(
+          `invalid args \`${key}\` for command \`${command}\`: before or after is required`,
+        );
+      }
+      if (before !== null && after !== null && before.id !== after.id) {
+        throw new Error(
+          `invalid args \`${key}\` for command \`${command}\`: branch identity cannot change`,
+        );
+      }
+      const id = String(before?.id ?? after?.id);
+      if (ids.has(id)) {
+        throw new Error(
+          `invalid args \`branchTransitions\` for command \`${command}\`: duplicate ids`,
+        );
+      }
+      ids.add(id);
+    },
+  );
   return payload;
 }
 
@@ -2034,6 +2178,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.plotThreadBranchCreate,
           "plotThreadBranchCreate",
         )(requirePlotThreadBranchCreatePayload(a)),
+      ),
+  },
+  plot_thread_move_marker_bundle: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.plotThreadMoveMarkerBundle,
+          "plotThreadMoveMarkerBundle",
+        )(requirePlotThreadMoveMarkerBundlePayload(a)),
       ),
   },
   plot_thread_restore_snapshot: {

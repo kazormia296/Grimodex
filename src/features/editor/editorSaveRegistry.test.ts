@@ -16,6 +16,7 @@ import {
   clearRetainedEditorRecoveryDraft,
   clearRetainedEditorRecoveryDraftsForScopeChange,
   collectEditorRecoveryDrafts,
+  hasRetainedRecoveryDraftForDocument,
   registerRecoveryDraftProvider,
   registerDiscardHandler,
   retainEditorRecoveryDraft,
@@ -208,6 +209,7 @@ describe("editorSaveRegistry", () => {
     retainEditorRecoveryDraft(key, instanceId, liveDraft);
     unregisterRecoveryDraftProvider(key, instanceId, provider);
 
+    expect(hasRetainedRecoveryDraftForDocument(key)).toBe(true);
     expect(collectEditorRecoveryDrafts()).toEqual([
       expect.objectContaining({
         documentId: "scene-recovery",
@@ -217,6 +219,7 @@ describe("editorSaveRegistry", () => {
     ]);
 
     clearRetainedEditorRecoveryDraft(key, instanceId);
+    expect(hasRetainedRecoveryDraftForDocument(key)).toBe(false);
     expect(collectEditorRecoveryDrafts()).toEqual([]);
   });
 

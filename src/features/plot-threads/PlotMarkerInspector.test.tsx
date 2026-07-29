@@ -113,13 +113,11 @@ describe("PlotMarkerInspector", () => {
   });
 
   it("マーカー選択時、別スレッドへの分岐を追加し、マーカーを対象スレッドへ移す", () => {
-    const addBranch = vi.fn();
-    const updateMarker = vi.fn();
+    const moveMarkerBundle = vi.fn(async () => {});
     const thread2: PlotThreadRow = { ...thread, id: "t2", name: "恋愛の糸" };
     usePlotThreadStore.setState({
       threads: [thread, thread2],
-      addBranch,
-      updateMarker,
+      moveMarkerBundle,
     });
     useTimelineStore.setState({
       selectedPlotLinkId: "l1", // thread t1 / scene s1
@@ -130,26 +128,23 @@ describe("PlotMarkerInspector", () => {
     );
     // 分岐エディタが出る
     expect(getByTestId("plot-branch-editor")).toBeTruthy();
-    // 「追加」で addBranch が from=t1, to=t2, at=s1, kind=branch で呼ばれる
+    // 「追加」で marker + branch が1つの atomic bundle として渡される。
     fireEvent.click(getByText("追加"));
-    expect(addBranch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fromThreadId: "t1",
-        toThreadId: "t2",
-        atNodeId: "s1",
-        kind: "branch",
-      }),
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
-    // 統一モデル: 選択マーカー l1 は移動先 = 対象(to=t2)スレッドへ移る（D&D と同じ終端状態）。
-    expect(updateMarker).toHaveBeenCalledWith(
-      "l1",
-      {
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "l1",
+      markerPatch: {
         threadId: "t2",
         nodeId: "s1",
       },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
+      branchCreates: [
+        {
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "s1",
+          kind: "branch",
+        },
+      ],
+    });
   });
 
   it("branch/merge 起点マーカーの削除は確認ダイアログを挟む", () => {

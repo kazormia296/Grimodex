@@ -576,7 +576,8 @@ fn parse_openrouter_model(m: &serde_json::Value) -> Option<AiModel> {
 
 const OLLAMA_METADATA_CONCURRENCY: usize = 4;
 const OLLAMA_METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const OLLAMA_SELECTED_METADATA_TIMEOUT: Duration = Duration::from_secs(12);
+const OLLAMA_MODEL_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const OLLAMA_SELECTED_METADATA_TIMEOUT: Duration = Duration::from_secs(90);
 const OLLAMA_CATALOG_METADATA_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -814,6 +815,32 @@ async fn fetch_ollama_show(
     }
 }
 
+/// 空の native generate を使って選択モデルだけを runner へロードする。
+///
+/// OpenAI 互換 route では `num_ctx` を指定できないため、Grimodex が値を推測して
+/// 上書きせず、Ollama が実際に確保した値を後続の `/api/ps` から観測する。
+async fn preload_ollama_model(
+    client: &reqwest::Client,
+    endpoint: &str,
+    model: &str,
+) -> anyhow::Result<()> {
+    let url = format!("{}/api/generate", endpoint.trim_end_matches('/'));
+    let response = client
+        .post(url)
+        .timeout(OLLAMA_MODEL_LOAD_TIMEOUT)
+        .json(&serde_json::json!({
+            "model": model,
+            "stream": false
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    // Empty generate returns a small terminal response after the runner is
+    // ready. Consume it before re-reading `/api/ps`.
+    let _ = response.bytes().await?;
+    Ok(())
+}
+
 async fn enrich_ollama_models(
     client: &reqwest::Client,
     endpoint: &str,
@@ -832,7 +859,7 @@ async fn enrich_ollama_models(
             ollama_tag_matches_selected(tag, selected)
         })
         .collect::<Vec<_>>();
-    let runners = Arc::new(fetch_ollama_runner_contexts(client, endpoint).await);
+    let mut runners = fetch_ollama_runner_contexts(client, endpoint).await;
     let endpoint = endpoint.to_string();
 
     if selected_model.is_some() {
@@ -843,11 +870,24 @@ async fn enrich_ollama_models(
             return Ok(Vec::new());
         };
         let show = fetch_ollama_show(client, &endpoint, &model).await;
+        if find_ollama_runner_context(&tag, &runners).is_none() {
+            match preload_ollama_model(client, &endpoint, &model).await {
+                Ok(()) => {
+                    runners = fetch_ollama_runner_contexts(client, &endpoint).await;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "Ollama selected-model preload unavailable for model={model}: {error}"
+                    );
+                }
+            }
+        }
         return Ok(build_ollama_model(&tag, show.as_ref(), runners.as_slice())
             .into_iter()
             .collect());
     }
 
+    let runners = Arc::new(runners);
     let models = futures::stream::iter(tags.into_iter().filter_map(|tag| {
         let model = ollama_model_name(&tag)?.to_string();
         let client = client.clone();
@@ -4471,6 +4511,8 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     // ── 複数 OpenAI 互換エンドポイント (Approach B) ──────────────────────────
 
@@ -6926,11 +6968,77 @@ mod tests {
     // Ollama model metadata
     // -----------------------------------------------------------------------
 
+    async fn read_test_http_request(stream: &mut TcpStream) -> anyhow::Result<(String, String)> {
+        let mut request = Vec::new();
+        let mut body_start = None;
+        let mut content_length = 0usize;
+
+        loop {
+            let mut chunk = [0u8; 4096];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+
+            if body_start.is_none() {
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let start = position + 4;
+                    let headers = std::str::from_utf8(&request[..position])?;
+                    content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    body_start = Some(start);
+                }
+            }
+
+            if let Some(start) = body_start {
+                if request.len() >= start + content_length {
+                    break;
+                }
+            }
+        }
+
+        let start = body_start.ok_or_else(|| anyhow::anyhow!("missing HTTP header terminator"))?;
+        let headers = std::str::from_utf8(&request[..start - 4])?;
+        let path = headers
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .ok_or_else(|| anyhow::anyhow!("missing HTTP request path"))?
+            .to_string();
+        let body = String::from_utf8(request[start..].to_vec())?;
+        Ok((path, body))
+    }
+
+    async fn write_test_json_response(
+        stream: &mut TcpStream,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let body = serde_json::to_string(body)?;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await?;
+        stream.shutdown().await?;
+        Ok(())
+    }
+
     #[test]
     fn ollama_metadata_deadlines_bound_selected_and_catalog_probes() {
         assert!(super::OLLAMA_METADATA_REQUEST_TIMEOUT > Duration::ZERO);
-        assert!(super::OLLAMA_METADATA_REQUEST_TIMEOUT < super::OLLAMA_SELECTED_METADATA_TIMEOUT);
-        assert!(super::OLLAMA_SELECTED_METADATA_TIMEOUT < super::OLLAMA_CATALOG_METADATA_TIMEOUT);
+        assert!(super::OLLAMA_METADATA_REQUEST_TIMEOUT < super::OLLAMA_CATALOG_METADATA_TIMEOUT);
+        assert!(super::OLLAMA_MODEL_LOAD_TIMEOUT < super::OLLAMA_SELECTED_METADATA_TIMEOUT);
+        assert!(super::OLLAMA_CATALOG_METADATA_TIMEOUT < super::OLLAMA_SELECTED_METADATA_TIMEOUT);
     }
 
     #[tokio::test]
@@ -6954,6 +7062,144 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn selected_ollama_probe_preloads_cold_runner_and_uses_observed_context(
+    ) -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            let mut ps_calls = 0usize;
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().await?;
+                let (path, body) = read_test_http_request(&mut stream).await?;
+                let response = match path.as_str() {
+                    "/api/tags" => serde_json::json!({
+                        "models": [{
+                            "name": "gemma4:latest",
+                            "model": "gemma4:latest",
+                            "digest": "digest-gemma4"
+                        }]
+                    }),
+                    "/api/ps" => {
+                        ps_calls += 1;
+                        if ps_calls == 1 {
+                            serde_json::json!({ "models": [] })
+                        } else {
+                            serde_json::json!({
+                                "models": [{
+                                    "name": "gemma4:latest",
+                                    "model": "gemma4:latest",
+                                    "digest": "digest-gemma4",
+                                    "context_length": 16384
+                                }]
+                            })
+                        }
+                    }
+                    "/api/show" => serde_json::json!({
+                        "model_info": {
+                            "general.architecture": "gemma4",
+                            "gemma4.context_length": 131072
+                        },
+                        "parameters": "temperature 1",
+                        "capabilities": ["completion", "tools"]
+                    }),
+                    "/api/generate" => serde_json::json!({
+                        "done": true,
+                        "done_reason": "load"
+                    }),
+                    other => return Err(anyhow::anyhow!("unexpected test request: {other}")),
+                };
+                write_test_json_response(&mut stream, &response).await?;
+                requests.push((path, body));
+            }
+            Ok::<_, anyhow::Error>(requests)
+        });
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let models = super::fetch_ollama_models(&client, &endpoint, Some("gemma4:latest")).await?;
+        let requests = server.await??;
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].context_length, Some(131_072));
+        assert_eq!(models[0].effective_context_length, Some(16_384));
+        assert_eq!(
+            models[0].effective_context_source.as_deref(),
+            Some("runner")
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "/api/tags",
+                "/api/ps",
+                "/api/show",
+                "/api/generate",
+                "/api/ps"
+            ]
+        );
+        let generate = requests
+            .iter()
+            .find(|(path, _)| path == "/api/generate")
+            .ok_or_else(|| anyhow::anyhow!("missing preload request"))?;
+        let generate_body: serde_json::Value = serde_json::from_str(&generate.1)?;
+        assert_eq!(generate_body["model"], "gemma4:latest");
+        assert_eq!(generate_body["stream"], false);
+        assert!(generate_body.get("prompt").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ollama_catalog_probe_does_not_preload_models() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await?;
+                let (path, body) = read_test_http_request(&mut stream).await?;
+                let response = match path.as_str() {
+                    "/api/tags" => serde_json::json!({
+                        "models": [{
+                            "name": "gemma4:latest",
+                            "model": "gemma4:latest",
+                            "digest": "digest-gemma4"
+                        }]
+                    }),
+                    "/api/ps" => serde_json::json!({ "models": [] }),
+                    "/api/show" => serde_json::json!({
+                        "model_info": {
+                            "general.architecture": "gemma4",
+                            "gemma4.context_length": 131072
+                        },
+                        "capabilities": ["completion"]
+                    }),
+                    other => return Err(anyhow::anyhow!("unexpected test request: {other}")),
+                };
+                write_test_json_response(&mut stream, &response).await?;
+                requests.push((path, body));
+            }
+            Ok::<_, anyhow::Error>(requests)
+        });
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let models = super::fetch_ollama_models(&client, &endpoint, None).await?;
+        let requests = server.await??;
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/api/tags", "/api/ps", "/api/show"]
+        );
+        assert!(requests.iter().all(|(path, _)| path != "/api/generate"));
+        Ok(())
     }
 
     #[test]

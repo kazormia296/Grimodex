@@ -21,18 +21,22 @@ import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
-import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
-import { useCodexStore } from "@/features/codex/codexStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getPersistedActiveSceneId } from "@/features/editor/tabPersistence";
-import { discardRegisteredDocumentDrafts } from "@/features/editor/editorSaveRegistry";
+import {
+  discardRegisteredDocumentDrafts,
+  hasRetainedRecoveryDraftForDocument,
+} from "@/features/editor/editorSaveRegistry";
 import { runExclusiveDocumentMutation } from "@/features/editor/document/documentSaveCoordinator";
 import type { DocumentKey } from "@/features/editor/document/documentKey";
 import { awaitPendingSceneContentWrite } from "@/features/tree/pendingSceneWrites";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
-import { discardAutoSavesForDocument } from "@/hooks/useAutoSave";
+import {
+  discardAutoSavesForDocument,
+  hasPendingOrFailedAutoSaveForDocument,
+} from "@/hooks/useAutoSave";
 import * as mountApi from "./api";
 import { useExternalRootStore } from "./externalRootStore";
 import { markdownToPmJson, pmJsonToMarkdown } from "./markdownBridge";
@@ -49,6 +53,7 @@ import type { ExternalRoot, FileEvent, ScanResult, ScannedFile } from "./types";
 import { EXTERNAL_ROOTS_KEY } from "./types";
 import { cancelWriteBack, hasPendingWriteBack } from "./writeBack";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { scheduleBodyMentionScan } from "@/features/editor/persistSceneBody";
 
 const ARCHIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RENAME_WINDOW_MS = 5000;
@@ -984,6 +989,8 @@ async function handleFileChanged(
   };
   const hasLocalDraft = () =>
     useEditorSessionStore.getState().isDocumentDirty(documentKey) ||
+    hasPendingOrFailedAutoSaveForDocument(documentKey) ||
+    hasRetainedRecoveryDraftForDocument(documentKey) ||
     hasPendingWriteBack(node.id);
 
   // Fast-path obvious conflicts before acquiring the exact-document lease.
@@ -995,27 +1002,32 @@ async function handleFileChanged(
     return;
   }
 
-  const applied = await runExclusiveDocumentMutation(documentKey, async () => {
-    assertMountAuthorityCurrent(isCurrent);
-    // A local save may have been issued just before the lease and be waiting
-    // in either the document coordinator or lower per-scene DB chain. Wait
-    // for both, then re-check. Its file-backed OUT draft is the durable
-    // signal that automatic IN must yield to a conflict.
-    await awaitPendingSceneContentWrite(node.id);
-    assertMountAuthorityCurrent(isCurrent);
-    if (hasLocalDraft()) return false;
-    await applyExternalContent(
-      node.id,
-      root.id,
-      relPath,
-      content,
-      fileMtime,
-      projectId,
-      isCurrent,
-      workspaceOpenRevision,
-    );
-    return true;
-  });
+  const applied = await runExclusiveDocumentMutation(
+    documentKey,
+    async ({ markAuthoritativeMutation }) => {
+      assertMountAuthorityCurrent(isCurrent);
+      // A local save may have been issued just before the lease and be waiting
+      // in either the document coordinator or lower per-scene DB chain. Wait
+      // for both, then re-check. Its file-backed OUT draft is the durable
+      // signal that automatic IN must yield to a conflict.
+      await awaitPendingSceneContentWrite(node.id);
+      assertMountAuthorityCurrent(isCurrent);
+      if (hasLocalDraft()) return false;
+      await applyExternalContent(
+        node.id,
+        root.id,
+        relPath,
+        content,
+        fileMtime,
+        projectId,
+        isCurrent,
+        workspaceOpenRevision,
+        markAuthoritativeMutation,
+      );
+      return true;
+    },
+    { didMutate: Boolean },
+  );
   assertMountAuthorityCurrent(isCurrent);
   if (!applied) {
     assertMountAuthorityCurrent(isCurrent);
@@ -1032,11 +1044,16 @@ async function applyExternalContent(
   projectId = getCurrentProjectId(),
   isCurrent: MountAuthorityGuard = () => true,
   workspaceOpenRevision?: number,
+  onContentReplaced?: () => void,
 ): Promise<void> {
   const pmJson = JSON.stringify(markdownToPmJson(markdown));
   const charCount = countSceneBodyCharsFromJson(pmJson);
   assertMountAuthorityCurrent(isCurrent);
-  await saveSceneContent(nodeId, { content: pmJson, charCount });
+  const { contentVersion, contentUpdatedAt } = await saveSceneContent(nodeId, {
+    content: pmJson,
+    charCount,
+  });
+  onContentReplaced?.();
   assertMountAuthorityCurrent(isCurrent);
   await updateNode(nodeId, {
     sourceMtime: sourceMtime ?? new Date().toISOString(),
@@ -1086,21 +1103,14 @@ async function applyExternalContent(
   // file-backed Scene でも schema 非依存の Codex 本文検出と チャット context
   // 再構築は実行する。Mention 拡張のような schema 依存処理は file-backed
   // editor 側で外しているのでここでは扱わない (see fileBackedEditorExtensions.ts)。
-  const codexEntries = useCodexStore.getState().entries;
-  if (codexEntries.length > 0) {
-    try {
-      assertMountAuthorityCurrent(isCurrent);
-      await upsertSceneBodyMentions(nodeId, pmJson, codexEntries);
-      assertMountAuthorityCurrent(isCurrent);
-    } catch (err) {
-      if (err instanceof ExternalMountAuthoritySupersededError) throw err;
-      debugLog.error(
-        "ExternalMount",
-        "upsertSceneBodyMentions failed",
-        errorDetail(err),
-      );
-    }
-  }
+  assertMountAuthorityCurrent(isCurrent);
+  scheduleBodyMentionScan({
+    projectId,
+    sceneId: nodeId,
+    docJsonStr: pmJson,
+    sceneVersion: contentVersion,
+    sceneUpdatedAt: contentUpdatedAt,
+  });
   const chatState = useChatStore.getState();
   if (chatState.activeSceneId === nodeId) {
     assertMountAuthorityCurrent(isCurrent);

@@ -11,6 +11,7 @@ import { useChatStore } from "@/features/chat/chatStore";
 import { normalizeDomainList } from "@/features/chat/webSearchConfig";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 import { getProviderLabel } from "@/features/chat/providerLabels";
+import { applyModelWhitelistToModels } from "@/features/chat/chatModelCatalog";
 import { FusionSettingsSection } from "./FusionSettingsSection";
 import {
   AI_PROVIDERS,
@@ -1500,10 +1501,7 @@ export function AiCategory() {
                 return [];
               }
             })();
-            const inWhitelist =
-              whitelist.length > 0
-                ? models.filter((m) => whitelist.includes(m.id))
-                : models;
+            const inWhitelist = applyModelWhitelistToModels(models, whitelist);
             return MODEL_ROLES.map((role) => (
               <RoleModelRow
                 key={role}

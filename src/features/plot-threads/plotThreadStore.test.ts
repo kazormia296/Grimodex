@@ -30,6 +30,7 @@ vi.mock("./api", () => ({
     id: payload.requestId ?? "delete",
     deleted: true,
   })),
+  movePlotMarkerBundle: vi.fn(),
 }));
 
 import {
@@ -47,6 +48,7 @@ import {
   deletePlotThreadBranch,
   restorePlotThreadSnapshot,
   deletePlotThreadSnapshot,
+  movePlotMarkerBundle,
   type PlotThreadRow,
   type PlotThreadLinkRow,
   type PlotThreadBranchRow,
@@ -138,6 +140,7 @@ describe("plotThreadStore", () => {
     mock(updatePlotThreadBranch).mockReset();
     mock(restorePlotThreadSnapshot).mockReset();
     mock(deletePlotThreadSnapshot).mockReset();
+    mock(movePlotMarkerBundle).mockReset();
     mock(createPlotThread).mockImplementation(async (data) => ({
       ...row(data.id ?? "thread-created", data.sortOrder, data.projectId),
       name: data.name,
@@ -194,6 +197,21 @@ describe("plotThreadStore", () => {
         updatedAt: "2026-01-03T02:00:00.000Z",
       };
     });
+    mock(movePlotMarkerBundle).mockImplementation(async (payload) => ({
+      id: payload.requestId ?? "move",
+      marker: payload.markerAfter,
+      branches: payload.branchTransitions.flatMap(
+        (transition: { after: PlotThreadBranchRow | null }) =>
+          transition.after ? [transition.after] : [],
+      ),
+      deletedBranchIds: payload.branchTransitions.flatMap(
+        (transition: {
+          before: PlotThreadBranchRow | null;
+          after: PlotThreadBranchRow | null;
+        }) =>
+          transition.before && !transition.after ? [transition.before.id] : [],
+      ),
+    }));
     mock(restorePlotThreadSnapshot).mockImplementation(async (payload) => ({
       id: payload.requestId ?? "restore",
       thread: payload.thread ?? null,
@@ -1186,60 +1204,141 @@ describe("plotThreadStore", () => {
       ).toEqual(["br1", "br2"]);
     });
 
-    it("compound drag (updateMarker + addBranch) in runAsTransaction is a SINGLE undo", async () => {
-      // commitMarkerDrop の主経路: 別スレッドへドロップ → マーカー付け替え + 新規 branch。
+    it("compound marker drag uses one atomic API call for apply, undo, and redo", async () => {
       usePlotThreadStore.setState({
         threads: [row("t1", "a0"), row("t2", "a1")],
-        links: [linkRow("l1")], // t1 / s1
+        links: [linkRow("l1")],
         branches: [],
       });
-      mock(createPlotThreadBranch).mockResolvedValue(
-        branchRow("br1", "t1", "t2"),
-      );
-      const store = usePlotThreadStore.getState();
+      await usePlotThreadStore.getState().moveMarkerBundle({
+        markerId: "l1",
+        markerPatch: { threadId: "t2", nodeId: "s2" },
+        branchCreates: [
+          {
+            fromThreadId: "t1",
+            toThreadId: "t2",
+            atNodeId: "s2",
+            kind: "branch",
+          },
+        ],
+      });
 
-      await history().runAsTransaction(
-        {
-          kind: "plot",
-          label: "マーカー移動",
-        },
-        async (collector) => {
-          await store.updateMarker(
-            "l1",
-            { threadId: "t2", nodeId: "s2" },
-            collector,
-          );
-          await store.addBranch(
+      expect(movePlotMarkerBundle).toHaveBeenCalledTimes(1);
+      const applied = mock(movePlotMarkerBundle).mock.calls[0][0];
+      expect(applied).toMatchObject({
+        requestId: expect.any(String),
+        projectId: "p1",
+        markerBefore: { id: "l1", threadId: "t1", nodeId: "s1" },
+        markerAfter: { id: "l1", threadId: "t2", nodeId: "s2" },
+        branchTransitions: [
+          {
+            before: null,
+            after: {
+              id: expect.any(String),
+              fromThreadId: "t1",
+              toThreadId: "t2",
+              atNodeId: "s2",
+            },
+          },
+        ],
+      });
+      expect(history().past).toHaveLength(1);
+      expect(usePlotThreadStore.getState().links[0].threadId).toBe("t2");
+      expect(usePlotThreadStore.getState().branches).toHaveLength(1);
+
+      await history().undo();
+      expect(movePlotMarkerBundle).toHaveBeenCalledTimes(2);
+      expect(mock(movePlotMarkerBundle).mock.calls[1][0]).toMatchObject({
+        markerBefore: { threadId: "t2", nodeId: "s2" },
+        markerAfter: { threadId: "t1", nodeId: "s1" },
+        branchTransitions: [
+          {
+            before: { id: applied.branchTransitions[0].after.id },
+            after: null,
+          },
+        ],
+      });
+      expect(usePlotThreadStore.getState().links[0].threadId).toBe("t1");
+      expect(usePlotThreadStore.getState().links[0].nodeId).toBe("s1");
+      expect(usePlotThreadStore.getState().branches).toHaveLength(0);
+
+      await history().redo();
+      expect(movePlotMarkerBundle).toHaveBeenCalledTimes(3);
+      expect(usePlotThreadStore.getState().links[0].threadId).toBe("t2");
+      expect(usePlotThreadStore.getState().branches).toHaveLength(1);
+    });
+
+    it("does not publish partial marker state or history when the atomic API fails", async () => {
+      usePlotThreadStore.setState({
+        threads: [row("t1", "a0"), row("t2", "a1")],
+        links: [linkRow("l1")],
+        branches: [],
+      });
+      mock(movePlotMarkerBundle).mockRejectedValueOnce(
+        new Error("branch insert failed"),
+      );
+
+      await expect(
+        usePlotThreadStore.getState().moveMarkerBundle({
+          markerId: "l1",
+          markerPatch: { threadId: "t2", nodeId: "s2" },
+          branchCreates: [
             {
-              projectId: "p1",
               fromThreadId: "t1",
               toThreadId: "t2",
               atNodeId: "s2",
               kind: "branch",
             },
-            collector,
-          );
-        },
-      );
-      // 2 mutation でも履歴エントリは1つだけ。
-      expect(history().past).toHaveLength(1);
-      expect(usePlotThreadStore.getState().links[0].threadId).toBe("t2");
-      expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
-        "br1",
-      ]);
+          ],
+        }),
+      ).rejects.toThrow("branch insert failed");
+      expect(usePlotThreadStore.getState().links[0]).toMatchObject({
+        threadId: "t1",
+        nodeId: "s1",
+      });
+      expect(usePlotThreadStore.getState().branches).toEqual([]);
+      expect(history().past).toEqual([]);
+    });
 
-      // 1 回の undo で両方戻る。
-      await history().undo();
-      expect(usePlotThreadStore.getState().links[0].threadId).toBe("t1");
-      expect(usePlotThreadStore.getState().links[0].nodeId).toBe("s1");
-      expect(usePlotThreadStore.getState().branches).toHaveLength(0);
+    it("reuses the exact atomic bundle after an unknown IPC outcome", async () => {
+      usePlotThreadStore.setState({
+        threads: [row("t1", "a0"), row("t2", "a1")],
+        links: [linkRow("l1")],
+        branches: [],
+      });
+      mock(movePlotMarkerBundle)
+        .mockRejectedValueOnce(
+          unknownCreateError("plot_thread_move_marker_bundle"),
+        )
+        .mockImplementationOnce(async (payload) => ({
+          id: payload.requestId,
+          marker: payload.markerAfter,
+          branches: payload.branchTransitions.flatMap(
+            (transition: { after: PlotThreadBranchRow | null }) =>
+              transition.after ? [transition.after] : [],
+          ),
+          deletedBranchIds: [],
+        }));
+      const plan = {
+        markerId: "l1",
+        markerPatch: { threadId: "t2", nodeId: "s2" },
+        branchCreates: [
+          {
+            fromThreadId: "t1",
+            toThreadId: "t2",
+            atNodeId: "s2",
+            kind: "branch" as const,
+          },
+        ],
+      };
 
-      // 1 回の redo で両方戻る。
-      await history().redo();
-      expect(usePlotThreadStore.getState().links[0].threadId).toBe("t2");
-      expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
-        "br1",
-      ]);
+      await expect(
+        usePlotThreadStore.getState().moveMarkerBundle(plan),
+      ).rejects.toBeInstanceOf(IpcInvokeError);
+      const first = mock(movePlotMarkerBundle).mock.calls[0][0];
+      await usePlotThreadStore.getState().moveMarkerBundle(plan);
+      const retried = mock(movePlotMarkerBundle).mock.calls[1][0];
+      expect(retried).toEqual(first);
     });
 
     it("importPlotThreads bulk-imports as a SINGLE undo (dedup + phase validation)", async () => {

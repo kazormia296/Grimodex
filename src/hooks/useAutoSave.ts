@@ -58,6 +58,7 @@ const autoSaveDocumentKeyProviders = new WeakMap<
   AutoSave,
   () => DocumentKey | null
 >();
+const autoSavePendingWorkChecks = new WeakMap<AutoSave, () => boolean>();
 let autoSaveRegistryRevision = 0;
 const MAX_REGISTRY_DRAIN_ROUNDS = 50;
 
@@ -170,6 +171,41 @@ export async function flushAutoSavesForKind(
   await flushMatchingAutoSaves((key) => key?.kind === kind);
 }
 
+function autoSaveTargetsDocument(
+  autoSave: AutoSave,
+  encodedTarget: string,
+): boolean {
+  try {
+    const current = autoSaveDocumentKeyProviders.get(autoSave)?.() ?? null;
+    return !!current && encodeDocumentKey(current) === encodedTarget;
+  } catch {
+    // A destroyed component getter cannot prove its identity. The global
+    // recovery path still retains it, but a document-scoped probe must not
+    // claim that an unrelated file has a draft.
+    return false;
+  }
+}
+
+/**
+ * True only when an active or retiring AutoSave for this exact document still
+ * owns queued, in-flight, or failed persistence work. A clean mounted editor
+ * does not block external file import.
+ */
+export function hasPendingOrFailedAutoSaveForDocument(
+  documentKey: DocumentKey,
+): boolean {
+  const target = encodeDocumentKey(documentKey);
+  const instances = new Set([
+    ...activeAutoSaves.keys(),
+    ...retiringAutoSaves.keys(),
+  ]);
+  return [...instances].some(
+    (autoSave) =>
+      autoSaveTargetsDocument(autoSave, target) &&
+      (autoSavePendingWorkChecks.get(autoSave)?.() ?? true),
+  );
+}
+
 /** Explicit destructive lifecycle path used only after user confirmation. */
 export function discardAllAutoSaves(): void {
   const instances = new Set([
@@ -197,14 +233,7 @@ export function discardAutoSavesForDocument(documentKey: DocumentKey): void {
     ...retiringAutoSaves.keys(),
   ]);
   for (const autoSave of instances) {
-    let current: DocumentKey | null = null;
-    try {
-      current = autoSaveDocumentKeyProviders.get(autoSave)?.() ?? null;
-    } catch {
-      // A destroyed component getter cannot identify this instance. Leave it
-      // to global recovery rather than discarding an uncertain target.
-    }
-    if (!current || encodeDocumentKey(current) !== target) continue;
+    if (!autoSaveTargetsDocument(autoSave, target)) continue;
     autoSave.cancel();
     finalizeRetiringAutoSave(autoSave);
   }
@@ -402,7 +431,12 @@ export function createAutoSave(
     }
   }
 
-  return { schedule, cancel, pause, resume, flush, setDelay };
+  const instance = { schedule, cancel, pause, resume, flush, setDelay };
+  autoSavePendingWorkChecks.set(
+    instance,
+    () => pending || lastFailed || inFlight !== null || timerArmed,
+  );
+  return instance;
 }
 
 export function useAutoSave(

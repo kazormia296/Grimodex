@@ -29,11 +29,20 @@ vi.mock("@/lib/resolveCodexColors", () => ({
 
 // Minimal store mocks
 let mockEntries: unknown[] = [];
+let mockCompletionTargets: unknown[] = [];
 let mockEnabled = true;
 
 vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: (selector: (s: { entries: unknown[] }) => unknown) =>
-    selector({ entries: mockEntries }),
+  useCodexStore: (
+    selector: (s: {
+      entries: unknown[];
+      completionTargets: unknown[];
+    }) => unknown,
+  ) =>
+    selector({
+      entries: mockEntries,
+      completionTargets: mockCompletionTargets,
+    }),
 }));
 
 vi.mock("@/features/settings/settingsStore", () => ({
@@ -136,6 +145,7 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
         excludedAliases: [],
       },
     ];
+    mockCompletionTargets = [...mockEntries];
     mockEnabled = true;
   });
 
@@ -215,6 +225,41 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
 
     // No dependency changed → no extra rebuild
     expect(mockRebuildAndSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches the whole project even when panel entries contain only one filtered type", () => {
+    const editor = makeEditor();
+    mockEntries = [
+      {
+        id: "character-a",
+        name: "太郎",
+        type: "character",
+        aliases: [],
+        excludedAliases: [],
+      },
+    ];
+    mockCompletionTargets = [
+      ...mockEntries,
+      {
+        id: "location-b",
+        name: "東京",
+        type: "location",
+        aliases: [],
+        excludedAliases: [],
+      },
+    ];
+
+    renderHook(() => useCodexHighlight(editor));
+
+    expect(mockRebuildAndSchedule).toHaveBeenCalledWith(
+      editor,
+      [
+        expect.objectContaining({ id: "character-a" }),
+        expect.objectContaining({ id: "location-b" }),
+      ],
+      [],
+      false,
+    );
   });
 
   it("does not access a TipTap view detached before passive effects", () => {

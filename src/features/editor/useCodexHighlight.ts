@@ -40,7 +40,7 @@ export function useCodexHighlight(
     [resolvedOptions.excludeEntryIds],
   );
   const skipMatchedIds = resolvedOptions.skipMatchedIds ?? false;
-  const entries = useCodexStore((s) => s.entries);
+  const completionTargets = useCodexStore((s) => s.completionTargets);
   const setMatchTargets = useCodexHighlightStore((s) => s.setMatchTargets);
   const setMatchedEntryIds = useCodexHighlightStore(
     (s) => s.setMatchedEntryIds,
@@ -64,8 +64,8 @@ export function useCodexHighlight(
       id: string;
       name: string;
       type: string;
-      aliases: (typeof entries)[0]["aliases"];
-      excludedAliases: (typeof entries)[0]["excludedAliases"];
+      aliases: (typeof completionTargets)[0]["aliases"];
+      excludedAliases: (typeof completionTargets)[0]["excludedAliases"];
     }>
   >([]);
   const excludeRef = useRef(excludeEntryIds);
@@ -108,22 +108,23 @@ export function useCodexHighlight(
         }
       }
     });
-  }, [entries, enabled, editor, setTypeColorMap, colorTheme, theme]);
+  }, [completionTargets, enabled, editor, setTypeColorMap, colorTheme, theme]);
 
-  // Update match targets + targetsRef when codex entries change or highlight is toggled
+  // Panel entries are filter/search dependent. Matching always consumes the
+  // project-wide lightweight projection instead.
   useEffect(() => {
     const targets = enabled
-      ? entries.map((e) => ({
-          id: e.id,
-          name: e.name,
-          type: e.type,
-          aliases: e.aliases,
-          excludedAliases: e.excludedAliases,
+      ? completionTargets.map((entry) => ({
+          id: entry.id,
+          name: entry.name,
+          type: entry.type,
+          aliases: entry.aliases,
+          excludedAliases: entry.excludedAliases,
         }))
       : [];
     targetsRef.current = targets;
     setMatchTargets(targets);
-  }, [entries, setMatchTargets, enabled]);
+  }, [completionTargets, setMatchTargets, enabled]);
 
   // Keep excludeRef / skipMatchedIdsRef in sync
   useEffect(() => {
@@ -152,7 +153,7 @@ export function useCodexHighlight(
     };
   }, [editor, setMatchedEntryIds]);
 
-  // Rebuild Rust matcher + initial match when entries / highlight style /
+  // Rebuild Rust matcher + initial match when project targets / highlight style /
   // opacity / enabled が変わったとき。enabled を deps に入れないと「Codexハイライトを
   // 有効化」トグルの ON/OFF が即座に反映されない (装飾の clear/rebuild dispatch が
   // 走らない)。opacity/style も同経路で装飾の再構築を促す。
@@ -178,7 +179,7 @@ export function useCodexHighlight(
     view.dispatch(tr);
   }, [
     editor,
-    entries,
+    completionTargets,
     highlightStyle,
     highlightOpacity,
     enabled,
