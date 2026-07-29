@@ -50,6 +50,7 @@ function classifyError(
 }
 
 import {
+  buildSystemPrompt,
   countTokens,
   allocateLayerBudgets,
   ensureTokenizer,
@@ -106,11 +107,12 @@ import { planChatContext } from "./context/chatContextPlanner";
 import {
   createNonSceneTurnContextRequest,
   createSceneTurnContextRequest,
+  bindTurn,
   type CreateNonSceneTurnContextRequestInput,
   type ContextPlanningPurpose,
   type ContextScopeTarget,
   type SceneTurnContextRequest,
-} from "./context/turnContextRequest";
+} from "./context/prepareTurn";
 import { createDefaultContextPlannerDeps } from "./context/defaultContextPlannerDeps";
 import {
   collectSceneContext,
@@ -120,9 +122,8 @@ import {
 import type { ChatContextPlan } from "./context/types";
 import {
   createNonSceneContextPlannerDeps,
-  planNonSceneChatContext,
+  planNonSceneChatContext as planNonScene,
 } from "./context/nonSceneContextPlanner";
-import { renderLegacyPrompt } from "./context/legacyPromptAdapter";
 import {
   resolveChatTurnRoute,
   resolvedChatTurnRouteAuthorityKey,
@@ -169,6 +170,8 @@ import {
 import { resolveSendApiVariant } from "./aiNovelist";
 import { createAgentTextBatcher } from "./agent/agentTextBatcher";
 import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
+
+const prepareChatTurn = bindTurn(planChatContext, planNonScene);
 
 function getChatApiVariant(model: string): string | undefined {
   const { settings, models } = useAiSettingsStore.getState();
@@ -3391,13 +3394,12 @@ async function buildSceneContextPrompt(
   const sceneSourceDeps = authority.sourceDeps;
 
   markStart("buildSceneCtx.buildSystemPrompt");
-  const result = await planChatContext(
-    request,
-    createDefaultContextPlannerDeps({
+  const result = await prepareChatTurn(request, {
+    scene: createDefaultContextPlannerDeps({
       collectRequiredSceneContext: (sourceRequest) =>
         collectSceneContext(sourceRequest, sceneSourceDeps),
     }),
-  );
+  });
   markEnd("buildSceneCtx.buildSystemPrompt");
 
   if (
@@ -7538,12 +7540,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         ) {
           throw new Error("chat session project mismatch");
         }
-        const planned = await planNonSceneChatContext(
-          request,
-          createNonSceneContextPlannerDeps({
-            // refreshContextLayers initializes it before capturing the request.
+        const planned = await prepareChatTurn(request, {
+          nonScene: createNonSceneContextPlannerDeps({
             ensureTokenizer: async () => {},
-            renderPrompt: renderLegacyPrompt,
+            renderPrompt: buildSystemPrompt,
             source: {
               fetchProjectContext: fetchRequiredProjectContext,
               listCodexEntries: listCodexEntriesForContext,
@@ -7585,7 +7585,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 }),
             },
           }),
-        );
+        });
         const contextWindowUsage = estimateContextWindowUsage({
           route: refreshTurnRoute,
           contextTokens: planned.totalTokens,

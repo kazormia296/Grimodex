@@ -85,7 +85,6 @@
           "src/features/chat/chatApi.ts",
           "src/features/chat/chatStore.ts",
           "src/features/chat/context/defaultContextPlannerDeps.ts",
-          "src/features/chat/context/legacyPromptAdapter.ts",
           "src/features/chat/context/nonSceneContextPlanner.ts",
           "src/features/chat/context/sources/nonSceneContextSource.ts",
           "src/features/chat/context/sources/sceneContextSource.ts",
@@ -470,10 +469,6 @@
           },
           {
             "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/context/legacyPromptAdapter.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
             "to": "src/features/chat/context/nonSceneContextPlanner.ts"
           },
           {
@@ -526,14 +521,6 @@
           },
           {
             "from": "src/features/chat/context/defaultContextPlannerDeps.ts",
-            "to": "src/features/chat/context/legacyPromptAdapter.ts"
-          },
-          {
-            "from": "src/features/chat/context/defaultContextPlannerDeps.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/context/legacyPromptAdapter.ts",
             "to": "src/features/chat/contextBuilder.ts"
           },
           {
@@ -1056,11 +1043,11 @@
     "cross-feature-store-import": 48,
     "cross-feature-store-mutation": 0,
     "dynamic-store-import": 0,
-    "cyclic-modules": 81,
-    "largest-scc": 81,
-    "scc-internal-edges": 226,
+    "cyclic-modules": 80,
+    "largest-scc": 80,
+    "scc-internal-edges": 223,
     "chat-store-lines": 8260,
-    "chat-store-runtime-imports": 91
+    "chat-store-runtime-imports": 90
   },
   "waivers": []
 }
