@@ -321,6 +321,12 @@ export function clampZoomFactor(factor: unknown): number {
 export interface NapiBackendLike {
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
+  lintIgnoreList?(projectId: string): Promise<string>;
+  lintIgnoreListScene?(projectId: string, sceneId: string): Promise<string>;
+  lintIgnoreCreate?(payload: unknown): Promise<string>;
+  lintIgnoreDelete?(projectId: string, id: string): Promise<void>;
+  lintIgnoreCopy?(payload: unknown): Promise<string>;
+  lintIgnoreMove?(payload: unknown): Promise<string>;
   saveSceneBodyBundle?(payload: unknown): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
@@ -769,6 +775,55 @@ function requireNonEmptyString(
     );
   }
   return value;
+}
+
+function requireLintIgnoreCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "lint_ignore_create";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["id", "projectId", "sceneId", "ruleId"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  for (const key of ["textSnippet", "contextBefore", "contextAfter"]) {
+    requireString(payload, key, command);
+  }
+  const note = requirePresent(payload, "note", command);
+  if (note !== null && typeof note !== "string") {
+    throw new Error(
+      `invalid args \`note\` for command \`${command}\`: expected a string or null`,
+    );
+  }
+  const createdAt = requireNumber(payload, "createdAt", command);
+  if (!Number.isSafeInteger(createdAt)) {
+    throw new Error(
+      `invalid args \`createdAt\` for command \`${command}\`: expected a safe integer`,
+    );
+  }
+  return payload;
+}
+
+function requireLintIgnoreCopyPayload(args: CommandArgs): CommandArgs {
+  const command = "lint_ignore_copy";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["projectId", "fromSceneId", "toSceneId"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  return payload;
+}
+
+function requireLintIgnoreMovePayload(args: CommandArgs): CommandArgs {
+  const command = "lint_ignore_move";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "toSceneId", command);
+  const fromSceneIds = requireArray(payload, "fromSceneIds", command);
+  fromSceneIds.forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`fromSceneIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  return payload;
 }
 
 function requirePlotSnapshotRecord(
@@ -1784,6 +1839,72 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.dbExecuteBatch(
           requirePresent(a, "statements", "db_execute_batch"),
         ),
+      ),
+  },
+  lint_ignore_list: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreList,
+          "lintIgnoreList",
+        )(requireNonEmptyString(a, "projectId", "lint_ignore_list")),
+      ),
+  },
+  lint_ignore_list_scene: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreListScene,
+          "lintIgnoreListScene",
+        )(
+          requireNonEmptyString(a, "projectId", "lint_ignore_list_scene"),
+          requireNonEmptyString(a, "sceneId", "lint_ignore_list_scene"),
+        ),
+      ),
+  },
+  lint_ignore_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreCreate,
+          "lintIgnoreCreate",
+        )(requireLintIgnoreCreatePayload(a)),
+      ),
+  },
+  lint_ignore_delete: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.lintIgnoreDelete,
+        "lintIgnoreDelete",
+      )(
+        requireNonEmptyString(a, "projectId", "lint_ignore_delete"),
+        requireNonEmptyString(a, "id", "lint_ignore_delete"),
+      );
+      return null;
+    },
+  },
+  lint_ignore_copy: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreCopy,
+          "lintIgnoreCopy",
+        )(requireLintIgnoreCopyPayload(a)),
+      ),
+  },
+  lint_ignore_move: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreMove,
+          "lintIgnoreMove",
+        )(requireLintIgnoreMovePayload(a)),
       ),
   },
   save_scene_body_bundle: {

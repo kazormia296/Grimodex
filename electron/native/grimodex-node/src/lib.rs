@@ -45,6 +45,7 @@ use grimodex_db::ime_export::{
     resolve_options_from_preferences, set_active_project, ImeExportOptions, ImeExportRequestGate,
     ImeExportRequestToken, ImeIntegrationMode,
 };
+use grimodex_db::lint_ignores::{self, CopyPayload, CreatePayload, MovePayload};
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
     self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
@@ -486,6 +487,82 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let rows = db.execute_batch_tx_renderer(&statements)?;
                 Ok(serde_json::to_string(&QueryResult { rows })?)
+            })
+        })
+        .await
+    }
+
+    /// Project-scoped lint diagnostic ignore-list commands. The renderer
+    /// receives a domain DTO instead of owning SQL strings or generic DB
+    /// parameters; all scene ownership checks happen in grimodex-db.
+    #[napi]
+    pub async fn lint_ignore_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::list_for_project(db, project_id)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_list_scene(
+        &self,
+        project_id: String,
+        scene_id: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::list_for_scene(
+                    db, project_id, scene_id,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::create(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_delete(&self, project_id: String, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| lint_ignores::delete(db, project_id, id))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_copy(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CopyPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::copy(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_move(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: MovePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::move_to_scene(db, payload)?)
             })
         })
         .await

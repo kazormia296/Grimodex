@@ -126,7 +126,11 @@ function toWire(blocks: OffsetLintBlock[]): WireLintBlock[] {
  *
  * Also runs once on mount / scene switch, bypassing the debounce.
  */
-export function useLinter(editor: Editor | null, sceneId: string | null): void {
+export function useLinter(
+  editor: Editor | null,
+  sceneId: string | null,
+  projectId: string,
+): void {
   const diagnostics = useLintStore((s) => s.diagnostics);
   const runLint = useLintStore((s) => s.runLint);
   const setCurrentScene = useLintStore((s) => s.setCurrentScene);
@@ -235,7 +239,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     // resolves we re-apply the filter against the current rawDiagnostics.
     void useLintIgnoreStore
       .getState()
-      .loadScene(sceneId)
+      .loadScene(sceneId, projectId)
       .then(() => {
         useLintStore.getState().reapplyIgnores(sceneId);
       })
@@ -368,5 +372,5 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
       unsubscribeCodexInput();
       cancelEditorAnalysisTask(schedulerKey);
     };
-  }, [editor, sceneId, runLint, schedulerKey, setCurrentScene]);
+  }, [editor, sceneId, projectId, runLint, schedulerKey, setCurrentScene]);
 }

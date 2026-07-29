@@ -423,6 +423,7 @@ pub mod foreshadow;
 mod fts;
 mod idempotency;
 pub mod ime_export;
+pub mod lint_ignores;
 mod integrity;
 mod migrate;
 pub mod plot_threads;

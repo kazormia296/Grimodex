@@ -54,6 +54,13 @@ export declare class Backend {
    * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
    */
   dbExecuteBatch(statements: any): Promise<string>
+  /** Project-scoped typed persistence for lint diagnostic ignore entries. */
+  lintIgnoreList(projectId: string): Promise<string>
+  lintIgnoreListScene(projectId: string, sceneId: string): Promise<string>
+  lintIgnoreCreate(payload: any): Promise<string>
+  lintIgnoreDelete(projectId: string, id: string): Promise<void>
+  lintIgnoreCopy(payload: any): Promise<string>
+  lintIgnoreMove(payload: any): Promise<string>
   /**
    * Scene content and every document-derived sidecar are committed in one
    * SQLite transaction. The renderer performs one PM traversal and passes

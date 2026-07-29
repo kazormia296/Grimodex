@@ -1185,6 +1185,152 @@ export async function createBrowserMock(
     return { rows: result.rows };
   }
 
+  function lintIgnoreRowsToWire(
+    rows: Record<string, unknown>[],
+  ): Array<Record<string, unknown>> {
+    return rows.map((row) => ({
+      id: String(row.id),
+      ruleId: String(row.rule_id),
+      sceneId: String(row.scene_id),
+      textSnippet: String(row.text_snippet),
+      contextBefore: String(row.context_before),
+      contextAfter: String(row.context_after),
+      note: row.note == null ? null : String(row.note),
+      createdAt: Number(row.created_at ?? 0),
+      sceneTitle: row.scene_title == null ? null : String(row.scene_title),
+    }));
+  }
+
+  function handleLintIgnoreList(args: Record<string, unknown>) {
+    const result = handleDbExecute({
+      sql: `SELECT l.id, l.rule_id, l.scene_id, l.text_snippet,
+                   l.context_before, l.context_after, l.note, l.created_at,
+                   t.title AS scene_title
+              FROM lint_ignored_diagnostics l
+              LEFT JOIN tree_nodes t ON t.id = l.scene_id
+             WHERE t.project_id = ? OR t.project_id IS NULL
+             ORDER BY t.title IS NULL, t.title, l.created_at DESC`,
+      params: [String(args.projectId)],
+      method: "all",
+    });
+    return lintIgnoreRowsToWire(result.rows);
+  }
+
+  function handleLintIgnoreListScene(args: Record<string, unknown>) {
+    const result = handleDbExecute({
+      sql: `SELECT l.id, l.rule_id, l.scene_id, l.text_snippet,
+                   l.context_before, l.context_after, l.note, l.created_at,
+                   t.title AS scene_title
+             FROM lint_ignored_diagnostics l
+              LEFT JOIN tree_nodes t ON t.id = l.scene_id
+             WHERE l.scene_id = ? AND t.project_id = ?
+             ORDER BY l.created_at DESC`,
+      params: [String(args.sceneId), String(args.projectId)],
+      method: "all",
+    });
+    return lintIgnoreRowsToWire(result.rows);
+  }
+
+  function handleLintIgnoreCreate(args: Record<string, unknown>) {
+    const payload = args.payload as Record<string, unknown>;
+    const scene = handleDbExecute({
+      sql: `SELECT id FROM tree_nodes
+             WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+      params: [String(payload.sceneId), String(payload.projectId)],
+      method: "all",
+    });
+    if (scene.rows.length === 0) {
+      throw new Error("lint ignore scene is not in the requested project");
+    }
+    handleDbExecute({
+      sql: `INSERT INTO lint_ignored_diagnostics
+             (id, rule_id, scene_id, text_snippet, context_before, context_after, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        String(payload.id),
+        String(payload.ruleId),
+        String(payload.sceneId),
+        String(payload.textSnippet),
+        String(payload.contextBefore),
+        String(payload.contextAfter),
+        payload.note == null ? null : String(payload.note),
+        Number(payload.createdAt),
+      ],
+      method: "run",
+    });
+    const result = handleDbExecute({
+      sql: `SELECT l.id, l.rule_id, l.scene_id, l.text_snippet,
+                   l.context_before, l.context_after, l.note, l.created_at,
+                   t.title AS scene_title
+              FROM lint_ignored_diagnostics l
+              LEFT JOIN tree_nodes t ON t.id = l.scene_id
+             WHERE l.id = ?`,
+      params: [String(payload.id)],
+      method: "get",
+    });
+    return lintIgnoreRowsToWire(result.rows)[0];
+  }
+
+  function handleLintIgnoreDelete(args: Record<string, unknown>) {
+    handleDbExecute({
+      sql: `DELETE FROM lint_ignored_diagnostics
+             WHERE id = ?
+               AND (EXISTS (
+                      SELECT 1 FROM tree_nodes t
+                       WHERE t.id = lint_ignored_diagnostics.scene_id
+                         AND t.project_id = ?
+                    ) OR NOT EXISTS (
+                      SELECT 1 FROM tree_nodes t
+                       WHERE t.id = lint_ignored_diagnostics.scene_id
+                    ))`,
+      params: [String(args.id), String(args.projectId)],
+      method: "run",
+    });
+    return null;
+  }
+
+  function handleLintIgnoreCopy(args: Record<string, unknown>) {
+    const payload = args.payload as Record<string, unknown>;
+    const source = handleLintIgnoreListScene({
+      sceneId: payload.fromSceneId,
+      projectId: payload.projectId,
+    });
+    for (const entry of source) {
+      handleLintIgnoreCreate({
+        payload: {
+          id: crypto.randomUUID(),
+          projectId: payload.projectId,
+          sceneId: payload.toSceneId,
+          ruleId: entry.ruleId,
+          textSnippet: entry.textSnippet,
+          contextBefore: entry.contextBefore,
+          contextAfter: entry.contextAfter,
+          note: entry.note,
+          createdAt: entry.createdAt,
+        },
+      });
+    }
+    return handleLintIgnoreListScene({
+      sceneId: payload.toSceneId,
+      projectId: payload.projectId,
+    });
+  }
+
+  function handleLintIgnoreMove(args: Record<string, unknown>) {
+    const payload = args.payload as Record<string, unknown>;
+    for (const sceneId of payload.fromSceneIds as string[]) {
+      handleDbExecute({
+        sql: "UPDATE lint_ignored_diagnostics SET scene_id = ? WHERE scene_id = ?",
+        params: [String(payload.toSceneId), sceneId],
+        method: "run",
+      });
+    }
+    return handleLintIgnoreListScene({
+      sceneId: payload.toSceneId,
+      projectId: payload.projectId,
+    });
+  }
+
   function handleFtsSearch(args: Record<string, unknown>): Array<{
     sourceType: "scene" | "codex" | "snippet";
     id: string;
@@ -3036,6 +3182,18 @@ export async function createBrowserMock(
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "lint_ignore_list":
+        return handleLintIgnoreList(args) as T;
+      case "lint_ignore_list_scene":
+        return handleLintIgnoreListScene(args) as T;
+      case "lint_ignore_create":
+        return handleLintIgnoreCreate(args) as T;
+      case "lint_ignore_delete":
+        return handleLintIgnoreDelete(args) as T;
+      case "lint_ignore_copy":
+        return handleLintIgnoreCopy(args) as T;
+      case "lint_ignore_move":
+        return handleLintIgnoreMove(args) as T;
       case "plot_thread_create":
         return (await handlePlotThreadCreate(args)) as T;
       case "plot_thread_link_create":

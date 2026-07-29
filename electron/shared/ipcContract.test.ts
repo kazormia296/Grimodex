@@ -817,6 +817,65 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({ ok: true, value: { rows: [] } });
   });
 
+  it("lint_ignore_create: typed payload を位置引数のJSONへ写像する", async () => {
+    const lintIgnoreCreate = vi
+      .fn()
+      .mockResolvedValue(
+        '{"id":"ignore-1","ruleId":"style/repetition","sceneId":"scene-1","textSnippet":"x","contextBefore":"","contextAfter":"","note":null,"createdAt":1,"sceneTitle":"Scene"}',
+      );
+    const { backend } = fakeBackend({
+      lintIgnoreCreate: lintIgnoreCreate as never,
+    });
+    const payload = {
+      id: "ignore-1",
+      projectId: "project-1",
+      sceneId: "scene-1",
+      ruleId: "style/repetition",
+      textSnippet: "x",
+      contextBefore: "",
+      contextAfter: "",
+      note: null,
+      createdAt: 1,
+    };
+    const env = await dispatchInvoke(
+      "lint_ignore_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(lintIgnoreCreate).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        id: "ignore-1",
+        ruleId: "style/repetition",
+        sceneId: "scene-1",
+        textSnippet: "x",
+        contextBefore: "",
+        contextAfter: "",
+        note: null,
+        createdAt: 1,
+        sceneTitle: "Scene",
+      },
+    });
+  });
+
+  it("lint_ignore_create: 必須フィールド不正時はbackendを呼ばない", async () => {
+    const lintIgnoreCreate = vi.fn();
+    const { backend } = fakeBackend({
+      lintIgnoreCreate: lintIgnoreCreate as never,
+    });
+    const env = await dispatchInvoke(
+      "lint_ignore_create",
+      { payload: { id: "", projectId: "p1" } },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(lintIgnoreCreate).not.toHaveBeenCalled();
+    if (!env.ok) {
+      expect(env.error).toContain("invalid args `id`");
+    }
+  });
+
   it("save_scene_body_bundle: typed snapshot を1 payloadで渡して結果をparseする", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -1486,6 +1545,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "ime_export_set_active_project",
       "import_web_editor_workspace",
       "integrity_check",
+      "lint_ignore_copy",
+      "lint_ignore_create",
+      "lint_ignore_delete",
+      "lint_ignore_list",
+      "lint_ignore_list_scene",
+      "lint_ignore_move",
       "lint_text",
       "list_ai_models",
       "list_annotations_for_project",
