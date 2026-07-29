@@ -120,6 +120,55 @@ The initial Ryzen 5 3600 Gate 1 outcome is recorded in
 Target latency band; this permits quality evaluation but does not select a
 production model.
 
+### Gate 2 fixed-candidate quality evaluation
+
+Gate 2 freezes one production-generated candidate pool per query before any
+reranker runs. The committed Japanese and English JSONL records carry the
+chunk text, dense score/rank, sparse rank, current RRF rank, scene identity,
+and relevance label for exactly 30 candidates. Rerankers may reorder these
+IDs, but cannot retrieve again or replace the current dense/sparse admission
+thresholds.
+
+Before quality evaluation, the direct quantized tokenizer/ONNX path is checked
+against the pinned official FP32 ONNX and Hugging Face tokenizer on 12 fixed
+positive/negative pairs. Token IDs, masks, special tokens, truncation, score
+direction, and ranking agreement must pass; MiniLM also verifies
+`token_type_ids`.
+
+Bootstrap the separately pinned reference artifacts:
+
+```bash
+make bootstrap-reranker-references
+```
+
+Run parity and Gate 2 for a selected model. Choose the matching Japanese or
+English candidate and parity files:
+
+```bash
+make reranker-parity \
+  PHASE0B_MODEL=ja_xsmall \
+  PHASE0B_GATE2_CANDIDATES=data/public/gate2/candidates-ja.jsonl \
+  PHASE0B_GATE2_PAIRS=data/public/gate2/parity-pairs-ja.jsonl \
+  PHASE0B_GATE2_THREADS=4
+
+make reranker-gate2 \
+  PHASE0B_MODEL=ja_xsmall \
+  PHASE0B_GATE2_CANDIDATES=data/public/gate2/candidates-ja.jsonl \
+  PHASE0B_GATE2_THREADS=4
+```
+
+The runner reports chunk MRR/NDCG@3, scene MRR/Recall@1/Recall@3, final
+injection behavior, paired bootstrap intervals, query improvements and
+regressions, named slices, hard negatives, candidate-depth effects, and 30
+real-corpus latency samples. Cross-encoder logits are ordering signals only;
+they are never compared with the current cosine/BGE thresholds.
+
+The completed Ryzen 5 3600 result and exact reproduction commands are recorded
+in [`PHASE0B_GATE2_RESULTS.md`](./PHASE0B_GATE2_RESULTS.md). Japanese xsmall
+top-30 and English MiniLM-L4 top-30 pass the Gate 2 promotion rule for a later
+shadow integration; Japanese xsmall top-12 fails the final-injection safety
+guard. No product path changes in this experiment.
+
 ## Fixed supply-chain inputs
 
 - Model: `LiquidAI/LFM2.5-Encoder-230M`

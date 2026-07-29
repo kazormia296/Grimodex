@@ -36,6 +36,21 @@ executes ONNX Runtime's CPU provider. PyTorch and Transformers remain installed
 for the original LFM harness but are not loaded by the Phase 0b warm or cold
 scoring path.
 
+### Gate 2 parity correction
+
+The later official-reference parity check found that this historical Gate 1
+Japanese path let `tokenizers` use its default padding identity (`id=0`)
+instead of the model configuration's `<pad>` identity (`id=3`). The artifact,
+sequence shapes, attention masks, revisions, and Gate 1 timing decision were
+not changed, but the historical Japanese logits are not correctness evidence.
+
+The direct tokenizer now reads `pad_token_id` and `pad_token` from the pinned
+model files. With that correction, both Japanese models pass exact
+tokenization parity and remain in the Target band on the formal Gate 2
+real-corpus workloads. The large Gate 1 speed margin and the corrected Gate 2
+measurements make a repeat of the synthetic Gate 1 timing sweep unnecessary
+for the current decision.
+
 | Key            | Revision                                   | Artifact SHA-256                                                   | Manifest SHA-256                                                   |
 | -------------- | ------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
 | `ja_tiny`      | `ba95175a4d53058816b971f31929f10c5cad8560` | `649a18583e21ad532e420a4ded4c9c4ff7ce882aa84af2bf2180ec4d4f679e38` | `97697d446bb39392e15d17a5c7d6900783dd1ccbfa804219febd2454b5857cae` |
@@ -200,7 +215,8 @@ hybrid baselines. A cascade should be considered only if quality evidence
 shows that it preserves Recall while offering a material product-level
 benefit.
 
-The next authorized evidence step is retrieval quality:
+The authorized retrieval-quality step was completed in
+[`PHASE0B_GATE2_RESULTS.md`](./PHASE0B_GATE2_RESULTS.md):
 
 1. Japanese: dense, hybrid, hybrid + tiny, and hybrid + xsmall.
 2. English: dense, hybrid, and hybrid + MiniLM-L4.
