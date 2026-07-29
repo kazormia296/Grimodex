@@ -966,6 +966,26 @@ test("smoke measures the seeded long scene before running the independent persis
   );
   assert.match(chronicleMeasureSource, /data-chronicle-total-event-count/);
   assert.match(chronicleMeasureSource, /data-chronicle-rendered-marker-count/);
+  assert.match(chronicleMeasureSource, /data-background-renderer/);
+  assert.match(chronicleMeasureSource, /data-background-fallback-reason/);
+  assert.match(chronicleMeasureSource, /data-zen-shader-renderer/);
+  assert.match(chronicleMeasureSource, /data-zen-glass-compositor/);
+  assert.match(chronicleMeasureSource, /data-ambient-glass-surface/);
+  assert.match(
+    chronicleMeasureSource,
+    /graphicsTopology\.ambientBackgroundRenderer !== "fallback"\s*\|\|\s*\(\s*!graphicsTopology\.sharedCompositorPresent\s*&&\s*graphicsTopology\.chronicleHostBackdropFilter === "none"\s*\)/,
+    "Chronicle fallback must not retain the shared compositor or host backdrop filter",
+  );
+  assert.match(
+    chronicleMeasureSource,
+    /targetVerified:\s+fallbackTopologyVerified\s*&&/,
+    "Chronicle fallback topology must flow through the existing runtime budget gate",
+  );
+  assert.match(
+    chronicleMeasureSource,
+    /graphicsTopology:\s*\{\s*\.\.\.graphicsTopology,\s*fallbackTopologyVerified,\s*\}/,
+    "Chronicle artifacts must retain the observed graphics topology",
+  );
   assert.match(
     chronicleMeasureSource,
     /renderedMarkers < totalEvents/,

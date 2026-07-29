@@ -121,7 +121,11 @@ function mount(width = 900) {
   return { ...r, host };
 }
 
-function mountInWorkspace(backgroundEnabled: boolean, glassEnabled: boolean) {
+function mountInWorkspace(
+  backgroundEnabled: boolean,
+  glassEnabled: boolean,
+  backgroundRenderer: "webgl" | "fallback" = "webgl",
+) {
   const width = 900;
   const view = { pxPerDay: 1.4, viewStartDay: -10 };
   const trackW = width - densitySpacing("standard").gutterX;
@@ -154,6 +158,7 @@ function mountInWorkspace(backgroundEnabled: boolean, glassEnabled: boolean) {
         <div
           data-editor-ambient
           data-background-enabled={backgroundEnabled ? "true" : "false"}
+          data-background-renderer={backgroundRenderer}
         />
         <div
           data-workspace-glass-root
@@ -503,4 +508,15 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
       expect(getComputedStyle(host).backdropFilter).toBe("none");
     },
   );
+
+  it("WebGL fallback 時は Chronicle の外側ホストに半透明の塗りを戻して blur を外す", async () => {
+    const { container } = mountInWorkspace(true, true, "fallback");
+    await settleBrowserLayout();
+    const host = container.querySelector<HTMLElement>(
+      '[data-ambient-glass-surface="panel"]',
+    )!;
+
+    expect(getComputedStyle(host).backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(getComputedStyle(host).backdropFilter).toBe("none");
+  });
 });

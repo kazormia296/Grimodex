@@ -1050,6 +1050,30 @@ async function measureChroniclePan(page, memorySampler) {
   );
   const projection = page.getByTestId("chronicle-viewport-projection");
   await projection.waitFor({ state: "attached", timeout: 10_000 });
+  const graphicsTopology = await track.evaluate((element) => {
+    const ambient = document.querySelector("[data-editor-ambient]");
+    const shaderSurface = ambient?.querySelector("[data-zen-shader-renderer]");
+    const chronicleHost = element.closest("[data-ambient-glass-surface]");
+    return {
+      ambientBackgroundRenderer:
+        ambient?.getAttribute("data-background-renderer") ?? null,
+      ambientFallbackReason:
+        ambient?.getAttribute("data-background-fallback-reason") ?? null,
+      shaderRendererStatus:
+        shaderSurface?.getAttribute("data-zen-shader-renderer") ?? null,
+      sharedCompositorPresent:
+        ambient?.querySelector("[data-zen-glass-compositor]") instanceof
+        HTMLElement,
+      chronicleHostBackdropFilter:
+        chronicleHost instanceof HTMLElement
+          ? getComputedStyle(chronicleHost).backdropFilter
+          : null,
+    };
+  });
+  const fallbackTopologyVerified =
+    graphicsTopology.ambientBackgroundRenderer !== "fallback" ||
+    (!graphicsTopology.sharedCompositorPresent &&
+      graphicsTopology.chronicleHostBackdropFilter === "none");
   const box = await track.boundingBox();
   if (!box) throw new Error("Chronicle pan target has no bounding box");
   await ensureBenchmarkPageForeground(page);
@@ -1170,6 +1194,7 @@ async function measureChroniclePan(page, memorySampler) {
     );
   performanceMetrics.interactions.chroniclePan = {
     targetVerified:
+      fallbackTopologyVerified &&
       previewTransform !== "" &&
       frameMetrics !== null &&
       markerProjection.totalEventCount >= PERF_CHRONICLE_EVENT_COUNT &&
@@ -1199,6 +1224,10 @@ async function measureChroniclePan(page, memorySampler) {
     finalRenderWindowTop,
     initialScrollTop,
     finalScrollTop,
+    graphicsTopology: {
+      ...graphicsTopology,
+      fallbackTopologyVerified,
+    },
     frameCount: frameMetrics?.frameCount ?? null,
     workFrameCount: frameMetrics?.workFrameCount ?? null,
     workCoverage: frameMetrics?.workCoverage ?? null,

@@ -586,6 +586,53 @@ button[role="switch"][aria-checked="true"] {
   background: var(--background);
 }
 
+/* WebGL can be blocklisted on remote desktops, VMs, and software-only X11
+   sessions. Keep the configured background as a static gradient there, but do
+   not leave full-surface backdrop filters active after Paper Shaders declines
+   the context. A translucent solid veil preserves the Glass hierarchy without
+   making every native scroll repaint resample a blurred backdrop. */
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-editor-fluid-glass="true"] {
+  background-color: color-mix(in oklch, var(--background) 84%, transparent);
+  background-image: none;
+}
+
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-editor-fluid-glass="true"]
+  > [data-editor-fluid-glass-filter],
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-editor-fluid-glass="true"]
+  .glass-editor-body,
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-editor-fluid-glass="true"]
+  .glass-editor-chrome,
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  .editor-background-glass {
+  background-color: color-mix(in oklch, var(--background) 86%, transparent);
+  background-image: none;
+  backdrop-filter: none;
+}
+
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-workspace-glass-root][data-workspace-fluid-glass="true"]
+  [data-ambient-glass-surface] {
+  background-color: color-mix(in oklch, var(--card) 84%, transparent);
+  background-image: none;
+  backdrop-filter: none;
+}
+
 /* Animation wrappers must not clip card shadows into inter-panel gaps. */
 .app-shell [data-animated-region] {
   overflow: visible;
