@@ -8,12 +8,6 @@ import {
   beginWorkspaceSwitch,
   endWorkspaceSwitch,
 } from "@/features/timelapse/recorder";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
-import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
-import { loadAndSyncChronicleSettings } from "@/features/chronicle/chronicleStore";
-import { useMapStore } from "@/features/map/mapStore";
-import { useGridStore } from "@/features/grid/gridStore";
 import {
   useProjectStore,
   getCurrentProjectId,
@@ -37,6 +31,7 @@ import {
   acquireWorkspaceProjectLoadLease,
   type WorkspaceProjectLoadLease,
 } from "@/features/project/projectLoadGate";
+import { hydrateWorkspaceStores } from "@/application/workspace/workspaceHydration";
 
 export type {
   GlobalSettings,
@@ -266,49 +261,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       await useProjectStore.getState().initCurrentProject();
       // Re-read global settings after open_workspace updated them
       const settings = await globalSettingsRepository.read();
-      // Migrate app_settings → userPreferences + project_settings (runs once per workspace)
-      const {
-        migrateAppSettingsToScopedStores,
-        migrateModelRoleKeys,
-        removeRetiredDisplaySettings,
-        seedProjectSettingsFromDefaults,
-      } = await import("@/features/settings/migration");
-      await migrateAppSettingsToScopedStores();
-      await removeRetiredDisplaySettings();
-      await migrateModelRoleKeys();
-      // Seed project defaults for brand-new workspaces
-      if (!result.isExisting) {
-        await seedProjectSettingsFromDefaults();
-      }
-      // Load persisted editor settings and apply to runtime stores
-      await useSettingsStore.getState().loadAll(getCurrentProjectId());
-      useCursorSettingsStore.getState().initFromSettings();
-      {
-        const { useCodexHighlightStore } =
-          await import("@/features/editor/codexHighlightStore");
-        useCodexHighlightStore.getState().initFromSettings();
-        // 本文レイヤーの表示トグル (帰属 / 校閲) も設定から復元する
-        const { useAttributionStore } =
-          await import("@/features/attribution/attributionStore");
-        useAttributionStore.getState().initFromSettings();
-        const { useAnnotationStore } =
-          await import("@/features/post-effect/annotationStore");
-        useAnnotationStore.getState().initFromSettings();
-      }
-      // Lint config depends on settings being loaded first.
-      const { useLintConfigStore } =
-        await import("@/features/lint/lintConfigStore");
-      useLintConfigStore.getState().load();
-      if (settings.timeline) {
-        loadAndSyncTimelineSettings(settings.timeline);
-      }
-      if (settings.chronicle) {
-        loadAndSyncChronicleSettings(settings.chronicle);
-      }
-      useMapStore.getState().loadFromSettings(settings);
-      useGridStore.getState().loadFromSettings(settings);
-      const { useMatrixStore } = await import("@/features/matrix/matrixStore");
-      useMatrixStore.getState().loadFromSettings(settings);
+      await hydrateWorkspaceStores({
+        projectId: getCurrentProjectId(),
+        settings,
+        isExisting: result.isExisting,
+      });
       const nextOpenRevision = get().workspaceOpenRevision + 1;
       if (!projectLoadLease) {
         throw new Error("Workspace Project-load lease was released too early");

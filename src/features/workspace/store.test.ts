@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "@/application/composition/runtimeStoreComposition";
 import { useWorkspaceStore } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 import {

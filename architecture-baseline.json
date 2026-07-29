@@ -49,31 +49,10 @@
       "src/features/tree/treeStore.ts:tree->settings:@/features/settings/settingsStore",
       "src/features/tree/treeStore.ts:tree->trash-bin:@/features/trash-bin/trashBinStore",
       "src/features/vivliostyle/runStore.ts:vivliostyle->project:@/features/project/projectStore",
-      "src/features/workspace/store.ts:workspace->attribution:@/features/attribution/attributionStore",
-      "src/features/workspace/store.ts:workspace->chronicle:@/features/chronicle/chronicleStore",
-      "src/features/workspace/store.ts:workspace->editor:@/features/editor/codexHighlightStore",
-      "src/features/workspace/store.ts:workspace->editor:@/features/editor/cursorSettingsStore",
-      "src/features/workspace/store.ts:workspace->grid:@/features/grid/gridStore",
-      "src/features/workspace/store.ts:workspace->lint:@/features/lint/lintConfigStore",
-      "src/features/workspace/store.ts:workspace->map:@/features/map/mapStore",
-      "src/features/workspace/store.ts:workspace->matrix:@/features/matrix/matrixStore",
-      "src/features/workspace/store.ts:workspace->post-effect:@/features/post-effect/annotationStore",
-      "src/features/workspace/store.ts:workspace->project:@/features/project/projectStore",
-      "src/features/workspace/store.ts:workspace->settings:@/features/settings/settingsStore",
-      "src/features/workspace/store.ts:workspace->timeline:@/features/timeline/timelineStore"
+      "src/features/workspace/store.ts:workspace->project:@/features/project/projectStore"
     ],
     "cross-feature-store-mutation": [],
-    "dynamic-store-import": [
-      "src/features/concurrency/externalWriteFeed.ts:@/features/chronicle/chronicleStore",
-      "src/features/concurrency/externalWriteFeed.ts:@/features/foreshadow/foreshadowStore",
-      "src/features/concurrency/externalWriteFeed.ts:@/features/labels/labelStore",
-      "src/features/concurrency/externalWriteFeed.ts:@/features/plot-threads/plotThreadStore",
-      "src/features/workspace/store.ts:@/features/attribution/attributionStore",
-      "src/features/workspace/store.ts:@/features/editor/codexHighlightStore",
-      "src/features/workspace/store.ts:@/features/lint/lintConfigStore",
-      "src/features/workspace/store.ts:@/features/matrix/matrixStore",
-      "src/features/workspace/store.ts:@/features/post-effect/annotationStore"
-    ],
+    "dynamic-store-import": [],
     "application-component-import": [],
     "single-scene-load-in-array-loop": [],
     "legacy-ipc-error-text-check": []
@@ -655,14 +634,6 @@
           },
           {
             "from": "src/features/concurrency/externalWriteFeed.ts",
-            "to": "src/features/foreshadow/foreshadowStore.ts"
-          },
-          {
-            "from": "src/features/concurrency/externalWriteFeed.ts",
-            "to": "src/features/plot-threads/plotThreadStore.ts"
-          },
-          {
-            "from": "src/features/concurrency/externalWriteFeed.ts",
             "to": "src/features/snippets/snippetStore.ts"
           },
           {
@@ -1043,10 +1014,6 @@
           },
           {
             "from": "src/features/workspace/store.ts",
-            "to": "src/features/grid/gridStore.ts"
-          },
-          {
-            "from": "src/features/workspace/store.ts",
             "to": "src/features/project/projectStore.ts"
           },
           {
@@ -1086,12 +1053,12 @@
     ]
   },
   "metrics": {
-    "cross-feature-store-import": 59,
+    "cross-feature-store-import": 48,
     "cross-feature-store-mutation": 0,
-    "dynamic-store-import": 9,
+    "dynamic-store-import": 0,
     "cyclic-modules": 81,
     "largest-scc": 81,
-    "scc-internal-edges": 229
+    "scc-internal-edges": 226
   },
   "waivers": []
 }

@@ -25,6 +25,7 @@ import {
 import { loadLatestProposedProse } from "@/features/agent-writes/prose";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import type { DocumentKey } from "@/features/editor/document/documentKey";
+import { getExternalWriteProjectors } from "@/application/externalWrites/externalWriteProjectors";
 
 const POLL_MS = 750;
 
@@ -406,6 +407,7 @@ async function fanOut(
   isAuthoritative: () => boolean,
 ): Promise<void> {
   if (!isAuthoritative()) return;
+  const projectors = getExternalWriteProjectors();
   const domains = new Set(events.map((e) => e.domain));
   const bulkTargets = new Map<ChangeEventRow, ChronicleBulkChangeTargets>();
   for (const event of events) {
@@ -430,39 +432,30 @@ async function fanOut(
     if (!isAuthoritative()) return;
   }
   if (domains.has("foreshadow")) {
-    // Dynamic import: foreshadowStore pulls in the editor/scene graph, and
-    // this low-level module is imported early — an eager import here would
-    // regrow the module-init chain that broke browser-mode vi.mock linking.
-    const { useForeshadowStore } =
-      await import("@/features/foreshadow/foreshadowStore");
     if (!isAuthoritative()) return;
-    await useForeshadowStore.getState().load(projectId);
+    await projectors.reloadForeshadows(projectId);
     if (!isAuthoritative()) return;
   }
   // 以下 3 ドメインは metadata 系（Rust agent_writes / MCP が記録する）。
   // 従来 fanOut は grid/codex/snippet/foreshadow の 4 ドメインしか反映せず、
   // 別プロセス（MCP 等）が年表(event)・プロット・ラベルを書いても UI が stale
-  // なままだった。各ドメインの再ロード権威に合わせて反映する。dynamic import
-  // は上の foreshadow と同じ module-init cycle 回避のため。
+  // なままだった。各ドメインの再ロード権威に合わせて反映する。再ロードは
+  // application-owned projector boundary に委譲し、この transport が各 feature
+  // store を直接 import しないようにする。
   if (domains.has("event")) {
     // Chronicle は revisionCounter を購読して listEvents を再クエリするため
     // bumpRevision が再ロードのトリガ（ChroniclePanel useEffect deps）。
-    const { useChronicleStore } =
-      await import("@/features/chronicle/chronicleStore");
     if (!isAuthoritative()) return;
-    useChronicleStore.getState().bumpRevision();
+    projectors.bumpChronicleRevision();
   }
   if (domains.has("plot")) {
-    const { usePlotThreadStore } =
-      await import("@/features/plot-threads/plotThreadStore");
     if (!isAuthoritative()) return;
-    await usePlotThreadStore.getState().load(projectId);
+    await projectors.reloadPlotThreads(projectId);
     if (!isAuthoritative()) return;
   }
   if (domains.has("labels")) {
-    const { useLabelStore } = await import("@/features/labels/labelStore");
     if (!isAuthoritative()) return;
-    await useLabelStore.getState().load(projectId);
+    await projectors.reloadLabels(projectId);
     if (!isAuthoritative()) return;
   }
 
