@@ -126,6 +126,9 @@ import { renderLegacyPrompt } from "./context/legacyPromptAdapter";
 import {
   resolveChatTurnRoute,
   resolvedChatTurnRouteAuthorityKey,
+  createTurnControl,
+  createTurnCoordinator,
+  createTurnRequest,
   type ResolvedChatTurnRoute,
 } from "./turn/resolveTurnRoute";
 import {
@@ -2359,25 +2362,11 @@ let _inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 // ask_user の遅延 Promise を解決するクロージャ（guardedExecuteTool が設定）。
 // シリアライズ不可なので state ではなく module-local に持つ。
 let _resolveUserQuestion: ((result: ToolResult) => void) | null = null;
-// Identity of the send that is still authorized to start a transport. Stop
-// clears it so an older turn cannot resume after tokenizer/context awaits.
-let _activeSendTurnId: string | null = null;
 // Claimed synchronously before any settings/session/Ollama preflight await so
 // two same-tick sends cannot both publish an optimistic turn.
 let _sendPreflightClaimId: string | null = null;
 let _sendPreflightClaimScopeKey: string | null = null;
-interface SendTurnControl {
-  id: string;
-  projectId: string;
-  sessionId: string | null;
-  surface: "chat" | "agent";
-  aborted: boolean;
-  userMessageId: string;
-  assistantMessageId: string;
-  transportStarted: boolean;
-  transport: "http" | "cli-exec" | "codex-app-server";
-}
-let _activeSendControl: SendTurnControl | null = null;
+const turnCoordinator = createTurnCoordinator();
 // Async session reads can finish after a scope/project transition. Only the
 // newest request for each surface may publish its result.
 let _sessionListGeneration = 0;
@@ -5055,20 +5044,27 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           route: turnRoute,
           inputOverheadTokens: contextInputOverheadTokens,
         });
-    const sendTurnId = crypto.randomUUID();
-    const sendControl: SendTurnControl = {
-      id: sendTurnId,
+    const turnRequest = createTurnRequest({
+      requestId: crypto.randomUUID(),
+      workspace: turnWorkspaceIdentity,
       projectId: turnProjectId,
+      sceneId: effectiveSceneId,
       sessionId: activeSessionId,
+      scope: chatScope,
+      scopeAnchorId,
+      routeAuthorityKey: turnRouteAuthorityKey,
+    });
+    const sendTurnId = turnRequest.requestId;
+    const sendControl = createTurnControl({
+      request: turnRequest,
       surface: useAgentPath ? "agent" : "chat",
-      aborted: false,
       userMessageId: userMsg.id,
       assistantMessageId: assistantMsg.id,
-      transportStarted: false,
       transport:
         turnRoute?.transport ??
         (turnRoute?.provider === "cli" ? "cli-exec" : "http"),
-    };
+    });
+    if (!turnCoordinator.claim(sendControl)) return;
     // A turn that starts without a persisted session is allowed to adopt the
     // session it creates below. Any other session transition invalidates it.
     let turnSessionId = activeSessionId;
@@ -5087,11 +5083,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         );
       }
     };
-    _activeSendTurnId = sendTurnId;
-    _activeSendControl = sendControl;
     _finalizeStoppedStream = null;
-    const isCurrentTurn = (): boolean =>
-      _activeSendTurnId === sendTurnId && _activeSendControl === sendControl;
+    const isCurrentTurn = (): boolean => turnCoordinator.isCurrent(sendControl);
     const capturedProjectIsCurrent = (): boolean => {
       const liveProjectIds = [
         get().activeProjectId,
@@ -5203,9 +5196,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (!shouldAbortTurn()) return false;
       const ownedInvalidTurn = isCurrentTurn();
       if (ownedInvalidTurn) {
-        sendControl.aborted = true;
-        _activeSendTurnId = null;
-        _activeSendControl = null;
+        turnCoordinator.abort(sendControl);
+        turnCoordinator.release(sendControl);
       }
       removeOwnedTurnMessages();
       if (ownedInvalidTurn) set({ isStreaming: false });
@@ -5224,8 +5216,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         error: error instanceof Error ? error.message : String(error),
       });
       if (_activeTurnRoute === turnRoute) _activeTurnRoute = null;
-      _activeSendTurnId = null;
-      _activeSendControl = null;
+      turnCoordinator.release(sendControl, "failed");
     };
     const prevMessages = initialMessages;
     const visiblePrevMessages = capturedMessages;
@@ -5249,8 +5240,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           isStreaming: false,
           error: error instanceof Error ? error.message : String(error),
         });
-        _activeSendTurnId = null;
-        _activeSendControl = null;
+        turnCoordinator.release(sendControl, "failed");
       } else {
         cancelBeforeTransport();
       }
@@ -6019,6 +6009,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 });
               }
               notifyAccepted();
+              turnCoordinator.transition(sendControl, "agent-running");
               transportStarted = true;
               sendControl.transportStarted = true;
               const response = await chatApi.sendAgentMessage(
@@ -6156,6 +6147,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         });
 
         // Persist
+        turnCoordinator.transition(sendControl, "persisting");
         if (sessionIdForPersist) {
           const userMetadata =
             options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
@@ -6316,15 +6308,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           if (_activeTurnRoute === turnRoute) {
             _activeTurnRoute = null;
           }
-          _activeSendTurnId = null;
-          _activeSendControl = null;
+          turnCoordinator.release(sendControl);
           set({
             isStreaming: false,
             agentProgress: null,
             subAgentProgress: null,
           });
-        } else if (_activeSendControl === sendControl) {
-          _activeSendControl = null;
+        } else {
+          turnCoordinator.release(sendControl);
         }
       }
       return;
@@ -6860,6 +6851,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             // Persist to DB
             const persistToDb = async () => {
               if (!sessionIdForPersist) return;
+              turnCoordinator.transition(sendControl, "persisting");
               const lastMsg = get().messages.find(
                 (message) => message.id === assistantMsg.id,
               );
@@ -7095,6 +7087,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         assertTurnAuthority();
         notifyAccepted();
+        turnCoordinator.transition(sendControl, "streaming");
         transportStarted = true;
         sendControl.transportStarted = true;
         const streamPromise = isCodexAppServer
@@ -7268,10 +7261,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // but guard here in case of early exit.
         if (get().isStreaming) set({ isStreaming: false });
         if (_activeTurnRoute === turnRoute) _activeTurnRoute = null;
-        _activeSendTurnId = null;
-        _activeSendControl = null;
-      } else if (_activeSendControl === sendControl) {
-        _activeSendControl = null;
+        turnCoordinator.release(sendControl);
+      } else {
+        turnCoordinator.release(sendControl);
       }
     }
   },
@@ -7950,7 +7942,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   _cancelPendingUserQuestion: () => {
-    if (_activeSendControl) _activeSendControl.aborted = true;
+    turnCoordinator.abort();
     if (_resolveUserQuestion) {
       // 非自発的キャンセル（Stop / セッション切替 / error）の単一ファネル。
       // Promise を sentinel 解決するだけでは、再開したループが tool_result を
@@ -8035,15 +8027,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // フラグを先に立てるので、resolve で再開したループは shouldAbort を見て
     // tool_result を送らずに即 return する（stop が agent path を止められない
     // 問題への対処）。フラグ→resolve の順序が肝。
-    const stoppedControl = _activeSendControl;
-    const stoppedTurnId = _activeSendTurnId;
+    const stoppedControl = turnCoordinator.current();
+    const stoppedTurnId = stoppedControl?.id ?? null;
     const stoppedSessionId = stoppedControl?.sessionId ?? get().activeSessionId;
     const stoppedProjectId =
-      stoppedControl?.projectId ??
+      stoppedControl?.request.projectId ??
       get().activeProjectId ??
       getCurrentProjectId();
     if (stoppedControl) {
-      stoppedControl.aborted = true;
+      turnCoordinator.abort(stoppedControl);
       if (!stoppedControl.transportStarted) {
         set((state) => ({
           messages: state.messages.filter(
@@ -8069,9 +8061,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     if (stoppedControl?.transportStarted && stoppedControl.surface === "chat") {
       _finalizeStoppedStream?.();
     }
-    if (!agentTransportWillFinalize) {
-      _activeSendTurnId = null;
-      _activeSendControl = null;
+    if (!agentTransportWillFinalize && stoppedControl) {
+      turnCoordinator.release(stoppedControl);
     }
     // Stop は送信開始時に凍結した transport を使う。Codex App Server は
     // subprocess 全体を終了せず、対象 Thread/Turn だけを interrupt する。

@@ -1059,7 +1059,7 @@
     "cyclic-modules": 81,
     "largest-scc": 81,
     "scc-internal-edges": 226,
-    "chat-store-lines": 8269,
+    "chat-store-lines": 8260,
     "chat-store-runtime-imports": 91
   },
   "waivers": []
