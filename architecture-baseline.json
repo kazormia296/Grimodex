@@ -25,9 +25,9 @@
     "chat-store-lines": 3926,
     "chat-store-runtime-imports": 49,
     "renderer-drizzle-mutation": 236,
-    "renderer-raw-sql-read": 30,
-    "renderer-raw-sql-write": 24,
-    "renderer-generic-db-route": 35,
+    "renderer-raw-sql-read": 29,
+    "renderer-raw-sql-write": 20,
+    "renderer-generic-db-route": 34,
     "tsx-direct-persistence": 0,
     "store-direct-persistence": 0
   },

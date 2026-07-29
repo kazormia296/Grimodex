@@ -248,7 +248,7 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       const aliases = await fetchCodexAliases();
       const collision = computeCollision(cleaned.variants, aliases);
       if (existingId) {
-        await updateTermDictionaryEntry({
+        await updateTermDictionaryEntry(getCurrentProjectId(), {
           id: existingId,
           preferred: cleaned.preferred,
           variants: cleaned.variants,
@@ -323,7 +323,12 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
 
     toggleEnabled: async (id, enabled) => {
       const now = Date.now();
-      await setTermDictionaryEntryEnabled(id, enabled, now);
+      await setTermDictionaryEntryEnabled(
+        getCurrentProjectId(),
+        id,
+        enabled,
+        now,
+      );
       set({
         rows: get().rows.map((r) =>
           r.id === id ? { ...r, enabled, updatedAt: now } : r,
@@ -332,7 +337,7 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
     },
 
     remove: async (id) => {
-      await deleteTermDictionaryEntry(id);
+      await deleteTermDictionaryEntry(getCurrentProjectId(), id);
       set({ rows: get().rows.filter((r) => r.id !== id) });
       recordChangeEvent({
         domain: "lint",
@@ -392,10 +397,10 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       const now = Date.now();
       const projectId = getCurrentProjectId();
       for (const id of plan.deletes) {
-        await deleteTermDictionaryEntry(id);
+        await deleteTermDictionaryEntry(projectId, id);
       }
       for (const u of plan.updates) {
-        await updateTermDictionaryEntry({
+        await updateTermDictionaryEntry(projectId, {
           id: u.id,
           preferred: u.preferred,
           variants: u.variants,

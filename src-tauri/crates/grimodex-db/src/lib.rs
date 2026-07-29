@@ -424,6 +424,7 @@ mod fts;
 mod idempotency;
 pub mod ime_export;
 pub mod lint_ignores;
+pub mod lint_terms;
 mod integrity;
 mod migrate;
 pub mod plot_threads;

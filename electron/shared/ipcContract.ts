@@ -327,6 +327,16 @@ export interface NapiBackendLike {
   lintIgnoreDelete?(projectId: string, id: string): Promise<void>;
   lintIgnoreCopy?(payload: unknown): Promise<string>;
   lintIgnoreMove?(payload: unknown): Promise<string>;
+  lintTermDictionaryList?(projectId: string): Promise<string>;
+  lintTermDictionaryInsert?(payload: unknown): Promise<string>;
+  lintTermDictionaryUpdate?(payload: unknown): Promise<string>;
+  lintTermDictionarySetEnabled?(
+    projectId: string,
+    id: string,
+    enabled: boolean,
+    updatedAt: number,
+  ): Promise<string>;
+  lintTermDictionaryDelete?(projectId: string, id: string): Promise<void>;
   saveSceneBodyBundle?(payload: unknown): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
@@ -777,6 +787,20 @@ function requireNonEmptyString(
   return value;
 }
 
+function requireSafeInteger(
+  args: CommandArgs,
+  key: string,
+  command: string,
+): number {
+  const value = requireNumber(args, key, command);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a safe integer`,
+    );
+  }
+  return value;
+}
+
 function requireLintIgnoreCreatePayload(args: CommandArgs): CommandArgs {
   const command = "lint_ignore_create";
   const payload = requireRecord(args, "payload", command);
@@ -823,6 +847,50 @@ function requireLintIgnoreMovePayload(args: CommandArgs): CommandArgs {
       );
     }
   });
+  return payload;
+}
+
+function requireLintTermDictionaryPayload(
+  args: CommandArgs,
+  command: "lint_term_dictionary_insert" | "lint_term_dictionary_update",
+): CommandArgs {
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["id", "projectId", "preferred"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const variants = requireArray(payload, "variants", command);
+  if (variants.length === 0) {
+    throw new Error(
+      `invalid args \`variants\` for command \`${command}\`: expected at least one string`,
+    );
+  }
+  variants.forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`variants[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  const severity = requireString(payload, "severity", command);
+  if (severity !== "warning" && severity !== "info") {
+    throw new Error(
+      `invalid args \`severity\` for command \`${command}\`: expected warning or info`,
+    );
+  }
+  const note = requirePresent(payload, "note", command);
+  if (note !== null && typeof note !== "string") {
+    throw new Error(
+      `invalid args \`note\` for command \`${command}\`: expected a string or null`,
+    );
+  }
+  requireBoolean(payload, "enabled", command);
+  const integerKeys =
+    command === "lint_term_dictionary_insert"
+      ? (["sortOrder", "createdAt", "updatedAt"] as const)
+      : (["updatedAt"] as const);
+  for (const key of integerKeys) {
+    requireSafeInteger(payload, key, command);
+  }
   return payload;
 }
 
@@ -1906,6 +1974,72 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           "lintIgnoreMove",
         )(requireLintIgnoreMovePayload(a)),
       ),
+  },
+  lint_term_dictionary_list: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintTermDictionaryList,
+          "lintTermDictionaryList",
+        )(requireNonEmptyString(a, "projectId", "lint_term_dictionary_list")),
+      ),
+  },
+  lint_term_dictionary_insert: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintTermDictionaryInsert,
+          "lintTermDictionaryInsert",
+        )(requireLintTermDictionaryPayload(a, "lint_term_dictionary_insert")),
+      ),
+  },
+  lint_term_dictionary_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintTermDictionaryUpdate,
+          "lintTermDictionaryUpdate",
+        )(requireLintTermDictionaryPayload(a, "lint_term_dictionary_update")),
+      ),
+  },
+  lint_term_dictionary_set_enabled: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintTermDictionarySetEnabled,
+          "lintTermDictionarySetEnabled",
+        )(
+          requireNonEmptyString(
+            a,
+            "projectId",
+            "lint_term_dictionary_set_enabled",
+          ),
+          requireNonEmptyString(a, "id", "lint_term_dictionary_set_enabled"),
+          requireBoolean(a, "enabled", "lint_term_dictionary_set_enabled"),
+          requireSafeInteger(
+            a,
+            "updatedAt",
+            "lint_term_dictionary_set_enabled",
+          ),
+        ),
+      ),
+  },
+  lint_term_dictionary_delete: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.lintTermDictionaryDelete,
+        "lintTermDictionaryDelete",
+      )(
+        requireNonEmptyString(a, "projectId", "lint_term_dictionary_delete"),
+        requireNonEmptyString(a, "id", "lint_term_dictionary_delete"),
+      );
+      return null;
+    },
   },
   save_scene_body_bundle: {
     run: async (b, a) =>

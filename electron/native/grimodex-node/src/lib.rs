@@ -46,12 +46,14 @@ use grimodex_db::ime_export::{
     ImeExportRequestToken, ImeIntegrationMode,
 };
 use grimodex_db::lint_ignores::{self, CopyPayload, CreatePayload, MovePayload};
+use grimodex_db::lint_terms::{
+    self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
+};
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
     self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
     PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
-    PlotThreadPatch,
-    PlotThreadRestoreSnapshotPayload,
+    PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::sample_seed;
@@ -515,9 +517,7 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
-                lint_ignores::encode(lint_ignores::list_for_scene(
-                    db, project_id, scene_id,
-                )?)
+                lint_ignores::encode(lint_ignores::list_for_scene(db, project_id, scene_id)?)
             })
         })
         .await
@@ -566,6 +566,69 @@ impl Backend {
             })
         })
         .await
+    }
+
+    /// Project-scoped term-dictionary commands. SQL and project ownership stay
+    /// in grimodex-db; the renderer only sends domain DTOs.
+    #[napi]
+    pub async fn lint_term_dictionary_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::list(db, project_id)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_insert(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: LintTermInsertPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::insert(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_update(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: LintTermUpdatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::update(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_set_enabled(
+        &self,
+        project_id: String,
+        id: String,
+        enabled: bool,
+        updated_at: i64,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::set_enabled(
+                    db, project_id, id, enabled, updated_at,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_delete(&self, project_id: String, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| lint_terms::delete(db, project_id, id)))
+            .await
     }
 
     /// Scene content and every document-derived sidecar are committed in one
@@ -2234,10 +2297,7 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn agent_chronicle_bulk_mutate(
-        &self,
-        payload: serde_json::Value,
-    ) -> Result<String> {
+    pub async fn agent_chronicle_bulk_mutate(&self, payload: serde_json::Value) -> Result<String> {
         agent_write_cmd(
             Arc::clone(&self.state),
             "payload",

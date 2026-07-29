@@ -1331,6 +1331,149 @@ export async function createBrowserMock(
     });
   }
 
+  function lintTermDictionaryRowsToWire(
+    rows: Record<string, unknown>[],
+  ): Array<Record<string, unknown>> {
+    return rows.map((row) => {
+      let variants: string[] = [];
+      try {
+        const parsed = JSON.parse(String(row.variants ?? "[]"));
+        if (Array.isArray(parsed)) {
+          variants = parsed.filter(
+            (value): value is string =>
+              typeof value === "string" && value.length > 0,
+          );
+        }
+      } catch {
+        // Match the native boundary: a corrupt row is readable with no
+        // variants, so one row cannot block the rest of the dictionary.
+      }
+      return {
+        id: String(row.id),
+        preferred: String(row.preferred),
+        variants,
+        severity: String(row.severity) === "info" ? "info" : "warning",
+        note: row.note == null ? null : String(row.note),
+        enabled: Number(row.enabled ?? 1) === 1,
+        sortOrder: Number(row.sort_order ?? 0),
+        createdAt: Number(row.created_at ?? 0),
+        updatedAt: Number(row.updated_at ?? 0),
+      };
+    });
+  }
+
+  function handleLintTermDictionaryList(args: Record<string, unknown>) {
+    const result = handleDbExecute({
+      sql: `SELECT id, preferred, variants, severity, note, enabled,
+                   sort_order, created_at, updated_at
+              FROM lint_term_dictionary
+             WHERE project_id = ?
+             ORDER BY sort_order ASC, preferred ASC`,
+      params: [String(args.projectId)],
+      method: "all",
+    });
+    return lintTermDictionaryRowsToWire(result.rows);
+  }
+
+  function selectLintTermDictionaryEntry(
+    projectId: string,
+    id: string,
+  ): Record<string, unknown> {
+    const result = handleDbExecute({
+      sql: `SELECT id, preferred, variants, severity, note, enabled,
+                   sort_order, created_at, updated_at
+              FROM lint_term_dictionary
+             WHERE project_id = ? AND id = ?`,
+      params: [projectId, id],
+      method: "all",
+    });
+    const entry = lintTermDictionaryRowsToWire(result.rows)[0];
+    if (!entry) {
+      throw new Error("lint term dictionary entry not found");
+    }
+    return entry;
+  }
+
+  function handleLintTermDictionaryInsert(args: Record<string, unknown>) {
+    const payload = args.payload as Record<string, unknown>;
+    handleDbExecute({
+      sql: `INSERT INTO lint_term_dictionary
+             (id, project_id, preferred, variants, severity, note, enabled,
+              sort_order, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        String(payload.id),
+        String(payload.projectId),
+        String(payload.preferred),
+        JSON.stringify(payload.variants),
+        String(payload.severity),
+        payload.note == null ? null : String(payload.note),
+        payload.enabled ? 1 : 0,
+        Number(payload.sortOrder),
+        Number(payload.createdAt),
+        Number(payload.updatedAt),
+      ],
+      method: "run",
+    });
+    return selectLintTermDictionaryEntry(
+      String(payload.projectId),
+      String(payload.id),
+    );
+  }
+
+  function handleLintTermDictionaryUpdate(args: Record<string, unknown>) {
+    const payload = args.payload as Record<string, unknown>;
+    handleDbExecute({
+      sql: `UPDATE lint_term_dictionary
+               SET preferred = ?, variants = ?, severity = ?, note = ?,
+                   enabled = ?, updated_at = ?
+             WHERE project_id = ? AND id = ?`,
+      params: [
+        String(payload.preferred),
+        JSON.stringify(payload.variants),
+        String(payload.severity),
+        payload.note == null ? null : String(payload.note),
+        payload.enabled ? 1 : 0,
+        Number(payload.updatedAt),
+        String(payload.projectId),
+        String(payload.id),
+      ],
+      method: "run",
+    });
+    return selectLintTermDictionaryEntry(
+      String(payload.projectId),
+      String(payload.id),
+    );
+  }
+
+  function handleLintTermDictionarySetEnabled(args: Record<string, unknown>) {
+    handleDbExecute({
+      sql: `UPDATE lint_term_dictionary
+               SET enabled = ?, updated_at = ?
+             WHERE project_id = ? AND id = ?`,
+      params: [
+        args.enabled ? 1 : 0,
+        Number(args.updatedAt),
+        String(args.projectId),
+        String(args.id),
+      ],
+      method: "run",
+    });
+    return selectLintTermDictionaryEntry(
+      String(args.projectId),
+      String(args.id),
+    );
+  }
+
+  function handleLintTermDictionaryDelete(args: Record<string, unknown>) {
+    handleDbExecute({
+      sql: "DELETE FROM lint_term_dictionary WHERE project_id = ? AND id = ?",
+      params: [String(args.projectId), String(args.id)],
+      method: "run",
+    });
+    return null;
+  }
+
   function handleFtsSearch(args: Record<string, unknown>): Array<{
     sourceType: "scene" | "codex" | "snippet";
     id: string;
@@ -3194,6 +3337,16 @@ export async function createBrowserMock(
         return handleLintIgnoreCopy(args) as T;
       case "lint_ignore_move":
         return handleLintIgnoreMove(args) as T;
+      case "lint_term_dictionary_list":
+        return handleLintTermDictionaryList(args) as T;
+      case "lint_term_dictionary_insert":
+        return handleLintTermDictionaryInsert(args) as T;
+      case "lint_term_dictionary_update":
+        return handleLintTermDictionaryUpdate(args) as T;
+      case "lint_term_dictionary_set_enabled":
+        return handleLintTermDictionarySetEnabled(args) as T;
+      case "lint_term_dictionary_delete":
+        return handleLintTermDictionaryDelete(args) as T;
       case "plot_thread_create":
         return (await handlePlotThreadCreate(args)) as T;
       case "plot_thread_link_create":

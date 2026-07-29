@@ -876,6 +876,101 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     }
   });
 
+  it("lint_term_dictionary_insert: typed payload を検証してJSONへ写像する", async () => {
+    const lintTermDictionaryInsert = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        id: "term-1",
+        preferred: "子ども",
+        variants: ["子供"],
+        severity: "warning",
+        note: null,
+        enabled: true,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    const { backend } = fakeBackend({
+      lintTermDictionaryInsert: lintTermDictionaryInsert as never,
+    });
+    const payload = {
+      id: "term-1",
+      projectId: "project-1",
+      preferred: "子ども",
+      variants: ["子供"],
+      severity: "warning",
+      note: null,
+      enabled: true,
+      sortOrder: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const env = await dispatchInvoke(
+      "lint_term_dictionary_insert",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(lintTermDictionaryInsert).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        id: "term-1",
+        preferred: "子ども",
+        variants: ["子供"],
+        severity: "warning",
+        note: null,
+        enabled: true,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+  });
+
+  it("lint_term_dictionary_insert: 不正payloadと旧nativeを明示的に拒否する", async () => {
+    const lintTermDictionaryInsert = vi.fn();
+    const { backend } = fakeBackend({
+      lintTermDictionaryInsert: lintTermDictionaryInsert as never,
+    });
+    const invalid = await dispatchInvoke(
+      "lint_term_dictionary_insert",
+      {
+        payload: {
+          id: "term-1",
+          projectId: "project-1",
+          preferred: "子ども",
+          variants: [],
+          severity: "warning",
+          note: null,
+          enabled: true,
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(invalid.ok).toBe(false);
+    expect(lintTermDictionaryInsert).not.toHaveBeenCalled();
+
+    const oldNative = await dispatchInvoke(
+      "lint_term_dictionary_list",
+      { projectId: "project-1" },
+      { backend: fakeBackend().backend, shell: noShell },
+    );
+    expect(oldNative).toEqual({
+      ok: false,
+      error: "IPC_BACKEND_UNAVAILABLE: native method lintTermDictionaryList",
+      errorInfo: {
+        code: "IPC_BACKEND_UNAVAILABLE",
+        message:
+          "IPC_BACKEND_UNAVAILABLE: native method lintTermDictionaryList",
+        retryable: false,
+        outcome: "failed",
+      },
+    });
+  });
+
   it("save_scene_body_bundle: typed snapshot を1 payloadで渡して結果をparseする", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -1551,6 +1646,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "lint_ignore_list",
       "lint_ignore_list_scene",
       "lint_ignore_move",
+      "lint_term_dictionary_delete",
+      "lint_term_dictionary_insert",
+      "lint_term_dictionary_list",
+      "lint_term_dictionary_set_enabled",
+      "lint_term_dictionary_update",
       "lint_text",
       "list_ai_models",
       "list_annotations_for_project",

@@ -66,6 +66,15 @@ export declare class Backend {
   lintIgnoreCopy(payload: any): Promise<string>
   lintIgnoreMove(payload: any): Promise<string>
   /**
+   * Project-scoped term-dictionary commands. SQL and project ownership stay
+   * in grimodex-db; the renderer only sends domain DTOs.
+   */
+  lintTermDictionaryList(projectId: string): Promise<string>
+  lintTermDictionaryInsert(payload: any): Promise<string>
+  lintTermDictionaryUpdate(payload: any): Promise<string>
+  lintTermDictionarySetEnabled(projectId: string, id: string, enabled: boolean, updatedAt: number): Promise<string>
+  lintTermDictionaryDelete(projectId: string, id: string): Promise<void>
+  /**
    * Scene content and every document-derived sidecar are committed in one
    * SQLite transaction. The renderer performs one PM traversal and passes
    * the typed snapshot as camelCase JSON.
