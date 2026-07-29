@@ -1,6 +1,7 @@
 import { render, waitFor } from "@testing-library/react";
 import { isPaperShaderElement } from "@paper-design/shaders";
 import { ShaderMount } from "@paper-design/shaders-react";
+import { useMemo } from "react";
 import { describe, expect, it } from "vitest";
 import {
   PAPER_SHADER_IDS,
@@ -14,6 +15,8 @@ import {
 import type { ZenContrastGuardRect } from "./zenContrastGuard";
 import type { ZenGlassLayout } from "./useZenShaderLayouts";
 import { ZEN_SHADER_DEFAULTS } from "./zenShaderConfig";
+import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
+import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
 
 const GRADIENT_FRAGMENT = `#version 300 es
 precision highp float;
@@ -131,6 +134,8 @@ function UiContrastProbe({
   enabled,
   uiTextColor,
   backdropColor,
+  uiSurfaces = DISJOINT_UI_SURFACES,
+  uiSurfaceCapacity = 32,
   toolMix = 0.5,
   strength = 1,
   opacity = 10,
@@ -140,11 +145,18 @@ function UiContrastProbe({
   enabled: boolean;
   uiTextColor: [number, number, number];
   backdropColor: [number, number, number];
+  uiSurfaces?: readonly ZenGlassLayout[];
+  uiSurfaceCapacity?: number;
   toolMix?: number;
   strength?: number;
   opacity?: number;
   fragmentShader?: string;
 }) {
+  const shaderCapacity = zenUiSurfaceVariantCapacity(uiSurfaceCapacity);
+  const surfaceBuffer = useMemo(
+    () => new ZenUiSurfaceUniformBuffer(shaderCapacity),
+    [shaderCapacity],
+  );
   const config = {
     ...ZEN_SHADER_DEFAULTS,
     opacity,
@@ -161,20 +173,28 @@ function UiContrastProbe({
   };
   return (
     <ShaderMount
+      key={`${name}:${shaderCapacity}`}
       data-ui-contrast-probe={name}
-      fragmentShader={buildZenPostProcessedFragment(fragmentShader)}
+      fragmentShader={buildZenPostProcessedFragment(
+        fragmentShader,
+        shaderCapacity,
+      )}
       uniforms={{
         ...SIZING_UNIFORMS,
-        ...buildZenPostProcessUniforms(config, {
-          rect: [0.45, 0.4, 0.55, 0.6],
-          feather: [0, 0, 0, 0],
-          glassRect: [0, 0, 0, 0],
-          glassCornerRadius: 0,
-          uiSurfaces: DISJOINT_UI_SURFACES,
-          textColor: [0, 0, 0],
-          uiTextColor,
-          backdropColor,
-        }),
+        ...buildZenPostProcessUniforms(
+          config,
+          {
+            rect: [0.45, 0.4, 0.55, 0.6],
+            feather: [0, 0, 0, 0],
+            glassRect: [0, 0, 0, 0],
+            glassCornerRadius: 0,
+            uiSurfaces,
+            textColor: [0, 0, 0],
+            uiTextColor,
+            backdropColor,
+          },
+          surfaceBuffer,
+        ),
       }}
       width={200}
       height={120}
@@ -189,6 +209,36 @@ function UiContrastProbe({
       }}
     />
   );
+}
+
+const EIGHT_UI_SURFACES_WITH_BOTTOM_LAST = Array.from(
+  { length: 8 },
+  (_, index): ZenGlassLayout => ({
+    rect:
+      index === 7
+        ? [0.1, 0, 0.9, 0.1]
+        : [0.05 + index * 0.1, 0.7, 0.1 + index * 0.1, 0.9],
+    feather: [0, 0, 0, 0],
+    cornerRadius: 0,
+  }),
+);
+
+function uiSurfacesWithBottomLast(count: number): ZenGlassLayout[] {
+  return [
+    ...Array.from(
+      { length: count - 1 },
+      (_, index): ZenGlassLayout => ({
+        rect: [0.05 + index * 0.1, 0.7, 0.1 + index * 0.1, 0.9],
+        feather: [0, 0, 0, 0],
+        cornerRadius: 0,
+      }),
+    ),
+    {
+      rect: [0.1, 0, 0.9, 0.1],
+      feather: [0, 0, 0, 0],
+      cornerRadius: 0,
+    },
+  ];
 }
 
 function LowOpacityContrastProbe({
@@ -259,6 +309,28 @@ function pixelAt(canvas: HTMLCanvasElement, u: number, v: number) {
   return pixel;
 }
 
+function expectShaderDrawn(container: HTMLElement, selector: string) {
+  const host = container.querySelector<HTMLElement>(selector);
+  expect(host).not.toBeNull();
+  if (!host) return;
+  expect(isPaperShaderElement(host)).toBe(true);
+  if (!isPaperShaderElement(host)) return;
+  const canvas = host.querySelector("canvas");
+  expect(canvas).not.toBeNull();
+  if (!canvas) return;
+  expect(canvas.width).toBeGreaterThan(0);
+  expect(canvas.height).toBeGreaterThan(0);
+  const mount = host.paperShaderMount;
+  expect(mount).toBeDefined();
+  if (!mount) return;
+  expect(mount.getPerformanceStats().isStaticFrameReady).toBe(true);
+}
+
+function waitForShaderState(assertion: () => void) {
+  // GitHub's software WebGL can take longer than Testing Library's 1s default.
+  return waitFor(assertion, { timeout: 5_000 });
+}
+
 function shaderRgb(
   red: number,
   green: number,
@@ -318,13 +390,9 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const name of ["flat", "bent"]) {
-        const canvas = container.querySelector<HTMLCanvasElement>(
-          `[data-refraction-probe="${name}"] canvas`,
-        );
-        expect(canvas?.width).toBeGreaterThan(0);
-        expect(canvas?.height).toBeGreaterThan(0);
+        expectShaderDrawn(container, `[data-refraction-probe="${name}"]`);
       }
     });
 
@@ -357,12 +425,8 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-refraction-probe="zen-bent"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+    await waitForShaderState(() => {
+      expectShaderDrawn(container, '[data-refraction-probe="zen-bent"]');
     });
 
     const flat = container.querySelector<HTMLCanvasElement>(
@@ -393,12 +457,8 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-refraction-probe="normal-bent"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+    await waitForShaderState(() => {
+      expectShaderDrawn(container, '[data-refraction-probe="normal-bent"]');
     });
 
     const flat = container.querySelector<HTMLCanvasElement>(
@@ -440,7 +500,11 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
+      expectShaderDrawn(
+        container,
+        '[data-refraction-probe="large-normal-bent"]',
+      );
       expect(
         container.querySelector<HTMLCanvasElement>(
           '[data-refraction-probe="large-normal-bent"] canvas',
@@ -492,18 +556,14 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const name of [
         "diagnostic-flat",
         "diagnostic-bent",
         "small-flat",
         "small-bent",
       ]) {
-        expect(
-          container.querySelector<HTMLCanvasElement>(
-            `[data-refraction-probe="${name}"] canvas`,
-          )?.width,
-        ).toBeGreaterThan(0);
+        expectShaderDrawn(container, `[data-refraction-probe="${name}"]`);
       }
     });
 
@@ -570,13 +630,9 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const name of ["round-flat", "round-bent"]) {
-        expect(
-          container.querySelector<HTMLCanvasElement>(
-            `[data-refraction-probe="${name}"] canvas`,
-          )?.width,
-        ).toBeGreaterThan(0);
+        expectShaderDrawn(container, `[data-refraction-probe="${name}"]`);
       }
     });
 
@@ -624,12 +680,8 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-refraction-probe="ui-bent"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+    await waitForShaderState(() => {
+      expectShaderDrawn(container, '[data-refraction-probe="ui-bent"]');
     });
 
     const flat = container.querySelector<HTMLCanvasElement>(
@@ -672,7 +724,8 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
+      expectShaderDrawn(container, '[data-refraction-probe="capped-bent"]');
       expect(
         container.querySelector<HTMLCanvasElement>(
           '[data-refraction-probe="capped-bent"] canvas',
@@ -746,12 +799,17 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-ui-contrast-probe="dark-guarded"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+    await waitForShaderState(() => {
+      for (const name of [
+        "dark-unguarded",
+        "dark-guarded",
+        "dark-tool-off",
+        "dark-tool-max",
+        "light-unguarded",
+        "light-guarded",
+      ]) {
+        expectShaderDrawn(container, `[data-ui-contrast-probe="${name}"]`);
+      }
     });
 
     const cases = [
@@ -816,6 +874,136 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     ).toBeGreaterThan(80);
   });
 
+  it("keeps BottomStripe guarded when startup expands the shader capacity", async () => {
+    const mutedForeground = shaderRgb(0x88, 0x88, 0x88);
+    const backdropColor = shaderRgb(0xf0, 0xed, 0xe6);
+    const probes = (uiSurfaces: readonly ZenGlassLayout[]) => (
+      <div>
+        <UiContrastProbe
+          name="bottom-stripe-unguarded"
+          enabled={false}
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          uiSurfaces={uiSurfaces}
+          uiSurfaceCapacity={uiSurfaces.length}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+        <UiContrastProbe
+          name="bottom-stripe-guarded"
+          enabled
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          uiSurfaces={uiSurfaces}
+          uiSurfaceCapacity={uiSurfaces.length}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+      </div>
+    );
+    const view = render(probes(EIGHT_UI_SURFACES_WITH_BOTTOM_LAST.slice(0, 1)));
+    view.rerender(probes(EIGHT_UI_SURFACES_WITH_BOTTOM_LAST));
+
+    await waitForShaderState(() => {
+      expectShaderDrawn(
+        view.container,
+        '[data-ui-contrast-probe="bottom-stripe-guarded"]',
+      );
+    });
+
+    const expectBottomStripeGuarded = () => {
+      const unguarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-unguarded"] canvas',
+      )!;
+      const guarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-guarded"] canvas',
+      )!;
+
+      expect(pixelAt(guarded, 0.5, 0.05)[0]).toBeGreaterThan(
+        pixelAt(unguarded, 0.5, 0.05)[0] + 20,
+      );
+    };
+    expectBottomStripeGuarded();
+  });
+
+  it("keeps BottomStripe guarded after a same-capacity panel open-close round trip", async () => {
+    const mutedForeground = shaderRgb(0x88, 0x88, 0x88);
+    const backdropColor = shaderRgb(0xf0, 0xed, 0xe6);
+    const probes = (uiSurfaces: readonly ZenGlassLayout[]) => (
+      <div>
+        <UiContrastProbe
+          name="bottom-stripe-round-trip-unguarded"
+          enabled={false}
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          uiSurfaces={uiSurfaces}
+          uiSurfaceCapacity={8}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+        <UiContrastProbe
+          name="bottom-stripe-round-trip-guarded"
+          enabled
+          uiTextColor={mutedForeground}
+          backdropColor={backdropColor}
+          uiSurfaces={uiSurfaces}
+          uiSurfaceCapacity={8}
+          toolMix={0.75}
+          strength={0}
+          opacity={100}
+          fragmentShader={BLACK_CONTRAST_FRAGMENT}
+        />
+      </div>
+    );
+    const closedSurfaces = uiSurfacesWithBottomLast(6);
+    const openSurfaces = uiSurfacesWithBottomLast(7);
+    const view = render(probes(closedSurfaces));
+
+    const expectBottomStripeGuarded = () => {
+      const unguarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-round-trip-unguarded"] canvas',
+      )!;
+      const guarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-round-trip-guarded"] canvas',
+      )!;
+
+      expect(pixelAt(guarded, 0.5, 0.05)[0]).toBeGreaterThan(
+        pixelAt(unguarded, 0.5, 0.05)[0] + 20,
+      );
+    };
+    const surfaceDeltaAt = (u: number, v: number) => {
+      const unguarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-round-trip-unguarded"] canvas',
+      )!;
+      const guarded = view.container.querySelector<HTMLCanvasElement>(
+        '[data-ui-contrast-probe="bottom-stripe-round-trip-guarded"] canvas',
+      )!;
+      return pixelAt(guarded, u, v)[0] - pixelAt(unguarded, u, v)[0];
+    };
+    const transientPanelPoint = [0.575, 0.8] as const;
+
+    await waitForShaderState(() => {
+      expectBottomStripeGuarded();
+      expect(surfaceDeltaAt(...transientPanelPoint)).toBeLessThan(5);
+    });
+    view.rerender(probes(openSurfaces));
+    await waitForShaderState(() => {
+      expectBottomStripeGuarded();
+      expect(surfaceDeltaAt(...transientPanelPoint)).toBeGreaterThan(20);
+    });
+    view.rerender(probes(closedSurfaces));
+    await waitForShaderState(() => {
+      expect(surfaceDeltaAt(...transientPanelPoint)).toBeLessThan(5);
+      expectBottomStripeGuarded();
+    });
+  });
+
   it("keeps every non-Simple light theme on the bright correction branch", async () => {
     const mutedForeground = shaderRgb(0x88, 0x88, 0x88);
     const lightThemes = [
@@ -853,13 +1041,16 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
+    await waitForShaderState(() => {
       for (const { name } of lightThemes) {
-        expect(
-          container.querySelector<HTMLCanvasElement>(
-            `[data-ui-contrast-probe="${name}-guarded"] canvas`,
-          )?.width,
-        ).toBeGreaterThan(0);
+        expectShaderDrawn(
+          container,
+          `[data-ui-contrast-probe="${name}-unguarded"]`,
+        );
+        expectShaderDrawn(
+          container,
+          `[data-ui-contrast-probe="${name}-guarded"]`,
+        );
       }
     });
 
@@ -905,12 +1096,15 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-ui-contrast-probe="black-light-guarded"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+    await waitForShaderState(() => {
+      expectShaderDrawn(
+        container,
+        '[data-ui-contrast-probe="black-light-unguarded"]',
+      );
+      expectShaderDrawn(
+        container,
+        '[data-ui-contrast-probe="black-light-guarded"]',
+      );
     });
 
     const unguarded = container.querySelector<HTMLCanvasElement>(
@@ -933,12 +1127,11 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
       </div>,
     );
 
-    await waitFor(() => {
-      expect(
-        container.querySelector<HTMLCanvasElement>(
-          '[data-low-opacity-contrast-probe="guarded"] canvas',
-        )?.width,
-      ).toBeGreaterThan(0);
+    await waitForShaderState(() => {
+      expectShaderDrawn(
+        container,
+        '[data-low-opacity-contrast-probe="guarded"]',
+      );
     });
 
     const guarded = container.querySelector<HTMLCanvasElement>(
@@ -950,6 +1143,35 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
 
     expect(feather).toBeGreaterThan(outside + 20);
     expect(feather).toBeLessThan(center - 20);
+  });
+
+  it("keeps the patched ShaderMount animation loop running", async () => {
+    const { container } = render(
+      <ShaderMount
+        data-animation-probe
+        fragmentShader={GRADIENT_FRAGMENT}
+        uniforms={SIZING_UNIFORMS}
+        width={64}
+        height={64}
+        minPixelRatio={1}
+        maxPixelCount={4_096}
+        speed={1}
+      />,
+    );
+
+    await waitForShaderState(() => {
+      const host = container.querySelector<HTMLElement>(
+        "[data-animation-probe]",
+      );
+      expect(host).not.toBeNull();
+      if (!host) return;
+      expect(isPaperShaderElement(host)).toBe(true);
+      if (!isPaperShaderElement(host)) return;
+      const mount = host.paperShaderMount;
+      expect(mount).toBeDefined();
+      if (!mount) return;
+      expect(mount.getPerformanceStats().drawCount).toBeGreaterThan(2);
+    });
   });
 
   it("compiles the refraction pass for every Paper background", async () => {

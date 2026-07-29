@@ -1,10 +1,18 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, fireEvent, within } from "@testing-library/react";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
+import { render, fireEvent, waitFor, within } from "@testing-library/react";
 import { PlotMarkerInspector } from "./PlotMarkerInspector";
 import { usePlotThreadStore } from "./plotThreadStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import type { PlotThreadRow, PlotThreadLinkRow } from "./api";
+import {
+  _resetQuiescenceParticipantsForTests,
+  flushQuiescenceParticipants,
+} from "@/application/lifecycle/quiescenceParticipants";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
 
@@ -31,8 +39,17 @@ const link: PlotThreadLinkRow = {
   updatedAt: "",
 };
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe("PlotMarkerInspector", () => {
   beforeEach(() => {
+    _resetQuiescenceParticipantsForTests();
     usePlotThreadStore.setState({
       threads: [thread],
       links: [link],
@@ -43,6 +60,11 @@ describe("PlotMarkerInspector", () => {
       selectedPlotLinkId: "l1",
       selectedPlotThreadId: null,
     });
+  });
+
+  afterEach(() => {
+    _resetQuiescenceParticipantsForTests();
+    _resetQuiescenceLeasesForTests();
   });
 
   it("選択中マーカーの phase 変更で updateMarker を呼ぶ", () => {
@@ -117,12 +139,17 @@ describe("PlotMarkerInspector", () => {
         atNodeId: "s1",
         kind: "branch",
       }),
+      expect.objectContaining({ push: expect.any(Function) }),
     );
     // 統一モデル: 選択マーカー l1 は移動先 = 対象(to=t2)スレッドへ移る（D&D と同じ終端状態）。
-    expect(updateMarker).toHaveBeenCalledWith("l1", {
-      threadId: "t2",
-      nodeId: "s1",
-    });
+    expect(updateMarker).toHaveBeenCalledWith(
+      "l1",
+      {
+        threadId: "t2",
+        nodeId: "s1",
+      },
+      expect.objectContaining({ push: expect.any(Function) }),
+    );
   });
 
   it("branch/merge 起点マーカーの削除は確認ダイアログを挟む", () => {
@@ -212,6 +239,75 @@ describe("PlotMarkerInspector", () => {
     fireEvent.click(getByText("削除する"));
     expect(deleteThread).toHaveBeenCalledWith("t1");
     expect(useTimelineStore.getState().selectedPlotThreadId).toBeNull();
+  });
+
+  it("strict quiescence は未blurのマーカーメモを保存する", async () => {
+    const updateMarker = vi.fn().mockResolvedValue(undefined);
+    usePlotThreadStore.setState({ updateMarker });
+    const { container } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    const note = container.querySelector("textarea") as HTMLTextAreaElement;
+    fireEvent.change(note, { target: { value: "境界前のメモ" } });
+
+    await flushQuiescenceParticipants();
+
+    expect(updateMarker).toHaveBeenCalledWith(
+      "l1",
+      {
+        note: "境界前のメモ",
+      },
+      undefined,
+      { preexistingDraft: true },
+    );
+  });
+
+  it("lease 中の保存 await 後も permit を引き継ぎ、最新メモまで drain する", async () => {
+    const firstWrite = deferred<void>();
+    const updateMarker = vi
+      .fn()
+      .mockImplementationOnce(() => firstWrite.promise)
+      .mockResolvedValueOnce(undefined);
+    usePlotThreadStore.setState({ updateMarker });
+    const { container } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    const note = container.querySelector("textarea") as HTMLTextAreaElement;
+    fireEvent.change(note, { target: { value: "first" } });
+    const lease = acquireQuiescenceLease("project-load");
+
+    const flushing = flushQuiescenceParticipants();
+    await waitFor(() => expect(updateMarker).toHaveBeenCalledOnce());
+    fireEvent.change(note, { target: { value: "latest" } });
+    firstWrite.resolve();
+    await flushing;
+
+    expect(updateMarker.mock.calls).toEqual([
+      ["l1", { note: "first" }, undefined, { preexistingDraft: true }],
+      ["l1", { note: "latest" }, undefined, { preexistingDraft: true }],
+    ]);
+    lease.release();
+  });
+
+  it("IME composition Enter/Escape ではスレッド名を確定・取消ししない", () => {
+    const renameThread = vi.fn().mockResolvedValue(undefined);
+    usePlotThreadStore.setState({ renameThread });
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: "t1",
+    });
+    const { container } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    const input = container.querySelector("input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "変換中の糸" } });
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+
+    expect(renameThread).not.toHaveBeenCalled();
+    expect(input.value).toBe("変換中の糸");
+    fireEvent.keyDown(input, { key: "Escape" });
   });
 
   it("中身のないスレッドの削除は確認なしで即実行", () => {

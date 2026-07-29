@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Trash2, Ban, ChevronDown, ChevronUp } from "lucide-react";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
@@ -9,24 +9,128 @@ import { PlotThreadCharacterArc } from "./PlotThreadCharacterArc";
 import { PlotBranchEditor } from "./PlotBranchEditor";
 import { PlotMarkerDeleteConfirmDialog } from "./PlotMarkerDeleteConfirmDialog";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import {
+  useLatestValueDraftController,
+  type LatestValueDraftPersistContext,
+} from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
+
+function useQuiescentInlineTextDraft({
+  participantId,
+  recoveryKind,
+  value,
+  onCommit,
+}: {
+  participantId: string;
+  recoveryKind: "plot-marker-note" | "plot-thread-name";
+  value: string;
+  onCommit: (
+    next: string,
+    context: LatestValueDraftPersistContext,
+  ) => void | Promise<void>;
+}) {
+  const [draft, setDraftState] = useState(value);
+  const mountedRef = useRef(true);
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  const controller = useLatestValueDraftController(
+    participantId,
+    value,
+    async (next, context) => {
+      await onCommitRef.current(next, context);
+    },
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (controller.dirty) return;
+    controller.reset(value);
+    setDraftState(value);
+  }, [controller, value]);
+
+  const commit = (options?: QuiescenceParticipantFlushOptions): Promise<void> =>
+    controller.save(options);
+
+  const discard = () => {
+    controller.reset(value);
+    if (mountedRef.current) setDraftState(value);
+  };
+
+  useQuiescentDraftParticipant({
+    id: participantId,
+    enabled: controller.dirty && draft !== value,
+    isDirty: () => controller.dirty,
+    flush: commit,
+    discard,
+    recovery: () =>
+      controller.dirty
+        ? {
+            kind: recoveryKind,
+            participantId,
+            text: controller.latestValue,
+          }
+        : null,
+  });
+
+  return {
+    draft,
+    setDraft(next: string, persistenceValue = next) {
+      controller.markDirty(persistenceValue);
+      setDraftState(next);
+    },
+    commit,
+    discard,
+  };
+}
 
 /** onBlur でコミットする単一行テキスト編集（毎キーストロークの IPC を避ける）。 */
 function InlineText({
+  participantId,
   value,
   onCommit,
   placeholder,
 }: {
+  participantId: string;
   value: string;
-  onCommit: (next: string) => void;
+  onCommit: (
+    next: string,
+    context: LatestValueDraftPersistContext,
+  ) => void | Promise<void>;
   placeholder: string;
 }) {
-  const [draft, setDraft] = useState(value);
+  const { draft, setDraft, commit, discard } = useQuiescentInlineTextDraft({
+    participantId,
+    recoveryKind: "plot-thread-name",
+    value,
+    onCommit,
+  });
   return (
     <input
       value={draft}
       placeholder={placeholder}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => onCommit(draft)}
+      onChange={(e) =>
+        setDraft(e.target.value, e.target.value.trim() ? e.target.value : value)
+      }
+      onBlur={() => void commit().catch(() => {})}
+      onKeyDown={(e) => {
+        if (e.nativeEvent.isComposing) return;
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void commit().catch(() => {});
+          e.currentTarget.blur();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          discard();
+          e.currentTarget.blur();
+        }
+      }}
       className="rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
     />
   );
@@ -34,21 +138,31 @@ function InlineText({
 
 /** onBlur でコミットする複数行メモ編集。 */
 function NoteEditor({
+  participantId,
   value,
   onCommit,
   placeholder,
 }: {
+  participantId: string;
   value: string;
-  onCommit: (next: string) => void;
+  onCommit: (
+    next: string,
+    context: LatestValueDraftPersistContext,
+  ) => void | Promise<void>;
   placeholder: string;
 }) {
-  const [draft, setDraft] = useState(value);
+  const { draft, setDraft, commit } = useQuiescentInlineTextDraft({
+    participantId,
+    recoveryKind: "plot-marker-note",
+    value,
+    onCommit,
+  });
   return (
     <textarea
       value={draft}
       placeholder={placeholder}
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => onCommit(draft)}
+      onBlur={() => void commit().catch(() => {})}
       rows={3}
       className="resize-none rounded border border-border bg-background px-1.5 py-1 text-xs focus:outline-none"
     />
@@ -202,14 +316,23 @@ export function PlotMarkerInspector({
                 </span>
                 <NoteEditor
                   key={link.id}
+                  participantId={`plot-marker-note:${link.id}`}
                   value={link.note ?? ""}
                   placeholder={t(
                     "plotThread.notePlaceholder",
                     "このマーカーのメモ",
                   )}
-                  onCommit={(next) =>
-                    void updateMarker(link.id, { note: next || null })
-                  }
+                  onCommit={(next, context) => {
+                    if (context.preexistingDraft) {
+                      return updateMarker(
+                        link.id,
+                        { note: next || null },
+                        undefined,
+                        { preexistingDraft: true },
+                      );
+                    }
+                    return updateMarker(link.id, { note: next || null });
+                  }}
                 />
               </label>
               {/* このマーカーのシーンを起点にした分岐 / 合流の編集。
@@ -264,15 +387,22 @@ export function PlotMarkerInspector({
                   </span>
                   <InlineText
                     key={thread.id}
+                    participantId={`plot-thread-name:${thread.id}`}
                     value={thread.name}
                     placeholder={t(
                       "plotThread.newThreadName",
                       "新しいスレッド",
                     )}
-                    onCommit={(next) => {
+                    onCommit={(next, context) => {
                       const v = next.trim();
-                      if (v && v !== thread.name)
-                        void renameThread(thread.id, v);
+                      if (v && v !== thread.name) {
+                        if (context.preexistingDraft) {
+                          return renameThread(thread.id, v, {
+                            preexistingDraft: true,
+                          });
+                        }
+                        return renameThread(thread.id, v);
+                      }
                     }}
                   />
                 </label>

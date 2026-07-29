@@ -2,6 +2,7 @@ import { Redo2, Undo2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { useQuiescenceLeaseActive } from "@/application/lifecycle/useQuiescenceLeaseActive";
 
 export function PhoneHistoryActions() {
   const { t } = useTranslation();
@@ -10,6 +11,7 @@ export function PhoneHistoryActions() {
   const isReplaying = useGlobalHistoryStore((state) => state.isReplaying);
   const undo = useGlobalHistoryStore((state) => state.undo);
   const redo = useGlobalHistoryStore((state) => state.redo);
+  const lifecycleLocked = useQuiescenceLeaseActive();
 
   const onUndo = (): void => {
     void undo().catch(() => {
@@ -26,7 +28,7 @@ export function PhoneHistoryActions() {
     <div className="grid grid-cols-2 gap-2">
       <button
         type="button"
-        disabled={!canUndo || isReplaying}
+        disabled={!canUndo || isReplaying || lifecycleLocked}
         onClick={onUndo}
         className="flex min-h-12 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-medium disabled:opacity-40"
       >
@@ -35,7 +37,7 @@ export function PhoneHistoryActions() {
       </button>
       <button
         type="button"
-        disabled={!canRedo || isReplaying}
+        disabled={!canRedo || isReplaying || lifecycleLocked}
         onClick={onRedo}
         className="flex min-h-12 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-medium disabled:opacity-40"
       >

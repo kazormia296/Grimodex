@@ -1,15 +1,36 @@
 // @vitest-environment happy-dom
 import React from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextBar } from "./ContextBar";
 import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedCodexEntryWithData } from "../chatApi";
+import type { ChatPromptPreviewResult } from "../chatStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { runContextCreator } from "../contextCreatorApi";
+import { useAiSettingsStore } from "../store";
+import { DEFAULT_AI_SETTINGS } from "../types";
+import {
+  __resetDynamicModelCapsForTests,
+  registerDynamicModelCaps,
+} from "../agent/dynamicModelCaps";
+
+const chatStoreMocks = vi.hoisted(() => ({
+  buildPreviewPrompt: vi.fn(),
+}));
 
 vi.mock("../chatStore", () => ({
-  useChatStore: vi.fn(() => ""),
+  useChatStore: vi.fn(
+    (
+      selector: (state: {
+        buildPreviewPrompt: typeof chatStoreMocks.buildPreviewPrompt;
+      }) => unknown,
+    ) =>
+      selector({
+        buildPreviewPrompt: chatStoreMocks.buildPreviewPrompt,
+      }),
+  ),
 }));
 
 vi.mock("../contextCreatorApi", () => ({
@@ -41,6 +62,16 @@ vi.mock("motion/react", async () => {
 
 afterEach(() => {
   useCodexStore.setState({ entries: [] });
+  chatStoreMocks.buildPreviewPrompt.mockReset();
+  vi.mocked(runContextCreator).mockReset().mockResolvedValue([]);
+  globalThis.localStorage?.removeItem("grimodex.modelCaps.v2");
+  globalThis.localStorage?.removeItem("grimodex.openrouterModelCaps.v1");
+  __resetDynamicModelCapsForTests();
+  useAiSettingsStore.setState({
+    settings: null,
+    models: [],
+    modelCapsRevision: 0,
+  });
 });
 
 function makeEntry(
@@ -87,10 +118,12 @@ function makePinnedEntry(
 }
 
 const defaultProps = {
+  previewAuthorityKey: "workspace-a/project-a/scene-a",
   onReturnToAuto: vi.fn(),
   onRemove: vi.fn(),
   onRemoveAuto: vi.fn(),
   onPin: vi.fn(),
+  pinnedCodexIds: new Set<string>(),
   pinnedSnippetIds: new Set<string>(),
   onPinEntry: vi.fn(),
   onUnpinEntry: vi.fn(),
@@ -101,7 +134,433 @@ const defaultProps = {
   model: "",
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function readyPreview(
+  prompt: string,
+  totalTokens: number,
+): ChatPromptPreviewResult {
+  return {
+    status: "ready",
+    prompt,
+    layers: [],
+    totalTokens,
+    userMessage: "",
+  };
+}
+
+describe("ContextBar model capability scope", () => {
+  it("uses the provider-scoped Ollama window while no finalized override exists", () => {
+    registerDynamicModelCaps(
+      "ollama",
+      [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          supportedParameters: ["tools"],
+        },
+      ],
+      { ollamaEndpoint: DEFAULT_AI_SETTINGS.ollamaEndpoint },
+    );
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "ollama",
+        model: "gemma4:latest",
+      },
+      modelCapsRevision: 1,
+    });
+
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        contextTokenCount={1_000}
+        model="gemma4:latest"
+        provider="ollama"
+      />,
+    );
+
+    expect(screen.getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "1",
+    );
+  });
+
+  it("does not reinterpret an explicit unknown window as the generic 8k fallback", () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "ollama",
+        model: "unknown-local:latest",
+      },
+    });
+
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        contextTokenCount={3_282}
+        contextWindowOverride={null}
+        model="unknown-local:latest"
+        provider="ollama"
+      />,
+    );
+
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+});
+
 describe("ContextBar グループ化", () => {
+  it("chat_mention は表示中でも picker では未選択で、クリックを onPinEntry へ渡す", async () => {
+    const user = userEvent.setup();
+    const onPinEntry = vi.fn();
+    const chatMention: PinnedCodexEntryWithData = {
+      ...makeEntry("alice", "アリス"),
+      withChildren: false,
+      pinnedType: "codex",
+      pinSource: "chat_mention",
+    };
+    useCodexStore.setState({
+      entries: [makeEntry("alice", "アリス")],
+    });
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[chatMention]}
+        pinnedCodexIds={new Set()}
+        onPinEntry={onPinEntry}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Codex/Snippet を Spotlight",
+      }),
+    );
+    const checkbox = screen.getByRole("checkbox", { name: /アリス/ });
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+
+    expect(onPinEntry).toHaveBeenCalledTimes(1);
+    expect(onPinEntry).toHaveBeenCalledWith("alice", "codex");
+  });
+
+  it("scopeAnchor は picker で checked のまま変更不可になる", async () => {
+    const user = userEvent.setup();
+    useCodexStore.setState({
+      entries: [makeEntry("alice", "アリス")],
+    });
+    render(
+      <ContextBar
+        {...defaultProps}
+        scopeAnchor={{ kind: "codex", id: "alice", name: "アリス" }}
+        pinnedEntries={[]}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Codex/Snippet を Spotlight",
+      }),
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: /アリス/ });
+    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeDisabled();
+  });
+
+  it("Spotlight が操作不能へ変わると trigger を無効化して開いた picker を閉じる", async () => {
+    const user = userEvent.setup();
+    useCodexStore.setState({
+      entries: [makeEntry("alice", "アリス")],
+    });
+    const { rerender } = render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        spotlightDisabled={false}
+      />,
+    );
+    const trigger = screen.getByRole("button", {
+      name: "Codex/Snippet を Spotlight",
+    });
+
+    await user.click(trigger);
+    expect(
+      screen.getByRole("checkbox", { name: /アリス/ }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <ContextBar {...defaultProps} pinnedEntries={[]} spotlightDisabled />,
+    );
+
+    expect(trigger).toBeDisabled();
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("checkbox", { name: /アリス/ }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("Spotlight が操作不能へ変わると AI context creator も無効化して閉じる", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        canUseCreator
+        spotlightDisabled={false}
+      />,
+    );
+    const creatorTrigger = screen.getByRole("button", {
+      name: "AIコンテキスト提案",
+    });
+
+    await user.click(creatorTrigger);
+    expect(
+      screen.getByPlaceholderText("コンテキストに追加するものを指示..."),
+    ).toBeInTheDocument();
+
+    rerender(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        canUseCreator
+        spotlightDisabled
+      />,
+    );
+
+    expect(creatorTrigger).toBeDisabled();
+    await waitFor(() => {
+      expect(
+        screen.queryByPlaceholderText("コンテキストに追加するものを指示..."),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("AI context creator の複数選択を一つの batch として渡す", async () => {
+    const user = userEvent.setup();
+    const onPin = vi.fn(async () => {});
+    const onPinBatch = vi.fn(async () => true);
+    vi.mocked(runContextCreator).mockResolvedValueOnce([
+      {
+        id: "alice",
+        name: "アリス",
+        type: "character",
+        summary: "",
+        reason: "relevant",
+        alreadyPinned: false,
+      },
+      {
+        id: "bob",
+        name: "ボブ",
+        type: "character",
+        summary: "",
+        reason: "relevant",
+        alreadyPinned: false,
+      },
+    ]);
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        canUseCreator
+        onPin={onPin}
+        onPinBatch={onPinBatch}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "AIコンテキスト提案" }),
+    );
+    const input = screen.getByPlaceholderText(
+      "コンテキストに追加するものを指示...",
+    );
+    await user.type(input, "登場人物{Enter}");
+    await user.click(
+      await screen.findByRole("button", { name: "選択を追加 (2)" }),
+    );
+
+    expect(onPinBatch).toHaveBeenCalledWith(["alice", "bob"]);
+    expect(onPin).not.toHaveBeenCalled();
+  });
+
+  it("AI context creator の batch が部分失敗すると dialog を閉じない", async () => {
+    const user = userEvent.setup();
+    const onPinBatch = vi.fn(async () => false);
+    vi.mocked(runContextCreator).mockResolvedValueOnce([
+      {
+        id: "alice",
+        name: "アリス",
+        type: "character",
+        summary: "",
+        reason: "relevant",
+        alreadyPinned: false,
+      },
+    ]);
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        canUseCreator
+        onPinBatch={onPinBatch}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "AIコンテキスト提案" }),
+    );
+    const input = screen.getByPlaceholderText(
+      "コンテキストに追加するものを指示...",
+    );
+    await user.type(input, "登場人物{Enter}");
+    await user.click(
+      await screen.findByRole("button", { name: "選択を追加 (1)" }),
+    );
+
+    expect(onPinBatch).toHaveBeenCalledWith(["alice"]);
+    expect(input).toBeInTheDocument();
+  });
+
+  it("Spotlight が操作不能な間は表示済み pill の変更操作も無効化する", () => {
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[makePinnedEntry("alice", "アリス")]}
+        detectedEntries={[makeEntry("bob", "ボブ")]}
+        spotlightDisabled
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "アリス を auto に戻す" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "アリス の Spotlight 解除" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "ボブ を Spotlight" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "ボブ の Spotlight 解除" }),
+    ).toBeDisabled();
+  });
+
+  it("close/reopen と authority change 後の stale preview を表示・保存しない", async () => {
+    const user = userEvent.setup();
+    const closedRequest = deferred<ChatPromptPreviewResult>();
+    const oldAuthorityRequest = deferred<ChatPromptPreviewResult>();
+    const currentRequest = deferred<ChatPromptPreviewResult>();
+    chatStoreMocks.buildPreviewPrompt
+      .mockReturnValueOnce(closedRequest.promise)
+      .mockReturnValueOnce(oldAuthorityRequest.promise)
+      .mockReturnValueOnce(currentRequest.promise);
+
+    const { rerender } = render(
+      <ContextBar
+        {...defaultProps}
+        previewAuthorityKey="workspace-a/project-a/scene-a"
+        pinnedEntries={[]}
+        contextTokenCount={1}
+        systemPrompt="LIVE CACHE A"
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /~1 tokens/ }));
+    expect(
+      screen.getByText(/プロンプトを構築中|Building prompt/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /閉じる|Close/ }));
+
+    await user.click(screen.getByRole("button", { name: /~1 tokens/ }));
+    expect(chatStoreMocks.buildPreviewPrompt).toHaveBeenCalledTimes(2);
+
+    rerender(
+      <ContextBar
+        {...defaultProps}
+        previewAuthorityKey="workspace-b/project-b/scene-b"
+        pinnedEntries={[]}
+        contextTokenCount={2}
+        systemPrompt="LIVE CACHE B"
+      />,
+    );
+    expect(
+      screen.queryByText(/システムプロンプト プレビュー|System prompt preview/),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /~2 tokens/ }));
+    expect(chatStoreMocks.buildPreviewPrompt).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      closedRequest.resolve(readyPreview("STALE CLOSED PROMPT", 10));
+      oldAuthorityRequest.resolve(readyPreview("STALE AUTHORITY PROMPT", 20));
+      await Promise.all([closedRequest.promise, oldAuthorityRequest.promise]);
+    });
+
+    expect(
+      screen.getByText(/プロンプトを構築中|Building prompt/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("STALE CLOSED PROMPT")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("STALE AUTHORITY PROMPT"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("LIVE CACHE B")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: /テンプレート保存|Save template/,
+      }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      currentRequest.resolve(readyPreview("CURRENT PROJECT B PROMPT", 30));
+      await currentRequest.promise;
+    });
+
+    expect(screen.getByText("CURRENT PROJECT B PROMPT")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /テンプレート保存|Save template/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("preview request の予期しない reject を unavailable で終端する", async () => {
+    const user = userEvent.setup();
+    chatStoreMocks.buildPreviewPrompt.mockRejectedValueOnce(
+      new Error("unexpected preview failure"),
+    );
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        contextTokenCount={1}
+        systemPrompt="LIVE CACHE MUST NOT ESCAPE"
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /~1 tokens/ }));
+
+    expect(
+      await screen.findByText(
+        /正確なプロンプトを構築できませんでした|exact prompt could not be built/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("LIVE CACHE MUST NOT ESCAPE"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: /テンプレート保存|Save template/,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders only items selected by the materialized ContextPlan", () => {
     const selected = makePinnedEntry("selected", "Selected");
     const trimmed = makePinnedEntry("trimmed", "Trimmed");
@@ -213,9 +672,7 @@ describe("ContextBar グループ化", () => {
 
     const summary = screen.getByTestId("context-decision-summary");
     expect(summary).toHaveAccessibleName("3 件を非注入");
-    const contextHeader = screen
-      .getByTestId("context-bar")
-      .querySelector<HTMLElement>('[role="button"]');
+    const contextHeader = screen.getByTestId("context-bar-toggle");
     expect(contextHeader).toHaveAttribute("aria-expanded", "true");
     summary.focus();
     await user.keyboard("{Enter}");
@@ -233,6 +690,31 @@ describe("ContextBar グループ化", () => {
       ),
     ).toBeInTheDocument();
     expect(within(popover).getByText(/42 → 0 tokens/)).toBeInTheDocument();
+  });
+
+  it("keeps header actions independent from the collapse button", async () => {
+    const user = userEvent.setup();
+    const onCreateLinkedSession = vi.fn();
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        summaryCount={4}
+        onCreateLinkedSession={onCreateLinkedSession}
+      />,
+    );
+
+    const contextBar = screen.getByTestId("context-bar");
+    const contextHeader = within(contextBar).getByTestId("context-bar-toggle");
+    expect(contextHeader).toHaveAttribute("aria-expanded", "true");
+    const createSession = within(contextBar).getByRole("button", {
+      name: "4 回要約済み — 新セッション推奨",
+    });
+    createSession.focus();
+    await user.keyboard("{Enter}");
+
+    expect(onCreateLinkedSession).toHaveBeenCalledTimes(1);
+    expect(contextHeader).toHaveAttribute("aria-expanded", "true");
   });
 
   it("6件以下では個別ピルを表示する", () => {

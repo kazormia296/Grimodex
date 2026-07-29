@@ -12,15 +12,18 @@ import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { debugLog } from "@/lib/debugLog";
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import type { VerifyResult } from "./hashChain";
 
 const FLUSH_DEBOUNCE_MS = 100;
 
 /**
- * How many consecutive failed flushes to tolerate before dropping the in-flight
- * batch. A genuinely unrecoverable insert (disk full, malformed row, ...) must
- * not tight-loop forever. Sequence/hash allocation is now Rust-owned, so a
+ * How many consecutive failed automatic flushes to tolerate before pausing
+ * retries. A genuinely unrecoverable insert (disk full, malformed row, ...)
+ * must not tight-loop forever, but the in-memory batch is retained so close /
+ * Project / Workspace quiescence can report the failure and retry. Sequence/hash
+ * allocation is now Rust-owned, so a
  * resend after a transient or committed-but-rejected blip is idempotent — Rust
  * skips already-present `eventUid`s and appends only the new suffix — so the
  * retry just succeeds rather than colliding.
@@ -148,6 +151,11 @@ interface RecorderState {
   flushPromise: Promise<void> | null;
   /** Consecutive failed-flush count; gates retry backoff and the give-up cap. */
   flushRetries: number;
+  /**
+   * Active destructive-lifecycle drains. A strict waiter promotes an already
+   * running automatic append to lossless failure handling.
+   */
+  strictFlushWaiters: number;
   /** 現行 init。resolve 値は「束縛を書いたか」(bystander/世代跨ぎ abort = false)。 */
   initPromise: Promise<boolean> | null;
   /**
@@ -192,6 +200,7 @@ const state: RecorderState = {
   flushTimer: null,
   flushPromise: null,
   flushRetries: 0,
+  strictFlushWaiters: 0,
   initPromise: null,
   switchInProgress: false,
   bindingInvalidated: false,
@@ -434,6 +443,7 @@ export function _resetRecorderForTests(): void {
   state.lastSequence = 0;
   state.queue = [];
   state.flushRetries = 0;
+  state.strictFlushWaiters = 0;
   if (state.flushTimer) clearTimeout(state.flushTimer);
   state.flushTimer = null;
   state.flushPromise = null;
@@ -485,9 +495,15 @@ function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
   if (state.flushTimer) return;
   state.flushTimer = setTimeout(() => {
     state.flushTimer = null;
-    void flushNow().catch((err) =>
-      console.warn("[timelapse] flush failed", err),
-    );
+    void flushNow().catch((_error) => {
+      debugLog.warn("timelapse", "flush failed", {
+        sensitivity: "safe",
+        fields: {
+          operation: "flush",
+          outcome: "failed",
+        },
+      });
+    });
   }, delayMs);
 }
 
@@ -551,6 +567,14 @@ export async function flushNow(): Promise<void> {
       // に旧イベントが新 workspace の chain へ混入する (C1)。バッチは破棄して
       // 件数を warn。
       if (isWorkspaceSwitchingError(err)) {
+        if (state.strictFlushWaiters > 0) {
+          state.queue = batch.concat(state.queue);
+          debugLog.warn(
+            "timelapse",
+            `workspace switching: retaining ${batch.length} event(s) for strict lifecycle recovery`,
+          );
+          throw err;
+        }
         debugLog.warn(
           "timelapse",
           `workspace switching: dropping ${batch.length} event(s) instead of re-queueing`,
@@ -562,11 +586,12 @@ export async function flushNow(): Promise<void> {
       // committed but the transport rejected, Rust treats the resend as a no-op.
       state.flushRetries += 1;
       if (state.flushRetries > MAX_FLUSH_RETRIES) {
+        state.queue = batch.concat(state.queue);
+        state.flushRetries = MAX_FLUSH_RETRIES;
         console.warn(
-          `[timelapse] dropping ${batch.length} event(s) after ${MAX_FLUSH_RETRIES} failed flush attempts`,
+          `[timelapse] pausing automatic retry for ${batch.length} event(s) after ${MAX_FLUSH_RETRIES} failed flush attempts`,
         );
-        state.flushRetries = 0;
-        return;
+        throw err;
       }
       state.queue = batch.concat(state.queue);
       scheduleFlush(flushBackoffMs(state.flushRetries));
@@ -577,6 +602,65 @@ export async function flushNow(): Promise<void> {
   });
   return state.flushPromise;
 }
+
+/**
+ * Destructive-lifecycle drain. It also catches events queued while a previous
+ * flush was in flight and never treats the retry cap as permission to discard.
+ */
+export async function flushStrict(): Promise<void> {
+  state.strictFlushWaiters += 1;
+  let completed = false;
+  if (state.flushTimer) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = null;
+  }
+  try {
+    for (let round = 0; round < 50; round++) {
+      await flushNow();
+      if (state.queue.length === 0 && state.flushPromise === null) {
+        completed = true;
+        return;
+      }
+    }
+    throw new Error("Timelapse recorder did not reach quiescence");
+  } finally {
+    state.strictFlushWaiters = Math.max(0, state.strictFlushWaiters - 1);
+    // Preserve strict recovery material until an explicit retry. Otherwise an
+    // older debounce/backoff timer could wake after this waiter releases and
+    // apply the automatic WORKSPACE_SWITCHING drop policy to the retained batch.
+    if (!completed && state.flushTimer) {
+      clearTimeout(state.flushTimer);
+      state.flushTimer = null;
+    }
+  }
+}
+
+function discardPendingTimelapseEvents(): void {
+  if (state.flushTimer) clearTimeout(state.flushTimer);
+  state.flushTimer = null;
+  state.queue = [];
+  state.flushRetries = 0;
+}
+
+registerQuiescenceProvider({
+  id: "timelapse-recorder",
+  stage: "timelapse",
+  flush: flushStrict,
+  discard: discardPendingTimelapseEvents,
+  recovery: () =>
+    state.queue.map((event) => ({
+      kind: "timelapse-event",
+      projectId: event.projectId,
+      eventUid: event.eventUid,
+      sceneId: event.sceneId,
+      domain: event.domain,
+      opType: event.opType,
+      entityType: event.entityType,
+      entityId: event.entityId,
+      payload: event.payload,
+      timestamp: event.timestamp,
+    })),
+});
 
 function canonicalisePayload(p: unknown): string {
   if (typeof p === "string") return p;

@@ -9,6 +9,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { isNotNull } from "drizzle-orm";
 import { nowInstantString } from "@/lib/time";
 
 export const projects = sqliteTable("projects", {
@@ -47,6 +48,31 @@ export const projects = sqliteTable("projects", {
   createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
 });
+
+/**
+ * Durable create-request tombstones shared by native SQLite and the browser
+ * editor. `tombstoneJson` is intentionally content-free (`{"id":"…"}`).
+ */
+export const idempotencyRequests = sqliteTable(
+  "idempotency_requests",
+  {
+    domain: text("domain").notNull(),
+    requestId: text("request_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    payloadHash: text("payload_hash").notNull(),
+    tombstoneJson: text("tombstone_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    primaryKey({ columns: [table.domain, table.requestId] }),
+    index("idx_idempotency_requests_project_created").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
 
 export const treeNodes = sqliteTable(
   "tree_nodes",
@@ -492,7 +518,8 @@ export const chatMessagePrompts = sqliteTable("chat_message_prompts", {
     .primaryKey()
     .references(() => chatMessages.id, { onDelete: "cascade" }),
   systemPrompt: text("system_prompt").notNull(),
-  layers: text("layers"), // JSON LayerBreakdown[]
+  // JSON { layers: LayerBreakdown[], provider, contextWindow }; legacy rows are arrays.
+  layers: text("layers"),
   totalTokens: integer("total_tokens"),
   model: text("model"),
   createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -701,9 +728,15 @@ export const chatSessionPinnedCodex = sqliteTable(
   },
   (table) => [
     index("idx_chat_pin_session").on(table.sessionId, table.createdAt),
-    uniqueIndex("uq_chat_pin_codex").on(table.sessionId, table.codexEntryId),
-    uniqueIndex("uq_chat_pin_snippet").on(table.sessionId, table.snippetId),
-    uniqueIndex("uq_chat_pin_sticky").on(table.sessionId, table.stickyId),
+    uniqueIndex("uq_chat_pin_codex")
+      .on(table.sessionId, table.codexEntryId)
+      .where(isNotNull(table.codexEntryId)),
+    uniqueIndex("uq_chat_pin_snippet")
+      .on(table.sessionId, table.snippetId)
+      .where(isNotNull(table.snippetId)),
+    uniqueIndex("uq_chat_pin_sticky")
+      .on(table.sessionId, table.stickyId)
+      .where(isNotNull(table.stickyId)),
   ],
 );
 
@@ -943,6 +976,8 @@ export const codexEntryPhases = sqliteTable(
     contextModeOverride: text("context_mode_override"),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    /** Optimistic-lock version shared by editor, history, and external writers. */
+    version: integer("version").notNull().default(0),
   },
   (table) => [
     index("idx_codex_phases_entry").on(table.entryId),
@@ -1366,6 +1401,8 @@ export const events = sqliteTable(
     }),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    /** Aggregate optimistic-lock version for the event row and participants. */
+    version: integer("version").notNull().default(0),
   },
   (table) => [
     index("idx_events_project").on(table.projectId),

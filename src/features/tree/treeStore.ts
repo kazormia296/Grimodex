@@ -31,7 +31,14 @@ import { moveTreeNode } from "@/application/tree/moveTreeNode";
 import { createTreeNode } from "@/application/tree/createTreeNode";
 import { deleteTreeSubtree } from "@/application/tree/deleteTreeSubtree";
 import { requestOpenEditorDocument } from "@/application/editor/editorNavigationRegistry";
-import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  getCurrentWorkspaceIdentity,
+  isCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import {
+  hasExternalEditConflictForId,
+  hasExternalEditConflictForKind,
+} from "@/lib/externalEditConflictRegistry";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -40,6 +47,16 @@ export type SceneStatus =
   | "complete"
   | "revision"
   | "final";
+
+function activeEditorHasExternalConflict(): boolean {
+  const tabs = useTabStore.getState();
+  if (tabs.isLinearMode) {
+    return hasExternalEditConflictForKind("tree", { includeLegacy: true });
+  }
+  return [tabs.activeTabId, tabs.secondaryActiveTabId].some(
+    (id) => id !== null && hasExternalEditConflictForId(id),
+  );
+}
 
 export interface TreeNodeData {
   id: string;
@@ -262,6 +279,19 @@ export interface NodeBeatPreview {
   unplaced: string | null;
 }
 
+export interface TreeHydrationSnapshot {
+  projectId: string;
+  workspaceOpenRevision: number | null;
+  nodes: TreeNodeData[];
+  scenes: SceneMeta[];
+  activeSceneId: string;
+  expandedIds: string[];
+  charCounts: Record<string, number>;
+  nodePreviews: Record<string, NodeBeatPreview>;
+  aiRatios: Record<string, number>;
+  pinnedCodexIds: string[];
+}
+
 const EMPTY_NODE_PREVIEW: NodeBeatPreview = { placed: null, unplaced: null };
 
 /**
@@ -278,6 +308,107 @@ function computeScenes(nodes: TreeNodeData[]): SceneMeta[] {
     .filter((n) => n.nodeType === "scene")
     .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder))
     .map((n) => ({ id: n.id, title: n.title, sortOrder: n.sortOrder }));
+}
+
+/**
+ * Phase A of Project switching: load and derive the complete critical tree
+ * projection without mutating the currently visible Project.
+ */
+export async function prepareTreeHydration(
+  projectId: string,
+  workspaceOpenRevision?: number,
+  previousActiveSceneId = useTreeStore.getState().activeSceneId,
+): Promise<TreeHydrationSnapshot> {
+  const capturedWorkspaceIdentity = getCurrentWorkspaceIdentity();
+  const hydrationWorkspaceOpenRevision = resolveWorkspaceOpenRevision(
+    workspaceOpenRevision,
+  );
+  const pinnedCodexIdsPromise = listPinnedCodexIds().catch(() => []);
+  const [raw, noteContents] = await Promise.all([
+    api.listNodes(projectId),
+    api.listNoteContents(projectId),
+  ]);
+  const nodes = raw.map((node) => toNodeData(node, noteContents.get(node.id)));
+  const scenes = computeScenes(nodes);
+  const activeNode = previousActiveSceneId
+    ? nodes.find((node) => node.id === previousActiveSceneId)
+    : undefined;
+  const activeStillExists =
+    activeNode?.nodeType === "scene" || activeNode?.nodeType === "note";
+  const activeSceneId = activeStillExists
+    ? previousActiveSceneId
+    : (scenes[0]?.id ?? "");
+  const charCounts: Record<string, number> = {};
+  for (const node of nodes) {
+    if (node.nodeType === "scene" || node.nodeType === "note") {
+      charCounts[node.id] = node.charCount;
+    }
+  }
+  const nodePreviews: Record<string, NodeBeatPreview> = {};
+  for (const node of raw) {
+    const placed = node.placedBeatPreview ?? null;
+    const unplaced = node.unplacedBeatPreview ?? null;
+    if (placed !== null || unplaced !== null) {
+      nodePreviews[node.id] = { placed, unplaced };
+    }
+  }
+  // The editor only needs the foreground Scene's attribution ratio at first
+  // paint. Loading every Scene here turns a decorative, default-off Tree
+  // badge into a critical 10k-ID query and duplicates the char counts already
+  // present in this snapshot. The all-Scene projection is loaded lazily when
+  // the user enables the badge.
+  const activeSceneRatioIds =
+    activeNode?.nodeType === "note" || activeSceneId === ""
+      ? []
+      : [activeSceneId];
+  const [aiRatios, pinnedCodexIds] = await Promise.all([
+    loadBatchAiRatio(activeSceneRatioIds).catch(
+      (): Record<string, number> => ({}),
+    ),
+    pinnedCodexIdsPromise,
+  ]);
+  if (
+    capturedWorkspaceIdentity &&
+    !isCurrentWorkspaceIdentity(capturedWorkspaceIdentity)
+  ) {
+    throw new Error("Workspace changed while preparing the Project tree");
+  }
+  return {
+    projectId,
+    workspaceOpenRevision: hydrationWorkspaceOpenRevision,
+    nodes,
+    scenes,
+    activeSceneId,
+    expandedIds: nodes
+      .filter((node) => node.nodeType === "folder")
+      .map((node) => node.id),
+    charCounts,
+    nodePreviews,
+    aiRatios,
+    pinnedCodexIds,
+  };
+}
+
+/** Phase B: synchronously publish a previously prepared tree snapshot. */
+export function applyTreeHydration(snapshot: TreeHydrationSnapshot): void {
+  useTreeStore.setState({
+    nodes: snapshot.nodes,
+    scenes: snapshot.scenes,
+    activeSceneId: snapshot.activeSceneId,
+    selectedIds: [],
+    isLoading: false,
+    projectId: snapshot.projectId,
+    hydratedProjectId: snapshot.projectId,
+    hydratedWorkspaceOpenRevision: snapshot.workspaceOpenRevision,
+    expandedIds: snapshot.expandedIds,
+    charCounts: snapshot.charCounts,
+    nodePreviews: snapshot.nodePreviews,
+    aiRatios: snapshot.aiRatios,
+    pinnedCodexIds: snapshot.pinnedCodexIds,
+    pendingRenameId: null,
+    pendingRevealId: null,
+  });
+  usePhaseStore.getState().recomputeSceneOrder(snapshot.nodes);
 }
 
 const DEFAULT_CHAPTER_ID = "default-chapter";
@@ -521,78 +652,13 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // reload 失敗を throw する版。AI バッチ executor のように「DB commit 後の
     // 再同期失敗を成功扱いにできない」呼び出し元が使う。loadTree はこれを
     // try/catch で包んで従来どおり握りつぶす。
-    set({
-      isLoading: true,
-      projectId,
-      hydratedProjectId: null,
-      hydratedWorkspaceOpenRevision: null,
-    });
+    set({ isLoading: true });
     try {
-      const hydrationWorkspaceOpenRevision = resolveWorkspaceOpenRevision(
+      const snapshot = await prepareTreeHydration(
+        projectId,
         workspaceOpenRevision,
       );
-      // listNodes は content / unplacedBeatsDoc を引かない軽量 projection (H4)。
-      // note 本文だけ 2 段目クエリで取り、note ノードにマージする
-      // (scene 本文は store 外に保つ不変条件は toNodeData 側で維持)。
-      const [raw, noteContents] = await Promise.all([
-        api.listNodes(projectId),
-        api.listNoteContents(projectId),
-      ]);
-      const nodes = raw.map((n) => toNodeData(n, noteContents.get(n.id)));
-      const sc = computeScenes(nodes);
-      // Expand folders by default
-      const chapters = nodes.filter((n) => n.nodeType === "folder");
-      // Prime char counts from the cached `tree_nodes.char_count` column.
-      // EditorPane writes this on every save, so it is the authoritative
-      // source — no need to re-tokenize ProseMirror docs on tree load.
-      const charCounts: Record<string, number> = {};
-      for (const n of nodes) {
-        if (n.nodeType === "scene" || n.nodeType === "note") {
-          charCounts[n.id] = n.charCount;
-        }
-      }
-      // Beat preview は TreeNodeData から外したので raw から直接取り出す。
-      // null/null のエントリは読まれた際に EMPTY_NODE_PREVIEW で受けるので
-      // 入れずに省略する。
-      const nodePreviews: Record<string, NodeBeatPreview> = {};
-      for (const n of raw) {
-        const placed = n.placedBeatPreview ?? null;
-        const unplaced = n.unplacedBeatPreview ?? null;
-        if (placed !== null || unplaced !== null) {
-          nodePreviews[n.id] = { placed, unplaced };
-        }
-      }
-      const prevActive = get().activeSceneId;
-      const prevNode = prevActive
-        ? nodes.find((n) => n.id === prevActive)
-        : undefined;
-      const activeStillExists =
-        prevNode != null &&
-        (prevNode.nodeType === "scene" || prevNode.nodeType === "note");
-      set({
-        nodes,
-        scenes: sc,
-        activeSceneId: activeStillExists ? prevActive : (sc[0]?.id ?? ""),
-        isLoading: false,
-        hydratedProjectId: projectId,
-        hydratedWorkspaceOpenRevision: hydrationWorkspaceOpenRevision,
-        expandedIds: chapters.map((c) => c.id),
-        charCounts,
-        nodePreviews,
-      });
-      // Recompute phase scene order for phase resolution
-      usePhaseStore.getState().recomputeSceneOrder(nodes);
-      // Load AI attribution ratios for all scene nodes
-      const sceneIds = nodes
-        .filter((n) => n.nodeType === "scene")
-        .map((n) => n.id);
-      loadBatchAiRatio(sceneIds)
-        .then((ratios) => set({ aiRatios: ratios }))
-        .catch(() => {});
-      // Load persisted Codex Quick pins
-      get()
-        .loadPinnedCodexIds()
-        .catch(() => {});
+      applyTreeHydration(snapshot);
     } catch (e) {
       // 失敗を握りつぶさず再 throw する契約は維持しつつ、isLoading を解除して
       // 「読み込み中のまま固まる」スピナー stuck を防ぐ(直接呼び出し元向け)。
@@ -720,6 +786,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // 二重防御。TabBar 系の主防御 (tabStore guard) を素通りした直接呼び出しや、
     // activeSceneId 起点の ensure-tab → openPreview 経路を pending 中に止める。
     if (id !== get().activeSceneId && guardInlineAiPending()) return;
+    if (id !== get().activeSceneId && activeEditorHasExternalConflict()) return;
     markStart("treeStore.setActiveScene");
     try {
       set({ activeSceneId: id });
@@ -732,6 +799,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   selectNode(id, extend) {
     // selectNode は activeSceneId=id を必ずセットする (= owner エディタが reload)。
     if (id !== get().activeSceneId && guardInlineAiPending()) return;
+    if (id !== get().activeSceneId && activeEditorHasExternalConflict()) return;
     if (extend) {
       set((state) => {
         const already = state.selectedIds.includes(id);
@@ -1435,8 +1503,19 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async refreshAiRatio(nodeId) {
+    const projectId = get().hydratedProjectId;
+    const workspaceOpenRevision = get().hydratedWorkspaceOpenRevision;
     try {
       const ratios = await loadBatchAiRatio([nodeId]);
+      if (
+        get().hydratedProjectId !== projectId ||
+        get().hydratedWorkspaceOpenRevision !== workspaceOpenRevision ||
+        getCurrentProjectId() !== projectId ||
+        (getCurrentWorkspaceIdentity()?.openRevision ?? null) !==
+          workspaceOpenRevision
+      ) {
+        return;
+      }
       // 結果に無いノード (シーンが空になった等) は key ごと削除する。
       // spread マージだけだと旧 % がツリー再ロードまで残留するし、
       // 0 を書くと初期一括ロード (省略=key無し) と表示が食い違う。
@@ -1469,6 +1548,27 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   setShowAiAttribution(v) {
     set({ showAiAttribution: v });
+    if (!v) return;
+
+    const projectId = get().hydratedProjectId;
+    const workspaceOpenRevision = get().hydratedWorkspaceOpenRevision;
+    const sceneIds = get()
+      .nodes.filter((node) => node.nodeType === "scene")
+      .map((node) => node.id);
+    void loadBatchAiRatio(sceneIds)
+      .then((ratios) => {
+        if (
+          get().showAiAttribution &&
+          get().hydratedProjectId === projectId &&
+          get().hydratedWorkspaceOpenRevision === workspaceOpenRevision &&
+          getCurrentProjectId() === projectId &&
+          (getCurrentWorkspaceIdentity()?.openRevision ?? null) ===
+            workspaceOpenRevision
+        ) {
+          set({ aiRatios: ratios });
+        }
+      })
+      .catch(() => {});
   },
 
   setAutoRevealActiveScene(v) {
@@ -1490,7 +1590,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async loadPinnedCodexIds() {
+    const projectId = get().hydratedProjectId;
+    const workspaceOpenRevision = get().hydratedWorkspaceOpenRevision;
     const ids = await listPinnedCodexIds();
+    if (
+      get().hydratedProjectId !== projectId ||
+      get().hydratedWorkspaceOpenRevision !== workspaceOpenRevision ||
+      (getCurrentWorkspaceIdentity()?.openRevision ?? null) !==
+        workspaceOpenRevision
+    ) {
+      return;
+    }
     set({ pinnedCodexIds: ids });
   },
 

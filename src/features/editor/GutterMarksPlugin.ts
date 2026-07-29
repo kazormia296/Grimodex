@@ -1,11 +1,13 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import type { EditorState } from "@tiptap/pm/state";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type { EditorState, Transaction } from "@tiptap/pm/state";
+import type { Fragment, Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { ReplaceStep } from "@tiptap/pm/transform";
 
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin";
 import i18next from "@/lib/i18n";
+import { markEnd, markStart } from "@/lib/perfLog";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
 import { lintDecorationKey, LINT_REBUILD_META } from "./LintDecorationPlugin";
@@ -36,6 +38,13 @@ const CHANNEL_ORDER: GutterChannel[] = [
   "foreshadow",
   "review",
 ];
+
+const GUTTER_MARK_NAMES = new Set([
+  "comment",
+  "foreshadowSetup",
+  "foreshadowPayoff",
+  "peAnnotation",
+]);
 
 /** 9x9 の Lucide 相当アイコン (stroke=currentColor)。 */
 const CHANNEL_ICON_PATHS: Record<GutterChannel, string> = {
@@ -183,6 +192,69 @@ function buildGutterDecorations(state: EditorState): DecorationSet {
   return DecorationSet.create(state.doc, decos);
 }
 
+function fragmentHasGutterMark(fragment: Fragment): boolean {
+  let found = false;
+  fragment.descendants((node) => {
+    if (node.marks.some((mark) => GUTTER_MARK_NAMES.has(mark.type.name))) {
+      found = true;
+      return false;
+    }
+    return !found;
+  });
+  return found;
+}
+
+function rangeHasGutterMark(
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+): boolean {
+  if (from >= to) return false;
+  let found = false;
+  doc.nodesBetween(from, to, (node) => {
+    if (node.marks.some((mark) => GUTTER_MARK_NAMES.has(mark.type.name))) {
+      found = true;
+      return false;
+    }
+    return !found;
+  });
+  return found;
+}
+
+/**
+ * Plain text edits cannot change which gutter channels a textblock owns.
+ * Preserve and map the existing widget set for those transactions so a
+ * keystroke near the start of a long document does not destroy/recreate every
+ * later widget merely because its absolute position shifted.
+ *
+ * Structural edits and edits carrying/removing gutter marks deliberately fall
+ * back to the full rebuild. Those operations can split/merge marked blocks or
+ * introduce/remove the last channel in a block.
+ */
+function canMapGutterDecorations(tr: Transaction): boolean {
+  if (!tr.docChanged || tr.steps.length === 0) return true;
+
+  return tr.steps.every((step, index) => {
+    if (!(step instanceof ReplaceStep)) return false;
+
+    const docBefore = tr.docs[index];
+    const $from = docBefore.resolve(step.from);
+    const $to = docBefore.resolve(step.to);
+    if (!$from.sameParent($to) || !$from.parent.inlineContent) return false;
+
+    let inlineOnly = true;
+    step.slice.content.forEach((node) => {
+      if (!node.isInline) inlineOnly = false;
+    });
+    if (!inlineOnly) return false;
+
+    return (
+      !fragmentHasGutterMark(step.slice.content) &&
+      !rangeHasGutterMark(docBefore, step.from, step.to)
+    );
+  });
+}
+
 export function createGutterMarksPlugin(): Plugin {
   return new Plugin<DecorationSet>({
     key: gutterMarksKey,
@@ -191,19 +263,24 @@ export function createGutterMarksPlugin(): Plugin {
         return buildGutterDecorations(state);
       },
       apply(tr, oldDecos, _oldState, newState) {
-        const forced =
-          tr.getMeta(GUTTER_REBUILD_META) === true ||
-          tr.getMeta(COMMENT_REBUILD_META) === true ||
-          tr.getMeta(ANNOTATION_REBUILD_META) === true ||
-          // Lint 指摘の更新 (debounce 後の setLintDiagnostics = lintDecorationKey
-          // meta) / showLint トグル (LINT_REBUILD_META) でも review ガターが
-          // 追従するよう rebuild する。
-          tr.getMeta(LINT_REBUILD_META) === true ||
-          tr.getMeta(lintDecorationKey) != null;
-        if (!forced && !tr.docChanged) {
-          return oldDecos.map(tr.mapping, tr.doc);
+        markStart("plugin.gutterMarks.apply");
+        try {
+          const forced =
+            tr.getMeta(GUTTER_REBUILD_META) === true ||
+            tr.getMeta(COMMENT_REBUILD_META) === true ||
+            tr.getMeta(ANNOTATION_REBUILD_META) === true ||
+            // Lint 指摘の更新 (debounce 後の setLintDiagnostics = lintDecorationKey
+            // meta) / showLint トグル (LINT_REBUILD_META) でも review ガターが
+            // 追従するよう rebuild する。
+            tr.getMeta(LINT_REBUILD_META) === true ||
+            tr.getMeta(lintDecorationKey) != null;
+          if (!forced && canMapGutterDecorations(tr)) {
+            return oldDecos.map(tr.mapping, tr.doc);
+          }
+          return buildGutterDecorations(newState);
+        } finally {
+          markEnd("plugin.gutterMarks.apply");
         }
-        return buildGutterDecorations(newState);
       },
     },
     props: {

@@ -4,6 +4,7 @@ import type { CodexEntry, CodexMatchRow } from "./api";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 const mockEntry: CodexEntry = {
   id: "codex-1",
@@ -148,6 +149,7 @@ describe("codexStore", () => {
     useProjectStore.setState({ currentProjectId: null });
     setCurrentWorkspaceIdentity(null);
     useGlobalHistoryStore.getState().clear();
+    useExternalWriteStore.getState().clear();
     useCodexStore.setState({
       entries: [],
       completionTargets: [],
@@ -161,8 +163,37 @@ describe("codexStore", () => {
   });
 
   afterEach(() => {
+    useExternalWriteStore.getState().clear();
     useProjectStore.setState({ currentProjectId: null });
     setCurrentWorkspaceIdentity(null);
+  });
+
+  describe("conflict owner lifecycle", () => {
+    it("Phase conflict 中は entry/preview 切替で paused draft owner を外さない", () => {
+      useCodexStore.setState({
+        selectedEntry: mockEntry,
+        previewPhaseByEntry: {},
+      });
+      useExternalWriteStore.getState().pushConflict({
+        documentKey: {
+          kind: "codex",
+          id: mockEntry.id,
+          phaseId: "phase-1",
+        },
+        sceneId: mockEntry.id,
+        domain: "codex",
+        opType: "phase.update",
+        entityId: "phase-1",
+      });
+
+      useCodexStore.getState().setSelectedEntry(mockEntry2);
+      useCodexStore.getState().setPreviewPhase(mockEntry.id, "__base__");
+
+      expect(useCodexStore.getState().selectedEntry).toEqual(mockEntry);
+      expect(
+        useCodexStore.getState().previewPhaseByEntry[mockEntry.id],
+      ).toBeUndefined();
+    });
   });
 
   describe("loadEntries", () => {
@@ -211,6 +242,62 @@ describe("codexStore", () => {
 
       resolvePromise!([]);
       await loadPromise;
+      expect(useCodexStore.getState().isLoading).toBe(false);
+    });
+
+    it("lets lifecycle strict callers observe a shared load failure", async () => {
+      const failure = new Error("codex optional hydrate failed");
+      mockListCodexEntries.mockRejectedValueOnce(failure);
+
+      const compatibleUiLoad = useCodexStore.getState().loadEntries();
+      const strictLifecycleLoad = useCodexStore
+        .getState()
+        .loadEntries({ propagateError: true });
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+
+      await Promise.all([compatibleExpectation, strictExpectation]);
+      expect(mockListCodexEntries).toHaveBeenCalledTimes(1);
+      expect(useCodexStore.getState().isLoading).toBe(false);
+    });
+
+    it("keeps a strict-first load authoritative when an ordinary caller joins", async () => {
+      const failure = new Error("codex strict-first hydrate failed");
+      mockListCodexEntries.mockRejectedValueOnce(failure);
+
+      const strictLifecycleLoad = useCodexStore
+        .getState()
+        .loadEntries({ propagateError: true });
+      const compatibleUiLoad = useCodexStore.getState().loadEntries();
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+
+      await Promise.all([strictExpectation, compatibleExpectation]);
+      expect(mockListCodexEntries).toHaveBeenCalledTimes(1);
+      expect(useCodexStore.getState().isLoading).toBe(false);
+    });
+
+    it("does not publish a load invalidated by a Project reset", async () => {
+      let resolveOldLoad!: (value: CodexEntry[]) => void;
+      mockListCodexEntries
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveOldLoad = resolve;
+          }),
+        )
+        .mockResolvedValueOnce([mockEntry2]);
+
+      const oldLoad = useCodexStore.getState().loadEntries();
+      useCodexStore.getState().resetForProject();
+      await useCodexStore.getState().loadEntries();
+      resolveOldLoad([mockEntry]);
+      await oldLoad;
+
+      expect(useCodexStore.getState().entries).toEqual([mockEntry2]);
       expect(useCodexStore.getState().isLoading).toBe(false);
     });
   });
@@ -469,6 +556,44 @@ describe("codexStore", () => {
         "アリス改",
       );
       expect(mockListCodexEntries).not.toHaveBeenCalled();
+    });
+
+    it("uses an editor session baseVersion and returns the persisted version", async () => {
+      const before = { ...mockEntry, version: 4 };
+      const updated = { ...before, name: "アリス改", version: 5 };
+      useCodexStore.setState({ entries: [before] });
+      mockUpdateCodexEntry.mockResolvedValue(updated);
+
+      await expect(
+        useCodexStore
+          .getState()
+          .update("codex-1", { name: "アリス改" }, { baseVersion: 4 }),
+      ).resolves.toEqual({ persisted: true, version: 5 });
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        { name: "アリス改" },
+        { baseVersion: 4 },
+      );
+    });
+
+    it("returns non-persisted for an editor session OCC conflict", async () => {
+      const before = { ...mockEntry, version: 4 };
+      useCodexStore.setState({ entries: [before] });
+      const conflictHandler = vi.fn();
+      setCodexEditConflictHandler(conflictHandler);
+      const { CodexVersionConflictError } = await import("./occ");
+      mockUpdateCodexEntry.mockRejectedValue(
+        new CodexVersionConflictError("codex-1"),
+      );
+
+      await expect(
+        useCodexStore
+          .getState()
+          .update("codex-1", { name: "競合" }, { baseVersion: 4 }),
+      ).resolves.toEqual({ persisted: false });
+      expect(conflictHandler).toHaveBeenCalledWith("codex-1");
     });
 
     it("keeps a filtered-out selected entry current after a structural edit", async () => {

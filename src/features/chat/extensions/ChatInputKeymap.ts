@@ -1,7 +1,7 @@
 import { Extension } from "@tiptap/core";
 
 interface ChatInputKeymapOptions {
-  onSubmit: (markdown: string) => void;
+  onSubmit: (markdown: string) => Promise<boolean>;
   onStop: () => void;
   onEditLast?: () => void;
 }
@@ -15,7 +15,7 @@ export const ChatInputKeymap = Extension.create<ChatInputKeymapOptions>({
 
   addOptions() {
     return {
-      onSubmit: () => {},
+      onSubmit: async () => false,
       onStop: () => {},
       onEditLast: undefined as (() => void) | undefined,
     };
@@ -34,8 +34,17 @@ export const ChatInputKeymap = Extension.create<ChatInputKeymapOptions>({
         >;
         const markdown: string =
           markdownStorage.markdown?.getMarkdown?.() ?? text;
-        this.options.onSubmit(markdown);
-        editor.commands.clearContent();
+        void this.options
+          .onSubmit(markdown)
+          .then((accepted) => {
+            if (accepted && !editor.isDestroyed) {
+              editor.commands.clearContent();
+            }
+          })
+          .catch(() => {
+            // The composer owns user-visible error reporting. A rejected
+            // preflight must still retain the draft without an unhandled task.
+          });
         return true;
       },
       ArrowUp: ({ editor }) => {

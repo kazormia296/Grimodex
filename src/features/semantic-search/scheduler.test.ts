@@ -5,6 +5,7 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 import { invoke } from "@/lib/tauri";
+import { _resetEditorAnalysisSchedulerForTests } from "@/lib/editorAnalysisScheduler";
 const mockInvoke = vi.mocked(invoke);
 
 import {
@@ -26,10 +27,12 @@ describe("semantic-search/scheduler", () => {
     mockInvoke.mockReset();
     mockInvoke.mockResolvedValue(0);
     _resetSchedulerForTests();
+    _resetEditorAnalysisSchedulerForTests();
   });
 
   afterEach(() => {
     _resetSchedulerForTests();
+    _resetEditorAnalysisSchedulerForTests();
     vi.useRealTimers();
   });
 
@@ -100,6 +103,9 @@ describe("semantic-search/scheduler", () => {
     scheduleSceneIndex("scene-2");
     expect(_pendingCount()).toBe(2);
     vi.advanceTimersByTime(DEBOUNCE_MS);
+    // Simultaneously due editor analysis starts one task per tick.
+    expect(_pendingCount()).toBe(1);
+    vi.advanceTimersByTime(1);
     expect(_pendingCount()).toBe(0);
   });
 

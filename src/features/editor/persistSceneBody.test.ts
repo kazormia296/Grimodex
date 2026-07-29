@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type { BeatMention } from "@/features/editor/beat/extractBeatMentions";
 
 /**
  * Behavioral contract for persistSceneBody — the single source of truth for the
@@ -15,8 +16,10 @@ const h = vi.hoisted(() => ({
   state: {
     treeNodes: [] as Array<{ id: string; sourceUri?: string }>,
     codexEntries: [] as unknown[],
+    hasCompletionTargets: false,
     activeChatSceneId: null as string | null,
     fileBacked: false,
+    electron: false,
   },
   saveSceneContent: vi.fn(async () => ({
     placedBeatPreview: null,
@@ -27,9 +30,16 @@ const h = vi.hoisted(() => ({
   saveAuthorshipSpans: vi.fn(async () => {}),
   saveForeshadowAnchors: vi.fn(async () => {}),
   saveAnnotationAnchors: vi.fn(async () => {}),
-  upsertSceneBeatMentions: vi.fn(() => Promise.resolve()),
-  upsertSceneBeatPovOverrides: vi.fn(() => Promise.resolve()),
+  extractBeatMentions: vi.fn<(doc: ProseMirrorNode) => BeatMention[]>(() => []),
+  upsertSceneBeatMentions: vi.fn<
+    (sceneId: string, mentions: BeatMention[]) => Promise<void>
+  >(() => Promise.resolve()),
+  extractBeatPovOverrides: vi.fn<(doc: ProseMirrorNode) => string[]>(() => []),
+  upsertSceneBeatPovOverrides: vi.fn<
+    (sceneId: string, povs: string[]) => Promise<void>
+  >(() => Promise.resolve()),
   upsertSceneBodyMentions: vi.fn(() => Promise.resolve()),
+  listCodexMatchTargets: vi.fn(async () => [] as Array<{ id: string }>),
   recordBodyMentionScans: vi.fn(() => Promise.resolve()),
   scheduleSceneIndex: vi.fn(),
   scheduleWriteBack: vi.fn(),
@@ -37,9 +47,38 @@ const h = vi.hoisted(() => ({
   setNodePreview: vi.fn(),
   refreshAiRatio: vi.fn(() => Promise.resolve()),
   refreshContextLayers: vi.fn(() => Promise.resolve()),
+  deriveSceneBodySnapshot: vi.fn(() => ({
+    contentJson: JSON.stringify({ type: "doc", content: [] }),
+    charCount: 42,
+    placedBeatPreview: null,
+    unplacedBeatsDoc: "[]",
+    unplacedBeatPreview: null,
+    authorshipSpans: [],
+    foreshadowSetups: [],
+    foreshadowPayoffs: [],
+    annotationAnchors: [],
+    beatMentions: [],
+    beatPovOverrides: [],
+    docContentSize: 2,
+  })),
+  saveSceneBodyBundle: vi.fn(async () => ({
+    placedBeatPreview: null,
+    unplacedBeatPreview: null,
+    contentVersion: 2,
+    contentUpdatedAt: "2026-07-28T00:00:00.000Z",
+    dbTransactionCount: 1,
+  })),
+  bumpMatrixDataVersion: vi.fn(),
+  recordCounter: vi.fn(),
+  recordSerializedByteCounter: vi.fn(),
 }));
 
-vi.mock("@/lib/perfLog", () => ({ markStart: vi.fn(), markEnd: vi.fn() }));
+vi.mock("@/lib/perfLog", () => ({
+  markStart: vi.fn(),
+  markEnd: vi.fn(),
+  recordCounter: h.recordCounter,
+  recordSerializedByteCounter: h.recordSerializedByteCounter,
+}));
 vi.mock("@/lib/debugLog", () => ({
   debugLog: { error: vi.fn(), warn: vi.fn() },
   errorDetail: (e: unknown) => e,
@@ -84,13 +123,13 @@ vi.mock("@/features/post-effect/syncAnnotations", () => ({
   saveAnnotationAnchors: h.saveAnnotationAnchors,
 }));
 vi.mock("@/features/editor/beat/extractBeatMentions", () => ({
-  extractBeatMentions: () => [],
+  extractBeatMentions: h.extractBeatMentions,
 }));
 vi.mock("@/features/editor/beat/mentionApi", () => ({
   upsertSceneBeatMentions: h.upsertSceneBeatMentions,
 }));
 vi.mock("@/features/editor/beat/extractBeatPovOverrides", () => ({
-  extractBeatPovOverrides: () => [],
+  extractBeatPovOverrides: h.extractBeatPovOverrides,
 }));
 vi.mock("@/features/editor/beat/beatPovCacheApi", () => ({
   upsertSceneBeatPovOverrides: h.upsertSceneBeatPovOverrides,
@@ -102,7 +141,15 @@ vi.mock("@/features/codex/bodyMentionIndexState", () => ({
   recordBodyMentionScans: h.recordBodyMentionScans,
 }));
 vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: { getState: () => ({ entries: h.state.codexEntries }) },
+  useCodexStore: {
+    getState: () => ({
+      entries: h.state.codexEntries,
+      ...(h.state.hasCompletionTargets ? { completionTargets: [] } : {}),
+    }),
+  },
+}));
+vi.mock("@/features/codex/api", () => ({
+  listCodexMatchTargets: h.listCodexMatchTargets,
 }));
 vi.mock("@/features/chat/chatStore", () => ({
   useChatStore: {
@@ -115,6 +162,18 @@ vi.mock("@/features/chat/chatStore", () => ({
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleSceneIndex: h.scheduleSceneIndex,
 }));
+vi.mock("@/lib/shell", () => ({
+  isElectron: () => h.state.electron,
+}));
+vi.mock("@/features/editor/sceneBodySnapshot", () => ({
+  deriveSceneBodySnapshot: h.deriveSceneBodySnapshot,
+}));
+vi.mock("@/features/editor/sceneBodyBundleApi", () => ({
+  saveSceneBodyBundle: h.saveSceneBodyBundle,
+}));
+vi.mock("@/features/matrix/matrixDataVersion", () => ({
+  bumpMatrixDataVersion: h.bumpMatrixDataVersion,
+}));
 
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
 
@@ -125,11 +184,43 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
   h.state.codexEntries = [];
+  h.state.hasCompletionTargets = false;
   h.state.activeChatSceneId = null;
   h.state.fileBacked = false;
+  h.state.electron = false;
 });
 
 describe("persistSceneBody — DB-native scene", () => {
+  it("Electron uses one derived snapshot and one domain IPC for content + sidecars", async () => {
+    h.state.electron = true;
+
+    await persistSceneBody("scene-1", fakeDoc);
+
+    expect(h.deriveSceneBodySnapshot).toHaveBeenCalledWith(fakeDoc, [], true);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledTimes(1);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sceneId: "scene-1",
+        projectId: "proj-1",
+        includeSidecars: true,
+        contentJson: JSON.stringify(DOC_JSON),
+        charCount: 42,
+      }),
+    );
+    expect(h.saveSceneContent).not.toHaveBeenCalled();
+    expect(h.saveAuthorshipSpans).not.toHaveBeenCalled();
+    expect(h.saveForeshadowAnchors).not.toHaveBeenCalled();
+    expect(h.saveAnnotationAnchors).not.toHaveBeenCalled();
+    expect(h.upsertSceneBeatMentions).not.toHaveBeenCalled();
+    expect(h.upsertSceneBeatPovOverrides).not.toHaveBeenCalled();
+    expect(h.bumpMatrixDataVersion).toHaveBeenCalledTimes(1);
+    expect(h.recordCounter).toHaveBeenCalledWith("editor.coreSave.domainIpc");
+    expect(h.recordCounter).toHaveBeenCalledWith(
+      "editor.coreSave.dbTransaction",
+      1,
+    );
+  });
+
   it("saves content with serialized doc JSON + char count", async () => {
     await persistSceneBody("scene-1", fakeDoc);
     expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
@@ -138,6 +229,28 @@ describe("persistSceneBody — DB-native scene", () => {
       unplacedBeatsDoc: "[]",
       charCount: 42,
     });
+  });
+
+  it("records the serialized scene payload as UTF-8 bytes", async () => {
+    const localizedJson = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "日本語の本文" }],
+        },
+      ],
+    };
+    const serialized = JSON.stringify(localizedJson);
+
+    await persistSceneBody("scene-1", {
+      toJSON: () => localizedJson,
+    } as unknown as ProseMirrorNode);
+
+    expect(h.recordSerializedByteCounter).toHaveBeenCalledWith(
+      "editor.coreSave.serializeBytes",
+      serialized,
+    );
   });
 
   it("reuses the save serialization for deferred body mention indexing", async () => {
@@ -191,6 +304,17 @@ describe("persistSceneBody — DB-native scene", () => {
     );
   });
 
+  it("skips body parsing and scan-state writes when the project has no match targets", async () => {
+    h.state.hasCompletionTargets = true;
+
+    await persistSceneBody("scene-1", fakeDoc);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(h.listCodexMatchTargets).toHaveBeenCalledWith("proj-1");
+    expect(h.upsertSceneBodyMentions).not.toHaveBeenCalled();
+    expect(h.recordBodyMentionScans).not.toHaveBeenCalled();
+  });
+
   it("runs the schema-dependent anchor/provenance cascade against the doc", async () => {
     await persistSceneBody("scene-1", fakeDoc);
     expect(h.saveAuthorshipSpans).toHaveBeenCalledWith("scene-1", fakeDoc);
@@ -239,6 +363,28 @@ describe("persistSceneBody — file-backed scene", () => {
     expect(h.saveAuthorshipSpans).not.toHaveBeenCalled();
     expect(h.saveForeshadowAnchors).not.toHaveBeenCalled();
     expect(h.saveAnnotationAnchors).not.toHaveBeenCalled();
+  });
+
+  it("uses the Electron bundle without sidecars and preserves write-back", async () => {
+    h.state.electron = true;
+
+    await persistSceneBody("scene-1", fakeDoc);
+
+    expect(h.deriveSceneBodySnapshot).toHaveBeenCalledWith(fakeDoc, [], false);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledTimes(1);
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sceneId: "scene-1",
+        includeSidecars: false,
+      }),
+    );
+    expect(h.saveSceneContent).not.toHaveBeenCalled();
+    expect(h.bumpMatrixDataVersion).not.toHaveBeenCalled();
+    expect(h.scheduleWriteBack).toHaveBeenCalledWith(
+      "scene-1",
+      "file:///x.md",
+      JSON.stringify(DOC_JSON),
+    );
   });
 });
 
@@ -295,5 +441,115 @@ describe("persistSceneBody — write-write serialization (M3 review I1)", () => 
     releaseA();
     await Promise.all([pA, pB]);
     expect(order).toEqual(["content_A", "spans_A", "content_B", "spans_B"]);
+  });
+
+  it("古い保存の Beat mention / POV cache が完了するまで後続保存を開始しない", async () => {
+    const mentionsA = [
+      { beatId: "beat-a", codexId: "codex-a", role: "actor" as const },
+    ];
+    const mentionsB = [
+      { beatId: "beat-b", codexId: "codex-b", role: "target" as const },
+    ];
+    const povsA = ["character-a"];
+    const povsB = ["character-b"];
+    const docA = {
+      toJSON: () => ({ type: "doc", content: [{ text: "first" }] }),
+    } as unknown as ProseMirrorNode;
+    const docB = {
+      toJSON: () => ({ type: "doc", content: [{ text: "second" }] }),
+    } as unknown as ProseMirrorNode;
+    h.extractBeatMentions.mockImplementation((doc) =>
+      doc === docA ? mentionsA : mentionsB,
+    );
+    h.extractBeatPovOverrides.mockImplementation((doc) =>
+      doc === docA ? povsA : povsB,
+    );
+
+    let releaseMentionA!: () => void;
+    const mentionGateA = new Promise<void>((resolve) => {
+      releaseMentionA = resolve;
+    });
+    let releasePovA!: () => void;
+    const povGateA = new Promise<void>((resolve) => {
+      releasePovA = resolve;
+    });
+    let mentionHead: BeatMention[] = [];
+    let povHead: string[] = [];
+    const order: string[] = [];
+
+    h.saveSceneContent
+      .mockImplementationOnce(async () => {
+        order.push("content_A");
+        return {
+          placedBeatPreview: null,
+          unplacedBeatPreview: null,
+          contentVersion: 1,
+          contentUpdatedAt: "2026-07-13T00:00:01.000Z",
+        };
+      })
+      .mockImplementationOnce(async () => {
+        order.push("content_B");
+        return {
+          placedBeatPreview: null,
+          unplacedBeatPreview: null,
+          contentVersion: 2,
+          contentUpdatedAt: "2026-07-13T00:00:02.000Z",
+        };
+      });
+    h.upsertSceneBeatMentions
+      .mockImplementationOnce(async (_sceneId, mentions) => {
+        order.push("mentions_A:start");
+        await mentionGateA;
+        mentionHead = mentions;
+        order.push("mentions_A:end");
+      })
+      .mockImplementationOnce(async (_sceneId, mentions) => {
+        mentionHead = mentions;
+        order.push("mentions_B");
+      });
+    h.upsertSceneBeatPovOverrides
+      .mockImplementationOnce(async (_sceneId, povs) => {
+        order.push("pov_A:start");
+        await povGateA;
+        povHead = povs;
+        order.push("pov_A:end");
+      })
+      .mockImplementationOnce(async (_sceneId, povs) => {
+        povHead = povs;
+        order.push("pov_B");
+      });
+
+    const saveA = persistSceneBody("scene-1", docA);
+    const saveB = persistSceneBody("scene-1", docB);
+
+    await flushTasks();
+    expect(order).toEqual(["content_A", "mentions_A:start"]);
+    expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
+
+    releaseMentionA();
+    await flushTasks();
+    expect(order).toEqual([
+      "content_A",
+      "mentions_A:start",
+      "mentions_A:end",
+      "pov_A:start",
+    ]);
+    expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
+
+    releasePovA();
+    await Promise.all([saveA, saveB]);
+
+    expect(order).toEqual([
+      "content_A",
+      "mentions_A:start",
+      "mentions_A:end",
+      "pov_A:start",
+      "pov_A:end",
+      "content_B",
+      "mentions_B",
+      "pov_B",
+    ]);
+    expect(mentionHead).toEqual(mentionsB);
+    expect(povHead).toEqual(povsB);
   });
 });

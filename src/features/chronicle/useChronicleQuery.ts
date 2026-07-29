@@ -24,6 +24,8 @@ export interface ChronicleQueryState {
 }
 
 export interface ChronicleQueryResult extends ChronicleQueryState {
+  /** 現在の rows が属する Project。null は切替後の新 snapshot 未到着。 */
+  snapshotProjectId: string | null;
   /** Optimistic event patches stay inside the query snapshot owner. */
   setEvents: (action: SetStateAction<EventRow[]>) => void;
 }
@@ -61,10 +63,22 @@ export function useChronicleQuery({
   onEventsLoaded,
 }: ChronicleQueryOptions): ChronicleQueryResult {
   const [state, setState] = useState<ChronicleQueryState>(EMPTY_STATE);
+  const [snapshotProjectId, setSnapshotProjectId] = useState<string | null>(
+    null,
+  );
+  const [snapshotGeneration, setSnapshotGeneration] = useState<string | null>(
+    null,
+  );
   const loadedProjectIdRef = useRef<string | null>(null);
+  const generation = `${projectId ?? ""}\u0000${reloadKey}\u0000${revisionCounter}`;
 
   useEffect(() => {
     const isProjectLoad = loadedProjectIdRef.current !== projectId;
+    // A reload/revision is a new read generation even when the Project stays
+    // the same. Do not let the previous successful snapshot authorize view
+    // writes while the replacement query is pending or after it fails.
+    setSnapshotProjectId(null);
+    setSnapshotGeneration(null);
     if (isProjectLoad) {
       loadedProjectIdRef.current = projectId;
       setState(EMPTY_STATE);
@@ -86,9 +100,15 @@ export function useChronicleQuery({
         ]);
         if (cancelled) return;
         setState({ events, sceneLinks, relations, participants });
+        setSnapshotProjectId(projectId);
+        setSnapshotGeneration(generation);
       })
       .catch(() => {
-        if (!cancelled) setState(EMPTY_STATE);
+        if (!cancelled) {
+          setState(EMPTY_STATE);
+          setSnapshotProjectId(null);
+          setSnapshotGeneration(null);
+        }
       });
 
     return () => {
@@ -101,6 +121,7 @@ export function useChronicleQuery({
     onEventsLoaded,
     onProjectChanged,
     onProjectLoaded,
+    generation,
   ]);
 
   const setEvents = useCallback((action: SetStateAction<EventRow[]>) => {
@@ -110,5 +131,18 @@ export function useChronicleQuery({
     }));
   }, []);
 
-  return { ...state, setEvents };
+  // Project prop が切り替わった最初の render では effect による reset より先に
+  // 旧 snapshot が残っている。同期的に隠して、旧 Project の Event を新 Project の
+  // view 計算・描画・操作へ一瞬でも流さない。
+  const visibleState =
+    loadedProjectIdRef.current === projectId ? state : EMPTY_STATE;
+  return {
+    ...visibleState,
+    snapshotProjectId:
+      loadedProjectIdRef.current === projectId &&
+      snapshotGeneration === generation
+        ? snapshotProjectId
+        : null,
+    setEvents,
+  };
 }

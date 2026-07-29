@@ -47,11 +47,13 @@ use grimodex_db::ime_export::{
 };
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
-    self, PlotThreadCreatePayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
-    PlotThreadPatch,
+    self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
+    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadPatch,
+    PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::sample_seed;
+use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
 };
@@ -255,6 +257,7 @@ struct ChatRequest {
     model: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
     request_max_output_tokens: Option<u32>,
 }
 
@@ -292,6 +295,7 @@ struct AgentRequest {
     model: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
     request_max_output_tokens: Option<u32>,
     resolved_tool_protocol: Option<grimodex_ai::ResolvedToolProtocol>,
 }
@@ -303,6 +307,8 @@ struct AgentRequest {
 struct ListAiModelsRequest {
     provider: grimodex_ai::AiProvider,
     endpoint_id: Option<String>,
+    selected_model_id: Option<String>,
+    expected_ollama_endpoint: Option<String>,
 }
 
 /// `test_ai_connection` の FE 引数。接続先 provider/model は必須、variant / endpoint
@@ -479,6 +485,22 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let rows = db.execute_batch_tx_renderer(&statements)?;
                 Ok(serde_json::to_string(&QueryResult { rows })?)
+            })
+        })
+        .await
+    }
+
+    /// Scene content and every document-derived sidecar are committed in one
+    /// SQLite transaction. The renderer performs one PM traversal and passes
+    /// the typed snapshot as camelCase JSON.
+    #[napi]
+    pub async fn save_scene_body_bundle(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SaveSceneBodyBundlePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = scene_body::save_scene_body_bundle(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
             })
         })
         .await
@@ -1268,6 +1290,20 @@ impl Backend {
     // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
     // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。
 
+    /// Rebuild可能なsemantic background indexingを協調停止する。
+    /// 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で
+    /// `IPC_DERIVED_CANCELLED` を返す。途中生成したindex payloadはcommitしない。
+    /// 返り値は新generationのJSON数値。
+    #[napi]
+    pub async fn semantic_cancel_background(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let generation = state.semantic.semantic_cancel_background();
+            Ok(serde_json::to_string(&generation).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     /// モデルが無ければbackground downloadを開始し、状態文字列を即返す。
     /// resource欠落はBackend constructorを失敗させず、このsemantic surfaceでのみ
     /// installed/unavailable/downloading または明示エラーとして扱う。
@@ -1560,6 +1596,50 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let row = plot_threads::link_create(db, payload)?;
                 Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// プロットスレッド分岐/合流作成。request ledger・XPROJ 検証・entity
+    /// insert を共有 Rust の単一 transaction で実行する。
+    #[napi]
+    pub async fn plot_thread_branch_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadBranchCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::branch_create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// History snapshot restore. Parent/children and request ledger commit in
+    /// one shared-Rust transaction.
+    #[napi]
+    pub async fn plot_thread_restore_snapshot(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadRestoreSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = plot_threads::restore_snapshot(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
+    /// Atomic marker + dependent-branch delete with durable replay identity.
+    #[napi]
+    pub async fn plot_thread_delete_snapshot(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadDeleteSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = plot_threads::delete_snapshot(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
             })
         })
         .await
@@ -2367,6 +2447,12 @@ impl Backend {
             req.provider,
             req.endpoint_id.as_deref(),
         );
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &settings_for_call.provider,
+            &settings_for_call.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         let variant = req.api_variant.as_deref();
         let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
@@ -2426,6 +2512,12 @@ impl Backend {
             req.provider,
             req.endpoint_id.as_deref(),
         );
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &settings_for_call.provider,
+            &settings_for_call.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         let variant = req.api_variant.as_deref();
         let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
@@ -2564,6 +2656,12 @@ impl Backend {
             req.provider,
             req.endpoint_id.as_deref(),
         );
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &settings_for_call.provider,
+            &settings_for_call.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         let variant = req.api_variant.as_deref();
         let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
@@ -2612,9 +2710,22 @@ impl Backend {
                 settings.active_openai_compatible_endpoint_id = Some(endpoint_id.to_string());
             }
         }
-        let models = grimodex_ai::fetch_models(&req.provider, &api_key, settings.endpoints())
-            .await
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        grimodex_ai::validate_expected_ollama_endpoint(
+            &req.provider,
+            &settings.ollama_endpoint,
+            req.expected_ollama_endpoint.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+        let models = grimodex_ai::fetch_models_for(
+            &req.provider,
+            &api_key,
+            settings.endpoints(),
+            req.selected_model_id
+                .as_deref()
+                .filter(|model| !model.trim().is_empty()),
+        )
+        .await
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         serde_json::to_string(&models)
             .map_err(|e| Error::from_reason(format!("failed to serialize AI models: {e}")))
     }

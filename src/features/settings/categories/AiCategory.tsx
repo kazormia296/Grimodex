@@ -18,6 +18,9 @@ import {
   getOpenaiCompatibleEndpoints,
   getOpenrouterProviderPins,
   groupModelsByDeveloper,
+  ollamaContextLengthSettingKey,
+  ollamaContextLengthSettingKeys,
+  normalizeOllamaModelId,
 } from "@/features/chat/types";
 import type {
   AiProvider,
@@ -251,9 +254,12 @@ export function AiCategory() {
     }
   }, [settings]);
 
-  const handleLoadModels = useCallback(() => {
-    if (settings) loadModels();
-  }, [settings, loadModels]);
+  const handleLoadModels = useCallback(
+    (force = false) => {
+      if (settings) loadModels({ force });
+    },
+    [settings, loadModels],
+  );
 
   useEffect(() => {
     if (!settings) return;
@@ -422,6 +428,81 @@ export function AiCategory() {
 
   async function handleSaveEndpoint() {
     if (localSettings) await saveSettings(localSettings);
+  }
+
+  function handleOllamaContextLengthChange(rawValue: string) {
+    const current = localSettings;
+    if (!current?.model) return;
+    const model = current.model;
+    const settingKeys = ollamaContextLengthSettingKeys(
+      current.ollamaEndpoint,
+      model,
+    );
+    const settingKey = ollamaContextLengthSettingKey(
+      current.ollamaEndpoint,
+      model,
+    );
+    const normalizedModel = normalizeOllamaModelId(model);
+    const modelMaximum = models.find(
+      (candidate) => normalizeOllamaModelId(candidate.id) === normalizedModel,
+    )?.contextLength;
+    const next = { ...(current.ollamaContextLengths ?? {}) };
+    for (const legacyKey of settingKeys) delete next[legacyKey];
+    // Retire unsafe endpoint-unscoped spellings written by older builds.
+    delete next[model];
+    delete next[normalizedModel];
+    delete next[`${normalizedModel}:latest`];
+    const parsed = Number(rawValue);
+    if (
+      rawValue.trim() === "" ||
+      !Number.isSafeInteger(parsed) ||
+      parsed <= 0
+    ) {
+      delete next[settingKey];
+    } else {
+      next[settingKey] =
+        modelMaximum && modelMaximum > 0
+          ? Math.min(parsed, modelMaximum)
+          : parsed;
+    }
+    setLocalSettings({ ...current, ollamaContextLengths: next });
+  }
+
+  async function handleSaveOllamaContextLength() {
+    if (!localSettings) return;
+    const normalizedModel = normalizeOllamaModelId(localSettings.model);
+    const modelMaximum = models.find(
+      (candidate) => normalizeOllamaModelId(candidate.id) === normalizedModel,
+    )?.contextLength;
+    const settingKeys = ollamaContextLengthSettingKeys(
+      localSettings.ollamaEndpoint,
+      localSettings.model,
+    );
+    const configured = settingKeys
+      .map((key) => localSettings.ollamaContextLengths?.[key])
+      .find((value) => value !== undefined);
+    if (modelMaximum && configured && configured > modelMaximum) {
+      const nextContextLengths = {
+        ...(localSettings.ollamaContextLengths ?? {}),
+      };
+      for (const legacyKey of settingKeys) {
+        delete nextContextLengths[legacyKey];
+      }
+      nextContextLengths[
+        ollamaContextLengthSettingKey(
+          localSettings.ollamaEndpoint,
+          localSettings.model,
+        )
+      ] = modelMaximum;
+      const normalized = {
+        ...localSettings,
+        ollamaContextLengths: nextContextLengths,
+      };
+      setLocalSettings(normalized);
+      await saveSettings(normalized);
+      return;
+    }
+    await saveSettings(localSettings);
   }
 
   // Context budget
@@ -842,7 +923,7 @@ export function AiCategory() {
                     />
                     <button
                       type="button"
-                      onClick={handleLoadModels}
+                      onClick={() => handleLoadModels(true)}
                       disabled={isLoadingModels}
                       className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
                     >
@@ -999,6 +1080,41 @@ export function AiCategory() {
               : current.filter((id) => id !== modelId);
             settingsStore.set("ai.modelWhitelist", JSON.stringify(next));
           };
+          const selectedOllamaModel =
+            localSettings.provider === "ollama"
+              ? models.find(
+                  (model) =>
+                    normalizeOllamaModelId(model.id) ===
+                    normalizeOllamaModelId(localSettings.model),
+                )
+              : undefined;
+          const modelMaximum = selectedOllamaModel?.contextLength;
+          const detectedOllamaContextRaw =
+            selectedOllamaModel?.effectiveContextLength;
+          const detectedOllamaContext =
+            detectedOllamaContextRaw && modelMaximum
+              ? Math.min(detectedOllamaContextRaw, modelMaximum)
+              : detectedOllamaContextRaw;
+          const ollamaContextSettingKeys = localSettings.model
+            ? ollamaContextLengthSettingKeys(
+                localSettings.ollamaEndpoint,
+                localSettings.model,
+              )
+            : [];
+          const declaredOllamaContextRaw = ollamaContextSettingKeys
+            .map((key) => localSettings.ollamaContextLengths?.[key])
+            .find((value) => value !== undefined);
+          const declaredOllamaContext =
+            declaredOllamaContextRaw && modelMaximum
+              ? Math.min(declaredOllamaContextRaw, modelMaximum)
+              : declaredOllamaContextRaw;
+          const usableOllamaContext =
+            detectedOllamaContext ?? declaredOllamaContext;
+          const usableOllamaContextSource = detectedOllamaContext
+            ? selectedOllamaModel?.effectiveContextSource
+            : declaredOllamaContext
+              ? "settings"
+              : undefined;
 
           return (
             <>
@@ -1013,12 +1129,67 @@ export function AiCategory() {
                     />
                     <button
                       type="button"
-                      onClick={handleLoadModels}
+                      onClick={() => handleLoadModels(true)}
                       disabled={isLoadingModels}
                       className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
                     >
                       {t("settings.ai.refresh")}
                     </button>
+                  </div>
+                </SettingRow>
+              )}
+
+              {localSettings.provider === "ollama" && (
+                <SettingRow
+                  label={t("settings.ai.ollamaEffectiveContext")}
+                  description={t("settings.ai.ollamaEffectiveContextDesc")}
+                >
+                  <div className="w-80 space-y-1.5">
+                    <input
+                      type="number"
+                      min={1}
+                      step={1024}
+                      max={modelMaximum}
+                      value={
+                        localSettings.model ? (declaredOllamaContext ?? "") : ""
+                      }
+                      onChange={(event) =>
+                        handleOllamaContextLengthChange(event.target.value)
+                      }
+                      onBlur={handleSaveOllamaContextLength}
+                      disabled={!localSettings.model}
+                      aria-label={t("settings.ai.ollamaEffectiveContext")}
+                      placeholder={t(
+                        "settings.ai.ollamaEffectiveContextPlaceholder",
+                      )}
+                      className="w-40 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none disabled:opacity-50"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {selectedOllamaModel?.contextLength
+                        ? t("settings.ai.ollamaModelMaximumValue", {
+                            value:
+                              selectedOllamaModel.contextLength.toLocaleString(),
+                          })
+                        : t("settings.ai.ollamaModelMaximumUnknown")}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {usableOllamaContext
+                        ? t("settings.ai.ollamaEffectiveContextValue", {
+                            value: usableOllamaContext.toLocaleString(),
+                            source:
+                              usableOllamaContextSource === "runner"
+                                ? t("settings.ai.ollamaContextSourceRunner")
+                                : usableOllamaContextSource ===
+                                    "model-parameter"
+                                  ? t(
+                                      "settings.ai.ollamaContextSourceModelParameter",
+                                    )
+                                  : t(
+                                      "settings.ai.ollamaContextSourceSettings",
+                                    ),
+                          })
+                        : t("settings.ai.ollamaEffectiveContextUnknown")}
+                    </p>
                   </div>
                 </SettingRow>
               )}
@@ -1337,6 +1508,7 @@ export function AiCategory() {
               <RoleModelRow
                 key={role}
                 role={role}
+                activeProvider={localSettings.provider}
                 activeModels={inWhitelist}
                 sections={roleCatalog.sections}
                 isLoadingModels={isLoadingModels}

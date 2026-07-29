@@ -3,6 +3,7 @@ import type { Edge } from "@xyflow/react";
 import { buildMapEdgesFromData } from "../boardToReactFlow";
 import { pendingEdgeLabelEdits } from "../mapApi";
 import type { ShowFlags, MapNodePositionRecord } from "../types";
+import type { LatestValueDraftPersistContext } from "@/application/lifecycle/latestValueDraftController";
 
 interface UseMapEdgesInput {
   codexEntries: {
@@ -46,7 +47,8 @@ interface UseMapEdgesInput {
     edgeId: string,
     field: "forwardLabel" | "backwardLabel",
     label: string | null,
-  ) => void;
+    context?: LatestValueDraftPersistContext,
+  ) => void | Promise<void>;
 }
 
 export function useMapEdges({
@@ -84,7 +86,8 @@ export function useMapEdges({
               onLabelSave: (
                 field: "forwardLabel" | "backwardLabel",
                 label: string | null,
-              ) => onUserEdgeLabelSave(edgeId, field, label),
+                context?: LatestValueDraftPersistContext,
+              ) => onUserEdgeLabelSave(edgeId, field, label, context),
             }
           : {}),
       };

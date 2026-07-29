@@ -43,6 +43,8 @@ export interface GridPersistentState {
 }
 
 interface GridState {
+  /** Project currently allowed to publish or persist Grid container state. */
+  activeProjectId: string | null;
   containerId: string | null;
   display: GridDisplaySettings;
   filter: GridFilterSettings;
@@ -67,6 +69,7 @@ interface GridState {
   cardTabMode: CardTabMode;
   setCardTabMode: (mode: CardTabMode) => void;
 
+  resetForProject: (projectId: string) => void;
   loadForProject: (projectId: string) => Promise<void>;
   setContainerId: (projectId: string, id: string | null) => Promise<void>;
   setDisplay: (updates: Partial<GridDisplaySettings>) => void;
@@ -112,7 +115,10 @@ const DEFAULT_FILTER: GridFilterSettings = {
   labelFilter: [],
 };
 
+let loadGeneration = 0;
+
 export const useGridStore = create<GridState>((set, get) => ({
+  activeProjectId: null,
   containerId: null,
   display: { ...DEFAULT_DISPLAY },
   filter: { ...DEFAULT_FILTER },
@@ -126,8 +132,31 @@ export const useGridStore = create<GridState>((set, get) => ({
   pendingRevealSceneId: null,
   revealedSceneId: null,
 
+  resetForProject(projectId) {
+    loadGeneration += 1;
+    set({
+      activeProjectId: projectId,
+      containerId: null,
+      searchQuery: "",
+      collapsedFolderIds: new Set<string>(),
+      expandedSynopsisIds: new Set<string>(),
+      selectedSceneIds: new Set<string>(),
+      selectionAnchorId: null,
+      pendingRevealSceneId: null,
+      revealedSceneId: null,
+    });
+  },
+
   async loadForProject(projectId) {
+    if (get().activeProjectId === null) {
+      get().resetForProject(projectId);
+    }
+    if (get().activeProjectId !== projectId) return;
+    const generation = ++loadGeneration;
     const stored = await loadContainerId(projectId);
+    if (generation !== loadGeneration || get().activeProjectId !== projectId) {
+      return;
+    }
     if (stored === null) {
       set({ containerId: null });
       return;
@@ -138,6 +167,12 @@ export const useGridStore = create<GridState>((set, get) => ({
     if (!node || node.nodeType !== "folder") {
       // Stale ID — remove it
       await clearContainerId(projectId);
+      if (
+        generation !== loadGeneration ||
+        get().activeProjectId !== projectId
+      ) {
+        return;
+      }
       set({ containerId: null });
     } else {
       set({ containerId: stored });
@@ -145,6 +180,12 @@ export const useGridStore = create<GridState>((set, get) => ({
   },
 
   async setContainerId(projectId, id) {
+    if (get().activeProjectId === null) {
+      get().resetForProject(projectId);
+    }
+    if (get().activeProjectId !== projectId) return;
+    // A direct user choice wins over any older hydration still in flight.
+    loadGeneration += 1;
     set({ containerId: id });
     if (id === null) {
       await clearContainerId(projectId);

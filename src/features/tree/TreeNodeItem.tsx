@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, memo } from "react";
-import type { RefObject } from "react";
+import type { CSSProperties, RefObject } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { useTranslation } from "react-i18next";
@@ -36,6 +36,11 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { getLiveFolderCharCount } from "./treeIndex";
+import { useTreeVirtualRowEditing } from "./treeVirtualEditingStore";
+import { useQuiescentDraftParticipant } from "@/application/lifecycle/useQuiescentDraftParticipant";
+import { useLatestValueDraftController } from "@/application/lifecycle/latestValueDraftController";
+import type { QuiescenceParticipantFlushOptions } from "@/application/lifecycle/quiescenceParticipants";
 
 const STATUS_OPTIONS: SceneStatus[] = [
   "outline",
@@ -85,9 +90,8 @@ interface TreeNodeItemProps {
   isSelected: boolean;
   isExpanded: boolean;
   children?: React.ReactNode;
-  /** For folders, the flat list of leaf descendant ids whose charCount should
-   *  be summed for the running total. Undefined for leaves. */
-  leafDescendants?: string[];
+  /** Outline-mode synopsis, kept inside the measured virtual row. */
+  outlineSynopsis?: React.ReactNode;
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
@@ -109,11 +113,15 @@ interface TreeNodeItemProps {
   dragInProgress: boolean;
   /** Current view mode — synopsis tooltip shown only in "tree" mode */
   viewMode?: string;
+  /** TanStack Virtual positioning/measurement. Omitted by legacy renderers. */
+  virtualIndex?: number;
+  virtualStart?: number;
+  measureElement?: (element: HTMLLIElement | null) => void;
 }
 
 /** memo 化の前提: 全 props がスカラーか安定参照であること。
- *  node/leafDescendants は useScenesDerivedData の useMemo 産物、
- *  orderedNodesRef は ref。folder 行だけは children (毎 render 新規の
+ *  node は useScenesDerivedData の useMemo 産物、orderedNodesRef は ref。
+ *  folder 行だけは children (毎 render 新規の
  *  JSX element) を受けるため親の再レンダーに常に追従する (許容済み)。
  *  ドロップ指示 (data-drop-*) は props でなく useScenesDnd が DOM 属性を
  *  直接トグルし、ここでは data-[drop-*] variant で見た目だけ持つ。 */
@@ -124,7 +132,7 @@ function TreeNodeItemImpl({
   isSelected,
   isExpanded,
   children,
-  leafDescendants,
+  outlineSynopsis,
   showWordCounts,
   showStatusDots,
   showLabelDots,
@@ -136,6 +144,9 @@ function TreeNodeItemImpl({
   orderedNodesRef,
   dragInProgress,
   viewMode,
+  virtualIndex,
+  virtualStart,
+  measureElement,
 }: TreeNodeItemProps) {
   const __perfStart = performance.now();
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
@@ -151,10 +162,7 @@ function TreeNodeItemImpl({
   const fallbackCharCount = node.charCount ?? 0;
   const charCount = useTreeStore((s) => {
     if (isLeafForCount) return s.charCounts[node.id] ?? fallbackCharCount;
-    if (!leafDescendants) return 0;
-    let total = 0;
-    for (const id of leafDescendants) total += s.charCounts[id] ?? 0;
-    return total;
+    return getLiveFolderCharCount(s.nodes, s.charCounts, node.id);
   });
   const aiRatio = useTreeStore((s) => s.aiRatios[node.id] ?? 0);
 
@@ -163,6 +171,26 @@ function TreeNodeItemImpl({
   const [editTitle, setEditTitle] = useState(node.title);
   const [showStatusPopover, setShowStatusPopover] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const editingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const titleController = useLatestValueDraftController(
+    `tree-title:${node.id}`,
+    node.title,
+    async (next) => {
+      const trimmed = next.trim();
+      if (trimmed && trimmed !== node.title) {
+        await updateNodeTitle(node.id, trimmed);
+      }
+    },
+  );
+  useTreeVirtualRowEditing(node.id, isEditing);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const isContainer = node.nodeType === "folder";
 
@@ -187,8 +215,9 @@ function TreeNodeItemImpl({
     (el: HTMLLIElement | null) => {
       setDragRef(el);
       setDropRef(el);
+      measureElement?.(el);
     },
-    [setDragRef, setDropRef],
+    [setDragRef, setDropRef, measureElement],
   );
 
   // DragOverlay handles the visual ghost, so suppress transform on the original.
@@ -197,9 +226,17 @@ function TreeNodeItemImpl({
   // useScenesDnd が書く data-drop-* 属性 + className の data-[drop-*]
   // variant が担う。React の style オブジェクトに padding を含めると
   // ドラッグ中の再レンダーで直書き属性側の見た目と競合するため持たない。
-  const style = {
+  const style: CSSProperties = {
     opacity: isDragging ? 0.3 : 1,
     transition: "padding 100ms ease-out",
+    ...(virtualStart !== undefined
+      ? {
+          position: "absolute",
+          insetInline: 0,
+          top: 0,
+          transform: `translateY(${virtualStart}px)`,
+        }
+      : {}),
   };
 
   const focusEditorPanel = useCallback(() => {
@@ -265,10 +302,13 @@ function TreeNodeItemImpl({
   }, [node, focusEditorPanel]);
 
   const startEdit = useCallback(() => {
+    if (editingRef.current) return;
+    editingRef.current = true;
+    titleController.reset(node.title);
     setEditTitle(node.title);
     setIsEditing(true);
     setTimeout(() => inputRef.current?.select(), 0);
-  }, [node.title]);
+  }, [node.title, titleController]);
 
   // Auto-enter edit mode when this node was just created
   useEffect(() => {
@@ -278,23 +318,58 @@ function TreeNodeItemImpl({
     }
   }, [pendingRenameId, node.id, startEdit, setPendingRenameId]);
 
-  const finishEdit = useCallback(() => {
-    const trimmed = editTitle.trim();
-    if (trimmed && trimmed !== node.title) {
-      updateNodeTitle(node.id, trimmed).catch(() => {});
+  const finishEdit = useCallback(
+    async (options?: QuiescenceParticipantFlushOptions): Promise<void> => {
+      if (!editingRef.current) return;
+      if (!titleController.latestValue.trim()) {
+        titleController.reset(node.title);
+      } else {
+        await titleController.save(options);
+      }
+      editingRef.current = false;
+      if (mountedRef.current) setIsEditing(false);
+    },
+    [node.title, titleController],
+  );
+
+  const cancelEdit = useCallback(() => {
+    if (!editingRef.current) return;
+    editingRef.current = false;
+    titleController.reset(node.title);
+    if (mountedRef.current) {
+      setEditTitle(node.title);
+      setIsEditing(false);
     }
-    setIsEditing(false);
-  }, [editTitle, node.id, node.title, updateNodeTitle]);
+  }, [node.title, titleController]);
+
+  useQuiescentDraftParticipant({
+    id: `tree-title:${node.id}`,
+    enabled: isEditing,
+    isDirty: () => editingRef.current && titleController.dirty,
+    flush: finishEdit,
+    discard: cancelEdit,
+    recovery: () =>
+      editingRef.current
+        ? {
+            kind: "tree-node-title",
+            nodeId: node.id,
+            title: titleController.latestValue,
+          }
+        : null,
+  });
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === "Escape") {
-        if (e.key === "Escape") setEditTitle(node.title);
-        finishEdit();
+      if (e.nativeEvent.isComposing) return;
+      if (e.key === "Enter") {
+        void finishEdit().catch(() => {});
+        e.preventDefault();
+      } else if (e.key === "Escape") {
+        cancelEdit();
         e.preventDefault();
       }
     },
-    [finishEdit, node.title],
+    [cancelEdit, finishEdit],
   );
 
   // 左ガターの「縦版ミニ・タイムライン」幅。スレッド列ぶん content を右へ寄せ、
@@ -313,6 +388,7 @@ function TreeNodeItemImpl({
       // ドラッグ中に直接トグルする (28px の隙間で挿入位置を示す)
       className="list-none data-[drop-before=true]:pt-7 data-[drop-after=true]:pb-7"
       data-node-id={node.id}
+      data-index={virtualIndex}
     >
       <ContextMenu>
         <ContextMenuTrigger asChild>
@@ -429,8 +505,13 @@ function TreeNodeItemImpl({
                 <Input
                   ref={inputRef}
                   value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  onBlur={finishEdit}
+                  onChange={(e) => {
+                    titleController.markDirty(
+                      e.target.value.trim() ? e.target.value : node.title,
+                    );
+                    setEditTitle(e.target.value);
+                  }}
+                  onBlur={() => void finishEdit().catch(() => {})}
                   onKeyDown={handleKeyDown}
                   onClick={(e) => e.stopPropagation()}
                   className="h-5 w-full rounded border-ring px-1 text-xs"
@@ -531,6 +612,8 @@ function TreeNodeItemImpl({
         </ContextMenuTrigger>
         <TreeContextMenu node={node} onStartRename={startEdit} />
       </ContextMenu>
+
+      {outlineSynopsis}
 
       {/* Children */}
       <AnimatePresence initial={false}>

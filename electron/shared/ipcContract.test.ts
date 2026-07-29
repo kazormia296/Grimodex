@@ -69,6 +69,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "dbExecuteBatch",
       Promise.resolve('{"rows":[]}'),
     ) as never,
+    saveSceneBodyBundle: record(
+      "saveSceneBodyBundle",
+      Promise.resolve(
+        '{"placedBeatPreview":null,"unplacedBeatPreview":null,"contentVersion":2,"contentUpdatedAt":"2026-07-28T00:00:00.000Z","dbTransactionCount":1}',
+      ),
+    ) as never,
     vacuumDatabase: record(
       "vacuumDatabase",
       Promise.resolve(undefined),
@@ -197,6 +203,24 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     plotThreadLinkCreate: record(
       "plotThreadLinkCreate",
       Promise.resolve('{"id":"pl1","thread_id":"pt1","node_id":"s1"}'),
+    ) as never,
+    plotThreadBranchCreate: record(
+      "plotThreadBranchCreate",
+      Promise.resolve(
+        '{"id":"pb1","project_id":"p1","from_thread_id":"pt1","to_thread_id":"pt2","at_node_id":"s1","kind":"branch"}',
+      ),
+    ) as never,
+    plotThreadRestoreSnapshot: record(
+      "plotThreadRestoreSnapshot",
+      Promise.resolve(
+        '{"id":"restore-1","thread":null,"links":[],"branches":[],"__idempotency":{"replayed":false,"entityPresent":true}}',
+      ),
+    ) as never,
+    plotThreadDeleteSnapshot: record(
+      "plotThreadDeleteSnapshot",
+      Promise.resolve(
+        '{"id":"delete-1","deleted":true,"__idempotency":{"replayed":false,"entityPresent":true}}',
+      ),
     ) as never,
     plotThreadLinkUpdate: record(
       "plotThreadLinkUpdate",
@@ -564,6 +588,12 @@ describe("dispatchInvoke", () => {
     expect(env).toEqual({
       ok: false,
       error: `IPC_UNIMPLEMENTED: ${command}`,
+      errorInfo: {
+        code: "IPC_UNIMPLEMENTED",
+        message: `IPC_UNIMPLEMENTED: ${command}`,
+        retryable: false,
+        outcome: "failed",
+      },
     });
     expect(
       unimplementedError(command).startsWith(IPC_UNIMPLEMENTED_MARKER),
@@ -650,7 +680,16 @@ describe("dispatchInvoke", () => {
       { sql: "SELECT 1", params: [], method: "all" },
       { backend, shell: noShell },
     );
-    expect(env).toEqual({ ok: false, error: "No workspace is open" });
+    expect(env).toEqual({
+      ok: false,
+      error: "No workspace is open",
+      errorInfo: {
+        code: "NO_WORKSPACE_OPEN",
+        message: "No workspace is open",
+        retryable: true,
+        outcome: "failed",
+      },
+    });
   });
 
   it("同期 throw も envelope に畳む（決して reject しない）", async () => {
@@ -664,7 +703,45 @@ describe("dispatchInvoke", () => {
       { path: "/x" },
       { backend, shell: noShell },
     );
-    expect(env).toEqual({ ok: false, error: "WORKSPACE_SWITCHING" });
+    expect(env).toEqual({
+      ok: false,
+      error: "WORKSPACE_SWITCHING",
+      errorInfo: {
+        code: "WORKSPACE_SWITCHING",
+        message: "WORKSPACE_SWITCHING",
+        retryable: true,
+        outcome: "failed",
+      },
+    });
+  });
+
+  it("native derived cancellation は retryable typed envelope にする", async () => {
+    const { backend } = fakeBackend({
+      semanticReindexAll: () =>
+        Promise.reject(
+          new Error(
+            "IPC_DERIVED_CANCELLED: semantic background indexing was cancelled",
+          ),
+        ),
+    });
+    const env = await dispatchInvoke(
+      "semantic_reindex_all",
+      { projectId: "project-1" },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: false,
+      error:
+        "IPC_DERIVED_CANCELLED: semantic background indexing was cancelled",
+      errorInfo: {
+        code: "IPC_DERIVED_CANCELLED",
+        message:
+          "IPC_DERIVED_CANCELLED: semantic background indexing was cancelled",
+        retryable: true,
+        outcome: "failed",
+      },
+    });
   });
 
   it("native license commandは残存shell stubに遮られない", async () => {
@@ -688,7 +765,10 @@ describe("dispatchInvoke", () => {
     const { backend } = fakeBackend();
     for (const cmd of ["constructor", "toString", "hasOwnProperty"]) {
       const env = await dispatchInvoke(cmd, {}, { backend, shell: noShell });
-      expect(env).toEqual({ ok: false, error: `IPC_UNIMPLEMENTED: ${cmd}` });
+      expect(env).toMatchObject({
+        ok: false,
+        error: `IPC_UNIMPLEMENTED: ${cmd}`,
+      });
     }
   });
 });
@@ -722,6 +802,111 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     );
     expect(calls).toEqual([{ method: "dbExecuteBatch", args: [statements] }]);
     expect(env).toEqual({ ok: true, value: { rows: [] } });
+  });
+
+  it("save_scene_body_bundle: typed snapshot を1 payloadで渡して結果をparseする", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      sceneId: "s1",
+      projectId: "p1",
+      includeSidecars: true,
+      contentJson: '{"type":"doc"}',
+      charCount: 3,
+      placedBeatPreview: null,
+      unplacedBeatsDoc: "[]",
+      unplacedBeatPreview: null,
+      authorshipSpans: [],
+      foreshadowSetups: [],
+      foreshadowPayoffs: [],
+      annotationAnchors: [],
+      beatMentions: [],
+      beatPovOverrides: [],
+      docContentSize: 2,
+    };
+    const env = await dispatchInvoke(
+      "save_scene_body_bundle",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([{ method: "saveSceneBodyBundle", args: [payload] }]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        placedBeatPreview: null,
+        unplacedBeatPreview: null,
+        contentVersion: 2,
+        contentUpdatedAt: "2026-07-28T00:00:00.000Z",
+        dbTransactionCount: 1,
+      },
+    });
+  });
+
+  it("save_scene_body_bundle: malformed arrays are rejected before native", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "save_scene_body_bundle",
+      {
+        payload: {
+          sceneId: "s1",
+          projectId: "p1",
+          includeSidecars: true,
+          contentJson: "{}",
+          charCount: 0,
+          placedBeatPreview: null,
+          unplacedBeatsDoc: "[]",
+          unplacedBeatPreview: null,
+          authorshipSpans: "not-an-array",
+          foreshadowSetups: [],
+          foreshadowPayoffs: [],
+          annotationAnchors: [],
+          beatMentions: [],
+          beatPovOverrides: [],
+          docContentSize: 2,
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("save_scene_body_bundle: malformed nested sidecars are rejected before native", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "save_scene_body_bundle",
+      {
+        payload: {
+          sceneId: "s1",
+          projectId: "p1",
+          includeSidecars: true,
+          contentJson: "{}",
+          charCount: 0,
+          placedBeatPreview: null,
+          unplacedBeatsDoc: "[]",
+          unplacedBeatPreview: null,
+          authorshipSpans: [
+            {
+              fromPos: 4,
+              toPos: 2,
+              source: "human",
+              model: null,
+              timestamp: null,
+              chatMsgId: null,
+              traceId: null,
+            },
+          ],
+          foreshadowSetups: [],
+          foreshadowPayoffs: [],
+          annotationAnchors: [],
+          beatMentions: [],
+          beatPovOverrides: [],
+          docContentSize: 2,
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(calls).toEqual([]);
   });
 
   it("vacuum_database: renderer 引数を native へ渡さず null を返す", async () => {
@@ -815,7 +1000,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend: null, shell: noShell },
     );
 
-    expect(env).toEqual({
+    expect(env).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} import_web_editor_workspace`,
     });
@@ -829,7 +1014,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend, shell: noShell },
     );
 
-    expect(env).toEqual({
+    expect(env).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method importWebEditorWorkspace`,
     });
@@ -1089,6 +1274,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     // Tauri 実装（trash_bin.rs）は payload struct の中身を serde rename_all の
     // camelCase で受ける — アダプタはキー変換せずそのまま渡すことが契約。
     const payload = {
+      id: "trash-request-1",
       projectId: "p1",
       kind: "text-fragment",
       subKind: "text-fragment",
@@ -1295,13 +1481,16 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "list_scene_lens_for_project",
       "list_system_fonts",
       "open_workspace",
+      "plot_thread_branch_create",
       "plot_thread_create",
       "plot_thread_delete",
+      "plot_thread_delete_snapshot",
       "plot_thread_link_create",
       "plot_thread_link_delete",
       "plot_thread_link_update",
       "plot_thread_list",
       "plot_thread_list_links",
+      "plot_thread_restore_snapshot",
       "plot_thread_update",
       "repair_integrity",
       "reply_to_annotation",
@@ -1310,8 +1499,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_ai_settings",
       "save_global_settings",
       "save_post_effect_annotations",
+      "save_scene_body_bundle",
       "seed_sample_workspace",
       "segment_bunsetsu",
+      "semantic_cancel_background",
       "semantic_chunk_context",
       "semantic_debug_dump",
       "semantic_download_model",
@@ -1444,7 +1635,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     it("全窓broadcast失敗は成功済みlicense mutationをinvoke失敗へ反転しない", async () => {
       const { backend } = fakeLicenseBackend();
       const broadcast = vi.fn(() => {
-        throw new Error("window closed during send");
+        throw new Error("SECRET_NOVEL_SENTINEL");
       });
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -1457,7 +1648,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("license:state_changed broadcast failed"),
-        expect.any(Error),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(
+        "SECRET_NOVEL_SENTINEL",
       );
       warn.mockRestore();
     });
@@ -1520,7 +1713,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
           shell: noShell,
         });
 
-        expect(env).toEqual({
+        expect(env).toMatchObject({
           ok: false,
           error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${methodName}`,
         });
@@ -1535,7 +1728,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
           shell: noShell,
         });
 
-        expect(env).toEqual({
+        expect(env).toMatchObject({
           ok: false,
           error: `${IPC_BACKEND_UNAVAILABLE_MARKER} ${cmd}`,
         });
@@ -1873,6 +2066,354 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("plot_thread_branch_create: typed payload を native adapter へ渡し行を parse する", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      id: "pb1",
+      projectId: "p1",
+      fromThreadId: "pt1",
+      toThreadId: "pt2",
+      atNodeId: "s1",
+      kind: "branch",
+    };
+    const env = await dispatchInvoke(
+      "plot_thread_branch_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "plotThreadBranchCreate", args: [payload] },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        id: "pb1",
+        project_id: "p1",
+        from_thread_id: "pt1",
+        to_thread_id: "pt2",
+        at_node_id: "s1",
+        kind: "branch",
+      },
+    });
+  });
+
+  it("plot_thread_branch_create は payload 欠落と backend/version skew を明示拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const invalid = await dispatchInvoke(
+      "plot_thread_branch_create",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(invalid.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+
+    const unavailable = await dispatchInvoke(
+      "plot_thread_branch_create",
+      { payload: {} },
+      { backend: null, shell: noShell },
+    );
+    expect(unavailable).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} plot_thread_branch_create`,
+    });
+
+    const missingMethod = await dispatchInvoke(
+      "plot_thread_branch_create",
+      { payload: {} },
+      {
+        backend: {
+          ...backend,
+          plotThreadBranchCreate: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method plotThreadBranchCreate`,
+    });
+  });
+
+  it("plot_thread_branch_create は malformed nested payload を main で拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const valid = {
+      projectId: "p1",
+      fromThreadId: "pt1",
+      toThreadId: "pt2",
+      atNodeId: "s1",
+      kind: "branch",
+    };
+    const invalidPayloads: unknown[] = [
+      null,
+      [],
+      "payload",
+      {},
+      { ...valid, id: "" },
+      { ...valid, id: null },
+      { ...valid, projectId: "" },
+      { ...valid, fromThreadId: 1 },
+      { ...valid, toThreadId: undefined },
+      { ...valid, atNodeId: [] },
+      { ...valid, kind: "fork" },
+    ];
+
+    for (const payload of invalidPayloads) {
+      const result = await dispatchInvoke(
+        "plot_thread_branch_create",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const withoutOptionalId = await dispatchInvoke(
+      "plot_thread_branch_create",
+      { payload: valid },
+      { backend, shell: noShell },
+    );
+    expect(withoutOptionalId.ok).toBe(true);
+    expect(calls).toEqual([
+      { method: "plotThreadBranchCreate", args: [valid] },
+    ]);
+  });
+
+  it("plot snapshot restore/delete は deep-validated payload を native adapter へ渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const restorePayload = {
+      requestId: "restore-1",
+      projectId: "p1",
+      thread: {
+        id: "pt1",
+        projectId: "p1",
+        name: "thread",
+        color: null,
+        description: null,
+        sortOrder: "a0",
+        startNodeId: null,
+        endNodeId: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      },
+      links: [],
+      branches: [],
+    };
+    const deletePayload = {
+      requestId: "delete-1",
+      projectId: "p1",
+      link: {
+        id: "link-1",
+        threadId: "pt1",
+        nodeId: "scene-1",
+        phaseType: "turn",
+        note: "marker",
+        sortOrder: "a0",
+        createdAt: "2026-01-01T01:00:00.000Z",
+        updatedAt: "2026-01-02T01:00:00.000Z",
+      },
+      branches: [
+        {
+          id: "branch-1",
+          projectId: "p1",
+          fromThreadId: "source",
+          toThreadId: "pt1",
+          atNodeId: "scene-1",
+          kind: "branch",
+          createdAt: "2026-01-01T02:00:00.000Z",
+          updatedAt: "2026-01-02T02:00:00.000Z",
+        },
+      ],
+    };
+
+    const restored = await dispatchInvoke(
+      "plot_thread_restore_snapshot",
+      { payload: restorePayload },
+      { backend, shell: noShell },
+    );
+    const deleted = await dispatchInvoke(
+      "plot_thread_delete_snapshot",
+      { payload: deletePayload },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([
+      { method: "plotThreadRestoreSnapshot", args: [restorePayload] },
+      { method: "plotThreadDeleteSnapshot", args: [deletePayload] },
+    ]);
+    expect(restored).toMatchObject({
+      ok: true,
+      value: {
+        id: "restore-1",
+        __idempotency: { entityPresent: true },
+      },
+    });
+    expect(deleted).toMatchObject({
+      ok: true,
+      value: {
+        id: "delete-1",
+        deleted: true,
+        __idempotency: { entityPresent: true },
+      },
+    });
+  });
+
+  it("plot snapshot commands reject empty row identity/timestamps and malformed delete rows in main", async () => {
+    const { backend, calls } = fakeBackend();
+    const validThread = {
+      id: "pt1",
+      projectId: "p1",
+      name: "thread",
+      color: null,
+      description: null,
+      sortOrder: "a0",
+      startNodeId: null,
+      endNodeId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const invalidRestorePayloads = [
+      null,
+      {},
+      {
+        requestId: "restore",
+        projectId: "p1",
+        thread: { ...validThread, id: "" },
+        links: [],
+        branches: [],
+      },
+      {
+        requestId: "restore",
+        projectId: "p1",
+        thread: { ...validThread, createdAt: "" },
+        links: [],
+        branches: [],
+      },
+      {
+        requestId: "restore",
+        projectId: "p1",
+        thread: null,
+        links: [],
+        branches: [],
+      },
+    ];
+    for (const payload of invalidRestorePayloads) {
+      const result = await dispatchInvoke(
+        "plot_thread_restore_snapshot",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    const validLink = {
+      id: "link",
+      threadId: "pt1",
+      nodeId: "scene",
+      phaseType: "turn",
+      note: null,
+      sortOrder: null,
+      createdAt: "2026-01-01T01:00:00.000Z",
+      updatedAt: "2026-01-02T01:00:00.000Z",
+    };
+    const validBranch = {
+      id: "branch",
+      projectId: "p1",
+      fromThreadId: "source",
+      toThreadId: "pt1",
+      atNodeId: "scene",
+      kind: "branch",
+      createdAt: "2026-01-01T02:00:00.000Z",
+      updatedAt: "2026-01-02T02:00:00.000Z",
+    };
+    const invalidDeletes = [
+      { link: { ...validLink, id: "" }, branches: [] },
+      { link: { ...validLink, updatedAt: "" }, branches: [] },
+      {
+        link: validLink,
+        branches: [{ ...validBranch, createdAt: "" }],
+      },
+      { link: validLink, branches: [validBranch, validBranch] },
+      { link: validLink, branches: "branch" },
+    ];
+    for (const invalid of invalidDeletes) {
+      const result = await dispatchInvoke(
+        "plot_thread_delete_snapshot",
+        {
+          payload: {
+            requestId: "delete",
+            projectId: "p1",
+            ...invalid,
+          },
+        },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("plot snapshot commands report native backend version skew", async () => {
+    const { backend } = fakeBackend();
+    const restore = await dispatchInvoke(
+      "plot_thread_restore_snapshot",
+      {
+        payload: {
+          requestId: "restore",
+          projectId: "p1",
+          thread: null,
+          links: [
+            {
+              id: "link",
+              threadId: "thread",
+              nodeId: "scene",
+              phaseType: "turn",
+              note: null,
+              sortOrder: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-02T00:00:00.000Z",
+            },
+          ],
+          branches: [],
+        },
+      },
+      {
+        backend: { ...backend, plotThreadRestoreSnapshot: undefined },
+        shell: noShell,
+      },
+    );
+    const deleted = await dispatchInvoke(
+      "plot_thread_delete_snapshot",
+      {
+        payload: {
+          requestId: "delete",
+          projectId: "p1",
+          link: {
+            id: "link",
+            threadId: "thread",
+            nodeId: "scene",
+            phaseType: "turn",
+            note: null,
+            sortOrder: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-02T00:00:00.000Z",
+          },
+          branches: [],
+        },
+      },
+      {
+        backend: { ...backend, plotThreadDeleteSnapshot: undefined },
+        shell: noShell,
+      },
+    );
+    expect(restore).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method plotThreadRestoreSnapshot`,
+    });
+    expect(deleted).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method plotThreadDeleteSnapshot`,
+    });
+  });
+
   it("plot_thread_update: id 欠落は invalid args エラー（backend は呼ばれない）", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -1887,7 +2428,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   // ── foreshadow 20 コマンド（Phase 3 バッチ1） ──────────────────────────
   it("foreshadow_create / update / delete: payload・id+patch 写像、unit→null", async () => {
     const { backend, calls } = fakeBackend();
-    const payload = { projectId: "p1", title: "伏線", intent: null };
+    const payload = {
+      id: "foreshadow-request-1",
+      projectId: "p1",
+      title: "伏線",
+      intent: null,
+    };
     const created = await dispatchInvoke(
       "foreshadow_create",
       { payload },
@@ -2117,7 +2663,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   // ── agent_writes 18 コマンド（Phase 3 バッチ1） ────────────────────────
   it("agent_writes: すべて単一 {payload} を素通しし AgentWriteResult を parse", async () => {
     const { backend, calls } = fakeBackend();
-    const payload = { projectId: "p1", sessionId: "s1", name: "太郎" };
+    const payload = {
+      entryId: "codex-request-1",
+      projectId: "p1",
+      sessionId: "s1",
+      name: "太郎",
+    };
     const created = await dispatchInvoke(
       "agent_codex_create",
       { payload },
@@ -2126,14 +2677,28 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     // link/unlink・relation add/remove も FE 側は同じ {payload} 契約。
     const linked = await dispatchInvoke(
       "agent_scene_event_link",
-      { payload: { projectId: "p1", eventId: "e1", sceneId: "sc1" } },
+      {
+        payload: {
+          requestId: "scene-link-request-1",
+          projectId: "p1",
+          eventId: "e1",
+          sceneId: "sc1",
+        },
+      },
       { backend, shell: noShell },
     );
     expect(calls).toEqual([
       { method: "agentCodexCreate", args: [payload] },
       {
         method: "agentSceneEventLink",
-        args: [{ projectId: "p1", eventId: "e1", sceneId: "sc1" }],
+        args: [
+          {
+            requestId: "scene-link-request-1",
+            projectId: "p1",
+            eventId: "e1",
+            sceneId: "sc1",
+          },
+        ],
       },
     ]);
     expect(created).toEqual({
@@ -2147,6 +2712,83 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
     expect(linked.ok).toBe(true);
   });
+
+  it.each([
+    "agent_event_update",
+    "agent_event_delete",
+    "agent_event_set_participants",
+  ])("%s: baseVersion 欠落は N-API を呼ばず拒否する", async (command) => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      command,
+      {
+        payload: {
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          ...(command === "agent_event_set_participants"
+            ? { codexEntryIds: [] }
+            : {}),
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    if (!env.ok) expect(env.error).toContain("baseVersion");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("agent_event_update: 非負整数 baseVersion を N-API へ渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      projectId: "p1",
+      sessionId: "s1",
+      eventId: "e1",
+      baseVersion: 7,
+      title: "updated",
+    };
+    const env = await dispatchInvoke(
+      "agent_event_update",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(calls).toContainEqual({
+      method: "agentEventUpdate",
+      args: [payload],
+    });
+  });
+
+  it.each([
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["unsafe", Number.MAX_SAFE_INTEGER + 1],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+  ])(
+    "agent_event_update: %s baseVersion は N-API を呼ばず拒否する",
+    async (_label, baseVersion) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "agent_event_update",
+        {
+          payload: {
+            projectId: "p1",
+            sessionId: "s1",
+            eventId: "e1",
+            baseVersion,
+          },
+        },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      if (!env.ok) expect(env.error).toContain("baseVersion");
+      expect(calls).toHaveLength(0);
+    },
+  );
 
   it("agent_propose_scene_body: payload 欠落は invalid args（backend 未呼び出し）", async () => {
     const { backend, calls } = fakeBackend();
@@ -2312,6 +2954,7 @@ describe("AI チャットコマンド", () => {
     const args = {
       messages: [{ role: "user", content: "hi" }],
       provider: "openai",
+      expectedOllamaEndpoint: null,
     };
     const env = await dispatchInvoke("send_chat_message", args, {
       backend,
@@ -2345,6 +2988,7 @@ describe("AI チャットコマンド", () => {
       messages: [{ role: "user", content: "yo" }],
       endpointId: "ep2",
       requestMaxOutputTokens: 32_000,
+      expectedOllamaEndpoint: "http://127.0.0.1:11434",
     };
     const env = await dispatchInvoke("send_chat_message_stream", args, {
       backend,
@@ -2401,7 +3045,7 @@ describe("AI チャットコマンド", () => {
       { messages: [] },
       { backend, shell: noShell }, // secrets 無し
     );
-    expect(env).toEqual({
+    expect(env).toMatchObject({
       ok: false,
       error: "IPC_SECRETS_UNAVAILABLE: send_chat_message",
     });
@@ -2581,6 +3225,7 @@ describe("AI Phase 3b コマンド", () => {
       ],
       webSearch: { enabled: true, agentic: true },
       resolvedToolProtocol: "hermes",
+      expectedOllamaEndpoint: "http://127.0.0.1:11434",
     };
     const env = await dispatchInvoke("send_agent_message", args, {
       backend,
@@ -2620,10 +3265,54 @@ describe("AI Phase 3b コマンド", () => {
     expect(methods.sendAgentMessage).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      "send_chat_message",
+      { messages: [], expectedOllamaEndpoint: 42 },
+      "sendChatMessage",
+    ],
+    [
+      "send_chat_message_stream",
+      { messages: [], expectedOllamaEndpoint: 42 },
+      "sendChatMessageStream",
+    ],
+    [
+      "send_agent_message",
+      { messages: [], tools: [], expectedOllamaEndpoint: 42 },
+      "sendAgentMessage",
+    ],
+    [
+      "list_ai_models",
+      { provider: "ollama", expectedOllamaEndpoint: 42 },
+      "listAiModels",
+    ],
+  ] as const)(
+    "%s は不正な expectedOllamaEndpoint を main 境界で拒否する",
+    async (command, args, method) => {
+      const { backend, calls } = makeBackend();
+      const env = await dispatchInvoke(command, args, {
+        backend,
+        shell: noShell,
+        secrets: secrets(),
+      });
+
+      expect(env).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/expectedOllamaEndpoint/),
+      });
+      expect(calls.some((call) => call.method === method)).toBe(false);
+    },
+  );
+
   it("list_ai_models はキー未設定を空文字にし、必須キー解決を使わない", async () => {
     const { backend, methods } = makeBackend();
     const keyStore = secrets("must-not-use", null);
-    const args = { provider: "anthropic", endpointId: null };
+    const args = {
+      provider: "anthropic",
+      endpointId: null,
+      selectedModelId: "gemma4:latest",
+      expectedOllamaEndpoint: "http://127.0.0.1:11434",
+    };
     const env = await dispatchInvoke("list_ai_models", args, {
       backend,
       shell: noShell,
@@ -2680,7 +3369,7 @@ describe("AI Phase 3b コマンド", () => {
       { provider: "openai", messages: [], tools: [], model: "m" },
       { backend, shell: noShell },
     );
-    expect(env).toEqual({
+    expect(env).toMatchObject({
       ok: false,
       error: `IPC_SECRETS_UNAVAILABLE: ${cmd}`,
     });
@@ -3049,9 +3738,9 @@ describe("Post-effect Phase 3d コマンド", () => {
 
     expect(env.ok).toBe(false);
     expect(methods.startPostEffectRun).not.toHaveBeenCalled();
-    expect(calls.filter((call) => call.method === "getAiSettings")).toHaveLength(
-      0,
-    );
+    expect(
+      calls.filter((call) => call.method === "getAiSettings"),
+    ).toHaveLength(0);
     expect(keyStore.getApiKeyForRequest).not.toHaveBeenCalled();
   });
 
@@ -3178,7 +3867,7 @@ describe("Post-effect Phase 3d コマンド", () => {
         secrets: secrets(null),
       });
 
-      expect(env).toEqual({
+      expect(env).toMatchObject({
         ok: false,
         error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${methodName}`,
       });
@@ -3196,7 +3885,7 @@ describe("Post-effect Phase 3d コマンド", () => {
         { backend, shell: noShell },
       );
 
-      expect(env).toEqual({
+      expect(env).toMatchObject({
         ok: false,
         error: `IPC_SECRETS_UNAVAILABLE: ${cmd}`,
       });

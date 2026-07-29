@@ -177,6 +177,214 @@ test("XPROJ ガード: link_update の別 project スレッドへの移動も re
   );
 });
 
+test("plotThreadBranchCreate は native transaction で XPROJ と durable replay を守る", async () => {
+  const from = JSON.parse(
+    await backend.plotThreadCreate({
+      id: "branch-from-thread",
+      projectId: PROJECT,
+      name: "分岐元",
+      color: null,
+      description: null,
+      sortOrder: "b0",
+    }),
+  );
+  const to = JSON.parse(
+    await backend.plotThreadCreate({
+      id: "branch-to-thread",
+      projectId: PROJECT,
+      name: "分岐先",
+      color: null,
+      description: null,
+      sortOrder: "b1",
+    }),
+  );
+  const payload = {
+    id: "branch-napi-request-1",
+    projectId: PROJECT,
+    fromThreadId: from.id,
+    toThreadId: to.id,
+    atNodeId: "s1",
+    kind: "branch",
+  };
+  const created = JSON.parse(await backend.plotThreadBranchCreate(payload));
+  assert.equal(created.id, payload.id);
+  assert.deepEqual(created.__idempotency, {
+    replayed: false,
+    entityPresent: true,
+  });
+  const exactReplay = JSON.parse(await backend.plotThreadBranchCreate(payload));
+  assert.deepEqual(exactReplay.__idempotency, {
+    replayed: true,
+    entityPresent: true,
+  });
+
+  await assert.rejects(
+    backend.plotThreadBranchCreate({ ...payload, kind: "merge" }),
+    /PLOT_THREAD_BRANCH_IDEMPOTENCY_CONFLICT/,
+  );
+  await assert.rejects(
+    backend.plotThreadBranchCreate({
+      ...payload,
+      id: "branch-napi-xproj",
+      toThreadId: "p2-thread-missing",
+    }),
+    /same project/,
+  );
+
+  await run("DELETE FROM plot_thread_branches WHERE id = ?", [payload.id]);
+  const deletedReplay = JSON.parse(
+    await backend.plotThreadBranchCreate(payload),
+  );
+  assert.deepEqual(deletedReplay.__idempotency, {
+    replayed: true,
+    entityPresent: false,
+  });
+  const rows = JSON.parse(
+    await backend.dbExecute(
+      "SELECT id FROM plot_thread_branches WHERE id = ?",
+      [payload.id],
+      "all",
+    ),
+  ).rows;
+  assert.deepEqual(rows, []);
+  await backend.plotThreadDelete(from.id);
+  await backend.plotThreadDelete(to.id);
+});
+
+test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic replay を守る", async () => {
+  const [sourceThread] = await listThreads();
+  const thread = {
+    id: "snapshot-napi-thread",
+    projectId: PROJECT,
+    name: "N-API snapshot",
+    color: "#334455",
+    description: "restored atomically",
+    sortOrder: "c0",
+    startNodeId: "s1",
+    endNodeId: "s1",
+    createdAt: "2026-07-28T03:00:00.000Z",
+    updatedAt: "2026-07-28T03:01:00.000Z",
+  };
+  const link = {
+    id: "snapshot-napi-link",
+    threadId: thread.id,
+    nodeId: "s1",
+    phaseType: "turn",
+    note: "N-API marker",
+    sortOrder: "a0",
+    createdAt: "2026-07-28T03:02:00.000Z",
+    updatedAt: "2026-07-28T03:03:00.000Z",
+  };
+  const branch = {
+    id: "snapshot-napi-branch",
+    projectId: PROJECT,
+    fromThreadId: sourceThread.id,
+    toThreadId: thread.id,
+    atNodeId: "s1",
+    kind: "branch",
+    createdAt: "2026-07-28T03:04:00.000Z",
+    updatedAt: "2026-07-28T03:05:00.000Z",
+  };
+  const restorePayload = {
+    requestId: "snapshot-napi-restore",
+    projectId: PROJECT,
+    thread,
+    links: [link],
+    branches: [branch],
+  };
+
+  const restored = JSON.parse(
+    await backend.plotThreadRestoreSnapshot(restorePayload),
+  );
+  assert.deepEqual(restored.__idempotency, {
+    replayed: false,
+    entityPresent: true,
+  });
+  assert.deepEqual(restored.thread, thread);
+  assert.deepEqual(restored.links, [link]);
+  assert.deepEqual(restored.branches, [branch]);
+  const exactRestore = JSON.parse(
+    await backend.plotThreadRestoreSnapshot(restorePayload),
+  );
+  assert.deepEqual(exactRestore.__idempotency, {
+    replayed: true,
+    entityPresent: true,
+  });
+
+  await run(
+    "UPDATE plot_thread_scene_links SET note = 'changed', updated_at = 'changed-at' WHERE id = ?",
+    [link.id],
+  );
+  await assert.rejects(
+    backend.plotThreadDeleteSnapshot({
+      requestId: "snapshot-napi-delete-stale",
+      projectId: PROJECT,
+      link,
+      branches: [branch],
+    }),
+    /PLOT_THREAD_DELETE_PRECONDITION_FAILED/,
+  );
+  const staleLedger = JSON.parse(
+    await backend.dbExecute(
+      `SELECT request_id FROM idempotency_requests
+        WHERE domain = 'plot_thread_delete_snapshot' AND request_id = ?`,
+      ["snapshot-napi-delete-stale"],
+      "all",
+    ),
+  ).rows;
+  assert.deepEqual(staleLedger, []);
+  await run(
+    "UPDATE plot_thread_scene_links SET note = ?, updated_at = ? WHERE id = ?",
+    [link.note, link.updatedAt, link.id],
+  );
+
+  const deletePayload = {
+    requestId: "snapshot-napi-delete",
+    projectId: PROJECT,
+    link,
+    branches: [branch],
+  };
+  const deleted = JSON.parse(
+    await backend.plotThreadDeleteSnapshot(deletePayload),
+  );
+  assert.equal(deleted.deleted, true);
+  assert.deepEqual(deleted.__idempotency, {
+    replayed: false,
+    entityPresent: true,
+  });
+  const exactDelete = JSON.parse(
+    await backend.plotThreadDeleteSnapshot(deletePayload),
+  );
+  assert.deepEqual(exactDelete.__idempotency, {
+    replayed: true,
+    entityPresent: true,
+  });
+
+  await backend.plotThreadRestoreSnapshot({
+    ...restorePayload,
+    requestId: "snapshot-napi-recreate",
+    thread: null,
+  });
+  const staleDelete = JSON.parse(
+    await backend.plotThreadDeleteSnapshot(deletePayload),
+  );
+  assert.deepEqual(staleDelete.__idempotency, {
+    replayed: true,
+    entityPresent: false,
+  });
+  const recreatedRows = JSON.parse(
+    await backend.dbExecute(
+      `SELECT id FROM plot_thread_scene_links WHERE id = ?
+       UNION ALL SELECT id FROM plot_thread_branches WHERE id = ?`,
+      [link.id, branch.id],
+      "all",
+    ),
+  ).rows;
+  assert.deepEqual(recreatedRows, [{ id: link.id }, { id: branch.id }]);
+
+  await backend.plotThreadDelete(thread.id);
+});
+
 test("plotThreadLinkDelete / plotThreadDelete は対象を消す", async () => {
   const [link] = await listLinks();
   await backend.plotThreadLinkDelete(link.id);

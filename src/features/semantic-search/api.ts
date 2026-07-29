@@ -32,6 +32,14 @@ export interface SemanticIndexStatus {
   currentChunkerVersion: string;
 }
 
+/**
+ * 実行中の再構築可能な semantic index 処理を協調停止する。
+ * 戻り値は切り替え後の runtime epoch。文書の正本データは変更しない。
+ */
+export function semanticCancelBackground(): Promise<number> {
+  return invoke<number>("semantic_cancel_background", {});
+}
+
 /** シーン 1 件をインデックス再構築。戻り値は投入チャンク数 (0 = race/非 scene)。 */
 export function semanticIndexScene(sceneId: string): Promise<number> {
   return invoke<number>("semantic_index_scene", { sceneId });

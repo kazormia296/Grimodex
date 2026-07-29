@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import {
   DEFAULT_SEASON_BOUNDARIES,
@@ -23,15 +23,16 @@ import {
 import { sceneIdFromEventId } from "./sceneEventAdapter";
 
 /**
- * Promise.allSettled の結果から成功したシーン本文だけを Map に集める純関数。
- * 1 シーンのロード失敗で全警告が消える退行を防ぐ（fail-silent ではなく graceful）。
+ * Batch の返却 Map を整合チェック用 plain text Map に変換する。
+ * 存在しない行は単発 loader と同じ空本文として扱い、取得できた他シーンを保つ。
  */
-export function collectFulfilledSceneTexts(
-  results: PromiseSettledResult<readonly [string, string]>[],
+export function collectLoadedSceneTexts(
+  sceneIds: readonly string[],
+  contents: ReadonlyMap<string, string>,
 ): Map<string, string> {
   const sceneTexts = new Map<string, string>();
-  for (const r of results) {
-    if (r.status === "fulfilled") sceneTexts.set(r.value[0], r.value[1]);
+  for (const sceneId of sceneIds) {
+    sceneTexts.set(sceneId, extractPlainText(contents.get(sceneId) ?? ""));
   }
   return sceneTexts;
 }
@@ -72,7 +73,7 @@ export interface EventForCheck {
  * （id / startTime / primaryCodexId / kind とリンク対）だけを畳むため、
  * title 等のテキスト編集や配列 identity の変化（楽観 setEvents / nodes 更新に
  * よる再導出）では変わらない。effect の依存をこれに絞ることで、per-keystroke に
- * 本文 SELECT（loadSceneContent）＋再チェックが走るカスケードを防ぐ。
+ * 本文 batch SELECT＋再チェックが走るカスケードを防ぐ。
  */
 export function checkInputsFingerprint(
   events: EventForCheck[],
@@ -196,16 +197,10 @@ export function useSeasonConflicts({
       return;
     }
     let cancelled = false;
-    // allSettled: 1 シーンのロード失敗で全警告を消さない。成功分だけで判定する。
-    Promise.allSettled(
-      sceneIds.map(
-        async (sid) =>
-          [sid, extractPlainText(await loadSceneContent(sid))] as const,
-      ),
-    )
-      .then((results) => {
+    loadSceneContents(sceneIds)
+      .then((contents) => {
         if (cancelled) return;
-        const sceneTexts = collectFulfilledSceneTexts(results);
+        const sceneTexts = collectLoadedSceneTexts(sceneIds, contents);
         // 季節は実 event のみ（event↔リンクシーン本文モデル）。
         setConflicts(
           findSeasonConflicts({ events, calendar, links, sceneTexts }),

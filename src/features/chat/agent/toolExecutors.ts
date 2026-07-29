@@ -25,6 +25,11 @@ import { eq, inArray, and } from "drizzle-orm";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { countTokens } from "../contextBuilder";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+} from "@/features/concurrency/mutationAuthority";
 import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
 import type { ToolResult } from "./agentTypes";
 import {
@@ -32,6 +37,7 @@ import {
   agentUpdateCodexEntry,
 } from "@/features/agent-writes/codex";
 import { agentCreateSnippet } from "@/features/agent-writes/snippet";
+import { agentMarkdownToProseMirrorJson } from "@/features/agent-writes/richTextInput";
 import {
   agentCreateForeshadow,
   agentUpdateForeshadow,
@@ -1215,8 +1221,36 @@ async function getSceneTimelineNeighbors(
 // Mutating executors (knowledgeWrite policy gated)
 // ---------------------------------------------------------------------------
 
+const MAX_CODEX_ALIASES = 100;
+const MAX_CODEX_ALIAS_BYTES = 64_000;
+
+function optionalMarkdownBody(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error("content must be a Markdown string");
+  }
+  return agentMarkdownToProseMirrorJson(value);
+}
+
+function optionalAliases(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error("aliases must be an array of strings");
+  }
+  if (value.length > MAX_CODEX_ALIASES) {
+    throw new Error(`aliases must contain at most ${MAX_CODEX_ALIASES} items`);
+  }
+  const aliases = value.map((item) => item.trim()).filter(Boolean);
+  const serialized = JSON.stringify(aliases);
+  if (new TextEncoder().encode(serialized).byteLength > MAX_CODEX_ALIAS_BYTES) {
+    throw new Error(`aliases exceed ${MAX_CODEX_ALIAS_BYTES} bytes`);
+  }
+  return serialized;
+}
+
 async function createCodexEntryTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const type = String(params["type"] ?? "").trim();
   const name = String(params["name"] ?? "").trim();
@@ -1231,11 +1265,12 @@ async function createCodexEntryTool(
   }
   try {
     const entry = await agentCreateCodexEntry({
+      requestId,
       type,
       name,
       summary: params["summary"] ? String(params["summary"]) : undefined,
-      content: params["content"] ? String(params["content"]) : undefined,
-      aliases: params["aliases"] ? String(params["aliases"]) : undefined,
+      content: optionalMarkdownBody(params["content"]),
+      aliases: optionalAliases(params["aliases"]),
       parentId: params["parentId"] ? String(params["parentId"]) : undefined,
     });
     const content = { id: entry.id, name: entry.name, type: entry.type };
@@ -1281,9 +1316,10 @@ async function updateCodexEntryTool(
       summary:
         params["summary"] !== undefined ? String(params["summary"]) : undefined,
       content:
-        params["content"] !== undefined ? String(params["content"]) : undefined,
-      aliases:
-        params["aliases"] !== undefined ? String(params["aliases"]) : undefined,
+        params["content"] !== undefined
+          ? optionalMarkdownBody(params["content"])
+          : undefined,
+      aliases: optionalAliases(params["aliases"]),
     });
     const content = { id: entry.id, name: entry.name, type: entry.type };
     const json = JSON.stringify(content);
@@ -1546,6 +1582,7 @@ async function getThreadScenes(
 
 type Executor = (
   params: Record<string, unknown>,
+  requestId?: string,
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
 /**
@@ -1592,6 +1629,7 @@ Object.freeze(READ_ONLY_EXECUTORS);
 
 async function createSnippetTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1605,8 +1643,9 @@ async function createSnippetTool(
   }
   try {
     const snippet = await agentCreateSnippet({
+      requestId,
       title,
-      content: params["content"] ? String(params["content"]) : undefined,
+      content: optionalMarkdownBody(params["content"]),
       sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
     });
     const content = { id: snippet.id, title: snippet.title };
@@ -1728,6 +1767,7 @@ async function proposeSceneBodyTool(
 
 async function createForeshadowTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1741,6 +1781,7 @@ async function createForeshadowTool(
   }
   try {
     const item = await agentCreateForeshadow({
+      requestId,
       title,
       intent: params["intent"] ? String(params["intent"]) : undefined,
       notes: params["notes"] ? String(params["notes"]) : undefined,
@@ -1859,6 +1900,28 @@ export const EXECUTORS: Record<string, Executor> = {
 // 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
 Object.freeze(EXECUTORS);
 
+const IDEMPOTENT_CREATE_TOOLS: ReadonlySet<string> = new Set([
+  "create_codex_entry",
+  "create_snippet",
+  "create_foreshadow",
+  "create_event",
+]);
+
+async function toolCreateRequestId(
+  toolName: string,
+  toolCallId: string,
+  projectId: string,
+): Promise<string> {
+  const bytes = new TextEncoder().encode(
+    `${toolName}\0${projectId}\0${toolCallId}`,
+  );
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `agent-tool:${hex}`;
+}
+
 /** Execute a named tool and return a ToolResult (always succeeds — errors are wrapped). */
 export async function executeTool(
   name: string,
@@ -1878,7 +1941,18 @@ export async function executeTool(
     };
   }
   try {
-    const result = await executor(params);
+    const createAuthority = IDEMPOTENT_CREATE_TOOLS.has(name)
+      ? captureMutationAuthority(getCurrentProjectId(), getCurrentProjectId)
+      : null;
+    const requestId = createAuthority
+      ? await toolCreateRequestId(name, toolCallId, createAuthority.projectId)
+      : undefined;
+    // SHA-256 yields before the domain writer captures its own Project. Do not
+    // let a pre-switch tool call resume against a replacement Project/Workspace.
+    if (createAuthority && !isCurrentMutationAuthority(createAuthority)) {
+      throw new Error("agent tool create authority changed");
+    }
+    const result = await executor(params, requestId);
     return { toolCallId, ...result };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

@@ -67,6 +67,7 @@ describe("SceneEditor Zen projection", () => {
       splitDirection: "right",
       isLinearMode: false,
       isDraggingTab: false,
+      tabStateHydrated: true,
     } as never);
   });
 

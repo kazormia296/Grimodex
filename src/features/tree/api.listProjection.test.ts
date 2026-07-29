@@ -5,6 +5,7 @@ import { treeNodes } from "@/db/schema";
 import {
   listNodes,
   listAllNodes,
+  listExpiredArchivedNodeIds,
   listNoteContents,
   loadSceneContents,
   saveSceneContent,
@@ -127,6 +128,29 @@ describe("listAllNodes projection", () => {
     expect(all[0].archivedAt).not.toBeNull();
     expect("content" in all[0]).toBe(false);
     expect("unplacedBeatsDoc" in all[0]).toBe(false);
+  });
+});
+
+describe("listExpiredArchivedNodeIds", () => {
+  it("期限切れの archived row ID だけを DB 側で抽出する", async () => {
+    await insertNode({
+      id: "expired",
+      nodeType: "scene",
+      archivedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await insertNode({
+      id: "recent",
+      nodeType: "scene",
+      archivedAt: "2026-07-01T00:00:00.000Z",
+    });
+    await insertNode({ id: "live", nodeType: "scene", archivedAt: null });
+
+    await expect(
+      listExpiredArchivedNodeIds(PROJECT_ID, "2026-06-01T00:00:00.000Z"),
+    ).resolves.toEqual(["expired"]);
+    expect((await listAllNodes(PROJECT_ID)).map((node) => node.id)).toEqual(
+      expect.arrayContaining(["expired", "recent", "live"]),
+    );
   });
 });
 

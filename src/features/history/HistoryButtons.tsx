@@ -3,12 +3,14 @@ import { toast } from "sonner";
 import i18next from "i18next";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { formatShortcut } from "@/lib/platform";
+import { useQuiescenceLeaseActive } from "@/application/lifecycle/useQuiescenceLeaseActive";
 
 export function HistoryButtons() {
   const past = useGlobalHistoryStore((s) => s.past);
   const future = useGlobalHistoryStore((s) => s.future);
   const undo = useGlobalHistoryStore((s) => s.undo);
   const redo = useGlobalHistoryStore((s) => s.redo);
+  const lifecycleLocked = useQuiescenceLeaseActive();
 
   const undoLabel = past.length > 0 ? past[past.length - 1].label : null;
   const redoLabel = future.length > 0 ? future[0].label : null;
@@ -38,7 +40,7 @@ export function HistoryButtons() {
       <button
         type="button"
         title={undoTitle}
-        disabled={past.length === 0}
+        disabled={past.length === 0 || lifecycleLocked}
         onClick={onUndo}
         className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
       >
@@ -47,7 +49,7 @@ export function HistoryButtons() {
       <button
         type="button"
         title={redoTitle}
-        disabled={future.length === 0}
+        disabled={future.length === 0 || lifecycleLocked}
         onClick={onRedo}
         className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
       >

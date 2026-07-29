@@ -1,4 +1,5 @@
 import type { LoadedEditorBinding } from "./types";
+import { documentKeyFromBinding, encodeDocumentKey } from "./documentKey";
 
 export interface SaveSnapshot {
   binding: LoadedEditorBinding;
@@ -14,6 +15,20 @@ export interface EditorMutationGate {
   markEdited(): void;
   captureSave(): SaveSnapshot | null;
   mayClearDirty(snapshot: SaveSnapshot): boolean;
+  /**
+   * Advance a successfully persisted version without clearing edits that
+   * arrived during the save. Returns whether dirty may be cleared.
+   */
+  commitSave(
+    snapshot: SaveSnapshot,
+    persistedBinding: LoadedEditorBinding,
+  ): boolean;
+  /**
+   * Adopt the persisted binding announced by another local editor instance
+   * displaying the exact same document. This advances only the OCC base; it
+   * never clears this instance's dirty generation.
+   */
+  advancePeerSave(persistedBinding: LoadedEditorBinding): boolean;
 }
 
 function sameBinding(
@@ -80,6 +95,35 @@ export function createEditorMutationGate(): EditorMutationGate {
         sameBinding(binding, snapshot.binding) &&
         editGeneration === snapshot.editGeneration
       );
+    },
+
+    commitSave(snapshot, persistedBinding) {
+      if (!loadReady || binding !== snapshot.binding) return false;
+      const currentKey = encodeDocumentKey(documentKeyFromBinding(binding));
+      const persistedKey = encodeDocumentKey(
+        documentKeyFromBinding(persistedBinding),
+      );
+      if (currentKey !== persistedKey) return false;
+      binding = persistedBinding;
+      return editGeneration === snapshot.editGeneration;
+    },
+
+    advancePeerSave(persistedBinding) {
+      if (!loadReady || !binding) return false;
+      const currentKey = encodeDocumentKey(documentKeyFromBinding(binding));
+      const persistedKey = encodeDocumentKey(
+        documentKeyFromBinding(persistedBinding),
+      );
+      if (currentKey !== persistedKey) return false;
+      if (
+        "loadedVersion" in binding &&
+        "loadedVersion" in persistedBinding &&
+        persistedBinding.loadedVersion < binding.loadedVersion
+      ) {
+        return false;
+      }
+      binding = persistedBinding;
+      return true;
     },
   };
 }

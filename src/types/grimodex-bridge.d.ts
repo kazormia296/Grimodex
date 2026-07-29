@@ -3,19 +3,37 @@
  * GrimodexBridge の renderer 参照用型（設計書 §5.4。契約の実体は
  * electron/shared/ipcContract.ts — 両者は手動で同期する）。
  *
- * `invoke` は envelope をそのまま返す。生文字列 reject への解封
- * （`if (!res.ok) throw res.error`）は src/lib/tauri.ts の electron 分岐が行う。
+ * `invoke` は envelope をそのまま返す。typed `IpcInvokeError`（legacy message
+ * 互換）への解封は src/lib/tauri.ts の electron 分岐が行う。
  */
+
+export type GrimodexIpcErrorCode =
+  | "WORKSPACE_SWITCHING"
+  | "NO_WORKSPACE_OPEN"
+  | "IPC_UNIMPLEMENTED"
+  | "IPC_BACKEND_UNAVAILABLE"
+  | "IPC_SECRETS_UNAVAILABLE"
+  | "UNKNOWN";
+
+export interface GrimodexIpcErrorInfo {
+  code: GrimodexIpcErrorCode;
+  message: string;
+  retryable: boolean;
+  outcome: "failed" | "unknown";
+  details?: Record<string, unknown>;
+}
 
 export type GrimodexInvokeEnvelope<T = unknown> =
   | { ok: true; value: T }
   | {
       ok: false;
       error: string;
+      /** Typed wire for new callers; `error` remains for compatibility. */
+      errorInfo?: GrimodexIpcErrorInfo;
       /**
        * Tauri がエラーを object で serialize するコマンド（lint_text の
        * LintError = {type, data}）の reject 値。解封側は
-       * `errorValue ?? error` を throw する。
+       * `errorValue` は raw object のまま throw する。
        */
       errorValue?: unknown;
     };
@@ -35,6 +53,13 @@ export interface GrimodexOpenTextResult {
 
 export interface GrimodexBridge {
   readonly shell: "electron";
+  /**
+   * Electron runtime performance harness が preload 前に発行したときだけ存在する。
+   * 通常の production renderer には mutation control を一切公開しない。
+   */
+  readonly runtimePerformance?: {
+    readonly ownerToken: string;
+  };
   invoke<T = unknown>(
     cmd: string,
     args?: Record<string, unknown>,

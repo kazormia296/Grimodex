@@ -2,8 +2,8 @@
 /**
  * Electron 分岐（設計書 §3.4 / §5.2、Phase 2 S5）:
  * ① isTauri → isElectron → browser-mock のディスパッチ順
- * ② envelope 解封が**生文字列 reject**になること（Tauri ワイヤ契約）
- * ③ SLOW_COMMANDS のタイムアウト値選択が electron 分岐でも効くこと
+ * ② envelope 解封が typed error になりつつ旧文字列表示を保つこと
+ * ③ read-only allowlist だけに caller timeout が適用されること
  * ④ listen / emit のブリッジ写像
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -76,14 +76,14 @@ describe("invoke のディスパッチ順（isTauri → isElectron → browser-m
   });
 });
 
-describe("envelope 解封 = 生文字列 reject（Tauri ワイヤ契約 §5.2）", () => {
-  it("ok:false は error 文字列そのものを reject 値にする（Error に包まない）", async () => {
+describe("envelope 解封 = typed error + legacy wire compatibility", () => {
+  it("legacy error 文字列を code 付き IpcInvokeError に正規化する", async () => {
     installBridge({
       invoke: vi
         .fn()
         .mockResolvedValue({ ok: false, error: "No workspace is open" }),
     });
-    const { invoke } = await import("./tauri");
+    const { invoke, IpcInvokeError } = await import("./tauri");
     let caught: unknown = null;
     try {
       await invoke("db_execute", {
@@ -94,8 +94,15 @@ describe("envelope 解封 = 生文字列 reject（Tauri ワイヤ契約 §5.2）
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBe("No workspace is open");
-    expect(typeof caught).toBe("string");
+    expect(caught).toBeInstanceOf(IpcInvokeError);
+    expect(caught).toMatchObject({
+      code: "NO_WORKSPACE_OPEN",
+      message: "No workspace is open",
+      retryable: true,
+      outcome: "failed",
+    });
+    // Existing String(error).includes(...) checks keep seeing the raw message.
+    expect(String(caught)).toBe("No workspace is open");
   });
 
   it("WORKSPACE_SWITCHING マーカーの部分一致判定（String(err)）が成立する", async () => {
@@ -105,7 +112,7 @@ describe("envelope 解封 = 生文字列 reject（Tauri ワイヤ契約 §5.2）
         error: "WORKSPACE_SWITCHING: workspace is being switched",
       }),
     });
-    const { invoke } = await import("./tauri");
+    const { invoke, IpcInvokeError } = await import("./tauri");
     let caught: unknown = null;
     try {
       await invoke("db_execute", {
@@ -116,7 +123,37 @@ describe("envelope 解封 = 生文字列 reject（Tauri ワイヤ契約 §5.2）
     } catch (e) {
       caught = e;
     }
+    expect(caught).toBeInstanceOf(IpcInvokeError);
+    expect(caught).toMatchObject({
+      code: "WORKSPACE_SWITCHING",
+      retryable: true,
+      outcome: "failed",
+    });
     expect(String(caught)).toContain("WORKSPACE_SWITCHING");
+  });
+
+  it("errorInfo があれば legacy error 文字列の推測より優先する", async () => {
+    installBridge({
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: "legacy transport message",
+        errorInfo: {
+          code: "WORKSPACE_SWITCHING",
+          message: "workspace transition in progress",
+          retryable: true,
+          outcome: "failed",
+        },
+      }),
+    });
+    const { invoke } = await import("./tauri");
+
+    await expect(invoke("db_execute")).rejects.toMatchObject({
+      name: "IpcInvokeError",
+      code: "WORKSPACE_SWITCHING",
+      message: "legacy transport message",
+      retryable: true,
+      outcome: "failed",
+    });
   });
 
   it("errorValue があれば object をそのまま reject 値にする（lint_text の LintError 契約）", async () => {
@@ -156,55 +193,228 @@ describe("envelope 解封 = 生文字列 reject（Tauri ワイヤ契約 §5.2）
   });
 });
 
-describe("SLOW_COMMANDS のタイムアウト選択（electron 分岐）", () => {
-  it("通常コマンドは 10s でタイムアウトする", async () => {
+describe("caller timeout policy（electron 分岐）", () => {
+  it("明示された通常 read-only コマンドは 10s でタイムアウトする", async () => {
     vi.useFakeTimers();
     installBridge({
       invoke: vi.fn().mockReturnValue(new Promise(() => {})),
     });
     const { invoke } = await import("./tauri");
-    const promise = invoke("hanging_command");
-    const expectation = expect(promise).rejects.toThrow(
-      /IPC timeout after 10000ms/,
-    );
+    const promise = invoke("validate_workspace_path", { path: "/tmp/ws" });
+    const caught = promise.catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(11_000);
-    await expectation;
+    await expect(caught).resolves.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_TIMEOUT",
+      retryable: false,
+      outcome: "unknown",
+      command: "validate_workspace_path",
+      details: { timeoutMs: 10_000 },
+    });
   });
 
-  it("SLOW_COMMANDS（open_workspace）は 10s では落ちず 300s で落ちる", async () => {
-    vi.useFakeTimers();
+  it.each(["foreshadow_load_anchors_for_scene", "list_annotations_for_scene"])(
+    "%s は Editor sidecar read lane の10s枠を使う",
+    async (command) => {
+      vi.useFakeTimers();
+      installBridge({
+        invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+      });
+      const { invoke } = await import("./tauri");
+      const caught = invoke(command).catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(11_000);
+      await expect(caught).resolves.toMatchObject({
+        name: "IpcInvokeError",
+        code: "IPC_TIMEOUT",
+        command,
+        details: { timeoutMs: 10_000 },
+      });
+    },
+  );
+
+  it.each([
+    ["SELECT * FROM projects", "all"],
+    ["WITH current AS (SELECT 1 AS id) SELECT * FROM current", "all"],
+    ["SELECT '/* UPDATE scenes */' AS harmless_marker", "get"],
+  ])(
+    "read-only db_execute (%s) は read lane の10s枠を使う",
+    async (sql, method) => {
+      vi.useFakeTimers();
+      installBridge({
+        invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+      });
+      const { invoke } = await import("./tauri");
+      const caught = invoke("db_execute", {
+        sql,
+        params: [],
+        method,
+      }).catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(11_000);
+      await expect(caught).resolves.toMatchObject({
+        name: "IpcInvokeError",
+        code: "IPC_TIMEOUT",
+        command: "db_execute",
+        details: { timeoutMs: 10_000 },
+      });
+    },
+  );
+
+  it("lifecycle quiescence cancels an active read caller with a retryable typed error", async () => {
+    let resolveBridge!: (value: { ok: true; value: null }) => void;
     installBridge({
-      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+      invoke: vi.fn().mockReturnValue(
+        new Promise<{ ok: true; value: null }>((resolve) => {
+          resolveBridge = resolve;
+        }),
+      ),
     });
-    const { invoke } = await import("./tauri");
-
-    let settled = false;
-    const promise = invoke("open_workspace", { path: "/tmp/ws" });
-    promise.catch(() => {
-      settled = true;
+    const [{ invoke }, { flushQuiescenceProviderStage }] = await Promise.all([
+      import("./tauri"),
+      import("./quiescenceProviders"),
+    ]);
+    const read = invoke("db_execute", {
+      sql: "SELECT * FROM projects",
+      params: [],
+      method: "all",
     });
 
-    await vi.advanceTimersByTimeAsync(11_000);
-    expect(settled).toBe(false);
+    await Promise.resolve();
+    await flushQuiescenceProviderStage("ipc-actual-tasks");
+    await expect(read).rejects.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_READ_CANCELLED",
+      retryable: true,
+      outcome: "failed",
+    });
 
-    const expectation = expect(promise).rejects.toThrow(
-      /IPC timeout after 300000ms/,
-    );
-    await vi.advanceTimersByTimeAsync(290_000);
-    await expectation;
-    expect(settled).toBe(true);
+    resolveBridge({ ok: true, value: null });
+    await Promise.resolve();
   });
+
+  it("semantic derived index は実処理を継続しても strict quiescence を保持しない", async () => {
+    let resolveBridge!: (value: { ok: true; value: number }) => void;
+    installBridge({
+      invoke: vi.fn().mockReturnValue(
+        new Promise<{ ok: true; value: number }>((resolve) => {
+          resolveBridge = resolve;
+        }),
+      ),
+    });
+    const [{ invoke }, { flushQuiescenceProviderStage }] = await Promise.all([
+      import("./tauri"),
+      import("./quiescenceProviders"),
+    ]);
+    const derived = invoke<number>("semantic_reindex_all", {
+      projectId: "project-1",
+    });
+
+    await Promise.resolve();
+    await expect(
+      flushQuiescenceProviderStage("ipc-actual-tasks"),
+    ).resolves.toBeUndefined();
+
+    resolveBridge({ ok: true, value: 42 });
+    await expect(derived).resolves.toBe(42);
+  });
+
+  it("lifecycle による derived cancel は retryable typed error になる", async () => {
+    let resolveBridge!: (value: { ok: true; value: number }) => void;
+    installBridge({
+      invoke: vi.fn().mockReturnValue(
+        new Promise<{ ok: true; value: number }>((resolve) => {
+          resolveBridge = resolve;
+        }),
+      ),
+    });
+    const [{ invoke }, { cancelDerivedIpcCallersForLifecycle }] =
+      await Promise.all([import("./tauri"), import("./ipcQueue")]);
+    const derived = invoke<number>("semantic_reindex_all", {
+      projectId: "project-1",
+    });
+    await Promise.resolve();
+
+    cancelDerivedIpcCallersForLifecycle();
+    await expect(derived).rejects.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_DERIVED_CANCELLED",
+      retryable: true,
+      outcome: "failed",
+    });
+
+    resolveBridge({ ok: true, value: 0 });
+    await Promise.resolve();
+  });
+
+  it.each([
+    ["open_workspace", { path: "/tmp/ws" }, 301_000],
+    [
+      "db_execute",
+      { sql: "UPDATE scenes SET title = ?", params: ["x"], method: "run" },
+      11_000,
+    ],
+    [
+      "db_execute",
+      {
+        sql: "INSERT INTO scenes (id) VALUES (?) RETURNING id",
+        params: ["scene-1"],
+        method: "all",
+      },
+      11_000,
+    ],
+    [
+      "db_execute",
+      {
+        sql: "WITH marker(v) AS (SELECT '/*') UPDATE scenes SET title = '*/' WHERE id = ? RETURNING id",
+        params: ["scene-1"],
+        method: "all",
+      },
+      11_000,
+    ],
+    ["events_index_entry", { eventId: "event-1" }, 301_000],
+    ["activate_license", { key: "GRIM-KEY-1234" }, 301_000],
+    ["unknown_mutating_command", undefined, 11_000],
+  ] as const)(
+    "%s は旧 caller timeout を超えても実処理の結果を待つ",
+    async (command, args, elapsedMs) => {
+      vi.useFakeTimers();
+      let resolveBridge!: (envelope: { ok: true; value: string }) => void;
+      const bridgeResult = new Promise<{ ok: true; value: string }>(
+        (resolve) => {
+          resolveBridge = resolve;
+        },
+      );
+      installBridge({
+        invoke: vi.fn().mockReturnValue(bridgeResult),
+      });
+      const { invoke } = await import("./tauri");
+
+      let settled = false;
+      const promise = invoke<string>(command, args);
+      void promise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(elapsedMs);
+      expect(settled).toBe(false);
+
+      resolveBridge({ ok: true, value: "late success" });
+      await expect(promise).resolves.toBe("late success");
+    },
+  );
 
   it.each([
     "semantic_search",
     "codex_semantic_search",
-    "events_index_entry",
     "events_semantic_search",
-    "events_reindex_all",
-    "chat_index_message",
     "chat_message_search",
-    "chat_reindex_all",
-  ])("%s はsemantic推論/全件処理用の300s枠を使う", async (command) => {
+  ])("%s は read-only semantic 検索用の300s枠を使う", async (command) => {
     vi.useFakeTimers();
     installBridge({
       invoke: vi.fn().mockReturnValue(new Promise(() => {})),
@@ -213,9 +423,14 @@ describe("SLOW_COMMANDS のタイムアウト選択（electron 分岐）", () =>
 
     let settled = false;
     const promise = invoke(command);
-    promise.catch(() => {
-      settled = true;
-    });
+    void promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     await vi.advanceTimersByTimeAsync(11_000);
     expect(settled).toBe(false);
 
@@ -226,37 +441,7 @@ describe("SLOW_COMMANDS のタイムアウト選択（electron 分岐）", () =>
     await expectation;
   });
 
-  it.each([
-    ["activate_license", { key: "GRIM-KEY-1234" }],
-    ["revalidate_license", undefined],
-    ["deactivate_license", undefined],
-  ] as const)(
-    "%sはPolarの15s timeoutより長い300s枠を使う",
-    async (command, args) => {
-      vi.useFakeTimers();
-      installBridge({
-        invoke: vi.fn().mockReturnValue(new Promise(() => {})),
-      });
-      const { invoke } = await import("./tauri");
-
-      let settled = false;
-      const promise = invoke(command, args);
-      promise.catch(() => {
-        settled = true;
-      });
-
-      await vi.advanceTimersByTimeAsync(16_000);
-      expect(settled).toBe(false);
-
-      const expectation = expect(promise).rejects.toThrow(
-        /IPC timeout after 300000ms/,
-      );
-      await vi.advanceTimersByTimeAsync(284_000);
-      await expectation;
-    },
-  );
-
-  it("detect_cli_binaryはlogin shell探索の内部timeoutより長い外側timeoutを使う", async () => {
+  it("detect_cli_binary は read-only 探索用の300s枠を使う", async () => {
     vi.useFakeTimers();
     installBridge({
       invoke: vi.fn().mockReturnValue(new Promise(() => {})),
@@ -265,33 +450,14 @@ describe("SLOW_COMMANDS のタイムアウト選択（electron 分岐）", () =>
 
     let settled = false;
     const promise = invoke("detect_cli_binary", { cli: "claude" });
-    promise.catch(() => {
-      settled = true;
-    });
-
-    await vi.advanceTimersByTimeAsync(11_000);
-    expect(settled).toBe(false);
-    const expectation = expect(promise).rejects.toThrow(
-      /IPC timeout after 300000ms/,
+    void promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
     );
-    await vi.advanceTimersByTimeAsync(290_000);
-    await expectation;
-  });
-
-  it("test_cli_connectionはnative authorization待ちを含む長いtimeoutを使う", async () => {
-    vi.useFakeTimers();
-    installBridge({
-      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
-    });
-    const { invoke } = await import("./tauri");
-
-    let settled = false;
-    const promise = invoke("test_cli_connection", {
-      binaryPath: "/opt/custom/claude",
-    });
-    promise.catch(() => {
-      settled = true;
-    });
 
     await vi.advanceTimersByTimeAsync(11_000);
     expect(settled).toBe(false);

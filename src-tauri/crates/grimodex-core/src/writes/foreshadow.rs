@@ -17,7 +17,7 @@
 
 use anyhow::Context;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
@@ -35,6 +35,12 @@ pub struct TrackedForeshadowCreateInput<'a> {
     pub notes: Option<&'a str>,
     pub load_bearing: Option<&'a str>,
     pub secret: bool,
+    /// Stable identity of the logical request. Unlike `foreshadow_id`, this
+    /// survives a caller retry that generated a fresh entity UUID.
+    pub request_id: Option<&'a str>,
+    /// Hash of the normalized client create request. When present, the
+    /// persisted create journal becomes a durable idempotency record.
+    pub request_hash: Option<&'a str>,
 }
 
 /// Only `Some` fields are written (same contract as the raw dynamic-SET
@@ -82,24 +88,162 @@ fn foreshadow_snapshot(
     .map_err(Into::into)
 }
 
+fn existing_create_result(
+    conn: &Connection,
+    input: &TrackedForeshadowCreateInput<'_>,
+    request_hash: &str,
+) -> anyhow::Result<Option<WriteResult>> {
+    let row = conn
+        .query_row(
+            "SELECT uj.id, uj.result_version, uj.change_event_uid, ce.payload
+             FROM undo_journal uj
+             LEFT JOIN change_events ce
+               ON ce.project_id = uj.project_id
+              AND ce.event_uid = uj.change_event_uid
+             WHERE uj.project_id = ?1
+               AND uj.entity_kind = 'foreshadow'
+               AND uj.entity_id = ?2
+               AND uj.op_kind = 'create'
+             ORDER BY uj.rowid ASC
+             LIMIT 1",
+            params![input.project_id, input.foreshadow_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let entity_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM foreshadows WHERE id = ?1)",
+        params![input.foreshadow_id],
+        |row| row.get(0),
+    )?;
+    let Some((undo_journal_id, version, change_event_uid, payload)) = row else {
+        if entity_exists {
+            anyhow::bail!(
+                "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: entity id already exists without matching request"
+            );
+        }
+        return Ok(None);
+    };
+    let stored_hash = payload
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()?
+        .and_then(|value| {
+            value
+                .get("requestHash")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    if !entity_exists || stored_hash.as_deref() != Some(request_hash) {
+        anyhow::bail!(
+            "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: request id reused with different payload or state"
+        );
+    }
+    Ok(Some(WriteResult {
+        entity_id: input.foreshadow_id.to_string(),
+        version,
+        change_event_uid: change_event_uid.ok_or_else(|| {
+            anyhow::anyhow!(
+                "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: missing original change event"
+            )
+        })?,
+        undo_journal_id,
+    }))
+}
+
+fn existing_request_result(
+    conn: &Connection,
+    request_id: &str,
+    request_hash: &str,
+) -> anyhow::Result<Option<WriteResult>> {
+    let row = conn
+        .query_row(
+            "SELECT uj.entity_id, uj.result_version, uj.change_event_uid, ce.payload
+             FROM undo_journal uj
+             LEFT JOIN change_events ce
+               ON ce.project_id = uj.project_id
+              AND ce.event_uid = uj.change_event_uid
+             WHERE uj.id = ?1",
+            params![request_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((entity_id, version, change_event_uid, payload)) = row else {
+        return Ok(None);
+    };
+    let stored_hash = payload
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()?
+        .and_then(|value| {
+            value
+                .get("requestHash")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    if stored_hash.as_deref() != Some(request_hash) {
+        anyhow::bail!(
+            "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: request id reused with different payload"
+        );
+    }
+    Ok(Some(WriteResult {
+        entity_id,
+        version,
+        change_event_uid: change_event_uid.ok_or_else(|| {
+            anyhow::anyhow!(
+                "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: missing original change event"
+            )
+        })?,
+        undo_journal_id: request_id.to_string(),
+    }))
+}
+
 pub fn tracked_foreshadow_create(
     conn: &Connection,
     input: TrackedForeshadowCreateInput<'_>,
 ) -> anyhow::Result<WriteResult> {
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    let undo_id = input
+        .request_id
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
 
-    let change_payload = json!({
+    let mut change_payload = json!({
         "title": input.title,
         "loadBearing": input.load_bearing,
         "secret": input.secret,
-    })
-    .to_string();
+    });
+    if let Some(request_hash) = input.request_hash {
+        change_payload["requestHash"] = serde_json::Value::String(request_hash.to_string());
+    }
+    let change_payload = change_payload.to_string();
 
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = (|| -> anyhow::Result<WriteResult> {
+        if let Some(request_hash) = input.request_hash {
+            if let Some(request_id) = input.request_id {
+                if let Some(existing) = existing_request_result(conn, request_id, request_hash)? {
+                    return Ok(existing);
+                }
+            } else if let Some(existing) = existing_create_result(conn, &input, request_hash)? {
+                return Ok(existing);
+            }
+        }
         conn.execute(
             "INSERT INTO foreshadows
              (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos,
@@ -392,6 +536,8 @@ mod tests {
             notes: None,
             load_bearing: Some("critical"),
             secret: false,
+            request_id: None,
+            request_hash: None,
         }
     }
 

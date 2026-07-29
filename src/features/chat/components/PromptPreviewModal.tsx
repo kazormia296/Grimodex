@@ -13,10 +13,14 @@ interface PromptPreviewModalProps {
   totalTokens: number;
   /** 現在のモデル ID。コスト推定に使う。未指定 / 未登録モデルではコスト行を省略 */
   model?: string;
+  /** `model` のprovider namespace。同名bare IDの価格衝突を防ぐ。 */
+  provider?: string | null;
   /** モデルのコンテキストウィンドウ (tokens)。0 / 省略時は fill bar 行も省略 */
   contextWindow?: number;
   /** related_scenes 込みのプレビュー再構築中。true の間はプレースホルダを出す。 */
   loading?: boolean;
+  /** Exact prompt construction failed. Estimated live cache must not be shown or saved. */
+  unavailable?: boolean;
   /** 「これから送る入力メッセージ」。空 / 未指定なら送信メッセージ行を描画しない。 */
   userMessage?: string;
   onClose: () => void;
@@ -29,7 +33,9 @@ export function PromptPreviewModal({
   model,
   contextWindow,
   loading = false,
+  unavailable = false,
   userMessage,
+  provider,
   onClose,
 }: PromptPreviewModalProps) {
   const { t } = useTranslation();
@@ -37,10 +43,15 @@ export function PromptPreviewModal({
   // テンプレート保存ダイアログ。保存対象は「これから送る入力メッセージ」が
   // あればそれ（再利用したい指示文）、無ければプロンプト全文。
   const [saveOpen, setSaveOpen] = useState(false);
-  const saveTarget =
-    userMessage && userMessage.trim() ? userMessage : systemPrompt;
+  const saveTarget = unavailable
+    ? ""
+    : userMessage && userMessage.trim()
+      ? userMessage
+      : systemPrompt;
   const estimatedCost =
-    model && totalTokens > 0 ? estimateInputCost(model, totalTokens) : null;
+    model && totalTokens > 0
+      ? estimateInputCost(model, totalTokens, provider)
+      : null;
   const costLabel = estimatedCost !== null ? formatCost(estimatedCost) : null;
   const fillPct =
     contextWindow && contextWindow > 0
@@ -67,7 +78,7 @@ export function PromptPreviewModal({
           {t("chat.context.promptPreviewTitle")}
         </h2>
         <div className="flex items-center gap-1">
-          {!loading && saveTarget.trim() && (
+          {!loading && !unavailable && saveTarget.trim() && (
             <button
               type="button"
               onClick={() => setSaveOpen(true)}
@@ -106,6 +117,13 @@ export function PromptPreviewModal({
         {loading ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
             {t("chat.context.promptPreviewLoading")}
+          </p>
+        ) : unavailable ? (
+          <p
+            className="py-8 text-center text-sm text-muted-foreground"
+            role="status"
+          >
+            {t("chat.context.promptPreviewUnavailable")}
           </p>
         ) : (
           <>

@@ -6,11 +6,15 @@
  * 忘れるので、remount 時の再フェッチ (外部書き込みの追従) は阻害しない。
  */
 export interface InFlightTracker {
-  /** ロード開始を記録する。promise は内部で reject しないこと (store の
-   *  load 関数は catch 込みで void を返す前提)。 */
+  /**
+   * ロード開始を記録する。rejecting な canonical promise も保持できる。
+   * 呼び出し側は用途ごとに reject を伝播／吸収する wrapper を選べる。
+   */
   track(key: string, promise: Promise<void>): void;
   /** 同一キーのロードが進行中ならその promise、なければ null。 */
   peek(key: string): Promise<void> | null;
+  /** scope replacement 時に、settle 前の旧 scope load への相乗りを禁止する。 */
+  clear(): void;
 }
 
 export function createInFlightTracker(): InFlightTracker {
@@ -18,13 +22,19 @@ export function createInFlightTracker(): InFlightTracker {
   return {
     track(key, promise) {
       current = { key, promise };
-      void promise.finally(() => {
-        // 後続の track で上書きされていたら触らない
+      const clearIfCurrent = () => {
+        // 後続の track / clear で上書きされていたら触らない
         if (current?.promise === promise) current = null;
-      });
+      };
+      // `finally` は元 promise が reject すると新しい rejected promise を
+      // 作るため使わない。両 branch を処理して cleanup 自体は必ず resolve。
+      void promise.then(clearIfCurrent, clearIfCurrent);
     },
     peek(key) {
       return current && current.key === key ? current.promise : null;
+    },
+    clear() {
+      current = null;
     },
   };
 }

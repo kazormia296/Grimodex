@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   isReplaying: false,
   applyUndoJournal: vi.fn().mockResolvedValue(undefined),
   scheduleEventIndex: vi.fn(),
+  notifySameRendererDocumentWrite: vi.fn(),
+  currentProjectId: "p1",
 }));
 
 vi.mock("i18next", () => ({ default: { t: (k: string) => k } }));
@@ -19,7 +21,7 @@ vi.mock("@/features/timelapse/recorder", () => ({
   getRecorderSessionId: () => "sess-1",
 }));
 vi.mock("@/features/project/projectStore", () => ({
-  getCurrentProjectId: () => "p1",
+  getCurrentProjectId: () => h.currentProjectId,
 }));
 vi.mock("@/features/chronicle/chronicleStore", () => ({
   useChronicleStore: {
@@ -28,6 +30,9 @@ vi.mock("@/features/chronicle/chronicleStore", () => ({
 }));
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleEventIndex: h.scheduleEventIndex,
+}));
+vi.mock("@/features/concurrency/documentWriteNotification", () => ({
+  notifySameRendererDocumentWrite: h.notifySameRendererDocumentWrite,
 }));
 vi.mock("@/store/globalHistoryStore", () => ({
   useGlobalHistoryStore: {
@@ -40,9 +45,14 @@ import {
   uiLinkSceneEvent,
   uiUnlinkSceneEvent,
   agentLinkSceneEvent,
+  agentAddEventRelation,
   agentCreateEvent,
   agentUpdateEvent,
+  agentDeleteEvent,
   uiCreateEvent,
+  uiUpdateEvent,
+  uiDeleteEvent,
+  uiSetEventParticipants,
 } from "./event";
 
 const writeResult = {
@@ -57,10 +67,15 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     h.blockIfPolicyOff.mockClear();
     h.blockIfPolicyOff.mockReturnValue(false);
     h.invoke.mockClear();
-    h.invoke.mockResolvedValue(writeResult);
+    h.invoke.mockImplementation(async (command: string) =>
+      command === "db_execute" ? { rows: [{ version: 0 }] } : writeResult,
+    );
     h.bumpRevision.mockClear();
     h.push.mockClear();
+    h.notifySameRendererDocumentWrite.mockClear();
+    h.scheduleEventIndex.mockClear();
     h.isReplaying = false;
+    h.currentProjectId = "p1";
   });
 
   it("surface='manual' で policy gate を通さず tracked link を invoke する", async () => {
@@ -69,6 +84,7 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     expect(h.blockIfPolicyOff).not.toHaveBeenCalled();
     expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_link", {
       payload: {
+        requestId: expect.any(String),
         projectId: "p1",
         sessionId: "sess-1",
         surface: "manual",
@@ -80,7 +96,10 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     expect(h.push).toHaveBeenCalledTimes(1);
     expect(h.push.mock.calls[0][0]).toMatchObject({
       kind: "chronicle",
+      operationId: "j1",
       entityId: "e1",
+      documentKey: { kind: "chronicle-event", id: "e1" },
+      retainOnVersionConflict: true,
     });
   });
 
@@ -89,6 +108,7 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     expect(h.blockIfPolicyOff).not.toHaveBeenCalled();
     expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_unlink", {
       payload: {
+        requestId: expect.any(String),
         projectId: "p1",
         sessionId: "sess-1",
         surface: "manual",
@@ -118,6 +138,19 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     await expect(agentLinkSceneEvent("s1", "e1")).rejects.toThrow();
     expect(h.blockIfPolicyOff).toHaveBeenCalledWith("knowledgeWrite");
     expect(h.invoke).not.toHaveBeenCalled();
+  });
+
+  it("association retry IDs are passed to link and relation commands", async () => {
+    await agentLinkSceneEvent("s1", "e1", { requestId: "link-request-1" });
+    await agentAddEventRelation("e1", "e2", {
+      requestId: "relation-request-1",
+    });
+    expect(h.invoke).toHaveBeenNthCalledWith(1, "agent_scene_event_link", {
+      payload: expect.objectContaining({ requestId: "link-request-1" }),
+    });
+    expect(h.invoke).toHaveBeenNthCalledWith(2, "agent_event_relation_add", {
+      payload: expect.objectContaining({ requestId: "relation-request-1" }),
+    });
   });
 });
 
@@ -160,10 +193,15 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     h.blockIfPolicyOff.mockClear();
     h.blockIfPolicyOff.mockReturnValue(false);
     h.invoke.mockClear();
-    h.invoke.mockResolvedValue(writeResult);
+    h.invoke.mockImplementation(async (command: string) =>
+      command === "db_execute" ? { rows: [{ version: 0 }] } : writeResult,
+    );
     h.bumpRevision.mockClear();
     h.push.mockClear();
+    h.notifySameRendererDocumentWrite.mockClear();
+    h.scheduleEventIndex.mockClear();
     h.isReplaying = false;
+    h.currentProjectId = "p1";
   });
 
   it("AI 経路 agentCreateEvent は detail に authorship マークを焼き込む", async () => {
@@ -171,9 +209,221 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     expect(hasAuthorshipMark(lastDetailDoc())).toBe(true);
   });
 
+  it("caller-reusable eventId is passed through the create payload", async () => {
+    await agentCreateEvent({
+      requestId: "agent-tool:event-request",
+      eventId: "event-request-1",
+      title: "t",
+    });
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_create", {
+      payload: expect.objectContaining({
+        requestId: "agent-tool:event-request",
+        eventId: "event-request-1",
+        projectId: "p1",
+        sessionId: "sess-1",
+      }),
+    });
+  });
+
+  it("削除済み create replay は renderer side effect を公開しない", async () => {
+    h.invoke.mockImplementation(async (command: string) =>
+      command === "db_execute" ? { rows: [] } : writeResult,
+    );
+
+    await expect(
+      agentCreateEvent({
+        requestId: "agent-tool:deleted-event-request",
+        title: "deleted",
+      }),
+    ).rejects.toThrow("not found after replay");
+
+    expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
+    expect(h.bumpRevision).not.toHaveBeenCalled();
+    expect(h.scheduleEventIndex).not.toHaveBeenCalled();
+    expect(h.push).not.toHaveBeenCalled();
+  });
+
+  it("invoke 中に Project が変わった create completion を公開しない", async () => {
+    let resolveCreate: ((value: typeof writeResult) => void) | undefined;
+    h.invoke.mockImplementation((command: string) => {
+      if (command === "agent_event_create") {
+        return new Promise((resolve) => {
+          resolveCreate = resolve;
+        });
+      }
+      return Promise.resolve({ rows: [{ version: 1 }] });
+    });
+
+    const creation = agentCreateEvent({
+      requestId: "agent-tool:stale-event-request",
+      title: "old project",
+    });
+    await vi.waitFor(() =>
+      expect(h.invoke).toHaveBeenCalledWith(
+        "agent_event_create",
+        expect.anything(),
+      ),
+    );
+    h.currentProjectId = "p2";
+    resolveCreate?.(writeResult);
+
+    await expect(creation).rejects.toThrow("event write authority changed");
+    expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
+    expect(h.bumpRevision).not.toHaveBeenCalled();
+    expect(h.scheduleEventIndex).not.toHaveBeenCalled();
+    expect(h.push).not.toHaveBeenCalled();
+  });
+
+  it("version 読み込み中に Project が変わった update を別 Project へ送らない", async () => {
+    let resolveVersion:
+      | ((value: { rows: Array<{ version: number }> }) => void)
+      | undefined;
+    h.invoke.mockImplementation((command: string) => {
+      if (command === "db_execute") {
+        return new Promise((resolve) => {
+          resolveVersion = resolve;
+        });
+      }
+      return Promise.resolve(writeResult);
+    });
+
+    const update = agentUpdateEvent({ eventId: "shared-id", title: "old" });
+    await vi.waitFor(() =>
+      expect(h.invoke).toHaveBeenCalledWith("db_execute", {
+        sql: expect.any(String),
+        params: ["shared-id", "p1"],
+        method: "all",
+      }),
+    );
+    h.currentProjectId = "p2";
+    resolveVersion?.({ rows: [{ version: 7 }] });
+
+    await expect(update).rejects.toThrow("event write authority changed");
+    expect(
+      h.invoke.mock.calls.some(([command]) => command === "agent_event_update"),
+    ).toBe(false);
+    expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
+    expect(h.bumpRevision).not.toHaveBeenCalled();
+    expect(h.push).not.toHaveBeenCalled();
+  });
+
   it("AI 経路 agentUpdateEvent も detail 更新に authorship マークを焼き込む", async () => {
     await agentUpdateEvent({ eventId: "e1", detail: DETAIL_DOC });
     expect(hasAuthorshipMark(lastDetailDoc())).toBe(true);
+  });
+
+  it("読み込み時点の baseVersion を update payload に通す", async () => {
+    await agentUpdateEvent({
+      eventId: "e1",
+      baseVersion: 7,
+      title: "new",
+    });
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_update", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 7,
+        title: "new",
+      }),
+    });
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenCalledWith(
+      { kind: "chronicle-event", id: "e1" },
+      {
+        domain: "event",
+        opType: "event.update",
+        entityId: "e1",
+      },
+    );
+  });
+
+  it("ChroniclePanel の手動 UI 更新も open Editor session へ通知する", async () => {
+    await uiUpdateEvent({ eventId: "e1", baseVersion: 0, title: "manual" });
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it("起点 Editor 自身の保存だけ document notification を抑止できる", async () => {
+    await uiUpdateEvent(
+      { eventId: "e1", baseVersion: 0, title: "editor" },
+      { suppressDocumentNotification: true },
+    );
+    expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
+  });
+
+  it("delete は読み込み時点の aggregate version をCAS payloadへ渡す", async () => {
+    await agentDeleteEvent("e1", { baseVersion: 7 });
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_delete", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 7,
+      }),
+    });
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenCalledWith(
+      { kind: "chronicle-event", id: "e1" },
+      {
+        domain: "event",
+        opType: "event.delete",
+        entityId: "e1",
+      },
+    );
+  });
+
+  it("手動 delete も選択行の version を伝播する", async () => {
+    await uiDeleteEvent("e1", { baseVersion: 4 });
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_delete", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 4,
+        surface: "manual",
+      }),
+    });
+  });
+
+  it("起点 UI は delete と participants の document notification を抑止できる", async () => {
+    await uiDeleteEvent("e1", {
+      baseVersion: 4,
+      suppressDocumentNotification: true,
+    });
+    await uiSetEventParticipants("e1", ["c1"], {
+      baseVersion: 4,
+      suppressDocumentNotification: true,
+    });
+
+    expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
+    expect(h.invoke).toHaveBeenNthCalledWith(1, "agent_event_delete", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        baseVersion: 4,
+      }),
+    });
+    expect(h.invoke).toHaveBeenNthCalledWith(
+      2,
+      "agent_event_set_participants",
+      {
+        payload: expect.objectContaining({
+          eventId: "e1",
+          codexEntryIds: ["c1"],
+          baseVersion: 4,
+        }),
+      },
+    );
+  });
+
+  it("Event row undo/redo も同一rendererのDocument Sessionへ通知する", async () => {
+    await agentUpdateEvent({ eventId: "e1", baseVersion: 0, title: "tracked" });
+    const command = h.push.mock.calls[0][0];
+    h.notifySameRendererDocumentWrite.mockClear();
+
+    await command.undo();
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenLastCalledWith(
+      { kind: "chronicle-event", id: "e1" },
+      {
+        domain: "event",
+        opType: "event.update",
+        entityId: "e1",
+      },
+    );
+
+    await command.redo();
+    expect(h.notifySameRendererDocumentWrite).toHaveBeenCalledTimes(2);
   });
 
   it("手動 UI 経路 uiCreateEvent は detail に AI マークを足さない (surface=manual)", async () => {

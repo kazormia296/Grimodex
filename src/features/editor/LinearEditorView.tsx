@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { flattenSceneNodes, getTreeIndex } from "@/features/tree/treeIndex";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { LinearSceneBlock } from "./LinearSceneBlock";
+import { AccessibleLinearReaderDialog } from "./AccessibleLinearReaderDialog";
 import { Toolbar } from "@/features/editor/Toolbar";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { CodexPopover } from "@/features/editor/CodexPopover";
@@ -28,7 +30,6 @@ import {
   buildEditorMeasureStyle,
   canScrollBlockAxis,
   getBlockStartOffset,
-  getLinearRootMargin,
   getLogicalScrollOffset,
   pickActiveSceneId,
   setLogicalScrollOffset,
@@ -44,6 +45,17 @@ import {
 import type { Editor } from "@tiptap/core";
 import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
 import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
+import { useEditorSessionStore } from "./editorSessionStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import {
+  buildLinearPinnedIndexes,
+  extractLinearVirtualIndexes,
+} from "./linearVirtualization";
+import {
+  measurePerfSync,
+  recordCounter,
+  recordMaxCounter,
+} from "@/lib/perfLog";
 
 const DEFAULT_HEIGHT = 300;
 const DEBOUNCE_ACTIVE_MS = 100;
@@ -54,6 +66,22 @@ export function LinearEditorView() {
   const verticalMode = editorSettings.verticalMode;
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
+  const dirtyDocumentIds = useEditorSessionStore(
+    (state) => state.dirtyDocumentIds,
+  );
+  const externalConflicts = useExternalWriteStore((state) => state.conflicts);
+  const conflictedSceneIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const conflict of externalConflicts) {
+      if (
+        conflict.documentKey === undefined ||
+        conflict.documentKey.kind === "tree"
+      ) {
+        ids.add(conflict.documentKey?.id ?? conflict.sceneId);
+      }
+    }
+    return ids;
+  }, [externalConflicts]);
 
   const focusedEditor = useLinearEditorStore((s) => s.focusedEditor);
   const focusedSceneId = useLinearEditorStore((s) => s.focusedSceneId);
@@ -62,6 +90,9 @@ export function LinearEditorView() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const heightMapRef = useRef<Map<string, number>>(new Map());
+  const visibleRectsRef = useRef<Map<string, DOMRectReadOnly>>(new Map());
+  const rowElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const activeObserverRef = useRef<IntersectionObserver | null>(null);
   const isScrollDetectionRef = useRef(false);
   const activeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Capture the active scene at mount time before any observer overwrites it
@@ -73,7 +104,6 @@ export function LinearEditorView() {
   const navigatingRef = useRef<string | null>(null);
   const navCleanupRef = useRef<(() => void) | null>(null);
 
-  const [mountedSet, setMountedSet] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useState<string | null>(activeSceneId);
   // editorsById 全体を購読すると、スクロールでブロックが mount/unmount する
   // たび (register/unregister の spread 差し替え) に view 全体が再レンダーされ
@@ -96,239 +126,215 @@ export function LinearEditorView() {
     useState<CodexMentionPopupState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
 
-  // sortOrder は同じ parentId 内でのみ比較可能な fractional-indexing key
-  // (各フォルダの最初の子は独立に "a0" を生成する)。グローバル sort だと
-  // 別フォルダのシーンが章をまたいで interleave するので、zipExport /
-  // exportEngine と同じく per-parent sort + DFS pre-order で flatten する。
-  // notes は意図的に除外 (LinearSceneBlock が scene 専用ロード経路のため)。
-  // DFS walk で到達できない孤児 scene (parentId が消失/循環) は末尾に append
-  // して旧フラット sort の「全 scene を必ず出す」保証を維持する。
-  const scenes = useMemo(() => {
-    const childrenByParent = new Map<string | null, TreeNodeData[]>();
-    for (const n of nodes) {
-      const arr = childrenByParent.get(n.parentId) ?? [];
-      arr.push(n);
-      childrenByParent.set(n.parentId, arr);
-    }
-    for (const arr of childrenByParent.values()) {
-      arr.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-    }
-    const out: TreeNodeData[] = [];
-    const guard = new Set<string>();
-    const walk = (parentId: string | null) => {
-      if (parentId !== null) {
-        if (guard.has(parentId)) return;
-        guard.add(parentId);
-      }
-      for (const n of childrenByParent.get(parentId) ?? []) {
-        if (n.nodeType === "scene") out.push(n);
-        else if (n.nodeType === "folder") walk(n.id);
-      }
-    };
-    walk(null);
-    const seen = new Set(out.map((n) => n.id));
-    const orphans = nodes
-      .filter((n) => n.nodeType === "scene" && !seen.has(n.id))
-      .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-    return orphans.length === 0 ? out : [...out, ...orphans];
-  }, [nodes]);
-  const focusedScene = useMemo(
-    () => nodes.find((node) => node.id === focusedSceneId) ?? null,
-    [nodes, focusedSceneId],
+  // Shared per-parent index preserves DFS order and keeps unreachable scenes.
+  const treeIndex = useMemo(() => getTreeIndex(nodes), [nodes]);
+  const scenes = useMemo(() => flattenSceneNodes(treeIndex), [treeIndex]);
+  const sceneIds = useMemo(() => scenes.map((scene) => scene.id), [scenes]);
+  const sceneIndexById = useMemo(
+    () => new Map(sceneIds.map((id, index) => [id, index])),
+    [sceneIds],
   );
+  const focusedScene =
+    focusedSceneId === null
+      ? null
+      : (treeIndex.nodeById.get(focusedSceneId) ?? null);
   const canEditCodexSemanticLink =
     focusedScene?.nodeType === "scene" &&
     !isFileBackedNode(focusedScene.sourceUri) &&
     focusedEditor?.isEditable === true;
 
-  // --- IntersectionObserver: mount/unmount ---
+  const pinnedIndexes = useMemo(
+    () =>
+      buildLinearPinnedIndexes(
+        sceneIds,
+        activeId,
+        dirtyDocumentIds,
+        conflictedSceneIds,
+      ),
+    [activeId, conflictedSceneIds, dirtyDocumentIds, sceneIds],
+  );
+  const rangeExtractor = useCallback(
+    (range: {
+      startIndex: number;
+      endIndex: number;
+      overscan: number;
+      count: number;
+    }) => extractLinearVirtualIndexes(range, pinnedIndexes),
+    [pinnedIndexes],
+  );
+  const linearVirtualizer = useVirtualizer({
+    horizontal: verticalMode,
+    isRtl: verticalMode,
+    count: scenes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) =>
+      heightMapRef.current.get(scenes[index]?.id ?? "") ??
+      DEFAULT_HEIGHT + (index > 0 ? 49 : 0),
+    overscan: 3,
+    getItemKey: (index) => scenes[index]?.id ?? index,
+    rangeExtractor,
+    scrollToFn: (offset, { adjustments = 0, behavior }) => {
+      const element = scrollRef.current;
+      if (!element) return;
+      const target = offset + adjustments;
+      element.scrollTo(
+        verticalMode ? { left: -target, behavior } : { top: target, behavior },
+      );
+    },
+  });
+
+  const scheduleActiveDetection = useCallback(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    if (navigatingRef.current) return;
+    if (activeDebounceRef.current) clearTimeout(activeDebounceRef.current);
+    activeDebounceRef.current = setTimeout(() => {
+      if (navigatingRef.current) return;
+      const closestId = measurePerfSync("linear.activeDetection", () => {
+        const visibleRects = [...visibleRectsRef.current].map(([id, rect]) => ({
+          id,
+          rect,
+        }));
+        recordMaxCounter(
+          "linear.activeDetection.maxVisibleRects",
+          visibleRects.length,
+        );
+        // The application reads one container rect and zero scene rects.
+        // Scene geometry comes from IntersectionObserver entries.
+        recordCounter("linear.activeDetection.containerRectReads");
+        recordCounter("linear.activeDetection.sceneRectReads", 0);
+        return pickActiveSceneId(
+          container.getBoundingClientRect(),
+          visibleRects,
+          verticalMode,
+        );
+      });
+      if (!closestId || closestId === activeIdRef.current) return;
+      setActiveId(closestId);
+      isScrollDetectionRef.current = true;
+      useTreeStore.getState().setActiveScene(closestId);
+      queueMicrotask(() => {
+        isScrollDetectionRef.current = false;
+      });
+    }, DEBOUNCE_ACTIVE_MS);
+  }, [verticalMode]);
+
+  // The observer supplies boundingClientRect for intersecting virtual rows.
+  // Active detection compares only this small map and never reads every scene.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-
+    const visibleRects = visibleRectsRef.current;
+    visibleRects.clear();
     const observer = new IntersectionObserver(
       (entries) => {
-        setMountedSet((prev) => {
-          const next = new Set(prev);
-          let changed = false;
-          for (const entry of entries) {
-            const id = (entry.target as HTMLElement).dataset.sceneId;
-            if (!id) continue;
-            if (entry.isIntersecting) {
-              if (!next.has(id)) {
-                next.add(id);
-                changed = true;
-              }
-            } else {
-              if (next.has(id)) {
-                next.delete(id);
-                changed = true;
-              }
-            }
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.linearSceneId;
+          if (!id) continue;
+          if (entry.isIntersecting) {
+            visibleRects.set(id, entry.boundingClientRect);
+          } else {
+            visibleRects.delete(id);
           }
-          return changed ? next : prev;
-        });
+        }
+        scheduleActiveDetection();
       },
-      { root: container, rootMargin: getLinearRootMargin(verticalMode) },
+      { root: container, rootMargin: "0px", threshold: [0, 0.5, 1] },
     );
-
-    const sentinels = container.querySelectorAll("[data-scene-id]");
-    sentinels.forEach((el) => observer.observe(el));
-
-    return () => observer.disconnect();
-  }, [scenes, verticalMode]);
-
-  // --- IntersectionObserver: active scene detection ---
-  // activeId は ref で参照する (deps に入れると active が変わるたびに observer
-  // を張り替え、その瞬間の交差イベントを取りこぼしてスクロール中の
-  // タブ名/チャットの追従が不安定になる)。
-  useEffect(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-
-    const observer = new IntersectionObserver(
-      (_entries) => {
-        // プログラムスクロール進行中の途中経過は active にしない
-        if (navigatingRef.current) return;
-        if (activeDebounceRef.current) clearTimeout(activeDebounceRef.current);
-
-        activeDebounceRef.current = setTimeout(() => {
-          if (navigatingRef.current) return;
-          // Find the visible scene closest to the block-start edge of the
-          // scroll container (top when horizontal, right when vertical).
-          const containerRect = container.getBoundingClientRect();
-          const items = Array.from(
-            container.querySelectorAll("[data-scene-id]"),
-          ).map((el) => ({
-            id: (el as HTMLElement).dataset.sceneId ?? "",
-            rect: el.getBoundingClientRect(),
-          }));
-          const closestId = pickActiveSceneId(
-            containerRect,
-            items,
-            verticalMode,
-          );
-
-          if (closestId && closestId !== activeIdRef.current) {
-            setActiveId(closestId);
-            isScrollDetectionRef.current = true;
-            useTreeStore.getState().setActiveScene(closestId);
-            // Clear the flag in a microtask so external watchers can distinguish
-            queueMicrotask(() => {
-              isScrollDetectionRef.current = false;
-            });
-          }
-        }, DEBOUNCE_ACTIVE_MS);
-      },
-      { root: container, rootMargin: "0px", threshold: [0, 0.5, 1.0] },
-    );
-
-    const sentinels = container.querySelectorAll("[data-scene-id]");
-    sentinels.forEach((el) => observer.observe(el));
+    activeObserverRef.current = observer;
+    for (const element of rowElementsRef.current.values()) {
+      observer.observe(element);
+    }
 
     return () => {
       observer.disconnect();
+      if (activeObserverRef.current === observer) {
+        activeObserverRef.current = null;
+      }
+      visibleRects.clear();
       if (activeDebounceRef.current) clearTimeout(activeDebounceRef.current);
     };
-  }, [scenes, verticalMode]);
+  }, [scheduleActiveDetection]);
 
-  // Placeholder sizes were measured along one writing mode's block axis —
-  // toggling vertical mode invalidates them.
+  // Measurements belong to one physical block axis; invalidate on mode flips.
   useEffect(() => {
     heightMapRef.current.clear();
-  }, [verticalMode]);
-
-  // --- Programmatic navigation: scroll a scene to the block-start edge ---
-  // 一発の scrollIntoView では足りない: 未マウントシーンは placeholder の
-  // 推定高さで並んでいるため、着地後に IO mount → 実高さ確定 → ターゲットが
-  // ズレる。ResizeObserver + rAF でターゲットを block-start に再アンカーし
-  // 続け、高さが安定したら終了する (初期スクロールの retry パターンを一般化)。
-  // 進行中は navigatingRef で active 検出を抑止 — 途中経過のシーンを active に
-  // すると openPreview が無関係なプレビュータブを開く。
-  const navigateToScene = useCallback((targetId: string) => {
-    const container = scrollRef.current;
-    const content = editorContainerRef.current;
-    if (!container || !content) return;
-
-    // 進行中のナビゲーションは置き換える
-    navCleanupRef.current?.();
-    navigatingRef.current = targetId;
-
-    let done = false;
-    let stableTicks = 0;
-    let rafId = 0;
-    let observer: ResizeObserver | null = null;
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-
-    const finish = () => {
-      if (done) return;
-      done = true;
-      observer?.disconnect();
-      cancelAnimationFrame(rafId);
-      if (timeout) clearTimeout(timeout);
-      if (navigatingRef.current === targetId) navigatingRef.current = null;
-      if (navCleanupRef.current === cleanup) navCleanupRef.current = null;
-    };
-    const cleanup = finish;
-
-    const step = () => {
-      if (done) return;
-      // call-time read — モード切替を跨いでも正しい軸で動く
-      const vertical = useSettingsStore
-        .getState()
-        .getBoolean("editor.verticalMode", false);
-      const target = container.querySelector(`[data-scene-id="${targetId}"]`);
-      if (!target) {
-        finish();
-        return;
+    (
+      linearVirtualizer as typeof linearVirtualizer & {
+        measure?: () => void;
       }
-      const containerRect = container.getBoundingClientRect();
-      const offset = getBlockStartOffset(
-        containerRect,
-        target.getBoundingClientRect(),
-        vertical,
-      );
-      if (Math.abs(offset) < 2) {
-        // 着地済み — 高さ変動が続く間は維持し、安定したら終了
-        stableTicks += 1;
-        return;
-      }
-      const before = getLogicalScrollOffset(container, vertical);
-      setLogicalScrollOffset(container, before + offset, vertical);
-      const after = getLogicalScrollOffset(container, vertical);
-      if (after === before) {
-        // スクロールが動かない: コンテンツ末尾でこれ以上寄せられない。
-        // ただしまだスクロール可能になっていない起動直後は、コンテンツの
-        // 成長を待つ (ResizeObserver が再試行する)。
-        if (canScrollBlockAxis(container, vertical)) {
-          stableTicks += 1;
+    ).measure?.();
+  }, [linearVirtualizer, verticalMode]);
+
+  // Virtualizer navigation first materializes the target, then a short
+  // re-anchor loop absorbs variable-height measurements as editors load.
+  const navigateToScene = useCallback(
+    (targetId: string) => {
+      const container = scrollRef.current;
+      const targetIndex = sceneIndexById.get(targetId);
+      if (!container || targetIndex === undefined) return;
+
+      navCleanupRef.current?.();
+      navigatingRef.current = targetId;
+      linearVirtualizer.scrollToIndex(targetIndex, { align: "start" });
+
+      let done = false;
+      let stableTicks = 0;
+      let rafId = 0;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        cancelAnimationFrame(rafId);
+        if (timeout) clearTimeout(timeout);
+        if (navigatingRef.current === targetId) navigatingRef.current = null;
+        if (navCleanupRef.current === cleanup) navCleanupRef.current = null;
+      };
+      const cleanup = finish;
+
+      const step = () => {
+        if (done) return;
+        const vertical = useSettingsStore
+          .getState()
+          .getBoolean("editor.verticalMode", false);
+        const target = rowElementsRef.current.get(targetId);
+        if (!target) {
+          linearVirtualizer.scrollToIndex(targetIndex, { align: "start" });
+          return;
         }
-      } else {
-        stableTicks = 0;
-      }
-    };
-
-    // コンテンツの成長 (シーン mount で高さ確定) のたびに再アンカー
-    observer = new ResizeObserver(() => step());
-    observer.observe(content);
-
-    const tick = () => {
-      if (done) return;
+        const offset = getBlockStartOffset(
+          container.getBoundingClientRect(),
+          target.getBoundingClientRect(),
+          vertical,
+        );
+        if (Math.abs(offset) < 2) {
+          stableTicks += 1;
+          return;
+        }
+        const before = getLogicalScrollOffset(container, vertical);
+        setLogicalScrollOffset(container, before + offset, vertical);
+        const after = getLogicalScrollOffset(container, vertical);
+        stableTicks =
+          after === before && canScrollBlockAxis(container, vertical)
+            ? stableTicks + 1
+            : 0;
+      };
+      const tick = () => {
+        if (done) return;
+        step();
+        if (stableTicks >= 3) {
+          finish();
+          return;
+        }
+        rafId = requestAnimationFrame(tick);
+      };
       step();
-      if (stableTicks >= 3) {
-        finish();
-        return;
-      }
       rafId = requestAnimationFrame(tick);
-    };
-    step();
-    rafId = requestAnimationFrame(tick);
-
-    // Safety: stop after 2s regardless
-    timeout = setTimeout(finish, 2000);
-
-    navCleanupRef.current = cleanup;
-  }, []);
+      timeout = setTimeout(finish, 2000);
+      navCleanupRef.current = cleanup;
+    },
+    [linearVirtualizer, sceneIndexById],
+  );
 
   // Unmount: stop any in-flight navigation
   useEffect(() => {
@@ -364,6 +370,24 @@ export function LinearEditorView() {
     useLinearEditorStore.getState().setPendingScrollToId(null);
     navigateToScene(pendingScrollToId);
   }, [pendingScrollToId, navigateToScene]);
+
+  const registerRowElement = useCallback(
+    (sceneId: string, element: HTMLDivElement | null) => {
+      const previous = rowElementsRef.current.get(sceneId);
+      if (previous && previous !== element) {
+        activeObserverRef.current?.unobserve(previous);
+      }
+      if (!element) {
+        rowElementsRef.current.delete(sceneId);
+        visibleRectsRef.current.delete(sceneId);
+        return;
+      }
+      rowElementsRef.current.set(sceneId, element);
+      linearVirtualizer.measureElement(element);
+      activeObserverRef.current?.observe(element);
+    },
+    [linearVirtualizer],
+  );
 
   // --- Height change callback ---
   const handleHeightChange = useCallback((sceneId: string, height: number) => {
@@ -463,23 +487,49 @@ export function LinearEditorView() {
           ...buildEditorPaperStyle({
             enabled: backgroundEnabled,
           }),
+          blockSize: `${linearVirtualizer.getTotalSize()}px`,
         }}
       >
-        {scenes.map((scene, i) => (
-          <div key={scene.id}>
-            {i > 0 && <div className="editor-scene-separator" />}
-            <LinearSceneBlock
-              sceneId={scene.id}
-              isMounted={mountedSet.has(scene.id)}
-              isActive={scene.id === activeId}
-              placeholderHeight={
-                heightMapRef.current.get(scene.id) ?? DEFAULT_HEIGHT
-              }
-              onHeightChange={handleHeightChange}
-              onFocus={handleFocus}
-            />
-          </div>
-        ))}
+        {linearVirtualizer.getVirtualItems().map((virtualItem) => {
+          const scene = scenes[virtualItem.index];
+          if (!scene) return null;
+          return (
+            <div
+              key={scene.id}
+              ref={(element) => registerRowElement(scene.id, element)}
+              data-index={virtualItem.index}
+              data-linear-scene-id={scene.id}
+              data-linear-virtual-row=""
+              style={{
+                position: "absolute",
+                insetBlockStart: 0,
+                insetInline: 0,
+                inlineSize: "100%",
+                transform: verticalMode
+                  ? `translateX(${-virtualItem.start}px)`
+                  : `translateY(${virtualItem.start}px)`,
+              }}
+            >
+              {virtualItem.index > 0 && (
+                <div className="editor-scene-separator" />
+              )}
+              <LinearSceneBlock
+                sceneId={scene.id}
+                scene={scene}
+                // Only virtual rows exist in the DOM. Dirty/conflicted ids are
+                // pinned by rangeExtractor, so their local TipTap owner remains
+                // mounted even when it is far outside the viewport.
+                isMounted
+                isActive={scene.id === activeId}
+                placeholderHeight={
+                  heightMapRef.current.get(scene.id) ?? DEFAULT_HEIGHT
+                }
+                onHeightChange={handleHeightChange}
+                onFocus={handleFocus}
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -498,6 +548,7 @@ export function LinearEditorView() {
         sceneId={activeId ?? undefined}
         nodeType="scene"
       />
+      {scenes.length > 0 && <AccessibleLinearReaderDialog scenes={scenes} />}
       <FindReplaceBar
         editor={activeEditor}
         open={findOpen}

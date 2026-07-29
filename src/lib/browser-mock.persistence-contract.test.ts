@@ -86,6 +86,80 @@ describe("BrowserMock persistence contract", () => {
     expect(await queryRows(restored, "select id from projects")).toEqual([]);
   });
 
+  it("migrates an old persisted database to the durable create ledger", async () => {
+    const legacy = await createMock();
+    await legacy.invoke("db_execute", {
+      sql: "DROP INDEX idx_idempotency_requests_project_created",
+      params: [],
+      method: "run",
+    });
+    await legacy.invoke("db_execute", {
+      sql: "DROP TABLE idempotency_requests",
+      params: [],
+      method: "run",
+    });
+
+    const onDatabaseDirty = vi.fn();
+    const migrated = await createMock({
+      databaseBytes: legacy.exportDatabase(),
+      onDatabaseDirty,
+    });
+    expect(onDatabaseDirty).toHaveBeenCalledTimes(1);
+    expect(
+      await queryRows(
+        migrated,
+        "select name from sqlite_master where name = 'idempotency_requests'",
+      ),
+    ).toEqual([{ name: "idempotency_requests" }]);
+
+    const payload = {
+      id: "migrated-browser-foreshadow",
+      requestId: "migrated-browser-foreshadow",
+      projectId: "default-project",
+      title: "Migrated durable create",
+      intent: null,
+      notes: null,
+      payoffSceneId: null,
+      payoffFromPos: null,
+      payoffToPos: null,
+      payoffConfirmed: false,
+      abandoned: false,
+      secret: true,
+      loadBearing: null,
+      codexLinkDirtyAt: null,
+    };
+    await expect(
+      migrated.invoke<Record<string, unknown>>("foreshadow_create", {
+        payload,
+      }),
+    ).resolves.toMatchObject({
+      id: payload.id,
+      __idempotency: { replayed: false, entityPresent: true },
+    });
+
+    const reopened = await createMock({
+      databaseBytes: migrated.exportDatabase(),
+    });
+    await reopened.invoke("db_execute", {
+      sql: "DELETE FROM foreshadows WHERE id = ?",
+      params: [payload.id],
+      method: "run",
+    });
+    await expect(
+      reopened.invoke<Record<string, unknown>>("foreshadow_create", {
+        payload,
+      }),
+    ).resolves.toMatchObject({
+      id: payload.id,
+      __idempotency: { replayed: true, entityPresent: false },
+    });
+    expect(
+      await queryRows(reopened, "SELECT id FROM foreshadows WHERE id = ?", [
+        payload.id,
+      ]),
+    ).toEqual([]);
+  });
+
   it("closes the SQL.js database and rejects subsequent database access", async () => {
     const mock = await createMock();
     mock.close();

@@ -654,14 +654,14 @@
       "file": "agent_writes.rs",
       "classification": "pure-db",
       "priority": "P1",
-      "args": ["payload: AgentEventUpdatePayload"],
+      "args": ["payload: AgentEventUpdatePayload（baseVersion 必須）"],
       "returns": "serde_json::Value（AgentWriteResult）",
       "stateDeps": ["WorkspaceState"],
       "appHandle": false,
       "emits": [],
       "isAsync": false,
       "summary": "年表イベントを set-if-present で部分更新（空文字→NULL 正規化、granularity='none' で time/minute を明示 NULL 化）し before/after 複合スナップショットを undo_journal に記録",
-      "napiNotes": "動的 SET 句組立が最長のコマンド。空文字→NULL 正規化（primaryCodexId/laneGroup/locationCodexId/revealSceneId）と granularity='none' シグナルによる端点クリアの2つの暗黙ワイヤ契約を落とさない。events に version 列なし（undo は base=1/result=1 固定）。spawn_blocking 必須",
+      "napiNotes": "動的 SET 句組立が最長のコマンド。空文字→NULL 正規化（primaryCodexId/laneGroup/locationCodexId/revealSceneId）と granularity='none' シグナルによる端点クリアの2つの暗黙ワイヤ契約を落とさない。events.version を aggregate OCC token とし、必須 baseVersion と一致した場合だけ version+1 で更新する。undo/redo の復元も旧 version を再利用せず単調増加させる。spawn_blocking 必須",
       "callSites": [
         { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
       ]
@@ -670,14 +670,14 @@
       "file": "agent_writes.rs",
       "classification": "pure-db",
       "priority": "P1",
-      "args": ["payload: AgentEventIdPayload"],
+      "args": ["payload: AgentEventIdPayload（baseVersion 必須）"],
       "returns": "serde_json::Value（AgentWriteResult、version=0）",
       "stateDeps": ["WorkspaceState"],
       "appHandle": false,
       "emits": [],
       "isAsync": false,
       "summary": "年表イベントを削除（FK ON DELETE CASCADE）。削除前に複合スナップショットを undo_journal(before) へ退避",
-      "napiNotes": "CASCADE 発火前に collect_event_snapshot で participants/sceneLinks/relations 込みの before を採取する順序が undo 可否を決める — 移植時に順序を崩さない。spawn_blocking 必須",
+      "napiNotes": "必須 baseVersion と events.version の一致を確認する。CASCADE 発火前に collect_event_snapshot で participants/sceneLinks/relations 込みの before と relation counterpart ids を採取する順序が undo 可否・外部履歴無効化を決める。undo 復元は旧 version を再利用せず fresh token を割り当てる。spawn_blocking 必須",
       "callSites": [
         { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
       ]
@@ -686,14 +686,14 @@
       "file": "agent_writes.rs",
       "classification": "pure-db",
       "priority": "P1",
-      "args": ["payload: AgentEventParticipantsPayload"],
+      "args": ["payload: AgentEventParticipantsPayload（baseVersion 必須）"],
       "returns": "serde_json::Value（AgentWriteResult）",
       "stateDeps": ["WorkspaceState"],
       "appHandle": false,
       "emits": [],
       "isAsync": false,
       "summary": "イベント参加者（event_participants）を全置換し、参加者スナップショットを op_kind='update' の undo_journal に記録（change_event: event.participants）",
-      "napiNotes": "各 codex_entry_id に ensure_codex_in_project スコープガード必須。DELETE→chunked INSERT OR IGNORE の置換セマンティクスを維持。spawn_blocking 必須",
+      "napiNotes": "各 codex_entry_id に ensure_codex_in_project スコープガード必須。必須 baseVersion と events.version の一致を確認し、DELETE→chunked INSERT OR IGNORE と version+1 を同一 transaction で行う。undo/redo も fresh token を割り当てる。spawn_blocking 必須",
       "callSites": [
         { "file": "src/features/agent-writes/event.ts", "trigger": "user-action", "notes": "L51 trackedEventWrite 経由（同上）" }
       ]

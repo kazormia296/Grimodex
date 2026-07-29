@@ -15,18 +15,26 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+const { mockInvoke, recordChangeEventMock } = vi.hoisted(() => ({
+  mockInvoke: vi.fn(),
+  recordChangeEventMock: vi.fn(),
+}));
 
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 vi.mock("@/features/chat/chatApi", () => ({
   sendChatMessageWithThinking: vi.fn(),
 }));
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: recordChangeEventMock,
+}));
 
 import { createForeshadow, getSceneForeshadowInfo } from "./api";
+import { getCreateResultMetadata } from "@/lib/createResultMetadata";
 
 describe("foreshadow api は Electron でネイティブ backend (napi) へ invoke する", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
+    recordChangeEventMock.mockReset();
     // Electron マーカー（isElectron 相当 = "grimodex" in window）。
     // __TAURI_INTERNALS__ は立てない = 純 Electron 判定のみで invoke に載ることを検証。
     (globalThis as unknown as { window?: Record<string, unknown> }).window = {
@@ -36,32 +44,151 @@ describe("foreshadow api は Electron でネイティブ backend (napi) へ invo
 
   it("createForeshadow は foreshadow_create を invoke（Drizzle 分岐に落ちない）", async () => {
     mockInvoke.mockResolvedValue({
-      id: "f1",
+      id: "local-id",
+      project_id: "p1",
+      title: "伏線A",
+      intent: null,
+      notes: "全行復元",
+      payoff_scene_id: "scene-1",
+      payoff_from_pos: 3,
+      payoff_to_pos: 9,
+      payoff_confirmed: 1,
+      abandoned: 1,
+      secret: 0,
+      load_bearing: "critical",
+      codex_link_dirty_at: 1713999999000,
+      created_at: 1714000000000,
+      updated_at: 1714000001000,
+    });
+
+    const result = await createForeshadow({
+      id: "local-id",
+      projectId: "p1",
+      title: "伏線A",
+      intent: null,
+      notes: "全行復元",
+      payoffSceneId: "scene-1",
+      payoffFromPos: 3,
+      payoffToPos: 9,
+      payoffConfirmed: true,
+      abandoned: true,
+      secret: false,
+      loadBearing: "critical",
+      codexLinkDirtyAt: new Date(1713999999000),
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("foreshadow_create", {
+      payload: {
+        id: "local-id",
+        requestId: "local-id",
+        projectId: "p1",
+        title: "伏線A",
+        intent: null,
+        notes: "全行復元",
+        payoffSceneId: "scene-1",
+        payoffFromPos: 3,
+        payoffToPos: 9,
+        payoffConfirmed: true,
+        abandoned: true,
+        secret: false,
+        loadBearing: "critical",
+        codexLinkDirtyAt: 1713999999000,
+      },
+    });
+    expect(result.projectId).toBe("p1");
+    expect(result.id).toBe("local-id");
+    expect(result).toMatchObject({
+      notes: "全行復元",
+      payoffSceneId: "scene-1",
+      payoffFromPos: 3,
+      payoffToPos: 9,
+      payoffConfirmed: true,
+      abandoned: true,
+      secret: false,
+      codexLinkDirtyAt: new Date(1713999999000),
+    });
+    expect(recordChangeEventMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("deliberate restore requestId と削除済み replay metadata を保持する", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "local-id",
+      __idempotency: { replayed: true, entityPresent: false },
+    });
+
+    const result = await createForeshadow(
+      {
+        id: "local-id",
+        projectId: "p1",
+        title: "伏線A",
+        intent: null,
+        loadBearing: "critical",
+      },
+      { requestId: "history-restore-1" },
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith("foreshadow_create", {
+      payload: expect.objectContaining({
+        id: "local-id",
+        requestId: "history-restore-1",
+      }),
+    });
+    expect(getCreateResultMetadata(result)).toEqual({
+      replayed: true,
+      entityPresent: false,
+    });
+    expect(recordChangeEventMock).not.toHaveBeenCalled();
+  });
+
+  it("id 省略時も renderer が entity/request identity を一度だけ materialize する", async () => {
+    mockInvoke.mockImplementation(
+      (_command: string, args: { payload: Record<string, unknown> }) => ({
+        id: args.payload.id,
+        project_id: args.payload.projectId,
+        title: args.payload.title,
+        created_at: 1714000000000,
+        updated_at: 1714000000000,
+      }),
+    );
+
+    await createForeshadow({
+      projectId: "p1",
+      title: "renderer identity",
+    });
+
+    const payload = mockInvoke.mock.calls[0][1].payload as Record<
+      string,
+      unknown
+    >;
+    expect(payload.id).toEqual(expect.any(String));
+    expect(payload.requestId).toBe(payload.id);
+  });
+
+  it("存在中の replay でも timelapse create event を重複記録しない", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "local-id",
       project_id: "p1",
       title: "伏線A",
       intent: null,
       load_bearing: "critical",
       created_at: 1714000000000,
       updated_at: 1714000001000,
+      __idempotency: { replayed: true, entityPresent: true },
     });
 
     const result = await createForeshadow({
-      id: "local-id", // FE 型都合。Rust 側が id を採番するため payload には載らない。
+      id: "local-id",
       projectId: "p1",
       title: "伏線A",
       intent: null,
       loadBearing: "critical",
     });
 
-    expect(mockInvoke).toHaveBeenCalledWith("foreshadow_create", {
-      payload: {
-        projectId: "p1",
-        title: "伏線A",
-        intent: null,
-        loadBearing: "critical",
-      },
+    expect(getCreateResultMetadata(result)).toEqual({
+      replayed: true,
+      entityPresent: true,
     });
-    expect(result.projectId).toBe("p1");
+    expect(recordChangeEventMock).not.toHaveBeenCalled();
   });
 
   it("getSceneForeshadowInfo は foreshadow_get_scene_info を invoke する", async () => {

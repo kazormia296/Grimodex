@@ -16,6 +16,12 @@ interface UnplacedBeatsState {
   /** Per-scene unplaced beats, keyed by sceneId. */
   sceneBeats: Record<string, UnplacedBeat[]>;
 
+  /**
+   * Drop every Project/Workspace-scoped cache and listener without notifying
+   * subscribers from the retired scope.
+   */
+  resetForProject(): void;
+
   getBeats(sceneId: string): UnplacedBeat[];
 
   /**
@@ -75,6 +81,11 @@ function arrayMove<T>(arr: T[], fromIdx: number, toIdx: number): T[] {
 export const useUnplacedBeatsStore = create<UnplacedBeatsState>()(
   (set, get) => ({
     sceneBeats: {},
+
+    resetForProject() {
+      subscribers.clear();
+      set({ sceneBeats: {} });
+    },
 
     getBeats(sceneId) {
       return get().sceneBeats[sceneId] ?? [];

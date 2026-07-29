@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  moveEventToDayPatch,
   splitDayMinute,
   shiftEventPatch,
   type ShiftableEvent,
@@ -75,5 +76,43 @@ describe("shiftEventPatch", () => {
   it("点（endTime=null）は終了を触らない", () => {
     const p = shiftEventPatch(ev(), 5, false);
     expect(p).toEqual({ startTime: 105 });
+  });
+});
+
+describe("moveEventToDayPatch", () => {
+  it("hour/minute 移動は開始・終了の分を同量ずらして期間長を保持する", () => {
+    expect(
+      moveEventToDayPatch(
+        ev({
+          startMinute: 360,
+          endTime: 102,
+          endMinute: 720,
+        }),
+        200.5,
+        true,
+      ),
+    ).toEqual({
+      startTime: 200,
+      startMinute: 720,
+      endTime: 202,
+      endMinute: 1080,
+    });
+  });
+
+  it("日単位移動は開始・終了日を同量ずらして分を変更しない", () => {
+    expect(
+      moveEventToDayPatch(
+        ev({
+          startMinute: 360,
+          endTime: 102,
+          endMinute: 720,
+        }),
+        200,
+        false,
+      ),
+    ).toEqual({
+      startTime: 200,
+      endTime: 202,
+    });
   });
 });

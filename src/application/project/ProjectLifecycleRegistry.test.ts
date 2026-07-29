@@ -13,10 +13,13 @@ describe("ProjectLifecycleRegistry", () => {
         reset: () => {
           events.push("first.reset");
         },
-        hydrateCritical: async () => {
-          events.push("first.critical.start");
+        prepareCritical: async () => {
+          events.push("first.prepare.start");
           await Promise.resolve();
-          events.push("first.critical.end");
+          events.push("first.prepare.end");
+          return () => {
+            events.push("first.commit");
+          };
         },
       },
       {
@@ -36,18 +39,53 @@ describe("ProjectLifecycleRegistry", () => {
       },
     ];
 
-    await createProjectLifecycleRegistry(participants).reload({
-      projectId: "project-a",
-    });
+    await createProjectLifecycleRegistry(participants).reload(
+      {
+        projectId: "project-a",
+      },
+      {
+        afterCommit: () => events.push("afterCommit"),
+      },
+    );
 
     expect(events).toEqual([
+      "first.prepare.start",
+      "first.prepare.end",
       "first.reset",
       "second.reset",
-      "first.critical.start",
-      "first.critical.end",
+      "first.commit",
+      "afterCommit",
       "second.optional",
       "activation",
     ]);
+  });
+
+  it("leaves existing state untouched when critical preparation fails", async () => {
+    const reset = vi.fn();
+    const commit = vi.fn();
+    const beforeCommit = vi.fn();
+    const registry = createProjectLifecycleRegistry([
+      {
+        id: "state",
+        reset,
+        prepareCritical: async () => {
+          throw new Error("tree unavailable");
+        },
+        commitCritical: commit,
+      },
+    ]);
+
+    await expect(
+      registry.reload(
+        { projectId: "project-b" },
+        {
+          beforeCommit,
+        },
+      ),
+    ).rejects.toThrow("tree unavailable");
+    expect(beforeCommit).not.toHaveBeenCalled();
+    expect(reset).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it("keeps optional hydration best effort and reports failures", async () => {
@@ -69,12 +107,15 @@ describe("ProjectLifecycleRegistry", () => {
       },
     ];
 
-    await createProjectLifecycleRegistry(participants, {
+    const result = await createProjectLifecycleRegistry(participants, {
       onOptionalFailure,
     }).reload({ projectId: "project-b" });
 
     expect(loaded).toEqual(["loaded"]);
     expect(onOptionalFailure).toHaveBeenCalledWith(participants[0], failure);
+    expect(result.degraded).toEqual([
+      { participantId: "failed", error: failure },
+    ]);
   });
 
   it("rejects duplicate participant ids before any work starts", () => {

@@ -94,6 +94,75 @@ function renderMatrix() {
   );
 }
 
+function renderMatrixInWorkspace(
+  backgroundEnabled: boolean,
+  glassEnabled: boolean,
+) {
+  return render(
+    <div
+      className="app-shell"
+      style={{
+        position: "fixed",
+        inset: 0,
+        width: 600,
+        height: 400,
+      }}
+    >
+      <main id="main-content" style={{ width: "100%", height: "100%" }}>
+        <div
+          data-editor-ambient
+          data-background-enabled={backgroundEnabled ? "true" : "false"}
+        />
+        <div
+          data-workspace-glass-root
+          data-workspace-fluid-glass={glassEnabled ? "true" : "false"}
+          style={{ width: "100%", height: "100%" }}
+        >
+          <section
+            data-ambient-glass-surface="panel"
+            className="gx-panel"
+            style={{
+              width: "100%",
+              height: "100%",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <MatrixTable
+              rows={rows}
+              columns={columns}
+              cellMap={cellMap}
+              beatPovCache={beatPovCache}
+              displayMode="dot"
+              showMode="codex-characters"
+              onOpenScene={noop}
+              onPin={asyncNoop}
+              onRemovePin={asyncNoop}
+              onAddBeat={asyncNoop}
+              onAddScene={asyncNoop}
+              onRenameNode={noop}
+              onRevealInScenes={noop}
+              onRevealInGrid={noop}
+            />
+          </section>
+        </div>
+      </main>
+    </div>,
+  );
+}
+
+function computedBackgroundAlpha(element: HTMLElement): number {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("2D canvas is unavailable");
+  context.clearRect(0, 0, 1, 1);
+  context.fillStyle = getComputedStyle(element).backgroundColor;
+  context.fillRect(0, 0, 1, 1);
+  return context.getImageData(0, 0, 1, 1).data[3] / 255;
+}
+
 const left = (el: Element) => el.getBoundingClientRect().left;
 
 beforeEach(() => {
@@ -159,4 +228,63 @@ describe("MatrixTable 列ヘッダー横スクロール同期 (real Chromium)", 
     expect(cell5).toBeTruthy();
     expect(Math.abs(left(head5) - left(cell5))).toBeLessThanOrEqual(1);
   });
+
+  it("Glass 時だけ sticky ヘッダーと行ラベルを frosted fill にする", async () => {
+    const { container } = renderMatrixInWorkspace(true, true);
+    await settle();
+
+    const host = container.querySelector<HTMLElement>(
+      '[data-ambient-glass-surface="panel"]',
+    )!;
+    const columnHeader = container.querySelector<HTMLElement>(
+      '[data-matrix-sticky-surface="column-header"]',
+    )!;
+    const rowHeader = container.querySelector<HTMLElement>(
+      '[data-matrix-sticky-surface="row-header"]',
+    )!;
+
+    expect(columnHeader).toBeTruthy();
+    expect(rowHeader).toBeTruthy();
+    expect(computedBackgroundAlpha(columnHeader)).toBeCloseTo(0.7, 1);
+    expect(computedBackgroundAlpha(rowHeader)).toBeCloseTo(0.7, 1);
+    expect(getComputedStyle(columnHeader).backdropFilter).toBe("none");
+    expect(getComputedStyle(rowHeader).backdropFilter).toBe("none");
+    expect(getComputedStyle(host).backdropFilter).toContain("blur(14px)");
+
+    const body = container.querySelector<HTMLElement>(
+      '[data-testid="mx-body"]',
+    )!;
+    const stickyLeft = left(rowHeader);
+    await act(async () => {
+      body.scrollLeft = 160;
+      body.dispatchEvent(new Event("scroll"));
+      await raf();
+      await raf();
+    });
+    expect(Math.abs(left(rowHeader) - stickyLeft)).toBeLessThanOrEqual(1);
+  });
+
+  it.each([
+    { backgroundEnabled: false, glassEnabled: true },
+    { backgroundEnabled: true, glassEnabled: false },
+  ])(
+    "背景または Glass が無効なら sticky 面を不透明に戻す ($backgroundEnabled/$glassEnabled)",
+    async ({ backgroundEnabled, glassEnabled }) => {
+      const { container } = renderMatrixInWorkspace(
+        backgroundEnabled,
+        glassEnabled,
+      );
+      await settle();
+
+      const columnHeader = container.querySelector<HTMLElement>(
+        '[data-matrix-sticky-surface="column-header"]',
+      )!;
+      const rowHeader = container.querySelector<HTMLElement>(
+        '[data-matrix-sticky-surface="row-header"]',
+      )!;
+
+      expect(computedBackgroundAlpha(columnHeader)).toBe(1);
+      expect(computedBackgroundAlpha(rowHeader)).toBe(1);
+    },
+  );
 });

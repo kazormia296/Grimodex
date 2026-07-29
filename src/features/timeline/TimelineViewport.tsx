@@ -1,7 +1,6 @@
 import {
   useRef,
   useState,
-  useReducer,
   useEffect,
   useLayoutEffect,
   useCallback,
@@ -32,7 +31,11 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
 import { fitLabelToWidth } from "./threadLabelFit";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
-import { recordMark } from "@/lib/perfLog";
+import {
+  measurePerfSync,
+  recordAnimationFrameInterval,
+  recordMark,
+} from "@/lib/perfLog";
 import {
   DURATIONS,
   CSS_DURATIONS,
@@ -124,6 +127,13 @@ interface MarkerDragState {
   moved: boolean;
 }
 
+interface LabelDragState {
+  threadId: string;
+  startY: number;
+  currentY: number;
+  moved: boolean;
+}
+
 interface ContextMenuState {
   node: TreeNodeData;
   x: number;
@@ -141,6 +151,8 @@ interface MarkerMenuState {
 }
 
 interface Props {
+  /** Keepalive-hidden panels remain mounted, so interaction work must stop. */
+  isActive?: boolean;
   scenes: TreeNodeData[];
   /** Normalized [0,1] x-positions for proportional spacing (null = uniform) */
   weights?: number[] | null;
@@ -166,6 +178,7 @@ interface Props {
 export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
   function TimelineViewport(
     {
+      isActive = true,
       scenes,
       weights = null,
       phasePins = [],
@@ -208,15 +221,106 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // effect）に適用する。幅更新前に scrollLeft をセットすると旧 scrollWidth でクランプ
     // されて位置がずれるため、適用は render 後に行う。
     const pendingZoomScrollRef = useRef<number | null>(null);
-    const [drag, setDrag] = useState<DragState | null>(null);
-    const [markerDrag, setMarkerDrag] = useState<MarkerDragState | null>(null);
-    // スレッドヘッダー(separated・手動順)の縦ドラッグ並べ替え。X は固定（Y のみ）。
-    const [labelDrag, setLabelDrag] = useState<{
-      threadId: string;
-      startY: number;
-      currentY: number;
-      moved: boolean;
+    // Scene drag pointer coordinates stay outside React state. Keeping the latest
+    // sample in a ref and applying it to a viewport-bounded sibling layer avoids
+    // reconciling or repainting the 5k-marker topology at drag start, during
+    // pointer movement, or on release.
+    const dragRef = useRef<DragState | null>(null);
+    const sceneDragSvgOriginRef = useRef<{
+      left: number;
+      top: number;
+      scrollLeft: number;
+      scrollTop: number;
     } | null>(null);
+    const sceneDragPresentationOriginRef = useRef<{
+      x: number;
+      y: number;
+    } | null>(null);
+    const sceneDragPreviewDirtyRef = useRef(false);
+    const sceneDragLayerRef = useRef<HTMLDivElement | null>(null);
+    const sceneDragMarkerRef = useRef<HTMLDivElement | null>(null);
+    const sceneDragGhostRef = useRef<HTMLDivElement | null>(null);
+    const sceneDragDotRef = useRef<HTMLDivElement | null>(null);
+    const sceneDragActiveRingRef = useRef<HTMLDivElement | null>(null);
+    const sceneDragUnscheduledHighlightRef = useRef<HTMLDivElement | null>(
+      null,
+    );
+    const sceneDragScheduleFrameRef = useRef<() => void>(() => {});
+    const sceneDragPresentedRef = useRef<{
+      startX: number;
+      startY: number;
+      x: number;
+      y: number;
+    } | null>(null);
+
+    const applySceneDragPresentation = useCallback((current: DragState) => {
+      const origin = sceneDragPresentationOriginRef.current;
+      if (!origin) return;
+      const container = containerRef.current;
+      if (!container) return;
+      const scrollLeft = container.scrollLeft;
+      const scrollTop = container.scrollTop;
+      const locked = Math.abs(current.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD;
+      const startX = origin.x - scrollLeft;
+      const startY = origin.y - scrollTop;
+      const x = current.currentX - scrollLeft;
+      const y = (locked ? LANE_Y : current.currentY) - scrollTop;
+      const presented = sceneDragPresentedRef.current;
+
+      // Both the marker and guide use compositor-only HTML transforms in a
+      // bounded sibling layer. No SVG geometry or visual-overflow bounds change
+      // while the 96k × 5.8k topology stays paint-stable.
+      if (presented?.x !== x || presented?.y !== y) {
+        const marker = sceneDragMarkerRef.current;
+        if (marker) {
+          marker.style.transform = `translate3d(${x - DOT_R}px, ${y - DOT_R}px, 0)`;
+        }
+      }
+      if (
+        presented?.startX !== startX ||
+        presented?.startY !== startY ||
+        presented?.x !== x ||
+        presented?.y !== y
+      ) {
+        const deltaX = x - startX;
+        const deltaY = y - startY;
+        const length = Math.hypot(deltaX, deltaY);
+        const angle = Math.atan2(deltaY, deltaX);
+        const ghost = sceneDragGhostRef.current;
+        if (ghost) {
+          ghost.style.transform = `translate3d(${startX}px, ${startY}px, 0) rotate(${angle}rad) scaleX(${length})`;
+        }
+      }
+      const highlight = sceneDragUnscheduledHighlightRef.current;
+      if (highlight) {
+        const highlightY = UNSCHEDULED_Y - 20 - scrollTop;
+        highlight.style.transform = `translate3d(0, ${highlightY}px, 0)`;
+      }
+      sceneDragPresentedRef.current = { startX, startY, x, y };
+    }, []);
+
+    // If unrelated state causes a render while a drag is active, restore the
+    // latest imperative pointer position immediately after React commits.
+    useLayoutEffect(() => {
+      const current = dragRef.current;
+      if (current) applySceneDragPresentation(current);
+    });
+    const [markerDrag, setMarkerDrag] = useState<MarkerDragState | null>(null);
+    // Pointer-frequency coordinates stay in refs/DOM. React state is only updated when
+    // the resolved drop slot changes, so a dense mousemove stream does not reconcile
+    // the whole SVG tree.
+    const markerDragRef = useRef<MarkerDragState | null>(null);
+    const markerDragRenderedRef = useRef<MarkerDragState | null>(null);
+    markerDragRenderedRef.current = markerDrag;
+    const markerGhostRef = useRef<SVGCircleElement | null>(null);
+    const markerDropKeyRef = useRef<string | null>(null);
+    const markerDropKeyAtRef = useRef<(drag: MarkerDragState) => string | null>(
+      () => null,
+    );
+    // スレッドヘッダー(separated・手動順)の縦ドラッグ並べ替え。X は固定（Y のみ）。
+    const [labelDrag, setLabelDrag] = useState<LabelDragState | null>(null);
+    const labelDragRef = useRef<LabelDragState | null>(null);
+    const labelDragRowRef = useRef<number | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(
       null,
     );
@@ -233,7 +337,11 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // 左ボタンドラッグ（dot/マーカー/ラベル）進行中はパンを開始しない。
     // 同時押しでドラッグ座標が飛ぶ/誤コミットするのを防ぐ（ネイティブ pan 用の即時参照）。
     const dragActiveRef = useRef(false);
-    dragActiveRef.current = !!(drag || markerDrag || labelDrag);
+    dragActiveRef.current = !!(
+      dragRef.current ||
+      markerDragRef.current ||
+      labelDragRef.current
+    );
 
     const STEP = STEP_BASE * zoom;
 
@@ -318,10 +426,15 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         homeY: l.y,
       }));
       if (labelDragActive) {
+        const lastRowY =
+          threadsTop + Math.max(0, order.length - 1) * LANE_HEIGHT;
         return computeLaneDragTargets({
           order,
           draggedId: labelDragActive.threadId,
-          currentY: labelDragActive.currentY,
+          currentY: Math.max(
+            threadsTop,
+            Math.min(lastRowY, labelDragActive.currentY),
+          ),
           laneTop: threadsTop,
           laneHeight: LANE_HEIGHT,
         });
@@ -335,12 +448,20 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const tweenRef = useRef<
       Map<string, { from: number; to: number; start: number }>
     >(new Map());
-    const [, forceTick] = useReducer((x: number) => x + 1, 0);
+    const applyLanePresentationRef = useRef<
+      (positions: ReadonlyMap<string, number>) => void
+    >(() => {});
     // ループは常に最新の target / dragged を ref から読む（再起動なしで追従）。
     const targetYRef = useRef(targetY);
     targetYRef.current = targetY;
     const draggedIdRef = useRef<string | null>(null);
     draggedIdRef.current = labelDragActive?.threadId ?? null;
+    if (labelDragActive) {
+      const immediateY = targetY.get(labelDragActive.threadId);
+      if (immediateY !== undefined) {
+        animatedYRef.current.set(labelDragActive.threadId, immediateY);
+      }
+    }
 
     // 目標が変わったらイージングループを（再）起動。raf id はエフェクト closure ローカルに
     // 持ち、cleanup で必ず cancel する（共有 ref を残さない＝StrictMode の mount/unmount/
@@ -355,9 +476,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       for (const [id, ty] of targetYRef.current) if (!a.has(id)) a.set(id, ty);
       for (const id of [...a.keys()])
         if (!targetYRef.current.has(id)) a.delete(id);
-      if (reducedMotion) {
+      if (!isActive || reducedMotion) {
         for (const [id, ty] of targetYRef.current) a.set(id, ty);
-        forceTick();
+        applyLanePresentationRef.current(a);
         return;
       }
       let raf = 0;
@@ -393,7 +514,11 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           if (p >= 1) tweens.delete(id);
           else moving = true;
         }
-        forceTick();
+        // React を frame clock にせず、既存 SVG group の transform と connector
+        // path だけを直接更新する。topology/model の再構築はデータ変更時に限定。
+        measurePerfSync("timeline.laneFrame", () => {
+          applyLanePresentationRef.current(cur);
+        });
         // ドラッグ中は掴んでいる間ループを維持。退避が落ち着いたら停止。
         raf = moving || draggedId ? requestAnimationFrame(step) : 0;
       };
@@ -401,50 +526,11 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       return () => {
         if (raf) cancelAnimationFrame(raf);
       };
-    }, [targetKey, reducedMotion]);
+    }, [isActive, targetKey, reducedMotion]);
 
-    // 表示モデル: animatedYRef がホームから乖離している（イージング中）か、ドラッグ中なら
-    // ホーム Y を displayY で上書きして再計算する。乖離が無ければ homeLaneModel をそのまま
-    // 使う（毎 render の再計算を避ける）。判定は実状態（乖離 / drag）に基づき、rAF id の
-    // ような揮発フラグは見ない＝ループが止まっても順序が固まらない。
-    let needsOverride = !!labelDragActive;
-    if (!needsOverride) {
-      for (const l of homeLaneModel.lanes) {
-        const a = animatedYRef.current.get(l.thread.id);
-        if (a !== undefined && Math.abs(a - l.y) > 0.5) {
-          needsOverride = true;
-          break;
-        }
-      }
-    }
+    // topology は常にホーム座標で保持し、表示上の lane Y は SVG transform で
+    // 適用する。これにより rAF 中の buildPlotLaneModel と reconciliation を廃止。
     let laneModel = homeLaneModel;
-    if (needsOverride) {
-      // ドラッグ点の表示 Y はレーン帯 [先頭行, 最終行] にクランプする。ドロップ先
-      // (targetRow) も同じ範囲にクランプ済みなので、列の外までは追従させない
-      // （contentHeight は件数ベースで cursorY に追従しないため、外へ出すと
-      //   ドラッグ中レーン/ラベルが SVG 下端で見切れる）。
-      const lastRowY =
-        threadsTop + Math.max(0, homeLaneModel.lanes.length - 1) * LANE_HEIGHT;
-      const laneYByThread = new Map<string, number>();
-      for (const l of homeLaneModel.lanes) {
-        const id = l.thread.id;
-        const y =
-          labelDragActive && id === labelDragActive.threadId
-            ? Math.max(threadsTop, Math.min(lastRowY, labelDragActive.currentY)) // ドラッグ点は即時追従（帯内にクランプ）
-            : (animatedYRef.current.get(id) ?? l.y);
-        laneYByThread.set(id, y);
-      }
-      laneModel = buildPlotLaneModel({
-        threads,
-        links,
-        sceneX,
-        laneTop: threadsTop,
-        branches,
-        scheduledCount: scheduledCountForLanes,
-        subwaySort: plotSubwaySort,
-        laneYByThread,
-      });
-    }
     // マーカードラッグ中のライブ・プレビューは scheduledCount/nearestSceneIndex に依存する
     // ため、それらが初期化される後段（xOf 群の後）で laneModel を差し替える。
 
@@ -590,14 +676,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // ドロップ先の解決（resolveMarkerDrop）は軽いので毎 render 行い、高価な
     // buildPlotLaneModel の再構築は解決結果（離散値）が変わったときだけ行う
     // （mousemove 毎のフルレーン再構築を避ける）。判定は commitMarkerDrop と同一。
-    const markerDropDesc = (() => {
-      if (!markerDrag?.moved) return null;
-      const dropCol = nearestSceneIndex(markerDrag.currentX);
+    const resolveMarkerDropDesc = (d: MarkerDragState) => {
+      const dropCol = nearestSceneIndex(d.currentX);
       const dropNodeId = dropCol >= 0 ? scenes[dropCol]?.id : undefined;
       if (!dropNodeId) return null;
       const action = resolveMarkerDrop({
-        dropY: markerDrag.currentY,
-        sourceThreadId: markerDrag.threadId,
+        dropY: d.currentY,
+        sourceThreadId: d.threadId,
         nodeId: dropNodeId,
         columnSlots: homeLaneModel.lanes.map((l) => ({
           threadId: l.thread.id,
@@ -606,24 +691,33 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       });
       if (action.type === "none") return null;
       return {
-        linkId: markerDrag.linkId,
-        threadId: markerDrag.threadId,
-        nodeId: markerDrag.nodeId,
+        linkId: d.linkId,
+        threadId: d.threadId,
+        nodeId: d.nodeId,
         action,
       };
-    })();
-    // プレビュー再構築のキー。ドラッグ座標そのものではなく解決結果で比較する。
-    const markerDropKey = markerDropDesc
-      ? [
-          markerDropDesc.linkId,
-          markerDropDesc.threadId,
-          markerDropDesc.nodeId,
-          markerDropDesc.action.type,
-          markerDropDesc.action.type === "move-scene"
-            ? markerDropDesc.action.nodeId
-            : `${markerDropDesc.action.fromThreadId}>${markerDropDesc.action.toThreadId}@${markerDropDesc.action.atNodeId}:${markerDropDesc.action.kind}`,
-        ].join("|")
+    };
+    const markerDropDesc = markerDrag?.moved
+      ? resolveMarkerDropDesc(markerDrag)
       : null;
+    const markerDropKeyOf = (
+      desc: ReturnType<typeof resolveMarkerDropDesc>,
+    ): string | null =>
+      desc
+        ? [
+            desc.linkId,
+            desc.threadId,
+            desc.nodeId,
+            desc.action.type,
+            desc.action.type === "move-scene"
+              ? desc.action.nodeId
+              : `${desc.action.fromThreadId}>${desc.action.toThreadId}@${desc.action.atNodeId}:${desc.action.kind}`,
+          ].join("|")
+        : null;
+    // プレビュー再構築のキー。ドラッグ座標そのものではなく解決結果で比較する。
+    const markerDropKey = markerDropKeyOf(markerDropDesc);
+    markerDropKeyAtRef.current = (d) =>
+      markerDropKeyOf(resolveMarkerDropDesc(d));
     const markerDropDescRef = useRef(markerDropDesc);
     markerDropDescRef.current = markerDropDesc;
     /**
@@ -752,7 +846,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         }
         // from レーン(X-ramp) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
         const d = `M ${X - ramp} ${c.fromY} C ${X - ramp * 0.4} ${c.fromY}, ${X - ramp * 0.6} ${c.toY}, ${X} ${c.toY}`;
-        return { ...c, d };
+        return { ...c, d, xPx: X, ramp };
       });
     }, [
       showThreads,
@@ -764,6 +858,54 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       STEP,
       zoom,
     ]);
+
+    const laneHomeYById = useMemo(
+      () =>
+        new Map(
+          laneModel.lanes.map((lane) => [lane.thread.id, lane.y] as const),
+        ),
+      [laneModel.lanes],
+    );
+    const connectorGeometryById = useMemo(
+      () =>
+        new Map(
+          connectorGeometry.map((connector) => [connector.id, connector]),
+        ),
+      [connectorGeometry],
+    );
+    applyLanePresentationRef.current = (positions) => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      const offsets = new Map<string, number>();
+      for (const [id, homeY] of laneHomeYById) {
+        offsets.set(id, (positions.get(id) ?? homeY) - homeY);
+      }
+      svg
+        .querySelectorAll<SVGGElement>("[data-lane-transform-id]")
+        .forEach((element) => {
+          const id = element.getAttribute("data-lane-transform-id");
+          const offset = id ? (offsets.get(id) ?? 0) : 0;
+          if (Math.abs(offset) < 0.01) element.removeAttribute("transform");
+          else element.setAttribute("transform", `translate(0 ${offset})`);
+        });
+      svg
+        .querySelectorAll<SVGPathElement>("[data-lane-animated-connector]")
+        .forEach((element) => {
+          const id = element.getAttribute("data-lane-animated-connector");
+          const geometry = id ? connectorGeometryById.get(id) : undefined;
+          const ends = id ? branchEnds.get(id) : undefined;
+          if (!geometry || !ends) return;
+          const fromY = geometry.fromY + (offsets.get(ends.from) ?? 0);
+          const toY = geometry.toY + (offsets.get(ends.to) ?? 0);
+          element.setAttribute(
+            "d",
+            `M ${geometry.xPx - geometry.ramp} ${fromY} C ${geometry.xPx - geometry.ramp * 0.4} ${fromY}, ${geometry.xPx - geometry.ramp * 0.6} ${toY}, ${geometry.xPx} ${toY}`,
+          );
+        });
+    };
+    useLayoutEffect(() => {
+      applyLanePresentationRef.current(animatedYRef.current);
+    }, [laneHomeYById, connectorGeometryById, targetKey]);
 
     function handleLaneDoubleClick(
       e: React.MouseEvent<SVGRectElement>,
@@ -793,19 +935,61 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       nodeId: string,
       originIndex: number,
     ) {
+      if (!isActive) return;
       if (!canDrag) return;
       if (e.button !== 0) return; // 左ボタンのみ（中ボタンはパンへ）
       e.preventDefault();
       const rect = svgRef.current?.getBoundingClientRect();
       const svgX = e.clientX - (rect?.left ?? 0);
       const svgY = e.clientY - (rect?.top ?? 0);
-      setDrag({
+      const next = {
         nodeId,
         startX: svgX,
         currentX: svgX,
         currentY: svgY,
         originIndex,
-      });
+      };
+      dragRef.current = next;
+      sceneDragSvgOriginRef.current = {
+        left: rect?.left ?? 0,
+        top: rect?.top ?? 0,
+        scrollLeft: containerRef.current?.scrollLeft ?? 0,
+        scrollTop: containerRef.current?.scrollTop ?? 0,
+      };
+      sceneDragPresentationOriginRef.current = {
+        x: xOf(originIndex),
+        y: yOf(originIndex),
+      };
+      sceneDragPresentedRef.current = null;
+      sceneDragPreviewDirtyRef.current = true;
+      const scene = scenes[originIndex];
+      const layer = sceneDragLayerRef.current;
+      if (layer) {
+        layer.style.visibility = "visible";
+        layer.style.opacity = originIndex >= scheduledCount ? "0.55" : "1";
+      }
+      const dot = sceneDragDotRef.current;
+      if (dot) {
+        dot.style.backgroundColor =
+          STATUS_FILL[scene?.status ?? "outline"] ?? STATUS_FILL.outline;
+        dot.style.borderColor = selectedNodeIds.includes(nodeId)
+          ? "white"
+          : "transparent";
+      }
+      if (sceneDragActiveRingRef.current) {
+        sceneDragActiveRingRef.current.style.display =
+          nodeId === activeSceneId ? "" : "none";
+      }
+      if (sceneDragUnscheduledHighlightRef.current) {
+        sceneDragUnscheduledHighlightRef.current.style.display =
+          showUnscheduledZone ? "" : "none";
+      }
+      applySceneDragPresentation(next);
+      // The bubble-phase background-pan handler runs in the same native event.
+      // Mark this synchronously so it delegates to the scene drag without
+      // waiting for a React render of the 5k-marker topology.
+      dragActiveRef.current = true;
+      sceneDragScheduleFrameRef.current();
     }
 
     function handleDotContextMenu(
@@ -816,18 +1000,15 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       setContextMenu({ node: scene, x: e.clientX, y: e.clientY });
     }
 
-    function commitDrop(clientX: number, clientY: number) {
-      if (!drag || !onDropStoryTime) {
-        setDrag(null);
-        return;
-      }
+    function commitDrop(current: DragState, clientX: number, clientY: number) {
+      if (!onDropStoryTime) return;
       const rect = svgRef.current?.getBoundingClientRect();
       const svgX = clientX - (rect?.left ?? 0);
       const toUnscheduled =
         showUnscheduledZone && clientY - (rect?.top ?? 0) > UNSCHEDULED_Y - 20;
 
       if (toUnscheduled) {
-        onDropStoryTime(drag.nodeId, null, null, true);
+        onDropStoryTime(current.nodeId, null, null, true);
       } else {
         // Preserve original scene index so xOf() returns the correct x position.
         // Filtering first then using the filtered index causes xOf() to compute
@@ -835,7 +1016,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         const scheduledWithOrigin = scenes
           .slice(0, scheduledCount)
           .map((scene, origIdx) => ({ scene, origIdx }))
-          .filter(({ scene }) => scene.id !== drag.nodeId);
+          .filter(({ scene }) => scene.id !== current.nodeId);
 
         let insertIdx = scheduledWithOrigin.length;
         for (let i = 0; i < scheduledWithOrigin.length; i++) {
@@ -852,38 +1033,132 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           insertIdx < scheduledWithOrigin.length
             ? (scheduledWithOrigin[insertIdx].scene.storyTimeOrder ?? null)
             : null;
-        onDropStoryTime(drag.nodeId, prevKey, nextKey, false);
+        onDropStoryTime(current.nodeId, prevKey, nextKey, false);
       }
-      setDrag(null);
     }
+    const commitDropRef = useRef(commitDrop);
+    commitDropRef.current = commitDrop;
 
     // ドラッグ中はdocumentレベルでmousemove/mouseupを捕捉する。
     // SVGの外にマウスが出てもドラッグが継続し、mouseupで正しくドロップされる。
     useEffect(() => {
-      if (!drag) return;
+      if (!isActive) return;
+      let pointerFrame: number | null = null;
+
+      function flushPointerPreview(frameTimestamp?: number) {
+        // Keep the frame clock pre-armed for the whole active gesture. If the
+        // next rAF were registered only after a mousemove, the time between two
+        // sparse input samples would be misreported as a missed presentation
+        // frame. Scheduling first also means real pointer work cannot delay the
+        // registration of the following frame.
+        pointerFrame =
+          typeof requestAnimationFrame === "function"
+            ? requestAnimationFrame(flushPointerPreview)
+            : null;
+        if (frameTimestamp !== undefined) {
+          recordAnimationFrameInterval(
+            "timeline.pointerFrame.interval",
+            frameTimestamp,
+          );
+        }
+        if (!sceneDragPreviewDirtyRef.current) return;
+        sceneDragPreviewDirtyRef.current = false;
+        measurePerfSync("timeline.pointerFrame.work", () => {
+          const current = dragRef.current;
+          if (current) applySceneDragPresentation(current);
+        });
+      }
+
+      function schedulePointerPreview() {
+        if (pointerFrame !== null) return;
+        if (typeof requestAnimationFrame !== "function") {
+          flushPointerPreview();
+          return;
+        }
+        pointerFrame = requestAnimationFrame(flushPointerPreview);
+      }
+
+      function cancelPointerFrame() {
+        if (pointerFrame === null) return;
+        cancelAnimationFrame(pointerFrame);
+        pointerFrame = null;
+      }
+
+      function hideSceneDragLayer() {
+        const layer = sceneDragLayerRef.current;
+        if (layer) layer.style.visibility = "hidden";
+      }
 
       function onMove(e: MouseEvent) {
-        const rect = svgRef.current?.getBoundingClientRect();
-        const svgX = e.clientX - (rect?.left ?? 0);
-        const svgY = e.clientY - (rect?.top ?? 0);
-        setDrag((d) => (d ? { ...d, currentX: svgX, currentY: svgY } : null));
+        const current = dragRef.current;
+        if (!current) return;
+        // The SVG cannot move during a scene drag, so reuse the origin captured
+        // at mousedown. Reading its bounding box after changing SVG geometry
+        // would synchronously flush style/layout on every pointer sample.
+        const origin = sceneDragSvgOriginRef.current;
+        const scrollLeft = containerRef.current?.scrollLeft ?? 0;
+        const scrollTop = containerRef.current?.scrollTop ?? 0;
+        const svgX =
+          e.clientX -
+          (origin?.left ?? 0) +
+          (scrollLeft - (origin?.scrollLeft ?? 0));
+        const svgY =
+          e.clientY -
+          (origin?.top ?? 0) +
+          (scrollTop - (origin?.scrollTop ?? 0));
+        dragRef.current = {
+          ...current,
+          currentX: svgX,
+          currentY: svgY,
+        };
+        sceneDragPreviewDirtyRef.current = true;
+        schedulePointerPreview();
       }
 
       function onUp(e: MouseEvent) {
         if (e.button !== 0) return; // 左ボタン release のみ確定（中/右 release は無視）
-        commitDrop(e.clientX, e.clientY);
+        cancelPointerFrame();
+        const current = dragRef.current;
+        dragRef.current = null;
+        sceneDragSvgOriginRef.current = null;
+        sceneDragPresentationOriginRef.current = null;
+        sceneDragPresentedRef.current = null;
+        sceneDragPreviewDirtyRef.current = false;
+        dragActiveRef.current = false;
+        hideSceneDragLayer();
+        if (current) commitDropRef.current(current, e.clientX, e.clientY);
       }
 
+      function onBlur() {
+        cancelPointerFrame();
+        dragRef.current = null;
+        sceneDragSvgOriginRef.current = null;
+        sceneDragPresentationOriginRef.current = null;
+        sceneDragPresentedRef.current = null;
+        sceneDragPreviewDirtyRef.current = false;
+        dragActiveRef.current = false;
+        hideSceneDragLayer();
+      }
+
+      sceneDragScheduleFrameRef.current = schedulePointerPreview;
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
+      window.addEventListener("blur", onBlur);
       return () => {
+        cancelPointerFrame();
+        sceneDragSvgOriginRef.current = null;
+        sceneDragPresentationOriginRef.current = null;
+        sceneDragPresentedRef.current = null;
+        sceneDragPreviewDirtyRef.current = false;
+        dragRef.current = null;
+        dragActiveRef.current = false;
+        hideSceneDragLayer();
+        sceneDragScheduleFrameRef.current = () => {};
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
+        window.removeEventListener("blur", onBlur);
       };
-      // commitDrop は drag / scenes / scheduledCount に依存するが、
-      // drag が変わるたびに再登録されるため最新値を参照できる
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [drag]);
+    }, [applySceneDragPresentation, isActive]);
 
     // ─── プロットマーカーのドラッグ（移動 / 分岐・合流作成） ───
     function handleMarkerMouseDown(
@@ -893,13 +1168,14 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       nodeId: string,
       color: string | null,
     ) {
+      if (!isActive) return;
       if (!showThreads) return;
       if (e.button !== 0) return; // 左ボタンのみ（中ボタンはパンへ）
       e.stopPropagation();
       const rect = svgRef.current?.getBoundingClientRect();
       const svgX = e.clientX - (rect?.left ?? 0);
       const svgY = e.clientY - (rect?.top ?? 0);
-      setMarkerDrag({
+      const next: MarkerDragState = {
         linkId,
         threadId,
         nodeId,
@@ -909,7 +1185,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         currentX: svgX,
         currentY: svgY,
         moved: false,
-      });
+      };
+      markerDragRef.current = next;
+      markerDropKeyRef.current = null;
+      setMarkerDrag(next);
     }
 
     function commitMarkerDrop(d: MarkerDragState) {
@@ -944,7 +1223,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           kind: "plot",
           label: t("plotThread.history.moveMarker", "マーカー移動"),
         },
-        async () => {
+        async (history) => {
           const store = usePlotThreadStore.getState();
           // mutation は同期的に発火（mock も実呼び出しも即座に呼ぶ＝従来の
           // fire-and-forget と同じ呼び出しタイミング）し、戻り Promise を集めて
@@ -973,6 +1252,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 crossThread
                   ? { threadId: newThread, nodeId: newScene }
                   : { nodeId: newScene },
+                history,
               ),
             );
             for (const e of anchored) {
@@ -990,7 +1270,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   b.kind === e.kind,
               );
               if (isSelf || isDupOther) {
-                ops.push(store.deleteBranch(e.id));
+                ops.push(store.deleteBranch(e.id, history));
                 continue;
               }
               ops.push(
@@ -999,6 +1279,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   crossThread
                     ? { toThreadId: newThread, atNodeId: newScene }
                     : { atNodeId: newScene },
+                  history,
                 ),
               );
             }
@@ -1008,7 +1289,11 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
 
           // 既存エッジ無し: 従来挙動。
           if (action.type === "move-scene") {
-            await store.updateMarker(d.linkId, { nodeId: action.nodeId });
+            await store.updateMarker(
+              d.linkId,
+              { nodeId: action.nodeId },
+              history,
+            );
             return;
           }
           // 別スレッドへドロップ → 新規 branch/merge（片側のみマーカー）。
@@ -1023,24 +1308,33 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           if (isDup) return;
           // 統一モデル: branch も merge もマーカーは移動先 = to（ドロップ先レーン）へ移す。
           ops.push(
-            store.updateMarker(d.linkId, {
-              threadId: action.toThreadId,
-              nodeId: action.atNodeId,
-            }),
+            store.updateMarker(
+              d.linkId,
+              {
+                threadId: action.toThreadId,
+                nodeId: action.atNodeId,
+              },
+              history,
+            ),
           );
           ops.push(
-            store.addBranch({
-              projectId: getCurrentProjectId(),
-              fromThreadId: action.fromThreadId,
-              toThreadId: action.toThreadId,
-              atNodeId: action.atNodeId,
-              kind: action.kind,
-            }),
+            store.addBranch(
+              {
+                projectId: getCurrentProjectId(),
+                fromThreadId: action.fromThreadId,
+                toThreadId: action.toThreadId,
+                atNodeId: action.atNodeId,
+                kind: action.kind,
+              },
+              history,
+            ),
           );
           await Promise.all(ops);
         },
       );
     }
+    const commitMarkerDropRef = useRef(commitMarkerDrop);
+    commitMarkerDropRef.current = commitMarkerDrop;
 
     function handleMarkerContextMenu(
       e: React.MouseEvent<SVGElement>,
@@ -1061,49 +1355,116 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       });
     }
 
+    const markerDragActive = markerDrag !== null;
     useEffect(() => {
-      if (!markerDrag) return;
+      if (!isActive || !markerDragActive) return;
+      let pointerFrame: number | null = null;
+      function flushPointerPreview(frameTimestamp?: number) {
+        pointerFrame = null;
+        if (frameTimestamp !== undefined) {
+          recordAnimationFrameInterval(
+            "timeline.pointerFrame.interval",
+            frameTimestamp,
+          );
+        }
+        measurePerfSync("timeline.pointerFrame.work", () => {
+          const current = markerDragRef.current;
+          if (!current?.moved) return;
+
+          // The ghost follows the latest pointer sample once per animation frame.
+          markerGhostRef.current?.setAttribute("cx", String(current.currentX));
+          markerGhostRef.current?.setAttribute("cy", String(current.currentY));
+
+          const nextDropKey = markerDropKeyAtRef.current(current);
+          if (
+            !markerDragRenderedRef.current?.moved ||
+            nextDropKey !== markerDropKeyRef.current
+          ) {
+            markerDropKeyRef.current = nextDropKey;
+            setMarkerDrag(current);
+          }
+        });
+      }
+      function schedulePointerPreview() {
+        if (pointerFrame !== null) return;
+        if (typeof requestAnimationFrame !== "function") {
+          flushPointerPreview();
+          return;
+        }
+        pointerFrame = requestAnimationFrame(flushPointerPreview);
+      }
+      function cancelPointerFrame() {
+        if (pointerFrame === null) return;
+        cancelAnimationFrame(pointerFrame);
+        pointerFrame = null;
+      }
       function onMove(e: MouseEvent) {
+        const current = markerDragRef.current;
+        if (!current) return;
         const rect = svgRef.current?.getBoundingClientRect();
         const svgX = e.clientX - (rect?.left ?? 0);
         const svgY = e.clientY - (rect?.top ?? 0);
-        setMarkerDrag((d) => {
-          if (!d) return null;
-          const moved =
-            d.moved ||
-            Math.abs(svgX - d.startX) > MARKER_DRAG_THRESHOLD ||
-            Math.abs(svgY - d.startY) > MARKER_DRAG_THRESHOLD;
-          return { ...d, currentX: svgX, currentY: svgY, moved };
-        });
+        const moved =
+          current.moved ||
+          Math.abs(svgX - current.startX) > MARKER_DRAG_THRESHOLD ||
+          Math.abs(svgY - current.startY) > MARKER_DRAG_THRESHOLD;
+        const next = {
+          ...current,
+          currentX: svgX,
+          currentY: svgY,
+          moved,
+        };
+        markerDragRef.current = next;
+        if (!moved) return;
+        schedulePointerPreview();
       }
       function onUp(e: MouseEvent) {
         if (e.button !== 0) return; // 左ボタン release のみ確定（中/右 release は無視）
+        cancelPointerFrame();
         // 副作用は updater の外で実行する（StrictMode の二重 invoke で
         // addBranch/updateMarker が重複発火するのを防ぐ。scene drag の onUp と同型）。
-        if (markerDrag) commitMarkerDrop(markerDrag);
+        const current = markerDragRef.current;
+        if (current) commitMarkerDropRef.current(current);
+        markerDragRef.current = null;
+        markerDropKeyRef.current = null;
+        setMarkerDrag(null);
+      }
+      function onBlur() {
+        cancelPointerFrame();
+        markerDragRef.current = null;
+        markerDropKeyRef.current = null;
         setMarkerDrag(null);
       }
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
+      window.addEventListener("blur", onBlur);
       return () => {
+        cancelPointerFrame();
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
+        window.removeEventListener("blur", onBlur);
       };
-      // commitMarkerDrop は markerDrag/laneModel/scenes に依存するが、
-      // markerDrag 変化のたびに再登録されるため最新クロージャを参照する。
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [markerDrag]);
+    }, [isActive, markerDragActive]);
 
     // スレッドヘッダーの縦ドラッグ並べ替え（手動順=subwaySort OFF のときのみ並べ替え）。
     function handleLabelMouseDown(
       e: React.MouseEvent<SVGElement>,
       threadId: string,
     ) {
+      if (!isActive) return;
       if (e.button !== 0) return; // 左ボタンのみ（中ボタンはパンへ）
       e.stopPropagation();
       const rect = svgRef.current?.getBoundingClientRect();
       const svgY = e.clientY - (rect?.top ?? 0);
-      setLabelDrag({ threadId, startY: svgY, currentY: svgY, moved: false });
+      const next = {
+        threadId,
+        startY: svgY,
+        currentY: svgY,
+        moved: false,
+      };
+      labelDragRef.current = next;
+      labelDragRowRef.current = null;
+      setLabelDrag(next);
     }
 
     function commitLabelDrop(d: {
@@ -1139,36 +1500,129 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       );
       void usePlotThreadStore.getState().reorderThread(d.threadId, newKey);
     }
+    const commitLabelDropRef = useRef(commitLabelDrop);
+    commitLabelDropRef.current = commitLabelDrop;
 
+    const labelDragInProgress = labelDrag !== null;
     useEffect(() => {
-      if (!labelDrag) return;
+      if (!isActive || !labelDragInProgress) return;
+      let pointerFrame: number | null = null;
+      function flushPointerPreview(frameTimestamp?: number) {
+        pointerFrame = null;
+        if (frameTimestamp !== undefined) {
+          recordAnimationFrameInterval(
+            "timeline.pointerFrame.interval",
+            frameTimestamp,
+          );
+        }
+        measurePerfSync("timeline.pointerFrame.work", () => {
+          const current = labelDragRef.current;
+          if (!current?.moved) return;
+          const lastRowY =
+            threadsTop + Math.max(0, threads.length - 1) * LANE_HEIGHT;
+          const clampedY = Math.max(
+            threadsTop,
+            Math.min(lastRowY, current.currentY),
+          );
+          const row = Math.max(
+            0,
+            Math.min(
+              threads.length - 1,
+              Math.round((clampedY - threadsTop) / LANE_HEIGHT),
+            ),
+          );
+          if (!plotSubwaySort) {
+            // Keep the grabbed lane under the pointer imperatively. React only needs
+            // to run when the discrete row changes so sibling-lane targets can swap.
+            targetYRef.current.set(current.threadId, clampedY);
+            animatedYRef.current.set(current.threadId, clampedY);
+            applyLanePresentationRef.current(animatedYRef.current);
+          }
+          if (!current.moved || row !== labelDragRowRef.current) {
+            labelDragRowRef.current = row;
+            setLabelDrag({ ...current, currentY: clampedY });
+          }
+        });
+      }
+      function schedulePointerPreview() {
+        if (pointerFrame !== null) return;
+        if (typeof requestAnimationFrame !== "function") {
+          flushPointerPreview();
+          return;
+        }
+        pointerFrame = requestAnimationFrame(flushPointerPreview);
+      }
+      function cancelPointerFrame() {
+        if (pointerFrame === null) return;
+        cancelAnimationFrame(pointerFrame);
+        pointerFrame = null;
+      }
       function onMove(e: MouseEvent) {
+        const current = labelDragRef.current;
+        if (!current) return;
         const rect = svgRef.current?.getBoundingClientRect();
         const svgY = e.clientY - (rect?.top ?? 0);
-        setLabelDrag((d) => {
-          if (!d) return null;
-          const moved =
-            d.moved || Math.abs(svgY - d.startY) > MARKER_DRAG_THRESHOLD;
-          return { ...d, currentY: svgY, moved };
-        });
+        const moved =
+          current.moved ||
+          Math.abs(svgY - current.startY) > MARKER_DRAG_THRESHOLD;
+        labelDragRef.current = { ...current, currentY: svgY, moved };
+        if (moved) schedulePointerPreview();
       }
       function onUp(e: MouseEvent) {
         if (e.button !== 0) return; // 左ボタン release のみ確定（中/右 release は無視）
-        if (labelDrag) commitLabelDrop(labelDrag);
+        cancelPointerFrame();
+        const current = labelDragRef.current;
+        if (current) commitLabelDropRef.current(current);
+        labelDragRef.current = null;
+        labelDragRowRef.current = null;
+        setLabelDrag(null);
+      }
+      function onBlur() {
+        cancelPointerFrame();
+        labelDragRef.current = null;
+        labelDragRowRef.current = null;
         setLabelDrag(null);
       }
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
+      window.addEventListener("blur", onBlur);
       return () => {
+        cancelPointerFrame();
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
+        window.removeEventListener("blur", onBlur);
       };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [labelDrag]);
+    }, [
+      isActive,
+      labelDragInProgress,
+      plotSubwaySort,
+      threads.length,
+      threadsTop,
+    ]);
+
+    useEffect(() => {
+      if (isActive) return;
+      dragRef.current = null;
+      sceneDragSvgOriginRef.current = null;
+      sceneDragPresentationOriginRef.current = null;
+      sceneDragPresentedRef.current = null;
+      sceneDragPreviewDirtyRef.current = false;
+      markerDragRef.current = null;
+      markerDropKeyRef.current = null;
+      labelDragRef.current = null;
+      labelDragRowRef.current = null;
+      dragActiveRef.current = false;
+      if (sceneDragLayerRef.current) {
+        sceneDragLayerRef.current.style.visibility = "hidden";
+      }
+      setMarkerDrag(null);
+      setLabelDrag(null);
+    }, [isActive]);
 
     // Restore scroll position when scrollOffset changes from the store (e.g. after settings load).
     // isRestoringRef prevents the scroll event from writing back the same value.
     useEffect(() => {
+      if (!isActive) return;
       const el = containerRef.current;
       if (!el || el.scrollLeft === scrollOffset) return;
       isRestoringRef.current = true;
@@ -1176,18 +1630,23 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       requestAnimationFrame(() => {
         isRestoringRef.current = false;
       });
-    }, [scrollOffset]);
+    }, [isActive, scrollOffset]);
 
     // Persist scroll position on user-initiated scroll.
     const handleScroll = useCallback(() => {
       if (isRestoringRef.current) return;
       const el = containerRef.current;
       if (el) setScrollOffset(el.scrollLeft);
+      if (dragRef.current) {
+        sceneDragPreviewDirtyRef.current = true;
+        sceneDragScheduleFrameRef.current();
+      }
     }, [setScrollOffset]);
 
     // 選択中のマーカー / スレッドをビューへスクロールして見せる（キーボードナビや
     // クリック選択で画面外に出ているとき）。横（シーン列）と縦（レーン）両方。
     useEffect(() => {
+      if (!isActive) return;
       if (!showThreads) return;
       const sel = selectedPlotLinkId
         ? `[data-testid="plot-marker-${selectedPlotLinkId}"]`
@@ -1201,7 +1660,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       if (el && typeof el.scrollIntoView === "function") {
         el.scrollIntoView({ block: "nearest", inline: "nearest" });
       }
-    }, [selectedPlotLinkId, selectedPlotThreadId, showThreads]);
+    }, [isActive, selectedPlotLinkId, selectedPlotThreadId, showThreads]);
 
     // マウスホイール（縦回転）でズーム。横スクロールしたいときは Shift+ホイール、
     // またはトラックパッドの横スワイプ（横優位の入力）をブラウザ既定の横スクロール
@@ -1209,7 +1668,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // Depends on containerEl (not just []) so the listener re-attaches when scenes
     // load after the first render and the container div appears for the first time.
     useEffect(() => {
-      if (!containerEl) return;
+      if (!containerEl || !isActive) return;
       const onWheel = (e: WheelEvent) => {
         // 横優位の入力（Shift+ホイール / トラックパッド横スワイプ）は横スクロールへ。
         // `>=` にすることで deltaY=0（横スワイプ / 慣性スクロール終端の 0,0 イベント）
@@ -1242,14 +1701,14 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       };
       containerEl.addEventListener("wheel", onWheel, { passive: false });
       return () => containerEl.removeEventListener("wheel", onWheel);
-    }, [containerEl]);
+    }, [containerEl, isActive]);
 
     // 中ボタン(ホイール)ドラッグでハンドツール・パン。capture 段で button===1 を
     // 横取りし、子（dot/ラベル）の左ボタンドラッグや OS の autoscroll を抑止する。
     // 横・縦の両 overflow をドラッグ量ぶんスクロール（scroll イベント経由で
     // scrollOffset も同期され固定ラベルが追従する）。
     useEffect(() => {
-      if (!containerEl) return;
+      if (!containerEl || !isActive) return;
       let panning = false;
       let startX = 0;
       let startY = 0;
@@ -1299,7 +1758,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         containerEl.removeEventListener("mousedown", onDown, true);
         endPan();
       };
-    }, [containerEl]);
+    }, [containerEl, isActive]);
 
     // 何も無いところ（背景）を左ボタンでドラッグしてもパン（Chronicle と同挙動）。
     // 中ボタンパンはそのまま。ドット/マーカー/ラベルの左ドラッグを壊さないため
@@ -1308,7 +1767,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // （ドラッグ状態）が立っていれば pan を中止し、子ドラッグに委ねる。閾値超え＆子
     // ドラッグ非発火のときだけ実際にパンを始めるので、素のクリック（選択）も壊さない。
     useEffect(() => {
-      if (!containerEl) return;
+      if (!containerEl || !isActive) return;
       let armed = false;
       let panning = false;
       let startX = 0;
@@ -1371,7 +1830,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         containerEl.removeEventListener("mousedown", onDown);
         disarm();
       };
-    }, [containerEl]);
+    }, [containerEl, isActive]);
 
     // ズームで SVG 幅が更新された後に、退避した scrollLeft を適用してカーソル下の点を
     // 固定する。幅更新後なので scrollWidth は新しい値になっており、正しくクランプされる。
@@ -1419,804 +1878,860 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       return __emptyResult;
     }
 
+    const currentSceneDrag = dragRef.current;
+    if (currentSceneDrag) {
+      const currentSceneDragIndex =
+        scenes[currentSceneDrag.originIndex]?.id === currentSceneDrag.nodeId
+          ? currentSceneDrag.originIndex
+          : scenes.findIndex((scene) => scene.id === currentSceneDrag.nodeId);
+      if (currentSceneDragIndex >= 0) {
+        // A zoom render changes the content-space anchor. The layout effect
+        // above reapplies the latest pointer in viewport coordinates.
+        sceneDragPresentationOriginRef.current = {
+          x: xOf(currentSceneDragIndex),
+          y: yOf(currentSceneDragIndex),
+        };
+      }
+    }
+
     const __renderResult = (
       <>
         <div
-          ref={setContainerRef}
-          data-testid="timeline-scroll-container"
-          className={`flex-1 overflow-x-auto overflow-y-auto pb-2${
-            isPanning ? " cursor-grabbing [&_*]:!cursor-grabbing" : ""
-          }`}
-          onScroll={handleScroll}
+          data-testid="timeline-viewport-frame"
+          className="relative min-h-0 min-w-0 flex-1 overflow-hidden"
         >
-          <svg
-            ref={svgRef}
-            width={totalWidth}
-            height={svgHeight}
-            className={`block select-none${canDrag ? " cursor-default" : ""}`}
-            aria-label={t("timeline.viewport", "タイムライン ビューポート")}
+          <div
+            ref={setContainerRef}
+            data-testid="timeline-scroll-container"
+            className={`h-full w-full overflow-x-auto overflow-y-auto pb-2${
+              isPanning ? " cursor-grabbing [&_*]:!cursor-grabbing" : ""
+            }`}
+            onScroll={handleScroll}
           >
-            {/* フォルダ構造のグルーピング帯（reading 順）。level0=部 を上段、
+            <svg
+              ref={svgRef}
+              data-testid="timeline-main-svg"
+              width={totalWidth}
+              height={svgHeight}
+              className={`block select-none${canDrag ? " cursor-default" : ""}`}
+              aria-label={t("timeline.viewport", "タイムライン ビューポート")}
+            >
+              {/* フォルダ構造のグルーピング帯（reading 順）。level0=部 を上段、
                 level1=章 を下段に最大2段。チャプター数目盛り(LABEL_Y=16)の下・
                 シーン軸(LANE_Y=60)の上の空き帯に描く。 */}
-            {folderGroups.slice(0, 2).map((groups, level) => {
-              const bandH = 13;
-              const top = 20 + level * (bandH + 3); // 20–33 / 36–49
-              return (
-                <g
-                  key={`folder-level-${level}`}
-                  data-testid={`folder-band-level-${level}`}
-                  pointerEvents="none"
-                >
-                  {groups.map((g) => {
-                    const x1 = xOf(g.startIndex) - DOT_R;
-                    const x2 = xOf(g.endIndex) + DOT_R;
-                    const w = Math.max(0, x2 - x1);
-                    const maxChars = Math.floor((w - 8) / 6);
-                    const text =
-                      g.label.length > maxChars
-                        ? g.label.slice(0, Math.max(1, maxChars - 1)) + "…"
-                        : g.label;
-                    return (
-                      <g key={`${level}-${g.id}-${g.startIndex}`}>
-                        <rect
-                          data-testid="folder-band"
-                          x={x1}
-                          y={top}
-                          width={w}
-                          height={bandH}
-                          rx={3}
-                          fill="currentColor"
-                          fillOpacity={0.06}
-                          stroke="currentColor"
-                          strokeOpacity={0.12}
-                          strokeWidth={1}
-                        />
-                        {maxChars >= 2 && (
-                          <text
-                            x={(x1 + x2) / 2}
-                            y={top + bandH / 2}
-                            textAnchor="middle"
-                            dominantBaseline="central"
-                            fontSize={9}
-                            fill="currentColor"
-                            fillOpacity={0.6}
-                            className="select-none"
-                          >
-                            {text}
-                          </text>
-                        )}
-                      </g>
-                    );
-                  })}
-                </g>
-              );
-            })}
-
-            {/* Axis tick labels */}
-            {computeAxisLabels(
-              scenes.slice(0, scheduledCount),
-              axisMode,
-              zoom,
-            ).map(({ index, label }) => (
-              <text
-                key={index}
-                data-testid="axis-label"
-                x={xOf(index)}
-                y={LABEL_Y}
-                textAnchor="middle"
-                fontSize={9}
-                fill="currentColor"
-                fillOpacity={0.45}
-                className="pointer-events-none select-none"
-              >
-                {label}
-              </text>
-            ))}
-
-            {/* Main axis line */}
-            <line
-              x1={padLeft - DOT_R}
-              y1={AXIS_Y}
-              x2={
-                scheduledCount > 0
-                  ? xOf(scheduledCount - 1) + DOT_R
-                  : totalWidth - PAD_RIGHT
-              }
-              y2={AXIS_Y}
-              stroke="currentColor"
-              strokeOpacity={scheduledCount > 0 ? 0.2 : 0.1}
-              strokeWidth={1}
-              strokeDasharray={scheduledCount === 0 ? "4 4" : undefined}
-            />
-
-            {/* 軸が空のときのプレースホルダーヒント */}
-            {showUnscheduledZone && scheduledCount === 0 && (
-              <text
-                x={totalWidth / 2}
-                y={AXIS_Y - 12}
-                textAnchor="middle"
-                fontSize={10}
-                fill="currentColor"
-                fillOpacity={0.35}
-                className="pointer-events-none"
-              >
-                {t(
-                  "timeline.emptyAxisHint",
-                  "↑ シーンをここにドラッグして story-time を設定",
-                )}
-              </text>
-            )}
-
-            {/* Unscheduled separator + drop zone (story-time モード中は常に表示) */}
-            {showUnscheduledZone && (
-              <>
-                {/* ドラッグ中はゾーンをハイライト */}
-                {drag && (
-                  <rect
-                    x={padLeft - DOT_R}
-                    y={UNSCHEDULED_Y - 20}
-                    width={totalWidth - padLeft - PAD_RIGHT + DOT_R}
-                    height={40}
-                    fill="currentColor"
-                    fillOpacity={0.05}
-                    rx={4}
+              {folderGroups.slice(0, 2).map((groups, level) => {
+                const bandH = 13;
+                const top = 20 + level * (bandH + 3); // 20–33 / 36–49
+                return (
+                  <g
+                    key={`folder-level-${level}`}
+                    data-testid={`folder-band-level-${level}`}
                     pointerEvents="none"
-                  />
-                )}
-                <line
-                  x1={padLeft - DOT_R}
-                  y1={UNSCHEDULED_Y - 16}
-                  x2={totalWidth - PAD_RIGHT}
-                  y2={UNSCHEDULED_Y - 16}
-                  stroke="currentColor"
-                  strokeOpacity={drag ? 0.35 : 0.12}
-                  strokeWidth={1}
-                  strokeDasharray="4 4"
-                />
+                  >
+                    {groups.map((g) => {
+                      const x1 = xOf(g.startIndex) - DOT_R;
+                      const x2 = xOf(g.endIndex) + DOT_R;
+                      const w = Math.max(0, x2 - x1);
+                      const maxChars = Math.floor((w - 8) / 6);
+                      const text =
+                        g.label.length > maxChars
+                          ? g.label.slice(0, Math.max(1, maxChars - 1)) + "…"
+                          : g.label;
+                      return (
+                        <g key={`${level}-${g.id}-${g.startIndex}`}>
+                          <rect
+                            data-testid="folder-band"
+                            x={x1}
+                            y={top}
+                            width={w}
+                            height={bandH}
+                            rx={3}
+                            fill="currentColor"
+                            fillOpacity={0.06}
+                            stroke="currentColor"
+                            strokeOpacity={0.12}
+                            strokeWidth={1}
+                          />
+                          {maxChars >= 2 && (
+                            <text
+                              x={(x1 + x2) / 2}
+                              y={top + bandH / 2}
+                              textAnchor="middle"
+                              dominantBaseline="central"
+                              fontSize={9}
+                              fill="currentColor"
+                              fillOpacity={0.6}
+                              className="select-none"
+                            >
+                              {text}
+                            </text>
+                          )}
+                        </g>
+                      );
+                    })}
+                  </g>
+                );
+              })}
+
+              {/* Axis tick labels */}
+              {computeAxisLabels(
+                scenes.slice(0, scheduledCount),
+                axisMode,
+                zoom,
+              ).map(({ index, label }) => (
                 <text
-                  x={padLeft - DOT_R}
-                  y={UNSCHEDULED_Y - 4}
+                  key={index}
+                  data-testid="axis-label"
+                  x={xOf(index)}
+                  y={LABEL_Y}
+                  textAnchor="middle"
                   fontSize={9}
                   fill="currentColor"
-                  fillOpacity={drag ? 0.7 : 0.4}
+                  fillOpacity={0.45}
+                  className="pointer-events-none select-none"
                 >
-                  {scheduledCount === 0
-                    ? t(
-                        "timeline.unscheduledAllHint",
-                        "Unscheduled — 上にドラッグして軸に配置",
-                      )
-                    : t("timeline.unscheduled", "Unscheduled")}
+                  {label}
                 </text>
-              </>
-            )}
+              ))}
 
-            {/* シーン行（常に表示。スレッドはこの上にオーバーレイ） */}
-            {scenes.map((scene, i) => {
-              const cx = xOf(i);
-              const cy = yOf(i);
-              const fill =
-                STATUS_FILL[scene.status ?? "outline"] ?? STATUS_FILL.outline;
-              const isSelected = selectedNodeIds.includes(scene.id);
-              const isActive = scene.id === activeSceneId;
-              const pins = pinsByNode.get(scene.id) ?? [];
-              const isUnscheduled = i >= scheduledCount;
+              {/* Main axis line */}
+              <line
+                x1={padLeft - DOT_R}
+                y1={AXIS_Y}
+                x2={
+                  scheduledCount > 0
+                    ? xOf(scheduledCount - 1) + DOT_R
+                    : totalWidth - PAD_RIGHT
+                }
+                y2={AXIS_Y}
+                stroke="currentColor"
+                strokeOpacity={scheduledCount > 0 ? 0.2 : 0.1}
+                strokeWidth={1}
+                strokeDasharray={scheduledCount === 0 ? "4 4" : undefined}
+              />
 
-              return (
-                <g
-                  key={scene.id}
-                  data-node-id={scene.id}
-                  opacity={isUnscheduled ? 0.55 : 1}
+              {/* 軸が空のときのプレースホルダーヒント */}
+              {showUnscheduledZone && scheduledCount === 0 && (
+                <text
+                  x={totalWidth / 2}
+                  y={AXIS_Y - 12}
+                  textAnchor="middle"
+                  fontSize={10}
+                  fill="currentColor"
+                  fillOpacity={0.35}
+                  className="pointer-events-none"
                 >
-                  {/* Vertical stem */}
-                  {(display.showTitles || display.showChapterNumbers) && (
-                    <line
-                      x1={cx}
-                      y1={cy + DOT_R}
-                      x2={cx}
-                      y2={cy + 20}
-                      stroke="currentColor"
-                      strokeOpacity={0.15}
-                      strokeWidth={1}
-                    />
+                  {t(
+                    "timeline.emptyAxisHint",
+                    "↑ シーンをここにドラッグして story-time を設定",
                   )}
+                </text>
+              )}
 
-                  {/* Drag ghost */}
-                  {drag?.nodeId === scene.id &&
-                    (() => {
-                      const locked =
-                        Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD;
-                      const ghostX = drag.currentX;
-                      const ghostY = locked ? LANE_Y : drag.currentY;
-                      return (
-                        <line
-                          x1={cx}
-                          y1={cy}
-                          x2={ghostX}
-                          y2={ghostY}
-                          stroke="currentColor"
-                          strokeOpacity={0.35}
-                          strokeWidth={1}
-                          strokeDasharray="3 3"
-                          pointerEvents="none"
-                        />
-                      );
-                    })()}
-
-                  {/* Active scene ring (現在地マーカー) */}
-                  {isActive && (
-                    <circle
-                      cx={drag?.nodeId === scene.id ? drag.currentX : cx}
-                      cy={
-                        drag?.nodeId === scene.id
-                          ? Math.abs(drag.currentY - LANE_Y) <
-                            AXIS_LOCK_THRESHOLD
-                            ? LANE_Y
-                            : drag.currentY
-                          : cy
-                      }
-                      r={DOT_R + 3}
-                      fill="none"
-                      stroke="var(--primary)"
-                      strokeWidth={1.5}
-                      pointerEvents="none"
-                    />
-                  )}
-
-                  {/* Scene dot */}
-                  <circle
-                    cx={drag?.nodeId === scene.id ? drag.currentX : cx}
-                    cy={
-                      drag?.nodeId === scene.id
-                        ? Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD
-                          ? LANE_Y
-                          : drag.currentY
-                        : cy
-                    }
-                    r={DOT_R}
-                    fill={fill}
-                    stroke={isSelected ? "white" : "transparent"}
-                    strokeWidth={2}
-                    className={canDrag ? "cursor-grab" : "cursor-pointer"}
-                    onClick={(e) => {
-                      if (e.shiftKey) {
-                        rangeSelectTo(
-                          scene.id,
-                          scenes.map((sc) => sc.id),
-                        );
-                      } else if (e.ctrlKey || e.metaKey) {
-                        toggleSelect(scene.id);
-                      } else {
-                        onSelectScene(scene.id);
-                      }
-                    }}
-                    onMouseDown={(e) => handleDotMouseDown(e, scene.id, i)}
-                    onContextMenu={(e) => handleDotContextMenu(e, scene)}
+              {/* Unscheduled separator + drop zone (story-time モード中は常に表示) */}
+              {showUnscheduledZone && (
+                <>
+                  <line
+                    x1={padLeft - DOT_R}
+                    y1={UNSCHEDULED_Y - 16}
+                    x2={totalWidth - PAD_RIGHT}
+                    y2={UNSCHEDULED_Y - 16}
+                    stroke="currentColor"
+                    strokeOpacity={0.12}
+                    strokeWidth={1}
+                    strokeDasharray="4 4"
+                  />
+                  <text
+                    x={padLeft - DOT_R}
+                    y={UNSCHEDULED_Y - 4}
+                    fontSize={9}
+                    fill="currentColor"
+                    fillOpacity={0.4}
                   >
-                    <title>{scene.title}</title>
-                  </circle>
+                    {scheduledCount === 0
+                      ? t(
+                          "timeline.unscheduledAllHint",
+                          "Unscheduled — 上にドラッグして軸に配置",
+                        )
+                      : t("timeline.unscheduled", "Unscheduled")}
+                  </text>
+                </>
+              )}
 
-                  {/* Story-time label (scheduled scenes in story-time mode) */}
-                  {display.showChapterNumbers &&
-                    !isUnscheduled &&
-                    scene.storyTimeLabel && (
-                      <text
-                        x={cx}
-                        y={cy - DOT_R - 4}
-                        textAnchor="middle"
-                        fontSize={9}
-                        fill="currentColor"
-                        fillOpacity={0.5}
-                        className="pointer-events-none"
-                      >
-                        {scene.storyTimeLabel}
-                      </text>
+              {/* シーン行（常に表示。スレッドはこの上にオーバーレイ） */}
+              {scenes.map((scene, i) => {
+                const cx = xOf(i);
+                const cy = yOf(i);
+                const fill =
+                  STATUS_FILL[scene.status ?? "outline"] ?? STATUS_FILL.outline;
+                const isSelected = selectedNodeIds.includes(scene.id);
+                const isActive = scene.id === activeSceneId;
+                const pins = pinsByNode.get(scene.id) ?? [];
+                const isUnscheduled = i >= scheduledCount;
+
+                return (
+                  <g
+                    key={scene.id}
+                    data-node-id={scene.id}
+                    opacity={isUnscheduled ? 0.55 : 1}
+                  >
+                    {/* Vertical stem */}
+                    {(display.showTitles || display.showChapterNumbers) && (
+                      <line
+                        x1={cx}
+                        y1={cy + DOT_R}
+                        x2={cx}
+                        y2={cy + 20}
+                        stroke="currentColor"
+                        strokeOpacity={0.15}
+                        strokeWidth={1}
+                      />
                     )}
 
-                  {/* Title label。 */}
-                  {display.showTitles && (
-                    <text
-                      x={cx}
-                      y={cy + 28}
-                      textAnchor="middle"
-                      fontSize={10}
-                      fill="currentColor"
-                      fillOpacity={0.7}
-                      className="pointer-events-none"
-                    >
-                      {scene.title.length > 8
-                        ? scene.title.slice(0, 7) + "…"
-                        : scene.title}
-                    </text>
-                  )}
+                    {/* Active scene ring (現在地マーカー) */}
+                    {isActive && (
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={DOT_R + 3}
+                        fill="none"
+                        stroke="var(--primary)"
+                        strokeWidth={1.5}
+                        pointerEvents="none"
+                      />
+                    )}
 
-                  {/* Phase pins */}
-                  {display.showPhasePins &&
-                    pins.length > 0 &&
-                    !isUnscheduled && (
+                    {/* Scene dot */}
+                    <circle
+                      data-testid={`timeline-scene-dot-${scene.id}`}
+                      cx={cx}
+                      cy={cy}
+                      r={DOT_R}
+                      fill={fill}
+                      stroke={isSelected ? "white" : "transparent"}
+                      strokeWidth={2}
+                      className={canDrag ? "cursor-grab" : "cursor-pointer"}
+                      onClick={(e) => {
+                        if (e.shiftKey) {
+                          rangeSelectTo(
+                            scene.id,
+                            scenes.map((sc) => sc.id),
+                          );
+                        } else if (e.ctrlKey || e.metaKey) {
+                          toggleSelect(scene.id);
+                        } else {
+                          onSelectScene(scene.id);
+                        }
+                      }}
+                      onMouseDown={(e) => handleDotMouseDown(e, scene.id, i)}
+                      onContextMenu={(e) => handleDotContextMenu(e, scene)}
+                    >
+                      <title>{scene.title}</title>
+                    </circle>
+
+                    {/* Story-time label (scheduled scenes in story-time mode) */}
+                    {display.showChapterNumbers &&
+                      !isUnscheduled &&
+                      scene.storyTimeLabel && (
+                        <text
+                          x={cx}
+                          y={cy - DOT_R - 4}
+                          textAnchor="middle"
+                          fontSize={9}
+                          fill="currentColor"
+                          fillOpacity={0.5}
+                          className="pointer-events-none"
+                        >
+                          {scene.storyTimeLabel}
+                        </text>
+                      )}
+
+                    {/* Title label。 */}
+                    {display.showTitles && (
                       <text
                         x={cx}
-                        y={PHASE_PIN_Y}
+                        y={cy + 28}
                         textAnchor="middle"
                         fontSize={10}
                         fill="currentColor"
-                        fillOpacity={0.55}
+                        fillOpacity={0.7}
+                        className="pointer-events-none"
                       >
-                        {pins.length === 1
-                          ? `⏱ ${pins[0].entryName}`
-                          : `⏱×${pins.length}`}
-                        <title>
-                          {pins
-                            .map((p) => `${p.entryName}: ${p.label}`)
-                            .join("\n")}
-                        </title>
+                        {scene.title.length > 8
+                          ? scene.title.slice(0, 7) + "…"
+                          : scene.title}
                       </text>
                     )}
-                </g>
-              );
-            })}
 
-            {/* シーン列の縦グリッド（threads モード）。マーカーがどのシーンに
+                    {/* Phase pins */}
+                    {display.showPhasePins &&
+                      pins.length > 0 &&
+                      !isUnscheduled && (
+                        <text
+                          x={cx}
+                          y={PHASE_PIN_Y}
+                          textAnchor="middle"
+                          fontSize={10}
+                          fill="currentColor"
+                          fillOpacity={0.55}
+                        >
+                          {pins.length === 1
+                            ? `⏱ ${pins[0].entryName}`
+                            : `⏱×${pins.length}`}
+                          <title>
+                            {pins
+                              .map((p) => `${p.entryName}: ${p.label}`)
+                              .join("\n")}
+                          </title>
+                        </text>
+                      )}
+                  </g>
+                );
+              })}
+
+              {/* シーン列の縦グリッド（threads モード）。マーカーがどのシーンに
                 紐づくかを目で追えるよう、各シーンの x に淡い縦線を引く。
                 マーカー/レーンより先に描いて背面に置く。x は xOf を共有するので
                 マーカー位置と必ず一致する。未配置(story-time)は scheduled 列へ
                 折り重なるため scheduled 範囲のみ引く。 */}
-            {showThreads &&
-              scenes
-                .slice(0, scheduledCount)
-                .map((_, i) => (
-                  <line
-                    key={`scene-grid-${i}`}
-                    data-testid="scene-gridline"
-                    x1={xOf(i)}
-                    x2={xOf(i)}
-                    y1={LANE_Y - LANE_HEIGHT / 2}
-                    y2={svgHeight}
-                    stroke="currentColor"
-                    strokeOpacity={0.07}
-                    strokeWidth={1}
+              {showThreads &&
+                scenes
+                  .slice(0, scheduledCount)
+                  .map((_, i) => (
+                    <line
+                      key={`scene-grid-${i}`}
+                      data-testid="scene-gridline"
+                      x1={xOf(i)}
+                      x2={xOf(i)}
+                      y1={LANE_Y - LANE_HEIGHT / 2}
+                      y2={svgHeight}
+                      stroke="currentColor"
+                      strokeOpacity={0.07}
+                      strokeWidth={1}
+                      pointerEvents="none"
+                    />
+                  ))}
+
+              {/* 収束ハイライト: 2 本以上のスレッドが通るシーン列を淡い縦バンドで強調
+                （separated レイアウトのみ。subway は共有駅で表現するため不要） */}
+              {showThreads &&
+                laneModel.convergences.map((x) => (
+                  <rect
+                    key={`conv-${x}`}
+                    data-testid="thread-convergence"
+                    x={xOf(x) - 5}
+                    y={threadsTop - LANE_HEIGHT / 2}
+                    width={10}
+                    height={Math.max(
+                      0,
+                      svgHeight - (threadsTop - LANE_HEIGHT / 2),
+                    )}
+                    fill="currentColor"
+                    fillOpacity={0.06}
                     pointerEvents="none"
                   />
                 ))}
 
-            {/* 収束ハイライト: 2 本以上のスレッドが通るシーン列を淡い縦バンドで強調
-                （separated レイアウトのみ。subway は共有駅で表現するため不要） */}
-            {showThreads &&
-              laneModel.convergences.map((x) => (
-                <rect
-                  key={`conv-${x}`}
-                  data-testid="thread-convergence"
-                  x={xOf(x) - 5}
-                  y={threadsTop - LANE_HEIGHT / 2}
-                  width={10}
-                  height={Math.max(
-                    0,
-                    svgHeight - (threadsTop - LANE_HEIGHT / 2),
-                  )}
-                  fill="currentColor"
-                  fillOpacity={0.06}
-                  pointerEvents="none"
-                />
-              ))}
-
-            {/* プロットスレッドのレーン（separated レイアウト） */}
-            {showThreads &&
-              laneModel.lanes.map((lane) => (
-                <g
-                  key={lane.thread.id}
-                  data-plot-lane={lane.thread.id}
-                  style={threadDimStyle(lane.thread.id)}
-                >
-                  {/* レーン行のヒット領域（ダブルクリックで最寄りシーンにマーカー追加） */}
-                  <rect
-                    data-testid={`plot-lane-hit-${lane.thread.id}`}
-                    x={0}
-                    y={lane.y - LANE_HEIGHT / 2}
-                    width={totalWidth}
-                    height={LANE_HEIGHT}
-                    fill="transparent"
-                    className="cursor-copy"
-                    onDoubleClick={(e) =>
-                      handleLaneDoubleClick(e, lane.thread.id)
-                    }
+              {/* プロットスレッドのレーン（separated レイアウト） */}
+              {showThreads &&
+                laneModel.lanes.map((lane) => (
+                  <g
+                    key={lane.thread.id}
+                    data-plot-lane={lane.thread.id}
+                    data-lane-transform-id={lane.thread.id}
+                    style={threadDimStyle(lane.thread.id)}
                   >
-                    <title>
-                      {t(
-                        "plotThread.laneHint",
-                        "ダブルクリックでマーカーを追加",
-                      )}
-                    </title>
-                  </rect>
-                  {/* レーン背景線。選択中スレッドはスレッド色で濃く・太く強調する。 */}
-                  <line
-                    x1={xOf(0)}
-                    y1={lane.y}
-                    x2={
-                      scheduledCount > 0
-                        ? xOf(scheduledCount - 1)
-                        : totalWidth - PAD_RIGHT
-                    }
-                    y2={lane.y}
-                    stroke={
-                      selectedPlotThreadId === lane.thread.id
-                        ? (lane.thread.color ?? "var(--primary)")
-                        : "currentColor"
-                    }
-                    strokeOpacity={
-                      selectedPlotThreadId === lane.thread.id ? 0.5 : 0.15
-                    }
-                    strokeWidth={
-                      selectedPlotThreadId === lane.thread.id ? 2 : 1
-                    }
-                    pointerEvents="none"
-                    style={{
-                      transition: reducedMotion
-                        ? undefined
-                        : `stroke-opacity ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}, stroke-width ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
-                    }}
-                  />
-                  {/* スレッドの太いバンド（reading-order のみ）。連続線セグメント単位で
+                    {/* レーン行のヒット領域（ダブルクリックで最寄りシーンにマーカー追加） */}
+                    <rect
+                      data-testid={`plot-lane-hit-${lane.thread.id}`}
+                      x={0}
+                      y={lane.y - LANE_HEIGHT / 2}
+                      width={totalWidth}
+                      height={LANE_HEIGHT}
+                      fill="transparent"
+                      className="cursor-copy"
+                      onDoubleClick={(e) =>
+                        handleLaneDoubleClick(e, lane.thread.id)
+                      }
+                    >
+                      <title>
+                        {t(
+                          "plotThread.laneHint",
+                          "ダブルクリックでマーカーを追加",
+                        )}
+                      </title>
+                    </rect>
+                    {/* レーン背景線。選択中スレッドはスレッド色で濃く・太く強調する。 */}
+                    <line
+                      x1={xOf(0)}
+                      y1={lane.y}
+                      x2={
+                        scheduledCount > 0
+                          ? xOf(scheduledCount - 1)
+                          : totalWidth - PAD_RIGHT
+                      }
+                      y2={lane.y}
+                      stroke={
+                        selectedPlotThreadId === lane.thread.id
+                          ? (lane.thread.color ?? "var(--primary)")
+                          : "currentColor"
+                      }
+                      strokeOpacity={
+                        selectedPlotThreadId === lane.thread.id ? 0.5 : 0.15
+                      }
+                      strokeWidth={
+                        selectedPlotThreadId === lane.thread.id ? 2 : 1
+                      }
+                      pointerEvents="none"
+                      style={{
+                        transition: reducedMotion
+                          ? undefined
+                          : `stroke-opacity ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}, stroke-width ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
+                      }}
+                    />
+                    {/* スレッドの太いバンド（reading-order のみ）。連続線セグメント単位で
                       描く。merge で終わり branch で始まるよう継ぎ目で切れる。
                       story-time/write では引かない（判断 e）。 */}
-                  {axisMode === "reading" &&
-                    lane.lineSegments.map((seg, i) => (
-                      <line
-                        key={`band-${i}`}
-                        data-testid={`plot-thread-line-${lane.thread.id}-${i}`}
-                        x1={xOf(seg.x1)}
-                        // rampOutEnd の区間は右端を CONNECTOR_RAMP だけ手前で止め、
-                        // ランプ（コネクタ）の始端へなめらかに渡す（帯がランプに重ならない）。
-                        // 低ズームで列幅 < RAMP のとき逆向きに伸びないよう x1 で下限クランプ。
-                        x2={
-                          seg.rampOutEnd
-                            ? Math.max(
-                                xOf(seg.x1),
-                                xOf(seg.x2) - CONNECTOR_RAMP,
-                              )
-                            : xOf(seg.x2)
-                        }
-                        y1={seg.y1}
-                        y2={seg.y2}
-                        stroke={lane.thread.color ?? "var(--primary)"}
-                        // 線は subway の路線と同じ細さ（TRACK_WIDTH）。段階チップは別途
-                        // BAND_HEIGHT のピルで線の上に載る。
-                        strokeWidth={TRACK_WIDTH}
-                        // 不透過（重なりによる濃淡差/混色を避ける）。butt 端で継ぎ目を揃える。
-                        strokeLinecap="butt"
-                        pointerEvents="none"
-                      />
-                    ))}
-                  {/* 抜けシーン（マーカー無し列）の薄い目印。線は通っているがビートが
+                    {axisMode === "reading" &&
+                      lane.lineSegments.map((seg, i) => (
+                        <line
+                          key={`band-${i}`}
+                          data-testid={`plot-thread-line-${lane.thread.id}-${i}`}
+                          x1={xOf(seg.x1)}
+                          // rampOutEnd の区間は右端を CONNECTOR_RAMP だけ手前で止め、
+                          // ランプ（コネクタ）の始端へなめらかに渡す（帯がランプに重ならない）。
+                          // 低ズームで列幅 < RAMP のとき逆向きに伸びないよう x1 で下限クランプ。
+                          x2={
+                            seg.rampOutEnd
+                              ? Math.max(
+                                  xOf(seg.x1),
+                                  xOf(seg.x2) - CONNECTOR_RAMP,
+                                )
+                              : xOf(seg.x2)
+                          }
+                          y1={seg.y1}
+                          y2={seg.y2}
+                          stroke={lane.thread.color ?? "var(--primary)"}
+                          // 線は subway の路線と同じ細さ（TRACK_WIDTH）。段階チップは別途
+                          // BAND_HEIGHT のピルで線の上に載る。
+                          strokeWidth={TRACK_WIDTH}
+                          // 不透過（重なりによる濃淡差/混色を避ける）。butt 端で継ぎ目を揃える。
+                          strokeLinecap="butt"
+                          pointerEvents="none"
+                        />
+                      ))}
+                    {/* 抜けシーン（マーカー無し列）の薄い目印。線は通っているがビートが
                       無い＝サブプロット休止列。帯と同じ reading-order ゲート。 */}
-                  {display.showThreadGaps &&
-                    axisMode === "reading" &&
-                    lane.gapCols.map((c) => (
-                      <line
-                        key={`gap-${c}`}
-                        data-testid={`plot-thread-gap-${lane.thread.id}-${c}`}
-                        x1={xOf(c)}
-                        x2={xOf(c)}
-                        y1={lane.y - 4}
-                        y2={lane.y + 4}
-                        stroke={lane.thread.color ?? "var(--primary)"}
-                        strokeWidth={2}
-                        strokeOpacity={0.28}
-                        strokeLinecap="round"
+                    {display.showThreadGaps &&
+                      axisMode === "reading" &&
+                      lane.gapCols.map((c) => (
+                        <line
+                          key={`gap-${c}`}
+                          data-testid={`plot-thread-gap-${lane.thread.id}-${c}`}
+                          x1={xOf(c)}
+                          x2={xOf(c)}
+                          y1={lane.y - 4}
+                          y2={lane.y + 4}
+                          stroke={lane.thread.color ?? "var(--primary)"}
+                          strokeWidth={2}
+                          strokeOpacity={0.28}
+                          strokeLinecap="round"
+                          pointerEvents="none"
+                        />
+                      ))}
+                    {/* 終端キャップ（完結）。自走で終わるスレッドの線端に小さな塗りノブ。
+                      merge で畳まれた終端には付かない（コネクタで表現）。 */}
+                    {axisMode === "reading" && lane.terminusX !== null && (
+                      <circle
+                        data-testid={`plot-thread-terminus-${lane.thread.id}`}
+                        cx={xOf(lane.terminusX)}
+                        cy={laneSlotY(lane, lane.terminusX)}
+                        r={NODE_R_SINGLE}
+                        fill={lane.thread.color ?? "var(--primary)"}
                         pointerEvents="none"
                       />
-                    ))}
-                  {/* 終端キャップ（完結）。自走で終わるスレッドの線端に小さな塗りノブ。
-                      merge で畳まれた終端には付かない（コネクタで表現）。 */}
-                  {axisMode === "reading" && lane.terminusX !== null && (
-                    <circle
-                      data-testid={`plot-thread-terminus-${lane.thread.id}`}
-                      cx={xOf(lane.terminusX)}
-                      cy={laneSlotY(lane, lane.terminusX)}
-                      r={NODE_R_SINGLE}
-                      fill={lane.thread.color ?? "var(--primary)"}
-                      pointerEvents="none"
-                    />
-                  )}
-                  {/* レーン見出しは下の固定ラベル列（subway と同じカプセル型）で描く。 */}
-                </g>
-              ))}
+                    )}
+                    {/* レーン見出しは下の固定ラベル列（subway と同じカプセル型）で描く。 */}
+                  </g>
+                ))}
 
-            {/* 分岐 / 合流コネクタ（reading-order のみ）。統一モデル: branch も merge も
+              {/* 分岐 / 合流コネクタ（reading-order のみ）。統一モデル: branch も merge も
                 「from レーンから to レーンへ線が移る」遷移点として同じ形で描く。ランプは
                 常にマーカー（at 列 X）の手前 (X-RAMP→X) から流れ込む。from 帯はランプ始端
                 (X-RAMP) で止まり、to 帯はマーカー (X) から始まるので、帯↔ランプ↔帯が
                 butt 端どうしの縦シームでなめらかに繋がる。線は通常の帯と同じ太さ・色・不透過。 */}
-            {showThreads &&
-              axisMode === "reading" &&
-              connectorGeometry.map((c) => (
-                <path
-                  key={`conn-${c.id}`}
-                  data-testid="plot-thread-connector"
-                  data-kind={c.kind}
-                  d={c.d}
-                  fill="none"
-                  stroke={c.color ?? "var(--primary)"}
-                  // 線(帯)と同じ subway 路線幅（TRACK_WIDTH）。
-                  strokeWidth={TRACK_WIDTH}
-                  // 不透過・butt 端: 帯の butt 端と縦シームで揃え、重なり混色を避ける。
-                  strokeLinecap="butt"
-                  strokeLinejoin="round"
-                  pointerEvents="none"
-                  style={connectorDimStyle(c.id, c.color)}
-                />
-              ))}
+              {showThreads &&
+                axisMode === "reading" &&
+                connectorGeometry.map((c) => (
+                  <path
+                    key={`conn-${c.id}`}
+                    data-lane-animated-connector={c.id}
+                    data-testid="plot-thread-connector"
+                    data-kind={c.kind}
+                    d={c.d}
+                    fill="none"
+                    stroke={c.color ?? "var(--primary)"}
+                    // 線(帯)と同じ subway 路線幅（TRACK_WIDTH）。
+                    strokeWidth={TRACK_WIDTH}
+                    // 不透過・butt 端: 帯の butt 端と縦シームで揃え、重なり混色を避ける。
+                    strokeLinecap="butt"
+                    strokeLinejoin="round"
+                    pointerEvents="none"
+                    style={connectorDimStyle(c.id, c.color)}
+                  />
+                ))}
 
-            {/* スレッドマーカー（separated）。帯・コネクタより後＝最前面に描く
+              {/* スレッドマーカー（separated）。帯・コネクタより後＝最前面に描く
                 （線がマーカーへ被らないよう描画順序を最後にする）。ドラッグ / 右クリック /
                 選択リングはここで処理する。axisMode に依らず常に描く。 */}
-            {showThreads &&
-              laneModel.lanes.map((lane) => (
-                <g
-                  key={`markers-${lane.thread.id}`}
-                  style={threadDimStyle(lane.thread.id)}
-                >
-                  {lane.markers.map((mk) => {
-                    const chip = phaseChip.get(mk.phaseType);
-                    const label = chip?.label ?? mk.phaseType;
-                    const chipW = chip?.chipW ?? 28;
-                    const cx = xOf(mk.x);
-                    const fill = lane.thread.color ?? "var(--primary)";
-                    const selected = selectedPlotLinkId === mk.linkId;
-                    const dragging =
-                      markerDrag?.linkId === mk.linkId && markerDrag.moved;
-                    // 選択中はスレッド色の発光で強調（filter で halo）。foreground(黒)は
-                    // ライトテーマで重いため、各スレッド固有の色でやわらかく光らせる。
-                    // 追加直後のマーカーは plot-marker-in でスケールイン。
-                    const markerClass = newMarkerIds.has(mk.linkId)
-                      ? "cursor-pointer plot-marker-in"
-                      : "cursor-pointer";
-                    // 選択中（高々 1 個）だけその場で生成し、残りは共有スタイル。
-                    const markerStyle: React.CSSProperties = selected
-                      ? {
-                          filter: `drop-shadow(0 0 5px ${fill})`,
-                          transition: markerBaseStyle.transition,
-                        }
-                      : markerBaseStyle;
-                    const onDown = (e: React.MouseEvent<SVGElement>) =>
-                      handleMarkerMouseDown(
-                        e,
-                        mk.linkId,
-                        lane.thread.id,
-                        mk.nodeId,
-                        lane.thread.color,
-                      );
-                    const onCtx = (e: React.MouseEvent<SVGElement>) =>
-                      handleMarkerContextMenu(
-                        e,
-                        mk.linkId,
-                        mk.phaseType,
-                        mk.nodeId,
-                        lane.thread.id,
-                      );
-                    const isMergeTarget = mergeTargetKeys.has(
-                      `${lane.thread.id}:${mk.nodeId}`,
-                    );
-                    // merge の流入先マーカーは縮小時のみ subway と同じ白丸ドーナツ
-                    // （白塗り＋色リング）で描く。拡大時（STEP >= CHIP_MIN_STEP）は通常
-                    // マーカー同様に段階テキストのチップを表示する（merge はコネクタが示す）。
-                    if (isMergeTarget && STEP < CHIP_MIN_STEP) {
-                      return (
-                        <circle
-                          key={mk.linkId}
-                          data-testid={`plot-marker-${mk.linkId}`}
-                          data-phase={mk.phaseType}
-                          data-merge-target="true"
-                          className={markerClass}
-                          style={markerStyle}
-                          opacity={dragging ? 0.3 : 1}
-                          cx={cx}
-                          cy={mk.y}
-                          r={NODE_R_MULTI}
-                          fill="var(--background, white)"
-                          stroke={selected ? "var(--foreground)" : fill}
-                          strokeWidth={selected ? 2.5 : NODE_RING}
-                          onMouseDown={onDown}
-                          onContextMenu={onCtx}
-                        >
-                          <title>{`${lane.thread.name}: ${label}`}</title>
-                        </circle>
-                      );
-                    }
-                    // 縮小時は円に縮退（段階テキストは title ツールチップで補う）。
-                    if (STEP < CHIP_MIN_STEP) {
-                      return (
-                        <circle
-                          key={mk.linkId}
-                          data-testid={`plot-marker-${mk.linkId}`}
-                          data-phase={mk.phaseType}
-                          className={markerClass}
-                          style={markerStyle}
-                          opacity={dragging ? 0.3 : 1}
-                          cx={cx}
-                          cy={mk.y}
-                          r={DOT_R}
-                          fill={fill}
-                          stroke={
-                            selected ? "var(--foreground)" : "var(--background)"
+              {showThreads &&
+                laneModel.lanes.map((lane) => (
+                  <g
+                    key={`markers-${lane.thread.id}`}
+                    data-lane-transform-id={lane.thread.id}
+                    style={threadDimStyle(lane.thread.id)}
+                  >
+                    {lane.markers.map((mk) => {
+                      const chip = phaseChip.get(mk.phaseType);
+                      const label = chip?.label ?? mk.phaseType;
+                      const chipW = chip?.chipW ?? 28;
+                      const cx = xOf(mk.x);
+                      const fill = lane.thread.color ?? "var(--primary)";
+                      const selected = selectedPlotLinkId === mk.linkId;
+                      const dragging =
+                        markerDrag?.linkId === mk.linkId && markerDrag.moved;
+                      // 選択中はスレッド色の発光で強調（filter で halo）。foreground(黒)は
+                      // ライトテーマで重いため、各スレッド固有の色でやわらかく光らせる。
+                      // 追加直後のマーカーは plot-marker-in でスケールイン。
+                      const markerClass = newMarkerIds.has(mk.linkId)
+                        ? "cursor-pointer plot-marker-in"
+                        : "cursor-pointer";
+                      // 選択中（高々 1 個）だけその場で生成し、残りは共有スタイル。
+                      const markerStyle: React.CSSProperties = selected
+                        ? {
+                            filter: `drop-shadow(0 0 5px ${fill})`,
+                            transition: markerBaseStyle.transition,
                           }
-                          strokeWidth={selected ? 2.5 : 1.5}
-                          onMouseDown={onDown}
-                          onContextMenu={onCtx}
-                        >
-                          <title>{`${lane.thread.name}: ${label}`}</title>
-                        </circle>
+                        : markerBaseStyle;
+                      const onDown = (e: React.MouseEvent<SVGElement>) =>
+                        handleMarkerMouseDown(
+                          e,
+                          mk.linkId,
+                          lane.thread.id,
+                          mk.nodeId,
+                          lane.thread.color,
+                        );
+                      const onCtx = (e: React.MouseEvent<SVGElement>) =>
+                        handleMarkerContextMenu(
+                          e,
+                          mk.linkId,
+                          mk.phaseType,
+                          mk.nodeId,
+                          lane.thread.id,
+                        );
+                      const isMergeTarget = mergeTargetKeys.has(
+                        `${lane.thread.id}:${mk.nodeId}`,
                       );
-                    }
-                    // merge の流入先チップは「白抜き」（背景塗り＋スレッド色リング＋色文字）
-                    // で描き、合流点であることを拡大時のチップ上でも示す。
-                    return (
-                      <g
-                        key={mk.linkId}
-                        data-testid={`plot-marker-${mk.linkId}`}
-                        data-phase={mk.phaseType}
-                        data-merge-target={isMergeTarget ? "true" : undefined}
-                        className={markerClass}
-                        style={markerStyle}
-                        opacity={dragging ? 0.3 : 1}
-                        onMouseDown={onDown}
-                        onContextMenu={onCtx}
-                      >
-                        <rect
-                          x={cx - chipW / 2}
-                          y={mk.y - BAND_HEIGHT / 2}
-                          width={chipW}
-                          height={BAND_HEIGHT}
-                          rx={BAND_HEIGHT / 2}
-                          fill={
-                            isMergeTarget ? "var(--background, white)" : fill
-                          }
-                          stroke={
-                            selected
-                              ? "var(--foreground)"
-                              : isMergeTarget
-                                ? fill
+                      // merge の流入先マーカーは縮小時のみ subway と同じ白丸ドーナツ
+                      // （白塗り＋色リング）で描く。拡大時（STEP >= CHIP_MIN_STEP）は通常
+                      // マーカー同様に段階テキストのチップを表示する（merge はコネクタが示す）。
+                      if (isMergeTarget && STEP < CHIP_MIN_STEP) {
+                        return (
+                          <circle
+                            key={mk.linkId}
+                            data-testid={`plot-marker-${mk.linkId}`}
+                            data-phase={mk.phaseType}
+                            data-merge-target="true"
+                            className={markerClass}
+                            style={markerStyle}
+                            opacity={dragging ? 0.3 : 1}
+                            cx={cx}
+                            cy={mk.y}
+                            r={NODE_R_MULTI}
+                            fill="var(--background, white)"
+                            stroke={selected ? "var(--foreground)" : fill}
+                            strokeWidth={selected ? 2.5 : NODE_RING}
+                            onMouseDown={onDown}
+                            onContextMenu={onCtx}
+                          >
+                            <title>{`${lane.thread.name}: ${label}`}</title>
+                          </circle>
+                        );
+                      }
+                      // 縮小時は円に縮退（段階テキストは title ツールチップで補う）。
+                      if (STEP < CHIP_MIN_STEP) {
+                        return (
+                          <circle
+                            key={mk.linkId}
+                            data-testid={`plot-marker-${mk.linkId}`}
+                            data-phase={mk.phaseType}
+                            className={markerClass}
+                            style={markerStyle}
+                            opacity={dragging ? 0.3 : 1}
+                            cx={cx}
+                            cy={mk.y}
+                            r={DOT_R}
+                            fill={fill}
+                            stroke={
+                              selected
+                                ? "var(--foreground)"
                                 : "var(--background)"
-                          }
-                          strokeWidth={
-                            selected ? 2.5 : isMergeTarget ? NODE_RING : 1
-                          }
-                        />
-                        <text
-                          x={cx}
-                          y={mk.y}
-                          textAnchor="middle"
-                          dominantBaseline="central"
-                          fontSize={CHIP_FONT}
-                          fill={isMergeTarget ? fill : contrastTextColor(fill)}
-                          pointerEvents="none"
-                          className="select-none"
+                            }
+                            strokeWidth={selected ? 2.5 : 1.5}
+                            onMouseDown={onDown}
+                            onContextMenu={onCtx}
+                          >
+                            <title>{`${lane.thread.name}: ${label}`}</title>
+                          </circle>
+                        );
+                      }
+                      // merge の流入先チップは「白抜き」（背景塗り＋スレッド色リング＋色文字）
+                      // で描き、合流点であることを拡大時のチップ上でも示す。
+                      return (
+                        <g
+                          key={mk.linkId}
+                          data-testid={`plot-marker-${mk.linkId}`}
+                          data-phase={mk.phaseType}
+                          data-merge-target={isMergeTarget ? "true" : undefined}
+                          className={markerClass}
+                          style={markerStyle}
+                          opacity={dragging ? 0.3 : 1}
+                          onMouseDown={onDown}
+                          onContextMenu={onCtx}
                         >
-                          {label}
-                        </text>
-                        <title>{`${lane.thread.name}: ${label}`}</title>
-                      </g>
-                    );
-                  })}
-                </g>
-              ))}
+                          <rect
+                            x={cx - chipW / 2}
+                            y={mk.y - BAND_HEIGHT / 2}
+                            width={chipW}
+                            height={BAND_HEIGHT}
+                            rx={BAND_HEIGHT / 2}
+                            fill={
+                              isMergeTarget ? "var(--background, white)" : fill
+                            }
+                            stroke={
+                              selected
+                                ? "var(--foreground)"
+                                : isMergeTarget
+                                  ? fill
+                                  : "var(--background)"
+                            }
+                            strokeWidth={
+                              selected ? 2.5 : isMergeTarget ? NODE_RING : 1
+                            }
+                          />
+                          <text
+                            x={cx}
+                            y={mk.y}
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            fontSize={CHIP_FONT}
+                            fill={
+                              isMergeTarget ? fill : contrastTextColor(fill)
+                            }
+                            pointerEvents="none"
+                            className="select-none"
+                          >
+                            {label}
+                          </text>
+                          <title>{`${lane.thread.name}: ${label}`}</title>
+                        </g>
+                      );
+                    })}
+                  </g>
+                ))}
 
-            {/* マーカードラッグ中のゴースト（カーソル追従・最前面） */}
-            {markerDrag?.moved && (
-              <circle
-                data-testid="plot-marker-ghost"
-                cx={markerDrag.currentX}
-                cy={markerDrag.currentY}
-                r={DOT_R}
-                fill={markerDrag.color ?? "var(--primary)"}
-                fillOpacity={0.7}
-                stroke="var(--background, white)"
-                strokeWidth={1.5}
-                pointerEvents="none"
-              />
-            )}
-
-            {/* スレッドヘッダー（左固定のカプセル型ラベル列）。
-                横スクロールしても残るよう scrollOffset ぶん平行移動。 */}
-            {showThreads && (
-              <g
-                transform={`translate(${scrollOffset},0)`}
-                data-testid="separated-labels"
-              >
-                <rect
-                  x={0}
-                  y={threadsTop - LANE_HEIGHT / 2}
-                  width={SUBWAY_LABEL_GUTTER - 12}
-                  height={Math.max(
-                    0,
-                    svgHeight - (threadsTop - LANE_HEIGHT / 2),
-                  )}
-                  fill="var(--background)"
+              {/* マーカードラッグ中のゴースト（カーソル追従・最前面） */}
+              {markerDrag?.moved && (
+                <circle
+                  ref={markerGhostRef}
+                  data-testid="plot-marker-ghost"
+                  cx={markerDrag.currentX}
+                  cy={markerDrag.currentY}
+                  r={DOT_R}
+                  fill={markerDrag.color ?? "var(--primary)"}
+                  fillOpacity={0.7}
+                  stroke="var(--background, white)"
+                  strokeWidth={1.5}
                   pointerEvents="none"
                 />
-                {(() => {
-                  // lane.y は既にアニメーション後の displayY（override モデル）。
-                  // ドラッグ中のスレッドだけ最後に描画＝最前面に重ねる。
-                  const lanes = laneModel.lanes;
-                  const draggedId = labelDragActive?.threadId ?? null;
-                  const renderOrder = draggedId
-                    ? [...lanes].sort(
-                        (a, b) =>
-                          Number(a.thread.id === draggedId) -
-                          Number(b.thread.id === draggedId),
-                      )
-                    : lanes;
-                  return renderOrder.map((lane) => {
-                    const name =
-                      lane.thread.name || t("plotThread.unnamed", "（無名）");
-                    const color = lane.thread.color ?? "var(--primary)";
-                    const isDragged = lane.thread.id === draggedId;
-                    const cyL = lane.y;
-                    // 全角/半角の実幅を見てカプセル内に収める（CJK 名で溢れる回避）。
-                    const display = fitLabelToWidth(
-                      name,
-                      SUBWAY_LABEL_TEXT_WIDTH,
-                      11,
-                    );
-                    const selected = selectedPlotThreadId === lane.thread.id;
-                    return (
-                      <g
-                        key={`label-${lane.thread.id}`}
-                        className="cursor-pointer"
-                        data-testid={`plot-lane-label-${lane.thread.id}`}
-                        style={{
-                          opacity: isDragged
-                            ? 0.7
-                            : hoveredThreadId &&
-                                hoveredThreadId !== lane.thread.id
-                              ? DIM_OPACITY
-                              : 1,
-                          transition: reducedMotion ? undefined : dimTransition,
-                        }}
-                        onMouseDown={(e) =>
-                          handleLabelMouseDown(e, lane.thread.id)
-                        }
-                        onMouseEnter={() => setHoveredThreadId(lane.thread.id)}
-                        onMouseLeave={() => setHoveredThreadId(null)}
-                      >
-                        <rect
-                          x={6}
-                          y={cyL - 13}
-                          width={SUBWAY_LABEL_GUTTER - 24}
-                          height={26}
-                          rx={13}
-                          fill="var(--card, var(--background))"
-                          // 選択中はスレッド色の枠＋発光で強調（foreground 黒は重いため）。
-                          stroke={selected ? color : "currentColor"}
-                          strokeOpacity={selected ? 0.9 : 0.15}
-                          strokeWidth={selected ? 2 : 1}
+              )}
+
+              {/* スレッドヘッダー（左固定のカプセル型ラベル列）。
+                横スクロールしても残るよう scrollOffset ぶん平行移動。 */}
+              {showThreads && (
+                <g
+                  transform={`translate(${scrollOffset},0)`}
+                  data-testid="separated-labels"
+                >
+                  <rect
+                    x={0}
+                    y={threadsTop - LANE_HEIGHT / 2}
+                    width={SUBWAY_LABEL_GUTTER - 12}
+                    height={Math.max(
+                      0,
+                      svgHeight - (threadsTop - LANE_HEIGHT / 2),
+                    )}
+                    fill="var(--background)"
+                    pointerEvents="none"
+                  />
+                  {(() => {
+                    // lane.y は既にアニメーション後の displayY（override モデル）。
+                    // ドラッグ中のスレッドだけ最後に描画＝最前面に重ねる。
+                    const lanes = laneModel.lanes;
+                    const draggedId = labelDragActive?.threadId ?? null;
+                    const renderOrder = draggedId
+                      ? [...lanes].sort(
+                          (a, b) =>
+                            Number(a.thread.id === draggedId) -
+                            Number(b.thread.id === draggedId),
+                        )
+                      : lanes;
+                    return renderOrder.map((lane) => {
+                      const name =
+                        lane.thread.name || t("plotThread.unnamed", "（無名）");
+                      const color = lane.thread.color ?? "var(--primary)";
+                      const isDragged = lane.thread.id === draggedId;
+                      const cyL = lane.y;
+                      // 全角/半角の実幅を見てカプセル内に収める（CJK 名で溢れる回避）。
+                      const display = fitLabelToWidth(
+                        name,
+                        SUBWAY_LABEL_TEXT_WIDTH,
+                        11,
+                      );
+                      const selected = selectedPlotThreadId === lane.thread.id;
+                      return (
+                        <g
+                          key={`label-${lane.thread.id}`}
+                          className="cursor-pointer"
+                          data-testid={`plot-lane-label-${lane.thread.id}`}
+                          data-lane-transform-id={lane.thread.id}
                           style={{
-                            filter: selected
-                              ? `drop-shadow(0 0 4px ${color})`
-                              : "none",
+                            opacity: isDragged
+                              ? 0.7
+                              : hoveredThreadId &&
+                                  hoveredThreadId !== lane.thread.id
+                                ? DIM_OPACITY
+                                : 1,
                             transition: reducedMotion
                               ? undefined
-                              : `filter ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
+                              : dimTransition,
                           }}
-                        />
-                        <circle cx={22} cy={cyL} r={7} fill={color} />
-                        <text
-                          x={36}
-                          y={cyL}
-                          dominantBaseline="central"
-                          fontSize={11}
-                          fill="currentColor"
-                          fillOpacity={0.85}
-                          className="select-none"
+                          onMouseDown={(e) =>
+                            handleLabelMouseDown(e, lane.thread.id)
+                          }
+                          onMouseEnter={() =>
+                            setHoveredThreadId(lane.thread.id)
+                          }
+                          onMouseLeave={() => setHoveredThreadId(null)}
                         >
-                          {display}
-                        </text>
-                      </g>
-                    );
-                  });
-                })()}
-              </g>
-            )}
-          </svg>
+                          <rect
+                            x={6}
+                            y={cyL - 13}
+                            width={SUBWAY_LABEL_GUTTER - 24}
+                            height={26}
+                            rx={13}
+                            fill="var(--card, var(--background))"
+                            // 選択中はスレッド色の枠＋発光で強調（foreground 黒は重いため）。
+                            stroke={selected ? color : "currentColor"}
+                            strokeOpacity={selected ? 0.9 : 0.15}
+                            strokeWidth={selected ? 2 : 1}
+                            style={{
+                              filter: selected
+                                ? `drop-shadow(0 0 4px ${color})`
+                                : "none",
+                              transition: reducedMotion
+                                ? undefined
+                                : `filter ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
+                            }}
+                          />
+                          <circle cx={22} cy={cyL} r={7} fill={color} />
+                          <text
+                            x={36}
+                            y={cyL}
+                            dominantBaseline="central"
+                            fontSize={11}
+                            fill="currentColor"
+                            fillOpacity={0.85}
+                            className="select-none"
+                          >
+                            {display}
+                          </text>
+                        </g>
+                      );
+                    });
+                  })()}
+                </g>
+              )}
+            </svg>
+          </div>
+          <div
+            ref={sceneDragLayerRef}
+            data-testid="timeline-scene-drag-layer"
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-[1] overflow-hidden"
+            style={{
+              contain: "strict",
+              isolation: "isolate",
+              transform: "translate3d(0, 0, 0)",
+              visibility: "hidden",
+              willChange: "transform",
+            }}
+          >
+            <div
+              ref={sceneDragUnscheduledHighlightRef}
+              data-testid="timeline-scene-drag-unscheduled-highlight"
+              className="absolute top-0 left-0 h-10 w-full rounded"
+              style={{
+                backgroundColor: "currentColor",
+                display: showUnscheduledZone ? undefined : "none",
+                opacity: 0.05,
+                transform: `translate3d(0, ${UNSCHEDULED_Y - 20}px, 0)`,
+                willChange: "transform",
+              }}
+            />
+            <div
+              ref={sceneDragGhostRef}
+              data-testid="timeline-scene-drag-ghost"
+              className="absolute top-0 left-0 h-px w-px bg-current"
+              style={{
+                opacity: 0.35,
+                transform: "translate3d(0, 0, 0) scaleX(0)",
+                transformOrigin: "0 50%",
+                willChange: "transform",
+              }}
+            />
+            <div
+              ref={sceneDragMarkerRef}
+              data-testid="timeline-scene-drag-marker"
+              className="absolute top-0 left-0"
+              style={{
+                width: DOT_R * 2,
+                height: DOT_R * 2,
+                transform: "translate3d(0, 0, 0)",
+                transformOrigin: "0 0",
+                willChange: "transform",
+              }}
+            >
+              <div
+                ref={sceneDragActiveRingRef}
+                data-testid="timeline-scene-drag-active-ring"
+                className="absolute rounded-full border-[1.5px] border-primary"
+                style={{
+                  display: "none",
+                  inset: -3,
+                }}
+              />
+              <div
+                ref={sceneDragDotRef}
+                data-testid="timeline-scene-drag-dot-preview"
+                className="h-full w-full rounded-full border-2"
+                style={{
+                  backgroundColor: STATUS_FILL.outline,
+                  borderColor: "transparent",
+                }}
+              />
+            </div>
+          </div>
         </div>
 
         {contextMenu && (

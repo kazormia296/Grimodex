@@ -55,6 +55,12 @@ async fn run_blocking<T: Send + 'static>(
 }
 
 #[tauri::command]
+pub(crate) async fn semantic_cancel_background(app: tauri::AppHandle) -> Result<u64, AppError> {
+    let runtime_state = app.state::<Arc<SemanticRuntime>>();
+    Ok(runtime_state.semantic_cancel_background())
+}
+
+#[tauri::command]
 pub(crate) async fn semantic_download_model(
     app: tauri::AppHandle,
     language: String,

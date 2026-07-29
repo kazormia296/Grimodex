@@ -1858,6 +1858,7 @@ pub struct ChronicleEventRow {
     pub end_granularity: String,
     pub precision: String,
     pub kind: String,
+    pub version: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -1903,6 +1904,7 @@ pub struct ChronicleCalendarRaw {
 #[serde(rename_all = "camelCase")]
 pub struct EventWriteResult {
     pub entity_id: String,
+    pub version: i64,
     pub change_event_uid: String,
     pub undo_journal_id: String,
 }
@@ -1923,6 +1925,7 @@ fn map_chronicle_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChronicleEve
         end_granularity: row.get(11)?,
         precision: row.get(12)?,
         kind: row.get(13)?,
+        version: row.get(14)?,
     })
 }
 
@@ -1939,7 +1942,7 @@ pub fn chronicle_list_events(
     let mut stmt = conn.prepare(
         "SELECT id, title, note, ordinal, primary_codex_id, location_codex_id,
                 start_time, end_time, start_minute, end_minute,
-                start_granularity, end_granularity, precision, kind
+                start_granularity, end_granularity, precision, kind, version
          FROM events WHERE project_id = ?1 AND secret = 0
          ORDER BY ordinal ASC, id ASC",
     )?;
@@ -2139,12 +2142,15 @@ fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<s
     let event_json: String = conn.query_row(
         "SELECT json_object(
             'id', id, 'projectId', project_id, 'title', title, 'note', note,
+            'detail', detail,
             'ordinal', ordinal, 'primaryCodexId', primary_codex_id,
+            'laneGroup', lane_group,
             'locationCodexId', location_codex_id, 'startTime', start_time,
             'endTime', end_time, 'startMinute', start_minute,
             'endMinute', end_minute, 'startGranularity', start_granularity,
             'endGranularity', end_granularity, 'precision', precision, 'kind', kind,
             'secret', secret, 'revealSceneId', reveal_scene_id,
+            'version', version,
             'createdAt', created_at, 'updatedAt', updated_at
          ) FROM events WHERE id = ?1",
         params![event_id],
@@ -2209,11 +2215,33 @@ fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<s
     }))
 }
 
+fn event_snapshot_related_ids(snapshot: &serde_json::Value) -> Vec<String> {
+    let mut related = std::collections::BTreeSet::new();
+    for key in ["asCause", "asEffect"] {
+        if let Some(relations) = snapshot["relations"][key].as_array() {
+            for relation in relations {
+                if let Some(id) = relation["effectEventId"]
+                    .as_str()
+                    .or_else(|| relation["causeEventId"].as_str())
+                {
+                    related.insert(id.to_string());
+                }
+            }
+        }
+    }
+    related.into_iter().collect()
+}
+
 fn collect_participants_json(
     conn: &Connection,
     event_id: &str,
 ) -> anyhow::Result<serde_json::Value> {
     use serde_json::json;
+    let version: i64 = conn.query_row(
+        "SELECT version FROM events WHERE id = ?1",
+        params![event_id],
+        |row| row.get(0),
+    )?;
     let mut stmt = conn.prepare(
         "SELECT codex_entry_id, role FROM event_participants
          WHERE event_id = ?1 ORDER BY codex_entry_id",
@@ -2224,19 +2252,67 @@ fn collect_participants_json(
         Ok(json!({ "codexEntryId": codex_entry_id, "role": role }))
     })?;
     let participants = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({ "eventId": event_id, "participants": participants }))
+    Ok(json!({
+        "eventId": event_id,
+        "version": version,
+        "participants": participants,
+    }))
 }
 
 /// 書込み対象 event の存在ゲート。AI 秘匿(fail-closed): MCP は現在シーンを持てない
 /// ため secret=1 を「存在しない」扱いにし、update/delete/stamp/participants/relation
 /// すべての write-by-id を一律遮断する(存在 oracle 化を防ぐ・spec §2.4.4)。
-fn event_exists(conn: &Connection, project_id: &str, event_id: &str) -> anyhow::Result<bool> {
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+fn visible_event_version(
+    conn: &Connection,
+    project_id: &str,
+    event_id: &str,
+) -> anyhow::Result<Option<i64>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT version FROM events WHERE id = ?1 AND project_id = ?2 AND secret = 0",
         params![event_id, project_id],
         |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn ensure_chronicle_codex_in_project(
+    conn: &Connection,
+    project_id: &str,
+    codex_id: &str,
+) -> anyhow::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        params![codex_id, project_id],
+        |row| row.get(0),
     )?;
-    Ok(n > 0)
+    anyhow::ensure!(
+        exists == 1,
+        "codex entry '{}' not found in project '{}'",
+        codex_id,
+        project_id
+    );
+    Ok(())
+}
+
+fn ensure_chronicle_scene_in_project(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> anyhow::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+        params![scene_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        exists == 1,
+        "scene '{}' not found in project '{}'",
+        scene_id,
+        project_id
+    );
+    Ok(())
 }
 
 /// Parameters for `chronicle_create_event` (defaults match
@@ -2293,13 +2369,28 @@ pub fn chronicle_create_event(
     let reveal_scene_id = input.reveal_scene_id.filter(|s| !s.is_empty());
 
     in_immediate_tx(conn, |conn| {
+        if let Some(codex_id) = input.primary_codex_id {
+            ensure_chronicle_codex_in_project(conn, input.project_id, codex_id)?;
+        }
+        if let Some(codex_id) = input.location_codex_id {
+            ensure_chronicle_codex_in_project(conn, input.project_id, codex_id)?;
+        }
+        if let Some(scene_id) = reveal_scene_id {
+            ensure_chronicle_scene_in_project(conn, input.project_id, scene_id)?;
+        }
+        for codex_id in input.participant_codex_ids {
+            ensure_chronicle_codex_in_project(conn, input.project_id, codex_id)?;
+        }
+        for scene_id in input.scene_ids {
+            ensure_chronicle_scene_in_project(conn, input.project_id, scene_id)?;
+        }
         conn.execute(
             "INSERT INTO events
              (id, project_id, title, note, ordinal, primary_codex_id,
               location_codex_id, start_time, end_time, start_minute, end_minute,
               start_granularity, end_granularity, precision, kind,
-              secret, reveal_scene_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18)",
+              secret, reveal_scene_id, created_at, updated_at, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18, 1)",
             params![
                 event_id,
                 input.project_id,
@@ -2369,6 +2460,7 @@ pub fn chronicle_create_event(
         )?;
         Ok(EventWriteResult {
             entity_id: event_id.clone(),
+            version: 1,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         })
@@ -2402,6 +2494,7 @@ pub fn chronicle_update_event(
     project_id: &str,
     session_id: &str,
     event_id: &str,
+    base_version: i64,
     patch: ChroniclePatch<'_>,
 ) -> Result<Option<EventWriteResult>> {
     use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
@@ -2415,13 +2508,30 @@ pub fn chronicle_update_event(
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     in_immediate_tx(conn, |conn| {
-        if !event_exists(conn, project_id, event_id)? {
+        let Some(current_version) = visible_event_version(conn, project_id, event_id)? else {
             return Ok(None);
+        };
+        anyhow::ensure!(
+            base_version == current_version,
+            "event '{}' version conflict: expected {}, found {}",
+            event_id,
+            base_version,
+            current_version
+        );
+        if let Some(codex_id) = patch.primary_codex_id {
+            ensure_chronicle_codex_in_project(conn, project_id, codex_id)?;
         }
+        if let Some(codex_id) = patch.location_codex_id {
+            ensure_chronicle_codex_in_project(conn, project_id, codex_id)?;
+        }
+        if let Some(scene_id) = patch.reveal_scene_id.filter(|id| !id.is_empty()) {
+            ensure_chronicle_scene_in_project(conn, project_id, scene_id)?;
+        }
+        let result_version = base_version + 1;
         let before = collect_event_snapshot(conn, event_id)?.to_string();
 
-        let mut sets: Vec<String> = vec!["updated_at = ?".to_string()];
-        let mut vals: Vec<V> = vec![V::Text(now.clone())];
+        let mut sets: Vec<String> = vec!["updated_at = ?".to_string(), "version = ?".to_string()];
+        let mut vals: Vec<V> = vec![V::Text(now.clone()), V::Integer(result_version)];
         let mut fields: Vec<&str> = Vec::new();
         if let Some(v) = patch.title {
             sets.push("title = ?".into());
@@ -2505,12 +2615,18 @@ pub fn chronicle_update_event(
         }
         vals.push(V::Text(event_id.to_string()));
         vals.push(V::Text(project_id.to_string()));
+        vals.push(V::Integer(base_version));
         let sql = format!(
-            "UPDATE events SET {} WHERE id = ? AND project_id = ?",
+            "UPDATE events SET {} WHERE id = ? AND project_id = ? AND version = ?",
             sets.join(", ")
         );
         let updated = conn.execute(&sql, rusqlite::params_from_iter(vals.iter()))?;
-        anyhow::ensure!(updated == 1, "event row vanished mid-transaction");
+        anyhow::ensure!(
+            updated == 1,
+            "event '{}' version conflict: expected {}",
+            event_id,
+            base_version
+        );
 
         let after = collect_event_snapshot(conn, event_id)?.to_string();
         insert_undo_journal_in_tx(
@@ -2524,8 +2640,8 @@ pub fn chronicle_update_event(
                 op_kind: "update",
                 before_json: Some(&before),
                 after_json: Some(&after),
-                base_version: 1,
-                result_version: 1,
+                base_version,
+                result_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -2546,6 +2662,7 @@ pub fn chronicle_update_event(
         )?;
         Ok(Some(EventWriteResult {
             entity_id: event_id.to_string(),
+            version: result_version,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -2559,6 +2676,7 @@ pub fn chronicle_delete_event(
     project_id: &str,
     session_id: &str,
     event_id: &str,
+    base_version: i64,
 ) -> Result<Option<EventWriteResult>> {
     use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
     use grimodex_core::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
@@ -2569,21 +2687,34 @@ pub fn chronicle_delete_event(
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     in_immediate_tx(conn, |conn| {
-        if !event_exists(conn, project_id, event_id)? {
+        let Some(current_version) = visible_event_version(conn, project_id, event_id)? else {
             return Ok(None);
-        }
+        };
+        anyhow::ensure!(
+            base_version == current_version,
+            "event '{}' version conflict: expected {}, found {}",
+            event_id,
+            base_version,
+            current_version
+        );
         let before_value = collect_event_snapshot(conn, event_id)?;
         let title = before_value["eventData"]["title"]
             .as_str()
             .unwrap_or("")
             .to_string();
+        let related_event_ids = event_snapshot_related_ids(&before_value);
         let before = before_value.to_string();
 
         let deleted = conn.execute(
-            "DELETE FROM events WHERE id = ?1 AND project_id = ?2",
-            params![event_id, project_id],
+            "DELETE FROM events WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+            params![event_id, project_id, base_version],
         )?;
-        anyhow::ensure!(deleted == 1, "event vanished mid-delete");
+        anyhow::ensure!(
+            deleted == 1,
+            "event '{}' version conflict: expected {}",
+            event_id,
+            base_version
+        );
 
         insert_undo_journal_in_tx(
             conn,
@@ -2596,7 +2727,7 @@ pub fn chronicle_delete_event(
                 op_kind: "delete",
                 before_json: Some(&before),
                 after_json: None,
-                base_version: 1,
+                base_version,
                 result_version: 0,
                 change_event_uid: Some(&event_uid),
             },
@@ -2612,12 +2743,17 @@ pub fn chronicle_delete_event(
                 op_type: "event.delete".to_string(),
                 entity_type: Some("event".to_string()),
                 entity_id: Some(event_id.to_string()),
-                payload: json!({ "title": title }).to_string(),
+                payload: json!({
+                    "title": title,
+                    "relatedEventIds": related_event_ids,
+                })
+                .to_string(),
                 timestamp,
             }],
         )?;
         Ok(Some(EventWriteResult {
             entity_id: event_id.to_string(),
+            version: 0,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -2630,6 +2766,7 @@ pub fn chronicle_set_participants(
     project_id: &str,
     session_id: &str,
     event_id: &str,
+    base_version: i64,
     codex_entry_ids: &[String],
 ) -> Result<Option<EventWriteResult>> {
     use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
@@ -2638,13 +2775,36 @@ pub fn chronicle_set_participants(
 
     let undo_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     in_immediate_tx(conn, |conn| {
-        if !event_exists(conn, project_id, event_id)? {
+        let Some(current_version) = visible_event_version(conn, project_id, event_id)? else {
             return Ok(None);
+        };
+        anyhow::ensure!(
+            base_version == current_version,
+            "event '{}' version conflict: expected {}, found {}",
+            event_id,
+            base_version,
+            current_version
+        );
+        for codex_id in codex_entry_ids {
+            ensure_chronicle_codex_in_project(conn, project_id, codex_id)?;
         }
+        let result_version = base_version + 1;
         let before = collect_participants_json(conn, event_id)?.to_string();
+        let bumped = conn.execute(
+            "UPDATE events SET version = ?1, updated_at = ?2
+             WHERE id = ?3 AND project_id = ?4 AND version = ?5",
+            params![result_version, now, event_id, project_id, base_version],
+        )?;
+        anyhow::ensure!(
+            bumped == 1,
+            "event '{}' version conflict: expected {}",
+            event_id,
+            base_version
+        );
         conn.execute(
             "DELETE FROM event_participants WHERE event_id = ?1",
             params![event_id],
@@ -2668,8 +2828,8 @@ pub fn chronicle_set_participants(
                 op_kind: "update",
                 before_json: Some(&before),
                 after_json: Some(&after),
-                base_version: 1,
-                result_version: 1,
+                base_version,
+                result_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -2691,6 +2851,7 @@ pub fn chronicle_set_participants(
         )?;
         Ok(Some(EventWriteResult {
             entity_id: event_id.to_string(),
+            version: result_version,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -2724,9 +2885,9 @@ pub fn chronicle_scene_event(
         if scene_ok == 0 {
             return Ok(None);
         }
-        if !event_exists(conn, project_id, event_id)? {
+        let Some(event_version) = visible_event_version(conn, project_id, event_id)? else {
             return Ok(None);
-        }
+        };
         let existed: i64 = conn.query_row(
             "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
             params![scene_id, event_id],
@@ -2765,8 +2926,8 @@ pub fn chronicle_scene_event(
                 op_kind: "update",
                 before_json: Some(&before),
                 after_json: Some(&after),
-                base_version: 1,
-                result_version: 1,
+                base_version: event_version,
+                result_version: event_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -2787,6 +2948,7 @@ pub fn chronicle_scene_event(
         )?;
         Ok(Some(EventWriteResult {
             entity_id: event_id.to_string(),
+            version: event_version,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -2816,9 +2978,10 @@ pub fn chronicle_event_relation(
             cause_event_id != effect_event_id,
             "self-loop event relation forbidden"
         );
-        if !event_exists(conn, project_id, cause_event_id)?
-            || !event_exists(conn, project_id, effect_event_id)?
-        {
+        let Some(cause_version) = visible_event_version(conn, project_id, cause_event_id)? else {
+            return Ok(None);
+        };
+        if visible_event_version(conn, project_id, effect_event_id)?.is_none() {
             return Ok(None);
         }
         let existed: i64 = conn.query_row(
@@ -2872,8 +3035,8 @@ pub fn chronicle_event_relation(
                 op_kind: "update",
                 before_json: Some(&before),
                 after_json: Some(&after),
-                base_version: 1,
-                result_version: 1,
+                base_version: cause_version,
+                result_version: cause_version,
                 change_event_uid: Some(&event_uid),
             },
         )?;
@@ -2898,6 +3061,7 @@ pub fn chronicle_event_relation(
         )?;
         Ok(Some(EventWriteResult {
             entity_id: cause_event_id.to_string(),
+            version: cause_version,
             change_event_uid: event_uid.clone(),
             undo_journal_id: undo_id.clone(),
         }))
@@ -3151,8 +3315,10 @@ pub(crate) mod tests {
                 project_id TEXT NOT NULL,
                 title TEXT NOT NULL DEFAULT '',
                 note TEXT,
+                detail TEXT,
                 ordinal TEXT NOT NULL DEFAULT 'a0',
                 primary_codex_id TEXT,
+                lane_group TEXT,
                 location_codex_id TEXT,
                 start_time INTEGER,
                 end_time INTEGER,
@@ -3164,6 +3330,7 @@ pub(crate) mod tests {
                 kind TEXT NOT NULL DEFAULT 'generic',
                 secret INTEGER NOT NULL DEFAULT 0,
                 reveal_scene_id TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -4037,6 +4204,8 @@ pub(crate) mod tests {
                 notes: None,
                 load_bearing: Some("critical"),
                 secret: false,
+                request_id: None,
+                request_hash: None,
             },
         )
         .unwrap();
@@ -4068,6 +4237,8 @@ pub(crate) mod tests {
                 notes: None,
                 load_bearing: None,
                 secret: true,
+                request_id: None,
+                request_hash: None,
             },
         )
         .unwrap();
@@ -4075,6 +4246,62 @@ pub(crate) mod tests {
                                                        // Secret items are excluded from the open list, but still readable by id.
         assert!(list_open_foreshadows(&conn, "p1").unwrap().is_empty());
         assert!(get_foreshadow_detail(&conn, "p1", "f1").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_chronicle_delete_event_reports_cascade_relation_counterparts() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO events (id, project_id, title, version)
+             VALUES ('deleted', 'p1', 'Deleted', 1),
+                    ('cause', 'p1', 'Cause', 1),
+                    ('effect', 'p1', 'Effect', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO event_relations (project_id, cause_event_id, effect_event_id)
+             VALUES ('p1', 'cause', 'deleted'),
+                    ('p1', 'deleted', 'effect')",
+            [],
+        )
+        .unwrap();
+
+        let result = chronicle_delete_event(&conn, "p1", "sess", "deleted", 1)
+            .unwrap()
+            .expect("event exists");
+        let payload: String = conn
+            .query_row(
+                "SELECT payload FROM change_events WHERE event_uid = ?1",
+                params![result.change_event_uid],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(
+            payload["relatedEventIds"],
+            serde_json::json!(["cause", "effect"])
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM event_relations", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0,
+            "both relation directions must be cascaded"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id IN ('cause', 'effect')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2,
+            "counterpart events survive the delete"
+        );
     }
 
     #[test]

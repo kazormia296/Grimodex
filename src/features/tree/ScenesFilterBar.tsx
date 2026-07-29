@@ -48,6 +48,7 @@ export function ScenesFilterBar({
     <>
       <div className="flex-shrink-0 border-b border-border px-2 py-1">
         <Input
+          data-testid="scenes-filter-input"
           ref={filterRef}
           type="text"
           value={filterQuery}

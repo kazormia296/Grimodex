@@ -34,6 +34,7 @@ function event(id: string, projectId: string): EventRow {
     secret: false,
     revealSceneId: null,
     laneGroup: null,
+    version: 0,
     createdAt: "now",
     updatedAt: "now",
   };
@@ -47,6 +48,80 @@ beforeEach(() => {
 });
 
 describe("useChronicleQuery", () => {
+  it("project 切替の未読込中は前 project の snapshot を返さない", async () => {
+    let resolveB: (rows: EventRow[]) => void = () => {};
+    apiMocks.listEvents.mockImplementation((projectId: string) => {
+      if (projectId === "a") {
+        return Promise.resolve([event("a-event", "a")]);
+      }
+      return new Promise<EventRow[]>((resolve) => {
+        resolveB = resolve;
+      });
+    });
+
+    let projectId: string | null = "a";
+    const { result, rerender } = renderHook(() =>
+      useChronicleQuery({ projectId, reloadKey: 0, revisionCounter: 0 }),
+    );
+    await waitFor(() => expect(result.current.events[0]?.id).toBe("a-event"));
+    expect(result.current.snapshotProjectId).toBe("a");
+
+    projectId = "b";
+    rerender();
+    expect(result.current.events).toEqual([]);
+    expect(result.current.snapshotProjectId).toBeNull();
+
+    await act(async () => {
+      resolveB([event("b-event", "b")]);
+    });
+    await waitFor(() => expect(result.current.events[0]?.id).toBe("b-event"));
+    expect(result.current.snapshotProjectId).toBe("b");
+  });
+
+  it("project 切替後の取得失敗は snapshot 到着済みにしない", async () => {
+    apiMocks.listEvents.mockImplementation((projectId: string) =>
+      projectId === "a"
+        ? Promise.resolve([event("a-event", "a")])
+        : Promise.reject(new Error("read failed")),
+    );
+
+    let projectId: string | null = "a";
+    const { result, rerender } = renderHook(() =>
+      useChronicleQuery({ projectId, reloadKey: 0, revisionCounter: 0 }),
+    );
+    await waitFor(() => expect(result.current.snapshotProjectId).toBe("a"));
+
+    projectId = "b";
+    rerender();
+    await waitFor(() => expect(apiMocks.listEvents).toHaveBeenCalledWith("b"));
+
+    expect(result.current.events).toEqual([]);
+    expect(result.current.snapshotProjectId).toBeNull();
+  });
+
+  it("同一 project の再取得失敗でも直前の snapshot を準備済みとして残さない", async () => {
+    apiMocks.listEvents
+      .mockResolvedValueOnce([event("a-event", "a")])
+      .mockRejectedValueOnce(new Error("reload failed"));
+
+    let revisionCounter = 0;
+    const { result, rerender } = renderHook(() =>
+      useChronicleQuery({
+        projectId: "a",
+        reloadKey: 0,
+        revisionCounter,
+      }),
+    );
+    await waitFor(() => expect(result.current.snapshotProjectId).toBe("a"));
+
+    revisionCounter = 1;
+    rerender();
+    expect(result.current.snapshotProjectId).toBeNull();
+    await waitFor(() => expect(apiMocks.listEvents).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.events).toEqual([]));
+    expect(result.current.snapshotProjectId).toBeNull();
+  });
+
   it("does not let a late project A response overwrite project B", async () => {
     let resolveA: (rows: EventRow[]) => void = () => {};
     let resolveB: (rows: EventRow[]) => void = () => {};

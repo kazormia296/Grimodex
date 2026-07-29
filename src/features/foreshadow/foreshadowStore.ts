@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
-import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   listForeshadowsWithLabels,
   createForeshadow,
@@ -19,7 +19,11 @@ import {
   detectRelatedCodex,
   type SceneForeshadowInfo,
 } from "./api";
-import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
+import {
+  getCreateResultMetadata,
+  isCreateResultEntityPresent,
+} from "@/lib/createResultMetadata";
+import { loadSceneContents, saveSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
@@ -41,6 +45,12 @@ import { useSceneStore } from "@/features/tree/store";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureForeshadowDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
+import { createInFlightTracker } from "@/lib/inFlightTracker";
+import {
+  createPendingCreateRequestRegistry,
+  type PendingCreateRequestRegistry,
+} from "@/lib/pendingCreateRequestRegistry";
+import { IpcInvokeError } from "@/lib/tauri";
 import type {
   ForeshadowRow,
   ForeshadowSetupRow,
@@ -79,7 +89,10 @@ interface ForeshadowState {
   /** Setup rows keyed by foreshadowId; populated on demand. */
   setupsByForeshadowId: Record<string, ForeshadowSetupRow[]>;
 
-  load: (projectId: string) => Promise<void>;
+  load: (
+    projectId: string,
+    options?: { propagateError?: boolean },
+  ) => Promise<void>;
   /** Clear project-owned rows and derived caches before a reload. */
   resetForProject: () => void;
   create: (
@@ -122,6 +135,63 @@ interface ForeshadowState {
   auditChapter: (chapterId: string) => Promise<void>;
 }
 
+const foreshadowLoadTracker = createInFlightTracker();
+let foreshadowLoadGeneration = 0;
+const pendingForeshadowCreates =
+  createPendingCreateRequestRegistry<Parameters<typeof createForeshadow>[0]>();
+
+function shouldRetainPendingForeshadowCreate(error: unknown): boolean {
+  return error instanceof IpcInvokeError && error.outcome === "unknown";
+}
+
+type ForeshadowCreatePayload = Parameters<typeof createForeshadow>[0];
+
+function foreshadowRestorePayload(row: ForeshadowRow): ForeshadowCreatePayload {
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    title: row.title,
+    intent: row.intent ?? null,
+    notes: row.notes ?? null,
+    payoffSceneId: row.payoffSceneId ?? null,
+    payoffFromPos: row.payoffFromPos ?? null,
+    payoffToPos: row.payoffToPos ?? null,
+    payoffConfirmed: row.payoffConfirmed,
+    abandoned: row.abandoned,
+    secret: row.secret,
+    loadBearing: row.loadBearing ?? null,
+    codexLinkDirtyAt: row.codexLinkDirtyAt ?? null,
+  };
+}
+
+async function restoreForeshadowWithRetainedRequest(
+  requests: PendingCreateRequestRegistry<ForeshadowCreatePayload>,
+  row: ForeshadowRow,
+): Promise<ForeshadowRow> {
+  const payload = foreshadowRestorePayload(row);
+  const pending = requests.acquire(
+    row.id,
+    JSON.stringify(payload),
+    () => payload,
+  );
+  try {
+    const restored = await createForeshadow(pending.payload, {
+      requestId: pending.requestId,
+    });
+    requests.release(pending);
+    return restored;
+  } catch (error) {
+    if (!shouldRetainPendingForeshadowCreate(error)) {
+      requests.release(pending);
+    }
+    throw error;
+  }
+}
+
+function swallowForeshadowLoadFailure(promise: Promise<void>): Promise<void> {
+  return promise.catch(() => undefined);
+}
+
 export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   items: [],
   isLoading: false,
@@ -134,7 +204,10 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   auditingChapterIds: new Set<string>(),
   auditResults: {},
 
-  resetForProject: () =>
+  resetForProject: () => {
+    foreshadowLoadGeneration++;
+    foreshadowLoadTracker.clear();
+    pendingForeshadowCreates.clear();
     set({
       items: [],
       isLoading: false,
@@ -146,60 +219,107 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       proposingForForeshadowIds: new Set<string>(),
       auditingChapterIds: new Set<string>(),
       auditResults: {},
-    }),
+    });
+  },
 
-  load: async (projectId) => {
-    set({ isLoading: true });
-    try {
-      const { items, sceneInfoBySceneId, setupScenesByForeshadowId } =
-        await listForeshadowsWithLabels(projectId);
-      set({
-        items,
-        sceneInfoBySceneId,
-        setupScenesByForeshadowId: setupScenesByForeshadowId ?? {},
-        isLoading: false,
-      });
-    } catch (e) {
-      set({ isLoading: false });
-      toast.error(
-        i18next.t(
-          "foreshadow.store.loadFailed",
-          "伏線の読み込みに失敗しました",
-        ),
-      );
-      debugLog.error(
-        "ForeshadowStore",
-        `load: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+  load: (projectId, options) => {
+    const inFlight = foreshadowLoadTracker.peek(projectId);
+    if (inFlight) {
+      return options?.propagateError
+        ? inFlight
+        : swallowForeshadowLoadFailure(inFlight);
     }
+    const generation = ++foreshadowLoadGeneration;
+    const run = (async () => {
+      set({ isLoading: true });
+      try {
+        const { items, sceneInfoBySceneId, setupScenesByForeshadowId } =
+          await listForeshadowsWithLabels(projectId);
+        if (generation !== foreshadowLoadGeneration) return;
+        set({
+          items,
+          sceneInfoBySceneId,
+          setupScenesByForeshadowId: setupScenesByForeshadowId ?? {},
+          isLoading: false,
+        });
+      } catch (e) {
+        if (generation === foreshadowLoadGeneration) {
+          set({ isLoading: false });
+          toast.error(
+            i18next.t(
+              "foreshadow.store.loadFailed",
+              "伏線の読み込みに失敗しました",
+            ),
+          );
+          debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+        }
+        throw e;
+      }
+    })();
+    foreshadowLoadTracker.track(projectId, run);
+    return options?.propagateError ? run : swallowForeshadowLoadFailure(run);
   },
 
   create: async (data) => {
-    try {
-      const id = crypto.randomUUID();
-      const row = await createForeshadow({
+    const intent = data.intent ?? null;
+    const loadBearing = data.loadBearing ?? null;
+    const signature = JSON.stringify({
+      projectId: data.projectId,
+      title: data.title,
+      intent,
+      loadBearing,
+    });
+    const pending = pendingForeshadowCreates.acquire(
+      `foreshadow:${signature}`,
+      signature,
+      (id) => ({
         id,
         projectId: data.projectId,
         title: data.title,
-        intent: data.intent ?? null,
+        intent,
         notes: null,
         payoffSceneId: null,
         payoffFromPos: null,
         payoffToPos: null,
         payoffConfirmed: false,
         abandoned: false,
-        loadBearing: data.loadBearing ?? null,
-      });
+        loadBearing,
+      }),
+    );
+    try {
+      const row = await createForeshadow(pending.payload);
+      pendingForeshadowCreates.release(pending);
       const item: ForeshadowWithLabel = {
         ...row,
         setupCount: 0,
         label: "planned",
       };
-      set((s) => ({ items: [item, ...s.items] }));
+      if (!isCreateResultEntityPresent(row)) {
+        return item;
+      }
+      if (getCreateResultMetadata(row)?.replayed) {
+        // Lost-response retry: publish and record once only when the original
+        // response never reached this store. An already-published entity is a
+        // complete no-op.
+        if (get().items.some((candidate) => candidate.id === item.id)) {
+          return item;
+        }
+        set((s) => ({ items: [item, ...s.items] }));
+        recordChangeEvent({
+          domain: "foreshadow",
+          opType: "create",
+          entityType: "foreshadow",
+          entityId: item.id,
+          payload: { foreshadowId: item.id, title: item.title },
+        });
+      } else {
+        set((s) => ({ items: [item, ...s.items] }));
+      }
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const cap = { ...row };
+        const redoRequests =
+          createPendingCreateRequestRegistry<ForeshadowCreatePayload>();
         useGlobalHistoryStore.getState().push({
           kind: "foreshadow",
           label: i18next.t("foreshadow.store.historyCreate"),
@@ -208,23 +328,15 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
             set((s) => ({ items: s.items.filter((i) => i.id !== cap.id) }));
           },
           async redo() {
-            await createForeshadow({
-              id: cap.id,
-              projectId: cap.projectId,
-              title: cap.title,
-              intent: cap.intent ?? null,
-              notes: cap.notes ?? null,
-              payoffSceneId: cap.payoffSceneId ?? null,
-              payoffFromPos: cap.payoffFromPos ?? null,
-              payoffToPos: cap.payoffToPos ?? null,
-              payoffConfirmed: cap.payoffConfirmed,
-              abandoned: cap.abandoned,
-              loadBearing: cap.loadBearing ?? null,
-            });
+            const restored = await restoreForeshadowWithRetainedRequest(
+              redoRequests,
+              cap,
+            );
+            if (!isCreateResultEntityPresent(restored)) return;
             set((s) => ({
               items: [
-                { ...cap, setupCount: 0, label: "planned" as const },
-                ...s.items.filter((i) => i.id !== cap.id),
+                { ...restored, setupCount: 0, label: "planned" as const },
+                ...s.items.filter((i) => i.id !== restored.id),
               ],
             }));
           },
@@ -233,14 +345,13 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
       return item;
     } catch (e) {
+      if (!shouldRetainPendingForeshadowCreate(e)) {
+        pendingForeshadowCreates.release(pending);
+      }
       toast.error(
         i18next.t("foreshadow.store.createFailed", "伏線の作成に失敗しました"),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `create: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "create failed", errorDetail(e));
       throw e;
     }
   },
@@ -281,11 +392,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       toast.error(
         i18next.t("foreshadow.store.updateFailed", "伏線の更新に失敗しました"),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `update: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "update failed", errorDetail(e));
       return;
     }
 
@@ -375,11 +482,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       toast.error(
         i18next.t("foreshadow.store.deleteFailed", "伏線の削除に失敗しました"),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `remove: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "remove failed", errorDetail(e));
       return;
     }
 
@@ -399,26 +502,25 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     // のみを restore し、setup 行とそれに対応する mark は復元できない。
     // 別 PR の adopt 系アトミック化で扱う想定。
     const cap = { ...before };
+    const undoRequests =
+      createPendingCreateRequestRegistry<ForeshadowCreatePayload>();
     useGlobalHistoryStore.getState().push({
       kind: "foreshadow",
       label: i18next.t("foreshadow.store.historyDelete"),
       async undo() {
         // 1500ms 以内 Ctrl+Z 吸収: trash 保留を cancel
         useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
-        await createForeshadow({
-          id: cap.id,
-          projectId: cap.projectId,
-          title: cap.title,
-          intent: cap.intent ?? null,
-          notes: cap.notes ?? null,
-          payoffSceneId: cap.payoffSceneId ?? null,
-          payoffFromPos: cap.payoffFromPos ?? null,
-          payoffToPos: cap.payoffToPos ?? null,
-          payoffConfirmed: cap.payoffConfirmed,
-          abandoned: cap.abandoned,
-          loadBearing: cap.loadBearing ?? null,
-        });
-        set((s) => ({ items: [cap, ...s.items] }));
+        const restored = await restoreForeshadowWithRetainedRequest(
+          undoRequests,
+          cap,
+        );
+        if (!isCreateResultEntityPresent(restored)) return;
+        set((s) => ({
+          items: [
+            { ...restored, setupCount: cap.setupCount, label: cap.label },
+            ...s.items.filter((item) => item.id !== restored.id),
+          ],
+        }));
       },
       async redo() {
         await deleteForeshadow(cap.id);
@@ -437,11 +539,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         },
       }));
     } catch (e) {
-      debugLog.error(
-        "ForeshadowStore",
-        `loadSetups: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "loadSetups failed", errorDetail(e));
     }
   },
 
@@ -464,11 +562,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           "Setupの削除に失敗しました",
         ),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `removeSetup: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "removeSetup failed", errorDetail(e));
     }
   },
 
@@ -559,11 +653,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           "Setupの再アンカーに失敗しました",
         ),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `reanchorSetup: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "reanchorSetup failed", errorDetail(e));
     }
   },
 
@@ -641,11 +731,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           "Setupの再挿入に失敗しました",
         ),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `reinsertSetup: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "reinsertSetup failed", errorDetail(e));
     }
   },
 
@@ -723,11 +809,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           "AI評価の取得に失敗しました",
         ),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `evaluateSetup: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "evaluateSetup failed", errorDetail(e));
     } finally {
       set((s) => {
         const next = new Set(s.evaluatingSetupIds);
@@ -773,20 +855,22 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         )
         .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
-      const pastScenes = await Promise.all(
-        sceneNodes.slice(0, 30).map(async (n, idx) => {
-          const content = await loadSceneContent(n.id);
-          const bodyText = prosemirrorToText(content);
-          return {
-            sceneId: n.id,
-            title: n.title,
-            excerpt: bodyText.slice(0, 3000),
-            orderIndex: idx + 1,
-          };
-        }),
-      );
+      const selectedSceneNodes = sceneNodes.slice(0, 30);
+      const sceneContents = await loadSceneContents([
+        ...selectedSceneNodes.map((scene) => scene.id),
+        foreshadow.payoffSceneId,
+      ]);
+      const pastScenes = selectedSceneNodes.map((scene, idx) => {
+        const bodyText = prosemirrorToText(sceneContents.get(scene.id) ?? "");
+        return {
+          sceneId: scene.id,
+          title: scene.title,
+          excerpt: bodyText.slice(0, 3000),
+          orderIndex: idx + 1,
+        };
+      });
 
-      const payoffContent = await loadSceneContent(foreshadow.payoffSceneId);
+      const payoffContent = sceneContents.get(foreshadow.payoffSceneId) ?? "";
       const payoffText = prosemirrorToText(payoffContent);
 
       const relatedCodex = await detectRelatedCodex(
@@ -811,11 +895,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           "Setup 提案の取得に失敗しました",
         ),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `proposeSetups: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "proposeSetups failed", errorDetail(e));
     } finally {
       set((s) => {
         const next = new Set(s.proposingForForeshadowIds);
@@ -876,7 +956,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       );
       debugLog.error(
         "ForeshadowStore",
-        `adoptProposedSetup: ${rootCause(e)}`,
+        "adoptProposedSetup failed",
         errorDetail(e),
       );
       return;
@@ -1022,7 +1102,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       );
       debugLog.error(
         "ForeshadowStore",
-        `adoptInsertedNewSetup: ${rootCause(e)}`,
+        "adoptInsertedNewSetup failed",
         errorDetail(e),
       );
       return;
@@ -1109,13 +1189,15 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         .filter((n) => n.nodeType === "scene" && n.parentId === chapterId)
         .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
 
-      const scenes = await Promise.all(
-        sceneNodes.map(async (n, i) => {
-          const content = await loadSceneContent(n.id);
-          const bodyText = prosemirrorToText(content);
-          return { sceneId: n.id, title: n.title, bodyText, orderIndex: i };
-        }),
+      const sceneContents = await loadSceneContents(
+        sceneNodes.map((scene) => scene.id),
       );
+      const scenes = sceneNodes.map((scene, orderIndex) => ({
+        sceneId: scene.id,
+        title: scene.title,
+        bodyText: prosemirrorToText(sceneContents.get(scene.id) ?? ""),
+        orderIndex,
+      }));
 
       const relatedCodex = await detectRelatedCodex(
         scenes.map((s) => s.bodyText).join("\n"),
@@ -1140,11 +1222,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       toast.error(
         i18next.t("foreshadow.store.auditFailed", "監査に失敗しました"),
       );
-      debugLog.error(
-        "ForeshadowStore",
-        `auditChapter: ${rootCause(e)}`,
-        errorDetail(e),
-      );
+      debugLog.error("ForeshadowStore", "auditChapter failed", errorDetail(e));
     } finally {
       set((s) => {
         const next = new Set(s.auditingChapterIds);

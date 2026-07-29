@@ -8,13 +8,13 @@ const REFRACTABLE_VARYINGS = [
 const FLOAT_PRECISION_PATTERN =
   /precision\s+(?:lowp|mediump|highp)\s+float\s*;/;
 
-export const ZEN_GLASS_REFRACTION_FRAGMENT = String.raw`
+const ZEN_GLASS_REFRACTION_TEMPLATE = String.raw`
 uniform float u_zenGlassRefraction;
 uniform vec4 u_zenGlassRect;
 uniform float u_zenGlassCornerRadius;
 uniform float u_zenUiSurfaceCount;
-uniform vec4 u_zenUiSurfaceRects[32];
-uniform vec4 u_zenUiSurfaceParams[32];
+uniform vec4 u_zenUiSurfaceRects[__ZEN_UI_SURFACE_CAPACITY__];
+uniform vec4 u_zenUiSurfaceParams[__ZEN_UI_SURFACE_CAPACITY__];
 
 float zenUiSurfaceMaskCache = 0.0;
 
@@ -231,7 +231,7 @@ vec2 zenGlassOffsetPixels() {
     editorMask
   );
   float strongestLength = dot(strongestOffset, strongestOffset);
-  for (int index = 0; index < 32; index += 1) {
+  for (int index = 0; index < __ZEN_UI_SURFACE_CAPACITY__; index += 1) {
     if (float(index) >= u_zenUiSurfaceCount) break;
     float candidateMask;
     vec2 candidate = zenGlassRegionOffsetPixels(
@@ -249,6 +249,20 @@ vec2 zenGlassOffsetPixels() {
   return strongestOffset;
 }
 `;
+
+export function zenUiSurfaceVariantCapacity(surfaceCount: number) {
+  return [1, 4, 8, 16, 32].find((capacity) => surfaceCount <= capacity) ?? 32;
+}
+
+export function buildZenGlassRefractionFragment(surfaceCapacity = 32) {
+  const capacity = zenUiSurfaceVariantCapacity(surfaceCapacity);
+  return ZEN_GLASS_REFRACTION_TEMPLATE.replaceAll(
+    "__ZEN_UI_SURFACE_CAPACITY__",
+    String(capacity),
+  );
+}
+
+export const ZEN_GLASS_REFRACTION_FRAGMENT = buildZenGlassRefractionFragment();
 
 interface RefractablePaperFragment {
   fragment: string;

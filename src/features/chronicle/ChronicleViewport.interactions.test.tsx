@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import type { ComponentProps } from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { ChronicleViewport } from "./ChronicleViewport";
 import {
@@ -11,11 +11,15 @@ import {
 type VP = ComponentProps<typeof ChronicleViewport>;
 import {
   buildChronicleLayout,
+  buildChronicleWorldGeometry,
+  projectChronicleWorldGeometry,
   type LayoutEventInput,
   type LayoutLane,
 } from "./chronicleLayout";
+import { dayToX, zoomAt, type View } from "./chronicleAxis";
 import type { ChronicleCalendar } from "./chronicleTime";
 import type { MarkerEvent } from "./EventMarker";
+import { endPerfSession, startPerfSession } from "@/lib/perfLog";
 
 const cal: ChronicleCalendar = {
   daysPerYear: 360,
@@ -116,6 +120,7 @@ function track(container: HTMLElement) {
 
 describe("ChronicleViewport interactions (happy-dom math)", () => {
   beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
 
   it("空白ダブルクリックで onCreateAt(day, codexId)", () => {
     const props = makeProps();
@@ -162,6 +167,55 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(typeof day).toBe("number");
     expect(codexId).toBe("c1");
     expect(props.onViewChange).not.toHaveBeenCalled(); // パンしない
+  });
+
+  it("縦だけのマーカードラッグは日付を渡さずレーンだけ移動する", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 100, clientY: 80 });
+    fireEvent.mouseUp(document, { clientX: 100, clientY: 80 });
+
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(props.onMoveEvent.mock.calls[0][0]).toBe("e1");
+    expect(props.onMoveEvent.mock.calls[0][1]).toBeNull();
+  });
+
+  it("レーン deadzone 内の縦操作に伴う小さな横ぶれは日付変更にしない", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 104, clientY: 40 });
+    fireEvent.mouseUp(document, { clientX: 104, clientY: 40 });
+
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(props.onMoveEvent.mock.calls[0][1]).toBeNull();
+  });
+
+  it("X/Y 同量の45度ドラッグは横優勢ではないため日付変更にしない", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 145, clientY: 65 });
+    fireEvent.mouseUp(document, { clientX: 145, clientY: 65 });
+
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(props.onMoveEvent.mock.calls[0][1]).toBeNull();
   });
 
   it("本体ドラッグの挿入位置はイベント先端基準（掴む位置に依存しない）", () => {
@@ -382,7 +436,29 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onMoveEvent).not.toHaveBeenCalled(); // 単独移動は呼ばれない
   });
 
-  it("並び順モード(暦軸なし)では一括移動しない（単独扱い・全件追従しない）", () => {
+  it("複数選択の最終 drop が縦移動だけなら一括・単独移動とも発火しない", () => {
+    const onMoveSelected = vi.fn();
+    const props = makeProps({
+      selectedIds: new Set(["e1", "e2"]),
+      selectedEventId: "e1",
+      onMoveSelected,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    // 途中では横 threshold を超えるが、最終 drop は開始 X へ戻す。
+    fireEvent.mouseMove(document, { clientX: 160, clientY: 80 });
+    fireEvent.mouseUp(document, { clientX: 100, clientY: 80 });
+
+    expect(onMoveSelected).not.toHaveBeenCalled();
+    expect(props.onMoveEvent).not.toHaveBeenCalled();
+  });
+
+  it("並び順モードは単独横 drop で実日付候補を渡すが一括移動しない", () => {
     const onMoveSelected = vi.fn();
     const props = makeProps({
       hasCalendarAxis: false,
@@ -406,6 +482,7 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     fireEvent.mouseUp(document, { clientX: 200, clientY: 20 });
     expect(onMoveSelected).not.toHaveBeenCalled();
     expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(typeof props.onMoveEvent.mock.calls[0][1]).toBe("number");
   });
 
   it("非選択マーカーのドラッグは単独移動のまま（onMoveEvent）", () => {
@@ -845,6 +922,615 @@ describe("ChronicleViewport — キーボード代替（a11y: ズーム/パン/�
 });
 
 describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライブエッジ", () => {
+  it("縦 viewport 外の大量 marker を DOM から外し、scroll 先を即時に投影する", () => {
+    const manyEvents: LayoutEventInput[] = Array.from(
+      { length: 300 },
+      (_, index) => ({
+        id: `windowed-${index}`,
+        title: `出来事 ${index}`,
+        primaryCodexId: "c1",
+        kind: "generic" as const,
+        precision: "exact" as const,
+        secret: false,
+        sceneLinked: true,
+        startDay: 50,
+        endDay: null,
+      }),
+    );
+    const manyLanes: LayoutLane[] = [
+      {
+        codexId: "c1",
+        name: "アヤ",
+        kind: "character",
+        unassigned: false,
+        eventIds: manyEvents.map((event) => event.id),
+      },
+    ];
+    const view = { pxPerDay: 2, viewStartDay: 0 };
+    const relations = [{ causeId: "windowed-0", effectId: "windowed-1" }];
+    const layout = buildChronicleLayout({
+      events: manyEvents,
+      lanes: manyLanes,
+      view,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 50,
+      relations,
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const eventsById = new Map<string, MarkerEvent>(
+      manyEvents.map((event) => [
+        event.id,
+        {
+          id: event.id,
+          title: event.title,
+          kind: event.kind,
+          precision: event.precision,
+          secret: event.secret,
+          sceneLinked: event.sceneLinked,
+          primaryCodexId: event.primaryCodexId,
+        },
+      ]),
+    );
+    const props = makeProps({ view, layout, eventsById, relations });
+    const bottomMarkerId = [...layout.markerById.entries()].reduce(
+      (bottom, current) => (current[1].top > bottom[1].top ? current : bottom),
+    )[0];
+    const { container, getByTestId, rerender } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const scrollArea = getByTestId("chronicle-scroll-area");
+    const tr = track(container);
+    const initialWindowCount = tr.querySelectorAll("[data-event-id]").length;
+    expect(initialWindowCount).toBeGreaterThan(0);
+    expect(initialWindowCount).toBeLessThan(manyEvents.length);
+
+    Object.defineProperty(scrollArea, "clientHeight", {
+      configurable: true,
+      value: 120,
+    });
+
+    fireEvent.scroll(scrollArea);
+    const topWindowCount = tr.querySelectorAll("[data-event-id]").length;
+    expect(topWindowCount).toBeGreaterThan(0);
+    expect(topWindowCount).toBeLessThan(manyEvents.length);
+    expect(
+      tr.querySelectorAll("[data-chronicle-windowed-marker-wrapper]"),
+    ).toHaveLength(topWindowCount);
+    expect(tr).toHaveAttribute(
+      "data-chronicle-total-event-count",
+      String(manyEvents.length),
+    );
+    expect(tr).toHaveAttribute(
+      "data-chronicle-rendered-marker-count",
+      String(topWindowCount),
+    );
+    expect(tr).toHaveAttribute("data-chronicle-total-edge-count", "1");
+    expect(tr).toHaveAttribute("data-chronicle-rendered-edge-count", "1");
+    expect(tr.querySelector('[data-event-id="windowed-0"]')).not.toBeNull();
+
+    scrollArea.scrollTop = layout.contentHeight;
+    fireEvent.scroll(scrollArea);
+    expect(tr.querySelector('[data-event-id="windowed-0"]')).toBeNull();
+    expect(
+      tr.querySelector(`[data-event-id="${bottomMarkerId}"]`),
+    ).not.toBeNull();
+    expect(
+      tr.querySelector('[data-causal-edge="windowed-0|windowed-1"]'),
+    ).toBeNull();
+
+    rerender(
+      <ChronicleViewport
+        {...(props as unknown as VP)}
+        selectedEventId="windowed-0"
+        selectedIds={new Set(["windowed-0"])}
+      />,
+    );
+    expect(tr.querySelector('[data-event-id="windowed-0"]')).not.toBeNull();
+    expect(
+      tr.querySelector('[data-causal-edge="windowed-0|windowed-1"]'),
+    ).not.toBeNull();
+  });
+
+  it("小規模 Chronicle は projection window を使わず作成・削除 fade を維持する", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+
+    expect(tr.querySelectorAll("[data-event-id]")).toHaveLength(events.length);
+    expect(
+      tr.querySelector("[data-chronicle-windowed-marker-wrapper]"),
+    ).toBeNull();
+    expect(tr).not.toHaveAttribute("data-chronicle-render-window-top");
+  });
+
+  it("wheel burst は DOM preview のみ更新し、80ms 後に最新 View を1回だけ確定する", () => {
+    vi.useFakeTimers();
+    let frame: FrameRequestCallback = () => {};
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frame = callback;
+        return 1;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    try {
+      const onViewChange = vi.fn();
+      const props = makeProps({ onViewChange });
+      const { container } = render(
+        <ChronicleViewport {...(props as unknown as VP)} />,
+      );
+      const tr = track(container);
+      const world = tr.querySelector(
+        "[data-chronicle-world-layer]",
+      ) as HTMLElement;
+
+      startPerfSession();
+      fireEvent.wheel(tr, { deltaY: -100, clientX: 200 });
+      fireEvent.wheel(tr, { deltaY: -100, clientX: 200 });
+      fireEvent.wheel(tr, { deltaY: -100, clientX: 200 });
+      expect(onViewChange).not.toHaveBeenCalled();
+
+      frame(0);
+      expect(world.style.transform).toContain("scaleX(");
+      fireEvent.wheel(tr, { deltaY: -100, clientX: 200 });
+      frame(20);
+      const perfSession = endPerfSession();
+      expect(perfSession?.counters["chronicle.viewportFrame.work.count"]).toBe(
+        2,
+      );
+      expect(
+        perfSession?.markStats.find(
+          (entry) => entry.label === "chronicle.viewportFrame.work",
+        )?.count,
+      ).toBe(2);
+      expect(
+        perfSession?.counters["chronicle.viewportFrame.interval.count"],
+      ).toBe(1);
+      expect(
+        perfSession?.markStats.find(
+          (entry) => entry.label === "chronicle.viewportFrame.interval",
+        ),
+      ).toMatchObject({ count: 1, maxMs: 20 });
+      vi.advanceTimersByTime(79);
+      expect(onViewChange).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onViewChange).toHaveBeenCalledTimes(1);
+      const committed = onViewChange.mock.calls[0][0] as {
+        pxPerDay: number;
+      };
+      expect(committed.pxPerDay).toBeCloseTo(2 * 1.2 * 1.2 * 1.2 * 1.2);
+    } finally {
+      endPerfSession();
+      vi.useRealTimers();
+    }
+  });
+
+  it("wheel の 0,0 sample は zoom/commit/debounce を発生させない", () => {
+    vi.useFakeTimers();
+    const requestFrame = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    try {
+      const onViewChange = vi.fn();
+      const props = makeProps({ onViewChange });
+      const { container, unmount } = render(
+        <ChronicleViewport {...(props as unknown as VP)} />,
+      );
+
+      fireEvent.wheel(track(container), {
+        deltaX: 0,
+        deltaY: 0,
+        clientX: 200,
+      });
+      vi.advanceTimersByTime(200);
+
+      expect(requestFrame).not.toHaveBeenCalled();
+      expect(onViewChange).not.toHaveBeenCalled();
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("wheel burst は次の pointer gesture 開始時に確定し、旧 timer は drag 中に発火しない", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    try {
+      const onViewChange = vi.fn();
+      const props = makeProps({ onViewChange });
+      const { container, unmount } = render(
+        <ChronicleViewport {...(props as unknown as VP)} />,
+      );
+      const tr = track(container);
+
+      fireEvent.wheel(tr, { deltaY: -100, clientX: 200 });
+      expect(onViewChange).not.toHaveBeenCalled();
+
+      fireEvent.mouseDown(tr, { button: 0, clientX: 300, clientY: 100 });
+      // pointerdown is the explicit end of the prior wheel burst.
+      expect(onViewChange).toHaveBeenCalledTimes(1);
+      fireEvent.mouseMove(document, { clientX: 360, clientY: 100 });
+      vi.advanceTimersByTime(200);
+      // The cleared wheel timer must not commit in the middle of the drag.
+      expect(onViewChange).toHaveBeenCalledTimes(1);
+
+      fireEvent.mouseUp(document, {
+        button: 0,
+        clientX: 360,
+        clientY: 100,
+      });
+      expect(onViewChange).toHaveBeenCalledTimes(2);
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("non-zero world offset の DOM zoom preview は pivot と論理日位置を保存する", () => {
+    vi.useFakeTimers();
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frames.push(callback);
+        return frames.length;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const baseView = { pxPerDay: 2, viewStartDay: 10 };
+    const originDay = 25;
+    const worldGeometry = buildChronicleWorldGeometry({
+      events,
+      lanes,
+      pxPerDay: baseView.pxPerDay,
+      originDay,
+      density: "standard",
+      labelsOn: true,
+      relations: [],
+      causalConflictPairs: new Set(),
+    });
+    const layout = projectChronicleWorldGeometry({
+      world: worldGeometry,
+      view: baseView,
+      trackW: 800,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 180,
+      lang: "ja",
+    });
+    expect(layout.worldOffsetX).toBeCloseTo(30);
+
+    const props = makeProps({ view: baseView, layout });
+    const { container, unmount } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    try {
+      const pivotPx = 200;
+      const tr = track(container);
+      vi.spyOn(tr, "getBoundingClientRect").mockReturnValue(
+        new DOMRect(0, 0, 800, 400),
+      );
+      expect(tr.getBoundingClientRect().left).toBe(0);
+      // happy-dom's WheelEvent constructor currently drops clientX. Define it
+      // explicitly so this test exercises browser zoom-to-cursor math.
+      const wheel = new WheelEvent("wheel", { deltaY: -100 });
+      Object.defineProperty(wheel, "clientX", {
+        configurable: true,
+        value: pivotPx,
+      });
+      fireEvent(tr, wheel);
+      for (const callback of frames.splice(0)) callback(0);
+
+      const world = tr.querySelector(
+        "[data-chronicle-world-layer]",
+      ) as HTMLElement;
+      expect(world.style.transform).toContain("scaleX(");
+      const match = /translateX\(([-+\d.eE]+)px\) scaleX\(([-+\d.eE]+)\)/.exec(
+        world.style.transform,
+      );
+      expect(match).not.toBeNull();
+      const translate = Number(match?.[1]);
+      const scale = Number(match?.[2]);
+      const nextView = zoomAt({ view: baseView, pivotPx, factor: 1.2 });
+      const projectDay = (day: number) =>
+        translate + (day - originDay) * baseView.pxPerDay * scale;
+
+      const pivotDay = baseView.viewStartDay + pivotPx / baseView.pxPerDay;
+      expect(projectDay(pivotDay)).toBeCloseTo(pivotPx);
+      expect(projectDay(50)).toBeCloseTo(dayToX(nextView, 50));
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("スクロールバー thumb は move 中 DOM のみ追従し、mouseup で最新位置を1回確定する", () => {
+    const onViewChange = vi.fn();
+    const view = { pxPerDay: 10, viewStartDay: 0 };
+    const layout = buildChronicleLayout({
+      events,
+      lanes,
+      view,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 180,
+      relations: [],
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const props = makeProps({ onViewChange, view, layout });
+    const { getByTestId } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const thumb = getByTestId("chronicle-scroll-thumb");
+    const initialLeft = thumb.style.left;
+
+    fireEvent.mouseDown(thumb, { button: 0, clientX: 100 });
+    fireEvent.mouseMove(document, { clientX: 120 });
+    fireEvent.mouseMove(document, { clientX: 140 });
+    fireEvent.mouseMove(document, { clientX: 160 });
+    expect(onViewChange).not.toHaveBeenCalled();
+    expect(thumb.style.left).not.toBe(initialLeft);
+
+    fireEvent.mouseUp(document, { button: 0, clientX: 160 });
+    expect(onViewChange).toHaveBeenCalledTimes(1);
+    const committed = onViewChange.mock.calls[0][0] as {
+      viewStartDay: number;
+    };
+    expect(committed.viewStartDay).toBeGreaterThan(0);
+  });
+
+  it.each([1, 2])(
+    "スクロールバー thumb は button=%i では drag/commit しない",
+    (button) => {
+      const onViewChange = vi.fn();
+      const props = makeProps({ onViewChange });
+      const { getByTestId } = render(
+        <ChronicleViewport {...(props as unknown as VP)} />,
+      );
+      const thumb = getByTestId("chronicle-scroll-thumb");
+      const initialLeft = thumb.style.left;
+
+      fireEvent.mouseDown(thumb, { button, clientX: 100 });
+      fireEvent.mouseMove(document, { clientX: 180 });
+      fireEvent.mouseUp(document, { button, clientX: 180 });
+
+      expect(thumb.style.left).toBe(initialLeft);
+      expect(onViewChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it("scrollbar は意味的な range/value/name を持ち、Arrow/Page/Home/End で水平移動できる", () => {
+    const onViewChange = vi.fn();
+    const view = { pxPerDay: 10, viewStartDay: 0 };
+    const layout = buildChronicleLayout({
+      events,
+      lanes,
+      view,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 180,
+      relations: [],
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const props = makeProps({
+      onViewChange,
+      view,
+      layout,
+      formatDayLabel: (day: number) => `story day ${day}`,
+    });
+    const { getByRole } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const scrollbar = getByRole("scrollbar", {
+      name: "作中年表の水平スクロール",
+    });
+
+    expect(scrollbar).toHaveAttribute("aria-valuemin", "-10");
+    expect(scrollbar).toHaveAttribute("aria-valuemax", "160");
+    expect(scrollbar).toHaveAttribute("aria-valuenow", "0");
+    expect(scrollbar).toHaveAttribute("aria-valuetext", "story day 0");
+
+    expect(fireEvent.keyDown(scrollbar, { key: "ArrowRight" })).toBe(false);
+    const arrowRight = onViewChange.mock.calls.at(-1)?.[0] as View;
+    expect(arrowRight.viewStartDay).toBeGreaterThan(0);
+
+    fireEvent.keyDown(scrollbar, { key: "ArrowLeft" });
+    const arrowLeft = onViewChange.mock.calls.at(-1)?.[0] as View;
+    expect(arrowLeft.viewStartDay).toBeCloseTo(0);
+
+    fireEvent.keyDown(scrollbar, { key: "PageDown" });
+    const pageDown = onViewChange.mock.calls.at(-1)?.[0] as View;
+    expect(pageDown.viewStartDay).toBeGreaterThan(arrowRight.viewStartDay);
+
+    fireEvent.keyDown(scrollbar, { key: "PageUp" });
+    const pageUp = onViewChange.mock.calls.at(-1)?.[0] as View;
+    expect(pageUp.viewStartDay).toBeCloseTo(0);
+
+    fireEvent.keyDown(scrollbar, { key: "End" });
+    expect(
+      (onViewChange.mock.calls.at(-1)?.[0] as View).viewStartDay,
+    ).toBeCloseTo(160);
+
+    fireEvent.keyDown(scrollbar, { key: "Home" });
+    expect(
+      (onViewChange.mock.calls.at(-1)?.[0] as View).viewStartDay,
+    ).toBeCloseTo(-10);
+  });
+
+  it("window blur は middle pan と thumb drag を取消し、DOM preview を確定前へ戻す", () => {
+    let frame: FrameRequestCallback = () => {};
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frame = callback;
+        return 1;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const onViewChange = vi.fn();
+    const props = makeProps({ onViewChange });
+    const { container, unmount } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    const world = tr.querySelector(
+      "[data-chronicle-world-layer]",
+    ) as HTMLElement;
+    const initialTransform = world.style.transform;
+    const scrollArea = tr.parentElement as HTMLElement;
+    scrollArea.scrollTop = 100;
+
+    fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(document, { clientX: 160, clientY: 40 });
+    frame(0);
+    expect(tr.style.cursor).toBe("grabbing");
+    expect(world.style.transform).not.toBe(initialTransform);
+    expect(scrollArea.scrollTop).toBe(160);
+
+    fireEvent.blur(window);
+    expect(tr.style.cursor).not.toBe("grabbing");
+    expect(world.style.transform).toBe(initialTransform);
+    expect(scrollArea.scrollTop).toBe(100);
+    fireEvent.mouseUp(document, { button: 1, clientX: 160, clientY: 40 });
+    expect(onViewChange).not.toHaveBeenCalled();
+    unmount();
+
+    const thumbView = { pxPerDay: 10, viewStartDay: 0 };
+    const thumbLayout = buildChronicleLayout({
+      events,
+      lanes,
+      view: thumbView,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 180,
+      relations: [],
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const { getByTestId: getThumbByTestId } = render(
+      <ChronicleViewport
+        {...(makeProps({
+          onViewChange,
+          view: thumbView,
+          layout: thumbLayout,
+        }) as unknown as VP)}
+      />,
+    );
+    const thumb = getThumbByTestId("chronicle-scroll-thumb");
+    const initialLeft = thumb.style.left;
+    fireEvent.mouseDown(thumb, { button: 0, clientX: 100 });
+    fireEvent.mouseMove(document, { clientX: 160 });
+    expect(thumb.style.left).not.toBe(initialLeft);
+    fireEvent.blur(window);
+    expect(thumb.style.left).toBe(initialLeft);
+    fireEvent.mouseUp(document, { button: 0, clientX: 160 });
+    expect(onViewChange).not.toHaveBeenCalled();
+  });
+
+  it("keepalive-hidden 遷移で middle pan の連続 rAF と document listener を取消す", () => {
+    let nextFrameId = 0;
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      nextFrameId += 1;
+      pendingFrames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    const cancelFrame = vi.fn((frameId: number) => {
+      pendingFrames.delete(frameId);
+    });
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+    const onViewChange = vi.fn();
+    const props = makeProps({ onViewChange });
+    const { container, rerender } = render(
+      <ChronicleViewport {...(props as unknown as VP)} isActive />,
+    );
+    const tr = track(container);
+
+    fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 124, clientY: 20 });
+    expect(requestFrame).toHaveBeenCalledTimes(1);
+    expect(tr.style.cursor).toBe("grabbing");
+
+    rerender(
+      <ChronicleViewport {...(props as unknown as VP)} isActive={false} />,
+    );
+    expect(cancelFrame).toHaveBeenCalledWith(1);
+    expect(pendingFrames.size).toBe(0);
+    expect(tr.style.cursor).not.toBe("grabbing");
+    fireEvent.mouseUp(document, {
+      button: 1,
+      buttons: 0,
+      clientX: 124,
+      clientY: 20,
+    });
+    expect(onViewChange).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 140, clientY: 20 });
+    expect(requestFrame).toHaveBeenCalledTimes(1);
+    expect(tr.style.cursor).not.toBe("grabbing");
+  });
+
+  it("閾値未満の空白パン preview は mouseup で解除される", () => {
+    let frame: FrameRequestCallback = () => {};
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frame = callback;
+        return 1;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const onViewChange = vi.fn();
+    const props = makeProps({ onViewChange });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    const world = tr.querySelector(
+      "[data-chronicle-world-layer]",
+    ) as HTMLElement;
+    const initialTransform = world.style.transform;
+
+    fireEvent.mouseDown(tr, { button: 0, clientX: 300, clientY: 100 });
+    fireEvent.mouseMove(document, { clientX: 302, clientY: 100 });
+    frame(0);
+    expect(world.style.transform).not.toBe(initialTransform);
+
+    fireEvent.mouseUp(document, { clientX: 302, clientY: 100 });
+
+    expect(onViewChange).not.toHaveBeenCalled();
+    expect(world.style.transform).toBe(initialTransform);
+  });
+
   it("中ボタンドラッグで横パン（onViewChange）＋トラックが grabbing", () => {
     const onViewChange = vi.fn();
     const props = makeProps({ onViewChange });
@@ -855,13 +1541,90 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
     expect(tr.style.cursor).toBe("grabbing");
     fireEvent.mouseMove(document, { clientX: 160, clientY: 20 });
+    // pointermove 中は DOM transform のみ。global/local view 通知は操作終了時に集約。
+    expect(onViewChange).not.toHaveBeenCalled();
+    fireEvent.mouseUp(document, { clientX: 160, clientY: 20 });
     // panByPx(dx=60): viewStartDay = 0 - 60/2 = -30
     const lastCall = onViewChange.mock.calls.at(-1)![0] as {
       viewStartDay: number;
     };
     expect(lastCall.viewStartDay).toBeCloseTo(-30);
-    fireEvent.mouseUp(document, { clientX: 160, clientY: 20 });
     expect(tr.style.cursor).not.toBe("grabbing");
+  });
+
+  it("pan 対象 layer は初回 rAF 前から transform origin を確定する", () => {
+    const props = makeProps();
+    const { container, getByTestId } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+
+    const worldLayers = container.querySelectorAll<HTMLElement>(
+      "[data-chronicle-world-layer]",
+    );
+    expect(worldLayers.length).toBeGreaterThan(0);
+    for (const layer of worldLayers) {
+      expect(layer.style.transformOrigin).toBe("0 0");
+      // World children may sit outside the viewport-width layer and become
+      // visible only after a negative pan/zoom translation. Paint containment
+      // would clip them before that transform is applied.
+      expect(layer.style.contain).not.toBe("paint");
+    }
+    expect(
+      getByTestId("chronicle-viewport-projection").style.transformOrigin,
+    ).toBe("0 0");
+    expect(
+      getByTestId("chronicle-ruler").querySelector<HTMLElement>(
+        ".will-change-transform",
+      )?.style.transformOrigin,
+    ).toBe("0 0");
+  });
+
+  it("pointer pan 中は move 配信の間も連続 rAF で表示 frame を計測する", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frames.push(callback);
+        return frames.length;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+
+    startPerfSession();
+    fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
+    expect(frames).toHaveLength(1);
+    frames.shift()!(0);
+
+    fireEvent.mouseMove(document, { clientX: 112, clientY: 20 });
+    frames.shift()!(16);
+    // No additional move: the next presented frame still belongs to the active
+    // gesture, so driver/input cadence cannot look like a dropped render frame.
+    frames.shift()!(32);
+
+    fireEvent.mouseMove(document, { clientX: 124, clientY: 20 });
+    frames.shift()!(48);
+    fireEvent.mouseUp(document, {
+      button: 1,
+      buttons: 0,
+      clientX: 124,
+      clientY: 20,
+    });
+
+    const perfSession = endPerfSession();
+    expect(
+      perfSession?.counters["chronicle.viewportFrame.interval.count"],
+    ).toBe(3);
+    expect(
+      perfSession?.markStats.find(
+        (entry) => entry.label === "chronicle.viewportFrame.interval",
+      )?.maxMs,
+    ).toBe(16);
+    expect(perfSession?.counters["chronicle.viewportFrame.work.count"]).toBe(3);
   });
 
   it("中ボタンドラッグで縦パン（scrollTop を移動）", () => {
@@ -879,6 +1642,42 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     fireEvent.mouseUp(document, { clientX: 100, clientY: 40 });
   });
 
+  it("斜めパン中の縦 window commit 後も横 preview transform を復元する", () => {
+    let frame: FrameRequestCallback = () => {};
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frame = callback;
+        return 1;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const props = makeProps();
+    const { container, getByTestId } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    const scrollArea = tr.parentElement as HTMLElement;
+    Object.defineProperty(scrollArea, "clientHeight", {
+      configurable: true,
+      value: 100,
+    });
+    scrollArea.scrollTop = 100;
+
+    fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(document, { clientX: 160, clientY: 40 });
+    frame(0);
+    const projection = getByTestId("chronicle-viewport-projection");
+    const previewTransform = projection.style.transform;
+    expect(previewTransform).not.toBe("");
+
+    // Native scroll updates verticalViewport and commits a new marker window.
+    // React must not clear the concurrent horizontal imperative preview.
+    fireEvent.scroll(scrollArea);
+    expect(projection.style.transform).toBe(previewTransform);
+    fireEvent.mouseUp(document, { button: 1, clientX: 160, clientY: 40 });
+  });
+
   it("空白ドラッグで縦にもパンする（横=view / 縦=scrollTop）", () => {
     const onViewChange = vi.fn();
     const props = makeProps({ onViewChange });
@@ -892,9 +1691,10 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     // 斜めドラッグ: 横 +60 / 縦 上へ 60。縦: 100 - (40 - 100) = 160
     fireEvent.mouseMove(document, { clientX: 360, clientY: 40 });
     expect(scrollArea.scrollTop).toBe(160);
-    // 横パン（従来挙動）も維持される
-    expect(onViewChange).toHaveBeenCalled();
+    expect(onViewChange).not.toHaveBeenCalled();
     fireEvent.mouseUp(document, { clientX: 360, clientY: 40 });
+    // 横パンは mouseup で 1 回だけ確定される。
+    expect(onViewChange).toHaveBeenCalledTimes(1);
     // ドラッグ扱いなので位置選択は発火しない
     expect(props.onSelectPosition).not.toHaveBeenCalled();
   });

@@ -5,9 +5,10 @@
  * いないため復元しない。payoffSceneRef が現存しなければ broken-link として警告
  * したうえで payoffSceneId=null で再作成する。
  */
-import { createForeshadow, updateForeshadow } from "@/features/foreshadow/api";
+import { createForeshadow } from "@/features/foreshadow/api";
 import { getNode } from "@/features/tree/api";
 import type { ForeshadowLoadBearing } from "@/features/foreshadow/types";
+import { isCreateResultEntityPresent } from "@/lib/createResultMetadata";
 import type { ForeshadowPayload, TrashItemData } from "../types";
 import type { RestoreOutcome } from "./types";
 
@@ -23,38 +24,44 @@ export async function restoreForeshadow(
     return { ok: false, reason: "rejected", message: "subKind mismatch" };
   }
   const payload = item.payload as ForeshadowPayload;
-  const newId = crypto.randomUUID();
+  // A persisted Trash row represents one logical restore. Deriving the new
+  // entity/request identity from it keeps a lost-response retry crash-safe.
+  const newId = `restored-foreshadow:${item.id}`;
   const brokenLinks: string[] = [];
 
   // payoffSceneRef の検証 (broken-link 検知。entity 自体は復元する。)
   let payoffSceneId: string | null = payload.payoffSceneRef;
   if (payoffSceneId) {
     const exists = await getNode(payoffSceneId);
-    if (!exists) {
+    if (!exists || exists.projectId !== options.projectId) {
       payoffSceneId = null;
       brokenLinks.push("payoffScene");
     }
   }
 
   try {
-    await createForeshadow({
+    const created = await createForeshadow({
       id: newId,
       projectId: options.projectId,
       title: payload.title,
       intent: payload.intent ?? null,
-      loadBearing:
-        (payload.loadBearing as ForeshadowLoadBearing | null) ?? null,
-    });
-    // notes / payoff* / state 軸は createForeshadow の payload 経由では渡せない
-    // ため updateForeshadow で 2 段階に上書き。
-    await updateForeshadow(newId, {
       notes: payload.notes ?? null,
       payoffSceneId,
-      payoffFromPos: payload.payoffFromPos ?? null,
-      payoffToPos: payload.payoffToPos ?? null,
+      payoffFromPos: payoffSceneId ? (payload.payoffFromPos ?? null) : null,
+      payoffToPos: payoffSceneId ? (payload.payoffToPos ?? null) : null,
       payoffConfirmed: payload.payoffConfirmed,
       abandoned: payload.abandoned,
+      secret: payload.secret ?? true,
+      loadBearing:
+        (payload.loadBearing as ForeshadowLoadBearing | null) ?? null,
+      codexLinkDirtyAt:
+        payload.codexLinkDirtyAt == null
+          ? null
+          : new Date(payload.codexLinkDirtyAt),
     });
+    if (!isCreateResultEntityPresent(created)) {
+      throw new Error("foreshadow restore replay refers to a deleted entity");
+    }
   } catch (e) {
     return {
       ok: false,

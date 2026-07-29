@@ -1,4 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+  type ReactNode,
+} from "react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
@@ -6,7 +13,13 @@ import { Play } from "lucide-react";
 import { useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
-import { useChatStore } from "./chatStore";
+import {
+  awaitChatComposerAuthority,
+  canUseCurrentChatPublicRag,
+  captureChatComposerAuthority,
+  resolveCurrentChatDisplayRoute,
+  useChatStore,
+} from "./chatStore";
 import { useMapBoardAutoActivate } from "./useMapBoardAutoActivate";
 import { useMapStore } from "@/features/map/mapStore";
 import { getMapBoard } from "@/features/map/mapApi";
@@ -16,6 +29,7 @@ import { ChatMessage } from "./components/ChatMessage";
 import type { ChatContextMenuState } from "./components/ChatDialogs";
 import { ChatDialogs } from "./components/ChatDialogs";
 import { ChatPanelHeader } from "./components/ChatPanelHeader";
+import { AccessibleChatTranscriptDialog } from "./components/AccessibleChatTranscriptDialog";
 import { ChatInput } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
 import { UserQuestionCard } from "./components/UserQuestionCard";
@@ -23,25 +37,36 @@ import { CodexApprovalCard } from "./components/CodexApprovalCard";
 import { QuickActionStrip } from "./components/QuickActionStrip";
 import { ChatRecallPromoteBanner } from "./components/ChatRecallPromoteBanner";
 import { ContextBar } from "./components/ContextBar";
-import { resolveModelCapabilities } from "./agent/modelLimits";
-import { resolveAinoveristApiVariant } from "./aiNovelist";
+import { roleSettingKey, ROLE_PROVIDERS_KEY } from "./modelRouting";
+import { canAttemptContextCreator } from "./contextCreatorApi";
+import { resolvedChatTurnRouteAuthorityKey } from "./turn/resolveTurnRoute";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
 import { listen } from "@/lib/tauri";
 import { respondToCodexServerRequest } from "./codexAppApi";
 import type { CodexAppEventEnvelope } from "@/../electron/shared/codexAppProtocol";
-import { useAiSettingsStore, isRagCapableProvider } from "./store";
+import { useAiSettingsStore } from "./store";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { openAiPolicySettings } from "@/features/ai-policy/openAiPolicySettings";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useChronicleStore } from "@/features/chronicle/chronicleStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { saveScene } from "@/features/editor/editorSaveRegistry";
+import {
+  saveDocumentsForEntity,
+  saveDocumentsForKind,
+} from "@/features/editor/editorSaveRegistry";
+import {
+  flushAutoSavesForEntity,
+  flushAutoSavesForKind,
+} from "@/hooks/useAutoSave";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
-import { recordMark } from "@/lib/perfLog";
+import { recordMark, registerRuntimePerformanceControl } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { MessagePromptSnapshot } from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
@@ -122,6 +147,43 @@ export function removeCodexApproval(
   return current.filter((item) => codexApprovalKey(item) !== key);
 }
 
+export async function saveChatScopeBeforeSend(
+  scope: ChatScope,
+  activeSceneId: string | null | undefined,
+  scopeAnchorId: string | null | undefined,
+): Promise<void> {
+  switch (scope) {
+    case "scene":
+      if (activeSceneId) {
+        await saveDocumentsForEntity("tree", activeSceneId);
+        await flushAutoSavesForEntity("tree", activeSceneId);
+      }
+      return;
+    case "codex":
+      if (scopeAnchorId) {
+        await saveDocumentsForEntity("codex", scopeAnchorId);
+        await flushAutoSavesForEntity("codex", scopeAnchorId);
+      }
+      return;
+    case "snippet":
+      if (scopeAnchorId) {
+        await saveDocumentsForEntity("snippet", scopeAnchorId);
+        await flushAutoSavesForEntity("snippet", scopeAnchorId);
+      }
+      return;
+    case "folder":
+    case "project":
+      // Aggregated prompts and project-agent tools read Scene bodies from the
+      // database. Every unsaved body is necessarily owned by a mounted tree
+      // editor, so flush all current-Project tree variants before snapshotting.
+      await saveDocumentsForKind("tree");
+      await flushAutoSavesForKind("tree");
+      return;
+    default:
+      scope satisfies never;
+  }
+}
+
 export function removeCodexApprovalsForTurn(
   current: CodexApproval[],
   grimodexTurnId: string,
@@ -148,21 +210,318 @@ export async function declineCodexApprovals(
   );
 }
 
+interface ChatMessageViewportProps {
+  activeSessionId: string | null;
+  codexApproval: CodexApproval | null;
+  onCodexApprovalDecision: (decision: "accept" | "decline") => Promise<void>;
+  renderMessage: (message: ChatMessageType, isStreaming: boolean) => ReactNode;
+}
+
+type RuntimeChatStreamingDraftControl =
+  | {
+      action: "prepare";
+      messageId: string;
+      content: string;
+    }
+  | {
+      action: "delta";
+      messageId: string;
+      delta: string;
+    }
+  | {
+      action: "cleanup";
+      messageId: string;
+    };
+
+function parseRuntimeChatStreamingDraftControl(
+  payload: unknown,
+): RuntimeChatStreamingDraftControl {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("chat streaming draft control payload is invalid");
+  }
+  const value = payload as Record<string, unknown>;
+  if (
+    typeof value.messageId !== "string" ||
+    value.messageId.length === 0 ||
+    !["prepare", "delta", "cleanup"].includes(String(value.action))
+  ) {
+    throw new Error("chat streaming draft control payload is invalid");
+  }
+  if (value.action === "prepare" && typeof value.content === "string") {
+    return {
+      action: "prepare",
+      messageId: value.messageId,
+      content: value.content,
+    };
+  }
+  if (value.action === "delta" && typeof value.delta === "string") {
+    return {
+      action: "delta",
+      messageId: value.messageId,
+      delta: value.delta,
+    };
+  }
+  if (value.action === "cleanup") {
+    return { action: "cleanup", messageId: value.messageId };
+  }
+  throw new Error("chat streaming draft control payload is invalid");
+}
+
+export function createRuntimeChatStreamingDraftControl() {
+  let ownedDraft: { messageId: string; content: string } | null = null;
+
+  const releaseOwnedDraft = () => {
+    if (!ownedDraft) return;
+    const current = useChatStore.getState();
+    // A genuine stream may have started after benchmark preparation. Only
+    // release the exact object installed by this controller; never clear or
+    // stop a draft now owned by the user/provider path.
+    if (current.isStreaming && current.streamingDraft === ownedDraft) {
+      useChatStore.setState({
+        isStreaming: false,
+        streamingDraft: null,
+      });
+    }
+    ownedDraft = null;
+  };
+
+  return {
+    invoke(payload: unknown) {
+      const control = parseRuntimeChatStreamingDraftControl(payload);
+      const state = useChatStore.getState();
+
+      if (control.action === "cleanup") {
+        if (!ownedDraft || ownedDraft.messageId !== control.messageId) {
+          throw new Error("chat streaming draft control is not prepared");
+        }
+        releaseOwnedDraft();
+        return null;
+      }
+
+      if (
+        !state.messages.some(
+          (message) =>
+            message.id === control.messageId && message.role === "assistant",
+        )
+      ) {
+        throw new Error("chat streaming draft control message is not loaded");
+      }
+
+      if (control.action === "prepare") {
+        if (ownedDraft) {
+          throw new Error("chat streaming draft control is already prepared");
+        }
+        if (state.isStreaming || state.streamingDraft !== null) {
+          throw new Error(
+            "chat streaming draft control refused because a real chat stream is active",
+          );
+        }
+        ownedDraft = {
+          messageId: control.messageId,
+          content: control.content,
+        };
+        useChatStore.setState({
+          isStreaming: true,
+          streamingDraft: ownedDraft,
+        });
+        return control.content;
+      }
+
+      if (
+        !ownedDraft ||
+        ownedDraft.messageId !== control.messageId ||
+        !state.isStreaming ||
+        state.streamingDraft !== ownedDraft
+      ) {
+        throw new Error(
+          "chat streaming draft control lost ownership of the prepared draft",
+        );
+      }
+      ownedDraft = {
+        messageId: control.messageId,
+        content: ownedDraft.content + control.delta,
+      };
+      useChatStore.setState({ streamingDraft: ownedDraft });
+      return ownedDraft.content;
+    },
+    dispose: releaseOwnedDraft,
+  };
+}
+
+/**
+ * Message store + virtualizer の接続境界。row measurement や streaming draft が
+ * 更新しても Header / ContextBar / Composer を含む ChatPanel 本体は再評価しない。
+ */
+function ChatMessageViewport({
+  activeSessionId,
+  codexApproval,
+  onCodexApprovalDecision,
+  renderMessage,
+}: ChatMessageViewportProps) {
+  const { t } = useTranslation();
+  const reduced = useReducedMotion();
+  const messages = useChatStore((state) => state.messages);
+  const isLoadingMessages = useChatStore((state) => state.isLoadingMessages);
+  const isStreaming = useChatStore((state) => state.isStreaming);
+  const pendingUserQuestion = useChatStore(
+    (state) => state.pendingUserQuestion,
+  );
+  const resolveUserQuestion = useChatStore(
+    (state) => state.resolveUserQuestion,
+  );
+  const dismissUserQuestion = useChatStore(
+    (state) => state.dismissUserQuestion,
+  );
+  const [messagesContainerEl, setMessagesContainerEl] =
+    useState<HTMLElement | null>(null);
+  const {
+    bottomRef,
+    scrollContainerRef,
+    visibleMessages,
+    virtualizer,
+    entranceAnim,
+    handleListScroll,
+  } = useChatMessageViewport({
+    messages,
+    isLoadingMessages,
+    activeSessionId,
+  });
+  const transcriptMessages = useMemo(
+    () => messages.filter((message) => message.role !== "system"),
+    [messages],
+  );
+  const transcriptPositionById = useMemo(
+    () =>
+      new Map(
+        transcriptMessages.map((message, index) => [message.id, index + 1]),
+      ),
+    [transcriptMessages],
+  );
+
+  return (
+    <>
+      <CodexPopover containerEl={messagesContainerEl} />
+      {!isLoadingMessages && transcriptMessages.length > 0 && (
+        <AccessibleChatTranscriptDialog messages={transcriptMessages} />
+      )}
+      <div
+        ref={scrollContainerRef}
+        data-testid="chat-scroll-container"
+        onScroll={handleListScroll}
+        className="flex-1 overflow-y-auto px-4 py-3 [overflow-anchor:none]"
+      >
+        {isLoadingMessages ? (
+          <MessageBubbleSkeletonList testId="chat-messages-loading" />
+        ) : messages.length === 0 ? (
+          <div className="mt-8 text-center">
+            <p className="text-sm text-muted-foreground">
+              {t("chat.noMessages")}
+            </p>
+            <p className="mt-2 text-[11px] leading-tight text-muted-foreground/70">
+              {t("chat.disclaimer")}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div
+              data-testid="chat-virtual-list"
+              role="list"
+              aria-label={t("chat.transcript.virtualListLabel")}
+              className="relative w-full"
+              style={{ height: `${virtualizer.getTotalSize()}px` }}
+              ref={setMessagesContainerEl}
+            >
+              {virtualizer.getVirtualItems().map((virtualItem) => {
+                const message = visibleMessages[virtualItem.index];
+                if (!message) return null;
+                const animateIn = entranceAnim.animateIds.has(message.id);
+                return (
+                  <div
+                    key={message.id}
+                    role="listitem"
+                    aria-posinset={
+                      transcriptPositionById.get(message.id) ??
+                      virtualItem.index + 1
+                    }
+                    aria-setsize={transcriptMessages.length}
+                    data-index={virtualItem.index}
+                    ref={virtualizer.measureElement}
+                    className="absolute left-0 top-0 w-full pb-4"
+                    style={{
+                      transform: `translateY(${virtualItem.start}px)`,
+                    }}
+                  >
+                    <motion.div
+                      data-animate-in={animateIn || undefined}
+                      initial={animateIn ? { opacity: 0, x: 20 } : false}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={
+                        reduced
+                          ? { duration: 0 }
+                          : { type: "spring", stiffness: 260, damping: 22 }
+                      }
+                    >
+                      {renderMessage(message, isStreaming)}
+                    </motion.div>
+                  </div>
+                );
+              })}
+            </div>
+            {codexApproval && (
+              <CodexApprovalCard
+                key={codexApprovalKey(codexApproval)}
+                request={codexApproval.request}
+                onDecision={onCodexApprovalDecision}
+              />
+            )}
+            {pendingUserQuestion &&
+              pendingUserQuestion.sessionId === activeSessionId && (
+                <UserQuestionCard
+                  key={pendingUserQuestion.toolCallId}
+                  spec={pendingUserQuestion.spec}
+                  onSubmit={resolveUserQuestion}
+                  onSkip={dismissUserQuestion}
+                />
+              )}
+            {isStreaming && !pendingUserQuestion && (
+              <div
+                data-testid="streaming-indicator"
+                className="flex items-center gap-1 text-muted-foreground"
+              >
+                <span className="animate-pulse text-xs">
+                  {t("chat.generating")}
+                </span>
+              </div>
+            )}
+          </>
+        )}
+        <div ref={bottomRef} />
+      </div>
+    </>
+  );
+}
+
 export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const runtimeCapabilities = useRuntimeCapabilities();
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  const reduced = useReducedMotion();
   const chatGate = useAiGate("chat");
+  const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (s) => s.workspaceOpenRevision,
+  );
+  const chronicleRevision = useChronicleStore((s) => s.revisionCounter);
   useMapBoardAutoActivate();
-  const messages = useChatStore((s) => s.messages);
-  const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
   const isStreaming = useChatStore((s) => s.isStreaming);
+  const isLoadingSessions = useChatStore((s) => s.isLoadingSessions);
+  const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const contextWindowSize = useChatStore((s) => s.contextWindowSize);
-  const contextModel = useChatStore((s) => s.contextModel);
+  const contextRouteAuthorityKey = useChatStore(
+    (s) => s.contextRouteAuthorityKey,
+  );
   const contextLayers = useChatStore((s) => s.contextLayers);
   const contextPlan = useChatStore((s) => s.contextPlan);
   const pinsVersion = useChatStore((s) => s.pinsVersion);
@@ -187,8 +546,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const agentContinuation = useChatStore((s) => s.agentContinuation);
   const continueAgentRun = useChatStore((s) => s.continueAgentRun);
   const pendingUserQuestion = useChatStore((s) => s.pendingUserQuestion);
-  const resolveUserQuestion = useChatStore((s) => s.resolveUserQuestion);
-  const dismissUserQuestion = useChatStore((s) => s.dismissUserQuestion);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
@@ -196,6 +553,20 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const activeProjectId = useChatStore((s) => s.activeProjectId);
   const chatScope = useChatStore((s) => s.chatScope);
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
+  const currentScopeAnchor =
+    scopeAnchor &&
+    scopeAnchor.kind === chatScope &&
+    scopeAnchor.id === scopeAnchorId
+      ? scopeAnchor
+      : null;
+  const threadFocusAuthority = useChatStore((s) =>
+    s.threadFocusOverride
+      ? JSON.stringify([
+          s.threadFocusOverride.threadId,
+          s.threadFocusOverride.title,
+        ])
+      : null,
+  );
   const setChatScope = useChatStore((s) => s.setChatScope);
   const includeBodies = useChatStore((s) => s.includeBodies);
   const setIncludeBodies = useChatStore((s) => s.setIncludeBodies);
@@ -208,6 +579,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const [codexApprovals, setCodexApprovals] = useState<CodexApproval[]>([]);
   const codexApprovalsRef = useRef<CodexApproval[]>([]);
   const codexApprovalEpochRef = useRef(0);
+  const sendPreparationRef = useRef(false);
   const updateCodexApprovals = useCallback(
     (update: (current: CodexApproval[]) => CodexApproval[]) => {
       const next = update(codexApprovalsRef.current);
@@ -226,6 +598,17 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   );
   const summaryCount = useChatStore((s) => s.summaryCount);
   const maxSummaryGeneration = useChatStore((s) => s.maxSummaryGeneration);
+  useEffect(() => {
+    const control = createRuntimeChatStreamingDraftControl();
+    const unregister = registerRuntimePerformanceControl(
+      "chat.streamingDraft",
+      control.invoke,
+    );
+    return () => {
+      unregister();
+      control.dispose();
+    };
+  }, []);
   const cacheInvalidatedReason = useChatStore((s) => s.cacheInvalidatedReason);
 
   // Phase 2: scene と folder スコープでは本文（または集約本文）が context に
@@ -246,34 +629,102 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const chatModelOverride = useAiSettingsStore((s) => s.chatModelOverride);
+  const chatProviderOverride = useAiSettingsStore(
+    (s) => s.chatProviderOverride,
+  );
+  useAiSettingsStore((s) => s.chatModelVariantOverride);
+  useAiSettingsStore((s) => s.chatEndpointIdOverride);
   const loadAiSettings = useAiSettingsStore((s) => s.loadSettings);
-  const aiModels = useAiSettingsStore((s) => s.models);
   // 動的 capability レジストリ（OpenRouter /models 等）更新時に再計算する。
-  useAiSettingsStore((s) => s.modelCapsRevision);
+  const modelCapsRevision = useAiSettingsStore((s) => s.modelCapsRevision);
+  useSettingsStore((s) => s.get(roleSettingKey("agent"), ""));
+  useSettingsStore((s) => s.get(roleSettingKey("conversation"), ""));
+  useSettingsStore((s) => s.get(ROLE_PROVIDERS_KEY, ""));
+  const intendedRoute = resolveCurrentChatDisplayRoute({
+    agentMode,
+    ragEnabled,
+  });
   const currentModel =
-    contextModel ?? chatModelOverride ?? aiSettings?.model ?? "";
-
-  // Context Creator（AIコンテキスト提案）は Codex/Snippet 検索ツールを使う
-  // エージェント実行のため、現在のモデル/プロバイダが Tool Use 対応のときだけ
-  // 有効化する。判定は ChatInput の agent ゲートと同じ resolveModelCapabilities
-  // 経路に揃える（CLI / AI のべりすと legacy 等のツール非対応プロバイダも反映）。
-  const canUseCreator = resolveModelCapabilities(
-    currentModel,
-    aiSettings,
-    resolveAinoveristApiVariant(
+    intendedRoute?.model ?? chatModelOverride ?? aiSettings?.model ?? "";
+  const currentProvider =
+    intendedRoute?.provider ??
+    (chatModelOverride
+      ? (chatProviderOverride ?? aiSettings?.provider)
+      : aiSettings?.provider) ??
+    null;
+  const intendedRouteAuthorityKey =
+    resolvedChatTurnRouteAuthorityKey(intendedRoute);
+  const liveContextRouteAuthorityKey = JSON.stringify([
+    modelCapsRevision,
+    agentMode,
+    ragEnabled,
+    intendedRouteAuthorityKey,
+  ]);
+  const materializedContextMatchesRoute =
+    contextRouteAuthorityKey !== null &&
+    contextRouteAuthorityKey === intendedRouteAuthorityKey;
+  const ollamaEffectiveContextUnknown =
+    intendedRoute?.provider === "ollama" &&
+    intendedRoute.contextWindowIsEffective === false;
+  const displayedContextWindow = ollamaEffectiveContextUnknown
+    ? null
+    : materializedContextMatchesRoute
+      ? contextWindowSize
+      : (intendedRoute?.contextWindow ?? null);
+  const contextPreviewAuthorityKey = useMemo(
+    () =>
+      JSON.stringify([
+        isActive,
+        activeWorkspacePath,
+        workspaceOpenRevision,
+        activeProjectId,
+        activeSessionId,
+        chatSceneId,
+        chatScope,
+        scopeAnchorId,
+        threadFocusAuthority,
+        chronicleRevision,
+        contextPlan?.requestId ?? null,
+        currentModel,
+        currentProvider,
+        intendedRouteAuthorityKey,
+        agentMode,
+        ragEnabled,
+        includeBodies,
+        includeMapBoard,
+        mapBoardIdFromStore,
+      ]),
+    [
+      isActive,
+      activeWorkspacePath,
+      workspaceOpenRevision,
+      activeProjectId,
+      activeSessionId,
+      chatSceneId,
+      chatScope,
+      scopeAnchorId,
+      threadFocusAuthority,
+      chronicleRevision,
+      contextPlan?.requestId,
       currentModel,
-      aiModels,
-      aiSettings?.modelApiVariant,
-    ),
-  ).supportsTools;
+      currentProvider,
+      intendedRouteAuthorityKey,
+      agentMode,
+      ragEnabled,
+      includeBodies,
+      includeMapBoard,
+      mapBoardIdFromStore,
+    ],
+  );
+
+  // Context Creator has its own Agent role. Gate the button with the same exact
+  // route that runContextCreator will probe and send, not the conversation route
+  // currently displayed by ContextBar.
+  const canUseCreator = canAttemptContextCreator(intendedRoute);
 
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [inputHasText, setInputHasText] = useState(false);
   const chatEditorRef = useRef<Editor | null>(null);
-  // メッセージリストコンテナの DOM 要素（Codex ポップオーバー用）
-  const [messagesContainerEl, setMessagesContainerEl] =
-    useState<HTMLElement | null>(null);
-
   const allCodexEntries = useCodexStore((s) => s.entries);
 
   const {
@@ -288,7 +739,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     handleDetectedEntries,
     resetInputDismissed,
     handlePin,
+    handlePinBatch,
     handleUnpin,
+    handleUnpinSticky,
     handleReturnToAuto,
     handleRemoveAuto,
     handleRemoveEntry,
@@ -298,6 +751,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     isActive,
     activeSessionId,
     pinsVersion,
+    mutationsDisabled: isLoadingSessions || isLoadingMessages || isStreaming,
     allCodexEntries,
     ensureSession,
     removeEntryFromAuto,
@@ -305,6 +759,30 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     clearAutoExclusion,
     refreshContextLayers,
   });
+  const contextBarProjection = useMemo(() => {
+    const detected = showDetectedEntries
+      ? detectedEntries.filter((entry) => !inputPinnedIds.has(entry.id))
+      : [];
+    const always = alwaysEntries.filter(
+      (entry) => !inputPinnedIds.has(entry.id),
+    );
+    const allPinnedIds = new Set([...pinnedIds, ...inputPinnedIds]);
+    return {
+      detected,
+      always,
+      spotlightCandidateIds: computeSpotlightCandidates(
+        showDetectedEntries ? detectedEntries : [],
+        alwaysEntries,
+        allPinnedIds,
+      ),
+    };
+  }, [
+    alwaysEntries,
+    detectedEntries,
+    inputPinnedIds,
+    pinnedIds,
+    showDetectedEntries,
+  ]);
 
   useChatSessionLifecycle({
     isActive,
@@ -316,7 +794,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     includeMapBoard,
     mapBoardId: mapBoardIdFromStore,
     agentMode,
-    provider: aiSettings?.provider,
+    ragEnabled,
+    routeAuthorityKey: liveContextRouteAuthorityKey,
+    provider: currentProvider,
     currentModel,
     allCodexEntries,
     loadAiSettings,
@@ -326,18 +806,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     refreshContextLayers,
   });
 
-  const {
-    bottomRef,
-    scrollContainerRef,
-    visibleMessages,
-    virtualizer,
-    entranceAnim,
-    handleListScroll,
-  } = useChatMessageViewport({
-    messages,
-    isLoadingMessages,
-    activeSessionId,
-  });
   const {
     extractionDialog,
     snippetDialog,
@@ -408,43 +876,119 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const handleContextCopy = useCallback(
     (text: string, messageId: string) => {
-      const msg = messages.find((m) => m.id === messageId);
+      const msg = useChatStore
+        .getState()
+        .messages.find((message) => message.id === messageId);
       const source = msg?.role === "assistant" ? "ai" : "human";
       copyWithAttribution(text, source)
         .then(() => toast.success(t("chat.copied")))
         .catch(() => toast.error(t("chat.copyFailed")));
     },
-    [messages, t],
+    [t],
   );
 
   const handleSend = useCallback(
-    (
+    async (
       markdown: string,
       options?: {
         overrideAgentMode?: boolean;
         mentionedSceneIds?: string[];
         commandInstruction?: string;
       },
-    ) => {
+    ): Promise<boolean> => {
       const trimmed = markdown.trim();
-      if (!trimmed || isStreaming) return;
+      const liveChatState = useChatStore.getState();
+      if (
+        !trimmed ||
+        liveChatState.isStreaming ||
+        liveChatState.isLoadingSessions ||
+        liveChatState.isLoadingMessages ||
+        sendPreparationRef.current
+      ) {
+        return false;
+      }
+      sendPreparationRef.current = true;
+      const authority = captureChatComposerAuthority();
       // スラッシュコマンド由来の一回限りの指示 (/brainstorm の VS 等) は
       // sendMessage の commandInstruction (L6) へ。残りは送信オプションとして渡す。
       const { commandInstruction, ...rest } = options ?? {};
-      // Flush any pending editor save so sendMessage reads latest scene content from DB.
-      const flushAndSend = async () => {
-        try {
-          if (chatSceneId) await saveScene(chatSceneId);
-          await sendMessage(trimmed, commandInstruction, rest);
-        } finally {
-          // Keep current-input dismissals in the send authority snapshot. They
-          // become eligible for detection again only after this turn finishes.
-          resetInputDismissed();
+      // Flush the active scope document so prompt construction reads the
+      // latest Scene, Codex, or Snippet content from persistence.
+      try {
+        await saveChatScopeBeforeSend(chatScope, chatSceneId, scopeAnchorId);
+        if (!(await awaitChatComposerAuthority(authority))) {
+          toast.warning(t("chat.sendCancelledScopeChanged"));
+          return false;
         }
-      };
-      void flushAndSend();
+        type AcceptanceResult =
+          | { accepted: true }
+          | { accepted: false; cause?: unknown };
+        let settleAcceptance!: (result: AcceptanceResult) => void;
+        let acceptanceSettled = false;
+        const acceptance = new Promise<AcceptanceResult>((resolve) => {
+          settleAcceptance = (result) => {
+            if (acceptanceSettled) return;
+            acceptanceSettled = true;
+            resolve(result);
+          };
+        });
+        const send = sendMessage(trimmed, commandInstruction, {
+          ...rest,
+          _onAccepted: () => settleAcceptance({ accepted: true }),
+        });
+        // Ollama selected-model preflight intentionally awaits before it can
+        // publish placeholders. Wait for the explicit acceptance handshake,
+        // not a same-tick isStreaming snapshot; a declined preflight resolves
+        // send without consuming the draft or pending slash command.
+        void send.then(
+          () => settleAcceptance({ accepted: false }),
+          (cause: unknown) => settleAcceptance({ accepted: false, cause }),
+        );
+        const acceptanceResult = await acceptance;
+        if (!acceptanceResult.accepted) {
+          if (acceptanceResult.cause !== undefined) {
+            toast.error(
+              t("chat.sendFailed", {
+                message:
+                  acceptanceResult.cause instanceof Error
+                    ? acceptanceResult.cause.message
+                    : String(acceptanceResult.cause),
+              }),
+            );
+          }
+          return false;
+        }
+        void send.then(
+          () => resetInputDismissed(),
+          (cause: unknown) => {
+            resetInputDismissed();
+            toast.error(
+              t("chat.sendFailed", {
+                message: cause instanceof Error ? cause.message : String(cause),
+              }),
+            );
+          },
+        );
+        return true;
+      } catch (cause) {
+        toast.error(
+          t("chat.sendFailed", {
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
+        );
+        return false;
+      } finally {
+        sendPreparationRef.current = false;
+      }
     },
-    [isStreaming, sendMessage, chatSceneId, resetInputDismissed],
+    [
+      sendMessage,
+      chatScope,
+      chatSceneId,
+      scopeAnchorId,
+      resetInputDismissed,
+      t,
+    ],
   );
 
   const handleScopeChange = useCallback(
@@ -584,6 +1128,46 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     },
     [codexApproval, updateCodexApprovals],
   );
+  const renderViewportMessage = useCallback(
+    (message: ChatMessageType, streaming: boolean) => (
+      <ChatMessage
+        msg={message}
+        isStreaming={streaming}
+        onInsert={insertFromChat}
+        onExtractCodexQuick={handleExtractCodexQuick}
+        onExtractCodexDetailed={handleExtractCodexDetailed}
+        onSaveSnippetQuick={handleSaveSnippetQuick}
+        onSaveSnippetDetailed={handleSaveSnippetDetailed}
+        onEdit={handleEditMessage}
+        onDelete={handleDeleteMessage}
+        onRegenerate={
+          isLoadingSessions || isLoadingMessages ? undefined : handleRegenerate
+        }
+        onRetryWithAgent={
+          isLoadingSessions || isLoadingMessages
+            ? undefined
+            : handleRetryWithAgent
+        }
+        onViewPrompt={handleViewPrompt}
+        onContextMenu={handleContextMenu}
+      />
+    ),
+    [
+      handleContextMenu,
+      handleDeleteMessage,
+      handleEditMessage,
+      handleExtractCodexDetailed,
+      handleExtractCodexQuick,
+      handleRegenerate,
+      handleRetryWithAgent,
+      isLoadingMessages,
+      isLoadingSessions,
+      handleSaveSnippetDetailed,
+      handleSaveSnippetQuick,
+      handleViewPrompt,
+      insertFromChat,
+    ],
+  );
 
   const handleToggleMapOverlay = useCallback(() => {
     const next = !includeMapBoard;
@@ -596,17 +1180,13 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // Direct browser transports do not expose provider-managed Web search.
   // Keep the trial on the explicitly disclosed Local LLM/BYOK request only.
   const ragCapable =
-    !runtimeCapabilities.browserDirectAi &&
-    isRagCapableProvider(aiSettings?.provider);
+    !runtimeCapabilities.browserDirectAi && canUseCurrentChatPublicRag();
   const handleToggleRag = useCallback(() => {
     setRagEnabled(!ragEnabled);
   }, [ragEnabled, setRagEnabled]);
 
   const __renderResult = (
     <div className="chat-panel-surface relative flex h-full flex-col bg-background">
-      {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
-      <CodexPopover containerEl={messagesContainerEl} />
-
       <ChatPanelHeader
         sessionsPanelOpen={sessionsPanelOpen}
         setSessionsPanelOpen={setSessionsPanelOpen}
@@ -636,31 +1216,24 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       />
 
       <ContextBar
-        scopeAnchor={scopeAnchor}
+        previewAuthorityKey={contextPreviewAuthorityKey}
+        scopeAnchor={currentScopeAnchor}
         contextPlan={contextPlan}
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
+        pinnedCodexIds={pinnedIds}
         pinnedSnippets={pinnedSnippets}
         pinnedStickies={pinnedStickies}
-        onUnpinSticky={async (stickyId) => {
-          if (!activeSessionId) return;
-          await chatApi.unpinStickyEntry(activeSessionId, stickyId);
-          await useChatStore.getState().refreshContextLayers();
+        onUnpinSticky={(stickyId) => {
+          void handleUnpinSticky(stickyId);
         }}
-        detectedEntries={
-          showDetectedEntries
-            ? detectedEntries.filter((e) => !inputPinnedIds.has(e.id))
-            : []
-        }
-        alwaysEntries={alwaysEntries.filter((e) => !inputPinnedIds.has(e.id))}
-        spotlightCandidateIds={computeSpotlightCandidates(
-          showDetectedEntries ? detectedEntries : [],
-          alwaysEntries,
-          new Set([...pinnedIds, ...inputPinnedIds]),
-        )}
+        detectedEntries={contextBarProjection.detected}
+        alwaysEntries={contextBarProjection.always}
+        spotlightCandidateIds={contextBarProjection.spotlightCandidateIds}
         onReturnToAuto={handleReturnToAuto}
         onRemove={handleRemoveEntry}
         onRemoveAuto={handleRemoveAuto}
         onPin={handlePin}
+        onPinBatch={handlePinBatch}
         onDismissViaChild={handleDismissViaChild}
         dismissedViaChildIds={dismissedViaChildIds}
         pinnedSnippetIds={pinnedSnippetIds}
@@ -668,10 +1241,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onUnpinEntry={handleUnpin}
         onTogglePinChildren={handleTogglePinChildren}
         contextTokenCount={contextTokenCount}
-        contextWindowOverride={contextWindowSize}
+        contextWindowOverride={displayedContextWindow}
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
         model={currentModel}
+        provider={currentProvider}
+        creatorFallbackRoute={intendedRoute}
         canUseCreator={canUseCreator}
         projectOutline={projectOutline}
         chapterOutlines={chapterOutlines}
@@ -680,119 +1255,19 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onCreateLinkedSession={
           isStreaming ? undefined : () => void createLinkedSession()
         }
+        spotlightDisabled={
+          isLoadingSessions || isLoadingMessages || isStreaming
+        }
         cacheInvalidatedReason={cacheInvalidatedReason}
         onDismissCacheInvalidated={dismissCacheInvalidated}
       />
 
-      <div
-        ref={scrollContainerRef}
-        data-testid="chat-scroll-container"
-        onScroll={handleListScroll}
-        // overflow-anchor: ブラウザ自身の scroll anchoring も stick 判定を汚す
-        // プログラム起因 scrollTop 移動源になるため切る (アンカーは自前管理)
-        className="flex-1 overflow-y-auto px-4 py-3 [overflow-anchor:none]"
-      >
-        {isLoadingMessages ? (
-          <MessageBubbleSkeletonList testId="chat-messages-loading" />
-        ) : messages.length === 0 ? (
-          <div className="mt-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              {t("chat.noMessages")}
-            </p>
-            {/* AI ミス免責: 常設だと狭いパネルで邪魔なので空状態にのみ表示。
-                会話が始まると消える（期待値調整は開封時で十分）。 */}
-            <p className="mt-2 text-[11px] leading-tight text-muted-foreground/70">
-              {t("chat.disclaimer")}
-            </p>
-          </div>
-        ) : (
-          <>
-            {/* 行は absolute + translateY 配置なので、行間 (旧 space-y-4) は
-                各行の pb-4 として測定高さに含める */}
-            <div
-              data-testid="chat-virtual-list"
-              className="relative w-full"
-              style={{ height: `${virtualizer.getTotalSize()}px` }}
-              // ref はインライン関数にしない: render 毎に identity が変わると
-              // React が commit 毎に null→el で呼び直し、setState(null) 経由の
-              // 余剰 render が毎 delta に乗る (gate: virtualization.test.tsx)
-              ref={setMessagesContainerEl}
-            >
-              {virtualizer.getVirtualItems().map((vItem) => {
-                const msg = visibleMessages[vItem.index];
-                if (!msg) return null;
-                const animateIn = entranceAnim.animateIds.has(msg.id);
-                return (
-                  <div
-                    key={msg.id}
-                    data-index={vItem.index}
-                    ref={virtualizer.measureElement}
-                    className="absolute left-0 top-0 w-full pb-4"
-                    style={{ transform: `translateY(${vItem.start}px)` }}
-                  >
-                    <motion.div
-                      data-animate-in={animateIn || undefined}
-                      initial={animateIn ? { opacity: 0, x: 20 } : false}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={
-                        reduced
-                          ? { duration: 0 }
-                          : { type: "spring", stiffness: 260, damping: 22 }
-                      }
-                    >
-                      <ChatMessage
-                        msg={msg}
-                        isStreaming={isStreaming}
-                        onInsert={insertFromChat}
-                        onExtractCodexQuick={handleExtractCodexQuick}
-                        onExtractCodexDetailed={handleExtractCodexDetailed}
-                        onSaveSnippetQuick={handleSaveSnippetQuick}
-                        onSaveSnippetDetailed={handleSaveSnippetDetailed}
-                        onEdit={handleEditMessage}
-                        onDelete={handleDeleteMessage}
-                        onRegenerate={handleRegenerate}
-                        onRetryWithAgent={handleRetryWithAgent}
-                        onViewPrompt={handleViewPrompt}
-                        onContextMenu={handleContextMenu}
-                      />
-                    </motion.div>
-                  </div>
-                );
-              })}
-            </div>
-            {/* 質問カード / streaming indicator はスペーサ外の通常フロー。
-                高さは virtualizer の totalSize に乗らないが、scrollToBottom
-                が bottomRef (全兄弟の後) に着地するため末尾はズレない。 */}
-            {codexApproval && (
-              <CodexApprovalCard
-                key={codexApprovalKey(codexApproval)}
-                request={codexApproval.request}
-                onDecision={handleCodexApprovalDecision}
-              />
-            )}
-            {pendingUserQuestion &&
-              pendingUserQuestion.sessionId === activeSessionId && (
-                <UserQuestionCard
-                  key={pendingUserQuestion.toolCallId}
-                  spec={pendingUserQuestion.spec}
-                  onSubmit={resolveUserQuestion}
-                  onSkip={dismissUserQuestion}
-                />
-              )}
-            {isStreaming && !pendingUserQuestion && (
-              <div
-                data-testid="streaming-indicator"
-                className="flex items-center gap-1 text-muted-foreground"
-              >
-                <span className="animate-pulse text-xs">
-                  {t("chat.generating")}
-                </span>
-              </div>
-            )}
-          </>
-        )}
-        <div ref={bottomRef} />
-      </div>
+      <ChatMessageViewport
+        activeSessionId={activeSessionId}
+        codexApproval={codexApproval}
+        onCodexApprovalDecision={handleCodexApprovalDecision}
+        renderMessage={renderViewportMessage}
+      />
 
       {error && (
         <div className="border-t border-destructive bg-destructive/10 px-4 py-2">
@@ -822,6 +1297,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       {agentContinuation &&
         agentContinuation.sessionId === activeSessionId &&
         !isStreaming &&
+        !isLoadingSessions &&
+        !isLoadingMessages &&
         !pendingUserQuestion && (
           <div className="border-t border-border bg-muted/30 px-4 py-2">
             <button
@@ -864,7 +1341,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
           <ChatInput
             onSend={handleSend}
-            disabled={isStreaming}
+            disabled={isStreaming || isLoadingSessions || isLoadingMessages}
             policyDisabled={chatGate.presentation !== "enabled"}
             editorRef={chatEditorRef}
             onDetectedEntries={handleDetectedEntries}
@@ -885,7 +1362,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         activeSceneId={treeActiveSceneId}
         onCloseSessions={() => setSessionsPanelOpen(false)}
         contextMenu={contextMenu}
-        contextMutationsDisabled={isStreaming}
+        contextMutationsDisabled={
+          isLoadingSessions || isLoadingMessages || isStreaming
+        }
         onCloseContextMenu={() => setContextMenu(null)}
         contextActions={{
           onInsert: insertFromChat,
@@ -900,6 +1379,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         }}
         promptViewOpen={promptViewOpen}
         promptViewSnapshot={promptViewSnapshot}
+        promptProvider={currentProvider}
         onClosePrompt={() => setPromptViewOpen(false)}
       />
     </div>

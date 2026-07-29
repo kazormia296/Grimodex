@@ -136,8 +136,30 @@ describe("chat/api", () => {
       expect(mockInvoke).toHaveBeenCalledWith("list_ai_models", {
         provider: "openrouter",
         endpointId: null,
+        selectedModelId: null,
+        expectedOllamaEndpoint: null,
       });
       expect(result).toEqual(models);
+    });
+
+    it("passes an optional selected Ollama model probe", async () => {
+      mockInvoke.mockResolvedValueOnce([
+        { id: "gemma4:latest", name: "gemma4:latest" },
+      ]);
+
+      await listAiModels(
+        "ollama",
+        null,
+        "gemma4:latest",
+        "http://127.0.0.1:11434",
+      );
+
+      expect(mockInvoke).toHaveBeenCalledWith("list_ai_models", {
+        provider: "ollama",
+        endpointId: null,
+        selectedModelId: "gemma4:latest",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      });
     });
   });
 });

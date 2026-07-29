@@ -1,9 +1,18 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useTabStore } from "./tabStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 // Reset store between tests
 function resetStore() {
-  useTabStore.setState({ tabs: [], activeTabId: null });
+  useTabStore.setState({
+    tabs: [],
+    activeTabId: null,
+    secondaryTabs: [],
+    secondaryActiveTabId: null,
+    secondaryGroupOpen: false,
+    isLinearMode: false,
+  });
+  useExternalWriteStore.getState().clear();
 }
 
 describe("tabStore", () => {
@@ -201,6 +210,69 @@ describe("tabStore", () => {
       // activeTabId should remain unchanged
       expect(useTabStore.getState().activeTabId).toBe("scene-1");
     });
+
+    it("does not detach the active tab while its external conflict is unresolved", () => {
+      useTabStore.getState().openPinned("scene-1");
+      useTabStore.getState().openPinned("scene-2");
+      useTabStore.getState().setActiveTab("scene-1");
+      useExternalWriteStore.getState().pushConflict({
+        documentKey: { kind: "tree", id: "scene-1", storage: "database" },
+        sceneId: "scene-1",
+        domain: "scene",
+        opType: "update",
+        entityId: "scene-1",
+      });
+
+      useTabStore.getState().setActiveTab("scene-2");
+
+      expect(useTabStore.getState().activeTabId).toBe("scene-1");
+    });
+  });
+
+  it("does not close the active tab while its external conflict is unresolved", () => {
+    useTabStore.getState().openPinned("scene-1");
+    useExternalWriteStore.getState().pushConflict({
+      documentKey: { kind: "tree", id: "scene-1", storage: "database" },
+      sceneId: "scene-1",
+      domain: "scene",
+      opType: "update",
+      entityId: "scene-1",
+    });
+
+    useTabStore.getState().closeTab("scene-1");
+
+    expect(useTabStore.getState().activeTabId).toBe("scene-1");
+    expect(useTabStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("does not leave linear mode while a tree conflict owns a mounted draft", () => {
+    useTabStore.setState({ isLinearMode: true });
+    useExternalWriteStore.getState().pushConflict({
+      documentKey: { kind: "tree", id: "scene-1", storage: "database" },
+      sceneId: "scene-1",
+      domain: "scene",
+      opType: "update",
+      entityId: "scene-1",
+    });
+
+    useTabStore.getState().toggleLinearMode();
+
+    expect(useTabStore.getState().isLinearMode).toBe(true);
+  });
+
+  it("does not switch the displayed Codex phase while its draft is conflicted", () => {
+    useTabStore.getState().openCodexTab("entry-1", "__base__");
+    useExternalWriteStore.getState().pushConflict({
+      documentKey: { kind: "codex", id: "entry-1", phaseId: null },
+      sceneId: "entry-1",
+      domain: "codex",
+      opType: "update",
+      entityId: "entry-1",
+    });
+
+    useTabStore.getState().openCodexTab("entry-1", "phase-1");
+
+    expect(useTabStore.getState().tabs[0]?.overridePhaseId).toBe("__base__");
   });
 
   // --- ensureTab ---

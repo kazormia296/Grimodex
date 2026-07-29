@@ -190,14 +190,12 @@ describe("Zen shader post-processing", () => {
       u_zenUiContrastTextColor: [0.8, 0.82, 0.85],
       u_zenUiContrastMix: 0.68,
     });
-    expect(uniforms["u_zenUiSurfaceRects[0]"]).toHaveLength(32);
-    expect(uniforms["u_zenUiSurfaceRects[0]"].slice(0, 2)).toEqual([
-      [0, 0.2, 0.15, 0.8],
-      [0.85, 0.2, 1, 0.8],
-    ]);
-    expect(uniforms["u_zenUiSurfaceParams[0]"].slice(0, 2)).toEqual([
-      [12, 0, 0, 0],
-      [12, 0, 0, 0],
+    expect(uniforms["u_zenUiSurfaceRects[0]"]).toHaveLength(32 * 4);
+    expect([...uniforms["u_zenUiSurfaceRects[0]"].slice(0, 8)]).toEqual(
+      [0, 0.2, 0.15, 0.8, 0.85, 0.2, 1, 0.8].map(Math.fround),
+    );
+    expect([...uniforms["u_zenUiSurfaceParams[0]"].slice(0, 8)]).toEqual([
+      12, 0, 0, 0, 12, 0, 0, 0,
     ]);
 
     const disabled = parseZenShaderConfig({

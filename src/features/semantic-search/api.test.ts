@@ -23,6 +23,7 @@ import {
   eventsSemanticSearch,
   getSemanticChunkContext,
   semanticDebugDump,
+  semanticCancelBackground,
   semanticIndexScene,
   semanticIndexStatus,
   semanticReindexAll,
@@ -34,6 +35,14 @@ import {
 describe("semantic-search/api", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe("semanticCancelBackground", () => {
+    it("invokes semantic_cancel_background without project-scoped payload", async () => {
+      mockInvoke.mockResolvedValueOnce(7);
+      await expect(semanticCancelBackground()).resolves.toBe(7);
+      expect(mockInvoke).toHaveBeenCalledWith("semantic_cancel_background", {});
+    });
   });
 
   describe("semanticIndexScene", () => {

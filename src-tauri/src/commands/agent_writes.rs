@@ -28,7 +28,9 @@ pub(crate) fn agent_codex_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentCodexCreatePayload,
 ) -> Result<Value, AppError> {
-    with_db(&ws_state, |db| agent_writes::agent_codex_create_impl(db, payload))
+    with_db(&ws_state, |db| {
+        agent_writes::agent_codex_create_impl(db, payload)
+    })
 }
 
 #[tauri::command(async)]
@@ -36,7 +38,9 @@ pub(crate) fn agent_codex_update(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentCodexUpdatePayload,
 ) -> Result<Value, AppError> {
-    with_db(&ws_state, |db| agent_writes::agent_codex_update_impl(db, payload))
+    with_db(&ws_state, |db| {
+        agent_writes::agent_codex_update_impl(db, payload)
+    })
 }
 
 #[tauri::command(async)]
@@ -44,7 +48,9 @@ pub(crate) fn agent_write_bundle(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentWriteBundlePayload,
 ) -> Result<Value, AppError> {
-    with_db(&ws_state, |db| agent_writes::agent_write_bundle_impl(db, payload))
+    with_db(&ws_state, |db| {
+        agent_writes::agent_write_bundle_impl(db, payload)
+    })
 }
 
 #[tauri::command(async)]
@@ -130,7 +136,9 @@ pub(crate) fn agent_event_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventCreatePayload,
 ) -> Result<Value, AppError> {
-    with_db(&ws_state, |db| agent_writes::agent_event_create_impl(db, payload))
+    with_db(&ws_state, |db| {
+        agent_writes::agent_event_create_impl(db, payload)
+    })
 }
 
 #[tauri::command(async)]
@@ -138,7 +146,9 @@ pub(crate) fn agent_event_update(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventUpdatePayload,
 ) -> Result<Value, AppError> {
-    with_db(&ws_state, |db| agent_writes::agent_event_update_impl(db, payload))
+    with_db(&ws_state, |db| {
+        agent_writes::agent_event_update_impl(db, payload)
+    })
 }
 
 #[tauri::command(async)]
@@ -146,7 +156,9 @@ pub(crate) fn agent_event_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventIdPayload,
 ) -> Result<Value, AppError> {
-    with_db(&ws_state, |db| agent_writes::agent_event_delete_impl(db, payload))
+    with_db(&ws_state, |db| {
+        agent_writes::agent_event_delete_impl(db, payload)
+    })
 }
 
 #[tauri::command(async)]

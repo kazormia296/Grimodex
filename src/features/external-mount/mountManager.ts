@@ -8,7 +8,9 @@ import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
   createNode,
+  deleteNode,
   listAllNodes,
+  listExpiredArchivedNodeIds,
   loadSceneContent,
   loadSceneContents,
   saveSceneContent,
@@ -23,6 +25,14 @@ import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { getPersistedActiveSceneId } from "@/features/editor/tabPersistence";
+import { discardRegisteredDocumentDrafts } from "@/features/editor/editorSaveRegistry";
+import { runExclusiveDocumentMutation } from "@/features/editor/document/documentSaveCoordinator";
+import type { DocumentKey } from "@/features/editor/document/documentKey";
+import { awaitPendingSceneContentWrite } from "@/features/tree/pendingSceneWrites";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { discardAutoSavesForDocument } from "@/hooks/useAutoSave";
 import * as mountApi from "./api";
 import { useExternalRootStore } from "./externalRootStore";
 import { markdownToPmJson, pmJsonToMarkdown } from "./markdownBridge";
@@ -37,6 +47,8 @@ import {
 } from "./sourceUri";
 import type { ExternalRoot, FileEvent, ScanResult, ScannedFile } from "./types";
 import { EXTERNAL_ROOTS_KEY } from "./types";
+import { cancelWriteBack, hasPendingWriteBack } from "./writeBack";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 const ARCHIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RENAME_WINDOW_MS = 5000;
@@ -78,8 +90,9 @@ export function _resetRecentDeletes(): void {
   recentDeletes.length = 0;
 }
 
-export async function loadRootsFromSettings(): Promise<ExternalRoot[]> {
-  const projectId = getCurrentProjectId();
+export async function loadRootsFromSettings(
+  projectId = getCurrentProjectId(),
+): Promise<ExternalRoot[]> {
   const raw = await getProjectSetting(projectId, EXTERNAL_ROOTS_KEY);
   if (!raw) return [];
   try {
@@ -91,8 +104,8 @@ export async function loadRootsFromSettings(): Promise<ExternalRoot[]> {
 
 export async function saveRootsToSettings(
   roots: ExternalRoot[],
+  projectId = getCurrentProjectId(),
 ): Promise<void> {
-  const projectId = getCurrentProjectId();
   await setProjectSetting(projectId, EXTERNAL_ROOTS_KEY, JSON.stringify(roots));
 }
 
@@ -102,22 +115,146 @@ export async function saveRootsToSettings(
 // registerMount with "overlaps with existing root: <self>". Dedup
 // concurrent calls for the same project; chain across projects so a
 // rapid switch still re-inits after the prior project's init drains.
-let inFlightInit: { projectId: string; promise: Promise<void> } | null = null;
+interface ExternalMountInitializationScope {
+  projectId: string;
+  workspaceOpenRevision: number | undefined;
+  workspacePath: string | null;
+  authorityToken: number;
+  previousRoots: ExternalRoot[];
+}
 
-export async function initializeExternalMounts(): Promise<void> {
+class ExternalMountAuthoritySupersededError extends Error {
+  constructor() {
+    super("External mount authority was superseded");
+    this.name = "ExternalMountAuthoritySupersededError";
+  }
+}
+
+type MountAuthorityGuard = () => boolean;
+
+let mountAuthorityToken = 0;
+const rootAuthorityTokens = new Map<string, number>();
+
+interface CapturedMountAuthority {
+  projectId: string;
+  token: number;
+  workspaceOpenRevision: number | undefined;
+  isCurrent: MountAuthorityGuard;
+}
+
+function assertMountAuthorityCurrent(isCurrent: MountAuthorityGuard): void {
+  if (!isCurrent()) throw new ExternalMountAuthoritySupersededError();
+}
+
+function captureMountAuthority(rootId?: string): CapturedMountAuthority | null {
   const projectId = getCurrentProjectId();
-  if (inFlightInit && inFlightInit.projectId === projectId) {
+  const token = mountAuthorityToken;
+  const workspace = getCurrentWorkspaceIdentity();
+  if (
+    rootId !== undefined &&
+    token !== 0 &&
+    rootAuthorityTokens.get(rootId) !== token
+  ) {
+    return null;
+  }
+  const isCurrent = () => {
+    if (token !== mountAuthorityToken || getCurrentProjectId() !== projectId) {
+      return false;
+    }
+    if (
+      rootId !== undefined &&
+      token !== 0 &&
+      rootAuthorityTokens.get(rootId) !== token
+    ) {
+      return false;
+    }
+    const currentWorkspace = getCurrentWorkspaceIdentity();
+    return workspace === null
+      ? currentWorkspace === null
+      : currentWorkspace?.path === workspace.path &&
+          currentWorkspace.openRevision === workspace.openRevision;
+  };
+  return {
+    projectId,
+    token,
+    workspaceOpenRevision: workspace?.openRevision,
+    isCurrent,
+  };
+}
+
+/** @internal test helper */
+export function _resetMountAuthorityForTests(): void {
+  mountAuthorityToken = 0;
+  rootAuthorityTokens.clear();
+  inFlightInit = null;
+  _resetPendingArchives();
+  recentDeletes.length = 0;
+}
+
+let inFlightInit: {
+  scope: ExternalMountInitializationScope;
+  promise: Promise<void>;
+} | null = null;
+
+export interface InitializeExternalMountsOptions {
+  projectId?: string;
+  workspaceOpenRevision?: number;
+}
+
+export async function initializeExternalMounts(
+  options: InitializeExternalMountsOptions = {},
+): Promise<void> {
+  const projectId = options.projectId ?? getCurrentProjectId();
+  const currentWorkspace = getCurrentWorkspaceIdentity();
+  const workspaceOpenRevision =
+    options.workspaceOpenRevision ?? currentWorkspace?.openRevision;
+  const desiredScope = {
+    projectId,
+    workspaceOpenRevision,
+    workspacePath:
+      currentWorkspace !== null &&
+      currentWorkspace.openRevision === workspaceOpenRevision
+        ? currentWorkspace.path
+        : null,
+  };
+  if (
+    inFlightInit &&
+    inFlightInit.scope.projectId === desiredScope.projectId &&
+    inFlightInit.scope.workspaceOpenRevision ===
+      desiredScope.workspaceOpenRevision &&
+    inFlightInit.scope.workspacePath === desiredScope.workspacePath
+  ) {
     return inFlightInit.promise;
   }
+  const scope: ExternalMountInitializationScope = {
+    ...desiredScope,
+    authorityToken: ++mountAuthorityToken,
+    previousRoots: useExternalRootStore.getState().roots,
+  };
+  // A newly accepted scope synchronously revokes every watcher callback and
+  // delayed archive owned by the prior Workspace before either init resumes.
+  _resetPendingArchives();
+  recentDeletes.length = 0;
+  rootAuthorityTokens.clear();
+  useExternalRootStore.setState({
+    roots: [],
+    missingRoots: [],
+    isInitialized: false,
+    conflicts: [],
+    mutedWrites: [],
+  });
   const previousInit = inFlightInit?.promise;
-  const entry: { projectId: string; promise: Promise<void> } = {
-    projectId,
+  const entry: {
+    scope: ExternalMountInitializationScope;
+    promise: Promise<void>;
+  } = {
+    scope,
     promise: Promise.resolve(),
   };
   entry.promise = (async () => {
     if (previousInit) await previousInit.catch(() => {});
     try {
-      await doInitializeExternalMounts();
+      await doInitializeExternalMounts(scope);
     } finally {
       if (inFlightInit === entry) inFlightInit = null;
     }
@@ -126,27 +263,62 @@ export async function initializeExternalMounts(): Promise<void> {
   return entry.promise;
 }
 
-async function doInitializeExternalMounts(): Promise<void> {
-  const previous = useExternalRootStore.getState().roots;
+async function doInitializeExternalMounts(
+  scope: ExternalMountInitializationScope,
+): Promise<void> {
+  const { projectId } = scope;
+  const isCurrent = () => isInitializationMutationScopeCurrent(scope);
+  const previous = scope.previousRoots;
   for (const root of previous) {
+    assertMountAuthorityCurrent(isCurrent);
     try {
       await mountApi.unregisterMount(root.id);
-    } catch {
+      assertMountAuthorityCurrent(isCurrent);
+    } catch (err) {
+      if (err instanceof ExternalMountAuthoritySupersededError) throw err;
       // ignore stale watchers
     }
   }
 
   const missing: ExternalRoot[] = [];
+  let treeMayHaveChanged = false;
   try {
-    const roots = await loadRootsFromSettings();
+    assertMountAuthorityCurrent(isCurrent);
+    const roots = await loadRootsFromSettings(projectId);
+    assertMountAuthorityCurrent(isCurrent);
     useExternalRootStore.getState().setRoots(roots);
-    await purgeExpiredArchives();
+    try {
+      treeMayHaveChanged =
+        (await purgeExpiredArchives(projectId, isCurrent)) > 0;
+    } catch (error) {
+      // A targeted delete can fail after an earlier row was removed. Force a
+      // Tree refresh in the failure finalizer so partial cleanup cannot leave
+      // the published projection stale.
+      treeMayHaveChanged = true;
+      throw error;
+    }
+    assertMountAuthorityCurrent(isCurrent);
 
     for (const root of roots) {
+      // Reconciliation may create, update, restore, or archive Tree rows.
+      // Conservatively refresh once after all roots instead of trying to infer
+      // whether every individual disk comparison was a no-op.
+      treeMayHaveChanged = true;
+      assertMountAuthorityCurrent(isCurrent);
       let scan: ScanResult;
       try {
         scan = await mountApi.registerMount(root.id, root.path, root.label);
+        if (!isCurrent()) {
+          try {
+            await mountApi.unregisterMount(root.id);
+          } catch {
+            // Best effort: the target scope will establish its own watchers.
+          }
+          throw new ExternalMountAuthoritySupersededError();
+        }
+        rootAuthorityTokens.set(root.id, scope.authorityToken);
       } catch (err) {
+        if (err instanceof ExternalMountAuthoritySupersededError) throw err;
         debugLog.error(
           "ExternalMount",
           `register failed: ${root.path}`,
@@ -156,8 +328,9 @@ async function doInitializeExternalMounts(): Promise<void> {
         continue;
       }
       try {
-        await reconcileRoot(root, scan);
+        await reconcileRoot(root, scan, projectId, isCurrent);
       } catch (err) {
+        if (err instanceof ExternalMountAuthoritySupersededError) throw err;
         debugLog.error(
           "ExternalMount",
           `reconcile failed: ${root.label}`,
@@ -171,64 +344,202 @@ async function doInitializeExternalMounts(): Promise<void> {
       }
     }
   } catch (err) {
-    // loadRootsFromSettings / purgeExpiredArchives が落ちると ScenesPanel が
-    // mountInitialized = true を永久に待ち、タブ復元 (loadTabState) が走らない。
-    // ここで握ってでも下の finally に到達させる。なお、setRoots 未実行で抜けた
-    // 場合 useExternalRootStore.roots は previous 値のままになるが、loadTree は
-    // DB から tree を組み立てるので表示は安全。
-    debugLog.error("ExternalMount", "initialize failed", errorDetail(err));
+    // loadRootsFromSettings / purgeExpiredArchives が落ちても unscoped boot
+    // の UI 初期化を永久に止めないよう、下の finally で最終 tree reload と
+    // mountInitialized の判定まで進める。tab restore は tree hydration と
+    // project/workspace authority を別途証明できた場合だけ実行する。
+    if (!(err instanceof ExternalMountAuthoritySupersededError)) {
+      debugLog.error("ExternalMount", "initialize failed", errorDetail(err));
+    }
   } finally {
-    useExternalRootStore.getState().setMissingRoots(missing);
-    // ScenesPanel.tsx の useEffect([mountInitialized]) は mountInitialized が
-    // true に変わった commit 時点の useTreeStore.nodes から validNodeIds を作り
-    // tabStore.loadTabState に渡す。setInitialized(true) を loadTree より先に
-    // 呼ぶと React の commit が yield 中に走り、nodes 空のまま useEffect が
-    // 発火して scene/note タブが全部除外される (1840c8c7 の race)。よって
-    // setInitialized は必ず loadTree 完了後。loadTree が落ちても初期化フラグは
-    // 立てて UI を進行させる。
+    await finalizeExternalMountInitialization(
+      scope,
+      missing,
+      treeMayHaveChanged,
+    );
+  }
+}
+
+async function finalizeExternalMountInitialization(
+  scope: ExternalMountInitializationScope,
+  missing: ExternalRoot[],
+  treeMayHaveChanged: boolean,
+): Promise<void> {
+  if (!isInitializationMutationScopeCurrent(scope)) return;
+  const { projectId, workspaceOpenRevision } = scope;
+  useExternalRootStore.getState().setMissingRoots(missing);
+  // The final tree hydration and tab restore form one project/workspace
+  // authority boundary. React mount timing must not decide which node IDs
+  // are valid for persisted tabs.
+  const hydratedTree = useTreeStore.getState();
+  let treeHydrated =
+    !treeMayHaveChanged &&
+    hydratedTree.projectId === projectId &&
+    hydratedTree.hydratedProjectId === projectId &&
+    hydratedTree.hydratedWorkspaceOpenRevision ===
+      (workspaceOpenRevision ?? null);
+  if (!treeHydrated) {
     try {
-      await useTreeStore.getState().loadTree(getCurrentProjectId());
+      await useTreeStore
+        .getState()
+        .reloadTreeOrThrow(projectId, workspaceOpenRevision);
+      treeHydrated = true;
     } catch (err) {
       debugLog.error("ExternalMount", "loadTree failed", errorDetail(err));
     }
+  }
+  const scopeCurrent = treeHydrated && isInitializationScopeCurrent(scope);
+  // Legacy/unscoped boot has no revision proof, but must still release the
+  // mount UI even on failure. Explicit lifecycle work may publish this
+  // global flag only while its captured Project/Workspace is still current.
+  if (workspaceOpenRevision === undefined || scopeCurrent) {
     useExternalRootStore.getState().setInitialized(true);
   }
+  if (!scopeCurrent) return;
+
+  const treeState = useTreeStore.getState();
+  const validNodeIds = new Set<string>();
+  for (const node of treeState.nodes) {
+    if (node.nodeType === "scene" || node.nodeType === "note") {
+      validNodeIds.add(node.id);
+    }
+  }
+  const applied = await useTabStore
+    .getState()
+    .loadTabState(projectId, validNodeIds, (snapshot) => {
+      if (!isInitializationScopeCurrent(scope)) return false;
+      const restoredSceneId = getPersistedActiveSceneId(snapshot);
+      if (restoredSceneId && validNodeIds.has(restoredSceneId)) {
+        useTreeStore.getState().setActiveScene(restoredSceneId);
+      }
+      return isInitializationScopeCurrent(scope);
+    });
+  if (applied && isInitializationScopeCurrent(scope)) {
+    useTabStore.getState().initAutoSave(projectId);
+  }
+}
+
+function isInitializationMutationScopeCurrent(
+  scope: ExternalMountInitializationScope,
+): boolean {
+  if (
+    scope.authorityToken !== mountAuthorityToken ||
+    getCurrentProjectId() !== scope.projectId
+  ) {
+    return false;
+  }
+  const currentWorkspace = getCurrentWorkspaceIdentity();
+  if (scope.workspaceOpenRevision === undefined) {
+    return currentWorkspace === null;
+  }
+  if (scope.workspacePath !== null) {
+    return (
+      currentWorkspace?.path === scope.workspacePath &&
+      currentWorkspace.openRevision === scope.workspaceOpenRevision
+    );
+  }
+  return (
+    currentWorkspace === null ||
+    currentWorkspace.openRevision === scope.workspaceOpenRevision
+  );
+}
+
+function isInitializationScopeCurrent(
+  scope: ExternalMountInitializationScope,
+): boolean {
+  if (
+    !isInitializationMutationScopeCurrent(scope) ||
+    scope.workspaceOpenRevision === undefined
+  ) {
+    return false;
+  }
+  const treeState = useTreeStore.getState();
+  if (
+    treeState.projectId !== scope.projectId ||
+    treeState.hydratedProjectId !== scope.projectId ||
+    treeState.hydratedWorkspaceOpenRevision !== scope.workspaceOpenRevision
+  ) {
+    return false;
+  }
+  const currentWorkspace = getCurrentWorkspaceIdentity();
+  if (scope.workspacePath !== null) {
+    return (
+      currentWorkspace?.path === scope.workspacePath &&
+      currentWorkspace.openRevision === scope.workspaceOpenRevision
+    );
+  }
+  return (
+    currentWorkspace === null ||
+    currentWorkspace.openRevision === scope.workspaceOpenRevision
+  );
 }
 
 export async function addExternalMount(
   path: string,
   label?: string,
 ): Promise<void> {
+  const authority = captureMountAuthority();
+  if (!authority) return;
+  const { projectId, isCurrent } = authority;
   const id = crypto.randomUUID();
   const resolvedLabel = label ?? basename(path);
   const root: ExternalRoot = { id, path, label: resolvedLabel };
   const scan = await mountApi.registerMount(id, path, resolvedLabel);
-  const roots = [...(await loadRootsFromSettings()), root];
-  await saveRootsToSettings(roots);
+  if (!isCurrent()) {
+    try {
+      await mountApi.unregisterMount(id);
+    } catch {
+      // Best-effort cleanup of the watcher created for a superseded scope.
+    }
+    return;
+  }
+  assertMountAuthorityCurrent(isCurrent);
+  rootAuthorityTokens.set(id, authority.token);
+  const roots = [...(await loadRootsFromSettings(projectId)), root];
+  assertMountAuthorityCurrent(isCurrent);
+  await saveRootsToSettings(roots, projectId);
+  assertMountAuthorityCurrent(isCurrent);
   useExternalRootStore.getState().addRoot(root);
-  await reconcileRoot(root, scan);
-  await useTreeStore.getState().loadTree(getCurrentProjectId());
+  await reconcileRoot(root, scan, projectId, isCurrent);
+  assertMountAuthorityCurrent(isCurrent);
+  await useTreeStore
+    .getState()
+    .loadTree(projectId, authority.workspaceOpenRevision);
+  assertMountAuthorityCurrent(isCurrent);
   toast.success(
     i18next.t("externalMount.toast.mounted", { label: resolvedLabel }),
   );
 }
 
 export async function removeExternalMount(rootId: string): Promise<void> {
+  const authority = captureMountAuthority(rootId);
+  if (!authority) return;
+  const { projectId, isCurrent } = authority;
   await mountApi.unregisterMount(rootId);
-  const roots = (await loadRootsFromSettings()).filter((r) => r.id !== rootId);
-  await saveRootsToSettings(roots);
+  assertMountAuthorityCurrent(isCurrent);
+  rootAuthorityTokens.delete(rootId);
+  const roots = (await loadRootsFromSettings(projectId)).filter(
+    (r) => r.id !== rootId,
+  );
+  assertMountAuthorityCurrent(isCurrent);
+  await saveRootsToSettings(roots, projectId);
+  assertMountAuthorityCurrent(isCurrent);
   useExternalRootStore.getState().removeRoot(rootId);
 
-  const projectId = getCurrentProjectId();
   const prefix = rootPrefix(rootId);
   const nodes = await listAllNodes(projectId);
+  assertMountAuthorityCurrent(isCurrent);
   const { deleteNode } = await import("@/features/tree/api");
   for (const node of nodes) {
+    assertMountAuthorityCurrent(isCurrent);
     if (node.sourceUri?.startsWith(prefix)) {
       await deleteNode(node.id);
+      assertMountAuthorityCurrent(isCurrent);
     }
   }
-  await useTreeStore.getState().loadTree(projectId);
+  await useTreeStore
+    .getState()
+    .loadTree(projectId, authority.workspaceOpenRevision);
   toast.success(i18next.t("externalMount.toast.removed"));
 }
 
@@ -239,14 +550,18 @@ function rootPrefix(rootId: string): string {
 async function reconcileRoot(
   root: ExternalRoot,
   scan: ScanResult,
+  projectId = getCurrentProjectId(),
+  isCurrent: MountAuthorityGuard = () => true,
 ): Promise<void> {
-  const projectId = getCurrentProjectId();
+  assertMountAuthorityCurrent(isCurrent);
   const allNodes = await listAllNodes(projectId);
+  assertMountAuthorityCurrent(isCurrent);
   const prefix = rootPrefix(root.id);
 
   const mountFolderUri = buildMountFolderUri(root.id);
   let mountFolder = allNodes.find((n) => n.sourceUri === mountFolderUri);
   if (!mountFolder) {
+    assertMountAuthorityCurrent(isCurrent);
     mountFolder = await createNode({
       id: crypto.randomUUID(),
       projectId,
@@ -256,9 +571,16 @@ async function reconcileRoot(
       parentId: null,
       sourceUri: mountFolderUri,
     });
+    assertMountAuthorityCurrent(isCurrent);
   }
 
-  const dbByUri = await buildDbByUriMap(allNodes, prefix, mountFolderUri);
+  const dbByUri = await buildDbByUriMap(
+    allNodes,
+    prefix,
+    mountFolderUri,
+    isCurrent,
+  );
+  assertMountAuthorityCurrent(isCurrent);
 
   const diskByPath = new Map(scan.files.map((f) => [f.relPath, f]));
   const folderIds = await ensureFolderTree(
@@ -266,7 +588,10 @@ async function reconcileRoot(
     scan,
     mountFolder.id,
     allNodes,
+    projectId,
+    isCurrent,
   );
+  assertMountAuthorityCurrent(isCurrent);
 
   // Boot-time rename detection via normalized-markdown content hash.
   // scan.files[].contentHash は disk の生 markdown を直接 SHA-256 したもので、
@@ -283,53 +608,73 @@ async function reconcileRoot(
 
   const diskHashByPath = new Map<string, string>();
   for (const f of diskOnly) {
+    assertMountAuthorityCurrent(isCurrent);
     diskHashByPath.set(f.relPath, await hashForDiskContent(f.content));
+    assertMountAuthorityCurrent(isCurrent);
   }
 
   // listAllNodes は content を返さない軽量 projection (H4) なので、rename 検知
   // ハッシュの対象 (DB にあって disk に無い少数ノード) だけ本文をバッチロードして
   // hashForNode に注入する。
   const dbOnlyContents = await loadSceneContents(dbOnly.map(([, n]) => n.id));
+  assertMountAuthorityCurrent(isCurrent);
 
   for (const [uri, node] of dbOnly) {
+    assertMountAuthorityCurrent(isCurrent);
     const parsed = parseSourceUri(uri);
     if (!parsed) continue;
     const content = dbOnlyContents.get(node.id);
     const nodeHash =
       content !== undefined ? await hashForNode({ content }) : null;
+    assertMountAuthorityCurrent(isCurrent);
     const match =
       nodeHash != null
         ? diskOnly.find((f) => diskHashByPath.get(f.relPath) === nodeHash)
         : undefined;
     if (match) {
       const newUri = buildSourceUri(root.id, match.relPath);
+      assertMountAuthorityCurrent(isCurrent);
       await updateNode(node.id, {
         sourceUri: newUri,
         title: titleFromFilename(basename(match.relPath)),
         sourceMtime: match.mtime,
       });
+      assertMountAuthorityCurrent(isCurrent);
       diskOnly.splice(diskOnly.indexOf(match), 1);
       dbByUri.delete(uri);
       dbByUri.set(newUri, { ...node, sourceUri: newUri });
     } else if (!node.archivedAt) {
+      assertMountAuthorityCurrent(isCurrent);
       await softArchiveNode(node.id);
+      assertMountAuthorityCurrent(isCurrent);
     }
   }
 
   for (const file of scan.files) {
+    assertMountAuthorityCurrent(isCurrent);
     const uri = buildSourceUri(root.id, file.relPath);
     const existing = dbByUri.get(uri);
     if (existing?.archivedAt) {
+      assertMountAuthorityCurrent(isCurrent);
       await updateNode(existing.id, {
         archivedAt: null,
         sourceMtime: file.mtime,
       });
+      assertMountAuthorityCurrent(isCurrent);
     }
     if (existing) {
-      await syncFileCache(existing.id, file);
+      await syncFileCache(existing.id, file, isCurrent);
     } else {
-      await upsertSceneFromFile(root, file, mountFolder.id, folderIds);
+      await upsertSceneFromFile(
+        root,
+        file,
+        mountFolder.id,
+        folderIds,
+        projectId,
+        isCurrent,
+      );
     }
+    assertMountAuthorityCurrent(isCurrent);
   }
 }
 
@@ -367,14 +712,16 @@ async function ensureFolderTree(
   scan: ScanResult,
   mountFolderId: string,
   allNodes: Awaited<ReturnType<typeof listAllNodes>>,
+  projectId: string,
+  isCurrent: MountAuthorityGuard,
 ): Promise<Map<string, string>> {
   const folderIds = new Map<string, string>();
-  const projectId = getCurrentProjectId();
   const sortedDirs = [...scan.dirs].sort((a, b) =>
     a.relPath.localeCompare(b.relPath),
   );
 
   for (const dir of sortedDirs) {
+    assertMountAuthorityCurrent(isCurrent);
     const uri = buildSourceUri(root.id, dir.relPath);
     let node = allNodes.find((n) => n.sourceUri === uri);
     if (!node) {
@@ -392,6 +739,7 @@ async function ensureFolderTree(
         parentId,
         sourceUri: uri,
       });
+      assertMountAuthorityCurrent(isCurrent);
       allNodes.push(node);
     }
     folderIds.set(dir.relPath, node.id);
@@ -404,6 +752,7 @@ export async function buildDbByUriMap(
   allNodes: Awaited<ReturnType<typeof listAllNodes>>,
   prefix: string,
   mountFolderUri: string,
+  isCurrent: MountAuthorityGuard = () => true,
 ): Promise<Map<string, Awaited<ReturnType<typeof listAllNodes>>[number]>> {
   const candidates = allNodes.filter(
     (n) => n.sourceUri?.startsWith(prefix) && n.sourceUri !== mountFolderUri,
@@ -422,7 +771,9 @@ export async function buildDbByUriMap(
     if (active.length > 1) {
       active.sort((a, b) => compareInstantValues(a.createdAt, b.createdAt));
       for (const dup of active.slice(1)) {
+        assertMountAuthorityCurrent(isCurrent);
         await softArchiveNode(dup.id);
+        assertMountAuthorityCurrent(isCurrent);
       }
     }
     const preferred =
@@ -440,20 +791,25 @@ async function upsertSceneFromFile(
   file: ScannedFile,
   mountFolderId: string,
   folderIds: Map<string, string>,
+  projectId: string,
+  isCurrent: MountAuthorityGuard,
 ): Promise<void> {
-  const projectId = getCurrentProjectId();
+  assertMountAuthorityCurrent(isCurrent);
   const uri = buildSourceUri(root.id, file.relPath);
   const existing = (await listAllNodes(projectId)).find(
     (n) => n.sourceUri === uri,
   );
+  assertMountAuthorityCurrent(isCurrent);
   if (existing) {
     if (existing.archivedAt) {
+      assertMountAuthorityCurrent(isCurrent);
       await updateNode(existing.id, {
         archivedAt: null,
         sourceMtime: file.mtime,
       });
+      assertMountAuthorityCurrent(isCurrent);
     }
-    await syncFileCache(existing.id, file);
+    await syncFileCache(existing.id, file, isCurrent);
     return;
   }
 
@@ -464,6 +820,7 @@ async function upsertSceneFromFile(
       : (folderIds.get(parentRel) ?? mountFolderId);
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
   const charCount = countSceneBodyCharsFromJson(pmJson);
+  assertMountAuthorityCurrent(isCurrent);
   const node = await createNode({
     id: crypto.randomUUID(),
     projectId,
@@ -475,18 +832,27 @@ async function upsertSceneFromFile(
     sourceMtime: file.mtime,
     content: pmJson,
   });
+  assertMountAuthorityCurrent(isCurrent);
   await saveSceneContent(node.id, { content: pmJson, charCount });
+  assertMountAuthorityCurrent(isCurrent);
   scheduleSceneIndex(node.id);
 }
 
-async function syncFileCache(nodeId: string, file: ScannedFile): Promise<void> {
+async function syncFileCache(
+  nodeId: string,
+  file: ScannedFile,
+  isCurrent: MountAuthorityGuard = () => true,
+): Promise<void> {
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
   const charCount = countSceneBodyCharsFromJson(pmJson);
+  assertMountAuthorityCurrent(isCurrent);
   await saveSceneContent(nodeId, { content: pmJson, charCount });
+  assertMountAuthorityCurrent(isCurrent);
   await updateNode(nodeId, {
     sourceMtime: file.mtime,
     title: titleFromFilename(basename(file.relPath)),
   });
+  assertMountAuthorityCurrent(isCurrent);
   scheduleSceneIndex(nodeId);
 }
 
@@ -511,21 +877,26 @@ async function softArchiveNode(nodeId: string): Promise<void> {
   await updateNode(nodeId, { archivedAt: new Date().toISOString() });
 }
 
-export async function purgeExpiredArchives(): Promise<void> {
-  const projectId = getCurrentProjectId();
-  const cutoff = Date.now() - ARCHIVE_RETENTION_MS;
-  const allNodes = await listAllNodes(projectId);
-  for (const node of allNodes) {
-    if (!node.archivedAt) continue;
-    const archivedAt = Date.parse(node.archivedAt);
-    if (!Number.isNaN(archivedAt) && archivedAt < cutoff) {
-      const { deleteNode } = await import("@/features/tree/api");
-      await deleteNode(node.id);
-    }
+export async function purgeExpiredArchives(
+  projectId = getCurrentProjectId(),
+  isCurrent: MountAuthorityGuard = () => true,
+): Promise<number> {
+  const cutoff = new Date(Date.now() - ARCHIVE_RETENTION_MS).toISOString();
+  assertMountAuthorityCurrent(isCurrent);
+  const expiredIds = await listExpiredArchivedNodeIds(projectId, cutoff);
+  let deletedCount = 0;
+  for (const id of expiredIds) {
+    assertMountAuthorityCurrent(isCurrent);
+    await deleteNode(id);
+    deletedCount += 1;
+    assertMountAuthorityCurrent(isCurrent);
   }
+  return deletedCount;
 }
 
 export async function handleFileEvent(event: FileEvent): Promise<void> {
+  const authority = captureMountAuthority(event.rootId);
+  if (!authority) return;
   if (useExternalRootStore.getState().isMuted(event.rootId, event.relPath)) {
     return;
   }
@@ -535,51 +906,121 @@ export async function handleFileEvent(event: FileEvent): Promise<void> {
     .roots.find((r) => r.id === event.rootId);
   if (!root) return;
 
-  switch (event.kind) {
-    case "changed":
-      await handleFileChanged(root, event.relPath);
-      break;
-    case "added":
-      await handleFileAdded(root, event.relPath);
-      break;
-    case "removed":
-      await handleFileRemoved(root, event.relPath);
-      break;
-    case "renamed":
-      if (event.oldRelPath) {
-        await handleFileRenamed(root, event.oldRelPath, event.relPath);
-      }
-      break;
+  try {
+    switch (event.kind) {
+      case "changed":
+        await handleFileChanged(
+          root,
+          event.relPath,
+          authority.projectId,
+          authority.isCurrent,
+          authority.workspaceOpenRevision,
+        );
+        break;
+      case "added":
+        await handleFileAdded(
+          root,
+          event.relPath,
+          authority.projectId,
+          authority.isCurrent,
+          authority.workspaceOpenRevision,
+        );
+        break;
+      case "removed":
+        await handleFileRemoved(
+          root,
+          event.relPath,
+          authority.projectId,
+          authority.isCurrent,
+          authority.workspaceOpenRevision,
+        );
+        break;
+      case "renamed":
+        if (event.oldRelPath) {
+          await handleFileRenamed(
+            root,
+            event.oldRelPath,
+            event.relPath,
+            authority.projectId,
+            authority.isCurrent,
+            authority.workspaceOpenRevision,
+          );
+        }
+        break;
+    }
+  } catch (err) {
+    if (!(err instanceof ExternalMountAuthoritySupersededError)) throw err;
   }
 }
 
 async function handleFileChanged(
   root: ExternalRoot,
   relPath: string,
+  projectId: string,
+  isCurrent: MountAuthorityGuard,
+  workspaceOpenRevision?: number,
 ): Promise<void> {
+  assertMountAuthorityCurrent(isCurrent);
   cancelPendingArchive(root.id, relPath);
   const uri = buildSourceUri(root.id, relPath);
-  const node = await findNodeByUri(uri);
+  const node = await findNodeByUri(uri, projectId, isCurrent);
   if (!node) return;
 
   const content = await mountApi.readExternalFile(root.id, relPath);
+  assertMountAuthorityCurrent(isCurrent);
   const fileMtime = await mountApi.getExternalFileMtime(root.id, relPath);
-  const isDirty = useEditorSessionStore
-    .getState()
-    .dirtyDocumentIds.has(node.id);
+  assertMountAuthorityCurrent(isCurrent);
+  const documentKey: DocumentKey = {
+    kind: "tree",
+    id: node.id,
+    storage: "file",
+  };
+  const conflict = {
+    sceneId: node.id,
+    rootId: root.id,
+    relPath,
+    incomingContent: content,
+    incomingMtime: fileMtime,
+  };
+  const hasLocalDraft = () =>
+    useEditorSessionStore.getState().isDocumentDirty(documentKey) ||
+    hasPendingWriteBack(node.id);
 
-  if (isDirty) {
-    useExternalRootStore.getState().enqueueConflict({
-      sceneId: node.id,
-      rootId: root.id,
-      relPath,
-      incomingContent: content,
-      incomingMtime: fileMtime,
-    });
+  // Fast-path obvious conflicts before acquiring the exact-document lease.
+  // A destructive global lifecycle is already draining this authority, so a
+  // watcher callback must not start a new import behind it.
+  if (hasLocalDraft() || !canScheduleQuiescenceMutation()) {
+    assertMountAuthorityCurrent(isCurrent);
+    useExternalRootStore.getState().enqueueConflict(conflict);
     return;
   }
 
-  await applyExternalContent(node.id, root.id, relPath, content, fileMtime);
+  const applied = await runExclusiveDocumentMutation(documentKey, async () => {
+    assertMountAuthorityCurrent(isCurrent);
+    // A local save may have been issued just before the lease and be waiting
+    // in either the document coordinator or lower per-scene DB chain. Wait
+    // for both, then re-check. Its file-backed OUT draft is the durable
+    // signal that automatic IN must yield to a conflict.
+    await awaitPendingSceneContentWrite(node.id);
+    assertMountAuthorityCurrent(isCurrent);
+    if (hasLocalDraft()) return false;
+    await applyExternalContent(
+      node.id,
+      root.id,
+      relPath,
+      content,
+      fileMtime,
+      projectId,
+      isCurrent,
+      workspaceOpenRevision,
+    );
+    return true;
+  });
+  assertMountAuthorityCurrent(isCurrent);
+  if (!applied) {
+    assertMountAuthorityCurrent(isCurrent);
+    useExternalRootStore.getState().enqueueConflict(conflict);
+  }
 }
 
 async function applyExternalContent(
@@ -588,13 +1029,19 @@ async function applyExternalContent(
   relPath: string,
   markdown: string,
   sourceMtime?: string,
+  projectId = getCurrentProjectId(),
+  isCurrent: MountAuthorityGuard = () => true,
+  workspaceOpenRevision?: number,
 ): Promise<void> {
   const pmJson = JSON.stringify(markdownToPmJson(markdown));
   const charCount = countSceneBodyCharsFromJson(pmJson);
+  assertMountAuthorityCurrent(isCurrent);
   await saveSceneContent(nodeId, { content: pmJson, charCount });
+  assertMountAuthorityCurrent(isCurrent);
   await updateNode(nodeId, {
     sourceMtime: sourceMtime ?? new Date().toISOString(),
   });
+  assertMountAuthorityCurrent(isCurrent);
   // External file → app (IN) rewrites scene content in the DB and the live
   // editor reload runs with isApplyingExternalUpdate=true, so no doc.step is
   // recorded. Mark the sync and re-anchor the scene baseline at the chain tail
@@ -607,22 +1054,28 @@ async function applyExternalContent(
   // folders. A brand-new scene not yet in the store still proceeds.
   const knownNode = useTreeStore.getState().nodes?.find((n) => n.id === nodeId);
   if (knownNode?.nodeType !== "folder") {
+    assertMountAuthorityCurrent(isCurrent);
     recordChangeEvent({
       domain: "mount",
       opType: "file.import",
       entityType: "scene",
       entityId: nodeId,
       sceneId: nodeId,
+      projectId,
       payload: { sceneId: nodeId, charCount },
     });
-    await rebaselineScenesAtTail(getCurrentProjectId(), [nodeId]);
+    await rebaselineScenesAtTail(projectId, [nodeId]);
+    assertMountAuthorityCurrent(isCurrent);
   }
+  assertMountAuthorityCurrent(isCurrent);
   scheduleSceneIndex(nodeId);
   useTreeStore.getState().setCharCount(nodeId, charCount);
-  await useTreeStore.getState().loadTree(getCurrentProjectId());
+  await useTreeStore.getState().loadTree(projectId, workspaceOpenRevision);
+  assertMountAuthorityCurrent(isCurrent);
 
   // 外部編集の取り込みはトーストを出さない無音イベントなので、
   // SR 利用者へ aria-live で通知する (WCAG 4.1.3)。
+  assertMountAuthorityCurrent(isCurrent);
   announce(
     i18next.t("externalMount.a11y.fileImported", {
       name: basename(relPath),
@@ -636,8 +1089,11 @@ async function applyExternalContent(
   const codexEntries = useCodexStore.getState().entries;
   if (codexEntries.length > 0) {
     try {
+      assertMountAuthorityCurrent(isCurrent);
       await upsertSceneBodyMentions(nodeId, pmJson, codexEntries);
+      assertMountAuthorityCurrent(isCurrent);
     } catch (err) {
+      if (err instanceof ExternalMountAuthoritySupersededError) throw err;
       debugLog.error(
         "ExternalMount",
         "upsertSceneBodyMentions failed",
@@ -647,7 +1103,9 @@ async function applyExternalContent(
   }
   const chatState = useChatStore.getState();
   if (chatState.activeSceneId === nodeId) {
+    assertMountAuthorityCurrent(isCurrent);
     await chatState.refreshContextLayers().catch(() => {});
+    assertMountAuthorityCurrent(isCurrent);
   }
 
   // 取り込んだ内容を表示中の live editor (タブ EditorPane / リニア
@@ -656,13 +1114,14 @@ async function applyExternalContent(
   // 取り込み分を上書きしてしまう。
   const { useLinearEditorStore } =
     await import("@/features/editor/linearEditorStore");
-  const { useTabStore } = await import("@/features/editor/tabStore");
+  assertMountAuthorityCurrent(isCurrent);
   const tabState = useTabStore.getState();
   const hasLiveEditor =
     tabState.tabs.some((t) => t.nodeId === nodeId) ||
     tabState.secondaryTabs.some((t) => t.nodeId === nodeId) ||
     nodeId in useLinearEditorStore.getState().editorsById;
   if (hasLiveEditor) {
+    assertMountAuthorityCurrent(isCurrent);
     window.dispatchEvent(
       new CustomEvent("external-mount:reload-scene", {
         detail: { sceneId: nodeId, content: pmJson },
@@ -674,15 +1133,21 @@ async function applyExternalContent(
 async function handleFileAdded(
   root: ExternalRoot,
   relPath: string,
+  projectId: string,
+  isCurrent: MountAuthorityGuard,
+  workspaceOpenRevision?: number,
 ): Promise<void> {
+  assertMountAuthorityCurrent(isCurrent);
   cancelPendingArchive(root.id, relPath);
   const scan = await mountApi.scanMount(root.id);
+  assertMountAuthorityCurrent(isCurrent);
   const file = scan.files.find((f) => f.relPath === relPath);
   if (!file) return;
 
   // recentDeletes は handleFileRemoved 側で hashForNode (pmJsonToMarkdown 経路)
   // で計算しているので、disk 側も同じ正規化経路の hashForDiskContent で揃える。
   const fileHash = await hashForDiskContent(file.content);
+  assertMountAuthorityCurrent(isCurrent);
   const recent = recentDeletes.find(
     (d) =>
       d.rootId === root.id &&
@@ -690,20 +1155,33 @@ async function handleFileAdded(
       Date.now() - d.at < RENAME_WINDOW_MS,
   );
   if (recent) {
-    await handleFileRenamed(root, recent.relPath, relPath);
+    await handleFileRenamed(
+      root,
+      recent.relPath,
+      relPath,
+      projectId,
+      isCurrent,
+      workspaceOpenRevision,
+    );
     return;
   }
 
-  await reconcileRoot(root, scan);
-  await useTreeStore.getState().loadTree(getCurrentProjectId());
+  await reconcileRoot(root, scan, projectId, isCurrent);
+  assertMountAuthorityCurrent(isCurrent);
+  await useTreeStore.getState().loadTree(projectId, workspaceOpenRevision);
+  assertMountAuthorityCurrent(isCurrent);
 }
 
 async function handleFileRemoved(
   root: ExternalRoot,
   relPath: string,
+  projectId: string,
+  isCurrent: MountAuthorityGuard,
+  workspaceOpenRevision?: number,
 ): Promise<void> {
+  assertMountAuthorityCurrent(isCurrent);
   const uri = buildSourceUri(root.id, relPath);
-  const node = await findNodeByUri(uri);
+  const node = await findNodeByUri(uri, projectId, isCurrent);
   if (!node) return;
 
   // handleFileAdded 側で hashForDiskContent と比較するので、削除側も同じ正規化
@@ -712,6 +1190,7 @@ async function handleFileRemoved(
   const hash = await hashForNode({
     content: await loadSceneContent(node.id),
   });
+  assertMountAuthorityCurrent(isCurrent);
   if (hash) {
     recentDeletes.push({
       rootId: root.id,
@@ -736,18 +1215,28 @@ async function handleFileRemoved(
   const timer = setTimeout(() => {
     cancelPendingArchive(root.id, relPath);
     void (async () => {
-      const still = await findNodeByUri(capturedUri);
-      if (!still || still.archivedAt) return;
-      await softArchiveNode(still.id);
-      await useTreeStore.getState().loadTree(getCurrentProjectId());
-      // dirty 経路と違いトーストを出さないため SR へ通知 (WCAG 4.1.3)。
-      announce(
-        i18next.t("externalMount.a11y.fileArchived", {
-          name: basename(relPath),
-          defaultValue:
-            "外部で削除されたファイル「{{name}}」をアーカイブしました",
-        }),
-      );
+      try {
+        if (!isCurrent()) return;
+        const still = await findNodeByUri(capturedUri, projectId, isCurrent);
+        if (!still || still.archivedAt) return;
+        assertMountAuthorityCurrent(isCurrent);
+        await softArchiveNode(still.id);
+        assertMountAuthorityCurrent(isCurrent);
+        await useTreeStore
+          .getState()
+          .loadTree(projectId, workspaceOpenRevision);
+        assertMountAuthorityCurrent(isCurrent);
+        // dirty 経路と違いトーストを出さないため SR へ通知 (WCAG 4.1.3)。
+        announce(
+          i18next.t("externalMount.a11y.fileArchived", {
+            name: basename(relPath),
+            defaultValue:
+              "外部で削除されたファイル「{{name}}」をアーカイブしました",
+          }),
+        );
+      } catch (err) {
+        if (!(err instanceof ExternalMountAuthoritySupersededError)) throw err;
+      }
     })();
   }, RENAME_WINDOW_MS);
   pendingArchives.push({ rootId: root.id, relPath, timer });
@@ -757,21 +1246,34 @@ async function handleFileRenamed(
   root: ExternalRoot,
   oldRelPath: string,
   newRelPath: string,
+  projectId: string,
+  isCurrent: MountAuthorityGuard,
+  workspaceOpenRevision?: number,
 ): Promise<void> {
+  assertMountAuthorityCurrent(isCurrent);
   cancelPendingArchive(root.id, oldRelPath);
   cancelPendingArchive(root.id, newRelPath);
   const oldUri = buildSourceUri(root.id, oldRelPath);
-  const node = await findNodeByUri(oldUri);
+  const node = await findNodeByUri(oldUri, projectId, isCurrent);
   if (!node) {
-    await handleFileAdded(root, newRelPath);
+    await handleFileAdded(
+      root,
+      newRelPath,
+      projectId,
+      isCurrent,
+      workspaceOpenRevision,
+    );
     return;
   }
   const newUri = buildSourceUri(root.id, newRelPath);
+  assertMountAuthorityCurrent(isCurrent);
   await updateNode(node.id, {
     sourceUri: newUri,
     title: titleFromFilename(basename(newRelPath)),
   });
-  await useTreeStore.getState().loadTree(getCurrentProjectId());
+  assertMountAuthorityCurrent(isCurrent);
+  await useTreeStore.getState().loadTree(projectId, workspaceOpenRevision);
+  assertMountAuthorityCurrent(isCurrent);
   toast.info(
     i18next.t("externalMount.toast.renamed", {
       title: titleFromFilename(basename(newRelPath)),
@@ -779,9 +1281,14 @@ async function handleFileRenamed(
   );
 }
 
-async function findNodeByUri(uri: string) {
-  const projectId = getCurrentProjectId();
+async function findNodeByUri(
+  uri: string,
+  projectId = getCurrentProjectId(),
+  isCurrent: MountAuthorityGuard = () => true,
+) {
+  assertMountAuthorityCurrent(isCurrent);
   const nodes = await listAllNodes(projectId);
+  assertMountAuthorityCurrent(isCurrent);
   return nodes.find((n) => n.sourceUri === uri);
 }
 
@@ -794,13 +1301,53 @@ export async function resolveReloadConflict(
   const conflict = useExternalRootStore.getState().conflicts[0];
   if (!conflict) return;
   if (choice === "reload") {
-    await applyExternalContent(
-      conflict.sceneId,
-      conflict.rootId,
-      conflict.relPath,
-      conflict.incomingContent,
-      conflict.incomingMtime,
-    );
+    if (!canScheduleQuiescenceMutation()) return;
+    const documentKey: DocumentKey = {
+      kind: "tree",
+      id: conflict.sceneId,
+      storage: "file",
+    };
+
+    // runExclusiveDocumentMutation publishes the read-only lease
+    // synchronously but invokes its callback in a microtask behind every
+    // already-issued local save. Use that synchronous window to cancel live
+    // debounce drafts immediately, before they can become another save.
+    let initialWriteBackCancellation: Promise<void> = Promise.resolve();
+    const reload = runExclusiveDocumentMutation(documentKey, async () => {
+      await initialWriteBackCancellation;
+      // A save already running when the user chose Reload can persist and
+      // schedule OUT after the first cancellation snapshot. Drain the DB
+      // chain, discard any failure/pending state it left on the live
+      // AutoSave, then cancel OUT again to a fixed point.
+      await awaitPendingSceneContentWrite(conflict.sceneId);
+      discardAutoSavesForDocument(documentKey);
+      discardRegisteredDocumentDrafts(documentKey);
+      await cancelWriteBack(conflict.sceneId);
+      await awaitPendingSceneContentWrite(conflict.sceneId);
+      await cancelWriteBack(conflict.sceneId);
+
+      // The disk version is now the explicit winner. Muting prevents this
+      // restorative write from re-entering the watcher as another conflict.
+      useExternalRootStore
+        .getState()
+        .mutePath(conflict.rootId, conflict.relPath);
+      await mountApi.writeExternalFile(
+        conflict.rootId,
+        conflict.relPath,
+        conflict.incomingContent,
+      );
+      await applyExternalContent(
+        conflict.sceneId,
+        conflict.rootId,
+        conflict.relPath,
+        conflict.incomingContent,
+        conflict.incomingMtime,
+      );
+    });
+    discardAutoSavesForDocument(documentKey);
+    discardRegisteredDocumentDrafts(documentKey);
+    initialWriteBackCancellation = cancelWriteBack(conflict.sceneId);
+    await reload;
   }
   useExternalRootStore.getState().shiftConflict();
 }

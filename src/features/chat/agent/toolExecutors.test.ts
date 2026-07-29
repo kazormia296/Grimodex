@@ -7,17 +7,47 @@ const {
   mockTreeProjectId,
   mockAgentCreateForeshadow,
   mockAgentUpdateForeshadow,
+  mockAgentCreateCodexEntry,
+  mockAgentUpdateCodexEntry,
+  mockAgentCreateSnippet,
+  mockAgentCreateEvent,
+  mockProjectId,
 } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
   mockListOpenForeshadows: vi.fn(),
   mockTreeProjectId: vi.fn<() => string | null>(),
   mockAgentCreateForeshadow: vi.fn(),
   mockAgentUpdateForeshadow: vi.fn(),
+  mockAgentCreateCodexEntry: vi.fn(),
+  mockAgentUpdateCodexEntry: vi.fn(),
+  mockAgentCreateSnippet: vi.fn(),
+  mockAgentCreateEvent: vi.fn(),
+  mockProjectId: vi.fn<() => string>(),
+}));
+
+vi.mock("@/features/agent-writes/codex", () => ({
+  agentCreateCodexEntry: mockAgentCreateCodexEntry,
+  agentUpdateCodexEntry: mockAgentUpdateCodexEntry,
+}));
+
+vi.mock("@/features/agent-writes/snippet", () => ({
+  agentCreateSnippet: mockAgentCreateSnippet,
 }));
 
 vi.mock("@/features/agent-writes/foreshadow", () => ({
   agentCreateForeshadow: mockAgentCreateForeshadow,
   agentUpdateForeshadow: mockAgentUpdateForeshadow,
+}));
+
+vi.mock("@/features/agent-writes/event", () => ({
+  agentCreateEvent: mockAgentCreateEvent,
+  agentUpdateEvent: vi.fn(),
+  agentDeleteEvent: vi.fn(),
+  agentSetEventParticipants: vi.fn(),
+  agentLinkSceneEvent: vi.fn(),
+  agentUnlinkSceneEvent: vi.fn(),
+  agentAddEventRelation: vi.fn(),
+  agentRemoveEventRelation: vi.fn(),
 }));
 
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
@@ -28,6 +58,10 @@ vi.mock("@/features/foreshadow/api", () => ({
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => ({ projectId: mockTreeProjectId() }) },
+}));
+
+vi.mock("@/features/project/projectStore", () => ({
+  getCurrentProjectId: mockProjectId,
 }));
 
 // db client returns empty arrays for any query — enough to exercise the
@@ -67,6 +101,10 @@ import {
   getDeterministicAgentTools,
   READ_ONLY_TOOL_NAMES,
 } from "./toolDefinitions";
+
+beforeEach(() => {
+  mockProjectId.mockReturnValue("project-1");
+});
 
 // ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
 // EXECUTORS は read-only ツールのみで構成される契約。mutating executor を追加
@@ -339,6 +377,207 @@ describe("foreshadow write executors", () => {
         payoffConfirmed: true,
       }),
     );
+  });
+});
+
+describe("Codex and Snippet rich-text write executors", () => {
+  beforeEach(() => {
+    mockAgentCreateCodexEntry.mockReset();
+    mockAgentUpdateCodexEntry.mockReset();
+    mockAgentCreateSnippet.mockReset();
+  });
+
+  it("converts Markdown and serializes structured aliases before creating Codex", async () => {
+    mockAgentCreateCodexEntry.mockResolvedValue({
+      id: "entry-1",
+      name: "Akane",
+      type: "character",
+    });
+
+    const result = await executeTool("create_codex_entry", "call-c1", {
+      type: "character",
+      name: "Akane",
+      content: "# Profile\n\nMain character.",
+      aliases: ["Hero", "  Protagonist  "],
+    });
+
+    expect(result.error).toBeUndefined();
+    const input = mockAgentCreateCodexEntry.mock.calls[0]![0] as {
+      content: string;
+      aliases: string;
+    };
+    expect(input.aliases).toBe(JSON.stringify(["Hero", "Protagonist"]));
+    expect(JSON.parse(input.content)).toMatchObject({
+      type: "doc",
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: "heading" }),
+        expect.objectContaining({ type: "paragraph" }),
+      ]),
+    });
+  });
+
+  it("rejects malformed aliases without calling a Codex writer", async () => {
+    const result = await executeTool("update_codex_entry", "call-c2", {
+      id: "entry-1",
+      aliases: ["valid", 42],
+    });
+
+    expect(result.error).toContain("array of strings");
+    expect(mockAgentUpdateCodexEntry).not.toHaveBeenCalled();
+  });
+
+  it("rejects excessive aliases without calling a Codex writer", async () => {
+    const result = await executeTool("create_codex_entry", "call-c3", {
+      type: "character",
+      name: "Akane",
+      aliases: Array.from({ length: 101 }, (_, index) => `alias-${index}`),
+    });
+
+    expect(result.error).toContain("at most 100");
+    expect(mockAgentCreateCodexEntry).not.toHaveBeenCalled();
+  });
+
+  it("converts Snippet Markdown into schema-valid ProseMirror JSON", async () => {
+    mockAgentCreateSnippet.mockResolvedValue({
+      id: "snippet-1",
+      title: "Opening",
+    });
+
+    const result = await executeTool("create_snippet", "call-s1", {
+      title: "Opening",
+      content: "**Storm** at midnight.",
+    });
+
+    expect(result.error).toBeUndefined();
+    const input = mockAgentCreateSnippet.mock.calls[0]![0] as {
+      content: string;
+    };
+    expect(JSON.parse(input.content)).toMatchObject({
+      type: "doc",
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: "paragraph" }),
+      ]),
+    });
+  });
+});
+
+describe("create-tool request identity", () => {
+  beforeEach(() => {
+    mockAgentCreateCodexEntry.mockReset();
+    mockAgentCreateSnippet.mockReset();
+    mockAgentCreateForeshadow.mockReset();
+    mockAgentCreateEvent.mockReset();
+    mockProjectId.mockReset();
+    mockProjectId.mockReturnValue("project-1");
+  });
+
+  it("derives one stable, tool-scoped requestId from the same toolCallId", async () => {
+    mockAgentCreateCodexEntry.mockResolvedValue({
+      id: "codex-1",
+      name: "Akane",
+      type: "character",
+    });
+    mockAgentCreateSnippet.mockResolvedValue({
+      id: "snippet-1",
+      title: "Opening",
+    });
+    mockAgentCreateForeshadow.mockResolvedValue({
+      id: "foreshadow-1",
+      title: "The seal",
+      secret: true,
+    });
+    mockAgentCreateEvent.mockResolvedValue({
+      id: "event-1",
+      title: "Arrival",
+    });
+
+    const cases = [
+      {
+        name: "create_codex_entry",
+        params: { type: "character", name: "Akane" },
+        writer: mockAgentCreateCodexEntry,
+      },
+      {
+        name: "create_snippet",
+        params: { title: "Opening" },
+        writer: mockAgentCreateSnippet,
+      },
+      {
+        name: "create_foreshadow",
+        params: { title: "The seal" },
+        writer: mockAgentCreateForeshadow,
+      },
+      {
+        name: "create_event",
+        params: { title: "Arrival" },
+        writer: mockAgentCreateEvent,
+      },
+    ] as const;
+
+    const requestIds = new Set<string>();
+    for (const { name, params, writer } of cases) {
+      await executeTool(name, "stable-tool-call", params);
+      await executeTool(name, "stable-tool-call", params);
+
+      const firstRequestId = writer.mock.calls[0]![0].requestId as string;
+      const retryRequestId = writer.mock.calls[1]![0].requestId as string;
+      expect(firstRequestId).toMatch(/^agent-tool:[0-9a-f]{64}$/);
+      expect(retryRequestId).toBe(firstRequestId);
+      requestIds.add(firstRequestId);
+    }
+
+    expect(requestIds.size).toBe(cases.length);
+
+    mockProjectId.mockReturnValue("project-2");
+    await executeTool("create_codex_entry", "stable-tool-call", {
+      type: "character",
+      name: "Akane",
+    });
+    expect(mockAgentCreateCodexEntry.mock.calls[2]![0].requestId).not.toBe(
+      mockAgentCreateCodexEntry.mock.calls[0]![0].requestId,
+    );
+
+    await executeTool("create_codex_entry", "different-tool-call", {
+      type: "character",
+      name: "Akane",
+    });
+    expect(mockAgentCreateCodexEntry.mock.calls[3]![0].requestId).not.toBe(
+      mockAgentCreateCodexEntry.mock.calls[0]![0].requestId,
+    );
+  });
+
+  it("rejects a create when Project authority changes during request hashing", async () => {
+    let releaseDigest!: () => void;
+    const digestGate = new Promise<void>((resolve) => {
+      releaseDigest = resolve;
+    });
+    const digest = vi
+      .spyOn(crypto.subtle, "digest")
+      .mockImplementation(async () => {
+        await digestGate;
+        return new Uint8Array(32).buffer;
+      });
+    mockAgentCreateCodexEntry.mockResolvedValue({
+      id: "codex-stale",
+      name: "Stale",
+      type: "character",
+    });
+
+    try {
+      const pending = executeTool("create_codex_entry", "stale-call", {
+        type: "character",
+        name: "Stale",
+      });
+      await vi.waitFor(() => expect(digest).toHaveBeenCalledOnce());
+      mockProjectId.mockReturnValue("project-2");
+      releaseDigest();
+
+      const result = await pending;
+      expect(result.error).toContain("authority changed");
+      expect(mockAgentCreateCodexEntry).not.toHaveBeenCalled();
+    } finally {
+      digest.mockRestore();
+    }
   });
 });
 

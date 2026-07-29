@@ -5,6 +5,7 @@ import {
   useEffect,
   useCallback,
 } from "react";
+import { recordCounter } from "@/lib/perfLog";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { useTranslation } from "react-i18next";
@@ -37,12 +38,14 @@ import { PromptPreviewModal } from "./PromptPreviewModal";
 import { ContextCreatorButton } from "./ContextCreatorButton";
 import { ContextCreatorDialog } from "./ContextCreatorDialog";
 import { runContextCreator, type SuggestedEntry } from "../contextCreatorApi";
-import { useChatStore } from "../chatStore";
+import { useChatStore, type ChatPromptPreviewResult } from "../chatStore";
+import type { ResolvedChatTurnRoute } from "../turn/resolveTurnRoute";
 import { useAiSettingsStore } from "../store";
 import {
-  getModelCapabilities,
   formatContextWindow,
+  resolveModelCapabilities,
 } from "../agent/modelLimits";
+import type { AiProvider } from "../types";
 import { estimateInputCost, formatCost } from "../modelPricing";
 import { CircularProgress } from "@/components/ui/circular-progress";
 import { getTypeLabel } from "../utils/typeLabels";
@@ -73,6 +76,11 @@ type ViaChild = {
 
 interface ContextBarProps {
   /**
+   * プレビューを所有する workspace / project / scope / session の immutable
+   * snapshot。値が変わった時点で、構築中・表示中の旧プレビューを失効させる。
+   */
+  previewAuthorityKey: string;
+  /**
    * codex/snippet スコープのアンカー (= この会話の主題)。固定・削除不可の
    * 専用チップとして先頭付近に表示し、プロンプトの <focus_subject> 注入対象と
    * 一致させる。scene/folder/project スコープでは null。
@@ -82,6 +90,8 @@ interface ContextBarProps {
     | { kind: "snippet"; id: string; title: string }
     | null;
   pinnedEntries: PinnedCodexEntryWithData[];
+  /** 永続化済みの manual Codex Spotlight。picker の checked 正本。 */
+  pinnedCodexIds: Set<string>;
   /** Last materialized plan is the display authority. Source arrays describe
    * candidates only and may contain budget-trimmed or policy-excluded rows. */
   contextPlan?: ChatContextPlan | null;
@@ -105,6 +115,7 @@ interface ContextBarProps {
   /** autoエントリをcontextから即時除去 */
   onRemoveAuto: (entryId: string) => void;
   onPin: (entryId: string) => Promise<void>;
+  onPinBatch?: (entryIds: readonly string[]) => Promise<boolean>;
   /** via表示の子エントリを一時的に非表示にする */
   onDismissViaChild?: (childId: string) => void;
   dismissedViaChildIds?: Set<string>;
@@ -119,7 +130,11 @@ interface ContextBarProps {
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
   model: string;
+  /** provider namespace paired with model/contextWindowOverride. */
+  provider?: AiProvider | null;
   canUseCreator?: boolean;
+  /** Conversation/composer route used only when the Context Creator role is unset. */
+  creatorFallbackRoute?: ResolvedChatTurnRoute | null;
   /** Phase 4 後続: AI に注入される project outline 全文（trim 済み・空でない場合のみ） */
   projectOutline?: string;
   /** Phase 4 後続: 祖先 chapter の outline（outermost → innermost 順） */
@@ -127,13 +142,17 @@ interface ContextBarProps {
   summaryCount?: number;
   maxSummaryGeneration?: number;
   onCreateLinkedSession?: () => void;
+  /** セッション切替・メッセージ読込・生成中は Spotlight 変更を禁止する。 */
+  spotlightDisabled?: boolean;
   cacheInvalidatedReason?: "model" | "instructions" | "budget" | null;
   onDismissCacheInvalidated?: () => void;
 }
 
 export function ContextBar({
+  previewAuthorityKey,
   scopeAnchor = null,
   pinnedEntries: candidatePinnedEntries,
+  pinnedCodexIds,
   contextPlan = null,
   detectedEntries: candidateDetectedEntries = [],
   alwaysEntries: candidateAlwaysEntries = [],
@@ -144,6 +163,7 @@ export function ContextBar({
   onRemove,
   onRemoveAuto,
   onPin,
+  onPinBatch,
   onDismissViaChild,
   dismissedViaChildIds,
   pinnedSnippetIds,
@@ -156,48 +176,99 @@ export function ContextBar({
   contextLayers,
   systemPrompt,
   model,
+  provider = null,
   canUseCreator = false,
+  creatorFallbackRoute = null,
   projectOutline,
   chapterOutlines = EMPTY_CHAPTER_OUTLINES,
   summaryCount = 0,
   maxSummaryGeneration = 0,
   onCreateLinkedSession,
+  spotlightDisabled = false,
   cacheInvalidatedReason,
   onDismissCacheInvalidated,
 }: ContextBarProps) {
   const { t } = useTranslation();
+  useEffect(() => {
+    recordCounter("chat.contextBar.commit");
+  });
   const reduced = useReducedMotion();
   // 動的 capability レジストリ更新時に contextWindow 表示を再計算する
   useAiSettingsStore((s) => s.modelCapsRevision);
+  const aiSettings = useAiSettingsStore((s) => s.settings);
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   // プレビューを開いたときに related_scenes（意味検索）込みでプロンプトを
-  // 組み直した結果。null = まだ構築前（ライブ値で代替表示）。
-  const [previewData, setPreviewData] = useState<{
-    prompt: string;
-    layers: LayerBreakdown[];
-    totalTokens: number;
-    userMessage: string;
-  } | null>(null);
+  // 組み直した結果。null = まだ構築前。exact 構築不能時は unavailable を保持し、
+  // live-estimate cache をプレビューへ流用しない。
+  const [previewData, setPreviewData] =
+    useState<ChatPromptPreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const buildPreviewPrompt = useChatStore((s) => s.buildPreviewPrompt);
+  const previewRequestGenerationRef = useRef(0);
+  const latestPreviewAuthorityKeyRef = useRef(previewAuthorityKey);
+  latestPreviewAuthorityKeyRef.current = previewAuthorityKey;
+
+  const closePreview = useCallback(() => {
+    previewRequestGenerationRef.current += 1;
+    setPreviewOpen(false);
+    setPreviewData(null);
+    setPreviewLoading(false);
+  }, []);
+
+  useLayoutEffect(() => {
+    previewRequestGenerationRef.current += 1;
+    setPreviewOpen(false);
+    setPreviewData(null);
+    setPreviewLoading(false);
+    return () => {
+      // unmount と authority change の cleanup は、未解決 request の callback
+      // より先に ownership を破棄する。state は cleanup では更新しない。
+      previewRequestGenerationRef.current += 1;
+    };
+  }, [previewAuthorityKey]);
 
   // プレビューを開く: related_scenes はメッセージ依存で送信時のみ計算される
   // ため、開いた瞬間に1回検索を走らせて RAG 込みのプロンプトを構築する。
   const openPreview = useCallback(() => {
+    const requestGeneration = ++previewRequestGenerationRef.current;
+    const requestAuthorityKey = previewAuthorityKey;
+    const ownsPreview = () =>
+      previewRequestGenerationRef.current === requestGeneration &&
+      latestPreviewAuthorityKeyRef.current === requestAuthorityKey;
     setPreviewData(null);
     setPreviewLoading(true);
     setPreviewOpen(true);
     void buildPreviewPrompt()
-      .then((data) => setPreviewData(data))
-      .finally(() => setPreviewLoading(false));
-  }, [buildPreviewPrompt]);
+      .then((data) => {
+        if (ownsPreview()) setPreviewData(data);
+      })
+      .catch(() => {
+        if (!ownsPreview()) return;
+        setPreviewData({
+          status: "unavailable",
+          prompt: "",
+          layers: [],
+          totalTokens: 0,
+          userMessage: "",
+        });
+      })
+      .finally(() => {
+        if (ownsPreview()) setPreviewLoading(false);
+      });
+  }, [buildPreviewPrompt, previewAuthorityKey]);
 
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const pinContainerRef = useRef<HTMLDivElement>(null);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const allCodexEntries = useCodexStore((s) => s.entries);
+
+  useEffect(() => {
+    if (!spotlightDisabled) return;
+    setPinOpen(false);
+    setCreatorOpen(false);
+  }, [spotlightDisabled]);
 
   const selectedPlanKeys = contextPlan
     ? new Set(contextPlan.items.map((item) => item.key))
@@ -330,15 +401,18 @@ export function ContextBar({
   async function handleCreatorSearch(
     instruction: string,
   ): Promise<SuggestedEntry[]> {
-    return runContextCreator(instruction, pinnedIds, model);
+    return runContextCreator(instruction, pinnedIds, creatorFallbackRoute);
   }
 
   async function handleCreatorAddSelected(
     entries: SuggestedEntry[],
-  ): Promise<void> {
-    for (const entry of entries) {
-      await onPin(entry.id);
+  ): Promise<boolean> {
+    const entryIds = entries.map((entry) => entry.id);
+    if (onPinBatch) {
+      return onPinBatch(entryIds);
     }
+    await Promise.all(entryIds.map((entryId) => onPin(entryId)));
+    return true;
   }
 
   const l3 = contextLayers.find((l) => l.layer === "L3");
@@ -353,11 +427,20 @@ export function ContextBar({
     : null;
 
   const contextWindow =
-    contextWindowOverride ??
-    (model ? getModelCapabilities(model).contextWindow : 0);
-  const ctxWindowLabel = model ? formatContextWindow(contextWindow) : null;
+    contextWindowOverride !== undefined
+      ? contextWindowOverride
+      : model
+        ? resolveModelCapabilities(
+            model,
+            aiSettings && provider
+              ? { ...aiSettings, provider, model }
+              : aiSettings,
+          ).contextWindow
+        : 0;
+  const ctxWindowLabel =
+    model && contextWindow !== null ? formatContextWindow(contextWindow) : null;
   const windowFillPct =
-    contextWindow > 0
+    contextWindow !== null && contextWindow > 0
       ? Math.min(100, Math.round((contextTokenCount / contextWindow) * 100))
       : null;
   const windowFillStroke =
@@ -398,23 +481,24 @@ export function ContextBar({
         data-testid="context-bar"
         data-tour-target="chat-context-bar"
       >
-        {/* ヘッダー行: クリックで折りたたみ */}
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => setCollapsed((v) => !v)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setCollapsed((v) => !v);
-            }
-          }}
-          aria-expanded={!collapsed}
-          className="flex w-full cursor-pointer items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30"
-        >
-          <span className="flex items-center gap-1.5 font-medium">
-            {t("chat.context.heading")}
-          </span>
+        {/* ヘッダー行: 左側の独立ボタンで折りたたみ */}
+        <div className="flex w-full items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30">
+          <button
+            type="button"
+            data-testid="context-bar-toggle"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-expanded={!collapsed}
+            className="flex min-w-0 flex-1 items-center justify-between self-stretch pr-2 text-left hover:text-foreground"
+          >
+            <span className="flex items-center gap-1.5 font-medium">
+              {t("chat.context.heading")}
+            </span>
+            {collapsed ? (
+              <ChevronDown className="h-3 w-3" aria-hidden />
+            ) : (
+              <ChevronUp className="h-3 w-3" aria-hidden />
+            )}
+          </button>
           <div className="flex items-center gap-2">
             {(summaryCount > 3 || maxSummaryGeneration > 3) &&
               onCreateLinkedSession && (
@@ -550,7 +634,11 @@ export function ContextBar({
             )}
             {contextTokenCount > 0 &&
               (() => {
-                const estimated = estimateInputCost(model, contextTokenCount);
+                const estimated = estimateInputCost(
+                  model,
+                  contextTokenCount,
+                  provider,
+                );
                 const costLabel =
                   estimated !== null ? formatCost(estimated) : null;
                 return (
@@ -605,11 +693,6 @@ export function ContextBar({
                   </div>
                 );
               })()}
-            {collapsed ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronUp className="h-3 w-3" />
-            )}
           </div>
         </div>
 
@@ -813,6 +896,7 @@ export function ContextBar({
                           onRemoveAuto={onRemoveAuto}
                           onPin={onPin}
                           onDismissVia={onDismissViaChild}
+                          actionsDisabled={spotlightDisabled}
                           resolvedColor={typeColorMap[type]}
                         />
                       </motion.div>
@@ -849,7 +933,8 @@ export function ContextBar({
                                   <button
                                     type="button"
                                     onClick={() => onReturnToAuto(entry.id)}
-                                    className="hover:text-foreground text-muted-foreground/70"
+                                    disabled={spotlightDisabled}
+                                    className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                                     aria-label={t("chat.context.returnToAuto", {
                                       name: entry.name,
                                     })}
@@ -860,7 +945,8 @@ export function ContextBar({
                                 <button
                                   type="button"
                                   onClick={() => onRemove(entry.id)}
-                                  className="hover:text-destructive"
+                                  disabled={spotlightDisabled}
+                                  className="hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                                   aria-label={t("chat.context.unpinEntry", {
                                     name: entry.name,
                                   })}
@@ -891,7 +977,8 @@ export function ContextBar({
                           <button
                             type="button"
                             onClick={() => onPin(child.id)}
-                            className="hover:text-foreground text-muted-foreground/70"
+                            disabled={spotlightDisabled}
+                            className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label={t("chat.context.pinEntry", {
                               name: child.name,
                             })}
@@ -902,7 +989,8 @@ export function ContextBar({
                             <button
                               type="button"
                               onClick={() => onDismissViaChild(child.id)}
-                              className="hover:text-destructive"
+                              disabled={spotlightDisabled}
+                              className="hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                               aria-label={t("chat.context.unpinEntry", {
                                 name: child.name,
                               })}
@@ -941,7 +1029,8 @@ export function ContextBar({
                             <button
                               type="button"
                               onClick={() => onPin(entry.id)}
-                              className="hover:text-foreground text-muted-foreground/70"
+                              disabled={spotlightDisabled}
+                              className="hover:text-foreground text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                               aria-label={t("chat.context.pinEntry", {
                                 name: entry.name,
                               })}
@@ -951,7 +1040,8 @@ export function ContextBar({
                             <button
                               type="button"
                               onClick={() => onRemoveAuto(entry.id)}
-                              className="hover:text-destructive text-muted-foreground/70"
+                              disabled={spotlightDisabled}
+                              className="hover:text-destructive text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
                               aria-label={t("chat.context.unpinEntry", {
                                 name: entry.name,
                               })}
@@ -973,7 +1063,8 @@ export function ContextBar({
                     <button
                       type="button"
                       onClick={() => onRemove(snippet.id)}
-                      className="hover:text-destructive"
+                      disabled={spotlightDisabled}
+                      className="hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                       aria-label={t("chat.context.unpinEntry", {
                         name: snippet.title,
                       })}
@@ -1005,7 +1096,8 @@ export function ContextBar({
                       <button
                         type="button"
                         onClick={() => onUnpinSticky?.(sticky.id)}
-                        className="hover:text-destructive"
+                        disabled={spotlightDisabled}
+                        className="hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                         aria-label={t("chat.context.unpinSpotlight", { label })}
                       >
                         <X className="h-3 w-3" />
@@ -1022,7 +1114,8 @@ export function ContextBar({
                 <button
                   type="button"
                   onClick={() => setPinOpen((v) => !v)}
-                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+                  disabled={spotlightDisabled}
+                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
                   aria-label={t("chat.context.pinCodexSnippet")}
                 >
                   <BookOpen className="h-3 w-3" />
@@ -1031,15 +1124,11 @@ export function ContextBar({
                 <PinCodexDialog
                   open={pinOpen}
                   containerRef={pinContainerRef}
-                  // スコープアンカーは既に <focus_subject> で文脈内なので、Pin
-                  // ダイアログでも「ピン済み」扱いにして重複手動ピンを防ぐ。
-                  pinnedIds={
-                    new Set([
-                      ...candidatePinnedEntries.map((e) => e.id),
-                      ...(scopeAnchor?.kind === "codex"
-                        ? [scopeAnchor.id]
-                        : []),
-                    ])
+                  pinnedIds={pinnedCodexIds}
+                  // スコープアンカーは <focus_subject> として固定注入されるため、
+                  // 通常の永続 pin と混ぜず checked + disabled で表示する。
+                  lockedIds={
+                    scopeAnchor ? new Set([scopeAnchor.id]) : undefined
                   }
                   withChildrenIds={
                     new Set(
@@ -1048,11 +1137,7 @@ export function ContextBar({
                         .map((e) => e.id),
                     )
                   }
-                  pinnedSnippetIds={
-                    scopeAnchor?.kind === "snippet"
-                      ? new Set([...pinnedSnippetIds, scopeAnchor.id])
-                      : pinnedSnippetIds
-                  }
+                  pinnedSnippetIds={pinnedSnippetIds}
                   onPin={onPinEntry}
                   onUnpin={onUnpinEntry}
                   onToggleChildren={onTogglePinChildren}
@@ -1061,7 +1146,7 @@ export function ContextBar({
               </div>
               <ContextCreatorButton
                 onClick={() => setCreatorOpen(true)}
-                disabled={!canUseCreator}
+                disabled={!canUseCreator || spotlightDisabled}
               />
             </div>
           </div>
@@ -1084,9 +1169,11 @@ export function ContextBar({
           totalTokens={previewData?.totalTokens ?? contextTokenCount}
           userMessage={previewData?.userMessage ?? ""}
           model={model}
-          contextWindow={contextWindow}
+          provider={provider}
+          contextWindow={contextWindow ?? undefined}
           loading={previewLoading}
-          onClose={() => setPreviewOpen(false)}
+          unavailable={previewData?.status === "unavailable"}
+          onClose={closePreview}
         />
       )}
     </>

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
+import { recordCounter } from "@/lib/perfLog";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -113,6 +114,9 @@ export function ChatPanelHeader({
   onToggleRag,
 }: ChatPanelHeaderProps) {
   const { t } = useTranslation();
+  useEffect(() => {
+    recordCounter("chat.header.commit");
+  });
   const privacyRagDisabled = agentMode;
   const effectiveRagDisabled = ragDisabled || privacyRagDisabled;
   const nodes = useTreeStore((s) => s.nodes);

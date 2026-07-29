@@ -15,7 +15,8 @@ import {
 } from "@/features/tree/treeStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { listEvents } from "./api";
 import {
@@ -23,6 +24,20 @@ import {
   importExtractedEvents,
   type EventProposal,
 } from "./extractEventsApi";
+
+export async function loadChronicleExtractionScenes(
+  sceneNodes: readonly Pick<TreeNodeData, "id" | "title">[],
+  loadContents: typeof loadSceneContents = loadSceneContents,
+) {
+  const contents = await loadContents(sceneNodes.map((scene) => scene.id));
+  return sceneNodes.map((scene, orderIndex) => ({
+    sceneId: scene.id,
+    title: scene.title,
+    // Match loadSceneContent's missing-row contract.
+    bodyText: extractPlainText(contents.get(scene.id) ?? ""),
+    orderIndex,
+  }));
+}
 
 /**
  * 本文（章/フォルダ）から LLM で作中の出来事候補を抽出し、確認のうえ一括取り込みする
@@ -86,14 +101,7 @@ export function ChronicleExtractDialog({
         useTreeStore.getState().nodes,
         folderId,
       );
-      const scenes = await Promise.all(
-        sceneNodes.map(async (n, i) => ({
-          sceneId: n.id,
-          title: n.title,
-          bodyText: extractPlainText(await loadSceneContent(n.id)),
-          orderIndex: i,
-        })),
-      );
+      const scenes = await loadChronicleExtractionScenes(sceneNodes);
       const existing = await listEvents(projectId);
       const result = await proposeEvents({
         scenes,

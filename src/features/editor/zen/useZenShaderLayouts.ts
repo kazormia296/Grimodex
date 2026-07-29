@@ -6,6 +6,11 @@ import {
 } from "./zenContrastGuard";
 
 export interface ZenShaderLayouts {
+  /** Shader surface dimensions in CSS pixels. */
+  surfaceSize: {
+    width: number;
+    height: number;
+  };
   /** Text readability remains scoped to the actual writing column. */
   contrast: ZenContrastGuardLayout;
   /** Glass refraction follows the complete Editor panel boundary. */
@@ -20,6 +25,10 @@ export interface ZenGlassLayout extends ZenContrastGuardLayout {
 }
 
 const EMPTY_LAYOUTS: ZenShaderLayouts = {
+  surfaceSize: {
+    width: 0,
+    height: 0,
+  },
   contrast: EMPTY_ZEN_CONTRAST_GUARD_LAYOUT,
   glass: {
     ...EMPTY_ZEN_CONTRAST_GUARD_LAYOUT,
@@ -42,6 +51,13 @@ function nodeContainsLayoutTarget(node: Node) {
   );
 }
 
+function nodeHasLayoutTargetDescendant(node: Node) {
+  return (
+    node instanceof Element &&
+    node.querySelector(LAYOUT_TARGET_SELECTOR) !== null
+  );
+}
+
 export function mutationAffectsZenShaderLayout(
   records: readonly MutationRecord[],
 ) {
@@ -49,7 +65,12 @@ export function mutationAffectsZenShaderLayout(
     (record) =>
       record.type === "attributes" ||
       Array.from(record.addedNodes).some(nodeContainsLayoutTarget) ||
-      Array.from(record.removedNodes).some(nodeContainsLayoutTarget),
+      Array.from(record.removedNodes).some(nodeContainsLayoutTarget) ||
+      // Removing an unrelated animated sibling can move a surviving Stripe
+      // without resizing it. The removed node no longer identifies the
+      // affected surface, but the mutation target still contains that surface.
+      (record.type === "childList" &&
+        nodeHasLayoutTargetDescendant(record.target)),
   );
 }
 
@@ -65,6 +86,8 @@ function sameRegion(
 
 function sameLayouts(current: ZenShaderLayouts, next: ZenShaderLayouts) {
   return (
+    current.surfaceSize.width === next.surfaceSize.width &&
+    current.surfaceSize.height === next.surfaceSize.height &&
     sameRegion(current.contrast, next.contrast) &&
     sameRegion(current.glass, next.glass) &&
     current.glass.cornerRadius === next.glass.cornerRadius &&
@@ -100,8 +123,13 @@ function elementIsFullyVisible(element: HTMLElement) {
   return true;
 }
 
-function visibleElements(selector: string): VisibleElement[] {
-  const elements = document.querySelectorAll<HTMLElement>(selector);
+function candidateElements(selector: string): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(selector));
+}
+
+function visibleCandidateElements(
+  elements: readonly HTMLElement[],
+): VisibleElement[] {
   const visible: VisibleElement[] = [];
   for (const element of elements) {
     if (!elementIsFullyVisible(element)) continue;
@@ -230,6 +258,11 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
     let resizeTargets = new Set<HTMLElement>();
     let scrollTargets = new Set<HTMLElement>();
     let mutationObserver: MutationObserver | null = null;
+    let paperCandidates: HTMLElement[] = [];
+    let editorCandidates: HTMLElement[] = [];
+    let uiSurfaceCandidates: HTMLElement[] = [];
+    let cachedUiLayouts: readonly ZenGlassLayout[] = [];
+    let fullLayoutPending = true;
     const resizeObserver =
       typeof ResizeObserver === "undefined"
         ? null
@@ -250,12 +283,12 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
     const syncScrollTargets = (next: Set<HTMLElement>) => {
       for (const target of scrollTargets) {
         if (!next.has(target)) {
-          target.removeEventListener("scroll", schedule);
+          target.removeEventListener("scroll", scheduleScroll);
         }
       }
       for (const target of next) {
         if (!scrollTargets.has(target)) {
-          target.addEventListener("scroll", schedule, { passive: true });
+          target.addEventListener("scroll", scheduleScroll, { passive: true });
         }
       }
       scrollTargets = next;
@@ -304,51 +337,81 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
 
     const update = () => {
       frame = 0;
-      const uiSurfaceCandidates = Array.from(
-        document.querySelectorAll<HTMLElement>(UI_SURFACE_SELECTOR),
-      );
-      const paperCandidates = visibleElements(".zen-editor-paper");
-      const visiblePapers = clipPapersToScrollports(paperCandidates);
-      const visibleEditors = visibleElements("[data-editor-area]");
-      const visibleUiSurfaces = visibleElements(UI_SURFACE_SELECTOR);
-      const glassRoots = Array.from(
-        document.querySelectorAll<HTMLElement>("[data-workspace-glass-root]"),
-      );
-      const uiVisibilityTargets = new Set<HTMLElement>();
-      for (const candidate of uiSurfaceCandidates) {
+      const refreshTargets = fullLayoutPending;
+      fullLayoutPending = false;
+      if (refreshTargets) {
+        uiSurfaceCandidates = Array.from(
+          document.querySelectorAll<HTMLElement>(UI_SURFACE_SELECTOR),
+        );
+        paperCandidates = candidateElements(".zen-editor-paper");
+        editorCandidates = candidateElements("[data-editor-area]");
+      }
+      const visiblePaperCandidates = visibleCandidateElements(paperCandidates);
+      const visibleEditors = visibleCandidateElements(editorCandidates);
+      const visiblePapers = clipPapersToScrollports(visiblePaperCandidates);
+      const visibleUiSurfaces = refreshTargets
+        ? visibleCandidateElements(uiSurfaceCandidates)
+        : [];
+      const glassRoots = refreshTargets
+        ? Array.from(
+            document.querySelectorAll<HTMLElement>(
+              "[data-workspace-glass-root]",
+            ),
+          )
+        : [];
+      // Visibility-changing ancestors must remain observed even while their
+      // Editor/Paper/UI descendants are currently transparent. Otherwise an
+      // enter animation can exclude a target before it ever becomes an
+      // observer candidate, leaving the shader mask empty after opacity=1.
+      const visibilityTargets = new Set<HTMLElement>();
+      for (const candidate of [
+        ...paperCandidates,
+        ...editorCandidates,
+        ...uiSurfaceCandidates,
+      ]) {
         let target: HTMLElement | null = candidate;
         while (target && target !== mutationRoot) {
-          uiVisibilityTargets.add(target);
+          visibilityTargets.add(target);
           target = target.parentElement;
         }
       }
       const nextScrollTargets = new Set(
-        paperCandidates.flatMap(({ element }) => {
+        paperCandidates.flatMap((element) => {
           const target = element.closest<HTMLElement>(".glass-editor-body");
           return target ? [target] : [];
         }),
       );
-      syncResizeTargets(
-        new Set([
-          surface,
-          ...paperCandidates.map(({ element }) => element),
-          ...visibleEditors.map(({ element }) => element),
-          ...uiSurfaceCandidates,
-          ...nextScrollTargets,
-        ]),
-      );
-      syncScrollTargets(nextScrollTargets);
-      syncMutationTargets([
-        ...glassRoots,
-        ...visibleEditors.map(({ element }) => element),
-        ...uiVisibilityTargets,
-      ]);
+      if (refreshTargets)
+        syncResizeTargets(
+          new Set([
+            surface,
+            ...paperCandidates,
+            ...editorCandidates,
+            ...uiSurfaceCandidates,
+            ...nextScrollTargets,
+          ]),
+        );
+      if (refreshTargets) syncScrollTargets(nextScrollTargets);
+      if (refreshTargets)
+        syncMutationTargets([...glassRoots, ...visibilityTargets]);
 
       const surfaceRect = surface.getBoundingClientRect();
       const paperRect = unionRect(visiblePapers);
-      const paperScrollportRect = unionPaperScrollportRect(paperCandidates);
+      const paperScrollportRect = unionPaperScrollportRect(
+        visiblePaperCandidates,
+      );
       const editorRect = unionRect(visibleEditors);
+      if (refreshTargets) {
+        cachedUiLayouts = visibleUiSurfaces.map(({ element, rect }) => ({
+          ...layoutFor(surfaceRect, rect, 0),
+          cornerRadius: surfaceCornerRadius(element, rect),
+        }));
+      }
       const next = {
+        surfaceSize: {
+          width: surfaceRect.width,
+          height: surfaceRect.height,
+        },
         contrast: layoutFor(surfaceRect, paperRect, 48, paperScrollportRect),
         glass: {
           ...layoutFor(surfaceRect, editorRect),
@@ -361,15 +424,18 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
                   ),
                 ),
         },
-        uiSurfaces: visibleUiSurfaces.map(({ element, rect }) => ({
-          ...layoutFor(surfaceRect, rect, 0),
-          cornerRadius: surfaceCornerRadius(element, rect),
-        })),
+        uiSurfaces: cachedUiLayouts,
       };
       setLayouts((current) => (sameLayouts(current, next) ? current : next));
     };
 
     function schedule() {
+      fullLayoutPending = true;
+      if (frame !== 0) return;
+      frame = requestAnimationFrame(update);
+    }
+
+    function scheduleScroll() {
       if (frame !== 0) return;
       frame = requestAnimationFrame(update);
     }
@@ -389,7 +455,7 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
       for (const target of scrollTargets) {
-        target.removeEventListener("scroll", schedule);
+        target.removeEventListener("scroll", scheduleScroll);
       }
       window.removeEventListener("resize", schedule);
     };

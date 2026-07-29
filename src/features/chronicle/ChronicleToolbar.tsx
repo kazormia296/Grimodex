@@ -82,7 +82,10 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
 
   return (
     <>
-      <div className="@container flex h-12 flex-none items-center gap-1 border-b border-border bg-card px-3">
+      <div
+        data-testid="chronicle-toolbar"
+        className="@container flex h-12 flex-none items-center gap-1 border-b border-border px-3"
+      >
         <button
           type="button"
           data-testid="toolbar-new"

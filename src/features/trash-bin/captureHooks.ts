@@ -350,7 +350,9 @@ export function captureForeshadowDeletion(opts: CaptureForeshadowOpts): void {
     payoffToPos: foreshadow.payoffToPos ?? null,
     payoffConfirmed: foreshadow.payoffConfirmed,
     abandoned: foreshadow.abandoned,
+    secret: foreshadow.secret,
     loadBearing: foreshadow.loadBearing ?? null,
+    codexLinkDirtyAt: foreshadow.codexLinkDirtyAt?.getTime() ?? null,
   };
 
   useTrashBinStore.getState().enqueuePending(

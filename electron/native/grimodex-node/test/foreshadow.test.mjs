@@ -69,18 +69,53 @@ test("foreshadowCreate は load_bearing を検証する（ワイヤエラー文�
 });
 
 test("foreshadowCreate → update: Option<Option> は Some(Some)=set / null・欠落=no-op（Tauri パリティ）", async () => {
-  const created = JSON.parse(
-    await backend.foreshadowCreate({
-      projectId: PROJECT,
-      title: "刹那の伏線",
-      intent: "最初の意図",
-      loadBearing: "critical",
-    }),
+  await run(
+    "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order) VALUES ('foreshadow-payoff-scene', ?, 'scene', 'Payoff', '{}', 'a-foreshadow')",
+    [PROJECT],
   );
+  const createPayload = {
+    id: "foreshadow-napi-request-1",
+    projectId: PROJECT,
+    title: "刹那の伏線",
+    intent: "最初の意図",
+    notes: "full-row note",
+    payoffSceneId: "foreshadow-payoff-scene",
+    payoffFromPos: 3,
+    payoffToPos: 9,
+    payoffConfirmed: true,
+    abandoned: true,
+    secret: false,
+    loadBearing: "critical",
+    codexLinkDirtyAt: 1784000000000,
+  };
+  const created = JSON.parse(await backend.foreshadowCreate(createPayload));
   assert.equal(created.title, "刹那の伏線");
   assert.equal(created.intent, "最初の意図");
+  assert.equal(created.notes, "full-row note");
+  assert.equal(created.payoff_scene_id, "foreshadow-payoff-scene");
+  assert.equal(created.payoff_from_pos, 3);
+  assert.equal(created.payoff_to_pos, 9);
+  assert.equal(created.payoff_confirmed, 1);
+  assert.equal(created.abandoned, 1);
+  assert.equal(created.secret, 0);
   assert.equal(created.load_bearing, "critical");
+  assert.equal(created.codex_link_dirty_at, 1784000000000);
   const fid = created.id;
+  assert.equal(fid, createPayload.id);
+  assert.deepEqual(created.__idempotency, {
+    replayed: false,
+    entityPresent: true,
+  });
+  const replay = JSON.parse(await backend.foreshadowCreate(createPayload));
+  assert.equal(replay.id, created.id);
+  assert.deepEqual(replay.__idempotency, {
+    replayed: true,
+    entityPresent: true,
+  });
+  await assert.rejects(
+    backend.foreshadowCreate({ ...createPayload, title: "別の伏線" }),
+    /FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT/,
+  );
 
   // Some(Some) — 値セットは効く（到達可能な唯一の書き込み経路）。
   const setted = JSON.parse(
@@ -95,11 +130,69 @@ test("foreshadowCreate → update: Option<Option> は Some(Some)=set / null・�
   const nulled = JSON.parse(
     await backend.foreshadowUpdate(fid, { intent: null }),
   );
-  assert.equal(nulled.intent, "改訂した意図", "null は no-op（Tauri パリティ）");
+  assert.equal(
+    nulled.intent,
+    "改訂した意図",
+    "null は no-op（Tauri パリティ）",
+  );
 
   // 空 patch は現行行をそのまま返す。
   const noop = JSON.parse(await backend.foreshadowUpdate(fid, {}));
   assert.equal(noop.id, fid);
+});
+
+test("foreshadowCreate requestId-only は同じ entity と ledger を replay する", async () => {
+  const payload = {
+    requestId: "foreshadow-napi-request-only",
+    projectId: PROJECT,
+    title: "request only",
+    intent: null,
+    loadBearing: null,
+  };
+  const created = JSON.parse(await backend.foreshadowCreate(payload));
+  const replay = JSON.parse(await backend.foreshadowCreate(payload));
+  assert.equal(created.id, payload.requestId);
+  assert.equal(replay.id, created.id);
+  assert.deepEqual(replay.__idempotency, {
+    replayed: true,
+    entityPresent: true,
+  });
+});
+
+test("foreshadowCreate は delete 後も request tombstone を replay し deliberate restore を区別する", async () => {
+  const payload = {
+    id: "foreshadow-napi-entity-deleted",
+    requestId: "foreshadow-napi-request-deleted",
+    projectId: PROJECT,
+    title: "削除後に復活しない伏線",
+    intent: "SECRET_NAPI_FORESHADOW_SENTINEL",
+    loadBearing: null,
+  };
+  await backend.foreshadowCreate(payload);
+  await backend.foreshadowDelete(payload.id);
+
+  const replay = JSON.parse(await backend.foreshadowCreate(payload));
+  assert.equal(replay.id, payload.id);
+  assert.deepEqual(replay.__idempotency, {
+    replayed: true,
+    entityPresent: false,
+  });
+  assert.equal(
+    await row("SELECT id FROM foreshadows WHERE id = ?", [payload.id]),
+    undefined,
+  );
+
+  const restored = JSON.parse(
+    await backend.foreshadowCreate({
+      ...payload,
+      requestId: "foreshadow-napi-history-restore",
+    }),
+  );
+  assert.equal(restored.id, payload.id);
+  assert.deepEqual(restored.__idempotency, {
+    replayed: false,
+    entityPresent: true,
+  });
 });
 
 test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され camelCase mark で返る", async () => {

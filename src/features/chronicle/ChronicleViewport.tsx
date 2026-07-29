@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
@@ -21,10 +30,19 @@ import { laneAtY } from "./chronicleLanePack";
 import { useLaneReorderTween } from "./chronicleLaneAnim";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { announce } from "@/lib/a11y/announcer";
+import { measurePerfSync, recordAnimationFrameInterval } from "@/lib/perfLog";
 import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
 import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
 import { EventMarker, type MarkerEvent } from "./EventMarker";
+import {
+  buildChronicleHorizontalRenderWindow,
+  buildChronicleVerticalRenderWindow,
+  chronicleEdgeIntersectsHorizontalRenderWindow,
+  chronicleEdgeIntersectsRenderWindow,
+  chronicleMarkerIntersectsHorizontalRenderWindow,
+  chronicleMarkerIntersectsRenderWindow,
+} from "./chronicleRenderWindow";
 import {
   connectedCausalChain,
   directCauses,
@@ -38,8 +56,82 @@ const LANE_DEADZONE = 28;
 // キーボード代替のパン/スクロール量（wheel/中ボタンパンの WCAG 2.1.1 等価操作）。
 const KBD_PAN_PX = 80;
 const KBD_VSCROLL_PX = 60;
+const KBD_PAGE_RATIO = 0.9;
+/** Trackpad/wheel bursts commit one view update after the interaction settles. */
+const WHEEL_VIEW_COMMIT_MS = 80;
+/**
+ * Small chronicles keep their insertion/removal fades. Larger chronicles use
+ * 2D projection windows and plain wrappers so offscreen data and Motion
+ * bookkeeping cannot enter pointer-frame work.
+ */
+const CHRONICLE_WINDOWING_THRESHOLD = 250;
+
+function ChronicleMarkerPresence({
+  windowed,
+  children,
+}: {
+  windowed: boolean;
+  children: ReactNode;
+}) {
+  // A scroll-window change is projection, not deletion. Keeping it outside
+  // AnimatePresence prevents hundreds of exit nodes from surviving a jump.
+  return windowed ? (
+    <>{children}</>
+  ) : (
+    <AnimatePresence initial={false}>{children}</AnimatePresence>
+  );
+}
+
+function ChronicleMarkerWrapper({
+  windowed,
+  reducedMotion,
+  style,
+  children,
+}: {
+  windowed: boolean;
+  reducedMotion: boolean;
+  style: CSSProperties;
+  children: ReactNode;
+}) {
+  // Projection-window changes are frequent during vertical pan. A plain div
+  // avoids running Framer Motion bookkeeping for every unchanged visible
+  // marker; real insertion/deletion retains the existing fade in the
+  // unwindowed fallback.
+  if (windowed) {
+    return (
+      <div data-chronicle-windowed-marker-wrapper style={style}>
+        {children}
+      </div>
+    );
+  }
+  return (
+    <motion.div
+      style={style}
+      initial={reducedMotion ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{
+        opacity: 0,
+        transition: reducedMotion
+          ? { duration: 0 }
+          : { duration: DURATIONS.fast, ease: EASINGS.easeOut },
+      }}
+      transition={
+        reducedMotion
+          ? { duration: 0 }
+          : {
+              duration: DURATIONS.normal,
+              ease: EASINGS.easeOut,
+            }
+      }
+    >
+      {children}
+    </motion.div>
+  );
+}
 
 export interface ChronicleViewportProps {
+  /** Keepalive-hidden panels remain mounted, so interaction work must stop. */
+  isActive?: boolean;
   view: View;
   onViewChange: (v: View) => void;
   onMeasureTrack: (w: number) => void;
@@ -75,7 +167,10 @@ export interface ChronicleViewportProps {
   // ── グラフ操作（任意・ロック時は呼ばれない） ──
   /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
   selectedDay?: number | null;
-  /** 暦軸モードか（false=並び順モードでは時間ドラッグ/位置作成を抑止）。 */
+  /**
+   * 暦軸モードか。false の並び順モードでもマーカーの横 drop は実日付への
+   * 変換に使うが、空白位置の日付作成・期間伸縮・一括時間移動は抑止する。
+   */
   hasCalendarAxis?: boolean;
   /** マーカー再配置（newStartDay=null は時間変更なし。newCodexId でレーン再割当）。 */
   onMoveEvent?: (
@@ -132,6 +227,7 @@ export interface ChronicleViewportProps {
  * 親が buildChronicleLayout（純関数）で算出した layout から描く。
  */
 export function ChronicleViewport({
+  isActive = true,
   view,
   onViewChange,
   onMeasureTrack,
@@ -175,8 +271,70 @@ export function ChronicleViewport({
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const trackElRef = useRef<HTMLDivElement | null>(null);
+  const rulerContentRef = useRef<HTMLDivElement | null>(null);
+  const projectionLayerRef = useRef<HTMLDivElement | null>(null);
+  const edgeWorldLayerRef = useRef<SVGSVGElement | null>(null);
+  const markerWorldLayerRef = useRef<HTMLDivElement | null>(null);
+  const thumbRef = useRef<HTMLDivElement | null>(null);
+  const viewPreviewFrameRef = useRef<number | null>(null);
+  const viewPreviewDirtyRef = useRef(false);
+  const continuousPreviewRef = useRef(false);
+  const pendingPreviewViewRef = useRef<View | null>(null);
+  const previewActiveRef = useRef(false);
+  const wheelCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   // 縦スクロール領域（中ボタンドラッグの縦パン用に scrollTop を直接いじる）。
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const [verticalViewport, setVerticalViewport] = useState(() => {
+    // Do not materialize every marker for the first commit merely because the
+    // panel ref has not been measured yet. useLayoutEffect replaces this
+    // conservative first-row window with the exact scroll-area height
+    // before paint.
+    const screenHeight =
+      typeof window === "undefined"
+        ? 1
+        : Math.min(
+            Math.max(
+              document.documentElement?.clientHeight || window.innerHeight || 1,
+              1,
+            ),
+            64,
+          );
+    return { scrollTop: 0, height: screenHeight };
+  });
+  useLayoutEffect(() => {
+    const element = scrollAreaRef.current;
+    if (!element) return;
+
+    const measure = () => {
+      const height = element.clientHeight;
+      // A hidden keepalive panel reports zero. Preserve the bounded initial
+      // window until the panel has real geometry instead of falling back to
+      // the legacy "render everything" null window.
+      if (!Number.isFinite(height) || height <= 0) return;
+      // Half-viewport buckets keep a full viewport of overscan while avoiding
+      // a React marker rebuild for every pixel of native vertical scrolling.
+      const quantum = Math.max(height / 2, 1);
+      const scrollTop = Math.floor(element.scrollTop / quantum) * quantum;
+      setVerticalViewport((current) =>
+        current.height === height && current.scrollTop === scrollTop
+          ? current
+          : { height, scrollTop },
+      );
+    };
+    measure();
+    element.addEventListener("scroll", measure, { passive: true });
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => measure());
+    observer?.observe(element);
+    return () => {
+      element.removeEventListener("scroll", measure);
+      observer?.disconnect();
+    };
+  }, [isActive, layout.contentHeight]);
   // 因果ホバー強調: ホバー中の出来事に連なるチェーン以外を dim する。
   const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
   // キーボード（矢印ナビ）で選択した出来事。ホバーと同じ因果チェーン強調を
@@ -196,7 +354,12 @@ export function ChronicleViewport({
   }, [chainSourceId, relations]);
   // ネイティブ wheel / pointer ハンドラから最新値を読むための ref。
   const viewRef = useRef(view);
-  viewRef.current = view;
+  const renderedViewRef = useRef(view);
+  renderedViewRef.current = view;
+  // An unrelated render during an active native preview must not discard the
+  // accumulated wheel/thumb position. The committed prop resumes authority once
+  // the interaction ends.
+  if (!previewActiveRef.current) viewRef.current = view;
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
   const draggedRef = useRef(false);
@@ -207,6 +370,120 @@ export function ChronicleViewport({
   const cleanupRef = useRef<(() => void) | null>(null);
   // 進行中のドラッグの document リスナ撤去関数（アンマウント時の取りこぼし防止）。
   const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  const cancelViewPreviewFrame = useCallback(() => {
+    if (viewPreviewFrameRef.current !== null) {
+      cancelAnimationFrame(viewPreviewFrameRef.current);
+      viewPreviewFrameRef.current = null;
+    }
+    viewPreviewDirtyRef.current = false;
+  }, []);
+  const applyViewPreviewPresentation = useCallback(() => {
+    const base = renderedViewRef.current;
+    const next = pendingPreviewViewRef.current ?? base;
+    const scale = next.pxPerDay / Math.max(base.pxPerDay, 1e-9);
+    const shift = (base.viewStartDay - next.viewStartDay) * next.pxPerDay;
+    const baseWorldOffset = layoutRef.current.worldOffsetX;
+    const worldOffset = baseWorldOffset * scale + shift;
+    const scaled = Math.abs(scale - 1) > 1e-9;
+    const worldTransform = scaled
+      ? `translateX(${worldOffset}px) scaleX(${scale})`
+      : `translateX(${worldOffset}px)`;
+    if (edgeWorldLayerRef.current) {
+      edgeWorldLayerRef.current.style.transform = worldTransform;
+    }
+    if (markerWorldLayerRef.current) {
+      markerWorldLayerRef.current.style.transform = worldTransform;
+    }
+    const viewportTransform =
+      Math.abs(shift) > 1e-9 || scaled
+        ? `translateX(${shift}px)${scaled ? ` scaleX(${scale})` : ""}`
+        : "";
+    if (projectionLayerRef.current) {
+      projectionLayerRef.current.style.transform = viewportTransform;
+    }
+    if (rulerContentRef.current) {
+      rulerContentRef.current.style.transform = viewportTransform;
+    }
+  }, []);
+  const flushViewPreview = useCallback(() => {
+    cancelViewPreviewFrame();
+    measurePerfSync(
+      "chronicle.viewportFrame.work",
+      applyViewPreviewPresentation,
+    );
+  }, [applyViewPreviewPresentation, cancelViewPreviewFrame]);
+  const scheduleViewPreviewFrame = useCallback(() => {
+    if (viewPreviewFrameRef.current !== null) return;
+    if (typeof requestAnimationFrame !== "function") {
+      if (viewPreviewDirtyRef.current) flushViewPreview();
+      return;
+    }
+    viewPreviewFrameRef.current = requestAnimationFrame((frameTimestamp) => {
+      viewPreviewFrameRef.current = null;
+      recordAnimationFrameInterval(
+        "chronicle.viewportFrame.interval",
+        frameTimestamp,
+      );
+      if (viewPreviewDirtyRef.current) flushViewPreview();
+      // Pointer events may arrive more slowly than display refresh (remote input,
+      // coalescing, loaded renderer). Keep the gesture clock on consecutive
+      // presented frames rather than treating input-delivery gaps as missed paint.
+      if (continuousPreviewRef.current) scheduleViewPreviewFrame();
+    });
+  }, [flushViewPreview]);
+  const startContinuousPreview = useCallback(() => {
+    continuousPreviewRef.current = true;
+    scheduleViewPreviewFrame();
+  }, [scheduleViewPreviewFrame]);
+  const stopContinuousPreview = useCallback(() => {
+    continuousPreviewRef.current = false;
+  }, []);
+  const previewView = useCallback(
+    (next: View) => {
+      previewActiveRef.current = true;
+      viewRef.current = next;
+      pendingPreviewViewRef.current = next;
+      viewPreviewDirtyRef.current = true;
+      scheduleViewPreviewFrame();
+    },
+    [scheduleViewPreviewFrame],
+  );
+  const resetViewPreview = useCallback(() => {
+    previewActiveRef.current = false;
+    pendingPreviewViewRef.current = renderedViewRef.current;
+    viewRef.current = renderedViewRef.current;
+    flushViewPreview();
+  }, [flushViewPreview]);
+  const commitPreviewView = useCallback(() => {
+    const next = pendingPreviewViewRef.current;
+    if (!next) return;
+    flushViewPreview();
+    // Keep the preview authoritative until the parent renders the committed prop.
+    // This prevents an unrelated hover/selection render from snapping a deferred
+    // store update back to the old View in the interim.
+    onViewChangeRef.current(next);
+  }, [flushViewPreview]);
+  const settleWheelPreview = useCallback(() => {
+    if (wheelCommitTimerRef.current === null) return false;
+    clearTimeout(wheelCommitTimerRef.current);
+    wheelCommitTimerRef.current = null;
+    // A pointer/keyboard gesture is an explicit boundary for the wheel burst.
+    // Commit here so the old timer can never fire in the middle of that gesture.
+    commitPreviewView();
+    return true;
+  }, [commitPreviewView]);
+  useLayoutEffect(() => {
+    resetViewPreview();
+  }, [resetViewPreview, layout.worldOffsetX, view.pxPerDay, view.viewStartDay]);
+  useLayoutEffect(() => {
+    if (!previewActiveRef.current) return;
+    // Native vertical scroll updates the marker projection window with React.
+    // That commit reapplies declarative style props, so restore the concurrent
+    // horizontal DOM preview before paint instead of snapping it back for a
+    // frame (or leaving it cleared after the final pointer sample).
+    applyViewPreviewPresentation();
+  });
 
   // ドラッグ中の縦ガイド（content px）とコンテキストメニュー。
   const [ghostX, setGhostX] = useState<number | null>(null);
@@ -230,13 +507,56 @@ export function ChronicleViewport({
     y: number;
     text: string;
   } | null>(null);
-  // 中ボタンドラッグ（ハンドツール）中フラグ。カーソルを grabbing にする。
-  const [middlePanning, setMiddlePanning] = useState(false);
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
     eventId: string | null;
   } | null>(null);
+  const setMiddlePanning = useCallback((active: boolean) => {
+    // This cursor is interaction-local DOM state. Keeping it out of React avoids
+    // rebuilding 1,000 marker elements on middle-button down/up.
+    if (trackElRef.current) {
+      trackElRef.current.style.cursor = active ? "grabbing" : "";
+    }
+  }, []);
+  const cancelTransientInteraction = useCallback(() => {
+    stopContinuousPreview();
+    cancelViewPreviewFrame();
+    draggedRef.current = false;
+    setGhostX(null);
+    setDragPreview(null);
+    setEdgeDrag(null);
+    setDragBubble(null);
+    setMiddlePanning(false);
+    if (thumbRef.current) {
+      thumbRef.current.style.left = `${layoutRef.current.scroll.thumbLeft}px`;
+    }
+    resetViewPreview();
+  }, [
+    cancelViewPreviewFrame,
+    resetViewPreview,
+    setMiddlePanning,
+    stopContinuousPreview,
+  ]);
+  useEffect(() => {
+    if (isActive) return;
+    const hasTransientInteraction =
+      dragCleanupRef.current !== null ||
+      previewActiveRef.current ||
+      continuousPreviewRef.current ||
+      viewPreviewFrameRef.current !== null ||
+      wheelCommitTimerRef.current !== null;
+    if (!hasTransientInteraction) return;
+    if (wheelCommitTimerRef.current !== null) {
+      clearTimeout(wheelCommitTimerRef.current);
+      wheelCommitTimerRef.current = null;
+    }
+    if (dragCleanupRef.current) {
+      dragCleanupRef.current();
+    } else {
+      cancelTransientInteraction();
+    }
+  }, [cancelTransientInteraction, isActive]);
 
   // document リスナから最新の callback/flag を読むための ref。
   const cbRef = useRef({
@@ -289,22 +609,48 @@ export function ChronicleViewport({
   const bindDrag = (
     move: (ev: MouseEvent) => void,
     up: (ev: MouseEvent) => void,
+    releaseButton = 0,
+    onCancel?: () => void,
   ) => {
     // 直前のドラッグの取りこぼし（mouseup 欠落）でリスナが漏れると以後の操作が
     // 壊れる（draggedRef が張り付く/勝手にパン）。新規ドラッグ前に必ず撤去する。
     dragCleanupRef.current?.();
-    const onUp = (ev: MouseEvent) => {
+    let active = true;
+    const removeListeners = () => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", onUp);
-      dragCleanupRef.current = null;
+      window.removeEventListener("blur", cancel);
+    };
+    const onUp = (ev: MouseEvent) => {
+      const expectedRelease =
+        ev.button === releaseButton ||
+        // happy-dom/legacy callers may omit `button` on mouseup. Accept that
+        // shape only when no button remains pressed; a real left-button release
+        // while middle is still held reports `buttons & 4` and must not end pan.
+        (releaseButton === 1 && ev.button === 0 && ev.buttons === 0);
+      if (!active || !expectedRelease) return;
+      active = false;
+      removeListeners();
+      if (dragCleanupRef.current === cancel) dragCleanupRef.current = null;
       up(ev);
     };
-    dragCleanupRef.current = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", onUp);
+    const cancel = () => {
+      if (!active) return;
+      active = false;
+      removeListeners();
+      if (dragCleanupRef.current === cancel) dragCleanupRef.current = null;
+      cancelTransientInteraction();
+      onCancel?.();
     };
+    dragCleanupRef.current = cancel;
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", cancel);
+  };
+
+  const preparePointerGesture = () => {
+    dragCleanupRef.current?.();
+    settleWheelPreview();
   };
 
   // wheel（passive:false で preventDefault）と ResizeObserver を track へ装着。
@@ -320,22 +666,34 @@ export function ChronicleViewport({
       trackElRef.current = el;
       if (externalTrackElRef) externalTrackElRef.current = el;
       const onWheel = (e: WheelEvent) => {
+        if (!isActive) return;
+        // Trackpad inertia can end with a synthetic 0,0 sample. It must not be
+        // interpreted as zoom-out, nor should it extend the debounce window.
+        if (e.deltaX === 0 && e.deltaY === 0) return;
         e.preventDefault();
+        // Mixing wheel projection with an active pointer drag makes the fixed
+        // drag origin stale and can commit the timer mid-gesture. The pointer
+        // interaction owns the viewport until it ends.
+        if (dragCleanupRef.current !== null) return;
+        let next: View;
         // Shift+ホイール=横スクロール（トラックパッドの deltaX も拾う）。
         if (e.shiftKey) {
           const delta =
             Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-          onViewChangeRef.current(
-            panByPx({ view: viewRef.current, dx: -delta }),
-          );
-          return;
+          next = panByPx({ view: viewRef.current, dx: -delta });
+        } else {
+          const rect = el.getBoundingClientRect();
+          const pivotPx = e.clientX - rect.left;
+          const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+          next = zoomAt({ view: viewRef.current, pivotPx, factor });
         }
-        const rect = el.getBoundingClientRect();
-        const pivotPx = e.clientX - rect.left;
-        const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-        onViewChangeRef.current(
-          zoomAt({ view: viewRef.current, pivotPx, factor }),
-        );
+        previewView(next);
+        if (wheelCommitTimerRef.current !== null)
+          clearTimeout(wheelCommitTimerRef.current);
+        wheelCommitTimerRef.current = setTimeout(() => {
+          wheelCommitTimerRef.current = null;
+          commitPreviewView();
+        }, WHEEL_VIEW_COMMIT_MS);
       };
       el.addEventListener("wheel", onWheel, { passive: false });
       const ro =
@@ -350,14 +708,23 @@ export function ChronicleViewport({
       cleanupRef.current = () => {
         el.removeEventListener("wheel", onWheel);
         ro?.disconnect();
+        if (wheelCommitTimerRef.current !== null) {
+          clearTimeout(wheelCommitTimerRef.current);
+          wheelCommitTimerRef.current = null;
+        }
       };
     },
-    [externalTrackElRef],
+    [commitPreviewView, externalTrackElRef, isActive, previewView],
   );
   useEffect(
     () => () => {
       cleanupRef.current?.();
       dragCleanupRef.current?.();
+      if (viewPreviewFrameRef.current !== null) {
+        cancelAnimationFrame(viewPreviewFrameRef.current);
+      }
+      if (wheelCommitTimerRef.current !== null)
+        clearTimeout(wheelCommitTimerRef.current);
     },
     [],
   );
@@ -365,6 +732,7 @@ export function ChronicleViewport({
   // トラック pointerdown を一元処理: 期間端伸縮 / マーカードラッグ（移動 or
   // 別マーカーへ落として因果エッジ）/ 空白パン＋位置選択。3px 超でクリック抑止。
   const onTrackPointerDown = (e: React.MouseEvent) => {
+    if (!isActive) return;
     // ── 中ボタンドラッグ = ハンドツール（対象に関わらずパン。Timeline と同挙動） ──
     // 横は view（panByPx）、縦はスクロール領域の scrollTop を直接移動。
     // OS の autoscroll は preventDefault で抑止する。
@@ -372,21 +740,33 @@ export function ChronicleViewport({
       e.preventDefault();
       const trackEl = trackElRef.current;
       if (!trackEl) return;
+      preparePointerGesture();
       const startX = e.clientX;
       const startY = e.clientY;
       const startView = viewRef.current;
       const scrollEl = scrollAreaRef.current;
       const startScrollTop = scrollEl?.scrollTop ?? 0;
+      let pendingView = startView;
+      startContinuousPreview();
       setMiddlePanning(true);
       bindDrag(
         (ev) => {
-          onViewChangeRef.current(
-            panByPx({ view: startView, dx: ev.clientX - startX }),
-          );
+          const dx = ev.clientX - startX;
+          pendingView = panByPx({ view: startView, dx });
+          previewView(pendingView);
           if (scrollEl)
             scrollEl.scrollTop = startScrollTop - (ev.clientY - startY);
         },
-        () => setMiddlePanning(false),
+        () => {
+          stopContinuousPreview();
+          pendingPreviewViewRef.current = pendingView;
+          commitPreviewView();
+          setMiddlePanning(false);
+        },
+        1,
+        () => {
+          if (scrollEl) scrollEl.scrollTop = startScrollTop;
+        },
       );
       return;
     }
@@ -396,6 +776,7 @@ export function ChronicleViewport({
     e.preventDefault();
     const el = trackElRef.current;
     if (!el) return;
+    preparePointerGesture();
     const rect = el.getBoundingClientRect();
     const targetEl = e.target as HTMLElement;
     const resizeEl = targetEl.closest("[data-resize]");
@@ -412,7 +793,10 @@ export function ChronicleViewport({
     if (edgeHandleEl && eventId && !cb.locked && cb.onCreateEdge) {
       const center = layoutRef.current.pack.centers.get(eventId);
       // ガイドはハンドル(末尾の●)位置＝末尾 outX から引く（描画エッジと整合）。
-      const fromX = center?.outX ?? center?.cx ?? e.clientX - rect.left;
+      const fromX =
+        (center?.outX ?? center?.cx) != null
+          ? (center?.outX ?? center!.cx) + layoutRef.current.worldOffsetX
+          : e.clientX - rect.left;
       const fromY = center?.cy ?? e.clientY - rect.top;
       bindDrag(
         (ev) => {
@@ -492,7 +876,11 @@ export function ChronicleViewport({
         // 挿入位置はカーソルではなくイベントの先端（開始＝centers.cx）を基準にする。
         // バー中ほどを掴むとカーソルへ開始が飛びドラッグ中とドロップ後がズレる問題への対策。
         // grabOffsetX=掴んだ点と先端の距離。マーカー追従(dx)と整合し、先端が吸着先になる。
-        const startAnchorX = layoutRef.current.pack.centers.get(eventId)?.cx;
+        const worldAnchorX = layoutRef.current.pack.centers.get(eventId)?.cx;
+        const startAnchorX =
+          worldAnchorX == null
+            ? undefined
+            : worldAnchorX + layoutRef.current.worldOffsetX;
         const grabOffsetX =
           startAnchorX != null ? startX - rect.left - startAnchorX : 0;
         // 掴んだマーカーが複数選択の一部なら選択全件を一括移動（=先端の差分を全件へ）。
@@ -544,12 +932,20 @@ export function ChronicleViewport({
             // 本体ドラッグは常に移動（別マーカーへ落としても因果エッジは作らない。
             // 因果エッジは選択時の末尾●ハンドル D&D のみ）。
             if (draggedRef.current && cb.onMoveEvent) {
-              const newDay = cb.hasCalendarAxis
+              const dx = Math.abs(ev.clientX - startX);
+              const dy = Math.abs(ev.clientY - startY);
+              // 縦操作中の手ぶれを日時変更と誤認しない。斜め gesture は
+              // 横成分が支配的な時だけ時間方向の移動として扱う
+              // （横優勢なら lane + time の同時移動可）。
+              const movedHorizontally = dx > DRAG_THRESHOLD && dx > dy;
+              const newDay = movedHorizontally
                 ? snappedDayAt(ev.clientX - grabOffsetX, rect)
                 : null;
-              if (bulk && newDay != null && cb.onMoveSelected) {
-                // 一括: 先端の差分を選択全件へ適用（レーンは各自保持）。
-                cb.onMoveSelected(eventId, newDay);
+              if (bulk) {
+                // 一括は時間方向だけを動かす。最終 drop が縦移動だけなら完全 no-op。
+                if (newDay != null && cb.onMoveSelected) {
+                  cb.onMoveSelected(eventId, newDay);
+                }
               } else {
                 // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
                 const newCodex =
@@ -575,6 +971,8 @@ export function ChronicleViewport({
     const startView = viewRef.current;
     const scrollEl = scrollAreaRef.current;
     const startScrollTop = scrollEl?.scrollTop ?? 0;
+    let pendingView = startView;
+    startContinuousPreview();
     bindDrag(
       (ev) => {
         const dx = ev.clientX - startX;
@@ -582,10 +980,20 @@ export function ChronicleViewport({
         // 縦だけのドラッグもドラッグ扱い（=クリック位置選択を抑止）にするため dy も見る。
         if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)
           draggedRef.current = true;
-        onViewChangeRef.current(panByPx({ view: startView, dx }));
+        pendingView = panByPx({ view: startView, dx });
+        previewView(pendingView);
         if (scrollEl) scrollEl.scrollTop = startScrollTop - dy;
       },
       (ev) => {
+        stopContinuousPreview();
+        if (draggedRef.current) {
+          pendingPreviewViewRef.current = pendingView;
+          commitPreviewView();
+        } else {
+          // preview は閾値判定より先に軽量 DOM transform へ反映される。
+          // クリック相当の微小移動では view 更新が発生しないため、ここで明示的に戻す。
+          resetViewPreview();
+        }
         if (!draggedRef.current && cb.onSelectPosition) {
           // 位置選択の縦ラインは表示中ルーラー解像度のグリッドへ必ず吸着。
           const day = cb.hasCalendarAxis
@@ -596,6 +1004,10 @@ export function ChronicleViewport({
         setTimeout(() => {
           draggedRef.current = false;
         }, 0);
+      },
+      0,
+      () => {
+        if (scrollEl) scrollEl.scrollTop = startScrollTop;
       },
     );
   };
@@ -807,29 +1219,91 @@ export function ChronicleViewport({
 
   // スクロールバーつまみドラッグ＝横スクロール。
   const onThumbPointerDown = (e: React.MouseEvent) => {
+    if (!isActive) return;
+    if (e.button !== 0) return;
+    e.preventDefault();
     e.stopPropagation();
+    preparePointerGesture();
     const geom = layoutRef.current.scroll;
     const startX = e.clientX;
     const startLeft = geom.thumbLeft;
+    const startView = viewRef.current;
+    let pendingView = startView;
+    let moved = false;
+    startContinuousPreview();
     const move = (ev: MouseEvent) => {
       const nextLeft = startLeft + (ev.clientX - startX);
-      const vs = viewStartFromThumb(layoutRef.current.scroll, nextLeft);
-      onViewChangeRef.current({
-        pxPerDay: viewRef.current.pxPerDay,
+      const clampedLeft = Math.max(
+        0,
+        Math.min(nextLeft, geom.trackW - geom.thumbW),
+      );
+      const vs = viewStartFromThumb(geom, clampedLeft);
+      pendingView = {
+        pxPerDay: startView.pxPerDay,
         viewStartDay: vs,
-      });
+      };
+      moved = moved || Math.abs(ev.clientX - startX) > 0;
+      if (thumbRef.current) thumbRef.current.style.left = `${clampedLeft}px`;
+      previewView(pendingView);
     };
-    const up = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-      dragCleanupRef.current = null;
+    bindDrag(move, () => {
+      stopContinuousPreview();
+      if (moved) {
+        pendingPreviewViewRef.current = pendingView;
+        commitPreviewView();
+      } else {
+        resetViewPreview();
+      }
+    });
+  };
+
+  const onThumbKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const supported =
+      e.key === "ArrowLeft" ||
+      e.key === "ArrowRight" ||
+      e.key === "PageUp" ||
+      e.key === "PageDown" ||
+      e.key === "Home" ||
+      e.key === "End";
+    if (!supported) return;
+    e.preventDefault();
+    e.stopPropagation();
+    preparePointerGesture();
+
+    const geom = layoutRef.current.scroll;
+    const current = viewRef.current;
+    const min = geom.fullStart;
+    const max = geom.fullStart + geom.denom;
+    const arrowDays = KBD_PAN_PX / Math.max(current.pxPerDay, 1e-9);
+    const pageDays =
+      (geom.trackW * KBD_PAGE_RATIO) / Math.max(current.pxPerDay, 1e-9);
+    let viewStartDay = current.viewStartDay;
+    switch (e.key) {
+      case "ArrowLeft":
+        viewStartDay -= arrowDays;
+        break;
+      case "ArrowRight":
+        viewStartDay += arrowDays;
+        break;
+      case "PageUp":
+        viewStartDay -= pageDays;
+        break;
+      case "PageDown":
+        viewStartDay += pageDays;
+        break;
+      case "Home":
+        viewStartDay = min;
+        break;
+      case "End":
+        viewStartDay = max;
+        break;
+    }
+    const next = {
+      pxPerDay: current.pxPerDay,
+      viewStartDay: Math.max(min, Math.min(max, viewStartDay)),
     };
-    dragCleanupRef.current = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-    };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
+    previewView(next);
+    commitPreviewView();
   };
 
   // マーカーへ渡す callback は安定参照にする（EventMarker は memo 化済み。
@@ -866,6 +1340,18 @@ export function ChronicleViewport({
     majorGridX,
     markerById,
   } = layout;
+  const scrollValueMin = scroll.fullStart;
+  const scrollValueMax = scroll.fullStart + scroll.denom;
+  const scrollValueNow = Math.max(
+    scrollValueMin,
+    Math.min(scrollValueMax, view.viewStartDay),
+  );
+  const formattedScrollValue = formatDayLabel?.(scrollValueNow).trim();
+  const scrollValueText =
+    formattedScrollValue ||
+    t("chronicle.scrollbarValue", "表示開始: 作中日 {{day}}", {
+      day: Number(scrollValueNow.toFixed(2)),
+    });
 
   // 並べ替えの入れ替えアニメ（Timeline Thread と同方式の手動 FLIP）。
   const reducedMotion = useReducedMotion();
@@ -910,17 +1396,149 @@ export function ChronicleViewport({
     );
     return [...kept, ...recomputed];
   }, [edges, dragPreview, pack.centers, relations]);
+  const windowingEnabled =
+    isActive && eventsById.size > CHRONICLE_WINDOWING_THRESHOLD;
+  const verticalRenderWindow = useMemo(
+    () =>
+      windowingEnabled
+        ? buildChronicleVerticalRenderWindow({
+            scrollTop: verticalViewport.scrollTop,
+            viewportHeight: verticalViewport.height,
+            contentHeight,
+          })
+        : null,
+    [contentHeight, verticalViewport, windowingEnabled],
+  );
+  const horizontalRenderWindow = useMemo(
+    () =>
+      windowingEnabled
+        ? buildChronicleHorizontalRenderWindow({
+            worldOffsetX: layout.worldOffsetX,
+            viewportWidth: scroll.trackW,
+          })
+        : null,
+    [layout.worldOffsetX, scroll.trackW, windowingEnabled],
+  );
+  const retainedMarkerIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (selectedEventId) ids.add(selectedEventId);
+    for (const id of selectedIds ?? []) ids.add(id);
+    for (const id of dragPreview?.ids ?? []) ids.add(id);
+    if (hoveredEventId) ids.add(hoveredEventId);
+    if (kbdSelectedId) ids.add(kbdSelectedId);
+    return ids;
+  }, [
+    dragPreview?.ids,
+    hoveredEventId,
+    kbdSelectedId,
+    selectedEventId,
+    selectedIds,
+  ]);
+  const visibleMarkers = useMemo(() => {
+    if (!isActive) return [];
+    const result: {
+      lane: (typeof pack.lanes)[number];
+      marker: (typeof pack.lanes)[number]["markers"][number];
+      render: NonNullable<ReturnType<typeof markerById.get>>;
+    }[] = [];
+    for (const lane of pack.lanes) {
+      for (const marker of lane.markers) {
+        const render = markerById.get(marker.eventId);
+        if (!render) continue;
+        const retained = retainedMarkerIds.has(realEventId(marker.eventId));
+        const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
+        if (
+          verticalRenderWindow &&
+          !retained &&
+          !chronicleMarkerIntersectsRenderWindow({
+            markerTop: render.top,
+            markerHeight: spacing.tokenH,
+            markerOffsetY: laneOffsetY,
+            window: verticalRenderWindow,
+          })
+        ) {
+          continue;
+        }
+        if (
+          horizontalRenderWindow &&
+          !retained &&
+          !chronicleMarkerIntersectsHorizontalRenderWindow({
+            markerLeft: render.left,
+            markerWidth: render.isInterval
+              ? Math.max(render.barWidth ?? 52, 52)
+              : spacing.maxTok,
+            window: horizontalRenderWindow,
+          })
+        ) {
+          continue;
+        }
+        result.push({ lane, marker, render });
+      }
+    }
+    return result;
+  }, [
+    isActive,
+    horizontalRenderWindow,
+    markerById,
+    laneOffsets,
+    pack.lanes,
+    retainedMarkerIds,
+    spacing.maxTok,
+    spacing.tokenH,
+    verticalRenderWindow,
+  ]);
+  const visibleLiveEdges = useMemo(() => {
+    if (!isActive) return [];
+    if (!verticalRenderWindow && !horizontalRenderWindow) return liveEdges;
+    return liveEdges.filter((edge) => {
+      if (
+        retainedMarkerIds.has(edge.causeId) ||
+        retainedMarkerIds.has(edge.effectId)
+      ) {
+        return true;
+      }
+      const cause = pack.centers.get(edge.causeId);
+      const effect = pack.centers.get(edge.effectId);
+      if (!cause || !effect) return true;
+      return (
+        (!verticalRenderWindow ||
+          chronicleEdgeIntersectsRenderWindow({
+            causeY: cause.cy,
+            effectY: effect.cy,
+            window: verticalRenderWindow,
+          })) &&
+        (!horizontalRenderWindow ||
+          chronicleEdgeIntersectsHorizontalRenderWindow({
+            causeX: cause.cx,
+            effectX: effect.cx,
+            window: horizontalRenderWindow,
+          }))
+      );
+    });
+  }, [
+    horizontalRenderWindow,
+    isActive,
+    liveEdges,
+    pack.centers,
+    retainedMarkerIds,
+    verticalRenderWindow,
+  ]);
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card">
+    <div
+      data-testid="chronicle-viewport"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+    >
       <ChronicleRuler
         gutterX={spacing.gutterX}
         unitLabel={ticks.unitLabel}
         ticks={ticks}
+        contentRef={rulerContentRef}
       />
 
       <div
         ref={scrollAreaRef}
+        data-testid="chronicle-scroll-area"
         className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
       >
         <ChronicleLaneGutter
@@ -939,36 +1557,76 @@ export function ChronicleViewport({
 
         <div
           id="chronicle-track"
+          data-chronicle-total-event-count={eventsById.size}
+          data-chronicle-rendered-marker-count={visibleMarkers.length}
+          data-chronicle-total-edge-count={liveEdges.length}
+          data-chronicle-rendered-edge-count={
+            showEdges ? visibleLiveEdges.length : 0
+          }
+          data-chronicle-render-window-top={verticalRenderWindow?.top}
+          data-chronicle-render-window-bottom={verticalRenderWindow?.bottom}
           ref={setTrackEl}
           onMouseDown={onTrackPointerDown}
           onDoubleClick={onTrackDoubleClick}
           onContextMenu={onTrackContextMenu}
           onKeyDown={onTrackKeyDown}
           tabIndex={0}
-          className="relative flex-1 select-none outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+          className="relative flex-1 select-none overflow-x-clip outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           // minHeight=コンテンツ高、flex stretch で残り高さまで伸ばしレーン外も操作可能に。
           // 本体ドラッグ追従中（dragPreview）/ 中ボタンパン中はトラック全体を grabbing に。
           style={{
             minHeight: contentHeight,
-            cursor: dragPreview || middlePanning ? "grabbing" : undefined,
+            cursor: dragPreview ? "grabbing" : undefined,
           }}
           role="application"
           aria-label={t("chronicle.viewportLabel", "作中年表")}
         >
-          {/* 選択位置ガイド（accent 実線）＋ドラッグ中ガイド（破線） */}
-          {selectedDay != null && hasCalendarAxis && (
-            <div
-              data-testid="chronicle-position-guide"
-              className="pointer-events-none absolute top-0 z-[4]"
-              style={{
-                left: dayToX(view, selectedDay),
-                width: 0,
-                height: contentHeight,
-                borderLeft: "1.5px solid var(--primary)",
-                opacity: 0.7,
-              }}
-            />
-          )}
+          {/* viewport projection: pan preview はこの軽量 layer と ruler/world の
+              transform だけを rAF で更新し、event/lane layout は再構築しない。 */}
+          <div
+            ref={projectionLayerRef}
+            data-testid="chronicle-viewport-projection"
+            className="pointer-events-none absolute inset-0 will-change-transform"
+            style={{ transformOrigin: "0 0" }}
+          >
+            {selectedDay != null && hasCalendarAxis && (
+              <div
+                data-testid="chronicle-position-guide"
+                className="absolute top-0 z-[4]"
+                style={{
+                  left: dayToX(view, selectedDay),
+                  width: 0,
+                  height: contentHeight,
+                  borderLeft: "1.5px solid var(--primary)",
+                  opacity: 0.7,
+                }}
+              />
+            )}
+
+            {/* グリッド線 */}
+            {minorGridX.map((x, i) => (
+              <div
+                key={`gmin-${i}`}
+                className="absolute top-0 z-[2]"
+                style={{
+                  left: x,
+                  width: 1,
+                  height: contentHeight,
+                  background:
+                    "color-mix(in oklch, var(--border) 45%, transparent)",
+                }}
+              />
+            ))}
+            {majorGridX.map((x, i) => (
+              <div
+                key={`gmaj-${i}`}
+                className="absolute top-0 z-[2] bg-border"
+                style={{ left: x, width: 1, height: contentHeight }}
+              />
+            ))}
+          </div>
+
+          {/* ドラッグ中ガイド（viewport px） */}
           {ghostX != null && (
             <div
               className="pointer-events-none absolute top-0 z-[8]"
@@ -981,27 +1639,6 @@ export function ChronicleViewport({
             />
           )}
 
-          {/* グリッド線 */}
-          {minorGridX.map((x, i) => (
-            <div
-              key={`gmin-${i}`}
-              className="absolute top-0 z-[2]"
-              style={{
-                left: x,
-                width: 1,
-                height: contentHeight,
-                background:
-                  "color-mix(in oklch, var(--border) 45%, transparent)",
-              }}
-            />
-          ))}
-          {majorGridX.map((x, i) => (
-            <div
-              key={`gmaj-${i}`}
-              className="absolute top-0 z-[2] bg-border"
-              style={{ left: x, width: 1, height: contentHeight }}
-            />
-          ))}
           {pack.laneSepTops.map((top, i) => {
             if (top <= 0) return null;
             // 区切り線は対応レーン（同 index）の入れ替えオフセットで追従。
@@ -1024,16 +1661,21 @@ export function ChronicleViewport({
           })}
 
           {/* 因果エッジ（ドラッグ中は liveEdges で動いた端点に追従） */}
-          {showEdges && liveEdges.length > 0 && (
+          {showEdges && visibleLiveEdges.length > 0 && (
             <svg
+              ref={edgeWorldLayerRef}
+              data-chronicle-world-layer
               className="pointer-events-none absolute left-0 top-0 z-[3]"
               style={{
                 width: "100%",
                 height: contentHeight,
                 overflow: "visible",
+                transform: `translateX(${layout.worldOffsetX}px)`,
+                transformOrigin: "0 0",
+                willChange: "transform",
               }}
             >
-              {liveEdges.map((e) => (
+              {visibleLiveEdges.map((e) => (
                 <g key={`${e.causeId}|${e.effectId}`}>
                   <path
                     d={e.d}
@@ -1083,14 +1725,22 @@ export function ChronicleViewport({
               挿入/削除は AnimatePresence の opacity フェードで見せる。追従(dragOffset)や
               レーン入れ替え(offsetY)の transform は EventMarker 側の inline のままなので、
               ラッパーの opacity は座標系(containing block)や静止時 z-index に干渉しない。 */}
-          <AnimatePresence initial={false}>
-            {pack.lanes.flatMap((lane) => {
-              const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
-              return lane.markers.map((m) => {
+          <div
+            ref={markerWorldLayerRef}
+            data-chronicle-world-layer
+            className="absolute inset-0 z-[5]"
+            style={{
+              transform: `translateX(${layout.worldOffsetX}px)`,
+              transformOrigin: "0 0",
+              willChange: isActive ? "transform" : undefined,
+            }}
+          >
+            <ChronicleMarkerPresence windowed={windowingEnabled}>
+              {visibleMarkers.map(({ lane, marker: m, render }) => {
+                const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
                 const realId = realEventId(m.eventId);
                 const ev = eventsById.get(realId);
-                const render = markerById.get(m.eventId);
-                if (!ev || !render) return null;
+                if (!ev) return null;
                 const isSelected = selectedIds
                   ? selectedIds.has(realId)
                   : selectedEventId === realId;
@@ -1100,25 +1750,14 @@ export function ChronicleViewport({
                 // 選択9/通常5）を持たせ、エッジ(z3)やグリッド(z2)より前面を保つ。position:
                 // relative でも wrapper は (0,0) の 0 高ブロックなので絶対配置の子は動かない。
                 return (
-                  <motion.div
+                  <ChronicleMarkerWrapper
                     key={m.eventId}
+                    windowed={windowingEnabled}
+                    reducedMotion={reducedMotion}
                     style={{
                       position: "relative",
                       zIndex: isDragging ? 30 : isSelected ? 9 : 5,
                     }}
-                    initial={reducedMotion ? false : { opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{
-                      opacity: 0,
-                      transition: reducedMotion
-                        ? { duration: 0 }
-                        : { duration: DURATIONS.fast, ease: EASINGS.easeOut },
-                    }}
-                    transition={
-                      reducedMotion
-                        ? { duration: 0 }
-                        : { duration: DURATIONS.normal, ease: EASINGS.easeOut }
-                    }
                   >
                     <EventMarker
                       event={ev}
@@ -1153,23 +1792,29 @@ export function ChronicleViewport({
                       }
                       onSelect={handleSelect}
                     />
-                  </motion.div>
+                  </ChronicleMarkerWrapper>
                 );
-              });
-            })}
-          </AnimatePresence>
+              })}
+            </ChronicleMarkerPresence>
+          </div>
         </div>
       </div>
 
       {/* スクロールバー */}
-      <div className="flex h-4 flex-none border-t border-border/60 bg-card">
+      <div
+        data-testid="chronicle-scrollbar"
+        className="flex h-4 flex-none border-t border-border/60"
+      >
         <div
           className="flex-none border-r border-border"
           style={{ width: spacing.gutterX }}
         />
         <div className="relative flex-1">
           <div
+            ref={thumbRef}
+            data-testid="chronicle-scroll-thumb"
             onMouseDown={onThumbPointerDown}
+            onKeyDown={onThumbKeyDown}
             tabIndex={0}
             className="absolute cursor-grab rounded-full bg-muted-foreground/40"
             style={{
@@ -1181,7 +1826,14 @@ export function ChronicleViewport({
             role="scrollbar"
             aria-controls="chronicle-track"
             aria-orientation="horizontal"
-            aria-valuenow={Math.round(scroll.thumbLeft)}
+            aria-label={t(
+              "chronicle.scrollbarLabel",
+              "作中年表の水平スクロール",
+            )}
+            aria-valuemin={scrollValueMin}
+            aria-valuemax={scrollValueMax}
+            aria-valuenow={scrollValueNow}
+            aria-valuetext={scrollValueText}
           />
         </div>
       </div>

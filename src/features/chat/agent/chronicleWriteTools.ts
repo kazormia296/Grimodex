@@ -14,6 +14,7 @@ import { EVENT_KINDS, EVENT_GRANULARITIES } from "@/db/schema";
 import type { EventKind, EventGranularity } from "@/db/schema";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
+import type { EventRow } from "@/features/chronicle/api";
 import {
   getSharedEvents,
   getSharedSceneEvents,
@@ -50,21 +51,27 @@ function optNum(v: unknown): number | null {
  * で hidden な secret event、または存在しない event を区別せず false にし、呼び出し側は
  * generic not found を返す（存在 oracle 化／秘匿内容の漏洩を防ぐ）。create は対象外。
  */
-async function isEventVisibleForWrite(eventId: string): Promise<boolean> {
+async function visibleEventForWrite(eventId: string): Promise<EventRow | null> {
   const projectId = useTreeStore.getState().projectId;
-  if (!projectId) return false;
+  if (!projectId) return null;
   const events = await getSharedEvents(projectId);
   const ev = events.find((e) => e.id === eventId);
-  if (!ev) return false;
-  if (!ev.secret) return true;
+  if (!ev) return null;
+  if (!ev.secret) return ev;
   const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
   const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
   // 全件共有キャッシュを使う（判定側が eventId で絞るため結果は filter 版と同一）。
   const sceneEvents = await getSharedSceneEvents(projectId);
-  return !isEventHiddenFromAi(ev, currentSceneId, {
+  return isEventHiddenFromAi(ev, currentSceneId, {
     readingOrder,
     sceneEvents,
-  });
+  })
+    ? null
+    : ev;
+}
+
+async function isEventVisibleForWrite(eventId: string): Promise<boolean> {
+  return (await visibleEventForWrite(eventId)) !== null;
 }
 
 const NOT_FOUND = "Event not found";
@@ -87,11 +94,13 @@ function coerceGranularity(v: unknown): EventGranularity | undefined {
 /** 作中年表に出来事を作成（tracked-write・undo 可）。 */
 export async function createEventTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<ToolReturn> {
   const title = str(params["title"]);
   if (!title) return fail("create_event", "title is required");
   try {
     const input: AgentEventCreateInput = {
+      requestId,
       title,
       note: params["note"] ? str(params["note"]) : null,
       kind: coerceKind(params["kind"]) ?? "generic",
@@ -133,11 +142,12 @@ export async function updateEventTool(
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("update_event", "eventId is required");
-  if (!(await isEventVisibleForWrite(eventId)))
-    return fail("update_event", NOT_FOUND);
+  const visibleEvent = await visibleEventForWrite(eventId);
+  if (!visibleEvent) return fail("update_event", NOT_FOUND);
   try {
     await agentUpdateEvent({
       eventId,
+      baseVersion: visibleEvent.version,
       title: params["title"] ? str(params["title"]) : undefined,
       note: params["note"] !== undefined ? str(params["note"]) : undefined,
       kind:
@@ -191,10 +201,10 @@ export async function deleteEventTool(
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("delete_event", "eventId is required");
-  if (!(await isEventVisibleForWrite(eventId)))
-    return fail("delete_event", NOT_FOUND);
+  const visibleEvent = await visibleEventForWrite(eventId);
+  if (!visibleEvent) return fail("delete_event", NOT_FOUND);
   try {
-    await agentDeleteEvent(eventId);
+    await agentDeleteEvent(eventId, { baseVersion: visibleEvent.version });
     return ok("delete_event", { id: eventId }, `Deleted event ${eventId}`);
   } catch (e) {
     return fail("delete_event", e instanceof Error ? e.message : String(e));
@@ -263,11 +273,13 @@ export async function setEventParticipantsTool(
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("set_event_participants", "eventId is required");
-  if (!(await isEventVisibleForWrite(eventId)))
-    return fail("set_event_participants", NOT_FOUND);
+  const visibleEvent = await visibleEventForWrite(eventId);
+  if (!visibleEvent) return fail("set_event_participants", NOT_FOUND);
   try {
     const codexIds = strArray(params["codexEntryIds"]);
-    await agentSetEventParticipants(eventId, codexIds);
+    await agentSetEventParticipants(eventId, codexIds, {
+      baseVersion: visibleEvent.version,
+    });
     return ok(
       "set_event_participants",
       { eventId, count: codexIds.length },

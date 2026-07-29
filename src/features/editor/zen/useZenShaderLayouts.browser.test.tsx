@@ -292,12 +292,135 @@ function TransientWorkspaceSurfaceProbe({
   );
 }
 
+function PositionOnlySettlementProbe({
+  phase,
+}: {
+  phase: "baseline" | "transient" | "settled";
+}) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const layouts = useZenShaderLayouts(surfaceRef);
+
+  return (
+    <div
+      ref={surfaceRef}
+      data-testid="position-only-settlement-layout"
+      data-ui-surface-rects={JSON.stringify(
+        layouts.uiSurfaces.map((surface) => surface.rect),
+      )}
+      style={{ position: "relative", width: 1_000, height: 600 }}
+    >
+      <div
+        className={phase === "baseline" ? undefined : "closing"}
+        data-workspace-glass-root
+        data-workspace-fluid-glass="true"
+        style={{ position: "absolute", inset: 0 }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            width: 1_000,
+            height: 600,
+          }}
+        >
+          {phase === "transient" && (
+            <div
+              data-position-only-exit
+              style={{
+                width: 1_000,
+                height: 180,
+                flexShrink: 0,
+              }}
+            />
+          )}
+          <div
+            data-position-only-spacer
+            style={{
+              width: 1_000,
+              height: 520,
+              flexShrink: 0,
+            }}
+          />
+          <nav
+            data-ambient-glass-surface="stripe"
+            style={{
+              width: 1_000,
+              height: 40,
+              flexShrink: 0,
+              borderRadius: 16,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TransientEditorProbe({
+  phase,
+}: {
+  phase: "absent" | "entering" | "visible";
+}) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const layouts = useZenShaderLayouts(surfaceRef);
+
+  return (
+    <div
+      ref={surfaceRef}
+      data-testid="transient-editor-layout"
+      data-contrast-rect={layouts.contrast.rect.join(" ")}
+      data-glass-rect={layouts.glass.rect.join(" ")}
+      style={{ position: "relative", width: 1_000, height: 600 }}
+    >
+      <div data-workspace-glass-root style={{ position: "absolute", inset: 0 }}>
+        {phase !== "absent" && (
+          <section
+            data-editor-area
+            style={{
+              position: "absolute",
+              left: 200,
+              top: 60,
+              width: 600,
+              height: 480,
+              opacity: phase === "visible" ? 1 : 0,
+            }}
+          >
+            <div
+              className="glass-editor-body"
+              style={{ position: "absolute", inset: 0 }}
+            >
+              <article
+                className="zen-editor-paper"
+                style={{
+                  position: "absolute",
+                  left: 100,
+                  top: 100,
+                  width: 400,
+                  height: 240,
+                }}
+              />
+            </div>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const parseRect = (value: string | null) => value?.split(" ").map(Number) ?? [];
 
 const parseNumber = (value: string | null) => Number(value);
 
 const parseRects = (value: string | null): number[][] =>
   value ? (JSON.parse(value) as number[][]) : [];
+
+async function settleLayoutFrames() {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
+}
 
 function expectRects(actual: number[][], expected: number[][]) {
   expect(actual).toHaveLength(expected.length);
@@ -361,6 +484,34 @@ describe("Zen shader geometry (real Chromium)", () => {
       0.8,
       14 / 15,
     ]);
+  });
+
+  it("starts tracking an Editor after its enter opacity becomes fully visible", async () => {
+    const view = render(<TransientEditorProbe phase="absent" />);
+    const probe = view.getByTestId("transient-editor-layout");
+
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [0, 0, 0, 0]);
+      expectRect(probe.getAttribute("data-glass-rect"), [0, 0, 0, 0]);
+    });
+    await settleLayoutFrames();
+
+    view.rerender(<TransientEditorProbe phase="entering" />);
+    await settleLayoutFrames();
+    expectRect(probe.getAttribute("data-contrast-rect"), [0, 0, 0, 0]);
+    expectRect(probe.getAttribute("data-glass-rect"), [0, 0, 0, 0]);
+
+    view.rerender(<TransientEditorProbe phase="visible" />);
+
+    await waitFor(() => {
+      expectRect(probe.getAttribute("data-contrast-rect"), [
+        0.3,
+        1 / 3,
+        0.7,
+        11 / 15,
+      ]);
+      expectRect(probe.getAttribute("data-glass-rect"), [0.2, 0.1, 0.8, 0.9]);
+    });
   });
 });
 
@@ -600,6 +751,31 @@ describe("Zen shader non-editor Glass geometry (real Chromium)", () => {
     await waitFor(() => {
       expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
         [0.1, 13 / 15, 0.9, 14 / 15],
+      ]);
+    });
+  });
+
+  it("remeasures after removing an animation sibling moves a Stripe without resizing it", async () => {
+    const view = render(<PositionOnlySettlementProbe phase="baseline" />);
+    const probe = view.getByTestId("position-only-settlement-layout");
+
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
+        [0, 1 / 15, 1, 2 / 15],
+      ]);
+    });
+
+    view.rerender(<PositionOnlySettlementProbe phase="transient" />);
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
+        [0, 0, 0, 0],
+      ]);
+    });
+
+    view.rerender(<PositionOnlySettlementProbe phase="settled" />);
+    await waitFor(() => {
+      expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
+        [0, 1 / 15, 1, 2 / 15],
       ]);
     });
   });

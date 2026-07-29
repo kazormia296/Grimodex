@@ -5,6 +5,7 @@ import {
   trimL3Text,
   trimL5Text,
   countTokens,
+  estimateTokens,
   sanitizeSceneContent,
   allocateLayerBudgets,
   computeResponseReservation,
@@ -1013,6 +1014,44 @@ describe("contextBuilder", () => {
         expect([...body].every((ch) => ch === ASTRAL)).toBe(true);
       }
     });
+
+    it("keeps the provider-bound exact-mode suffix identical to the legacy search", () => {
+      const text = HEADER + "冒頭abc𠀀🙂中盤かなカナ終端XYZ。".repeat(1_000);
+      const legacyTrimExact = (targetTokens: number) => {
+        if (countTokens(text) <= targetTokens) return text;
+        if (targetTokens <= 0) return "";
+
+        const headerTokens = countTokens(HEADER);
+        if (headerTokens > targetTokens) return "";
+        if (headerTokens === targetTokens) return HEADER;
+
+        const words = Array.from(text.slice(HEADER.length));
+        const bodyBudget = targetTokens - headerTokens;
+        let lo = 0;
+        let hi = words.length;
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          const candidate = words.slice(mid).join("");
+          if (countTokens(candidate) <= bodyBudget) {
+            hi = mid;
+          } else {
+            lo = mid + 1;
+          }
+        }
+        return HEADER + words.slice(lo).join("");
+      };
+      const fullTokens = countTokens(text);
+
+      for (const targetTokens of [
+        countTokens(HEADER) + 17,
+        Math.floor(fullTokens / 2),
+        fullTokens - 11,
+      ]) {
+        expect(trimL3Text(text, targetTokens)).toBe(
+          legacyTrimExact(targetTokens),
+        );
+      }
+    });
   });
 
   describe("trimL5Text — graceful trim (#3)", () => {
@@ -1136,6 +1175,29 @@ describe("contextBuilder", () => {
   });
 
   describe("countTokens", () => {
+    it("keeps the live estimator equivalent across BMP, astral, and malformed Unicode", () => {
+      const referenceEstimate = (text: string) => {
+        const cjkCount =
+          text.match(
+            /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{2ffff}]/gu,
+          )?.length ?? 0;
+        return Math.ceil(cjkCount + (text.length - cjkCount) / 3);
+      };
+      const samples = [
+        "",
+        "plain ASCII text",
+        "本文、カナ。ＡＢＣ",
+        "𠀀𯿿🙂abc",
+        `broken \ud840 tail`,
+        `broken \udc00 head`,
+        "本文abc𠀀🙂".repeat(100),
+      ];
+
+      for (const sample of samples) {
+        expect(estimateTokens(sample)).toBe(referenceEstimate(sample));
+      }
+    });
+
     it("returns a positive number for non-empty text", () => {
       const count = countTokens("こんにちは、世界！");
       expect(count).toBeGreaterThan(0);
@@ -1166,6 +1228,36 @@ describe("contextBuilder", () => {
       );
       expect(total).toBeGreaterThan(0);
     });
+
+    it.each([128_000, 200_000])(
+      "trims a 200k-character live ContextBar scene for a %i-token window in under 50ms",
+      (contextWindow) => {
+        const scene: SceneContext = {
+          id: `runtime-perf-scene-${contextWindow}`,
+          title: "Runtime performance",
+          content: "本文".repeat(100_000),
+        };
+        const input = {
+          scene,
+          tokenCountingMode: "live-estimate" as const,
+          contextWindow,
+          conversationTokens: 0,
+        };
+
+        // Warm the compiled live path before timing the repeated ContextBar
+        // refresh that users experience; input construction and WASM setup are
+        // intentionally outside the measured interval.
+        buildSystemPrompt(input);
+        const startedAt = performance.now();
+        const result = buildSystemPrompt(input);
+        const elapsedMs = performance.now() - startedAt;
+
+        expect(elapsedMs).toBeLessThan(50);
+        expect(result.prompt).toContain("Runtime performance");
+        expect(result.prompt).toContain("本文");
+        expect(result.payloadBudget?.overflowTokens).toBe(0);
+      },
+    );
   });
 
   describe("buildSystemPrompt — pendingBeatsSection (C-3)", () => {

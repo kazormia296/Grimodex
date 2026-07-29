@@ -44,6 +44,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload";
+import type { AiProvider } from "./types";
 
 // --- AI message sending (existing) ---
 
@@ -213,6 +214,8 @@ export async function sendAgentMessage(
   resolvedEndpointId?: string | null,
   /** Turn-start protocol snapshot; prevents backend settings drift mid-turn. */
   resolvedToolProtocol?: TurnToolProtocol | null,
+  /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
+  expectedOllamaEndpoint?: string | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -228,6 +231,7 @@ export async function sendAgentMessage(
     model: model ?? null,
     provider: resolvedProvider ?? provider ?? null,
     endpointId: resolvedEndpointId ?? endpointId ?? null,
+    expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
     ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
     ...(resolvedToolProtocol != null ? { resolvedToolProtocol } : {}),
   });
@@ -269,6 +273,8 @@ export async function sendChatMessageWithThinking(
   requestMaxOutputTokens?: number | null,
   resolvedProvider?: string | null,
   resolvedEndpointId?: string | null,
+  /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
+  expectedOllamaEndpoint?: string | null,
 ): Promise<ChatMessageResult> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -282,6 +288,7 @@ export async function sendChatMessageWithThinking(
     model: model ?? null,
     provider: resolvedProvider ?? provider ?? null,
     endpointId: resolvedEndpointId ?? endpointId ?? null,
+    expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
     ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
   });
   const text = response.blocks
@@ -377,6 +384,8 @@ export async function sendChatMessageStream(
   /** Immutable route snapshot; takes precedence over the legacy override. */
   resolvedProvider?: string | null,
   resolvedEndpointId?: string | null,
+  /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
+  expectedOllamaEndpoint?: string | null,
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -418,6 +427,7 @@ export async function sendChatMessageStream(
     model: model ?? null,
     provider: resolvedProvider ?? provider ?? null,
     endpointId: resolvedEndpointId ?? endpointId ?? null,
+    expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
     ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
@@ -786,15 +796,50 @@ export interface MessagePromptSnapshot {
   layers: LayerBreakdown[];
   totalTokens: number | null;
   model: string | null;
+  provider: AiProvider | null;
+  contextWindow: number | null;
 }
 
-function parseSnapshotLayers(raw: string | null): LayerBreakdown[] {
-  if (!raw) return [];
+interface MessagePromptPayload {
+  layers: LayerBreakdown[];
+  provider: AiProvider | null;
+  contextWindow: number | null;
+}
+
+function parseSnapshotPayload(raw: string | null): MessagePromptPayload {
+  const empty: MessagePromptPayload = {
+    layers: [],
+    provider: null,
+    contextWindow: null,
+  };
+  if (!raw) return empty;
   try {
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as LayerBreakdown[]) : [];
+    if (Array.isArray(parsed)) {
+      // Legacy rows stored the layer array directly.
+      return { ...empty, layers: parsed as LayerBreakdown[] };
+    }
+    if (parsed && typeof parsed === "object") {
+      const payload = parsed as Record<string, unknown>;
+      return {
+        layers: Array.isArray(payload.layers)
+          ? (payload.layers as LayerBreakdown[])
+          : [],
+        provider:
+          typeof payload.provider === "string"
+            ? (payload.provider as AiProvider)
+            : null,
+        contextWindow:
+          typeof payload.contextWindow === "number" &&
+          Number.isSafeInteger(payload.contextWindow) &&
+          payload.contextWindow > 0
+            ? payload.contextWindow
+            : null,
+      };
+    }
+    return empty;
   } catch {
-    return [];
+    return empty;
   }
 }
 
@@ -810,9 +855,15 @@ export async function saveMessagePrompt(
     layers: LayerBreakdown[];
     totalTokens: number | null;
     model: string | null;
+    provider?: AiProvider | null;
+    contextWindow?: number | null;
   },
 ): Promise<void> {
-  const layersJson = JSON.stringify(snapshot.layers ?? []);
+  const layersJson = JSON.stringify({
+    layers: snapshot.layers ?? [],
+    provider: snapshot.provider ?? null,
+    contextWindow: snapshot.contextWindow ?? null,
+  });
   await db
     .insert(chatMessagePrompts)
     .values({
@@ -845,11 +896,14 @@ export async function getMessagePrompt(
     .where(eq(chatMessagePrompts.messageId, messageId));
   const row = rows[0];
   if (!row) return null;
+  const payload = parseSnapshotPayload(row.layers);
   return {
     systemPrompt: row.systemPrompt,
-    layers: parseSnapshotLayers(row.layers),
+    layers: payload.layers,
     totalTokens: row.totalTokens,
     model: row.model,
+    provider: payload.provider,
+    contextWindow: payload.contextWindow,
   };
 }
 
@@ -1078,6 +1132,13 @@ export async function pinCodexEntry(
           ];
     await insert.onConflictDoUpdate({
       target: conflictTarget,
+      // The normalized pin table uses partial UNIQUE indexes so nullable
+      // polymorphic columns can coexist. SQLite only matches an UPSERT target
+      // when its predicate matches the index predicate exactly.
+      targetWhere:
+        type === "snippet"
+          ? isNotNull(chatSessionPinnedCodex.snippetId)
+          : isNotNull(chatSessionPinnedCodex.codexEntryId),
       set: {
         pinSource: "manual",
         withChildren: withChildren ? 1 : 0,

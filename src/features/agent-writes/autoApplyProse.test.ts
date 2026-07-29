@@ -46,8 +46,10 @@ vi.mock("@/features/editor/sceneContentStore", () => ({
   useSceneContentStore: {
     getState: () => ({ setLiveContent: h.setLiveContent }),
   },
-  hasLiveContentSubscriber: (id: string) =>
-    h.state.liveSubscribers.includes(id),
+  hasLiveContentSubscriber: (document: string | { kind: string; id: string }) =>
+    h.state.liveSubscribers.includes(
+      typeof document === "string" ? document : document.id,
+    ),
 }));
 vi.mock("@/features/external-mount/externalRootStore", () => ({
   isFileBackedNode: () => h.state.fileBacked,
@@ -181,7 +183,62 @@ describe("autoApplyProseProposal — append", () => {
     h.state.liveSubscribers = ["scene-1"];
     await autoApplyProseProposal(proposal());
     expect(h.setLiveContent).toHaveBeenCalledTimes(1);
-    expect(h.setLiveContent.mock.calls[0][0]).toBe("scene-1");
+    expect(h.setLiveContent.mock.calls[0][0]).toEqual({
+      kind: "tree",
+      id: "scene-1",
+      storage: "database",
+    });
+  });
+});
+
+describe("autoApplyProseProposal — authority", () => {
+  it("rechecks authority after the editor flush before reading or writing", async () => {
+    let releaseSave!: () => void;
+    h.saveScene.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSave = resolve;
+        }),
+    );
+    let authoritative = true;
+
+    const applying = autoApplyProseProposal(proposal(), () => authoritative);
+    await vi.waitFor(() => expect(h.saveScene).toHaveBeenCalledOnce());
+    authoritative = false;
+    releaseSave();
+
+    await expect(applying).resolves.toEqual({
+      applied: false,
+      reason: "authority-changed",
+    });
+    expect(h.loadSceneContent).not.toHaveBeenCalled();
+    expect(h.agentAcceptProseStage).not.toHaveBeenCalled();
+    expect(h.persistSceneBody).not.toHaveBeenCalled();
+  });
+
+  it("rechecks authority immediately before the scene-body write", async () => {
+    let releaseAccept!: () => void;
+    h.agentAcceptProseStage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseAccept = () => resolve({});
+        }),
+    );
+    let authoritative = true;
+
+    const applying = autoApplyProseProposal(proposal(), () => authoritative);
+    await vi.waitFor(() =>
+      expect(h.agentAcceptProseStage).toHaveBeenCalledOnce(),
+    );
+    authoritative = false;
+    releaseAccept();
+
+    await expect(applying).resolves.toEqual({
+      applied: false,
+      reason: "authority-changed",
+    });
+    expect(h.persistSceneBody).not.toHaveBeenCalled();
+    expect(h.recordChangeEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -369,6 +426,11 @@ describe("autoApplyProseProposal — stale base_version 検知", () => {
       // 既存の scene 用 conflict 導線 (ExternalEditConflictBanner) に流す
       expect(useExternalWriteStore.getState().conflicts).toEqual([
         {
+          documentKey: {
+            kind: "tree",
+            id: "scene-1",
+            storage: "database",
+          },
           sceneId: "scene-1",
           domain: "prose",
           opType: "prose.stale",
@@ -425,7 +487,11 @@ describe("autoApplyProseProposal — open editor (dirty ゲート付き flush �
     expect(result.applied).toBe(true);
     expect(h.persistSceneBody).toHaveBeenCalledTimes(1);
     expect(h.setLiveContent).toHaveBeenCalledTimes(1);
-    expect(h.setLiveContent.mock.calls[0][0]).toBe("scene-1");
+    expect(h.setLiveContent.mock.calls[0][0]).toEqual({
+      kind: "tree",
+      id: "scene-1",
+      storage: "database",
+    });
   });
 
   it("dirty な open editor: flush が保存 + bump → stale ブロック → 手動レビューへ", async () => {

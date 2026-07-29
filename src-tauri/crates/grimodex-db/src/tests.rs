@@ -1,9 +1,78 @@
 use super::*;
+use std::sync::{atomic::Ordering, mpsc, Arc};
+use std::time::Duration;
 
 fn test_db() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
     db.migrate().expect("migrate");
     db
+}
+
+#[test]
+fn background_connection_scope_yields_to_a_waiting_foreground_call() {
+    let db = Arc::new(Database::new(Path::new(":memory:")).expect("open in-memory db"));
+    let (first_acquired_tx, first_acquired_rx) = mpsc::channel();
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let (winner_tx, winner_rx) = mpsc::channel();
+
+    let background_db = Arc::clone(&db);
+    let background_winner = winner_tx.clone();
+    let background = std::thread::spawn(move || {
+        background_db
+            .with_background_connection_priority(|| -> anyhow::Result<()> {
+                background_db.with_conn(|_| {
+                    first_acquired_tx.send(()).expect("announce first lock");
+                    release_first_rx.recv().expect("release first lock");
+                    Ok(())
+                })?;
+                background_db.with_conn(|_| {
+                    background_winner
+                        .send("background")
+                        .expect("announce background reacquire");
+                    Ok(())
+                })
+            })
+            .expect("background calls");
+    });
+
+    first_acquired_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("background owns first lock");
+
+    let foreground_db = Arc::clone(&db);
+    let foreground = std::thread::spawn(move || {
+        foreground_db
+            .with_conn(|_| {
+                winner_tx
+                    .send("foreground")
+                    .expect("announce foreground acquisition");
+                Ok(())
+            })
+            .expect("foreground call");
+    });
+
+    for _ in 0..1_000 {
+        if db.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        db.foreground_connection_waiters.load(Ordering::Acquire),
+        1,
+        "foreground waiter must be published before the background hand-off",
+    );
+
+    release_first_tx.send(()).expect("release first lock");
+    assert_eq!(
+        winner_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("a caller acquires next"),
+        "foreground",
+    );
+
+    foreground.join().expect("foreground thread");
+    background.join().expect("background thread");
 }
 
 /// Insert a `default-chapter` folder for tests that historically relied

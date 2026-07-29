@@ -133,6 +133,63 @@ describe("snippetStore", () => {
       await promise;
       expect(useSnippetStore.getState().isLoading).toBe(false);
     });
+
+    it("lets lifecycle strict callers observe a shared load failure", async () => {
+      const failure = new Error("snippet optional hydrate failed");
+      mockListSnippets.mockRejectedValueOnce(failure);
+
+      const compatibleUiLoad = useSnippetStore.getState().loadEntries();
+      const strictLifecycleLoad = useSnippetStore
+        .getState()
+        .loadEntries({ propagateError: true });
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+
+      await Promise.all([compatibleExpectation, strictExpectation]);
+      expect(mockListSnippets).toHaveBeenCalledTimes(1);
+      expect(useSnippetStore.getState().isLoading).toBe(false);
+    });
+
+    it("keeps a strict-first load authoritative when an ordinary caller joins", async () => {
+      const failure = new Error("snippet strict-first hydrate failed");
+      mockListSnippets.mockRejectedValueOnce(failure);
+
+      const strictLifecycleLoad = useSnippetStore
+        .getState()
+        .loadEntries({ propagateError: true });
+      const compatibleUiLoad = useSnippetStore.getState().loadEntries();
+      const strictExpectation =
+        expect(strictLifecycleLoad).rejects.toBe(failure);
+      const compatibleExpectation =
+        expect(compatibleUiLoad).resolves.toBe(undefined);
+
+      await Promise.all([strictExpectation, compatibleExpectation]);
+      expect(mockListSnippets).toHaveBeenCalledTimes(1);
+      expect(useSnippetStore.getState().isLoading).toBe(false);
+    });
+
+    it("does not publish a load invalidated by a Project reset", async () => {
+      let resolveOldLoad!: (value: snippetApi.Snippet[]) => void;
+      const newSnippet = fakeSnippet({ id: "snippet-new" });
+      mockListSnippets
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveOldLoad = resolve;
+          }),
+        )
+        .mockResolvedValueOnce([newSnippet]);
+
+      const oldLoad = useSnippetStore.getState().loadEntries();
+      useSnippetStore.getState().resetForProject();
+      await useSnippetStore.getState().loadEntries();
+      resolveOldLoad([fakeSnippet({ id: "snippet-old" })]);
+      await oldLoad;
+
+      expect(useSnippetStore.getState().entries).toEqual([newSnippet]);
+      expect(useSnippetStore.getState().isLoading).toBe(false);
+    });
   });
 
   describe("search", () => {
@@ -343,20 +400,24 @@ describe("snippetStore", () => {
       );
     });
 
-    // 保存の成否は戻り値で返す。EditorPane の snippet 保存 (coreSave) は
+    // 保存結果と新 version は戻り値で返す。EditorPane の snippet 保存は
     // これを見て dirty を維持する — 衝突を toast だけで握り潰して正常 resolve
     // すると、呼び出し側が dirty を誤クリアして編集が失われうる。
-    it("成功時は true を返す", async () => {
+    it("成功時は persisted と新 version を返す", async () => {
       const original = fakeSnippet({ id: "snippet-1" });
       useSnippetStore.setState({ entries: [original] });
-      mockUpdateSnippet.mockResolvedValue({ ...original, title: "新題" });
+      mockUpdateSnippet.mockResolvedValue({
+        ...original,
+        title: "新題",
+        version: 1,
+      });
 
       await expect(
         useSnippetStore.getState().update("snippet-1", { title: "新題" }),
-      ).resolves.toBe(true);
+      ).resolves.toEqual({ persisted: true, version: 1 });
     });
 
-    it("OCC 衝突時は false を返す (呼び出し側が dirty を維持できる)", async () => {
+    it("OCC 衝突時は非保存を返す (呼び出し側が dirty を維持できる)", async () => {
       const original = fakeSnippet({ id: "snippet-1", version: 2 });
       useSnippetStore.setState({ entries: [original] });
       mockUpdateSnippet.mockRejectedValueOnce(
@@ -365,25 +426,25 @@ describe("snippetStore", () => {
 
       await expect(
         useSnippetStore.getState().update("snippet-1", { content: "new" }),
-      ).resolves.toBe(false);
+      ).resolves.toEqual({ persisted: false });
     });
 
-    it("その他の失敗と行なし (undefined) も false を返す", async () => {
+    it("その他の失敗と行なし (undefined) も非保存を返す", async () => {
       const original = fakeSnippet({ id: "snippet-1" });
       useSnippetStore.setState({ entries: [original] });
 
       mockUpdateSnippet.mockRejectedValueOnce(new Error("boom"));
       await expect(
         useSnippetStore.getState().update("snippet-1", { title: "x" }),
-      ).resolves.toBe(false);
+      ).resolves.toEqual({ persisted: false });
 
       mockUpdateSnippet.mockResolvedValueOnce(undefined);
       await expect(
         useSnippetStore.getState().update("snippet-1", { title: "x" }),
-      ).resolves.toBe(false);
+      ).resolves.toEqual({ persisted: false });
     });
 
-    it("行なし (削除済み/スコープmiss) の false でもトーストで通知する (無音失敗防止)", async () => {
+    it("行なし (削除済み/スコープmiss) の非保存でもトーストで通知する", async () => {
       // EditorPane は false → AlreadyNotifiedSaveError で「通知済み」を前提に
       // autoSave.failed トーストを抑止する。この経路が無音だと、削除済み
       // snippet を開いたまま編集したときの保存失敗が完全無音で継続する。
@@ -393,8 +454,25 @@ describe("snippetStore", () => {
 
       await expect(
         useSnippetStore.getState().update("snippet-1", { title: "x" }),
-      ).resolves.toBe(false);
+      ).resolves.toEqual({ persisted: false });
       expect(toastError).toHaveBeenCalledTimes(1);
+    });
+
+    it("editor が渡した loadedVersion を store 内の行より優先する", async () => {
+      const original = fakeSnippet({ id: "snippet-1", version: 9 });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValue({ ...original, version: 6 });
+
+      await useSnippetStore
+        .getState()
+        .update("snippet-1", { content: "new" }, { baseVersion: 5 });
+
+      expect(mockUpdateSnippet).toHaveBeenCalledWith(
+        "default-project",
+        "snippet-1",
+        { content: "new" },
+        { baseVersion: 5 },
+      );
     });
 
     it("records snippet.update with a content diff over extracted text", async () => {

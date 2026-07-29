@@ -67,9 +67,14 @@ export async function testAiConnection(
 export async function listAiModels(
   provider: AiProvider,
   endpointId?: string | null,
+  selectedModelId?: string | null,
+  /** Ollama endpoint expected by the caller's capability-cache scope. */
+  expectedOllamaEndpoint?: string | null,
 ): Promise<AiModel[]> {
   return invoke<AiModel[]>("list_ai_models", {
     provider,
     endpointId: endpointId ?? null,
+    selectedModelId: selectedModelId ?? null,
+    expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
   });
 }

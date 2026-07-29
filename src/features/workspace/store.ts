@@ -4,10 +4,7 @@ import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
-import { flushAllAutoSaves } from "@/hooks/useAutoSave";
-import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
 import {
-  flushNow as flushTimelapseRecorder,
   beginWorkspaceSwitch,
   endWorkspaceSwitch,
 } from "@/features/timelapse/recorder";
@@ -20,6 +17,7 @@ import { useGridStore } from "@/features/grid/gridStore";
 import {
   useProjectStore,
   getCurrentProjectId,
+  invalidateProjectLoadsForWorkspaceSwitch,
 } from "@/features/project/projectStore";
 import { toast } from "sonner";
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
@@ -28,6 +26,17 @@ import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
+import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
+import {
+  acquireQuiescenceLease,
+  type QuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import { clearRetainedEditorRecoveryDraftsForScopeChange } from "@/features/editor/editorSaveRegistry";
+import {
+  acquireWorkspaceProjectLoadLease,
+  type WorkspaceProjectLoadLease,
+} from "@/features/project/projectLoadGate";
 
 export type {
   GlobalSettings,
@@ -175,42 +184,43 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       toast.info(i18next.t("workspace.openInProgress"));
       return;
     }
+    if (guardInlineAiPending()) return;
     openWorkspaceInFlight = true;
-    // R4-1 系列A 検出用: 「エディタ表示中の同一パス再オープン」は
-    // EditorScreen の key (activeWorkspacePath) が変わらず remount しない。
-    const wasSamePathReopen =
-      get().view === "editor" && get().activeWorkspacePath === path;
     const previousWorkspaceHydrated = get().workspaceHydrated;
     const previousImeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
     let swapDone = false;
+    let projectLoadLease: WorkspaceProjectLoadLease | null = null;
+    let quiescenceLease: QuiescenceLease | null = null;
     try {
       // Debounced snapshot writes carry the old Project id. Stop them before
       // any await so they cannot wake up against the replacement database.
       cancelScheduledImeExports();
-      setCurrentImeWorkspaceIdentity(null);
       set({
         error: null,
         workspaceSwitchInProgress: true,
         workspaceHydrated: false,
       });
+      quiescenceLease = acquireQuiescenceLease("workspace-open");
+      // Exclude new Project loads, invalidate every load bound to the old DB,
+      // and await the complete load operation before quiescing/switching. The
+      // lease remains held through initCurrentProject + identity publication.
+      projectLoadLease = await acquireWorkspaceProjectLoadLease(
+        invalidateProjectLoadsForWorkspaceSwitch,
+      );
       // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
       // swap を跨いだ in-flight write が旧 workspace の内容を新 workspace の
       // DB に落とさないよう、切替前に書き込みを静止させる:
       // (a) マウント中の全 AutoSave を flush、(b) pending scene write の完了
-      // 待ち、(c) timelapse recorder の flush。ここで save が失敗しても既存の
-      // 失敗 toast + dirty 維持 (リトライ) に任せ、切替自体は続行する
-      // (Rust 側の switching ガードが最後の砦)。
-      try {
-        await flushAllAutoSaves();
-        await awaitAllPendingSceneWrites();
-        await flushTimelapseRecorder();
-      } catch (e) {
-        debugLog.warn(
-          "workspaceStore",
-          "pre-switch quiesce failed; proceeding with switch",
-          errorDetail(e),
-        );
-      }
+      // 待ち、(c) timelapse recorder の flush。1 件でも失敗した場合は例外を
+      // outer catch へ伝え、native open_workspace より前に切替を中断する。
+      // 旧 DB/UI binding と dirty editor はそのまま維持される。
+      await flushStrictQuiescence();
+      clearRetainedEditorRecoveryDraftsForScopeChange();
+      // Existing Project lifecycles and every old-scope persistence surface
+      // have now settled. Keep the old identity published until this point so
+      // an interrupted create/update can complete or roll back against the
+      // database it actually owns; only the native swap window is unbound.
+      setCurrentImeWorkspaceIdentity(null);
       // 切替開始 (r5 状態機械): recorder のキュー破棄 + 束縛無効化。切替中の
       // flush 再試行が open 完了後に新 workspace の hash chain へ旧イベントを
       // 混入させるのを防ぐ (C1)。記録の再開は「命令」ではなく、正規 rebind
@@ -229,6 +239,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       beginWorkspaceSwitch();
       let result: OpenWorkspaceResult;
       try {
+        // Runtime benchmark origin: native workspace open starts here. The
+        // consumer ends the interval only after a seeded scene is visible, so
+        // this cannot accidentally regress to measuring bridge/header readiness.
+        performance.mark("grimodex.workspaceOpen.start");
         result = await invoke<OpenWorkspaceResult>("open_workspace", {
           path,
         });
@@ -243,27 +257,15 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         // 正規 rebind (initRecorderForProject) の完了だけが記録を再開する。
         endWorkspaceSwitch({ restoreBinding: !swapDone });
       }
+      // The native binding now points at the target Workspace and the old UI
+      // remains semantically unavailable. Permit this controlled target
+      // hydration phase; reads are sealed again before identity publication.
+      quiescenceLease.openTargetReadPhase();
       // Resolve the current Project before the editor view renders so that
       // panels reading currentProjectId have a value to work with.
       await useProjectStore.getState().initCurrentProject();
       // Re-read global settings after open_workspace updated them
       const settings = await globalSettingsRepository.read();
-      // Publish path + DB revision only after currentProjectId is rebound. The
-      // editor is keyed by activeWorkspacePath, so exposing the new path before
-      // initCurrentProject would mount the new DB with the old project's state.
-      set((state) => ({
-        view: "editor",
-        activeWorkspacePath: path,
-        workspaceOpenRevision: state.workspaceOpenRevision + 1,
-        activeWorkspaceName: result.name,
-        globalSettings: settings,
-        workspaceSwitchInProgress: false,
-        workspaceHydrated: true,
-      }));
-      setCurrentImeWorkspaceIdentity({
-        path,
-        openRevision: get().workspaceOpenRevision,
-      });
       // Migrate app_settings → userPreferences + project_settings (runs once per workspace)
       const {
         migrateAppSettingsToScopedStores,
@@ -279,7 +281,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         await seedProjectSettingsFromDefaults();
       }
       // Load persisted editor settings and apply to runtime stores
-      await useSettingsStore.getState().loadAll();
+      await useSettingsStore.getState().loadAll(getCurrentProjectId());
       useCursorSettingsStore.getState().initFromSettings();
       {
         const { useCodexHighlightStore } =
@@ -307,16 +309,43 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       useGridStore.getState().loadFromSettings(settings);
       const { useMatrixStore } = await import("@/features/matrix/matrixStore");
       useMatrixStore.getState().loadFromSettings(settings);
-      // R4-1 系列A: 同一パスの再オープン (例: チュートリアル再実行 = seed で
-      // DB を作り直して同じ path を open) では EditorScreen が remount せず、
-      // mount 時の loadProject (正規 rebind の唯一の経路) が走らない。ここで
-      // 明示的に再ロードする。loadProject は再実行安全: generation ガードが
-      // 外部フィードの多重購読を防ぎ、reloadProjectData が in-memory 状態を
-      // 作り直す。切替は上で終了済みなので、この rebind は bystander 扱い
-      // されず束縛を書ける。
-      if (wasSamePathReopen) {
-        await useProjectStore.getState().loadProject(getCurrentProjectId());
+      const nextOpenRevision = get().workspaceOpenRevision + 1;
+      if (!projectLoadLease) {
+        throw new Error("Workspace Project-load lease was released too early");
       }
+      // Hydrate the replacement Project for every Workspace open while the
+      // Workspace-owned gate still excludes user Project switches. This path
+      // deliberately skips a second strict flush: the old UI was drained
+      // before native open, and flushing it after the swap could write stale
+      // content into the replacement database.
+      await useProjectStore
+        .getState()
+        .loadProjectWithinLifecycle(
+          getCurrentProjectId(),
+          projectLoadLease.projectLoadContext,
+          {
+            skipStrictQuiescence: true,
+            workspaceOpenRevision: nextOpenRevision,
+          },
+        );
+      // Publish identity/ready only after Project critical snapshots and every
+      // other mandatory Workspace surface have committed. The gate stays held
+      // through this publication, so a queued Project load cannot supersede
+      // the mandatory hydrate in between.
+      quiescenceLease.sealReadsForAuthorityCommit();
+      setCurrentImeWorkspaceIdentity({
+        path,
+        openRevision: nextOpenRevision,
+      });
+      set({
+        view: "editor",
+        activeWorkspacePath: path,
+        workspaceOpenRevision: nextOpenRevision,
+        activeWorkspaceName: result.name,
+        globalSettings: settings,
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: true,
+      });
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {
@@ -328,15 +357,21 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         error: e instanceof Error ? e.message : String(e),
         // Native open rejected before swap: the previous DB/UI binding remains
         // valid, so restore its semantic-ready state. A post-swap hydration
-        // failure must stay false to avoid issuing commands through stale UI.
-        ...(!swapDone ? { workspaceHydrated: previousWorkspaceHydrated } : {}),
-        // If still on loading screen (called from initialize), recover to launcher
-        ...(get().view === "loading" ? { view: "launcher" as const } : {}),
+        // failure is unrecoverable in-place because the native DB has already
+        // changed: stay unhydrated and leave the stale editor UI.
+        workspaceHydrated: swapDone ? false : previousWorkspaceHydrated,
+        // Post-swap failures always leave the editor. Pre-swap failures only
+        // need this fallback when initialize was still showing loading.
+        ...(swapDone || get().view === "loading"
+          ? { view: "launcher" as const }
+          : {}),
       });
       if (!swapDone && previousWorkspaceHydrated) {
         setCurrentImeWorkspaceIdentity(previousImeWorkspaceIdentity);
       }
     } finally {
+      projectLoadLease?.release();
+      quiescenceLease?.release();
       if (get().workspaceSwitchInProgress) {
         set({ workspaceSwitchInProgress: false });
       }

@@ -27,6 +27,9 @@ function secondaryEntryFor(state: TabReducerState, nodeId: string): TabEntry {
     isPreview: false,
     contentType: source?.contentType ?? "scene",
     ...(source?.label !== undefined ? { label: source.label } : {}),
+    ...(source?.overridePhaseId !== undefined
+      ? { overridePhaseId: source.overridePhaseId }
+      : {}),
   };
 }
 

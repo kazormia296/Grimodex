@@ -56,6 +56,7 @@ vi.mock("./saveAnchors", () => ({
 vi.mock("@/features/tree/api", () => ({
   saveSceneContent: mockSaveSceneContent,
   loadSceneContent: vi.fn().mockResolvedValue(null),
+  loadSceneContents: vi.fn().mockResolvedValue(new Map()),
 }));
 
 vi.mock("@/features/revision/api", () => ({

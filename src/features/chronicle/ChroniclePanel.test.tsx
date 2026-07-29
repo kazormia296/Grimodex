@@ -8,6 +8,7 @@ import {
   act,
 } from "@testing-library/react";
 import type { EventRow } from "./api";
+import type { ChronicleLayout } from "./chronicleLayout";
 
 // ── ./api を丸ごとモック（DB に触らせない）。読み取りのみ。 ──
 const apiMocks = vi.hoisted(() => ({
@@ -34,6 +35,10 @@ vi.mock("@/features/agent-writes/event", () => eventMocks);
 // ── toast（sonner）をモックしてエラー通知の発火だけ検証 ──
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 vi.mock("sonner", () => ({ toast: toastMocks }));
+const inspectorMocks = vi.hoisted(() => ({
+  draftRejected: vi.fn(),
+  detailRejected: vi.fn(),
+}));
 
 // ── SR announcer をモック（読み込み完了/ズーム通知の発火を検証） ──
 const announceMocks = vi.hoisted(() => ({ announce: vi.fn() }));
@@ -62,13 +67,20 @@ vi.mock("./useSeasonConflicts", () => ({
 // ── 重い子コンポーネントは観測しやすいテストダブルへ差し替える ──
 vi.mock("./ChronicleViewport", () => ({
   ChronicleViewport: ({
+    isActive,
+    layout,
     eventsById,
+    hasCalendarAxis,
     onMoveEvent,
     onDeleteEvent,
     onViewChange,
+    onNudgeSelected,
     onResizeSelectedBy,
   }: {
+    isActive?: boolean;
+    layout: ChronicleLayout;
     eventsById: Map<string, unknown>;
+    hasCalendarAxis?: boolean;
     onMoveEvent?: (
       id: string,
       newStartDay: number | null,
@@ -76,9 +88,40 @@ vi.mock("./ChronicleViewport", () => ({
     ) => void;
     onDeleteEvent?: (id: string) => void;
     onViewChange?: (v: { pxPerDay: number; viewStartDay: number }) => void;
+    onNudgeSelected?: (deltaDays: number) => void;
     onResizeSelectedBy?: (edge: "start" | "end", deltaDays: number) => void;
   }) => (
-    <div data-testid="viewport" data-n={eventsById.size}>
+    <div
+      data-testid="viewport"
+      data-n={eventsById.size}
+      data-is-active={isActive}
+      data-has-calendar-axis={hasCalendarAxis}
+      data-ea-is-interval={layout.markerById.get("ea")?.isInterval}
+    >
+      <button
+        data-testid="move-event-btn"
+        onClick={() => onMoveEvent?.("ea", 200, null)}
+      >
+        move-event
+      </button>
+      <button
+        data-testid="move-undated-event-btn"
+        onClick={() => onMoveEvent?.("undated", 220, null)}
+      >
+        move-undated-event
+      </button>
+      <button
+        data-testid="move-undated-lane-btn"
+        onClick={() => onMoveEvent?.("undated", null, "c2")}
+      >
+        move-undated-lane
+      </button>
+      <button
+        data-testid="move-subday-event-btn"
+        onClick={() => onMoveEvent?.("ea", 200.5, null)}
+      >
+        move-subday-event
+      </button>
       <button
         data-testid="move-scene-btn"
         onClick={() => onMoveEvent?.("scene:sc1", 200, null)}
@@ -109,6 +152,15 @@ vi.mock("./ChronicleViewport", () => ({
       >
         resize-end
       </button>
+      <button
+        data-testid="rapid-nudge-btn"
+        onClick={() => {
+          onNudgeSelected?.(1);
+          onNudgeSelected?.(1);
+        }}
+      >
+        rapid-nudge
+      </button>
     </div>
   ),
 }));
@@ -122,17 +174,28 @@ vi.mock("./ChronicleInspector", () => ({
     onLinkScene,
     onUnlinkScene,
     onOpenScene,
+    onPull,
+    onPatchDraft,
+    onPatchDetail,
   }: {
     event: EventRow;
     isScene?: boolean;
     onPatch: (patch: Partial<EventRow>) => void;
+    onPatchDraft?: (patch: Partial<EventRow>) => void | Promise<void>;
+    onPatchDetail?: (
+      detail: string,
+      baseVersion: number,
+    ) => Promise<{ version: number }>;
     onDelete: () => void;
     onLinkScene?: (sceneId: string, mode: "event" | "scene") => void;
     onUnlinkScene?: (sceneId: string) => void;
     onOpenScene?: () => void;
+    onPull?: () => void;
   }) => (
     <div>
       <span data-testid="insp-title">{event.title}</span>
+      <span data-testid="insp-detail">{event.detail}</span>
+      <span data-testid="insp-version">{event.version}</span>
       <span data-testid="insp-is-scene">{isScene ? "yes" : "no"}</span>
       <span data-testid="insp-can-open">{onOpenScene ? "yes" : "no"}</span>
       <button data-testid="open-scene-btn" onClick={() => onOpenScene?.()}>
@@ -143,6 +206,29 @@ vi.mock("./ChronicleInspector", () => ({
         onClick={() => onPatch({ title: "新題" })}
       >
         patch
+      </button>
+      <button
+        data-testid="draft-patch-btn"
+        onClick={() => {
+          void Promise.resolve(onPatchDraft?.({ title: "下書き題" })).catch(
+            inspectorMocks.draftRejected,
+          );
+        }}
+      >
+        draft-patch
+      </button>
+      <button
+        data-testid="parallel-patch-btn"
+        onClick={() => {
+          void Promise.resolve(onPatchDraft?.({ title: "並行題" })).catch(
+            inspectorMocks.draftRejected,
+          );
+          void Promise.resolve(
+            onPatchDetail?.("並行詳細", event.version),
+          ).catch(inspectorMocks.detailRejected);
+        }}
+      >
+        parallel-patch
       </button>
       <button data-testid="delete-btn" onClick={() => onDelete()}>
         delete
@@ -162,6 +248,9 @@ vi.mock("./ChronicleInspector", () => ({
       <button data-testid="unlink-btn" onClick={() => onUnlinkScene?.("s1")}>
         unlink
       </button>
+      <button data-testid="pull-btn" onClick={() => onPull?.()}>
+        pull
+      </button>
     </div>
   ),
 }));
@@ -174,6 +263,7 @@ vi.mock("./ChronicleExtractDialog", () => ({
 
 import { ChroniclePanel } from "./ChroniclePanel";
 import { useProjectStore } from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { useChronicleStore } from "./chronicleStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
@@ -202,6 +292,7 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
     secret: false,
     revealSceneId: null,
     laneGroup: null,
+    version: 0,
     createdAt: NOW,
     updatedAt: NOW,
     ...over,
@@ -210,12 +301,16 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useWorkspaceStore.setState({ activeWorkspacePath: "/workspace-a" });
   useProjectStore.setState({ currentProjectId: null });
   useChronicleStore.setState({
     selectedEventId: null,
     selectedEventIds: [],
     pxPerDay: null,
     viewStartDay: null,
+    axisMode: null,
+    viewProjectId: null,
+    viewWorkspacePath: null,
   });
   useCodexStore.setState({ entries: [] });
   useTimelineStore.setState({ selectedNodeIds: [] });
@@ -232,12 +327,262 @@ beforeEach(() => {
   apiMocks.listEventRelations.mockResolvedValue([]);
   apiMocks.listEventParticipantsForProject.mockResolvedValue([]);
   eventMocks.uiCreateEvent.mockResolvedValue({ id: "new", title: "" });
-  eventMocks.uiUpdateEvent.mockResolvedValue(undefined);
-  eventMocks.uiDeleteEvent.mockResolvedValue(undefined);
+  eventMocks.uiUpdateEvent.mockResolvedValue({ version: 1 });
+  eventMocks.uiDeleteEvent.mockResolvedValue({ version: 1 });
+  eventMocks.uiSetEventParticipants.mockResolvedValue({ version: 1 });
   eventMocks.uiAddEventRelation.mockResolvedValue(undefined);
   eventMocks.uiRemoveEventRelation.mockResolvedValue(undefined);
   eventMocks.uiLinkSceneEvent.mockResolvedValue(undefined);
   eventMocks.uiUnlinkSceneEvent.mockResolvedValue(undefined);
+});
+
+describe("ChroniclePanel keepalive activity", () => {
+  it("通常表示の塗りをトップレベルの一面へ集約する", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent()]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("chronicle-panel")).toHaveClass("bg-card");
+  });
+
+  it("isActive を viewport へ伝播する", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent()]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel isActive={false} />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-is-active",
+      "false",
+    );
+  });
+
+  it("query snapshot の読込中は viewport 操作を停止し、到着後に再開する", async () => {
+    let resolveEvents: (rows: EventRow[]) => void = () => {};
+    const pendingEvents = new Promise<EventRow[]>((resolve) => {
+      resolveEvents = resolve;
+    });
+    apiMocks.listEvents.mockReturnValue(pendingEvents);
+    useTreeStore.setState({ nodes: [makeScene()] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-is-active",
+      "false",
+    );
+
+    await act(async () => {
+      resolveEvents([]);
+      await pendingEvents;
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("viewport")).toHaveAttribute(
+        "data-is-active",
+        "true",
+      );
+    });
+  });
+});
+
+describe("ChroniclePanel mixed dated/undated axis", () => {
+  it("暦軸と期間表示を維持し、dated interval の横移動で開始・終了を同時にずらす", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        endTime: 110,
+        startGranularity: "day",
+        endGranularity: "day",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+        startTime: null,
+        endTime: null,
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    const viewport = await screen.findByTestId("viewport");
+    expect(viewport).toHaveAttribute("data-has-calendar-axis", "true");
+    expect(viewport).toHaveAttribute("data-ea-is-interval", "true");
+
+    fireEvent.click(screen.getByTestId("move-event-btn"));
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "ea",
+          baseVersion: 0,
+          primaryCodexId: "",
+          laneGroup: "",
+          startTime: 200,
+          endTime: 210,
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+  });
+
+  it("undated proxy の横 drop を実日付へ変換して永続化する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        startGranularity: "day",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+        startTime: null,
+        startGranularity: "none",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-has-calendar-axis",
+      "true",
+    );
+    fireEvent.click(screen.getByTestId("move-undated-event-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "undated",
+          baseVersion: 0,
+          primaryCodexId: "",
+          laneGroup: "",
+          startTime: 220,
+          startGranularity: "day",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+  });
+
+  it("全件 undated の sequence 軸でも単独横 drop を実日付へ変換する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "undated",
+        ordinal: "a0",
+        startTime: null,
+        startGranularity: "none",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-has-calendar-axis",
+      "false",
+    );
+    fireEvent.click(screen.getByTestId("move-undated-event-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "undated",
+          baseVersion: 0,
+          primaryCodexId: "",
+          laneGroup: "",
+          startTime: 220,
+          startGranularity: "day",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+  });
+
+  it("undated proxy の縦レーン移動では日付未設定を維持する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        startGranularity: "day",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+        startTime: null,
+        startGranularity: "none",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    fireEvent.click(screen.getByTestId("move-undated-lane-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "undated",
+          baseVersion: 0,
+          primaryCodexId: "c2",
+          laneGroup: "",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+    expect(eventMocks.uiUpdateEvent.mock.calls[0]?.[0]).not.toHaveProperty(
+      "startTime",
+    );
+    expect(eventMocks.uiUpdateEvent.mock.calls[0]?.[0]).not.toHaveProperty(
+      "startGranularity",
+    );
+  });
+
+  it("hour zoom の単独 interval 移動で開始・終了の分を同量ずらす", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        startMinute: 360,
+        endTime: 102,
+        endMinute: 720,
+        startGranularity: "time",
+        endGranularity: "time",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+      }),
+    ]);
+    useChronicleStore.setState({
+      pxPerDay: 2_000,
+      viewStartDay: 100,
+      axisMode: "calendar",
+      viewProjectId: "p1",
+      viewWorkspacePath: "/workspace-a",
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    fireEvent.click(screen.getByTestId("move-subday-event-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "ea",
+          baseVersion: 0,
+          primaryCodexId: "",
+          laneGroup: "",
+          startTime: 200,
+          startMinute: 720,
+          endTime: 202,
+          endMinute: 1_080,
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+  });
 });
 
 describe("ChroniclePanel project switch", () => {
@@ -307,9 +652,187 @@ describe("ChroniclePanel optimistic patch", () => {
     await waitFor(() => {
       expect(screen.getByTestId("insp-title").textContent).toBe("原題");
     });
-    expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith({
-      eventId: "ea",
-      title: "新題",
+    expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+      {
+        eventId: "ea",
+        baseVersion: 0,
+        title: "新題",
+      },
+      { suppressDocumentNotification: true },
+    );
+    expect(toastMocks.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("pullで返ったversionを次の編集のbaseVersionへ進める", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({ id: "ea", version: 7 }),
+    ]);
+    apiMocks.listSceneEvents.mockResolvedValue([
+      { sceneId: "sc1", eventId: "ea" },
+    ]);
+    useTreeStore.setState({
+      nodes: [makeScene({ id: "sc1", storyTimeOrder: "b0" })],
+    });
+    eventMocks.uiUpdateEvent
+      .mockResolvedValueOnce({ version: 8 })
+      .mockResolvedValueOnce({ version: 9 });
+
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+
+    fireEvent.click(screen.getByTestId("pull-btn"));
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenNthCalledWith(
+        1,
+        {
+          eventId: "ea",
+          baseVersion: 7,
+          ordinal: "b0",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+
+    fireEvent.click(screen.getByTestId("patch-btn"));
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenNthCalledWith(
+        2,
+        {
+          eventId: "ea",
+          baseVersion: 8,
+          title: "新題",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+  });
+
+  it("rapid nudgeを同一eventのwrite chainで直列化し、latest versionと楽観値を使う", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({ id: "ea", startTime: 100, version: 0 }),
+    ]);
+    let resolveFirst: (result: { version: number }) => void = () => {};
+    const firstWrite = new Promise<{ version: number }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    eventMocks.uiUpdateEvent
+      .mockImplementationOnce(() => firstWrite)
+      .mockResolvedValueOnce({ version: 2 });
+
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelectedEventId("ea");
+    });
+
+    fireEvent.click(screen.getByTestId("rapid-nudge-btn"));
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledTimes(1);
+    });
+    expect(eventMocks.uiUpdateEvent).toHaveBeenNthCalledWith(
+      1,
+      {
+        eventId: "ea",
+        baseVersion: 0,
+        startTime: 101,
+      },
+      { suppressDocumentNotification: true },
+    );
+
+    await act(async () => {
+      resolveFirst({ version: 1 });
+      await firstWrite;
+    });
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledTimes(2);
+    });
+    expect(eventMocks.uiUpdateEvent).toHaveBeenNthCalledWith(
+      2,
+      {
+        eventId: "ea",
+        baseVersion: 1,
+        startTime: 102,
+      },
+      { suppressDocumentNotification: true },
+    );
+  });
+
+  it("titleとdetailの並行patchを直列化し、後続失敗でも成功済みversionへ後退しない", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({ id: "ea", title: "原題", detail: "旧詳細", version: 5 }),
+    ]);
+    let resolveTitle: (result: { version: number }) => void = () => {};
+    const titleWrite = new Promise<{ version: number }>((resolve) => {
+      resolveTitle = resolve;
+    });
+    eventMocks.uiUpdateEvent
+      .mockImplementationOnce(() => titleWrite)
+      .mockRejectedValueOnce(new Error("detail failed"));
+
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelectedEventId("ea");
+    });
+
+    fireEvent.click(screen.getByTestId("parallel-patch-btn"));
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledTimes(1);
+    });
+    expect(eventMocks.uiUpdateEvent).toHaveBeenNthCalledWith(
+      1,
+      {
+        eventId: "ea",
+        baseVersion: 5,
+        title: "並行題",
+      },
+      { suppressDocumentNotification: true },
+    );
+
+    await act(async () => {
+      resolveTitle({ version: 6 });
+      await titleWrite;
+    });
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledTimes(2);
+    });
+    expect(eventMocks.uiUpdateEvent).toHaveBeenNthCalledWith(
+      2,
+      {
+        eventId: "ea",
+        baseVersion: 6,
+        detail: "並行詳細",
+      },
+      { suppressDocumentNotification: true },
+    );
+    await waitFor(() => {
+      expect(inspectorMocks.detailRejected).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("insp-title").textContent).toBe("並行題");
+      expect(screen.getByTestId("insp-detail").textContent).toBe("旧詳細");
+      expect(screen.getByTestId("insp-version").textContent).toBe("6");
+    });
+  });
+
+  it("Draft通常patchは永続化失敗を呼び出し元へ伝播する", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    eventMocks.uiUpdateEvent.mockRejectedValueOnce(new Error("draft failed"));
+
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelectedEventId("ea");
+    });
+
+    fireEvent.click(screen.getByTestId("draft-patch-btn"));
+    await waitFor(() => {
+      expect(inspectorMocks.draftRejected).toHaveBeenCalledTimes(1);
     });
     expect(toastMocks.error).toHaveBeenCalledTimes(1);
   });
@@ -528,7 +1051,9 @@ describe("ChroniclePanel scene-event union", () => {
 
     fireEvent.click(screen.getByTestId("bulk-delete"));
     await waitFor(() => {
-      expect(eventMocks.uiDeleteEvent).toHaveBeenCalledWith("ea");
+      expect(eventMocks.uiDeleteEvent).toHaveBeenCalledWith("ea", {
+        baseVersion: 0,
+      });
     });
     expect(useTreeStore.getState().updateChronicleDate).toHaveBeenCalledWith(
       "sc1",
@@ -556,6 +1081,7 @@ describe("ChroniclePanel scene-event union", () => {
     });
     expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
       expect.objectContaining({ eventId: "ea" }),
+      { suppressDocumentNotification: true },
     );
   });
 
@@ -765,10 +1291,14 @@ describe("ChroniclePanel キーボード期間端伸縮（onResizeSelectedBy）"
     });
     fireEvent.click(screen.getByTestId("resize-end-btn")); // ("end", +5)
     await waitFor(() => {
-      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith({
-        eventId: "ea",
-        endTime: 115,
-      });
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "ea",
+          baseVersion: 0,
+          endTime: 115,
+        },
+        { suppressDocumentNotification: true },
+      );
     });
   });
 

@@ -28,7 +28,10 @@
  *         read_ai_settings 後に override（既存 model=input_hash/記録用とは独立軸）
  */
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { getModelCapabilities } from "./agent/modelLimits";
+import {
+  getModelCapabilities,
+  resolveModelCapabilities,
+} from "./agent/modelLimits";
 import { overrideApiVariantForProvider } from "./aiNovelist";
 import type { AiProvider } from "./types";
 
@@ -212,8 +215,14 @@ export function resolveRoleModel(
  *     （deepseek-r1 等）だけがゲートで弾かれる。
  *   - conversation / inline / cheap: 制約なし。
  */
-export function isModelCapableForRole(model: string, role: ModelRole): boolean {
-  const caps = getModelCapabilities(model);
+export function isModelCapableForRole(
+  model: string,
+  role: ModelRole,
+  provider?: AiProvider,
+): boolean {
+  const caps = provider
+    ? resolveModelCapabilities(model, { provider })
+    : getModelCapabilities(model);
   if (role === "agent") return caps.supportsTools;
   if (role === "structured" || role === "review")
     return caps.supportsStructuredJson !== false;
@@ -235,17 +244,23 @@ export function isModelCapableForRole(model: string, role: ModelRole): boolean {
 export function resolveRolePathConfig(
   pathId: string,
   getSetting: SettingGetter = defaultGetter,
+  activeProvider?: AiProvider,
 ): RolePathModel | undefined {
   const role = PATH_TO_ROLE[pathId];
   if (!role) return undefined;
   const candidate = resolveRoleModel(role, getSetting);
   if (!candidate) return undefined;
-  if (!isModelCapableForRole(candidate, role)) return undefined;
 
   const override = parseRoleProviders(getSetting(ROLE_PROVIDERS_KEY) ?? "")[
     role
   ];
   const provider = override?.provider?.trim();
+  const capabilityProvider = provider
+    ? (provider as AiProvider)
+    : activeProvider;
+  if (!isModelCapableForRole(candidate, role, capabilityProvider)) {
+    return undefined;
+  }
   if (!provider) return { model: candidate };
 
   const endpointId = override?.endpointId?.trim() || undefined;
@@ -266,8 +281,9 @@ export function resolveRolePathConfig(
 export function resolveModelForPath(
   pathId: string,
   getSetting: SettingGetter = defaultGetter,
+  activeProvider?: AiProvider,
 ): string | undefined {
-  return resolveRolePathConfig(pathId, getSetting)?.model;
+  return resolveRolePathConfig(pathId, getSetting, activeProvider)?.model;
 }
 
 /** Tauri invoke の override 引数にそのまま流せる正規化形（未設定は null）。 */
@@ -291,8 +307,9 @@ export interface RoleSendOverride {
 export function resolveRoleSendOverride(
   pathId: string,
   getSetting: SettingGetter = defaultGetter,
+  activeProvider?: AiProvider,
 ): RoleSendOverride {
-  const cfg = resolveRolePathConfig(pathId, getSetting);
+  const cfg = resolveRolePathConfig(pathId, getSetting, activeProvider);
   return {
     model: cfg?.model ?? null,
     provider: cfg?.provider ?? null,

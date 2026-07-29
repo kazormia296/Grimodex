@@ -22,6 +22,13 @@ import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { resolveModelCapabilities } from "../agent/modelLimits";
+import {
+  parseRoleProviders,
+  resolveRolePathConfig,
+  resolveRoleModel,
+  roleSettingKey,
+  ROLE_PROVIDERS_KEY,
+} from "../modelRouting";
 import { resolveAinoveristApiVariant } from "../aiNovelist";
 import { getChatInputExtensions } from "../extensions/chatInputExtensions";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
@@ -69,19 +76,18 @@ import {
 } from "@/features/project/projectStore";
 import { buildChatCommandInstruction } from "../extensions/chatCommandInstruction";
 
+interface ChatSendOptions {
+  overrideAgentMode?: boolean;
+  /** @ で指定された scene ID 一覧（送信時に context へ一時 pin される） */
+  mentionedSceneIds?: string[];
+  /** @ で指定された人物(codex) ID 一覧（作中年表スナップショットの人物 seed） */
+  mentionedCodexIds?: string[];
+  /** スラッシュコマンド由来の一回限りの指示 (L6 へ注入)。例: /brainstorm の VS。 */
+  commandInstruction?: string;
+}
+
 interface ChatInputProps {
-  onSend: (
-    markdown: string,
-    options?: {
-      overrideAgentMode?: boolean;
-      /** @ で指定された scene ID 一覧（送信時に context へ一時 pin される） */
-      mentionedSceneIds?: string[];
-      /** @ で指定された人物(codex) ID 一覧（作中年表スナップショットの人物 seed） */
-      mentionedCodexIds?: string[];
-      /** スラッシュコマンド由来の一回限りの指示 (L6 へ注入)。例: /brainstorm の VS。 */
-      commandInstruction?: string;
-    },
-  ) => void;
+  onSend: (markdown: string, options?: ChatSendOptions) => Promise<boolean>;
   disabled?: boolean;
   /** AIポリシーまたはプロバイダ未設定により送信不可の場合 true */
   policyDisabled?: boolean;
@@ -218,6 +224,13 @@ export function ChatInput({
   // 動的 capability レジストリ更新時に caps を再計算する
   useAiSettingsStore((s) => s.modelCapsRevision);
   const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
+  // Agent role/provider overrides change the actual route even when the chat
+  // composer model is unchanged. Subscribe to both raw authorities so the
+  // toggle capability follows the same precedence as sendMessage.
+  useSettingsStore((s) => s.get(roleSettingKey("agent"), ""));
+  const roleProvidersRaw = useSettingsStore((s) =>
+    s.get(ROLE_PROVIDERS_KEY, ""),
+  );
   const models = (() => {
     try {
       const whitelist: string[] = JSON.parse(modelWhitelistRaw || "[]");
@@ -246,11 +259,51 @@ export function ChatInput({
         models,
         aiSettings?.modelApiVariant,
       );
+  const capabilitySettings =
+    aiSettings && chatProviderOverride
+      ? {
+          ...aiSettings,
+          provider: chatProviderOverride,
+          model: currentModel,
+          ...(chatEndpointIdOverride
+            ? { activeOpenaiCompatibleEndpointId: chatEndpointIdOverride }
+            : {}),
+        }
+      : aiSettings;
   const caps = resolveModelCapabilities(
     currentModel,
-    aiSettings,
+    capabilitySettings,
     selectedApiVariant,
   );
+  const agentRole = chatModelOverride
+    ? undefined
+    : resolveRolePathConfig("chat_agent_main", undefined, aiSettings?.provider);
+  const agentCapabilityModel =
+    chatModelOverride ?? agentRole?.model ?? aiSettings?.model ?? "";
+  const agentCapabilityProvider = chatModelOverride
+    ? (chatProviderOverride ?? aiSettings?.provider)
+    : (agentRole?.provider ?? aiSettings?.provider);
+  const agentCapabilitySettings =
+    aiSettings && agentCapabilityProvider
+      ? {
+          ...aiSettings,
+          provider: agentCapabilityProvider,
+          model: agentCapabilityModel,
+          ...(chatEndpointIdOverride
+            ? { activeOpenaiCompatibleEndpointId: chatEndpointIdOverride }
+            : {}),
+        }
+      : aiSettings;
+  const agentCaps = resolveModelCapabilities(
+    agentCapabilityModel,
+    agentCapabilitySettings,
+    agentRole?.provider ? agentRole.variant : selectedApiVariant,
+  );
+  const rawAgentRoleModel = chatModelOverride ? "" : resolveRoleModel("agent");
+  const rawAgentRoleProvider = rawAgentRoleModel
+    ? (parseRoleProviders(roleProvidersRaw).agent?.provider ??
+      aiSettings?.provider)
+    : null;
 
   const [modelOpen, setModelOpen] = useState(false);
   // 複数プロバイダ横断のモデルカタログ(ピッカーを開いたら設定済みプロバイダを取得)。
@@ -316,28 +369,54 @@ export function ChatInput({
               : t("chat.placeholderScene");
 
   // /コマンド選択後の「次の送信」に対して一回限りの指示 (L6) を作る。
-  // 読み取り時にクリアするので、送信ごとに高々1回適用される。
+  // 送信先の保存・authority 検証が成功するまでは消費せず、失敗時に
+  // composer 本文と一緒に再送できるよう保持する。
   const pendingCommandRef = useRef<string | null>(null);
-  const consumePendingCommandInstruction = useCallback(():
-    | string
-    | undefined => {
-    const cmdId = pendingCommandRef.current;
-    pendingCommandRef.current = null;
-    const lang = getCurrentProjectLanguage().startsWith("en") ? "en" : "ja";
-    // CoT 前置きは小型/ローカル (cli) では認知負荷で品質が落ちうるため切る。
-    return buildChatCommandInstruction(cmdId, lang, {
-      cot: aiSettings?.provider !== "cli",
-    });
-  }, [aiSettings]);
-
-  const handleSubmit = useCallback(
-    (markdown: string) => {
-      if (isStreaming) return;
-      onSend(markdown, {
-        commandInstruction: consumePendingCommandInstruction(),
+  const submissionPendingRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const buildPendingCommandInstruction = useCallback(
+    (commandId: string | null = pendingCommandRef.current) => {
+      const lang = getCurrentProjectLanguage().startsWith("en") ? "en" : "ja";
+      return buildChatCommandInstruction(commandId, lang, {
+        cot: aiSettings?.provider !== "cli",
       });
     },
-    [isStreaming, onSend, consumePendingCommandInstruction],
+    [aiSettings?.provider],
+  );
+  const submitDraft = useCallback(
+    async (
+      markdown: string,
+      options?: Omit<ChatSendOptions, "commandInstruction">,
+    ): Promise<boolean> => {
+      if (isStreaming || submissionPendingRef.current) return false;
+      submissionPendingRef.current = true;
+      setIsSubmitting(true);
+      const commandId = pendingCommandRef.current;
+      const commandInstruction = buildPendingCommandInstruction(commandId);
+      try {
+        const accepted = await onSend(markdown, {
+          ...options,
+          commandInstruction,
+        });
+        if (accepted && pendingCommandRef.current === commandId) {
+          pendingCommandRef.current = null;
+        }
+        return accepted;
+      } catch {
+        return false;
+      } finally {
+        submissionPendingRef.current = false;
+        setIsSubmitting(false);
+      }
+    },
+    [buildPendingCommandInstruction, isStreaming, onSend],
+  );
+
+  const handleSubmit = useCallback(
+    (markdown: string): Promise<boolean> => {
+      return submitDraft(markdown);
+    },
+    [submitDraft],
   );
 
   const handleStop = () => {
@@ -507,11 +586,12 @@ export function ChatInput({
     if (!hasText) setSuggestionDismissed(false);
   }, [hasText]);
 
-  // ストリーミング中は編集不可
+  // 保存 preflight 中とストリーミング中は編集不可。成功後だけ本文を消すため、
+  // preflight 中の追加入力・二重送信で別 draft を巻き込まない。
   useEffect(() => {
     if (!isEditorViewReady(mountedEditor)) return;
-    mountedEditor.setEditable(!isStreaming);
-  }, [mountedEditor, isStreaming]);
+    mountedEditor.setEditable(!isStreaming && !isSubmitting);
+  }, [mountedEditor, isStreaming, isSubmitting]);
 
   const modelLabel = (() => {
     if (!currentModel) {
@@ -681,7 +761,12 @@ export function ChatInput({
   useEffect(() => {
     registerInputDraftProvider(() => {
       if (!editor)
-        return { markdown: "", mentionedSceneIds: [], mentionedCodexIds: [] };
+        return {
+          markdown: "",
+          mentionedSceneIds: [],
+          mentionedCodexIds: [],
+          commandInstruction: buildPendingCommandInstruction(),
+        };
       const markdownStorage = editor.storage as unknown as Record<
         string,
         { getMarkdown?: () => string } | undefined
@@ -692,6 +777,7 @@ export function ChatInput({
         markdown,
         mentionedSceneIds: collectMentionedSceneIds() ?? [],
         mentionedCodexIds: collectMentionedCodexIds() ?? [],
+        commandInstruction: buildPendingCommandInstruction(),
       };
     });
     return () => registerInputDraftProvider(null);
@@ -700,10 +786,13 @@ export function ChatInput({
     registerInputDraftProvider,
     collectMentionedSceneIds,
     collectMentionedCodexIds,
+    buildPendingCommandInstruction,
   ]);
 
-  const handleSendClick = (options?: { overrideAgentMode?: boolean }) => {
-    if (!editor || isStreaming) return;
+  const handleSendClick = async (options?: {
+    overrideAgentMode?: boolean;
+  }): Promise<void> => {
+    if (!editor || isStreaming || isSubmitting) return;
     const text = editor.getText().trim();
     if (!text) return;
     const markdownStorage = editor.storage as unknown as Record<
@@ -713,13 +802,12 @@ export function ChatInput({
     const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
     const mentionedSceneIds = collectMentionedSceneIds();
     const mentionedCodexIds = collectMentionedCodexIds();
-    onSend(markdown, {
+    const accepted = await submitDraft(markdown, {
       ...options,
       mentionedSceneIds,
       mentionedCodexIds,
-      commandInstruction: consumePendingCommandInstruction(),
     });
-    editor.commands.clearContent();
+    if (accepted) editor.commands.clearContent();
   };
 
   const handleSendWithAgent = () => {
@@ -743,6 +831,7 @@ export function ChatInput({
         const prompt = await buildPromptForCopy(markdown, {
           mentionedSceneIds,
           mentionedCodexIds,
+          commandInstruction: buildPendingCommandInstruction(),
         });
         await navigator.clipboard.writeText(prompt);
         toast.success(t("chat.promptCopied"));
@@ -755,6 +844,7 @@ export function ChatInput({
       buildPromptForCopy,
       collectMentionedSceneIds,
       collectMentionedCodexIds,
+      buildPendingCommandInstruction,
       t,
     ],
   );
@@ -779,6 +869,7 @@ export function ChatInput({
       const prompt = await buildPromptForCopy(markdown, {
         mentionedSceneIds,
         mentionedCodexIds,
+        commandInstruction: buildPendingCommandInstruction(),
       });
       setAbChat({
         basePrompt: prompt,
@@ -795,6 +886,7 @@ export function ChatInput({
     buildPromptForCopy,
     collectMentionedSceneIds,
     collectMentionedCodexIds,
+    buildPendingCommandInstruction,
     t,
   ]);
 
@@ -821,7 +913,14 @@ export function ChatInput({
     [abChat, appendAdoptedAbTurn, editor, onHasTextChange, t],
   );
 
-  const canUseTools = caps.supportsTools;
+  const canUseTools = agentCaps.supportsTools;
+  // Ollama tags can be replaced in place. A cached no-tools observation must
+  // not permanently lock the only UI path that performs the authoritative
+  // selected-model `/api/show` re-probe.
+  const canAttemptAgentTools =
+    canUseTools ||
+    agentCapabilityProvider === "ollama" ||
+    rawAgentRoleProvider === "ollama";
   const canThink =
     caps.supportsThinking ||
     caps.supportsAdaptiveThinking ||
@@ -862,7 +961,7 @@ export function ChatInput({
       {/* Agent mode サジェストチップ (探索系の問いを検出した時のみ) */}
       {suggestAgent &&
         !agentMode &&
-        canUseTools &&
+        canAttemptAgentTools &&
         !suggestionDismissed &&
         !isStreaming && (
           <div className="mb-1.5 flex items-center justify-between gap-2 rounded-md border border-border bg-accent/30 px-2.5 py-1 text-xs">
@@ -895,18 +994,21 @@ export function ChatInput({
 
         {/* 下段ツール列（カード内）。狭い幅では chip を縦に割らず次の行へ折り返す。 */}
         <div className="flex flex-wrap items-center gap-1 px-2 pb-1.5 pt-0.5">
-          {/* Agent mode chip: ツール非対応モデルでは disabled + 理由ツールチップ */}
+          {/* Agent mode chip: 非対応モデルでも ON から OFF へ戻す操作は許可する。 */}
           <button
             type="button"
+            data-testid="agent-mode-toggle"
             onClick={() => setAgentMode(!agentMode)}
-            disabled={!canUseTools}
+            disabled={!canAttemptAgentTools && !agentMode}
             aria-pressed={agentMode}
             title={
-              !canUseTools ? t("chat.agentUnavailable") : t("chat.agentMode")
+              !canAttemptAgentTools
+                ? t("chat.agentUnavailable")
+                : t("chat.agentMode")
             }
             className={[
               "flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs transition-colors",
-              !canUseTools
+              !canAttemptAgentTools && !agentMode
                 ? "cursor-not-allowed text-muted-foreground/40"
                 : agentMode
                   ? "bg-primary/10 text-primary hover:bg-primary/15"
@@ -1030,7 +1132,7 @@ export function ChatInput({
           <button
             type="button"
             onClick={() => void handleOpenAbCompare()}
-            disabled={!editor || !hasText || isStreaming}
+            disabled={!editor || !hasText || isStreaming || isSubmitting}
             title={t("abTest.chatMenuLabel")}
             className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:text-muted-foreground/40"
           >
@@ -1056,9 +1158,14 @@ export function ChatInput({
               <Button
                 type="button"
                 size="icon"
-                onClick={() => handleSendClick()}
+                onClick={() => void handleSendClick()}
                 onContextMenu={handleSendContextMenu}
-                disabled={!editor || !hasText || (policyDisabled ?? false)}
+                disabled={
+                  !editor ||
+                  !hasText ||
+                  isSubmitting ||
+                  (policyDisabled ?? false)
+                }
                 aria-label={t("chat.sendAriaLabel")}
                 title={t("chat.sendTitle")}
                 className="size-8 rounded-full active:scale-95 transition-transform duration-75"

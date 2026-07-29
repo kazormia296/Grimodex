@@ -40,7 +40,9 @@ describe("codexStore.updateText OCC", () => {
       version: 6,
       content: "new",
     });
-    await useCodexStore.getState().updateText("e1", { content: "new" });
+    await expect(
+      useCodexStore.getState().updateText("e1", { content: "new" }),
+    ).resolves.toEqual({ persisted: true, version: 6 });
     expect(updateCodexEntryMock).toHaveBeenCalledWith(
       "proj-1",
       "e1",
@@ -57,6 +59,25 @@ describe("codexStore.updateText OCC", () => {
     });
     await useCodexStore.getState().updateText("e1", { content: "new" });
     expect(useCodexStore.getState().entries[0].content).toBe("new");
+  });
+
+  it("editor が渡した loadedVersion を store 内の行より優先する", async () => {
+    updateCodexEntryMock.mockResolvedValueOnce({
+      id: "e1",
+      version: 4,
+      content: "new",
+    });
+
+    await useCodexStore
+      .getState()
+      .updateText("e1", { content: "new" }, { baseVersion: 3 });
+
+    expect(updateCodexEntryMock).toHaveBeenCalledWith(
+      "proj-1",
+      "e1",
+      { content: "new" },
+      { baseVersion: 3 },
+    );
   });
 
   it("filtered-out selectedEntry の version と更新結果を使う", async () => {
@@ -93,7 +114,9 @@ describe("codexStore.updateText OCC", () => {
     );
     const handler = vi.fn();
     setCodexEditConflictHandler(handler);
-    await useCodexStore.getState().updateText("e1", { content: "new" });
+    await expect(
+      useCodexStore.getState().updateText("e1", { content: "new" }),
+    ).resolves.toEqual({ persisted: false });
     expect(handler).toHaveBeenCalledWith("e1");
     expect(useCodexStore.getState().entries[0].content).toBe("old"); // 非破壊
   });

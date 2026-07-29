@@ -29,6 +29,7 @@ import {
 import { LayoutShell } from "@/features/layout/LayoutShell";
 import { cloneLayoutState } from "@/features/layout/layoutStateUtils";
 import { useResultsPanelStore } from "@/features/commandCenter";
+import { subscribeSemanticRetryAfterLifecycle } from "@/features/semantic-search/semanticLifecycle";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { PostEffectProgressToast } from "@/features/post-effect/PostEffectProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
@@ -39,12 +40,16 @@ import { useUpdateChecker } from "@/features/updater/useUpdateChecker";
 import { UpdateDot } from "@/features/updater/UpdateDot";
 import { useUpdatePending } from "@/features/updater/updaterStore";
 import { ensureSemanticIndexesOnOpen } from "@/features/semantic-search/autoIndex";
+import {
+  createEditorInputScopeKey,
+  waitForForegroundEditorInputReady,
+} from "@/features/editor/editorInputReady";
 import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 import { useLicenseStore } from "@/features/license/store";
 import { useLicenseStateListener } from "@/features/license/useLicenseStateListener";
-import { useDebugLogStore } from "@/lib/debugLog";
+import { debugLog, useDebugLogStore } from "@/lib/debugLog";
 import {
   isInlineAiPending,
   guardInlineAiPending,
@@ -85,7 +90,25 @@ import {
   getMergedBindings,
   matchesBinding,
 } from "@/features/settings/keybindings";
-import { onWindowCloseRequested } from "@/lib/windowControls";
+import { closeWindow, onWindowCloseRequested } from "@/lib/windowControls";
+import {
+  StrictQuiescenceError,
+  flushStrictQuiescence,
+  type QuiescenceFailure,
+} from "@/application/lifecycle/quiescenceCoordinator";
+import {
+  createCloseQuiescenceController,
+  type CloseQuiescenceController,
+} from "@/application/lifecycle/closeQuiescenceController";
+import { CloseSaveFailureDialog } from "@/components/CloseSaveFailureDialog";
+import { exportRecoveryDrafts } from "@/application/lifecycle/exportRecoveryDrafts";
+import { discardQuiescenceParticipants } from "@/application/lifecycle/quiescenceParticipants";
+import { discardQuiescenceProviders } from "@/lib/quiescenceProviders";
+import { discardAllRegisteredEditorDrafts } from "@/features/editor/editorSaveRegistry";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { useQuiescenceLeaseActive } from "@/application/lifecycle/useQuiescenceLeaseActive";
+import { LifecycleStatus } from "@/application/lifecycle/LifecycleStatus";
+import { hasUnresolvedEditorChanges } from "@/lib/editorQuiescence";
 import {
   getScreenshotPanelId,
   isScreenshotCapture,
@@ -214,6 +237,19 @@ function App() {
   );
   const { t } = useTranslation();
   const [showWebEditorImport, setShowWebEditorImport] = useState(false);
+  const [closeFailures, setCloseFailures] = useState<
+    readonly QuiescenceFailure[] | null
+  >(null);
+  const [quiescenceSettledRevision, setQuiescenceSettledRevision] = useState(0);
+  const closeControllerRef = useRef<CloseQuiescenceController | null>(null);
+
+  useEffect(
+    () =>
+      subscribeSemanticRetryAfterLifecycle(() => {
+        setQuiescenceSettledRevision((revision) => revision + 1);
+      }),
+    [],
+  );
 
   useEffect(
     () =>
@@ -240,22 +276,54 @@ function App() {
   // workspace path も依存に含め、異なるDBが同じ default-project
   // id を持つ場合も必ず別 scope として起動する。panel 窓は関数内で no-op。
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
+  const tabStateHydrated = useTabStore((s) => s.tabStateHydrated);
+  const foregroundEditorScopeKey = createEditorInputScopeKey({
+    projectId: currentProjectId,
+    workspacePath: activeWorkspacePath,
+    workspaceOpenRevision,
+  });
   useEffect(() => {
     if (
       runtimeCapabilities.localAi &&
       workspaceHydrated &&
       !workspaceSwitchInProgress &&
+      tabStateHydrated &&
       currentProjectId &&
       activeWorkspacePath
     ) {
-      void ensureSemanticIndexesOnOpen(currentProjectId, activeWorkspacePath);
+      const controller = new AbortController();
+      void waitForForegroundEditorInputReady({
+        signal: controller.signal,
+        // The editor boundary publishes the canonical loaded DocumentKey
+        // together with its visible group and authority. Accept either of the
+        // two real workspace projections; standalone panel editors are never
+        // allowed to release this project-open gate.
+        expectedProjection: {
+          authorities: ["workspace", "linear"],
+          scopeKey: foregroundEditorScopeKey,
+        },
+      }).then((editorReady) => {
+        if (controller.signal.aborted) return;
+        if (!editorReady) {
+          debugLog.warn(
+            "semantic-search",
+            "foreground Editor readiness timed out; starting background indexing",
+          );
+        }
+        void ensureSemanticIndexesOnOpen(currentProjectId, activeWorkspacePath);
+      });
+      return () => controller.abort();
     }
+    return undefined;
   }, [
     activeWorkspacePath,
     currentProjectId,
+    foregroundEditorScopeKey,
+    tabStateHydrated,
     workspaceHydrated,
     workspaceOpenRevision,
     workspaceSwitchInProgress,
+    quiescenceSettledRevision,
     runtimeCapabilities.localAi,
   ]);
 
@@ -266,18 +334,30 @@ function App() {
     }
   }, [uiLanguage]);
 
-  // 未確定の inline-AI diff があるままアプリを終了させない。Tauri の
+  // 未確定の inline-AI diff または未保存の文書があるまま終了させない。Tauri の
   // onCloseRequested は OS / ネイティブタイトルバー / カスタム閉じるボタンの
   // すべての close を捕捉できる唯一の安全網 (Mac は WindowControls 非表示)。
-  // veto + toast でユーザーに Accept/Reject を促す。web ビルドは beforeunload。
+  // 同期 veto の後で strict quiescence を実行し、全保存成功時だけ再 close する。
+  // web ビルドは async 保存不能なので beforeunload の同期警告に限定する。
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
     void (async () => {
       try {
-        const un = await onWindowCloseRequested((event) => {
-          if (guardInlineAiPending()) event.preventDefault();
+        const controller = createCloseQuiescenceController({
+          hasImmediateVeto: guardInlineAiPending,
+          flush: flushStrictQuiescence,
+          close: closeWindow,
+          onFailure: (error) => {
+            setCloseFailures(
+              error instanceof StrictQuiescenceError
+                ? error.failures
+                : [{ stage: "participants", error }],
+            );
+          },
         });
+        closeControllerRef.current = controller;
+        const un = await onWindowCloseRequested(controller.handleCloseRequest);
         if (disposed) un();
         else unlisten = un;
       } catch {
@@ -285,7 +365,7 @@ function App() {
       }
     })();
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isInlineAiPending()) {
+      if (isInlineAiPending() || hasUnresolvedEditorChanges()) {
         e.preventDefault();
         e.returnValue = "";
       }
@@ -293,6 +373,8 @@ function App() {
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       disposed = true;
+      closeControllerRef.current?.cancel();
+      closeControllerRef.current = null;
       unlisten?.();
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
@@ -361,6 +443,7 @@ function App() {
     <>
       <Toaster position="bottom-right" richColors />
       <LiveRegion />
+      <LifecycleStatus />
       {view === "loading" && (
         <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-foreground">
           <TitleBar />
@@ -382,12 +465,37 @@ function App() {
           />
         </Suspense>
       )}
+      <CloseSaveFailureDialog
+        open={closeFailures !== null}
+        onCancel={() => {
+          closeControllerRef.current?.cancel();
+          setCloseFailures(null);
+        }}
+        onRetry={() => {
+          setCloseFailures(null);
+          closeControllerRef.current?.retry();
+        }}
+        onExport={() => {
+          if (!closeFailures) return;
+          void exportRecoveryDrafts(closeFailures).catch(() => {
+            toast.error(t("closeSaveFailure.exportFailed"));
+          });
+        }}
+        onDiscard={() => {
+          discardQuiescenceProviders();
+          discardQuiescenceParticipants();
+          discardAllRegisteredEditorDrafts();
+          setCloseFailures(null);
+          closeControllerRef.current?.discardAndClose();
+        }}
+      />
       <DebugLogViewer />
     </>
   );
 }
 
 function EditorScreen() {
+  const lifecycleLocked = useQuiescenceLeaseActive();
   const runtimeCapabilities = useRuntimeCapabilities();
   const screenshotPanelId = getScreenshotPanelId();
   const panelWindowTarget = getPanelWindowTarget();
@@ -475,8 +583,9 @@ function EditorScreen() {
       window.removeEventListener("restart-sample-tour", onRestartTutorial);
   }, [seedAndOpenSample]);
 
-  // Project メタデータ（執筆言語・Phase resolution mode）を適用し、
-  // screenshot キャプチャ用のステージを初期化する
+  // screenshot キャプチャ用のステージを初期化する。通常の Workspace は
+  // openWorkspace が Project critical hydrate まで完了してから editor view を
+  // 公開するため、mount 後の受動的な loadProject は行わない。
   useEffect(() => {
     void (async () => {
       clearScreenshotStageReady();
@@ -501,7 +610,6 @@ function EditorScreen() {
         markScreenshotStageReady();
         return;
       }
-      await useProjectStore.getState().loadProject(getCurrentProjectId());
     })();
   }, []);
 
@@ -580,6 +688,7 @@ function EditorScreen() {
   // Keyboard shortcuts (Ctrl+Alt+*)
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      if (!canScheduleQuiescenceMutation()) return;
       // Ctrl+Shift+E: エクスポートダイアログ開閉
       if (
         runtimeCapabilities.genericProjectTransfer &&
@@ -723,6 +832,7 @@ function EditorScreen() {
   // Ctrl+Tab / Ctrl+Shift+Tab: switch tabs in the active editor group
   useEffect(() => {
     function onTabSwitch(e: KeyboardEvent) {
+      if (!canScheduleQuiescenceMutation()) return;
       handleEditorTabSwitchKeydown(e, phoneWorkspace);
     }
 
@@ -734,6 +844,8 @@ function EditorScreen() {
     <WorkspaceViewportProvider profile={workspaceProfile}>
       <div
         className="app-shell flex h-screen flex-col"
+        inert={lifecycleLocked ? true : undefined}
+        aria-busy={lifecycleLocked || undefined}
         data-platform-mac={mac ? "true" : undefined}
         data-viewport-profile={workspaceProfile}
         data-mobile-workspace={phoneWorkspace ? "true" : undefined}

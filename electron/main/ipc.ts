@@ -5,7 +5,7 @@
  * 純関数 `dispatchInvoke`（electron/shared/ipcContract.ts — node 環境で
  * 単体テスト済み）へ委譲する。ここは electron グルーのみ:
  * - 送信元窓の解決（保存ダイアログなど窓単位コマンドへの束縛）
- * - IPC_UNIMPLEMENTED の main 側ログ（A6 fail-soft 監査の集計ポイント）
+ * - fail-soft outcome の main 側ログ（A6 監査の集計ポイント）
  */
 import { BrowserWindow, ipcMain } from "electron";
 
@@ -71,12 +71,12 @@ export function registerIpcRouter(
         secrets,
         broadcast,
       });
-      if (
-        !envelope.ok &&
-        (envelope.error.startsWith(IPC_UNIMPLEMENTED_MARKER) ||
-          envelope.error.startsWith(IPC_BACKEND_UNAVAILABLE_MARKER))
-      ) {
-        console.warn(`[grim:invoke] ${envelope.error}`);
+      if (!envelope.ok) {
+        if (envelope.error.startsWith(IPC_UNIMPLEMENTED_MARKER)) {
+          console.warn("[grim:invoke] IPC_UNIMPLEMENTED");
+        } else if (envelope.error.startsWith(IPC_BACKEND_UNAVAILABLE_MARKER)) {
+          console.warn("[grim:invoke] IPC_BACKEND_UNAVAILABLE");
+        }
       }
       return envelope;
     },

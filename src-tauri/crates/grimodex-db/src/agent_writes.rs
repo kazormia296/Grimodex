@@ -3,8 +3,10 @@
 //! Each write bundles entity mutation + authorship_spans + undo_journal +
 //! change_events in a single BEGIN IMMEDIATE transaction.
 
-use serde::Deserialize;
+use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 // 実装本体は src-tauri/src/commands/agent_writes.rs から本クレートへ移動した
 // (Electron 移行 Phase 3 バッチ1 — napi Backend と Tauri コマンドで共用)。
@@ -13,7 +15,7 @@ use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::{BatchStatement, Database};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorshipSpanInput {
     from_pos: i64,
@@ -24,9 +26,17 @@ pub struct AuthorshipSpanInput {
     trace_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCodexCreatePayload {
+    /// Stable identity of the logical request. This is deliberately separate
+    /// from `entry_id`, which remains the domain entity identity.
+    #[serde(default)]
+    request_id: Option<String>,
+    /// Domain-owned idempotency key. New renderer callers always provide it;
+    /// `None` preserves compatibility with older native clients.
+    #[serde(default)]
+    entry_id: Option<String>,
     project_id: String,
     session_id: String,
     type_slug: String,
@@ -69,6 +79,287 @@ struct AgentWriteResult {
     version: i64,
     change_event_uid: String,
     undo_journal_id: String,
+}
+
+fn idempotency_hash<T: Serialize>(domain: &str, payload: &T) -> anyhow::Result<String> {
+    let mut canonical = serde_json::to_value((domain, payload))?;
+    canonicalize_json_value(&mut canonical);
+    let body = serde_json::to_vec(&canonical)?;
+    Ok(hex::encode(Sha256::digest(body)))
+}
+
+fn canonicalize_json_value(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                canonicalize_json_value(item);
+            }
+        }
+        Value::Object(object) => {
+            let mut entries: Vec<_> = std::mem::take(object).into_iter().collect();
+            for (_, child) in &mut entries {
+                canonicalize_json_value(child);
+            }
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            object.extend(entries);
+        }
+        _ => {}
+    }
+}
+
+fn normalize_prosemirror_for_idempotency(raw: &str) -> String {
+    fn strip_volatile_authorship_timestamp(value: &mut Value) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    strip_volatile_authorship_timestamp(item);
+                }
+            }
+            Value::Object(object) => {
+                if object.get("type").and_then(Value::as_str) == Some("authorship") {
+                    if let Some(Value::Object(attrs)) = object.get_mut("attrs") {
+                        attrs.remove("timestamp");
+                    }
+                }
+                for child in object.values_mut() {
+                    strip_volatile_authorship_timestamp(child);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Ok(mut parsed) = serde_json::from_str::<Value>(raw) else {
+        return raw.to_string();
+    };
+    strip_volatile_authorship_timestamp(&mut parsed);
+    canonicalize_json_value(&mut parsed);
+    serde_json::to_string(&parsed).unwrap_or_else(|_| raw.to_string())
+}
+
+fn codex_create_request_hash(payload: &AgentCodexCreatePayload) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.request_id = None;
+    normalized.entry_id = None;
+    normalized.session_id.clear();
+    normalized.summary = Some(normalized.summary.unwrap_or_default());
+    normalized.content = Some(normalize_prosemirror_for_idempotency(
+        normalized.content.as_deref().unwrap_or("{}"),
+    ));
+    idempotency_hash("agent_codex_create", &normalized)
+}
+
+fn snippet_create_request_hash(payload: &AgentSnippetCreatePayload) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.request_id = None;
+    normalized.snippet_id = None;
+    normalized.session_id.clear();
+    normalized.content = Some(normalize_prosemirror_for_idempotency(
+        normalized.content.as_deref().unwrap_or("{}"),
+    ));
+    idempotency_hash("agent_snippet_create", &normalized)
+}
+
+fn event_create_request_hash(payload: &AgentEventCreatePayload) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.request_id = None;
+    normalized.event_id = None;
+    normalized.session_id.clear();
+    normalized.surface = None;
+    normalized.detail = normalized
+        .detail
+        .as_deref()
+        .map(normalize_prosemirror_for_idempotency);
+    normalized.title = Some(normalized.title.unwrap_or_default());
+    normalized.ordinal = Some(normalized.ordinal.unwrap_or_else(|| "a0".to_string()));
+    normalized.precision = Some(normalized.precision.unwrap_or_else(|| "exact".to_string()));
+    normalized.kind = Some(normalized.kind.unwrap_or_else(|| "generic".to_string()));
+    normalized.start_granularity = Some(
+        normalized
+            .start_granularity
+            .unwrap_or_else(|| "none".to_string()),
+    );
+    normalized.end_granularity = Some(
+        normalized
+            .end_granularity
+            .unwrap_or_else(|| "none".to_string()),
+    );
+    normalized.secret = Some(normalized.secret.unwrap_or(false));
+    normalized.reveal_scene_id = normalized.reveal_scene_id.filter(|value| !value.is_empty());
+    normalized.participant_codex_ids = Some(normalize_id_set(normalized.participant_codex_ids));
+    normalized.scene_ids = Some(normalize_id_set(normalized.scene_ids));
+    idempotency_hash("agent_event_create", &normalized)
+}
+
+fn normalize_id_set(ids: Option<Vec<String>>) -> Vec<String> {
+    let mut ids = ids.unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn foreshadow_create_request_hash(
+    payload: &AgentForeshadowCreatePayload,
+) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.request_id = None;
+    normalized.foreshadow_id = None;
+    normalized.session_id.clear();
+    idempotency_hash("agent_foreshadow_create", &normalized)
+}
+
+fn scene_event_request_hash(
+    payload: &AgentSceneEventPayload,
+    link: bool,
+) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.request_id = None;
+    normalized.session_id.clear();
+    normalized.surface = None;
+    idempotency_hash(
+        if link {
+            "agent_scene_event_link"
+        } else {
+            "agent_scene_event_unlink"
+        },
+        &normalized,
+    )
+}
+
+fn event_relation_request_hash(
+    payload: &AgentEventRelationPayload,
+    add: bool,
+) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.request_id = None;
+    normalized.session_id.clear();
+    normalized.surface = None;
+    idempotency_hash(
+        if add {
+            "agent_event_relation_add"
+        } else {
+            "agent_event_relation_remove"
+        },
+        &normalized,
+    )
+}
+
+fn request_hash_from_change_payload(payload: &str) -> anyhow::Result<Option<String>> {
+    Ok(serde_json::from_str::<Value>(payload)?
+        .get("requestHash")
+        .and_then(Value::as_str)
+        .map(str::to_string))
+}
+
+/// Resolve an already-committed create while holding the caller's
+/// `BEGIN IMMEDIATE` lock. `table` is always a static internal literal.
+fn existing_create_result(
+    conn: &rusqlite::Connection,
+    table: &str,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    request_hash: &str,
+    conflict_marker: &str,
+) -> anyhow::Result<Option<AgentWriteResult>> {
+    let journal = conn
+        .query_row(
+            "SELECT uj.id, uj.result_version, uj.change_event_uid, ce.payload
+             FROM undo_journal uj
+             LEFT JOIN change_events ce
+               ON ce.project_id = uj.project_id
+              AND ce.event_uid = uj.change_event_uid
+             WHERE uj.project_id = ?1
+               AND uj.entity_kind = ?2
+               AND uj.entity_id = ?3
+               AND uj.op_kind = 'create'
+             ORDER BY uj.rowid ASC
+             LIMIT 1",
+            rusqlite::params![project_id, entity_kind, entity_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let entity_exists: bool = conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE id = ?1)"),
+        rusqlite::params![entity_id],
+        |row| row.get(0),
+    )?;
+
+    let Some((undo_journal_id, version, change_event_uid, event_payload)) = journal else {
+        if entity_exists {
+            anyhow::bail!("{conflict_marker}: entity id already exists without matching request");
+        }
+        return Ok(None);
+    };
+    let stored_hash = event_payload
+        .as_deref()
+        .map(request_hash_from_change_payload)
+        .transpose()?
+        .flatten();
+    if !entity_exists || stored_hash.as_deref() != Some(request_hash) {
+        anyhow::bail!("{conflict_marker}: request id reused with different payload or state");
+    }
+    let change_event_uid = change_event_uid
+        .ok_or_else(|| anyhow::anyhow!("{conflict_marker}: missing original change event"))?;
+    Ok(Some(AgentWriteResult {
+        entity_id: entity_id.to_string(),
+        version,
+        change_event_uid,
+        undo_journal_id,
+    }))
+}
+
+fn existing_request_result(
+    conn: &rusqlite::Connection,
+    request_id: &str,
+    request_hash: &str,
+    conflict_marker: &str,
+) -> anyhow::Result<Option<AgentWriteResult>> {
+    let row = conn
+        .query_row(
+            "SELECT uj.entity_id, uj.result_version, uj.change_event_uid, ce.payload
+             FROM undo_journal uj
+             LEFT JOIN change_events ce
+               ON ce.project_id = uj.project_id
+              AND ce.event_uid = uj.change_event_uid
+             WHERE uj.id = ?1",
+            rusqlite::params![request_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((entity_id, version, change_event_uid, event_payload)) = row else {
+        return Ok(None);
+    };
+    let stored_hash = event_payload
+        .as_deref()
+        .map(request_hash_from_change_payload)
+        .transpose()?
+        .flatten();
+    if stored_hash.as_deref() != Some(request_hash) {
+        anyhow::bail!("{conflict_marker}: request id reused with different payload");
+    }
+    let change_event_uid = change_event_uid
+        .ok_or_else(|| anyhow::anyhow!("{conflict_marker}: missing original change event"))?;
+    Ok(Some(AgentWriteResult {
+        entity_id,
+        version,
+        change_event_uid,
+        undo_journal_id: request_id.to_string(),
+    }))
 }
 
 const LANE_SUMMARY_MODEL: &str = "__lane_summary__";
@@ -152,8 +443,19 @@ pub fn agent_codex_create_impl(
     db: &Database,
     payload: AgentCodexCreatePayload,
 ) -> anyhow::Result<Value> {
-    let entry_id = uuid::Uuid::new_v4().to_string();
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    let request_hash = codex_create_request_hash(&payload)?;
+    let legacy_entity_request = payload.request_id.is_none() && payload.entry_id.is_some();
+    let request_id = payload
+        .request_id
+        .clone()
+        .or_else(|| payload.entry_id.clone());
+    let entry_id = payload
+        .entry_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let undo_id = request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let content = payload.content.unwrap_or_else(|| "{}".to_string());
@@ -163,16 +465,42 @@ pub fn agent_codex_create_impl(
     let source_chat_message_id = payload.source_chat_message_id;
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    let change_payload = json!({
+    let mut change_payload = json!({
         "type": payload.type_slug,
         "name": payload.name,
         "parentId": parent_id,
     });
+    if request_id.is_some() {
+        change_payload["requestHash"] = Value::String(request_hash.clone());
+    }
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if let Some(request_id) = request_id.as_deref() {
+                if let Some(existing) = existing_request_result(
+                    conn,
+                    request_id,
+                    &request_hash,
+                    "AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT",
+                )? {
+                    return Ok(existing);
+                }
+            }
+            if legacy_entity_request {
+                if let Some(existing) = existing_create_result(
+                    conn,
+                    "codex_entries",
+                    &payload.project_id,
+                    "codex_entry",
+                    &entry_id,
+                    &request_hash,
+                    "AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT",
+                )? {
+                    return Ok(existing);
+                }
+            }
             conn.execute(
                 "INSERT INTO codex_entries
                  (id, project_id, type, name, aliases, summary, content, parent_id,
@@ -496,9 +824,15 @@ pub struct AgentWriteBundlePayload {
     pub change_event: ChangeEventPayload,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSnippetCreatePayload {
+    /// Stable identity of the logical request, independent of `snippet_id`.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// Domain-owned idempotency key for create retries.
+    #[serde(default)]
+    pub snippet_id: Option<String>,
     pub project_id: String,
     pub session_id: String,
     pub title: String,
@@ -625,8 +959,19 @@ pub fn agent_snippet_create_impl(
     db: &Database,
     payload: AgentSnippetCreatePayload,
 ) -> anyhow::Result<Value> {
-    let snippet_id = uuid::Uuid::new_v4().to_string();
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    let request_hash = snippet_create_request_hash(&payload)?;
+    let legacy_entity_request = payload.request_id.is_none() && payload.snippet_id.is_some();
+    let request_id = payload
+        .request_id
+        .clone()
+        .or_else(|| payload.snippet_id.clone());
+    let snippet_id = payload
+        .snippet_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let undo_id = request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let content = payload.content.unwrap_or_else(|| "{}".to_string());
@@ -643,15 +988,41 @@ pub fn agent_snippet_create_impl(
     })
     .to_string();
 
-    let change_payload = json!({
+    let mut change_payload = json!({
         "title": payload.title,
         "sceneId": payload.scene_id,
     });
+    if request_id.is_some() {
+        change_payload["requestHash"] = Value::String(request_hash.clone());
+    }
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if let Some(request_id) = request_id.as_deref() {
+                if let Some(existing) = existing_request_result(
+                    conn,
+                    request_id,
+                    &request_hash,
+                    "AGENT_SNIPPET_CREATE_IDEMPOTENCY_CONFLICT",
+                )? {
+                    return Ok(existing);
+                }
+            }
+            if legacy_entity_request {
+                if let Some(existing) = existing_create_result(
+                    conn,
+                    "snippets",
+                    &payload.project_id,
+                    "snippet",
+                    &snippet_id,
+                    &request_hash,
+                    "AGENT_SNIPPET_CREATE_IDEMPOTENCY_CONFLICT",
+                )? {
+                    return Ok(existing);
+                }
+            }
             conn.execute(
                 "INSERT INTO snippets
                  (id, project_id, title, content, scene_id, content_source,
@@ -1065,21 +1436,113 @@ fn undo_journal_change_event(
         other => anyhow::bail!("undo_journal_change_event: unsupported entity_kind '{other}'"),
     };
     let op_type = match (direction, row.op_kind.as_str()) {
-        ("undo", "create") => delete_op,
-        ("redo", "create") => create_op,
+        ("undo", "create") => delete_op.to_string(),
+        ("redo", "create") => create_op.to_string(),
         // Tracked deletes (currently only `event`): undoing a delete re-creates,
         // redoing it deletes again.
-        ("undo", "delete") => create_op,
-        ("redo", "delete") => delete_op,
-        ("undo", "update") | ("redo", "update") => update_op,
+        ("undo", "delete") => create_op.to_string(),
+        ("redo", "delete") => delete_op.to_string(),
+        ("undo" | "redo", "update") if row.entity_kind == "event" => {
+            let raw = if direction == "undo" {
+                row.before_json.as_deref()
+            } else {
+                row.after_json.as_deref()
+            }
+            .ok_or_else(|| anyhow::anyhow!("event update replay snapshot is missing"))?;
+            let snap: Value = serde_json::from_str(raw)?;
+            if snap.get("participants").is_some() && snap.get("eventData").is_none() {
+                "event.participants".to_string()
+            } else if snap.get("sceneId").is_some() {
+                if snap["linked"].as_bool().unwrap_or(false) {
+                    "event.stamp".to_string()
+                } else {
+                    "event.unstamp".to_string()
+                }
+            } else if snap.get("causeEventId").is_some() {
+                if snap["linked"].as_bool().unwrap_or(false) {
+                    "event.relation_add".to_string()
+                } else {
+                    "event.relation_remove".to_string()
+                }
+            } else {
+                update_op.to_string()
+            }
+        }
+        ("undo", "update") | ("redo", "update") => update_op.to_string(),
         (dir, op) => anyhow::bail!("undo_journal_change_event: unsupported {dir}/{op}"),
     };
     Ok((
         domain.to_string(),
         entity_type.to_string(),
-        op_type.to_string(),
+        op_type,
         row.entity_id.clone(),
     ))
+}
+
+fn event_replay_snapshot_raw<'a>(
+    row: &'a grimodex_core::undo_journal::UndoJournalRow,
+    direction: &str,
+) -> Option<&'a str> {
+    match (direction, row.op_kind.as_str()) {
+        ("undo" | "redo", "create") => row.after_json.as_deref(),
+        ("undo" | "redo", "delete") => row.before_json.as_deref(),
+        ("undo", "update") => row.before_json.as_deref(),
+        ("redo", "update") => row.after_json.as_deref(),
+        _ => None,
+    }
+}
+
+fn event_snapshot_related_ids(snap: &Value) -> Vec<String> {
+    let mut related = std::collections::BTreeSet::new();
+    for key in ["asCause", "asEffect"] {
+        if let Some(relations) = snap["relations"][key].as_array() {
+            for relation in relations {
+                if let Some(id) = relation["effectEventId"]
+                    .as_str()
+                    .or_else(|| relation["causeEventId"].as_str())
+                {
+                    related.insert(id.to_string());
+                }
+            }
+        }
+    }
+    related.into_iter().collect()
+}
+
+fn enrich_event_replay_change_payload(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    direction: &str,
+    payload: &mut Value,
+) -> anyhow::Result<()> {
+    if row.entity_kind != "event" {
+        return Ok(());
+    }
+    let Some(raw) = event_replay_snapshot_raw(row, direction) else {
+        return Ok(());
+    };
+    let snap: Value = serde_json::from_str(raw)?;
+    let Some(object) = payload.as_object_mut() else {
+        return Ok(());
+    };
+    if let Some(id) = snap["eventId"].as_str() {
+        object.insert("eventId".to_string(), Value::from(id));
+    }
+    if let Some(id) = snap["sceneId"].as_str() {
+        object.insert("sceneId".to_string(), Value::from(id));
+    }
+    if let Some(id) = snap["causeEventId"].as_str() {
+        object.insert("causeEventId".to_string(), Value::from(id));
+    }
+    if let Some(id) = snap["effectEventId"].as_str() {
+        object.insert("effectEventId".to_string(), Value::from(id));
+    }
+    if matches!(row.op_kind.as_str(), "create" | "delete") {
+        let related = event_snapshot_related_ids(&snap);
+        if !related.is_empty() {
+            object.insert("relatedEventIds".to_string(), json!(related));
+        }
+    }
+    Ok(())
 }
 
 pub fn agent_undo_journal_impl(
@@ -1124,11 +1587,12 @@ pub fn agent_undo_journal_impl(
                 undo_journal_change_event(&row, &payload.direction)?;
             let event_uid = uuid::Uuid::new_v4().to_string();
             let timestamp = chrono::Utc::now().timestamp_millis();
-            let change_payload = json!({
+            let mut change_payload = json!({
                 "direction": payload.direction,
                 "opKind": row.op_kind,
                 "journalId": payload.journal_id,
             });
+            enrich_event_replay_change_payload(&row, &payload.direction, &mut change_payload)?;
             append_change_events_in_tx(
                 conn,
                 &payload.project_id,
@@ -1164,9 +1628,13 @@ pub fn agent_undo_journal_impl(
 // (the same path the MCP foreshadow tools use, surface differs).
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentForeshadowCreatePayload {
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    foreshadow_id: Option<String>,
     project_id: String,
     session_id: String,
     title: String,
@@ -1204,7 +1672,11 @@ pub fn agent_foreshadow_create_impl(
     db: &Database,
     payload: AgentForeshadowCreatePayload,
 ) -> anyhow::Result<Value> {
-    let foreshadow_id = uuid::Uuid::new_v4().to_string();
+    let request_hash = foreshadow_create_request_hash(&payload)?;
+    let foreshadow_id = payload
+        .foreshadow_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     db.with_conn(|conn| {
         let res = grimodex_core::writes::foreshadow::tracked_foreshadow_create(
             conn,
@@ -1218,8 +1690,11 @@ pub fn agent_foreshadow_create_impl(
                 notes: payload.notes.as_deref(),
                 load_bearing: payload.load_bearing.as_deref(),
                 secret: payload.secret,
+                request_id: payload.request_id.as_deref(),
+                request_hash: Some(&request_hash),
             },
-        )?;
+        )
+        .map_err(|error| anyhow::anyhow!("agent_foreshadow_create: {error:#}"))?;
         agent_write_result_json(res)
     })
 }
@@ -1254,15 +1729,20 @@ pub fn agent_foreshadow_update_impl(
 
 // ---------------------------------------------------------------------------
 // Chronicle (作中年表) writes — events + participants + scene links + relations.
-// Mirrors the codex create/update/delete transaction shape. `events` has no
-// version column, so undo_journal versions are fixed: create=0/1, update=1/1,
-// delete=1/0. Association mutations (participants / scene links / relations)
-// are modelled as op_kind="update" on the host event (base=1, result=1).
+// Mirrors the codex create/update/delete transaction shape. `events.version`
+// is the aggregate OCC token for event fields + participants. Scene links and
+// causal relations remain independent association writes.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventCreatePayload {
+    /// Stable identity of the logical request, independent of `event_id`.
+    #[serde(default)]
+    request_id: Option<String>,
+    /// Domain-owned idempotency key for create retries.
+    #[serde(default)]
+    event_id: Option<String>,
     project_id: String,
     session_id: String,
     /// 書き込み元の表面: "in-app-agent"(AI) / "mcp" / "manual"(UI手動編集)。
@@ -1304,6 +1784,8 @@ pub struct AgentEventUpdatePayload {
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
     surface: Option<String>,
     event_id: String,
+    /// Version observed when the caller loaded this Event aggregate.
+    base_version: i64,
     title: Option<String>,
     note: Option<String>,
     /// 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。set-if-present。
@@ -1335,6 +1817,8 @@ pub struct AgentEventIdPayload {
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
     surface: Option<String>,
     event_id: String,
+    /// Version observed when the caller loaded this Event aggregate.
+    base_version: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1345,12 +1829,18 @@ pub struct AgentEventParticipantsPayload {
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
     surface: Option<String>,
     event_id: String,
+    /// Version observed when the caller loaded this Event aggregate.
+    base_version: i64,
     codex_entry_ids: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSceneEventPayload {
+    /// Request-owned idempotency key. The association has only a natural
+    /// composite key, so this key also deduplicates journal/event side effects.
+    #[serde(default)]
+    request_id: Option<String>,
     project_id: String,
     session_id: String,
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
@@ -1359,9 +1849,11 @@ pub struct AgentSceneEventPayload {
     event_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventRelationPayload {
+    #[serde(default)]
+    request_id: Option<String>,
     project_id: String,
     session_id: String,
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
@@ -1385,6 +1877,7 @@ fn collect_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> anyhow
             'endMinute', end_minute, 'startGranularity', start_granularity,
             'endGranularity', end_granularity, 'precision', precision, 'kind', kind,
             'secret', secret, 'revealSceneId', reveal_scene_id,
+            'version', version,
             'createdAt', created_at, 'updatedAt', updated_at
          ) FROM events WHERE id = ?1",
         rusqlite::params![event_id],
@@ -1450,6 +1943,11 @@ fn collect_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> anyhow
 }
 
 fn collect_participants_json(conn: &rusqlite::Connection, event_id: &str) -> anyhow::Result<Value> {
+    let version: i64 = conn.query_row(
+        "SELECT version FROM events WHERE id = ?1",
+        rusqlite::params![event_id],
+        |row| row.get(0),
+    )?;
     let mut stmt = conn.prepare(
         "SELECT codex_entry_id, role FROM event_participants
          WHERE event_id = ?1 ORDER BY codex_entry_id",
@@ -1460,7 +1958,11 @@ fn collect_participants_json(conn: &rusqlite::Connection, event_id: &str) -> any
         Ok(json!({ "codexEntryId": codex_entry_id, "role": role }))
     })?;
     let participants = rows.collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({ "eventId": event_id, "participants": participants }))
+    Ok(json!({
+        "eventId": event_id,
+        "version": version,
+        "participants": participants,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1544,18 +2046,51 @@ fn batch_insert_event_relations(
     Ok(())
 }
 
-/// Make the DB match a composite event snapshot exactly: UPSERT the event row
-/// and replace its participants, scene links, and relations (both directions).
-fn apply_event_composite_snapshot(
+/// Restore the Event row from a snapshot. When `restore_associations` is true
+/// (create/delete journal replay), also replace participants, scene links, and
+/// relations. Field-only update replay deliberately leaves associations alone:
+/// scene links and relations do not bump the Event aggregate version, so they
+/// may have changed legitimately after the journalled row update.
+fn apply_event_snapshot(
     conn: &rusqlite::Connection,
     project_id: &str,
     snap: &Value,
+    target_version: Option<i64>,
+    restore_associations: bool,
 ) -> anyhow::Result<()> {
+    use rusqlite::OptionalExtension;
+
     let ed = &snap["eventData"];
     let id = ed["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("event snapshot missing eventData.id"))?;
     let now = chrono::Utc::now().to_rfc3339();
+    let existing_project = conn
+        .query_row(
+            "SELECT project_id FROM events WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if existing_project.as_deref().is_some_and(|p| p != project_id) {
+        anyhow::bail!(
+            "event '{}' belongs to another project during journal restore",
+            id
+        );
+    }
+    let current_version = conn
+        .query_row(
+            "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![id, project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let restored_version = target_version
+        .or_else(|| ed["version"].as_i64())
+        // Legacy journal snapshots did not carry a version. Preserve the
+        // current migrated row's token instead of resetting it.
+        .or(current_version)
+        .unwrap_or(1);
 
     // reveal_scene_id は tree_nodes(scene) 参照。undo/redo の間に reveal シーンが
     // 削除されていると、古いスナップショットの id を UPSERT すると FK 失敗で undo が
@@ -1582,8 +2117,8 @@ fn apply_event_composite_snapshot(
          (id, project_id, title, note, ordinal, primary_codex_id, lane_group, location_codex_id,
           start_time, end_time, start_minute, end_minute, start_granularity,
           end_granularity, precision, kind, secret, reveal_scene_id,
-          created_at, updated_at, detail)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+          created_at, updated_at, detail, version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title, note = excluded.note, detail = excluded.detail,
             ordinal = excluded.ordinal,
@@ -1596,7 +2131,7 @@ fn apply_event_composite_snapshot(
             end_granularity = excluded.end_granularity,
             precision = excluded.precision, kind = excluded.kind,
             secret = excluded.secret, reveal_scene_id = excluded.reveal_scene_id,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at, version = excluded.version",
         rusqlite::params![
             id,
             project_id,
@@ -1619,8 +2154,13 @@ fn apply_event_composite_snapshot(
             ed["createdAt"].as_str().unwrap_or(&now),
             ed["updatedAt"].as_str().unwrap_or(&now),
             ed["detail"].as_str(),
+            restored_version,
         ],
     )?;
+
+    if !restore_associations {
+        return Ok(());
+    }
 
     conn.execute(
         "DELETE FROM event_participants WHERE event_id = ?1",
@@ -1749,36 +2289,265 @@ fn restore_event_relation_snapshot(
     Ok(())
 }
 
+fn event_update_snapshot_uses_occ(snap: &Value) -> bool {
+    snap.get("eventData").is_some() || snap.get("participants").is_some()
+}
+
+fn event_update_snapshot_has_occ_version(snap: &Value) -> bool {
+    if snap.get("eventData").is_some() {
+        snap["eventData"].get("version").is_some()
+    } else if snap.get("participants").is_some() {
+        snap.get("version").is_some()
+    } else {
+        false
+    }
+}
+
+fn event_snapshot_is_legacy_occ(snap: &Value) -> bool {
+    event_update_snapshot_uses_occ(snap) && !event_update_snapshot_has_occ_version(snap)
+}
+
+fn mark_legacy_event_snapshot_version(raw: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut snap: Value = serde_json::from_str(raw)?;
+    if let Some(event_data) = snap.get_mut("eventData").and_then(Value::as_object_mut) {
+        event_data
+            .entry("version".to_string())
+            .or_insert(Value::from(0));
+    } else if snap.get("participants").is_some() {
+        if let Some(object) = snap.as_object_mut() {
+            object
+                .entry("version".to_string())
+                .or_insert(Value::from(0));
+        }
+    }
+    Ok(Some(snap.to_string()))
+}
+
+/// Legacy Event journals predate aggregate OCC and therefore carry unusable
+/// placeholder base/result versions. Once a replay reaches that legacy chain,
+/// attach an explicit version marker to every legacy aggregate snapshot and
+/// align its journal tokens with the state that is about to be replayed.
+fn normalize_legacy_event_journal_chain(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+    state_version: i64,
+) -> anyhow::Result<usize> {
+    let rows = {
+        let mut stmt = conn.prepare(
+            "SELECT id, before_json, after_json FROM undo_journal
+             WHERE project_id = ?1 AND entity_kind = 'event' AND entity_id = ?2",
+        )?;
+        let mapped = stmt.query_map(rusqlite::params![project_id, event_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        mapped.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut normalized = 0;
+    for (journal_id, before_json, after_json) in rows {
+        let legacy = [before_json.as_deref(), after_json.as_deref()]
+            .into_iter()
+            .flatten()
+            .try_fold(false, |found, raw| {
+                let snapshot: Value = serde_json::from_str(raw)?;
+                Ok::<_, anyhow::Error>(found || event_snapshot_is_legacy_occ(&snapshot))
+            })?;
+        if !legacy {
+            continue;
+        }
+        let before_json = mark_legacy_event_snapshot_version(before_json.as_deref())?;
+        let after_json = mark_legacy_event_snapshot_version(after_json.as_deref())?;
+        normalized += conn.execute(
+            "UPDATE undo_journal
+             SET base_version = ?1, result_version = ?1,
+                 before_json = ?2, after_json = ?3
+             WHERE id = ?4 AND project_id = ?5",
+            rusqlite::params![
+                state_version,
+                before_json,
+                after_json,
+                journal_id,
+                project_id
+            ],
+        )?;
+    }
+    Ok(normalized)
+}
+
+/// A monotonically replayed state replaces the old state token everywhere it
+/// appears in the Event's journal chain. This keeps adjacent commands
+/// connected across multi-level undo/redo (A.result == B.base), while an
+/// external write still conflicts because it cannot update these tokens.
+fn advance_event_journal_state_token(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+    previous_version: i64,
+    replay_version: i64,
+) -> anyhow::Result<()> {
+    let updated = conn.execute(
+        "UPDATE undo_journal
+         SET base_version = CASE WHEN base_version = ?1 THEN ?2 ELSE base_version END,
+             result_version = CASE WHEN result_version = ?1 THEN ?2 ELSE result_version END
+         WHERE project_id = ?3 AND entity_kind = 'event' AND entity_id = ?4
+           AND (base_version = ?1 OR result_version = ?1)",
+        rusqlite::params![previous_version, replay_version, project_id, event_id],
+    )?;
+    anyhow::ensure!(
+        updated > 0,
+        "event undo journal chain for '{}' lost state version {}",
+        event_id,
+        previous_version
+    );
+    Ok(())
+}
+
+fn next_event_replay_version(version: i64, direction: &str) -> anyhow::Result<i64> {
+    version
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("event version overflow during {direction}"))
+}
+
 /// Restore an `update` op (event-update / participants / scene / relation) to a
 /// target snapshot, discriminating by snapshot shape.
 fn restore_event_update_snapshot(
     conn: &rusqlite::Connection,
     project_id: &str,
     snap: &Value,
+    expected_current_version: i64,
+    target_version: i64,
 ) -> anyhow::Result<()> {
     if snap.get("eventData").is_some() {
-        apply_event_composite_snapshot(conn, project_id, snap)
+        ensure_event_version(
+            conn,
+            project_id,
+            snap["eventData"]["id"].as_str().unwrap_or(""),
+            expected_current_version,
+        )?;
+        apply_event_snapshot(conn, project_id, snap, Some(target_version), false)
     } else if snap.get("causeEventId").is_some() {
         restore_event_relation_snapshot(conn, project_id, snap)
     } else if snap.get("sceneId").is_some() {
         restore_event_scene_snapshot(conn, snap)
     } else if snap.get("participants").is_some() {
+        let event_id = snap["eventId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("participants snapshot missing eventId"))?;
+        ensure_event_version(conn, project_id, event_id, expected_current_version)?;
+        conn.execute(
+            "UPDATE events SET version = ?1 WHERE id = ?2 AND project_id = ?3",
+            rusqlite::params![target_version, event_id, project_id],
+        )?;
         restore_event_participants_snapshot(conn, snap)
     } else {
         anyhow::bail!("restore_event_update_snapshot: unrecognized event snapshot shape")
     }
 }
 
+fn replay_event_update_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    snap: &Value,
+    direction: &str,
+) -> anyhow::Result<()> {
+    if !event_update_snapshot_uses_occ(snap) {
+        return restore_event_update_snapshot(
+            conn,
+            project_id,
+            snap,
+            row.base_version,
+            row.result_version,
+        );
+    }
+
+    // Legacy Event journals did not embed a version. Their migrated row starts
+    // with placeholder tokens; the first replay normalizes the whole legacy
+    // chain so subsequent stacked undo/redo can share the fresh state token.
+    let legacy_snapshot = event_snapshot_is_legacy_occ(snap);
+    let (expected_version, target_state_version) = if legacy_snapshot {
+        (0, 0)
+    } else {
+        match direction {
+            "undo" => (row.result_version, row.base_version),
+            "redo" => (row.base_version, row.result_version),
+            other => anyhow::bail!("invalid event replay direction: {other}"),
+        }
+    };
+    let replay_version = next_event_replay_version(expected_version, direction)?;
+
+    restore_event_update_snapshot(conn, project_id, snap, expected_version, replay_version)?;
+    if legacy_snapshot || target_state_version == 0 {
+        normalize_legacy_event_journal_chain(
+            conn,
+            project_id,
+            &row.entity_id,
+            target_state_version,
+        )?;
+    }
+    advance_event_journal_state_token(
+        conn,
+        project_id,
+        &row.entity_id,
+        target_state_version,
+        replay_version,
+    )
+}
+
+fn ensure_event_version(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+    expected_version: i64,
+) -> anyhow::Result<()> {
+    let found: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events
+         WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+        rusqlite::params![event_id, project_id, expected_version],
+        |row| row.get(0),
+    )?;
+    if found == 0 {
+        anyhow::bail!(
+            "event '{}' version {} conflict during journal restore",
+            event_id,
+            expected_version
+        );
+    }
+    Ok(())
+}
+
 fn delete_event_cascade(
     conn: &rusqlite::Connection,
     project_id: &str,
     event_id: &str,
+    expected_version: Option<i64>,
 ) -> anyhow::Result<()> {
-    let deleted = conn.execute(
-        "DELETE FROM events WHERE id = ?1 AND project_id = ?2",
-        rusqlite::params![event_id, project_id],
-    )?;
+    let deleted = match expected_version {
+        Some(version) => conn.execute(
+            "DELETE FROM events WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+            rusqlite::params![event_id, project_id, version],
+        )?,
+        None => conn.execute(
+            "DELETE FROM events WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![event_id, project_id],
+        )?,
+    };
     if deleted == 0 {
+        if let Some(version) = expected_version {
+            anyhow::bail!(
+                "event '{}' version {} conflict during journal restore",
+                event_id,
+                version
+            );
+        }
         anyhow::bail!("event '{event_id}' not found in project '{project_id}' during restore");
     }
     Ok(())
@@ -1791,14 +2560,57 @@ fn revert_event_undo_in_tx(
     row: &grimodex_core::undo_journal::UndoJournalRow,
 ) -> anyhow::Result<()> {
     match row.op_kind.as_str() {
-        "create" => delete_event_cascade(conn, project_id, &row.entity_id),
+        "create" => {
+            let after: Value = serde_json::from_str(
+                row.after_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("revert event create: missing after_json"))?,
+            )?;
+            let legacy_snapshot = event_snapshot_is_legacy_occ(&after);
+            let expected_version = if legacy_snapshot {
+                normalize_legacy_event_journal_chain(conn, project_id, &row.entity_id, 0)?;
+                0
+            } else {
+                row.result_version
+            };
+            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))
+        }
         "delete" => {
             let before = row
                 .before_json
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("revert event delete: missing before_json"))?;
             let snap: Value = serde_json::from_str(before)?;
-            apply_event_composite_snapshot(conn, project_id, &snap)
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1",
+                rusqlite::params![row.entity_id],
+                |r| r.get(0),
+            )?;
+            if exists != 0 {
+                anyhow::bail!(
+                    "event '{}' version conflict during journal restore",
+                    row.entity_id
+                );
+            }
+            let legacy_snapshot = event_snapshot_is_legacy_occ(&snap);
+            let previous_state_version = if legacy_snapshot { 0 } else { row.base_version };
+            let replay_version = next_event_replay_version(previous_state_version, "undo delete")?;
+            apply_event_snapshot(conn, project_id, &snap, Some(replay_version), true)?;
+            if legacy_snapshot || previous_state_version == 0 {
+                normalize_legacy_event_journal_chain(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    previous_state_version,
+                )?;
+            }
+            advance_event_journal_state_token(
+                conn,
+                project_id,
+                &row.entity_id,
+                previous_state_version,
+                replay_version,
+            )
         }
         "update" => {
             let before = row
@@ -1806,7 +2618,7 @@ fn revert_event_undo_in_tx(
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("revert event update: missing before_json"))?;
             let snap: Value = serde_json::from_str(before)?;
-            restore_event_update_snapshot(conn, project_id, &snap)
+            replay_event_update_snapshot(conn, project_id, row, &snap, "undo")
         }
         other => anyhow::bail!("revert event: unsupported op_kind '{other}'"),
     }
@@ -1825,16 +2637,63 @@ fn apply_event_redo_in_tx(
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("apply event create: missing after_json"))?;
             let snap: Value = serde_json::from_str(after)?;
-            apply_event_composite_snapshot(conn, project_id, &snap)
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1",
+                rusqlite::params![row.entity_id],
+                |r| r.get(0),
+            )?;
+            if exists != 0 {
+                anyhow::bail!(
+                    "event '{}' version conflict during journal restore",
+                    row.entity_id
+                );
+            }
+            let legacy_snapshot = event_snapshot_is_legacy_occ(&snap);
+            let previous_state_version = if legacy_snapshot {
+                0
+            } else {
+                row.result_version
+            };
+            let replay_version = next_event_replay_version(previous_state_version, "redo create")?;
+            apply_event_snapshot(conn, project_id, &snap, Some(replay_version), true)?;
+            if legacy_snapshot || previous_state_version == 0 {
+                normalize_legacy_event_journal_chain(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    previous_state_version,
+                )?;
+            }
+            advance_event_journal_state_token(
+                conn,
+                project_id,
+                &row.entity_id,
+                previous_state_version,
+                replay_version,
+            )
         }
-        "delete" => delete_event_cascade(conn, project_id, &row.entity_id),
+        "delete" => {
+            let before: Value = serde_json::from_str(
+                row.before_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("apply event delete: missing before_json"))?,
+            )?;
+            let legacy_snapshot = event_snapshot_is_legacy_occ(&before);
+            let expected_version = if legacy_snapshot {
+                normalize_legacy_event_journal_chain(conn, project_id, &row.entity_id, 0)?;
+                0
+            } else {
+                row.base_version
+            };
+            delete_event_cascade(conn, project_id, &row.entity_id, Some(expected_version))
+        }
         "update" => {
             let after = row
                 .after_json
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("apply event update: missing after_json"))?;
             let snap: Value = serde_json::from_str(after)?;
-            restore_event_update_snapshot(conn, project_id, &snap)
+            replay_event_update_snapshot(conn, project_id, row, &snap, "redo")
         }
         other => anyhow::bail!("apply event: unsupported op_kind '{other}'"),
     }
@@ -1884,8 +2743,19 @@ pub fn agent_event_create_impl(
     db: &Database,
     payload: AgentEventCreatePayload,
 ) -> anyhow::Result<Value> {
-    let event_id = uuid::Uuid::new_v4().to_string();
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    let request_hash = event_create_request_hash(&payload)?;
+    let legacy_entity_request = payload.request_id.is_none() && payload.event_id.is_some();
+    let request_id = payload
+        .request_id
+        .clone()
+        .or_else(|| payload.event_id.clone());
+    let event_id = payload
+        .event_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let undo_id = request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -1905,18 +2775,55 @@ pub fn agent_event_create_impl(
     let secret = payload.secret.unwrap_or(false);
     // 空文字の reveal は NULL（自動導出/恒久秘匿）に正規化。
     let reveal_scene_id = payload.reveal_scene_id.filter(|s| !s.is_empty());
+    let mut change_payload = json!({ "title": title, "kind": kind });
+    if request_id.is_some() {
+        change_payload["requestHash"] = Value::String(request_hash.clone());
+    }
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if let Some(request_id) = request_id.as_deref() {
+                if let Some(existing) = existing_request_result(
+                    conn,
+                    request_id,
+                    &request_hash,
+                    "AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT",
+                )? {
+                    return Ok(existing);
+                }
+            }
+            if legacy_entity_request {
+                if let Some(existing) = existing_create_result(
+                    conn,
+                    "events",
+                    &payload.project_id,
+                    "event",
+                    &event_id,
+                    &request_hash,
+                    "AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT",
+                )? {
+                    return Ok(existing);
+                }
+            }
+            if let Some(codex_id) = payload.primary_codex_id.as_deref() {
+                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
+            }
+            if let Some(codex_id) = payload.location_codex_id.as_deref() {
+                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
+            }
+            if let Some(scene_id) = reveal_scene_id.as_deref() {
+                ensure_scene_in_project(conn, &payload.project_id, scene_id)?;
+            }
+
             conn.execute(
                 "INSERT INTO events
                  (id, project_id, title, note, detail, ordinal, primary_codex_id,
                   location_codex_id, start_time, end_time, start_minute, end_minute,
                   start_granularity, end_granularity, precision, kind,
-                  secret, reveal_scene_id, lane_group, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20)",
+                  secret, reveal_scene_id, lane_group, created_at, updated_at, version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20, 1)",
                 rusqlite::params![
                     event_id,
                     payload.project_id,
@@ -1987,7 +2894,7 @@ pub fn agent_event_create_impl(
                     op_type: "event.create".to_string(),
                     entity_type: Some("event".to_string()),
                     entity_id: Some(event_id.clone()),
-                    payload: json!({ "title": title, "kind": kind }).to_string(),
+                    payload: change_payload.to_string(),
                     timestamp,
                 }],
             )?;
@@ -2023,27 +2930,62 @@ pub fn agent_event_update_impl(
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
+        use rusqlite::OptionalExtension;
+
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+            let current_version: Option<i64> = conn
+                .query_row(
+                "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
                 rusqlite::params![payload.event_id, payload.project_id],
                 |r| r.get(0),
-            )?;
-            if exists == 0 {
+            )
+                .optional()?;
+            let Some(current_version) = current_version else {
                 anyhow::bail!(
                     "event '{}' not found in project '{}'",
                     payload.event_id,
                     payload.project_id
                 );
+            };
+            let base_version = payload.base_version;
+            if current_version != base_version {
+                anyhow::bail!(
+                    "event '{}' version conflict: expected {}, found {}",
+                    payload.event_id,
+                    base_version,
+                    current_version
+                );
+            }
+            let result_version = base_version + 1;
+
+            // Scalar FKs are globally keyed, so SQLite can prove existence but
+            // not project ownership. Validate non-empty patch values before any
+            // row, journal, or change-event mutation. Empty strings remain the
+            // existing explicit "clear to NULL" convention.
+            if let Some(codex_id) = payload.primary_codex_id.as_deref() {
+                if !codex_id.is_empty() {
+                    ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
+                }
+            }
+            if let Some(codex_id) = payload.location_codex_id.as_deref() {
+                if !codex_id.is_empty() {
+                    ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
+                }
+            }
+            if let Some(scene_id) = payload.reveal_scene_id.as_deref() {
+                if !scene_id.is_empty() {
+                    ensure_scene_in_project(conn, &payload.project_id, scene_id)?;
+                }
             }
 
             let before = collect_event_snapshot(conn, &payload.event_id)?.to_string();
 
-            let mut sets = vec!["updated_at = ?1".to_string()];
-            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now.clone())];
-            let mut param_idx = 2;
+            let mut sets = vec!["updated_at = ?1".to_string(), "version = ?2".to_string()];
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+                vec![Box::new(now.clone()), Box::new(result_version)];
+            let mut param_idx = 3;
             let mut fields: Vec<&str> = Vec::new();
 
             if let Some(ref v) = payload.title {
@@ -2185,12 +3127,14 @@ pub fn agent_event_update_impl(
             }
 
             let sql = format!(
-                "UPDATE events SET {} WHERE id = ?{param_idx} AND project_id = ?{}",
+                "UPDATE events SET {} WHERE id = ?{param_idx} AND project_id = ?{} AND version = ?{}",
                 sets.join(", "),
-                param_idx + 1
+                param_idx + 1,
+                param_idx + 2
             );
             params.push(Box::new(payload.event_id.clone()));
             params.push(Box::new(payload.project_id.clone()));
+            params.push(Box::new(base_version));
 
             let updated = conn.execute(
                 &sql,
@@ -2198,9 +3142,9 @@ pub fn agent_event_update_impl(
             )?;
             if updated == 0 {
                 anyhow::bail!(
-                    "event '{}' not found in project '{}'",
+                    "event '{}' version conflict: expected {}",
                     payload.event_id,
-                    payload.project_id
+                    base_version
                 );
             }
 
@@ -2217,8 +3161,8 @@ pub fn agent_event_update_impl(
                     op_kind: "update",
                     before_json: Some(&before),
                     after_json: Some(&after),
-                    base_version: 1,
-                    result_version: 1,
+                    base_version,
+                    result_version,
                     change_event_uid: Some(&event_uid),
                 },
             )?;
@@ -2241,7 +3185,7 @@ pub fn agent_event_update_impl(
 
             Ok(AgentWriteResult {
                 entity_id: payload.event_id.clone(),
-                version: 1,
+                version: result_version,
                 change_event_uid: event_uid,
                 undo_journal_id: undo_id,
             })
@@ -2260,7 +3204,10 @@ pub fn agent_event_update_impl(
     })
 }
 
-pub fn agent_event_delete_impl(db: &Database, payload: AgentEventIdPayload) -> anyhow::Result<Value> {
+pub fn agent_event_delete_impl(
+    db: &Database,
+    payload: AgentEventIdPayload,
+) -> anyhow::Result<Value> {
     let undo_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -2269,16 +3216,26 @@ pub fn agent_event_delete_impl(db: &Database, payload: AgentEventIdPayload) -> a
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
-                rusqlite::params![payload.event_id, payload.project_id],
-                |r| r.get(0),
-            )?;
-            if exists == 0 {
+            let current_version: i64 = conn
+                .query_row(
+                    "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![payload.event_id, payload.project_id],
+                    |r| r.get(0),
+                )
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "event '{}' not found in project '{}'",
+                        payload.event_id,
+                        payload.project_id
+                    )
+                })?;
+            let base_version = payload.base_version;
+            if current_version != base_version {
                 anyhow::bail!(
-                    "event '{}' not found in project '{}'",
+                    "event '{}' version conflict: expected {}, found {}",
                     payload.event_id,
-                    payload.project_id
+                    base_version,
+                    current_version
                 );
             }
 
@@ -2289,17 +3246,18 @@ pub fn agent_event_delete_impl(db: &Database, payload: AgentEventIdPayload) -> a
                 .as_str()
                 .unwrap_or("")
                 .to_string();
+            let related_event_ids = event_snapshot_related_ids(&before_value);
             let before = before_value.to_string();
 
             let deleted = conn.execute(
-                "DELETE FROM events WHERE id = ?1 AND project_id = ?2",
-                rusqlite::params![payload.event_id, payload.project_id],
+                "DELETE FROM events WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+                rusqlite::params![payload.event_id, payload.project_id, base_version],
             )?;
             if deleted == 0 {
                 anyhow::bail!(
-                    "event '{}' not found in project '{}'",
+                    "event '{}' version conflict: expected {}",
                     payload.event_id,
-                    payload.project_id
+                    base_version
                 );
             }
 
@@ -2314,7 +3272,7 @@ pub fn agent_event_delete_impl(db: &Database, payload: AgentEventIdPayload) -> a
                     op_kind: "delete",
                     before_json: Some(&before),
                     after_json: None,
-                    base_version: 1,
+                    base_version,
                     result_version: 0,
                     change_event_uid: Some(&event_uid),
                 },
@@ -2331,7 +3289,11 @@ pub fn agent_event_delete_impl(db: &Database, payload: AgentEventIdPayload) -> a
                     op_type: "event.delete".to_string(),
                     entity_type: Some("event".to_string()),
                     entity_id: Some(payload.event_id.clone()),
-                    payload: json!({ "title": title }).to_string(),
+                    payload: json!({
+                        "title": title,
+                        "relatedEventIds": related_event_ids,
+                    })
+                    .to_string(),
                     timestamp,
                 }],
             )?;
@@ -2363,27 +3325,60 @@ pub fn agent_event_set_participants_impl(
 ) -> anyhow::Result<Value> {
     let undo_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
-                rusqlite::params![payload.event_id, payload.project_id],
-                |r| r.get(0),
-            )?;
-            if exists == 0 {
+            use rusqlite::OptionalExtension;
+
+            let current_version: Option<i64> = conn
+                .query_row(
+                    "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![payload.event_id, payload.project_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(current_version) = current_version else {
                 anyhow::bail!(
                     "event '{}' not found in project '{}'",
                     payload.event_id,
                     payload.project_id
                 );
+            };
+            let base_version = payload.base_version;
+            if current_version != base_version {
+                anyhow::bail!(
+                    "event '{}' version conflict: expected {}, found {}",
+                    payload.event_id,
+                    base_version,
+                    current_version
+                );
             }
+            let result_version = base_version + 1;
 
             let before = collect_participants_json(conn, &payload.event_id)?.to_string();
 
+            let bumped = conn.execute(
+                "UPDATE events SET version = ?1, updated_at = ?2
+                 WHERE id = ?3 AND project_id = ?4 AND version = ?5",
+                rusqlite::params![
+                    result_version,
+                    now,
+                    payload.event_id,
+                    payload.project_id,
+                    base_version
+                ],
+            )?;
+            if bumped == 0 {
+                anyhow::bail!(
+                    "event '{}' version conflict: expected {}",
+                    payload.event_id,
+                    base_version
+                );
+            }
             conn.execute(
                 "DELETE FROM event_participants WHERE event_id = ?1",
                 rusqlite::params![payload.event_id],
@@ -2414,8 +3409,8 @@ pub fn agent_event_set_participants_impl(
                     op_kind: "update",
                     before_json: Some(&before),
                     after_json: Some(&after),
-                    base_version: 1,
-                    result_version: 1,
+                    base_version,
+                    result_version,
                     change_event_uid: Some(&event_uid),
                 },
             )?;
@@ -2442,7 +3437,7 @@ pub fn agent_event_set_participants_impl(
 
             Ok(AgentWriteResult {
                 entity_id: payload.event_id.clone(),
-                version: 1,
+                version: result_version,
                 change_event_uid: event_uid,
                 undo_journal_id: undo_id,
             })
@@ -2466,7 +3461,11 @@ pub fn agent_scene_event_mutate_impl(
     payload: AgentSceneEventPayload,
     link: bool,
 ) -> anyhow::Result<Value> {
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    let request_hash = scene_event_request_hash(&payload, link)?;
+    let undo_id = payload
+        .request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -2474,6 +3473,19 @@ pub fn agent_scene_event_mutate_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let existing_request = payload
+                .request_id
+                .as_deref()
+                .map(|request_id| {
+                    existing_request_result(
+                        conn,
+                        request_id,
+                        &request_hash,
+                        "AGENT_SCENE_EVENT_IDEMPOTENCY_CONFLICT",
+                    )
+                })
+                .transpose()?
+                .flatten();
             let scene_ok: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
                 rusqlite::params![payload.scene_id, payload.project_id],
@@ -2486,18 +3498,19 @@ pub fn agent_scene_event_mutate_impl(
                     payload.project_id
                 );
             }
-            let event_ok: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
-                rusqlite::params![payload.event_id, payload.project_id],
-                |r| r.get(0),
-            )?;
-            if event_ok == 0 {
-                anyhow::bail!(
-                    "event '{}' not found in project '{}'",
-                    payload.event_id,
-                    payload.project_id
-                );
-            }
+            let event_version: i64 = conn
+                .query_row(
+                    "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![payload.event_id, payload.project_id],
+                    |r| r.get(0),
+                )
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "event '{}' not found in project '{}'",
+                        payload.event_id,
+                        payload.project_id
+                    )
+                })?;
 
             let existed: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
@@ -2510,6 +3523,14 @@ pub fn agent_scene_event_mutate_impl(
                 "linked": existed > 0,
             })
             .to_string();
+            if let Some(existing) = existing_request {
+                if (existed > 0) == link {
+                    return Ok(existing);
+                }
+                anyhow::bail!(
+                    "AGENT_SCENE_EVENT_IDEMPOTENCY_CONFLICT: association state changed after original request"
+                );
+            }
 
             if link {
                 conn.execute(
@@ -2543,8 +3564,8 @@ pub fn agent_scene_event_mutate_impl(
                     op_kind: "update",
                     before_json: Some(&before),
                     after_json: Some(&after),
-                    base_version: 1,
-                    result_version: 1,
+                    base_version: event_version,
+                    result_version: event_version,
                     change_event_uid: Some(&event_uid),
                 },
             )?;
@@ -2563,6 +3584,7 @@ pub fn agent_scene_event_mutate_impl(
                     payload: json!({
                         "sceneId": payload.scene_id,
                         "eventId": payload.event_id,
+                        "requestHash": request_hash,
                     })
                     .to_string(),
                     timestamp,
@@ -2571,7 +3593,7 @@ pub fn agent_scene_event_mutate_impl(
 
             Ok(AgentWriteResult {
                 entity_id: payload.event_id.clone(),
-                version: 1,
+                version: event_version,
                 change_event_uid: event_uid,
                 undo_journal_id: undo_id,
             })
@@ -2595,7 +3617,11 @@ pub fn agent_event_relation_mutate_impl(
     payload: AgentEventRelationPayload,
     add: bool,
 ) -> anyhow::Result<Value> {
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    let request_hash = event_relation_request_hash(&payload, add)?;
+    let undo_id = payload
+        .request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -2603,21 +3629,35 @@ pub fn agent_event_relation_mutate_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let existing_request = payload
+                .request_id
+                .as_deref()
+                .map(|request_id| {
+                    existing_request_result(
+                        conn,
+                        request_id,
+                        &request_hash,
+                        "AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT",
+                    )
+                })
+                .transpose()?
+                .flatten();
             if payload.cause_event_id == payload.effect_event_id {
                 anyhow::bail!("self-loop event relation forbidden");
             }
-            let cause_ok: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
-                rusqlite::params![payload.cause_event_id, payload.project_id],
-                |r| r.get(0),
-            )?;
-            if cause_ok == 0 {
-                anyhow::bail!(
-                    "cause event '{}' not found in project '{}'",
-                    payload.cause_event_id,
-                    payload.project_id
-                );
-            }
+            let cause_version: i64 = conn
+                .query_row(
+                    "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![payload.cause_event_id, payload.project_id],
+                    |r| r.get(0),
+                )
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "cause event '{}' not found in project '{}'",
+                        payload.cause_event_id,
+                        payload.project_id
+                    )
+                })?;
             let effect_ok: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
                 rusqlite::params![payload.effect_event_id, payload.project_id],
@@ -2644,6 +3684,14 @@ pub fn agent_event_relation_mutate_impl(
                 "linked": existed > 0,
             })
             .to_string();
+            if let Some(existing) = existing_request {
+                if (existed > 0) == add {
+                    return Ok(existing);
+                }
+                anyhow::bail!(
+                    "AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT: association state changed after original request"
+                );
+            }
 
             if add {
                 conn.execute(
@@ -2688,8 +3736,8 @@ pub fn agent_event_relation_mutate_impl(
                     op_kind: "update",
                     before_json: Some(&before),
                     after_json: Some(&after),
-                    base_version: 1,
-                    result_version: 1,
+                    base_version: cause_version,
+                    result_version: cause_version,
                     change_event_uid: Some(&event_uid),
                 },
             )?;
@@ -2708,6 +3756,7 @@ pub fn agent_event_relation_mutate_impl(
                     payload: json!({
                         "causeEventId": payload.cause_event_id,
                         "effectEventId": payload.effect_event_id,
+                        "requestHash": request_hash,
                     })
                     .to_string(),
                     timestamp,
@@ -2716,7 +3765,7 @@ pub fn agent_event_relation_mutate_impl(
 
             Ok(AgentWriteResult {
                 entity_id: payload.cause_event_id.clone(),
-                version: 1,
+                version: cause_version,
                 change_event_uid: event_uid,
                 undo_journal_id: undo_id,
             })
@@ -2784,6 +3833,17 @@ mod tests {
         id
     }
 
+    fn table_count(db: &Database, table: &str) -> i64 {
+        db.with_conn(|conn| {
+            Ok(
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .expect("count rows")
+    }
+
     fn json_keys(v: &serde_json::Value) -> Vec<String> {
         let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
         keys.sort();
@@ -2810,6 +3870,8 @@ mod tests {
         agent_codex_create_impl(
             &db,
             AgentCodexCreatePayload {
+                request_id: None,
+                entry_id: None,
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
                 type_slug: "character".to_string(),
@@ -2890,6 +3952,129 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn codex_create_retries_return_original_result_and_conflict_on_payload_change() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let payload = AgentCodexCreatePayload {
+            request_id: Some("agent-tool:codex-request-1".to_string()),
+            entry_id: None,
+            project_id,
+            session_id: "sess".to_string(),
+            type_slug: "character".to_string(),
+            name: "Alice".to_string(),
+            summary: None,
+            content: Some(
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "text",
+                        "text": "AI prose",
+                        "marks": [{
+                            "type": "authorship",
+                            "attrs": { "source": "ai", "timestamp": "first-attempt" }
+                        }]
+                    }]
+                })
+                .to_string(),
+            ),
+            aliases: None,
+            parent_id: None,
+            source_chat_message_id: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: vec![],
+        };
+        let first = agent_codex_create_impl(&db, payload.clone()).expect("first create");
+        assert_ne!(first["entityId"], "agent-tool:codex-request-1");
+        assert_eq!(first["undoJournalId"], "agent-tool:codex-request-1");
+        let mut retry_payload = payload.clone();
+        retry_payload.session_id = "sess-after-restart".to_string();
+        retry_payload.summary = Some(String::new());
+        retry_payload.content = Some(
+            json!({
+                "content": [{
+                    "marks": [{
+                        "attrs": { "timestamp": "retry-attempt", "source": "ai" },
+                        "type": "authorship"
+                    }],
+                    "text": "AI prose",
+                    "type": "text"
+                }],
+                "type": "doc"
+            })
+            .to_string(),
+        );
+        let retry = agent_codex_create_impl(&db, retry_payload)
+            .expect("retry ignores session, JSON key order, and authorship timestamp");
+        assert_eq!(retry, first);
+        assert_eq!(table_count(&db, "codex_entries"), 1);
+        assert_eq!(table_count(&db, "undo_journal"), 1);
+        assert_eq!(table_count(&db, "change_events"), 1);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM codex_entries WHERE id = ?1",
+                rusqlite::params![first["entityId"].as_str().expect("entity id")],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let deleted_retry =
+            agent_codex_create_impl(&db, payload.clone()).expect("deleted request replay");
+        assert_eq!(deleted_retry, first);
+        assert_eq!(table_count(&db, "codex_entries"), 0);
+
+        let mut conflicting = payload;
+        conflicting.name = "Mallory".to_string();
+        let error = agent_codex_create_impl(&db, conflicting).expect_err("payload conflict");
+        assert!(error
+            .to_string()
+            .contains("AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT"));
+        assert_eq!(table_count(&db, "codex_entries"), 0);
+    }
+
+    #[test]
+    fn snippet_create_retries_return_original_result_and_conflict_on_payload_change() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let payload = AgentSnippetCreatePayload {
+            request_id: Some("agent-tool:snippet-request-1".to_string()),
+            snippet_id: None,
+            project_id,
+            session_id: "sess".to_string(),
+            title: "Excerpt".to_string(),
+            content: None,
+            scene_id: None,
+            source_chat_message_id: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: vec![],
+        };
+        let first = agent_snippet_create_impl(&db, payload.clone()).expect("first create");
+        assert_ne!(first["entityId"], "agent-tool:snippet-request-1");
+        assert_eq!(first["undoJournalId"], "agent-tool:snippet-request-1");
+        let mut retry_payload = payload.clone();
+        retry_payload.session_id = "sess-after-restart".to_string();
+        retry_payload.content = Some("{ }".to_string());
+        let retry = agent_snippet_create_impl(&db, retry_payload)
+            .expect("retry ignores session and JSON whitespace");
+        assert_eq!(retry, first);
+        assert_eq!(table_count(&db, "snippets"), 1);
+        assert_eq!(table_count(&db, "undo_journal"), 1);
+        assert_eq!(table_count(&db, "change_events"), 1);
+
+        let mut conflicting = payload;
+        conflicting.title = "Changed".to_string();
+        let error = agent_snippet_create_impl(&db, conflicting).expect_err("payload conflict");
+        assert!(error
+            .to_string()
+            .contains("AGENT_SNIPPET_CREATE_IDEMPOTENCY_CONFLICT"));
+        assert_eq!(table_count(&db, "snippets"), 1);
     }
 
     #[test]
@@ -3004,6 +4189,47 @@ mod tests {
     }
 
     #[test]
+    fn undo_journal_change_event_preserves_event_association_operations() {
+        let cases = [
+            (
+                json!({ "sceneId": "s1", "eventId": "e1", "linked": true }),
+                "event.stamp",
+            ),
+            (
+                json!({ "sceneId": "s1", "eventId": "e1", "linked": false }),
+                "event.unstamp",
+            ),
+            (
+                json!({
+                    "causeEventId": "e1",
+                    "effectEventId": "e2",
+                    "linked": true
+                }),
+                "event.relation_add",
+            ),
+            (
+                json!({
+                    "causeEventId": "e1",
+                    "effectEventId": "e2",
+                    "linked": false
+                }),
+                "event.relation_remove",
+            ),
+            (
+                json!({ "eventId": "e1", "participants": [], "version": 2 }),
+                "event.participants",
+            ),
+        ];
+
+        for (snapshot, expected) in cases {
+            let mut row = journal_row("event", "update");
+            row.before_json = Some(snapshot.to_string());
+            let (_, _, op_type, _) = undo_journal_change_event(&row, "undo").unwrap();
+            assert_eq!(op_type, expected);
+        }
+    }
+
+    #[test]
     fn foreshadow_create_in_app_is_tracked() {
         let db = test_db();
         let project_id = insert_project(&db);
@@ -3011,6 +4237,8 @@ mod tests {
         let res = agent_foreshadow_create_impl(
             &db,
             AgentForeshadowCreatePayload {
+                request_id: None,
+                foreshadow_id: None,
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
                 title: "刻印の謎".to_string(),
@@ -3048,6 +4276,55 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn agent_foreshadow_create_retries_return_original_result_and_conflict() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let payload = AgentForeshadowCreatePayload {
+            request_id: Some("agent-tool:foreshadow-request-1".to_string()),
+            foreshadow_id: None,
+            project_id,
+            session_id: "sess".to_string(),
+            title: "刻印の謎".to_string(),
+            intent: Some("後段で回収".to_string()),
+            notes: None,
+            load_bearing: Some("critical".to_string()),
+            secret: true,
+        };
+        let first = agent_foreshadow_create_impl(&db, payload.clone()).expect("first create");
+        assert_ne!(first["entityId"], "agent-tool:foreshadow-request-1");
+        assert_eq!(first["undoJournalId"], "agent-tool:foreshadow-request-1");
+        let mut retry_payload = payload.clone();
+        retry_payload.session_id = "sess-after-restart".to_string();
+        let retry = agent_foreshadow_create_impl(&db, retry_payload)
+            .expect("retry ignores recorder session");
+        assert_eq!(retry, first);
+        assert_eq!(table_count(&db, "foreshadows"), 1);
+        assert_eq!(table_count(&db, "undo_journal"), 1);
+        assert_eq!(table_count(&db, "change_events"), 1);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM foreshadows WHERE id = ?1",
+                rusqlite::params![first["entityId"].as_str().expect("entity id")],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let deleted_retry =
+            agent_foreshadow_create_impl(&db, payload.clone()).expect("deleted request replay");
+        assert_eq!(deleted_retry, first);
+        assert_eq!(table_count(&db, "foreshadows"), 0);
+
+        let mut conflicting = payload;
+        conflicting.title = "別の伏線".to_string();
+        let error = agent_foreshadow_create_impl(&db, conflicting).expect_err("payload conflict");
+        assert!(error
+            .to_string()
+            .contains("AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT"));
+        assert_eq!(table_count(&db, "foreshadows"), 0);
     }
 
     #[test]
@@ -3169,6 +4446,7 @@ mod tests {
 
     fn relation_payload(project_id: &str, cause: &str, effect: &str) -> AgentEventRelationPayload {
         AgentEventRelationPayload {
+            request_id: None,
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
             surface: None,
@@ -3179,6 +4457,7 @@ mod tests {
 
     fn scene_payload(project_id: &str, scene_id: &str, event_id: &str) -> AgentSceneEventPayload {
         AgentSceneEventPayload {
+            request_id: None,
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
             surface: None,
@@ -3193,6 +4472,7 @@ mod tests {
             session_id: "sess".to_string(),
             surface: None,
             event_id: event_id.to_string(),
+            base_version: 1,
             title: None,
             note: None,
             detail: None,
@@ -3213,6 +4493,35 @@ mod tests {
         }
     }
 
+    fn empty_create(project_id: &str, title: &str) -> AgentEventCreatePayload {
+        AgentEventCreatePayload {
+            request_id: None,
+            event_id: None,
+            project_id: project_id.to_string(),
+            session_id: "sess".to_string(),
+            surface: None,
+            title: Some(title.to_string()),
+            note: None,
+            detail: None,
+            ordinal: None,
+            primary_codex_id: None,
+            lane_group: None,
+            location_codex_id: None,
+            start_time: None,
+            end_time: None,
+            start_minute: None,
+            end_minute: None,
+            start_granularity: None,
+            end_granularity: None,
+            precision: None,
+            kind: None,
+            secret: None,
+            reveal_scene_id: None,
+            participant_codex_ids: None,
+            scene_ids: None,
+        }
+    }
+
     /// Create an event and return (event_id, undo_journal_id).
     fn create_event(
         db: &Database,
@@ -3224,6 +4533,8 @@ mod tests {
         let res = agent_event_create_impl(
             db,
             AgentEventCreatePayload {
+                request_id: None,
+                event_id: None,
                 project_id: project_id.to_string(),
                 session_id: "sess".to_string(),
                 surface: None,
@@ -3258,6 +4569,165 @@ mod tests {
         )
     }
 
+    #[test]
+    fn event_create_retries_return_original_result_and_conflict_on_payload_change() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let participant_a = insert_codex(&db, &project_id, "Alice");
+        let participant_b = insert_codex(&db, &project_id, "Bob");
+        let scene_a = insert_scene(&db, &project_id);
+        let scene_b = insert_scene(&db, &project_id);
+        let mut payload = empty_create(&project_id, "Arrival");
+        payload.request_id = Some("agent-tool:event-request-1".to_string());
+        payload.participant_codex_ids = Some(vec![
+            participant_b.clone(),
+            participant_a.clone(),
+            participant_a.clone(),
+        ]);
+        payload.scene_ids = Some(vec![scene_b.clone(), scene_a.clone(), scene_a.clone()]);
+
+        let first = agent_event_create_impl(&db, payload.clone()).expect("first create");
+        assert_ne!(first["entityId"], "agent-tool:event-request-1");
+        assert_eq!(first["undoJournalId"], "agent-tool:event-request-1");
+        let mut retry_payload = payload.clone();
+        retry_payload.session_id = "sess-after-restart".to_string();
+        retry_payload.surface = Some("manual".to_string());
+        retry_payload.ordinal = Some("a0".to_string());
+        retry_payload.precision = Some("exact".to_string());
+        retry_payload.kind = Some("generic".to_string());
+        retry_payload.start_granularity = Some("none".to_string());
+        retry_payload.end_granularity = Some("none".to_string());
+        retry_payload.secret = Some(false);
+        retry_payload.reveal_scene_id = Some(String::new());
+        retry_payload.participant_codex_ids = Some(vec![participant_a, participant_b]);
+        retry_payload.scene_ids = Some(vec![scene_a, scene_b]);
+        let retry = agent_event_create_impl(&db, retry_payload)
+            .expect("retry canonicalizes defaults, provenance, and set-like inputs");
+        assert_eq!(retry, first);
+        assert_eq!(table_count(&db, "events"), 1);
+        assert_eq!(table_count(&db, "undo_journal"), 1);
+        assert_eq!(table_count(&db, "change_events"), 1);
+
+        let mut conflicting = payload;
+        conflicting.title = Some("Departure".to_string());
+        let error = agent_event_create_impl(&db, conflicting).expect_err("payload conflict");
+        assert!(error
+            .to_string()
+            .contains("AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT"));
+        assert_eq!(table_count(&db, "events"), 1);
+    }
+
+    #[test]
+    fn association_request_ids_deduplicate_journal_and_event_side_effects() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_a = insert_scene(&db, &project_id);
+        let scene_b = insert_scene(&db, &project_id);
+        let (event_a, _) = create_event(&db, &project_id, "A", vec![], vec![]);
+        let (event_b, _) = create_event(&db, &project_id, "B", vec![], vec![]);
+        let (event_c, _) = create_event(&db, &project_id, "C", vec![], vec![]);
+
+        let mut link = scene_payload(&project_id, &scene_a, &event_a);
+        link.request_id = Some("scene-link-request-1".to_string());
+        let journal_before = table_count(&db, "undo_journal");
+        let events_before = table_count(&db, "change_events");
+        let first_link =
+            agent_scene_event_mutate_impl(&db, link.clone(), true).expect("first link");
+        let mut retried_link = link.clone();
+        retried_link.session_id = "sess-after-restart".to_string();
+        retried_link.surface = Some("manual".to_string());
+        let retry_link =
+            agent_scene_event_mutate_impl(&db, retried_link, true).expect("link retry");
+        assert_eq!(retry_link, first_link);
+        assert_eq!(table_count(&db, "undo_journal"), journal_before + 1);
+        assert_eq!(table_count(&db, "change_events"), events_before + 1);
+
+        let mut conflicting_link = link;
+        conflicting_link.scene_id = scene_b;
+        let error = agent_scene_event_mutate_impl(&db, conflicting_link, true)
+            .expect_err("link request conflict");
+        assert!(error
+            .to_string()
+            .contains("AGENT_SCENE_EVENT_IDEMPOTENCY_CONFLICT"));
+
+        let mut relation = relation_payload(&project_id, &event_a, &event_b);
+        relation.request_id = Some("event-relation-request-1".to_string());
+        let journal_before = table_count(&db, "undo_journal");
+        let events_before = table_count(&db, "change_events");
+        let first_relation =
+            agent_event_relation_mutate_impl(&db, relation.clone(), true).expect("first relation");
+        let mut retried_relation = relation.clone();
+        retried_relation.session_id = "sess-after-restart".to_string();
+        retried_relation.surface = Some("manual".to_string());
+        let retry_relation =
+            agent_event_relation_mutate_impl(&db, retried_relation, true).expect("relation retry");
+        assert_eq!(retry_relation, first_relation);
+        assert_eq!(table_count(&db, "undo_journal"), journal_before + 1);
+        assert_eq!(table_count(&db, "change_events"), events_before + 1);
+
+        let mut conflicting_relation = relation;
+        conflicting_relation.effect_event_id = event_c;
+        let error = agent_event_relation_mutate_impl(&db, conflicting_relation, true)
+            .expect_err("relation request conflict");
+        assert!(error
+            .to_string()
+            .contains("AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT"));
+    }
+
+    fn legacy_event_snapshot(db: &Database, event_id: &str) -> Value {
+        db.with_conn(|conn| {
+            let mut snapshot = collect_event_snapshot(conn, event_id)?;
+            snapshot["eventData"]
+                .as_object_mut()
+                .expect("eventData object")
+                .remove("version");
+            Ok(snapshot)
+        })
+        .expect("legacy snapshot")
+    }
+
+    fn legacy_participants_snapshot(db: &Database, event_id: &str) -> Value {
+        db.with_conn(|conn| {
+            let mut snapshot = collect_participants_json(conn, event_id)?;
+            snapshot
+                .as_object_mut()
+                .expect("participants snapshot object")
+                .remove("version");
+            Ok(snapshot)
+        })
+        .expect("legacy participants snapshot")
+    }
+
+    fn insert_legacy_event_journal(
+        db: &Database,
+        project_id: &str,
+        event_id: &str,
+        op_kind: &str,
+        before: Option<&Value>,
+        after: Option<&Value>,
+    ) -> String {
+        let journal_id = uuid::Uuid::new_v4().to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO undo_journal
+                 (id, project_id, surface, entity_kind, entity_id, op_kind,
+                  before_json, after_json, base_version, result_version)
+                 VALUES (?1, ?2, 'legacy', 'event', ?3, ?4, ?5, ?6, 1, 1)",
+                rusqlite::params![
+                    journal_id,
+                    project_id,
+                    event_id,
+                    op_kind,
+                    before.map(Value::to_string),
+                    after.map(Value::to_string),
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("insert legacy journal");
+        journal_id
+    }
+
     fn journal_surface(db: &Database, journal_id: &str) -> String {
         db.with_conn(|conn| {
             let s: String = conn.query_row(
@@ -3284,6 +4754,8 @@ mod tests {
         let res = agent_event_create_impl(
             &db,
             AgentEventCreatePayload {
+                request_id: None,
+                event_id: None,
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
                 surface: Some("manual".to_string()),
@@ -3429,6 +4901,21 @@ mod tests {
         .expect("event_primary_codex")
     }
 
+    fn event_scalar_references(
+        db: &Database,
+        event_id: &str,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT primary_codex_id, location_codex_id, reveal_scene_id
+                 FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("event_scalar_references")
+    }
+
     fn event_detail(db: &Database, event_id: &str) -> Option<String> {
         db.with_conn(|conn| {
             Ok(conn.query_row(
@@ -3438,6 +4925,146 @@ mod tests {
             )?)
         })
         .expect("event_detail")
+    }
+
+    fn event_version(db: &Database, event_id: &str) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT version FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("event_version")
+    }
+
+    fn latest_change_payload(db: &Database, op_type: &str) -> Value {
+        db.with_conn(|conn| {
+            let raw: String = conn.query_row(
+                "SELECT payload FROM change_events
+                 WHERE op_type = ?1 ORDER BY sequence DESC LIMIT 1",
+                rusqlite::params![op_type],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&raw)?)
+        })
+        .expect("latest_change_payload")
+    }
+
+    #[test]
+    fn event_mutation_payloads_require_base_version() {
+        let shared = json!({
+            "projectId": "p1",
+            "sessionId": "s1",
+            "eventId": "e1",
+        });
+        assert!(
+            serde_json::from_value::<AgentEventUpdatePayload>(shared.clone()).is_err(),
+            "update must reject a missing baseVersion"
+        );
+        assert!(
+            serde_json::from_value::<AgentEventIdPayload>(shared.clone()).is_err(),
+            "delete must reject a missing baseVersion"
+        );
+        let mut participants = shared;
+        participants["codexEntryIds"] = json!([]);
+        assert!(
+            serde_json::from_value::<AgentEventParticipantsPayload>(participants).is_err(),
+            "participant replacement must reject a missing baseVersion"
+        );
+    }
+
+    #[test]
+    fn event_update_rejects_stale_base_without_journal_or_change_event() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+
+        let mut first = empty_update(&project_id, &event_id);
+        first.base_version = 1;
+        first.title = Some("fresh".to_string());
+        let result = agent_event_update_impl(&db, first).expect("fresh update");
+        assert_eq!(result["version"], 2);
+
+        let journals_before = scalar_count(
+            &db,
+            "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+            &event_id,
+            None,
+        );
+        let changes_before = scalar_count(
+            &db,
+            "SELECT COUNT(*) FROM change_events WHERE entity_id = ?1",
+            &event_id,
+            None,
+        );
+        let mut stale = empty_update(&project_id, &event_id);
+        stale.base_version = 1;
+        stale.title = Some("stale".to_string());
+        let error = agent_event_update_impl(&db, stale).expect_err("stale update");
+
+        assert!(error.to_string().contains("version conflict"));
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("fresh"));
+        assert_eq!(event_version(&db, &event_id), 2);
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+                &event_id,
+                None,
+            ),
+            journals_before,
+        );
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM change_events WHERE entity_id = ?1",
+                &event_id,
+                None,
+            ),
+            changes_before,
+        );
+    }
+
+    #[test]
+    fn event_participants_reject_stale_base_and_preserve_aggregate() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex_a = insert_codex(&db, &project_id, "A");
+        let codex_b = insert_codex(&db, &project_id, "B");
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+
+        let first = agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                base_version: 1,
+                codex_entry_ids: vec![codex_a.clone()],
+            },
+        )
+        .expect("fresh participants");
+        assert_eq!(first["version"], 2);
+
+        let stale = agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                base_version: 1,
+                codex_entry_ids: vec![codex_b.clone()],
+            },
+        )
+        .expect_err("stale participants");
+
+        assert!(stale.to_string().contains("version conflict"));
+        assert!(participant_has(&db, &event_id, &codex_a));
+        assert!(!participant_has(&db, &event_id, &codex_b));
+        assert_eq!(event_version(&db, &event_id), 2);
     }
 
     #[test]
@@ -3458,6 +5085,7 @@ mod tests {
         // 別の詳細へ更新し、戻りスナップショットで undo すると detailA に戻る。
         let doc_b = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"詳細B"}]}]}"#;
         let mut p2 = empty_update(&project_id, &event_id);
+        p2.base_version = 2;
         p2.detail = Some(doc_b.to_string());
         let res = agent_event_update_impl(&db, p2).unwrap();
         assert_eq!(event_detail(&db, &event_id).as_deref(), Some(doc_b));
@@ -3480,9 +5108,175 @@ mod tests {
         assert_eq!(event_primary_codex(&db, &event_id), Some(codex));
         // "" で未割当へ戻す（D&D で未割当レーンへ移動）。NULL クリアされる。
         let mut p2 = empty_update(&project_id, &event_id);
+        p2.base_version = 2;
         p2.primary_codex_id = Some(String::new());
         agent_event_update_impl(&db, p2).unwrap();
         assert_eq!(event_primary_codex(&db, &event_id), None);
+    }
+
+    #[test]
+    fn event_create_rejects_cross_project_scalar_references_atomically() {
+        let db = test_db();
+        let local_project = insert_project(&db);
+        let foreign_project = insert_project(&db);
+        let foreign_codex = insert_codex(&db, &foreign_project, "Foreign");
+        let foreign_scene = insert_scene(&db, &foreign_project);
+
+        let mut primary = empty_create(&local_project, "foreign primary");
+        primary.primary_codex_id = Some(foreign_codex.clone());
+        let error =
+            agent_event_create_impl(&db, primary).expect_err("foreign primary must be rejected");
+        assert!(error.to_string().contains("not found in project"));
+
+        let mut location = empty_create(&local_project, "foreign location");
+        location.location_codex_id = Some(foreign_codex);
+        let error =
+            agent_event_create_impl(&db, location).expect_err("foreign location must be rejected");
+        assert!(error.to_string().contains("not found in project"));
+
+        let mut reveal = empty_create(&local_project, "foreign reveal");
+        reveal.reveal_scene_id = Some(foreign_scene);
+        let error =
+            agent_event_create_impl(&db, reveal).expect_err("foreign reveal must be rejected");
+        assert!(error.to_string().contains("not found in project"));
+
+        db.with_conn(|conn| {
+            let events: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE project_id = ?1",
+                rusqlite::params![local_project],
+                |row| row.get(0),
+            )?;
+            let journals: i64 =
+                conn.query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))?;
+            let changes: i64 =
+                conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?;
+            assert_eq!(events, 0, "invalid creates must not leave an event row");
+            assert_eq!(journals, 0, "invalid creates must not leave a journal row");
+            assert_eq!(changes, 0, "invalid creates must not emit a change event");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn event_create_allows_same_project_and_null_scalar_references() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex = insert_codex(&db, &project_id, "Local");
+        let scene = insert_scene(&db, &project_id);
+
+        let mut local = empty_create(&project_id, "local references");
+        local.primary_codex_id = Some(codex.clone());
+        local.location_codex_id = Some(codex.clone());
+        local.reveal_scene_id = Some(scene.clone());
+        let local_result = agent_event_create_impl(&db, local).expect("local references");
+        let local_id = local_result["entityId"].as_str().expect("entityId");
+        assert_eq!(
+            event_scalar_references(&db, local_id),
+            (Some(codex.clone()), Some(codex), Some(scene))
+        );
+
+        let null_result =
+            agent_event_create_impl(&db, empty_create(&project_id, "null references"))
+                .expect("null references");
+        let null_id = null_result["entityId"].as_str().expect("entityId");
+        assert_eq!(event_scalar_references(&db, null_id), (None, None, None));
+    }
+
+    #[test]
+    fn event_update_rejects_cross_project_scalar_references_atomically() {
+        let db = test_db();
+        let local_project = insert_project(&db);
+        let foreign_project = insert_project(&db);
+        let local_codex = insert_codex(&db, &local_project, "Local");
+        let foreign_codex = insert_codex(&db, &foreign_project, "Foreign");
+        let local_scene = insert_scene(&db, &local_project);
+        let foreign_scene = insert_scene(&db, &foreign_project);
+        let (event_id, _) = create_event(&db, &local_project, "unchanged", vec![], vec![]);
+
+        let journals_before = scalar_count(
+            &db,
+            "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+            &event_id,
+            None,
+        );
+        let changes_before = scalar_count(
+            &db,
+            "SELECT COUNT(*) FROM change_events WHERE entity_id = ?1",
+            &event_id,
+            None,
+        );
+
+        let mut primary = empty_update(&local_project, &event_id);
+        primary.base_version = 1;
+        primary.title = Some("invalid primary".to_string());
+        primary.primary_codex_id = Some(foreign_codex.clone());
+        let error =
+            agent_event_update_impl(&db, primary).expect_err("foreign primary must be rejected");
+        assert!(error.to_string().contains("not found in project"));
+
+        let mut location = empty_update(&local_project, &event_id);
+        location.base_version = 1;
+        location.title = Some("invalid location".to_string());
+        location.location_codex_id = Some(foreign_codex);
+        let error =
+            agent_event_update_impl(&db, location).expect_err("foreign location must be rejected");
+        assert!(error.to_string().contains("not found in project"));
+
+        let mut reveal = empty_update(&local_project, &event_id);
+        reveal.base_version = 1;
+        reveal.title = Some("invalid reveal".to_string());
+        reveal.reveal_scene_id = Some(foreign_scene);
+        let error =
+            agent_event_update_impl(&db, reveal).expect_err("foreign reveal must be rejected");
+        assert!(error.to_string().contains("not found in project"));
+
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("unchanged"));
+        assert_eq!(event_version(&db, &event_id), 1);
+        assert_eq!(event_scalar_references(&db, &event_id), (None, None, None));
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+                &event_id,
+                None,
+            ),
+            journals_before
+        );
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM change_events WHERE entity_id = ?1",
+                &event_id,
+                None,
+            ),
+            changes_before
+        );
+
+        let mut local = empty_update(&local_project, &event_id);
+        local.base_version = 1;
+        local.primary_codex_id = Some(local_codex.clone());
+        local.location_codex_id = Some(local_codex.clone());
+        local.reveal_scene_id = Some(local_scene.clone());
+        let local_result = agent_event_update_impl(&db, local).expect("local references");
+        assert_eq!(local_result["version"], 2);
+        assert_eq!(
+            event_scalar_references(&db, &event_id),
+            (
+                Some(local_codex.clone()),
+                Some(local_codex),
+                Some(local_scene)
+            )
+        );
+
+        let mut clear = empty_update(&local_project, &event_id);
+        clear.base_version = 2;
+        clear.primary_codex_id = Some(String::new());
+        clear.location_codex_id = Some(String::new());
+        clear.reveal_scene_id = Some(String::new());
+        let clear_result = agent_event_update_impl(&db, clear).expect("clear references");
+        assert_eq!(clear_result["version"], 3);
+        assert_eq!(event_scalar_references(&db, &event_id), (None, None, None));
     }
 
     #[test]
@@ -3502,6 +5296,7 @@ mod tests {
         // Option<i64> では null と未指定を区別できないが、粒度 none をシグナルに end_time を
         // クリアする（期間→点が永続し、点へ変更後に期間へ戻らない）。
         let mut pt = empty_update(&project_id, &event_id);
+        pt.base_version = 2;
         pt.end_time = None;
         pt.end_granularity = Some("none".to_string());
         agent_event_update_impl(&db, pt).unwrap();
@@ -3538,6 +5333,7 @@ mod tests {
             vec![scene_id.clone()],
         );
         assert_eq!(event_count(&db, &event_id), 1);
+        assert_eq!(event_version(&db, &event_id), 1);
         assert_eq!(participant_count(&db, &event_id), 1);
         assert_eq!(scene_link_count(&db, &event_id), 1);
 
@@ -3556,8 +5352,29 @@ mod tests {
 
         agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
         assert_eq!(event_count(&db, &event_id), 1, "redo recreates event");
+        assert_eq!(
+            event_version(&db, &event_id),
+            2,
+            "redo create must not reuse the pre-undo version"
+        );
         assert_eq!(participant_count(&db, &event_id), 1);
         assert_eq!(scene_link_count(&db, &event_id), 1);
+
+        let mut stale = empty_update(&project_id, &event_id);
+        stale.base_version = 1;
+        stale.title = Some("stale editor".to_string());
+        assert!(
+            agent_event_update_impl(&db, stale).is_err(),
+            "a pre-undo editor token must not pass after redo create"
+        );
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
+        assert_eq!(
+            event_version(&db, &event_id),
+            3,
+            "repeated create replay must remain monotonic"
+        );
     }
 
     #[test]
@@ -3599,10 +5416,16 @@ mod tests {
                 session_id: "sess".to_string(),
                 surface: None,
                 event_id: main_id.clone(),
+                base_version: 1,
             },
         )
         .unwrap();
         let journal_id = del["undoJournalId"].as_str().unwrap().to_string();
+        assert_eq!(
+            latest_change_payload(&db, "event.delete")["relatedEventIds"],
+            json!([other_id.clone()]),
+            "delete notification must name relation counterparts"
+        );
 
         assert_eq!(event_count(&db, &main_id), 0);
         assert_eq!(event_count(&db, &other_id), 1, "sibling event survives");
@@ -3612,6 +5435,11 @@ mod tests {
         assert_eq!(relation_count(&db, &other_id, &main_id), 0);
 
         agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        assert_eq!(
+            latest_change_payload(&db, "event.create")["relatedEventIds"],
+            json!([other_id.clone()]),
+            "undo delete notification must name restored relation counterparts"
+        );
         assert_eq!(event_count(&db, &main_id), 1, "undo delete restores event");
         assert_eq!(participant_count(&db, &main_id), 1);
         assert_eq!(
@@ -3632,9 +5460,193 @@ mod tests {
         );
 
         agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
+        assert_eq!(
+            latest_change_payload(&db, "event.delete")["relatedEventIds"],
+            json!([other_id.clone()]),
+            "redo delete notification must name cascaded relation counterparts"
+        );
         assert_eq!(event_count(&db, &main_id), 0, "redo delete removes again");
         assert_eq!(relation_count(&db, &main_id, &other_id), 0);
         assert_eq!(relation_count(&db, &other_id, &main_id), 0);
+    }
+
+    #[test]
+    fn event_delete_undo_redo_uses_fresh_versions_and_rejects_stale_editor() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "tracked", vec![], vec![]);
+        let deleted = agent_event_delete_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                base_version: 1,
+            },
+        )
+        .expect("delete event");
+        let journal_id = deleted["undoJournalId"]
+            .as_str()
+            .expect("undoJournalId")
+            .to_string();
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("undo delete");
+        assert_eq!(
+            event_version(&db, &event_id),
+            2,
+            "undo delete must restore with a fresh version"
+        );
+        let mut stale = empty_update(&project_id, &event_id);
+        stale.base_version = 1;
+        stale.title = Some("stale editor".to_string());
+        assert!(
+            agent_event_update_impl(&db, stale).is_err(),
+            "a pre-delete editor token must not pass after undo delete"
+        );
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("redo delete");
+        assert_eq!(event_count(&db, &event_id), 0);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("second undo delete");
+        assert_eq!(
+            event_version(&db, &event_id),
+            3,
+            "repeated delete replay must remain monotonic"
+        );
+    }
+
+    #[test]
+    fn stacked_event_update_and_delete_replay_keep_the_journal_chain_connected() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+        let mut update = empty_update(&project_id, &event_id);
+        update.base_version = 1;
+        update.title = Some("edited".to_string());
+        let updated = agent_event_update_impl(&db, update).expect("update event");
+        let update_journal = updated["undoJournalId"]
+            .as_str()
+            .expect("update undoJournalId")
+            .to_string();
+        let deleted = agent_event_delete_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                base_version: 2,
+            },
+        )
+        .expect("delete event");
+        let delete_journal = deleted["undoJournalId"]
+            .as_str()
+            .expect("delete undoJournalId")
+            .to_string();
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &delete_journal, "undo"))
+            .expect("undo delete");
+        assert_eq!(event_version(&db, &event_id), 3);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &update_journal, "undo"))
+            .expect("undo update before delete");
+        assert_eq!(event_version(&db, &event_id), 4);
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("seed"));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &update_journal, "redo"))
+            .expect("redo update before delete");
+        assert_eq!(event_version(&db, &event_id), 5);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &delete_journal, "redo"))
+            .expect("redo delete after replayed update");
+        assert_eq!(event_count(&db, &event_id), 0);
+    }
+
+    #[test]
+    fn event_delete_undo_rejects_recreated_id_non_destructively() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "tracked", vec![], vec![]);
+
+        let deleted = agent_event_delete_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                base_version: 1,
+            },
+        )
+        .expect("delete event");
+        let journal_id = deleted["undoJournalId"]
+            .as_str()
+            .expect("undoJournalId")
+            .to_string();
+
+        db.execute(
+            "INSERT INTO events (id, project_id, title, version) VALUES (?, ?, ?, 7)",
+            &[
+                Value::String(event_id.clone()),
+                Value::String(project_id.clone()),
+                Value::String("external".to_string()),
+            ],
+            "run",
+        )
+        .expect("recreate event externally");
+
+        let error = agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect_err("stale delete undo");
+        assert!(error.to_string().contains("version conflict"));
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("external"));
+        assert_eq!(event_version(&db, &event_id), 7);
+    }
+
+    #[test]
+    fn event_delete_rejects_stale_base_without_journal_or_change_event() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+
+        let mut update = empty_update(&project_id, &event_id);
+        update.base_version = 1;
+        update.title = Some("fresh".to_string());
+        agent_event_update_impl(&db, update).expect("fresh update");
+
+        let error = agent_event_delete_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                base_version: 1,
+            },
+        )
+        .expect_err("stale delete");
+        assert!(error.to_string().contains("version conflict"));
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("fresh"));
+        assert_eq!(event_version(&db, &event_id), 2);
+
+        let delete_journals = db
+            .execute(
+                "SELECT COUNT(*) AS n FROM undo_journal
+                 WHERE entity_id = ? AND op_kind = 'delete'",
+                &[Value::String(event_id.clone())],
+                "all",
+            )
+            .expect("journal count");
+        assert_eq!(delete_journals[0]["n"], Value::Number(0.into()));
+        let delete_events = db
+            .execute(
+                "SELECT COUNT(*) AS n FROM change_events
+                 WHERE entity_id = ? AND op_type = 'event.delete'",
+                &[Value::String(event_id)],
+                "all",
+            )
+            .expect("change event count");
+        assert_eq!(delete_events[0]["n"], Value::Number(0.into()));
     }
 
     #[test]
@@ -3649,6 +5661,7 @@ mod tests {
         agent_event_update_impl(&db, p1).unwrap();
 
         let mut p2 = empty_update(&project_id, &event_id);
+        p2.base_version = 2;
         p2.title = Some("new".to_string());
         p2.start_time = Some(200);
         let res = agent_event_update_impl(&db, p2).unwrap();
@@ -3660,10 +5673,420 @@ mod tests {
         agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
         assert_eq!(event_title(&db, &event_id), Some("old".to_string()));
         assert_eq!(event_start(&db, &event_id), Some(100));
+        assert_eq!(
+            event_version(&db, &event_id),
+            4,
+            "undo must allocate a fresh version instead of restoring version 2"
+        );
 
         agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
         assert_eq!(event_title(&db, &event_id), Some("new".to_string()));
         assert_eq!(event_start(&db, &event_id), Some(200));
+        assert_eq!(
+            event_version(&db, &event_id),
+            5,
+            "redo must allocate another fresh version instead of restoring version 3"
+        );
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        assert_eq!(event_title(&db, &event_id), Some("old".to_string()));
+        assert_eq!(
+            event_version(&db, &event_id),
+            6,
+            "repeated replay must remain monotonic"
+        );
+    }
+
+    #[test]
+    fn stacked_event_field_and_participant_replay_share_monotonic_state_tokens() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex_a = insert_codex(&db, &project_id, "A");
+        let codex_b = insert_codex(&db, &project_id, "B");
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![codex_a.clone()], vec![]);
+
+        let mut field_update = empty_update(&project_id, &event_id);
+        field_update.base_version = 1;
+        field_update.title = Some("edited".to_string());
+        let field_result =
+            agent_event_update_impl(&db, field_update).expect("field update succeeds");
+        let field_journal = field_result["undoJournalId"]
+            .as_str()
+            .expect("field undoJournalId")
+            .to_string();
+
+        let participants_result = agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                base_version: 2,
+                codex_entry_ids: vec![codex_b.clone()],
+            },
+        )
+        .expect("participant update succeeds");
+        let participants_journal = participants_result["undoJournalId"]
+            .as_str()
+            .expect("participants undoJournalId")
+            .to_string();
+        assert_eq!(event_version(&db, &event_id), 3);
+
+        agent_undo_journal_impl(
+            &db,
+            undo_payload(&project_id, &participants_journal, "undo"),
+        )
+        .expect("undo participants");
+        assert_eq!(event_version(&db, &event_id), 4);
+        assert!(participant_has(&db, &event_id, &codex_a));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &field_journal, "undo"))
+            .expect("undo preceding field update");
+        assert_eq!(event_version(&db, &event_id), 5);
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("seed"));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &field_journal, "redo"))
+            .expect("redo field update");
+        assert_eq!(event_version(&db, &event_id), 6);
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("edited"));
+
+        agent_undo_journal_impl(
+            &db,
+            undo_payload(&project_id, &participants_journal, "redo"),
+        )
+        .expect("redo participants");
+        assert_eq!(event_version(&db, &event_id), 7);
+        assert!(participant_has(&db, &event_id, &codex_b));
+        assert!(!participant_has(&db, &event_id, &codex_a));
+    }
+
+    #[test]
+    fn event_update_undo_rejects_version_drift_non_destructively() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+
+        let mut update = empty_update(&project_id, &event_id);
+        update.base_version = 1;
+        update.title = Some("tracked".to_string());
+        let result = agent_event_update_impl(&db, update).expect("tracked update");
+        let journal_id = result["undoJournalId"].as_str().unwrap().to_string();
+
+        db.execute(
+            "UPDATE events SET title = ?, version = 3 WHERE id = ?",
+            &[
+                Value::String("external".to_string()),
+                Value::String(event_id.clone()),
+            ],
+            "run",
+        )
+        .expect("external write");
+
+        let error = agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect_err("stale undo");
+        assert!(error.to_string().contains("version 2 conflict"));
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("external"));
+        assert_eq!(event_version(&db, &event_id), 3);
+    }
+
+    #[test]
+    fn event_update_undo_preserves_later_scene_links_and_relations() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+        let (other_id, _) = create_event(&db, &project_id, "other", vec![], vec![]);
+
+        let mut update = empty_update(&project_id, &event_id);
+        update.base_version = 1;
+        update.title = Some("tracked".to_string());
+        let updated = agent_event_update_impl(&db, update).expect("tracked update");
+        let journal_id = updated["undoJournalId"]
+            .as_str()
+            .expect("undoJournalId")
+            .to_string();
+
+        let linked = agent_scene_event_mutate_impl(
+            &db,
+            scene_payload(&project_id, &scene_id, &event_id),
+            true,
+        )
+        .expect("link scene");
+        let related = agent_event_relation_mutate_impl(
+            &db,
+            relation_payload(&project_id, &event_id, &other_id),
+            true,
+        )
+        .expect("add relation");
+        assert_eq!(linked["version"], 2);
+        assert_eq!(related["version"], 2);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("undo row update");
+
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("seed"));
+        assert_eq!(event_version(&db, &event_id), 3);
+        assert_eq!(
+            scene_link_count(&db, &event_id),
+            1,
+            "row update undo must not remove a later scene link"
+        );
+        assert_eq!(
+            relation_count(&db, &event_id, &other_id),
+            1,
+            "row update undo must not remove a later relation"
+        );
+    }
+
+    #[test]
+    fn legacy_event_update_journal_modernizes_monotonically_and_rejects_drift() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "before", vec![], vec![]);
+        db.execute(
+            "UPDATE events SET version = 0 WHERE id = ?",
+            &[Value::String(event_id.clone())],
+            "run",
+        )
+        .expect("simulate migrated legacy event");
+        let before = legacy_event_snapshot(&db, &event_id);
+
+        db.execute(
+            "UPDATE events SET title = 'legacy-after' WHERE id = ?",
+            &[Value::String(event_id.clone())],
+            "run",
+        )
+        .expect("simulate legacy update");
+        let after = legacy_event_snapshot(&db, &event_id);
+        let journal_id = insert_legacy_event_journal(
+            &db,
+            &project_id,
+            &event_id,
+            "update",
+            Some(&before),
+            Some(&after),
+        );
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("legacy undo");
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("before"));
+        assert_eq!(event_version(&db, &event_id), 1);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("legacy redo");
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("legacy-after"));
+        assert_eq!(event_version(&db, &event_id), 2);
+
+        let mut v2_update = empty_update(&project_id, &event_id);
+        v2_update.base_version = 2;
+        v2_update.title = Some("fresh-v2".to_string());
+        agent_event_update_impl(&db, v2_update).expect("v2 update");
+
+        let error = agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect_err("legacy replay after v2 drift");
+        assert!(error.to_string().contains("version 2 conflict"));
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("fresh-v2"));
+        assert_eq!(event_version(&db, &event_id), 3);
+    }
+
+    #[test]
+    fn stacked_legacy_event_field_and_participant_replay_modernizes_as_a_chain() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex_a = insert_codex(&db, &project_id, "A");
+        let codex_b = insert_codex(&db, &project_id, "B");
+        let event_id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO events (id, project_id, title, version) VALUES (?, ?, 'seed', 0)",
+            &[
+                Value::String(event_id.clone()),
+                Value::String(project_id.clone()),
+            ],
+            "run",
+        )
+        .expect("insert legacy event");
+        db.execute(
+            "INSERT INTO event_participants (event_id, codex_entry_id) VALUES (?, ?)",
+            &[
+                Value::String(event_id.clone()),
+                Value::String(codex_a.clone()),
+            ],
+            "run",
+        )
+        .expect("insert legacy participant");
+
+        let before_field = legacy_event_snapshot(&db, &event_id);
+        db.execute(
+            "UPDATE events SET title = 'edited' WHERE id = ?",
+            &[Value::String(event_id.clone())],
+            "run",
+        )
+        .expect("simulate legacy field update");
+        let after_field = legacy_event_snapshot(&db, &event_id);
+        let field_journal = insert_legacy_event_journal(
+            &db,
+            &project_id,
+            &event_id,
+            "update",
+            Some(&before_field),
+            Some(&after_field),
+        );
+
+        let before_participants = legacy_participants_snapshot(&db, &event_id);
+        db.execute(
+            "DELETE FROM event_participants WHERE event_id = ?",
+            &[Value::String(event_id.clone())],
+            "run",
+        )
+        .expect("clear legacy participants");
+        db.execute(
+            "INSERT INTO event_participants (event_id, codex_entry_id) VALUES (?, ?)",
+            &[
+                Value::String(event_id.clone()),
+                Value::String(codex_b.clone()),
+            ],
+            "run",
+        )
+        .expect("replace legacy participant");
+        let after_participants = legacy_participants_snapshot(&db, &event_id);
+        let participants_journal = insert_legacy_event_journal(
+            &db,
+            &project_id,
+            &event_id,
+            "update",
+            Some(&before_participants),
+            Some(&after_participants),
+        );
+
+        agent_undo_journal_impl(
+            &db,
+            undo_payload(&project_id, &participants_journal, "undo"),
+        )
+        .expect("undo legacy participants");
+        assert_eq!(event_version(&db, &event_id), 1);
+        assert!(participant_has(&db, &event_id, &codex_a));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &field_journal, "undo"))
+            .expect("undo preceding legacy field update");
+        assert_eq!(event_version(&db, &event_id), 2);
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("seed"));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &field_journal, "redo"))
+            .expect("redo legacy field update");
+        assert_eq!(event_version(&db, &event_id), 3);
+        agent_undo_journal_impl(
+            &db,
+            undo_payload(&project_id, &participants_journal, "redo"),
+        )
+        .expect("redo legacy participants");
+        assert_eq!(event_version(&db, &event_id), 4);
+        assert!(participant_has(&db, &event_id, &codex_b));
+    }
+
+    #[test]
+    fn legacy_event_create_replay_allocates_fresh_versions() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let event_id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO events (id, project_id, title, version)
+             VALUES (?, ?, 'legacy create', 0)",
+            &[
+                Value::String(event_id.clone()),
+                Value::String(project_id.clone()),
+            ],
+            "run",
+        )
+        .expect("insert legacy event");
+        let after = legacy_event_snapshot(&db, &event_id);
+        let journal_id =
+            insert_legacy_event_journal(&db, &project_id, &event_id, "create", None, Some(&after));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("undo legacy create");
+        assert_eq!(event_count(&db, &event_id), 0);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("redo legacy create");
+        assert_eq!(event_version(&db, &event_id), 1);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("second undo legacy create");
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("second redo legacy create");
+        assert_eq!(event_version(&db, &event_id), 2);
+    }
+
+    #[test]
+    fn legacy_event_delete_replay_allocates_fresh_versions() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let event_id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO events (id, project_id, title, version)
+             VALUES (?, ?, 'legacy delete', 0)",
+            &[
+                Value::String(event_id.clone()),
+                Value::String(project_id.clone()),
+            ],
+            "run",
+        )
+        .expect("insert legacy event");
+        let before = legacy_event_snapshot(&db, &event_id);
+        db.execute(
+            "DELETE FROM events WHERE id = ?",
+            &[Value::String(event_id.clone())],
+            "run",
+        )
+        .expect("simulate legacy delete");
+        let journal_id =
+            insert_legacy_event_journal(&db, &project_id, &event_id, "delete", Some(&before), None);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("undo legacy delete");
+        assert_eq!(event_version(&db, &event_id), 1);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("redo legacy delete");
+        assert_eq!(event_count(&db, &event_id), 0);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("second undo legacy delete");
+        assert_eq!(event_version(&db, &event_id), 2);
+    }
+
+    #[test]
+    fn legacy_event_delete_undo_rejects_cross_project_id_reuse() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let other_project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "deleted", vec![], vec![]);
+        db.execute(
+            "UPDATE events SET version = 0 WHERE id = ?",
+            &[Value::String(event_id.clone())],
+            "run",
+        )
+        .expect("simulate migrated legacy event");
+        let before = legacy_event_snapshot(&db, &event_id);
+        db.execute(
+            "DELETE FROM events WHERE id = ?",
+            &[Value::String(event_id.clone())],
+            "run",
+        )
+        .expect("simulate legacy delete");
+        let journal_id =
+            insert_legacy_event_journal(&db, &project_id, &event_id, "delete", Some(&before), None);
+
+        db.execute(
+            "INSERT INTO events (id, project_id, title, version) VALUES (?, ?, 'external', 0)",
+            &[
+                Value::String(event_id.clone()),
+                Value::String(other_project_id),
+            ],
+            "run",
+        )
+        .expect("reuse id in another project");
+
+        let error = agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect_err("legacy delete undo must not overwrite reused id");
+        assert!(error.to_string().contains("version conflict"));
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("external"));
     }
 
     #[test]
@@ -3683,6 +6106,7 @@ mod tests {
                 session_id: "sess".to_string(),
                 surface: None,
                 event_id: event_id.clone(),
+                base_version: 1,
                 codex_entry_ids: vec![codex_b.clone(), codex_c.clone()],
             },
         )
@@ -3731,7 +6155,7 @@ mod tests {
         assert_eq!(participant_count(&db, &event_id), 120);
         assert_eq!(scene_link_count(&db, &event_id), 120);
 
-        // undo → redo (apply_event_composite_snapshot path).
+        // undo → redo (composite snapshot restore path).
         agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
         assert_eq!(participant_count(&db, &event_id), 0);
         agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
@@ -3746,6 +6170,7 @@ mod tests {
                 session_id: "sess".to_string(),
                 surface: None,
                 event_id: event_id.clone(),
+                base_version: 2,
                 codex_entry_ids: codex_ids[..3].to_vec(),
             },
         )
@@ -3772,6 +6197,8 @@ mod tests {
         let res = agent_event_create_impl(
             &db,
             AgentEventCreatePayload {
+                request_id: None,
+                event_id: None,
                 project_id: p1.clone(),
                 session_id: "sess".to_string(),
                 surface: None,
@@ -3839,6 +6266,8 @@ mod tests {
         let res = agent_event_create_impl(
             &db,
             AgentEventCreatePayload {
+                request_id: None,
+                event_id: None,
                 project_id: p1.clone(),
                 session_id: "sess".to_string(),
                 surface: None,
@@ -3904,6 +6333,7 @@ mod tests {
                 session_id: "sess".to_string(),
                 surface: None,
                 event_id: event_id.clone(),
+                base_version: 1,
                 codex_entry_ids: vec![foreign.clone()],
             },
         );

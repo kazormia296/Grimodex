@@ -25,7 +25,8 @@ import type { PlotThreadRow, PlotThreadLinkRow } from "./api";
 // tauri モジュールを丸ごと差し替えるので、推移的に取り込まれるモジュールが
 // 静的 import する値エクスポート（listen/emit）も漏れなく与える。欠けると
 // "does not provide an export named 'listen'" で suite ごと import 失敗する。
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn(),
   isTauri: () => false,
   listen: vi.fn(async () => () => {}),

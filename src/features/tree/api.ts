@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq, and, isNull, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, inArray, lt, sql } from "drizzle-orm";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 import {
@@ -127,6 +127,28 @@ export async function listAllNodes(projectId: string): Promise<TreeNodeLite[]> {
     .select(treeNodeLiteColumns())
     .from(treeNodes)
     .where(eq(treeNodes.projectId, projectId));
+}
+
+/**
+ * Select only expired archived row IDs without transferring every live Tree
+ * row to the renderer. `archivedAt` is always written as an ISO-8601 instant,
+ * so lexical ordering is chronological and remains index-friendly.
+ */
+export async function listExpiredArchivedNodeIds(
+  projectId: string,
+  archivedBefore: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: treeNodes.id })
+    .from(treeNodes)
+    .where(
+      and(
+        eq(treeNodes.projectId, projectId),
+        isNotNull(treeNodes.archivedAt),
+        lt(treeNodes.archivedAt, archivedBefore),
+      ),
+    );
+  return rows.map((row) => row.id);
 }
 
 /**

@@ -271,6 +271,137 @@ test("listAiModels はendpoint overrideを使い、空キーならAuthorization�
   }
 });
 
+test("listAiModels は選択Ollamaモデルだけをshowで照会する", async () => {
+  const shownModels = [];
+  const { server, baseUrl } = await startMockServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/tags") {
+      res.end(
+        JSON.stringify({
+          models: [
+            { name: "gemma4:latest" },
+            { name: "slow-unrelated:latest" },
+          ],
+        }),
+      );
+      return;
+    }
+    if (req.url === "/api/ps") {
+      res.end(JSON.stringify({ models: [] }));
+      return;
+    }
+    if (req.url === "/api/show") {
+      const body = await readJson(req);
+      shownModels.push(body.model);
+      res.end(
+        JSON.stringify({
+          model_info: {
+            "general.architecture": "gemma4",
+            "gemma4.context_length": 131072,
+          },
+          capabilities: ["completion", "tools"],
+        }),
+      );
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+  try {
+    const { backend } = makeBackend();
+    const settings = {
+      ...settingsWithEndpoints(baseUrl, baseUrl, "ollama"),
+      model: "gemma4:latest",
+      ollamaEndpoint: baseUrl,
+    };
+    const models = JSON.parse(
+      await backend.listAiModels(
+        {
+          provider: "ollama",
+          endpointId: null,
+          selectedModelId: "gemma4:latest",
+          expectedOllamaEndpoint: baseUrl,
+        },
+        settings,
+        "",
+      ),
+    );
+    assert.deepEqual(shownModels, ["gemma4:latest"]);
+    assert.equal(models.length, 1);
+    assert.equal(models[0].id, "gemma4:latest");
+    assert.equal(models[0].contextLength, 131072);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("同名Ollamaモデルのendpoint A/B driftをplain/stream/agent/models全境界で拒否する", async () => {
+  const { backend } = makeBackend();
+  const endpointA = "http://127.0.0.1:11434";
+  const endpointB = "http://127.0.0.1:21434";
+  const settings = {
+    ...settingsWithEndpoints(endpointB, endpointB, "ollama"),
+    model: "shared-model:latest",
+    ollamaEndpoint: endpointB,
+  };
+  const messages = [{ role: "user", content: "hello" }];
+  const expected = /Ollama endpoint changed before request/;
+
+  await assert.rejects(
+    backend.sendChatMessage(
+      {
+        messages,
+        provider: "ollama",
+        model: "shared-model:latest",
+        expectedOllamaEndpoint: endpointA,
+      },
+      settings,
+      "",
+    ),
+    expected,
+  );
+  await assert.rejects(
+    backend.sendChatMessageStream(
+      {
+        messages,
+        provider: "ollama",
+        model: "shared-model:latest",
+        expectedOllamaEndpoint: endpointA,
+      },
+      settings,
+      "",
+    ),
+    expected,
+  );
+  await assert.rejects(
+    backend.sendAgentMessage(
+      {
+        messages,
+        tools: [],
+        provider: "ollama",
+        model: "shared-model:latest",
+        expectedOllamaEndpoint: endpointA,
+        resolvedToolProtocol: "native",
+      },
+      settings,
+      "",
+    ),
+    expected,
+  );
+  await assert.rejects(
+    backend.listAiModels(
+      {
+        provider: "ollama",
+        selectedModelId: "shared-model:latest",
+        expectedOllamaEndpoint: endpointA,
+      },
+      settings,
+      "",
+    ),
+    expected,
+  );
+});
+
 test("testAiConnection はendpoint/model/key overrideを保ち、応答文字列を返す", async () => {
   let request;
   const { server, baseUrl } = await startMockServer(async (req, res) => {

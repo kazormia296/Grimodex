@@ -128,6 +128,7 @@ function mkEvent(
     precision: e.precision ?? "exact",
     kind: e.kind ?? "generic",
     secret: e.secret ?? false,
+    version: e.version ?? 0,
     revealSceneId: e.revealSceneId ?? null,
     laneGroup: e.laneGroup ?? null,
     createdAt: "2026-01-01T00:00:00Z",

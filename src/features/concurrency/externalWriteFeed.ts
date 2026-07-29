@@ -24,6 +24,7 @@ import {
 } from "@/features/agent-writes/proseStagingStore";
 import { loadLatestProposedProse } from "@/features/agent-writes/prose";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import type { DocumentKey } from "@/features/editor/document/documentKey";
 
 const POLL_MS = 750;
 
@@ -38,6 +39,7 @@ const POLL_MS = 750;
 type ProseProposalHandler = (
   proposal: PendingProseProposal,
   projectId: string,
+  isAuthoritative: () => boolean,
 ) => boolean | Promise<boolean>;
 
 let proseProposalHandler: ProseProposalHandler | null = null;
@@ -58,10 +60,14 @@ function domainForHistoryKind(kind: HistoryKind): string | null {
   switch (kind) {
     case "codex":
       return "codex";
+    case "phase":
+      return "codex";
     case "snippets":
       return "snippet";
     case "scenes":
       return "grid";
+    case "chronicle":
+      return "event";
     default:
       return null;
   }
@@ -72,16 +78,33 @@ function handleUndoConflict(cmd: HistoryCommand): void {
   const domain = domainForHistoryKind(cmd.kind);
   if (!entityId || !domain) return;
   const extStore = useExternalWriteStore.getState();
-  const dirtyTabIds = useEditorSessionStore.getState().dirtyDocumentIds;
-  if (dirtyTabIds.has(entityId) || isInlineAiPending()) {
+  const documentKey: DocumentKey | null =
+    cmd.documentKey ??
+    (cmd.kind === "codex"
+      ? { kind: "codex", id: entityId, phaseId: null }
+      : cmd.kind === "snippets"
+        ? { kind: "snippet", id: entityId }
+        : cmd.kind === "chronicle"
+          ? { kind: "chronicle-event", id: entityId }
+          : cmd.kind === "scenes"
+            ? { kind: "tree", id: entityId, storage: "database" }
+            : null);
+  if (!documentKey) return;
+  const editorState = useEditorSessionStore.getState();
+  const dirty =
+    typeof editorState.isDocumentDirty === "function"
+      ? editorState.isDocumentDirty(documentKey)
+      : editorState.dirtyDocumentIds.has(documentKey.id);
+  if (dirty || isInlineAiPending()) {
     extStore.pushConflict({
-      sceneId: entityId,
+      documentKey,
+      sceneId: documentKey.id,
       domain,
       opType: "undo.version_conflict",
       entityId,
     });
   } else {
-    extStore.bumpReloadNonce(entityId);
+    extStore.bumpReloadNonce(documentKey);
   }
 }
 
@@ -98,17 +121,37 @@ interface PollerState {
   projectId: string | null;
   cursor: number;
   timer: ReturnType<typeof setInterval> | null;
+  generation: number;
 }
 
 const state: PollerState = {
   projectId: null,
   cursor: 0,
   timer: null,
+  generation: 0,
 };
 
-let pollInFlight = false;
+interface FeedAuthority {
+  projectId: string;
+  generation: number;
+}
+
+let pollInFlightToken: symbol | null = null;
 
 type ChangeEventRow = typeof changeEvents.$inferSelect;
+
+function captureFeedAuthority(): FeedAuthority | null {
+  return state.projectId
+    ? { projectId: state.projectId, generation: state.generation }
+    : null;
+}
+
+function isCurrentFeedAuthority(authority: FeedAuthority): boolean {
+  return (
+    state.projectId === authority.projectId &&
+    state.generation === authority.generation
+  );
+}
 
 async function readTailSequence(projectId: string): Promise<number> {
   const rows = await db
@@ -134,25 +177,151 @@ function invalidateHistoryForEntity(
         ? "snippets"
         : entityType === "tree_batch"
           ? "scenes"
-          : null;
+          : entityType === "event"
+            ? "chronicle"
+            : null;
   if (!kind) return;
   history.invalidateForEntity(kind, entityId);
 }
 
-async function fanOut(events: ChangeEventRow[]): Promise<void> {
+function parseChangePayload(payload: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    return parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function payloadString(
+  payload: Record<string, unknown> | null,
+  key: string,
+): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function payloadStringArray(
+  payload: Record<string, unknown> | null,
+  key: string,
+): string[] {
+  const value = payload?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+}
+
+/**
+ * Relation/stamp change rows represent aggregate metadata, not an editor
+ * document-body update. They therefore must not enter notifyEditorDocument,
+ * but they still invalidate every local undo closure whose assumptions the
+ * metadata write changed.
+ *
+ * The tracked writers store the cause/event in entity_id and the stamped scene
+ * in scene_id. Their JSON payload carries the otherwise-unaddressable relation
+ * effect. Prefer those typed columns and use payload only for missing metadata;
+ * a malformed payload must never stop the external-write poll.
+ */
+function invalidateEventMetadataHistory(event: ChangeEventRow): void {
+  if (event.domain !== "event") return;
+
+  if (event.opType === "event.create" || event.opType === "event.delete") {
+    const payload = parseChangePayload(event.payload);
+    const eventIds = new Set([
+      event.entityId,
+      ...payloadStringArray(payload, "relatedEventIds"),
+    ]);
+    for (const eventId of eventIds) {
+      invalidateHistoryForEntity("event", eventId);
+    }
+    return;
+  }
+
+  if (
+    event.opType === "event.relation_add" ||
+    event.opType === "event.relation_remove"
+  ) {
+    const payload = parseChangePayload(event.payload);
+    const causeEventId =
+      event.entityId ?? payloadString(payload, "causeEventId");
+    const effectEventId = payloadString(payload, "effectEventId");
+    const eventIds = new Set([causeEventId, effectEventId]);
+    for (const eventId of eventIds) {
+      invalidateHistoryForEntity("event", eventId);
+    }
+    return;
+  }
+
+  if (event.opType === "event.stamp" || event.opType === "event.unstamp") {
+    const payload = parseChangePayload(event.payload);
+    const eventId = event.entityId ?? payloadString(payload, "eventId");
+    const sceneId = event.sceneId ?? payloadString(payload, "sceneId");
+    invalidateHistoryForEntity("event", eventId);
+    invalidateHistoryForEntity("tree_batch", sceneId);
+  }
+}
+
+function isDocumentDirty(documentKey: DocumentKey): boolean {
+  const state = useEditorSessionStore.getState();
+  return typeof state.isDocumentDirty === "function"
+    ? state.isDocumentDirty(documentKey)
+    : state.dirtyDocumentIds.has(documentKey.id);
+}
+
+function notifyEditorDocument(
+  documentKey: DocumentKey,
+  event: ChangeEventRow,
+  inlineAiPending: boolean,
+): void {
+  const extStore = useExternalWriteStore.getState();
+  if (isDocumentDirty(documentKey) || inlineAiPending) {
+    extStore.pushConflict({
+      documentKey,
+      sceneId: documentKey.id,
+      domain: event.domain,
+      opType: event.opType,
+      entityId: event.entityId,
+    });
+  } else {
+    extStore.bumpReloadNonce(documentKey);
+  }
+}
+
+function eventChangesDocumentAggregate(event: ChangeEventRow): boolean {
+  return (
+    event.entityType === "event" &&
+    (event.opType === "event.create" ||
+      event.opType === "event.update" ||
+      event.opType === "event.participants" ||
+      event.opType === "event.delete")
+  );
+}
+
+async function fanOut(
+  events: ChangeEventRow[],
+  projectId: string,
+  isAuthoritative: () => boolean,
+): Promise<void> {
+  if (!isAuthoritative()) return;
   const domains = new Set(events.map((e) => e.domain));
-  const projectId = state.projectId;
-  if (!projectId) return;
 
   if (domains.has("grid")) {
     await useTreeStore.getState().reloadTreeOrThrow(projectId);
+    if (!isAuthoritative()) return;
   }
   if (domains.has("codex")) {
     await useCodexStore.getState().loadEntries();
+    if (!isAuthoritative()) return;
     scheduleImeExportRefresh(projectId);
   }
   if (domains.has("snippet")) {
     await useSnippetStore.getState().loadEntries();
+    if (!isAuthoritative()) return;
   }
   if (domains.has("foreshadow")) {
     // Dynamic import: foreshadowStore pulls in the editor/scene graph, and
@@ -160,7 +329,9 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
     // regrow the module-init chain that broke browser-mode vi.mock linking.
     const { useForeshadowStore } =
       await import("@/features/foreshadow/foreshadowStore");
+    if (!isAuthoritative()) return;
     await useForeshadowStore.getState().load(projectId);
+    if (!isAuthoritative()) return;
   }
   // 以下 3 ドメインは metadata 系（Rust agent_writes / MCP が記録する）。
   // 従来 fanOut は grid/codex/snippet/foreshadow の 4 ドメインしか反映せず、
@@ -172,38 +343,38 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
     // bumpRevision が再ロードのトリガ（ChroniclePanel useEffect deps）。
     const { useChronicleStore } =
       await import("@/features/chronicle/chronicleStore");
+    if (!isAuthoritative()) return;
     useChronicleStore.getState().bumpRevision();
   }
   if (domains.has("plot")) {
     const { usePlotThreadStore } =
       await import("@/features/plot-threads/plotThreadStore");
+    if (!isAuthoritative()) return;
     await usePlotThreadStore.getState().load(projectId);
+    if (!isAuthoritative()) return;
   }
   if (domains.has("labels")) {
     const { useLabelStore } = await import("@/features/labels/labelStore");
+    if (!isAuthoritative()) return;
     await useLabelStore.getState().load(projectId);
+    if (!isAuthoritative()) return;
   }
 
+  if (!isAuthoritative()) return;
   const editorEvents = events.filter(
     (e) => e.domain === "editor" && e.sceneId != null,
   );
-  const dirtyTabIds = useEditorSessionStore.getState().dirtyDocumentIds;
-  const extStore = useExternalWriteStore.getState();
   const inlineAiPending = isInlineAiPending();
 
   for (const ev of editorEvents) {
+    if (!isAuthoritative()) return;
     const sceneId = ev.sceneId!;
     invalidateHistoryForEntity(ev.entityType, ev.entityId);
-    if (dirtyTabIds.has(sceneId) || inlineAiPending) {
-      extStore.pushConflict({
-        sceneId,
-        domain: ev.domain,
-        opType: ev.opType,
-        entityId: ev.entityId,
-      });
-    } else {
-      extStore.bumpReloadNonce(sceneId);
-    }
+    notifyEditorDocument(
+      { kind: "tree", id: sceneId, storage: "database" },
+      ev,
+      inlineAiPending,
+    );
   }
 
   const proseProposals = events.filter(
@@ -211,18 +382,27 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   );
   const proseSceneIds = [...new Set(proseProposals.map((e) => e.sceneId!))];
   for (const sceneId of proseSceneIds) {
+    if (!isAuthoritative()) return;
     try {
       const proposal = await loadLatestProposedProse(sceneId);
+      if (!isAuthoritative()) return;
       if (!proposal) continue;
       if (proseProposalHandler) {
         let consumed = false;
         try {
-          consumed = await proseProposalHandler(proposal, projectId);
+          consumed = await proseProposalHandler(
+            proposal,
+            projectId,
+            isAuthoritative,
+          );
+          if (!isAuthoritative()) return;
         } catch (err) {
           console.warn("[externalWriteFeed] prose auto-apply failed", err);
         }
+        if (!isAuthoritative()) return;
         if (consumed) continue;
       }
+      if (!isAuthoritative()) return;
       useProseStagingStore.getState().enqueue(proposal);
     } catch {
       // ignore load failures; user can reopen scene to retry
@@ -231,31 +411,31 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
 
   // Non-editor entity events may still target codex/snippet tabs open in editor.
   for (const ev of events) {
+    if (!isAuthoritative()) return;
+    invalidateEventMetadataHistory(ev);
     if (ev.entityType === "codex_entry" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);
-      if (dirtyTabIds.has(ev.entityId) || inlineAiPending) {
-        extStore.pushConflict({
-          sceneId: ev.entityId,
-          domain: ev.domain,
-          opType: ev.opType,
-          entityId: ev.entityId,
-        });
-      } else {
-        extStore.bumpReloadNonce(ev.entityId);
-      }
+      notifyEditorDocument(
+        { kind: "codex", id: ev.entityId, phaseId: null },
+        ev,
+        inlineAiPending,
+      );
     }
     if (ev.entityType === "snippet" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);
-      if (dirtyTabIds.has(ev.entityId) || inlineAiPending) {
-        extStore.pushConflict({
-          sceneId: ev.entityId,
-          domain: ev.domain,
-          opType: ev.opType,
-          entityId: ev.entityId,
-        });
-      } else {
-        extStore.bumpReloadNonce(ev.entityId);
-      }
+      notifyEditorDocument(
+        { kind: "snippet", id: ev.entityId },
+        ev,
+        inlineAiPending,
+      );
+    }
+    if (eventChangesDocumentAggregate(ev) && ev.entityId) {
+      invalidateHistoryForEntity(ev.entityType, ev.entityId);
+      notifyEditorDocument(
+        { kind: "chronicle-event", id: ev.entityId },
+        ev,
+        inlineAiPending,
+      );
     }
   }
 }
@@ -278,12 +458,24 @@ async function fetchExternalRows(
     .orderBy(asc(changeEvents.sequence));
 }
 
-async function pollTick(): Promise<void> {
-  const projectId = state.projectId;
-  if (!projectId) return;
+async function pollTick(
+  requestedAuthority: FeedAuthority | null = captureFeedAuthority(),
+): Promise<void> {
+  if (
+    !requestedAuthority ||
+    !isCurrentFeedAuthority(requestedAuthority) ||
+    pollInFlightToken
+  ) {
+    return;
+  }
 
-  if (pollInFlight) return; // skip overlapping tick; cursor retained, next interval retries
-  pollInFlight = true;
+  const authority = requestedAuthority;
+  const { projectId } = authority;
+  const cursor = state.cursor;
+  const inFlightToken = Symbol("external-write-poll");
+  pollInFlightToken = inFlightToken;
+  const isAuthoritative = (): boolean =>
+    pollInFlightToken === inFlightToken && isCurrentFeedAuthority(authority);
 
   // Everything below runs inside one try/catch. pollTick is fired via
   // `void pollTick()` in setInterval, so ANY throw here (including the DB reads,
@@ -294,42 +486,60 @@ async function pollTick(): Promise<void> {
   // retries the same range instead of crashing the poll or dropping events.
   try {
     const sessionId = getRecorderSessionId();
-    let rows = await fetchExternalRows(projectId, state.cursor, sessionId);
+    let rows = await fetchExternalRows(projectId, cursor, sessionId);
+    if (!isAuthoritative()) return;
 
     if (rows.length === 0) {
       const tail = await readTailSequence(projectId);
-      if (tail > state.cursor) {
+      if (!isAuthoritative()) return;
+      if (tail > cursor) {
         // Re-fetch once: events may have landed between the first query and tail read.
-        rows = await fetchExternalRows(projectId, state.cursor, sessionId);
+        rows = await fetchExternalRows(projectId, cursor, sessionId);
+        if (!isAuthoritative()) return;
         if (rows.length === 0) {
+          if (!isAuthoritative()) return;
           state.cursor = tail;
         }
       }
       if (rows.length === 0) return;
     }
 
-    await fanOut(rows);
+    await fanOut(rows, projectId, isAuthoritative);
+    if (!isAuthoritative()) return;
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
     console.warn("[externalWriteFeed] poll failed; cursor retained", err);
   } finally {
-    pollInFlight = false;
+    if (pollInFlightToken === inFlightToken) {
+      pollInFlightToken = null;
+    }
   }
 }
 
 /** Start polling external change_events for the given project. */
 export async function startExternalWriteFeed(projectId: string): Promise<void> {
   stopExternalWriteFeed();
+  const authority: FeedAuthority = {
+    projectId,
+    generation: state.generation,
+  };
   state.projectId = projectId;
-  state.cursor = await readTailSequence(projectId);
+  const cursor = await readTailSequence(projectId);
+  if (!isCurrentFeedAuthority(authority)) return;
+  state.cursor = cursor;
   useExternalWriteStore.getState().clear();
   state.timer = setInterval(() => {
-    void pollTick();
+    void pollTick(authority);
   }, POLL_MS);
 }
 
 /** Stop polling (project switch / workspace close). */
 export function stopExternalWriteFeed(): void {
+  state.generation += 1;
+  // The transport read cannot be aborted, but relinquishing this ownership
+  // token lets the replacement feed poll immediately. The old tick's finally
+  // block cannot clear a newer tick's token.
+  pollInFlightToken = null;
   if (state.timer) {
     clearInterval(state.timer);
     state.timer = null;
@@ -345,7 +555,9 @@ export async function processExternalEventsForTest(
   projectId: string,
 ): Promise<void> {
   state.projectId = projectId;
-  await fanOut(events);
+  const authority = captureFeedAuthority();
+  if (!authority) return;
+  await fanOut(events, projectId, () => isCurrentFeedAuthority(authority));
 }
 
 /** Test hook: run one poll cycle synchronously. */

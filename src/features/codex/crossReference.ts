@@ -1,7 +1,7 @@
 import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
 import { sceneCodexMentions, treeNodes } from "@/db/schema";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContents } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { listCodexMatchTargets } from "./api";
 import type { CodexMatchRow } from "./api";
@@ -42,6 +42,13 @@ export interface SceneCodexMentionRow {
   sceneId: string;
   sceneTitle: string;
   source?: string;
+}
+
+export async function loadCrossReferenceSceneContents(
+  sceneIds: readonly string[],
+  loadContents: typeof loadSceneContents = loadSceneContents,
+): Promise<Map<string, string>> {
+  return loadContents([...sceneIds]).catch(() => new Map<string, string>());
 }
 
 /** Build the Galaxy cross-reference shape from the incremental mention index. */
@@ -129,17 +136,15 @@ export async function buildCrossReferenceReportForProject(
     { entry: CodexMatchRow; scenes: Map<string, SceneMention> }
   >();
   const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  const sceneContents = await loadCrossReferenceSceneContents(
+    scenes.map((scene) => scene.id),
+  );
 
   for (const scene of scenes) {
-    let content: string;
-    let semanticLinks: CodexSemanticLink[];
-    try {
-      const rawContent = await loadSceneContent(scene.id);
-      content = prosemirrorToText(rawContent);
-      semanticLinks = extractCodexSemanticLinks(rawContent);
-    } catch {
-      continue;
-    }
+    const rawContent = sceneContents.get(scene.id) ?? "";
+    const content = prosemirrorToText(rawContent);
+    const semanticLinks: CodexSemanticLink[] =
+      extractCodexSemanticLinks(rawContent);
 
     const matches = content ? await matchText(content, targets) : [];
     const automaticCounts = new Map<string, number>();

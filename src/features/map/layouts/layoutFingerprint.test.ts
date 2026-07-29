@@ -3,6 +3,7 @@ import { layoutFingerprint } from "./layoutFingerprint";
 import type { MapNodePositionRecord } from "../types";
 import type { SceneLayoutInput } from "./types";
 import type { CodexEntry } from "@/features/codex/api";
+import { projectMapPositions } from "../hooks/mapPositionProjection";
 
 function makePosition(
   id: string,
@@ -123,5 +124,23 @@ describe("layoutFingerprint", () => {
       userEdges: [{ fromPositionId: "pos-s1", toPositionId: "pos-c1" }],
     });
     expect(withEdge).not.toBe(without);
+  });
+
+  it("precomputed projection があれば positions を再走査しない", () => {
+    const expected = layoutFingerprint(base);
+    const positionProjection = projectMapPositions(base.positions);
+    const guardedPositions = new Proxy(base.positions, {
+      get(_target, property) {
+        throw new Error(`positions was accessed: ${String(property)}`);
+      },
+    });
+
+    expect(
+      layoutFingerprint({
+        ...base,
+        positions: guardedPositions,
+        positionProjection,
+      }),
+    ).toBe(expected);
   });
 });

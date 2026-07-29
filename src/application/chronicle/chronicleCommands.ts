@@ -14,14 +14,27 @@ export interface ChronicleCreatedEvent {
   title: string;
 }
 
+export interface ChronicleVersionedWriteResult {
+  version: number;
+}
+
 export interface ChronicleCommandPorts {
   event: {
     create(input: ChronicleCreateInput): Promise<ChronicleCreatedEvent>;
-    update(input: { eventId: string } & Partial<EventRow>): Promise<void>;
-    delete(eventId: string): Promise<void>;
+    update(
+      input: { eventId: string; baseVersion?: number } & Partial<EventRow>,
+    ): Promise<ChronicleVersionedWriteResult>;
+    delete(
+      eventId: string,
+      options?: { baseVersion?: number },
+    ): Promise<ChronicleVersionedWriteResult>;
     addRelation(causeId: string, effectId: string): Promise<void>;
     removeRelation(causeId: string, effectId: string): Promise<void>;
-    setParticipants(eventId: string, codexEntryIds: string[]): Promise<void>;
+    setParticipants(
+      eventId: string,
+      codexEntryIds: string[],
+      options?: { baseVersion?: number },
+    ): Promise<ChronicleVersionedWriteResult>;
     linkScene(sceneId: string, eventId: string): Promise<void>;
     unlinkScene(sceneId: string, eventId: string): Promise<void>;
   };
@@ -62,10 +75,16 @@ export async function patchChronicleItem(
   target: { kind: "event" | "scene"; id: string },
   patch: Partial<EventRow>,
   ports: ChronicleCommandPorts,
-): Promise<void> {
+  options?: { baseVersion?: number },
+): Promise<ChronicleVersionedWriteResult | void> {
   if (target.kind === "event") {
-    await ports.event.update({ eventId: target.id, ...patch });
-    return;
+    return ports.event.update({
+      eventId: target.id,
+      ...patch,
+      ...(options?.baseVersion === undefined
+        ? {}
+        : { baseVersion: options.baseVersion }),
+    });
   }
 
   if (patch.title != null)
@@ -91,12 +110,15 @@ export async function clearChronicleDate(
 export async function deleteChronicleItem(
   target: { kind: "event" | "scene"; id: string },
   ports: ChronicleCommandPorts,
-): Promise<void> {
+  options?: { baseVersion?: number },
+): Promise<ChronicleVersionedWriteResult | void> {
   if (target.kind === "scene") {
     await clearChronicleDate(target.id, ports);
     return;
   }
-  await ports.event.delete(target.id);
+  return options?.baseVersion === undefined
+    ? ports.event.delete(target.id)
+    : ports.event.delete(target.id, options);
 }
 
 export async function createChronicleEvent(

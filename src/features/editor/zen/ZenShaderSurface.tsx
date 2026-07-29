@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PaperShaderElement } from "@paper-design/shaders";
 import { ShaderMount } from "@paper-design/shaders-react";
 import {
@@ -15,6 +15,9 @@ import { useZenShaderLayouts } from "./useZenShaderLayouts";
 import { useZenShaderAnimation } from "./zenShaderAnimation";
 import { usePreparedZenShaderUniforms } from "./zenShaderImageUniforms";
 import { useZenThemePalette } from "./zenThemePalette";
+import { ZenUiSurfaceUniformBuffer } from "./zenShaderUniformBuffer";
+import { zenUiSurfaceVariantCapacity } from "./zenGlassRefraction";
+import { buildZenGlassMask } from "./zenGlassCompositor";
 
 const PREVIEW_PIXEL_BUDGET = 300_000;
 const LIVE_BACKGROUND_PIXEL_BUDGET = 1920 * 1080;
@@ -24,17 +27,37 @@ interface ZenShaderSurfaceProps {
   config: ZenShaderConfig;
   playing: boolean;
   preview?: boolean;
+  webGlSupported?: boolean;
+  onRendererStatusChange?: (status: ZenShaderRendererStatus) => void;
 }
+
+export type ZenShaderRendererStatus =
+  | "initializing"
+  | "webgl"
+  | "fallback-unsupported"
+  | "fallback-context-lost";
 
 export function ZenShaderSurface({
   config,
   playing,
   preview = false,
+  webGlSupported = true,
+  onRendererStatusChange,
 }: ZenShaderSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const paperMountRef = useRef<PaperShaderElement>(null);
   const palette = useZenThemePalette();
   const layouts = useZenShaderLayouts(surfaceRef);
+  // Paper prepares uniforms asynchronously. Keep the program, upload buffer,
+  // and React mount on one capacity so a stale smaller initialization cannot
+  // win while the startup layout expands from one surface to the full shell.
+  const uiSurfaceCapacity = zenUiSurfaceVariantCapacity(
+    layouts.uiSurfaces.length,
+  );
+  const surfaceUniformBuffer = useMemo(
+    () => new ZenUiSurfaceUniformBuffer(uiSurfaceCapacity),
+    [uiSurfaceCapacity],
+  );
   const resolved = useMemo(
     () =>
       resolvePaperShaderMount(
@@ -44,30 +67,97 @@ export function ZenShaderSurface({
     [config, palette],
   );
   const fragmentShader = useMemo(
-    () => buildZenPostProcessedFragment(resolved.fragmentShader),
-    [resolved.fragmentShader],
+    () =>
+      buildZenPostProcessedFragment(resolved.fragmentShader, uiSurfaceCapacity),
+    [resolved.fragmentShader, uiSurfaceCapacity],
   );
   const uniforms = useMemo(
     () => ({
       ...resolved.uniforms,
-      ...buildZenPostProcessUniforms(config, {
-        ...layouts.contrast,
-        glassRect: layouts.glass.rect,
-        glassCornerRadius: layouts.glass.cornerRadius,
-        uiSurfaces: layouts.uiSurfaces,
-        textColor: palette.textColor ?? [0.85, 0.85, 0.85],
-        uiTextColor: palette.uiTextColor ??
-          palette.textColor ?? [0.85, 0.85, 0.85],
-        backdropColor: palette.backdropColor ?? [0.063, 0.075, 0.094],
-      }),
+      ...buildZenPostProcessUniforms(
+        config,
+        {
+          ...layouts.contrast,
+          glassRect: layouts.glass.rect,
+          glassCornerRadius: layouts.glass.cornerRadius,
+          uiSurfaces: layouts.uiSurfaces,
+          textColor: palette.textColor ?? [0.85, 0.85, 0.85],
+          uiTextColor: palette.uiTextColor ??
+            palette.textColor ?? [0.85, 0.85, 0.85],
+          backdropColor: palette.backdropColor ?? [0.063, 0.075, 0.094],
+        },
+        surfaceUniformBuffer,
+      ),
     }),
-    [config, layouts, palette, resolved.uniforms],
+    [config, layouts, palette, resolved.uniforms, surfaceUniformBuffer],
   );
   const preparedUniforms = usePreparedZenShaderUniforms(uniforms);
+  const mountKey = `${config.shader}:${uiSurfaceCapacity}`;
   const definition = getPaperShaderDefinition(config.shader);
+  const [readyMountKey, setReadyMountKey] = useState<string | null>(null);
+  const [lostMountKey, setLostMountKey] = useState<string | null>(null);
+  const shaderReady =
+    webGlSupported && readyMountKey === mountKey && lostMountKey !== mountKey;
+  const rendererStatus: ZenShaderRendererStatus = !webGlSupported
+    ? "fallback-unsupported"
+    : lostMountKey === mountKey
+      ? "fallback-context-lost"
+      : shaderReady
+        ? "webgl"
+        : "initializing";
+
+  // Keep the parent CSS topology in the same paint as mount-key changes.
+  // A passive update would briefly restore per-surface backdrop filters while
+  // the replacement shader is still settling.
+  useLayoutEffect(() => {
+    onRendererStatusChange?.(rendererStatus);
+  }, [onRendererStatusChange, rendererStatus]);
+
+  useEffect(() => {
+    if (
+      !webGlSupported ||
+      preparedUniforms === null ||
+      lostMountKey === mountKey
+    ) {
+      return;
+    }
+    let frameId: number | null = null;
+    let cancelled = false;
+    const observeFirstDraw = () => {
+      if (cancelled) return;
+      const stats =
+        paperMountRef.current?.paperShaderMount?.getPerformanceStats();
+      if (stats?.isStaticFrameReady) {
+        setReadyMountKey(mountKey);
+        return;
+      }
+      frameId = requestAnimationFrame(observeFirstDraw);
+    };
+    frameId = requestAnimationFrame(observeFirstDraw);
+    return () => {
+      cancelled = true;
+      if (frameId !== null) cancelAnimationFrame(frameId);
+    };
+  }, [lostMountKey, mountKey, preparedUniforms, webGlSupported]);
+
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      setReadyMountKey(null);
+      setLostMountKey(mountKey);
+    };
+    surface.addEventListener("webglcontextlost", handleContextLost, true);
+    return () => {
+      surface.removeEventListener("webglcontextlost", handleContextLost, true);
+    };
+  }, [mountKey]);
+
   const animationSpeed = config.speed / 100;
   const shouldAnimate =
     preparedUniforms !== null &&
+    shaderReady &&
     playing &&
     definition.animated &&
     animationSpeed > 0;
@@ -91,6 +181,11 @@ export function ZenShaderSurface({
         resolvedMaxPixelCount ?? LIVE_BACKGROUND_PIXEL_BUDGET,
         LIVE_BACKGROUND_PIXEL_BUDGET,
       );
+  const useSharedGlassCompositor =
+    shaderReady &&
+    !preview &&
+    config.glass.enabled &&
+    layouts.uiSurfaces.length > 0;
 
   return (
     <div
@@ -98,6 +193,7 @@ export function ZenShaderSurface({
       data-zen-shader-surface
       data-zen-shader-preview={preview ? "true" : "false"}
       data-zen-shader-ready={preparedUniforms ? "true" : "false"}
+      data-zen-shader-renderer={rendererStatus}
       data-contrast-guard={config.contrastGuard.mode}
       data-contrast-target={
         config.contrastGuard.mode === "auto"
@@ -117,9 +213,9 @@ export function ZenShaderSurface({
         background: `linear-gradient(135deg, ${palette.colors[0]}, ${palette.colors[1]})`,
       }}
     >
-      {preparedUniforms && (
+      {webGlSupported && lostMountKey !== mountKey && preparedUniforms && (
         <ShaderMount
-          key={config.shader}
+          key={mountKey}
           {...mountProps}
           ref={paperMountRef}
           data-paper-shader={config.shader}
@@ -134,8 +230,25 @@ export function ZenShaderSurface({
           webGlContextAttributes={{
             alpha: true,
             antialias: false,
-            powerPreference: "low-power",
+            powerPreference: "default",
             premultipliedAlpha: true,
+          }}
+        />
+      )}
+      {useSharedGlassCompositor && (
+        <div
+          data-zen-glass-compositor
+          className="pointer-events-none absolute inset-0"
+          style={{
+            backdropFilter: `blur(${config.glass.blur}px) saturate(${config.glass.saturation}) contrast(1.03)`,
+            maskImage: buildZenGlassMask(
+              layouts.surfaceSize,
+              layouts.glass,
+              layouts.uiSurfaces,
+            ),
+            maskPosition: "0 0",
+            maskRepeat: "no-repeat",
+            maskSize: "100% 100%",
           }}
         />
       )}

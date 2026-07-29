@@ -1,7 +1,9 @@
 import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
 import type { UnplacedBeat } from "./unplacedBeatsStore";
-import { saveSceneBeatsOnly, loadSceneFull } from "@/features/tree/api";
+import { saveSceneBeatsOnly } from "@/features/tree/api";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { prepareUnplacedBeatsForGrid } from "./addUnplacedBeatFromGrid";
+import { runGridBeatMutation } from "./gridBeatMutationQueue";
 
 export function beatToPlainText(beat: UnplacedBeat): string {
   return (beat.content ?? [])
@@ -10,21 +12,8 @@ export function beatToPlainText(beat: UnplacedBeat): string {
 }
 
 async function hydrateIfEmpty(sceneId: string): Promise<UnplacedBeat[]> {
-  const store = useUnplacedBeatsStore.getState();
-  let beats = store.getBeats(sceneId);
-  if (beats.length === 0) {
-    try {
-      const { unplacedBeatsDoc } = await loadSceneFull(sceneId);
-      const parsed: unknown = JSON.parse(unplacedBeatsDoc);
-      if (Array.isArray(parsed)) {
-        store.setBeats(sceneId, parsed as UnplacedBeat[], "load");
-        beats = store.getBeats(sceneId);
-      }
-    } catch {
-      // missing/malformed — treat as empty
-    }
-  }
-  return beats;
+  await prepareUnplacedBeatsForGrid(sceneId);
+  return useUnplacedBeatsStore.getState().getBeats(sceneId);
 }
 
 /**
@@ -53,36 +42,40 @@ export async function editUnplacedBeatFromGrid(
   beatId: string,
   newText: string,
 ): Promise<void> {
-  const trimmed = newText.trim();
-  await hydrateIfEmpty(sceneId);
+  await runGridBeatMutation(sceneId, async () => {
+    const trimmed = newText.trim();
+    await hydrateIfEmpty(sceneId);
 
-  const store = useUnplacedBeatsStore.getState();
-  const prevBeats = store.getBeats(sceneId);
-  const target = prevBeats.find((b) => b.id === beatId);
-  if (!target) return;
+    const store = useUnplacedBeatsStore.getState();
+    const prevBeats = store.getBeats(sceneId);
+    const target = prevBeats.find((b) => b.id === beatId);
+    if (!target) {
+      throw new Error(`Grid Beat edit target is unavailable: ${beatId}`);
+    }
 
-  if (!trimmed) {
-    store.removeBeat(sceneId, beatId);
-  } else {
-    store.updateBeat(sceneId, beatId, {
-      content: [{ type: "text", text: trimmed }],
-    });
-  }
+    if (!trimmed) {
+      store.removeBeat(sceneId, beatId);
+    } else {
+      store.updateBeat(sceneId, beatId, {
+        content: [{ type: "text", text: trimmed }],
+      });
+    }
 
-  const beats = store.getBeats(sceneId);
-  const unplacedBeatsDoc = JSON.stringify(beats);
+    const beats = store.getBeats(sceneId);
+    const unplacedBeatsDoc = JSON.stringify(beats);
 
-  let unplacedBeatPreview: string | null;
-  try {
-    ({ unplacedBeatPreview } = await saveSceneBeatsOnly(sceneId, {
-      unplacedBeatsDoc,
-    }));
-  } catch (err) {
-    store.setBeats(sceneId, prevBeats);
-    throw err;
-  }
+    let unplacedBeatPreview: string | null;
+    try {
+      ({ unplacedBeatPreview } = await saveSceneBeatsOnly(sceneId, {
+        unplacedBeatsDoc,
+      }));
+    } catch (error) {
+      store.setBeats(sceneId, prevBeats);
+      throw error;
+    }
 
-  useTreeStore
-    .getState()
-    .setNodePreview(sceneId, { unplaced: unplacedBeatPreview });
+    useTreeStore
+      .getState()
+      .setNodePreview(sceneId, { unplaced: unplacedBeatPreview });
+  });
 }

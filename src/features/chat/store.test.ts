@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   useAiSettingsStore,
+  refreshDynamicCapsForProvider,
+  invalidateOllamaEffectiveContexts,
   selectProviderReadiness,
   isRagCapableProvider,
 } from "./store";
 import type { AiSettings, AiModel } from "./types";
 import { DEFAULT_AI_SETTINGS } from "./types";
+import {
+  __resetDynamicModelCapsForTests,
+  getDynamicModelMeta,
+  registerDynamicModelCaps,
+} from "./agent/dynamicModelCaps";
 
 vi.mock("./api", () => ({
   getAiSettings: vi.fn(),
@@ -51,9 +58,12 @@ function resetStore() {
     connectionTestResult: null,
     models: [],
     isLoadingModels: false,
+    modelLoadError: null,
+    modelCapsRevision: 0,
     chatModelOverride: null,
     chatProviderOverride: null,
     chatModelVariantOverride: null,
+    chatEndpointIdOverride: null,
   });
 }
 
@@ -68,7 +78,9 @@ const defaultSettings: AiSettings = {
 describe("useAiSettingsStore", () => {
   beforeEach(() => {
     resetStore();
+    __resetDynamicModelCapsForTests();
     vi.clearAllMocks();
+    mockListAiModels.mockResolvedValue([]);
   });
 
   describe("loadSettings", () => {
@@ -90,6 +102,870 @@ describe("useAiSettingsStore", () => {
       await useAiSettingsStore.getState().loadSettings();
 
       expect(useAiSettingsStore.getState().hasApiKey).toBe(false);
+    });
+
+    it("refreshes stale Ollama metadata during startup", async () => {
+      const ollamaSettings: AiSettings = {
+        ...defaultSettings,
+        provider: "ollama",
+        model: "gemma4:latest",
+      };
+      const models: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "gemma4:latest",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools", "reasoning"],
+        },
+      ];
+      mockGetAiSettings.mockResolvedValueOnce(ollamaSettings);
+      mockHasApiKey.mockResolvedValueOnce(false);
+      mockListAiModels.mockResolvedValueOnce(models);
+
+      await useAiSettingsStore.getState().loadSettings();
+
+      await vi.waitFor(() => {
+        expect(useAiSettingsStore.getState().models).toEqual(models);
+      });
+      expect(mockListAiModels).toHaveBeenCalledWith(
+        "ollama",
+        undefined,
+        null,
+        "http://localhost:11434",
+      );
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        ctx: 131_072,
+        effectiveCtx: 65_536,
+        tools: true,
+        reasoning: true,
+      });
+    });
+
+    it("does not let an older load overwrite settings saved while key lookup is pending", async () => {
+      let resolveHasApiKey!: (value: boolean) => void;
+      const loadedSettings: AiSettings = {
+        ...defaultSettings,
+        provider: "ollama",
+        model: "old:latest",
+        ollamaEndpoint: "http://127.0.0.1:11434",
+      };
+      const savedSettings: AiSettings = {
+        ...defaultSettings,
+        provider: "ollama",
+        model: "new:latest",
+        ollamaEndpoint: "http://127.0.0.1:21434",
+      };
+      mockGetAiSettings.mockResolvedValueOnce(loadedSettings);
+      mockHasApiKey.mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveHasApiKey = resolve;
+          }),
+      );
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      const staleLoad = useAiSettingsStore.getState().loadSettings();
+      await vi.waitFor(() => expect(mockHasApiKey).toHaveBeenCalledOnce());
+      await useAiSettingsStore.getState().saveSettings(savedSettings);
+      resolveHasApiKey(false);
+      await staleLoad;
+
+      expect(useAiSettingsStore.getState().settings).toEqual(savedSettings);
+      expect(mockListAiModels).not.toHaveBeenCalled();
+    });
+
+    it("waits for a pending save before loading the authoritative settings snapshot", async () => {
+      let resolveSave!: () => void;
+      const savedSettings: AiSettings = {
+        ...defaultSettings,
+        provider: "ollama",
+        model: "new:latest",
+        ollamaEndpoint: "http://127.0.0.1:21434",
+      };
+      mockSaveAiSettings.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveSave = resolve;
+          }),
+      );
+      mockGetAiSettings.mockResolvedValueOnce(savedSettings);
+      mockHasApiKey.mockResolvedValueOnce(false);
+
+      const save = useAiSettingsStore.getState().saveSettings(savedSettings);
+      const load = useAiSettingsStore.getState().loadSettings();
+      await Promise.resolve();
+      expect(mockGetAiSettings).not.toHaveBeenCalled();
+
+      resolveSave();
+      await Promise.all([save, load]);
+
+      expect(mockGetAiSettings).toHaveBeenCalledOnce();
+      expect(useAiSettingsStore.getState().settings).toEqual(savedSettings);
+    });
+  });
+
+  describe("refreshDynamicCapsForProvider", () => {
+    it("shares one in-flight fetch for the same provider", async () => {
+      let resolveModels!: (models: AiModel[]) => void;
+      mockListAiModels.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveModels = resolve)),
+      );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+      const models: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+        },
+      ];
+
+      const first = refreshDynamicCapsForProvider("ollama", { force: true });
+      const second = refreshDynamicCapsForProvider("ollama", { force: true });
+      expect(mockListAiModels).toHaveBeenCalledTimes(1);
+
+      resolveModels(models);
+      await expect(first).resolves.toEqual(models);
+      await expect(second).resolves.toEqual(models);
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models,
+        modelCapsRevision: 1,
+      });
+    });
+
+    it("does not share a selected-model probe across Ollama endpoints", async () => {
+      let resolveFirst!: (models: AiModel[]) => void;
+      let resolveSecond!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveFirst = resolve)),
+        )
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveSecond = resolve)),
+        );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+          ollamaEndpoint: "http://127.0.0.1:11434",
+        },
+      });
+
+      const first = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+        ollamaEndpoint: "http://127.0.0.1:11434",
+      });
+      useAiSettingsStore.setState((state) => ({
+        settings: state.settings
+          ? {
+              ...state.settings,
+              ollamaEndpoint: "http://127.0.0.1:21434",
+            }
+          : null,
+      }));
+      const second = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+        ollamaEndpoint: "http://127.0.0.1:21434",
+      });
+
+      expect(mockListAiModels).toHaveBeenCalledTimes(2);
+      const currentEndpointModel: AiModel = {
+        id: "gemma4:latest",
+        name: "Gemma 4",
+        contextLength: 131_072,
+        effectiveContextLength: 65_536,
+        effectiveContextSource: "runner",
+      };
+      resolveSecond([currentEndpointModel]);
+      await second;
+      resolveFirst([
+        {
+          ...currentEndpointModel,
+          effectiveContextLength: 4_096,
+        },
+      ]);
+      await first;
+
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        effectiveCtx: 65_536,
+      });
+    });
+
+    it("starts a new probe after an Ollama endpoint A-B-A activation cycle", async () => {
+      let resolveOldA!: (models: AiModel[]) => void;
+      let resolveNewA!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveOldA = resolve;
+            }),
+        )
+        .mockResolvedValueOnce([])
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveNewA = resolve;
+            }),
+        );
+      const endpointA = "http://127.0.0.1:11434";
+      const endpointB = "http://127.0.0.1:21434";
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+          ollamaEndpoint: endpointA,
+        },
+      });
+
+      const oldA = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+        ollamaEndpoint: endpointA,
+      });
+      useAiSettingsStore.setState((state) => ({
+        settings: state.settings
+          ? { ...state.settings, ollamaEndpoint: endpointB }
+          : null,
+      }));
+      await refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+        ollamaEndpoint: endpointB,
+      });
+      useAiSettingsStore.setState((state) => ({
+        settings: state.settings
+          ? { ...state.settings, ollamaEndpoint: endpointA }
+          : null,
+      }));
+      const newA = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+        ollamaEndpoint: endpointA,
+      });
+
+      expect(mockListAiModels).toHaveBeenCalledTimes(3);
+      resolveNewA([
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      await newA;
+      resolveOldA([
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 4_096,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      await oldA;
+
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        effectiveCtx: 65_536,
+      });
+    });
+
+    it("does not let an older full failure clear a newer selected observation", async () => {
+      let rejectFull!: (error: Error) => void;
+      let resolveSelected!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((_, reject) => {
+              rejectFull = reject;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveSelected = resolve;
+            }),
+        );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+
+      const full = refreshDynamicCapsForProvider("ollama", { force: true });
+      const selected = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+      });
+      resolveSelected([
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      await selected;
+      rejectFull(new Error("older full failed"));
+      await full;
+
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        ctx: 131_072,
+        effectiveCtx: 65_536,
+        tools: true,
+      });
+      expect(useAiSettingsStore.getState().models[0]).toMatchObject({
+        effectiveContextLength: 65_536,
+      });
+    });
+
+    it("merges an older full success without replacing a newer selected effective value", async () => {
+      let resolveFull!: (models: AiModel[]) => void;
+      let resolveSelected!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveFull = resolve;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveSelected = resolve;
+            }),
+        );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+
+      const full = refreshDynamicCapsForProvider("ollama", { force: true });
+      const selected = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+      });
+      resolveSelected([
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      await selected;
+      resolveFull([
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 4_096,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      await full;
+
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        effectiveCtx: 65_536,
+      });
+      expect(useAiSettingsStore.getState().models[0]).toMatchObject({
+        effectiveContextLength: 65_536,
+      });
+    });
+
+    it("does not let an older selected failure clear a newer full observation", async () => {
+      let rejectSelected!: (error: Error) => void;
+      let resolveFull!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((_, reject) => {
+              rejectSelected = reject;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveFull = resolve;
+            }),
+        );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+
+      const selected = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+      });
+      const full = refreshDynamicCapsForProvider("ollama", { force: true });
+      resolveFull([
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      await full;
+      rejectSelected(new Error("older selected failed"));
+      await selected;
+
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        ctx: 131_072,
+        effectiveCtx: 65_536,
+      });
+      expect(useAiSettingsStore.getState().models[0]).toMatchObject({
+        effectiveContextLength: 65_536,
+      });
+    });
+
+    it("retains older durable metadata but not effective context after a newer selected failure", async () => {
+      let resolveFull!: (models: AiModel[]) => void;
+      let rejectSelected!: (error: Error) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveFull = resolve;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((_, reject) => {
+              rejectSelected = reject;
+            }),
+        );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+
+      const full = refreshDynamicCapsForProvider("ollama", { force: true });
+      const selected = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+      });
+      rejectSelected(new Error("newer selected failed"));
+      await selected;
+      resolveFull([
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      await full;
+
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        ctx: 131_072,
+        tools: true,
+        effectiveCtx: undefined,
+      });
+      expect(useAiSettingsStore.getState().models[0]).toMatchObject({
+        contextLength: 131_072,
+        supportedParameters: ["tools"],
+      });
+      expect(
+        useAiSettingsStore.getState().models[0]?.effectiveContextLength,
+      ).toBeUndefined();
+    });
+
+    it("does not resurrect a model after a newer selected lookup returns no row", async () => {
+      let resolveFull!: (models: AiModel[]) => void;
+      let resolveSelected!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveFull = resolve;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise<AiModel[]>((resolve) => {
+              resolveSelected = resolve;
+            }),
+        );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "deleted:latest",
+        },
+      });
+
+      const full = refreshDynamicCapsForProvider("ollama", { force: true });
+      const selected = refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "deleted:latest",
+      });
+      resolveSelected([]);
+      await selected;
+      resolveFull([
+        {
+          id: "deleted:latest",
+          name: "Deleted",
+          contextLength: 32_768,
+          effectiveContextLength: 32_768,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      await full;
+
+      expect(getDynamicModelMeta("ollama", "deleted:latest")).toBeNull();
+      expect(useAiSettingsStore.getState().models).toEqual([]);
+    });
+
+    it("force refreshes a fresh provider cache", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+      registerDynamicModelCaps(
+        "ollama",
+        [
+          {
+            id: "gemma4:latest",
+            name: "Gemma 4",
+            contextLength: 32_768,
+          },
+        ],
+        { ollamaEndpoint: defaultSettings.ollamaEndpoint },
+      );
+      const refreshed: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+        },
+      ];
+      mockListAiModels.mockResolvedValueOnce(refreshed);
+
+      await expect(
+        refreshDynamicCapsForProvider("ollama", {
+          ollamaEndpoint: defaultSettings.ollamaEndpoint,
+        }),
+      ).resolves.toBeNull();
+      expect(mockListAiModels).not.toHaveBeenCalled();
+
+      await expect(
+        refreshDynamicCapsForProvider("ollama", {
+          force: true,
+          ollamaEndpoint: defaultSettings.ollamaEndpoint,
+        }),
+      ).resolves.toEqual(refreshed);
+      expect(mockListAiModels).toHaveBeenCalledOnce();
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")?.ctx).toBe(131_072);
+    });
+
+    it("probes and merges only the selected Ollama model", async () => {
+      const existingModels: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 4_096,
+          effectiveContextSource: "runner",
+        },
+        { id: "unrelated:latest", name: "Unrelated", contextLength: 65_536 },
+      ];
+      const selectedProbe: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ];
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+        models: existingModels,
+      });
+      mockListAiModels.mockResolvedValueOnce(selectedProbe);
+
+      await refreshDynamicCapsForProvider("ollama", {
+        force: true,
+        selectedModelId: "gemma4:latest",
+      });
+
+      expect(mockListAiModels).toHaveBeenCalledWith(
+        "ollama",
+        undefined,
+        "gemma4:latest",
+        "http://localhost:11434",
+      );
+      expect(useAiSettingsStore.getState().models).toEqual([
+        selectedProbe[0],
+        existingModels[1],
+      ]);
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        ctx: 131_072,
+        effectiveCtx: 65_536,
+      });
+    });
+
+    it("retains durable metadata and clears effective context when selected enrichment is unavailable", async () => {
+      const existing: AiModel = {
+        id: "gemma4:latest",
+        name: "Gemma 4",
+        contextLength: 131_072,
+        effectiveContextLength: 65_536,
+        effectiveContextSource: "runner",
+        supportedParameters: ["tools"],
+      };
+      registerDynamicModelCaps("ollama", [existing], {
+        ollamaEndpoint: defaultSettings.ollamaEndpoint,
+      });
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+        models: [existing],
+      });
+      mockListAiModels.mockResolvedValueOnce([
+        { id: "gemma4:latest", name: "Gemma 4" },
+      ]);
+
+      await expect(
+        refreshDynamicCapsForProvider("ollama", {
+          force: true,
+          selectedModelId: "gemma4:latest",
+          requireOllamaCapabilities: true,
+        }),
+      ).resolves.toBeNull();
+
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        ctx: 131_072,
+        tools: true,
+        effectiveCtx: undefined,
+      });
+      expect(useAiSettingsStore.getState().models[0]).toMatchObject({
+        contextLength: 131_072,
+        supportedParameters: ["tools"],
+      });
+      expect(
+        useAiSettingsStore.getState().models[0]?.effectiveContextLength,
+      ).toBeUndefined();
+    });
+
+    it("rejects a selected Ollama tag row with no context metadata", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+          ollamaContextLengths: {},
+        },
+        models: [],
+      });
+      mockListAiModels.mockResolvedValueOnce([
+        { id: "gemma4:latest", name: "Gemma 4" },
+      ]);
+
+      await expect(
+        refreshDynamicCapsForProvider("ollama", {
+          force: true,
+          selectedModelId: "gemma4:latest",
+        }),
+      ).resolves.toBeNull();
+
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toBeNull();
+      expect(useAiSettingsStore.getState().models).toEqual([]);
+    });
+
+    it("keeps identical bare model ids isolated by provider", async () => {
+      mockListAiModels
+        .mockResolvedValueOnce([
+          {
+            id: "shared:latest",
+            name: "OpenRouter shared",
+            contextLength: 200_000,
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            id: "shared:latest",
+            name: "Ollama shared",
+            contextLength: 131_072,
+            effectiveContextLength: 16_384,
+            effectiveContextSource: "runner",
+          },
+        ]);
+
+      await refreshDynamicCapsForProvider("openrouter", { force: true });
+      await refreshDynamicCapsForProvider("ollama", { force: true });
+
+      expect(getDynamicModelMeta("openrouter", "shared:latest")).toMatchObject({
+        ctx: 200_000,
+      });
+      expect(getDynamicModelMeta("ollama", "shared:latest")).toMatchObject({
+        ctx: 131_072,
+        effectiveCtx: 16_384,
+      });
+    });
+
+    it("does not let a response for the previous provider replace active models", async () => {
+      let resolveModels!: (models: AiModel[]) => void;
+      mockListAiModels.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveModels = resolve)),
+      );
+      useAiSettingsStore.setState({
+        settings: defaultSettings,
+        models: [{ id: "current", name: "Current" }],
+      });
+
+      const pending = refreshDynamicCapsForProvider("openrouter", {
+        force: true,
+      });
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "local",
+        },
+        models: [{ id: "local", name: "Local" }],
+      });
+      resolveModels([
+        {
+          id: "stale",
+          name: "Stale",
+          contextLength: 64_000,
+        },
+      ]);
+
+      await pending;
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [{ id: "local", name: "Local" }],
+        modelCapsRevision: 0,
+      });
+      expect(getDynamicModelMeta("openrouter", "stale")?.ctx).toBe(64_000);
+    });
+
+    it("returns null, preserves static metadata, and clears stale runner state on failure", async () => {
+      registerDynamicModelCaps(
+        "ollama",
+        [
+          {
+            id: "gemma4:latest",
+            name: "Gemma 4",
+            contextLength: 131_072,
+            effectiveContextLength: 32_768,
+            effectiveContextSource: "model-parameter",
+          },
+        ],
+        { ollamaEndpoint: defaultSettings.ollamaEndpoint },
+      );
+      const existingModels: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 32_768,
+          effectiveContextSource: "model-parameter",
+        },
+      ];
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+        models: existingModels,
+        modelCapsRevision: 7,
+      });
+      mockListAiModels.mockRejectedValueOnce(new Error("Ollama offline"));
+
+      await expect(
+        refreshDynamicCapsForProvider("ollama", { force: true }),
+      ).resolves.toBeNull();
+
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [
+          {
+            id: "gemma4:latest",
+            name: "Gemma 4",
+            contextLength: 131_072,
+          },
+        ],
+        modelCapsRevision: 8,
+      });
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        ctx: 131_072,
+        effectiveCtx: undefined,
+        effectiveSource: undefined,
+      });
+    });
+
+    it("does not mutate an active non-Ollama catalog with the same bare id", () => {
+      const openRouterModel: AiModel = {
+        id: "shared:latest",
+        name: "OpenRouter shared",
+        contextLength: 128_000,
+      };
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "openrouter",
+          model: "shared:latest",
+        },
+        models: [openRouterModel],
+        modelCapsRevision: 3,
+      });
+
+      invalidateOllamaEffectiveContexts("shared:latest");
+
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [openRouterModel],
+        modelCapsRevision: 3,
+      });
     });
   });
 
@@ -249,6 +1125,84 @@ describe("useAiSettingsStore", () => {
       expect(mockSaveAiSettings).toHaveBeenCalledWith(newSettings);
       expect(useAiSettingsStore.getState().settings).toEqual(newSettings);
     });
+
+    it("keeps the last successful serialized save when the next queued save fails", async () => {
+      let resolveFirst!: () => void;
+      const firstSettings: AiSettings = {
+        ...defaultSettings,
+        provider: "ollama",
+        model: "first:latest",
+      };
+      const secondSettings: AiSettings = {
+        ...defaultSettings,
+        provider: "ollama",
+        model: "second:latest",
+      };
+      mockSaveAiSettings
+        .mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveFirst = resolve;
+            }),
+        )
+        .mockRejectedValueOnce(new Error("second save failed"));
+
+      const first = useAiSettingsStore.getState().saveSettings(firstSettings);
+      const second = useAiSettingsStore.getState().saveSettings(secondSettings);
+      await vi.waitFor(() => expect(resolveFirst).toBeTypeOf("function"));
+      resolveFirst();
+
+      await first;
+      await expect(second).rejects.toThrow("second save failed");
+      expect(useAiSettingsStore.getState().settings).toEqual(firstSettings);
+    });
+
+    it("invalidates Ollama models, capability scope, and loading on endpoint change", async () => {
+      const endpointA = "http://127.0.0.1:11434";
+      const endpointB = "http://127.0.0.1:21434";
+      registerDynamicModelCaps(
+        "ollama",
+        [
+          {
+            id: "shared:latest",
+            name: "Endpoint A",
+            supportedParameters: [],
+          },
+        ],
+        { ollamaEndpoint: endpointA },
+      );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "shared:latest",
+          ollamaEndpoint: endpointA,
+        },
+        models: [{ id: "shared:latest", name: "Endpoint A" }],
+        isLoadingModels: true,
+        connectionTestResult: { success: true, message: "old endpoint" },
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "ollama",
+        model: "shared:latest",
+        ollamaEndpoint: endpointB,
+      });
+
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [],
+        isLoadingModels: false,
+        modelLoadError: null,
+        modelCapsRevision: 1,
+        connectionTestResult: null,
+      });
+      expect(getDynamicModelMeta("ollama", "shared:latest")).toBeNull();
+      expect(
+        getDynamicModelMeta("ollama", "shared:latest", endpointB),
+      ).toBeNull();
+    });
   });
 
   describe("saveApiKey", () => {
@@ -398,6 +1352,278 @@ describe("useAiSettingsStore", () => {
       expect(state.isLoadingModels).toBe(false);
     });
 
+    it("registers Ollama metadata when models are explicitly loaded", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+      const models: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ];
+      mockListAiModels.mockResolvedValueOnce(models);
+
+      await useAiSettingsStore.getState().loadModels();
+
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models,
+        isLoadingModels: false,
+        modelCapsRevision: 1,
+      });
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        ctx: 131_072,
+        effectiveCtx: 65_536,
+        effectiveSource: "runner",
+        tools: true,
+      });
+    });
+
+    it("reuses a non-empty fresh Ollama catalog on repeated menu loads", async () => {
+      const models: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+          supportedParameters: ["tools"],
+        },
+      ];
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+      mockListAiModels.mockResolvedValueOnce(models);
+
+      await useAiSettingsStore.getState().loadModels();
+      await useAiSettingsStore.getState().loadModels();
+
+      expect(mockListAiModels).toHaveBeenCalledTimes(1);
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models,
+        isLoadingModels: false,
+        modelLoadError: null,
+      });
+    });
+
+    it("lets an explicit refresh replace a non-empty fresh Ollama catalog", async () => {
+      const firstModels: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+        },
+      ];
+      const refreshedModels: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4 replaced",
+          contextLength: 262_144,
+        },
+      ];
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+      mockListAiModels
+        .mockResolvedValueOnce(firstModels)
+        .mockResolvedValueOnce(refreshedModels);
+
+      await useAiSettingsStore.getState().loadModels();
+      await useAiSettingsStore.getState().loadModels({ force: true });
+
+      expect(mockListAiModels).toHaveBeenCalledTimes(2);
+      expect(useAiSettingsStore.getState().models).toEqual(refreshedModels);
+    });
+
+    it("refreshes a non-empty Ollama catalog after its capability cache becomes stale", async () => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+      const firstModels: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4",
+          contextLength: 131_072,
+        },
+      ];
+      const refreshedModels: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Gemma 4 refreshed",
+          contextLength: 131_072,
+        },
+      ];
+      try {
+        useAiSettingsStore.setState({
+          settings: {
+            ...defaultSettings,
+            provider: "ollama",
+            model: "gemma4:latest",
+          },
+        });
+        mockListAiModels
+          .mockResolvedValueOnce(firstModels)
+          .mockResolvedValueOnce(refreshedModels);
+
+        await useAiSettingsStore.getState().loadModels();
+        now.mockReturnValue(1_000 + 24 * 60 * 60 * 1_000 + 1);
+        await useAiSettingsStore.getState().loadModels();
+
+        expect(mockListAiModels).toHaveBeenCalledTimes(2);
+        expect(useAiSettingsStore.getState().models).toEqual(refreshedModels);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it("retries a fresh but empty Ollama catalog", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+      });
+      mockListAiModels.mockResolvedValue([]);
+
+      await useAiSettingsStore.getState().loadModels();
+      await useAiSettingsStore.getState().loadModels();
+
+      expect(mockListAiModels).toHaveBeenCalledTimes(2);
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [],
+        isLoadingModels: false,
+        modelLoadError: null,
+      });
+    });
+
+    it("continues to force-refresh a fresh OpenRouter catalog", async () => {
+      const firstModels: AiModel[] = [
+        { id: "openai/gpt-5", name: "GPT-5", contextLength: 400_000 },
+      ];
+      const refreshedModels: AiModel[] = [
+        { id: "openai/gpt-5", name: "GPT-5 refreshed", contextLength: 400_000 },
+      ];
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "openrouter",
+          model: "openai/gpt-5",
+        },
+      });
+      mockListAiModels
+        .mockResolvedValueOnce(firstModels)
+        .mockResolvedValueOnce(refreshedModels);
+
+      await useAiSettingsStore.getState().loadModels();
+      await useAiSettingsStore.getState().loadModels();
+
+      expect(mockListAiModels).toHaveBeenCalledTimes(2);
+      expect(useAiSettingsStore.getState().models).toEqual(refreshedModels);
+    });
+
+    it("keeps the last Ollama models when an explicit refresh fails", async () => {
+      const existingModels: AiModel[] = [
+        { id: "gemma4:latest", name: "Gemma 4" },
+      ];
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+        },
+        models: existingModels,
+      });
+      mockListAiModels.mockRejectedValueOnce(new Error("Ollama offline"));
+
+      await useAiSettingsStore.getState().loadModels();
+
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: existingModels,
+        isLoadingModels: false,
+        modelLoadError: "Failed to refresh ollama models",
+      });
+    });
+
+    it("does not apply a full Ollama catalog response from a previous endpoint", async () => {
+      let resolveOld!: (models: AiModel[]) => void;
+      let resolveCurrent!: (models: AiModel[]) => void;
+      mockListAiModels
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveOld = resolve)),
+        )
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveCurrent = resolve)),
+        );
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "ollama",
+          model: "gemma4:latest",
+          ollamaEndpoint: "http://127.0.0.1:11434",
+        },
+        models: [{ id: "current", name: "Current" }],
+      });
+
+      const oldRequest = useAiSettingsStore.getState().loadModels();
+      useAiSettingsStore.setState((state) => ({
+        settings: state.settings
+          ? {
+              ...state.settings,
+              ollamaEndpoint: "http://127.0.0.1:21434",
+            }
+          : null,
+      }));
+      const currentRequest = useAiSettingsStore.getState().loadModels();
+
+      resolveOld([
+        {
+          id: "gemma4:latest",
+          name: "Old endpoint",
+          contextLength: 131_072,
+          effectiveContextLength: 4_096,
+          effectiveContextSource: "runner",
+        },
+      ]);
+      await oldRequest;
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: [{ id: "current", name: "Current" }],
+        isLoadingModels: true,
+      });
+
+      const currentModels: AiModel[] = [
+        {
+          id: "gemma4:latest",
+          name: "Current endpoint",
+          contextLength: 131_072,
+          effectiveContextLength: 65_536,
+          effectiveContextSource: "runner",
+        },
+      ];
+      resolveCurrent(currentModels);
+      await currentRequest;
+
+      expect(useAiSettingsStore.getState()).toMatchObject({
+        models: currentModels,
+        isLoadingModels: false,
+      });
+      expect(getDynamicModelMeta("ollama", "gemma4:latest")).toMatchObject({
+        effectiveCtx: 65_536,
+      });
+    });
+
     it("fetches CLI models when provider is cli", async () => {
       useAiSettingsStore.setState({
         settings: {
@@ -476,7 +1702,7 @@ describe("useAiSettingsStore", () => {
           () => new Promise((resolve) => (resolveLatest = resolve)),
         );
       useAiSettingsStore.setState({
-        settings: defaultSettings,
+        settings: { ...defaultSettings, provider: "openai" },
         models: [{ id: "current", name: "Current" }],
       });
 
@@ -510,6 +1736,7 @@ describe("useAiSettingsStore", () => {
         );
       const settingsA: AiSettings = {
         ...defaultSettings,
+        provider: "openai-compatible",
         activeOpenaiCompatibleEndpointId: "endpoint-a",
       };
       useAiSettingsStore.setState({
@@ -521,6 +1748,7 @@ describe("useAiSettingsStore", () => {
       useAiSettingsStore.setState({
         settings: {
           ...defaultSettings,
+          provider: "openai-compatible",
           activeOpenaiCompatibleEndpointId: "endpoint-b",
         },
       });
@@ -553,7 +1781,7 @@ describe("useAiSettingsStore", () => {
           () => new Promise((_resolve, reject) => (rejectLatest = reject)),
         );
       useAiSettingsStore.setState({
-        settings: defaultSettings,
+        settings: { ...defaultSettings, provider: "openai" },
         models: [{ id: "current", name: "Current" }],
       });
 

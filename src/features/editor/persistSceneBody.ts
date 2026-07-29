@@ -1,8 +1,16 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { markStart, markEnd } from "@/lib/perfLog";
+import {
+  markStart,
+  markEnd,
+  recordCounter,
+  recordSerializedByteCounter,
+} from "@/lib/perfLog";
 import { countSceneBodyChars } from "@/features/editor/charCountForBody";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
-import { saveSceneContentInner } from "@/features/tree/api";
+import {
+  saveSceneContentInner,
+  type DerivedPreviews,
+} from "@/features/tree/api";
 import { serializeSceneWrite } from "@/features/tree/pendingSceneWrites";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
@@ -21,6 +29,10 @@ import { useChatStore } from "@/features/chat/chatStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { recordBodyMentionScans } from "@/features/codex/bodyMentionIndexState";
+import { isElectron } from "@/lib/shell";
+import { deriveSceneBodySnapshot } from "./sceneBodySnapshot";
+import { saveSceneBodyBundle } from "./sceneBodyBundleApi";
+import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
 
 interface PendingBodyMentionScan {
   projectId: string;
@@ -66,6 +78,10 @@ function scheduleBodyMentionScan(
       // completion cache can be empty/stale during a project switch.
       const allEntries =
         scan.allEntries ?? (await listCodexMatchTargets(scan.projectId));
+      // With no match targets there can be no derived mention rows. The index
+      // readiness contract already treats an empty project as ready, so avoid
+      // parsing the 50k document or recording a redundant scan revision.
+      if (allEntries.length === 0) return;
       await upsertSceneBodyMentions(id, scan.docJsonStr, allEntries);
       await recordBodyMentionScans(scan.projectId, allEntries, [
         {
@@ -151,20 +167,41 @@ export async function persistSceneBody(
   id: string,
   doc: ProseMirrorNode,
 ): Promise<void> {
-  markStart("editor.coreSave.countChars");
-  const charCount = countSceneBodyChars(doc);
-  markEnd("editor.coreSave.countChars");
   const beats = useUnplacedBeatsStore.getState().getBeats(id);
-  const unplacedBeatsDoc = JSON.stringify(beats);
-  markStart("editor.coreSave.getJSON");
-  const sceneJsonStr = JSON.stringify(doc.toJSON());
-  markEnd("editor.coreSave.getJSON");
   const projectId = useTreeStore.getState().projectId;
 
   const fileBackedUri = useTreeStore
     .getState()
     .nodes.find((n) => n.id === id)?.sourceUri;
   const isFileBacked = !!fileBackedUri && isFileBackedNode(fileBackedUri);
+  const useNativeBundle = isElectron();
+
+  let nativeSnapshot: ReturnType<typeof deriveSceneBodySnapshot> | null = null;
+  let charCount: number;
+  let unplacedBeatsDoc: string;
+  let sceneJsonStr: string;
+  if (useNativeBundle) {
+    markStart("editor.coreSave.deriveSnapshot");
+    nativeSnapshot = deriveSceneBodySnapshot(doc, beats, !isFileBacked);
+    markEnd("editor.coreSave.deriveSnapshot");
+    charCount = nativeSnapshot.charCount;
+    unplacedBeatsDoc = nativeSnapshot.unplacedBeatsDoc;
+    sceneJsonStr = nativeSnapshot.contentJson;
+  } else {
+    // Browser fallback and the frozen Tauri compatibility shell retain the
+    // existing per-service path. Electron uses the domain bundle below.
+    markStart("editor.coreSave.countChars");
+    charCount = countSceneBodyChars(doc);
+    markEnd("editor.coreSave.countChars");
+    unplacedBeatsDoc = JSON.stringify(beats);
+    markStart("editor.coreSave.getJSON");
+    sceneJsonStr = JSON.stringify(doc.toJSON());
+    markEnd("editor.coreSave.getJSON");
+  }
+  // Payload size is recorded separately from elapsed serialization time. UTF-8
+  // bytes match the bridge/SQLite payload more closely than JavaScript UTF-16
+  // code units, especially for the canonical Japanese long-scene fixture.
+  recordSerializedByteCounter("editor.coreSave.serializeBytes", sceneJsonStr);
 
   // content 書き込みと full-replace cascade (authorship / foreshadow /
   // annotation anchors) を **単一のチェーン単位** として実行する。cascade を
@@ -181,13 +218,33 @@ export async function persistSceneBody(
     contentUpdatedAt,
   } = await serializeSceneWrite(id, async () => {
     markStart("editor.coreSave.invokeSave");
-    const previews = await saveSceneContentInner(id, {
-      content: sceneJsonStr,
-      unplacedBeatsDoc,
-      charCount,
-    });
+    let previews: DerivedPreviews;
+    if (nativeSnapshot) {
+      recordCounter("editor.coreSave.domainIpc");
+      const bundledPreviews = await saveSceneBodyBundle({
+        ...nativeSnapshot,
+        sceneId: id,
+        projectId,
+        includeSidecars: !isFileBacked,
+      });
+      recordCounter(
+        "editor.coreSave.dbTransaction",
+        bundledPreviews.dbTransactionCount,
+      );
+      previews = bundledPreviews;
+    } else {
+      previews = await saveSceneContentInner(id, {
+        content: sceneJsonStr,
+        unplacedBeatsDoc,
+        charCount,
+      });
+    }
     markEnd("editor.coreSave.invokeSave");
-    if (!isFileBacked) {
+    if (nativeSnapshot && !isFileBacked) {
+      // The former POV cache helper bumped this revision after its DB writes.
+      // The bundle owns those writes now, so publish once after commit.
+      bumpMatrixDataVersion();
+    } else if (!nativeSnapshot && !isFileBacked) {
       markStart("editor.coreSave.saveAuthorship");
       await saveAuthorshipSpans(id, doc);
       markEnd("editor.coreSave.saveAuthorship");
@@ -197,6 +254,42 @@ export async function persistSceneBody(
       markStart("editor.coreSave.saveAnnotations");
       await saveAnnotationAnchors(projectId, id, doc);
       markEnd("editor.coreSave.saveAnnotations");
+
+      // Beat-derived caches are whole-set replacements (insert desired rows,
+      // then prune stale rows). They must settle inside the same per-scene
+      // chain as content: otherwise an older save can finish pruning after a
+      // newer save and restore the old mention / POV set.
+      markStart("editor.coreSave.extractBeatMentions");
+      const beatMentions = extractBeatMentions(doc);
+      markEnd("editor.coreSave.extractBeatMentions");
+      markStart("editor.coreSave.upsertBeatMentions");
+      try {
+        await upsertSceneBeatMentions(id, beatMentions);
+      } catch (e) {
+        debugLog.error(
+          "persistSceneBody",
+          "upsertSceneBeatMentions failed",
+          errorDetail(e),
+        );
+      } finally {
+        markEnd("editor.coreSave.upsertBeatMentions");
+      }
+
+      markStart("editor.coreSave.extractBeatPovOverrides");
+      const beatPovOverrides = extractBeatPovOverrides(doc);
+      markEnd("editor.coreSave.extractBeatPovOverrides");
+      markStart("editor.coreSave.upsertBeatPovOverrides");
+      try {
+        await upsertSceneBeatPovOverrides(id, beatPovOverrides);
+      } catch (e) {
+        debugLog.error(
+          "persistSceneBody",
+          "upsertSceneBeatPovOverrides failed",
+          errorDetail(e),
+        );
+      } finally {
+        markEnd("editor.coreSave.upsertBeatPovOverrides");
+      }
     }
     return previews;
   });
@@ -234,32 +327,6 @@ export async function persistSceneBody(
     unplaced: unplacedBeatPreview ?? null,
   });
   markEnd("editor.coreSave.treeMirror");
-  markStart("editor.coreSave.extractBeatMentions");
-  const beatMentions = extractBeatMentions(doc);
-  markEnd("editor.coreSave.extractBeatMentions");
-  markStart("editor.coreSave.upsertBeatMentions");
-  upsertSceneBeatMentions(id, beatMentions)
-    .catch((e) => {
-      debugLog.error(
-        "persistSceneBody",
-        "upsertSceneBeatMentions failed",
-        errorDetail(e),
-      );
-    })
-    .finally(() => markEnd("editor.coreSave.upsertBeatMentions"));
-  markStart("editor.coreSave.extractBeatPovOverrides");
-  const beatPovOverrides = extractBeatPovOverrides(doc);
-  markEnd("editor.coreSave.extractBeatPovOverrides");
-  markStart("editor.coreSave.upsertBeatPovOverrides");
-  upsertSceneBeatPovOverrides(id, beatPovOverrides)
-    .catch((e) => {
-      debugLog.error(
-        "persistSceneBody",
-        "upsertSceneBeatPovOverrides failed",
-        errorDetail(e),
-      );
-    })
-    .finally(() => markEnd("editor.coreSave.upsertBeatPovOverrides"));
   // Deferred body-mention scan — does not block the save response
   scheduleCurrentBodyMentionScan(
     projectId,

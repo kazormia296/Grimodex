@@ -7,6 +7,17 @@ export interface ScopeSessionKey {
   snippetAnchorId: string | undefined;
 }
 
+export function scopeSessionKeysEqual(
+  left: ScopeSessionKey,
+  right: ScopeSessionKey,
+): boolean {
+  return (
+    left.nodeId === right.nodeId &&
+    left.codexAnchorId === right.codexAnchorId &&
+    left.snippetAnchorId === right.snippetAnchorId
+  );
+}
+
 export function resolveScopeSessionKey(
   scope: ChatScope,
   activeSceneId: string | null | undefined,
