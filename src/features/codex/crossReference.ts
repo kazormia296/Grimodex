@@ -1,4 +1,3 @@
-import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
 import { sceneCodexMentions, treeNodes } from "@/db/schema";
 import { loadSceneContents } from "@/features/tree/api";
@@ -15,10 +14,6 @@ import {
   extractCodexSemanticLinks,
   type CodexSemanticLink,
 } from "./semanticLinks";
-
-interface QueryResult {
-  rows: Array<{ id: string; title: string; parent_id: string | null }>;
-}
 
 export interface SceneMention {
   sceneId: string;
@@ -114,12 +109,16 @@ export async function buildCrossReferenceReportForProject(
   const entries = await listCodexMatchTargets(projectId);
   if (entries.length === 0) return [];
 
-  const scenesResult = await invoke<QueryResult>("db_execute", {
-    sql: "SELECT id, title, parent_id FROM tree_nodes WHERE node_type = 'scene' AND project_id = ? ORDER BY sort_order",
-    params: [projectId],
-    method: "all",
-  });
-  const scenes = scenesResult.rows;
+  const scenes = await db
+    .select({
+      id: treeNodes.id,
+      title: treeNodes.title,
+    })
+    .from(treeNodes)
+    .where(
+      and(eq(treeNodes.nodeType, "scene"), eq(treeNodes.projectId, projectId)),
+    )
+    .orderBy(treeNodes.sortOrder);
   if (scenes.length === 0) return [];
 
   const targets = entries.map((e: CodexMatchRow) => ({

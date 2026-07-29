@@ -1037,6 +1037,229 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("renderer aggregate writes は typed payload を native へ明示写像する", async () => {
+    const authorshipReplaceLane = vi.fn().mockResolvedValue(undefined);
+    const entityTagsSet = vi.fn().mockResolvedValue(undefined);
+    const codexRenameUndo = vi.fn().mockResolvedValue(undefined);
+    const scanStagingProjectCreate = vi.fn().mockResolvedValue(undefined);
+    const treePlanUndo = vi.fn().mockResolvedValue(undefined);
+    const mapWriteBundle = vi.fn().mockResolvedValue(undefined);
+    const { backend } = fakeBackend({
+      authorshipReplaceLane: authorshipReplaceLane as never,
+      entityTagsSet: entityTagsSet as never,
+      codexRenameUndo: codexRenameUndo as never,
+      scanStagingProjectCreate: scanStagingProjectCreate as never,
+      treePlanUndo: treePlanUndo as never,
+      mapWriteBundle: mapWriteBundle as never,
+    });
+    const calls = [
+      [
+        "authorship_replace_lane",
+        {
+          payload: {
+            lane: { kind: "node", nodeId: "scene-1" },
+            spans: [
+              {
+                id: "span-1",
+                fromPos: 1,
+                toPos: 3,
+                source: "ai",
+                model: null,
+                timestamp: "now",
+                chatMsgId: null,
+                traceId: null,
+              },
+            ],
+          },
+        },
+        authorshipReplaceLane,
+      ],
+      [
+        "entity_tags_set",
+        {
+          payload: {
+            entityKind: "codex",
+            entityId: "codex-1",
+            tagIds: ["tag-1"],
+            updatedAt: "now",
+          },
+        },
+        entityTagsSet,
+      ],
+      [
+        "codex_rename_undo",
+        {
+          payload: {
+            projectId: "project-1",
+            updatedAt: "now",
+            updates: [
+              {
+                kind: "node-title",
+                refId: "scene-1",
+                detailDefinitionId: null,
+                value: "Old title",
+                charCount: null,
+                placedBeatPreview: null,
+              },
+            ],
+          },
+        },
+        codexRenameUndo,
+      ],
+      [
+        "scan_staging_project_create",
+        {
+          payload: {
+            id: "project-1",
+            title: "Import",
+            language: "ja",
+            createdAt: "now",
+          },
+        },
+        scanStagingProjectCreate,
+      ],
+      [
+        "tree_plan_undo",
+        {
+          payload: {
+            projectId: "project-1",
+            beforeStates: [
+              {
+                id: "scene-1",
+                parentId: null,
+                sortOrder: "a0",
+                title: "Scene",
+              },
+            ],
+            createdIds: ["folder-1"],
+            updatedAt: "now",
+          },
+        },
+        treePlanUndo,
+      ],
+      [
+        "map_write_bundle",
+        {
+          payload: {
+            kind: "erase-ai-branch",
+            projectId: "project-1",
+            branchId: "branch-1",
+            spanIds: [],
+            stickyPositionIds: [],
+            stickyIds: [],
+          },
+        },
+        mapWriteBundle,
+      ],
+    ] as const;
+
+    for (const [command, args, method] of calls) {
+      await expect(
+        dispatchInvoke(command, args, { backend, shell: noShell }),
+      ).resolves.toEqual({ ok: true, value: null });
+      expect(method).toHaveBeenCalledExactlyOnceWith(args.payload);
+    }
+  });
+
+  it("renderer aggregate writes は不正payloadと旧nativeを拒否する", async () => {
+    const authorshipReplaceLane = vi.fn();
+    const invalid = await dispatchInvoke(
+      "authorship_replace_lane",
+      {
+        payload: {
+          lane: { kind: "node", nodeId: "scene-1" },
+          spans: [
+            {
+              id: "span-1",
+              fromPos: 3,
+              toPos: 1,
+              source: "invalid",
+              model: null,
+              timestamp: null,
+              chatMsgId: null,
+              traceId: null,
+            },
+          ],
+        },
+      },
+      {
+        backend: fakeBackend({
+          authorshipReplaceLane: authorshipReplaceLane as never,
+        }).backend,
+        shell: noShell,
+      },
+    );
+    expect(invalid.ok).toBe(false);
+    expect(authorshipReplaceLane).not.toHaveBeenCalled();
+
+    for (const command of [
+      "authorship_replace_lane",
+      "codex_rename_undo",
+      "entity_tags_set",
+      "scan_staging_project_create",
+      "tree_plan_undo",
+      "map_write_bundle",
+    ]) {
+      const oldNative = await dispatchInvoke(
+        command,
+        command === "authorship_replace_lane"
+          ? {
+              payload: { lane: { kind: "node", nodeId: "scene-1" }, spans: [] },
+            }
+          : command === "codex_rename_undo"
+            ? {
+                payload: {
+                  projectId: "project-1",
+                  updatedAt: "now",
+                  updates: [],
+                },
+              }
+            : command === "entity_tags_set"
+              ? {
+                  payload: {
+                    entityKind: "snippet",
+                    entityId: "snippet-1",
+                    tagIds: [],
+                    updatedAt: null,
+                  },
+                }
+              : command === "scan_staging_project_create"
+                ? {
+                    payload: {
+                      id: "project-1",
+                      title: "Import",
+                      language: "en",
+                      createdAt: "now",
+                    },
+                  }
+                : command === "map_write_bundle"
+                  ? {
+                      payload: {
+                        kind: "erase-ai-branch",
+                        projectId: "project-1",
+                        branchId: "branch-1",
+                        spanIds: [],
+                        stickyPositionIds: [],
+                        stickyIds: [],
+                      },
+                    }
+                  : {
+                      payload: {
+                        projectId: "project-1",
+                        beforeStates: [],
+                        createdIds: [],
+                        updatedAt: "now",
+                      },
+                    },
+        { backend: fakeBackend().backend, shell: noShell },
+      );
+      expect(oldNative).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE"),
+      });
+    }
+  });
+
   it("project snapshot typed commands は集約payloadを明示写像する", async () => {
     const projectSnapshotCreate = vi.fn().mockResolvedValue(undefined);
     const projectSnapshotRestoreContext = vi.fn().mockResolvedValue(
@@ -1798,6 +2021,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "agent_scene_event_unlink",
       "agent_snippet_create",
       "agent_write_bundle",
+      "authorship_replace_lane",
       "chat_index_message",
       "chat_index_status",
       "chat_message_search",
@@ -1807,10 +2031,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "codex_match_text",
       "codex_rebuild_matcher",
       "codex_reindex_all",
+      "codex_rename_undo",
       "codex_semantic_search",
       "db_execute",
       "db_execute_batch",
       "deactivate_license",
+      "entity_tags_set",
       "event_get_version",
       "event_set_participants",
       "events_index_entry",
@@ -1871,6 +2097,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "list_post_effect_runs",
       "list_scene_lens_for_project",
       "list_system_fonts",
+      "map_write_bundle",
       "open_workspace",
       "plot_thread_branch_create",
       "plot_thread_create",
@@ -1895,6 +2122,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_global_settings",
       "save_post_effect_annotations",
       "save_scene_body_bundle",
+      "scan_staging_project_create",
       "seed_sample_workspace",
       "segment_bunsetsu",
       "semantic_cancel_background",
@@ -1918,6 +2146,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "trash_bin_delete",
       "trash_bin_list",
       "trash_bin_prune",
+      "tree_plan_undo",
       "update_annotation_status",
       "vacuum_database",
       "validate_workspace_path",

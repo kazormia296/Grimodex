@@ -1546,18 +1546,46 @@ export async function createBrowserMock(
     return nextVersion;
   }
 
-  function handleFtsSearch(args: Record<string, unknown>): Array<{
-    sourceType: "scene" | "codex" | "snippet";
-    id: string;
-    title: string;
-    excerpt: string;
-  }> {
+  function handleFtsSearch(
+    args: Record<string, unknown>,
+  ): Array<Record<string, unknown>> {
     const projectId = String(args.projectId ?? "default-project");
     const query = String(args.query ?? "").trim();
+    const scope = String(args.scope ?? "all");
     const limit = Math.max(1, Number(args.limit ?? 50));
     if (!query) return [];
 
     const like = `%${query}%`;
+    if (scope === "chat_history") {
+      return queryAll(
+        `SELECT
+            m.id AS msg_id,
+            m.session_id,
+            s.title AS session_title,
+            s.node_id,
+            s.codex_anchor_id,
+            s.snippet_anchor_id,
+            m.role,
+            m.content,
+            m.created_at,
+            s.updated_at AS session_updated_at
+           FROM chat_messages m
+           JOIN chat_sessions s ON m.session_id = s.id
+          WHERE s.project_id = ?
+            AND m.role != 'system'
+            AND m.content LIKE ?
+          ORDER BY s.updated_at DESC, m.created_at DESC
+          LIMIT ?`,
+        [projectId, like, limit],
+      ).map((row) => ({
+        ...row,
+        highlighted_content: String(row.content).replace(
+          query,
+          `\x01${query}\x02`,
+        ),
+      }));
+    }
+
     const result = handleDbExecute({
       sql: `SELECT 'scene' AS source_type, id, title,
                    COALESCE(synopsis, '') AS excerpt
@@ -1665,6 +1693,1007 @@ export async function createBrowserMock(
     }
     stmt.free();
     return rows;
+  }
+
+  function handleAuthorshipReplaceLane(args: Record<string, unknown>): void {
+    const payload = args.payload as {
+      lane: Record<string, unknown>;
+      spans: Array<Record<string, unknown>>;
+    };
+    const lane = payload.lane;
+    const kind = String(lane.kind);
+    let deleteSql: string;
+    let deleteId: string;
+    let owners: [SqlValue, SqlValue, SqlValue, SqlValue, SqlValue];
+    switch (kind) {
+      case "node":
+        deleteSql = "DELETE FROM authorship_spans WHERE node_id = ?";
+        deleteId = String(lane.nodeId);
+        if (!queryOne("SELECT 1 FROM tree_nodes WHERE id = ?", [deleteId])) {
+          throw new Error("authorship owner lane does not exist");
+        }
+        owners = [deleteId, null, null, null, null];
+        break;
+      case "codex":
+        deleteSql = `DELETE FROM authorship_spans
+          WHERE codex_entry_id = ? AND phase_id IS NULL
+            AND detail_value_id IS NULL`;
+        deleteId = String(lane.codexEntryId);
+        if (!queryOne("SELECT 1 FROM codex_entries WHERE id = ?", [deleteId])) {
+          throw new Error("authorship owner lane does not exist");
+        }
+        owners = [null, deleteId, null, null, null];
+        break;
+      case "snippet":
+        deleteSql = "DELETE FROM authorship_spans WHERE snippet_id = ?";
+        deleteId = String(lane.snippetId);
+        if (!queryOne("SELECT 1 FROM snippets WHERE id = ?", [deleteId])) {
+          throw new Error("authorship owner lane does not exist");
+        }
+        owners = [null, null, deleteId, null, null];
+        break;
+      case "detail": {
+        deleteSql = "DELETE FROM authorship_spans WHERE detail_value_id = ?";
+        deleteId = String(lane.detailValueId);
+        const codexEntryId = String(lane.codexEntryId);
+        if (
+          !queryOne(
+            `SELECT 1 FROM codex_detail_values
+              WHERE id = ? AND entry_id = ?`,
+            [deleteId, codexEntryId],
+          )
+        ) {
+          throw new Error("authorship owner lane does not exist");
+        }
+        owners = [null, null, null, deleteId, null];
+        break;
+      }
+      case "phase": {
+        deleteSql = "DELETE FROM authorship_spans WHERE phase_id = ?";
+        deleteId = String(lane.phaseId);
+        const codexEntryId = String(lane.codexEntryId);
+        if (
+          !queryOne(
+            `SELECT 1 FROM codex_entry_phases
+              WHERE id = ? AND entry_id = ?`,
+            [deleteId, codexEntryId],
+          )
+        ) {
+          throw new Error("authorship owner lane does not exist");
+        }
+        owners = [null, codexEntryId, null, null, deleteId];
+        break;
+      }
+      default:
+        throw new Error("unsupported authorship owner lane");
+    }
+
+    const statements: Array<{
+      sql: string;
+      params: SqlValue[];
+      method: string;
+    }> = [{ sql: deleteSql, params: [deleteId], method: "run" }];
+    for (const span of payload.spans) {
+      statements.push({
+        sql: `INSERT INTO authorship_spans
+          (id, node_id, codex_entry_id, snippet_id, detail_value_id,
+           from_pos, to_pos, source, model, timestamp, chat_msg_id, trace_id,
+           phase_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        params: [
+          String(span.id),
+          owners[0],
+          owners[1],
+          owners[2],
+          owners[3],
+          Number(span.fromPos),
+          Number(span.toPos),
+          String(span.source),
+          (span.model as SqlValue) ?? null,
+          (span.timestamp as SqlValue) ?? null,
+          (span.chatMsgId as SqlValue) ?? null,
+          (span.traceId as SqlValue) ?? null,
+          owners[4],
+        ],
+        method: "run",
+      });
+    }
+    handleDbExecuteBatch({ statements });
+  }
+
+  function handleEntityTagsSet(args: Record<string, unknown>): void {
+    const payload = args.payload as {
+      entityKind: "codex" | "snippet";
+      entityId: string;
+      tagIds: string[];
+      updatedAt: string | null;
+    };
+    const entityTable =
+      payload.entityKind === "codex" ? "codex_entries" : "snippets";
+    const entity = queryOne(
+      `SELECT project_id FROM ${entityTable} WHERE id = ?`,
+      [payload.entityId],
+    );
+    if (!entity) throw new Error(`${payload.entityKind} entity not found`);
+    const projectId = String(entity.project_id);
+    const tags = payload.tagIds.map((tagId) => {
+      const tag = queryOne(
+        `SELECT name, color FROM codex_tags
+          WHERE id = ? AND project_id = ?`,
+        [tagId, projectId],
+      );
+      if (!tag) throw new Error(`tag '${tagId}' is not in the entity project`);
+      return { id: tagId, name: String(tag.name), color: tag.color ?? null };
+    });
+    tags.sort((a, b) => a.name.localeCompare(b.name));
+    const tagsCache = JSON.stringify(
+      tags.map(({ name, color }) => ({ name, color })),
+    );
+    const statements: Array<{
+      sql: string;
+      params: SqlValue[];
+      method: string;
+    }> = [];
+    if (payload.entityKind === "codex") {
+      statements.push({
+        sql: "DELETE FROM codex_entry_tags WHERE entry_id = ?",
+        params: [payload.entityId],
+        method: "run",
+      });
+      for (const tag of tags) {
+        statements.push({
+          sql: `INSERT INTO codex_entry_tags (entry_id, tag_id)
+                VALUES (?, ?)`,
+          params: [payload.entityId, tag.id],
+          method: "run",
+        });
+      }
+      statements.push({
+        sql: `UPDATE codex_entries
+                SET tags_cache = ?, updated_at = ?
+              WHERE id = ? AND project_id = ?`,
+        params: [tagsCache, payload.updatedAt, payload.entityId, projectId],
+        method: "run",
+      });
+    } else {
+      statements.push({
+        sql: "DELETE FROM snippet_entry_tags WHERE snippet_id = ?",
+        params: [payload.entityId],
+        method: "run",
+      });
+      for (const tag of tags) {
+        statements.push({
+          sql: `INSERT INTO snippet_entry_tags (snippet_id, tag_id)
+                VALUES (?, ?)`,
+          params: [payload.entityId, tag.id],
+          method: "run",
+        });
+      }
+      statements.push({
+        sql: `UPDATE snippets SET tags_cache = ?
+              WHERE id = ? AND project_id = ?`,
+        params: [tagsCache, payload.entityId, projectId],
+        method: "run",
+      });
+    }
+    handleDbExecuteBatch({ statements });
+  }
+
+  function handleCodexRenameUndo(args: Record<string, unknown>): void {
+    const payload = args.payload as {
+      projectId: string;
+      updatedAt: string;
+      updates: Array<{
+        kind: string;
+        refId: string;
+        detailDefinitionId: string | null;
+        value: string;
+        charCount: number | null;
+        placedBeatPreview: string | null;
+      }>;
+    };
+    const statements: Array<{
+      sql: string;
+      params: SqlValue[];
+      method: string;
+    }> = [];
+    for (const update of payload.updates) {
+      if (update.kind.startsWith("node-") || update.kind === "scene-body") {
+        if (
+          !queryOne(
+            "SELECT 1 FROM tree_nodes WHERE id = ? AND project_id = ?",
+            [update.refId, payload.projectId],
+          )
+        ) {
+          throw new Error("codex rename undo tree target is outside project");
+        }
+      } else if (update.kind.startsWith("codex-")) {
+        const exists =
+          update.kind === "codex-detail"
+            ? queryOne(
+                `SELECT 1
+                   FROM codex_detail_values value
+                   JOIN codex_entries entry ON entry.id = value.entry_id
+                  WHERE value.entry_id = ? AND value.definition_id = ?
+                    AND entry.project_id = ?`,
+                [update.refId, update.detailDefinitionId, payload.projectId],
+              )
+            : update.kind === "codex-relation-label"
+              ? queryOne(
+                  "SELECT 1 FROM codex_relations WHERE id = ? AND project_id = ?",
+                  [update.refId, payload.projectId],
+                )
+              : queryOne(
+                  "SELECT 1 FROM codex_entries WHERE id = ? AND project_id = ?",
+                  [update.refId, payload.projectId],
+                );
+        if (!exists) {
+          throw new Error("codex rename undo target is outside project");
+        }
+      }
+
+      switch (update.kind) {
+        case "scene-body":
+          statements.push({
+            sql: `UPDATE tree_nodes
+                    SET content = ?, char_count = ?, placed_beat_preview = ?,
+                        version = version + 1, updated_at = ?
+                  WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+            params: [
+              update.value,
+              update.charCount,
+              update.placedBeatPreview,
+              payload.updatedAt,
+              update.refId,
+              payload.projectId,
+            ],
+            method: "run",
+          });
+          break;
+        case "node-title":
+        case "node-synopsis": {
+          const column = update.kind === "node-title" ? "title" : "synopsis";
+          statements.push({
+            sql: `UPDATE tree_nodes SET ${column} = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ?`,
+            params: [
+              update.value,
+              payload.updatedAt,
+              update.refId,
+              payload.projectId,
+            ],
+            method: "run",
+          });
+          break;
+        }
+        case "codex-summary":
+        case "codex-content":
+        case "codex-notes": {
+          const column =
+            update.kind === "codex-summary"
+              ? "summary"
+              : update.kind === "codex-content"
+                ? "content"
+                : "notes";
+          statements.push({
+            sql: `UPDATE codex_entries SET ${column} = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ?`,
+            params: [
+              update.value,
+              payload.updatedAt,
+              update.refId,
+              payload.projectId,
+            ],
+            method: "run",
+          });
+          break;
+        }
+        case "codex-detail":
+          statements.push({
+            sql: `UPDATE codex_detail_values SET value = ?
+                  WHERE entry_id = ? AND definition_id = ?
+                    AND EXISTS (
+                      SELECT 1 FROM codex_entries
+                       WHERE id = ? AND project_id = ?
+                    )`,
+            params: [
+              update.value,
+              update.refId,
+              update.detailDefinitionId,
+              update.refId,
+              payload.projectId,
+            ],
+            method: "run",
+          });
+          break;
+        case "codex-relation-label":
+          statements.push({
+            sql: `UPDATE codex_relations SET label = ?
+                  WHERE id = ? AND project_id = ?`,
+            params: [update.value, update.refId, payload.projectId],
+            method: "run",
+          });
+          break;
+        default:
+          throw new Error("unsupported codex rename undo kind");
+      }
+    }
+    handleDbExecuteBatch({ statements });
+  }
+
+  function handleScanStagingProjectCreate(args: Record<string, unknown>): void {
+    const payload = args.payload as {
+      id: string;
+      title: string;
+      language: "ja" | "en";
+      createdAt: string;
+    };
+    handleDbExecuteBatch({
+      statements: [
+        {
+          sql: `INSERT INTO projects
+            (id, title, language, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)`,
+          params: [
+            payload.id,
+            payload.title,
+            payload.language,
+            payload.createdAt,
+            payload.createdAt,
+          ],
+          method: "run",
+        },
+        {
+          sql: `INSERT INTO project_settings (project_id, key, value)
+                VALUES (?, 'scan.import.state', 'staging')
+                ON CONFLICT(project_id, key)
+                DO UPDATE SET value = 'staging'`,
+          params: [payload.id],
+          method: "run",
+        },
+      ],
+    });
+  }
+
+  function handleTreePlanUndo(args: Record<string, unknown>): void {
+    const payload = args.payload as {
+      projectId: string;
+      beforeStates: Array<{
+        id: string;
+        parentId: string | null;
+        sortOrder: string;
+        title: string;
+      }>;
+      createdIds: string[];
+      updatedAt: string;
+    };
+    const statements = payload.beforeStates.map((state) => ({
+      sql: `UPDATE tree_nodes
+              SET parent_id = ?, sort_order = ?, title = ?, updated_at = ?
+            WHERE id = ? AND project_id = ?`,
+      params: [
+        state.parentId,
+        state.sortOrder,
+        state.title,
+        payload.updatedAt,
+        state.id,
+        payload.projectId,
+      ],
+      method: "run",
+    }));
+    for (const id of [...payload.createdIds].reverse()) {
+      statements.push({
+        sql: "DELETE FROM tree_nodes WHERE id = ? AND project_id = ?",
+        params: [id, payload.projectId],
+        method: "run",
+      });
+    }
+    handleDbExecuteBatch({ statements });
+  }
+
+  type BrowserMapRow = Record<string, unknown>;
+  type BrowserMapStatement = {
+    sql: string;
+    params: SqlValue[];
+    method: "run";
+  };
+
+  function mapValue(row: BrowserMapRow, key: string): SqlValue {
+    return (row[key] as SqlValue | undefined) ?? null;
+  }
+
+  function mapStatement(sql: string, params: SqlValue[]): BrowserMapStatement {
+    return { sql, params, method: "run" };
+  }
+
+  function ensureBrowserMapBoardProject(
+    boardId: string,
+    projectId: string,
+  ): void {
+    if (
+      !queryOne("SELECT 1 FROM map_boards WHERE id = ? AND project_id = ?", [
+        boardId,
+        projectId,
+      ])
+    ) {
+      throw new Error("map board is outside project");
+    }
+  }
+
+  function validateBrowserMapGraph(
+    projectId: string,
+    boardId: string,
+    branches: BrowserMapRow[],
+    stickies: BrowserMapRow[],
+    positions: BrowserMapRow[],
+    edges: BrowserMapRow[],
+    frames: BrowserMapRow[],
+    spans: BrowserMapRow[],
+  ): void {
+    const branchIds = new Set(branches.map((row) => String(row.id)));
+    const stickyIds = new Set(stickies.map((row) => String(row.id)));
+    const positionIds = new Set(positions.map((row) => String(row.id)));
+    for (const row of [
+      ...branches,
+      ...stickies,
+      ...positions,
+      ...edges,
+      ...frames,
+    ]) {
+      if (String(row.boardId) !== boardId) {
+        throw new Error("map aggregate contains a foreign board row");
+      }
+    }
+    for (const row of stickies) {
+      if (row.aiBranchId && !branchIds.has(String(row.aiBranchId))) {
+        throw new Error("map sticky references a foreign AI branch");
+      }
+    }
+    for (const row of positions) {
+      const kind = String(row.nodeRefType);
+      const valid =
+        kind === "scene" || kind === "note"
+          ? Boolean(
+              row.treeNodeId &&
+              queryOne(
+                "SELECT 1 FROM tree_nodes WHERE id = ? AND project_id = ?",
+                [String(row.treeNodeId), projectId],
+              ),
+            )
+          : kind === "codex"
+            ? Boolean(
+                row.codexEntryId &&
+                queryOne(
+                  "SELECT 1 FROM codex_entries WHERE id = ? AND project_id = ?",
+                  [String(row.codexEntryId), projectId],
+                ),
+              )
+            : kind === "snippet"
+              ? Boolean(
+                  row.snippetId &&
+                  queryOne(
+                    "SELECT 1 FROM snippets WHERE id = ? AND project_id = ?",
+                    [String(row.snippetId), projectId],
+                  ),
+                )
+              : kind === "sticky"
+                ? stickyIds.has(String(row.stickyId))
+                : kind === "ai_branch"
+                  ? branchIds.has(String(row.aiBranchId))
+                  : false;
+      if (!valid) throw new Error("map position has an invalid reference");
+    }
+    for (const row of edges) {
+      if (
+        !positionIds.has(String(row.fromPositionId)) ||
+        !positionIds.has(String(row.toPositionId))
+      ) {
+        throw new Error("map edge references a foreign position");
+      }
+    }
+    for (const row of spans) {
+      if (!stickyIds.has(String(row.stickyId))) {
+        throw new Error("map authorship span references a foreign sticky");
+      }
+    }
+  }
+
+  function browserMapBoardInsert(row: BrowserMapRow): BrowserMapStatement {
+    return mapStatement(
+      `INSERT INTO map_boards
+        (id, project_id, title, sort_order, mode, viewport_x, viewport_y,
+         viewport_zoom, show_config, color_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        mapValue(row, "id"),
+        mapValue(row, "projectId"),
+        mapValue(row, "title"),
+        mapValue(row, "sortOrder"),
+        mapValue(row, "mode"),
+        mapValue(row, "viewportX"),
+        mapValue(row, "viewportY"),
+        mapValue(row, "viewportZoom"),
+        mapValue(row, "showConfig"),
+        mapValue(row, "colorBy"),
+        mapValue(row, "createdAt"),
+        mapValue(row, "updatedAt"),
+      ],
+    );
+  }
+
+  function browserMapBranchInsert(
+    row: BrowserMapRow,
+    restore: boolean,
+  ): BrowserMapStatement {
+    return mapStatement(
+      `${restore ? "INSERT OR IGNORE" : "INSERT"} INTO map_ai_branches
+        (id, board_id, prompt, seed_node_ids, session_id, model, token_usage,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        mapValue(row, "id"),
+        mapValue(row, "boardId"),
+        mapValue(row, "prompt"),
+        mapValue(row, "seedNodeIds"),
+        mapValue(row, "sessionId"),
+        mapValue(row, "model"),
+        mapValue(row, "tokenUsage"),
+        mapValue(row, "createdAt"),
+        mapValue(row, "updatedAt"),
+      ],
+    );
+  }
+
+  function browserMapStickyInsert(
+    row: BrowserMapRow,
+    restore: boolean,
+  ): BrowserMapStatement {
+    return mapStatement(
+      `${restore ? "INSERT OR IGNORE" : "INSERT"} INTO map_stickies
+        (id, board_id, title, body, preview_text, palette_id, color_slot,
+         ai_branch_id, ai_derived, source_chat_message_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        mapValue(row, "id"),
+        mapValue(row, "boardId"),
+        mapValue(row, "title"),
+        mapValue(row, "body"),
+        mapValue(row, "previewText"),
+        mapValue(row, "paletteId"),
+        mapValue(row, "colorSlot"),
+        mapValue(row, "aiBranchId"),
+        mapValue(row, "aiDerived"),
+        mapValue(row, "sourceChatMessageId"),
+        mapValue(row, "createdAt"),
+        mapValue(row, "updatedAt"),
+      ],
+    );
+  }
+
+  function browserMapPositionInsert(
+    row: BrowserMapRow,
+    restore: boolean,
+  ): BrowserMapStatement {
+    return mapStatement(
+      `${restore ? "INSERT OR IGNORE" : "INSERT"} INTO map_node_positions
+        (id, board_id, node_ref_type, tree_node_id, codex_entry_id, snippet_id,
+         sticky_id, ai_branch_id, x, y, pinned, z_index, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        mapValue(row, "id"),
+        mapValue(row, "boardId"),
+        mapValue(row, "nodeRefType"),
+        mapValue(row, "treeNodeId"),
+        mapValue(row, "codexEntryId"),
+        mapValue(row, "snippetId"),
+        mapValue(row, "stickyId"),
+        mapValue(row, "aiBranchId"),
+        mapValue(row, "x"),
+        mapValue(row, "y"),
+        mapValue(row, "pinned"),
+        mapValue(row, "zIndex"),
+        mapValue(row, "createdAt"),
+        mapValue(row, "updatedAt"),
+      ],
+    );
+  }
+
+  function browserMapEdgeInsert(
+    row: BrowserMapRow,
+    restore: boolean,
+  ): BrowserMapStatement {
+    return mapStatement(
+      `${restore ? "INSERT OR IGNORE" : "INSERT"} INTO map_edges
+        (id, board_id, from_position_id, to_position_id, forward_label,
+         backward_label, labels, style, color, direction, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        mapValue(row, "id"),
+        mapValue(row, "boardId"),
+        mapValue(row, "fromPositionId"),
+        mapValue(row, "toPositionId"),
+        mapValue(row, "forwardLabel"),
+        mapValue(row, "backwardLabel"),
+        mapValue(row, "labels"),
+        mapValue(row, "style"),
+        mapValue(row, "color"),
+        mapValue(row, "direction"),
+        mapValue(row, "createdAt"),
+        mapValue(row, "updatedAt"),
+      ],
+    );
+  }
+
+  function browserMapFrameInsert(
+    row: BrowserMapRow,
+    restore: boolean,
+  ): BrowserMapStatement {
+    return mapStatement(
+      `${restore ? "INSERT OR IGNORE" : "INSERT"} INTO map_frames
+        (id, board_id, title, x, y, width, height, background, border_color,
+         z_index, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        mapValue(row, "id"),
+        mapValue(row, "boardId"),
+        mapValue(row, "title"),
+        mapValue(row, "x"),
+        mapValue(row, "y"),
+        mapValue(row, "width"),
+        mapValue(row, "height"),
+        mapValue(row, "background"),
+        mapValue(row, "borderColor"),
+        mapValue(row, "zIndex"),
+        mapValue(row, "createdAt"),
+        mapValue(row, "updatedAt"),
+      ],
+    );
+  }
+
+  function browserMapSpanInsert(
+    row: BrowserMapRow,
+    restore: boolean,
+  ): BrowserMapStatement {
+    return mapStatement(
+      `${restore ? "INSERT OR IGNORE" : "INSERT"} INTO authorship_spans
+        (id, node_id, codex_entry_id, snippet_id, detail_value_id, sticky_id,
+         from_pos, to_pos, source, model, timestamp, chat_msg_id, trace_id,
+         phase_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        mapValue(row, "id"),
+        mapValue(row, "nodeId"),
+        mapValue(row, "codexEntryId"),
+        mapValue(row, "snippetId"),
+        mapValue(row, "detailValueId"),
+        mapValue(row, "stickyId"),
+        mapValue(row, "fromPos"),
+        mapValue(row, "toPos"),
+        mapValue(row, "source"),
+        mapValue(row, "model"),
+        mapValue(row, "timestamp"),
+        mapValue(row, "chatMsgId"),
+        mapValue(row, "traceId"),
+        mapValue(row, "phaseId"),
+      ],
+    );
+  }
+
+  function handleMapWriteBundle(args: Record<string, unknown>): void {
+    const payload = args.payload as BrowserMapRow;
+    const kind = String(payload.kind);
+    const projectId = String(payload.projectId);
+    const statements: BrowserMapStatement[] = [];
+
+    if (kind === "create-board") {
+      const board = payload.board as BrowserMapRow;
+      const stickies = (payload.stickies ?? []) as BrowserMapRow[];
+      const positions = (payload.positions ?? []) as BrowserMapRow[];
+      const edges = (payload.edges ?? []) as BrowserMapRow[];
+      const frames = (payload.frames ?? []) as BrowserMapRow[];
+      if (
+        String(board.projectId) !== projectId ||
+        !queryOne("SELECT 1 FROM projects WHERE id = ?", [projectId])
+      ) {
+        throw new Error("map board project is invalid");
+      }
+      validateBrowserMapGraph(
+        projectId,
+        String(board.id),
+        [],
+        stickies,
+        positions,
+        edges,
+        frames,
+        [],
+      );
+      statements.push(browserMapBoardInsert(board));
+      statements.push(
+        ...stickies.map((row) => browserMapStickyInsert(row, false)),
+        ...positions.map((row) => browserMapPositionInsert(row, false)),
+        ...edges.map((row) => browserMapEdgeInsert(row, false)),
+        ...frames.map((row) => browserMapFrameInsert(row, false)),
+      );
+    } else if (kind === "create-ai-branch" || kind === "restore-ai-branch") {
+      const restore = kind === "restore-ai-branch";
+      const branch = payload.branch as BrowserMapRow;
+      const branchPosition = payload.branchPosition as BrowserMapRow;
+      const stickies = (payload.stickies ?? []) as BrowserMapRow[];
+      const positions = (payload.positions ?? []) as BrowserMapRow[];
+      const edges = (payload.edges ?? []) as BrowserMapRow[];
+      const spans = (payload.spans ?? []) as BrowserMapRow[];
+      const boardId = String(branch.boardId);
+      ensureBrowserMapBoardProject(boardId, projectId);
+      validateBrowserMapGraph(
+        projectId,
+        boardId,
+        [branch],
+        stickies,
+        [branchPosition, ...positions],
+        edges,
+        [],
+        spans,
+      );
+      statements.push(
+        browserMapBranchInsert(branch, restore),
+        browserMapPositionInsert(branchPosition, restore),
+        ...stickies.map((row) => browserMapStickyInsert(row, restore)),
+      );
+      if (restore) {
+        statements.push(
+          ...stickies.map((row) =>
+            mapStatement(
+              `UPDATE map_stickies SET ai_branch_id = ?
+                WHERE id = ? AND board_id = ?`,
+              [mapValue(branch, "id"), mapValue(row, "id"), boardId],
+            ),
+          ),
+        );
+      }
+      statements.push(
+        ...positions.map((row) => browserMapPositionInsert(row, restore)),
+        ...edges.map((row) => browserMapEdgeInsert(row, restore)),
+        ...spans.map((row) => browserMapSpanInsert(row, restore)),
+      );
+    } else if (kind === "promote-sticky") {
+      const boardId = String(payload.boardId);
+      const stickyId = String(payload.stickyId);
+      const positionId = String(payload.positionId);
+      const newEntityId = String(payload.newEntityId);
+      const targetType = String(payload.targetType);
+      ensureBrowserMapBoardProject(boardId, projectId);
+      if (
+        !queryOne("SELECT 1 FROM map_stickies WHERE id = ? AND board_id = ?", [
+          stickyId,
+          boardId,
+        ]) ||
+        !queryOne(
+          `SELECT 1 FROM map_node_positions
+            WHERE id = ? AND board_id = ? AND sticky_id = ?`,
+          [positionId, boardId, stickyId],
+        )
+      ) {
+        throw new Error("map sticky promotion target is stale");
+      }
+      let treeNodeId: SqlValue = null;
+      let codexEntryId: SqlValue = null;
+      let snippetId: SqlValue = null;
+      if (targetType === "scene" || targetType === "note") {
+        if (
+          payload.parentId &&
+          !queryOne(
+            "SELECT 1 FROM tree_nodes WHERE id = ? AND project_id = ?",
+            [String(payload.parentId), projectId],
+          )
+        ) {
+          throw new Error("map sticky promotion parent is outside project");
+        }
+        treeNodeId = newEntityId;
+        statements.push(
+          mapStatement(
+            `INSERT INTO tree_nodes
+              (id, project_id, parent_id, node_type, title, sort_order, content,
+               created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              newEntityId,
+              projectId,
+              mapValue(payload, "parentId"),
+              targetType,
+              mapValue(payload, "title"),
+              mapValue(payload, "sortOrder"),
+              mapValue(payload, "body"),
+              mapValue(payload, "createdAt"),
+              mapValue(payload, "updatedAt"),
+            ],
+          ),
+        );
+      } else if (targetType === "snippet") {
+        snippetId = newEntityId;
+        statements.push(
+          mapStatement(
+            `INSERT INTO snippets
+              (id, project_id, title, content, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              newEntityId,
+              projectId,
+              mapValue(payload, "title"),
+              mapValue(payload, "body"),
+              mapValue(payload, "createdAt"),
+              mapValue(payload, "updatedAt"),
+            ],
+          ),
+        );
+      } else if (targetType === "codex") {
+        codexEntryId = newEntityId;
+        statements.push(
+          mapStatement(
+            `INSERT INTO codex_entries
+              (id, project_id, type, name, content, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              newEntityId,
+              projectId,
+              mapValue(payload, "codexType"),
+              mapValue(payload, "title"),
+              mapValue(payload, "body"),
+              mapValue(payload, "createdAt"),
+              mapValue(payload, "updatedAt"),
+            ],
+          ),
+        );
+      } else {
+        throw new Error("unsupported sticky promotion target");
+      }
+      statements.push(
+        mapStatement(
+          `UPDATE map_node_positions
+              SET node_ref_type = ?, tree_node_id = ?, codex_entry_id = ?,
+                  snippet_id = ?, sticky_id = NULL, ai_branch_id = NULL,
+                  updated_at = ?
+            WHERE id = ? AND board_id = ? AND sticky_id = ?`,
+          [
+            targetType,
+            treeNodeId,
+            codexEntryId,
+            snippetId,
+            mapValue(payload, "updatedAt"),
+            positionId,
+            boardId,
+            stickyId,
+          ],
+        ),
+        mapStatement(
+          `UPDATE authorship_spans
+              SET node_id = ?, codex_entry_id = ?, snippet_id = ?,
+                  sticky_id = NULL
+            WHERE sticky_id = ?`,
+          [treeNodeId, codexEntryId, snippetId, stickyId],
+        ),
+        mapStatement("DELETE FROM map_stickies WHERE id = ? AND board_id = ?", [
+          stickyId,
+          boardId,
+        ]),
+      );
+    } else if (kind === "erase-ai-branch") {
+      const branchId = String(payload.branchId);
+      const branch = queryOne(
+        `SELECT branch.board_id
+           FROM map_ai_branches branch
+           JOIN map_boards board ON board.id = branch.board_id
+          WHERE branch.id = ? AND board.project_id = ?`,
+        [branchId, projectId],
+      );
+      if (!branch) throw new Error("AI branch is outside project");
+      const boardId = String(branch.board_id);
+      for (const id of (payload.spanIds ?? []) as string[]) {
+        statements.push(
+          mapStatement(
+            `DELETE FROM authorship_spans
+              WHERE id = ? AND sticky_id IN (
+                SELECT id FROM map_stickies
+                 WHERE board_id = ? AND ai_branch_id = ?
+              )`,
+            [id, boardId, branchId],
+          ),
+        );
+      }
+      for (const id of (payload.stickyPositionIds ?? []) as string[]) {
+        statements.push(
+          mapStatement(
+            `DELETE FROM map_node_positions
+              WHERE id = ? AND board_id = ? AND sticky_id IN (
+                SELECT id FROM map_stickies
+                 WHERE board_id = ? AND ai_branch_id = ?
+              )`,
+            [id, boardId, boardId, branchId],
+          ),
+        );
+      }
+      for (const id of (payload.stickyIds ?? []) as string[]) {
+        statements.push(
+          mapStatement(
+            `DELETE FROM map_stickies
+              WHERE id = ? AND board_id = ? AND ai_branch_id = ?`,
+            [id, boardId, branchId],
+          ),
+        );
+      }
+      statements.push(
+        mapStatement(
+          "DELETE FROM map_ai_branches WHERE id = ? AND board_id = ?",
+          [branchId, boardId],
+        ),
+      );
+    } else if (kind === "extract-frame-to-codex") {
+      const boardId = String(payload.boardId);
+      const frameId = String(payload.frameId);
+      const stickyIds = (payload.stickyIds ?? []) as string[];
+      ensureBrowserMapBoardProject(boardId, projectId);
+      if (
+        !queryOne("SELECT 1 FROM map_frames WHERE id = ? AND board_id = ?", [
+          frameId,
+          boardId,
+        ])
+      ) {
+        throw new Error("map frame is stale");
+      }
+      for (const stickyId of stickyIds) {
+        if (
+          !queryOne(
+            "SELECT 1 FROM map_stickies WHERE id = ? AND board_id = ?",
+            [stickyId, boardId],
+          )
+        ) {
+          throw new Error("map frame contains a foreign sticky");
+        }
+      }
+      statements.push(
+        mapStatement(
+          `INSERT INTO codex_entries
+            (id, project_id, type, name, content, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            mapValue(payload, "codexId"),
+            projectId,
+            mapValue(payload, "codexType"),
+            mapValue(payload, "title"),
+            mapValue(payload, "content"),
+            mapValue(payload, "createdAt"),
+            mapValue(payload, "updatedAt"),
+          ],
+        ),
+      );
+      for (const stickyId of stickyIds) {
+        statements.push(
+          mapStatement(
+            `UPDATE authorship_spans
+                SET codex_entry_id = ?, sticky_id = NULL
+              WHERE sticky_id = ?`,
+            [mapValue(payload, "codexId"), stickyId],
+          ),
+        );
+      }
+      for (const stickyId of stickyIds) {
+        statements.push(
+          mapStatement(
+            "DELETE FROM map_stickies WHERE id = ? AND board_id = ?",
+            [stickyId, boardId],
+          ),
+        );
+      }
+      statements.push(
+        mapStatement("DELETE FROM map_frames WHERE id = ? AND board_id = ?", [
+          frameId,
+          boardId,
+        ]),
+      );
+    } else {
+      throw new Error("unsupported map write kind");
+    }
+
+    handleDbExecuteBatch({ statements });
   }
 
   const browserSnapshotRestoreTables = new Set<string>([
@@ -1782,15 +2811,16 @@ export async function createBrowserMock(
     for (const scope of AUX_SCOPES) {
       const table = AUX_TABLE[scope];
       const filter = AUX_PROJECT_FILTER[scope];
-      let rows: Record<string, SqlValue>[] = [];
-      try {
-        rows = queryAll(
-          `SELECT * FROM "${table}" WHERE ${filter.where}`,
-          Array<SqlValue>(filter.binds).fill(projectId),
-        );
-      } catch {
-        rows = [];
-      }
+      const rows: Record<string, SqlValue>[] = (() => {
+        try {
+          return queryAll(
+            `SELECT * FROM "${table}" WHERE ${filter.where}`,
+            Array<SqlValue>(filter.binds).fill(projectId),
+          );
+        } catch {
+          return [];
+        }
+      })();
       statements.push({
         sql: `INSERT INTO project_snapshot_aux
                 (snapshot_id, scope, payload_json)
@@ -3894,6 +4924,24 @@ export async function createBrowserMock(
         return handleEventGetVersion(args) as T;
       case "event_set_participants":
         return handleEventSetParticipants(args) as T;
+      case "authorship_replace_lane":
+        handleAuthorshipReplaceLane(args);
+        return undefined as T;
+      case "entity_tags_set":
+        handleEntityTagsSet(args);
+        return undefined as T;
+      case "codex_rename_undo":
+        handleCodexRenameUndo(args);
+        return undefined as T;
+      case "scan_staging_project_create":
+        handleScanStagingProjectCreate(args);
+        return undefined as T;
+      case "tree_plan_undo":
+        handleTreePlanUndo(args);
+        return undefined as T;
+      case "map_write_bundle":
+        handleMapWriteBundle(args);
+        return undefined as T;
       case "project_snapshot_create":
         handleProjectSnapshotCreate(args);
         return undefined as T;

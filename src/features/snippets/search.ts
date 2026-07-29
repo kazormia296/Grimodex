@@ -1,50 +1,42 @@
-import { invoke } from "@/lib/tauri";
-import { toFtsMatchQuery } from "@/lib/fts";
+import { db } from "@/db/client";
+import { snippets } from "@/db/schema";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { invoke } from "@/lib/tauri";
+import { and, eq, inArray } from "drizzle-orm";
+
 import type { Snippet } from "./api";
 
-interface QueryResult {
-  rows: Snippet[];
+interface SparseSearchHit {
+  sourceType: string;
+  id: string;
 }
 
-/**
- * Search snippets using FTS5.
- * - 3+ chars: uses trigram MATCH (fastest, index-backed)
- * - 1-2 chars: falls back to LIKE across title/content/tags
- *
- * snippets_fts はプロジェクト横断のグローバル索引なので、MATCH/LIKE 双方に
- * project_id フィルタを掛けて現在プロジェクトのスニペットだけに限定する
- * (list 系と同じく getCurrentProjectId() でスコープを解決)。
- */
+/** Search snippets via the typed FTS command and hydrate full Drizzle rows. */
 export async function searchSnippets(query: string): Promise<Snippet[]> {
   const trimmed = query.trim();
   if (trimmed.length === 0) return [];
 
   const projectId = getCurrentProjectId();
-
-  // 生クエリを安全な FTS5 MATCH 式へ。3 codepoint 未満のトークンしか無いときは
-  // 空になるので LIKE フォールバックへ倒す。
-  const matchQuery = toFtsMatchQuery(trimmed);
-
-  if (matchQuery) {
-    const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT s.* FROM snippets s
-            JOIN snippets_fts fts ON s.rowid = fts.rowid
-            WHERE snippets_fts MATCH ? AND s.project_id = ?
-            ORDER BY fts.rank`,
-      params: [matchQuery, projectId],
-      method: "all",
-    });
-    return result.rows;
-  }
-
-  const likeParam = `%${trimmed}%`;
-  const result = await invoke<QueryResult>("db_execute", {
-    sql: `SELECT * FROM snippets
-          WHERE project_id = ?
-            AND (title LIKE ? OR content LIKE ? OR tags_cache LIKE ?)`,
-    params: [projectId, likeParam, likeParam, likeParam],
-    method: "all",
+  const hits = await invoke<SparseSearchHit[]>("fts_search", {
+    projectId,
+    query: trimmed,
+    scope: "snippets",
+    limit: 50,
   });
-  return result.rows;
+  const hitIds = hits
+    .filter((hit) => hit.sourceType === "snippet")
+    .map((hit) => hit.id);
+  if (hitIds.length === 0) return [];
+
+  const rows = await db
+    .select()
+    .from(snippets)
+    .where(
+      and(eq(snippets.projectId, projectId), inArray(snippets.id, hitIds)),
+    );
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return hitIds.flatMap((id) => {
+    const row = byId.get(id);
+    return row ? [row] : [];
+  });
 }

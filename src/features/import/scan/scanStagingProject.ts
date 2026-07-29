@@ -19,35 +19,13 @@ export async function createScanStagingProject(input: {
   language: "ja" | "en";
 }): Promise<void> {
   const now = new Date().toISOString();
-  const project = db
-    .insert(projects)
-    .values({
+  await invoke("scan_staging_project_create", {
+    payload: {
       id: input.id,
       title: input.title,
       language: input.language,
       createdAt: now,
-      updatedAt: now,
-    })
-    .toSQL();
-  const stagingMarker = db
-    .insert(projectSettings)
-    .values({
-      projectId: input.id,
-      key: SCAN_IMPORT_STATE_KEY,
-      value: SCAN_IMPORT_STAGING,
-    })
-    .onConflictDoUpdate({
-      target: [projectSettings.projectId, projectSettings.key],
-      set: { value: SCAN_IMPORT_STAGING },
-    })
-    .toSQL();
-
-  await invoke("db_execute_batch", {
-    statements: [project, stagingMarker].map((statement) => ({
-      sql: statement.sql,
-      params: statement.params,
-      method: "run",
-    })),
+    },
   });
 }
 

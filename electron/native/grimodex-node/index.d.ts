@@ -81,6 +81,16 @@ export declare class Backend {
   eventGetVersion(projectId: string, eventId: string): Promise<string>
   eventSetParticipants(payload: any): Promise<string>
   /**
+   * Renderer domain aggregates that previously crossed the preload
+   * boundary as renderer-authored SQL batches.
+   */
+  authorshipReplaceLane(payload: any): Promise<void>
+  entityTagsSet(payload: any): Promise<void>
+  codexRenameUndo(payload: any): Promise<void>
+  scanStagingProjectCreate(payload: any): Promise<void>
+  treePlanUndo(payload: any): Promise<void>
+  mapWriteBundle(payload: any): Promise<void>
+  /**
    * Project snapshots are a typed aggregate: renderer computes the
    * dependency-safe row plan while shared Rust owns all SQL, project
    * ownership checks, and transaction boundaries.

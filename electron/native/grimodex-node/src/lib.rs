@@ -35,6 +35,10 @@ use grimodex_db::agent_writes;
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::chronicle::{self, SetParticipantsPayload};
+use grimodex_db::domain_writes::{
+    self, CodexRenameUndoPayload, CreateScanStagingProjectPayload, ReplaceAuthorshipLanePayload,
+    SetEntityTagsPayload, UndoTreePlanPayload,
+};
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
@@ -50,6 +54,7 @@ use grimodex_db::lint_ignores::{self, CopyPayload, CreatePayload, MovePayload};
 use grimodex_db::lint_terms::{
     self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
 };
+use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
     self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
@@ -660,6 +665,74 @@ impl Backend {
                     db, payload,
                 )?)?)
             })
+        })
+        .await
+    }
+
+    /// Renderer domain aggregates that previously crossed the preload
+    /// boundary as renderer-authored SQL batches.
+    #[napi]
+    pub async fn authorship_replace_lane(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ReplaceAuthorshipLanePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::replace_authorship_lane(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn entity_tags_set(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SetEntityTagsPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| domain_writes::set_entity_tags(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_rename_undo(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CodexRenameUndoPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::undo_codex_rename(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn scan_staging_project_create(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreateScanStagingProjectPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::create_scan_staging_project(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn tree_plan_undo(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: UndoTreePlanPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| domain_writes::undo_tree_plan(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn map_write_bundle(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: MapWritePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| map_writes::apply_map_write(db, payload))
         })
         .await
     }

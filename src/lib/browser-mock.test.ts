@@ -116,6 +116,52 @@ describe("createBrowserMock", () => {
     });
   });
 
+  describe("map_write_bundle", () => {
+    it("persists a renderer SQL-free board aggregate", async () => {
+      const now = new Date().toISOString();
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "create-board",
+          projectId: "default-project",
+          board: {
+            id: "typed-map-board",
+            projectId: "default-project",
+            title: "Typed map",
+            sortOrder: 1,
+            mode: "free",
+            viewportX: 0,
+            viewportY: 0,
+            viewportZoom: 1,
+            showConfig: "{}",
+            colorBy: "none",
+            createdAt: now,
+            updatedAt: now,
+          },
+          stickies: [],
+          positions: [],
+          edges: [],
+          frames: [],
+        },
+      });
+
+      const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
+        "db_execute",
+        {
+          sql: "select id, project_id, title from map_boards where id = ?",
+          params: ["typed-map-board"],
+          method: "all",
+        },
+      );
+      expect(result.rows).toEqual([
+        {
+          id: "typed-map-board",
+          project_id: "default-project",
+          title: "Typed map",
+        },
+      ]);
+    });
+  });
+
   describe("timelapse_append_batch", () => {
     it("allocates sequence/hash rows in the browser mock and dedupes resend", async () => {
       const events = [
