@@ -55,32 +55,15 @@
     "legacy-ipc-error-text-check": []
   },
   "feature-cycle": {
-    "sccs": [
-      {
-        "members": [
-          "src/features/codex/api.ts",
-          "src/features/codex/mentionRescanQueue.ts"
-        ],
-        "edges": [
-          {
-            "from": "src/features/codex/api.ts",
-            "to": "src/features/codex/mentionRescanQueue.ts"
-          },
-          {
-            "from": "src/features/codex/mentionRescanQueue.ts",
-            "to": "src/features/codex/api.ts"
-          }
-        ]
-      }
-    ]
+    "sccs": []
   },
   "metrics": {
     "cross-feature-store-import": 45,
     "cross-feature-store-mutation": 0,
     "dynamic-store-import": 0,
-    "cyclic-modules": 2,
-    "largest-scc": 2,
-    "scc-internal-edges": 2,
+    "cyclic-modules": 0,
+    "largest-scc": 0,
+    "scc-internal-edges": 0,
     "chat-store-lines": 8260,
     "chat-store-runtime-imports": 90
   },
