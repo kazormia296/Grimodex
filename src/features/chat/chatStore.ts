@@ -25,15 +25,14 @@ import {
   resolveAgentPreflightTarget,
   resolveChatTurnRoutePolicy,
   resolveConversationPreflightTarget,
+  resolveCurrentChatDisplayRoute,
   resolveCurrentChatTurnPolicy,
   resolveCurrentPreflightRoute,
   resolveRawAgentPreflightTarget,
+  canUseCurrentChatPublicRag,
   type AgentPreflightTarget,
 } from "@/application/chat/chatTurnRouting";
-export {
-  canUseCurrentChatPublicRag,
-  resolveCurrentChatDisplayRoute,
-} from "@/application/chat/chatTurnRouting";
+export { canUseCurrentChatPublicRag, resolveCurrentChatDisplayRoute };
 import {
   TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
   finalizeChatTurnPayload,
@@ -50,28 +49,27 @@ export type {
   ChatPromptPreviewResult,
   PendingUserQuestion,
 } from "@/application/chat/chatStoreTypes";
-import { createChatContextStoreActions } from "@/application/chat/chatContextStoreActions";
-export { contextPromptKey } from "@/application/chat/chatContextStoreActions";
+import {
+  contextPromptKey,
+  createChatComposerAuthority,
+  createChatContextStoreActions,
+  createChatContinuationStoreActions,
+  createChatPersistenceStoreActions,
+  createChatSessionStoreActions,
+  createChatTurnRuntime,
+  createChatUserQuestionRuntime,
+  createChatUserQuestionStoreActions,
+  type ChatComposerAuthority,
+} from "@/application/chat/chatStoreActions";
+export { contextPromptKey };
 import { maybeRunSummarization } from "@/application/chat/chatSummarization";
 import {
-  captureSessionMutationAuthority,
   clearedSessionScopeState,
-  enqueueSessionMutation,
   getSessionMutationTail,
   hasPendingSessionMutations,
   invalidateSessionScopeAuthority,
   isCapturedWorkspaceCurrent,
-  isSameCapturedSession,
-  isSessionListLoadAuthorityCurrent,
-  isSessionMutationAuthorityCurrent,
-  isSessionSelectionGenerationCurrent,
-  isSessionTargetForAuthority,
-  nextSessionListGeneration,
-  nextSessionSelectionGeneration,
-  requestedSessionListScopeKey,
   sessionScopeChanged,
-  type SessionListLoadAuthority,
-  type SessionMutationAuthority,
 } from "@/application/chat/chatSessionAuthority";
 import {
   MAX_RATE_LIMIT_RETRIES,
@@ -80,8 +78,6 @@ import {
   fetchRequiredProjectContext,
   parseMentionedSceneIdsFromMetadata,
 } from "@/application/chat/chatStoreSupport";
-import { createChatPersistenceStoreActions } from "@/application/chat/chatPersistenceStoreActions";
-import { createChatContinuationStoreActions } from "@/application/chat/chatContinuationStoreActions";
 
 import {
   countTokens,
@@ -98,12 +94,7 @@ import {
   getResearchSubagentTools,
   RESEARCH_SUBAGENT_TOOL,
 } from "./agent/toolDefinitions";
-import {
-  buildAskUserResult,
-  dismissedAskUserResult,
-  invalidAskUserResult,
-  normalizeAskUserSpec,
-} from "./agent/askUser";
+import { invalidAskUserResult, normalizeAskUserSpec } from "./agent/askUser";
 import {
   getToolTokenBudgetForContext,
   getAgentToolCallBudgetForContext,
@@ -121,9 +112,7 @@ import {
   resolveChatTurnRoute,
   resolvedChatTurnRouteAuthorityKey,
   createTurnControl,
-  createTurnCoordinator,
   createTurnRequest,
-  type ResolvedChatTurnRoute,
 } from "./turn/resolveTurnRoute";
 import { renderAgentToolPayloads } from "./turn/renderAgentPayload";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
@@ -154,8 +143,6 @@ import { createAgentTextBatcher } from "./agent/agentTextBatcher";
 import type {
   AgentMessagePayload,
   ToolCallRecord,
-  AskUserContent,
-  ToolResult,
   WebSearchConfig,
 } from "./agent/agentTypes";
 
@@ -167,94 +154,46 @@ import { readRuntimeSetting } from "@/features/settings/runtimeSettings";
 import { getTreeProjectId } from "@/features/tree/treeProjection";
 import { markStart, markEnd } from "@/lib/perfLog";
 import type { ChatMessage } from "./chatTypes";
-import { resolveScopeSessionKey, scopeSessionKeysEqual } from "./chatScope";
+import { resolveScopeSessionKey } from "./chatScope";
 import { setSnippetDeletedHandler } from "@/features/snippets/anchorNotify";
 import { getPromptCatalog } from "@/prompts/index";
 
-// Module-level lifecycle hooks for the active stream.
-let _streamCleanup: (() => void) | null = null;
-let _flushPendingDelta: (() => void) | null = null;
-let _finalizeStoppedStream: (() => void) | null = null;
+const turnRuntime = createChatTurnRuntime();
+const userQuestionRuntime = createChatUserQuestionRuntime();
 
-// Debounce timer for refreshContextLayers when input-detected entry IDs change.
-// Token counting (WASM tiktoken) は同期で長文 scene でも数百 ms。打鍵が落ち着いてから走らせる。
-let _inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-// ask_user の遅延 Promise を解決するクロージャ（guardedExecuteTool が設定）。
-// シリアライズ不可なので state ではなく module-local に持つ。
-let _resolveUserQuestion: ((result: ToolResult) => void) | null = null;
-// Claimed synchronously before any settings/session/Ollama preflight await so
-// two same-tick sends cannot both publish an optimistic turn.
-let _sendPreflightClaimId: string | null = null;
-let _sendPreflightClaimScopeKey: string | null = null;
-const turnCoordinator = createTurnCoordinator();
+const composerAuthority = createChatComposerAuthority({
+  get: () => useChatStore.getState(),
+  captureAiRoute: (state) =>
+    JSON.stringify([
+      state.agentMode,
+      state.ragEnabled,
+      captureAgentPreflightAuthority(),
+      resolvedChatTurnRouteAuthorityKey(
+        resolveCurrentChatTurnPolicy({
+          agentMode: state.agentMode,
+          ragEnabled: state.ragEnabled,
+        }).route,
+      ),
+    ]) ?? "",
+});
 
-export interface ChatComposerAuthority {
-  activeSessionId: string | null;
-  sessionMutation: SessionMutationAuthority;
-  aiRoute: string;
-}
+export type { ChatComposerAuthority };
 
-/** Capture the exact Project/scope/session that owns the current composer. */
 export function captureChatComposerAuthority(): ChatComposerAuthority {
-  const state = useChatStore.getState();
-  return {
-    activeSessionId: state.activeSessionId,
-    sessionMutation: captureSessionMutationAuthority(state),
-    aiRoute:
-      JSON.stringify([
-        state.agentMode,
-        state.ragEnabled,
-        captureAgentPreflightAuthority(),
-        resolvedChatTurnRouteAuthorityKey(
-          resolveCurrentChatTurnPolicy({
-            agentMode: state.agentMode,
-            ragEnabled: state.ragEnabled,
-          }).route,
-        ),
-      ]) ?? "",
-  };
+  return composerAuthority.capture();
 }
 
-/**
- * Wait for every session mutation requested before this check, then prove the
- * composer still belongs to the captured authority. The fixed-point loop also
- * covers a mutation queued while an earlier one is settling.
- */
-export async function awaitChatComposerAuthority(
+export function awaitChatComposerAuthority(
   authority: ChatComposerAuthority,
 ): Promise<boolean> {
-  while (hasPendingSessionMutations()) {
-    const tail = getSessionMutationTail();
-    await tail;
-    if (tail === getSessionMutationTail()) break;
-  }
-  const state = useChatStore.getState();
-  const currentAuthority = captureChatComposerAuthority();
-  return (
-    !hasPendingSessionMutations() &&
-    state.activeSessionId === authority.activeSessionId &&
-    isSessionMutationAuthorityCurrent(authority.sessionMutation, state) &&
-    currentAuthority.aiRoute === authority.aiRoute
-  );
+  return composerAuthority.awaitCurrent(authority);
 }
 
-async function awaitWritableChatComposerAuthority(
+function awaitWritableChatComposerAuthority(
   authority: ChatComposerAuthority,
 ): Promise<boolean> {
-  if (!(await awaitChatComposerAuthority(authority))) return false;
-  const state = useChatStore.getState();
-  return (
-    !state.isStreaming &&
-    !state.isLoadingSessions &&
-    !state.isLoadingMessages &&
-    state.activeSessionId === authority.activeSessionId &&
-    isSessionMutationAuthorityCurrent(authority.sessionMutation, state)
-  );
+  return composerAuthority.awaitWritable(authority);
 }
-
-// Stop must target the transport selected for the in-flight turn, not mutable
-// settings that may have changed after the request started.
-let _activeTurnRoute: ResolvedChatTurnRoute | null = null;
 /**
  * chat episodic recall の「Codex に昇格しますか？」頻度トラッカー (per-session・
  * in-memory)。store 外の module 状態にして、毎ターンの recall カウントで store の
@@ -395,83 +334,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }));
   },
 
-  createLinkedSession: async () => {
-    const invocationState = get();
-    if (invocationState.isStreaming) return;
-    const authority = captureSessionMutationAuthority(invocationState);
-    const ref = invocationState.sessions.find(
-      (session) => session.id === invocationState.activeSessionId,
-    );
-    if (ref && !isSessionTargetForAuthority(ref, authority)) return;
-    return enqueueSessionMutation(async () => {
-      const queuedState = get();
-      if (
-        queuedState.isStreaming ||
-        !isSessionMutationAuthorityCurrent(authority, queuedState) ||
-        queuedState.activeSessionId !== (ref?.id ?? null)
-      ) {
-        return;
-      }
-      const { projectId, scopeKey } = authority;
-      try {
-        const session = await createSessionForCurrentRuntime(
-          projectId,
-          ref ? `Linked: ${ref.title}` : "New session",
-          scopeKey.nodeId === null ? undefined : scopeKey.nodeId,
-          scopeKey.codexAnchorId,
-          scopeKey.snippetAnchorId,
-        );
-        if (
-          get().isStreaming ||
-          session.projectId !== projectId ||
-          !isSessionTargetForAuthority(session, authority) ||
-          !isSessionMutationAuthorityCurrent(authority, get()) ||
-          get().activeSessionId !== (ref?.id ?? null)
-        ) {
-          return;
-        }
-        set((state) => ({
-          sessions: [session, ...state.sessions],
-          activeSessionId: session.id,
-          messages: [],
-          summaryCount: 0,
-          maxSummaryGeneration: 0,
-          sessionStableCodexIds: [],
-          sessionStableContextInitialized: false,
-          sessionAgentToolsSnapshot: snapshotAgentTools(),
-          cacheInvalidatedReason: null,
-          excludedAutoEntryIds: [],
-          threadFocusOverride: null,
-        }));
-        if (ref) {
-          if (
-            !isSessionMutationAuthorityCurrent(authority, get()) ||
-            get().activeSessionId !== session.id
-          ) {
-            return;
-          }
-          const linkMsg = await chatApi.addMessage(
-            session.id,
-            "system",
-            i18next.t("chat.linkedSessionReference", {
-              title: ref.title,
-              sessionId: ref.id,
-            }),
-          );
-          if (
-            isSessionMutationAuthorityCurrent(authority, get()) &&
-            get().activeSessionId === session.id
-          ) {
-            set({ messages: [linkMsg] });
-          }
-        }
-      } catch (e) {
-        toast.error(i18next.t("chat.createSessionFailed"));
-        debugLog.error("ChatStore", "createLinkedSession", errorDetail(e));
-      }
-    });
-  },
-
   removeEntryFromAuto: (entryId: string) => {
     set((state) => ({
       detectedEntries: state.detectedEntries.filter((e) => e.id !== entryId),
@@ -532,12 +394,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const prev = [...inputPinnedEntryIds].sort();
     if (sorted.join(",") === prev.join(",")) return;
     set({ inputPinnedEntryIds: ids });
-    if (_inputPinnedRefreshTimer !== null)
-      clearTimeout(_inputPinnedRefreshTimer);
-    _inputPinnedRefreshTimer = setTimeout(() => {
-      _inputPinnedRefreshTimer = null;
+    turnRuntime.scheduleInputPinnedRefresh(() => {
       void get().refreshContextLayers();
-    }, 500);
+    });
   },
 
   setPendingLookupText: (text) => set({ pendingLookupText: text }),
@@ -556,426 +415,47 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- Session management ---
 
-  loadSessions: async (
-    nodeId?: string | null,
-    codexAnchorId?: string | null,
-    snippetAnchorId?: string | null,
-  ) => {
-    const invocationState = get();
-    // Reopening the panel can retrigger the lifecycle effect while a response
-    // is still streaming. Do not clear the stream-owned session/draft merely
-    // to refresh the same scope's history list.
-    if (invocationState.isStreaming) return false;
-    const capturedActiveSessionId = invocationState.activeSessionId;
-    const sessionAuthority = captureSessionMutationAuthority(invocationState);
-    const requestedScopeKey = requestedSessionListScopeKey(
-      nodeId,
-      codexAnchorId,
-      snippetAnchorId,
-    );
-    // A deferred panel mutation can resume with its old closure after the
-    // active Chat scope changed. Reject that stale request before it clears
-    // the replacement scope's already-published list/loading state.
-    if (!scopeSessionKeysEqual(requestedScopeKey, sessionAuthority.scopeKey)) {
-      return false;
-    }
-    const authority: SessionListLoadAuthority = {
-      generation: nextSessionListGeneration(),
-      session: sessionAuthority,
-    };
-    const { projectId } = sessionAuthority;
-    // A list refresh is not a session switch. Preserve the current
-    // list/selection as one coherent snapshot while the replacement is in
-    // flight; Spotlight mutations are gated by isLoadingSessions below.
-    set({ isLoadingSessions: true });
-    try {
-      const sessions = await chatApi.listSessions(
+  ...createChatSessionStoreActions({
+    set,
+    get,
+    repository: {
+      listSessions: (projectId, nodeId, codexAnchorId, snippetAnchorId) =>
+        chatApi.listSessions(projectId, nodeId, codexAnchorId, snippetAnchorId),
+      getSessionForProject: (sessionId, projectId) =>
+        chatApi.getSessionForProject(sessionId, projectId),
+      createSession: (
         projectId,
+        title,
         nodeId,
         codexAnchorId,
         snippetAnchorId,
-      );
-      if (!isSessionListLoadAuthorityCurrent(authority, get())) {
-        return false;
-      }
-      const currentBeforePublish = get();
-      if (
-        currentBeforePublish.isStreaming ||
-        currentBeforePublish.activeSessionId !== capturedActiveSessionId
-      ) {
-        set({ isLoadingSessions: false });
-        return false;
-      }
-      if (
-        sessions.some(
-          (session) => !isSessionTargetForAuthority(session, sessionAuthority),
-        )
-      ) {
-        throw new Error("chat session scope mismatch");
-      }
-      const current = get();
-      const activeSessionStillExists =
-        current.activeSessionId === null ||
-        sessions.some((session) => session.id === current.activeSessionId);
-      if (activeSessionStillExists) {
-        set({ sessions, isLoadingSessions: false });
-      } else {
-        // The selected session was removed externally. Publish the refreshed
-        // list and clear its dependent state atomically.
-        set({
-          ...clearedSessionScopeState(),
-          sessions,
-          isLoadingSessions: false,
-        });
-      }
-      return true;
-    } catch (e) {
-      if (!isSessionListLoadAuthorityCurrent(authority, get())) {
-        return false;
-      }
-      const currentBeforeFailure = get();
-      if (
-        currentBeforeFailure.isStreaming ||
-        currentBeforeFailure.activeSessionId !== capturedActiveSessionId
-      ) {
-        set({ isLoadingSessions: false });
-        return false;
-      }
-      set({ isLoadingSessions: false });
-      toast.error(i18next.t("chat.loadSessionsFailed"));
-      debugLog.error("ChatStore", "loadSessions", errorDetail(e));
-      return false;
-    }
-  },
-
-  selectSession: async (sessionId: string | null) => {
-    const invocationState = get();
-    const authority = captureSessionMutationAuthority(invocationState);
-    const capturedSession =
-      sessionId === null
-        ? undefined
-        : invocationState.sessions.find((session) => session.id === sessionId);
-    if (
-      capturedSession &&
-      !isSessionTargetForAuthority(capturedSession, authority)
-    ) {
-      return;
-    }
-    const { projectId } = authority;
-    return enqueueSessionMutation(async () => {
-      const generation = nextSessionSelectionGeneration();
-      if (!isSessionMutationAuthorityCurrent(authority, get())) {
-        return;
-      }
-      if (get().isStreaming) get().stopGeneration();
-      if (!isSessionMutationAuthorityCurrent(authority, get())) return;
-      // セッションを切り替える前に、回答待ちの ask_user を sentinel 解決して
-      // resolver リーク・別セッションでのカード誤表示を防ぐ（null/切替の両分岐共通）。
-      get()._cancelPendingUserQuestion();
-      // エピソード recall 昇格トラッカーは per-session。切替時にリセットして、前
-      // セッションの頻度・dismiss を持ち越さない。
-      resetRecallPromote(recallPromoteTracker);
-      if (sessionId === null) {
-        set({
-          activeSessionId: null,
-          messages: [],
-          isLoadingMessages: false,
-          summaryCount: 0,
-          maxSummaryGeneration: 0,
-          sessionStableCodexIds: [],
-          sessionStableContextInitialized: false,
-          sessionAgentToolsSnapshot: null,
-          excludedAutoEntryIds: [],
-          threadFocusOverride: null,
-          chatRecallPromoteSuggestion: null,
-          // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
-          agentContinuation: null,
-          subAgentProgress: null,
-        });
-        return;
-      }
-      set({
-        isLoadingMessages: true,
-        activeSessionId: sessionId,
-        messages: [],
-        chatRecallPromoteSuggestion: null,
-        // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
-        agentContinuation: null,
-        subAgentProgress: null,
-      });
-      try {
-        if (!isSessionMutationAuthorityCurrent(authority, get())) return;
-        const session = await chatApi.getSessionForProject(
-          sessionId,
-          projectId,
-        );
-        if (
-          !isSessionSelectionGenerationCurrent(generation) ||
-          !isSessionMutationAuthorityCurrent(authority, get()) ||
-          get().activeSessionId !== sessionId
-        ) {
-          return;
-        }
-        if (
-          !session ||
-          !isSessionTargetForAuthority(session, authority) ||
-          (capturedSession && !isSameCapturedSession(session, capturedSession))
-        ) {
-          throw new Error("chat session scope mismatch");
-        }
-        if (!isSessionMutationAuthorityCurrent(authority, get())) return;
-        const [messages, summaries] = await Promise.all([
-          chatApi.listMessages(sessionId),
-          chatApi.listSummaries(sessionId),
-        ]);
-        if (
-          !isSessionSelectionGenerationCurrent(generation) ||
-          !isSessionMutationAuthorityCurrent(authority, get()) ||
-          get().activeSessionId !== sessionId
-        ) {
-          return;
-        }
-        set({
-          activeSessionId: sessionId,
-          messages,
-          isLoadingMessages: false,
-          summaryCount: summaries.length,
-          maxSummaryGeneration:
-            summaries.length > 0
-              ? Math.max(...summaries.map((s) => s.generation))
-              : 0,
-          sessionStableCodexIds: [],
-          sessionStableContextInitialized: false,
-          sessionAgentToolsSnapshot: snapshotAgentTools(),
-          cacheInvalidatedReason: null,
-          excludedAutoEntryIds: [],
-          threadFocusOverride: null,
-        });
-      } catch (e) {
-        if (
-          !isSessionSelectionGenerationCurrent(generation) ||
-          !isSessionMutationAuthorityCurrent(authority, get()) ||
-          get().activeSessionId !== sessionId
-        ) {
-          return;
-        }
-        set({ activeSessionId: null, messages: [], isLoadingMessages: false });
-        toast.error(i18next.t("chat.loadMessagesFailed"));
-        debugLog.error("ChatStore", "selectSession", errorDetail(e));
-      }
-    });
-  },
-
-  createNewSession: async (
-    projectId: string,
-    title: string,
-    nodeId?: string,
-    codexAnchorId?: string,
-    snippetAnchorId?: string,
-  ) => {
-    const invocationState = get();
-    if (invocationState.isStreaming) return;
-    const authority = captureSessionMutationAuthority(invocationState);
-    if (
-      !isSessionTargetForAuthority(
-        {
-          projectId,
-          nodeId: nodeId ?? null,
-          codexAnchorId: codexAnchorId ?? null,
-          snippetAnchorId: snippetAnchorId ?? null,
-        },
-        authority,
-      )
-    ) {
-      return;
-    }
-    return enqueueSessionMutation(async () => {
-      if (
-        get().isStreaming ||
-        !isSessionMutationAuthorityCurrent(authority, get())
-      ) {
-        return;
-      }
-      try {
-        const session = await createSessionForCurrentRuntime(
+      ) =>
+        createSessionForCurrentRuntime(
           projectId,
           title,
           nodeId,
           codexAnchorId,
           snippetAnchorId,
-        );
-        if (
-          get().isStreaming ||
-          !isSessionTargetForAuthority(session, authority) ||
-          !isSessionMutationAuthorityCurrent(authority, get())
-        ) {
-          return;
-        }
-        set((state) => ({
-          sessions: [session, ...state.sessions],
-          activeSessionId: session.id,
-          messages: [],
-          summaryCount: 0,
-          maxSummaryGeneration: 0,
-          sessionStableCodexIds: [],
-          sessionStableContextInitialized: false,
-          sessionAgentToolsSnapshot: snapshotAgentTools(),
-          cacheInvalidatedReason: null,
-          excludedAutoEntryIds: [],
-          threadFocusOverride: null,
-        }));
-      } catch (e) {
-        debugLog.error("ChatStore", "createNewSession", errorDetail(e));
-        if (isSessionMutationAuthorityCurrent(authority, get())) {
-          toast.error(i18next.t("chat.createSessionFailed"));
-        }
-      }
-    });
-  },
-
-  ensureSession: async () => {
-    const invocationState = get();
-    if (invocationState.isLoadingSessions) return null;
-    const authority = captureSessionMutationAuthority(invocationState);
-    const capturedSessionId = invocationState.activeSessionId;
-    const capturedSession = capturedSessionId
-      ? invocationState.sessions.find(
-          (session) => session.id === capturedSessionId,
-        )
-      : undefined;
-    if (
-      capturedSessionId &&
-      (!capturedSession ||
-        !isSessionTargetForAuthority(capturedSession, authority))
-    ) {
-      return null;
-    }
-    return enqueueSessionMutation(async () => {
-      const queuedState = get();
-      if (
-        queuedState.isLoadingSessions ||
-        queuedState.isStreaming ||
-        !isSessionMutationAuthorityCurrent(authority, queuedState) ||
-        queuedState.activeSessionId !== capturedSessionId
-      ) {
-        return null;
-      }
-      if (capturedSessionId) return capturedSessionId;
-      const { projectId, scopeKey } = authority;
-      try {
-        const session = await createSessionForCurrentRuntime(
-          projectId,
-          "New session",
-          scopeKey.nodeId === null ? undefined : scopeKey.nodeId,
-          scopeKey.codexAnchorId,
-          scopeKey.snippetAnchorId,
-        );
-        if (
-          get().isLoadingSessions ||
-          get().isStreaming ||
-          !isSessionTargetForAuthority(session, authority) ||
-          !isSessionMutationAuthorityCurrent(authority, get()) ||
-          get().activeSessionId !== capturedSessionId
-        ) {
-          return null;
-        }
-        set((state) => ({
-          sessions: [session, ...state.sessions],
-          activeSessionId: session.id,
-        }));
-        return session.id;
-      } catch (e) {
-        debugLog.error("ChatStore", "ensureSession", errorDetail(e));
-        return null;
-      }
-    });
-  },
-
-  deleteSession: async (sessionId: string) => {
-    const invocationState = get();
-    if (invocationState.isStreaming) return;
-    const authority = captureSessionMutationAuthority(invocationState);
-    const capturedSession = invocationState.sessions.find(
-      (session) => session.id === sessionId,
-    );
-    if (
-      !capturedSession ||
-      !isSessionTargetForAuthority(capturedSession, authority)
-    ) {
-      return;
-    }
-    return enqueueSessionMutation(async () => {
-      if (
-        get().isStreaming ||
-        !isSessionMutationAuthorityCurrent(authority, get())
-      ) {
-        return;
-      }
-      try {
-        const { projectId, workspaceIdentity } = authority;
-        // `deleteSession` is id-only at the Drizzle boundary. Resolve ownership
-        // in the captured project first, then re-check the full renderer
-        // authority before issuing that unscoped mutation.
-        const ownedSession = await chatApi.getSessionForProject(
-          sessionId,
-          projectId,
-        );
-        if (
-          !ownedSession ||
-          !isSameCapturedSession(ownedSession, capturedSession) ||
-          !isSessionTargetForAuthority(ownedSession, authority) ||
-          !isSessionMutationAuthorityCurrent(authority, get())
-        ) {
-          return;
-        }
-        if (workspaceIdentity) {
-          // The local DB cascade removes the binding, but archive the external
-          // thread first so a later Codex process cannot retain an orphaned turn.
-          await codexAppApi
-            .archiveCodexSessionThread({
-              projectId,
-              sessionId,
-              expectedWorkspacePath: workspaceIdentity.path,
-            })
-            .catch((error: unknown) =>
-              debugLog.warn(
-                "ChatStore",
-                "archive Codex session thread",
-                errorDetail(error),
-              ),
-            );
-        }
-        if (
-          get().isStreaming ||
-          !isSessionMutationAuthorityCurrent(authority, get())
-        ) {
-          return;
-        }
-        await chatApi.deleteSession(sessionId);
-        if (!isSessionMutationAuthorityCurrent(authority, get())) return;
-        const { activeSessionId } = get();
-        set((state) => ({
-          sessions: state.sessions.filter((s) => s.id !== sessionId),
-          ...(activeSessionId === sessionId
-            ? {
-                activeSessionId: null,
-                messages: [],
-                // 他のセッションライフサイクル操作（select/create）と同じく
-                // auto 除外をクリアする。残すと削除直後の refresh や送信時の
-                // auto-create セッションに前セッションの除外がリークする。
-                excludedAutoEntryIds: [],
-                threadFocusOverride: null,
-              }
-            : {}),
-        }));
-      } catch (e) {
-        debugLog.error("ChatStore", "deleteSession", errorDetail(e));
-        if (isSessionMutationAuthorityCurrent(authority, get())) {
-          toast.error(i18next.t("chat.deleteSessionFailed"));
-        }
-      }
-    });
-  },
+        ),
+      deleteSession: (sessionId) => chatApi.deleteSession(sessionId),
+      listMessages: (sessionId) => chatApi.listMessages(sessionId),
+      listSummaries: (sessionId) => chatApi.listSummaries(sessionId),
+      addSystemMessage: (sessionId, content) =>
+        chatApi.addMessage(sessionId, "system", content),
+      archiveSessionThread: (input) =>
+        codexAppApi.archiveCodexSessionThread(input),
+    },
+    runtime: {
+      snapshotAgentTools,
+      resetRecallPromote: () => resetRecallPromote(recallPromoteTracker),
+      translate: (key, options) => i18next.t(key, options),
+      notifyError: (message) => toast.error(message),
+      reportError: (operation, error) =>
+        debugLog.error("ChatStore", operation, errorDetail(error)),
+      reportWarning: (operation, error) =>
+        debugLog.warn("ChatStore", operation, errorDetail(error)),
+    },
+  }),
 
   ...createChatPersistenceStoreActions({ set, get }),
 
@@ -998,6 +478,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     },
   ) => {
     if (!content.trim()) return;
+    const turnCoordinator = turnRuntime.coordinator;
     const captureSendPreflightScopeKey = (): string => {
       const state = get();
       return JSON.stringify([
@@ -1032,20 +513,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     };
     const sendPreflightScopeKey = captureSendPreflightScopeKey();
     const sendInvocationAiAuthority = captureSendInvocationAiAuthority();
-    if (
-      _sendPreflightClaimId !== null &&
-      _sendPreflightClaimScopeKey === sendPreflightScopeKey
-    ) {
-      return;
-    }
-    const sendPreflightClaimId = crypto.randomUUID();
-    _sendPreflightClaimId = sendPreflightClaimId;
-    _sendPreflightClaimScopeKey = sendPreflightScopeKey;
+    const sendPreflightClaimId = turnRuntime.claimSendPreflight(
+      sendPreflightScopeKey,
+    );
+    if (sendPreflightClaimId === null) return;
     const releaseSendPreflightClaim = (): void => {
-      if (_sendPreflightClaimId === sendPreflightClaimId) {
-        _sendPreflightClaimId = null;
-        _sendPreflightClaimScopeKey = null;
-      }
+      turnRuntime.releaseSendPreflight(sendPreflightClaimId);
     };
     // Preserve Send's synchronous authority snapshot on the normal fast path.
     // Agent + Ollama additionally performs one metadata preflight before
@@ -1171,7 +644,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           !sameAiAuthority ||
           !sameThreadFocus ||
           !sameRequestedAgentMode ||
-          _sendPreflightClaimId !== sendPreflightClaimId ||
+          !turnRuntime.isSendPreflightCurrent(sendPreflightClaimId) ||
           !isCapturedWorkspaceCurrent(turnWorkspaceIdentity)
         ) {
           return false;
@@ -1560,7 +1033,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         );
       }
     };
-    _finalizeStoppedStream = null;
+    turnRuntime.setStoppedStreamFinalizer(null);
     const isCurrentTurn = (): boolean => turnCoordinator.isCurrent(sendControl);
     const capturedProjectIsCurrent = (): boolean => {
       const liveProjectIds = [
@@ -1678,7 +1151,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
       removeOwnedTurnMessages();
       if (ownedInvalidTurn) set({ isStreaming: false });
-      if (_activeTurnRoute === turnRoute) _activeTurnRoute = null;
+      turnRuntime.clearActiveRouteIf(turnRoute);
       return true;
     };
     const failBeforeTransport = (error: unknown): void => {
@@ -1692,7 +1165,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         isStreaming: false,
         error: error instanceof Error ? error.message : String(error),
       });
-      if (_activeTurnRoute === turnRoute) _activeTurnRoute = null;
+      turnRuntime.clearActiveRouteIf(turnRoute);
       turnCoordinator.release(sendControl, "failed");
     };
     const prevMessages = initialMessages;
@@ -1724,7 +1197,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       return;
     }
     if (cancelBeforeTransport()) return;
-    _activeTurnRoute = turnRoute;
+    turnRuntime.setActiveRoute(turnRoute);
 
     // Session-scoped pins and summaries are keyed only by session id. Validate
     // ownership against persisted state before any such source is read.
@@ -2094,17 +1567,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             }
             const sessionId = sessionIdForPersist ?? activeSessionId;
             const dismissNote = agentControl.userDismissMessage;
-            return await new Promise<ToolResult>((resolve) => {
-              _resolveUserQuestion = resolve;
-              set({
-                pendingUserQuestion: {
-                  sessionId,
-                  toolCallId,
-                  spec,
-                  dismissNote,
-                },
-              });
-            });
+            return await new Promise<Awaited<ReturnType<typeof executeTool>>>(
+              (resolve) => {
+                userQuestionRuntime.register(resolve);
+                set({
+                  pendingUserQuestion: {
+                    sessionId,
+                    toolCallId,
+                    spec,
+                    dismissNote,
+                  },
+                });
+              },
+            );
           }
           // run_research: 読み取り専用のサブエージェントを別ループで起動し、
           // 要約だけを tool_result として親に返す。親のツール予算を温存しつつ
@@ -2676,9 +2151,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
         if (isCurrentTurn()) {
           get()._cancelPendingUserQuestion();
-          if (_activeTurnRoute === turnRoute) {
-            _activeTurnRoute = null;
-          }
+          turnRuntime.clearActiveRouteIf(turnRoute);
           turnCoordinator.release(sendControl);
           set({
             isStreaming: false,
@@ -2990,7 +2463,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }
           flushHandle = requestAnimationFrame(flushDelta);
         };
-        _flushPendingDelta = flushDelta;
+        turnRuntime.setPendingDeltaFlusher(flushDelta);
 
         const callbacks: chatApi.StreamCallbacks = {
           onTextDelta: (delta: string) => {
@@ -3012,9 +2485,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }) => {
             if (callbacksSettled) return;
             callbacksSettled = true;
-            if (_finalizeStoppedStream === finalizeStoppedStream) {
-              _finalizeStoppedStream = null;
-            }
+            turnRuntime.clearStoppedStreamFinalizerIf(finalizeStoppedStream);
             if (!isCurrentTurn()) {
               pendingDelta = "";
               if (flushHandle !== null) {
@@ -3029,9 +2500,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             }
             // 末尾の buffered delta を確定前に同期反映。
             flushDelta();
-            if (_flushPendingDelta === flushDelta) {
-              _flushPendingDelta = null;
-            }
+            turnRuntime.clearPendingDeltaFlusherIf(flushDelta);
             const chatDurationMs = Math.round(
               performance.now() - chatStartTime,
             );
@@ -3312,8 +2781,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               })
               .finally(() => {
                 turnStreamCleanup?.();
-                if (_streamCleanup === turnStreamCleanup) {
-                  _streamCleanup = null;
+                if (turnStreamCleanup) {
+                  turnRuntime.clearStreamCleanupIf(turnStreamCleanup);
                 }
                 if (isCurrentTurn()) set({ isStreaming: false });
                 resolve();
@@ -3322,9 +2791,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           onError: (message: string) => {
             if (callbacksSettled) return;
             callbacksSettled = true;
-            if (_finalizeStoppedStream === finalizeStoppedStream) {
-              _finalizeStoppedStream = null;
-            }
+            turnRuntime.clearStoppedStreamFinalizerIf(finalizeStoppedStream);
             if (!isCurrentTurn()) {
               pendingDelta = "";
               turnStreamCleanup?.();
@@ -3334,12 +2801,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             // エラー時も partial content を保持するため同期 flush。
             flushDelta();
             finalizeStreamingDraft();
-            if (_flushPendingDelta === flushDelta) {
-              _flushPendingDelta = null;
-            }
+            turnRuntime.clearPendingDeltaFlusherIf(flushDelta);
             turnStreamCleanup?.();
-            if (_streamCleanup === turnStreamCleanup) {
-              _streamCleanup = null;
+            if (turnStreamCleanup) {
+              turnRuntime.clearStreamCleanupIf(turnStreamCleanup);
             }
             if (sendControl.transport === "codex-app-server") {
               const runtimeMetadata = {
@@ -3386,7 +2851,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const finalizeStoppedStream = () => {
           callbacks.onDone({ stopReason: "stopped" });
         };
-        _finalizeStoppedStream = finalizeStoppedStream;
+        turnRuntime.setStoppedStreamFinalizer(finalizeStoppedStream);
 
         assertTurnAuthority();
         notifyAccepted();
@@ -3471,7 +2936,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             if (callbacksSettled || !isCurrentTurn()) {
               cleanup();
             } else {
-              _streamCleanup = cleanup;
+              turnRuntime.setStreamCleanup(cleanup);
             }
           })
           .catch((error) => {
@@ -3563,7 +3028,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // isStreaming is set to false inside onDone/onError callbacks
         // but guard here in case of early exit.
         if (get().isStreaming) set({ isStreaming: false });
-        if (_activeTurnRoute === turnRoute) _activeTurnRoute = null;
+        turnRuntime.clearActiveRouteIf(turnRoute);
         turnCoordinator.release(sendControl);
       } else {
         turnCoordinator.release(sendControl);
@@ -3584,49 +3049,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     awaitWritableAuthority: awaitWritableChatComposerAuthority,
   }),
 
-  // --- ask_user（ユーザーへの質問）の解決 ---
-  resolveUserQuestion: (answer: AskUserContent) => {
-    const pending = get().pendingUserQuestion;
-    if (!pending) return;
-    // ask 発行時と別セッションに切り替わっていたら適用しない
-    // （切替時は _cancelPendingUserQuestion が既に sentinel 解決しているはず）。
-    if (pending.sessionId !== get().activeSessionId) {
-      return;
-    }
-    const result = buildAskUserResult(
-      pending.toolCallId,
-      answer,
-      pending.dismissNote,
-    );
-    _resolveUserQuestion?.(result);
-    _resolveUserQuestion = null;
-    set({ pendingUserQuestion: null });
-  },
-
-  dismissUserQuestion: () => {
-    get().resolveUserQuestion({ answers: [], dismissed: true });
-  },
-
-  _cancelPendingUserQuestion: () => {
-    turnCoordinator.abort();
-    if (_resolveUserQuestion) {
-      // 非自発的キャンセル（Stop / セッション切替 / error）の単一ファネル。
-      // Promise を sentinel 解決するだけでは、再開したループが tool_result を
-      // 積んで次ターンを発火し、別セッションへ stream を漏らす。ここで中断
-      // フラグも立て、resolve で再開したループが shouldAbort を見て即 return
-      // するようにする。自発的な Answer/dismiss は resolveUserQuestion 経由で
-      // この関数を通らないため、フラグは立たずループは正常継続する。
-      const pending = get().pendingUserQuestion;
-      _resolveUserQuestion(
-        dismissedAskUserResult(
-          pending?.toolCallId ?? "ask_user_cancelled",
-          pending?.dismissNote ?? "",
-        ),
-      );
-      _resolveUserQuestion = null;
-    }
-    if (get().pendingUserQuestion) set({ pendingUserQuestion: null });
-  },
+  ...createChatUserQuestionStoreActions({
+    set,
+    get,
+    runtime: userQuestionRuntime,
+    abortTurn: () => {
+      turnRuntime.coordinator.abort();
+    },
+  }),
 
   setChatScope: (scope, anchorId) => {
     const current = get();
@@ -3687,12 +3117,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // A send may still be waiting for Ollama metadata before placeholders are
     // published. Invalidate that claim so Stop (or a new authority) can recover
     // without waiting for the endpoint timeout.
-    _sendPreflightClaimId = null;
-    _sendPreflightClaimScopeKey = null;
+    turnRuntime.clearSendPreflight();
     // agent ループの中断を要求してから、回答待ちの ask_user を sentinel 解決する。
     // フラグを先に立てるので、resolve で再開したループは shouldAbort を見て
     // tool_result を送らずに即 return する（stop が agent path を止められない
     // 問題への対処）。フラグ→resolve の順序が肝。
+    const turnCoordinator = turnRuntime.coordinator;
     const stoppedControl = turnCoordinator.current();
     const stoppedTurnId = stoppedControl?.id ?? null;
     const stoppedSessionId = stoppedControl?.sessionId ?? get().activeSessionId;
@@ -3719,13 +3149,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
     // Flush while this turn still owns the identity; flushDelta deliberately
     // rejects stale owners, so clearing the id first would drop the final frame.
-    _flushPendingDelta?.();
-    _flushPendingDelta = null;
+    turnRuntime.flushPendingDelta();
     const agentTransportWillFinalize = Boolean(
       stoppedControl?.transportStarted && stoppedControl.surface === "agent",
     );
     if (stoppedControl?.transportStarted && stoppedControl.surface === "chat") {
-      _finalizeStoppedStream?.();
+      turnRuntime.finalizeStoppedStream();
     }
     if (!agentTransportWillFinalize && stoppedControl) {
       turnCoordinator.release(stoppedControl);
@@ -3733,7 +3162,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // Stop は送信開始時に凍結した transport を使う。Codex App Server は
     // subprocess 全体を終了せず、対象 Thread/Turn だけを interrupt する。
     const stoppedTransport =
-      stoppedControl?.transport ?? _activeTurnRoute?.transport ?? "http";
+      stoppedControl?.transport ??
+      turnRuntime.activeRoute()?.transport ??
+      "http";
     if (
       stoppedTransport === "codex-app-server" &&
       stoppedTurnId &&
@@ -3752,8 +3183,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       void chatApi.abortChatStream().catch(() => {});
     }
     if (!agentTransportWillFinalize) {
-      _streamCleanup?.();
-      _streamCleanup = null;
+      turnRuntime.runStreamCleanup();
     }
     get()._cancelPendingUserQuestion();
     set({

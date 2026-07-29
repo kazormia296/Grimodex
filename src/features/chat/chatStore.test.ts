@@ -1547,6 +1547,51 @@ describe("useChatStore", () => {
   });
 
   describe("createLinkedSession", () => {
+    it("creates a linked session, selects it, and publishes the reference message", async () => {
+      const linkedSession = {
+        ...session2,
+        title: `Linked: ${session1.title}`,
+      };
+      const linkMessage: ChatMessage = {
+        id: "linked-reference",
+        sessionId: linkedSession.id,
+        role: "system",
+        content: "linked reference",
+        createdAt: "2025-01-01T00:02:00Z",
+      };
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+      });
+      mockCreateSession.mockResolvedValueOnce(linkedSession);
+      mockAddMessage.mockResolvedValueOnce(linkMessage);
+
+      await useChatStore.getState().createLinkedSession();
+
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        "proj-1",
+        `Linked: ${session1.title}`,
+        "scene-1",
+        undefined,
+        undefined,
+      );
+      expect(mockAddMessage).toHaveBeenCalledWith(
+        linkedSession.id,
+        "system",
+        expect.stringContaining(session1.title),
+      );
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [linkedSession, session1],
+        activeSessionId: linkedSession.id,
+        messages: [linkMessage],
+        summaryCount: 0,
+        maxSummaryGeneration: 0,
+        sessionStableCodexIds: [],
+        sessionStableContextInitialized: false,
+      });
+    });
+
     it("does not replace the active session while a turn is streaming", async () => {
       useChatStore.setState({
         sessions: [session1],
