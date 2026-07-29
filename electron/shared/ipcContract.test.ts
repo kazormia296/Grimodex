@@ -1037,6 +1037,150 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("project snapshot typed commands は集約payloadを明示写像する", async () => {
+    const projectSnapshotCreate = vi.fn().mockResolvedValue(undefined);
+    const projectSnapshotRestoreContext = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        structural: true,
+        liveTables: ["tree_nodes"],
+        treeRows: [],
+        codexRows: [],
+        snippetRows: [],
+        auxRows: [],
+        contentRows: [],
+        liveCodexIds: [],
+        liveTreeNodeIds: [],
+        liveCodexTagIds: [],
+      }),
+    );
+    const projectSnapshotApplyRestore = vi.fn().mockResolvedValue(undefined);
+    const { backend } = fakeBackend({
+      projectSnapshotCreate: projectSnapshotCreate as never,
+      projectSnapshotRestoreContext: projectSnapshotRestoreContext as never,
+      projectSnapshotApplyRestore: projectSnapshotApplyRestore as never,
+    });
+    const createPayload = {
+      projectId: "project-1",
+      snapshotId: "snapshot-1",
+      name: "Before edit",
+      description: null,
+      createdAt: "2026-07-30T00:00:00.000Z",
+      treeRows: [
+        {
+          snapshot_id: "snapshot-1",
+          node_id: "scene-1",
+          char_count: 1,
+        },
+      ],
+      codexRows: [],
+      snippetRows: [],
+      versionIds: ["version-1"],
+    };
+    const created = await dispatchInvoke(
+      "project_snapshot_create",
+      { payload: createPayload },
+      { backend, shell: noShell },
+    );
+    expect(projectSnapshotCreate).toHaveBeenCalledExactlyOnceWith(
+      createPayload,
+    );
+    expect(created).toEqual({ ok: true, value: null });
+
+    const context = await dispatchInvoke(
+      "project_snapshot_restore_context",
+      {
+        projectId: "project-1",
+        snapshotId: "snapshot-1",
+        scopes: ["body", "map"],
+      },
+      { backend, shell: noShell },
+    );
+    expect(projectSnapshotRestoreContext).toHaveBeenCalledExactlyOnceWith(
+      "project-1",
+      "snapshot-1",
+      ["body", "map"],
+    );
+    expect(context).toMatchObject({
+      ok: true,
+      value: { structural: true, liveTables: ["tree_nodes"] },
+    });
+
+    const applyPayload = {
+      projectId: "project-1",
+      snapshotId: "snapshot-1",
+      scopes: ["body"],
+      inserts: [
+        {
+          table: "tree_nodes",
+          row: { id: "scene-1", project_id: "project-1" },
+          mode: "insert",
+        },
+      ],
+    };
+    const applied = await dispatchInvoke(
+      "project_snapshot_apply_restore",
+      { payload: applyPayload },
+      { backend, shell: noShell },
+    );
+    expect(projectSnapshotApplyRestore).toHaveBeenCalledExactlyOnceWith(
+      applyPayload,
+    );
+    expect(applied).toEqual({ ok: true, value: null });
+  });
+
+  it("project snapshot commands は不正scope/tableと旧nativeを拒否する", async () => {
+    const projectSnapshotApplyRestore = vi.fn();
+    const { backend } = fakeBackend({
+      projectSnapshotApplyRestore: projectSnapshotApplyRestore as never,
+    });
+    const invalidScope = await dispatchInvoke(
+      "project_snapshot_restore_context",
+      {
+        projectId: "project-1",
+        snapshotId: "snapshot-1",
+        scopes: ["everything"],
+      },
+      { backend, shell: noShell },
+    );
+    expect(invalidScope.ok).toBe(false);
+
+    const invalidTable = await dispatchInvoke(
+      "project_snapshot_apply_restore",
+      {
+        payload: {
+          projectId: "project-1",
+          snapshotId: "snapshot-1",
+          scopes: ["body"],
+          inserts: [
+            {
+              table: "projects",
+              row: { id: "project-2" },
+              mode: "insert",
+            },
+          ],
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(invalidTable.ok).toBe(false);
+    expect(projectSnapshotApplyRestore).not.toHaveBeenCalled();
+
+    const oldNative = await dispatchInvoke(
+      "project_snapshot_restore_context",
+      {
+        projectId: "project-1",
+        snapshotId: "snapshot-1",
+        scopes: ["body"],
+      },
+      { backend: fakeBackend().backend, shell: noShell },
+    );
+    expect(oldNative).toMatchObject({
+      ok: false,
+      error:
+        "IPC_BACKEND_UNAVAILABLE: native method projectSnapshotRestoreContext",
+    });
+  });
+
   it("save_scene_body_bundle: typed snapshot を1 payloadで渡して結果をparseする", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -1740,6 +1884,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_move_marker_bundle",
       "plot_thread_restore_snapshot",
       "plot_thread_update",
+      "project_snapshot_apply_restore",
+      "project_snapshot_create",
+      "project_snapshot_restore_context",
       "repair_integrity",
       "reply_to_annotation",
       "restore_backup",

@@ -32,7 +32,7 @@
         "src/features/chronicle/api.ts:drizzle-insert:events": 1,
         "src/features/chronicle/api.ts:drizzle-insert:projectCalendar": 1,
         "src/features/chronicle/api.ts:drizzle-insert:sceneEvents": 2,
-        "src/features/chronicle/api.ts:drizzle-update:events": 2,
+        "src/features/chronicle/api.ts:drizzle-update:events": 1,
         "src/features/codex/api.ts:drizzle-delete:codexEntries": 1,
         "src/features/codex/api.ts:drizzle-insert:codexEntries": 1,
         "src/features/codex/api.ts:drizzle-update:codexEntries": 1,
@@ -155,12 +155,6 @@
         "src/features/revision/api.ts:drizzle-delete:contentVersions": 1,
         "src/features/revision/api.ts:drizzle-insert:contentVersions": 1,
         "src/features/revision/projectSnapshotApi.ts:drizzle-delete:projectSnapshots": 1,
-        "src/features/revision/projectSnapshotApi.ts:drizzle-insert:projectSnapshotAux": 1,
-        "src/features/revision/projectSnapshotApi.ts:drizzle-insert:projectSnapshotCodexEntries": 1,
-        "src/features/revision/projectSnapshotApi.ts:drizzle-insert:projectSnapshotEntries": 1,
-        "src/features/revision/projectSnapshotApi.ts:drizzle-insert:projectSnapshots": 1,
-        "src/features/revision/projectSnapshotApi.ts:drizzle-insert:projectSnapshotSnippets": 1,
-        "src/features/revision/projectSnapshotApi.ts:drizzle-insert:projectSnapshotTreeNodes": 1,
         "src/features/revision/projectSnapshotApi.ts:drizzle-update:codexEntries": 1,
         "src/features/revision/projectSnapshotApi.ts:drizzle-update:snippets": 1,
         "src/features/revision/projectSnapshotApi.ts:drizzle-update:treeNodes": 1,
@@ -195,39 +189,12 @@
         "src/features/codex/crossReference.ts:raw-sql-select:tree_nodes": 1,
         "src/features/codex/search.ts:raw-sql-select:codex_entries": 2,
         "src/features/codex/version.ts:raw-sql-select:codex_entries": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:<expression>": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:codex_entries": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:codex_tags": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:content_versions": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:project_snapshot_aux": 2,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:project_snapshot_codex_entries": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:project_snapshot_snippets": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:project_snapshot_tree_nodes": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:sqlite_master": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-select:tree_nodes": 1,
         "src/features/snippets/search.ts:raw-sql-select:snippets": 2
       }
     },
     "renderer-raw-sql-write": {
       "scope": "Raw renderer SQL mutation and DDL statements.",
-      "allowedCallsiteCounts": {
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:codex_detail_definitions": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:codex_entries": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:codex_tags": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:codex_types": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:events": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:foreshadows": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:labels": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:lint_ignored_diagnostics": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:lint_term_dictionary": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:map_boards": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:plot_threads": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:project_calendar": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:snippets": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:tree_nodes": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-pragma:defer_foreign_keys": 1,
-        "src/features/revision/projectSnapshotApi.ts:raw-sql-update:map_node_positions": 2
-      }
+      "allowedCallsiteCounts": {}
     },
     "renderer-generic-db-route": {
       "scope": "Direct renderer invoke() calls to db_execute and db_execute_batch.",
@@ -244,8 +211,6 @@
         "src/features/map/causalityBoard.ts:generic-db-route:db_execute_batch": 1,
         "src/features/map/correlationBoard.ts:generic-db-route:db_execute_batch": 1,
         "src/features/map/mapApi.ts:generic-db-route:db_execute_batch": 6,
-        "src/features/revision/projectSnapshotApi.ts:generic-db-route:db_execute": 1,
-        "src/features/revision/projectSnapshotApi.ts:generic-db-route:db_execute_batch": 1,
         "src/features/snippets/search.ts:generic-db-route:db_execute": 2,
         "src/features/tree/aiScaffold/applyPlan.ts:generic-db-route:db_execute_batch": 1
       }

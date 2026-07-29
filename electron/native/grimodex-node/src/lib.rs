@@ -57,6 +57,9 @@ use grimodex_db::plot_threads::{
     PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
+use grimodex_db::project_snapshots::{
+    self, ApplyProjectSnapshotRestorePayload, CreateProjectSnapshotPayload, RestoreScope,
+};
 use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
@@ -656,6 +659,57 @@ impl Backend {
                 Ok(serde_json::to_string(&chronicle::set_event_participants(
                     db, payload,
                 )?)?)
+            })
+        })
+        .await
+    }
+
+    /// Project snapshots are a typed aggregate: renderer computes the
+    /// dependency-safe row plan while shared Rust owns all SQL, project
+    /// ownership checks, and transaction boundaries.
+    #[napi]
+    pub async fn project_snapshot_create(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreateProjectSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                project_snapshots::create_project_snapshot(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn project_snapshot_restore_context(
+        &self,
+        project_id: String,
+        snapshot_id: String,
+        scopes: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let scopes: Vec<RestoreScope> = from_wire("scopes", scopes)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &project_snapshots::project_snapshot_restore_context(
+                        db,
+                        project_id,
+                        snapshot_id,
+                        scopes,
+                    )?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn project_snapshot_apply_restore(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ApplyProjectSnapshotRestorePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                project_snapshots::apply_project_snapshot_restore(db, payload)
             })
         })
         .await

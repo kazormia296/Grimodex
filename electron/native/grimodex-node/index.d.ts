@@ -81,6 +81,14 @@ export declare class Backend {
   eventGetVersion(projectId: string, eventId: string): Promise<string>
   eventSetParticipants(payload: any): Promise<string>
   /**
+   * Project snapshots are a typed aggregate: renderer computes the
+   * dependency-safe row plan while shared Rust owns all SQL, project
+   * ownership checks, and transaction boundaries.
+   */
+  projectSnapshotCreate(payload: any): Promise<void>
+  projectSnapshotRestoreContext(projectId: string, snapshotId: string, scopes: any): Promise<string>
+  projectSnapshotApplyRestore(payload: any): Promise<void>
+  /**
    * Scene content and every document-derived sidecar are committed in one
    * SQLite transaction. The renderer performs one PM traversal and passes
    * the typed snapshot as camelCase JSON.

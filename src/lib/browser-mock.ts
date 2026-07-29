@@ -40,6 +40,15 @@ import {
   hexToBytes,
 } from "@/features/timelapse/hashChain";
 import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
+import {
+  AUX_PROJECT_FILTER,
+  AUX_SCOPE_OWNER,
+  AUX_SCOPES,
+  AUX_TABLE,
+  type AuxScope,
+  type RawRow,
+  type RestoreScope,
+} from "@/features/revision/projectSnapshotScopes";
 import sampleProjectJa from "../../src-tauri/resources/sample_project/v1.json";
 import sampleProjectEn from "../../src-tauri/resources/sample_project/v1_en.json";
 
@@ -1656,6 +1665,477 @@ export async function createBrowserMock(
     }
     stmt.free();
     return rows;
+  }
+
+  const browserSnapshotRestoreTables = new Set<string>([
+    "tree_nodes",
+    "codex_entries",
+    "snippets",
+    ...AUX_SCOPES,
+  ]);
+
+  function browserSnapshotTableOwner(table: string): RestoreScope | null {
+    if (table === "tree_nodes") return "body";
+    if (table === "codex_entries") return "codex";
+    if (table === "snippets") return "snippet";
+    return (
+      (AUX_SCOPE_OWNER as Partial<Record<string, RestoreScope>>)[table] ?? null
+    );
+  }
+
+  function browserSnapshotInsertStatement(
+    table: string,
+    row: RawRow,
+    mode: "insert" | "replace" = "insert",
+  ): { sql: string; params: SqlValue[]; method: "run" } {
+    const columns = Object.keys(row).sort();
+    if (columns.length === 0) {
+      throw new Error(`project snapshot insert for '${table}' is empty`);
+    }
+    const verb = mode === "replace" ? "INSERT OR REPLACE" : "INSERT";
+    return {
+      sql: `${verb} INTO "${table}" (${columns
+        .map((column) => `"${column}"`)
+        .join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+      params: columns.map((column) => row[column]) as SqlValue[],
+      method: "run",
+    };
+  }
+
+  function browserSnapshotPayload(
+    args: Record<string, unknown>,
+    command: string,
+  ): Record<string, unknown> {
+    const payload = args.payload;
+    if (
+      payload === null ||
+      typeof payload !== "object" ||
+      Array.isArray(payload)
+    ) {
+      throw new Error(`${command}: payload must be an object`);
+    }
+    return payload as Record<string, unknown>;
+  }
+
+  function browserSnapshotOwned(projectId: string, snapshotId: string): void {
+    if (
+      !queryOne(
+        "SELECT 1 FROM project_snapshots WHERE id = ? AND project_id = ?",
+        [snapshotId, projectId],
+      )
+    ) {
+      throw new Error(
+        `project snapshot '${snapshotId}' is not owned by project '${projectId}'`,
+      );
+    }
+  }
+
+  function handleProjectSnapshotCreate(args: Record<string, unknown>): void {
+    const payload = browserSnapshotPayload(args, "project_snapshot_create");
+    const projectId = String(payload.projectId);
+    const snapshotId = String(payload.snapshotId);
+    if (!queryOne("SELECT 1 FROM projects WHERE id = ?", [projectId])) {
+      throw new Error(`project snapshot project '${projectId}' does not exist`);
+    }
+    const statements: Array<{
+      sql: string;
+      params: SqlValue[];
+      method: "run";
+    }> = [
+      {
+        sql: `INSERT INTO project_snapshots
+                (id, project_id, name, description, created_at)
+              VALUES (?, ?, ?, ?, ?)`,
+        params: [
+          snapshotId,
+          projectId,
+          String(payload.name),
+          payload.description == null ? null : String(payload.description),
+          String(payload.createdAt),
+        ],
+        method: "run",
+      },
+    ];
+    for (const [table, rowsKey] of [
+      ["project_snapshot_tree_nodes", "treeRows"],
+      ["project_snapshot_codex_entries", "codexRows"],
+      ["project_snapshot_snippets", "snippetRows"],
+    ] as const) {
+      const rows = payload[rowsKey] as RawRow[];
+      for (const row of rows) {
+        if (row.snapshot_id !== snapshotId) {
+          throw new Error(
+            `project snapshot ${rowsKey} row has a foreign snapshot_id`,
+          );
+        }
+        statements.push(browserSnapshotInsertStatement(table, row));
+      }
+    }
+    for (const versionId of payload.versionIds as string[]) {
+      statements.push({
+        sql: `INSERT INTO project_snapshot_entries (snapshot_id, version_id)
+              VALUES (?, ?)`,
+        params: [snapshotId, versionId],
+        method: "run",
+      });
+    }
+    for (const scope of AUX_SCOPES) {
+      const table = AUX_TABLE[scope];
+      const filter = AUX_PROJECT_FILTER[scope];
+      let rows: Record<string, SqlValue>[] = [];
+      try {
+        rows = queryAll(
+          `SELECT * FROM "${table}" WHERE ${filter.where}`,
+          Array<SqlValue>(filter.binds).fill(projectId),
+        );
+      } catch {
+        rows = [];
+      }
+      statements.push({
+        sql: `INSERT INTO project_snapshot_aux
+                (snapshot_id, scope, payload_json)
+              VALUES (?, ?, ?)`,
+        params: [snapshotId, scope, JSON.stringify({ rows })],
+        method: "run",
+      });
+    }
+    handleDbExecuteBatch({ statements });
+  }
+
+  function handleProjectSnapshotRestoreContext(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const projectId = String(args.projectId);
+    const snapshotId = String(args.snapshotId);
+    const scopes = new Set(args.scopes as RestoreScope[]);
+    browserSnapshotOwned(projectId, snapshotId);
+    const structural = Boolean(
+      queryOne(
+        "SELECT 1 FROM project_snapshot_aux WHERE snapshot_id = ? LIMIT 1",
+        [snapshotId],
+      ),
+    );
+    const allowedAuxScopes = new Set(
+      AUX_SCOPES.filter((scope) => scopes.has(AUX_SCOPE_OWNER[scope])),
+    );
+    const auxRows = queryAll(
+      `SELECT scope, payload_json
+         FROM project_snapshot_aux
+        WHERE snapshot_id = ?
+        ORDER BY scope`,
+      [snapshotId],
+    )
+      .filter((row) => allowedAuxScopes.has(String(row.scope) as AuxScope))
+      .map((row) => ({
+        scope: String(row.scope),
+        payloadJson: String(row.payload_json),
+      }));
+    return {
+      structural,
+      liveTables: queryAll(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        [],
+      ).map((row) => String(row.name)),
+      treeRows: queryAll(
+        "SELECT * FROM project_snapshot_tree_nodes WHERE snapshot_id = ?",
+        [snapshotId],
+      ),
+      codexRows: queryAll(
+        "SELECT * FROM project_snapshot_codex_entries WHERE snapshot_id = ?",
+        [snapshotId],
+      ),
+      snippetRows: queryAll(
+        "SELECT * FROM project_snapshot_snippets WHERE snapshot_id = ?",
+        [snapshotId],
+      ),
+      auxRows,
+      contentRows: queryAll(
+        `SELECT id, content
+           FROM content_versions
+          WHERE id IN (
+                SELECT body_version_id
+                  FROM project_snapshot_tree_nodes
+                 WHERE snapshot_id = ? AND body_version_id IS NOT NULL
+                UNION
+                SELECT body_version_id
+                  FROM project_snapshot_codex_entries
+                 WHERE snapshot_id = ? AND body_version_id IS NOT NULL
+                UNION
+                SELECT body_version_id
+                  FROM project_snapshot_snippets
+                 WHERE snapshot_id = ? AND body_version_id IS NOT NULL
+          )`,
+        [snapshotId, snapshotId, snapshotId],
+      ),
+      liveCodexIds: queryAll(
+        "SELECT id FROM codex_entries WHERE project_id = ?",
+        [projectId],
+      ).map((row) => String(row.id)),
+      liveTreeNodeIds: queryAll(
+        "SELECT id FROM tree_nodes WHERE project_id = ?",
+        [projectId],
+      ).map((row) => String(row.id)),
+      liveCodexTagIds: queryAll(
+        "SELECT id FROM codex_tags WHERE project_id = ?",
+        [projectId],
+      ).map((row) => String(row.id)),
+    };
+  }
+
+  function handleProjectSnapshotApplyRestore(
+    args: Record<string, unknown>,
+  ): void {
+    const payload = browserSnapshotPayload(
+      args,
+      "project_snapshot_apply_restore",
+    );
+    const projectId = String(payload.projectId);
+    const snapshotId = String(payload.snapshotId);
+    const scopes = new Set(payload.scopes as RestoreScope[]);
+    browserSnapshotOwned(projectId, snapshotId);
+    if (
+      !queryOne(
+        "SELECT 1 FROM project_snapshot_aux WHERE snapshot_id = ? LIMIT 1",
+        [snapshotId],
+      )
+    ) {
+      throw new Error("legacy project snapshots cannot use structural restore");
+    }
+
+    const treePrefix = `__grimodex_snapshot_tree_${snapshotId}__`;
+    const codexPrefix = `__grimodex_snapshot_codex_${snapshotId}__`;
+    const statements: Array<{
+      sql: string;
+      params: SqlValue[];
+      method: "run";
+    }> = [
+      {
+        sql: "PRAGMA defer_foreign_keys = ON",
+        params: [],
+        method: "run",
+      },
+    ];
+    const parkTree = scopes.has("body") && !scopes.has("map");
+    const parkCodex = scopes.has("codex") && !scopes.has("map");
+    if (parkTree) {
+      statements.push({
+        sql: `UPDATE map_node_positions
+                 SET tree_node_id = ? || tree_node_id
+               WHERE tree_node_id IS NOT NULL
+                 AND board_id IN (
+                     SELECT id FROM map_boards WHERE project_id = ?
+                 )`,
+        params: [treePrefix, projectId],
+        method: "run",
+      });
+    }
+    if (parkCodex) {
+      statements.push({
+        sql: `UPDATE map_node_positions
+                 SET codex_entry_id = ? || codex_entry_id
+               WHERE codex_entry_id IS NOT NULL
+                 AND board_id IN (
+                     SELECT id FROM map_boards WHERE project_id = ?
+                 )`,
+        params: [codexPrefix, projectId],
+        method: "run",
+      });
+    }
+    if (scopes.has("body")) {
+      statements.push(
+        {
+          sql: "DELETE FROM tree_nodes WHERE project_id = ?",
+          params: [projectId],
+          method: "run",
+        },
+        {
+          sql: "DELETE FROM plot_threads WHERE project_id = ?",
+          params: [projectId],
+          method: "run",
+        },
+      );
+      if (
+        queryOne(
+          `SELECT 1 FROM project_snapshot_aux
+            WHERE snapshot_id = ? AND scope = 'events'`,
+          [snapshotId],
+        )
+      ) {
+        statements.push({
+          sql: "DELETE FROM events WHERE project_id = ?",
+          params: [projectId],
+          method: "run",
+        });
+      }
+      if (
+        queryOne(
+          `SELECT 1 FROM project_snapshot_aux
+            WHERE snapshot_id = ? AND scope = 'project_calendar'`,
+          [snapshotId],
+        )
+      ) {
+        statements.push({
+          sql: "DELETE FROM project_calendar WHERE project_id = ?",
+          params: [projectId],
+          method: "run",
+        });
+      }
+    }
+    if (scopes.has("codex")) {
+      for (const table of [
+        "codex_entries",
+        "codex_types",
+        "codex_tags",
+        "codex_detail_definitions",
+      ]) {
+        statements.push({
+          sql: `DELETE FROM "${table}" WHERE project_id = ?`,
+          params: [projectId],
+          method: "run",
+        });
+      }
+    }
+    for (const [scope, table] of [
+      ["snippet", "snippets"],
+      ["map", "map_boards"],
+      ["foreshadow", "foreshadows"],
+      ["labels", "labels"],
+    ] as const) {
+      if (scopes.has(scope)) {
+        statements.push({
+          sql: `DELETE FROM "${table}" WHERE project_id = ?`,
+          params: [projectId],
+          method: "run",
+        });
+      }
+    }
+    if (scopes.has("lint")) {
+      statements.push(
+        {
+          sql: `DELETE FROM lint_ignored_diagnostics
+                 WHERE scene_id IN (
+                     SELECT id FROM tree_nodes WHERE project_id = ?
+                 )`,
+          params: [projectId],
+          method: "run",
+        },
+        {
+          sql: "DELETE FROM lint_term_dictionary WHERE project_id = ?",
+          params: [projectId],
+          method: "run",
+        },
+      );
+    }
+
+    for (const insert of payload.inserts as Array<{
+      table: string;
+      row: RawRow;
+      mode: "insert" | "replace";
+    }>) {
+      if (!browserSnapshotRestoreTables.has(insert.table)) {
+        throw new Error(
+          `project snapshot restore table '${insert.table}' is not allowed`,
+        );
+      }
+      const owner = browserSnapshotTableOwner(insert.table);
+      if (owner === null || !scopes.has(owner)) {
+        throw new Error(
+          `project snapshot restore table '${insert.table}' is outside the selected scopes`,
+        );
+      }
+      if (
+        insert.row.project_id !== undefined &&
+        insert.row.project_id !== projectId
+      ) {
+        throw new Error(
+          `project snapshot restore table '${insert.table}' has a foreign project_id`,
+        );
+      }
+      if (insert.mode === "replace" && insert.table !== "codex_types") {
+        throw new Error(
+          "project snapshot replace mode is only valid for codex_types",
+        );
+      }
+      statements.push(
+        browserSnapshotInsertStatement(insert.table, insert.row, insert.mode),
+      );
+    }
+
+    if (parkTree) {
+      statements.push(
+        {
+          sql: `UPDATE map_node_positions
+                   SET tree_node_id =
+                       substr(tree_node_id, length(?) + 1)
+                 WHERE substr(tree_node_id, 1, length(?)) = ?
+                   AND board_id IN (
+                       SELECT id FROM map_boards WHERE project_id = ?
+                   )
+                   AND EXISTS (
+                       SELECT 1 FROM tree_nodes target
+                        WHERE target.id =
+                              substr(map_node_positions.tree_node_id, length(?) + 1)
+                          AND target.project_id = ?
+                   )`,
+          params: [
+            treePrefix,
+            treePrefix,
+            treePrefix,
+            projectId,
+            treePrefix,
+            projectId,
+          ],
+          method: "run",
+        },
+        {
+          sql: `DELETE FROM map_node_positions
+                 WHERE substr(tree_node_id, 1, length(?)) = ?
+                   AND board_id IN (
+                       SELECT id FROM map_boards WHERE project_id = ?
+                   )`,
+          params: [treePrefix, treePrefix, projectId],
+          method: "run",
+        },
+      );
+    }
+    if (parkCodex) {
+      statements.push(
+        {
+          sql: `UPDATE map_node_positions
+                   SET codex_entry_id =
+                       substr(codex_entry_id, length(?) + 1)
+                 WHERE substr(codex_entry_id, 1, length(?)) = ?
+                   AND board_id IN (
+                       SELECT id FROM map_boards WHERE project_id = ?
+                   )
+                   AND EXISTS (
+                       SELECT 1 FROM codex_entries target
+                        WHERE target.id =
+                              substr(map_node_positions.codex_entry_id, length(?) + 1)
+                          AND target.project_id = ?
+                   )`,
+          params: [
+            codexPrefix,
+            codexPrefix,
+            codexPrefix,
+            projectId,
+            codexPrefix,
+            projectId,
+          ],
+          method: "run",
+        },
+        {
+          sql: `DELETE FROM map_node_positions
+                 WHERE substr(codex_entry_id, 1, length(?)) = ?
+                   AND board_id IN (
+                       SELECT id FROM map_boards WHERE project_id = ?
+                   )`,
+          params: [codexPrefix, codexPrefix, projectId],
+          method: "run",
+        },
+      );
+    }
+    handleDbExecuteBatch({ statements });
   }
 
   function browserCommandPayload(
@@ -3414,6 +3894,14 @@ export async function createBrowserMock(
         return handleEventGetVersion(args) as T;
       case "event_set_participants":
         return handleEventSetParticipants(args) as T;
+      case "project_snapshot_create":
+        handleProjectSnapshotCreate(args);
+        return undefined as T;
+      case "project_snapshot_restore_context":
+        return handleProjectSnapshotRestoreContext(args) as T;
+      case "project_snapshot_apply_restore":
+        handleProjectSnapshotApplyRestore(args);
+        return undefined as T;
       case "plot_thread_create":
         return (await handlePlotThreadCreate(args)) as T;
       case "plot_thread_link_create":
