@@ -7,6 +7,7 @@ function renderLayering(
   glassEnabled = true,
   palette?: ThemePalette,
   sharedCompositor = false,
+  backgroundRenderer: "initializing" | "webgl" | "fallback" = "webgl",
 ) {
   return render(
     <div
@@ -18,6 +19,7 @@ function renderLayering(
         <div
           data-editor-ambient
           data-background-enabled={enabled ? "true" : "false"}
+          data-background-renderer={backgroundRenderer}
         >
           {sharedCompositor && <div data-zen-glass-compositor />}
         </div>
@@ -293,6 +295,29 @@ describe("editor ambient background layering (real Chromium)", () => {
     expect(getComputedStyle(editorFilter!).backdropFilter).toBe("none");
     for (const surface of glassSurfaces) {
       expect(getComputedStyle(surface).backdropFilter).toBe("none");
+    }
+  });
+
+  it("keeps native Glass filters active while WebGL is initializing", () => {
+    const { container } = renderLayering(
+      true,
+      true,
+      undefined,
+      false,
+      "initializing",
+    );
+    const editorFilter = container.querySelector<HTMLElement>(
+      "[data-editor-fluid-glass-filter]",
+    );
+    const glassSurfaces = container.querySelectorAll<HTMLElement>(
+      "[data-ambient-glass-surface]",
+    );
+
+    expect(getComputedStyle(editorFilter!).backdropFilter).toContain(
+      "blur(14px)",
+    );
+    for (const surface of glassSurfaces) {
+      expect(getComputedStyle(surface).backdropFilter).toContain("blur(22px)");
     }
   });
 

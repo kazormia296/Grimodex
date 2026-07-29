@@ -6,6 +6,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const zenState = vi.hoisted(() => ({
   reduced: false,
   webGlSupported: true,
+  rendererStatus: "webgl" as
+    | "initializing"
+    | "webgl"
+    | "fallback-unsupported"
+    | "fallback-context-lost",
   config: {
     enabled: true,
     shader: "mesh-gradient",
@@ -38,10 +43,18 @@ vi.mock("./zen/ZenShaderSurface", () => ({
   }: {
     playing: boolean;
     webGlSupported: boolean;
-    onRendererStatusChange: (status: "webgl" | "fallback-unsupported") => void;
+    onRendererStatusChange: (
+      status:
+        | "initializing"
+        | "webgl"
+        | "fallback-unsupported"
+        | "fallback-context-lost",
+    ) => void;
   }) => {
     React.useEffect(() => {
-      onRendererStatusChange(webGlSupported ? "webgl" : "fallback-unsupported");
+      onRendererStatusChange(
+        webGlSupported ? zenState.rendererStatus : "fallback-unsupported",
+      );
     }, [onRendererStatusChange, webGlSupported]);
     return (
       <div
@@ -85,6 +98,7 @@ describe("ZenAmbientBackdrop", () => {
   beforeEach(() => {
     zenState.reduced = false;
     zenState.webGlSupported = true;
+    zenState.rendererStatus = "webgl";
     zenState.config.enabled = true;
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
   });
@@ -141,6 +155,20 @@ describe("ZenAmbientBackdrop", () => {
     expect(
       container.querySelector("[data-zen-shader-surface]"),
     ).toHaveAttribute("data-playing", "false");
+  });
+
+  it("keeps initializing distinct from a real WebGL fallback", () => {
+    zenState.rendererStatus = "initializing";
+
+    const { container } = render(<ZenAmbientBackdrop active />);
+
+    const backdrop = container.querySelector("[data-editor-ambient]");
+    expect(backdrop).toHaveAttribute(
+      "data-background-renderer",
+      "initializing",
+    );
+    expect(backdrop).not.toHaveAttribute("data-background-fallback-reason");
+    expect(backdrop).toHaveAttribute("data-motion", "static");
   });
 
   it("stops the WebGL animation when the window becomes inactive", () => {
