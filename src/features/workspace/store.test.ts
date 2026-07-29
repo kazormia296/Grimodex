@@ -46,6 +46,7 @@ function resetStore() {
     view: "loading",
     globalSettings: null,
     activeWorkspacePath: null,
+    activeWorkspaceId: null,
     workspaceOpenRevision: 0,
     workspaceSwitchInProgress: false,
     workspaceHydrated: false,
@@ -234,12 +235,16 @@ describe("useWorkspaceStore", () => {
     });
 
     it("sets editor view and active workspace on success", async () => {
-      mockInvoke.mockResolvedValueOnce({ name: "MyNovel" });
+      mockInvoke.mockResolvedValueOnce({
+        name: "MyNovel",
+        workspaceId: "workspace-my-novel",
+      });
 
       await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\MyNovel");
       const state = useWorkspaceStore.getState();
       expect(state.view).toBe("editor");
       expect(state.activeWorkspacePath).toBe("D:\\Novels\\MyNovel");
+      expect(state.activeWorkspaceId).toBe("workspace-my-novel");
       expect(state.activeWorkspaceName).toBe("MyNovel");
       expect(state.workspaceOpenRevision).toBe(1);
       expect(state.workspaceSwitchInProgress).toBe(false);

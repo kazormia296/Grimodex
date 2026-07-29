@@ -347,8 +347,11 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
 beforeEach(() => {
   vi.clearAllMocks();
   useWorkspaceStore.setState({
+    activeWorkspaceId: "workspace-a-id",
     activeWorkspacePath: "/workspace-a",
     workspaceOpenRevision: 1,
+    workspaceSwitchInProgress: false,
+    workspaceHydrated: true,
   });
   useProjectStore.setState({ currentProjectId: null });
   useChronicleStore.setState({
@@ -358,6 +361,7 @@ beforeEach(() => {
     viewStartDay: null,
     axisMode: null,
     viewProjectId: null,
+    viewWorkspaceId: null,
     viewWorkspacePath: null,
   });
   useCodexStore.setState({ entries: [] });
@@ -459,6 +463,52 @@ describe("ChroniclePanel keepalive activity", () => {
         scope: {
           workspacePath: "/workspace-a",
           openRevision: 1,
+          projectId: "p1",
+        },
+      }),
+    );
+  });
+
+  it("Workspace切替中は旧scopeのqueryを開始せず、hydrate完了後だけ新scopeを読む", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent()]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    useWorkspaceStore.setState({
+      workspaceSwitchInProgress: true,
+      workspaceHydrated: false,
+    });
+    render(<ChroniclePanel />);
+
+    expect(screen.queryByTestId("viewport")).toBeNull();
+    expect(screen.getByTestId("chronicle-loading")).toBeTruthy();
+    expect(apiMocks.listEvents).not.toHaveBeenCalled();
+    expect(seasonMocks.useSeasonConflicts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: false,
+        scope: null,
+      }),
+    );
+
+    act(() => {
+      useWorkspaceStore.setState({
+        activeWorkspaceId: "workspace-b-id",
+        activeWorkspacePath: "/workspace-b",
+        workspaceOpenRevision: 2,
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: true,
+      });
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.listEvents).toHaveBeenCalledTimes(1);
+      expect(apiMocks.listEvents).toHaveBeenCalledWith("p1");
+      expect(screen.getByTestId("viewport")).toBeTruthy();
+    });
+    expect(seasonMocks.useSeasonConflicts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: true,
+        scope: {
+          workspacePath: "/workspace-b",
+          openRevision: 2,
           projectId: "p1",
         },
       }),
@@ -831,6 +881,36 @@ describe("ChroniclePanel mixed dated/undated axis", () => {
         startGranularity: "time",
       });
     });
+  });
+
+  it("hour zoom の位置ステータスは端数日を HH:MM として表示する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        startTime: 100,
+        startMinute: 360,
+        startGranularity: "time",
+      }),
+    ]);
+    useChronicleStore.setState({
+      pxPerDay: 2_000,
+      viewStartDay: 100,
+      axisMode: "calendar",
+      viewProjectId: "p1",
+      viewWorkspaceId: "workspace-a-id",
+      viewWorkspacePath: "/workspace-a",
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelectedPosition(100.75);
+    });
+
+    const status = await screen.findByTestId("chronicle-status-bar");
+    expect(status).toHaveTextContent("18:00");
+    expect(status).not.toHaveTextContent("00:00");
   });
 });
 

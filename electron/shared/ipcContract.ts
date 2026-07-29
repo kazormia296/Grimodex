@@ -1301,6 +1301,8 @@ function requireEventMutationPayload(
   return payload;
 }
 
+const MAX_CHRONICLE_BULK_PAYLOAD_BYTES = 8 * 1024 * 1024;
+
 function requireChronicleBulkPayload(args: CommandArgs): CommandArgs {
   const command = "agent_chronicle_bulk_mutate";
   const payload = requireRecord(args, "payload", command);
@@ -1311,9 +1313,15 @@ function requireChronicleBulkPayload(args: CommandArgs): CommandArgs {
     requireNonEmptyString(payload, "surface", command);
   }
   const operations = requireArray(payload, "operations", command);
-  if (operations.length === 0 || operations.length > 500) {
+  if (operations.length === 0) {
     throw new Error(
-      `invalid args \`operations\` for command \`${command}\`: expected 1..500 operations`,
+      `invalid args \`operations\` for command \`${command}\`: expected at least one operation`,
+    );
+  }
+  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload)).length;
+  if (payloadBytes > MAX_CHRONICLE_BULK_PAYLOAD_BYTES) {
+    throw new Error(
+      `invalid args \`payload\` for command \`${command}\`: encoded payload exceeds 8 MiB`,
     );
   }
   const targets = new Set<string>();
