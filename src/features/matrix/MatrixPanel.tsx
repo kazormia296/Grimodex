@@ -300,13 +300,7 @@ export function MatrixPanel() {
       parentId,
     });
     if (synopsis.trim()) {
-      const { updateNode } = await import("@/features/tree/api");
-      await updateNode(newNode.id, { synopsis: synopsis.trim() });
-      useTreeStore.setState((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === newNode.id ? { ...n, synopsis: synopsis.trim() } : n,
-        ),
-      }));
+      await treeState.patchNode(newNode.id, { synopsis: synopsis.trim() });
     }
     if (entryId) {
       await upsertScenePin(newNode.id, entryId);
@@ -317,13 +311,7 @@ export function MatrixPanel() {
   async function handleRenameNode(id: string, _currentTitle: string) {
     const newTitle = window.prompt("Rename scene:", _currentTitle);
     if (!newTitle?.trim()) return;
-    const { updateNode } = await import("@/features/tree/api");
-    await updateNode(id, { title: newTitle.trim() });
-    useTreeStore.setState((s) => ({
-      nodes: s.nodes.map((n) =>
-        n.id === id ? { ...n, title: newTitle.trim() } : n,
-      ),
-    }));
+    await useTreeStore.getState().patchNode(id, { title: newTitle.trim() });
   }
 
   function handleRevealInScenes(id: string) {

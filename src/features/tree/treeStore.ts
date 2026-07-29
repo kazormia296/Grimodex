@@ -107,6 +107,45 @@ export interface TreeNodeData {
   updatedAt: string;
 }
 
+/**
+ * Application-owned metadata patch. Callers persist through `patchNode` so the
+ * Tree projection cannot diverge from the durable row after a partial update.
+ */
+export type TreeNodePatch = Omit<
+  Partial<
+    Pick<
+      TreeNodeData,
+      | "title"
+      | "sortOrder"
+      | "parentId"
+      | "status"
+      | "synopsis"
+      | "intent"
+      | "storyTimeOrder"
+      | "storyTimeLabel"
+      | "povCharacterId"
+      | "locationId"
+      | "chronicleStartTime"
+      | "chronicleStartMinute"
+      | "chronicleStartGranularity"
+      | "chronicleEndTime"
+      | "chronicleEndMinute"
+      | "chronicleEndGranularity"
+      | "chroniclePrecision"
+      | "sourceUri"
+      | "sourceMtime"
+      | "archivedAt"
+      | "contextMode"
+      | "aliases"
+      | "excludedAliases"
+    >
+  >,
+  "aliases" | "excludedAliases"
+> & {
+  aliases?: string;
+  excludedAliases?: string;
+};
+
 /** シーンの作中暦日付（chronicle*）への部分更新パッチ。 */
 export type ChronicleDatePatch = Partial<
   Pick<
@@ -716,6 +755,7 @@ interface TreeState {
 
   // New tree operations
   createNode: (opts: CreateNodeOpts) => Promise<TreeNodeData>;
+  patchNode: (id: string, patch: TreeNodePatch) => Promise<void>;
   updateNodeTitle: (id: string, title: string) => Promise<void>;
   deleteNode: (id: string) => Promise<void>;
   updateSynopsis: (id: string, synopsis: string) => Promise<void>;
@@ -1183,6 +1223,19 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
               updatedAt: persisted?.updatedAt ?? n.updatedAt,
             }
           : n,
+      );
+      return { nodes, scenes: computeScenes(nodes) };
+    });
+  },
+
+  async patchNode(id, patch) {
+    const persisted = await api.updateNode(id, patch);
+    if (!persisted) return;
+    set((state) => {
+      const nodes = state.nodes.map((node) =>
+        node.id === id
+          ? { ...node, ...patch, updatedAt: persisted.updatedAt }
+          : node,
       );
       return { nodes, scenes: computeScenes(nodes) };
     });

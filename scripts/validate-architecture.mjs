@@ -10,6 +10,15 @@ const genericSqlWriteManifestPath = path.join(
   repoRoot,
   "policies/architecture/generic-renderer-sql-writes.json",
 );
+const ARCHITECTURE_BASELINE_SCHEMA_VERSION = 2;
+const ARCHITECTURE_FINDING_RULES = [
+  "cross-feature-store-import",
+  "cross-feature-store-mutation",
+  "dynamic-store-import",
+  "application-component-import",
+  "single-scene-load-in-array-loop",
+  "legacy-ipc-error-text-check",
+];
 
 async function collectSourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -25,7 +34,7 @@ async function collectSourceFiles(directory) {
       files.push(absolute);
     }
   }
-  return files;
+  return files.sort();
 }
 
 function relativeSource(absolute, currentRepoRoot = repoRoot) {
@@ -444,12 +453,34 @@ export function resolveImport(
   );
 }
 
-function canonicalCycle(component) {
-  const sorted = [...component].sort();
-  return sorted.join(" -> ");
+function shortestPath(graph, start, goal, allowedNodes) {
+  if (start === goal) return [start];
+  const queue = [start];
+  const previous = new Map([[start, null]]);
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index];
+    const neighbors = [...(graph.get(current) ?? [])].sort();
+    for (const neighbor of neighbors) {
+      if (!allowedNodes.has(neighbor) || previous.has(neighbor)) continue;
+      previous.set(neighbor, current);
+      if (neighbor === goal) {
+        const path = [];
+        let cursor = goal;
+        while (cursor !== null) {
+          path.push(cursor);
+          cursor = previous.get(cursor) ?? null;
+        }
+        return path.reverse();
+      }
+      queue.push(neighbor);
+    }
+  }
+
+  return [];
 }
 
-function findCycles(graph, currentRepoRoot = repoRoot) {
+export function findCycleDetails(graph, currentRepoRoot = repoRoot) {
   let nextIndex = 0;
   const indices = new Map();
   const lowLinks = new Map();
@@ -482,18 +513,75 @@ function findCycles(graph, currentRepoRoot = repoRoot) {
     do {
       current = stack.pop();
       onStack.delete(current);
-      component.push(relativeSource(current, currentRepoRoot));
+      component.push(current);
     } while (current !== node);
-    if (component.length > 1) components.push(canonicalCycle(component));
+    if (component.length <= 1) return;
+
+    const componentSet = new Set(component);
+    const members = component
+      .map((member) => relativeSource(member, currentRepoRoot))
+      .sort();
+    const edges = [];
+    for (const from of component) {
+      for (const to of graph.get(from) ?? []) {
+        if (!componentSet.has(to)) continue;
+        const returnPath = shortestPath(graph, to, from, componentSet).map(
+          (member) => relativeSource(member, currentRepoRoot),
+        );
+        edges.push({
+          from: relativeSource(from, currentRepoRoot),
+          to: relativeSource(to, currentRepoRoot),
+          returnPath,
+        });
+      }
+    }
+    edges.sort((left, right) => {
+      const leftKey = `${left.from}->${left.to}`;
+      const rightKey = `${right.from}->${right.to}`;
+      return leftKey.localeCompare(rightKey);
+    });
+    components.push({ members, edges });
   }
 
   for (const node of graph.keys()) {
     if (!indices.has(node)) visit(node);
   }
-  return components;
+  return components.sort((left, right) =>
+    left.members.join("\n").localeCompare(right.members.join("\n")),
+  );
 }
 
-export async function collectFindings(options = {}) {
+export function findCycles(graph, currentRepoRoot = repoRoot) {
+  return findCycleDetails(graph, currentRepoRoot).map(({ members }) =>
+    members.join(" -> "),
+  );
+}
+
+export function createArchitectureMetrics(findings, featureCycles) {
+  const cyclicModules = new Set(
+    featureCycles.flatMap((cycle) => cycle.members),
+  );
+  const hasCompleteEdgeData = featureCycles.every((cycle) =>
+    Array.isArray(cycle.edges),
+  );
+  return {
+    "cross-feature-store-import":
+      findings["cross-feature-store-import"]?.length ?? 0,
+    "cross-feature-store-mutation":
+      findings["cross-feature-store-mutation"]?.length ?? 0,
+    "dynamic-store-import": findings["dynamic-store-import"]?.length ?? 0,
+    "cyclic-modules": cyclicModules.size,
+    "largest-scc": featureCycles.reduce(
+      (largest, cycle) => Math.max(largest, cycle.members.length),
+      0,
+    ),
+    "scc-internal-edges": hasCompleteEdgeData
+      ? featureCycles.reduce((total, cycle) => total + cycle.edges.length, 0)
+      : null,
+  };
+}
+
+export async function collectArchitectureSnapshot(options = {}) {
   const currentRepoRoot = options.repoRoot ?? repoRoot;
   const currentSourceRoot =
     options.sourceRoot ?? path.join(currentRepoRoot, "src");
@@ -581,15 +669,378 @@ export async function collectFindings(options = {}) {
     );
   }
 
-  findings["feature-cycle"] = findCycles(graph, currentRepoRoot);
+  const featureCycles = findCycleDetails(graph, currentRepoRoot);
+  findings["feature-cycle"] = featureCycles.map(({ members }) =>
+    members.join(" -> "),
+  );
   for (const values of Object.values(findings)) values.sort();
-  return findings;
+  return {
+    findings,
+    featureCycles,
+    metrics: createArchitectureMetrics(findings, featureCycles),
+  };
+}
+
+export async function collectFindings(options = {}) {
+  const snapshot = await collectArchitectureSnapshot(options);
+  return snapshot.findings;
 }
 
 function flatten(findings) {
   return Object.entries(findings).flatMap(([rule, values]) =>
     values.map((value) => `${rule}:${value}`),
   );
+}
+
+function countValues(values) {
+  const counts = new Map();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function findingDelta(current, baseline) {
+  const currentCounts = countValues(current);
+  const baselineCounts = countValues(baseline);
+  const introduced = [];
+  const improvements = [];
+
+  for (const [signature, currentCount] of currentCounts) {
+    const baselineCount = baselineCounts.get(signature) ?? 0;
+    for (
+      let occurrence = baselineCount;
+      occurrence < currentCount;
+      occurrence += 1
+    ) {
+      introduced.push(signature);
+    }
+  }
+
+  for (const [signature, baselineCount] of baselineCounts) {
+    const currentCount = currentCounts.get(signature) ?? 0;
+    if (currentCount < baselineCount) {
+      improvements.push(
+        `${signature}#baseline-${baselineCount}-observed-${currentCount}`,
+      );
+    }
+  }
+
+  return { introduced, improvements };
+}
+
+function normalizeCycleEntry(entry) {
+  if (typeof entry === "string") {
+    return {
+      members: entry
+        .split(" -> ")
+        .map((member) => member.trim())
+        .filter(Boolean)
+        .sort(),
+      edges: null,
+    };
+  }
+  if (!entry || !Array.isArray(entry.members)) return null;
+  const edges = Array.isArray(entry.edges)
+    ? entry.edges
+        .filter(
+          (edge) =>
+            edge &&
+            typeof edge.from === "string" &&
+            typeof edge.to === "string",
+        )
+        .map((edge) => ({
+          from: edge.from,
+          to: edge.to,
+          ...(Array.isArray(edge.returnPath)
+            ? { returnPath: [...edge.returnPath] }
+            : {}),
+        }))
+        .sort((left, right) =>
+          `${left.from}->${left.to}`.localeCompare(
+            `${right.from}->${right.to}`,
+          ),
+        )
+    : null;
+  return {
+    members: [...new Set(entry.members)].sort(),
+    edges,
+  };
+}
+
+function normalizeCycleEntries(entries) {
+  return (Array.isArray(entries) ? entries : [])
+    .map(normalizeCycleEntry)
+    .filter(Boolean)
+    .sort((left, right) =>
+      left.members.join("\n").localeCompare(right.members.join("\n")),
+    );
+}
+
+function deriveBaselineMetrics(findings, featureCycles) {
+  const metrics = createArchitectureMetrics(findings, featureCycles);
+  if (featureCycles.some((cycle) => cycle.edges === null)) {
+    metrics["scc-internal-edges"] = null;
+  }
+  return metrics;
+}
+
+export function normalizeArchitectureBaseline(baseline = {}) {
+  const sourceFindings =
+    baseline.findings && typeof baseline.findings === "object"
+      ? baseline.findings
+      : baseline;
+  const findings = Object.fromEntries(
+    ARCHITECTURE_FINDING_RULES.map((rule) => [
+      rule,
+      Array.isArray(sourceFindings[rule]) ? [...sourceFindings[rule]] : [],
+    ]),
+  );
+  const cycleSource =
+    baseline["feature-cycle"]?.sccs ??
+    baseline["feature-cycle"] ??
+    sourceFindings["feature-cycle"] ??
+    [];
+  const featureCycles = normalizeCycleEntries(cycleSource);
+  const metrics =
+    baseline.metrics && typeof baseline.metrics === "object"
+      ? { ...baseline.metrics }
+      : deriveBaselineMetrics(findings, featureCycles);
+
+  return {
+    schemaVersion: baseline.schemaVersion ?? 1,
+    findings,
+    featureCycles,
+    metrics,
+    waivers: Array.isArray(baseline.waivers) ? [...baseline.waivers] : [],
+    legacy: baseline.schemaVersion !== ARCHITECTURE_BASELINE_SCHEMA_VERSION,
+  };
+}
+
+function dateOnly(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+  return new Date(value ?? Date.now()).toISOString().slice(0, 10);
+}
+
+function isWaiverShapeValid(waiver) {
+  return (
+    waiver &&
+    typeof waiver.id === "string" &&
+    typeof waiver.rule === "string" &&
+    typeof waiver.signature === "string" &&
+    typeof waiver.reason === "string" &&
+    typeof waiver.ownerArea === "string" &&
+    Number.isInteger(waiver.issue) &&
+    typeof waiver.introducedAt === "string" &&
+    typeof waiver.expiresAt === "string"
+  );
+}
+
+function waiverExpired(waiver, today) {
+  return !isWaiverShapeValid(waiver) || waiver.expiresAt < today;
+}
+
+function waiverMatches(waiver, rule, signature) {
+  return (
+    isWaiverShapeValid(waiver) &&
+    waiver.rule === rule &&
+    waiver.signature === signature
+  );
+}
+
+function isSubset(members, container) {
+  const containerSet = new Set(container);
+  return members.every((member) => containerSet.has(member));
+}
+
+function edgeKey(edge) {
+  return `${edge.from}->${edge.to}`;
+}
+
+function cycleDebtContainsSignature(cycles, signature) {
+  if (signature.startsWith("new-scc:")) {
+    const members = signature
+      .slice("new-scc:".length)
+      .split(" -> ")
+      .filter(Boolean)
+      .sort();
+    return cycles.some(
+      (cycle) => cycle.members.join(" -> ") === members.join(" -> "),
+    );
+  }
+  if (signature.startsWith("new-internal-edge:")) {
+    const edge = signature
+      .slice("new-internal-edge:".length)
+      .split(":return=", 1)[0];
+    return cycles.some((cycle) =>
+      cycle.edges?.some((candidate) => edgeKey(candidate) === edge),
+    );
+  }
+  return false;
+}
+
+function compareCycleDebt(currentCycles, baselineCycles) {
+  const introduced = [];
+  const improvements = [];
+  const matches = new Map();
+
+  for (const current of currentCycles) {
+    const matchingBaseline = baselineCycles.find((baseline) =>
+      isSubset(current.members, baseline.members),
+    );
+    if (!matchingBaseline) {
+      introduced.push(`feature-cycle:new-scc:${current.members.join(" -> ")}`);
+      continue;
+    }
+
+    matches.set(matchingBaseline, (matches.get(matchingBaseline) ?? 0) + 1);
+    if (current.members.length < matchingBaseline.members.length) {
+      improvements.push(
+        `feature-cycle:scc-shrunk:${matchingBaseline.members.join(" -> ")}#observed-${current.members.length}`,
+      );
+    }
+
+    if (current.edges === null || matchingBaseline.edges === null) continue;
+    const currentEdges = new Set(current.edges.map(edgeKey));
+    const baselineEdges = new Set(matchingBaseline.edges.map(edgeKey));
+    for (const edge of current.edges) {
+      if (baselineEdges.has(edgeKey(edge))) continue;
+      const returnPath = edge.returnPath?.join(" -> ");
+      introduced.push(
+        `feature-cycle:new-internal-edge:${edgeKey(edge)}${
+          returnPath ? `:return=${returnPath}` : ""
+        }`,
+      );
+    }
+    for (const edge of matchingBaseline.edges) {
+      if (!currentEdges.has(edgeKey(edge))) {
+        improvements.push(`feature-cycle:edge-removed:${edgeKey(edge)}`);
+      }
+    }
+  }
+
+  for (const baseline of baselineCycles) {
+    if (!matches.has(baseline)) {
+      improvements.push(
+        `feature-cycle:scc-removed:${baseline.members.join(" -> ")}`,
+      );
+    }
+  }
+
+  return { introduced, improvements };
+}
+
+export function compareArchitectureBaseline(snapshot, baseline, options = {}) {
+  const normalizedBaseline = normalizeArchitectureBaseline(baseline);
+  const introduced = [];
+  const improvements = [];
+  const today = dateOnly(options.now);
+  const expiredWaivers = normalizedBaseline.waivers.filter((waiver) =>
+    waiverExpired(waiver, today),
+  );
+  const activeWaivers = normalizedBaseline.waivers.filter(
+    (waiver) => isWaiverShapeValid(waiver) && !waiverExpired(waiver, today),
+  );
+  const currentFindings = snapshot.findings ?? {};
+
+  for (const rule of ARCHITECTURE_FINDING_RULES) {
+    const delta = findingDelta(
+      Array.isArray(currentFindings[rule]) ? currentFindings[rule] : [],
+      normalizedBaseline.findings[rule],
+    );
+    for (const signature of delta.introduced) {
+      if (
+        !activeWaivers.some((waiver) => waiverMatches(waiver, rule, signature))
+      ) {
+        introduced.push(`${rule}:${signature}`);
+      }
+    }
+    improvements.push(...delta.improvements.map((value) => `${rule}:${value}`));
+  }
+
+  const cycleDelta = compareCycleDebt(
+    normalizeCycleEntries(snapshot.featureCycles),
+    normalizedBaseline.featureCycles,
+  );
+  for (const finding of cycleDelta.introduced) {
+    const { rule, signature } = splitRuleSignature(finding);
+    if (
+      !activeWaivers.some((waiver) => waiverMatches(waiver, rule, signature))
+    ) {
+      introduced.push(finding);
+    }
+  }
+  improvements.push(...cycleDelta.improvements);
+
+  const metricIncreases = [];
+  const metricImprovements = [];
+  for (const [metric, current] of Object.entries(snapshot.metrics ?? {})) {
+    const baselineValue = normalizedBaseline.metrics[metric];
+    if (typeof current !== "number" || typeof baselineValue !== "number") {
+      continue;
+    }
+    if (current > baselineValue) {
+      const waived = activeWaivers.some((waiver) =>
+        waiverMatches(waiver, "metric", metric),
+      );
+      if (!waived) {
+        metricIncreases.push({ baseline: baselineValue, current, metric });
+      }
+    } else if (current < baselineValue) {
+      metricImprovements.push({ baseline: baselineValue, current, metric });
+    }
+  }
+
+  const staleWaivers = normalizedBaseline.waivers.filter((waiver) => {
+    if (!isWaiverShapeValid(waiver)) return false;
+    if (waiver.rule === "metric") {
+      return typeof snapshot.metrics?.[waiver.signature] !== "number";
+    }
+    if (waiver.rule === "feature-cycle") {
+      return !cycleDebtContainsSignature(
+        normalizeCycleEntries(snapshot.featureCycles),
+        waiver.signature,
+      );
+    }
+    return !(currentFindings[waiver.rule] ?? []).includes(waiver.signature);
+  });
+
+  return {
+    introduced: [...new Set(introduced)].sort(),
+    improvements: [...new Set(improvements)].sort(),
+    metricIncreases: metricIncreases.sort((left, right) =>
+      left.metric.localeCompare(right.metric),
+    ),
+    metricImprovements: metricImprovements.sort((left, right) =>
+      left.metric.localeCompare(right.metric),
+    ),
+    expiredWaivers,
+    staleWaivers,
+    baseline: normalizedBaseline,
+  };
+}
+
+export function createArchitectureBaseline(snapshot, options = {}) {
+  const findings = Object.fromEntries(
+    ARCHITECTURE_FINDING_RULES.map((rule) => [
+      rule,
+      [...(snapshot.findings[rule] ?? [])].sort(),
+    ]),
+  );
+  const sccs = normalizeCycleEntries(snapshot.featureCycles).map((cycle) => ({
+    members: cycle.members,
+    edges: cycle.edges?.map(({ from, to }) => ({ from, to })) ?? [],
+  }));
+  return {
+    schemaVersion: ARCHITECTURE_BASELINE_SCHEMA_VERSION,
+    findings,
+    "feature-cycle": { sccs },
+    metrics: { ...snapshot.metrics },
+    waivers: [...(options.waivers ?? [])],
+  };
 }
 
 export function findNewFindings(findings, baseline) {
@@ -646,16 +1097,167 @@ export function findNewGenericSqlWriteFindings(findings, manifest) {
   return [...overages, ...staleCeilings].sort();
 }
 
+const METRIC_LABELS = {
+  "cross-feature-store-import": "cross-feature store imports",
+  "cross-feature-store-mutation": "direct cross-feature mutations",
+  "dynamic-store-import": "dynamic store imports",
+  "cyclic-modules": "cyclic modules",
+  "largest-scc": "largest SCC",
+  "scc-internal-edges": "SCC-internal edges",
+};
+
+export function formatArchitectureMetrics(metrics) {
+  return Object.entries(METRIC_LABELS).map(
+    ([metric, label]) => `- ${label}: ${metrics[metric] ?? "unknown"}`,
+  );
+}
+
+function cliOption(name) {
+  const prefix = `${name}=`;
+  const inline = process.argv.find((argument) => argument.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = process.argv.indexOf(name);
+  if (index === -1) return undefined;
+  return process.argv[index + 1];
+}
+
+function hasCliFlag(flag) {
+  return process.argv.includes(flag);
+}
+
+function splitRuleSignature(value) {
+  const separator = value.indexOf(":");
+  if (separator === -1) return { rule: "unknown", signature: value };
+  return {
+    rule: value.slice(0, separator),
+    signature: value.slice(separator + 1),
+  };
+}
+
+function createGrowthWaivers(values, metricIncreases, options, existing) {
+  const today = dateOnly();
+  const requests = [
+    ...values.map((value) => splitRuleSignature(value)),
+    ...metricIncreases.map(({ metric }) => ({
+      rule: "metric",
+      signature: metric,
+    })),
+  ];
+  const existingKeys = new Set(
+    existing.map((waiver) => `${waiver.rule}:${waiver.signature}`),
+  );
+  const additions = [];
+  for (const request of requests) {
+    const key = `${request.rule}:${request.signature}`;
+    if (existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    const slug = request.signature
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 48);
+    additions.push({
+      id: `architecture-${request.rule}-${slug || "debt"}`,
+      rule: request.rule,
+      signature: request.signature,
+      reason: options.reason,
+      ownerArea: options.ownerArea,
+      issue: options.issue,
+      introducedAt: today,
+      expiresAt: options.expiresAt,
+    });
+  }
+  return [...existing, ...additions];
+}
+
+function growthWaiverOptions() {
+  const issueValue = cliOption("--issue");
+  const issue = issueValue === undefined ? undefined : Number(issueValue);
+  return {
+    issue: Number.isInteger(issue) && issue > 0 ? issue : undefined,
+    reason: cliOption("--reason"),
+    ownerArea: cliOption("--owner-area"),
+    expiresAt: cliOption("--expires-at"),
+  };
+}
+
+function printList(label, values) {
+  if (values.length === 0) return;
+  console.error(`${label}:`);
+  for (const value of values) console.error(`- ${value}`);
+}
+
 async function main() {
-  const findings = await collectFindings();
-  const genericSqlWriteFindings = findings["generic-renderer-sql-write"];
-  const architectureFindings = { ...findings };
-  delete architectureFindings["generic-renderer-sql-write"];
-  if (process.argv.includes("--write-baseline")) {
-    await writeFile(
-      baselinePath,
-      `${JSON.stringify(architectureFindings, null, 2)}\n`,
+  const snapshot = await collectArchitectureSnapshot();
+  const genericSqlWriteFindings =
+    snapshot.findings["generic-renderer-sql-write"];
+  const baseline = JSON.parse(await readFile(baselinePath, "utf8"));
+  const genericSqlWriteManifest = JSON.parse(
+    await readFile(genericSqlWriteManifestPath, "utf8"),
+  );
+  const architectureComparison = compareArchitectureBaseline(
+    snapshot,
+    baseline,
+  );
+  const genericChanges = findNewGenericSqlWriteFindings(
+    genericSqlWriteFindings,
+    genericSqlWriteManifest,
+  );
+  const genericIntroduced = genericChanges
+    .filter((finding) => !finding.includes("#manifest-"))
+    .map((finding) => `generic-renderer-sql-write:${finding}`);
+  const genericImprovements = genericChanges
+    .filter((finding) => finding.includes("#manifest-"))
+    .map((finding) => `generic-renderer-sql-write:${finding}`);
+  const introduced = [
+    ...architectureComparison.introduced,
+    ...genericIntroduced,
+  ];
+  const improvements = [
+    ...architectureComparison.improvements,
+    ...genericImprovements,
+  ];
+
+  if (hasCliFlag("--write-baseline")) {
+    const growth = [
+      ...introduced,
+      ...architectureComparison.metricIncreases.map(
+        ({ metric, baseline: previous, current }) =>
+          `metric:${metric}:${previous}->${current}`,
+      ),
+    ];
+    const waiverOptions = growthWaiverOptions();
+    if (
+      growth.length > 0 &&
+      (!waiverOptions.issue ||
+        !waiverOptions.reason ||
+        !waiverOptions.ownerArea ||
+        !waiverOptions.expiresAt)
+    ) {
+      console.error(
+        "Baseline growth requires --issue, --reason, --owner-area, and --expires-at.",
+      );
+      printList("Unwaived growth", growth);
+      process.exitCode = 1;
+      return;
+    }
+    if (
+      architectureComparison.expiredWaivers.length > 0 ||
+      architectureComparison.staleWaivers.length > 0
+    ) {
+      console.error(
+        "Expired or stale architecture waivers must be removed before writing a baseline.",
+      );
+      return (process.exitCode = 1);
+    }
+
+    const waivers = createGrowthWaivers(
+      introduced,
+      architectureComparison.metricIncreases,
+      waiverOptions,
+      architectureComparison.baseline.waivers,
     );
+    const nextBaseline = createArchitectureBaseline(snapshot, { waivers });
+    await writeFile(baselinePath, `${JSON.stringify(nextBaseline, null, 2)}\n`);
     await writeFile(
       genericSqlWriteManifestPath,
       `${JSON.stringify(
@@ -664,28 +1266,68 @@ async function main() {
         2,
       )}\n`,
     );
-    console.log(`Wrote ${baselinePath} and ${genericSqlWriteManifestPath}`);
+    console.log(
+      `Wrote ${baselinePath} and ${genericSqlWriteManifestPath} (architecture debt ratchet baseline).`,
+    );
     return;
   }
 
-  const baseline = JSON.parse(await readFile(baselinePath, "utf8"));
-  const genericSqlWriteManifest = JSON.parse(
-    await readFile(genericSqlWriteManifestPath, "utf8"),
-  );
-  const fresh = [
-    ...findNewFindings(architectureFindings, baseline),
-    ...findNewGenericSqlWriteFindings(
-      genericSqlWriteFindings,
-      genericSqlWriteManifest,
-    ).map((finding) => `generic-renderer-sql-write:${finding}`),
-  ];
-  if (fresh.length > 0) {
-    console.error("Architecture boundary violations introduced:");
-    for (const finding of fresh) console.error(`- ${finding}`);
+  if (
+    introduced.length > 0 ||
+    architectureComparison.metricIncreases.length > 0 ||
+    architectureComparison.expiredWaivers.length > 0 ||
+    architectureComparison.staleWaivers.length > 0
+  ) {
+    console.error("Architecture debt ratchet failed:");
+    printList("New or unwaived debt", introduced);
+    printList(
+      "Metric increases",
+      architectureComparison.metricIncreases.map(
+        ({ metric, baseline: previous, current }) =>
+          `${metric}: baseline=${previous}, current=${current}`,
+      ),
+    );
+    printList(
+      "Expired waivers",
+      architectureComparison.expiredWaivers.map(
+        (waiver) => waiver.id ?? "invalid",
+      ),
+    );
+    printList(
+      "Stale waivers",
+      architectureComparison.staleWaivers.map((waiver) => waiver.id),
+    );
     process.exitCode = 1;
     return;
   }
-  console.log("Architecture boundary baseline is clean.");
+
+  if (
+    improvements.length > 0 ||
+    architectureComparison.metricImprovements.length > 0
+  ) {
+    console.error("Architecture debt ratchet requires baseline shrink:");
+    printList("Improvement detected", improvements);
+    printList(
+      "Metric decreases",
+      architectureComparison.metricImprovements.map(
+        ({ metric, baseline: previous, current }) =>
+          `${metric}: baseline=${previous}, current=${current}`,
+      ),
+    );
+    console.error(
+      `Run ${path.basename(process.argv[1])} --write-baseline after reviewing the reduction.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log("Architecture debt ratchet unchanged:");
+  for (const line of formatArchitectureMetrics(snapshot.metrics)) {
+    console.log(line);
+  }
+  console.log(
+    `- expired waivers: ${architectureComparison.expiredWaivers.length}`,
+  );
 }
 
 if (

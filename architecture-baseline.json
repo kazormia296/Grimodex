@@ -1,85 +1,1097 @@
 {
-  "cross-feature-store-import": [
-    "src/features/attribution/attributionStore.ts:attribution->post-effect:@/features/post-effect/annotationStore",
-    "src/features/attribution/attributionStore.ts:attribution->settings:@/features/settings/settingsStore",
-    "src/features/chat/chatStore.ts:chat->chronicle:@/features/chronicle/chronicleStore",
-    "src/features/chat/chatStore.ts:chat->codex:@/features/codex/phaseStore",
-    "src/features/chat/chatStore.ts:chat->editor:@/features/editor/beat/unplacedBeatsStore",
-    "src/features/chat/chatStore.ts:chat->editor:@/features/editor/beat/unplacedBeatsStore",
-    "src/features/chat/chatStore.ts:chat->editor:@/features/editor/tabStore",
-    "src/features/chat/chatStore.ts:chat->map:@/features/map/mapStore",
-    "src/features/chat/chatStore.ts:chat->plot-threads:@/features/plot-threads/plotThreadStore",
-    "src/features/chat/chatStore.ts:chat->project:@/features/project/projectStore",
-    "src/features/chat/chatStore.ts:chat->settings:@/features/settings/settingsStore",
-    "src/features/chat/chatStore.ts:chat->tree:@/features/tree/treeStore",
-    "src/features/chat/chatStore.ts:chat->tree:@/features/tree/treeStore",
-    "src/features/codex/codexStore.ts:codex->chat:@/features/chat/chatStore",
-    "src/features/codex/codexStore.ts:codex->project:@/features/project/projectStore",
-    "src/features/codex/codexStore.ts:codex->trash-bin:@/features/trash-bin/trashBinStore",
-    "src/features/codex/phaseStore.ts:codex->tree:@/features/tree/treeStore",
-    "src/features/editor/codexHighlightStore.ts:editor->post-effect:@/features/post-effect/annotationStore",
-    "src/features/editor/codexHighlightStore.ts:editor->settings:@/features/settings/settingsStore",
-    "src/features/editor/cursorSettingsStore.ts:editor->post-effect:@/features/post-effect/annotationStore",
-    "src/features/editor/cursorSettingsStore.ts:editor->settings:@/features/settings/settingsStore",
-    "src/features/editor/editorStore.ts:editor->project:@/features/project/projectStore",
-    "src/features/editor/synopsisSuggestionStore.ts:editor->tree:@/features/tree/treeStore",
-    "src/features/foreshadow/foreshadowStore.ts:foreshadow->editor:@/features/editor/editorStore",
-    "src/features/foreshadow/foreshadowStore.ts:foreshadow->project:@/features/project/projectStore",
-    "src/features/foreshadow/foreshadowStore.ts:foreshadow->trash-bin:@/features/trash-bin/trashBinStore",
-    "src/features/foreshadow/foreshadowStore.ts:foreshadow->tree:@/features/tree/store",
-    "src/features/grid/gridStore.ts:grid->tree:@/features/tree/treeStore",
-    "src/features/kouetsu/fullCheckStore.ts:kouetsu->lint:@/features/lint/lintProjectStore",
-    "src/features/kouetsu/fullCheckStore.ts:kouetsu->post-effect:@/features/post-effect/runStore",
-    "src/features/kouetsu/kouetsuStore.ts:kouetsu->tree:@/features/tree/treeStore",
-    "src/features/lint/lintConfigStore.ts:lint->settings:@/features/settings/settingsStore",
-    "src/features/lint/termDictionaryStore.ts:lint->project:@/features/project/projectStore",
-    "src/features/plot-threads/plotThreadStore.ts:plot-threads->project:@/features/project/projectStore",
-    "src/features/post-effect/annotationStore.ts:post-effect->settings:@/features/settings/settingsStore",
-    "src/features/project/projectStore.ts:project->codex:@/features/codex/phaseStore",
-    "src/features/project/projectStore.ts:project->settings:@/features/settings/settingsStore",
-    "src/features/prompt-library/promptLibraryStore.ts:prompt-library->project:@/features/project/projectStore",
-    "src/features/snippets/snippetStore.ts:snippets->project:@/features/project/projectStore",
-    "src/features/snippets/snippetStore.ts:snippets->trash-bin:@/features/trash-bin/trashBinStore",
-    "src/features/trash-bin/trashBinStore.ts:trash-bin->settings:@/features/settings/settingsStore",
-    "src/features/tree/treeStore.ts:tree->codex:@/features/codex/phaseStore",
-    "src/features/tree/treeStore.ts:tree->editor:@/features/editor/tabStore",
-    "src/features/tree/treeStore.ts:tree->project:@/features/project/projectStore",
-    "src/features/tree/treeStore.ts:tree->settings:@/features/settings/settingsStore",
-    "src/features/tree/treeStore.ts:tree->trash-bin:@/features/trash-bin/trashBinStore",
-    "src/features/vivliostyle/runStore.ts:vivliostyle->project:@/features/project/projectStore",
-    "src/features/workspace/store.ts:workspace->attribution:@/features/attribution/attributionStore",
-    "src/features/workspace/store.ts:workspace->chronicle:@/features/chronicle/chronicleStore",
-    "src/features/workspace/store.ts:workspace->editor:@/features/editor/codexHighlightStore",
-    "src/features/workspace/store.ts:workspace->editor:@/features/editor/cursorSettingsStore",
-    "src/features/workspace/store.ts:workspace->grid:@/features/grid/gridStore",
-    "src/features/workspace/store.ts:workspace->lint:@/features/lint/lintConfigStore",
-    "src/features/workspace/store.ts:workspace->map:@/features/map/mapStore",
-    "src/features/workspace/store.ts:workspace->matrix:@/features/matrix/matrixStore",
-    "src/features/workspace/store.ts:workspace->post-effect:@/features/post-effect/annotationStore",
-    "src/features/workspace/store.ts:workspace->project:@/features/project/projectStore",
-    "src/features/workspace/store.ts:workspace->settings:@/features/settings/settingsStore",
-    "src/features/workspace/store.ts:workspace->timeline:@/features/timeline/timelineStore"
-  ],
-  "cross-feature-store-mutation": [
-    "src/features/editor/NoteContextControls.tsx:editor->tree:useTreeStore.setState",
-    "src/features/matrix/MatrixPanel.tsx:matrix->tree:useTreeStore.setState"
-  ],
-  "dynamic-store-import": [
-    "src/features/concurrency/externalWriteFeed.ts:@/features/chronicle/chronicleStore",
-    "src/features/concurrency/externalWriteFeed.ts:@/features/foreshadow/foreshadowStore",
-    "src/features/concurrency/externalWriteFeed.ts:@/features/labels/labelStore",
-    "src/features/concurrency/externalWriteFeed.ts:@/features/plot-threads/plotThreadStore",
-    "src/features/workspace/store.ts:@/features/attribution/attributionStore",
-    "src/features/workspace/store.ts:@/features/editor/codexHighlightStore",
-    "src/features/workspace/store.ts:@/features/lint/lintConfigStore",
-    "src/features/workspace/store.ts:@/features/matrix/matrixStore",
-    "src/features/workspace/store.ts:@/features/post-effect/annotationStore"
-  ],
-  "application-component-import": [],
-  "single-scene-load-in-array-loop": [],
-  "legacy-ipc-error-text-check": [],
-  "feature-cycle": [
-    "src/application/project/defaultProjectLifecycle.ts -> src/features/agent-writes/autoAcceptFeed.ts -> src/features/agent-writes/autoApplyProse.ts -> src/features/agent-writes/codex.ts -> src/features/agent-writes/event.ts -> src/features/agent-writes/foreshadow.ts -> src/features/agent-writes/prose.ts -> src/features/agent-writes/snippet.ts -> src/features/agent-writes/tree.ts -> src/features/agent-writes/undoJournal.ts -> src/features/ai-policy/policyGuard.ts -> src/features/ai-policy/useAiGate.ts -> src/features/ai-policy/useCurrentProjectAiPolicy.ts -> src/features/ai-usage/recordAiUsage.ts -> src/features/attribution/generationLogApi.ts -> src/features/chat/agent/agentLoop.ts -> src/features/chat/agent/askUser.ts -> src/features/chat/agent/chronicleReadTools.ts -> src/features/chat/agent/chronicleToolCache.ts -> src/features/chat/agent/chronicleWriteTools.ts -> src/features/chat/agent/toolExecutors.ts -> src/features/chat/chatApi.ts -> src/features/chat/chatStore.ts -> src/features/chat/context/defaultContextPlannerDeps.ts -> src/features/chat/context/legacyPromptAdapter.ts -> src/features/chat/context/nonSceneContextPlanner.ts -> src/features/chat/context/sources/nonSceneContextSource.ts -> src/features/chat/context/sources/sceneContextSource.ts -> src/features/chat/contextBuilder.ts -> src/features/chat/conversationHistory.ts -> src/features/chat/summarization.ts -> src/features/codex/CodexMentionExtension.ts -> src/features/codex/api.ts -> src/features/codex/childrenBudget.ts -> src/features/codex/codexStore.ts -> src/features/codex/mentionRescanQueue.ts -> src/features/concurrency/externalWriteFeed.ts -> src/features/editor/AutoPairBracketsExtension.ts -> src/features/editor/SceneBeatNode.ts -> src/features/editor/SceneBeatNodeView.tsx -> src/features/editor/TrashBinCapturePlugin.ts -> src/features/editor/beat/RoleSuggestionBadges.tsx -> src/features/editor/beat/beatPromptBuilder.ts -> src/features/editor/beat/buildBeatContext.ts -> src/features/editor/beat/generateBeatAlternative.ts -> src/features/editor/beat/inferMentionRoles.ts -> src/features/editor/beat/streamInlineAiText.ts -> src/features/editor/beat/useBeatGeneration.ts -> src/features/editor/editorStore.ts -> src/features/editor/extensions.ts -> src/features/editor/inlineAi/SlashCommandExtension.ts -> src/features/editor/inlineAi/inlineAiCommands.ts -> src/features/editor/persistSceneBody.ts -> src/features/editor/reorder/ParagraphReorderExtension.ts -> src/features/editor/reorder/ReorderInteractionExtension.ts -> src/features/external-mount/fileBackedEditorExtensions.ts -> src/features/external-mount/markdownBridge.ts -> src/features/external-mount/mountManager.ts -> src/features/external-mount/writeBack.ts -> src/features/foreshadow/api.ts -> src/features/foreshadow/foreshadowStore.ts -> src/features/grid/gridStore.ts -> src/features/layout/layoutStore.ts -> src/features/lint/termDictionaryStore.ts -> src/features/plot-threads/plotThreadStore.ts -> src/features/project/contextAtoms.ts -> src/features/project/projectStore.ts -> src/features/project/reloadProjectData.ts -> src/features/prompt-library/promptLibraryStore.ts -> src/features/snippets/search.ts -> src/features/snippets/snippetStore.ts -> src/features/timelapse/seedSession.ts -> src/features/timelapse/toggle.ts -> src/features/tree/aiScaffold/applyPlan.ts -> src/features/tree/store.ts -> src/features/tree/treeStore.ts -> src/features/workspace/store.ts -> src/prompts/en/beatGenerate.ts -> src/prompts/index.ts -> src/prompts/ja/beatGenerate.ts -> src/screenshot-scenes/screenshotBootstrap.ts",
-    "src/features/editor/BubbleAiMenu.tsx -> src/features/editor/EditorBubbleMenu.tsx"
-  ]
+  "schemaVersion": 2,
+  "findings": {
+    "cross-feature-store-import": [
+      "src/features/attribution/attributionStore.ts:attribution->post-effect:@/features/post-effect/annotationStore",
+      "src/features/attribution/attributionStore.ts:attribution->settings:@/features/settings/settingsStore",
+      "src/features/chat/chatStore.ts:chat->chronicle:@/features/chronicle/chronicleStore",
+      "src/features/chat/chatStore.ts:chat->codex:@/features/codex/phaseStore",
+      "src/features/chat/chatStore.ts:chat->editor:@/features/editor/beat/unplacedBeatsStore",
+      "src/features/chat/chatStore.ts:chat->editor:@/features/editor/beat/unplacedBeatsStore",
+      "src/features/chat/chatStore.ts:chat->editor:@/features/editor/tabStore",
+      "src/features/chat/chatStore.ts:chat->map:@/features/map/mapStore",
+      "src/features/chat/chatStore.ts:chat->plot-threads:@/features/plot-threads/plotThreadStore",
+      "src/features/chat/chatStore.ts:chat->project:@/features/project/projectStore",
+      "src/features/chat/chatStore.ts:chat->settings:@/features/settings/settingsStore",
+      "src/features/chat/chatStore.ts:chat->tree:@/features/tree/treeStore",
+      "src/features/chat/chatStore.ts:chat->tree:@/features/tree/treeStore",
+      "src/features/codex/codexStore.ts:codex->chat:@/features/chat/chatStore",
+      "src/features/codex/codexStore.ts:codex->project:@/features/project/projectStore",
+      "src/features/codex/codexStore.ts:codex->trash-bin:@/features/trash-bin/trashBinStore",
+      "src/features/codex/phaseStore.ts:codex->tree:@/features/tree/treeStore",
+      "src/features/editor/codexHighlightStore.ts:editor->post-effect:@/features/post-effect/annotationStore",
+      "src/features/editor/codexHighlightStore.ts:editor->settings:@/features/settings/settingsStore",
+      "src/features/editor/cursorSettingsStore.ts:editor->post-effect:@/features/post-effect/annotationStore",
+      "src/features/editor/cursorSettingsStore.ts:editor->settings:@/features/settings/settingsStore",
+      "src/features/editor/editorStore.ts:editor->project:@/features/project/projectStore",
+      "src/features/editor/synopsisSuggestionStore.ts:editor->tree:@/features/tree/treeStore",
+      "src/features/foreshadow/foreshadowStore.ts:foreshadow->editor:@/features/editor/editorStore",
+      "src/features/foreshadow/foreshadowStore.ts:foreshadow->project:@/features/project/projectStore",
+      "src/features/foreshadow/foreshadowStore.ts:foreshadow->trash-bin:@/features/trash-bin/trashBinStore",
+      "src/features/foreshadow/foreshadowStore.ts:foreshadow->tree:@/features/tree/store",
+      "src/features/grid/gridStore.ts:grid->tree:@/features/tree/treeStore",
+      "src/features/kouetsu/fullCheckStore.ts:kouetsu->lint:@/features/lint/lintProjectStore",
+      "src/features/kouetsu/fullCheckStore.ts:kouetsu->post-effect:@/features/post-effect/runStore",
+      "src/features/kouetsu/kouetsuStore.ts:kouetsu->tree:@/features/tree/treeStore",
+      "src/features/lint/lintConfigStore.ts:lint->settings:@/features/settings/settingsStore",
+      "src/features/lint/termDictionaryStore.ts:lint->project:@/features/project/projectStore",
+      "src/features/plot-threads/plotThreadStore.ts:plot-threads->project:@/features/project/projectStore",
+      "src/features/post-effect/annotationStore.ts:post-effect->settings:@/features/settings/settingsStore",
+      "src/features/project/projectStore.ts:project->codex:@/features/codex/phaseStore",
+      "src/features/project/projectStore.ts:project->settings:@/features/settings/settingsStore",
+      "src/features/prompt-library/promptLibraryStore.ts:prompt-library->project:@/features/project/projectStore",
+      "src/features/snippets/snippetStore.ts:snippets->project:@/features/project/projectStore",
+      "src/features/snippets/snippetStore.ts:snippets->trash-bin:@/features/trash-bin/trashBinStore",
+      "src/features/trash-bin/trashBinStore.ts:trash-bin->settings:@/features/settings/settingsStore",
+      "src/features/tree/treeStore.ts:tree->codex:@/features/codex/phaseStore",
+      "src/features/tree/treeStore.ts:tree->editor:@/features/editor/tabStore",
+      "src/features/tree/treeStore.ts:tree->project:@/features/project/projectStore",
+      "src/features/tree/treeStore.ts:tree->settings:@/features/settings/settingsStore",
+      "src/features/tree/treeStore.ts:tree->trash-bin:@/features/trash-bin/trashBinStore",
+      "src/features/vivliostyle/runStore.ts:vivliostyle->project:@/features/project/projectStore",
+      "src/features/workspace/store.ts:workspace->attribution:@/features/attribution/attributionStore",
+      "src/features/workspace/store.ts:workspace->chronicle:@/features/chronicle/chronicleStore",
+      "src/features/workspace/store.ts:workspace->editor:@/features/editor/codexHighlightStore",
+      "src/features/workspace/store.ts:workspace->editor:@/features/editor/cursorSettingsStore",
+      "src/features/workspace/store.ts:workspace->grid:@/features/grid/gridStore",
+      "src/features/workspace/store.ts:workspace->lint:@/features/lint/lintConfigStore",
+      "src/features/workspace/store.ts:workspace->map:@/features/map/mapStore",
+      "src/features/workspace/store.ts:workspace->matrix:@/features/matrix/matrixStore",
+      "src/features/workspace/store.ts:workspace->post-effect:@/features/post-effect/annotationStore",
+      "src/features/workspace/store.ts:workspace->project:@/features/project/projectStore",
+      "src/features/workspace/store.ts:workspace->settings:@/features/settings/settingsStore",
+      "src/features/workspace/store.ts:workspace->timeline:@/features/timeline/timelineStore"
+    ],
+    "cross-feature-store-mutation": [],
+    "dynamic-store-import": [
+      "src/features/concurrency/externalWriteFeed.ts:@/features/chronicle/chronicleStore",
+      "src/features/concurrency/externalWriteFeed.ts:@/features/foreshadow/foreshadowStore",
+      "src/features/concurrency/externalWriteFeed.ts:@/features/labels/labelStore",
+      "src/features/concurrency/externalWriteFeed.ts:@/features/plot-threads/plotThreadStore",
+      "src/features/workspace/store.ts:@/features/attribution/attributionStore",
+      "src/features/workspace/store.ts:@/features/editor/codexHighlightStore",
+      "src/features/workspace/store.ts:@/features/lint/lintConfigStore",
+      "src/features/workspace/store.ts:@/features/matrix/matrixStore",
+      "src/features/workspace/store.ts:@/features/post-effect/annotationStore"
+    ],
+    "application-component-import": [],
+    "single-scene-load-in-array-loop": [],
+    "legacy-ipc-error-text-check": []
+  },
+  "feature-cycle": {
+    "sccs": [
+      {
+        "members": [
+          "src/application/project/defaultProjectLifecycle.ts",
+          "src/features/agent-writes/autoAcceptFeed.ts",
+          "src/features/agent-writes/autoApplyProse.ts",
+          "src/features/agent-writes/codex.ts",
+          "src/features/agent-writes/event.ts",
+          "src/features/agent-writes/foreshadow.ts",
+          "src/features/agent-writes/prose.ts",
+          "src/features/agent-writes/snippet.ts",
+          "src/features/agent-writes/tree.ts",
+          "src/features/agent-writes/undoJournal.ts",
+          "src/features/ai-policy/policyGuard.ts",
+          "src/features/ai-policy/useAiGate.ts",
+          "src/features/ai-policy/useCurrentProjectAiPolicy.ts",
+          "src/features/ai-usage/recordAiUsage.ts",
+          "src/features/attribution/generationLogApi.ts",
+          "src/features/chat/agent/agentLoop.ts",
+          "src/features/chat/agent/askUser.ts",
+          "src/features/chat/agent/chronicleReadTools.ts",
+          "src/features/chat/agent/chronicleToolCache.ts",
+          "src/features/chat/agent/chronicleWriteTools.ts",
+          "src/features/chat/agent/toolExecutors.ts",
+          "src/features/chat/chatApi.ts",
+          "src/features/chat/chatStore.ts",
+          "src/features/chat/context/defaultContextPlannerDeps.ts",
+          "src/features/chat/context/legacyPromptAdapter.ts",
+          "src/features/chat/context/nonSceneContextPlanner.ts",
+          "src/features/chat/context/sources/nonSceneContextSource.ts",
+          "src/features/chat/context/sources/sceneContextSource.ts",
+          "src/features/chat/contextBuilder.ts",
+          "src/features/chat/conversationHistory.ts",
+          "src/features/chat/summarization.ts",
+          "src/features/codex/CodexMentionExtension.ts",
+          "src/features/codex/api.ts",
+          "src/features/codex/childrenBudget.ts",
+          "src/features/codex/codexStore.ts",
+          "src/features/codex/mentionRescanQueue.ts",
+          "src/features/concurrency/externalWriteFeed.ts",
+          "src/features/editor/AutoPairBracketsExtension.ts",
+          "src/features/editor/SceneBeatNode.ts",
+          "src/features/editor/SceneBeatNodeView.tsx",
+          "src/features/editor/TrashBinCapturePlugin.ts",
+          "src/features/editor/beat/RoleSuggestionBadges.tsx",
+          "src/features/editor/beat/beatPromptBuilder.ts",
+          "src/features/editor/beat/buildBeatContext.ts",
+          "src/features/editor/beat/generateBeatAlternative.ts",
+          "src/features/editor/beat/inferMentionRoles.ts",
+          "src/features/editor/beat/streamInlineAiText.ts",
+          "src/features/editor/beat/useBeatGeneration.ts",
+          "src/features/editor/editorStore.ts",
+          "src/features/editor/extensions.ts",
+          "src/features/editor/inlineAi/SlashCommandExtension.ts",
+          "src/features/editor/inlineAi/inlineAiCommands.ts",
+          "src/features/editor/persistSceneBody.ts",
+          "src/features/editor/reorder/ParagraphReorderExtension.ts",
+          "src/features/editor/reorder/ReorderInteractionExtension.ts",
+          "src/features/external-mount/fileBackedEditorExtensions.ts",
+          "src/features/external-mount/markdownBridge.ts",
+          "src/features/external-mount/mountManager.ts",
+          "src/features/external-mount/writeBack.ts",
+          "src/features/foreshadow/api.ts",
+          "src/features/foreshadow/foreshadowStore.ts",
+          "src/features/grid/gridStore.ts",
+          "src/features/layout/layoutStore.ts",
+          "src/features/lint/termDictionaryStore.ts",
+          "src/features/plot-threads/plotThreadStore.ts",
+          "src/features/project/contextAtoms.ts",
+          "src/features/project/projectStore.ts",
+          "src/features/project/reloadProjectData.ts",
+          "src/features/prompt-library/promptLibraryStore.ts",
+          "src/features/snippets/search.ts",
+          "src/features/snippets/snippetStore.ts",
+          "src/features/timelapse/seedSession.ts",
+          "src/features/timelapse/toggle.ts",
+          "src/features/tree/aiScaffold/applyPlan.ts",
+          "src/features/tree/store.ts",
+          "src/features/tree/treeStore.ts",
+          "src/features/workspace/store.ts",
+          "src/prompts/en/beatGenerate.ts",
+          "src/prompts/index.ts",
+          "src/prompts/ja/beatGenerate.ts",
+          "src/screenshot-scenes/screenshotBootstrap.ts"
+        ],
+        "edges": [
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/chat/chatStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/editor/editorStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/external-mount/mountManager.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/foreshadow/foreshadowStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/grid/gridStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/lint/termDictionaryStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/plot-threads/plotThreadStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/prompt-library/promptLibraryStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/snippets/snippetStore.ts"
+          },
+          {
+            "from": "src/application/project/defaultProjectLifecycle.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/autoAcceptFeed.ts",
+            "to": "src/features/agent-writes/autoApplyProse.ts"
+          },
+          {
+            "from": "src/features/agent-writes/autoAcceptFeed.ts",
+            "to": "src/features/agent-writes/prose.ts"
+          },
+          {
+            "from": "src/features/agent-writes/autoAcceptFeed.ts",
+            "to": "src/features/concurrency/externalWriteFeed.ts"
+          },
+          {
+            "from": "src/features/agent-writes/autoApplyProse.ts",
+            "to": "src/features/agent-writes/prose.ts"
+          },
+          {
+            "from": "src/features/agent-writes/autoApplyProse.ts",
+            "to": "src/features/editor/extensions.ts"
+          },
+          {
+            "from": "src/features/agent-writes/autoApplyProse.ts",
+            "to": "src/features/editor/persistSceneBody.ts"
+          },
+          {
+            "from": "src/features/agent-writes/autoApplyProse.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/codex.ts",
+            "to": "src/features/agent-writes/undoJournal.ts"
+          },
+          {
+            "from": "src/features/agent-writes/codex.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/agent-writes/codex.ts",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/codex.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/event.ts",
+            "to": "src/features/agent-writes/codex.ts"
+          },
+          {
+            "from": "src/features/agent-writes/event.ts",
+            "to": "src/features/agent-writes/undoJournal.ts"
+          },
+          {
+            "from": "src/features/agent-writes/event.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/agent-writes/event.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/foreshadow.ts",
+            "to": "src/features/agent-writes/undoJournal.ts"
+          },
+          {
+            "from": "src/features/agent-writes/foreshadow.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/agent-writes/foreshadow.ts",
+            "to": "src/features/foreshadow/foreshadowStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/foreshadow.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/prose.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/agent-writes/prose.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/prose.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/snippet.ts",
+            "to": "src/features/agent-writes/codex.ts"
+          },
+          {
+            "from": "src/features/agent-writes/snippet.ts",
+            "to": "src/features/agent-writes/undoJournal.ts"
+          },
+          {
+            "from": "src/features/agent-writes/snippet.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/agent-writes/snippet.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/snippet.ts",
+            "to": "src/features/snippets/snippetStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/tree.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/agent-writes/tree.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/tree.ts",
+            "to": "src/features/tree/aiScaffold/applyPlan.ts"
+          },
+          {
+            "from": "src/features/agent-writes/tree.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/agent-writes/undoJournal.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/ai-policy/policyGuard.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/ai-policy/useAiGate.ts",
+            "to": "src/features/ai-policy/useCurrentProjectAiPolicy.ts"
+          },
+          {
+            "from": "src/features/ai-policy/useCurrentProjectAiPolicy.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/ai-usage/recordAiUsage.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/attribution/generationLogApi.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/chat/agent/agentLoop.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/agent/askUser.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/agent/chronicleReadTools.ts",
+            "to": "src/features/chat/agent/chronicleToolCache.ts"
+          },
+          {
+            "from": "src/features/chat/agent/chronicleReadTools.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/agent/chronicleReadTools.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/chat/agent/chronicleToolCache.ts",
+            "to": "src/features/codex/api.ts"
+          },
+          {
+            "from": "src/features/chat/agent/chronicleWriteTools.ts",
+            "to": "src/features/agent-writes/event.ts"
+          },
+          {
+            "from": "src/features/chat/agent/chronicleWriteTools.ts",
+            "to": "src/features/chat/agent/chronicleToolCache.ts"
+          },
+          {
+            "from": "src/features/chat/agent/chronicleWriteTools.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/agent/chronicleWriteTools.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/agent-writes/codex.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/agent-writes/foreshadow.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/agent-writes/prose.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/agent-writes/snippet.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/agent-writes/tree.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/chat/agent/chronicleReadTools.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/chat/agent/chronicleToolCache.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/chat/agent/chronicleWriteTools.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/foreshadow/api.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/chat/agent/toolExecutors.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/chat/chatApi.ts",
+            "to": "src/features/ai-usage/recordAiUsage.ts"
+          },
+          {
+            "from": "src/features/chat/chatApi.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/chatApi.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/chat/chatApi.ts",
+            "to": "src/prompts/index.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/ai-usage/recordAiUsage.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/agent/agentLoop.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/agent/askUser.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/agent/toolExecutors.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/chatApi.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/context/defaultContextPlannerDeps.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/context/legacyPromptAdapter.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/context/nonSceneContextPlanner.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/context/sources/sceneContextSource.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/conversationHistory.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/chat/summarization.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/codex/api.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/codex/childrenBudget.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/foreshadow/api.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/plot-threads/plotThreadStore.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/project/contextAtoms.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/chat/chatStore.ts",
+            "to": "src/prompts/index.ts"
+          },
+          {
+            "from": "src/features/chat/context/defaultContextPlannerDeps.ts",
+            "to": "src/features/chat/context/legacyPromptAdapter.ts"
+          },
+          {
+            "from": "src/features/chat/context/defaultContextPlannerDeps.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/context/legacyPromptAdapter.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/context/nonSceneContextPlanner.ts",
+            "to": "src/features/chat/context/sources/nonSceneContextSource.ts"
+          },
+          {
+            "from": "src/features/chat/context/nonSceneContextPlanner.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/context/sources/nonSceneContextSource.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/context/sources/nonSceneContextSource.ts",
+            "to": "src/features/codex/childrenBudget.ts"
+          },
+          {
+            "from": "src/features/chat/context/sources/nonSceneContextSource.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/chat/context/sources/sceneContextSource.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/context/sources/sceneContextSource.ts",
+            "to": "src/features/codex/childrenBudget.ts"
+          },
+          {
+            "from": "src/features/chat/contextBuilder.ts",
+            "to": "src/features/project/contextAtoms.ts"
+          },
+          {
+            "from": "src/features/chat/contextBuilder.ts",
+            "to": "src/prompts/index.ts"
+          },
+          {
+            "from": "src/features/chat/conversationHistory.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/summarization.ts",
+            "to": "src/features/ai-usage/recordAiUsage.ts"
+          },
+          {
+            "from": "src/features/chat/summarization.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/chat/summarization.ts",
+            "to": "src/features/chat/conversationHistory.ts"
+          },
+          {
+            "from": "src/features/chat/summarization.ts",
+            "to": "src/prompts/index.ts"
+          },
+          {
+            "from": "src/features/codex/api.ts",
+            "to": "src/features/codex/mentionRescanQueue.ts"
+          },
+          {
+            "from": "src/features/codex/childrenBudget.ts",
+            "to": "src/features/chat/contextBuilder.ts"
+          },
+          {
+            "from": "src/features/codex/CodexMentionExtension.ts",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/features/codex/codexStore.ts",
+            "to": "src/features/chat/chatStore.ts"
+          },
+          {
+            "from": "src/features/codex/codexStore.ts",
+            "to": "src/features/codex/api.ts"
+          },
+          {
+            "from": "src/features/codex/codexStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/codex/mentionRescanQueue.ts",
+            "to": "src/features/codex/api.ts"
+          },
+          {
+            "from": "src/features/codex/mentionRescanQueue.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/concurrency/externalWriteFeed.ts",
+            "to": "src/features/agent-writes/prose.ts"
+          },
+          {
+            "from": "src/features/concurrency/externalWriteFeed.ts",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/features/concurrency/externalWriteFeed.ts",
+            "to": "src/features/foreshadow/foreshadowStore.ts"
+          },
+          {
+            "from": "src/features/concurrency/externalWriteFeed.ts",
+            "to": "src/features/plot-threads/plotThreadStore.ts"
+          },
+          {
+            "from": "src/features/concurrency/externalWriteFeed.ts",
+            "to": "src/features/snippets/snippetStore.ts"
+          },
+          {
+            "from": "src/features/concurrency/externalWriteFeed.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/editor/AutoPairBracketsExtension.ts",
+            "to": "src/features/editor/TrashBinCapturePlugin.ts"
+          },
+          {
+            "from": "src/features/editor/beat/beatPromptBuilder.ts",
+            "to": "src/prompts/index.ts"
+          },
+          {
+            "from": "src/features/editor/beat/buildBeatContext.ts",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/features/editor/beat/buildBeatContext.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/editor/beat/buildBeatContext.ts",
+            "to": "src/features/workspace/store.ts"
+          },
+          {
+            "from": "src/features/editor/beat/generateBeatAlternative.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/editor/beat/generateBeatAlternative.ts",
+            "to": "src/features/editor/beat/beatPromptBuilder.ts"
+          },
+          {
+            "from": "src/features/editor/beat/generateBeatAlternative.ts",
+            "to": "src/features/editor/beat/buildBeatContext.ts"
+          },
+          {
+            "from": "src/features/editor/beat/generateBeatAlternative.ts",
+            "to": "src/features/editor/beat/streamInlineAiText.ts"
+          },
+          {
+            "from": "src/features/editor/beat/generateBeatAlternative.ts",
+            "to": "src/features/snippets/snippetStore.ts"
+          },
+          {
+            "from": "src/features/editor/beat/inferMentionRoles.ts",
+            "to": "src/features/ai-usage/recordAiUsage.ts"
+          },
+          {
+            "from": "src/features/editor/beat/inferMentionRoles.ts",
+            "to": "src/features/chat/chatApi.ts"
+          },
+          {
+            "from": "src/features/editor/beat/inferMentionRoles.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/editor/beat/inferMentionRoles.ts",
+            "to": "src/prompts/index.ts"
+          },
+          {
+            "from": "src/features/editor/beat/RoleSuggestionBadges.tsx",
+            "to": "src/features/codex/CodexMentionExtension.ts"
+          },
+          {
+            "from": "src/features/editor/beat/streamInlineAiText.ts",
+            "to": "src/features/ai-usage/recordAiUsage.ts"
+          },
+          {
+            "from": "src/features/editor/beat/useBeatGeneration.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/editor/beat/useBeatGeneration.ts",
+            "to": "src/features/ai-usage/recordAiUsage.ts"
+          },
+          {
+            "from": "src/features/editor/beat/useBeatGeneration.ts",
+            "to": "src/features/attribution/generationLogApi.ts"
+          },
+          {
+            "from": "src/features/editor/beat/useBeatGeneration.ts",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/features/editor/beat/useBeatGeneration.ts",
+            "to": "src/features/editor/beat/beatPromptBuilder.ts"
+          },
+          {
+            "from": "src/features/editor/beat/useBeatGeneration.ts",
+            "to": "src/features/editor/beat/buildBeatContext.ts"
+          },
+          {
+            "from": "src/features/editor/beat/useBeatGeneration.ts",
+            "to": "src/features/editor/beat/inferMentionRoles.ts"
+          },
+          {
+            "from": "src/features/editor/editorStore.ts",
+            "to": "src/features/chat/chatApi.ts"
+          },
+          {
+            "from": "src/features/editor/editorStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/editor/extensions.ts",
+            "to": "src/features/codex/CodexMentionExtension.ts"
+          },
+          {
+            "from": "src/features/editor/extensions.ts",
+            "to": "src/features/editor/AutoPairBracketsExtension.ts"
+          },
+          {
+            "from": "src/features/editor/extensions.ts",
+            "to": "src/features/editor/inlineAi/SlashCommandExtension.ts"
+          },
+          {
+            "from": "src/features/editor/extensions.ts",
+            "to": "src/features/editor/reorder/ParagraphReorderExtension.ts"
+          },
+          {
+            "from": "src/features/editor/extensions.ts",
+            "to": "src/features/editor/reorder/ReorderInteractionExtension.ts"
+          },
+          {
+            "from": "src/features/editor/extensions.ts",
+            "to": "src/features/editor/SceneBeatNode.ts"
+          },
+          {
+            "from": "src/features/editor/inlineAi/inlineAiCommands.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/editor/inlineAi/SlashCommandExtension.ts",
+            "to": "src/features/editor/inlineAi/inlineAiCommands.ts"
+          },
+          {
+            "from": "src/features/editor/persistSceneBody.ts",
+            "to": "src/features/chat/chatStore.ts"
+          },
+          {
+            "from": "src/features/editor/persistSceneBody.ts",
+            "to": "src/features/codex/api.ts"
+          },
+          {
+            "from": "src/features/editor/persistSceneBody.ts",
+            "to": "src/features/external-mount/writeBack.ts"
+          },
+          {
+            "from": "src/features/editor/persistSceneBody.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/editor/reorder/ParagraphReorderExtension.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/editor/reorder/ReorderInteractionExtension.ts",
+            "to": "src/features/editor/reorder/ParagraphReorderExtension.ts"
+          },
+          {
+            "from": "src/features/editor/reorder/ReorderInteractionExtension.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/editor/SceneBeatNode.ts",
+            "to": "src/features/editor/SceneBeatNodeView.tsx"
+          },
+          {
+            "from": "src/features/editor/SceneBeatNodeView.tsx",
+            "to": "src/features/ai-policy/useAiGate.ts"
+          },
+          {
+            "from": "src/features/editor/SceneBeatNodeView.tsx",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/features/editor/SceneBeatNodeView.tsx",
+            "to": "src/features/editor/beat/generateBeatAlternative.ts"
+          },
+          {
+            "from": "src/features/editor/SceneBeatNodeView.tsx",
+            "to": "src/features/editor/beat/RoleSuggestionBadges.tsx"
+          },
+          {
+            "from": "src/features/editor/SceneBeatNodeView.tsx",
+            "to": "src/features/editor/beat/useBeatGeneration.ts"
+          },
+          {
+            "from": "src/features/editor/SceneBeatNodeView.tsx",
+            "to": "src/features/editor/SceneBeatNode.ts"
+          },
+          {
+            "from": "src/features/editor/SceneBeatNodeView.tsx",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/editor/TrashBinCapturePlugin.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/external-mount/fileBackedEditorExtensions.ts",
+            "to": "src/features/editor/AutoPairBracketsExtension.ts"
+          },
+          {
+            "from": "src/features/external-mount/fileBackedEditorExtensions.ts",
+            "to": "src/features/editor/extensions.ts"
+          },
+          {
+            "from": "src/features/external-mount/markdownBridge.ts",
+            "to": "src/features/external-mount/fileBackedEditorExtensions.ts"
+          },
+          {
+            "from": "src/features/external-mount/mountManager.ts",
+            "to": "src/features/chat/chatStore.ts"
+          },
+          {
+            "from": "src/features/external-mount/mountManager.ts",
+            "to": "src/features/editor/persistSceneBody.ts"
+          },
+          {
+            "from": "src/features/external-mount/mountManager.ts",
+            "to": "src/features/external-mount/markdownBridge.ts"
+          },
+          {
+            "from": "src/features/external-mount/mountManager.ts",
+            "to": "src/features/external-mount/writeBack.ts"
+          },
+          {
+            "from": "src/features/external-mount/mountManager.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/external-mount/mountManager.ts",
+            "to": "src/features/timelapse/toggle.ts"
+          },
+          {
+            "from": "src/features/external-mount/mountManager.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/external-mount/writeBack.ts",
+            "to": "src/features/external-mount/markdownBridge.ts"
+          },
+          {
+            "from": "src/features/foreshadow/api.ts",
+            "to": "src/features/ai-policy/policyGuard.ts"
+          },
+          {
+            "from": "src/features/foreshadow/api.ts",
+            "to": "src/features/ai-usage/recordAiUsage.ts"
+          },
+          {
+            "from": "src/features/foreshadow/api.ts",
+            "to": "src/features/chat/chatApi.ts"
+          },
+          {
+            "from": "src/features/foreshadow/api.ts",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/features/foreshadow/api.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/foreshadow/api.ts",
+            "to": "src/prompts/index.ts"
+          },
+          {
+            "from": "src/features/foreshadow/foreshadowStore.ts",
+            "to": "src/features/editor/editorStore.ts"
+          },
+          {
+            "from": "src/features/foreshadow/foreshadowStore.ts",
+            "to": "src/features/foreshadow/api.ts"
+          },
+          {
+            "from": "src/features/foreshadow/foreshadowStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/foreshadow/foreshadowStore.ts",
+            "to": "src/features/timelapse/toggle.ts"
+          },
+          {
+            "from": "src/features/foreshadow/foreshadowStore.ts",
+            "to": "src/features/tree/store.ts"
+          },
+          {
+            "from": "src/features/grid/gridStore.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/layout/layoutStore.ts",
+            "to": "src/screenshot-scenes/screenshotBootstrap.ts"
+          },
+          {
+            "from": "src/features/lint/termDictionaryStore.ts",
+            "to": "src/features/codex/api.ts"
+          },
+          {
+            "from": "src/features/lint/termDictionaryStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/plot-threads/plotThreadStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/project/contextAtoms.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/project/projectStore.ts",
+            "to": "src/features/agent-writes/autoAcceptFeed.ts"
+          },
+          {
+            "from": "src/features/project/projectStore.ts",
+            "to": "src/features/concurrency/externalWriteFeed.ts"
+          },
+          {
+            "from": "src/features/project/projectStore.ts",
+            "to": "src/features/project/reloadProjectData.ts"
+          },
+          {
+            "from": "src/features/project/projectStore.ts",
+            "to": "src/features/timelapse/seedSession.ts"
+          },
+          {
+            "from": "src/features/project/projectStore.ts",
+            "to": "src/features/timelapse/toggle.ts"
+          },
+          {
+            "from": "src/features/project/reloadProjectData.ts",
+            "to": "src/application/project/defaultProjectLifecycle.ts"
+          },
+          {
+            "from": "src/features/prompt-library/promptLibraryStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/snippets/search.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/snippets/snippetStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/snippets/snippetStore.ts",
+            "to": "src/features/snippets/search.ts"
+          },
+          {
+            "from": "src/features/timelapse/seedSession.ts",
+            "to": "src/features/layout/layoutStore.ts"
+          },
+          {
+            "from": "src/features/timelapse/toggle.ts",
+            "to": "src/features/codex/api.ts"
+          },
+          {
+            "from": "src/features/timelapse/toggle.ts",
+            "to": "src/features/timelapse/seedSession.ts"
+          },
+          {
+            "from": "src/features/tree/aiScaffold/applyPlan.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/tree/store.ts",
+            "to": "src/features/tree/treeStore.ts"
+          },
+          {
+            "from": "src/features/tree/treeStore.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/features/workspace/store.ts",
+            "to": "src/features/grid/gridStore.ts"
+          },
+          {
+            "from": "src/features/workspace/store.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/prompts/en/beatGenerate.ts",
+            "to": "src/features/editor/SceneBeatNode.ts"
+          },
+          {
+            "from": "src/prompts/index.ts",
+            "to": "src/prompts/en/beatGenerate.ts"
+          },
+          {
+            "from": "src/prompts/index.ts",
+            "to": "src/prompts/ja/beatGenerate.ts"
+          },
+          {
+            "from": "src/prompts/ja/beatGenerate.ts",
+            "to": "src/features/editor/SceneBeatNode.ts"
+          },
+          {
+            "from": "src/screenshot-scenes/screenshotBootstrap.ts",
+            "to": "src/features/codex/codexStore.ts"
+          },
+          {
+            "from": "src/screenshot-scenes/screenshotBootstrap.ts",
+            "to": "src/features/project/projectStore.ts"
+          },
+          {
+            "from": "src/screenshot-scenes/screenshotBootstrap.ts",
+            "to": "src/features/snippets/snippetStore.ts"
+          },
+          {
+            "from": "src/screenshot-scenes/screenshotBootstrap.ts",
+            "to": "src/features/tree/treeStore.ts"
+          }
+        ]
+      }
+    ]
+  },
+  "metrics": {
+    "cross-feature-store-import": 59,
+    "cross-feature-store-mutation": 0,
+    "dynamic-store-import": 9,
+    "cyclic-modules": 81,
+    "largest-scc": 81,
+    "scc-internal-edges": 229
+  },
+  "waivers": []
 }

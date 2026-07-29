@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   collectFindings,
+  compareArchitectureBaseline,
+  createArchitectureBaseline,
   createGenericSqlWriteManifest,
   findNewFindings,
   findNewGenericSqlWriteFindings,
@@ -94,6 +96,235 @@ test("cycle graph includes relative imports and index.tsx targets", async () => 
       "src/features/beta/index.tsx",
     ].join(" -> "),
   ]);
+});
+
+test("architecture baseline permits SCC splitting but rejects new SCC members and edges", () => {
+  const baseline = {
+    schemaVersion: 2,
+    findings: {},
+    "feature-cycle": {
+      sccs: [
+        {
+          members: ["a.ts", "b.ts", "c.ts"],
+          edges: [
+            { from: "a.ts", to: "b.ts" },
+            { from: "b.ts", to: "a.ts" },
+            { from: "a.ts", to: "c.ts" },
+            { from: "c.ts", to: "a.ts" },
+          ],
+        },
+      ],
+    },
+    metrics: {
+      "cross-feature-store-import": 0,
+      "cross-feature-store-mutation": 0,
+      "dynamic-store-import": 0,
+      "cyclic-modules": 3,
+      "largest-scc": 3,
+      "scc-internal-edges": 4,
+    },
+    waivers: [],
+  };
+
+  const split = {
+    findings: {},
+    featureCycles: [
+      {
+        members: ["a.ts", "b.ts"],
+        edges: [
+          { from: "a.ts", to: "b.ts" },
+          { from: "b.ts", to: "a.ts" },
+        ],
+      },
+    ],
+    metrics: {
+      "cross-feature-store-import": 0,
+      "cross-feature-store-mutation": 0,
+      "dynamic-store-import": 0,
+      "cyclic-modules": 2,
+      "largest-scc": 2,
+      "scc-internal-edges": 2,
+    },
+  };
+
+  const splitResult = compareArchitectureBaseline(split, baseline, {
+    now: "2026-07-30",
+  });
+  assert.deepEqual(splitResult.introduced, []);
+  assert.ok(
+    splitResult.improvements.some((finding) =>
+      finding.startsWith("feature-cycle:scc-shrunk:"),
+    ),
+  );
+
+  const merged = {
+    ...split,
+    featureCycles: [
+      {
+        members: ["a.ts", "b.ts", "c.ts", "d.ts"],
+        edges: [],
+      },
+    ],
+    metrics: {
+      ...split.metrics,
+      "cyclic-modules": 4,
+      "largest-scc": 4,
+    },
+  };
+  const mergedResult = compareArchitectureBaseline(merged, baseline, {
+    now: "2026-07-30",
+  });
+  assert.ok(
+    mergedResult.introduced.some((finding) =>
+      finding.startsWith("feature-cycle:new-scc:"),
+    ),
+  );
+  assert.deepEqual(mergedResult.metricIncreases, [
+    { baseline: 3, current: 4, metric: "cyclic-modules" },
+    { baseline: 3, current: 4, metric: "largest-scc" },
+  ]);
+
+  const newEdge = {
+    ...split,
+    featureCycles: [
+      {
+        members: ["a.ts", "b.ts", "c.ts"],
+        edges: [
+          { from: "a.ts", to: "b.ts" },
+          { from: "b.ts", to: "a.ts" },
+          { from: "a.ts", to: "c.ts" },
+          { from: "c.ts", to: "a.ts" },
+          { from: "b.ts", to: "c.ts" },
+        ],
+      },
+    ],
+    metrics: {
+      ...split.metrics,
+      "cyclic-modules": 3,
+      "largest-scc": 3,
+      "scc-internal-edges": 5,
+    },
+  };
+  const edgeResult = compareArchitectureBaseline(newEdge, baseline, {
+    now: "2026-07-30",
+  });
+  assert.ok(
+    edgeResult.introduced.some((finding) =>
+      finding.startsWith("feature-cycle:new-internal-edge:b.ts->c.ts"),
+    ),
+  );
+  assert.deepEqual(edgeResult.metricIncreases, [
+    { baseline: 4, current: 5, metric: "scc-internal-edges" },
+  ]);
+});
+
+test("architecture baseline tracks ordinary improvements, stale waivers, and expiry", () => {
+  const baseline = {
+    schemaVersion: 2,
+    findings: {
+      "cross-feature-store-import": ["old-import", "removed-import"],
+    },
+    "feature-cycle": { sccs: [] },
+    metrics: {
+      "cross-feature-store-import": 2,
+      "cross-feature-store-mutation": 0,
+      "dynamic-store-import": 0,
+      "cyclic-modules": 0,
+      "largest-scc": 0,
+      "scc-internal-edges": 0,
+    },
+    waivers: [
+      {
+        id: "expired",
+        rule: "cross-feature-store-import",
+        signature: "expired-import",
+        reason: "temporary migration",
+        ownerArea: "architecture",
+        issue: 123,
+        introducedAt: "2026-01-01",
+        expiresAt: "2026-07-29",
+      },
+      {
+        id: "stale",
+        rule: "cross-feature-store-import",
+        signature: "stale-import",
+        reason: "temporary migration",
+        ownerArea: "architecture",
+        issue: 124,
+        introducedAt: "2026-01-01",
+        expiresAt: "2026-12-31",
+      },
+    ],
+  };
+  const current = {
+    findings: {
+      "cross-feature-store-import": ["old-import", "expired-import"],
+    },
+    featureCycles: [],
+    metrics: {
+      "cross-feature-store-import": 2,
+      "cross-feature-store-mutation": 0,
+      "dynamic-store-import": 0,
+      "cyclic-modules": 0,
+      "largest-scc": 0,
+      "scc-internal-edges": 0,
+    },
+  };
+
+  const result = compareArchitectureBaseline(current, baseline, {
+    now: "2026-07-30",
+  });
+
+  assert.deepEqual(result.introduced, [
+    "cross-feature-store-import:expired-import",
+  ]);
+  assert.deepEqual(result.improvements, [
+    "cross-feature-store-import:removed-import#baseline-1-observed-0",
+  ]);
+  assert.deepEqual(
+    result.expiredWaivers.map((waiver) => waiver.id),
+    ["expired"],
+  );
+  assert.deepEqual(
+    result.staleWaivers.map((waiver) => waiver.id),
+    ["stale"],
+  );
+});
+
+test("architecture baseline writer stores SCC members and metrics instead of canonical cycle strings", () => {
+  const baseline = createArchitectureBaseline({
+    findings: {
+      "cross-feature-store-import": ["known-import"],
+      "feature-cycle": ["a.ts -> b.ts"],
+      "generic-renderer-sql-write": ["not-in-architecture-baseline"],
+    },
+    featureCycles: [
+      {
+        members: ["a.ts", "b.ts"],
+        edges: [{ from: "a.ts", to: "b.ts" }],
+      },
+    ],
+    metrics: {
+      "cross-feature-store-import": 1,
+      "cross-feature-store-mutation": 0,
+      "dynamic-store-import": 0,
+      "cyclic-modules": 2,
+      "largest-scc": 2,
+      "scc-internal-edges": 1,
+    },
+  });
+
+  assert.equal(baseline.schemaVersion, 2);
+  assert.deepEqual(baseline.findings["cross-feature-store-import"], [
+    "known-import",
+  ]);
+  assert.deepEqual(baseline["feature-cycle"].sccs, [
+    {
+      members: ["a.ts", "b.ts"],
+      edges: [{ from: "a.ts", to: "b.ts" }],
+    },
+  ]);
+  assert.equal(baseline.findings["generic-renderer-sql-write"], undefined);
 });
 
 test("scene load rule rejects array loops but permits legitimate single loads", async () => {
