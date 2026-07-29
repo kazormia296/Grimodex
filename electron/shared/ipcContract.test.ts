@@ -971,6 +971,72 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("Chronicle typed commands は project/OCC payload を明示写像する", async () => {
+    const eventGetVersion = vi.fn().mockResolvedValue("3");
+    const eventSetParticipants = vi.fn().mockResolvedValue("4");
+    const { backend } = fakeBackend({
+      eventGetVersion: eventGetVersion as never,
+      eventSetParticipants: eventSetParticipants as never,
+    });
+    const version = await dispatchInvoke(
+      "event_get_version",
+      { projectId: "project-1", eventId: "event-1" },
+      { backend, shell: noShell },
+    );
+    expect(eventGetVersion).toHaveBeenCalledExactlyOnceWith(
+      "project-1",
+      "event-1",
+    );
+    expect(version).toEqual({ ok: true, value: 3 });
+
+    const payload = {
+      projectId: "project-1",
+      eventId: "event-1",
+      codexEntryIds: ["codex-1"],
+      baseVersion: 3,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    };
+    const participants = await dispatchInvoke(
+      "event_set_participants",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(eventSetParticipants).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(participants).toEqual({ ok: true, value: 4 });
+  });
+
+  it("event_set_participants は不正payloadと旧nativeを拒否する", async () => {
+    const eventSetParticipants = vi.fn();
+    const { backend } = fakeBackend({
+      eventSetParticipants: eventSetParticipants as never,
+    });
+    const invalid = await dispatchInvoke(
+      "event_set_participants",
+      {
+        payload: {
+          projectId: "project-1",
+          eventId: "event-1",
+          codexEntryIds: [""],
+          baseVersion: 0,
+          updatedAt: "2026-07-30T00:00:00.000Z",
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(invalid.ok).toBe(false);
+    expect(eventSetParticipants).not.toHaveBeenCalled();
+
+    const oldNative = await dispatchInvoke(
+      "event_get_version",
+      { projectId: "project-1", eventId: "event-1" },
+      { backend: fakeBackend().backend, shell: noShell },
+    );
+    expect(oldNative).toMatchObject({
+      ok: false,
+      error: "IPC_BACKEND_UNAVAILABLE: native method eventGetVersion",
+    });
+  });
+
   it("save_scene_body_bundle: typed snapshot を1 payloadで渡して結果をparseする", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -1601,6 +1667,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "db_execute",
       "db_execute_batch",
       "deactivate_license",
+      "event_get_version",
+      "event_set_participants",
       "events_index_entry",
       "events_index_status",
       "events_reindex_all",

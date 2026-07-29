@@ -75,6 +75,12 @@ export declare class Backend {
   lintTermDictionarySetEnabled(projectId: string, id: string, enabled: boolean, updatedAt: number): Promise<string>
   lintTermDictionaryDelete(projectId: string, id: string): Promise<void>
   /**
+   * Chronicle aggregate OCC reads and participant replacement. The latter
+   * advances the event version and replaces participants in one DB tx.
+   */
+  eventGetVersion(projectId: string, eventId: string): Promise<string>
+  eventSetParticipants(payload: any): Promise<string>
+  /**
    * Scene content and every document-derived sidecar are committed in one
    * SQLite transaction. The renderer performs one PM traversal and passes
    * the typed snapshot as camelCase JSON.

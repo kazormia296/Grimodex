@@ -1474,6 +1474,69 @@ export async function createBrowserMock(
     return null;
   }
 
+  function handleEventGetVersion(args: Record<string, unknown>): number | null {
+    const row = queryOne(
+      "SELECT version FROM events WHERE id = ? AND project_id = ?",
+      [String(args.eventId), String(args.projectId)],
+    );
+    return row ? Number(row.version) : null;
+  }
+
+  function handleEventSetParticipants(
+    args: Record<string, unknown>,
+  ): number | null {
+    const payload = args.payload as Record<string, unknown>;
+    const eventId = String(payload.eventId);
+    const projectId = String(payload.projectId);
+    const baseVersion = Number(payload.baseVersion);
+    const currentVersion = handleEventGetVersion({ eventId, projectId });
+    if (currentVersion !== baseVersion) return null;
+
+    const codexEntryIds = payload.codexEntryIds as string[];
+    for (const codexEntryId of codexEntryIds) {
+      const entry = queryOne(
+        "SELECT 1 FROM codex_entries WHERE id = ? AND project_id = ?",
+        [codexEntryId, projectId],
+      );
+      if (!entry) {
+        throw new Error(
+          `chronicle participant '${codexEntryId}' is not in project '${projectId}'`,
+        );
+      }
+    }
+
+    const nextVersion = baseVersion + 1;
+    handleDbExecuteBatch({
+      statements: [
+        {
+          sql: `UPDATE events SET version = ?, updated_at = ?
+                 WHERE id = ? AND project_id = ? AND version = ?`,
+          params: [
+            nextVersion,
+            String(payload.updatedAt),
+            eventId,
+            projectId,
+            baseVersion,
+          ],
+          method: "run",
+        },
+        {
+          sql: "DELETE FROM event_participants WHERE event_id = ?",
+          params: [eventId],
+          method: "run",
+        },
+        ...codexEntryIds.map((codexEntryId) => ({
+          sql: `INSERT INTO event_participants
+                  (event_id, codex_entry_id, role)
+                VALUES (?, ?, NULL)`,
+          params: [eventId, codexEntryId],
+          method: "run",
+        })),
+      ],
+    });
+    return nextVersion;
+  }
+
   function handleFtsSearch(args: Record<string, unknown>): Array<{
     sourceType: "scene" | "codex" | "snippet";
     id: string;
@@ -3347,6 +3410,10 @@ export async function createBrowserMock(
         return handleLintTermDictionarySetEnabled(args) as T;
       case "lint_term_dictionary_delete":
         return handleLintTermDictionaryDelete(args) as T;
+      case "event_get_version":
+        return handleEventGetVersion(args) as T;
+      case "event_set_participants":
+        return handleEventSetParticipants(args) as T;
       case "plot_thread_create":
         return (await handlePlotThreadCreate(args)) as T;
       case "plot_thread_link_create":

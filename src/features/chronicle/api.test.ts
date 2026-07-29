@@ -1,14 +1,18 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import type { BindParams } from "sql.js";
 
-// C2: setEventParticipants が invoke("db_execute_batch") を使うため、そのバッチを
-// 下の @/db/client モックと同じ sqldb 上で実行できるよう共有ホルダーを立てる。
+// setEventParticipants の typed command を下の @/db/client モックと同じ
+// sqldb 上で実行できるよう共有ホルダーを立てる。
 const chronicleTestDb = vi.hoisted(
   () =>
-    ({ runBatch: undefined }) as {
-      runBatch?: (
-        statements: { sql: string; params: unknown[]; method?: string }[],
-      ) => { rows: Array<Record<string, unknown>> };
+    ({ setParticipants: undefined }) as {
+      setParticipants?: (payload: {
+        eventId: string;
+        projectId: string;
+        codexEntryIds: string[];
+        baseVersion: number;
+        updatedAt: string;
+      }) => number | null;
     },
 );
 
@@ -18,9 +22,15 @@ const chronicleTestDb = vi.hoisted(
 // 「実際の SQL 挙動」を assert できる(SQL 文字列の捕捉では足りない部分)。
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "db_execute_batch") {
-      return chronicleTestDb.runBatch?.(
-        (args?.statements as { sql: string; params: unknown[] }[]) ?? [],
+    if (cmd === "event_set_participants") {
+      return chronicleTestDb.setParticipants?.(
+        args?.payload as {
+          eventId: string;
+          projectId: string;
+          codexEntryIds: string[];
+          baseVersion: number;
+          updatedAt: string;
+        },
       );
     }
     return [];
@@ -126,25 +136,51 @@ vi.mock("@/db/client", async () => {
     },
     { schema },
   );
-  // Route db_execute_batch (setEventParticipants) to the same sqldb.
-  chronicleTestDb.runBatch = (statements) => {
-    let rows: Array<Record<string, unknown>> = [];
+  // Route the typed Chronicle aggregate command to the same sqldb.
+  chronicleTestDb.setParticipants = (payload) => {
     sqldb.run("BEGIN");
     try {
-      for (const s of statements) {
-        const st = sqldb.prepare(s.sql);
-        st.bind(s.params as BindParams);
-        const currentRows: Array<Record<string, unknown>> = [];
-        while (st.step()) currentRows.push(st.getAsObject());
-        if (s.method === "all") rows = currentRows;
-        st.free();
+      const versionQuery = sqldb.prepare(
+        "SELECT version FROM events WHERE id = ? AND project_id = ?",
+      );
+      versionQuery.bind([payload.eventId, payload.projectId]);
+      const currentVersion = versionQuery.step()
+        ? Number(versionQuery.get()[0])
+        : null;
+      versionQuery.free();
+      if (currentVersion !== payload.baseVersion) {
+        sqldb.run("ROLLBACK");
+        return null;
+      }
+
+      const nextVersion = payload.baseVersion + 1;
+      sqldb.run(
+        `UPDATE events SET version = ?, updated_at = ?
+          WHERE id = ? AND project_id = ? AND version = ?`,
+        [
+          nextVersion,
+          payload.updatedAt,
+          payload.eventId,
+          payload.projectId,
+          payload.baseVersion,
+        ] as BindParams,
+      );
+      sqldb.run("DELETE FROM event_participants WHERE event_id = ?", [
+        payload.eventId,
+      ] as BindParams);
+      for (const codexEntryId of payload.codexEntryIds) {
+        sqldb.run(
+          `INSERT INTO event_participants (event_id, codex_entry_id, role)
+           VALUES (?, ?, NULL)`,
+          [payload.eventId, codexEntryId] as BindParams,
+        );
       }
       sqldb.run("COMMIT");
+      return nextVersion;
     } catch (e) {
       sqldb.run("ROLLBACK");
       throw e;
     }
-    return { rows };
   };
   return { db };
 });

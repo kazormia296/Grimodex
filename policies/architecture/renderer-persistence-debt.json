@@ -192,7 +192,6 @@
         "src/features/chat/agent/toolExecutors.ts:raw-sql-select:snippets": 2,
         "src/features/chat/agent/toolExecutors.ts:raw-sql-select:tree_nodes": 2,
         "src/features/chat/chatHistoryApi.ts:raw-sql-select:chat_messages_fts": 1,
-        "src/features/chronicle/version.ts:raw-sql-select:events": 1,
         "src/features/codex/crossReference.ts:raw-sql-select:tree_nodes": 1,
         "src/features/codex/search.ts:raw-sql-select:codex_entries": 2,
         "src/features/codex/version.ts:raw-sql-select:codex_entries": 1,
@@ -212,9 +211,6 @@
     "renderer-raw-sql-write": {
       "scope": "Raw renderer SQL mutation and DDL statements.",
       "allowedCallsiteCounts": {
-        "src/features/chronicle/api.ts:raw-sql-delete:event_participants": 1,
-        "src/features/chronicle/api.ts:raw-sql-insert:event_participants": 1,
-        "src/features/chronicle/api.ts:raw-sql-update:events": 1,
         "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:codex_detail_definitions": 1,
         "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:codex_entries": 1,
         "src/features/revision/projectSnapshotApi.ts:raw-sql-delete:codex_tags": 1,
@@ -239,8 +235,6 @@
         "src/features/attribution/api.ts:generic-db-route:db_execute_batch": 1,
         "src/features/chat/agent/toolExecutors.ts:generic-db-route:db_execute": 9,
         "src/features/chat/chatHistoryApi.ts:generic-db-route:db_execute": 1,
-        "src/features/chronicle/api.ts:generic-db-route:db_execute_batch": 1,
-        "src/features/chronicle/version.ts:generic-db-route:db_execute": 1,
         "src/features/codex/crossReference.ts:generic-db-route:db_execute": 1,
         "src/features/codex/rename/renameEngine.ts:generic-db-route:db_execute_batch": 1,
         "src/features/codex/search.ts:generic-db-route:db_execute": 2,

@@ -337,6 +337,8 @@ export interface NapiBackendLike {
     updatedAt: number,
   ): Promise<string>;
   lintTermDictionaryDelete?(projectId: string, id: string): Promise<void>;
+  eventGetVersion?(projectId: string, eventId: string): Promise<string>;
+  eventSetParticipants?(payload: unknown): Promise<string>;
   saveSceneBodyBundle?(payload: unknown): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
@@ -891,6 +893,28 @@ function requireLintTermDictionaryPayload(
   for (const key of integerKeys) {
     requireSafeInteger(payload, key, command);
   }
+  return payload;
+}
+
+function requireEventSetParticipantsPayload(args: CommandArgs): CommandArgs {
+  const command = "event_set_participants";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "eventId", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  const baseVersion = requireSafeInteger(payload, "baseVersion", command);
+  if (baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  requireArray(payload, "codexEntryIds", command).forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`codexEntryIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
   return payload;
 }
 
@@ -2040,6 +2064,29 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
       return null;
     },
+  },
+  event_get_version: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventGetVersion,
+          "eventGetVersion",
+        )(
+          requireNonEmptyString(a, "projectId", "event_get_version"),
+          requireNonEmptyString(a, "eventId", "event_get_version"),
+        ),
+      ),
+  },
+  event_set_participants: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventSetParticipants,
+          "eventSetParticipants",
+        )(requireEventSetParticipantsPayload(a)),
+      ),
   },
   save_scene_body_bundle: {
     run: async (b, a) =>

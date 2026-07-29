@@ -34,6 +34,7 @@ use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::agent_writes;
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
+use grimodex_db::chronicle::{self, SetParticipantsPayload};
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
@@ -629,6 +630,35 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || with_db_state(&state.ws, |db| lint_terms::delete(db, project_id, id)))
             .await
+    }
+
+    /// Chronicle aggregate OCC reads and participant replacement. The latter
+    /// advances the event version and replaces participants in one DB tx.
+    #[napi]
+    pub async fn event_get_version(&self, project_id: String, event_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&chronicle::get_event_version(
+                    db, project_id, event_id,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn event_set_participants(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SetParticipantsPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&chronicle::set_event_participants(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
     }
 
     /// Scene content and every document-derived sidecar are committed in one

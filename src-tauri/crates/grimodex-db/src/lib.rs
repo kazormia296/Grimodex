@@ -417,6 +417,7 @@ impl Database {
 pub mod agent_writes;
 pub mod backup_restore;
 pub mod change_events;
+pub mod chronicle;
 pub mod chronicle_bulk;
 mod execute;
 pub mod foreshadow;
