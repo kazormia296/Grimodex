@@ -41,6 +41,80 @@ The first host's C0 and C0.5 outcome is recorded in
 [`RESULTS.md`](./RESULTS.md). Both warm tracks reached Reject, so this branch
 intentionally stops at PR 1.
 
+## Phase 0b quantized reranker gate
+
+Phase 0b is a separate follow-up speed gate. It does not reopen the rejected
+LFM path, create a corpus, run fine-tuning, or change product behavior. It
+measures the official AVX2 quantized ONNX artifacts for three smaller
+language-specific rerankers:
+
+| Key            | Model                                    | Pinned artifact          | License    |
+| -------------- | ---------------------------------------- | ------------------------ | ---------- |
+| `ja_tiny`      | `hotchpotch/japanese-reranker-tiny-v2`   | `model_qint8_avx2.onnx`  | MIT        |
+| `ja_xsmall`    | `hotchpotch/japanese-reranker-xsmall-v2` | `model_qint8_avx2.onnx`  | MIT        |
+| `en_minilm_l4` | `cross-encoder/ms-marco-MiniLM-L4-v2`    | `model_quint8_avx2.onnx` | Apache-2.0 |
+
+Exact Hugging Face revisions, upstream ONNX SHA-256 digests, selected
+tokenizer files, and local manifest paths are fixed in
+`configs/phase0b-rerankers.yaml`. Bootstrap downloads only those files; it
+does not download PyTorch or safetensors weights:
+
+```bash
+uv run --frozen --extra cpu \
+  python tools/bootstrap_rerankers.py \
+  --config configs/phase0b-rerankers.yaml
+```
+
+Every offline load verifies the complete selected snapshot manifest and the
+upstream ONNX digest before creating a session. ONNX Runtime is pinned to
+1.24.2, matching the current product-side runtime line. The session explicitly
+disables memory-pattern optimization and the CPU memory arena because
+reranker inputs vary by shape.
+
+The warm benchmark includes tokenization, ONNX inference, and score extraction.
+It uses deterministic Japanese or English query/passage pairs over four length
+tiers, truncates each combined pair to 512 tokens, and evaluates 12- and
+30-candidate groups. Generated snapshots and reports remain ignored beneath
+`local/phase0b/` and `artifacts/phase0b/`.
+
+First screen batch, bucket, and thread settings for each model:
+
+```bash
+for model in ja_tiny ja_xsmall en_minilm_l4; do
+  HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    uv run --frozen --extra cpu \
+    python -m grimodex_lfm_eval.reranker_benchmark \
+    --config configs/phase0b-rerankers.yaml \
+    --model "$model" \
+    --mode pilot \
+    --batch-sizes 4,8,16 \
+    --thread-counts 4,physical,8 \
+    --bucket-modes naive,bucketed \
+    --skip-cold
+done
+```
+
+Then run each model's best observed configuration with the formal 30-sample
+floor and five independent cold starts:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  uv run --frozen --extra cpu \
+  python -m grimodex_lfm_eval.reranker_benchmark \
+  --config configs/phase0b-rerankers.yaml \
+  --model <model-key> \
+  --mode early-gate \
+  --batch-sizes <selected-batch> \
+  --thread-counts <selected-threads> \
+  --bucket-modes <naive-or-bucketed>
+```
+
+The Semantic Recall C0.5 budgets remain unchanged: 12 candidates must stay at
+or below 4 seconds and 30 candidates at or below 8 seconds to avoid Reject.
+Only models that pass this speed gate may proceed to the existing locked
+retrieval-quality evaluation. Impact Review windowing and task-specific
+fine-tuning remain later, separately gated work.
+
 ## Fixed supply-chain inputs
 
 - Model: `LiquidAI/LFM2.5-Encoder-230M`

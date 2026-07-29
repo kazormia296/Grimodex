@@ -6,8 +6,14 @@ FINAL_THREAD_COUNT ?= physical
 FINAL_BUCKET_MODE ?= bucketed
 FINAL_IMPACT_CONTEXT ?= full
 FINAL_CHECKPOINT ?= artifacts/early-gate/final.checkpoint.json
+PHASE0B_MODEL ?= ja_xsmall
+PHASE0B_PILOT_BATCH_SIZES ?= 4,8,16
+PHASE0B_PILOT_THREAD_COUNTS ?= 4,physical,8
+PHASE0B_FINAL_BATCH_SIZE ?= 8
+PHASE0B_FINAL_THREAD_COUNT ?= physical
+PHASE0B_FINAL_BUCKET_MODE ?= bucketed
 
-.PHONY: sync-cpu test validate bootstrap smoke pilot early-gate contention
+.PHONY: sync-cpu test validate bootstrap smoke pilot early-gate contention bootstrap-rerankers reranker-pilot reranker-gate
 
 sync-cpu:
 	$(UV) sync --frozen --extra cpu
@@ -32,3 +38,12 @@ early-gate:
 
 contention:
 	node tools/host_contention_probe.mjs --config configs/benchmark-contention.yaml --output artifacts/contention.json
+
+bootstrap-rerankers:
+	$(UV) run --frozen --extra cpu python tools/bootstrap_rerankers.py --config configs/phase0b-rerankers.yaml
+
+reranker-pilot:
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.reranker_benchmark --config configs/phase0b-rerankers.yaml --model $(PHASE0B_MODEL) --mode pilot --batch-sizes $(PHASE0B_PILOT_BATCH_SIZES) --thread-counts $(PHASE0B_PILOT_THREAD_COUNTS) --bucket-modes naive,bucketed --skip-cold
+
+reranker-gate:
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.reranker_benchmark --config configs/phase0b-rerankers.yaml --model $(PHASE0B_MODEL) --mode early-gate --batch-sizes $(PHASE0B_FINAL_BATCH_SIZE) --thread-counts $(PHASE0B_FINAL_THREAD_COUNT) --bucket-modes $(PHASE0B_FINAL_BUCKET_MODE)

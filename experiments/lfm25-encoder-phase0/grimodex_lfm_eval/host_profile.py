@@ -122,6 +122,7 @@ def capture_host_profile(
                 "transformers",
                 "tokenizers",
                 "huggingface-hub",
+                "onnxruntime",
                 "pydantic",
                 "psutil",
                 "PyYAML",
