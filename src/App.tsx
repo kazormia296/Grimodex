@@ -15,9 +15,7 @@ import { ProjectMenu } from "@/features/project/ProjectMenu";
 import { WorkspaceTrustDialog } from "@/features/workspace/WorkspaceTrustDialog";
 import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
 import { ReleaseNotesDialog } from "@/features/release-notes/ReleaseNotesDialog";
-import { useReleaseNotesGate } from "@/features/release-notes/useReleaseNotesGate";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
 import type { SettingsCategory } from "@/features/settings/types";
 import type { TransferTab } from "@/features/transfer/TransferDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
@@ -29,39 +27,18 @@ import {
 import { LayoutShell } from "@/features/layout/LayoutShell";
 import { cloneLayoutState } from "@/features/layout/layoutStateUtils";
 import { useResultsPanelStore } from "@/features/commandCenter";
-import { subscribeSemanticRetryAfterLifecycle } from "@/features/semantic-search/semanticLifecycle";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { PostEffectProgressToast } from "@/features/post-effect/PostEffectProgressToast";
-import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { ModelDownloadToast } from "@/features/semantic-search/ModelDownloadToast";
-import { useModelDownloadListener } from "@/features/semantic-search/useModelDownloadListener";
 import { UpdateToast } from "@/features/updater/UpdateToast";
-import { useUpdateChecker } from "@/features/updater/useUpdateChecker";
 import { UpdateDot } from "@/features/updater/UpdateDot";
 import { useUpdatePending } from "@/features/updater/updaterStore";
-import { ensureSemanticIndexesOnOpen } from "@/features/semantic-search/autoIndex";
-import {
-  createEditorInputScopeKey,
-  waitForForegroundEditorInputReady,
-} from "@/features/editor/editorInputReady";
-import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 import { useLicenseStore } from "@/features/license/store";
-import { useLicenseStateListener } from "@/features/license/useLicenseStateListener";
-import { debugLog, useDebugLogStore } from "@/lib/debugLog";
-import {
-  isInlineAiPending,
-  guardInlineAiPending,
-} from "@/features/editor/inlineAi/pendingGuard";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
 import type { ExportDialogMode } from "@/features/export/ExportDialog";
-import {
-  COLOR_THEMES,
-  DEFAULT_COLOR_THEME,
-  THEME_CSS_VARS,
-} from "@/lib/colorThemes";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
 import { HeaderBarLayout } from "@/components/HeaderBarLayout";
@@ -78,10 +55,7 @@ import { ZenModeController } from "@/features/editor/ZenModeController";
 import { BackgroundStudioHost } from "@/features/editor/background/BackgroundStudioHost";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { HistoryButtons } from "@/features/history/HistoryButtons";
-import {
-  useProjectStore,
-  getCurrentProjectId,
-} from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { isMac, matchesMod } from "@/lib/platform";
@@ -90,25 +64,10 @@ import {
   getMergedBindings,
   matchesBinding,
 } from "@/features/settings/keybindings";
-import { closeWindow, onWindowCloseRequested } from "@/lib/windowControls";
-import {
-  StrictQuiescenceError,
-  flushStrictQuiescence,
-  type QuiescenceFailure,
-} from "@/application/lifecycle/quiescenceCoordinator";
-import {
-  createCloseQuiescenceController,
-  type CloseQuiescenceController,
-} from "@/application/lifecycle/closeQuiescenceController";
 import { CloseSaveFailureDialog } from "@/components/CloseSaveFailureDialog";
-import { exportRecoveryDrafts } from "@/application/lifecycle/exportRecoveryDrafts";
-import { discardQuiescenceParticipants } from "@/application/lifecycle/quiescenceParticipants";
-import { discardQuiescenceProviders } from "@/lib/quiescenceProviders";
-import { discardAllRegisteredEditorDrafts } from "@/features/editor/editorSaveRegistry";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { useQuiescenceLeaseActive } from "@/application/lifecycle/useQuiescenceLeaseActive";
 import { LifecycleStatus } from "@/application/lifecycle/LifecycleStatus";
-import { hasUnresolvedEditorChanges } from "@/lib/editorQuiescence";
 import {
   getScreenshotPanelId,
   isScreenshotCapture,
@@ -130,11 +89,8 @@ import { shouldUseAdaptiveWorkspace } from "@/features/layout/adaptive/adaptiveW
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { useViewportProfile } from "@/runtime/useViewportProfile";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
-import {
-  consumeWebEditorHandoffRequest,
-  requestWebEditorHandoffImport,
-  subscribeWebEditorHandoffRequests,
-} from "@/features/import/webEditorHandoffRequest";
+import { ApplicationBootstrapHost } from "@/application/bootstrap/ApplicationBootstrapHost";
+import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
 
 const SettingsDialog = lazy(() =>
   import("@/features/settings/SettingsDialog").then((m) => ({
@@ -184,263 +140,26 @@ const WebEditorWorkspaceImportDialog = lazy(() =>
 
 /* ── App root ── */
 
-function applyTheme(theme: string, colorTheme?: string) {
-  const html = document.documentElement;
-
-  // Light/dark mode
-  if (theme === "dark") {
-    html.classList.add("dark");
-  } else if (theme === "light") {
-    html.classList.remove("dark");
-  } else {
-    const prefersDark = window.matchMedia(
-      "(prefers-color-scheme: dark)",
-    ).matches;
-    html.classList.toggle("dark", prefersDark);
-  }
-
-  // Named color theme
-  const isDark = html.classList.contains("dark");
-  const resolvedId = colorTheme ?? DEFAULT_COLOR_THEME;
-  const themeObj = COLOR_THEMES.find((t) => t.id === resolvedId);
-
-  if (!themeObj) {
-    // Unknown theme — remove overrides, fall back to CSS defaults
-    for (const prop of THEME_CSS_VARS) {
-      html.style.removeProperty(prop);
-    }
-    return;
-  }
-
-  const palette = isDark ? themeObj.dark : themeObj.light;
-  for (const prop of THEME_CSS_VARS) {
-    html.style.setProperty(prop, palette[prop]);
-  }
-}
-
 function App() {
   const runtimeCapabilities = useRuntimeCapabilities();
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
-  const workspaceOpenRevision = useWorkspaceStore(
-    (s) => s.workspaceOpenRevision,
-  );
-  const workspaceSwitchInProgress = useWorkspaceStore(
-    (s) => s.workspaceSwitchInProgress,
-  );
-  const workspaceHydrated = useWorkspaceStore((s) => s.workspaceHydrated);
-  const initialize = useWorkspaceStore((s) => s.initialize);
-  const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
-  const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
-  const uiLanguage = useWorkspaceStore(
-    (s) => s.globalSettings?.uiLanguage ?? "ja",
-  );
   const { t } = useTranslation();
   const [showWebEditorImport, setShowWebEditorImport] = useState(false);
-  const [closeFailures, setCloseFailures] = useState<
-    readonly QuiescenceFailure[] | null
-  >(null);
-  const [quiescenceSettledRevision, setQuiescenceSettledRevision] = useState(0);
-  const closeControllerRef = useRef<CloseQuiescenceController | null>(null);
-
-  useEffect(
-    () =>
-      subscribeSemanticRetryAfterLifecycle(() => {
-        setQuiescenceSettledRevision((revision) => revision + 1);
-      }),
+  const requestWebEditorImport = useCallback(
+    () => setShowWebEditorImport(true),
     [],
   );
-
-  useEffect(
-    () =>
-      subscribeWebEditorHandoffRequests(() => {
-        if (consumeWebEditorHandoffRequest()) {
-          setShowWebEditorImport(true);
-        }
-      }),
-    [],
-  );
-
-  // semantic_reindex_all の進行状況 event を購読 (App 起動中ずっと 1 度だけ)。
-  useReindexProgressListener();
-  // オンデマンド埋め込みモデル DL の進行状況 event を購読。完了後に back-index を再実行。
-  useModelDownloadListener();
-  // アプリ更新: 起動 ~10 秒後にサイレント check() → 更新があればトーストを出す。
-  useUpdateChecker();
-  useReleaseNotesGate();
-  useExternalMountListener();
-  useLicenseStateListener();
-
-  // プロジェクトを開いたら codex / events / chat / scene の未 index を自動補完する。
-  // status は embedder 不要の軽量チェック → 未 index がある時だけ背景 reindex。
-  // workspace path も依存に含め、異なるDBが同じ default-project
-  // id を持つ場合も必ず別 scope として起動する。panel 窓は関数内で no-op。
-  const currentProjectId = useProjectStore((s) => s.currentProjectId);
-  const tabStateHydrated = useTabStore((s) => s.tabStateHydrated);
-  const foregroundEditorScopeKey = createEditorInputScopeKey({
-    projectId: currentProjectId,
-    workspacePath: activeWorkspacePath,
-    workspaceOpenRevision,
-  });
-  useEffect(() => {
-    if (
-      runtimeCapabilities.localAi &&
-      workspaceHydrated &&
-      !workspaceSwitchInProgress &&
-      tabStateHydrated &&
-      currentProjectId &&
-      activeWorkspacePath
-    ) {
-      const controller = new AbortController();
-      void waitForForegroundEditorInputReady({
-        signal: controller.signal,
-        // The editor boundary publishes the canonical loaded DocumentKey
-        // together with its visible group and authority. Accept either of the
-        // two real workspace projections; standalone panel editors are never
-        // allowed to release this project-open gate.
-        expectedProjection: {
-          authorities: ["workspace", "linear"],
-          scopeKey: foregroundEditorScopeKey,
-        },
-      }).then((editorReady) => {
-        if (controller.signal.aborted) return;
-        if (!editorReady) {
-          debugLog.warn(
-            "semantic-search",
-            "foreground Editor readiness timed out; starting background indexing",
-          );
-        }
-        void ensureSemanticIndexesOnOpen(currentProjectId, activeWorkspacePath);
-      });
-      return () => controller.abort();
-    }
-    return undefined;
-  }, [
-    activeWorkspacePath,
-    currentProjectId,
-    foregroundEditorScopeKey,
-    tabStateHydrated,
-    workspaceHydrated,
-    workspaceOpenRevision,
-    workspaceSwitchInProgress,
-    quiescenceSettledRevision,
-    runtimeCapabilities.localAi,
-  ]);
-
-  // Sync uiLanguage setting → i18next
-  useEffect(() => {
-    if (i18next.language !== uiLanguage) {
-      void i18next.changeLanguage(uiLanguage);
-    }
-  }, [uiLanguage]);
-
-  // 未確定の inline-AI diff または未保存の文書があるまま終了させない。Tauri の
-  // onCloseRequested は OS / ネイティブタイトルバー / カスタム閉じるボタンの
-  // すべての close を捕捉できる唯一の安全網 (Mac は WindowControls 非表示)。
-  // 同期 veto の後で strict quiescence を実行し、全保存成功時だけ再 close する。
-  // web ビルドは async 保存不能なので beforeunload の同期警告に限定する。
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void (async () => {
-      try {
-        const controller = createCloseQuiescenceController({
-          hasImmediateVeto: guardInlineAiPending,
-          flush: flushStrictQuiescence,
-          close: closeWindow,
-          onFailure: (error) => {
-            setCloseFailures(
-              error instanceof StrictQuiescenceError
-                ? error.failures
-                : [{ stage: "participants", error }],
-            );
-          },
-        });
-        closeControllerRef.current = controller;
-        const un = await onWindowCloseRequested(controller.handleCloseRequest);
-        if (disposed) un();
-        else unlisten = un;
-      } catch {
-        // 非 Tauri / API 不在: beforeunload に任せる
-      }
-    })();
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isInlineAiPending() || hasUnresolvedEditorChanges()) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => {
-      disposed = true;
-      closeControllerRef.current?.cancel();
-      closeControllerRef.current = null;
-      unlisten?.();
-      window.removeEventListener("beforeunload", onBeforeUnload);
-    };
-  }, []);
-
-  // Apply theme reactively — globalSettings is loaded from global-settings.json
-  // (no workspace DB needed), so this works before any workspace is opened.
-  useEffect(() => {
-    applyTheme(theme, colorTheme);
-  }, [theme, colorTheme]);
-
-  // Re-apply when OS light/dark preference changes while theme === "system"
-  useEffect(() => {
-    if (theme !== "system") return;
-    const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => applyTheme("system", colorTheme);
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, [theme, colorTheme]);
-
-  // Sync attribution highlight opacity setting → CSS variable
-  const attributionOpacity = useSettingsStore((s) =>
-    s.getNumber("display.attributionHighlightOpacity", 10),
-  );
-  useEffect(() => {
-    document.documentElement.style.setProperty(
-      "--attribution-pct",
-      `${attributionOpacity * 2}%`,
-    );
-  }, [attributionOpacity]);
-
-  // Sync UI font setting → --ui-font CSS variable (アプリ全体の UI 書体)。
-  // index.css の --font-sans / body が var(--ui-font, ...) を参照する。
-  // cache は DEFAULT_SETTINGS で seed 済みなので workspace 未オープンでも効く。
-  const uiFontFamily = useSettingsStore((s) => s.get("display.uiFontFamily"));
-  useEffect(() => {
-    const html = document.documentElement;
-    const v = uiFontFamily.trim();
-    if (v) {
-      html.style.setProperty("--ui-font", v);
-    } else {
-      html.style.removeProperty("--ui-font");
-    }
-  }, [uiFontFamily]);
-
-  useEffect(() => {
-    initialize();
-  }, [initialize]);
-
-  useSyncUiScale();
-
-  // Ctrl+Shift+D toggles debug log viewer
-  const toggleDebugLog = useDebugLogStore((s) => s.toggle);
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "d") {
-        e.preventDefault();
-        toggleDebugLog();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggleDebugLog]);
 
   return (
     <>
+      <ApplicationBootstrapHost
+        onWebEditorImportRequested={requestWebEditorImport}
+        runtimeCapabilities={runtimeCapabilities}
+        renderCloseFailureDialog={(dialogProps) => (
+          <CloseSaveFailureDialog {...dialogProps} />
+        )}
+      />
       <Toaster position="bottom-right" richColors />
       <LiveRegion />
       <LifecycleStatus />
@@ -465,30 +184,6 @@ function App() {
           />
         </Suspense>
       )}
-      <CloseSaveFailureDialog
-        open={closeFailures !== null}
-        onCancel={() => {
-          closeControllerRef.current?.cancel();
-          setCloseFailures(null);
-        }}
-        onRetry={() => {
-          setCloseFailures(null);
-          closeControllerRef.current?.retry();
-        }}
-        onExport={() => {
-          if (!closeFailures) return;
-          void exportRecoveryDrafts(closeFailures).catch(() => {
-            toast.error(t("closeSaveFailure.exportFailed"));
-          });
-        }}
-        onDiscard={() => {
-          discardQuiescenceProviders();
-          discardQuiescenceParticipants();
-          discardAllRegisteredEditorDrafts();
-          setCloseFailures(null);
-          closeControllerRef.current?.discardAndClose();
-        }}
-      />
       <DebugLogViewer />
     </>
   );
