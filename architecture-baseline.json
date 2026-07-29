@@ -37,8 +37,6 @@
       "src/features/lint/termDictionaryStore.ts:lint->project:@/features/project/projectStore",
       "src/features/plot-threads/plotThreadStore.ts:plot-threads->project:@/features/project/projectStore",
       "src/features/post-effect/annotationStore.ts:post-effect->settings:@/features/settings/settingsStore",
-      "src/features/project/projectStore.ts:project->codex:@/features/codex/phaseStore",
-      "src/features/project/projectStore.ts:project->settings:@/features/settings/settingsStore",
       "src/features/prompt-library/promptLibraryStore.ts:prompt-library->project:@/features/project/projectStore",
       "src/features/snippets/snippetStore.ts:snippets->project:@/features/project/projectStore",
       "src/features/snippets/snippetStore.ts:snippets->trash-bin:@/features/trash-bin/trashBinStore",
@@ -61,24 +59,13 @@
     "sccs": [
       {
         "members": [
-          "src/features/agent-writes/autoAcceptFeed.ts",
-          "src/features/agent-writes/autoApplyProse.ts",
           "src/features/agent-writes/codex.ts",
           "src/features/agent-writes/event.ts",
           "src/features/agent-writes/foreshadow.ts",
-          "src/features/agent-writes/prose.ts",
           "src/features/agent-writes/snippet.ts",
-          "src/features/agent-writes/tree.ts",
-          "src/features/agent-writes/undoJournal.ts",
-          "src/features/ai-policy/policyGuard.ts",
-          "src/features/ai-policy/useAiGate.ts",
-          "src/features/ai-policy/useCurrentProjectAiPolicy.ts",
-          "src/features/ai-usage/recordAiUsage.ts",
-          "src/features/attribution/generationLogApi.ts",
           "src/features/chat/agent/agentLoop.ts",
           "src/features/chat/agent/askUser.ts",
           "src/features/chat/agent/chronicleReadTools.ts",
-          "src/features/chat/agent/chronicleToolCache.ts",
           "src/features/chat/agent/chronicleWriteTools.ts",
           "src/features/chat/agent/toolExecutors.ts",
           "src/features/chat/chatApi.ts",
@@ -91,46 +78,22 @@
           "src/features/chat/conversationHistory.ts",
           "src/features/chat/summarization.ts",
           "src/features/codex/CodexMentionExtension.ts",
-          "src/features/codex/api.ts",
           "src/features/codex/childrenBudget.ts",
           "src/features/codex/codexStore.ts",
-          "src/features/codex/mentionRescanQueue.ts",
-          "src/features/concurrency/externalWriteFeed.ts",
-          "src/features/editor/AutoPairBracketsExtension.ts",
           "src/features/editor/SceneBeatNode.ts",
           "src/features/editor/SceneBeatNodeView.tsx",
-          "src/features/editor/TrashBinCapturePlugin.ts",
           "src/features/editor/beat/RoleSuggestionBadges.tsx",
           "src/features/editor/beat/beatPromptBuilder.ts",
           "src/features/editor/beat/buildBeatContext.ts",
           "src/features/editor/beat/generateBeatAlternative.ts",
           "src/features/editor/beat/inferMentionRoles.ts",
-          "src/features/editor/beat/streamInlineAiText.ts",
           "src/features/editor/beat/useBeatGeneration.ts",
           "src/features/editor/editorStore.ts",
-          "src/features/editor/extensions.ts",
-          "src/features/editor/inlineAi/SlashCommandExtension.ts",
-          "src/features/editor/inlineAi/inlineAiCommands.ts",
-          "src/features/editor/persistSceneBody.ts",
-          "src/features/editor/reorder/ParagraphReorderExtension.ts",
-          "src/features/editor/reorder/ReorderInteractionExtension.ts",
-          "src/features/external-mount/fileBackedEditorExtensions.ts",
-          "src/features/external-mount/markdownBridge.ts",
-          "src/features/external-mount/writeBack.ts",
           "src/features/foreshadow/api.ts",
           "src/features/foreshadow/foreshadowStore.ts",
           "src/features/layout/layoutStore.ts",
-          "src/features/plot-threads/plotThreadStore.ts",
-          "src/features/project/contextAtoms.ts",
-          "src/features/project/projectStore.ts",
-          "src/features/snippets/search.ts",
-          "src/features/snippets/snippetStore.ts",
           "src/features/timelapse/seedSession.ts",
           "src/features/timelapse/toggle.ts",
-          "src/features/tree/aiScaffold/applyPlan.ts",
-          "src/features/tree/store.ts",
-          "src/features/tree/treeStore.ts",
-          "src/features/workspace/store.ts",
           "src/prompts/en/beatGenerate.ts",
           "src/prompts/index.ts",
           "src/prompts/ja/beatGenerate.ts",
@@ -138,152 +101,20 @@
         ],
         "edges": [
           {
-            "from": "src/features/agent-writes/autoAcceptFeed.ts",
-            "to": "src/features/agent-writes/autoApplyProse.ts"
-          },
-          {
-            "from": "src/features/agent-writes/autoAcceptFeed.ts",
-            "to": "src/features/agent-writes/prose.ts"
-          },
-          {
-            "from": "src/features/agent-writes/autoAcceptFeed.ts",
-            "to": "src/features/concurrency/externalWriteFeed.ts"
-          },
-          {
-            "from": "src/features/agent-writes/autoApplyProse.ts",
-            "to": "src/features/agent-writes/prose.ts"
-          },
-          {
-            "from": "src/features/agent-writes/autoApplyProse.ts",
-            "to": "src/features/editor/extensions.ts"
-          },
-          {
-            "from": "src/features/agent-writes/autoApplyProse.ts",
-            "to": "src/features/editor/persistSceneBody.ts"
-          },
-          {
-            "from": "src/features/agent-writes/autoApplyProse.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/codex.ts",
-            "to": "src/features/agent-writes/undoJournal.ts"
-          },
-          {
-            "from": "src/features/agent-writes/codex.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
             "from": "src/features/agent-writes/codex.ts",
             "to": "src/features/codex/codexStore.ts"
           },
           {
-            "from": "src/features/agent-writes/codex.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
             "from": "src/features/agent-writes/event.ts",
             "to": "src/features/agent-writes/codex.ts"
-          },
-          {
-            "from": "src/features/agent-writes/event.ts",
-            "to": "src/features/agent-writes/undoJournal.ts"
-          },
-          {
-            "from": "src/features/agent-writes/event.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
-            "from": "src/features/agent-writes/event.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/foreshadow.ts",
-            "to": "src/features/agent-writes/undoJournal.ts"
-          },
-          {
-            "from": "src/features/agent-writes/foreshadow.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
           },
           {
             "from": "src/features/agent-writes/foreshadow.ts",
             "to": "src/features/foreshadow/foreshadowStore.ts"
           },
           {
-            "from": "src/features/agent-writes/foreshadow.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/prose.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
-            "from": "src/features/agent-writes/prose.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/prose.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
             "from": "src/features/agent-writes/snippet.ts",
             "to": "src/features/agent-writes/codex.ts"
-          },
-          {
-            "from": "src/features/agent-writes/snippet.ts",
-            "to": "src/features/agent-writes/undoJournal.ts"
-          },
-          {
-            "from": "src/features/agent-writes/snippet.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
-            "from": "src/features/agent-writes/snippet.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/snippet.ts",
-            "to": "src/features/snippets/snippetStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/tree.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
-            "from": "src/features/agent-writes/tree.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/tree.ts",
-            "to": "src/features/tree/aiScaffold/applyPlan.ts"
-          },
-          {
-            "from": "src/features/agent-writes/tree.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/undoJournal.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/ai-policy/policyGuard.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/ai-policy/useAiGate.ts",
-            "to": "src/features/ai-policy/useCurrentProjectAiPolicy.ts"
-          },
-          {
-            "from": "src/features/ai-policy/useCurrentProjectAiPolicy.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/ai-usage/recordAiUsage.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/attribution/generationLogApi.ts",
-            "to": "src/features/tree/treeStore.ts"
           },
           {
             "from": "src/features/chat/agent/agentLoop.ts",
@@ -295,19 +126,7 @@
           },
           {
             "from": "src/features/chat/agent/chronicleReadTools.ts",
-            "to": "src/features/chat/agent/chronicleToolCache.ts"
-          },
-          {
-            "from": "src/features/chat/agent/chronicleReadTools.ts",
             "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/agent/chronicleReadTools.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/chat/agent/chronicleToolCache.ts",
-            "to": "src/features/codex/api.ts"
           },
           {
             "from": "src/features/chat/agent/chronicleWriteTools.ts",
@@ -315,15 +134,7 @@
           },
           {
             "from": "src/features/chat/agent/chronicleWriteTools.ts",
-            "to": "src/features/chat/agent/chronicleToolCache.ts"
-          },
-          {
-            "from": "src/features/chat/agent/chronicleWriteTools.ts",
             "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/agent/chronicleWriteTools.ts",
-            "to": "src/features/tree/treeStore.ts"
           },
           {
             "from": "src/features/chat/agent/toolExecutors.ts",
@@ -335,23 +146,11 @@
           },
           {
             "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/agent-writes/prose.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
             "to": "src/features/agent-writes/snippet.ts"
           },
           {
             "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/agent-writes/tree.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
             "to": "src/features/chat/agent/chronicleReadTools.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/chat/agent/chronicleToolCache.ts"
           },
           {
             "from": "src/features/chat/agent/toolExecutors.ts",
@@ -366,36 +165,12 @@
             "to": "src/features/foreshadow/api.ts"
           },
           {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/chat/chatApi.ts",
-            "to": "src/features/ai-usage/recordAiUsage.ts"
-          },
-          {
             "from": "src/features/chat/chatApi.ts",
             "to": "src/features/chat/contextBuilder.ts"
           },
           {
             "from": "src/features/chat/chatApi.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/chat/chatApi.ts",
             "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/ai-usage/recordAiUsage.ts"
           },
           {
             "from": "src/features/chat/chatStore.ts",
@@ -439,31 +214,11 @@
           },
           {
             "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/codex/api.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
             "to": "src/features/codex/childrenBudget.ts"
           },
           {
             "from": "src/features/chat/chatStore.ts",
             "to": "src/features/foreshadow/api.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/plot-threads/plotThreadStore.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/project/contextAtoms.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/tree/treeStore.ts"
           },
           {
             "from": "src/features/chat/chatStore.ts",
@@ -490,10 +245,6 @@
             "to": "src/features/codex/childrenBudget.ts"
           },
           {
-            "from": "src/features/chat/context/sources/nonSceneContextSource.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
             "from": "src/features/chat/context/sources/sceneContextSource.ts",
             "to": "src/features/chat/contextBuilder.ts"
           },
@@ -503,19 +254,11 @@
           },
           {
             "from": "src/features/chat/contextBuilder.ts",
-            "to": "src/features/project/contextAtoms.ts"
-          },
-          {
-            "from": "src/features/chat/contextBuilder.ts",
             "to": "src/prompts/index.ts"
           },
           {
             "from": "src/features/chat/conversationHistory.ts",
             "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/summarization.ts",
-            "to": "src/features/ai-usage/recordAiUsage.ts"
           },
           {
             "from": "src/features/chat/summarization.ts",
@@ -530,10 +273,6 @@
             "to": "src/prompts/index.ts"
           },
           {
-            "from": "src/features/codex/api.ts",
-            "to": "src/features/codex/mentionRescanQueue.ts"
-          },
-          {
             "from": "src/features/codex/childrenBudget.ts",
             "to": "src/features/chat/contextBuilder.ts"
           },
@@ -546,60 +285,12 @@
             "to": "src/features/chat/chatStore.ts"
           },
           {
-            "from": "src/features/codex/codexStore.ts",
-            "to": "src/features/codex/api.ts"
-          },
-          {
-            "from": "src/features/codex/codexStore.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/codex/mentionRescanQueue.ts",
-            "to": "src/features/codex/api.ts"
-          },
-          {
-            "from": "src/features/codex/mentionRescanQueue.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/concurrency/externalWriteFeed.ts",
-            "to": "src/features/agent-writes/prose.ts"
-          },
-          {
-            "from": "src/features/concurrency/externalWriteFeed.ts",
-            "to": "src/features/codex/codexStore.ts"
-          },
-          {
-            "from": "src/features/concurrency/externalWriteFeed.ts",
-            "to": "src/features/snippets/snippetStore.ts"
-          },
-          {
-            "from": "src/features/concurrency/externalWriteFeed.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/editor/AutoPairBracketsExtension.ts",
-            "to": "src/features/editor/TrashBinCapturePlugin.ts"
-          },
-          {
             "from": "src/features/editor/beat/beatPromptBuilder.ts",
             "to": "src/prompts/index.ts"
           },
           {
             "from": "src/features/editor/beat/buildBeatContext.ts",
             "to": "src/features/codex/codexStore.ts"
-          },
-          {
-            "from": "src/features/editor/beat/buildBeatContext.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/editor/beat/buildBeatContext.ts",
-            "to": "src/features/workspace/store.ts"
-          },
-          {
-            "from": "src/features/editor/beat/generateBeatAlternative.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
           },
           {
             "from": "src/features/editor/beat/generateBeatAlternative.ts",
@@ -610,24 +301,8 @@
             "to": "src/features/editor/beat/buildBeatContext.ts"
           },
           {
-            "from": "src/features/editor/beat/generateBeatAlternative.ts",
-            "to": "src/features/editor/beat/streamInlineAiText.ts"
-          },
-          {
-            "from": "src/features/editor/beat/generateBeatAlternative.ts",
-            "to": "src/features/snippets/snippetStore.ts"
-          },
-          {
-            "from": "src/features/editor/beat/inferMentionRoles.ts",
-            "to": "src/features/ai-usage/recordAiUsage.ts"
-          },
-          {
             "from": "src/features/editor/beat/inferMentionRoles.ts",
             "to": "src/features/chat/chatApi.ts"
-          },
-          {
-            "from": "src/features/editor/beat/inferMentionRoles.ts",
-            "to": "src/features/tree/treeStore.ts"
           },
           {
             "from": "src/features/editor/beat/inferMentionRoles.ts",
@@ -636,22 +311,6 @@
           {
             "from": "src/features/editor/beat/RoleSuggestionBadges.tsx",
             "to": "src/features/codex/CodexMentionExtension.ts"
-          },
-          {
-            "from": "src/features/editor/beat/streamInlineAiText.ts",
-            "to": "src/features/ai-usage/recordAiUsage.ts"
-          },
-          {
-            "from": "src/features/editor/beat/useBeatGeneration.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
-            "from": "src/features/editor/beat/useBeatGeneration.ts",
-            "to": "src/features/ai-usage/recordAiUsage.ts"
-          },
-          {
-            "from": "src/features/editor/beat/useBeatGeneration.ts",
-            "to": "src/features/attribution/generationLogApi.ts"
           },
           {
             "from": "src/features/editor/beat/useBeatGeneration.ts",
@@ -674,76 +333,8 @@
             "to": "src/features/chat/chatApi.ts"
           },
           {
-            "from": "src/features/editor/editorStore.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/editor/extensions.ts",
-            "to": "src/features/codex/CodexMentionExtension.ts"
-          },
-          {
-            "from": "src/features/editor/extensions.ts",
-            "to": "src/features/editor/AutoPairBracketsExtension.ts"
-          },
-          {
-            "from": "src/features/editor/extensions.ts",
-            "to": "src/features/editor/inlineAi/SlashCommandExtension.ts"
-          },
-          {
-            "from": "src/features/editor/extensions.ts",
-            "to": "src/features/editor/reorder/ParagraphReorderExtension.ts"
-          },
-          {
-            "from": "src/features/editor/extensions.ts",
-            "to": "src/features/editor/reorder/ReorderInteractionExtension.ts"
-          },
-          {
-            "from": "src/features/editor/extensions.ts",
-            "to": "src/features/editor/SceneBeatNode.ts"
-          },
-          {
-            "from": "src/features/editor/inlineAi/inlineAiCommands.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
-            "from": "src/features/editor/inlineAi/SlashCommandExtension.ts",
-            "to": "src/features/editor/inlineAi/inlineAiCommands.ts"
-          },
-          {
-            "from": "src/features/editor/persistSceneBody.ts",
-            "to": "src/features/chat/chatStore.ts"
-          },
-          {
-            "from": "src/features/editor/persistSceneBody.ts",
-            "to": "src/features/codex/api.ts"
-          },
-          {
-            "from": "src/features/editor/persistSceneBody.ts",
-            "to": "src/features/external-mount/writeBack.ts"
-          },
-          {
-            "from": "src/features/editor/persistSceneBody.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/editor/reorder/ParagraphReorderExtension.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/editor/reorder/ReorderInteractionExtension.ts",
-            "to": "src/features/editor/reorder/ParagraphReorderExtension.ts"
-          },
-          {
-            "from": "src/features/editor/reorder/ReorderInteractionExtension.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
             "from": "src/features/editor/SceneBeatNode.ts",
             "to": "src/features/editor/SceneBeatNodeView.tsx"
-          },
-          {
-            "from": "src/features/editor/SceneBeatNodeView.tsx",
-            "to": "src/features/ai-policy/useAiGate.ts"
           },
           {
             "from": "src/features/editor/SceneBeatNodeView.tsx",
@@ -766,48 +357,12 @@
             "to": "src/features/editor/SceneBeatNode.ts"
           },
           {
-            "from": "src/features/editor/SceneBeatNodeView.tsx",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/editor/TrashBinCapturePlugin.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/external-mount/fileBackedEditorExtensions.ts",
-            "to": "src/features/editor/AutoPairBracketsExtension.ts"
-          },
-          {
-            "from": "src/features/external-mount/fileBackedEditorExtensions.ts",
-            "to": "src/features/editor/extensions.ts"
-          },
-          {
-            "from": "src/features/external-mount/markdownBridge.ts",
-            "to": "src/features/external-mount/fileBackedEditorExtensions.ts"
-          },
-          {
-            "from": "src/features/external-mount/writeBack.ts",
-            "to": "src/features/external-mount/markdownBridge.ts"
-          },
-          {
-            "from": "src/features/foreshadow/api.ts",
-            "to": "src/features/ai-policy/policyGuard.ts"
-          },
-          {
-            "from": "src/features/foreshadow/api.ts",
-            "to": "src/features/ai-usage/recordAiUsage.ts"
-          },
-          {
             "from": "src/features/foreshadow/api.ts",
             "to": "src/features/chat/chatApi.ts"
           },
           {
             "from": "src/features/foreshadow/api.ts",
             "to": "src/features/codex/codexStore.ts"
-          },
-          {
-            "from": "src/features/foreshadow/api.ts",
-            "to": "src/features/tree/treeStore.ts"
           },
           {
             "from": "src/features/foreshadow/api.ts",
@@ -823,55 +378,11 @@
           },
           {
             "from": "src/features/foreshadow/foreshadowStore.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/foreshadow/foreshadowStore.ts",
             "to": "src/features/timelapse/toggle.ts"
-          },
-          {
-            "from": "src/features/foreshadow/foreshadowStore.ts",
-            "to": "src/features/tree/store.ts"
           },
           {
             "from": "src/features/layout/layoutStore.ts",
             "to": "src/screenshot-scenes/screenshotBootstrap.ts"
-          },
-          {
-            "from": "src/features/plot-threads/plotThreadStore.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/project/contextAtoms.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/project/projectStore.ts",
-            "to": "src/features/agent-writes/autoAcceptFeed.ts"
-          },
-          {
-            "from": "src/features/project/projectStore.ts",
-            "to": "src/features/concurrency/externalWriteFeed.ts"
-          },
-          {
-            "from": "src/features/project/projectStore.ts",
-            "to": "src/features/timelapse/seedSession.ts"
-          },
-          {
-            "from": "src/features/project/projectStore.ts",
-            "to": "src/features/timelapse/toggle.ts"
-          },
-          {
-            "from": "src/features/snippets/search.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/snippets/snippetStore.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/snippets/snippetStore.ts",
-            "to": "src/features/snippets/search.ts"
           },
           {
             "from": "src/features/timelapse/seedSession.ts",
@@ -879,27 +390,7 @@
           },
           {
             "from": "src/features/timelapse/toggle.ts",
-            "to": "src/features/codex/api.ts"
-          },
-          {
-            "from": "src/features/timelapse/toggle.ts",
             "to": "src/features/timelapse/seedSession.ts"
-          },
-          {
-            "from": "src/features/tree/aiScaffold/applyPlan.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/tree/store.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
-            "from": "src/features/tree/treeStore.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/workspace/store.ts",
-            "to": "src/features/project/projectStore.ts"
           },
           {
             "from": "src/prompts/en/beatGenerate.ts",
@@ -920,30 +411,34 @@
           {
             "from": "src/screenshot-scenes/screenshotBootstrap.ts",
             "to": "src/features/codex/codexStore.ts"
+          }
+        ]
+      },
+      {
+        "members": [
+          "src/features/codex/api.ts",
+          "src/features/codex/mentionRescanQueue.ts"
+        ],
+        "edges": [
+          {
+            "from": "src/features/codex/api.ts",
+            "to": "src/features/codex/mentionRescanQueue.ts"
           },
           {
-            "from": "src/screenshot-scenes/screenshotBootstrap.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/screenshot-scenes/screenshotBootstrap.ts",
-            "to": "src/features/snippets/snippetStore.ts"
-          },
-          {
-            "from": "src/screenshot-scenes/screenshotBootstrap.ts",
-            "to": "src/features/tree/treeStore.ts"
+            "from": "src/features/codex/mentionRescanQueue.ts",
+            "to": "src/features/codex/api.ts"
           }
         ]
       }
     ]
   },
   "metrics": {
-    "cross-feature-store-import": 48,
+    "cross-feature-store-import": 46,
     "cross-feature-store-mutation": 0,
     "dynamic-store-import": 0,
-    "cyclic-modules": 74,
-    "largest-scc": 74,
-    "scc-internal-edges": 199,
+    "cyclic-modules": 41,
+    "largest-scc": 39,
+    "scc-internal-edges": 80,
     "chat-store-lines": 8260,
     "chat-store-runtime-imports": 90
   },

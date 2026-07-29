@@ -34,6 +34,8 @@ import {
   resetUnplacedBeatsForProject,
 } from "@/application/project/defaultProjectLifecycle";
 import { registerProjectLifecycle } from "@/application/project/projectLifecycle";
+import { registerProjectRuntime } from "@/application/project/projectRuntime";
+import { projectRuntimeComposition } from "./projectRuntimeComposition";
 
 const workspaceHydrationDependencies: WorkspaceHydrationDependencies = {
   migrateAppSettingsToScopedStores,
@@ -74,3 +76,4 @@ registerProjectLifecycle(projectLifecycleRegistry, {
   resetPhaseStateForProject,
   resetUnplacedBeatsForProject,
 });
+registerProjectRuntime(projectRuntimeComposition);
