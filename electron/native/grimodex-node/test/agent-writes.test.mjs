@@ -202,6 +202,61 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   );
 });
 
+test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越しに保持する", async () => {
+  const created = JSON.parse(
+    await backend.agentEventCreate({
+      requestId: "agent-tool:event-napi-chronicle-boundaries-1",
+      projectId: PROJECT,
+      sessionId: "sess-chronicle-boundaries",
+      title: "境界日時",
+      startTime: 10,
+      startMinute: 0,
+      startGranularity: "time",
+      endTime: 10,
+      endMinute: 1439,
+      endGranularity: "time",
+    }),
+  );
+  assert.equal(created.version, 1);
+
+  const boundaryRow = await rows(
+    `SELECT start_time, start_minute, end_time, end_minute
+       FROM events WHERE id = ?`,
+    [created.entityId],
+  );
+  assert.deepEqual(boundaryRow[0], {
+    start_time: 10,
+    start_minute: 0,
+    end_time: 10,
+    end_minute: 1439,
+  });
+
+  const updated = JSON.parse(
+    await backend.agentEventUpdate({
+      projectId: PROJECT,
+      sessionId: "sess-chronicle-boundaries",
+      eventId: created.entityId,
+      baseVersion: created.version,
+      endTime: 10,
+      endMinute: 0,
+      endGranularity: "time",
+    }),
+  );
+  assert.equal(updated.version, 2);
+
+  const equalEndpoints = await rows(
+    `SELECT start_time, start_minute, end_time, end_minute
+       FROM events WHERE id = ?`,
+    [created.entityId],
+  );
+  assert.deepEqual(equalEndpoints[0], {
+    start_time: 10,
+    start_minute: 0,
+    end_time: 10,
+    end_minute: 0,
+  });
+});
+
 test("agentCodexUpdate: 存在しない entry は reject し、副作用を残さない（ROLLBACK）", async () => {
   const before = await rows("SELECT COUNT(*) AS n FROM change_events");
   await assert.rejects(
@@ -216,4 +271,196 @@ test("agentCodexUpdate: 存在しない entry は reject し、副作用を残�
   );
   const after = await rows("SELECT COUNT(*) AS n FROM change_events");
   assert.equal(after[0].n, before[0].n, "失敗時に change_events を書かない");
+});
+
+test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往復する", async () => {
+  const eventId = "chronicle-bulk-napi-event-1";
+  const datedEventId = "chronicle-bulk-napi-event-2";
+  const sceneId = "chronicle-bulk-napi-scene-1";
+  const datedSceneId = "chronicle-bulk-napi-scene-2";
+  const sceneUpdatedAt = "2026-07-29T00:00:00.000Z";
+  const datedSceneUpdatedAt = "2026-07-29T00:00:01.000Z";
+  await backend.dbExecute(
+    `INSERT INTO events
+       (id, project_id, title, ordinal, start_time, start_minute,
+        start_granularity, end_granularity, precision, kind,
+        created_at, updated_at, version)
+     VALUES (?, ?, 'Bulk event', 'z-bulk', 42, 90, 'time', 'none',
+             'exact', 'generic', datetime('now'), datetime('now'), 1)`,
+    [eventId, PROJECT],
+    "run",
+  );
+  await backend.dbExecute(
+    `INSERT INTO events
+       (id, project_id, title, ordinal, start_time, start_minute,
+        start_granularity, end_granularity, precision, kind,
+        created_at, updated_at, version)
+     VALUES (?, ?, 'Dated bulk event', 'z-bulk-2', 142, NULL, 'day', 'none',
+             'exact', 'generic', datetime('now'), datetime('now'), 1)`,
+    [datedEventId, PROJECT],
+    "run",
+  );
+  await backend.dbExecute(
+    `INSERT INTO tree_nodes
+       (id, project_id, node_type, title, sort_order,
+        chronicle_start_time, chronicle_start_granularity, updated_at)
+     VALUES (?, ?, 'scene', 'Bulk scene', 'z-bulk', 84, 'day', ?)`,
+    [sceneId, PROJECT, sceneUpdatedAt],
+    "run",
+  );
+  await backend.dbExecute(
+    `INSERT INTO tree_nodes
+       (id, project_id, node_type, title, sort_order,
+        chronicle_start_time, chronicle_start_granularity, updated_at)
+     VALUES (?, ?, 'scene', 'Dated bulk scene', 'z-bulk-2', 184, 'day', ?)`,
+    [datedSceneId, PROJECT, datedSceneUpdatedAt],
+    "run",
+  );
+
+  const result = JSON.parse(
+    await backend.agentChronicleBulkMutate({
+      requestId: "chronicle-bulk-napi-forward-1",
+      projectId: PROJECT,
+      sessionId: "sess-bulk",
+      surface: "manual",
+      operations: [
+        { kind: "eventDelete", eventId, baseVersion: 1 },
+        { kind: "sceneClearDate", sceneId, baseUpdatedAt: sceneUpdatedAt },
+        {
+          kind: "eventSetDate",
+          eventId: datedEventId,
+          baseVersion: 1,
+          startTime: 143,
+          startMinute: 120,
+          startGranularity: "time",
+          endTime: 144,
+          endMinute: null,
+          endGranularity: "day",
+        },
+        {
+          kind: "sceneSetDate",
+          sceneId: datedSceneId,
+          baseUpdatedAt: datedSceneUpdatedAt,
+          startTime: 185,
+          startMinute: null,
+          startGranularity: "day",
+          endTime: 185,
+          endMinute: 720,
+          endGranularity: "time",
+        },
+      ],
+    }),
+  );
+  assert.equal(result.eventResults[0].eventId, eventId);
+  assert.equal(result.eventResults[0].version, null);
+  assert.equal(result.sceneResults[0].sceneId, sceneId);
+  assert.deepEqual(result.eventResults[1], {
+    kind: "eventSetDate",
+    eventId: datedEventId,
+    version: 2,
+  });
+  assert.equal(result.sceneResults[1].sceneId, datedSceneId);
+
+  const eventAfter = await rows(
+    "SELECT COUNT(*) AS n FROM events WHERE id = ?",
+    [eventId],
+  );
+  const sceneAfter = await rows(
+    "SELECT chronicle_start_time, chronicle_start_granularity FROM tree_nodes WHERE id = ?",
+    [sceneId],
+  );
+  const datedEventAfter = await rows(
+    `SELECT start_time, start_minute, start_granularity,
+            end_time, end_minute, end_granularity, version
+       FROM events WHERE id = ?`,
+    [datedEventId],
+  );
+  const datedSceneAfter = await rows(
+    `SELECT chronicle_start_time, chronicle_start_minute,
+            chronicle_start_granularity, chronicle_end_time,
+            chronicle_end_minute, chronicle_end_granularity
+       FROM tree_nodes WHERE id = ?`,
+    [datedSceneId],
+  );
+  const journal = await rows(
+    "SELECT entity_kind, op_kind FROM undo_journal WHERE id = ?",
+    [result.undoJournalId],
+  );
+  const changeEvent = await rows(
+    "SELECT op_type FROM change_events WHERE event_uid = ?",
+    [result.changeEventUid],
+  );
+  assert.equal(eventAfter[0].n, 0);
+  assert.equal(sceneAfter[0].chronicle_start_time, null);
+  assert.equal(sceneAfter[0].chronicle_start_granularity, "none");
+  assert.deepEqual(datedEventAfter[0], {
+    start_time: 143,
+    start_minute: 120,
+    start_granularity: "time",
+    end_time: 144,
+    end_minute: null,
+    end_granularity: "day",
+    version: 2,
+  });
+  assert.deepEqual(datedSceneAfter[0], {
+    chronicle_start_time: 185,
+    chronicle_start_minute: null,
+    chronicle_start_granularity: "day",
+    chronicle_end_time: 185,
+    chronicle_end_minute: 720,
+    chronicle_end_granularity: "time",
+  });
+  assert.deepEqual(journal[0], {
+    entity_kind: "chronicle_bulk",
+    op_kind: "update",
+  });
+  assert.equal(changeEvent[0].op_type, "chronicle.bulk");
+
+  await backend.agentApplyUndoJournal({
+    requestId: "chronicle-bulk-napi-undo-1",
+    projectId: PROJECT,
+    sessionId: "sess-bulk",
+    journalId: result.undoJournalId,
+    direction: "undo",
+  });
+  const eventUndo = await rows("SELECT version FROM events WHERE id = ?", [
+    eventId,
+  ]);
+  const sceneUndo = await rows(
+    "SELECT chronicle_start_time, chronicle_start_granularity FROM tree_nodes WHERE id = ?",
+    [sceneId],
+  );
+  const datedEventUndo = await rows(
+    `SELECT start_time, start_minute, start_granularity,
+            end_time, end_minute, end_granularity, version
+       FROM events WHERE id = ?`,
+    [datedEventId],
+  );
+  const datedSceneUndo = await rows(
+    `SELECT chronicle_start_time, chronicle_start_minute,
+            chronicle_start_granularity, chronicle_end_time,
+            chronicle_end_minute, chronicle_end_granularity
+       FROM tree_nodes WHERE id = ?`,
+    [datedSceneId],
+  );
+  assert.equal(eventUndo[0].version, 2);
+  assert.equal(sceneUndo[0].chronicle_start_time, 84);
+  assert.equal(sceneUndo[0].chronicle_start_granularity, "day");
+  assert.deepEqual(datedEventUndo[0], {
+    start_time: 142,
+    start_minute: null,
+    start_granularity: "day",
+    end_time: null,
+    end_minute: null,
+    end_granularity: "none",
+    version: 3,
+  });
+  assert.deepEqual(datedSceneUndo[0], {
+    chronicle_start_time: 184,
+    chronicle_start_minute: null,
+    chronicle_start_granularity: "day",
+    chronicle_end_time: null,
+    chronicle_end_minute: null,
+    chronicle_end_granularity: "none",
+  });
 });

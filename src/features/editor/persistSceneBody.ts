@@ -32,6 +32,9 @@ import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
 import { listCodexMatchTargets } from "@/features/codex/api";
 import { recordBodyMentionScans } from "@/features/codex/bodyMentionIndexState";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { publishSceneBodyCommit } from "@/lib/sceneBodyCommitRegistry";
+import { publishTreeNodeMutation } from "@/lib/treeNodeMutationRegistry";
 
 export interface BodyMentionScanRequest {
   projectId: string;
@@ -146,6 +149,7 @@ export async function persistSceneBody(
 ): Promise<void> {
   const beats = useUnplacedBeatsStore.getState().getBeats(id);
   const projectId = useTreeStore.getState().projectId;
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
 
   const fileBackedUri = useTreeStore
     .getState()
@@ -217,6 +221,30 @@ export async function persistSceneBody(
       });
     }
     markEnd("editor.coreSave.invokeSave");
+    // Publish immediately after the authoritative content commit, before
+    // fallible derived side effects. Chronicle and other read-only consumers
+    // must invalidate even when a later authorship/anchor/cache write rejects.
+    if (workspaceIdentity && projectId) {
+      // The native bundle bypasses tree/api.ts, so publish its authoritative
+      // row token here. The Drizzle fallback publishes inside
+      // saveSceneContentInner and must not be emitted twice.
+      if (nativeSnapshot) {
+        publishTreeNodeMutation({
+          workspacePath: workspaceIdentity.path,
+          workspaceOpenRevision: workspaceIdentity.openRevision,
+          projectId,
+          nodeId: id,
+          updatedAt: previews.contentUpdatedAt,
+        });
+      }
+      publishSceneBodyCommit({
+        workspacePath: workspaceIdentity.path,
+        openRevision: workspaceIdentity.openRevision,
+        projectId,
+        sceneId: id,
+        contentVersion: previews.contentVersion,
+      });
+    }
     if (nativeSnapshot && !isFileBacked) {
       // The former POV cache helper bumped this revision after its DB writes.
       // The bundle owns those writes now, so publish once after commit.

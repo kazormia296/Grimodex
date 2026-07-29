@@ -185,17 +185,24 @@ import { buildMountFolderUri, buildSourceUri } from "./sourceUri";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { _resetWriteBackTimers, scheduleWriteBack } from "./writeBack";
 import {
+  createDocumentSaveSession,
   _resetDocumentSaveCoordinatorForTests,
   isExclusiveDocumentLeaseActive,
   runCoordinatedDocumentSave,
+  StaleRetiredDocumentSaveError,
 } from "@/features/editor/document/documentSaveCoordinator";
 import { serializeSceneWrite } from "@/features/tree/pendingSceneWrites";
 import { discardAutoSavesForDocument, useAutoSave } from "@/hooks/useAutoSave";
+import {
+  externalDocumentStateKey,
+  useExternalWriteStore,
+} from "@/features/concurrency/externalWriteStore";
 
 beforeEach(() => {
   _resetMountAuthorityForTests();
   mockCurrentProject.id = "p1";
   mockWorkspaceIdentity.current = null;
+  useExternalWriteStore.getState().clear();
 });
 
 // listAllNodes は H4 projection で content / unplacedBeatsDoc を返さない
@@ -1264,5 +1271,88 @@ describe("reload conflict queue", () => {
       "external winner\n",
     );
     expect(useExternalRootStore.getState().conflicts).toEqual([]);
+  });
+
+  it("publishes the exact-document reload and foreign revision before automatic-import side effects", async () => {
+    const documentKey = {
+      kind: "tree",
+      id: "scene-1",
+      storage: "file",
+    } as const;
+    const detached = createDocumentSaveSession();
+    detached.retire(documentKey);
+    mockUpdateNode.mockImplementationOnce(async () => {
+      expect(
+        useExternalWriteStore.getState().reloadNonce[
+          externalDocumentStateKey(documentKey)
+        ],
+      ).toBe(1);
+      throw new Error("metadata update failed");
+    });
+
+    await expect(
+      handleFileEvent({
+        rootId: "root-1",
+        relPath: "chapter/01.md",
+        kind: "changed",
+      }),
+    ).rejects.toThrow("metadata update failed");
+
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        externalDocumentStateKey(documentKey)
+      ],
+    ).toBe(1);
+    const staleRetry = vi.fn(async () => true);
+    await expect(
+      runCoordinatedDocumentSave(documentKey, staleRetry, {
+        session: detached,
+        didPersist: Boolean,
+      }),
+    ).rejects.toBeInstanceOf(StaleRetiredDocumentSaveError);
+    expect(staleRetry).not.toHaveBeenCalled();
+  });
+
+  it("publishes the chosen disk version before explicit Reload side effects", async () => {
+    const documentKey = {
+      kind: "tree",
+      id: "scene-1",
+      storage: "file",
+    } as const;
+    const detached = createDocumentSaveSession();
+    detached.retire(documentKey);
+    useExternalRootStore.getState().enqueueConflict({
+      sceneId: "scene-1",
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      incomingContent: "external winner\n",
+      incomingMtime: "2026-05-24T12:00:00.000Z",
+    });
+    mockUpdateNode.mockImplementationOnce(async () => {
+      expect(
+        useExternalWriteStore.getState().reloadNonce[
+          externalDocumentStateKey(documentKey)
+        ],
+      ).toBe(1);
+      throw new Error("metadata update failed");
+    });
+
+    await expect(resolveReloadConflict("reload")).rejects.toThrow(
+      "metadata update failed",
+    );
+
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        externalDocumentStateKey(documentKey)
+      ],
+    ).toBe(1);
+    const staleRetry = vi.fn(async () => true);
+    await expect(
+      runCoordinatedDocumentSave(documentKey, staleRetry, {
+        session: detached,
+        didPersist: Boolean,
+      }),
+    ).rejects.toBeInstanceOf(StaleRetiredDocumentSaveError);
+    expect(staleRetry).not.toHaveBeenCalled();
   });
 });

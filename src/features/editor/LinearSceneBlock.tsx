@@ -82,7 +82,6 @@ import type { SceneStatus, TreeNodeData } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useLinearInlineAi } from "./useLinearInlineAi";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
-import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
@@ -636,46 +635,6 @@ function MountedSceneBlock({
       },
     );
   }, [beginApplyingExternalUpdate, documentKey, editor, sceneId]);
-
-  // 外部ファイル変更の取り込み反映 (EditorPane と同じリスナー)。これが無いと
-  // file-backed scene の外部編集取り込み後も editor が古い doc を保持し、
-  // 次の編集の autosave が取り込んだ外部変更を上書きして消す。
-  // dispatch 元 (applyExternalContent) は dirty でないときしか発火しないので
-  // pending autosave の cancel で編集を失うことはない。
-  useEffect(() => {
-    function onExternalReload(e: Event) {
-      const detail = (e as CustomEvent<{ sceneId: string; content: string }>)
-        .detail;
-      const ed = editorRef.current;
-      if (detail.sceneId !== sceneId || !ed) return;
-      if (guardInlineAiPending()) return;
-      cancel();
-      const finishExternalUpdate = beginApplyingExternalUpdate();
-      try {
-        const parsed =
-          detail.content && detail.content !== "{}"
-            ? JSON.parse(detail.content)
-            : "";
-        ed.commands.setContent(parsed, { emitUpdate: false });
-        resetEditorHistory(ed.view);
-        isDirtyRef.current = false;
-        useEditorSessionStore
-          .getState()
-          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
-      } finally {
-        finishExternalUpdate();
-      }
-      const count = getDocText(ed.state.doc).length;
-      setCharCount(count);
-      useTreeStore.getState().setCharCount(sceneId, count);
-    }
-    window.addEventListener("external-mount:reload-scene", onExternalReload);
-    return () =>
-      window.removeEventListener(
-        "external-mount:reload-scene",
-        onExternalReload,
-      );
-  }, [beginApplyingExternalUpdate, cancel, documentKey, sceneId]);
 
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });

@@ -637,7 +637,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
 });
 
 // リニアモードが flush/dirty/resync インフラ (editorSaveRegistry /
-// dirtyTabIds / sceneContentStore / reload-scene / reloadNonce) に乗っている
+// dirtyTabIds / sceneContentStore / reloadNonce) に乗っている
 // ことの回帰テスト。未配線だと: agent 書き込み・Codex 改名波及が stale DB を
 // read-modify-write して直近編集を消す / 外部ファイル変更が未保存編集を
 // サイレント上書きする / 取り込み・resync が editor doc に届かず次の autosave
@@ -815,8 +815,24 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     expect(mockPersist).not.toHaveBeenCalled();
   });
 
-  it("external-mount:reload-scene で取り込み内容を反映し dirty を解除する", async () => {
-    await renderLoaded();
+  it("別シーンの Inline AI が diffShown でも file-backed reloadNonce を反映する", async () => {
+    isFileBackedNodeMock.mockReturnValue(true);
+    mockLoadSceneFull.mockResolvedValue({
+      content: JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "取り込み前の本文" }],
+          },
+        ],
+      }),
+      unplacedBeatsDoc: "[]",
+    });
+    renderBlock();
+    await waitFor(() =>
+      expect(getDocText(lastEditor().state.doc)).toContain("取り込み前の本文"),
+    );
     const RELOADED = JSON.stringify({
       type: "doc",
       content: [
@@ -826,36 +842,35 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
         },
       ],
     });
-    mockSetTabDirty.mockClear();
-    window.dispatchEvent(
-      new CustomEvent("external-mount:reload-scene", {
-        detail: { sceneId: "scene-0001", content: RELOADED },
-      }),
-    );
-    await waitFor(() => {
-      expect(getDocText(lastEditor().state.doc)).toContain(
-        "外部エディタで書き換えた本文",
-      );
+    mockLoadSceneFull.mockResolvedValueOnce({
+      content: RELOADED,
+      unplacedBeatsDoc: "[]",
     });
-    expect(mockSetTabDirty).toHaveBeenCalledWith(
-      {
+    act(() => {
+      useInlineAiStore.getState().startGeneration({
+        commandId: "continue",
+        mode: "insert",
+        originalRange: null,
+        originalText: "",
+        insertPos: 0,
+        abortController: new AbortController(),
+        activeEditor: null,
+      });
+      useInlineAiStore.getState().finishGeneration("other-scene-model");
+      useExternalWriteStore.getState().bumpReloadNonce({
         kind: "tree",
         id: "scene-0001",
-        storage: "database",
-      },
-      false,
-      expect.any(String),
-    );
-  });
+        storage: "file",
+      });
+    });
 
-  it("別シーン宛の reload-scene は無視する", async () => {
-    await renderLoaded();
-    window.dispatchEvent(
-      new CustomEvent("external-mount:reload-scene", {
-        detail: { sceneId: "other-scene", content: "{}" },
-      }),
+    await waitFor(() =>
+      expect(getDocText(lastEditor().state.doc)).toContain(
+        "外部エディタで書き換えた本文",
+      ),
     );
-    expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+    expect(useInlineAiStore.getState().status).toBe("diffShown");
+    expect(mockLoadSceneFull).toHaveBeenCalledTimes(2);
   });
 
   it("reloadNonce が進んだら DB から再ロードする (外部 write feed 配線)", async () => {

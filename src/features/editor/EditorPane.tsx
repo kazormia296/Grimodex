@@ -114,7 +114,6 @@ import {
   buildUserPrompt as buildInlineUserPrompt,
 } from "@/features/editor/inlineAi/inlineAiApi";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
-import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { resolvePhoneEditorGroup } from "@/features/editor/phoneEditorGroup";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -467,8 +466,11 @@ export function EditorPane({
           },
     [activeLoadedDocumentKey, isEntryMode, isFileBacked, nodeId],
   );
-  const activeDocumentStateKey = activeLoadedDocumentKey
-    ? externalDocumentStateKey(activeLoadedDocumentKey)
+  // Scene reload temporarily revokes the loaded save binding. Keep the exact
+  // notification key stable through that window so one nonce cannot retrigger
+  // the same canonical load.
+  const activeDocumentStateKey = documentLeaseKey
+    ? externalDocumentStateKey(documentLeaseKey)
     : null;
   const externalReloadNonce = useExternalWriteStore((state) =>
     activeDocumentStateKey
@@ -2198,35 +2200,6 @@ export function EditorPane({
     setIsDirtyRef,
     setLoadedPhaseId,
   ]);
-
-  useEffect(() => {
-    function onExternalReload(e: Event) {
-      const detail = (e as CustomEvent<{ sceneId: string; content: string }>)
-        .detail;
-      if (detail.sceneId !== nodeId || !editorRef.current) return;
-      if (guardInlineAiPending()) return;
-      const finishExternalUpdate = beginApplyingExternalUpdate();
-      try {
-        const parsed =
-          detail.content && detail.content !== "{}"
-            ? JSON.parse(detail.content)
-            : "";
-        mutationGate.runProgrammatic(() => {
-          editorRef.current!.commands.setContent(parsed, { emitUpdate: false });
-        });
-        resetEditorHistory(editorRef.current.view);
-        setIsDirtyRef.current(false);
-      } finally {
-        finishExternalUpdate();
-      }
-    }
-    window.addEventListener("external-mount:reload-scene", onExternalReload);
-    return () =>
-      window.removeEventListener(
-        "external-mount:reload-scene",
-        onExternalReload,
-      );
-  }, [beginApplyingExternalUpdate, nodeId, mutationGate, setIsDirtyRef]);
 
   const isNote = !isEntryMode && activeNode?.nodeType === "note";
 

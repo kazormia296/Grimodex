@@ -516,7 +516,7 @@ export interface NapiBackendLike {
     docContentSize: number,
   ): Promise<void>;
   foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
-  // agent_writes 18 コマンド（すべて単一 payload → AgentWriteResult/ProseStageResult）
+  // agent_writes 19 コマンド（すべて単一 payload → tracked write result）
   agentCodexCreate(payload: unknown): Promise<string>;
   agentCodexUpdate(payload: unknown): Promise<string>;
   agentWriteBundle(payload: unknown): Promise<string>;
@@ -530,6 +530,7 @@ export interface NapiBackendLike {
   agentEventCreate(payload: unknown): Promise<string>;
   agentEventUpdate(payload: unknown): Promise<string>;
   agentEventDelete(payload: unknown): Promise<string>;
+  agentChronicleBulkMutate?(payload: unknown): Promise<string>;
   agentEventSetParticipants(payload: unknown): Promise<string>;
   agentSceneEventLink(payload: unknown): Promise<string>;
   agentSceneEventUnlink(payload: unknown): Promise<string>;
@@ -1295,6 +1296,184 @@ function requireEventMutationPayload(
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
     throw new Error(
       `invalid args \`baseVersion\` for command \`${cmd}\`: expected a non-negative safe integer`,
+    );
+  }
+  return payload;
+}
+
+function requireChronicleBulkPayload(args: CommandArgs): CommandArgs {
+  const command = "agent_chronicle_bulk_mutate";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "sessionId", command);
+  if (Object.hasOwn(payload, "surface")) {
+    requireNonEmptyString(payload, "surface", command);
+  }
+  const operations = requireArray(payload, "operations", command);
+  if (operations.length === 0 || operations.length > 500) {
+    throw new Error(
+      `invalid args \`operations\` for command \`${command}\`: expected 1..500 operations`,
+    );
+  }
+  const targets = new Set<string>();
+  const granularities = new Set([
+    "none",
+    "season",
+    "year",
+    "month",
+    "day",
+    "time",
+  ]);
+  const requireNullableSafeInteger = (
+    operation: CommandArgs,
+    field: string,
+    key: string,
+    minute: boolean,
+  ): number | null => {
+    const value = requirePresent(operation, field, command);
+    if (
+      value !== null &&
+      (typeof value !== "number" ||
+        !Number.isSafeInteger(value) ||
+        (minute && (value < 0 || value >= 1440)))
+    ) {
+      throw new Error(
+        `invalid args \`${key}.${field}\` for command \`${command}\`: expected ${
+          minute
+            ? "null or an integer from 0 to 1439"
+            : "null or a safe integer"
+        }`,
+      );
+    }
+    return value as number | null;
+  };
+  const requireAbsoluteDate = (operation: CommandArgs, key: string): void => {
+    const startTime = requireNumber(operation, "startTime", command);
+    if (!Number.isSafeInteger(startTime)) {
+      throw new Error(
+        `invalid args \`${key}.startTime\` for command \`${command}\`: expected a safe integer`,
+      );
+    }
+    const startMinute = requireNullableSafeInteger(
+      operation,
+      "startMinute",
+      key,
+      true,
+    );
+    const endTime = requireNullableSafeInteger(
+      operation,
+      "endTime",
+      key,
+      false,
+    );
+    const endMinute = requireNullableSafeInteger(
+      operation,
+      "endMinute",
+      key,
+      true,
+    );
+    const startGranularity = requireString(
+      operation,
+      "startGranularity",
+      command,
+    );
+    const endGranularity = requireString(operation, "endGranularity", command);
+    if (
+      !granularities.has(startGranularity) ||
+      !granularities.has(endGranularity) ||
+      startGranularity === "none" ||
+      (startGranularity === "time"
+        ? startMinute === null
+        : startMinute !== null) ||
+      (endGranularity === "none"
+        ? endTime !== null || endMinute !== null
+        : endTime === null ||
+          (endGranularity === "time" ? endMinute === null : endMinute !== null))
+    ) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a canonical absolute Chronicle date`,
+      );
+    }
+  };
+  operations.forEach((value, index) => {
+    const key = `operations[${index}]`;
+    const operation = requireSceneBundleRecord(value, key, command);
+    const kind = requireString(operation, "kind", command);
+    let target: string;
+    if (
+      kind === "eventDelete" ||
+      kind === "eventClearDate" ||
+      kind === "eventSetLane" ||
+      kind === "eventSetDate"
+    ) {
+      const eventId = requireNonEmptyString(operation, "eventId", command);
+      const baseVersion = requireNumber(operation, "baseVersion", command);
+      if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
+        throw new Error(
+          `invalid args \`${key}.baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+        );
+      }
+      if (kind === "eventSetLane") {
+        for (const field of ["primaryCodexId", "laneGroup"] as const) {
+          const laneValue = requirePresent(operation, field, command);
+          if (
+            laneValue !== null &&
+            (typeof laneValue !== "string" || laneValue.length === 0)
+          ) {
+            throw new Error(
+              `invalid args \`${key}.${field}\` for command \`${command}\`: expected null or a non-empty string`,
+            );
+          }
+        }
+      } else if (kind === "eventSetDate") {
+        requireAbsoluteDate(operation, key);
+      }
+      target = `event:${eventId}`;
+    } else if (
+      kind === "sceneClearDate" ||
+      kind === "sceneSetPov" ||
+      kind === "sceneSetDate"
+    ) {
+      const sceneId = requireNonEmptyString(operation, "sceneId", command);
+      requireNonEmptyString(operation, "baseUpdatedAt", command);
+      if (kind === "sceneSetPov") {
+        const pov = requirePresent(operation, "povCharacterId", command);
+        if (pov !== null && (typeof pov !== "string" || pov.length === 0)) {
+          throw new Error(
+            `invalid args \`${key}.povCharacterId\` for command \`${command}\`: expected null or a non-empty string`,
+          );
+        }
+      } else if (kind === "sceneSetDate") {
+        requireAbsoluteDate(operation, key);
+      }
+      target = `scene:${sceneId}`;
+    } else {
+      throw new Error(
+        `invalid args \`${key}.kind\` for command \`${command}\`: unsupported operation`,
+      );
+    }
+    if (targets.has(target)) {
+      throw new Error(
+        `invalid args \`operations\` for command \`${command}\`: duplicate target ${target}`,
+      );
+    }
+    targets.add(target);
+  });
+  return payload;
+}
+
+function requireUndoJournalPayload(args: CommandArgs): CommandArgs {
+  const command = "agent_apply_undo_journal";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "sessionId", command);
+  requireNonEmptyString(payload, "journalId", command);
+  const direction = requireString(payload, "direction", command);
+  if (direction !== "undo" && direction !== "redo") {
+    throw new Error(
+      `invalid args \`direction\` for command \`${command}\`: expected "undo" or "redo"`,
     );
   }
   return payload;
@@ -2408,7 +2587,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
-  // agent_writes 18 コマンド（Phase 3 バッチ1 — grimodex-db::agent_writes を Tauri と
+  // agent_writes 19 コマンド（Phase 3 バッチ1 — shared grimodex-db を Tauri と
   // 共用）。すべて FE は単一の `{ payload }` を送り、AgentWriteResult /
   // ProseStageResult (camelCase) が返る。payload はそのまま素通し（napi 側 from_wire
   // が serde rename_all + normalize_integer_numbers で受ける）。
@@ -2470,11 +2649,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   agent_apply_undo_journal: {
     run: async (b, a) =>
-      parseWire(
-        await b.agentApplyUndoJournal(
-          requirePresent(a, "payload", "agent_apply_undo_journal"),
-        ),
-      ),
+      parseWire(await b.agentApplyUndoJournal(requireUndoJournalPayload(a))),
   },
   agent_foreshadow_create: {
     run: async (b, a) =>
@@ -2514,6 +2689,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.agentEventDelete(
           requireEventMutationPayload(a, "agent_event_delete"),
         ),
+      ),
+  },
+  agent_chronicle_bulk_mutate: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.agentChronicleBulkMutate,
+          "agentChronicleBulkMutate",
+        )(requireChronicleBulkPayload(a)),
       ),
   },
   agent_event_set_participants: {

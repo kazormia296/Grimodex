@@ -9,7 +9,8 @@
  * 実ブラウザで getBoundingClientRect() を測って assert し、CI で恒久ガードする。
  */
 import { describe, it, expect } from "vitest";
-import { act, render } from "@testing-library/react";
+import { useMemo, useState } from "react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { ChronicleViewport } from "./ChronicleViewport";
 import {
   buildChronicleLayout,
@@ -75,6 +76,87 @@ function eventsById() {
     });
   }
   return m;
+}
+
+const longPanEvents: LayoutEventInput[] = Array.from(
+  { length: 300 },
+  (_, index) => ({
+    id: `long-${index}`,
+    title: `出来事 ${index}`,
+    primaryCodexId: "c1",
+    kind: "generic" as const,
+    precision: "exact" as const,
+    secret: false,
+    sceneLinked: true,
+    startDay: index * 10,
+    endDay: null,
+  }),
+);
+
+function LongPanHarness() {
+  const [view, setView] = useState({ pxPerDay: 1, viewStartDay: 0 });
+  const trackW = 800;
+  const layout = useMemo(
+    () =>
+      buildChronicleLayout({
+        events: longPanEvents,
+        lanes: [
+          {
+            codexId: "c1",
+            name: "アヤ",
+            kind: "character",
+            unassigned: false,
+            eventIds: longPanEvents.map((event) => event.id),
+          },
+        ],
+        view,
+        trackW,
+        density: "standard",
+        labelsOn: true,
+        calendar: cal,
+        hasCalendarAxis: true,
+        dataStart: 0,
+        dataEnd: 2_990,
+        relations: [],
+        causalConflictPairs: new Set(),
+        lang: "ja",
+      }),
+    [view],
+  );
+  const markerEvents = useMemo(
+    () =>
+      new Map<string, MarkerEvent>(
+        longPanEvents.map((event) => [
+          event.id,
+          {
+            id: event.id,
+            title: event.title,
+            kind: event.kind,
+            precision: event.precision,
+            secret: event.secret,
+            sceneLinked: event.sceneLinked,
+            primaryCodexId: event.primaryCodexId,
+          },
+        ]),
+      ),
+    [],
+  );
+  return (
+    <ChronicleViewport
+      view={view}
+      onViewChange={setView}
+      onMeasureTrack={() => {}}
+      layout={layout}
+      eventsById={markerEvents}
+      selectedEventId={null}
+      activeLaneKey={null}
+      conflictIds={new Set()}
+      relatedIds={new Set()}
+      showEdges
+      labelsOn
+      onSelectEvent={() => {}}
+    />
+  );
 }
 
 function mount(width = 900) {
@@ -208,6 +290,52 @@ async function settleBrowserLayout() {
 }
 
 describe("ChronicleViewport geometry (real Chromium)", () => {
+  it("長距離pan中にoverscan境界前で再投影し、新viewportのmarkerをmouseup前に描く", async () => {
+    const host = document.createElement("div");
+    host.style.width = `${800 + densitySpacing("standard").gutterX}px`;
+    host.style.height = "420px";
+    host.style.display = "flex";
+    host.style.flexDirection = "column";
+    document.body.appendChild(host);
+    const mounted = render(<LongPanHarness />, { container: host });
+    await settleBrowserLayout();
+
+    const track = document.getElementById("chronicle-track")!;
+    expect(
+      mounted.container.querySelector('[data-event-id="long-170"]'),
+    ).toBeNull();
+    const rect = track.getBoundingClientRect();
+    const startX = rect.left + rect.width / 2;
+
+    await act(async () => {
+      fireEvent.mouseDown(track, {
+        button: 0,
+        clientX: startX,
+        clientY: rect.top + 100,
+      });
+      fireEvent.mouseMove(document, {
+        clientX: startX - 1_300,
+        clientY: rect.top + 100,
+      });
+    });
+
+    const projected = mounted.container.querySelector(
+      '[data-event-id="long-170"]',
+    ) as HTMLElement | null;
+    expect(projected).not.toBeNull();
+    const markerRect = projected!.getBoundingClientRect();
+    expect(markerRect.left).toBeGreaterThanOrEqual(rect.left - 1);
+    expect(markerRect.left).toBeLessThanOrEqual(rect.right + 1);
+
+    fireEvent.mouseUp(document, {
+      button: 0,
+      clientX: startX - 1_300,
+      clientY: rect.top + 100,
+    });
+    mounted.unmount();
+    host.remove();
+  });
+
   it("ルーラーのガター幅と本体レーンガター幅が一致する", () => {
     const { getByTestId } = mount();
     const rulerGutter = getByTestId(
@@ -446,8 +574,10 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
     );
     // 実測ガード: 最終レーンまで縦スクロールし、fold 外だったマーカーとガターの
     // 交差点でも最前面がガター側であること（既存テストの fold 内版と同じ塗り順 gate）。
-    scrollArea.scrollTop = layout.pack.lanes[N - 1].top - 100;
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    await act(async () => {
+      scrollArea.scrollTop = layout.pack.lanes[N - 1].top - 100;
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
     const marker = container.querySelector(
       `[data-event-id="f${N}"]`,
     ) as HTMLElement;

@@ -38,6 +38,9 @@ interface Call {
 const AGENT_WRITE_RESULT = Promise.resolve(
   '{"entityId":"e1","version":1,"changeEventUid":"ce1","undoJournalId":"uj1"}',
 );
+const CHRONICLE_BULK_RESULT = Promise.resolve(
+  '{"eventResults":[],"sceneResults":[],"changeEventUid":"ce1","undoJournalId":"uj1"}',
+);
 const PROSE_STAGE_RESULT = Promise.resolve(
   '{"stagingId":"st1","sceneId":"s1","status":"proposed"}',
 );
@@ -325,7 +328,7 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '[{"from":10,"to":20,"markName":"foreshadowSetup","attrs":{"setupId":"su1","foreshadowId":"f1"}}]',
       ),
     ) as never,
-    // agent_writes 18 コマンド（AgentWriteResult / ProseStageResult camelCase）
+    // agent_writes 19 コマンド（tracked write result は camelCase）
     agentCodexCreate: record("agentCodexCreate", AGENT_WRITE_RESULT) as never,
     agentCodexUpdate: record("agentCodexUpdate", AGENT_WRITE_RESULT) as never,
     agentWriteBundle: record("agentWriteBundle", AGENT_WRITE_RESULT) as never,
@@ -360,6 +363,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     agentEventCreate: record("agentEventCreate", AGENT_WRITE_RESULT) as never,
     agentEventUpdate: record("agentEventUpdate", AGENT_WRITE_RESULT) as never,
     agentEventDelete: record("agentEventDelete", AGENT_WRITE_RESULT) as never,
+    agentChronicleBulkMutate: record(
+      "agentChronicleBulkMutate",
+      CHRONICLE_BULK_RESULT,
+    ) as never,
     agentEventSetParticipants: record(
       "agentEventSetParticipants",
       AGENT_WRITE_RESULT,
@@ -1410,6 +1417,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "activate_license",
       "agent_accept_prose_stage",
       "agent_apply_undo_journal",
+      "agent_chronicle_bulk_mutate",
       "agent_codex_create",
       "agent_codex_update",
       "agent_discard_prose_stage",
@@ -2770,7 +2778,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env.ok).toBe(false);
   });
 
-  // ── agent_writes 18 コマンド（Phase 3 バッチ1） ────────────────────────
+  // ── agent_writes 19 コマンド（Phase 3 バッチ1） ────────────────────────
   it("agent_writes: すべて単一 {payload} を素通しし AgentWriteResult を parse", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -2870,6 +2878,246 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       args: [payload],
     });
   });
+
+  it("agent_chronicle_bulk_mutate: mixed operations を検証して N-API へ渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      requestId: "chronicle-bulk-request-1",
+      projectId: "p1",
+      sessionId: "s1",
+      surface: "manual",
+      operations: [
+        { kind: "eventDelete", eventId: "e1", baseVersion: 7 },
+        {
+          kind: "eventSetLane",
+          eventId: "e2",
+          baseVersion: 2,
+          primaryCodexId: "c1",
+          laneGroup: null,
+        },
+        {
+          kind: "sceneSetPov",
+          sceneId: "sc1",
+          baseUpdatedAt: "2026-07-29T00:00:00.000Z",
+          povCharacterId: null,
+        },
+        {
+          kind: "eventSetDate",
+          eventId: "e3",
+          baseVersion: 4,
+          startTime: -2,
+          startMinute: 1439,
+          startGranularity: "time",
+          endTime: null,
+          endMinute: null,
+          endGranularity: "none",
+        },
+        {
+          kind: "sceneSetDate",
+          sceneId: "sc2",
+          baseUpdatedAt: "2026-07-29T00:00:01.000Z",
+          startTime: 12,
+          startMinute: null,
+          startGranularity: "day",
+          endTime: 13,
+          endMinute: null,
+          endGranularity: "day",
+        },
+      ],
+    };
+    const env = await dispatchInvoke(
+      "agent_chronicle_bulk_mutate",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(calls).toContainEqual({
+      method: "agentChronicleBulkMutate",
+      args: [payload],
+    });
+  });
+
+  it("agent_chronicle_bulk_mutate: 旧native bindingのmethod欠落を明示エラーにする", async () => {
+    const { backend, calls } = fakeBackend({
+      agentChronicleBulkMutate: undefined,
+    });
+    const env = await dispatchInvoke(
+      "agent_chronicle_bulk_mutate",
+      {
+        payload: {
+          requestId: "chronicle-bulk-old-binding-request",
+          projectId: "p1",
+          sessionId: "s1",
+          operations: [{ kind: "eventDelete", eventId: "e1", baseVersion: 7 }],
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method agentChronicleBulkMutate`,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["empty operations", { operations: [] }],
+    [
+      "missing event version",
+      { operations: [{ kind: "eventDelete", eventId: "e1" }] },
+    ],
+    [
+      "duplicate target",
+      {
+        operations: [
+          { kind: "eventDelete", eventId: "e1", baseVersion: 1 },
+          { kind: "eventClearDate", eventId: "e1", baseVersion: 1 },
+        ],
+      },
+    ],
+    [
+      "missing scene token",
+      {
+        operations: [
+          {
+            kind: "sceneClearDate",
+            sceneId: "sc1",
+          },
+        ],
+      },
+    ],
+    [
+      "missing lane field",
+      {
+        operations: [
+          {
+            kind: "eventSetLane",
+            eventId: "e1",
+            baseVersion: 1,
+            primaryCodexId: null,
+          },
+        ],
+      },
+    ],
+    [
+      "invalid pov",
+      {
+        operations: [
+          {
+            kind: "sceneSetPov",
+            sceneId: "sc1",
+            baseUpdatedAt: "2026-07-29T00:00:00.000Z",
+            povCharacterId: "",
+          },
+        ],
+      },
+    ],
+    [
+      "invalid absolute date minute",
+      {
+        operations: [
+          {
+            kind: "eventSetDate",
+            eventId: "e1",
+            baseVersion: 1,
+            startTime: 10,
+            startMinute: 1440,
+            startGranularity: "time",
+            endTime: null,
+            endMinute: null,
+            endGranularity: "none",
+          },
+        ],
+      },
+    ],
+    [
+      "missing absolute scene date field",
+      {
+        operations: [
+          {
+            kind: "sceneSetDate",
+            sceneId: "sc1",
+            baseUpdatedAt: "2026-07-29T00:00:00.000Z",
+            startTime: 10,
+            startMinute: null,
+            startGranularity: "day",
+            endTime: null,
+            endMinute: null,
+          },
+        ],
+      },
+    ],
+  ])(
+    "agent_chronicle_bulk_mutate: %s は backend を呼ばず拒否する",
+    async (_label, invalid) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "agent_chronicle_bulk_mutate",
+        {
+          payload: {
+            requestId: "chronicle-bulk-invalid-request",
+            projectId: "p1",
+            sessionId: "s1",
+            ...invalid,
+          },
+        },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it("agent_apply_undo_journal: retry requestId と方向を検証して N-API へ渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      requestId: "chronicle-bulk-undo-request-1",
+      projectId: "p1",
+      sessionId: "s1",
+      journalId: "journal-1",
+      direction: "undo",
+    };
+
+    const env = await dispatchInvoke(
+      "agent_apply_undo_journal",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(calls).toContainEqual({
+      method: "agentApplyUndoJournal",
+      args: [payload],
+    });
+  });
+
+  it.each([
+    ["missing requestId", { requestId: undefined, direction: "undo" }],
+    ["invalid direction", { requestId: "undo-request", direction: "back" }],
+  ])(
+    "agent_apply_undo_journal: %s は backend を呼ばず拒否する",
+    async (_label, invalid) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "agent_apply_undo_journal",
+        {
+          payload: {
+            projectId: "p1",
+            sessionId: "s1",
+            journalId: "journal-1",
+            ...invalid,
+          },
+        },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(calls).toHaveLength(0);
+    },
+  );
 
   it.each([
     ["negative", -1],

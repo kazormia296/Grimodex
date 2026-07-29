@@ -41,7 +41,8 @@ const harness = vi.hoisted(() => ({
         content: [{ type: "text", text: "first beat" }],
       },
     ],
-  },
+  } as Record<string, unknown>,
+  storage: "database" as "database" | "file",
   activeSurface: "tab" as Surface,
   editors: {
     tab: [] as TiptapEditor[],
@@ -60,6 +61,28 @@ const harness = vi.hoisted(() => ({
     linear: [] as unknown[],
   },
 }));
+
+function makeSceneContent(text: string): Record<string, unknown> {
+  return {
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text }],
+      },
+      {
+        type: "sceneBeat",
+        attrs: {
+          id: "beat-1",
+          collapsed: false,
+          beatType: "free",
+          pov: null,
+        },
+        content: [{ type: "text", text: "first beat" }],
+      },
+    ],
+  };
+}
 
 vi.mock("@tiptap/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tiptap/react")>();
@@ -171,7 +194,7 @@ vi.mock("@/features/editor/document/loadEditorDocument", () => ({
       kind: "tree",
       id: harness.sceneId,
       nodeType: "scene",
-      storage: "database",
+      storage: harness.storage,
     },
     content: harness.sceneContent,
     unplacedBeatsDoc: "[]",
@@ -441,7 +464,10 @@ vi.stubGlobal("ResizeObserver", StubResizeObserver);
 import { EditorPane } from "./EditorPane";
 import { LinearSceneBlock } from "./LinearSceneBlock";
 import { useUnplacedBeatsStore } from "./beat/unplacedBeatsStore";
+import { loadEditorDocument } from "./document/loadEditorDocument";
 import { useEditorSessionStore } from "./editorSessionStore";
+import { useInlineAiStore } from "./inlineAi/inlineAiStore";
+import { useExternalWriteStore } from "../concurrency/externalWriteStore";
 import { useTreeStore, type TreeNodeData } from "../tree/treeStore";
 
 const SCENE: TreeNodeData = {
@@ -589,12 +615,16 @@ async function observeSurface(surface: Surface): Promise<SurfaceObservation> {
 
 beforeEach(() => {
   harness.activeSurface = "tab";
+  harness.sceneContent = makeSceneContent("alpha");
+  harness.storage = "database";
   for (const surface of ["tab", "linear"] as const) {
     harness.editors[surface].length = 0;
     harness.autoSave[surface].length = 0;
     harness.timelapse[surface].length = 0;
     harness.persisted[surface].length = 0;
   }
+  useExternalWriteStore.getState().clear();
+  useInlineAiStore.getState().reset();
   useEditorSessionStore.getState().resetForProject();
   useUnplacedBeatsStore.setState({ sceneBeats: {} });
   useTreeStore.setState({
@@ -644,6 +674,87 @@ describe("Editor scene surface parity", () => {
         placed: null,
         unplaced: JSON.stringify(["first beat"]),
       },
+    });
+  });
+
+  it("EditorPaneは別sceneのInline AIがdiffShownでもexact file-backed reloadを反映する", async () => {
+    const fileScene: TreeNodeData = {
+      ...SCENE,
+      sourceUri: "file:///workspace/scene-parity.md",
+    };
+    harness.storage = "file";
+    harness.sceneContent = makeSceneContent("取り込み前の本文");
+    useTreeStore.setState({
+      nodes: [fileScene],
+      scenes: [fileScene],
+      activeSceneId: SCENE_ID,
+    });
+    const loadMock = vi.mocked(loadEditorDocument);
+
+    render(
+      <EditorPane
+        nodeId={SCENE_ID}
+        contentType="scene"
+        groupIndex={0}
+        onFocus={() => {}}
+      />,
+    );
+    await waitFor(() => {
+      expect(latestEditor("tab").state.doc.textContent).toContain(
+        "取り込み前の本文",
+      );
+      expect(latestEditor("tab").isEditable).toBe(true);
+    });
+    expect(loadMock).toHaveBeenCalledTimes(1);
+    expect(loadMock.mock.calls[0]?.[0]).toMatchObject({
+      kind: "tree",
+      id: SCENE_ID,
+      storage: "file",
+    });
+
+    const otherSceneEditor = {} as TiptapEditor;
+    act(() => {
+      useInlineAiStore.getState().startGeneration({
+        commandId: "other-scene-continue",
+        mode: "insert",
+        originalRange: null,
+        originalText: "",
+        insertPos: 0,
+        abortController: new AbortController(),
+        activeEditor: otherSceneEditor,
+        activeEditorGroup: 1,
+      });
+      useInlineAiStore.getState().finishGeneration("other-scene-model");
+      useExternalWriteStore.getState().bumpReloadNonce({
+        kind: "tree",
+        id: "different-scene",
+        storage: "file",
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(loadMock).toHaveBeenCalledTimes(1);
+
+    harness.sceneContent = makeSceneContent("外部エディタで書き換えた本文");
+    act(() => {
+      useExternalWriteStore.getState().bumpReloadNonce({
+        kind: "tree",
+        id: SCENE_ID,
+        storage: "file",
+      });
+    });
+
+    await waitFor(() => {
+      expect(latestEditor("tab").state.doc.textContent).toContain(
+        "外部エディタで書き換えた本文",
+      );
+      expect(loadMock).toHaveBeenCalledTimes(2);
+    });
+    expect(useInlineAiStore.getState()).toMatchObject({
+      status: "diffShown",
+      activeEditor: otherSceneEditor,
+      activeEditorGroup: 1,
     });
   });
 });

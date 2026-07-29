@@ -14,6 +14,7 @@ describe("useChronicleViewportController", () => {
       axisMode: null,
       viewProjectId: null,
       viewWorkspacePath: null,
+      viewWorkspaceOpenRevision: null,
     });
   });
 
@@ -21,6 +22,7 @@ describe("useChronicleViewportController", () => {
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
+        workspaceOpenRevision: 1,
         projectId: "project-a",
         dataReady: true,
         dataStart: 0,
@@ -42,6 +44,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
 
     act(() => result.current.centerOnDay(110));
@@ -52,6 +55,7 @@ describe("useChronicleViewportController", () => {
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
+        workspaceOpenRevision: 1,
         projectId: "project-a",
         dataReady: true,
         dataStart: 0,
@@ -73,10 +77,12 @@ describe("useChronicleViewportController", () => {
       axisMode: null,
       viewProjectId: null,
       viewWorkspacePath: null,
+      viewWorkspaceOpenRevision: null,
     });
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
+        workspaceOpenRevision: 1,
         projectId: "project-a",
         dataReady: true,
         dataStart: 96_000,
@@ -95,6 +101,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
   });
 
@@ -105,10 +112,12 @@ describe("useChronicleViewportController", () => {
       axisMode: "sequence",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
+        workspaceOpenRevision: 1,
         projectId: "project-a",
         dataReady: true,
         // 旧 sequence view の day=0 は bounding range 内だが、calendar event
@@ -129,6 +138,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
   });
 
@@ -139,11 +149,13 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
     const { result, rerender } = renderHook(
       ({ dataStart, dataEnd }: { dataStart: number; dataEnd: number }) =>
         useChronicleViewportController({
           workspacePath: "/workspace-a",
+          workspaceOpenRevision: 1,
           projectId: "project-a",
           dataReady: true,
           dataStart,
@@ -169,6 +181,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
   });
 
@@ -179,11 +192,13 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
     const { result, rerender } = renderHook(
       ({ projectId }: { projectId: string }) =>
         useChronicleViewportController({
           workspacePath: "/workspace-a",
+          workspaceOpenRevision: 1,
           projectId,
           dataReady: true,
           dataStart: 0,
@@ -208,6 +223,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-b",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
   });
 
@@ -218,10 +234,12 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
+        workspaceOpenRevision: 1,
         projectId: "project-b",
         dataReady: true,
         dataStart: 0,
@@ -240,6 +258,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-b",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
   });
 
@@ -250,10 +269,12 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "default-project",
       viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
     });
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-b",
+        workspaceOpenRevision: 1,
         projectId: "default-project",
         dataReady: true,
         dataStart: 0,
@@ -272,6 +293,47 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "default-project",
       viewWorkspacePath: "/workspace-b",
+      viewWorkspaceOpenRevision: 1,
+    });
+  });
+
+  it("同じ workspace path と project ID でも再open後の view は再 fit する", () => {
+    useChronicleStore.setState({
+      pxPerDay: 4,
+      viewStartDay: 50_000,
+      axisMode: "calendar",
+      viewProjectId: "default-project",
+      viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 1,
+    });
+    const { result, rerender } = renderHook(
+      ({ workspaceOpenRevision }: { workspaceOpenRevision: number }) =>
+        useChronicleViewportController({
+          workspacePath: "/workspace-a",
+          workspaceOpenRevision,
+          projectId: "default-project",
+          dataReady: true,
+          dataStart: 0,
+          dataEnd: 10,
+          eventCount: 2,
+          focusDay: 5,
+          hasCalendarAxis: true,
+        }),
+      { initialProps: { workspaceOpenRevision: 1 } },
+    );
+
+    act(() => result.current.setTrackW(400));
+    expect(result.current.view.viewStartDay).toBe(50_000);
+
+    rerender({ workspaceOpenRevision: 2 });
+
+    expect(result.current.view.viewStartDay).toBeLessThan(100);
+    expect(useChronicleStore.getState()).toMatchObject({
+      ...result.current.view,
+      axisMode: "calendar",
+      viewProjectId: "default-project",
+      viewWorkspacePath: "/workspace-a",
+      viewWorkspaceOpenRevision: 2,
     });
   });
 
@@ -280,6 +342,7 @@ describe("useChronicleViewportController", () => {
       ({ dataReady }: { dataReady: boolean }) =>
         useChronicleViewportController({
           workspacePath: "/workspace-a",
+          workspaceOpenRevision: 1,
           projectId: "project-a",
           dataReady,
           dataStart: 0,
@@ -318,6 +381,7 @@ describe("useChronicleViewportController", () => {
       }) =>
         useChronicleViewportController({
           workspacePath: "/workspace-a",
+          workspaceOpenRevision: 1,
           projectId: "project-a",
           dataReady: true,
           dataStart,

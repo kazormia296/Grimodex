@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   moveEventToDayPatch,
+  resizeEventEndpointPatch,
   splitDayMinute,
   shiftEventPatch,
   type ShiftableEvent,
@@ -27,6 +28,20 @@ describe("splitDayMinute", () => {
       minute: 720,
     });
   });
+
+  it("subDay=true は丸めで1440分を作らず翌日0分へcarryする", () => {
+    expect(splitDayMinute(10 + 1439.6 / 1440, true, null)).toEqual({
+      time: 11,
+      minute: 0,
+    });
+  });
+
+  it("subDay=true は負の日付でもminuteを0..1439へ正規化する", () => {
+    expect(splitDayMinute(-0.25, true, null)).toEqual({
+      time: -1,
+      minute: 1080,
+    });
+  });
 });
 
 describe("shiftEventPatch", () => {
@@ -51,12 +66,20 @@ describe("shiftEventPatch", () => {
 
   it("subDay=true: 端数を分へ反映（1/24日=60分）", () => {
     const p = shiftEventPatch(ev({ startMinute: 0 }), 1 / 24, true);
-    expect(p).toEqual({ startTime: 100, startMinute: 60 });
+    expect(p).toEqual({
+      startTime: 100,
+      startMinute: 60,
+      startGranularity: "time",
+    });
   });
 
   it("subDay=true: 日跨ぎの繰り上げ（23:00 + 2h → 翌日 01:00）", () => {
     const p = shiftEventPatch(ev({ startMinute: 1380 }), 120 / 1440, true);
-    expect(p).toEqual({ startTime: 101, startMinute: 60 });
+    expect(p).toEqual({
+      startTime: 101,
+      startMinute: 60,
+      startGranularity: "time",
+    });
   });
 
   it("subDay=true: 期間端も同量移動（期間長保持）", () => {
@@ -68,8 +91,10 @@ describe("shiftEventPatch", () => {
     expect(p).toEqual({
       startTime: 100,
       startMinute: 60,
+      startGranularity: "time",
       endTime: 102,
       endMinute: 60,
+      endGranularity: "time",
     });
   });
 
@@ -94,8 +119,10 @@ describe("moveEventToDayPatch", () => {
     ).toEqual({
       startTime: 200,
       startMinute: 720,
+      startGranularity: "time",
       endTime: 202,
       endMinute: 1080,
+      endGranularity: "time",
     });
   });
 
@@ -113,6 +140,130 @@ describe("moveEventToDayPatch", () => {
     ).toEqual({
       startTime: 200,
       endTime: 202,
+    });
+  });
+});
+
+describe("resizeEventEndpointPatch", () => {
+  const interval = ev({
+    startTime: 10,
+    startMinute: 18 * 60,
+    endTime: 10,
+    endMinute: 20 * 60,
+  });
+
+  it("同日内で終了を開始前へ動かすと開始日時へclampする", () => {
+    expect(resizeEventEndpointPatch(interval, "end", 10.5, true)).toEqual({
+      endTime: 10,
+      endMinute: 18 * 60,
+      endGranularity: "time",
+    });
+  });
+
+  it("同日内で開始を終了後へ動かすと終了日時へclampする", () => {
+    expect(resizeEventEndpointPatch(interval, "start", 10.875, true)).toEqual({
+      startTime: 10,
+      startMinute: 20 * 60,
+      startGranularity: "time",
+    });
+  });
+
+  it("日単位resizeでも保持minute込みで逆転を防ぐ", () => {
+    expect(
+      resizeEventEndpointPatch(
+        ev({
+          startTime: 9,
+          startMinute: 21 * 60,
+          endTime: 10,
+          endMinute: 12 * 60,
+        }),
+        "start",
+        10,
+        false,
+      ),
+    ).toEqual({
+      startTime: 10,
+      startMinute: 12 * 60,
+    });
+  });
+
+  it("coarse開始をtime終了へ日単位clampすると開始粒度もtimeへ昇格する", () => {
+    expect(
+      resizeEventEndpointPatch(
+        ev({
+          startTime: 10,
+          startMinute: null,
+          endTime: 11,
+          endMinute: 10 * 60,
+        }),
+        "start",
+        12,
+        false,
+      ),
+    ).toEqual({
+      startTime: 11,
+      startMinute: 10 * 60,
+      startGranularity: "time",
+    });
+  });
+
+  it("coarse終了をtime開始へ日単位clampすると終了粒度もtimeへ昇格する", () => {
+    expect(
+      resizeEventEndpointPatch(
+        ev({
+          startTime: 10,
+          startMinute: 10 * 60,
+          endTime: 11,
+          endMinute: null,
+        }),
+        "end",
+        9,
+        false,
+      ),
+    ).toEqual({
+      endTime: 10,
+      endMinute: 10 * 60,
+      endGranularity: "time",
+    });
+  });
+
+  it("sub-day開始をcoarse終了より後へ動かすと終了日の00:00へ完全なtimeとしてclampする", () => {
+    expect(
+      resizeEventEndpointPatch(
+        ev({
+          startTime: 10,
+          startMinute: null,
+          endTime: 11,
+          endMinute: null,
+        }),
+        "start",
+        11.75,
+        true,
+      ),
+    ).toEqual({
+      startTime: 11,
+      startMinute: 0,
+      startGranularity: "time",
+    });
+  });
+
+  it("sub-day終了をcoarse開始より前へ動かすと開始日の00:00へ完全なtimeとしてclampする", () => {
+    expect(
+      resizeEventEndpointPatch(
+        ev({
+          startTime: 10,
+          startMinute: null,
+          endTime: 11,
+          endMinute: null,
+        }),
+        "end",
+        9.75,
+        true,
+      ),
+    ).toEqual({
+      endTime: 10,
+      endMinute: 0,
+      endGranularity: "time",
     });
   });
 });

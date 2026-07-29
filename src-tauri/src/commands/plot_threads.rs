@@ -13,8 +13,8 @@ use serde_json::Value;
 
 use crate::database::plot_threads::{
     self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
-    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadPatch,
-    PlotThreadRestoreSnapshotPayload,
+    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
+    PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
 };
 
 use super::{with_db, AppError, WorkspaceState};
@@ -100,6 +100,16 @@ pub(crate) fn plot_thread_branch_create(
     payload: PlotThreadBranchCreatePayload,
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| plot_threads::branch_create(db, payload))
+}
+
+#[tauri::command(async)]
+pub(crate) fn plot_thread_move_marker_bundle(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: PlotThreadMoveMarkerBundlePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        plot_threads::move_marker_bundle(db, payload)
+    })
 }
 
 #[tauri::command(async)]

@@ -32,6 +32,8 @@ export interface ChronicleSettings {
   viewProjectId: string | null;
   /** 永続 view の所有 Workspace path（null=legacy / 未設定）。 */
   viewWorkspacePath: string | null;
+  /** 永続 view の所有 Workspace open generation（null=legacy / 未設定）。 */
+  viewWorkspaceOpenRevision: number | null;
   /**
    * 編集ロック。on でグラフ上の直接操作（マーカーのドラッグ移動・期間端の伸縮・
    * D&D による因果エッジ作成・空白のダブルクリック/右クリック作成）を無効化する。
@@ -58,6 +60,8 @@ interface ChronicleState {
   viewProjectId: string | null;
   /** 永続 view の所有 Workspace path（null=legacy / 未設定）。 */
   viewWorkspacePath: string | null;
+  /** 永続 view の所有 Workspace open generation（null=legacy / 未設定）。 */
+  viewWorkspaceOpenRevision: number | null;
   /**
    * 選択中の出来事(events.id)＝プライマリ（最後にクリック＝範囲選択のアンカー）。
    * Inspector が読む（単一選択時のみ詳細編集を出す）。
@@ -92,6 +96,7 @@ interface ChronicleState {
     axisMode: ChronicleAxisMode,
     viewProjectId: string,
     viewWorkspacePath: string,
+    viewWorkspaceOpenRevision: number,
   ) => void;
   toggleShowOffpage: () => void;
   /** 単一選択（複数選択も [id] に畳む）。null で全解除。 */
@@ -145,6 +150,7 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
   axisMode: null,
   viewProjectId: null,
   viewWorkspacePath: null,
+  viewWorkspaceOpenRevision: null,
   selectedEventId: null,
   selectedEventIds: [],
   locked: false,
@@ -159,6 +165,7 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
     axisMode,
     viewProjectId,
     viewWorkspacePath,
+    viewWorkspaceOpenRevision,
   ) =>
     set({
       pxPerDay,
@@ -166,6 +173,7 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
       axisMode,
       viewProjectId,
       viewWorkspacePath,
+      viewWorkspaceOpenRevision,
     }),
   toggleShowOffpage: () => set((s) => ({ showOffpage: !s.showOffpage })),
   setSelectedEventId: (selectedEventId) => {
@@ -234,6 +242,10 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
         typeof settings.viewWorkspacePath === "string"
           ? settings.viewWorkspacePath
           : null,
+      viewWorkspaceOpenRevision:
+        typeof settings.viewWorkspaceOpenRevision === "number"
+          ? settings.viewWorkspaceOpenRevision
+          : null,
       locked: settings.locked ?? false,
     }),
 }));
@@ -250,6 +262,7 @@ function snapshotPersistent(
     axisMode: state.axisMode,
     viewProjectId: state.viewProjectId,
     viewWorkspacePath: state.viewWorkspacePath,
+    viewWorkspaceOpenRevision: state.viewWorkspaceOpenRevision,
     locked: state.locked,
   };
 }

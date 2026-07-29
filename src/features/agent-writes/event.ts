@@ -235,8 +235,15 @@ export async function agentCreateEvent(
       endTime: input.endTime ?? null,
       startMinute: input.startMinute ?? null,
       endMinute: input.endMinute ?? null,
-      startGranularity: input.startGranularity ?? "none",
-      endGranularity: input.endGranularity ?? "none",
+      // Omission is meaningful: the native boundary infers none/day/time from
+      // the supplied day/minute tuple before enforcing the strict matrix.
+      // Sending "none" here would erase an otherwise valid dated create.
+      ...(input.startGranularity !== undefined
+        ? { startGranularity: input.startGranularity }
+        : {}),
+      ...(input.endGranularity !== undefined
+        ? { endGranularity: input.endGranularity }
+        : {}),
       precision: input.precision ?? "exact",
       kind: input.kind ?? "generic",
       secret: input.secret ?? false,

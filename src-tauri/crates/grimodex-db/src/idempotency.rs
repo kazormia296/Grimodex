@@ -29,6 +29,65 @@ pub(crate) struct IdempotentCreateOutcome {
     entity_present: bool,
 }
 
+/// Load the exact response recorded for a completed non-create request.
+///
+/// Composite mutations cannot reconstruct their response from one entity row:
+/// the response owns an undo journal id plus multiple event/scene result tokens.
+/// Their ledger therefore stores that small, content-free response directly.
+pub(crate) fn load_idempotent_response(
+    conn: &Connection,
+    request: &IdempotencyRequest<'_>,
+) -> anyhow::Result<Option<Value>> {
+    let Some(request_id) = request.request_id else {
+        return Ok(None);
+    };
+    let stored = conn
+        .query_row(
+            "SELECT payload_hash, tombstone_json
+               FROM idempotency_requests
+              WHERE domain = ?1 AND request_id = ?2",
+            rusqlite::params![request.domain, request_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((stored_hash, response_json)) = stored else {
+        return Ok(None);
+    };
+    if stored_hash != request.payload_hash {
+        anyhow::bail!(
+            "{}: request id reused with different payload",
+            request.conflict_marker
+        );
+    }
+    Ok(Some(serde_json::from_str(&response_json)?))
+}
+
+/// Record the exact response for a completed non-create request in the
+/// caller-owned transaction.
+pub(crate) fn insert_idempotent_response(
+    conn: &Connection,
+    request: &IdempotencyRequest<'_>,
+    project_id: &str,
+    response: &Value,
+) -> anyhow::Result<()> {
+    let Some(request_id) = request.request_id else {
+        return Ok(());
+    };
+    conn.execute(
+        "INSERT INTO idempotency_requests
+             (domain, request_id, project_id, payload_hash, tombstone_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            request.domain,
+            request_id,
+            project_id,
+            request.payload_hash,
+            serde_json::to_string(response)?,
+        ],
+    )?;
+    Ok(())
+}
+
 impl IdempotentCreateOutcome {
     /// Preserve the historical entity-row wire shape while adding non-DB
     /// metadata that lets renderer stores avoid publishing a deleted replay.

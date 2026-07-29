@@ -12,6 +12,7 @@ type VP = ComponentProps<typeof ChronicleViewport>;
 import {
   buildChronicleLayout,
   buildChronicleWorldGeometry,
+  laneDupId,
   projectChronicleWorldGeometry,
   type LayoutEventInput,
   type LayoutLane,
@@ -150,7 +151,7 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onCreateAt).not.toHaveBeenCalled();
   });
 
-  it("マーカードラッグで onMoveEvent（横=日 / レーン codexId）", () => {
+  it("横だけのマーカードラッグは日だけを変更しレーンは未指定にする", () => {
     const props = makeProps();
     const { container } = render(
       <ChronicleViewport {...(props as unknown as VP)} />,
@@ -165,7 +166,7 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     const [id, day, codexId] = props.onMoveEvent.mock.calls[0];
     expect(id).toBe("e1");
     expect(typeof day).toBe("number");
-    expect(codexId).toBe("c1");
+    expect(codexId).toBeUndefined();
     expect(props.onViewChange).not.toHaveBeenCalled(); // パンしない
   });
 
@@ -295,6 +296,119 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(getByTestId("chronicle-context-menu")).toBeTruthy();
     fireEvent.click(getByText("ここにイベントを作成"));
     expect(props.onCreateAt).toHaveBeenCalledTimes(1);
+  });
+
+  it("非interactive化またはepoch変更でportalメニューと操作を即時破棄する", () => {
+    const props = makeProps({
+      isInteractive: true,
+      interactionEpoch: "scope:1",
+    });
+    const { container, queryByTestId, rerender } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    fireEvent.contextMenu(track(container), { clientX: 200, clientY: 20 });
+    expect(queryByTestId("chronicle-context-menu")).not.toBeNull();
+
+    rerender(
+      <ChronicleViewport {...(props as unknown as VP)} isInteractive={false} />,
+    );
+    expect(queryByTestId("chronicle-context-menu")).toBeNull();
+
+    rerender(
+      <ChronicleViewport
+        {...(props as unknown as VP)}
+        isInteractive
+        interactionEpoch="scope:2"
+      />,
+    );
+    fireEvent.contextMenu(track(container), { clientX: 200, clientY: 20 });
+    expect(queryByTestId("chronicle-context-menu")).not.toBeNull();
+    rerender(
+      <ChronicleViewport
+        {...(props as unknown as VP)}
+        isInteractive
+        interactionEpoch="scope:3"
+      />,
+    );
+    expect(queryByTestId("chronicle-context-menu")).toBeNull();
+  });
+
+  it("参加レーン複製はinstance/lane identityを保ち、handleを持たず横dragでprimary laneを変えない", () => {
+    const duplicateId = laneDupId("e2", "c2");
+    const duplicatedEvents: LayoutEventInput[] = [
+      ...events,
+      { ...events[1], id: duplicateId, primaryCodexId: "c2" },
+    ];
+    const duplicatedLanes: LayoutLane[] = [
+      lanes[0],
+      {
+        codexId: "c2",
+        name: "ユウ",
+        kind: "character",
+        unassigned: false,
+        eventIds: [duplicateId],
+      },
+    ];
+    const view = { pxPerDay: 2, viewStartDay: 0 };
+    const layout = buildChronicleLayout({
+      events: duplicatedEvents,
+      lanes: duplicatedLanes,
+      view,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 180,
+      relations: [],
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const props = makeProps({
+      view,
+      layout,
+      selectedEventId: "e2",
+      selectedIds: new Set(["e2"]),
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const home = container.querySelector(
+      '[data-marker-instance-id="e2"]',
+    ) as HTMLElement;
+    const copy = container.querySelector(
+      `[data-marker-instance-id="${duplicateId}"]`,
+    ) as HTMLElement;
+    expect(home).not.toBeNull();
+    expect(copy).not.toBeNull();
+    expect(home.getAttribute("data-lane-key")).toBe("c1");
+    expect(copy.getAttribute("data-lane-key")).toBe("c2");
+    expect(home.querySelectorAll("[data-resize]")).toHaveLength(2);
+    expect(copy.querySelector("[data-resize]")).toBeNull();
+    expect(copy.querySelector("[data-edge-handle]")).toBeNull();
+
+    const center = layout.pack.centers.get(duplicateId)!;
+    const startX = center.cx + layout.worldOffsetX;
+    fireEvent.mouseDown(copy, {
+      button: 0,
+      clientX: startX,
+      clientY: center.cy,
+    });
+    fireEvent.mouseMove(document, {
+      clientX: startX + 80,
+      clientY: center.cy,
+    });
+    fireEvent.mouseUp(document, {
+      clientX: startX + 80,
+      clientY: center.cy,
+    });
+
+    expect(props.onMoveEvent).toHaveBeenCalledWith(
+      "e2",
+      expect.any(Number),
+      undefined,
+    );
   });
 
   it("マーカー右クリック→「編集」で onEditEvent(id)（選択＋詳細パネルを開く）", () => {
@@ -736,7 +850,8 @@ describe("ChronicleViewport — キーボード代替（a11y: ズーム/パン/�
     expect(zin.pxPerDay).toBeCloseTo(2 * 1.2);
     fireEvent.keyDown(tr, { key: "-" });
     const zout = props.onViewChange.mock.calls[1][0] as { pxPerDay: number };
-    expect(zout.pxPerDay).toBeCloseTo(2 / 1.2);
+    // Parent がまだ再描画していなくても直前の確定 preview が操作基準になる。
+    expect(zout.pxPerDay).toBeCloseTo(2);
     // Shift 併用（多くの配列で "+" は Shift が要る）でも効く。
     fireEvent.keyDown(tr, { key: "+", shiftKey: true });
     expect(props.onViewChange).toHaveBeenCalledTimes(3);
@@ -759,7 +874,8 @@ describe("ChronicleViewport — キーボード代替（a11y: ズーム/パン/�
     const left = props.onViewChange.mock.calls[1][0] as {
       viewStartDay: number;
     };
-    expect(left.viewStartDay).toBeLessThan(0);
+    // Parent 再描画前の連続入力でも前の確定位置から戻る。
+    expect(left.viewStartDay).toBeCloseTo(0);
     // 選択が無くても効く（選択ナビは発火しない）。
     expect(props.onSelectEvent).not.toHaveBeenCalled();
   });
@@ -922,6 +1038,85 @@ describe("ChronicleViewport — キーボード代替（a11y: ズーム/パン/�
 });
 
 describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライブエッジ", () => {
+  it("logical event数でなくparticipant copyを含むmarker instance数でwindowingを有効化する", () => {
+    const logicalEvents: LayoutEventInput[] = Array.from(
+      { length: 126 },
+      (_, index) => ({
+        id: `copied-${index}`,
+        title: `出来事 ${index}`,
+        primaryCodexId: "c1",
+        kind: "generic" as const,
+        precision: "exact" as const,
+        secret: false,
+        sceneLinked: true,
+        startDay: 50,
+        endDay: null,
+      }),
+    );
+    const copies = logicalEvents.map((event) => ({
+      ...event,
+      id: laneDupId(event.id, "c2"),
+      primaryCodexId: "c2",
+    }));
+    const view = { pxPerDay: 2, viewStartDay: 0 };
+    const layout = buildChronicleLayout({
+      events: [...logicalEvents, ...copies],
+      lanes: [
+        {
+          codexId: "c1",
+          name: "アヤ",
+          kind: "character",
+          unassigned: false,
+          eventIds: logicalEvents.map((event) => event.id),
+        },
+        {
+          codexId: "c2",
+          name: "ユウ",
+          kind: "character",
+          unassigned: false,
+          eventIds: copies.map((event) => event.id),
+        },
+      ],
+      view,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 50,
+      relations: [],
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const eventsById = new Map<string, MarkerEvent>(
+      logicalEvents.map((event) => [
+        event.id,
+        {
+          id: event.id,
+          title: event.title,
+          kind: event.kind,
+          precision: event.precision,
+          secret: event.secret,
+          sceneLinked: event.sceneLinked,
+          primaryCodexId: event.primaryCodexId,
+        },
+      ]),
+    );
+    const props = makeProps({ view, layout, eventsById });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+
+    expect(eventsById.size).toBeLessThanOrEqual(250);
+    expect(layout.markerById.size).toBeGreaterThan(250);
+    expect(tr).toHaveAttribute("data-chronicle-total-marker-count", "252");
+    expect(
+      tr.querySelector("[data-chronicle-windowed-marker-wrapper]"),
+    ).not.toBeNull();
+  });
+
   it("縦 viewport 外の大量 marker を DOM から外し、scroll 先を即時に投影する", () => {
     const manyEvents: LayoutEventInput[] = Array.from(
       { length: 300 },
@@ -1176,6 +1371,192 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("wheel DOM preview直後のmarker dragはpreview座標系で開始日を解決する", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    try {
+      const props = makeProps();
+      const { container, unmount } = render(
+        <ChronicleViewport {...(props as unknown as VP)} />,
+      );
+      const tr = track(container);
+      const marker = container.querySelector(
+        '[data-event-id="e1"]',
+      ) as HTMLElement;
+      // 2px/day, day 50 is x=100. Zooming 1.2x around x=200 keeps
+      // the pivot fixed and projects that marker to x=80.
+      const previewMarkerX = 80;
+
+      // happy-dom's WheelEvent constructor drops clientX.
+      const wheel = new WheelEvent("wheel", { deltaY: -100 });
+      Object.defineProperty(wheel, "clientX", {
+        configurable: true,
+        value: 200,
+      });
+      fireEvent(tr, wheel);
+      fireEvent.mouseDown(marker, {
+        button: 0,
+        clientX: previewMarkerX,
+        clientY: 20,
+      });
+      fireEvent.mouseMove(document, {
+        clientX: previewMarkerX + 60,
+        clientY: 20,
+      });
+      fireEvent.mouseUp(document, {
+        clientX: previewMarkerX + 60,
+        clientY: 20,
+      });
+
+      const movedDay = props.onMoveEvent.mock.calls[0][1] as number;
+      expect(movedDay).toBeCloseTo(75);
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("wheel DOM preview直後の期間resizeはpreview座標系で終了日を解決する", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    try {
+      const props = makeProps();
+      const { container, unmount } = render(
+        <ChronicleViewport {...(props as unknown as VP)} />,
+      );
+      const tr = track(container);
+      const handle = container.querySelector(
+        '[data-event-id="e2"] [data-resize="end"]',
+      ) as HTMLElement;
+      // day 180 is x=360 before zoom and x=392 after a 1.2x zoom around x=200.
+      const previewEndX = 392;
+      const wheel = new WheelEvent("wheel", { deltaY: -100 });
+      Object.defineProperty(wheel, "clientX", {
+        configurable: true,
+        value: 200,
+      });
+
+      fireEvent(tr, wheel);
+      fireEvent.mouseDown(handle, {
+        button: 0,
+        clientX: previewEndX,
+        clientY: 30,
+      });
+      fireEvent.mouseMove(document, {
+        clientX: previewEndX + 60,
+        clientY: 30,
+      });
+      fireEvent.mouseUp(document, {
+        clientX: previewEndX + 60,
+        clientY: 30,
+      });
+
+      expect(props.onResizeEvent).toHaveBeenCalledTimes(1);
+      expect(props.onResizeEvent.mock.calls[0].slice(0, 2)).toEqual([
+        "e2",
+        "end",
+      ]);
+      expect(props.onResizeEvent.mock.calls[0][2]).toBeCloseTo(205);
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("wheel DOM preview直後の因果edge dragはpreview後のhome handleからガイドを引く", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    try {
+      const props = makeProps({ selectedEventId: "e1" });
+      const { container, unmount } = render(
+        <ChronicleViewport {...(props as unknown as VP)} />,
+      );
+      const tr = track(container);
+      const handle = container.querySelector(
+        '[data-event-id="e1"] [data-edge-handle]',
+      ) as HTMLElement;
+      const target = container.querySelector(
+        '[data-event-id="e2"]',
+      ) as HTMLElement;
+      const center = props.layout.pack.centers.get("e1")!;
+      const worldAnchorX = center.outX ?? center.cx;
+      const previewView = zoomAt({
+        view: props.view,
+        pivotPx: 200,
+        factor: 1.2,
+      });
+      const previewScale = previewView.pxPerDay / props.view.pxPerDay;
+      const previewShift =
+        (props.view.viewStartDay - previewView.viewStartDay) *
+        previewView.pxPerDay;
+      const expectedGuideX =
+        props.layout.worldOffsetX * previewScale +
+        previewShift +
+        worldAnchorX * previewScale;
+      const wheel = new WheelEvent("wheel", { deltaY: -100 });
+      Object.defineProperty(wheel, "clientX", {
+        configurable: true,
+        value: 200,
+      });
+      vi.spyOn(document, "elementFromPoint").mockReturnValue(target);
+
+      fireEvent(tr, wheel);
+      fireEvent.mouseDown(handle, {
+        button: 0,
+        clientX: expectedGuideX,
+        clientY: center.cy,
+      });
+      fireEvent.mouseMove(document, { clientX: 320, clientY: center.cy });
+
+      const guide = container.querySelector(
+        "line.stroke-primary",
+      ) as SVGLineElement;
+      expect(Number(guide.getAttribute("x1"))).toBeCloseTo(expectedGuideX);
+      expect(Number(guide.getAttribute("x2"))).toBeCloseTo(320);
+
+      fireEvent.mouseUp(document, { clientX: 320, clientY: center.cy });
+      expect(props.onCreateEdge).toHaveBeenCalledWith("e1", "e2");
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("長いpanは1 viewportのoverscanを使い切る前に中間projectionをcommitする", () => {
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+
+    fireEvent.mouseDown(tr, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(document, { clientX: 700, clientY: 100 });
+    expect(props.onViewChange).toHaveBeenCalledTimes(1);
+    fireEvent.mouseUp(document, {
+      button: 0,
+      clientX: 700,
+      clientY: 100,
+    });
+    expect(props.onViewChange.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("non-zero world offset の DOM zoom preview は pivot と論理日位置を保存する", () => {

@@ -8,10 +8,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use grimodex_core::chronicle_time::{
+    normalize_chronicle_timestamp, resolve_chronicle_granularity,
+    validate_canonical_chronicle_date_range, validate_chronicle_date_range, ChronicleDateRange,
+    ChronicleTimestamp,
+};
+
 // 実装本体は src-tauri/src/commands/agent_writes.rs から本クレートへ移動した
 // (Electron 移行 Phase 3 バッチ1 — napi Backend と Tauri コマンドで共用)。
 // grimodex-db は grimodex-core に依存済みなので tracked write / undo_journal を直接呼べる。
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+use crate::idempotency::{
+    insert_idempotent_response, load_idempotent_response, IdempotencyRequest,
+};
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::{BatchStatement, Database};
 
@@ -1390,9 +1399,11 @@ pub fn agent_discard_prose_stage_impl(
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentUndoJournalPayload {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub project_id: String,
     pub session_id: String,
     pub journal_id: String,
@@ -1432,6 +1443,13 @@ fn undo_journal_change_event(
             "event.create",
             "event.delete",
             "event.update",
+        ),
+        "chronicle_bulk" => (
+            "event",
+            "chronicle_bulk",
+            "chronicle.bulk",
+            "chronicle.bulk",
+            "chronicle.bulk",
         ),
         other => anyhow::bail!("undo_journal_change_event: unsupported entity_kind '{other}'"),
     };
@@ -1497,11 +1515,10 @@ fn event_snapshot_related_ids(snap: &Value) -> Vec<String> {
     for key in ["asCause", "asEffect"] {
         if let Some(relations) = snap["relations"][key].as_array() {
             for relation in relations {
-                if let Some(id) = relation["effectEventId"]
-                    .as_str()
-                    .or_else(|| relation["causeEventId"].as_str())
-                {
-                    related.insert(id.to_string());
+                for field in ["causeEventId", "effectEventId"] {
+                    if let Some(id) = relation[field].as_str() {
+                        related.insert(id.to_string());
+                    }
                 }
             }
         }
@@ -1514,6 +1531,9 @@ fn enrich_event_replay_change_payload(
     direction: &str,
     payload: &mut Value,
 ) -> anyhow::Result<()> {
+    if row.entity_kind == "chronicle_bulk" {
+        return crate::chronicle_bulk::enrich_replay_change_payload(row, payload);
+    }
     if row.entity_kind != "event" {
         return Ok(());
     }
@@ -1549,10 +1569,40 @@ pub fn agent_undo_journal_impl(
     db: &Database,
     payload: AgentUndoJournalPayload,
 ) -> anyhow::Result<Value> {
+    if payload.request_id.as_deref() == Some("") {
+        anyhow::bail!("undo journal requestId must not be empty");
+    }
+    let request_hash = payload
+        .request_id
+        .as_ref()
+        .map(|_| {
+            idempotency_hash(
+                "agent_apply_undo_journal",
+                &json!({
+                    "projectId": payload.project_id,
+                    "journalId": payload.journal_id,
+                    "direction": payload.direction,
+                }),
+            )
+        })
+        .transpose()?;
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<()> {
+        let result = (|| -> anyhow::Result<Value> {
+            if let (Some(request_id), Some(payload_hash)) =
+                (payload.request_id.as_deref(), request_hash.as_deref())
+            {
+                let request = IdempotencyRequest {
+                    domain: "agent_apply_undo_journal",
+                    request_id: Some(request_id),
+                    payload_hash,
+                    conflict_marker: "UNDO_JOURNAL_IDEMPOTENCY_CONFLICT",
+                };
+                if let Some(existing) = load_idempotent_response(conn, &request)? {
+                    return Ok(existing);
+                }
+            }
             let row = grimodex_core::undo_journal::load_undo_journal(
                 conn,
                 &payload.project_id,
@@ -1568,6 +1618,13 @@ pub fn agent_undo_journal_impl(
                     "redo" => apply_event_redo_in_tx(conn, &payload.project_id, &row)?,
                     other => anyhow::bail!("invalid undo direction: {other}"),
                 }
+            } else if row.entity_kind == "chronicle_bulk" {
+                crate::chronicle_bulk::replay_chronicle_bulk_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &row,
+                    &payload.direction,
+                )?;
             } else {
                 match payload.direction.as_str() {
                     "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
@@ -1608,12 +1665,28 @@ pub fn agent_undo_journal_impl(
                     timestamp,
                 }],
             )?;
-            Ok(())
+            let response = json!({ "ok": true });
+            if let (Some(request_id), Some(payload_hash)) =
+                (payload.request_id.as_deref(), request_hash.as_deref())
+            {
+                insert_idempotent_response(
+                    conn,
+                    &IdempotencyRequest {
+                        domain: "agent_apply_undo_journal",
+                        request_id: Some(request_id),
+                        payload_hash,
+                        conflict_marker: "UNDO_JOURNAL_IDEMPOTENCY_CONFLICT",
+                    },
+                    &payload.project_id,
+                    &response,
+                )?;
+            }
+            Ok(response)
         })();
         match result {
-            Ok(()) => {
+            Ok(response) => {
                 grimodex_core::commit_or_rollback(conn)?;
-                Ok(json!({ "ok": true }))
+                Ok(response)
             }
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -1865,7 +1938,10 @@ pub struct AgentEventRelationPayload {
 /// Full self-contained snapshot of an event row + its participants, scene
 /// links, and causal relations (both directions). Used as the undo `before`
 /// for delete (cascade-restorable) and before/after for create/update.
-fn collect_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> anyhow::Result<Value> {
+pub(crate) fn collect_event_snapshot(
+    conn: &rusqlite::Connection,
+    event_id: &str,
+) -> anyhow::Result<Value> {
     let event_json: String = conn.query_row(
         "SELECT json_object(
             'id', id, 'projectId', project_id, 'title', title, 'note', note,
@@ -2051,7 +2127,7 @@ fn batch_insert_event_relations(
 /// relations. Field-only update replay deliberately leaves associations alone:
 /// scene links and relations do not bump the Event aggregate version, so they
 /// may have changed legitimately after the journalled row update.
-fn apply_event_snapshot(
+pub(crate) fn apply_event_snapshot(
     conn: &rusqlite::Connection,
     project_id: &str,
     snap: &Value,
@@ -2524,7 +2600,7 @@ fn ensure_event_version(
     Ok(())
 }
 
-fn delete_event_cascade(
+pub(crate) fn delete_event_cascade(
     conn: &rusqlite::Connection,
     project_id: &str,
     event_id: &str,
@@ -2764,12 +2840,20 @@ pub fn agent_event_create_impl(
     let ordinal = payload.ordinal.unwrap_or_else(|| "a0".to_string());
     let precision = payload.precision.unwrap_or_else(|| "exact".to_string());
     let kind = payload.kind.unwrap_or_else(|| "generic".to_string());
-    let start_granularity = payload
-        .start_granularity
-        .unwrap_or_else(|| "none".to_string());
-    let end_granularity = payload
-        .end_granularity
-        .unwrap_or_else(|| "none".to_string());
+    let start_granularity = resolve_chronicle_granularity(
+        payload.start_granularity.as_deref(),
+        "none",
+        payload.start_time.is_some(),
+        payload.start_minute.is_some(),
+    )
+    .to_string();
+    let end_granularity = resolve_chronicle_granularity(
+        payload.end_granularity.as_deref(),
+        "none",
+        payload.end_time.is_some(),
+        payload.end_minute.is_some(),
+    )
+    .to_string();
     let participants = payload.participant_codex_ids.unwrap_or_default();
     let scene_ids = payload.scene_ids.unwrap_or_default();
     let secret = payload.secret.unwrap_or(false);
@@ -2807,6 +2891,20 @@ pub fn agent_event_create_impl(
                     return Ok(existing);
                 }
             }
+            let canonical_start = normalize_chronicle_timestamp(ChronicleTimestamp {
+                day: payload.start_time,
+                minute: payload.start_minute,
+                granularity: &start_granularity,
+            });
+            let canonical_end = normalize_chronicle_timestamp(ChronicleTimestamp {
+                day: payload.end_time,
+                minute: payload.end_minute,
+                granularity: &end_granularity,
+            });
+            validate_canonical_chronicle_date_range(ChronicleDateRange {
+                start: canonical_start,
+                end: canonical_end,
+            })?;
             if let Some(codex_id) = payload.primary_codex_id.as_deref() {
                 ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
             }
@@ -2833,10 +2931,10 @@ pub fn agent_event_create_impl(
                     ordinal,
                     payload.primary_codex_id,
                     payload.location_codex_id,
-                    payload.start_time,
-                    payload.end_time,
-                    payload.start_minute,
-                    payload.end_minute,
+                    canonical_start.day,
+                    canonical_end.day,
+                    canonical_start.minute,
+                    canonical_end.minute,
                     start_granularity,
                     end_granularity,
                     precision,
@@ -2924,6 +3022,16 @@ pub fn agent_event_update_impl(
     db: &Database,
     payload: AgentEventUpdatePayload,
 ) -> anyhow::Result<Value> {
+    struct CurrentChronicleRange {
+        version: i64,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        start_minute: Option<i64>,
+        end_minute: Option<i64>,
+        start_granularity: String,
+        end_granularity: String,
+    }
+
     let undo_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -2935,14 +3043,35 @@ pub fn agent_event_update_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let current_version: Option<i64> = conn
+            let current: Option<CurrentChronicleRange> = conn
                 .query_row(
-                "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
-                rusqlite::params![payload.event_id, payload.project_id],
-                |r| r.get(0),
-            )
+                    "SELECT version, start_time, end_time, start_minute, end_minute,
+                            start_granularity, end_granularity
+                     FROM events WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![payload.event_id, payload.project_id],
+                    |row| {
+                        Ok(CurrentChronicleRange {
+                            version: row.get(0)?,
+                            start_time: row.get(1)?,
+                            end_time: row.get(2)?,
+                            start_minute: row.get(3)?,
+                            end_minute: row.get(4)?,
+                            start_granularity: row.get(5)?,
+                            end_granularity: row.get(6)?,
+                        })
+                    },
+                )
                 .optional()?;
-            let Some(current_version) = current_version else {
+            let Some(CurrentChronicleRange {
+                version: current_version,
+                start_time: current_start_time,
+                end_time: current_end_time,
+                start_minute: current_start_minute,
+                end_minute: current_end_minute,
+                start_granularity: current_start_granularity,
+                end_granularity: current_end_granularity,
+            }) = current
+            else {
                 anyhow::bail!(
                     "event '{}' not found in project '{}'",
                     payload.event_id,
@@ -2958,6 +3087,49 @@ pub fn agent_event_update_impl(
                     current_version
                 );
             }
+            let touches_chronicle_date = payload.start_time.is_some()
+                || payload.end_time.is_some()
+                || payload.start_minute.is_some()
+                || payload.end_minute.is_some()
+                || payload.start_granularity.is_some()
+                || payload.end_granularity.is_some();
+            let start_granularity = resolve_chronicle_granularity(
+                payload.start_granularity.as_deref(),
+                &current_start_granularity,
+                payload.start_time.is_some(),
+                payload.start_minute.is_some(),
+            );
+            let end_granularity = resolve_chronicle_granularity(
+                payload.end_granularity.as_deref(),
+                &current_end_granularity,
+                payload.end_time.is_some(),
+                payload.end_minute.is_some(),
+            );
+            let merged_start = ChronicleTimestamp {
+                day: payload.start_time.or(current_start_time),
+                minute: payload.start_minute.or(current_start_minute),
+                granularity: start_granularity,
+            };
+            let merged_end = ChronicleTimestamp {
+                day: payload.end_time.or(current_end_time),
+                minute: payload.end_minute.or(current_end_minute),
+                granularity: end_granularity,
+            };
+            let (canonical_start, canonical_end) = if touches_chronicle_date {
+                let start = normalize_chronicle_timestamp(merged_start);
+                let end = normalize_chronicle_timestamp(merged_end);
+                validate_canonical_chronicle_date_range(ChronicleDateRange { start, end })?;
+                (start, end)
+            } else {
+                // Legacy rows may carry a minute at a coarse granularity. An
+                // unrelated update must not wedge them, but still retains the
+                // established range/minute safety checks.
+                validate_chronicle_date_range(ChronicleDateRange {
+                    start: merged_start,
+                    end: merged_end,
+                })?;
+                (merged_start, merged_end)
+            };
             let result_version = base_version + 1;
 
             // Scalar FKs are globally keyed, so SQLite can prove existence but
@@ -3037,39 +3209,61 @@ pub fn agent_event_update_impl(
                 param_idx += 1;
                 fields.push("locationCodexId");
             }
-            if let Some(v) = payload.start_time {
-                sets.push(format!("start_time = ?{param_idx}"));
-                params.push(Box::new(v));
-                param_idx += 1;
-                fields.push("startTime");
+            if touches_chronicle_date {
+                if canonical_start.day != current_start_time {
+                    if let Some(v) = canonical_start.day {
+                        sets.push(format!("start_time = ?{param_idx}"));
+                        params.push(Box::new(v));
+                        param_idx += 1;
+                    } else {
+                        sets.push("start_time = NULL".to_string());
+                    }
+                    fields.push("startTime");
+                }
+                if canonical_end.day != current_end_time {
+                    if let Some(v) = canonical_end.day {
+                        sets.push(format!("end_time = ?{param_idx}"));
+                        params.push(Box::new(v));
+                        param_idx += 1;
+                    } else {
+                        sets.push("end_time = NULL".to_string());
+                    }
+                    fields.push("endTime");
+                }
+                if canonical_start.minute != current_start_minute {
+                    if let Some(v) = canonical_start.minute {
+                        sets.push(format!("start_minute = ?{param_idx}"));
+                        params.push(Box::new(v));
+                        param_idx += 1;
+                    } else {
+                        sets.push("start_minute = NULL".to_string());
+                    }
+                    fields.push("startMinute");
+                }
+                if canonical_end.minute != current_end_minute {
+                    if let Some(v) = canonical_end.minute {
+                        sets.push(format!("end_minute = ?{param_idx}"));
+                        params.push(Box::new(v));
+                        param_idx += 1;
+                    } else {
+                        sets.push("end_minute = NULL".to_string());
+                    }
+                    fields.push("endMinute");
+                }
             }
-            if let Some(v) = payload.end_time {
-                sets.push(format!("end_time = ?{param_idx}"));
-                params.push(Box::new(v));
-                param_idx += 1;
-                fields.push("endTime");
-            }
-            if let Some(v) = payload.start_minute {
-                sets.push(format!("start_minute = ?{param_idx}"));
-                params.push(Box::new(v));
-                param_idx += 1;
-                fields.push("startMinute");
-            }
-            if let Some(v) = payload.end_minute {
-                sets.push(format!("end_minute = ?{param_idx}"));
-                params.push(Box::new(v));
-                param_idx += 1;
-                fields.push("endMinute");
-            }
-            if let Some(ref v) = payload.start_granularity {
+            if payload.start_granularity.is_some()
+                || start_granularity != current_start_granularity
+            {
                 sets.push(format!("start_granularity = ?{param_idx}"));
-                params.push(Box::new(v.clone()));
+                params.push(Box::new(start_granularity.to_string()));
                 param_idx += 1;
                 fields.push("startGranularity");
             }
-            if let Some(ref v) = payload.end_granularity {
+            if payload.end_granularity.is_some()
+                || end_granularity != current_end_granularity
+            {
                 sets.push(format!("end_granularity = ?{param_idx}"));
-                params.push(Box::new(v.clone()));
+                params.push(Box::new(end_granularity.to_string()));
                 param_idx += 1;
                 fields.push("endGranularity");
             }
@@ -3098,32 +3292,6 @@ pub fn agent_event_update_impl(
                 params.push(Box::new(val));
                 param_idx += 1;
                 fields.push("revealSceneId");
-            }
-
-            // 粒度 "none" は「その端点の時刻が存在しない」を意味する。UI の「点にする」/
-            // 粒度=none は endTime/startTime:null を送るが、Option<i64> では null と未指定を
-            // 区別できず end_time が SET 句に乗らずクリアされない（点へ変更しても期間に戻る）。
-            // 粒度をシグナルに、対応する time/minute を明示的に NULL へ落とす（時刻値が
-            // 同時指定された場合はそちらを優先＝二重 SET しない）。
-            if payload.end_granularity.as_deref() == Some("none") {
-                if !fields.contains(&"endTime") {
-                    sets.push("end_time = NULL".to_string());
-                    fields.push("endTime");
-                }
-                if !fields.contains(&"endMinute") {
-                    sets.push("end_minute = NULL".to_string());
-                    fields.push("endMinute");
-                }
-            }
-            if payload.start_granularity.as_deref() == Some("none") {
-                if !fields.contains(&"startTime") {
-                    sets.push("start_time = NULL".to_string());
-                    fields.push("startTime");
-                }
-                if !fields.contains(&"startMinute") {
-                    sets.push("start_minute = NULL".to_string());
-                    fields.push("startMinute");
-                }
             }
 
             let sql = format!(
@@ -4437,6 +4605,7 @@ mod tests {
         direction: &str,
     ) -> AgentUndoJournalPayload {
         AgentUndoJournalPayload {
+            request_id: None,
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
             journal_id: journal_id.to_string(),
@@ -4938,6 +5107,40 @@ mod tests {
         .expect("event_version")
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct EventDateState {
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        start_minute: Option<i64>,
+        end_minute: Option<i64>,
+        start_granularity: String,
+        end_granularity: String,
+        version: i64,
+    }
+
+    fn event_date_state(db: &Database, event_id: &str) -> EventDateState {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT start_time, end_time, start_minute, end_minute,
+                        start_granularity, end_granularity, version
+                 FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| {
+                    Ok(EventDateState {
+                        start_time: row.get(0)?,
+                        end_time: row.get(1)?,
+                        start_minute: row.get(2)?,
+                        end_minute: row.get(3)?,
+                        start_granularity: row.get(4)?,
+                        end_granularity: row.get(5)?,
+                        version: row.get(6)?,
+                    })
+                },
+            )?)
+        })
+        .expect("event_date_state")
+    }
+
     fn latest_change_payload(db: &Database, op_type: &str) -> Value {
         db.with_conn(|conn| {
             let raw: String = conn.query_row(
@@ -5024,6 +5227,219 @@ mod tests {
             ),
             changes_before,
         );
+    }
+
+    #[test]
+    fn event_create_rejects_invalid_chronicle_dates_without_side_effects() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+
+        let mut negative_minute = empty_create(&project_id, "negative minute");
+        negative_minute.start_time = Some(10);
+        negative_minute.start_minute = Some(-1);
+        negative_minute.start_granularity = Some("time".to_string());
+
+        let mut overflow_minute = empty_create(&project_id, "overflow minute");
+        overflow_minute.start_time = Some(10);
+        overflow_minute.start_minute = Some(0);
+        overflow_minute.start_granularity = Some("time".to_string());
+        overflow_minute.end_time = Some(11);
+        overflow_minute.end_minute = Some(1440);
+        overflow_minute.end_granularity = Some("time".to_string());
+
+        let mut reversed = empty_create(&project_id, "reversed");
+        reversed.start_time = Some(10);
+        reversed.start_minute = Some(18 * 60);
+        reversed.start_granularity = Some("time".to_string());
+        reversed.end_time = Some(10);
+        reversed.end_minute = Some(12 * 60);
+        reversed.end_granularity = Some("time".to_string());
+
+        let mut coarse_without_day = empty_create(&project_id, "coarse without day");
+        coarse_without_day.start_granularity = Some("day".to_string());
+
+        let mut end_without_start = empty_create(&project_id, "end without start");
+        end_without_start.end_time = Some(10);
+        end_without_start.end_granularity = Some("day".to_string());
+
+        for (payload, expected) in [
+            (negative_minute, "minute must be between 0 and 1439"),
+            (overflow_minute, "minute must be between 0 and 1439"),
+            (reversed, "must not precede start timestamp"),
+            (coarse_without_day, "granularity 'day' requires a day"),
+            (end_without_start, "end endpoint requires a start endpoint"),
+        ] {
+            let error = agent_event_create_impl(&db, payload).expect_err("invalid date must fail");
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert_eq!(table_count(&db, "events"), 0);
+            assert_eq!(table_count(&db, "undo_journal"), 0);
+            assert_eq!(table_count(&db, "change_events"), 0);
+        }
+    }
+
+    #[test]
+    fn event_create_normalizes_non_time_endpoint_components() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let mut payload = empty_create(&project_id, "canonical");
+        payload.start_time = Some(10);
+        payload.start_minute = Some(18 * 60);
+        payload.start_granularity = Some("day".to_string());
+        payload.end_time = Some(11);
+        payload.end_minute = Some(20 * 60);
+        payload.end_granularity = Some("none".to_string());
+
+        let created = agent_event_create_impl(&db, payload).expect("canonical create");
+        let event_id = created["entityId"].as_str().expect("entity id");
+        assert_eq!(
+            event_date_state(&db, event_id),
+            EventDateState {
+                start_time: Some(10),
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: "day".to_string(),
+                end_granularity: "none".to_string(),
+                version: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn event_update_time_to_day_clears_minute() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let mut seed = empty_create(&project_id, "timed");
+        seed.start_time = Some(10);
+        seed.start_minute = Some(18 * 60);
+        seed.start_granularity = Some("time".to_string());
+        let created = agent_event_create_impl(&db, seed).expect("timed create");
+        let event_id = created["entityId"].as_str().expect("entity id");
+
+        let mut patch = empty_update(&project_id, event_id);
+        patch.start_granularity = Some("day".to_string());
+        let updated = agent_event_update_impl(&db, patch).expect("time to day");
+        assert_eq!(updated["version"], 2);
+        assert_eq!(
+            event_date_state(&db, event_id),
+            EventDateState {
+                start_time: Some(10),
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: "day".to_string(),
+                end_granularity: "none".to_string(),
+                version: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn event_update_omitted_granularity_promotes_minute_to_time() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let mut seed = empty_create(&project_id, "coarse");
+        seed.start_time = Some(10);
+        seed.start_granularity = Some("day".to_string());
+        let created = agent_event_create_impl(&db, seed).expect("coarse create");
+        let event_id = created["entityId"].as_str().expect("entity id");
+
+        let mut patch = empty_update(&project_id, event_id);
+        patch.start_minute = Some(18 * 60);
+        let updated = agent_event_update_impl(&db, patch).expect("minute promotion");
+        assert_eq!(updated["version"], 2);
+        assert_eq!(
+            event_date_state(&db, event_id),
+            EventDateState {
+                start_time: Some(10),
+                end_time: None,
+                start_minute: Some(18 * 60),
+                end_minute: None,
+                start_granularity: "time".to_string(),
+                end_granularity: "none".to_string(),
+                version: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn event_unrelated_update_preserves_legacy_coarse_minute() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let mut seed = empty_create(&project_id, "legacy");
+        seed.start_time = Some(10);
+        seed.start_granularity = Some("day".to_string());
+        seed.end_time = Some(10);
+        seed.end_granularity = Some("day".to_string());
+        let created = agent_event_create_impl(&db, seed).expect("coarse create");
+        let event_id = created["entityId"].as_str().expect("entity id").to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE events
+                 SET start_minute = ?1, end_minute = ?2
+                 WHERE id = ?3",
+                rusqlite::params![18 * 60, 12 * 60, event_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy minute");
+
+        let mut patch = empty_update(&project_id, &event_id);
+        patch.title = Some("renamed".to_string());
+        let updated = agent_event_update_impl(&db, patch).expect("unrelated title update");
+        assert_eq!(updated["version"], 2);
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("renamed"));
+        assert_eq!(
+            event_date_state(&db, &event_id),
+            EventDateState {
+                start_time: Some(10),
+                end_time: Some(10),
+                start_minute: Some(18 * 60),
+                end_minute: Some(12 * 60),
+                start_granularity: "day".to_string(),
+                end_granularity: "day".to_string(),
+                version: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn event_update_validates_merged_chronicle_dates_without_mutation() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let mut seed = empty_create(&project_id, "interval");
+        seed.start_time = Some(10);
+        seed.start_minute = Some(18 * 60);
+        seed.start_granularity = Some("time".to_string());
+        seed.end_time = Some(10);
+        seed.end_minute = Some(20 * 60);
+        seed.end_granularity = Some("time".to_string());
+        let created = agent_event_create_impl(&db, seed).expect("valid interval");
+        let event_id = created["entityId"].as_str().expect("entity id").to_string();
+        let before = event_date_state(&db, &event_id);
+        let journals_before = table_count(&db, "undo_journal");
+        let changes_before = table_count(&db, "change_events");
+
+        let mut negative_minute = empty_update(&project_id, &event_id);
+        negative_minute.start_minute = Some(-1);
+
+        let mut overflow_minute = empty_update(&project_id, &event_id);
+        overflow_minute.end_minute = Some(1440);
+
+        let mut reversed = empty_update(&project_id, &event_id);
+        reversed.end_minute = Some(12 * 60);
+
+        for (payload, expected) in [
+            (negative_minute, "minute must be between 0 and 1439"),
+            (overflow_minute, "minute must be between 0 and 1439"),
+            (reversed, "must not precede start timestamp"),
+        ] {
+            let error = agent_event_update_impl(&db, payload).expect_err("invalid date must fail");
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert_eq!(event_date_state(&db, &event_id), before);
+            assert_eq!(table_count(&db, "undo_journal"), journals_before);
+            assert_eq!(table_count(&db, "change_events"), changes_before);
+        }
     }
 
     #[test]
@@ -5658,6 +6074,7 @@ mod tests {
         let mut p1 = empty_update(&project_id, &event_id);
         p1.title = Some("old".to_string());
         p1.start_time = Some(100);
+        p1.start_granularity = Some("day".to_string());
         agent_event_update_impl(&db, p1).unwrap();
 
         let mut p2 = empty_update(&project_id, &event_id);
@@ -6478,5 +6895,25 @@ mod tests {
         )
         .is_err());
         assert_eq!(relation_count(&db, &event_p1, &event_p2), 0);
+    }
+
+    #[test]
+    fn replay_related_event_ids_collect_both_relation_endpoints() {
+        let snapshot = json!({
+            "relations": {
+                "asCause": [{
+                    "causeEventId": "cause",
+                    "effectEventId": "effect",
+                }],
+                "asEffect": [{
+                    "causeEventId": "cause",
+                    "effectEventId": "effect",
+                }],
+            },
+        });
+        assert_eq!(
+            event_snapshot_related_ids(&snapshot),
+            vec!["cause".to_string(), "effect".to_string()]
+        );
     }
 }

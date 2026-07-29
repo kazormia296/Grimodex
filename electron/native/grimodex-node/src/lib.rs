@@ -212,7 +212,7 @@ fn pin_ime_workspace_request(
     }
 }
 
-/// agent_writes 18 コマンドの定形写像。FE の `{ payload }` を DTO へ
+/// agent_writes 19 コマンドの定形写像。FE の `{ payload }` を DTO へ
 /// deserialize し、共有 impl を with_db_state 上で呼んで結果 Value を JSON 文字列
 /// で返す (Tauri の `with_db(&ws, |db| agent_xxx_impl(db, payload))` の写像)。
 /// 各 impl 内で BEGIN IMMEDIATE → tracked write → commit_or_rollback が閉じる。
@@ -2010,7 +2010,7 @@ impl Backend {
     // commit_or_rollback が各 impl 内で閉じる。XPROJ ガード / 楽観ロック /
     // undo-redo はサーバサイド維持) ──────────────────────────────────────────
     //
-    // 18 コマンドはすべて FE が単一の `{ payload }` を送る。返り値は
+    // 19 コマンドはすべて FE が単一の `{ payload }` を送る。返り値は
     // AgentWriteResult / ProseStageResult (camelCase)。agent_write_cmd 定形で写像。
 
     #[napi]
@@ -2152,6 +2152,20 @@ impl Backend {
             "payload",
             payload,
             agent_writes::agent_event_delete_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_chronicle_bulk_mutate(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::chronicle_bulk::agent_chronicle_bulk_mutate_impl,
         )
         .await
     }

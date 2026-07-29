@@ -18,6 +18,7 @@ use crate::database::agent_writes::{
     AgentProposeSceneBodyPayload, AgentProseStageIdPayload, AgentSceneEventPayload,
     AgentSnippetCreatePayload, AgentUndoJournalPayload, AgentWriteBundlePayload,
 };
+use crate::database::chronicle_bulk::{self, AgentChronicleBulkPayload};
 
 use super::{with_db, AppError, WorkspaceState};
 
@@ -158,6 +159,16 @@ pub(crate) fn agent_event_delete(
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| {
         agent_writes::agent_event_delete_impl(db, payload)
+    })
+}
+
+#[tauri::command(async)]
+pub(crate) fn agent_chronicle_bulk_mutate(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentChronicleBulkPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        chronicle_bulk::agent_chronicle_bulk_mutate_impl(db, payload)
     })
 }
 

@@ -30,6 +30,11 @@ import {
   uiUnlinkSceneEvent,
 } from "@/features/agent-writes/event";
 import {
+  uiMutateChronicleBulk,
+  type ChronicleBulkMutationResult,
+  type ChronicleBulkOperation,
+} from "@/features/agent-writes/chronicleBulk";
+import {
   deriveSceneEventRows,
   isSceneEventId,
   sceneIdFromEventId,
@@ -65,6 +70,7 @@ import { announcePersistedBinding } from "@/features/editor/editorSaveRegistry";
 import {
   MIN_PER_DAY,
   moveEventToDayPatch,
+  resizeEventEndpointPatch,
   splitDayMinute,
   shiftEventPatch,
 } from "./chronicleShift";
@@ -81,6 +87,10 @@ import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { useSeasonConflicts } from "./useSeasonConflicts";
 import { useChronicleQuery } from "./useChronicleQuery";
+import {
+  chronicleScopeKey as makeChronicleScopeKey,
+  type ChronicleScope,
+} from "./chronicleScope";
 import { useChronicleViewportController } from "./useChronicleViewportController";
 import { announce } from "@/lib/a11y/announcer";
 import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
@@ -92,6 +102,31 @@ import {
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 
 type EventAggregateWriteResult = { version: number };
+type ChronicleAbsoluteDateFields = Pick<
+  Extract<ChronicleBulkOperation, { kind: "eventSetDate" }>,
+  | "startTime"
+  | "startMinute"
+  | "startGranularity"
+  | "endTime"
+  | "endMinute"
+  | "endGranularity"
+>;
+const EMPTY_INACTIVE_COLLECTION: never[] = [];
+
+/**
+ * Keep expensive Chronicle projections pinned while the keep-alive panel is
+ * hidden. Store subscriptions may still rerender the shell, but memoized lane,
+ * conflict, and world-geometry inputs only advance when the panel is active.
+ */
+function useActiveSnapshot<T>(
+  value: T,
+  isActive: boolean,
+  inactiveInitial: T,
+): T {
+  const snapshotRef = useRef(isActive ? value : inactiveInitial);
+  if (isActive) snapshotRef.current = value;
+  return snapshotRef.current;
+}
 
 function rollbackOptimisticEventPatch(
   current: EventRow,
@@ -113,6 +148,57 @@ function rollbackOptimisticEventPatch(
   return restored;
 }
 
+function absoluteChronicleDateFields(
+  event: EventRow,
+  patch: Partial<EventRow>,
+): ChronicleAbsoluteDateFields {
+  const startTime =
+    patch.startTime === undefined ? event.startTime : patch.startTime;
+  if (startTime === null) {
+    throw new Error(`Chronicle Event '${event.id}' has no start date`);
+  }
+  const rawStartMinute =
+    patch.startMinute === undefined ? event.startMinute : patch.startMinute;
+  const rawStartGranularity = patch.startGranularity ?? event.startGranularity;
+  const startGranularity =
+    rawStartGranularity === "none"
+      ? rawStartMinute === null
+        ? "day"
+        : "time"
+      : rawStartGranularity;
+  const startMinute =
+    startGranularity === "time" ? (rawStartMinute ?? 0) : null;
+
+  const endTime = patch.endTime === undefined ? event.endTime : patch.endTime;
+  if (endTime === null) {
+    return {
+      startTime,
+      startMinute,
+      startGranularity,
+      endTime: null,
+      endMinute: null,
+      endGranularity: "none",
+    };
+  }
+  const rawEndMinute =
+    patch.endMinute === undefined ? event.endMinute : patch.endMinute;
+  const rawEndGranularity = patch.endGranularity ?? event.endGranularity;
+  const endGranularity =
+    rawEndGranularity === "none"
+      ? rawEndMinute === null
+        ? "day"
+        : "time"
+      : rawEndGranularity;
+  return {
+    startTime,
+    startMinute,
+    startGranularity,
+    endTime,
+    endMinute: endGranularity === "time" ? (rawEndMinute ?? 0) : null,
+    endGranularity,
+  };
+}
+
 /**
  * 作中年表(Chronicle)パネル — 人物/場所レーン×作中時間軸の pan/zoom 年表。
  * 座標数学は chronicleAxis/Ticks/LanePack/CausalBezier（純関数）に委譲し、
@@ -123,7 +209,29 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const lang: DateLang = i18n.language?.startsWith("en") ? "en" : "ja";
   const projectId = useProjectStore((s) => s.currentProjectId);
   const workspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
-  const entries = useCodexStore((s) => s.entries);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (s) => s.workspaceOpenRevision,
+  );
+  const chronicleScope = useMemo<ChronicleScope | null>(
+    () =>
+      workspacePath && projectId
+        ? {
+            workspacePath,
+            openRevision: workspaceOpenRevision,
+            projectId,
+          }
+        : null,
+    [projectId, workspaceOpenRevision, workspacePath],
+  );
+  const scopeKey = chronicleScope
+    ? makeChronicleScopeKey(chronicleScope)
+    : null;
+  const liveEntries = useCodexStore((s) => s.entries);
+  const entries = useActiveSnapshot(
+    liveEntries,
+    isActive,
+    EMPTY_INACTIVE_COLLECTION,
+  );
   const selectedEventId = useChronicleStore((s) => s.selectedEventId);
   const selectedEventIds = useChronicleStore((s) => s.selectedEventIds);
   const setSelectedEventId = useChronicleStore((s) => s.setSelectedEventId);
@@ -136,7 +244,12 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   // Undo/Redo（bumpRevision のみ呼ぶ）後も DB から再取得して表示を更新する。
   const revisionCounter = useChronicleStore((s) => s.revisionCounter);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
-  const nodes = useTreeStore((s) => s.nodes);
+  const liveNodes = useTreeStore((s) => s.nodes);
+  const nodes = useActiveSnapshot(
+    liveNodes,
+    isActive,
+    EMPTY_INACTIVE_COLLECTION,
+  );
   // Scene-Event union の書き戻し（scene-event 編集 → シーン側プロパティ）に使う。
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
@@ -147,12 +260,13 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const documentVersionOriginRef = useRef(
     createEditorInstanceId("chronicle-panel"),
   );
-  const eventVersionProjectRef = useRef<string | null>(projectId);
+  const eventVersionScopeRef = useRef<string | null>(scopeKey);
   const eventVersionsRef = useRef(new Map<string, number>());
   const eventWriteChainsRef = useRef(new Map<string, Promise<unknown>>());
+  const bulkDateWriteChainsRef = useRef(new Map<string, Promise<void>>());
 
-  if (eventVersionProjectRef.current !== projectId) {
-    eventVersionProjectRef.current = projectId;
+  if (eventVersionScopeRef.current !== scopeKey) {
+    eventVersionScopeRef.current = scopeKey;
     eventVersionsRef.current.clear();
   }
 
@@ -166,8 +280,8 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       suggestedBaseVersion: number | undefined,
       write: (baseVersion: number) => Promise<T>,
     ): Promise<T> => {
-      const writeProjectId = projectId;
-      const chainKey = `${writeProjectId ?? ""}\u0000${eventId}`;
+      const writeScopeKey = scopeKey;
+      const chainKey = `${writeScopeKey ?? ""}\u0000${eventId}`;
       const previous =
         eventWriteChainsRef.current.get(chainKey) ?? Promise.resolve();
       const run = previous
@@ -184,7 +298,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             throw new Error(`Event version is unavailable: ${eventId}`);
           }
           const result = await write(baseVersion);
-          if (eventVersionProjectRef.current === writeProjectId) {
+          if (eventVersionScopeRef.current === writeScopeKey) {
             eventVersionsRef.current.set(
               eventId,
               Math.max(
@@ -208,7 +322,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         });
       return run;
     },
-    [projectId],
+    [scopeKey],
   );
 
   const chronicleCommandPorts = useMemo<ChronicleCommandPorts>(
@@ -300,7 +414,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   );
 
   const resetProjectTransientState = useCallback(
-    (nextProjectId: string | null) => {
+    (nextScope: ChronicleScope | null) => {
       setSelectedEventId(null);
       // 位置選択(ephemeral)も捨てる。残すと handleAdd が他プロジェクトの
       // codexId/日を新規イベントへ書き込みクロスプロジェクト参照を作る。
@@ -310,7 +424,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       lastPersistedOrderRef.current = [];
       // 永続ビューがあれば維持（再フィットしない）、無ければ新規プロジェクトに
       // 合わせて全体フィットし直す。
-      resetViewportForProjectRef.current(nextProjectId);
+      resetViewportForProjectRef.current(nextScope?.projectId ?? null);
     },
     [setSelectedEventId, setSelectedPosition],
   );
@@ -343,20 +457,30 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     sceneLinks,
     relations,
     participants,
-    snapshotProjectId,
+    snapshotScopeKey,
+    requestGeneration,
+    status: queryStatus,
+    error: queryError,
+    isSnapshotFresh,
+    retry: retryChronicleQuery,
   } = useChronicleQuery({
-    projectId,
+    scope: chronicleScope,
+    enabled: isActive,
     reloadKey,
     revisionCounter,
-    onProjectChanged: resetProjectTransientState,
-    onProjectLoaded: handleProjectLoaded,
+    onScopeChanged: resetProjectTransientState,
+    onScopeLoaded: handleProjectLoaded,
     onEventsLoaded: handleProjectEventsLoaded,
   });
+  const chronicleSnapshotOwned =
+    scopeKey !== null && snapshotScopeKey === scopeKey;
+  const chronicleInteractive =
+    isActive && chronicleSnapshotOwned && isSnapshotFresh;
 
   const latestEventsRef = useRef<EventRow[]>(events);
   latestEventsRef.current = events;
   for (const event of events) {
-    if (event.projectId !== projectId) continue;
+    if (!chronicleSnapshotOwned || event.projectId !== projectId) continue;
     eventVersionsRef.current.set(
       event.id,
       Math.max(
@@ -501,10 +625,11 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
 
   // codex レーン順を per-project でロード（projectSettings）。
   useEffect(() => {
-    if (!projectId) return;
+    if (!isActive || !projectId || !scopeKey) return;
+    const loadScopeKey = scopeKey;
     let cancelled = false;
     void loadLaneOrder(projectId).then((order) => {
-      if (!cancelled) {
+      if (!cancelled && eventVersionScopeRef.current === loadScopeKey) {
         setLaneOrder(order);
         lastPersistedOrderRef.current = order;
       }
@@ -512,7 +637,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [isActive, projectId, scopeKey]);
 
   // Scene-Event union: 作中日付を持つシーンを擬似 EventRow 化してタイムラインに
   // 一級トークンとして混ぜる（描画・選択・レイアウト専用）。実 event の `events` は
@@ -534,8 +659,11 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     ageConflicts,
     ageConflictIds,
     saveCalendar,
+    conflictLoadError,
+    retryConflicts,
   } = useSeasonConflicts({
-    projectId,
+    scope: chronicleScope,
+    enabled: isActive && chronicleSnapshotOwned,
     events,
     links: sceneLinks,
     ageExtraEvents: sceneEventRows,
@@ -588,10 +716,10 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       .sort((a, b) => a - b);
     return days.length ? days[Math.floor(days.length / 2)] : 0;
   }, [eff]);
-  const chronicleSnapshotReady =
-    projectId !== null && snapshotProjectId === projectId;
+  const chronicleSnapshotReady = chronicleSnapshotOwned;
   const viewport = useChronicleViewportController({
     workspacePath,
+    workspaceOpenRevision,
     projectId,
     dataReady: chronicleSnapshotReady,
     dataStart: eff.dataStart,
@@ -793,9 +921,14 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
                 ? "time"
                 : "none";
       if (gran === "none") return "";
-      const floorDay = Math.floor(day);
-      const minute = Math.round((day - floorDay) * MIN_PER_DAY);
-      return formatChronicleDate(floorDay, minute, gran, cal, lang);
+      const normalized = splitDayMinute(day, gran === "time", null);
+      return formatChronicleDate(
+        normalized.time,
+        normalized.minute,
+        gran,
+        cal,
+        lang,
+      );
     },
     [eff.hasCalendarAxis, layout.ticks.level, cal, lang],
   );
@@ -963,8 +1096,29 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const defaultCreateDay = useCallback((): number | null => {
     if (!eff.hasCalendarAxis || trackW <= 0 || !(view.pxPerDay > 0))
       return null;
-    return Math.round(view.viewStartDay + trackW / 2 / view.pxPerDay);
+    return view.viewStartDay + trackW / 2 / view.pxPerDay;
   }, [eff.hasCalendarAxis, trackW, view]);
+
+  const createTimePatch = useCallback(
+    (day: number) => {
+      const subDay =
+        rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
+      const start = splitDayMinute(day, subDay, null);
+      return subDay
+        ? {
+            startTime: start.time,
+            // splitDayMinute guarantees a canonical 0..1439 minute for
+            // sub-day input.
+            startMinute: start.minute ?? 0,
+            startGranularity: "time" as const,
+          }
+        : {
+            startTime: start.time,
+            startGranularity: "day" as const,
+          };
+    },
+    [rulerLevelRef],
+  );
 
   // 新規作成は「選択中の位置」（空白クリック/ダブルクリック由来）、無ければビュー中央へ置く。
   const handleAdd = useCallback(async () => {
@@ -981,15 +1135,12 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
           title: t("chronicle.newEvent", "新しいイベント"),
           ...(primaryCodexId ? { primaryCodexId } : {}),
           ...(laneGroup ? { laneGroup } : {}),
-          ...(day != null
-            ? { startTime: Math.round(day), startGranularity: "day" as const }
-            : {}),
+          ...(day != null ? createTimePatch(day) : {}),
         },
         chronicleCommandPorts,
       );
       setSelectedEventId(ev.id);
       setSelectedPosition(null);
-      refresh();
     } catch {
       toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
     } finally {
@@ -999,10 +1150,10 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     projectId,
     creating,
     t,
-    refresh,
     setSelectedEventId,
     setSelectedPosition,
     defaultCreateDay,
+    createTimePatch,
     chronicleCommandPorts,
   ]);
 
@@ -1030,12 +1181,20 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   // マーカー再配置（横=startTime / 縦=レーン再割当。interval は期間維持）。
   // 時刻 zoom 中は時刻も吸着先へ、日以上 zoom では時刻を保持して day だけ動かす。
   const handleMoveEvent = useCallback(
-    (id: string, newStartDay: number | null, newCodexId: string | null) => {
+    (
+      id: string,
+      newStartDay: number | null,
+      newCodexId: string | null | undefined,
+    ) => {
       const e = renderEvents.find((x) => x.id === id);
       if (!e) return;
-      // 移動先レーンを実 codex 割当 or 未割当グループに解く。""=NULL クリア。
-      const { primaryCodexId, laneGroup } = decodeLaneTarget(newCodexId);
-      const patch: Partial<EventRow> = { primaryCodexId, laneGroup };
+      const patch: Partial<EventRow> = {};
+      // undefined は横移動だけでレーン不変。null は基底未割当への明示drop。
+      if (newCodexId !== undefined) {
+        const { primaryCodexId, laneGroup } = decodeLaneTarget(newCodexId);
+        patch.primaryCodexId = primaryCodexId;
+        patch.laneGroup = laneGroup;
+      }
       if (newStartDay != null) {
         const subDay =
           rulerLevelRef.current === "hour" ||
@@ -1063,9 +1222,10 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
           );
         }
       }
+      if (Object.keys(patch).length === 0) return;
       void patchById(id, patch);
     },
-    [renderEvents, patchById],
+    [renderEvents, patchById, rulerLevelRef],
   );
 
   // 選択中の全イベントを同じ「日数差分(端数可)」だけ平行移動（レーン・期間長は保持）。
@@ -1079,30 +1239,138 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       const subDay =
         rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
       if (!subDay && Math.round(deltaDays) === 0) return;
-      for (const id of selectedIdSet) {
-        // A rapid key repeat can enqueue another nudge before React rerenders.
-        // Real events therefore read the synchronously maintained optimistic
-        // snapshot; scene projections continue to use renderEvents.
-        const e = isSceneEventId(id)
-          ? renderEvents.find((x) => x.id === id)
-          : latestEventsRef.current.find((x) => x.id === id);
-        if (!e || e.startTime == null) continue;
-        void patchById(
-          id,
-          shiftEventPatch(
-            {
-              startTime: e.startTime,
-              startMinute: e.startMinute,
-              endTime: e.endTime,
-              endMinute: e.endMinute,
-            },
-            deltaDays,
-            subDay,
-          ),
-        );
-      }
+      if (!projectId || !scopeKey || selectedIdSet.size === 0) return;
+      const selectedIds = [...selectedIdSet];
+      const writeScopeKey = scopeKey;
+      const previous =
+        bulkDateWriteChainsRef.current.get(writeScopeKey) ?? Promise.resolve();
+      const run = previous
+        .catch(() => undefined)
+        .then(async () => {
+          if (eventVersionScopeRef.current !== writeScopeKey || !projectId) {
+            return;
+          }
+          const operations: ChronicleBulkOperation[] = [];
+          for (const id of selectedIds) {
+            if (isSceneEventId(id)) {
+              const sceneId = sceneIdFromEventId(id);
+              const scene = useTreeStore
+                .getState()
+                .nodes.find((node) => node.id === sceneId);
+              if (!scene || scene.chronicleStartTime == null) continue;
+              const event = deriveSceneEventRows([scene])[0];
+              if (!event) continue;
+              const patch = shiftEventPatch(
+                {
+                  startTime: event.startTime!,
+                  startMinute: event.startMinute,
+                  endTime: event.endTime,
+                  endMinute: event.endMinute,
+                },
+                deltaDays,
+                subDay,
+              );
+              operations.push({
+                kind: "sceneSetDate",
+                sceneId,
+                baseUpdatedAt: scene.updatedAt,
+                ...absoluteChronicleDateFields(event, patch),
+              });
+              continue;
+            }
+            const event = latestEventsRef.current.find(
+              (candidate) => candidate.id === id,
+            );
+            if (!event || event.startTime == null) continue;
+            const patch = shiftEventPatch(
+              {
+                startTime: event.startTime,
+                startMinute: event.startMinute,
+                endTime: event.endTime,
+                endMinute: event.endMinute,
+              },
+              deltaDays,
+              subDay,
+            );
+            operations.push({
+              kind: "eventSetDate",
+              eventId: id,
+              baseVersion: eventVersionsRef.current.get(id) ?? event.version,
+              ...absoluteChronicleDateFields(event, patch),
+            });
+          }
+          if (operations.length === 0) return;
+
+          const result = await uiMutateChronicleBulk(operations);
+          if (eventVersionScopeRef.current !== writeScopeKey) return;
+          const eventResults = new Map(
+            result.eventResults.flatMap((item) =>
+              item.version === null
+                ? []
+                : [[item.eventId, item.version] as const],
+            ),
+          );
+          const eventOperations = new Map(
+            operations.flatMap((operation) =>
+              operation.kind === "eventSetDate"
+                ? [[operation.eventId, operation] as const]
+                : [],
+            ),
+          );
+          for (const [eventId, version] of eventResults) {
+            eventVersionsRef.current.set(
+              eventId,
+              Math.max(eventVersionsRef.current.get(eventId) ?? 0, version),
+            );
+          }
+          mutateEvents((current) =>
+            current.map((event) => {
+              const operation = eventOperations.get(event.id);
+              const version = eventResults.get(event.id);
+              if (!operation || version === undefined) return event;
+              return {
+                ...event,
+                startTime: operation.startTime,
+                startMinute: operation.startMinute,
+                startGranularity: operation.startGranularity,
+                endTime: operation.endTime,
+                endMinute: operation.endMinute,
+                endGranularity: operation.endGranularity,
+                version,
+              };
+            }),
+          );
+          const sceneOperations = operations.filter(
+            (
+              operation,
+            ): operation is Extract<
+              ChronicleBulkOperation,
+              { kind: "sceneSetDate" }
+            > => operation.kind === "sceneSetDate",
+          );
+          useTreeStore
+            .getState()
+            .applyChronicleBulkSceneProjection(
+              projectId,
+              sceneOperations,
+              result.sceneResults,
+            );
+        });
+      trackPendingEditorWrite(run);
+      bulkDateWriteChainsRef.current.set(writeScopeKey, run);
+      void run
+        .catch(() => {
+          if (eventVersionScopeRef.current === writeScopeKey) {
+            toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+          }
+        })
+        .finally(() => {
+          if (bulkDateWriteChainsRef.current.get(writeScopeKey) === run) {
+            bulkDateWriteChainsRef.current.delete(writeScopeKey);
+          }
+        });
     },
-    [selectedIdSet, renderEvents, patchById],
+    [selectedIdSet, projectId, scopeKey, rulerLevelRef, mutateEvents, t],
   );
 
   // 一括ドラッグ: primary の吸着先(newStartDay=グリッド吸着済)と元の先端の差分を全選択へ。
@@ -1125,23 +1393,22 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       if (!e || e.startTime == null) return;
       const subDay =
         rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
-      if (edge === "start") {
-        const s = splitDayMinute(newDay, subDay, e.startMinute);
-        const patch: Partial<EventRow> = {
-          startTime: Math.min(s.time, e.endTime ?? s.time),
-        };
-        if (subDay) patch.startMinute = s.minute;
-        void patchById(id, patch);
-      } else {
-        const s = splitDayMinute(newDay, subDay, e.endMinute);
-        const patch: Partial<EventRow> = {
-          endTime: Math.max(s.time, e.startTime),
-        };
-        if (subDay) patch.endMinute = s.minute;
-        void patchById(id, patch);
-      }
+      void patchById(
+        id,
+        resizeEventEndpointPatch(
+          {
+            startTime: e.startTime,
+            startMinute: e.startMinute,
+            endTime: e.endTime,
+            endMinute: e.endMinute,
+          },
+          edge,
+          newDay,
+          subDay,
+        ),
+      );
     },
-    [renderEvents, patchById],
+    [renderEvents, patchById, rulerLevelRef],
   );
 
   // 期間端伸縮のキーボード代替（Shift+←/→=終了端, Ctrl+Shift=開始端）。プライマリ選択の
@@ -1162,7 +1429,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
           : e.endTime + (subDay ? (e.endMinute ?? 0) / MIN_PER_DAY : 0);
       handleResizeEvent(selectedEventId, edge, base + deltaDays);
     },
-    [selectedEventId, renderEvents, handleResizeEvent],
+    [selectedEventId, renderEvents, handleResizeEvent, rulerLevelRef],
   );
 
   // D&D 因果エッジ作成（ドラッグ元=原因→落下先=結果）。
@@ -1173,12 +1440,11 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         return;
       try {
         await chronicleCommandPorts.event.addRelation(causeId, effectId);
-        refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [projectId, refresh, t, chronicleCommandPorts],
+    [projectId, t, chronicleCommandPorts],
   );
 
   // 位置にイベント作成（ダブルクリック/コンテキストメニュー）。
@@ -1194,15 +1460,12 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             title: t("chronicle.newEvent", "新しいイベント"),
             ...(primaryCodexId ? { primaryCodexId } : {}),
             ...(laneGroup ? { laneGroup } : {}),
-            ...(d != null
-              ? { startTime: Math.round(d), startGranularity: "day" as const }
-              : {}),
+            ...(d != null ? createTimePatch(d) : {}),
           },
           chronicleCommandPorts,
         );
         setSelectedEventId(ev.id);
         setSelectedPosition(null);
-        refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       } finally {
@@ -1213,10 +1476,10 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       projectId,
       creating,
       t,
-      refresh,
       setSelectedEventId,
       setSelectedPosition,
       defaultCreateDay,
+      createTimePatch,
       chronicleCommandPorts,
     ],
   );
@@ -1239,22 +1502,21 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         );
         if (useChronicleStore.getState().selectedEventId === id)
           setSelectedEventId(null);
-        refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [projectId, events, refresh, setSelectedEventId, t, chronicleCommandPorts],
+    [projectId, events, setSelectedEventId, t, chronicleCommandPorts],
   );
 
   // 範囲選択(Shift)用の時間順 id 列（startDay 昇順, 同値は id）。
   const timeOrderedIds = useMemo(
     () =>
-      events
+      renderEvents
         .map((e) => ({ id: e.id, d: eff.byId.get(e.id)?.startDay ?? 0 }))
         .sort((a, b) => a.d - b.d || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
         .map((x) => x.id),
-    [events, eff],
+    [renderEvents, eff],
   );
 
   // 出来事クリック。修飾なし=単一選択（＋位置の縦ライン）, Ctrl/⌘=トグル, Shift=範囲。
@@ -1268,14 +1530,15 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       }
       // 単一選択（＋開始位置に縦ライン）。
       setSelectedEventId(id);
-      const e = events.find((x) => x.id === id);
+      const e = renderEvents.find((x) => x.id === id);
       setSelectedPosition(
-        e && e.startTime != null ? e.startTime : null,
+        eff.byId.get(id)?.startDay ?? null,
         e?.primaryCodexId ?? null,
       );
     },
     [
-      events,
+      renderEvents,
+      eff,
       timeOrderedIds,
       setSelection,
       setSelectedEventId,
@@ -1319,16 +1582,21 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   // 保存失敗時は永続済みスナップショットへ同期復帰（DB 再読込せず＝多タブ競合も回避）。
   const handleReorderLanes = useCallback(
     (newOrder: string[], commit: boolean) => {
+      if (!chronicleInteractive) return;
       const merged = mergeLaneOrder(laneOrderRef.current, newOrder, (id) =>
         entriesRef.current.some((e) => e.id === id),
       );
       setLaneOrder(merged);
-      if (commit && projectId) {
+      if (commit && projectId && scopeKey) {
+        const saveScopeKey = scopeKey;
         void saveLaneOrder(projectId, merged)
           .then(() => {
-            lastPersistedOrderRef.current = merged;
+            if (eventVersionScopeRef.current === saveScopeKey) {
+              lastPersistedOrderRef.current = merged;
+            }
           })
           .catch(() => {
+            if (eventVersionScopeRef.current !== saveScopeKey) return;
             toast.error(
               t("chronicle.reorderSaveFailed", "レーン順の保存に失敗しました"),
             );
@@ -1336,14 +1604,14 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
           });
       }
     },
-    [projectId, t],
+    [chronicleInteractive, projectId, scopeKey, t],
   );
 
   // 未割当レーンのピッカーで群ごと Codex へ割り当てる（その群の未割当出来事を一括）。
   // groupId=null は基底未割当（laneGroup 無し）の出来事すべてが対象。
   const handleAssignGroup = useCallback(
     async (groupId: string | null, codexId: string) => {
-      if (!projectId || !codexId) return;
+      if (!projectId || !codexId || !chronicleInteractive) return;
       const targets = events.filter((e) => {
         const assigned =
           e.primaryCodexId && entries.some((x) => x.id === e.primaryCodexId);
@@ -1351,34 +1619,28 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         const g = e.laneGroup && e.laneGroup.length ? e.laneGroup : null;
         return groupId == null ? g == null : g === groupId;
       });
+      if (targets.length === 0) {
+        if (groupId) handleHideGroup(groupId);
+        return;
+      }
       try {
-        // 対象は互いに独立なので並列に書く（逐次 await で DB を N 回直列に
-        // 待たない）。undo journal は 1 件=1 エントリのまま。
-        await Promise.all(
-          targets.map((e) =>
-            patchChronicleItem(
-              { kind: "event", id: e.id },
-              { primaryCodexId: codexId, laneGroup: "" },
-              chronicleCommandPorts,
-              { baseVersion: e.version },
-            ),
+        await uiMutateChronicleBulk(
+          targets.map(
+            (event): ChronicleBulkOperation => ({
+              kind: "eventSetLane",
+              eventId: event.id,
+              baseVersion: event.version,
+              primaryCodexId: codexId,
+              laneGroup: null,
+            }),
           ),
         );
         if (groupId) handleHideGroup(groupId);
-        refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [
-      projectId,
-      events,
-      entries,
-      handleHideGroup,
-      refresh,
-      t,
-      chronicleCommandPorts,
-    ],
+    [projectId, chronicleInteractive, events, entries, handleHideGroup, t],
   );
 
   // ── 複数選択の一括操作（multiCount>1 のとき下部バーに表示） ──
@@ -1387,76 +1649,129 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     [setSelectedEventId],
   );
 
+  const applyBulkSceneProjection = useCallback(
+    (
+      operations: readonly ChronicleBulkOperation[],
+      result: ChronicleBulkMutationResult,
+    ) => {
+      if (
+        !projectId ||
+        !scopeKey ||
+        eventVersionScopeRef.current !== scopeKey
+      ) {
+        return;
+      }
+      const sceneOperations = new Map(
+        operations.flatMap((operation) =>
+          operation.kind === "sceneClearDate" ||
+          operation.kind === "sceneSetPov" ||
+          operation.kind === "sceneSetDate"
+            ? [[operation.sceneId, operation] as const]
+            : [],
+        ),
+      );
+      useTreeStore
+        .getState()
+        .applyChronicleBulkSceneProjection(
+          projectId,
+          [...sceneOperations.values()],
+          result.sceneResults,
+        );
+    },
+    [projectId, scopeKey],
+  );
+
   // 選択中をまとめて削除。scene-event は作中日付クリア、実 event は削除に振り分ける。
   const handleBulkDelete = useCallback(async () => {
-    if (!projectId || selectedIdSet.size === 0) return;
+    if (!projectId || !chronicleInteractive || selectedIdSet.size === 0) {
+      return;
+    }
     try {
-      // 対象は互いに独立なので並列に消す（undo journal は 1 件=1 エントリのまま）。
-      await Promise.all(
-        [...selectedIdSet].map((id) => {
+      const operations = [...selectedIdSet].map(
+        (id): ChronicleBulkOperation => {
           if (isSceneEventId(id)) {
-            return deleteChronicleItem(
-              { kind: "scene", id: sceneIdFromEventId(id) },
-              chronicleCommandPorts,
-            );
+            const sceneId = sceneIdFromEventId(id);
+            const scene = nodes.find((node) => node.id === sceneId);
+            if (!scene) throw new Error(`Scene not found: ${sceneId}`);
+            return {
+              kind: "sceneClearDate",
+              sceneId,
+              baseUpdatedAt: scene.updatedAt,
+            };
           }
           const event = events.find((candidate) => candidate.id === id);
           if (!event) throw new Error(`Event not found: ${id}`);
-          return deleteChronicleItem(
-            { kind: "event", id },
-            chronicleCommandPorts,
-            { baseVersion: event.version },
-          );
-        }),
+          return {
+            kind: "eventDelete",
+            eventId: id,
+            baseVersion: event.version,
+          };
+        },
       );
+      const result = await uiMutateChronicleBulk(operations);
+      applyBulkSceneProjection(operations, result);
       setSelectedEventId(null);
-      refresh();
     } catch {
       toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
     }
   }, [
     projectId,
+    chronicleInteractive,
     selectedIdSet,
     events,
+    nodes,
+    applyBulkSceneProjection,
     setSelectedEventId,
-    refresh,
     t,
-    chronicleCommandPorts,
   ]);
 
   // 選択中をまとめて指定 Codex レーンへ割当（""=未割当へ戻す）。
   // scene-event はレーン=POV なので updatePovCharacter へ振り分ける。
   const handleBulkAssign = useCallback(
     async (codexId: string) => {
-      if (!projectId || selectedIdSet.size === 0) return;
+      if (!projectId || !chronicleInteractive || selectedIdSet.size === 0) {
+        return;
+      }
       try {
-        // 対象は互いに独立なので並列に書く（undo journal は 1 件=1 エントリのまま）。
-        await Promise.all(
-          [...selectedIdSet].map((id) => {
-            const sceneEvent = isSceneEventId(id);
-            return patchChronicleItem(
-              sceneEvent
-                ? { kind: "scene", id: sceneIdFromEventId(id) }
-                : { kind: "event", id },
-              sceneEvent
-                ? { primaryCodexId: codexId || null }
-                : { primaryCodexId: codexId, laneGroup: "" },
-              chronicleCommandPorts,
-              sceneEvent
-                ? undefined
-                : {
-                    baseVersion: events.find((event) => event.id === id)
-                      ?.version,
-                  },
-            );
-          }),
+        const operations = [...selectedIdSet].map(
+          (id): ChronicleBulkOperation => {
+            if (isSceneEventId(id)) {
+              const sceneId = sceneIdFromEventId(id);
+              const scene = nodes.find((node) => node.id === sceneId);
+              if (!scene) throw new Error(`Scene not found: ${sceneId}`);
+              return {
+                kind: "sceneSetPov",
+                sceneId,
+                baseUpdatedAt: scene.updatedAt,
+                povCharacterId: codexId || null,
+              };
+            }
+            const event = events.find((candidate) => candidate.id === id);
+            if (!event) throw new Error(`Event not found: ${id}`);
+            return {
+              kind: "eventSetLane",
+              eventId: id,
+              baseVersion: event.version,
+              primaryCodexId: codexId || null,
+              laneGroup: null,
+            };
+          },
         );
-        refresh();
+        const result = await uiMutateChronicleBulk(operations);
+        applyBulkSceneProjection(operations, result);
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [projectId, selectedIdSet, events, refresh, t, chronicleCommandPorts],
+    [
+      projectId,
+      chronicleInteractive,
+      selectedIdSet,
+      events,
+      nodes,
+      applyBulkSceneProjection,
+      t,
+    ],
   );
 
   const patchSelected = useCallback(
@@ -1526,18 +1841,10 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
           : { baseVersion: selected.version },
       );
       setSelectedEventId(null);
-      refresh();
     } catch {
       toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
     }
-  }, [
-    selected,
-    projectId,
-    refresh,
-    setSelectedEventId,
-    t,
-    chronicleCommandPorts,
-  ]);
+  }, [selected, projectId, setSelectedEventId, t, chronicleCommandPorts]);
 
   const selectedSceneIds = useMemo(
     () =>
@@ -1663,17 +1970,15 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     async (causeId: string) => {
       if (!selected || !projectId || isSceneEventId(selected.id)) return;
       await chronicleCommandPorts.event.addRelation(causeId, selected.id);
-      refresh();
     },
-    [selected, projectId, refresh, chronicleCommandPorts],
+    [selected, projectId, chronicleCommandPorts],
   );
   const handleRemoveCause = useCallback(
     async (causeId: string) => {
       if (!selected || !projectId || isSceneEventId(selected.id)) return;
       await chronicleCommandPorts.event.removeRelation(causeId, selected.id);
-      refresh();
     },
-    [selected, projectId, refresh, chronicleCommandPorts],
+    [selected, projectId, chronicleCommandPorts],
   );
 
   const handleLinkScene = useCallback(
@@ -1704,24 +2009,22 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             chronicleCommandPorts,
           );
         }
-        refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [selected, projectId, refresh, t, chronicleCommandPorts],
+    [selected, projectId, t, chronicleCommandPorts],
   );
   const handleUnlinkScene = useCallback(
     async (sceneId: string) => {
       if (!selected || !projectId || isSceneEventId(selected.id)) return;
       try {
         await chronicleCommandPorts.event.unlinkScene(sceneId, selected.id);
-        refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [selected, projectId, refresh, t, chronicleCommandPorts],
+    [selected, projectId, t, chronicleCommandPorts],
   );
 
   // 選択中イベントの参加レーン（複数 Codex 所属）。
@@ -1748,12 +2051,11 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
               : event,
           ),
         );
-        refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [selected, projectId, refresh, mutateEvents, t, chronicleCommandPorts],
+    [selected, projectId, mutateEvents, t, chronicleCommandPorts],
   );
 
   const n = renderEvents.length;
@@ -1820,9 +2122,10 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         showEdges={showEdges}
         density={density}
         labelsOn={labelsOn}
-        locked={locked}
+        locked={locked || !chronicleInteractive}
         calendar={calendar}
         creating={creating}
+        disabled={!chronicleInteractive}
         onNew={handleAdd}
         onExtract={() => setExtractOpen(true)}
         onSaveCalendar={(c) => void saveCalendar(c)}
@@ -1839,6 +2142,52 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         onToggleLabels={() => setLabelsOn((s) => !s)}
       />
 
+      {queryError && (
+        <div
+          role="alert"
+          data-testid="chronicle-query-error"
+          className="flex flex-none items-center gap-3 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+        >
+          <span className="min-w-0 flex-1">
+            {chronicleSnapshotOwned
+              ? t(
+                  "chronicle.refreshFailed",
+                  "最新状態を取得できませんでした。表示中の年表は読み取り専用です。",
+                )
+              : t("chronicle.loadFailed", "年表を読み込めませんでした。")}
+          </span>
+          <button
+            type="button"
+            onClick={retryChronicleQuery}
+            className="rounded-md border border-current px-2 py-1 font-medium"
+          >
+            {t("common.retry", "再試行")}
+          </button>
+        </div>
+      )}
+
+      {isActive && conflictLoadError && chronicleSnapshotOwned && (
+        <div
+          role="alert"
+          data-testid="chronicle-conflict-error"
+          className="flex flex-none items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
+        >
+          <span className="min-w-0 flex-1">
+            {t(
+              "chronicle.conflictRefreshFailed",
+              "本文整合チェックを更新できませんでした。直前の結果を表示しています。",
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={retryConflicts}
+            className="rounded-md border border-current px-2 py-1 font-medium"
+          >
+            {t("common.retry", "再試行")}
+          </button>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {showEventList && (
           <ChronicleEventList
@@ -1849,7 +2198,21 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             onClose={() => setShowEventList(false)}
           />
         )}
-        {n === 0 ? (
+        {!chronicleSnapshotOwned &&
+        (queryStatus === "idle" ||
+          queryStatus === "loading" ||
+          queryStatus === "refreshing") ? (
+          <div
+            data-testid="chronicle-loading"
+            className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground"
+          >
+            {t("chronicle.loading", "年表を読み込んでいます…")}
+          </div>
+        ) : !chronicleSnapshotOwned && queryStatus === "error" ? (
+          <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
+            {t("chronicle.loadFailed", "年表を読み込めませんでした。")}
+          </div>
+        ) : n === 0 ? (
           <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
             {t(
               "chronicle.empty",
@@ -1859,6 +2222,8 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         ) : (
           <ChronicleViewport
             isActive={isActive && chronicleSnapshotReady}
+            isInteractive={chronicleInteractive}
+            interactionEpoch={requestGeneration ?? scopeKey ?? ""}
             view={view}
             onViewChange={applyView}
             onMeasureTrack={setTrackW}
@@ -1874,7 +2239,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             labelsOn={labelsOn}
             onSelectEvent={handleSelectEvent}
             laneOptions={laneOptions}
-            locked={locked}
+            locked={locked || !chronicleInteractive}
             onAssignGroup={handleAssignGroup}
             onAddLane={handleAddLane}
             onHideGroup={handleHideGroup}
@@ -1901,57 +2266,63 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             formatDayLabel={formatDragDayLabel}
           />
         )}
-        {showInspector && selected && multiCount <= 1 && (
-          <ChronicleInspector
-            event={selected}
-            width={inspectorWidth}
-            onWidthChange={setInspectorWidth}
-            laneOptions={laneOptions}
-            locations={locations}
-            scenes={scenes}
-            calendar={cal}
-            conflicts={conflicts.filter((c) => c.eventId === selected.id)}
-            ageConflicts={ageConflicts.filter((c) => c.eventId === selected.id)}
-            hasTwoPlacesIssue={twoPlacesConflicts.some(
-              (c) => c.eventA === selected.id || c.eventB === selected.id,
-            )}
-            hasCausalIssue={selectedHasCausalIssue}
-            isScene={selectedIsScene}
-            linkedSceneCount={selectedSceneIds.length}
-            linkedSceneIds={selectedSceneIds}
-            onLinkScene={handleLinkScene}
-            onUnlinkScene={handleUnlinkScene}
-            onOpenScene={
-              primaryLinkedSceneId
-                ? () => handleOpenScene(primaryLinkedSceneId)
-                : undefined
-            }
-            onOpenSceneById={handleOpenScene}
-            allEvents={events}
-            causeIds={selectedCauseIds}
-            participantIds={selectedParticipants}
-            onSetParticipants={handleSetParticipants}
-            onAddCause={handleAddCause}
-            onRemoveCause={handleRemoveCause}
-            onStamp={handleStamp}
-            onPull={handlePull}
-            onPatch={handlePatch}
-            onPatchDraft={handlePatchDraft}
-            onPatchDetail={handlePatchDetail}
-            onResolveExternalVersion={(version) => {
-              eventVersionsRef.current.set(
-                selected.id,
-                Math.max(
-                  eventVersionsRef.current.get(selected.id) ?? selected.version,
-                  version,
-                ),
-              );
-            }}
-            onDelete={handleDelete}
-            onClose={() => setSelectedEventId(null)}
-            lang={lang}
-          />
-        )}
+        {showInspector &&
+          chronicleInteractive &&
+          selected &&
+          multiCount <= 1 && (
+            <ChronicleInspector
+              event={selected}
+              width={inspectorWidth}
+              onWidthChange={setInspectorWidth}
+              laneOptions={laneOptions}
+              locations={locations}
+              scenes={scenes}
+              calendar={cal}
+              conflicts={conflicts.filter((c) => c.eventId === selected.id)}
+              ageConflicts={ageConflicts.filter(
+                (c) => c.eventId === selected.id,
+              )}
+              hasTwoPlacesIssue={twoPlacesConflicts.some(
+                (c) => c.eventA === selected.id || c.eventB === selected.id,
+              )}
+              hasCausalIssue={selectedHasCausalIssue}
+              isScene={selectedIsScene}
+              linkedSceneCount={selectedSceneIds.length}
+              linkedSceneIds={selectedSceneIds}
+              onLinkScene={handleLinkScene}
+              onUnlinkScene={handleUnlinkScene}
+              onOpenScene={
+                primaryLinkedSceneId
+                  ? () => handleOpenScene(primaryLinkedSceneId)
+                  : undefined
+              }
+              onOpenSceneById={handleOpenScene}
+              allEvents={events}
+              causeIds={selectedCauseIds}
+              participantIds={selectedParticipants}
+              onSetParticipants={handleSetParticipants}
+              onAddCause={handleAddCause}
+              onRemoveCause={handleRemoveCause}
+              onStamp={handleStamp}
+              onPull={handlePull}
+              onPatch={handlePatch}
+              onPatchDraft={handlePatchDraft}
+              onPatchDetail={handlePatchDetail}
+              onResolveExternalVersion={(version) => {
+                eventVersionsRef.current.set(
+                  selected.id,
+                  Math.max(
+                    eventVersionsRef.current.get(selected.id) ??
+                      selected.version,
+                    version,
+                  ),
+                );
+              }}
+              onDelete={handleDelete}
+              onClose={() => setSelectedEventId(null)}
+              lang={lang}
+            />
+          )}
       </div>
 
       {showStatusBar && (
@@ -1986,7 +2357,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
               value={null}
               options={laneOptions.map((o) => ({ id: o.id, name: o.name }))}
               onChange={(id) => {
-                if (id) void handleBulkAssign(id);
+                if (chronicleInteractive && id) void handleBulkAssign(id);
               }}
               ariaLabel={t("chronicle.assignLane", "レーンへ割当")}
               placeholder={t("chronicle.bulkAssignLane", "レーンへ一括割当")}
@@ -1996,6 +2367,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             type="button"
             data-testid="bulk-unassign"
             onClick={() => void handleBulkAssign("")}
+            disabled={!chronicleInteractive}
             className="inline-flex h-8 items-center rounded-lg px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             {t("chronicle.bulkUnassign", "未割当へ")}
@@ -2004,6 +2376,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             type="button"
             data-testid="bulk-delete"
             onClick={() => void handleBulkDelete()}
+            disabled={!chronicleInteractive}
             className="inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs text-destructive hover:bg-destructive/10"
           >
             <Trash2 className="size-3.5" /> {t("chronicle.bulkDelete", "削除")}

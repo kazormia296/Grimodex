@@ -127,6 +127,38 @@ describe("useGlobalHistoryStore", () => {
     expect(useGlobalHistoryStore.getState().past).toEqual([]);
   });
 
+  it.each([
+    ["chronicle", "event-1"],
+    ["scenes", "scene-1"],
+  ] as const)(
+    "invalidating an affected %s entity drops the whole composite command",
+    (kind, entityId) => {
+      const bulk = {
+        kind: "chronicle" as const,
+        label: "mixed Chronicle edit",
+        affectedEntities: [
+          { kind: "chronicle" as const, entityId: "event-1" },
+          { kind: "scenes" as const, entityId: "scene-1" },
+        ],
+        undo: async () => {},
+        redo: async () => {},
+      };
+      const unrelated = {
+        kind: "chronicle" as const,
+        label: "unrelated",
+        entityId: "event-other",
+        undo: async () => {},
+        redo: async () => {},
+      };
+      useGlobalHistoryStore.getState().push(bulk);
+      useGlobalHistoryStore.getState().push(unrelated);
+
+      useGlobalHistoryStore.getState().invalidateForEntity(kind, entityId);
+
+      expect(useGlobalHistoryStore.getState().past).toEqual([unrelated]);
+    },
+  );
+
   it("clear resets operation ids for the next project/session", () => {
     const command = {
       kind: "codex" as const,

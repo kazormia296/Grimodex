@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadSceneContents } from "@/features/tree/api";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
+import { encodeDocumentKey } from "@/features/editor/document/documentKey";
+import { subscribeExternalDocumentReloads } from "@/lib/externalDocumentReloadRegistry";
+import { subscribeSceneBodyCommits } from "@/lib/sceneBodyCommitRegistry";
 import {
   DEFAULT_SEASON_BOUNDARIES,
   type ChronicleCalendar,
@@ -21,6 +24,11 @@ import {
   calendarFromRow,
 } from "./api";
 import { sceneIdFromEventId } from "./sceneEventAdapter";
+import { chronicleScopeKey, type ChronicleScope } from "./chronicleScope";
+
+const CONFLICT_RECHECK_DEBOUNCE_MS = 200;
+const EMPTY_SEASON_CONFLICTS: SeasonConflict[] = [];
+const EMPTY_AGE_CONFLICTS: AgeConflict[] = [];
 
 /**
  * Batch の返却 Map を整合チェック用 plain text Map に変換する。
@@ -89,8 +97,11 @@ export function checkInputsFingerprint(
   ].join("\u0001");
 }
 
-interface UseSeasonConflictsArgs {
-  projectId: string | null;
+export interface UseSeasonConflictsArgs {
+  /** Exact database ownership boundary. projectId alone is not globally unique. */
+  scope: ChronicleScope | null;
+  /** Hidden/inactive panels keep their last snapshot without issuing DB work. */
+  enabled?: boolean;
   events: EventForCheck[];
   links: { sceneId: string; eventId: string }[];
   /**
@@ -107,15 +118,54 @@ interface UseSeasonConflictsArgs {
  * 既定の 360日4季暦を作成できる。
  */
 export function useSeasonConflicts({
-  projectId,
+  scope,
+  enabled = true,
   events,
   links,
   ageExtraEvents,
 }: UseSeasonConflictsArgs) {
-  const [calendar, setCalendar] = useState<ChronicleCalendar | null>(null);
-  const [conflicts, setConflicts] = useState<SeasonConflict[]>([]);
-  const [ageConflicts, setAgeConflicts] = useState<AgeConflict[]>([]);
+  const scopeKey = scope ? chronicleScopeKey(scope) : null;
+  const scopeProjectId = scope?.projectId ?? null;
+  const activeScopeKeyRef = useRef(scopeKey);
+  activeScopeKeyRef.current = scopeKey;
+
+  const [calendarSnapshot, setCalendarSnapshot] = useState<{
+    scopeKey: string | null;
+    calendar: ChronicleCalendar | null;
+  }>({ scopeKey: null, calendar: null });
+  const [conflictSnapshot, setConflictSnapshot] = useState<{
+    scopeKey: string | null;
+    conflicts: SeasonConflict[];
+    ageConflicts: AgeConflict[];
+  }>({
+    scopeKey: null,
+    conflicts: EMPTY_SEASON_CONFLICTS,
+    ageConflicts: EMPTY_AGE_CONFLICTS,
+  });
+  const [conflictLoadState, setConflictLoadState] = useState<{
+    scopeKey: string | null;
+    status: "idle" | "loading" | "ready" | "error";
+    error: Error | null;
+  }>({ scopeKey: null, status: "idle", error: null });
   const [calVersion, setCalVersion] = useState(0);
+  const [contentRevision, setContentRevision] = useState(0);
+  const [checkRevision, setCheckRevision] = useState(0);
+
+  // Snapshot values are exposed only to their exact workspace/open/project
+  // scope. A synchronous render after a scope switch can therefore never flash
+  // conflicts or a calendar from another database while the new load is pending.
+  const calendar =
+    scopeKey !== null && calendarSnapshot.scopeKey === scopeKey
+      ? calendarSnapshot.calendar
+      : null;
+  const conflicts =
+    scopeKey !== null && conflictSnapshot.scopeKey === scopeKey
+      ? conflictSnapshot.conflicts
+      : EMPTY_SEASON_CONFLICTS;
+  const ageConflicts =
+    scopeKey !== null && conflictSnapshot.scopeKey === scopeKey
+      ? conflictSnapshot.ageConflicts
+      : EMPTY_AGE_CONFLICTS;
 
   // 指紋が同じ間は同一参照をチェック effect へ渡す。楽観 setEvents や nodes 更新に
   // よる「内容は同じで identity だけ変わる」再導出では effect を再走させない
@@ -137,34 +187,129 @@ export function useSeasonConflicts({
   const checkInputs = stableRef.current.inputs;
 
   useEffect(() => {
-    if (!projectId) {
-      setCalendar(null);
-      return;
-    }
+    if (!enabled || !scopeKey || !scopeProjectId) return;
+    const requestScopeKey = scopeKey;
     let cancelled = false;
-    getProjectCalendar(projectId)
+    getProjectCalendar(scopeProjectId)
       .then((row) => {
-        if (cancelled) return;
-        if (!row) {
-          setCalendar(null);
+        if (cancelled || activeScopeKeyRef.current !== requestScopeKey) {
           return;
         }
-        setCalendar(calendarFromRow(row));
+        if (!row) {
+          setCalendarSnapshot({
+            scopeKey: requestScopeKey,
+            calendar: null,
+          });
+          return;
+        }
+        setCalendarSnapshot({
+          scopeKey: requestScopeKey,
+          calendar: calendarFromRow(row),
+        });
       })
-      .catch(() => {
-        if (!cancelled) setCalendar(null);
-      });
+      // Preserve the same-scope last-good calendar. Clearing it here would
+      // cascade into clearing otherwise valid conflict markers.
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [projectId, calVersion]);
+  }, [calVersion, enabled, scopeKey, scopeProjectId]);
+
+  const monitoredSceneIds = useMemo(() => {
+    const ids = new Set(checkInputs.links.map((link) => link.sceneId));
+    for (const event of checkInputs.ageExtraEvents ?? []) {
+      ids.add(sceneIdFromEventId(event.id));
+    }
+    return [...ids].sort();
+  }, [checkInputs]);
+  const monitoredSceneFingerprint = monitoredSceneIds.join("\u0000");
+
+  // A regular editor save emits an exact-scope commit publication. External
+  // file import already emits the canonical reload nonce consumed by mounted
+  // editors; subscribe to that same publication so Chronicle observes both
+  // persisted body paths without polling or per-keystroke reads.
+  useEffect(() => {
+    if (!enabled || !scope || !scopeKey || monitoredSceneIds.length === 0) {
+      return;
+    }
+    const sceneIds = new Set(monitoredSceneIds);
+    const externalStateKeys = new Set<string>(
+      monitoredSceneIds.flatMap((sceneId) => [
+        encodeDocumentKey({
+          kind: "tree",
+          id: sceneId,
+          storage: "database",
+        }),
+        encodeDocumentKey({
+          kind: "tree",
+          id: sceneId,
+          storage: "file",
+        }),
+      ]),
+    );
+    let replayingExternalRegistry = true;
+    const unsubscribeExternal = subscribeExternalDocumentReloads((stateKey) => {
+      // subscribeExternalDocumentReloads replays current nonce inventory.
+      // Initial Chronicle loading already reads the latest DB rows, so only
+      // publications after subscription are invalidations.
+      if (
+        !replayingExternalRegistry &&
+        activeScopeKeyRef.current === scopeKey &&
+        externalStateKeys.has(stateKey)
+      ) {
+        setContentRevision((revision) => revision + 1);
+      }
+    });
+    replayingExternalRegistry = false;
+    const unsubscribeCommits = subscribeSceneBodyCommits((publication) => {
+      if (
+        activeScopeKeyRef.current === scopeKey &&
+        publication.workspacePath === scope.workspacePath &&
+        publication.openRevision === scope.openRevision &&
+        publication.projectId === scope.projectId &&
+        sceneIds.has(publication.sceneId)
+      ) {
+        setContentRevision((revision) => revision + 1);
+      }
+    });
+    return () => {
+      unsubscribeExternal();
+      unsubscribeCommits();
+    };
+    // monitoredSceneFingerprint is the stable ownership input; the array
+    // itself is rebuilt only when the semantic check inputs change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, monitoredSceneFingerprint, scopeKey]);
 
   useEffect(() => {
     const { events, links, ageExtraEvents } = checkInputs;
+    if (!enabled || !scopeKey) return;
+    const requestScopeKey = scopeKey;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const publishSuccess = (
+      nextConflicts: SeasonConflict[],
+      nextAgeConflicts: AgeConflict[],
+    ) => {
+      if (cancelled || activeScopeKeyRef.current !== requestScopeKey) {
+        return;
+      }
+      setConflictSnapshot({
+        scopeKey: requestScopeKey,
+        conflicts: nextConflicts,
+        ageConflicts: nextAgeConflicts,
+      });
+      setConflictLoadState({
+        scopeKey: requestScopeKey,
+        status: "ready",
+        error: null,
+      });
+    };
+
     // 季節は seasonBoundaries が要るが、年齢は daysPerYear>0 だけで動く。
     if (!calendar || calendar.daysPerYear <= 0) {
-      setConflicts([]);
-      setAgeConflicts([]);
+      publishSuccess([], []);
       return;
     }
     // 年齢チェック用の拡張集合（scene-event＋暗黙リンク）。季節は実 event のみ。
@@ -192,45 +337,70 @@ export function useSeasonConflicts({
       ]),
     ];
     if (sceneIds.length === 0) {
-      setConflicts([]);
-      setAgeConflicts([]);
+      publishSuccess([], []);
       return;
     }
-    let cancelled = false;
-    loadSceneContents(sceneIds)
-      .then((contents) => {
-        if (cancelled) return;
-        const sceneTexts = collectLoadedSceneTexts(sceneIds, contents);
-        // 季節は実 event のみ（event↔リンクシーン本文モデル）。
-        setConflicts(
-          findSeasonConflicts({ events, calendar, links, sceneTexts }),
-        );
-        // 年齢は scene-event も含む（本文=自分自身の暗黙リンク）。
-        setAgeConflicts(
-          findAgeConflicts({
+    setConflictLoadState({
+      scopeKey: requestScopeKey,
+      status: "loading",
+      error: null,
+    });
+    timer = setTimeout(() => {
+      timer = null;
+      loadSceneContents(sceneIds)
+        .then((contents) => {
+          if (cancelled || activeScopeKeyRef.current !== requestScopeKey) {
+            return;
+          }
+          const sceneTexts = collectLoadedSceneTexts(sceneIds, contents);
+          // 季節は実 event のみ（event↔リンクシーン本文モデル）。
+          const nextConflicts = findSeasonConflicts({
+            events,
+            calendar,
+            links,
+            sceneTexts,
+          });
+          // 年齢は scene-event も含む（本文=自分自身の暗黙リンク）。
+          const nextAgeConflicts = findAgeConflicts({
             events: ageEvents,
             calendar,
             links: ageLinks,
             sceneTexts,
-          }),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setConflicts([]);
-          setAgeConflicts([]);
-        }
-      });
+          });
+          publishSuccess(nextConflicts, nextAgeConflicts);
+        })
+        .catch((error: unknown) => {
+          if (cancelled || activeScopeKeyRef.current !== requestScopeKey) {
+            return;
+          }
+          // Same-scope failures retain the last successful snapshot. A
+          // transient SELECT/bridge failure must not make markers disappear.
+          setConflictLoadState({
+            scopeKey: requestScopeKey,
+            status: "error",
+            error: error instanceof Error ? error : new Error(String(error)),
+          });
+        });
+    }, CONFLICT_RECHECK_DEBOUNCE_MS);
     return () => {
       cancelled = true;
+      if (timer !== null) clearTimeout(timer);
     };
-  }, [calendar, checkInputs]);
+  }, [
+    calendar,
+    checkInputs,
+    checkRevision,
+    contentRevision,
+    enabled,
+    scopeKey,
+  ]);
 
   const saveCalendar = useCallback(
     async (cal: ChronicleCalendar) => {
-      if (!projectId) return;
+      if (!scopeProjectId || !scopeKey) return;
+      const requestScopeKey = scopeKey;
       await upsertProjectCalendar({
-        projectId,
+        projectId: scopeProjectId,
         daysPerYear: cal.daysPerYear,
         seasonBoundaries: JSON.stringify(cal.seasonBoundaries),
         startYear: cal.startYear ?? 0,
@@ -244,9 +414,11 @@ export function useSeasonConflicts({
         timezone: JSON.stringify(cal.timezone ?? null),
         lunarTzMinutes: cal.lunarTzMinutes ?? 480,
       });
-      setCalVersion((v) => v + 1);
+      if (activeScopeKeyRef.current === requestScopeKey) {
+        setCalVersion((v) => v + 1);
+      }
     },
-    [projectId],
+    [scopeKey, scopeProjectId],
   );
 
   const ensureDefaultCalendar = useCallback(
@@ -266,6 +438,13 @@ export function useSeasonConflicts({
     () => ageConflictEventIds(ageConflicts),
     [ageConflicts],
   );
+  const currentLoadState =
+    scopeKey !== null && conflictLoadState.scopeKey === scopeKey
+      ? conflictLoadState
+      : { scopeKey, status: "idle" as const, error: null };
+  const retryConflicts = useCallback(() => {
+    if (enabled && scopeKey) setCheckRevision((revision) => revision + 1);
+  }, [enabled, scopeKey]);
 
   return {
     hasCalendar: !!calendar && calendar.seasonBoundaries.length > 0,
@@ -276,5 +455,8 @@ export function useSeasonConflicts({
     ageConflictIds,
     ensureDefaultCalendar,
     saveCalendar,
+    conflictStatus: enabled ? currentLoadState.status : "disabled",
+    conflictLoadError: currentLoadState.error,
+    retryConflicts,
   };
 }

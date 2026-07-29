@@ -165,7 +165,7 @@ describe("ZenShaderSurface", () => {
     expect(shaderLifecycle.unmounted).toEqual([ZEN_SHADER_DEFAULTS.shader]);
   });
 
-  it("grows the Paper mount when the UI surface capacity exceeds its high-water mark", () => {
+  it("keeps the 32-surface Paper mount after a 16 → 17 → 16 high-water transition", () => {
     shaderLayouts.current = layoutsWithUiSurfaceCount(16);
     const view = render(
       <ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />,
@@ -173,10 +173,17 @@ describe("ZenShaderSurface", () => {
 
     shaderLayouts.current = layoutsWithUiSurfaceCount(17);
     view.rerender(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
+    const grownShader = view.container.querySelector("[data-paper-shader]");
+
+    shaderLayouts.current = layoutsWithUiSurfaceCount(16);
+    view.rerender(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
 
     expect(shaderLifecycle.mountedCapacities).toEqual([16, 32]);
     expect(shaderLifecycle.mountedUniformLengths).toEqual([64, 128]);
     expect(shaderLifecycle.unmountedCapacities).toEqual([16]);
+    expect(view.container.querySelector("[data-paper-shader]")).toBe(
+      grownShader,
+    );
   });
 
   it("keeps the Paper mount when the UI surface count drops from nine to eight", () => {
