@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
+
+import { createProductJourneyHarness } from "../electron/scripts/product-journey-harness.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -74,4 +77,88 @@ test("performance smoke reuses the product journey boundary helpers", async () =
   );
   assert.doesNotMatch(source, /async function invokeOk\(/);
   assert.doesNotMatch(source, /async function waitUntil\(/);
+});
+
+test("product journey harness closes Electron when firstWindow fails", async (t) => {
+  const app = {
+    firstWindow: async () => {
+      throw new Error("window was never created");
+    },
+  };
+  const closed = [];
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async (launchedApp, page, phase) => {
+      closed.push({ launchedApp, page, phase });
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  await assert.rejects(harness.launch("startup"), /window was never created/);
+  await harness.dispose({ success: false, name: "startup-failure" });
+
+  assert.deepEqual(closed, [
+    {
+      launchedApp: app,
+      page: null,
+      phase: "failure:startup-failure",
+    },
+  ]);
+});
+
+test("product journey harness retains the renderer screenshot before close", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-artifacts-"),
+  );
+  let pageClosed = false;
+  const events = [];
+  const page = {
+    isClosed: () => pageClosed,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async ({ path: screenshotPath }) => {
+      events.push("screenshot");
+      await writeFile(screenshotPath, "renderer-state");
+    },
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async () => {
+      events.push("close");
+      pageClosed = true;
+    },
+  });
+  t.after(async () => {
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const launched = await harness.launch("editor-persistence/write");
+  await harness.close(launched.app, launched.page, "editor-persistence/write");
+  await harness.dispose({
+    success: false,
+    name: "editor-persistence",
+  });
+
+  assert.deepEqual(events, ["screenshot", "close"]);
+  assert.equal(
+    await readFile(
+      path.join(artifactRoot, "editor-persistence", "renderer.png"),
+      "utf8",
+    ),
+    "renderer-state",
+  );
 });

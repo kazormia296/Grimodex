@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from "node:fs/promises";
+import { copyFile, cp, mkdir, rm } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -54,11 +54,14 @@ export function createProductJourneyHarness({
   electronBin = require("electron"),
   launchTimeoutMs = 60_000,
   artifactRoot = process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
+  electronLauncher = _electron,
+  closeApp = closeElectronAppWithDiagnostics,
 } = {}) {
   if (!mainCjs) throw new Error("product journey harness requires mainCjs");
 
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "grimodex-product-"));
   const userDataDir = path.join(tmpRoot, "user-data");
+  const retainedRendererPath = path.join(tmpRoot, "last-renderer.png");
   const lastResources = {
     app: null,
     page: null,
@@ -73,19 +76,21 @@ export function createProductJourneyHarness({
   }
 
   async function launch(phase) {
+    await rm(retainedRendererPath, { force: true });
     const env = { ...process.env };
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
-    const app = await _electron.launch({
+    const app = await electronLauncher.launch({
       executablePath: electronBin,
       args: [mainCjs],
       env,
       timeout: launchTimeoutMs,
     });
-    const page = await app.firstWindow({ timeout: launchTimeoutMs });
     lastResources.app = app;
-    lastResources.page = page;
+    lastResources.page = null;
     lastResources.phase = phase;
+    const page = await app.firstWindow({ timeout: launchTimeoutMs });
+    lastResources.page = page;
 
     app.process().stdout?.on("data", (data) => {
       process.stdout.write(`  [product:${phase}:main] ${String(data)}`);
@@ -112,11 +117,23 @@ export function createProductJourneyHarness({
     return { app, page };
   }
 
+  async function retainRendererScreenshot(page) {
+    if (!artifactRoot || !page || page.isClosed()) return;
+    await page
+      .screenshot({
+        path: retainedRendererPath,
+        fullPage: true,
+      })
+      .catch(() => undefined);
+  }
+
   async function close(app, page, phase) {
-    await closeElectronAppWithDiagnostics(app, page, phase);
+    await retainRendererScreenshot(page);
+    await closeApp(app, page, phase);
     if (lastResources.app === app) {
       lastResources.app = null;
       lastResources.page = null;
+      lastResources.phase = null;
     }
   }
 
@@ -124,12 +141,11 @@ export function createProductJourneyHarness({
     if (!artifactRoot) return;
     const destination = path.join(artifactRoot, name);
     await mkdir(destination, { recursive: true });
-    await lastResources.page
-      ?.screenshot({
-        path: path.join(destination, "renderer.png"),
-        fullPage: true,
-      })
-      .catch(() => undefined);
+    await retainRendererScreenshot(lastResources.page);
+    await copyFile(
+      retainedRendererPath,
+      path.join(destination, "renderer.png"),
+    ).catch(() => undefined);
     await cp(tmpRoot, path.join(destination, "runtime"), {
       recursive: true,
       force: true,
@@ -138,15 +154,22 @@ export function createProductJourneyHarness({
 
   async function dispose({ success, name }) {
     if (!success) {
-      await captureFailureArtifact(name);
-      if (lastResources.app && lastResources.page) {
-        await closeElectronAppWithDiagnostics(
+      await captureFailureArtifact(name).catch((error) => {
+        console.error(
+          `[electron:product] failed to retain artifacts: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+      if (lastResources.app) {
+        await closeApp(
           lastResources.app,
           lastResources.page,
           `failure:${name}`,
         ).catch(() => undefined);
         lastResources.app = null;
         lastResources.page = null;
+        lastResources.phase = null;
       }
       console.error(`[electron:product] retained temporary root: ${tmpRoot}`);
       return;

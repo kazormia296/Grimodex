@@ -215,11 +215,18 @@ async function runWorkspaceSwitchAuthorityJourney(harness) {
 
   const prepare = await harness.launch("workspace-switch/prepare");
   try {
-    await harness.invokeOk(prepare.page, "db_execute", {
-      sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
-      params: ["product.journey.workspace-a", "workspace-a-marker"],
-      method: "run",
-    });
+    await harness.waitUntil(
+      async () => {
+        await harness.invokeOk(prepare.page, "db_execute", {
+          sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+          params: ["product.journey.workspace-a", "workspace-a-marker"],
+          method: "run",
+        });
+        return true;
+      },
+      "workspace A authority before marker write",
+      30_000,
+    );
     await harness.invokeOk(prepare.page, "open_workspace", {
       path: workspaceB,
     });
@@ -244,7 +251,16 @@ async function runWorkspaceSwitchAuthorityJourney(harness) {
 
   const switched = await harness.launch("workspace-switch/ui");
   try {
-    if (await readJourneyMarker(harness, switched.page)) {
+    let workspaceBMarker = null;
+    await harness.waitUntil(
+      async () => {
+        workspaceBMarker = await readJourneyMarker(harness, switched.page);
+        return true;
+      },
+      "workspace B authority before isolation check",
+      30_000,
+    );
+    if (workspaceBMarker) {
       throw new Error("workspace B inherited workspace A app_settings");
     }
     await switched.page.getByTestId("workspace-menu-trigger").click();

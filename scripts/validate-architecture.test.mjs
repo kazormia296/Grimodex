@@ -9,8 +9,10 @@ import {
   compareArchitectureBaseline,
   createArchitectureBaseline,
   createGenericSqlWriteManifest,
+  createGrowthWaivers,
   findNewFindings,
   findNewGenericSqlWriteFindings,
+  growthWaiverOptionsAreValid,
   resolveImport,
 } from "./validate-architecture.mjs";
 
@@ -310,6 +312,169 @@ test("architecture baseline tracks ordinary improvements, stale waivers, and exp
   assert.deepEqual(
     result.staleWaivers.map((waiver) => waiver.id),
     ["stale"],
+  );
+});
+
+test("metric waivers document baseline debt without authorizing future growth", () => {
+  const baseline = {
+    schemaVersion: 2,
+    findings: {},
+    "feature-cycle": { sccs: [] },
+    metrics: {
+      "chat-store-lines": 100,
+    },
+    waivers: [
+      {
+        id: "chat-store-growth",
+        rule: "metric",
+        signature: "chat-store-lines",
+        reason: "temporary migration",
+        ownerArea: "chat",
+        issue: 125,
+        introducedAt: "2026-07-01",
+        expiresAt: "2026-12-31",
+      },
+    ],
+  };
+  const current = {
+    findings: {},
+    featureCycles: [],
+    metrics: {
+      "chat-store-lines": 101,
+    },
+  };
+
+  const result = compareArchitectureBaseline(current, baseline, {
+    now: "2026-07-30",
+  });
+
+  assert.deepEqual(result.metricIncreases, [
+    { baseline: 100, current: 101, metric: "chat-store-lines" },
+  ]);
+  assert.deepEqual(result.expiredWaivers, []);
+});
+
+test("architecture waivers reject malformed and impossible calendar dates", () => {
+  const baseline = {
+    schemaVersion: 2,
+    findings: {},
+    "feature-cycle": { sccs: [] },
+    metrics: {},
+    waivers: [
+      {
+        id: "malformed-expiry",
+        rule: "cross-feature-store-import",
+        signature: "malformed-expiry-import",
+        reason: "temporary migration",
+        ownerArea: "architecture",
+        issue: 126,
+        introducedAt: "2026-07-01",
+        expiresAt: "never",
+      },
+      {
+        id: "impossible-introduction",
+        rule: "cross-feature-store-import",
+        signature: "impossible-introduction-import",
+        reason: "temporary migration",
+        ownerArea: "architecture",
+        issue: 127,
+        introducedAt: "2026-02-30",
+        expiresAt: "2026-12-31",
+      },
+    ],
+  };
+  const current = {
+    findings: {
+      "cross-feature-store-import": [
+        "malformed-expiry-import",
+        "impossible-introduction-import",
+      ],
+    },
+    featureCycles: [],
+    metrics: {},
+  };
+
+  const result = compareArchitectureBaseline(current, baseline, {
+    now: "2026-07-30",
+  });
+
+  assert.deepEqual(result.introduced, [
+    "cross-feature-store-import:impossible-introduction-import",
+    "cross-feature-store-import:malformed-expiry-import",
+  ]);
+  assert.deepEqual(
+    result.expiredWaivers.map((waiver) => waiver.id),
+    ["malformed-expiry", "impossible-introduction"],
+  );
+});
+
+test("baseline growth options require a real, non-expired expiry date", () => {
+  const valid = {
+    issue: 128,
+    reason: "temporary migration",
+    ownerArea: "architecture",
+    expiresAt: "2026-12-31",
+  };
+
+  assert.equal(growthWaiverOptionsAreValid(valid, "2026-07-30"), true);
+  assert.equal(
+    growthWaiverOptionsAreValid({ ...valid, expiresAt: "never" }, "2026-07-30"),
+    false,
+  );
+  assert.equal(
+    growthWaiverOptionsAreValid(
+      { ...valid, expiresAt: "2026-02-30" },
+      "2026-07-30",
+    ),
+    false,
+  );
+  assert.equal(
+    growthWaiverOptionsAreValid(
+      { ...valid, expiresAt: "2026-07-29" },
+      "2026-07-30",
+    ),
+    false,
+  );
+});
+
+test("baseline writer refreshes metric waiver approval metadata", () => {
+  const waivers = createGrowthWaivers(
+    [],
+    [{ baseline: 100, current: 101, metric: "chat-store-lines" }],
+    {
+      issue: 129,
+      reason: "approved follow-up growth",
+      ownerArea: "chat",
+      expiresAt: "2026-12-31",
+    },
+    [
+      {
+        id: "chat-store-growth",
+        rule: "metric",
+        signature: "chat-store-lines",
+        reason: "old approval",
+        ownerArea: "chat",
+        issue: 125,
+        introducedAt: "2026-07-01",
+        expiresAt: "2026-08-01",
+      },
+    ],
+  );
+
+  assert.equal(waivers.length, 1);
+  assert.deepEqual(
+    {
+      id: waivers[0].id,
+      issue: waivers[0].issue,
+      reason: waivers[0].reason,
+      expiresAt: waivers[0].expiresAt,
+    },
+    {
+      id: "chat-store-growth",
+      issue: 129,
+      reason: "approved follow-up growth",
+      expiresAt: "2026-12-31",
+    },
   );
 });
 

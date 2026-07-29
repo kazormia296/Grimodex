@@ -66,6 +66,7 @@ function timeoutOutcome(timeoutMs, kind) {
 }
 
 async function collectPageDiagnostics(page, timeoutMs) {
+  if (!page) return { pageUnavailable: true };
   if (page.isClosed()) return { pageClosed: true };
 
   const inspection = page

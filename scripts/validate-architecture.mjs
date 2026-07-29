@@ -837,6 +837,17 @@ function dateOnly(value) {
   return new Date(value ?? Date.now()).toISOString().slice(0, 10);
 }
 
+function isValidDateOnly(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return (
+    Number.isFinite(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
+}
+
 function isWaiverShapeValid(waiver) {
   return (
     waiver &&
@@ -846,8 +857,9 @@ function isWaiverShapeValid(waiver) {
     typeof waiver.reason === "string" &&
     typeof waiver.ownerArea === "string" &&
     Number.isInteger(waiver.issue) &&
-    typeof waiver.introducedAt === "string" &&
-    typeof waiver.expiresAt === "string"
+    isValidDateOnly(waiver.introducedAt) &&
+    isValidDateOnly(waiver.expiresAt) &&
+    waiver.introducedAt <= waiver.expiresAt
   );
 }
 
@@ -995,12 +1007,7 @@ export function compareArchitectureBaseline(snapshot, baseline, options = {}) {
       continue;
     }
     if (current > baselineValue) {
-      const waived = activeWaivers.some((waiver) =>
-        waiverMatches(waiver, "metric", metric),
-      );
-      if (!waived) {
-        metricIncreases.push({ baseline: baselineValue, current, metric });
-      }
+      metricIncreases.push({ baseline: baselineValue, current, metric });
     } else if (current < baselineValue) {
       metricImprovements.push({ baseline: baselineValue, current, metric });
     }
@@ -1148,7 +1155,12 @@ function splitRuleSignature(value) {
   };
 }
 
-function createGrowthWaivers(values, metricIncreases, options, existing) {
+export function createGrowthWaivers(
+  values,
+  metricIncreases,
+  options,
+  existing,
+) {
   const today = dateOnly();
   const requests = [
     ...values.map((value) => splitRuleSignature(value)),
@@ -1157,19 +1169,17 @@ function createGrowthWaivers(values, metricIncreases, options, existing) {
       signature: metric,
     })),
   ];
+  const nextWaivers = [...existing];
   const existingKeys = new Set(
     existing.map((waiver) => `${waiver.rule}:${waiver.signature}`),
   );
-  const additions = [];
   for (const request of requests) {
     const key = `${request.rule}:${request.signature}`;
-    if (existingKeys.has(key)) continue;
-    existingKeys.add(key);
     const slug = request.signature
       .replace(/[^A-Za-z0-9]+/g, "-")
       .replace(/^-|-$/g, "")
       .slice(0, 48);
-    additions.push({
+    const waiver = {
       id: `architecture-${request.rule}-${slug || "debt"}`,
       rule: request.rule,
       signature: request.signature,
@@ -1178,9 +1188,24 @@ function createGrowthWaivers(values, metricIncreases, options, existing) {
       issue: options.issue,
       introducedAt: today,
       expiresAt: options.expiresAt,
-    });
+    };
+    if (request.rule === "metric" && existingKeys.has(key)) {
+      const existingIndex = nextWaivers.findIndex(
+        (candidate) =>
+          candidate.rule === request.rule &&
+          candidate.signature === request.signature,
+      );
+      nextWaivers[existingIndex] = {
+        ...waiver,
+        id: nextWaivers[existingIndex].id,
+      };
+      continue;
+    }
+    if (existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    nextWaivers.push(waiver);
   }
-  return [...existing, ...additions];
+  return nextWaivers;
 }
 
 function growthWaiverOptions() {
@@ -1192,6 +1217,19 @@ function growthWaiverOptions() {
     ownerArea: cliOption("--owner-area"),
     expiresAt: cliOption("--expires-at"),
   };
+}
+
+export function growthWaiverOptionsAreValid(options, today = dateOnly()) {
+  return (
+    Number.isInteger(options.issue) &&
+    options.issue > 0 &&
+    typeof options.reason === "string" &&
+    options.reason.trim().length > 0 &&
+    typeof options.ownerArea === "string" &&
+    options.ownerArea.trim().length > 0 &&
+    isValidDateOnly(options.expiresAt) &&
+    options.expiresAt >= today
+  );
 }
 
 function printList(label, values) {
@@ -1240,15 +1278,9 @@ async function main() {
       ),
     ];
     const waiverOptions = growthWaiverOptions();
-    if (
-      growth.length > 0 &&
-      (!waiverOptions.issue ||
-        !waiverOptions.reason ||
-        !waiverOptions.ownerArea ||
-        !waiverOptions.expiresAt)
-    ) {
+    if (growth.length > 0 && !growthWaiverOptionsAreValid(waiverOptions)) {
       console.error(
-        "Baseline growth requires --issue, --reason, --owner-area, and --expires-at.",
+        "Baseline growth requires --issue, --reason, --owner-area, and a valid non-expired YYYY-MM-DD --expires-at.",
       );
       printList("Unwaived growth", growth);
       process.exitCode = 1;
