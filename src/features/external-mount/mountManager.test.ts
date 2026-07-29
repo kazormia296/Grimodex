@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
 import type { TreeNodeLite } from "@/features/tree/api";
 
 const {
@@ -13,8 +14,7 @@ const {
   mockLoadSceneContents,
   mockLoadTree,
   mockSetCharCount,
-  mockUpsertSceneBodyMentions,
-  mockCodexState,
+  mockScheduleBodyMentionScan,
   mockChatState,
   mockReadExternalFile,
   mockGetExternalFileMtime,
@@ -32,16 +32,17 @@ const {
   mockListAllNodes: vi.fn(),
   mockListExpiredArchivedNodeIds: vi.fn().mockResolvedValue([]),
   mockDeleteNode: vi.fn().mockResolvedValue(undefined),
-  mockSaveSceneContent: vi.fn().mockResolvedValue({ placedBeatPreview: null }),
+  mockSaveSceneContent: vi.fn().mockResolvedValue({
+    placedBeatPreview: null,
+    contentVersion: 7,
+    contentUpdatedAt: "2026-05-24T12:00:01.000Z",
+  }),
   mockCreateNode: vi.fn(),
   mockLoadSceneContent: vi.fn().mockResolvedValue("{}"),
   mockLoadSceneContents: vi.fn().mockResolvedValue(new Map<string, string>()),
   mockLoadTree: vi.fn().mockResolvedValue(undefined),
   mockSetCharCount: vi.fn(),
-  mockUpsertSceneBodyMentions: vi.fn().mockResolvedValue(undefined),
-  mockCodexState: {
-    entries: [] as Array<{ id: string; name: string; type: string }>,
-  },
+  mockScheduleBodyMentionScan: vi.fn(),
   mockChatState: {
     activeSceneId: "",
     refreshContextLayers: vi.fn().mockResolvedValue(undefined),
@@ -126,20 +127,14 @@ vi.mock("@/features/editor/linearEditorStore", () => ({
   },
 }));
 
-vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: {
-    getState: () => mockCodexState,
-  },
-}));
-
 vi.mock("@/features/chat/chatStore", () => ({
   useChatStore: {
     getState: () => mockChatState,
   },
 }));
 
-vi.mock("@/features/editor/beat/bodyMentionApi", () => ({
-  upsertSceneBodyMentions: mockUpsertSceneBodyMentions,
+vi.mock("@/features/editor/persistSceneBody", () => ({
+  scheduleBodyMentionScan: mockScheduleBodyMentionScan,
 }));
 
 vi.mock("./api", () => ({
@@ -154,6 +149,7 @@ vi.mock("./api", () => ({
 
 vi.mock("sonner", () => ({
   toast: {
+    error: vi.fn(),
     success: vi.fn(),
     warning: vi.fn(),
     info: vi.fn(),
@@ -194,6 +190,7 @@ import {
   runCoordinatedDocumentSave,
 } from "@/features/editor/document/documentSaveCoordinator";
 import { serializeSceneWrite } from "@/features/tree/pendingSceneWrites";
+import { discardAutoSavesForDocument, useAutoSave } from "@/hooks/useAutoSave";
 
 beforeEach(() => {
   _resetMountAuthorityForTests();
@@ -495,13 +492,10 @@ describe("applyExternalContent — Codex body mention + chat refresh", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useExternalRootStore.setState({ mutedWrites: [], conflicts: [] });
-    mockCodexState.entries = [];
     mockChatState.activeSceneId = "";
   });
 
-  it("calls upsertSceneBodyMentions when codex entries exist", async () => {
-    mockCodexState.entries = [{ id: "e1", name: "太郎", type: "character" }];
-
+  it("schedules the project-wide authoritative body mention scanner", async () => {
     await applyExternalContent(
       "scene-1",
       "root-1",
@@ -510,26 +504,13 @@ describe("applyExternalContent — Codex body mention + chat refresh", () => {
       "2026-05-24T12:00:00.000Z",
     );
 
-    expect(mockUpsertSceneBodyMentions).toHaveBeenCalledTimes(1);
-    expect(mockUpsertSceneBodyMentions).toHaveBeenCalledWith(
-      "scene-1",
-      expect.any(String),
-      mockCodexState.entries,
-    );
-  });
-
-  it("skips upsertSceneBodyMentions when codex entries are empty", async () => {
-    mockCodexState.entries = [];
-
-    await applyExternalContent(
-      "scene-1",
-      "root-1",
-      "chapter/01.md",
-      "External text.",
-      "2026-05-24T12:00:00.000Z",
-    );
-
-    expect(mockUpsertSceneBodyMentions).not.toHaveBeenCalled();
+    expect(mockScheduleBodyMentionScan).toHaveBeenCalledWith({
+      projectId: "p1",
+      sceneId: "scene-1",
+      docJsonStr: expect.any(String),
+      sceneVersion: 7,
+      sceneUpdatedAt: "2026-05-24T12:00:01.000Z",
+    });
   });
 
   it("calls refreshContextLayers when the synced scene is active in chat", async () => {
@@ -1171,6 +1152,40 @@ describe("reload conflict queue", () => {
       }),
     );
     expect(useExternalRootStore.getState().conflicts).toEqual([]);
+  });
+
+  it("queues an external change while a failed unmounted AutoSave retains the local draft", async () => {
+    const documentKey = {
+      kind: "tree",
+      id: "scene-1",
+      storage: "file",
+    } as const;
+    const retiredSave = vi.fn().mockRejectedValue(new Error("disk full"));
+    const hook = renderHook(() =>
+      useAutoSave(retiredSave, 0, { documentKey: () => documentKey }),
+    );
+
+    act(() => {
+      hook.result.current.schedule();
+    });
+    hook.unmount();
+    await vi.waitFor(() => expect(retiredSave).toHaveBeenCalledOnce());
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "changed",
+    });
+
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
+    expect(useExternalRootStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        sceneId: "scene-1",
+        incomingContent: "external winner\n",
+      }),
+    ]);
+
+    discardAutoSavesForDocument(documentKey);
   });
 
   it("rechecks after the initial clean snapshot and preserves an edit that appears while a prior scene write settles", async () => {

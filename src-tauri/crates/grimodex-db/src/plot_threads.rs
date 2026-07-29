@@ -193,6 +193,31 @@ pub struct PlotThreadDeleteSnapshotPayload {
     branches: Vec<PlotThreadBranchSnapshotRow>,
 }
 
+/// One before/after branch transition in a marker drag. `None -> Some` creates,
+/// `Some -> Some` updates, and `Some -> None` deletes the full persisted row.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlotThreadBranchTransition {
+    #[serde(default)]
+    before: Option<PlotThreadBranchSnapshotRow>,
+    #[serde(default)]
+    after: Option<PlotThreadBranchSnapshotRow>,
+}
+
+/// Marker movement and every dependent branch transition are one durable,
+/// idempotent transaction. Full rows act as OCC preconditions for both the
+/// initial command and history replay.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlotThreadMoveMarkerBundlePayload {
+    request_id: String,
+    project_id: String,
+    marker_before: PlotThreadLinkSnapshotRow,
+    marker_after: PlotThreadLinkSnapshotRow,
+    #[serde(default)]
+    branch_transitions: Vec<PlotThreadBranchTransition>,
+}
+
 fn load_map(
     conn: &Connection,
     table: &str,
@@ -983,6 +1008,413 @@ pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow:
             Ok((project_id.clone(), row))
         },
         |conn| load_row(conn, "plot_thread_branches", &id),
+    )
+    .map(|outcome| outcome.into_wire_value())
+}
+
+fn validate_move_link_row(label: &str, row: &PlotThreadLinkSnapshotRow) -> anyhow::Result<()> {
+    for (field, value) in [
+        ("id", row.id.as_str()),
+        ("threadId", row.thread_id.as_str()),
+        ("nodeId", row.node_id.as_str()),
+        ("phaseType", row.phase_type.as_str()),
+        ("createdAt", row.created_at.as_str()),
+        ("updatedAt", row.updated_at.as_str()),
+    ] {
+        if value.is_empty() {
+            anyhow::bail!("plot marker move {label}.{field} must be non-empty");
+        }
+    }
+    validate_phase(&row.phase_type)
+}
+
+fn validate_move_branch_row(
+    label: &str,
+    row: &PlotThreadBranchSnapshotRow,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    for (field, value) in [
+        ("id", row.id.as_str()),
+        ("projectId", row.project_id.as_str()),
+        ("fromThreadId", row.from_thread_id.as_str()),
+        ("toThreadId", row.to_thread_id.as_str()),
+        ("atNodeId", row.at_node_id.as_str()),
+        ("kind", row.kind.as_str()),
+        ("createdAt", row.created_at.as_str()),
+        ("updatedAt", row.updated_at.as_str()),
+    ] {
+        if value.is_empty() {
+            anyhow::bail!("plot marker move {label}.{field} must be non-empty");
+        }
+    }
+    if row.project_id != project_id {
+        anyhow::bail!("plot marker move branch must belong to the bundle project");
+    }
+    if row.from_thread_id == row.to_thread_id {
+        anyhow::bail!("plot thread branch cannot reference the same thread twice");
+    }
+    validate_branch_kind(&row.kind)
+}
+
+fn validate_move_marker_bundle_shape(
+    payload: &PlotThreadMoveMarkerBundlePayload,
+) -> anyhow::Result<()> {
+    if payload.request_id.is_empty() {
+        anyhow::bail!("plot marker move requestId must be non-empty");
+    }
+    if payload.project_id.is_empty() {
+        anyhow::bail!("plot marker move projectId must be non-empty");
+    }
+    validate_move_link_row("markerBefore", &payload.marker_before)?;
+    validate_move_link_row("markerAfter", &payload.marker_after)?;
+    if payload.marker_before.id != payload.marker_after.id {
+        anyhow::bail!("plot marker move marker identity cannot change");
+    }
+    if payload.marker_before.phase_type != payload.marker_after.phase_type
+        || payload.marker_before.note != payload.marker_after.note
+        || payload.marker_before.sort_order != payload.marker_after.sort_order
+        || payload.marker_before.created_at != payload.marker_after.created_at
+    {
+        anyhow::bail!("plot marker move may only change marker thread, scene, and updatedAt");
+    }
+
+    let mut branch_ids = HashSet::new();
+    for (index, transition) in payload.branch_transitions.iter().enumerate() {
+        if transition.before.is_none() && transition.after.is_none() {
+            anyhow::bail!("plot marker move branch transition must contain before or after");
+        }
+        if let Some(before) = &transition.before {
+            validate_move_branch_row(
+                &format!("branchTransitions[{index}].before"),
+                before,
+                &payload.project_id,
+            )?;
+        }
+        if let Some(after) = &transition.after {
+            validate_move_branch_row(
+                &format!("branchTransitions[{index}].after"),
+                after,
+                &payload.project_id,
+            )?;
+        }
+        let id = transition
+            .before
+            .as_ref()
+            .map(|row| row.id.as_str())
+            .or_else(|| transition.after.as_ref().map(|row| row.id.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("plot marker move branch transition has no identity"))?;
+        if let (Some(before), Some(after)) = (&transition.before, &transition.after) {
+            if before.id != after.id {
+                anyhow::bail!("plot marker move branch identity cannot change");
+            }
+            if before.project_id != after.project_id
+                || before.kind != after.kind
+                || before.created_at != after.created_at
+            {
+                anyhow::bail!(
+                    "plot marker move may only change branch endpoints, anchor, and updatedAt"
+                );
+            }
+        }
+        if !branch_ids.insert(id.to_string()) {
+            anyhow::bail!("plot marker move contains duplicate branch ids");
+        }
+    }
+    Ok(())
+}
+
+fn validate_move_marker_bundle_membership(
+    conn: &Connection,
+    payload: &PlotThreadMoveMarkerBundlePayload,
+) -> anyhow::Result<()> {
+    require_project(conn, &payload.project_id)?;
+    for marker in [&payload.marker_before, &payload.marker_after] {
+        require_project_member(
+            conn,
+            "plot_threads",
+            &marker.thread_id,
+            &payload.project_id,
+            "plot marker move thread",
+        )?;
+        require_project_member(
+            conn,
+            "tree_nodes",
+            &marker.node_id,
+            &payload.project_id,
+            "plot marker move scene",
+        )?;
+    }
+    for transition in &payload.branch_transitions {
+        for branch in [&transition.before, &transition.after]
+            .into_iter()
+            .flatten()
+        {
+            require_project_member(
+                conn,
+                "plot_threads",
+                &branch.from_thread_id,
+                &payload.project_id,
+                "plot marker move branch source thread",
+            )?;
+            require_project_member(
+                conn,
+                "plot_threads",
+                &branch.to_thread_id,
+                &payload.project_id,
+                "plot marker move branch target thread",
+            )?;
+            require_project_member(
+                conn,
+                "tree_nodes",
+                &branch.at_node_id,
+                &payload.project_id,
+                "plot marker move branch scene",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn move_marker_bundle_response(
+    request_id: &str,
+    payload: &PlotThreadMoveMarkerBundlePayload,
+) -> Value {
+    let branches = payload
+        .branch_transitions
+        .iter()
+        .filter_map(|transition| transition.after.clone())
+        .collect::<Vec<_>>();
+    let deleted_branch_ids = payload
+        .branch_transitions
+        .iter()
+        .filter(|transition| transition.after.is_none())
+        .filter_map(|transition| transition.before.as_ref().map(|row| row.id.clone()))
+        .collect::<Vec<_>>();
+    json!({
+        "id": request_id,
+        "marker": payload.marker_after,
+        "branches": branches,
+        "deletedBranchIds": deleted_branch_ids,
+    })
+}
+
+fn move_marker_bundle_effect_present(
+    conn: &Connection,
+    request_id: &str,
+    payload: &PlotThreadMoveMarkerBundlePayload,
+) -> anyhow::Result<Option<Value>> {
+    let Some(marker) = load_map(conn, "plot_thread_scene_links", &payload.marker_after.id)? else {
+        return Ok(None);
+    };
+    if !link_row_matches(&marker, &payload.marker_after) {
+        return Ok(None);
+    }
+    for transition in &payload.branch_transitions {
+        match &transition.after {
+            Some(after) => {
+                let Some(current) = load_map(conn, "plot_thread_branches", &after.id)? else {
+                    return Ok(None);
+                };
+                if !branch_row_matches(&current, after) {
+                    return Ok(None);
+                }
+            }
+            None => {
+                let id = &transition
+                    .before
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("plot marker move branch transition has no identity")
+                    })?
+                    .id;
+                if load_row(conn, "plot_thread_branches", id)?.is_some() {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    Ok(Some(move_marker_bundle_response(request_id, payload)))
+}
+
+fn replace_link_row(conn: &Connection, row: &PlotThreadLinkSnapshotRow) -> anyhow::Result<()> {
+    Database::execute_with_conn(
+        conn,
+        "UPDATE plot_thread_scene_links
+            SET thread_id = ?, node_id = ?, phase_type = ?, note = ?,
+                sort_order = ?, created_at = ?, updated_at = ?
+          WHERE id = ?",
+        &[
+            Value::String(row.thread_id.clone()),
+            Value::String(row.node_id.clone()),
+            Value::String(row.phase_type.clone()),
+            nullable_string_value(&row.note),
+            nullable_string_value(&row.sort_order),
+            Value::String(row.created_at.clone()),
+            Value::String(row.updated_at.clone()),
+            Value::String(row.id.clone()),
+        ],
+        "run",
+    )?;
+    Ok(())
+}
+
+fn replace_branch_row(conn: &Connection, row: &PlotThreadBranchSnapshotRow) -> anyhow::Result<()> {
+    Database::execute_with_conn(
+        conn,
+        "UPDATE plot_thread_branches
+            SET project_id = ?, from_thread_id = ?, to_thread_id = ?,
+                at_node_id = ?, kind = ?, created_at = ?, updated_at = ?
+          WHERE id = ?",
+        &[
+            Value::String(row.project_id.clone()),
+            Value::String(row.from_thread_id.clone()),
+            Value::String(row.to_thread_id.clone()),
+            Value::String(row.at_node_id.clone()),
+            Value::String(row.kind.clone()),
+            Value::String(row.created_at.clone()),
+            Value::String(row.updated_at.clone()),
+            Value::String(row.id.clone()),
+        ],
+        "run",
+    )?;
+    Ok(())
+}
+
+fn reject_duplicate_branch_topology(
+    conn: &Connection,
+    rows: impl Iterator<Item = PlotThreadBranchSnapshotRow>,
+) -> anyhow::Result<()> {
+    for row in rows {
+        let count = Database::execute_with_conn(
+            conn,
+            "SELECT COUNT(*) AS count
+               FROM plot_thread_branches
+              WHERE project_id = ? AND from_thread_id = ? AND to_thread_id = ?
+                AND at_node_id = ? AND kind = ? AND id <> ?",
+            &[
+                Value::String(row.project_id),
+                Value::String(row.from_thread_id),
+                Value::String(row.to_thread_id),
+                Value::String(row.at_node_id),
+                Value::String(row.kind),
+                Value::String(row.id),
+            ],
+            "get",
+        )?
+        .first()
+        .and_then(|result| result.get("count"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+        if count > 0 {
+            anyhow::bail!("plot marker move would create a duplicate branch");
+        }
+    }
+    Ok(())
+}
+
+/// Atomically move one marker and create/update/delete all dependent branches.
+/// The request ledger is committed in the same transaction, so renderer retries
+/// after an unknown IPC outcome cannot apply only part of the drag twice.
+pub fn move_marker_bundle(
+    db: &Database,
+    payload: PlotThreadMoveMarkerBundlePayload,
+) -> anyhow::Result<Value> {
+    validate_move_marker_bundle_shape(&payload)?;
+    let request_id = payload.request_id.clone();
+    let fingerprint_payload = json!({
+        "projectId": payload.project_id,
+        "markerBefore": payload.marker_before,
+        "markerAfter": payload.marker_after,
+        "branchTransitions": payload.branch_transitions,
+    });
+    let payload_hash = payload_fingerprint("plot_thread_move_marker_bundle", &fingerprint_payload)?;
+
+    run_atomic_create(
+        db,
+        IdempotencyRequest {
+            domain: "plot_thread_move_marker_bundle",
+            request_id: Some(request_id.as_str()),
+            payload_hash: &payload_hash,
+            conflict_marker: "PLOT_THREAD_MOVE_MARKER_IDEMPOTENCY_CONFLICT",
+        },
+        |conn| {
+            validate_move_marker_bundle_membership(conn, &payload)?;
+            let current_marker = load_map(
+                conn,
+                "plot_thread_scene_links",
+                &payload.marker_before.id,
+            )?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker no longer exists"
+                )
+            })?;
+            if !link_row_matches(&current_marker, &payload.marker_before) {
+                anyhow::bail!(
+                    "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker changed since snapshot"
+                );
+            }
+            for transition in &payload.branch_transitions {
+                match &transition.before {
+                    Some(before) => {
+                        let current =
+                            load_map(conn, "plot_thread_branches", &before.id)?.ok_or_else(
+                                || {
+                                    anyhow::anyhow!(
+                                        "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch no longer exists"
+                                    )
+                                },
+                            )?;
+                        if !branch_row_matches(&current, before) {
+                            anyhow::bail!(
+                                "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch changed since snapshot"
+                            );
+                        }
+                    }
+                    None => {
+                        let after = transition.after.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("plot marker move branch transition has no target")
+                        })?;
+                        if load_row(conn, "plot_thread_branches", &after.id)?.is_some() {
+                            anyhow::bail!(
+                                "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch id already exists"
+                            );
+                        }
+                    }
+                }
+            }
+
+            replace_link_row(conn, &payload.marker_after)?;
+            for transition in &payload.branch_transitions {
+                match (&transition.before, &transition.after) {
+                    (None, Some(after)) => insert_or_validate_branch(conn, after)?,
+                    (Some(_), Some(after)) => replace_branch_row(conn, after)?,
+                    (Some(before), None) => {
+                        Database::execute_with_conn(
+                            conn,
+                            "DELETE FROM plot_thread_branches WHERE id = ?",
+                            &[Value::String(before.id.clone())],
+                            "run",
+                        )?;
+                    }
+                    (None, None) => {
+                        anyhow::bail!("plot marker move branch transition has no rows")
+                    }
+                }
+            }
+            reject_duplicate_branch_topology(
+                conn,
+                payload
+                    .branch_transitions
+                    .iter()
+                    .filter_map(|transition| transition.after.clone()),
+            )?;
+            Ok((
+                payload.project_id.clone(),
+                move_marker_bundle_response(&request_id, &payload),
+            ))
+        },
+        |conn| move_marker_bundle_effect_present(conn, &request_id, &payload),
     )
     .map(|outcome| outcome.into_wire_value())
 }
@@ -1975,6 +2407,118 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    fn marker_move_payload(request_id: &str) -> PlotThreadMoveMarkerBundlePayload {
+        let before = link_snapshot("link", "target");
+        let mut after = before.clone();
+        after.node_id = "scene-2".into();
+        after.updated_at = "2026-01-03T01:00:00.000Z".into();
+        let mut created_branch = branch_snapshot("moved-branch", "source", "target");
+        created_branch.at_node_id = "scene-2".into();
+        created_branch.updated_at = "2026-01-03T02:00:00.000Z".into();
+        PlotThreadMoveMarkerBundlePayload {
+            request_id: request_id.into(),
+            project_id: "p1".into(),
+            marker_before: before,
+            marker_after: after,
+            branch_transitions: vec![PlotThreadBranchTransition {
+                before: None,
+                after: Some(created_branch),
+            }],
+        }
+    }
+
+    fn seed_marker_move_bundle(d: &Database) {
+        seed_marker_delete_snapshot(d);
+        d.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title)
+             VALUES ('scene-2','p1','scene','Scene 2')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        d.execute(
+            "DELETE FROM plot_thread_branches WHERE id = 'branch'",
+            &[],
+            "run",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn move_marker_bundle_commits_once_and_exact_retry_replays() {
+        let d = db();
+        seed_marker_move_bundle(&d);
+        let first =
+            move_marker_bundle(&d, marker_move_payload("move-request")).expect("marker move");
+        assert_eq!(first["marker"]["nodeId"], Value::String("scene-2".into()));
+        assert_eq!(
+            first["branches"][0]["id"],
+            Value::String("moved-branch".into())
+        );
+        assert_eq!(first["__idempotency"]["replayed"], Value::Bool(false));
+
+        let replay =
+            move_marker_bundle(&d, marker_move_payload("move-request")).expect("exact replay");
+        assert_eq!(replay["__idempotency"]["replayed"], Value::Bool(true));
+        assert_eq!(replay["__idempotency"]["entityPresent"], Value::Bool(true));
+        let rows = d
+            .execute(
+                "SELECT
+                   (SELECT COUNT(*) FROM plot_thread_scene_links
+                     WHERE id = 'link' AND node_id = 'scene-2') AS markers,
+                   (SELECT COUNT(*) FROM plot_thread_branches
+                     WHERE id = 'moved-branch') AS branches,
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'plot_thread_move_marker_bundle'
+                       AND request_id = 'move-request') AS ledger",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["markers"].as_i64(), Some(1));
+        assert_eq!(rows[0]["branches"].as_i64(), Some(1));
+        assert_eq!(rows[0]["ledger"].as_i64(), Some(1));
+    }
+
+    #[test]
+    fn move_marker_bundle_rolls_back_marker_when_branch_write_fails() {
+        let d = db();
+        seed_marker_move_bundle(&d);
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_moved_branch
+                   BEFORE INSERT ON plot_thread_branches
+                   WHEN NEW.id = 'moved-branch'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced branch failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = move_marker_bundle(&d, marker_move_payload("move-rollback"))
+            .expect_err("branch failure must roll back marker");
+        assert!(error.to_string().contains("forced branch failure"));
+        let rows = d
+            .execute(
+                "SELECT
+                   (SELECT node_id FROM plot_thread_scene_links
+                     WHERE id = 'link') AS marker_node,
+                   (SELECT COUNT(*) FROM plot_thread_branches
+                     WHERE id = 'moved-branch') AS branches,
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'plot_thread_move_marker_bundle'
+                       AND request_id = 'move-rollback') AS ledger",
+                &[],
+                "get",
+            )
+            .unwrap();
+        assert_eq!(rows[0]["marker_node"].as_str(), Some("scene"));
+        assert_eq!(rows[0]["branches"].as_i64(), Some(0));
+        assert_eq!(rows[0]["ledger"].as_i64(), Some(0));
     }
 
     #[test]

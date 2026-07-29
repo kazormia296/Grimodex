@@ -22,6 +22,7 @@ import { buildZenGlassMask } from "./zenGlassCompositor";
 const PREVIEW_PIXEL_BUDGET = 300_000;
 const LIVE_BACKGROUND_PIXEL_BUDGET = 1920 * 1080;
 const LIVE_BACKGROUND_MIN_PIXEL_RATIO = 1;
+const INITIAL_UI_SURFACE_CAPACITY = 16;
 
 interface ZenShaderSurfaceProps {
   config: ZenShaderConfig;
@@ -49,11 +50,16 @@ export function ZenShaderSurface({
   const palette = useZenThemePalette();
   const layouts = useZenShaderLayouts(surfaceRef);
   // Paper prepares uniforms asynchronously. Keep the program, upload buffer,
-  // and React mount on one capacity so a stale smaller initialization cannot
-  // win while the startup layout expands from one surface to the full shell.
-  const uiSurfaceCapacity = zenUiSurfaceVariantCapacity(
+  // and React mount on a high-water capacity so transient surface removal
+  // cannot replace the compositor while a panel is closing.
+  const requiredUiSurfaceCapacity = zenUiSurfaceVariantCapacity(
     layouts.uiSurfaces.length,
   );
+  const uiSurfaceCapacityRef = useRef(INITIAL_UI_SURFACE_CAPACITY);
+  if (requiredUiSurfaceCapacity > uiSurfaceCapacityRef.current) {
+    uiSurfaceCapacityRef.current = requiredUiSurfaceCapacity;
+  }
+  const uiSurfaceCapacity = uiSurfaceCapacityRef.current;
   const surfaceUniformBuffer = useMemo(
     () => new ZenUiSurfaceUniformBuffer(uiSurfaceCapacity),
     [uiSurfaceCapacity],

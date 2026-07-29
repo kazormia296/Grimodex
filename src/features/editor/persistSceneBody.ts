@@ -22,86 +22,82 @@ import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions"
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
 import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOverrides";
 import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
-import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
-import { useCodexStore } from "@/features/codex/codexStore";
-import { listCodexMatchTargets } from "@/features/codex/api";
 import { useChatStore } from "@/features/chat/chatStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import { recordBodyMentionScans } from "@/features/codex/bodyMentionIndexState";
 import { isElectron } from "@/lib/shell";
 import { deriveSceneBodySnapshot } from "./sceneBodySnapshot";
 import { saveSceneBodyBundle } from "./sceneBodyBundleApi";
 import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
+import { listCodexMatchTargets } from "@/features/codex/api";
+import { recordBodyMentionScans } from "@/features/codex/bodyMentionIndexState";
+import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 
-interface PendingBodyMentionScan {
+export interface BodyMentionScanRequest {
   projectId: string;
+  sceneId: string;
   docJsonStr: string;
-  /** Compatibility input for callers backed by the pre-completionTargets store. */
-  allEntries?: Parameters<typeof upsertSceneBodyMentions>[2];
   sceneVersion: number;
   sceneUpdatedAt: string;
 }
 
-const pendingBodyMentionScans = new Map<string, PendingBodyMentionScan>();
+const pendingBodyMentionScans = new Map<string, BodyMentionScanRequest>();
 const bodyMentionScanTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const bodyMentionScanRunning = new Set<string>();
 
-function scheduleBodyMentionScan(
-  projectId: string,
-  id: string,
-  docJsonStr: string,
-  allEntries: PendingBodyMentionScan["allEntries"],
-  sceneVersion: number,
-  sceneUpdatedAt: string,
-): void {
-  pendingBodyMentionScans.set(id, {
-    projectId,
-    docJsonStr,
-    allEntries,
-    sceneVersion,
-    sceneUpdatedAt,
-  });
-  if (bodyMentionScanTimers.has(id) || bodyMentionScanRunning.has(id)) return;
+/**
+ * Coalesce scene-body mention scans without borrowing the Codex panel's
+ * filter-dependent collection. The complete project projection is resolved at
+ * execution time so live saves and external imports use the same authority.
+ */
+export function scheduleBodyMentionScan(request: BodyMentionScanRequest): void {
+  const { sceneId } = request;
+  pendingBodyMentionScans.set(sceneId, request);
+  if (
+    bodyMentionScanTimers.has(sceneId) ||
+    bodyMentionScanRunning.has(sceneId)
+  ) {
+    return;
+  }
 
   const run = async () => {
-    bodyMentionScanTimers.delete(id);
-    const scan = pendingBodyMentionScans.get(id);
-    pendingBodyMentionScans.delete(id);
-    if (!scan) return;
-    bodyMentionScanRunning.add(id);
+    bodyMentionScanTimers.delete(sceneId);
+    const current = pendingBodyMentionScans.get(sceneId);
+    pendingBodyMentionScans.delete(sceneId);
+    if (!current) return;
+    bodyMentionScanRunning.add(sceneId);
 
     markStart("editor.coreSave.bodyMentionUpsert");
     try {
-      // Always resolve the complete project projection at execution time. The
-      // panel's `entries` collection is filter-dependent, while even the
-      // completion cache can be empty/stale during a project switch.
-      const allEntries =
-        scan.allEntries ?? (await listCodexMatchTargets(scan.projectId));
-      // With no match targets there can be no derived mention rows. The index
-      // readiness contract already treats an empty project as ready, so avoid
-      // parsing the 50k document or recording a redundant scan revision.
+      const allEntries = await listCodexMatchTargets(current.projectId);
       if (allEntries.length === 0) return;
-      await upsertSceneBodyMentions(id, scan.docJsonStr, allEntries);
-      await recordBodyMentionScans(scan.projectId, allEntries, [
+      await upsertSceneBodyMentions(
+        current.sceneId,
+        current.docJsonStr,
+        allEntries,
+      );
+      await recordBodyMentionScans(current.projectId, allEntries, [
         {
-          sceneId: id,
-          version: scan.sceneVersion,
-          updatedAt: scan.sceneUpdatedAt,
+          sceneId: current.sceneId,
+          version: current.sceneVersion,
+          updatedAt: current.sceneUpdatedAt,
         },
       ]);
-    } catch (e) {
+    } catch (error) {
       debugLog.error(
         "persistSceneBody",
         "upsertSceneBodyMentions failed",
-        errorDetail(e),
+        errorDetail(error),
       );
     } finally {
       markEnd("editor.coreSave.bodyMentionUpsert");
-      bodyMentionScanRunning.delete(id);
-      if (pendingBodyMentionScans.has(id) && !bodyMentionScanTimers.has(id)) {
+      bodyMentionScanRunning.delete(sceneId);
+      if (
+        pendingBodyMentionScans.has(sceneId) &&
+        !bodyMentionScanTimers.has(sceneId)
+      ) {
         bodyMentionScanTimers.set(
-          id,
+          sceneId,
           setTimeout(() => void run(), 0),
         );
       }
@@ -109,36 +105,17 @@ function scheduleBodyMentionScan(
   };
 
   bodyMentionScanTimers.set(
-    id,
+    sceneId,
     setTimeout(() => void run(), 0),
   );
 }
 
-function scheduleCurrentBodyMentionScan(
-  projectId: string,
-  id: string,
-  docJsonStr: string,
-  sceneVersion: number,
-  sceneUpdatedAt: string,
-): void {
-  const codexState = useCodexStore.getState() as {
-    entries: Parameters<typeof upsertSceneBodyMentions>[2];
-    completionTargets?: Parameters<typeof upsertSceneBodyMentions>[2];
-  };
-  // Current stores expose completionTargets, so the deferred job performs an
-  // authoritative project-scoped read. The fallback keeps older embedded
-  // store implementations functional during rolling upgrades.
-  const legacyEntries =
-    codexState.completionTargets === undefined ? codexState.entries : undefined;
-  if (legacyEntries && legacyEntries.length === 0) return;
-  scheduleBodyMentionScan(
-    projectId,
-    id,
-    docJsonStr,
-    legacyEntries,
-    sceneVersion,
-    sceneUpdatedAt,
-  );
+/** @internal */
+export function _resetBodyMentionScanSchedulerForTests(): void {
+  for (const timer of bodyMentionScanTimers.values()) clearTimeout(timer);
+  pendingBodyMentionScans.clear();
+  bodyMentionScanTimers.clear();
+  bodyMentionScanRunning.clear();
 }
 
 /**
@@ -303,13 +280,13 @@ export async function persistSceneBody(
     // context 再構築は実行する。他の schema 依存処理
     // (authorship/foreshadow/annotation/sceneBeat/aiRatio) は
     // file-backed editor 拡張で外しているため空打ちになるのでスキップ。
-    scheduleCurrentBodyMentionScan(
+    scheduleBodyMentionScan({
       projectId,
-      id,
-      sceneJsonStr,
-      contentVersion,
-      contentUpdatedAt,
-    );
+      sceneId: id,
+      docJsonStr: sceneJsonStr,
+      sceneVersion: contentVersion,
+      sceneUpdatedAt: contentUpdatedAt,
+    });
     const chatState = useChatStore.getState();
     if (chatState.activeSceneId === id) {
       markStart("editor.coreSave.refreshContextLayers");
@@ -328,13 +305,13 @@ export async function persistSceneBody(
   });
   markEnd("editor.coreSave.treeMirror");
   // Deferred body-mention scan — does not block the save response
-  scheduleCurrentBodyMentionScan(
+  scheduleBodyMentionScan({
     projectId,
-    id,
-    sceneJsonStr,
-    contentVersion,
-    contentUpdatedAt,
-  );
+    sceneId: id,
+    docJsonStr: sceneJsonStr,
+    sceneVersion: contentVersion,
+    sceneUpdatedAt: contentUpdatedAt,
+  });
   markStart("editor.coreSave.refreshAiRatio");
   useTreeStore
     .getState()

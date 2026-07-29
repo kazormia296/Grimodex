@@ -1614,10 +1614,10 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
   }
 
-  it("同レーンで横ドラッグ → updateMarker でシーン移動", () => {
+  it("同レーンで横ドラッグ → atomic bundle でシーン移動", () => {
     seed();
-    const updateMarker = vi.fn();
-    usePlotThreadStore.setState({ updateMarker });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1625,19 +1625,17 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 158 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 158 });
-    expect(updateMarker).toHaveBeenCalledWith(
-      "l1",
-      { nodeId: "s2" },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "l1",
+      markerPatch: { nodeId: "s2" },
+    });
   });
 
   it("マーカードラッグ中はグラフを再計算しプレビューのコネクタが出る（確定前）", async () => {
     seed();
     usePlotThreadStore.setState({
-      updateMarker: vi.fn(),
+      moveMarkerBundle: vi.fn(async () => {}),
       addMarker: vi.fn(),
-      addBranch: vi.fn(),
     });
     const { getByTestId, container } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
@@ -1656,10 +1654,9 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
 
   it("下のレーンへドラッグ → branch: ドラッグ点を先(to)へ移動・元に点は作らない", () => {
     seed();
-    const updateMarker = vi.fn();
+    const moveMarkerBundle = vi.fn(async () => {});
     const addMarker = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    usePlotThreadStore.setState({ moveMarkerBundle, addMarker });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1668,32 +1665,29 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
-    expect(updateMarker).toHaveBeenCalledWith(
-      "l1",
-      {
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "l1",
+      markerPatch: {
         threadId: "t2",
         nodeId: "s2",
       },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
+      branchCreates: [
+        {
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "s2",
+          kind: "branch",
+        },
+      ],
+    });
     expect(addMarker).not.toHaveBeenCalled(); // 第2の点は作らない
-    expect(addBranch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fromThreadId: "t1",
-        toThreadId: "t2",
-        atNodeId: "s2",
-        kind: "branch",
-      }),
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
   });
 
   it("上のレーンへドラッグ → merge: ドラッグ点を移動先(to)へ移す・元に点は作らない", () => {
     seed();
-    const updateMarker = vi.fn();
+    const moveMarkerBundle = vi.fn(async () => {});
     const addMarker = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    usePlotThreadStore.setState({ moveMarkerBundle, addMarker });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1702,24 +1696,22 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 158 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 158 });
-    expect(updateMarker).toHaveBeenCalledWith(
-      "l2",
-      {
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "l2",
+      markerPatch: {
         threadId: "t1",
         nodeId: "s2",
       },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
+      branchCreates: [
+        {
+          fromThreadId: "t2",
+          toThreadId: "t1",
+          atNodeId: "s2",
+          kind: "merge",
+        },
+      ],
+    });
     expect(addMarker).not.toHaveBeenCalled();
-    expect(addBranch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fromThreadId: "t2",
-        toThreadId: "t1",
-        atNodeId: "s2",
-        kind: "merge",
-      }),
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
   });
 
   it("動かさず mousedown→mouseup なら選択（マーカー＋そのシーン）", () => {
@@ -1760,10 +1752,9 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
       loading: false,
     });
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
-    const updateMarker = vi.fn();
+    const moveMarkerBundle = vi.fn(async () => {});
     const addMarker = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    usePlotThreadStore.setState({ moveMarkerBundle, addMarker });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1773,9 +1764,8 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
     // dup なので何も起きない（source も動かない）
-    expect(updateMarker).not.toHaveBeenCalled();
+    expect(moveMarkerBundle).not.toHaveBeenCalled();
     expect(addMarker).not.toHaveBeenCalled();
-    expect(addBranch).not.toHaveBeenCalled();
   });
 
   it("同じドロップ先への mousemove ではレーンモデルを再構築しない（離散キーで抑制）", () => {
@@ -1790,9 +1780,8 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     try {
       seed();
       usePlotThreadStore.setState({
-        updateMarker: vi.fn(),
+        moveMarkerBundle: vi.fn(async () => {}),
         addMarker: vi.fn(),
-        addBranch: vi.fn(),
       });
       const spy = vi.mocked(buildPlotLaneModel);
       let renderCount = 0;
@@ -1839,9 +1828,9 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
 
   it("window blur は保留中のマーカードラッグを取消し、復帰後のクリックを妨げない", () => {
     seed();
-    const updateMarker = vi.fn();
+    const moveMarkerBundle = vi.fn(async () => {});
     const onSelectMarker = vi.fn();
-    usePlotThreadStore.setState({ updateMarker });
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport
         scenes={scenes}
@@ -1854,7 +1843,7 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
     fireEvent.blur(window);
     fireEvent.mouseUp(document, { button: 0, clientX: 246, clientY: 214 });
-    expect(updateMarker).not.toHaveBeenCalled();
+    expect(moveMarkerBundle).not.toHaveBeenCalled();
 
     fireEvent.mouseDown(marker, { clientX: 150, clientY: 158 });
     fireEvent.mouseUp(document, { button: 0, clientX: 150, clientY: 158 });
@@ -2162,10 +2151,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
 
   it("同レーンでドラッグ → エッジの at_node が追従する", () => {
     seedBranch();
-    const updateMarker = vi.fn();
-    const updateBranch = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -2174,25 +2161,18 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 }); // 同 B レーンの s2
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
-    expect(updateMarker).toHaveBeenCalledWith(
-      "lB",
-      { nodeId: "s2" },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
-    expect(updateBranch).toHaveBeenCalledWith(
-      "br1",
-      { atNodeId: "s2" },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
-    expect(addBranch).not.toHaveBeenCalled();
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB",
+      markerPatch: { nodeId: "s2" },
+      branchUpdates: [{ id: "br1", patch: { atNodeId: "s2" } }],
+      branchDeletes: [],
+    });
   });
 
   it("別スレッドへドロップ → エッジの構造側を付け替え（新規作らない）", () => {
     seedBranch();
-    const updateMarker = vi.fn();
-    const updateBranch = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -2201,23 +2181,23 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     fireEvent.mouseMove(document, { clientX: 246, clientY: 270 }); // C レーンの s2
     fireEvent.mouseUp(document, { clientX: 246, clientY: 270 });
     // マーカーは C へ、branch の to を C へ付け替え＋at_node 追従
-    expect(updateMarker).toHaveBeenCalledWith(
-      "lB",
-      {
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB",
+      markerPatch: {
         threadId: "C",
         nodeId: "s2",
       },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
-    expect(updateBranch).toHaveBeenCalledWith(
-      "br1",
-      {
-        toThreadId: "C",
-        atNodeId: "s2",
-      },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
-    expect(addBranch).not.toHaveBeenCalled();
+      branchUpdates: [
+        {
+          id: "br1",
+          patch: {
+            toThreadId: "C",
+            atNodeId: "s2",
+          },
+        },
+      ],
+      branchDeletes: [],
+    });
   });
 
   it("merge エッジも to 側マーカーで追従・付け替えする（統一アンカー）", () => {
@@ -2240,10 +2220,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
       loading: false,
     });
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
-    const updateMarker = vi.fn();
-    const updateBranch = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -2253,23 +2231,23 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     fireEvent.mouseMove(document, { clientX: 246, clientY: 270 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 270 });
     // マーカーは C へ、merge の to を C へ付け替え＋at_node 追従（新規作らない）。
-    expect(updateMarker).toHaveBeenCalledWith(
-      "lB",
-      {
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB",
+      markerPatch: {
         threadId: "C",
         nodeId: "s2",
       },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
-    expect(updateBranch).toHaveBeenCalledWith(
-      "mg1",
-      {
-        toThreadId: "C",
-        atNodeId: "s2",
-      },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
-    expect(addBranch).not.toHaveBeenCalled();
+      branchUpdates: [
+        {
+          id: "mg1",
+          patch: {
+            toThreadId: "C",
+            atNodeId: "s2",
+          },
+        },
+      ],
+      branchDeletes: [],
+    });
   });
 
   it("付け替えで既存エッジと重複するなら rebind せず削除する", () => {
@@ -2301,10 +2279,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
       loading: false,
     });
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
-    const updateMarker = vi.fn();
-    const updateBranch = vi.fn();
-    const deleteBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, updateBranch, deleteBranch });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -2314,16 +2290,12 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 }); // B レーンの s2
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
     // br1 が A→B@s2 になり br2 と重複 → rebind せず br1 を削除
-    expect(deleteBranch).toHaveBeenCalledWith(
-      "br1",
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
-    expect(updateBranch).not.toHaveBeenCalled();
-    expect(updateMarker).toHaveBeenCalledWith(
-      "lB1",
-      { nodeId: "s2" },
-      expect.objectContaining({ push: expect.any(Function) }),
-    );
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB1",
+      markerPatch: { nodeId: "s2" },
+      branchUpdates: [],
+      branchDeletes: ["br1"],
+    });
   });
 });
 

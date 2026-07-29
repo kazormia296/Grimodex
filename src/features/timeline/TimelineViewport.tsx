@@ -26,9 +26,9 @@ import {
 } from "@/features/plot-threads/plotThreadLaneModel";
 import { resolveMarkerDrop } from "@/features/plot-threads/plotThreadDnd";
 import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
-import { getCurrentProjectId } from "@/features/project/projectStore";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { toast } from "sonner";
 import { fitLabelToWidth } from "./threadLabelFit";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
 import {
@@ -1215,123 +1215,89 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       });
       if (action.type === "none") return;
 
-      // 1 ドラッグ = 1 Undo。マーカー移動とそれに伴うエッジの追従/生成/削除を
-      // ひとつの履歴エントリにまとめる（個別 push だと Ctrl+Z が部分的に戻す）。
-      // ストア mutation は内部で push するので、ここでは await して取りこぼさない。
-      void useGlobalHistoryStore.getState().runAsTransaction(
-        {
-          kind: "plot",
-          label: t("plotThread.history.moveMarker", "マーカー移動"),
-        },
-        async (history) => {
-          const store = usePlotThreadStore.getState();
-          // mutation は同期的に発火（mock も実呼び出しも即座に呼ぶ＝従来の
-          // fire-and-forget と同じ呼び出しタイミング）し、戻り Promise を集めて
-          // 最後に待つ。await して初めてトランザクションが閉じ、各 mutation 内の
-          // push がこのエントリにまとまる。
-          const ops: Array<Promise<void>> = [];
-
-          const newThread =
-            action.type === "branch" ? action.toThreadId : d.threadId;
-          const newScene =
-            action.type === "move-scene" ? action.nodeId : action.atNodeId;
-          const crossThread = newThread !== d.threadId;
-
-          // このマーカーが既存 branch/merge のアンカーか。統一モデルでは branch も merge も
-          // マーカーは移動先 = to 側に乗るので、アンカー = (to===自スレッド && at===開始シーン)。
-          const anchored = store.branches.filter(
-            (b) => b.atNodeId === d.nodeId && b.toThreadId === d.threadId,
-          );
-
-          if (anchored.length > 0) {
-            // 既存エッジを持つマーカー: マーカーと一緒にエッジを追従／別スレッドへ
-            // 付け替え（新規エッジは作らない）。
-            ops.push(
-              store.updateMarker(
-                d.linkId,
-                crossThread
-                  ? { threadId: newThread, nodeId: newScene }
-                  : { nodeId: newScene },
-                history,
-              ),
-            );
-            for (const e of anchored) {
-              // マーカーは to 側アンカー。別スレッドへ移したら to を付け替え、同レーンなら
-              // at_node のみ追従。自己参照 or 既存エッジと重複になるなら rebind せず削除する
-              // （新規/手動経路と同じ dedup 不変条件）。
-              const resTo = crossThread ? newThread : e.toThreadId;
-              const isSelf = e.fromThreadId === resTo;
-              const isDupOther = store.branches.some(
-                (b) =>
-                  b.id !== e.id &&
-                  b.fromThreadId === e.fromThreadId &&
-                  b.toThreadId === resTo &&
-                  b.atNodeId === newScene &&
-                  b.kind === e.kind,
-              );
-              if (isSelf || isDupOther) {
-                ops.push(store.deleteBranch(e.id, history));
-                continue;
-              }
-              ops.push(
-                store.updateBranch(
-                  e.id,
-                  crossThread
-                    ? { toThreadId: newThread, atNodeId: newScene }
-                    : { atNodeId: newScene },
-                  history,
-                ),
-              );
-            }
-            await Promise.all(ops);
-            return;
-          }
-
-          // 既存エッジ無し: 従来挙動。
-          if (action.type === "move-scene") {
-            await store.updateMarker(
-              d.linkId,
-              { nodeId: action.nodeId },
-              history,
-            );
-            return;
-          }
-          // 別スレッドへドロップ → 新規 branch/merge（片側のみマーカー）。
-          // 既存の同一エッジがあれば非アトミックを避けるため何もしない。
-          const isDup = store.branches.some(
-            (b) =>
-              b.fromThreadId === action.fromThreadId &&
-              b.toThreadId === action.toThreadId &&
-              b.atNodeId === action.atNodeId &&
-              b.kind === action.kind,
-          );
-          if (isDup) return;
-          // 統一モデル: branch も merge もマーカーは移動先 = to（ドロップ先レーン）へ移す。
-          ops.push(
-            store.updateMarker(
-              d.linkId,
-              {
-                threadId: action.toThreadId,
-                nodeId: action.atNodeId,
-              },
-              history,
-            ),
-          );
-          ops.push(
-            store.addBranch(
-              {
-                projectId: getCurrentProjectId(),
-                fromThreadId: action.fromThreadId,
-                toThreadId: action.toThreadId,
-                atNodeId: action.atNodeId,
-                kind: action.kind,
-              },
-              history,
-            ),
-          );
-          await Promise.all(ops);
-        },
+      const store = usePlotThreadStore.getState();
+      const newThread =
+        action.type === "branch" ? action.toThreadId : d.threadId;
+      const newScene =
+        action.type === "move-scene" ? action.nodeId : action.atNodeId;
+      const crossThread = newThread !== d.threadId;
+      const anchored = store.branches.filter(
+        (branch) =>
+          branch.atNodeId === d.nodeId && branch.toThreadId === d.threadId,
       );
+
+      let operation: Promise<void>;
+      if (anchored.length > 0) {
+        const branchUpdates = [];
+        const branchDeletes: string[] = [];
+        for (const branch of anchored) {
+          const reboundTarget = crossThread ? newThread : branch.toThreadId;
+          const isSelf = branch.fromThreadId === reboundTarget;
+          const isDuplicate = store.branches.some(
+            (candidate) =>
+              candidate.id !== branch.id &&
+              candidate.fromThreadId === branch.fromThreadId &&
+              candidate.toThreadId === reboundTarget &&
+              candidate.atNodeId === newScene &&
+              candidate.kind === branch.kind,
+          );
+          if (isSelf || isDuplicate) {
+            branchDeletes.push(branch.id);
+          } else {
+            branchUpdates.push({
+              id: branch.id,
+              patch: crossThread
+                ? { toThreadId: newThread, atNodeId: newScene }
+                : { atNodeId: newScene },
+            });
+          }
+        }
+        operation = store.moveMarkerBundle({
+          markerId: d.linkId,
+          markerPatch: crossThread
+            ? { threadId: newThread, nodeId: newScene }
+            : { nodeId: newScene },
+          branchUpdates,
+          branchDeletes,
+        });
+      } else if (action.type === "move-scene") {
+        operation = store.moveMarkerBundle({
+          markerId: d.linkId,
+          markerPatch: { nodeId: action.nodeId },
+        });
+      } else {
+        const isDuplicate = store.branches.some(
+          (branch) =>
+            branch.fromThreadId === action.fromThreadId &&
+            branch.toThreadId === action.toThreadId &&
+            branch.atNodeId === action.atNodeId &&
+            branch.kind === action.kind,
+        );
+        if (isDuplicate) return;
+        operation = store.moveMarkerBundle({
+          markerId: d.linkId,
+          markerPatch: {
+            threadId: action.toThreadId,
+            nodeId: action.atNodeId,
+          },
+          branchCreates: [
+            {
+              fromThreadId: action.fromThreadId,
+              toThreadId: action.toThreadId,
+              atNodeId: action.atNodeId,
+              kind: action.kind,
+            },
+          ],
+        });
+      }
+      void operation.catch((error: unknown) => {
+        debugLog.error(
+          "plot-thread",
+          "Atomic marker move failed",
+          errorDetail(error),
+        );
+        toast.error(t("plotThread.moveFailed", "マーカーの移動に失敗しました"));
+      });
     }
     const commitMarkerDropRef = useRef(commitMarkerDrop);
     commitMarkerDropRef.current = commitMarkerDrop;

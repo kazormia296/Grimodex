@@ -2,7 +2,6 @@ import { useCallback, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
-  MeasuringStrategy,
   PointerSensor,
   KeyboardSensor,
   useSensor,
@@ -32,6 +31,7 @@ import { moveScenesToChapter } from "./bulkSceneOps";
 import { recordMark } from "@/lib/perfLog";
 import { useGridPanelLifecycle } from "./useGridPanelLifecycle";
 import { useGridDragController } from "./useGridDragController";
+import { GRID_DND_MEASURING } from "./gridDndMeasuring";
 
 /**
  * Pin the DragOverlay's center to the pointer. The actual draggable element
@@ -194,13 +194,10 @@ export function GridPanel() {
       sensors={sensors}
       collisionDetection={gridCollisionDetection}
       modifiers={[snapOverlayCenterToCursor]}
-      // dnd-kit デフォルトの "Optimized" 戦略は translate.x/y 変化で droppable
-      // を全件 getBoundingClientRect する。Grid は ~27 droppable + 16 cards で
-      // pointer move 毎に 15-25ms の layout thrashing になっていた。
-      // axis-lock 中は GridPanel が自前 siblingRects を保持しており、drag 中に
-      // 列やカードの実 rect が動く局面でも dnd-kit の measure 結果は使われない
-      // ため、BeforeDragging に切替えて drag 開始時のみ measure する。
-      measuring={{ droppable: { strategy: MeasuringStrategy.BeforeDragging } }}
+      // Virtual rows mount after drag start when the user scrolls. The live
+      // registry must be remeasured or an initially off-screen row can never
+      // become a drop target.
+      measuring={GRID_DND_MEASURING}
       onDragStart={dragController.handleDragStart}
       onDragOver={dragController.handleDragOver}
       onDragEnd={dragController.handleDragEnd}

@@ -27,9 +27,12 @@ import {
   deletePlotThreadBranch,
   restorePlotThreadSnapshot,
   deletePlotThreadSnapshot,
+  movePlotMarkerBundle,
   type PlotThreadRow,
   type PlotThreadLinkRow,
   type PlotThreadBranchRow,
+  type PlotThreadMoveMarkerBundle,
+  type PlotThreadMoveMarkerBundleResult,
 } from "./api";
 import {
   captureMutationAuthority,
@@ -53,9 +56,9 @@ import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
  * Undo/Redo: プロットスレッド操作を globalHistoryStore に1エントリ積む。
  * replay 中は no-op（push 自体も safety net で弾くが、ここで早期 return して
  * クロージャ生成も省く）。closures は逆操作 API + set を直接叩き、ストアの公開
- * mutation を呼ばない（再 push の再帰を避ける。codexStore と同方針）。複数 mutation
- * を1ユーザー操作にまとめたい経路（マーカードラッグ）は呼び出し側で
- * useGlobalHistoryStore.runAsTransaction で包む。
+ * mutation を呼ばない（再 push の再帰を避ける。codexStore と同方針）。
+ * マーカー＋分岐は moveMarkerBundle がDB原子性と単一history entryを所有し、
+ * 一括importのような独立mutation群だけを明示collectorへ束ねる。
  */
 function recordPlotHistory(
   cmd: {
@@ -141,6 +144,24 @@ export interface PlotThreadImportProposal {
   }>;
 }
 
+export interface PlotMarkerMovePlan {
+  markerId: string;
+  markerPatch: Partial<Pick<PlotThreadLinkRow, "threadId" | "nodeId">>;
+  branchCreates?: Array<
+    Pick<
+      PlotThreadBranchRow,
+      "fromThreadId" | "toThreadId" | "atNodeId" | "kind"
+    >
+  >;
+  branchUpdates?: Array<{
+    id: string;
+    patch: Partial<
+      Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
+    >;
+  }>;
+  branchDeletes?: string[];
+}
+
 interface PlotThreadState {
   /** Project whose rows are currently allowed to be displayed or mutated. */
   activeProjectId: string | null;
@@ -191,6 +212,8 @@ interface PlotThreadState {
     history?: HistoryCollector,
     options?: { preexistingDraft?: boolean },
   ) => Promise<void>;
+  /** Marker + dependent branch transitions commit and replay as one DB unit. */
+  moveMarkerBundle: (plan: PlotMarkerMovePlan) => Promise<void>;
   deleteMarker: (id: string) => Promise<void>;
   addBranch: (
     data: {
@@ -227,6 +250,8 @@ const pendingPlotDeleteSnapshots =
   createPendingCreateRequestRegistry<
     Parameters<typeof deletePlotThreadSnapshot>[0]
   >();
+const pendingPlotMarkerMoves =
+  createPendingCreateRequestRegistry<PlotThreadMoveMarkerBundle>();
 const pendingPlotImportThreads = new Map<string, string>();
 
 function shouldRetainPendingCreate(error: unknown): boolean {
@@ -238,6 +263,7 @@ function releasePlotCreateRequests(): void {
   pendingLinkCreates.clear();
   pendingBranchCreates.clear();
   pendingPlotDeleteSnapshots.clear();
+  pendingPlotMarkerMoves.clear();
   pendingPlotImportThreads.clear();
 }
 
@@ -315,6 +341,47 @@ async function runRetainedPlotDelete(
     }
     throw error;
   }
+}
+
+async function runRetainedPlotMarkerMove(
+  requests: PendingCreateRequestRegistry<PlotThreadMoveMarkerBundle>,
+  key: string,
+  bundle: Omit<PlotThreadMoveMarkerBundle, "requestId">,
+): Promise<PlotThreadMoveMarkerBundleResult> {
+  const signature = JSON.stringify(bundle);
+  const pending = requests.acquire(key, signature, (requestId) => ({
+    ...bundle,
+    requestId,
+  }));
+  try {
+    const result = await movePlotMarkerBundle(pending.payload);
+    requests.release(pending);
+    if (!isCreateResultEntityPresent(result)) {
+      throw new Error(
+        "plot marker move replay no longer matches the current marker rows",
+      );
+    }
+    return result;
+  } catch (error) {
+    if (!shouldRetainPendingCreate(error)) {
+      requests.release(pending);
+    }
+    throw error;
+  }
+}
+
+function reversePlotMarkerMove(
+  bundle: Omit<PlotThreadMoveMarkerBundle, "requestId">,
+): Omit<PlotThreadMoveMarkerBundle, "requestId"> {
+  return {
+    projectId: bundle.projectId,
+    markerBefore: bundle.markerAfter,
+    markerAfter: bundle.markerBefore,
+    branchTransitions: bundle.branchTransitions.map((transition) => ({
+      before: transition.after,
+      after: transition.before,
+    })),
+  };
 }
 
 function captureBoundPlotAuthority(
@@ -1204,6 +1271,217 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
         },
       },
       history,
+      authority,
+    );
+  },
+
+  moveMarkerBundle: async (plan) => {
+    const markerBefore = get().links.find((link) => link.id === plan.markerId);
+    const authority = captureBoundPlotAuthority(get());
+    if (!markerBefore || !authority) return;
+    const markerThreadId = plan.markerPatch.threadId ?? markerBefore.threadId;
+    if (!get().threads.some((thread) => thread.id === markerThreadId)) return;
+
+    const deletes = new Set(plan.branchDeletes ?? []);
+    const updateIds = new Set(
+      (plan.branchUpdates ?? []).map((transition) => transition.id),
+    );
+    if (
+      deletes.size !== (plan.branchDeletes ?? []).length ||
+      updateIds.size !== (plan.branchUpdates ?? []).length ||
+      [...deletes].some((id) => updateIds.has(id))
+    ) {
+      return;
+    }
+
+    const branchById = new Map(
+      get().branches.map((branch) => [branch.id, branch] as const),
+    );
+    const branchUpdates = (plan.branchUpdates ?? []).map((transition) => {
+      const before = branchById.get(transition.id);
+      return before
+        ? { before, after: { ...before, ...transition.patch } }
+        : null;
+    });
+    if (branchUpdates.some((transition) => transition === null)) return;
+    const deletedBranches = [...deletes].map((id) => branchById.get(id));
+    if (deletedBranches.some((branch) => branch === undefined)) return;
+
+    const knownThread = (id: string) =>
+      get().threads.some((thread) => thread.id === id);
+    const proposedBranches = [
+      ...get()
+        .branches.filter((branch) => !deletes.has(branch.id))
+        .map(
+          (branch) =>
+            branchUpdates.find(
+              (transition) => transition?.before.id === branch.id,
+            )?.after ?? branch,
+        ),
+      ...(plan.branchCreates ?? []).map((branch, index) => ({
+        id: `pending:${index}`,
+        projectId: authority.projectId,
+        ...branch,
+        createdAt: "",
+        updatedAt: "",
+      })),
+    ];
+    const topology = new Set<string>();
+    for (const branch of proposedBranches) {
+      if (
+        branch.fromThreadId === branch.toThreadId ||
+        !knownThread(branch.fromThreadId) ||
+        !knownThread(branch.toThreadId)
+      ) {
+        return;
+      }
+      const key = JSON.stringify([
+        branch.fromThreadId,
+        branch.toThreadId,
+        branch.atNodeId,
+        branch.kind,
+      ]);
+      if (topology.has(key)) return;
+      topology.add(key);
+    }
+
+    const markerChanged =
+      markerThreadId !== markerBefore.threadId ||
+      (plan.markerPatch.nodeId !== undefined &&
+        plan.markerPatch.nodeId !== markerBefore.nodeId);
+    if (
+      !markerChanged &&
+      branchUpdates.length === 0 &&
+      deletes.size === 0 &&
+      (plan.branchCreates ?? []).length === 0
+    ) {
+      return;
+    }
+
+    const semanticSignature = JSON.stringify({
+      projectId: authority.projectId,
+      markerBefore,
+      markerPatch: plan.markerPatch,
+      branchUpdates,
+      deletedBranches,
+      branchCreates: plan.branchCreates ?? [],
+    });
+    const pending = pendingPlotMarkerMoves.acquire(
+      `marker-move:${authority.projectId}:${plan.markerId}`,
+      semanticSignature,
+      (requestId) => {
+        const now = new Date().toISOString();
+        return {
+          requestId,
+          projectId: authority.projectId,
+          markerBefore,
+          markerAfter: {
+            ...markerBefore,
+            ...plan.markerPatch,
+            updatedAt: now,
+          },
+          branchTransitions: [
+            ...branchUpdates.map((transition) => {
+              const value = transition!;
+              return {
+                before: value.before,
+                after: { ...value.after, updatedAt: now },
+              };
+            }),
+            ...deletedBranches.map((branch) => ({
+              before: branch!,
+              after: null,
+            })),
+            ...(plan.branchCreates ?? []).map((branch) => ({
+              before: null,
+              after: {
+                id: crypto.randomUUID(),
+                projectId: authority.projectId,
+                ...branch,
+                createdAt: now,
+                updatedAt: now,
+              },
+            })),
+          ],
+        };
+      },
+    );
+    const outcome = await runRetainedPlotCreate(
+      authority,
+      pendingPlotMarkerMoves,
+      pending,
+      movePlotMarkerBundle,
+    );
+    if (
+      outcome.status !== "current" ||
+      !isCreateResultEntityPresent(outcome.value)
+    ) {
+      return;
+    }
+
+    const bundle = {
+      projectId: pending.payload.projectId,
+      markerBefore: pending.payload.markerBefore,
+      markerAfter: pending.payload.markerAfter,
+      branchTransitions: pending.payload.branchTransitions,
+    };
+    const publish = (
+      appliedBundle: Omit<PlotThreadMoveMarkerBundle, "requestId">,
+      result: PlotThreadMoveMarkerBundleResult,
+    ) => {
+      const transitionedIds = new Set(
+        appliedBundle.branchTransitions.flatMap((transition) => [
+          ...(transition.before ? [transition.before.id] : []),
+          ...(transition.after ? [transition.after.id] : []),
+        ]),
+      );
+      set({
+        links: get().links.map((link) =>
+          link.id === appliedBundle.markerBefore.id ? result.marker : link,
+        ),
+        branches: [
+          ...get().branches.filter((branch) => !transitionedIds.has(branch.id)),
+          ...result.branches,
+        ],
+      });
+    };
+    publish(bundle, outcome.value);
+
+    const reverseBundle = reversePlotMarkerMove(bundle);
+    const undoRequests =
+      createPendingCreateRequestRegistry<PlotThreadMoveMarkerBundle>();
+    const redoRequests =
+      createPendingCreateRequestRegistry<PlotThreadMoveMarkerBundle>();
+    recordPlotHistory(
+      {
+        label: i18next.t("plotThread.history.moveMarker", "マーカー移動"),
+        entityId: markerBefore.id,
+        undo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotMarkerMove(
+                undoRequests,
+                "undo-marker-move",
+                reverseBundle,
+              ),
+            (result) => publish(reverseBundle, result),
+          );
+        },
+        redo: async () => {
+          await replayPlotMutation(
+            authority,
+            () =>
+              runRetainedPlotMarkerMove(
+                redoRequests,
+                "redo-marker-move",
+                bundle,
+              ),
+            (result) => publish(bundle, result),
+          );
+        },
+      },
+      undefined,
       authority,
     );
   },

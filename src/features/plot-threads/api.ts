@@ -25,6 +25,10 @@ import { attachCreateResultMetadata } from "@/lib/createResultMetadata";
  */
 function nativeBackend(): boolean {
   if (isTauri()) return true;
+  return electronBackend();
+}
+
+function electronBackend(): boolean {
   return typeof window !== "undefined" && "grimodex" in window;
 }
 
@@ -365,6 +369,26 @@ export interface PlotThreadDeleteSnapshotResult {
   deleted: boolean;
 }
 
+export interface PlotThreadBranchTransition {
+  before: PlotThreadBranchRow | null;
+  after: PlotThreadBranchRow | null;
+}
+
+export interface PlotThreadMoveMarkerBundle {
+  requestId?: string;
+  projectId: string;
+  markerBefore: PlotThreadLinkRow;
+  markerAfter: PlotThreadLinkRow;
+  branchTransitions: PlotThreadBranchTransition[];
+}
+
+export interface PlotThreadMoveMarkerBundleResult {
+  id: string;
+  marker: PlotThreadLinkRow;
+  branches: PlotThreadBranchRow[];
+  deletedBranchIds: string[];
+}
+
 function retryableSnapshotError(
   error: unknown,
   requestId: string,
@@ -453,6 +477,44 @@ export async function deletePlotThreadSnapshot(
     );
   } catch (error) {
     retryableSnapshotError(error, requestId, "plot-thread-delete-snapshot");
+  }
+}
+
+/**
+ * One marker drag, including every dependent branch transition. Every runtime
+ * uses the typed command so the marker, branches, and durable request ledger
+ * share one atomic transaction.
+ */
+export async function movePlotMarkerBundle(
+  data: PlotThreadMoveMarkerBundle,
+): Promise<PlotThreadMoveMarkerBundleResult> {
+  const requestId = data.requestId ?? crypto.randomUUID();
+  try {
+    const raw = await invoke("plot_thread_move_marker_bundle", {
+      payload: {
+        requestId,
+        projectId: data.projectId,
+        markerBefore: data.markerBefore,
+        markerAfter: data.markerAfter,
+        branchTransitions: data.branchTransitions,
+      },
+    });
+    const row = (raw ?? {}) as Record<string, unknown>;
+    return attachCreateResultMetadata(
+      {
+        id: s(row.id, requestId),
+        marker: normalizeLink(row.marker),
+        branches: Array.isArray(row.branches)
+          ? row.branches.map(normalizeBranch)
+          : [],
+        deletedBranchIds: Array.isArray(row.deletedBranchIds)
+          ? row.deletedBranchIds.map(String)
+          : [],
+      },
+      raw,
+    );
+  } catch (error) {
+    retryableSnapshotError(error, requestId, "plot-thread-move-marker-bundle");
   }
 }
 

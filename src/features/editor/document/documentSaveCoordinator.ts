@@ -44,6 +44,24 @@ export interface DocumentSaveOptions<T> {
   didPersist?: (result: T) => boolean;
 }
 
+export interface DocumentMutationOptions<T> {
+  /**
+   * Some exclusive callbacks can discover a newly-published local draft after
+   * acquiring the lease and intentionally return without replacing content.
+   * Only an actual authoritative replacement advances the foreign revision.
+   */
+  didMutate?: (result: T) => boolean;
+}
+
+export interface DocumentMutationContext {
+  /**
+   * Publish the foreign revision immediately after the authoritative content
+   * write commits. Later non-content side effects may still fail, but a
+   * detached editor must already be stale at that point.
+   */
+  markAuthoritativeMutation: () => void;
+}
+
 export class StaleRetiredDocumentSaveError extends Error {
   constructor() {
     super("A detached editor draft was superseded by a newer saved version");
@@ -169,6 +187,12 @@ function recordSuccessfulSave(
   });
 }
 
+function recordAuthoritativeDocumentMutation(encoded: string): void {
+  // `undefined` deliberately records a foreign writer identity (`null`) that
+  // can never equal a live or retired editor session's private Symbol.
+  recordSuccessfulSave(encoded, undefined);
+}
+
 /**
  * Renderer-local canonical-document lease. The callback is invoked only when
  * every earlier save for the same document has settled, so it captures the
@@ -214,13 +238,26 @@ export async function runCoordinatedDocumentSave<T>(
  */
 export async function runExclusiveDocumentMutation<T>(
   documentKey: DocumentKey,
-  mutation: () => Promise<T>,
+  mutation: (context: DocumentMutationContext) => Promise<T>,
+  options: DocumentMutationOptions<T> = {},
 ): Promise<T> {
   const encoded = encodeDocumentKey(documentKey);
   const releaseLease = acquireExclusiveDocumentLease(documentKey);
   const previous = saveTails.get(encoded);
   const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(
-    mutation,
+    async () => {
+      let mutationRecorded = false;
+      const markAuthoritativeMutation = () => {
+        if (mutationRecorded) return;
+        recordAuthoritativeDocumentMutation(encoded);
+        mutationRecorded = true;
+      };
+      const result = await mutation({ markAuthoritativeMutation });
+      if (!mutationRecorded && (options.didMutate?.(result) ?? true)) {
+        markAuthoritativeMutation();
+      }
+      return result;
+    },
   );
   saveTails.set(encoded, run);
   try {
