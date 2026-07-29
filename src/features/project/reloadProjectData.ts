@@ -1,9 +1,9 @@
 import {
-  projectLifecycleRegistry,
+  reloadProjectLifecycle,
   resetChatForProject,
   resetPhaseStateForProject,
   resetUnplacedBeatsForProject,
-} from "@/application/project/defaultProjectLifecycle";
+} from "@/application/project/projectLifecycle";
 import type { ProjectLifecycleReloadResult } from "@/application/project/ProjectLifecycleRegistry";
 
 export {
@@ -23,7 +23,7 @@ export async function reloadProjectData(
   workspaceOpenRevision?: number,
   afterCommit?: () => void,
 ): Promise<ProjectLifecycleReloadResult> {
-  return projectLifecycleRegistry.reload(
+  return reloadProjectLifecycle(
     { projectId, workspaceOpenRevision },
     { beforeCommit, afterCommit },
   );

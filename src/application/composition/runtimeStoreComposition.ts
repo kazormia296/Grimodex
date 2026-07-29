@@ -27,6 +27,13 @@ import {
   registerExternalWriteProjectors,
   type ExternalWriteProjectors,
 } from "@/application/externalWrites/externalWriteProjectors";
+import {
+  projectLifecycleRegistry,
+  resetChatForProject,
+  resetPhaseStateForProject,
+  resetUnplacedBeatsForProject,
+} from "@/application/project/defaultProjectLifecycle";
+import { registerProjectLifecycle } from "@/application/project/projectLifecycle";
 
 const workspaceHydrationDependencies: WorkspaceHydrationDependencies = {
   migrateAppSettingsToScopedStores,
@@ -62,3 +69,8 @@ const externalWriteProjectors: ExternalWriteProjectors = {
 
 registerWorkspaceHydrationDependencies(workspaceHydrationDependencies);
 registerExternalWriteProjectors(externalWriteProjectors);
+registerProjectLifecycle(projectLifecycleRegistry, {
+  resetChatForProject,
+  resetPhaseStateForProject,
+  resetUnplacedBeatsForProject,
+});

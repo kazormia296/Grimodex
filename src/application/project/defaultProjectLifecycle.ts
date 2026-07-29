@@ -38,20 +38,17 @@ import {
 } from "./ProjectLifecycleRegistry";
 import { debugLog } from "@/lib/debugLog";
 
-/**
- * Project 境界を跨いで参照してはいけない Chat の turn/session/context 状態を破棄する。
- * streaming 中は resetForProject が旧 turn を先に中断する。
- */
+/** Abort and clear project-scoped chat state before a Project boundary commit. */
 export function resetChatForProject(projectId: string): void {
   useChatStore.getState().resetForProject(projectId);
 }
 
-/** Codex Phase の project-owned cache を破棄し、resolution mode は保持する。 */
+/** Clear Phase caches while retaining the user's resolution mode. */
 export function resetPhaseStateForProject(): void {
   usePhaseStore.getState().resetForProject();
 }
 
-/** Scene-id keyed Beat caches and subscriptions must not cross Project scope. */
+/** Clear scene-keyed beat caches so same-id scenes cannot leak across Projects. */
 export function resetUnplacedBeatsForProject(): void {
   useUnplacedBeatsStore.getState().resetForProject();
 }

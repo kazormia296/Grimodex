@@ -61,7 +61,6 @@
     "sccs": [
       {
         "members": [
-          "src/application/project/defaultProjectLifecycle.ts",
           "src/features/agent-writes/autoAcceptFeed.ts",
           "src/features/agent-writes/autoApplyProse.ts",
           "src/features/agent-writes/codex.ts",
@@ -117,18 +116,13 @@
           "src/features/editor/reorder/ReorderInteractionExtension.ts",
           "src/features/external-mount/fileBackedEditorExtensions.ts",
           "src/features/external-mount/markdownBridge.ts",
-          "src/features/external-mount/mountManager.ts",
           "src/features/external-mount/writeBack.ts",
           "src/features/foreshadow/api.ts",
           "src/features/foreshadow/foreshadowStore.ts",
-          "src/features/grid/gridStore.ts",
           "src/features/layout/layoutStore.ts",
-          "src/features/lint/termDictionaryStore.ts",
           "src/features/plot-threads/plotThreadStore.ts",
           "src/features/project/contextAtoms.ts",
           "src/features/project/projectStore.ts",
-          "src/features/project/reloadProjectData.ts",
-          "src/features/prompt-library/promptLibraryStore.ts",
           "src/features/snippets/search.ts",
           "src/features/snippets/snippetStore.ts",
           "src/features/timelapse/seedSession.ts",
@@ -143,50 +137,6 @@
           "src/screenshot-scenes/screenshotBootstrap.ts"
         ],
         "edges": [
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/chat/chatStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/codex/codexStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/editor/editorStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/external-mount/mountManager.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/foreshadow/foreshadowStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/grid/gridStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/lint/termDictionaryStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/plot-threads/plotThreadStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/prompt-library/promptLibraryStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/snippets/snippetStore.ts"
-          },
-          {
-            "from": "src/application/project/defaultProjectLifecycle.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
           {
             "from": "src/features/agent-writes/autoAcceptFeed.ts",
             "to": "src/features/agent-writes/autoApplyProse.ts"
@@ -836,34 +786,6 @@
             "to": "src/features/external-mount/fileBackedEditorExtensions.ts"
           },
           {
-            "from": "src/features/external-mount/mountManager.ts",
-            "to": "src/features/chat/chatStore.ts"
-          },
-          {
-            "from": "src/features/external-mount/mountManager.ts",
-            "to": "src/features/editor/persistSceneBody.ts"
-          },
-          {
-            "from": "src/features/external-mount/mountManager.ts",
-            "to": "src/features/external-mount/markdownBridge.ts"
-          },
-          {
-            "from": "src/features/external-mount/mountManager.ts",
-            "to": "src/features/external-mount/writeBack.ts"
-          },
-          {
-            "from": "src/features/external-mount/mountManager.ts",
-            "to": "src/features/project/projectStore.ts"
-          },
-          {
-            "from": "src/features/external-mount/mountManager.ts",
-            "to": "src/features/timelapse/toggle.ts"
-          },
-          {
-            "from": "src/features/external-mount/mountManager.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
             "from": "src/features/external-mount/writeBack.ts",
             "to": "src/features/external-mount/markdownBridge.ts"
           },
@@ -912,20 +834,8 @@
             "to": "src/features/tree/store.ts"
           },
           {
-            "from": "src/features/grid/gridStore.ts",
-            "to": "src/features/tree/treeStore.ts"
-          },
-          {
             "from": "src/features/layout/layoutStore.ts",
             "to": "src/screenshot-scenes/screenshotBootstrap.ts"
-          },
-          {
-            "from": "src/features/lint/termDictionaryStore.ts",
-            "to": "src/features/codex/api.ts"
-          },
-          {
-            "from": "src/features/lint/termDictionaryStore.ts",
-            "to": "src/features/project/projectStore.ts"
           },
           {
             "from": "src/features/plot-threads/plotThreadStore.ts",
@@ -945,23 +855,11 @@
           },
           {
             "from": "src/features/project/projectStore.ts",
-            "to": "src/features/project/reloadProjectData.ts"
-          },
-          {
-            "from": "src/features/project/projectStore.ts",
             "to": "src/features/timelapse/seedSession.ts"
           },
           {
             "from": "src/features/project/projectStore.ts",
             "to": "src/features/timelapse/toggle.ts"
-          },
-          {
-            "from": "src/features/project/reloadProjectData.ts",
-            "to": "src/application/project/defaultProjectLifecycle.ts"
-          },
-          {
-            "from": "src/features/prompt-library/promptLibraryStore.ts",
-            "to": "src/features/project/projectStore.ts"
           },
           {
             "from": "src/features/snippets/search.ts",
@@ -1043,9 +941,9 @@
     "cross-feature-store-import": 48,
     "cross-feature-store-mutation": 0,
     "dynamic-store-import": 0,
-    "cyclic-modules": 80,
-    "largest-scc": 80,
-    "scc-internal-edges": 223,
+    "cyclic-modules": 74,
+    "largest-scc": 74,
+    "scc-internal-edges": 199,
     "chat-store-lines": 8260,
     "chat-store-runtime-imports": 90
   },
