@@ -115,6 +115,11 @@ Only models that pass this speed gate may proceed to the existing locked
 retrieval-quality evaluation. Impact Review windowing and task-specific
 fine-tuning remain later, separately gated work.
 
+The initial Ryzen 5 3600 Gate 1 outcome is recorded in
+[`PHASE0B_RESULTS.md`](./PHASE0B_RESULTS.md). All three candidates reached the
+Target latency band; this permits quality evaluation but does not select a
+production model.
+
 ## Fixed supply-chain inputs
 
 - Model: `LiquidAI/LFM2.5-Encoder-230M`
