@@ -204,6 +204,12 @@ class Gate2RankingAndInjectionTests(unittest.TestCase):
         third = query.candidates[2].model_copy(
             update={"scene_id": "other", "scene_title": "Other"}
         )
+        remaining = [
+            candidate.model_copy(
+                update={"dense_score": 0.10, "sparse_rank": None}
+            )
+            for candidate in query.candidates[3:]
+        ]
         query = Gate2Query.model_validate(
             {
                 **query.model_dump(),
@@ -211,10 +217,7 @@ class Gate2RankingAndInjectionTests(unittest.TestCase):
                     first.model_dump(),
                     second.model_dump(),
                     third.model_dump(),
-                    *[
-                        candidate.model_dump()
-                        for candidate in query.candidates[3:]
-                    ],
+                    *[candidate.model_dump() for candidate in remaining],
                 ],
             }
         )
