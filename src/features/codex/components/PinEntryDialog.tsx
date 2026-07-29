@@ -126,6 +126,7 @@ function PinCodexList({
             >
               <input
                 type="checkbox"
+                data-testid={`pin-entry-toggle-${entry.id}`}
                 checked={isPinned}
                 disabled={isLocked}
                 onChange={() => {

@@ -152,6 +152,11 @@ export async function deleteTreeSubtree(
   ports.pushHistory({
     kind: "scenes",
     label: ports.deletedLabel,
+    entityId: id,
+    affectedEntities: deletedNodes.map((node) => ({
+      kind: "scenes",
+      entityId: node.id,
+    })),
     async undo() {
       for (const tempId of trashTempIds.values()) ports.cancelTrash(tempId);
       for (const node of parentsFirst(deletedNodes)) {

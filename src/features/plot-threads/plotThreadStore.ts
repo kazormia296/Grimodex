@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import i18next from "i18next";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
 import {
   useGlobalHistoryStore,

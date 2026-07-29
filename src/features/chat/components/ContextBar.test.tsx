@@ -293,6 +293,7 @@ describe("ContextBar グループ化", () => {
       }),
     );
     const checkbox = screen.getByRole("checkbox", { name: /アリス/ });
+    expect(checkbox.closest("div.fixed")).toHaveClass("z-[9999]");
     expect(checkbox).not.toBeChecked();
     await user.click(checkbox);
 

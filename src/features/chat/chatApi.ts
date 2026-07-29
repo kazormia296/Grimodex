@@ -680,6 +680,18 @@ export async function clearProjectChatHistory(
   await db.delete(chatSessions).where(eq(chatSessions.projectId, projectId));
 }
 
+export async function getSessionTitleForMessage(
+  messageId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ title: chatSessions.title })
+    .from(chatMessages)
+    .innerJoin(chatSessions, eq(chatMessages.sessionId, chatSessions.id))
+    .where(eq(chatMessages.id, messageId))
+    .limit(1);
+  return rows[0]?.title ?? null;
+}
+
 export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
   const rows = await db
     .select()

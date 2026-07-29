@@ -59,16 +59,42 @@ test("CI has a dedicated product-journeys gate with native Electron and SQLite",
   assert.equal(upload.with["retention-days"], 14);
 });
 
-test("product runner keeps at least two real boundary journeys", async () => {
+test("product runner keeps all five real boundary journeys", async () => {
   const source = await read("electron/scripts/product-journeys.mjs");
   assert.match(source, /editor-persistence/);
+  assert.match(source, /chat-authority-isolation/);
   assert.match(source, /workspace-switch-authority/);
+  assert.match(source, /external-write-conflict/);
+  assert.match(source, /cross-feature-authoring/);
   assert.match(source, /open_workspace/);
   assert.match(source, /db_execute/);
   assert.match(source, /workspace-menu-trigger/);
   assert.match(source, /PENDING_SAVE_AUTOSAVE_DELAY_MS\s*=\s*60_000/);
   assert.match(source, /pending-editor-draft/);
+  assert.match(source, /workspaceOpenRevision/);
+  assert.match(source, /persistedBeforeSwitch/);
+  assert.match(source, /leakedIntoWorkspaceB/);
+  assert.match(source, /persistedAfterReturn/);
   assert.match(source, /workspace B received workspace A pending editor text/);
+  assert.match(source, /clean-external-write-reloaded/);
+  assert.match(source, /dirty-external-write-conflict/);
+  assert.match(source, /undoHistoryInvalidated/);
+  assert.match(source, /external-edit-reload/);
+  assert.match(source, /chat-late-chunk-isolated/);
+  assert.match(source, /staleChunkInNewScope:\s*false/);
+  assert.match(source, /promptSnapshotInNewScope:\s*false/);
+  assert.match(source, /sessionMutationInNewScope:\s*false/);
+  assert.match(source, /cross-feature-authoring-persisted/);
+  assert.match(source, /promptIncludedCodex:\s*true/);
+  assert.match(source, /aiAttributionPersisted:\s*true/);
+  assert.match(source, /cross-feature-authoring-restored/);
+});
+
+test("product harness enables only the deterministic main-boundary AI provider", async () => {
+  const source = await read("electron/scripts/product-journey-harness.mjs");
+  assert.match(source, /GRIMODEX_PRODUCT_JOURNEY_FAKE_AI/);
+  assert.match(source, /deterministic-v1/);
+  assert.match(source, /env\[PRODUCT_JOURNEY_AI_ENV\]/);
 });
 
 test("performance smoke reuses the product journey boundary helpers", async () => {

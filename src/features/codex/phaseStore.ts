@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import type { TreeNodeData } from "@/features/tree/treeStore";
+import type { TreeNodeData } from "@/features/tree/types";
 import type { CodexEntry } from "./api";
 import * as phaseApi from "./phaseApi";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "./phaseApi";

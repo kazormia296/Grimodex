@@ -6,16 +6,26 @@ import ts from "typescript";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const sourceRoot = path.join(repoRoot, "src");
 const baselinePath = path.join(repoRoot, "architecture-baseline.json");
-const genericSqlWriteManifestPath = path.join(
+const persistenceDebtManifestPath = path.join(
   repoRoot,
-  "policies/architecture/generic-renderer-sql-writes.json",
+  "policies/architecture/renderer-persistence-debt.json",
 );
+const PERSISTENCE_DEBT_CATEGORIES = [
+  "renderer-drizzle-mutation",
+  "renderer-raw-sql-read",
+  "renderer-raw-sql-write",
+  "renderer-generic-db-route",
+  "tsx-direct-persistence",
+  "store-direct-persistence",
+];
 const ARCHITECTURE_BASELINE_SCHEMA_VERSION = 2;
 const ARCHITECTURE_FINDING_RULES = [
   "cross-feature-store-import",
   "cross-feature-store-mutation",
   "dynamic-store-import",
   "application-component-import",
+  "oversized-app-root",
+  "oversized-lifecycle-host",
   "single-scene-load-in-array-loop",
   "legacy-ipc-error-text-check",
 ];
@@ -158,7 +168,7 @@ function importedNamedBindings(
   return bindings;
 }
 
-function rawSqlWrite(node) {
+function sqlLiteralText(node) {
   let sql;
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
     sql = node.text;
@@ -167,7 +177,17 @@ function rawSqlWrite(node) {
   } else {
     return null;
   }
-  const patterns = [
+  return sql.replace(
+    /^(?:(?:\s+)|(?:--[^\n]*(?:\n|$))|(?:\/\*[\s\S]*?\*\/))*/,
+    "",
+  );
+}
+
+function rawSqlStatement(node) {
+  const sql = sqlLiteralText(node);
+  if (sql === null) return null;
+
+  const writePatterns = [
     {
       operation: "insert",
       pattern:
@@ -186,15 +206,92 @@ function rawSqlWrite(node) {
       operation: "delete",
       pattern: /^\s*delete\s+from\s+["'`[]?([A-Za-z_][A-Za-z0-9_]*)/i,
     },
+    {
+      operation: "create",
+      pattern:
+        /^\s*create(?:\s+\w+)*\s+(?:table|index|trigger|view)\s+(?:if\s+not\s+exists\s+)?["'`[]?([A-Za-z_][A-Za-z0-9_]*)/i,
+    },
+    {
+      operation: "alter",
+      pattern: /^\s*alter\s+table\s+["'`[]?([A-Za-z_][A-Za-z0-9_]*)/i,
+    },
+    {
+      operation: "drop",
+      pattern:
+        /^\s*drop\s+(?:table|index|trigger|view)\s+(?:if\s+exists\s+)?["'`[]?([A-Za-z_][A-Za-z0-9_]*)/i,
+    },
+    {
+      operation: "vacuum",
+      pattern: /^\s*vacuum(?:\s+["'`[]?([A-Za-z_][A-Za-z0-9_]*))?/i,
+    },
+    {
+      operation: "reindex",
+      pattern: /^\s*reindex(?:\s+["'`[]?([A-Za-z_][A-Za-z0-9_]*))?/i,
+    },
   ];
-  for (const { operation, pattern } of patterns) {
+  for (const { operation, pattern } of writePatterns) {
     const match = sql.match(pattern);
-    if (match) return { operation, target: match[1] };
+    if (match) {
+      return {
+        access: "write",
+        operation,
+        target: match[1] ?? "<database>",
+      };
+    }
   }
+
+  const pragma = sql.match(
+    /^\s*pragma\s+(?:["'`[]?[A-Za-z_][A-Za-z0-9_]*["'`\]]?\.)?["'`[]?([A-Za-z_][A-Za-z0-9_]*)/i,
+  );
+  if (pragma) {
+    return {
+      access: /=/.test(sql.slice(pragma[0].length)) ? "write" : "read",
+      operation: "pragma",
+      target: pragma[1],
+    };
+  }
+
+  const select = sql.match(
+    /^\s*(?:explain(?:\s+query\s+plan)?\s+)?select\s+[\s\S]*?\bfrom\s+["'`[]?([A-Za-z_][A-Za-z0-9_]*)/i,
+  );
+  if (select) {
+    return { access: "read", operation: "select", target: select[1] };
+  }
+  if (/^\s*(?:explain(?:\s+query\s+plan)?\s+)?select\s+/i.test(sql)) {
+    return {
+      access: "read",
+      operation: "select",
+      target: "<expression>",
+    };
+  }
+
+  if (
+    /^\s*with\s+(?:recursive\s+)?["'`[]?[A-Za-z_][A-Za-z0-9_]*["'`\]]?\s+as\s*\(/i.test(
+      sql,
+    )
+  ) {
+    const mutation = sql.match(
+      /\b(insert(?:\s+or\s+\w+)?\s+into|replace\s+into|update(?:\s+or\s+\w+)?|delete\s+from)\s+["'`[]?([A-Za-z_][A-Za-z0-9_]*)/i,
+    );
+    if (mutation) {
+      return {
+        access: "write",
+        operation: mutation[1].split(/\s+/)[0].toLowerCase(),
+        target: mutation[2],
+      };
+    }
+    const target = sql.match(/\bfrom\s+["'`[]?([A-Za-z_][A-Za-z0-9_]*)/i)?.[1];
+    return {
+      access: "read",
+      operation: "select",
+      target: target ?? "<cte>",
+    };
+  }
+
   return null;
 }
 
-function genericRendererSqlWriteFindings(
+function persistenceDebtFindings(
   source,
   relative,
   absolute,
@@ -221,10 +318,22 @@ function genericRendererSqlWriteFindings(
     path.join(currentSourceRoot, "lib/tauri.ts"),
     "invoke",
   );
-  const bases = [];
+  const bases = Object.fromEntries(
+    PERSISTENCE_DEBT_CATEGORIES.map((category) => [category, []]),
+  );
+  const directCategory = relative.endsWith(".tsx")
+    ? "tsx-direct-persistence"
+    : isStoreFile(relative)
+      ? "store-direct-persistence"
+      : null;
 
-  function add(kind, target) {
-    bases.push(`${relative}:${kind}:${target}`);
+  function add(category, kind, target) {
+    const suffix = target === undefined ? kind : `${kind}:${target}`;
+    bases[category].push(`${relative}:${suffix}`);
+  }
+
+  if (directCategory && dbBindings.size > 0) {
+    add(directCategory, "db-client");
   }
 
   function visit(node) {
@@ -238,7 +347,11 @@ function genericRendererSqlWriteFindings(
       const target =
         node.arguments[0]?.getText(sourceFile).replace(/\s+/g, "") ??
         "<dynamic>";
-      add(`drizzle-${node.expression.name.text}`, target);
+      add(
+        "renderer-drizzle-mutation",
+        `drizzle-${node.expression.name.text}`,
+        target,
+      );
     }
 
     if (
@@ -250,24 +363,50 @@ function genericRendererSqlWriteFindings(
       (node.arguments[0].text === "db_execute" ||
         node.arguments[0].text === "db_execute_batch")
     ) {
-      add("generic-db-route", node.arguments[0].text);
+      const route = node.arguments[0].text;
+      add("renderer-generic-db-route", "generic-db-route", route);
+      if (directCategory) {
+        add(directCategory, "generic-db-route", route);
+      }
     }
 
-    const rawWrite =
-      relative === "src/lib/browser-mock.ts" ? null : rawSqlWrite(node);
-    if (rawWrite) {
-      add(`raw-sql-${rawWrite.operation}`, rawWrite.target);
+    const rawSql =
+      relative === "src/lib/browser-mock.ts" ? null : rawSqlStatement(node);
+    if (rawSql) {
+      add(
+        rawSql.access === "write"
+          ? "renderer-raw-sql-write"
+          : "renderer-raw-sql-read",
+        `raw-sql-${rawSql.operation}`,
+        rawSql.target,
+      );
     }
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
 
-  const occurrences = new Map();
-  return bases.map((base) => {
-    const occurrence = (occurrences.get(base) ?? 0) + 1;
-    occurrences.set(base, occurrence);
-    return `${base}#${occurrence}`;
-  });
+  // SQL-looking UI labels (for example "VACUUM") are not persistence debt.
+  // A raw renderer statement is actionable only in a module that also owns a
+  // direct generic database route; Drizzle query builders are inventoried by
+  // their mutation calls instead.
+  if (bases["renderer-generic-db-route"].length === 0) {
+    bases["renderer-raw-sql-read"] = [];
+    bases["renderer-raw-sql-write"] = [];
+  }
+
+  return Object.fromEntries(
+    Object.entries(bases).map(([category, categoryBases]) => {
+      const occurrences = new Map();
+      return [
+        category,
+        categoryBases.map((base) => {
+          const occurrence = (occurrences.get(base) ?? 0) + 1;
+          occurrences.set(base, occurrence);
+          return `${base}#${occurrence}`;
+        }),
+      ];
+    }),
+  );
 }
 
 function legacyIpcErrorTextFindings(source, relative) {
@@ -596,10 +735,14 @@ export async function collectArchitectureSnapshot(options = {}) {
     "cross-feature-store-mutation": [],
     "dynamic-store-import": [],
     "application-component-import": [],
+    "oversized-app-root": [],
+    "oversized-lifecycle-host": [],
     "single-scene-load-in-array-loop": [],
-    "generic-renderer-sql-write": [],
     "legacy-ipc-error-text-check": [],
     "feature-cycle": [],
+    ...Object.fromEntries(
+      PERSISTENCE_DEBT_CATEGORIES.map((category) => [category, []]),
+    ),
   };
   const trackedMetrics = {};
   const graph = new Map(files.map((file) => [file, new Set()]));
@@ -608,9 +751,28 @@ export async function collectArchitectureSnapshot(options = {}) {
     const relative = relativeSource(file, currentRepoRoot);
     const fromFeature = featureFromSource(relative);
     const source = await readFile(file, "utf8");
+    const lineCount = source.split(/\r?\n/).length;
+
+    if (relative === "src/App.tsx") {
+      trackedMetrics["app-root-lines"] = lineCount;
+      if (lineCount > 200) {
+        findings["oversized-app-root"].push(`${relative}:${lineCount}>200`);
+      }
+    }
+    if (/(?:^|\/)[^/]*Host\.tsx$/.test(relative)) {
+      trackedMetrics["largest-host-lines"] = Math.max(
+        trackedMetrics["largest-host-lines"] ?? 0,
+        lineCount,
+      );
+      if (lineCount > 300) {
+        findings["oversized-lifecycle-host"].push(
+          `${relative}:${lineCount}>300`,
+        );
+      }
+    }
 
     if (relative === "src/features/chat/chatStore.ts") {
-      trackedMetrics["chat-store-lines"] = source.split(/\r?\n/).length;
+      trackedMetrics["chat-store-lines"] = lineCount;
       trackedMetrics["chat-store-runtime-imports"] =
         runtimeImportSpecifiers(source).length;
     }
@@ -668,14 +830,15 @@ export async function collectArchitectureSnapshot(options = {}) {
     findings["single-scene-load-in-array-loop"].push(
       ...singleSceneLoadLoopFindings(source, relative, file, currentSourceRoot),
     );
-    findings["generic-renderer-sql-write"].push(
-      ...genericRendererSqlWriteFindings(
-        source,
-        relative,
-        file,
-        currentSourceRoot,
-      ),
+    const persistenceFindings = persistenceDebtFindings(
+      source,
+      relative,
+      file,
+      currentSourceRoot,
     );
+    for (const category of PERSISTENCE_DEBT_CATEGORIES) {
+      findings[category].push(...persistenceFindings[category]);
+    }
     findings["legacy-ipc-error-text-check"].push(
       ...legacyIpcErrorTextFindings(source, relative),
     );
@@ -685,6 +848,9 @@ export async function collectArchitectureSnapshot(options = {}) {
   findings["feature-cycle"] = featureCycles.map(({ members }) =>
     members.join(" -> "),
   );
+  for (const category of PERSISTENCE_DEBT_CATEGORIES) {
+    trackedMetrics[category] = findings[category].length;
+  }
   for (const values of Object.values(findings)) values.sort();
   return {
     findings,
@@ -1067,7 +1233,21 @@ export function findNewFindings(findings, baseline) {
   return flatten(findings).filter((finding) => !known.has(finding));
 }
 
-export function createGenericSqlWriteManifest(findings) {
+const PERSISTENCE_CATEGORY_SCOPES = {
+  "renderer-drizzle-mutation":
+    "Renderer-side db.insert(), db.update(), and db.delete() callsites.",
+  "renderer-raw-sql-read":
+    "Raw renderer SQL read statements, including SELECT, read-only PRAGMA, and CTE reads.",
+  "renderer-raw-sql-write": "Raw renderer SQL mutation and DDL statements.",
+  "renderer-generic-db-route":
+    "Direct renderer invoke() calls to db_execute and db_execute_batch.",
+  "tsx-direct-persistence":
+    "React TSX modules that import db/client or invoke a generic database route directly.",
+  "store-direct-persistence":
+    "Zustand store modules that import db/client or invoke a generic database route directly.",
+};
+
+function createCallsiteCeilings(findings) {
   const allowedCallsiteCounts = {};
   for (const finding of findings) {
     const match = finding.match(/^(.*)#(\d+)$/);
@@ -1078,22 +1258,35 @@ export function createGenericSqlWriteManifest(findings) {
       count,
     );
   }
+  return Object.fromEntries(
+    Object.entries(allowedCallsiteCounts).sort(([a], [b]) =>
+      a.localeCompare(b),
+    ),
+  );
+}
+
+export function createPersistenceDebtManifest(findings) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     scope:
-      "Existing renderer Drizzle mutations, raw SQL mutations, and direct generic db_execute routes.",
+      "Renderer persistence debt separated by mechanism and presentation/state ownership boundary.",
     policy:
-      "This is a migration ceiling, not an approved API list. New callsites must use a typed persistence command or explicitly update this debt manifest.",
-    allowedCallsiteCounts: Object.fromEntries(
-      Object.entries(allowedCallsiteCounts).sort(([a], [b]) =>
-        a.localeCompare(b),
-      ),
+      "These are migration ceilings, not approved APIs. React components and Zustand stores must not access db/client or db_execute* directly. Reads use feature repositories; writes use typed domain commands.",
+    categories: Object.fromEntries(
+      PERSISTENCE_DEBT_CATEGORIES.map((category) => [
+        category,
+        {
+          scope: PERSISTENCE_CATEGORY_SCOPES[category],
+          allowedCallsiteCounts: createCallsiteCeilings(
+            findings[category] ?? [],
+          ),
+        },
+      ]),
     ),
   };
 }
 
-export function findNewGenericSqlWriteFindings(findings, manifest) {
-  const allowed = manifest.allowedCallsiteCounts ?? {};
+function compareCallsiteCeilings(findings, allowed) {
   const observed = {};
   for (const finding of findings) {
     const match = finding.match(/^(.*)#(\d+)$/);
@@ -1113,7 +1306,31 @@ export function findNewGenericSqlWriteFindings(findings, manifest) {
         : [];
     },
   );
-  return [...overages, ...staleCeilings].sort();
+  return {
+    improvements: staleCeilings.sort(),
+    introduced: overages.sort(),
+  };
+}
+
+export function findPersistenceDebtChanges(findings, manifest) {
+  const introduced = [];
+  const improvements = [];
+  for (const category of PERSISTENCE_DEBT_CATEGORIES) {
+    const changes = compareCallsiteCeilings(
+      findings[category] ?? [],
+      manifest.categories?.[category]?.allowedCallsiteCounts ?? {},
+    );
+    introduced.push(
+      ...changes.introduced.map((finding) => `${category}:${finding}`),
+    );
+    improvements.push(
+      ...changes.improvements.map((finding) => `${category}:${finding}`),
+    );
+  }
+  return {
+    introduced: introduced.sort(),
+    improvements: improvements.sort(),
+  };
 }
 
 const METRIC_LABELS = {
@@ -1125,6 +1342,14 @@ const METRIC_LABELS = {
   "scc-internal-edges": "SCC-internal edges",
   "chat-store-lines": "chatStore.ts lines",
   "chat-store-runtime-imports": "chatStore.ts runtime imports",
+  "app-root-lines": "App.tsx lines",
+  "largest-host-lines": "largest lifecycle Host lines",
+  "renderer-drizzle-mutation": "renderer Drizzle mutations",
+  "renderer-raw-sql-read": "renderer raw SQL reads",
+  "renderer-raw-sql-write": "renderer raw SQL writes",
+  "renderer-generic-db-route": "renderer generic DB routes",
+  "tsx-direct-persistence": "TSX direct persistence",
+  "store-direct-persistence": "store direct persistence",
 };
 
 export function formatArchitectureMetrics(metrics) {
@@ -1240,33 +1465,31 @@ function printList(label, values) {
 
 async function main() {
   const snapshot = await collectArchitectureSnapshot();
-  const genericSqlWriteFindings =
-    snapshot.findings["generic-renderer-sql-write"];
+  const persistenceFindings = Object.fromEntries(
+    PERSISTENCE_DEBT_CATEGORIES.map((category) => [
+      category,
+      snapshot.findings[category],
+    ]),
+  );
   const baseline = JSON.parse(await readFile(baselinePath, "utf8"));
-  const genericSqlWriteManifest = JSON.parse(
-    await readFile(genericSqlWriteManifestPath, "utf8"),
+  const persistenceDebtManifest = JSON.parse(
+    await readFile(persistenceDebtManifestPath, "utf8"),
   );
   const architectureComparison = compareArchitectureBaseline(
     snapshot,
     baseline,
   );
-  const genericChanges = findNewGenericSqlWriteFindings(
-    genericSqlWriteFindings,
-    genericSqlWriteManifest,
+  const persistenceChanges = findPersistenceDebtChanges(
+    persistenceFindings,
+    persistenceDebtManifest,
   );
-  const genericIntroduced = genericChanges
-    .filter((finding) => !finding.includes("#manifest-"))
-    .map((finding) => `generic-renderer-sql-write:${finding}`);
-  const genericImprovements = genericChanges
-    .filter((finding) => finding.includes("#manifest-"))
-    .map((finding) => `generic-renderer-sql-write:${finding}`);
   const introduced = [
     ...architectureComparison.introduced,
-    ...genericIntroduced,
+    ...persistenceChanges.introduced,
   ];
   const improvements = [
     ...architectureComparison.improvements,
-    ...genericImprovements,
+    ...persistenceChanges.improvements,
   ];
 
   if (hasCliFlag("--write-baseline")) {
@@ -1305,15 +1528,15 @@ async function main() {
     const nextBaseline = createArchitectureBaseline(snapshot, { waivers });
     await writeFile(baselinePath, `${JSON.stringify(nextBaseline, null, 2)}\n`);
     await writeFile(
-      genericSqlWriteManifestPath,
+      persistenceDebtManifestPath,
       `${JSON.stringify(
-        createGenericSqlWriteManifest(genericSqlWriteFindings),
+        createPersistenceDebtManifest(persistenceFindings),
         null,
         2,
       )}\n`,
     );
     console.log(
-      `Wrote ${baselinePath} and ${genericSqlWriteManifestPath} (architecture debt ratchet baseline).`,
+      `Wrote ${baselinePath} and ${persistenceDebtManifestPath} (architecture debt ratchet baseline).`,
     );
     return;
   }

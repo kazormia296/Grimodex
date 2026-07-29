@@ -75,6 +75,7 @@ export function ExternalEditConflictBanner({
   return (
     <div
       role="alert"
+      data-testid="external-edit-conflict"
       className="flex items-center gap-3 border-b border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
     >
       <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden />
@@ -84,6 +85,7 @@ export function ExternalEditConflictBanner({
       <div className="flex shrink-0 gap-2">
         <button
           type="button"
+          data-testid="external-edit-keep"
           className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
           onClick={() => void handleKeep()}
           disabled={resolving}
@@ -92,6 +94,7 @@ export function ExternalEditConflictBanner({
         </button>
         <button
           type="button"
+          data-testid="external-edit-reload"
           className="rounded bg-primary px-2 py-1 text-xs text-primary-foreground"
           onClick={() => void handleReload()}
           disabled={resolving}

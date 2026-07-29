@@ -102,6 +102,7 @@ export async function moveTreeNode(
     ports.pushHistory({
       kind: "scenes",
       label: ports.movedLabel,
+      entityId: id,
       async undo() {
         const persisted = await ports.persist(id, {
           parentId: oldParentId,

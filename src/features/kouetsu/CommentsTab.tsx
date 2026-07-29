@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { and, eq } from "drizzle-orm";
 import {
   Bot,
   EyeOff,
@@ -11,8 +10,6 @@ import {
   User,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { db } from "@/db/client";
-import { treeNodes } from "@/db/schema";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/platform";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -37,18 +34,10 @@ import { KouetsuScopePicker } from "./KouetsuScopePicker";
 import { PseudoCommentRunControl } from "./PseudoCommentRunControl";
 import { useResolvedKouetsuScope } from "./useResolvedKouetsuScope";
 import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
+import { listProjectSceneDocuments } from "@/features/tree/api";
 
 async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
-  const rows = await db
-    .select({
-      id: treeNodes.id,
-      title: treeNodes.title,
-      content: treeNodes.content,
-    })
-    .from(treeNodes)
-    .where(
-      and(eq(treeNodes.projectId, projectId), eq(treeNodes.nodeType, "scene")),
-    );
+  const rows = await listProjectSceneDocuments(projectId);
 
   const out: HumanComment[] = [];
   for (const r of rows) {

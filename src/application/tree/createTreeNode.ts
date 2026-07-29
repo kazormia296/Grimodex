@@ -233,6 +233,7 @@ export async function createTreeNode(
     ports.pushHistory({
       kind: "scenes",
       label,
+      entityId: captured.id,
       async undo() {
         await ports.deletePersisted(captured.id);
         if (!ports.isCurrentAuthority()) return;

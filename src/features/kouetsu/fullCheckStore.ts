@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { useLintProjectStore } from "@/features/lint/lintProjectStore";
-import { usePostEffectRunStore } from "@/features/post-effect/runStore";
+import { cancelProjectLintScan } from "@/features/lint/projectScanCommands";
+import { listRunningPostEffectRunTargets } from "@/features/post-effect/runProjection";
 import { abortPostEffectRun } from "@/features/post-effect/api";
 
 /**
@@ -144,17 +144,13 @@ function abortActiveWork(): void {
   // ボードの校正タイル等）であり、巻き込んで abort してはならない
   // （post-effect run の per-run 追跡と同じ isolation 方針）。
   if (useFullCheckStore.getState().currentStep === "lint") {
-    useLintProjectStore.getState().cancel();
+    cancelProjectLintScan();
   }
   // 全体チェック自身が起動した run に限定して abort する。集合に記録した runId を
   // runStore で引き、outcome 未確定（＝まだ実行中）のものだけを止める。既に終端した
   // 過去ステップの runId が集合に残っていても outcome フィルタで no-op になる。
-  const runs = usePostEffectRunStore.getState().runs;
-  for (const runId of activeFullCheckRunIds) {
-    const r = runs[runId];
-    if (r && r.outcome === undefined) {
-      void abortPostEffectRun(r.runId, r.projectId);
-    }
+  for (const run of listRunningPostEffectRunTargets(activeFullCheckRunIds)) {
+    void abortPostEffectRun(run.runId, run.projectId);
   }
 }
 

@@ -14,7 +14,7 @@ vi.mock("@/lib/tauri", () => ({
   listen: vi.fn(),
 }));
 
-vi.mock("@/features/project/projectStore", () => ({
+vi.mock("@/application/project/currentProjectAuthority", () => ({
   getCurrentProjectId: () => "p1",
 }));
 

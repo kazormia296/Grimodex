@@ -46,38 +46,7 @@ import { discardQuiescenceProviders } from "@/lib/quiescenceProviders";
 import { hasUnresolvedEditorChanges } from "@/lib/editorQuiescence";
 import { useTranslation } from "react-i18next";
 import i18next from "@/lib/i18n";
-import {
-  COLOR_THEMES,
-  DEFAULT_COLOR_THEME,
-  THEME_CSS_VARS,
-} from "@/lib/colorThemes";
-
-function applyTheme(theme: string, colorTheme?: string): void {
-  const html = document.documentElement;
-  if (theme === "dark") {
-    html.classList.add("dark");
-  } else if (theme === "light") {
-    html.classList.remove("dark");
-  } else {
-    const prefersDark = window.matchMedia(
-      "(prefers-color-scheme: dark)",
-    ).matches;
-    html.classList.toggle("dark", prefersDark);
-  }
-
-  const themeObj = COLOR_THEMES.find(
-    (candidate) => candidate.id === (colorTheme ?? DEFAULT_COLOR_THEME),
-  );
-  if (!themeObj) {
-    for (const prop of THEME_CSS_VARS) html.style.removeProperty(prop);
-    return;
-  }
-  const palette = html.classList.contains("dark")
-    ? themeObj.dark
-    : themeObj.light;
-  for (const prop of THEME_CSS_VARS)
-    html.style.setProperty(prop, palette[prop]);
-}
+import { applyApplicationTheme } from "./applicationTheme";
 
 export function ApplicationBootstrapHost({
   onWebEditorImportRequested,
@@ -247,12 +216,15 @@ export function ApplicationBootstrapHost({
     };
   }, []);
 
-  useEffect(() => applyTheme(theme, colorTheme), [theme, colorTheme]);
+  useEffect(
+    () => applyApplicationTheme(theme, colorTheme),
+    [theme, colorTheme],
+  );
 
   useEffect(() => {
     if (theme !== "system") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => applyTheme("system", colorTheme);
+    const handler = () => applyApplicationTheme("system", colorTheme);
     media.addEventListener("change", handler);
     return () => media.removeEventListener("change", handler);
   }, [theme, colorTheme]);

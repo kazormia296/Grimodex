@@ -8,10 +8,10 @@ import {
   collectArchitectureSnapshot,
   compareArchitectureBaseline,
   createArchitectureBaseline,
-  createGenericSqlWriteManifest,
+  createPersistenceDebtManifest,
   createGrowthWaivers,
   findNewFindings,
-  findNewGenericSqlWriteFindings,
+  findPersistenceDebtChanges,
   growthWaiverOptionsAreValid,
   resolveImport,
 } from "./validate-architecture.mjs";
@@ -59,6 +59,43 @@ test("application component rule resolves extensionless imports", async () => {
   assert.deepEqual(findings["application-component-import"], [
     "src/application/useCase.ts:@/features/widget/Widget",
   ]);
+});
+
+test("application root and lifecycle hosts have explicit size ceilings", async () => {
+  const fixture = await fixtureRepo();
+  await writeSource(
+    fixture.root,
+    "src/App.tsx",
+    Array.from({ length: 201 }, (_, index) => `// app ${index + 1}`).join("\n"),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/OversizedHost.tsx",
+    Array.from({ length: 301 }, (_, index) => `// host ${index + 1}`).join(
+      "\n",
+    ),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/SmallHost.tsx",
+    Array.from({ length: 300 }, (_, index) => `// host ${index + 1}`).join(
+      "\n",
+    ),
+  );
+
+  const snapshot = await collectArchitectureSnapshot({
+    repoRoot: fixture.root,
+    sourceRoot: fixture.source,
+  });
+
+  assert.deepEqual(snapshot.findings["oversized-app-root"], [
+    "src/App.tsx:201>200",
+  ]);
+  assert.deepEqual(snapshot.findings["oversized-lifecycle-host"], [
+    "src/features/example/OversizedHost.tsx:301>300",
+  ]);
+  assert.equal(snapshot.metrics["app-root-lines"], 201);
+  assert.equal(snapshot.metrics["largest-host-lines"], 301);
 });
 
 test("cycle graph includes relative imports and index.tsx targets", async () => {
@@ -483,7 +520,7 @@ test("architecture baseline writer stores SCC members and metrics instead of can
     findings: {
       "cross-feature-store-import": ["known-import"],
       "feature-cycle": ["a.ts -> b.ts"],
-      "generic-renderer-sql-write": ["not-in-architecture-baseline"],
+      "renderer-drizzle-mutation": ["not-in-architecture-baseline"],
     },
     featureCycles: [
       {
@@ -511,7 +548,7 @@ test("architecture baseline writer stores SCC members and metrics instead of can
       edges: [{ from: "a.ts", to: "b.ts" }],
     },
   ]);
-  assert.equal(baseline.findings["generic-renderer-sql-write"], undefined);
+  assert.equal(baseline.findings["renderer-drizzle-mutation"], undefined);
 });
 
 test("scene load rule rejects array loops but permits legitimate single loads", async () => {
@@ -592,7 +629,7 @@ test("scene load rule rejects array loops but permits legitimate single loads", 
   ]);
 });
 
-test("generic renderer SQL write rule inventories Drizzle, raw SQL, and direct generic routes", async () => {
+test("persistence debt rules classify Drizzle, raw SQL, generic routes, TSX, and stores", async () => {
   const fixture = await fixtureRepo();
   await writeSource(fixture.root, "src/db/client.ts", "export const db = {};");
   await writeSource(
@@ -612,11 +649,38 @@ test("generic renderer SQL write rule inventories Drizzle, raw SQL, and direct g
       "  await rendererDb.update(items).set({ active: true });",
       "  await rendererDb.delete(oldItems);",
       '  await callNative("db_execute_batch", { statements: rows });',
+      "  const selectSql = `SELECT id FROM items WHERE active = ?`;",
       '  await callNative("db_execute", {',
       "    sql: `DELETE FROM audit_log WHERE created_at < ?`,",
       "    params: [0],",
       '    method: "run",',
       "  });",
+      "}",
+    ].join("\n"),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/DirectPanel.tsx",
+    [
+      'import { db } from "@/db/client";',
+      "export function DirectPanel() {",
+      "  void db.select().from(items);",
+      "  return null;",
+      "}",
+    ].join("\n"),
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/harmlessUiTokens.ts",
+    'export const tokens = ["select-none", "SELECT", "with", "VACUUM"];',
+  );
+  await writeSource(
+    fixture.root,
+    "src/features/example/directStore.ts",
+    [
+      'import { invoke } from "@/lib/tauri";',
+      "export async function persist() {",
+      '  await invoke("db_execute", { sql: "PRAGMA user_version", params: [], method: "all" });',
       "}",
     ].join("\n"),
   );
@@ -634,41 +698,72 @@ test("generic renderer SQL write rule inventories Drizzle, raw SQL, and direct g
     sourceRoot: fixture.source,
   });
 
-  assert.deepEqual(findings["generic-renderer-sql-write"], [
+  assert.deepEqual(findings["renderer-drizzle-mutation"], [
     "src/features/example/api.ts:drizzle-delete:oldItems#1",
     "src/features/example/api.ts:drizzle-insert:items#1",
     "src/features/example/api.ts:drizzle-insert:items#2",
     "src/features/example/api.ts:drizzle-update:items#1",
-    "src/features/example/api.ts:generic-db-route:db_execute#1",
-    "src/features/example/api.ts:generic-db-route:db_execute_batch#1",
+  ]);
+  assert.deepEqual(findings["renderer-raw-sql-read"], [
+    "src/features/example/api.ts:raw-sql-select:items#1",
+    "src/features/example/directStore.ts:raw-sql-pragma:user_version#1",
+  ]);
+  assert.deepEqual(findings["renderer-raw-sql-write"], [
     "src/features/example/api.ts:raw-sql-delete:audit_log#1",
   ]);
-});
-
-test("generic renderer SQL write baseline rejects an additional same-table callsite", () => {
-  const baseline = createGenericSqlWriteManifest([
-    "src/features/example/api.ts:drizzle-insert:items#1",
+  assert.deepEqual(findings["renderer-generic-db-route"], [
+    "src/features/example/api.ts:generic-db-route:db_execute#1",
+    "src/features/example/api.ts:generic-db-route:db_execute_batch#1",
+    "src/features/example/directStore.ts:generic-db-route:db_execute#1",
   ]);
-  const findings = [
-    "src/features/example/api.ts:drizzle-insert:items#1",
-    "src/features/example/api.ts:drizzle-insert:items#2",
-  ];
-
-  assert.deepEqual(findNewGenericSqlWriteFindings(findings, baseline), [
-    "src/features/example/api.ts:drizzle-insert:items#2",
+  assert.deepEqual(findings["tsx-direct-persistence"], [
+    "src/features/example/DirectPanel.tsx:db-client#1",
+  ]);
+  assert.deepEqual(findings["store-direct-persistence"], [
+    "src/features/example/directStore.ts:generic-db-route:db_execute#1",
   ]);
 });
 
-test("generic renderer SQL write baseline must shrink when a callsite is removed", () => {
-  const baseline = createGenericSqlWriteManifest([
-    "src/features/example/api.ts:drizzle-insert:items#1",
-    "src/features/example/api.ts:drizzle-insert:items#2",
-  ]);
-  const findings = ["src/features/example/api.ts:drizzle-insert:items#1"];
+test("persistence debt manifest rejects an additional same-category callsite", () => {
+  const baseline = createPersistenceDebtManifest({
+    "renderer-drizzle-mutation": [
+      "src/features/example/api.ts:drizzle-insert:items#1",
+    ],
+  });
+  const findings = {
+    "renderer-drizzle-mutation": [
+      "src/features/example/api.ts:drizzle-insert:items#1",
+      "src/features/example/api.ts:drizzle-insert:items#2",
+    ],
+  };
 
-  assert.deepEqual(findNewGenericSqlWriteFindings(findings, baseline), [
-    "src/features/example/api.ts:drizzle-insert:items#manifest-2-observed-1",
-  ]);
+  assert.deepEqual(findPersistenceDebtChanges(findings, baseline), {
+    improvements: [],
+    introduced: [
+      "renderer-drizzle-mutation:src/features/example/api.ts:drizzle-insert:items#2",
+    ],
+  });
+});
+
+test("persistence debt manifest must shrink the affected category when a callsite is removed", () => {
+  const baseline = createPersistenceDebtManifest({
+    "renderer-drizzle-mutation": [
+      "src/features/example/api.ts:drizzle-insert:items#1",
+      "src/features/example/api.ts:drizzle-insert:items#2",
+    ],
+  });
+  const findings = {
+    "renderer-drizzle-mutation": [
+      "src/features/example/api.ts:drizzle-insert:items#1",
+    ],
+  };
+
+  assert.deepEqual(findPersistenceDebtChanges(findings, baseline), {
+    improvements: [
+      "renderer-drizzle-mutation:src/features/example/api.ts:drizzle-insert:items#manifest-2-observed-1",
+    ],
+    introduced: [],
+  });
 });
 
 test("typed IPC boundary rejects feature-level legacy marker text matching", async () => {
@@ -712,7 +807,7 @@ test("typed IPC boundary rejects feature-level legacy marker text matching", asy
   ]);
 });
 
-test("the general baseline comparator remains independent from the SQL debt manifest", () => {
+test("the general baseline comparator remains independent from the persistence debt manifest", () => {
   assert.deepEqual(
     findNewFindings(
       { "feature-cycle": ["new-cycle"] },

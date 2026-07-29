@@ -39,6 +39,7 @@ export function HistoryButtons() {
     <>
       <button
         type="button"
+        data-testid="history-undo"
         title={undoTitle}
         disabled={past.length === 0 || lifecycleLocked}
         onClick={onUndo}
@@ -48,6 +49,7 @@ export function HistoryButtons() {
       </button>
       <button
         type="button"
+        data-testid="history-redo"
         title={redoTitle}
         disabled={future.length === 0 || lifecycleLocked}
         onClick={onRedo}

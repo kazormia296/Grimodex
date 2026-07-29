@@ -54,7 +54,11 @@ export declare class Backend {
    * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
    */
   dbExecuteBatch(statements: any): Promise<string>
-  /** Project-scoped typed persistence for lint diagnostic ignore entries. */
+  /**
+   * Project-scoped lint diagnostic ignore-list commands. The renderer
+   * receives a domain DTO instead of owning SQL strings or generic DB
+   * parameters; all scene ownership checks happen in grimodex-db.
+   */
   lintIgnoreList(projectId: string): Promise<string>
   lintIgnoreListScene(projectId: string, sceneId: string): Promise<string>
   lintIgnoreCreate(payload: any): Promise<string>

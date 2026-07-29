@@ -4,7 +4,7 @@ import { Fragment, Slice } from "@tiptap/pm/model";
 import { computeAttributedSegments } from "@/features/snippets/snippetDiff";
 import type { AttributedSegment } from "@/lib/clipboardAttribution";
 import { incrementSnippetUsageCount } from "@/features/snippets/api";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import * as chatApi from "@/features/chat/chatApi";
 
 export interface InsertRange {

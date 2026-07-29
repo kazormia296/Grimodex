@@ -8,23 +8,28 @@ import {
 } from "@/features/license/gate";
 import type { TreeNodeLite as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { readRuntimeSetting } from "@/features/settings/runtimeSettings";
+import {
+  activeEditorDocumentIds,
+  closeEditorDocumentTabs,
+} from "@/features/editor/tabCommands";
 import {
   guardInlineAiPending,
   isInlineAiPending,
 } from "@/features/editor/inlineAi/pendingGuard";
 import { markStart, markEnd } from "@/lib/perfLog";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { captureSceneDeletion } from "@/features/trash-bin/captureHooks";
-import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
+import {
+  cancelPendingTrash,
+  captureSceneDeletion,
+} from "@/features/trash-bin/captureHooks";
 import {
   listPinnedCodexIds,
   addPinnedCodex,
   removePinnedCodex,
 } from "./codexQuickPinApi";
-import { usePhaseStore } from "@/features/codex/phaseStore";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { recomputeCodexSceneOrder } from "@/features/codex/phaseProjection";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { cmpKeys, generateKeyBetween } from "./fractionalIndex";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { moveTreeNode } from "@/application/tree/moveTreeNode";
@@ -47,64 +52,18 @@ import {
   serializeSceneWrite,
   trackSceneContentWrite,
 } from "./pendingSceneWrites";
+import type { NodeType, SceneStatus, TreeNodeData } from "./types";
 
-export type NodeType = "folder" | "scene" | "note";
-export type SceneStatus =
-  | "outline"
-  | "draft"
-  | "complete"
-  | "revision"
-  | "final";
+export type { NodeType, SceneStatus, TreeNodeData } from "./types";
 
 function activeEditorHasExternalConflict(): boolean {
-  const tabs = useTabStore.getState();
+  const tabs = activeEditorDocumentIds();
   if (tabs.isLinearMode) {
     return hasExternalEditConflictForKind("tree", { includeLegacy: true });
   }
   return [tabs.activeTabId, tabs.secondaryActiveTabId].some(
     (id) => id !== null && hasExternalEditConflictForId(id),
   );
-}
-
-export interface TreeNodeData {
-  id: string;
-  projectId: string;
-  parentId: string | null;
-  nodeType: NodeType;
-  title: string;
-  synopsis: string | null;
-  intent: string | null;
-  /** fractional-indexing 文字列キー（base62、辞書順比較） */
-  sortOrder: string;
-  status: string | null;
-  storyTimeOrder: string | null;
-  storyTimeLabel: string | null;
-  povCharacterId: string | null;
-  locationId: string | null;
-  /** Chronicle（作中暦日付）— events と同じ日付モデルをシーンに共有（永続化のみ）。
-   * 既存の非コア列 (sourceUri 等) と同様 optional。load 時に toNodeData が常に埋める。 */
-  chronicleStartTime?: number | null;
-  chronicleStartMinute?: number | null;
-  chronicleStartGranularity?: string;
-  chronicleEndTime?: number | null;
-  chronicleEndMinute?: number | null;
-  chronicleEndGranularity?: string;
-  chroniclePrecision?: string;
-  charCount: number;
-  /** File-backed scene location (null = DB-native). */
-  sourceUri?: string | null;
-  sourceMtime?: string | null;
-  archivedAt?: string | null;
-  /** Note body (ProseMirror JSON). Loaded for note nodes only (scene bodies stay out of store). */
-  content?: string;
-  /** Note-only: AI context injection mode. */
-  contextMode?: string | null;
-  /** Note-only: alternate names (JSON array string). */
-  aliases?: string | null;
-  /** Note-only: excluded aliases (JSON array string). */
-  excludedAliases?: string | null;
-  createdAt: string;
-  updatedAt: string;
 }
 
 /**
@@ -678,7 +637,7 @@ export function applyTreeHydration(snapshot: TreeHydrationSnapshot): void {
     pendingRenameId: null,
     pendingRevealId: null,
   });
-  usePhaseStore.getState().recomputeSceneOrder(snapshot.nodes);
+  recomputeCodexSceneOrder(snapshot.nodes);
 }
 
 const DEFAULT_CHAPTER_ID = "default-chapter";
@@ -1135,7 +1094,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = [...state.nodes, newNode];
       return { nodes, scenes: computeScenes(nodes) };
     });
-    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+    recomputeCodexSceneOrder(get().nodes);
     recordChangeEvent({
       domain: "grid",
       opType: "scene.create",
@@ -1209,7 +1168,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         activeSceneId: newActive,
       };
     });
-    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+    recomputeCodexSceneOrder(get().nodes);
   },
 
   async renameScene(id, title) {
@@ -1324,8 +1283,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         getProjectId: () => projectId,
         getNodes: () => get().nodes,
         isCurrentAuthority,
-        getSetting: (key, fallback) =>
-          useSettingsStore.getState().get(key, fallback),
+        getSetting: (key, fallback) => readRuntimeSetting(key, fallback),
         createPersisted: async (record) => {
           const created = await api.createNode({
             id: record.id,
@@ -1386,12 +1344,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             return { nodes, scenes: computeScenes(nodes) };
           });
         },
-        recomputeSceneOrder: (nodes) =>
-          usePhaseStore.getState().recomputeSceneOrder([...nodes]),
-        closeTabs: (id) => {
-          useTabStore.getState().closeTab(id);
-          useTabStore.getState().closeSecondaryTab(id);
-        },
+        recomputeSceneOrder: recomputeCodexSceneOrder,
+        closeTabs: closeEditorDocumentTabs,
         revealEditorDocument: (id) =>
           requestOpenEditorDocument({
             target: { kind: "scene", documentId: id },
@@ -1435,6 +1389,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: i18next.t("tree.undo.renamed"),
+        entityId: id,
         async undo() {
           const restored = await api.updateNode(id, { title: oldTitle });
           set((state) => {
@@ -1492,17 +1447,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         api.saveSceneContent(nodeId, content).then(() => {}),
       applyNodes: (nodes, activeSceneId) =>
         set({ nodes, scenes: computeScenes(nodes), activeSceneId }),
-      recomputeSceneOrder: (nodes) =>
-        usePhaseStore.getState().recomputeSceneOrder([...nodes]),
+      recomputeSceneOrder: recomputeCodexSceneOrder,
       isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
       pushHistory: (command) => useGlobalHistoryStore.getState().push(command),
-      closeTabs: (nodeId) => {
-        useTabStore.getState().closeTab(nodeId);
-        useTabStore.getState().closeSecondaryTab(nodeId);
-      },
+      closeTabs: closeEditorDocumentTabs,
       captureTrash: (input) => captureSceneDeletion(input),
-      cancelTrash: (tempId) =>
-        useTrashBinStore.getState().cancelPending({ tempId }),
+      cancelTrash: cancelPendingTrash,
       makeTrashTempId: (node) =>
         `trash-${node.nodeType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${node.id}`,
       recordChange: ({
@@ -1558,6 +1508,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: i18next.t("tree.undo.synopsisUpdated"),
+        entityId: id,
         async undo() {
           const restored = await api.updateNode(id, {
             synopsis: oldSynopsis,
@@ -1618,6 +1569,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: i18next.t("tree.undo.intentUpdated"),
+        entityId: id,
         async undo() {
           const restored = await api.updateNode(id, {
             intent: oldIntent,
@@ -1670,6 +1622,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: i18next.t("tree.undo.statusChanged"),
+        entityId: id,
         async undo() {
           const restored = await api.updateNode(id, {
             status: oldStatus as SceneStatus | null,
@@ -1728,11 +1681,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           : n,
       ),
     }));
-    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+    recomputeCodexSceneOrder(get().nodes);
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: i18next.t("tree.undo.storyTimeChanged"),
+        entityId: id,
         async undo() {
           const undoPatch: Parameters<typeof api.updateNode>[1] = {
             storyTimeOrder: oldOrder,
@@ -1751,7 +1705,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
                 : n,
             ),
           }));
-          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+          recomputeCodexSceneOrder(get().nodes);
         },
         async redo() {
           const restored = await api.updateNode(id, patch);
@@ -1768,7 +1722,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
                 : n,
             ),
           }));
-          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+          recomputeCodexSceneOrder(get().nodes);
         },
       });
     }
@@ -1966,8 +1920,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         const persisted = await api.updateNode(nodeId, patch);
         return persisted ? { updatedAt: persisted.updatedAt } : undefined;
       },
-      recomputeSceneOrder: (nodes) =>
-        usePhaseStore.getState().recomputeSceneOrder([...nodes]),
+      recomputeSceneOrder: recomputeCodexSceneOrder,
       isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
       pushHistory: (command) => useGlobalHistoryStore.getState().push(command),
       recordChange: ({ entityType, entityId, sceneId, payload }) =>

@@ -9,6 +9,8 @@ import { _electron } from "playwright";
 import { closeElectronAppWithDiagnostics } from "./close-electron-app.mjs";
 
 const require = createRequire(import.meta.url);
+const PRODUCT_JOURNEY_AI_ENV = "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI";
+const PRODUCT_JOURNEY_AI_VERSION = "deterministic-v1";
 
 /** Typed renderer bridge invocation shared by product and performance journeys. */
 export async function invokeOk(page, command, args = {}) {
@@ -93,6 +95,7 @@ export function createProductJourneyHarness({
     const env = { ...process.env };
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
+    env[PRODUCT_JOURNEY_AI_ENV] = PRODUCT_JOURNEY_AI_VERSION;
     const app = await electronLauncher.launch({
       executablePath: electronBin,
       args: [mainCjs],

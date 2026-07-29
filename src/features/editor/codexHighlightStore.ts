@@ -1,8 +1,11 @@
 import { create } from "zustand";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-import type { LayerSetOptions } from "@/features/post-effect/annotationStore";
+import {
+  readRuntimeSettingBoolean,
+  writeRuntimeSetting,
+} from "@/features/settings/runtimeSettings";
+import type { LayerSetOptions } from "@/features/post-effect/types";
 
 interface CodexHighlightState {
   matchTargets: CodexMatchTarget[];
@@ -34,18 +37,14 @@ export const useCodexHighlightStore = create<CodexHighlightState>()((set) => ({
     // （設定画面からの呼び出しでは同値の再書き込みになるだけで無害）。
     // persist:false はパネル連動 (Auto) の自動追従用 — 設定を汚さない。
     if (opts?.persist !== false) {
-      useSettingsStore
-        .getState()
-        .set("display.codexHighlight", String(enabled));
+      writeRuntimeSetting("display.codexHighlight", String(enabled));
     }
     set({ enabled });
   },
   setTypeColorMap: (map) => set({ typeColorMap: map }),
   initFromSettings: () => {
     set({
-      enabled: useSettingsStore
-        .getState()
-        .getBoolean("display.codexHighlight", true),
+      enabled: readRuntimeSettingBoolean("display.codexHighlight", true),
     });
   },
 }));

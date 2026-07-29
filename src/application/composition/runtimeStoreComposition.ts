@@ -38,6 +38,8 @@ import { registerProjectRuntime } from "@/application/project/projectRuntime";
 import { registerCodexAnchorLifecycle } from "@/application/codex/codexAnchorLifecycle";
 import { codexAnchorLifecycleComposition } from "./codexAnchorLifecycleComposition";
 import { projectRuntimeComposition } from "./projectRuntimeComposition";
+import { registerChatContextPreparation } from "@/application/chat/chatContextPreparation";
+import { chatContextPreparationComposition } from "./chatContextPreparationComposition";
 
 const workspaceHydrationDependencies: WorkspaceHydrationDependencies = {
   migrateAppSettingsToScopedStores,
@@ -80,3 +82,4 @@ registerProjectLifecycle(projectLifecycleRegistry, {
 });
 registerCodexAnchorLifecycle(codexAnchorLifecycleComposition);
 registerProjectRuntime(projectRuntimeComposition);
+registerChatContextPreparation(chatContextPreparationComposition);

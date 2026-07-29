@@ -1,83 +1,36 @@
 import { create } from "zustand";
 
 import i18next from "@/lib/i18n";
-import { invoke } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { listCodexMatchTargets } from "@/features/codex/api";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import {
   planBulkImport,
   type ImportMode,
   type ImportResult,
 } from "./termDictionaryImport";
 import type { ParsedTermEntry } from "./termDictionaryCsv";
-import type { LintTermEntry, Severity } from "./types";
+import type { LintTermEntry } from "./types";
+import {
+  deleteTermDictionaryEntry,
+  insertTermDictionaryEntry,
+  listTermDictionaryEntries,
+  setTermDictionaryEntryEnabled,
+  updateTermDictionaryEntry,
+  type PersistedTermDictionaryRow,
+} from "./termDictionaryRepository";
 
 /**
  * One row as stored in the `lint_term_dictionary` table plus decoration
  * fields (`aliasCollision`) computed on load.
  */
-export interface TermDictionaryRow {
-  id: string;
-  preferred: string;
-  variants: string[];
-  severity: Extract<Severity, "warning" | "info">;
-  note: string | null;
-  enabled: boolean;
-  sortOrder: number;
-  createdAt: number;
-  updatedAt: number;
+export interface TermDictionaryRow extends PersistedTermDictionaryRow {
   /**
    * Which variants collide with a Codex entry's alias / canonical. When
    * non-empty the row is shadowed by Codex at lint time (Codex wins);
    * the Settings UI surfaces the warning icon from this field.
    */
   aliasCollision: string[];
-}
-
-interface QueryResult {
-  rows: Record<string, unknown>[];
-}
-
-async function dbExec<T = unknown>(
-  sql: string,
-  params: unknown[],
-  method: "run" | "all" | "get" | "values",
-): Promise<T> {
-  const r = await invoke<QueryResult>("db_execute", { sql, params, method });
-  return r as unknown as T;
-}
-
-function rowToEntry(
-  row: Record<string, unknown>,
-): Omit<TermDictionaryRow, "aliasCollision"> {
-  const variantsRaw = String(row.variants ?? "[]");
-  let variants: string[] = [];
-  try {
-    const parsed = JSON.parse(variantsRaw);
-    if (Array.isArray(parsed)) {
-      variants = parsed.filter(
-        (x): x is string => typeof x === "string" && x.length > 0,
-      );
-    }
-  } catch {
-    // Corrupted row — leave variants empty; the entry will be ignored
-    // by the linter (empty variants ⇒ no matcher contribution).
-  }
-  const severityRaw = String(row.severity ?? "warning");
-  const severity: "warning" | "info" =
-    severityRaw === "info" ? "info" : "warning";
-  return {
-    id: String(row.id),
-    preferred: String(row.preferred),
-    variants,
-    severity,
-    note: row.note === null || row.note === undefined ? null : String(row.note),
-    enabled: Number(row.enabled ?? 1) === 1,
-    sortOrder: Number(row.sort_order ?? 0),
-    createdAt: Number(row.created_at ?? 0),
-    updatedAt: Number(row.updated_at ?? 0),
-  };
 }
 
 async function fetchCodexAliases(): Promise<Set<string>> {
@@ -269,22 +222,14 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       if (get().loading) return;
       set({ loading: true });
       try {
-        const r = await dbExec<QueryResult>(
-          `SELECT id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at
-           FROM lint_term_dictionary
-           WHERE project_id = ?
-           ORDER BY sort_order ASC, preferred ASC`,
-          [getCurrentProjectId()],
-          "all",
+        const persistedRows = await listTermDictionaryEntries(
+          getCurrentProjectId(),
         );
         const aliases = await fetchCodexAliases();
-        const rows: TermDictionaryRow[] = r.rows.map((row) => {
-          const base = rowToEntry(row);
-          return {
-            ...base,
-            aliasCollision: computeCollision(base.variants, aliases),
-          };
-        });
+        const rows: TermDictionaryRow[] = persistedRows.map((row) => ({
+          ...row,
+          aliasCollision: computeCollision(row.variants, aliases),
+        }));
         set({ rows, isLoaded: true, loading: false });
       } catch (err) {
         set({ loading: false });
@@ -303,21 +248,15 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       const aliases = await fetchCodexAliases();
       const collision = computeCollision(cleaned.variants, aliases);
       if (existingId) {
-        await dbExec(
-          `UPDATE lint_term_dictionary
-             SET preferred = ?, variants = ?, severity = ?, note = ?, enabled = ?, updated_at = ?
-           WHERE id = ?`,
-          [
-            cleaned.preferred,
-            JSON.stringify(cleaned.variants),
-            cleaned.severity,
-            cleaned.note,
-            cleaned.enabled ? 1 : 0,
-            now,
-            existingId,
-          ],
-          "run",
-        );
+        await updateTermDictionaryEntry({
+          id: existingId,
+          preferred: cleaned.preferred,
+          variants: cleaned.variants,
+          severity: cleaned.severity,
+          note: cleaned.note,
+          enabled: cleaned.enabled,
+          updatedAt: now,
+        });
         const updated: TermDictionaryRow = {
           id: existingId,
           preferred: cleaned.preferred,
@@ -346,24 +285,17 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       }
       const id = crypto.randomUUID();
       const sortOrder = (others[others.length - 1]?.sortOrder ?? -1) + 1;
-      await dbExec(
-        `INSERT INTO lint_term_dictionary
-           (id, project_id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          getCurrentProjectId(),
-          cleaned.preferred,
-          JSON.stringify(cleaned.variants),
-          cleaned.severity,
-          cleaned.note,
-          cleaned.enabled ? 1 : 0,
-          sortOrder,
-          now,
-          now,
-        ],
-        "run",
-      );
+      await insertTermDictionaryEntry(getCurrentProjectId(), {
+        id,
+        preferred: cleaned.preferred,
+        variants: cleaned.variants,
+        severity: cleaned.severity,
+        note: cleaned.note,
+        enabled: cleaned.enabled,
+        sortOrder,
+        createdAt: now,
+        updatedAt: now,
+      });
       const row: TermDictionaryRow = {
         id,
         preferred: cleaned.preferred,
@@ -391,11 +323,7 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
 
     toggleEnabled: async (id, enabled) => {
       const now = Date.now();
-      await dbExec(
-        `UPDATE lint_term_dictionary SET enabled = ?, updated_at = ? WHERE id = ?`,
-        [enabled ? 1 : 0, now, id],
-        "run",
-      );
+      await setTermDictionaryEntryEnabled(id, enabled, now);
       set({
         rows: get().rows.map((r) =>
           r.id === id ? { ...r, enabled, updatedAt: now } : r,
@@ -404,11 +332,7 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
     },
 
     remove: async (id) => {
-      await dbExec(
-        `DELETE FROM lint_term_dictionary WHERE id = ?`,
-        [id],
-        "run",
-      );
+      await deleteTermDictionaryEntry(id);
       set({ rows: get().rows.filter((r) => r.id !== id) });
       recordChangeEvent({
         domain: "lint",
@@ -430,33 +354,24 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       const sortOrder =
         (get().rows[get().rows.length - 1]?.sortOrder ?? -1) + 1;
       const newVariants = source.variants.map((v) => `${v}_copy`);
-      await dbExec(
-        `INSERT INTO lint_term_dictionary
-           (id, project_id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          newId,
-          getCurrentProjectId(),
-          i18next.t("lint.termDict.copySuffix", {
-            name: source.preferred,
-            defaultValue: "{{name}}（コピー）",
-          }),
-          JSON.stringify(newVariants),
-          source.severity,
-          source.note,
-          0,
-          sortOrder,
-          now,
-          now,
-        ],
-        "run",
-      );
+      const preferred = i18next.t("lint.termDict.copySuffix", {
+        name: source.preferred,
+        defaultValue: "{{name}}（コピー）",
+      });
+      await insertTermDictionaryEntry(getCurrentProjectId(), {
+        id: newId,
+        preferred,
+        variants: newVariants,
+        severity: source.severity,
+        note: source.note,
+        enabled: false,
+        sortOrder,
+        createdAt: now,
+        updatedAt: now,
+      });
       const row: TermDictionaryRow = {
         id: newId,
-        preferred: i18next.t("lint.termDict.copySuffix", {
-          name: source.preferred,
-          defaultValue: "{{name}}（コピー）",
-        }),
+        preferred,
         variants: newVariants,
         severity: source.severity,
         note: source.note,
@@ -477,28 +392,18 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       const now = Date.now();
       const projectId = getCurrentProjectId();
       for (const id of plan.deletes) {
-        await dbExec(
-          `DELETE FROM lint_term_dictionary WHERE id = ?`,
-          [id],
-          "run",
-        );
+        await deleteTermDictionaryEntry(id);
       }
       for (const u of plan.updates) {
-        await dbExec(
-          `UPDATE lint_term_dictionary
-             SET preferred = ?, variants = ?, severity = ?, note = ?, enabled = ?, updated_at = ?
-           WHERE id = ?`,
-          [
-            u.preferred,
-            JSON.stringify(u.variants),
-            u.severity,
-            u.note,
-            u.enabled ? 1 : 0,
-            now,
-            u.id,
-          ],
-          "run",
-        );
+        await updateTermDictionaryEntry({
+          id: u.id,
+          preferred: u.preferred,
+          variants: u.variants,
+          severity: u.severity,
+          note: u.note,
+          enabled: u.enabled,
+          updatedAt: now,
+        });
         recordChangeEvent({
           domain: "lint",
           opType: "term.upsert",
@@ -509,24 +414,17 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       }
       for (const ins of plan.inserts) {
         const id = crypto.randomUUID();
-        await dbExec(
-          `INSERT INTO lint_term_dictionary
-             (id, project_id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            id,
-            projectId,
-            ins.preferred,
-            JSON.stringify(ins.variants),
-            ins.severity,
-            ins.note,
-            ins.enabled ? 1 : 0,
-            ins.sortOrder,
-            now,
-            now,
-          ],
-          "run",
-        );
+        await insertTermDictionaryEntry(projectId, {
+          id,
+          preferred: ins.preferred,
+          variants: ins.variants,
+          severity: ins.severity,
+          note: ins.note,
+          enabled: ins.enabled,
+          sortOrder: ins.sortOrder,
+          createdAt: now,
+          updatedAt: now,
+        });
         recordChangeEvent({
           domain: "lint",
           opType: "term.upsert",

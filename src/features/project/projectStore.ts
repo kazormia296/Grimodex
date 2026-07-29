@@ -40,6 +40,12 @@ import {
   prepareExternalWriteFeedStop,
   startProjectExternalWriteFeed,
 } from "@/application/project/projectRuntime";
+import {
+  getCurrentProjectId,
+  publishCurrentProjectId,
+} from "@/application/project/currentProjectAuthority";
+
+export { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 interface CreateProjectInput {
   title: string;
@@ -857,13 +863,12 @@ subscribeCurrentWorkspaceIdentity((identity) => {
   );
 });
 
-/**
- * Current Project id for non-React modules. Falls back to the bootstrap
- * Project id in the window before initCurrentProject has resolved.
- */
-export function getCurrentProjectId(): string {
-  return useProjectStore.getState().currentProjectId ?? FALLBACK_PROJECT_ID;
-}
+publishCurrentProjectId(useProjectStore.getState().currentProjectId);
+useProjectStore.subscribe((state, previous) => {
+  if (state.currentProjectId !== previous.currentProjectId) {
+    publishCurrentProjectId(state.currentProjectId);
+  }
+});
 
 /**
  * Current Project language for non-React modules (post-effect run callbacks

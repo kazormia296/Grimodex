@@ -989,7 +989,7 @@ export function ChatInput({
       {/* shadcn chat-01 風: 入力欄＋下段ツール列を 1 枚の角丸カードに内包 */}
       <div className="rounded-2xl border border-input bg-background shadow-sm transition-colors focus-within:ring-1 focus-within:ring-ring">
         {/* TipTap エディタ */}
-        <div className="chat-input-editor">
+        <div className="chat-input-editor" data-testid="chat-input">
           <EditorContent editor={editor} />
         </div>
 
@@ -1158,6 +1158,7 @@ export function ChatInput({
             ) : (
               <Button
                 type="button"
+                data-testid="chat-send"
                 size="icon"
                 onClick={() => void handleSendClick()}
                 onContextMenu={handleSendContextMenu}
