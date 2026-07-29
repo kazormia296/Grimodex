@@ -371,6 +371,12 @@ describe("ChatPanel virtualization contract", () => {
       messageId: "a1",
       content: "生成中",
     });
+    // prepare は isStreaming も切り替えるため、負荷時には親 viewport の
+    // commit が次の act まで遅延し得る。indicator を commit barrier にして、
+    // delta 自身の再描画だけを下の計測窓へ入れる。
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("streaming-indicator")).toBeTruthy(),
+    );
 
     perfCapture.marks.length = 0;
     perfCapture.counters.length = 0;
