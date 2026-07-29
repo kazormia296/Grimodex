@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { useRef } from "react";
 import { describe, expect, it } from "vitest";
 import { useZenShaderLayouts } from "./useZenShaderLayouts";
@@ -163,7 +163,13 @@ function OverflowingPaperProbe({
   );
 }
 
-function WorkspaceSurfaceProbe({ glass = true }: { glass?: boolean }) {
+function WorkspaceSurfaceProbe({
+  glass = true,
+  accessibilityHidden = false,
+}: {
+  glass?: boolean;
+  accessibilityHidden?: boolean;
+}) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const layouts = useZenShaderLayouts(surfaceRef);
 
@@ -181,6 +187,7 @@ function WorkspaceSurfaceProbe({ glass = true }: { glass?: boolean }) {
         data-workspace-glass-root
         data-layout-shell
         data-workspace-fluid-glass={glass ? "true" : "false"}
+        aria-hidden={accessibilityHidden ? "true" : undefined}
         style={{ position: "absolute", inset: 0 }}
       >
         <aside
@@ -717,6 +724,37 @@ describe("Zen shader non-editor Glass geometry (real Chromium)", () => {
       0.6,
       11 / 15,
     ]);
+  });
+
+  it("keeps paint geometry when a modal removes the workspace from the accessibility tree", async () => {
+    const view = render(<WorkspaceSurfaceProbe />);
+    const probe = view.getByTestId("workspace-surface-layout");
+    const expectedUiRects = [
+      [0, 1 / 3, 0.2, 5 / 6],
+      [0, 14 / 15, 1, 1],
+    ];
+    const expectedContrastRect = [0.4, 1 / 3, 0.6, 11 / 15];
+
+    await waitFor(() => {
+      expectRects(
+        parseRects(probe.getAttribute("data-ui-surface-rects")),
+        expectedUiRects,
+      );
+      expectRect(
+        probe.getAttribute("data-contrast-rect"),
+        expectedContrastRect,
+      );
+    });
+
+    view.rerender(<WorkspaceSurfaceProbe accessibilityHidden />);
+    act(() => window.dispatchEvent(new Event("resize")));
+    await settleLayoutFrames();
+
+    expectRects(
+      parseRects(probe.getAttribute("data-ui-surface-rects")),
+      expectedUiRects,
+    );
+    expectRect(probe.getAttribute("data-contrast-rect"), expectedContrastRect);
   });
 
   it("starts tracking a Glass surface after its enter animation becomes visible", async () => {

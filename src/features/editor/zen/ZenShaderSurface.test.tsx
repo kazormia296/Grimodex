@@ -165,18 +165,36 @@ describe("ZenShaderSurface", () => {
     expect(shaderLifecycle.unmounted).toEqual([ZEN_SHADER_DEFAULTS.shader]);
   });
 
-  it("replaces the Paper mount when the UI surface capacity changes", () => {
-    shaderLayouts.current = layoutsWithUiSurfaceCount(1);
+  it("grows the Paper mount when the UI surface capacity exceeds its high-water mark", () => {
+    shaderLayouts.current = layoutsWithUiSurfaceCount(16);
     const view = render(
       <ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />,
     );
 
+    shaderLayouts.current = layoutsWithUiSurfaceCount(17);
+    view.rerender(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
+
+    expect(shaderLifecycle.mountedCapacities).toEqual([16, 32]);
+    expect(shaderLifecycle.mountedUniformLengths).toEqual([64, 128]);
+    expect(shaderLifecycle.unmountedCapacities).toEqual([16]);
+  });
+
+  it("keeps the Paper mount when the UI surface count drops from nine to eight", () => {
+    shaderLayouts.current = layoutsWithUiSurfaceCount(9);
+    const view = render(
+      <ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />,
+    );
+    const mountedShader = view.container.querySelector("[data-paper-shader]");
+
     shaderLayouts.current = layoutsWithUiSurfaceCount(8);
     view.rerender(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
 
-    expect(shaderLifecycle.mountedCapacities).toEqual([1, 8]);
-    expect(shaderLifecycle.mountedUniformLengths).toEqual([4, 32]);
-    expect(shaderLifecycle.unmountedCapacities).toEqual([1]);
+    expect(shaderLifecycle.mountedCapacities).toEqual([16]);
+    expect(shaderLifecycle.mountedUniformLengths).toEqual([64]);
+    expect(shaderLifecycle.unmountedCapacities).toEqual([]);
+    expect(view.container.querySelector("[data-paper-shader]")).toBe(
+      mountedShader,
+    );
   });
 
   it("exposes the effective GPU refraction for live diagnostics", () => {

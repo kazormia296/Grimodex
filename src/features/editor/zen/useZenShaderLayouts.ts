@@ -105,7 +105,7 @@ interface VisibleElement {
   rect: DOMRect;
 }
 
-function elementIsFullyVisible(element: HTMLElement) {
+function elementIsPaintVisible(element: HTMLElement) {
   let current: HTMLElement | null = element;
   while (current) {
     const style = getComputedStyle(current);
@@ -113,7 +113,6 @@ function elementIsFullyVisible(element: HTMLElement) {
     if (
       style.display === "none" ||
       style.visibility === "hidden" ||
-      current.getAttribute("aria-hidden") === "true" ||
       (Number.isFinite(opacity) && opacity < FULLY_VISIBLE_OPACITY)
     ) {
       return false;
@@ -132,7 +131,7 @@ function visibleCandidateElements(
 ): VisibleElement[] {
   const visible: VisibleElement[] = [];
   for (const element of elements) {
-    if (!elementIsFullyVisible(element)) continue;
+    if (!elementIsPaintVisible(element)) continue;
     const rect = element.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       visible.push({ element, rect });
@@ -303,12 +302,7 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       for (const target of targets) {
         mutationObserver?.observe(target, {
           attributes: true,
-          attributeFilter: [
-            "aria-hidden",
-            "class",
-            "data-workspace-fluid-glass",
-            "style",
-          ],
+          attributeFilter: ["class", "data-workspace-fluid-glass", "style"],
         });
       }
     };

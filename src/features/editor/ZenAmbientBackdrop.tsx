@@ -61,9 +61,13 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
     ? "none"
     : rendererStatus === "webgl"
       ? "webgl"
-      : "fallback";
+      : rendererStatus === "initializing"
+        ? "initializing"
+        : "fallback";
   const fallbackReason =
-    config.enabled && rendererStatus !== "webgl" ? rendererStatus : undefined;
+    config.enabled && rendererStatus.startsWith("fallback-")
+      ? rendererStatus
+      : undefined;
 
   return (
     <motion.div
