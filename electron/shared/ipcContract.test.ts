@@ -210,6 +210,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"id":"pb1","project_id":"p1","from_thread_id":"pt1","to_thread_id":"pt2","at_node_id":"s1","kind":"branch"}',
       ),
     ) as never,
+    plotThreadMoveMarkerBundle: record(
+      "plotThreadMoveMarkerBundle",
+      Promise.resolve(
+        '{"id":"move-1","marker":{"id":"pl1","threadId":"pt2","nodeId":"s2","phaseType":"turn","note":null,"sortOrder":null,"createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-02T00:00:00.000Z"},"branches":[],"deletedBranchIds":[],"__idempotency":{"replayed":false,"entityPresent":true}}',
+      ),
+    ) as never,
     plotThreadRestoreSnapshot: record(
       "plotThreadRestoreSnapshot",
       Promise.resolve(
@@ -1490,6 +1496,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_link_update",
       "plot_thread_list",
       "plot_thread_list_links",
+      "plot_thread_move_marker_bundle",
       "plot_thread_restore_snapshot",
       "plot_thread_update",
       "repair_integrity",
@@ -2176,6 +2183,109 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toEqual([
       { method: "plotThreadBranchCreate", args: [valid] },
     ]);
+  });
+
+  it("plot_thread_move_marker_bundle は deep-validated atomic payload だけを native adapter へ渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const markerBefore = {
+      id: "pl1",
+      threadId: "pt1",
+      nodeId: "s1",
+      phaseType: "turn",
+      note: null,
+      sortOrder: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const markerAfter = {
+      ...markerBefore,
+      threadId: "pt2",
+      nodeId: "s2",
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    };
+    const branchAfter = {
+      id: "pb1",
+      projectId: "p1",
+      fromThreadId: "pt1",
+      toThreadId: "pt2",
+      atNodeId: "s2",
+      kind: "branch",
+      createdAt: "2026-01-03T00:00:00.000Z",
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    };
+    const payload = {
+      requestId: "move-1",
+      projectId: "p1",
+      markerBefore,
+      markerAfter,
+      branchTransitions: [{ before: null, after: branchAfter }],
+    };
+    const moved = await dispatchInvoke(
+      "plot_thread_move_marker_bundle",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "plotThreadMoveMarkerBundle", args: [payload] },
+    ]);
+    expect(moved).toMatchObject({
+      ok: true,
+      value: {
+        id: "move-1",
+        marker: { id: "pl1", threadId: "pt2" },
+        __idempotency: { entityPresent: true },
+      },
+    });
+
+    calls.length = 0;
+    for (const invalid of [
+      { ...payload, requestId: "" },
+      {
+        ...payload,
+        markerAfter: { ...markerAfter, id: "different" },
+      },
+      {
+        ...payload,
+        branchTransitions: [{ before: null, after: null }],
+      },
+      {
+        ...payload,
+        branchTransitions: [
+          { before: null, after: branchAfter },
+          { before: null, after: branchAfter },
+        ],
+      },
+      {
+        ...payload,
+        branchTransitions: [
+          {
+            before: null,
+            after: { ...branchAfter, projectId: "other" },
+          },
+        ],
+      },
+    ]) {
+      const result = await dispatchInvoke(
+        "plot_thread_move_marker_bundle",
+        { payload: invalid },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const unavailable = await dispatchInvoke(
+      "plot_thread_move_marker_bundle",
+      { payload },
+      {
+        backend: { ...backend, plotThreadMoveMarkerBundle: undefined },
+        shell: noShell,
+      },
+    );
+    expect(unavailable).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method plotThreadMoveMarkerBundle`,
+    });
   });
 
   it("plot snapshot restore/delete は deep-validated payload を native adapter へ渡す", async () => {

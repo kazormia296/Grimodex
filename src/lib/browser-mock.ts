@@ -95,6 +95,11 @@ type BrowserPlotBranchSnapshot = {
   updatedAt: string;
 };
 
+type BrowserPlotBranchTransition = {
+  before: BrowserPlotBranchSnapshot | null;
+  after: BrowserPlotBranchSnapshot | null;
+};
+
 // Keep this list aligned with the native-only contract surfaces asserted by
 // src/db/schema.contract.test.ts. BrowserMock uses every other canonical
 // CREATE statement so browser editing exercises the same renderer schema.
@@ -1869,6 +1874,339 @@ export async function createBrowserMock(
     }
   }
 
+  async function handlePlotThreadMoveMarkerBundle(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "plot_thread_move_marker_bundle";
+    const payload = browserCommandPayload(command, args);
+    const requestId = requiredBrowserString(command, payload, "requestId");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const markerBefore = parseBrowserLinkSnapshot(
+      command,
+      browserSnapshotRecord(command, payload.markerBefore, "markerBefore"),
+    );
+    const markerAfter = parseBrowserLinkSnapshot(
+      command,
+      browserSnapshotRecord(command, payload.markerAfter, "markerAfter"),
+    );
+    const branchTransitions = browserSnapshotArray(
+      command,
+      payload,
+      "branchTransitions",
+    ).map((transition, index): BrowserPlotBranchTransition => {
+      const parseBranch = (
+        key: "before" | "after",
+      ): BrowserPlotBranchSnapshot | null => {
+        const value = transition[key];
+        if (value === null || value === undefined) return null;
+        return parseBrowserBranchSnapshot(
+          command,
+          browserSnapshotRecord(
+            command,
+            value,
+            `branchTransitions[${index}].${key}`,
+          ),
+        );
+      };
+      return { before: parseBranch("before"), after: parseBranch("after") };
+    });
+
+    if (
+      !["introduce", "develop", "turn", "climax", "resolve"].includes(
+        markerBefore.phaseType,
+      ) ||
+      !["introduce", "develop", "turn", "climax", "resolve"].includes(
+        markerAfter.phaseType,
+      )
+    ) {
+      throw new Error("plot marker move has an invalid phase_type");
+    }
+    if (markerBefore.id !== markerAfter.id) {
+      throw new Error("plot marker move marker identity cannot change");
+    }
+    if (
+      markerBefore.phaseType !== markerAfter.phaseType ||
+      markerBefore.note !== markerAfter.note ||
+      markerBefore.sortOrder !== markerAfter.sortOrder ||
+      markerBefore.createdAt !== markerAfter.createdAt
+    ) {
+      throw new Error(
+        "plot marker move may only change marker thread, scene, and updatedAt",
+      );
+    }
+
+    const branchIds = new Set<string>();
+    for (const transition of branchTransitions) {
+      if (transition.before === null && transition.after === null) {
+        throw new Error(
+          "plot marker move branch transition must contain before or after",
+        );
+      }
+      for (const branch of [transition.before, transition.after]) {
+        if (!branch) continue;
+        if (branch.projectId !== projectId) {
+          throw new Error(
+            "plot marker move branch must belong to the bundle project",
+          );
+        }
+        if (branch.fromThreadId === branch.toThreadId) {
+          throw new Error(
+            "plot thread branch cannot reference the same thread twice",
+          );
+        }
+        if (!["branch", "merge"].includes(branch.kind)) {
+          throw new Error(`invalid plot branch kind: ${branch.kind}`);
+        }
+      }
+      if (
+        transition.before !== null &&
+        transition.after !== null &&
+        (transition.before.id !== transition.after.id ||
+          transition.before.projectId !== transition.after.projectId ||
+          transition.before.kind !== transition.after.kind ||
+          transition.before.createdAt !== transition.after.createdAt)
+      ) {
+        throw new Error(
+          "plot marker move may only change branch endpoints, anchor, and updatedAt",
+        );
+      }
+      const branchId = (transition.before ?? transition.after)?.id;
+      if (!branchId || branchIds.has(branchId)) {
+        throw new Error("plot marker move contains duplicate branch ids");
+      }
+      branchIds.add(branchId);
+    }
+
+    const branchesAfter = branchTransitions.flatMap((transition) =>
+      transition.after === null ? [] : [transition.after],
+    );
+    const deletedBranchIds = branchTransitions.flatMap((transition) =>
+      transition.after === null && transition.before !== null
+        ? [transition.before.id]
+        : [],
+    );
+    const response = () => ({
+      id: requestId,
+      marker: markerAfter,
+      branches: branchesAfter,
+      deletedBranchIds,
+    });
+    const loadEntity = (): Record<string, SqlValue> | null => {
+      const marker = queryOne(
+        "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+        [markerAfter.id],
+      );
+      if (!marker || !browserLinkSnapshotMatches(marker, markerAfter)) {
+        return null;
+      }
+      for (const transition of branchTransitions) {
+        if (transition.after !== null) {
+          const branch = queryOne(
+            "SELECT * FROM plot_thread_branches WHERE id = ?",
+            [transition.after.id],
+          );
+          if (
+            !branch ||
+            !browserBranchSnapshotMatches(branch, transition.after)
+          ) {
+            return null;
+          }
+        } else if (
+          transition.before !== null &&
+          queryOne("SELECT id FROM plot_thread_branches WHERE id = ?", [
+            transition.before.id,
+          ])
+        ) {
+          return null;
+        }
+      }
+      return response() as unknown as Record<string, SqlValue>;
+    };
+
+    return runBrowserIdempotentCreate({
+      domain: command,
+      requestId,
+      entityId: requestId,
+      projectId,
+      fingerprintPayload: {
+        projectId,
+        markerBefore,
+        markerAfter,
+        branchTransitions,
+      },
+      conflictMarker: "PLOT_THREAD_MOVE_MARKER_IDEMPOTENCY_CONFLICT",
+      loadEntity,
+      createEntity: () => {
+        if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
+          throw new Error("plot marker move project does not exist");
+        }
+        for (const marker of [markerBefore, markerAfter]) {
+          requireBrowserProjectMember(
+            "plot_threads",
+            marker.threadId,
+            projectId,
+            "plot marker move thread must belong to the bundle project",
+          );
+          requireBrowserProjectMember(
+            "tree_nodes",
+            marker.nodeId,
+            projectId,
+            "plot marker move scene must belong to the bundle project",
+          );
+        }
+        for (const transition of branchTransitions) {
+          for (const branch of [transition.before, transition.after]) {
+            if (!branch) continue;
+            requireBrowserProjectMember(
+              "plot_threads",
+              branch.fromThreadId,
+              projectId,
+              "plot marker move branch source thread must belong to the bundle project",
+            );
+            requireBrowserProjectMember(
+              "plot_threads",
+              branch.toThreadId,
+              projectId,
+              "plot marker move branch target thread must belong to the bundle project",
+            );
+            requireBrowserProjectMember(
+              "tree_nodes",
+              branch.atNodeId,
+              projectId,
+              "plot marker move branch scene must belong to the bundle project",
+            );
+          }
+        }
+
+        const currentMarker = queryOne(
+          "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+          [markerBefore.id],
+        );
+        if (!currentMarker) {
+          throw new Error(
+            "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker no longer exists",
+          );
+        }
+        if (!browserLinkSnapshotMatches(currentMarker, markerBefore)) {
+          throw new Error(
+            "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: marker changed since snapshot",
+          );
+        }
+        for (const transition of branchTransitions) {
+          if (transition.before !== null) {
+            const currentBranch = queryOne(
+              "SELECT * FROM plot_thread_branches WHERE id = ?",
+              [transition.before.id],
+            );
+            if (!currentBranch) {
+              throw new Error(
+                "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch no longer exists",
+              );
+            }
+            if (
+              !browserBranchSnapshotMatches(currentBranch, transition.before)
+            ) {
+              throw new Error(
+                "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch changed since snapshot",
+              );
+            }
+          } else if (
+            transition.after !== null &&
+            queryOne("SELECT id FROM plot_thread_branches WHERE id = ?", [
+              transition.after.id,
+            ])
+          ) {
+            throw new Error(
+              "PLOT_THREAD_MOVE_MARKER_PRECONDITION_FAILED: branch id already exists",
+            );
+          }
+        }
+
+        db.run(
+          `UPDATE plot_thread_scene_links
+              SET thread_id = ?, node_id = ?, phase_type = ?, note = ?,
+                  sort_order = ?, created_at = ?, updated_at = ?
+            WHERE id = ?`,
+          [
+            markerAfter.threadId,
+            markerAfter.nodeId,
+            markerAfter.phaseType,
+            markerAfter.note,
+            markerAfter.sortOrder,
+            markerAfter.createdAt,
+            markerAfter.updatedAt,
+            markerAfter.id,
+          ],
+        );
+        for (const transition of branchTransitions) {
+          if (transition.before === null && transition.after !== null) {
+            const branch = transition.after;
+            db.run(
+              `INSERT INTO plot_thread_branches
+                 (id, project_id, from_thread_id, to_thread_id, at_node_id,
+                  kind, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                branch.id,
+                branch.projectId,
+                branch.fromThreadId,
+                branch.toThreadId,
+                branch.atNodeId,
+                branch.kind,
+                branch.createdAt,
+                branch.updatedAt,
+              ],
+            );
+          } else if (transition.before !== null && transition.after !== null) {
+            const branch = transition.after;
+            db.run(
+              `UPDATE plot_thread_branches
+                  SET project_id = ?, from_thread_id = ?, to_thread_id = ?,
+                      at_node_id = ?, kind = ?, created_at = ?, updated_at = ?
+                WHERE id = ?`,
+              [
+                branch.projectId,
+                branch.fromThreadId,
+                branch.toThreadId,
+                branch.atNodeId,
+                branch.kind,
+                branch.createdAt,
+                branch.updatedAt,
+                branch.id,
+              ],
+            );
+          } else if (transition.before !== null && transition.after === null) {
+            db.run("DELETE FROM plot_thread_branches WHERE id = ?", [
+              transition.before.id,
+            ]);
+          }
+        }
+
+        for (const branch of branchesAfter) {
+          const duplicate = queryOne(
+            `SELECT id
+               FROM plot_thread_branches
+              WHERE project_id = ? AND from_thread_id = ? AND to_thread_id = ?
+                AND at_node_id = ? AND kind = ? AND id <> ?
+              LIMIT 1`,
+            [
+              branch.projectId,
+              branch.fromThreadId,
+              branch.toThreadId,
+              branch.atNodeId,
+              branch.kind,
+              branch.id,
+            ],
+          );
+          if (duplicate) {
+            throw new Error("plot marker move would create a duplicate branch");
+          }
+        }
+        return response() as unknown as Record<string, SqlValue>;
+      },
+    });
+  }
+
   async function handlePlotThreadRestoreSnapshot(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -2704,6 +3042,8 @@ export async function createBrowserMock(
         return (await handlePlotThreadLinkCreate(args)) as T;
       case "plot_thread_branch_create":
         return (await handlePlotThreadBranchCreate(args)) as T;
+      case "plot_thread_move_marker_bundle":
+        return (await handlePlotThreadMoveMarkerBundle(args)) as T;
       case "plot_thread_restore_snapshot":
         return (await handlePlotThreadRestoreSnapshot(args)) as T;
       case "plot_thread_delete_snapshot":

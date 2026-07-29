@@ -100,6 +100,77 @@ describe("runCoordinatedDocumentSave", () => {
     ).resolves.toBe(true);
   });
 
+  it("rejects a detached retry after an authoritative replacement advances a foreign revision", async () => {
+    const detached = createDocumentSaveSession();
+    detached.retire(key);
+    await expect(
+      runCoordinatedDocumentSave(
+        key,
+        async () => {
+          throw new Error("disk full");
+        },
+        {
+          session: detached,
+          didPersist: Boolean,
+        },
+      ),
+    ).rejects.toThrow("disk full");
+
+    await runExclusiveDocumentMutation(key, async () => true, {
+      didMutate: Boolean,
+    });
+
+    const staleRetry = vi.fn(async () => true);
+    await expect(
+      runCoordinatedDocumentSave(key, staleRetry, {
+        session: detached,
+        didPersist: Boolean,
+      }),
+    ).rejects.toBeInstanceOf(StaleRetiredDocumentSaveError);
+    expect(staleRetry).not.toHaveBeenCalled();
+  });
+
+  it("does not stale a detached session when an exclusive callback declines the replacement", async () => {
+    const detached = createDocumentSaveSession();
+    detached.retire(key);
+
+    await runExclusiveDocumentMutation(key, async () => false, {
+      didMutate: Boolean,
+    });
+
+    await expect(
+      runCoordinatedDocumentSave(key, async () => true, {
+        session: detached,
+        didPersist: Boolean,
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps the foreign revision when a later side effect fails after the content commit", async () => {
+    const detached = createDocumentSaveSession();
+    detached.retire(key);
+
+    await expect(
+      runExclusiveDocumentMutation(
+        key,
+        async ({ markAuthoritativeMutation }) => {
+          markAuthoritativeMutation();
+          throw new Error("metadata update failed");
+        },
+        { didMutate: Boolean },
+      ),
+    ).rejects.toThrow("metadata update failed");
+
+    const staleRetry = vi.fn(async () => true);
+    await expect(
+      runCoordinatedDocumentSave(key, staleRetry, {
+        session: detached,
+        didPersist: Boolean,
+      }),
+    ).rejects.toBeInstanceOf(StaleRetiredDocumentSaveError);
+    expect(staleRetry).not.toHaveBeenCalled();
+  });
+
   it("publishes an exact-document lease synchronously and runs behind an earlier save", async () => {
     let releaseSave!: () => void;
     const saveGate = new Promise<void>((resolve) => {

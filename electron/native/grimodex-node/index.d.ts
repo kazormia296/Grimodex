@@ -421,6 +421,11 @@ export declare class Backend {
    */
   plotThreadBranchCreate(payload: any): Promise<string>;
   /**
+   * Marker move + branch create/update/delete. Full before/after snapshots,
+   * durable replay identity, and all writes share one Rust transaction.
+   */
+  plotThreadMoveMarkerBundle(payload: any): Promise<string>;
+  /**
    * History snapshot restore. Parent/children and request ledger commit in
    * one shared-Rust transaction.
    */

@@ -48,7 +48,8 @@ use grimodex_db::ime_export::{
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
     self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
-    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadPatch,
+    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
+    PlotThreadPatch,
     PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
@@ -1611,6 +1612,24 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let row = plot_threads::branch_create(db, payload)?;
                 Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// Marker move + branch create/update/delete. Full before/after snapshots,
+    /// durable replay identity, and all writes share one Rust transaction.
+    #[napi]
+    pub async fn plot_thread_move_marker_bundle(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadMoveMarkerBundlePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = plot_threads::move_marker_bundle(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
             })
         })
         .await

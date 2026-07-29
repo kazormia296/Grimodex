@@ -6,6 +6,7 @@ import {
   discardAutoSavesForDocument,
   flushAllAutoSaves,
   flushAutoSavesForKind,
+  hasPendingOrFailedAutoSaveForDocument,
   registerAutoSaveForQuiesce,
   useAutoSave,
 } from "./useAutoSave";
@@ -94,6 +95,37 @@ describe("useAutoSave callback freshness", () => {
 
     await flushAllAutoSaves();
     expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports pending and failed work for the exact document without blocking on a clean mount", async () => {
+    const key = {
+      kind: "tree",
+      id: "scene-probe",
+      storage: "file",
+    } as const;
+    const otherKey = {
+      kind: "tree",
+      id: "scene-other",
+      storage: "file",
+    } as const;
+    const save = vi.fn().mockRejectedValue(new Error("disk full"));
+    const { result, unmount } = renderHook(() =>
+      useAutoSave(save, 100, { documentKey: () => key }),
+    );
+
+    expect(hasPendingOrFailedAutoSaveForDocument(key)).toBe(false);
+    act(() => result.current.schedule());
+    expect(hasPendingOrFailedAutoSaveForDocument(key)).toBe(true);
+    expect(hasPendingOrFailedAutoSaveForDocument(otherKey)).toBe(false);
+
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(hasPendingOrFailedAutoSaveForDocument(key)).toBe(true);
+
+    act(() => discardAutoSavesForDocument(key));
+    expect(hasPendingOrFailedAutoSaveForDocument(key)).toBe(false);
   });
 
   it("scoped flush retries a retired editor without draining another kind", async () => {

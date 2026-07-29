@@ -24,6 +24,7 @@ import {
   createPlotThread,
   createPlotThreadLink,
   createPlotThreadBranch,
+  movePlotMarkerBundle,
   restorePlotThreadSnapshot,
   deletePlotThreadSnapshot,
   listPlotThreads,
@@ -155,6 +156,94 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
     expect((error as IpcInvokeError).details).toMatchObject({
       requestId: "request-1",
       idempotencyDomain: "plot-thread-create",
+    });
+  });
+
+  it("movePlotMarkerBundle preserves the full transition and durable retry metadata", async () => {
+    const markerBefore = {
+      id: "pl1",
+      threadId: "t1",
+      nodeId: "s1",
+      phaseType: "turn" as const,
+      note: null,
+      sortOrder: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const markerAfter = {
+      ...markerBefore,
+      threadId: "t2",
+      nodeId: "s2",
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    };
+    const branch = {
+      id: "pb1",
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t2",
+      atNodeId: "s2",
+      kind: "branch" as const,
+      createdAt: "2026-01-03T00:00:00.000Z",
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    };
+    invoke.mockResolvedValueOnce({
+      id: "move-1",
+      marker: {
+        ...markerAfter,
+        thread_id: markerAfter.threadId,
+        node_id: markerAfter.nodeId,
+        phase_type: markerAfter.phaseType,
+      },
+      branches: [branch],
+      deletedBranchIds: [],
+      __idempotency: { replayed: true, entityPresent: true },
+    });
+
+    const moved = await movePlotMarkerBundle({
+      requestId: "move-1",
+      projectId: "p1",
+      markerBefore,
+      markerAfter,
+      branchTransitions: [{ before: null, after: branch }],
+    });
+    expect(invoke).toHaveBeenCalledWith("plot_thread_move_marker_bundle", {
+      payload: {
+        requestId: "move-1",
+        projectId: "p1",
+        markerBefore,
+        markerAfter,
+        branchTransitions: [{ before: null, after: branch }],
+      },
+    });
+    expect(moved.marker).toMatchObject({
+      id: "pl1",
+      threadId: "t2",
+      nodeId: "s2",
+    });
+    expect(getCreateResultMetadata(moved)).toEqual({
+      replayed: true,
+      entityPresent: true,
+    });
+
+    invoke.mockRejectedValueOnce(
+      new IpcInvokeError("plot_thread_move_marker_bundle", {
+        code: "IPC_TIMEOUT",
+        message: "unknown marker move",
+        retryable: false,
+        outcome: "unknown",
+      }),
+    );
+    const error = await movePlotMarkerBundle({
+      requestId: "move-retry",
+      projectId: "p1",
+      markerBefore,
+      markerAfter,
+      branchTransitions: [],
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(IpcInvokeError);
+    expect((error as IpcInvokeError).details).toMatchObject({
+      requestId: "move-retry",
+      idempotencyDomain: "plot-thread-move-marker-bundle",
     });
   });
 

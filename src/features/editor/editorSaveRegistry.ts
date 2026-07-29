@@ -277,6 +277,16 @@ export function clearRetainedEditorRecoveryDraft(
   retainedRecoveryDrafts.delete(recoveryDraftIdentity(reference, instanceId));
 }
 
+/** Whether an unmounted editor still owns a recovery snapshot for this document. */
+export function hasRetainedRecoveryDraftForDocument(
+  reference: DocumentReference,
+): boolean {
+  const prefix = `${referenceIdentity(reference).encoded}\u0000`;
+  return [...retainedRecoveryDrafts.keys()].some((key) =>
+    key.startsWith(prefix),
+  );
+}
+
 /**
  * A successful Project/Workspace quiescence proves that every drainable
  * detached draft has either persisted or vetoed the boundary. Once it

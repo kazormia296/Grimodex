@@ -251,6 +251,111 @@ test("plotThreadBranchCreate は native transaction で XPROJ と durable replay
   await backend.plotThreadDelete(to.id);
 });
 
+test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で確定・再送する", async () => {
+  await run(
+    "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s-move', ?, 'scene', 'Move')",
+    [PROJECT],
+  );
+  const from = JSON.parse(
+    await backend.plotThreadCreate({
+      id: "move-from-thread",
+      projectId: PROJECT,
+      name: "移動元",
+      color: null,
+      description: null,
+      sortOrder: "m0",
+    }),
+  );
+  const to = JSON.parse(
+    await backend.plotThreadCreate({
+      id: "move-to-thread",
+      projectId: PROJECT,
+      name: "移動先",
+      color: null,
+      description: null,
+      sortOrder: "m1",
+    }),
+  );
+  const rawLink = JSON.parse(
+    await backend.plotThreadLinkCreate({
+      id: "move-marker-link",
+      threadId: from.id,
+      nodeId: "s1",
+      phaseType: "turn",
+      note: "atomic marker",
+      sortOrder: null,
+    }),
+  );
+  const markerBefore = {
+    id: rawLink.id,
+    threadId: rawLink.thread_id,
+    nodeId: rawLink.node_id,
+    phaseType: rawLink.phase_type,
+    note: rawLink.note,
+    sortOrder: rawLink.sort_order,
+    createdAt: rawLink.created_at,
+    updatedAt: rawLink.updated_at,
+  };
+  const markerAfter = {
+    ...markerBefore,
+    threadId: to.id,
+    nodeId: "s-move",
+    updatedAt: "2026-07-29T04:00:00.000Z",
+  };
+  const branchAfter = {
+    id: "move-marker-branch",
+    projectId: PROJECT,
+    fromThreadId: from.id,
+    toThreadId: to.id,
+    atNodeId: "s-move",
+    kind: "branch",
+    createdAt: "2026-07-29T04:00:00.000Z",
+    updatedAt: "2026-07-29T04:00:00.000Z",
+  };
+  const payload = {
+    requestId: "move-marker-request",
+    projectId: PROJECT,
+    markerBefore,
+    markerAfter,
+    branchTransitions: [{ before: null, after: branchAfter }],
+  };
+
+  const moved = JSON.parse(
+    await backend.plotThreadMoveMarkerBundle(payload),
+  );
+  assert.deepEqual(moved.marker, markerAfter);
+  assert.deepEqual(moved.branches, [branchAfter]);
+  assert.deepEqual(moved.__idempotency, {
+    replayed: false,
+    entityPresent: true,
+  });
+  const replay = JSON.parse(
+    await backend.plotThreadMoveMarkerBundle(payload),
+  );
+  assert.deepEqual(replay.__idempotency, {
+    replayed: true,
+    entityPresent: true,
+  });
+  const persisted = JSON.parse(
+    await backend.dbExecute(
+      `SELECT
+         (SELECT thread_id FROM plot_thread_scene_links WHERE id = ?) AS marker_thread,
+         (SELECT node_id FROM plot_thread_scene_links WHERE id = ?) AS marker_node,
+         (SELECT COUNT(*) FROM plot_thread_branches WHERE id = ?) AS branches`,
+      [rawLink.id, rawLink.id, branchAfter.id],
+      "get",
+    ),
+  ).rows[0];
+  assert.deepEqual(persisted, {
+    marker_thread: to.id,
+    marker_node: "s-move",
+    branches: 1,
+  });
+
+  await backend.plotThreadDelete(from.id);
+  await backend.plotThreadDelete(to.id);
+});
+
 test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic replay を守る", async () => {
   const [sourceThread] = await listThreads();
   const thread = {
