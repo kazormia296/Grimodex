@@ -34,6 +34,7 @@ import type {
 } from "../chatApi";
 import type { LayerBreakdown } from "../contextBuilder";
 import type { ChatContextPlan } from "../context/types";
+import type { ContextWindowUsage } from "@/features/ai-context/contextWindowUsage";
 import { PromptPreviewModal } from "./PromptPreviewModal";
 import { ContextCreatorButton } from "./ContextCreatorButton";
 import { ContextCreatorDialog } from "./ContextCreatorDialog";
@@ -126,6 +127,7 @@ interface ContextBarProps {
   onUnpinEntry: (entryId: string) => void;
   onTogglePinChildren: (entryId: string, withChildren: boolean) => void;
   contextTokenCount: number;
+  contextWindowUsage?: ContextWindowUsage | null;
   contextWindowOverride?: number | null;
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
@@ -172,6 +174,7 @@ export function ContextBar({
   onUnpinEntry,
   onTogglePinChildren,
   contextTokenCount,
+  contextWindowUsage = null,
   contextWindowOverride,
   contextLayers,
   systemPrompt,
@@ -250,6 +253,7 @@ export function ContextBar({
           prompt: "",
           layers: [],
           totalTokens: 0,
+          contextWindowUsage: null,
           userMessage: "",
         });
       })
@@ -439,14 +443,19 @@ export function ContextBar({
         : 0;
   const ctxWindowLabel =
     model && contextWindow !== null ? formatContextWindow(contextWindow) : null;
-  const windowFillPct =
+  const windowUsedTokens =
+    contextWindowUsage?.reservedTotalTokens ?? contextTokenCount;
+  const inputTokenCount = contextWindowUsage?.inputTokens ?? contextTokenCount;
+  const windowFillLabelPct =
     contextWindow !== null && contextWindow > 0
-      ? Math.min(100, Math.round((contextTokenCount / contextWindow) * 100))
+      ? Math.round((windowUsedTokens / contextWindow) * 100)
       : null;
+  const windowFillPct =
+    windowFillLabelPct === null ? null : Math.min(100, windowFillLabelPct);
   const windowFillStroke =
     windowFillPct === null
       ? null
-      : windowFillPct >= 80
+      : (contextWindowUsage?.overflowTokens ?? 0) > 0 || windowFillPct >= 80
         ? "stroke-destructive"
         : windowFillPct >= 50
           ? "stroke-amber-500"
@@ -632,11 +641,11 @@ export function ContextBar({
                 </PopoverContent>
               </Popover>
             )}
-            {contextTokenCount > 0 &&
+            {windowUsedTokens > 0 &&
               (() => {
                 const estimated = estimateInputCost(
                   model,
-                  contextTokenCount,
+                  inputTokenCount,
                   provider,
                 );
                 const costLabel =
@@ -652,14 +661,29 @@ export function ContextBar({
                       }}
                       className="rounded bg-muted px-1.5 py-0.5 text-xs hover:bg-accent"
                       title={
-                        costLabel
-                          ? t("chat.context.tokensWithCostTitle", {
-                              cost: costLabel,
+                        contextWindowUsage
+                          ? t("chat.context.requestUsageTitle", {
+                              total:
+                                contextWindowUsage.reservedTotalTokens.toLocaleString(),
+                              context:
+                                contextWindowUsage.contextTokens.toLocaleString(),
+                              tools:
+                                contextWindowUsage.toolTokens.toLocaleString(),
+                              framing:
+                                contextWindowUsage.envelopeTokens.toLocaleString(),
+                              output:
+                                contextWindowUsage.outputReservedTokens.toLocaleString(),
+                              safety:
+                                contextWindowUsage.safetyMarginTokens.toLocaleString(),
                             })
-                          : t("chat.context.showPrompt")
+                          : costLabel
+                            ? t("chat.context.tokensWithCostTitle", {
+                                cost: costLabel,
+                              })
+                            : t("chat.context.showPrompt")
                       }
                     >
-                      ~{contextTokenCount.toLocaleString()} tokens
+                      ~{windowUsedTokens.toLocaleString()} tokens
                       {costLabel && (
                         <span className="ml-1 text-muted-foreground">
                           · ~{costLabel}
@@ -674,11 +698,11 @@ export function ContextBar({
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-label={t("chat.context.windowFillOfWindow", {
-                          pct: windowFillPct,
+                          pct: windowFillLabelPct ?? windowFillPct,
                           window: ctxWindowLabel ?? "",
                         })}
                         title={t("chat.context.windowFillOfWindow", {
-                          pct: windowFillPct,
+                          pct: windowFillLabelPct ?? windowFillPct,
                           window: ctxWindowLabel ?? "",
                         })}
                       >
@@ -1178,6 +1202,11 @@ export function ContextBar({
           systemPrompt={previewData?.prompt ?? systemPrompt}
           layers={previewData?.layers ?? contextLayers}
           totalTokens={previewData?.totalTokens ?? contextTokenCount}
+          contextWindowUsage={
+            previewData?.status === "ready"
+              ? previewData.contextWindowUsage
+              : contextWindowUsage
+          }
           userMessage={previewData?.userMessage ?? ""}
           model={model}
           provider={provider}

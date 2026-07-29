@@ -6,11 +6,13 @@ import { estimateInputCost, formatCost } from "../modelPricing";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
 import { PromptTemplateEditorDialog } from "@/features/prompt-library/PromptTemplateEditorDialog";
+import type { ContextWindowUsage } from "@/features/ai-context/contextWindowUsage";
 
 interface PromptPreviewModalProps {
   systemPrompt: string;
   layers: LayerBreakdown[];
   totalTokens: number;
+  contextWindowUsage?: ContextWindowUsage | null;
   /** 現在のモデル ID。コスト推定に使う。未指定 / 未登録モデルではコスト行を省略 */
   model?: string;
   /** `model` のprovider namespace。同名bare IDの価格衝突を防ぐ。 */
@@ -30,6 +32,7 @@ export function PromptPreviewModal({
   systemPrompt,
   layers,
   totalTokens,
+  contextWindowUsage = null,
   model,
   contextWindow,
   loading = false,
@@ -48,19 +51,23 @@ export function PromptPreviewModal({
     : userMessage && userMessage.trim()
       ? userMessage
       : systemPrompt;
+  const inputTokenCount = contextWindowUsage?.inputTokens ?? totalTokens;
+  const requestTokenCount =
+    contextWindowUsage?.reservedTotalTokens ?? totalTokens;
   const estimatedCost =
-    model && totalTokens > 0
-      ? estimateInputCost(model, totalTokens, provider)
+    model && inputTokenCount > 0
+      ? estimateInputCost(model, inputTokenCount, provider)
       : null;
   const costLabel = estimatedCost !== null ? formatCost(estimatedCost) : null;
-  const fillPct =
+  const fillLabelPct =
     contextWindow && contextWindow > 0
-      ? Math.min(100, Math.round((totalTokens / contextWindow) * 100))
+      ? Math.round((requestTokenCount / contextWindow) * 100)
       : null;
+  const fillPct = fillLabelPct === null ? null : Math.min(100, fillLabelPct);
   const fillTone =
     fillPct === null
       ? null
-      : fillPct >= 80
+      : (contextWindowUsage?.overflowTokens ?? 0) > 0 || fillPct >= 80
         ? "bg-destructive"
         : fillPct >= 50
           ? "bg-amber-500"
@@ -128,7 +135,7 @@ export function PromptPreviewModal({
         ) : (
           <>
             {/* レイヤー別内訳テーブル */}
-            {layers.length > 0 && (
+            {(layers.length > 0 || contextWindowUsage) && (
               <div>
                 <h3 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
                   {t("chat.context.layerBreakdown")}
@@ -183,13 +190,74 @@ export function PromptPreviewModal({
                     })}
                     <tr className="font-semibold">
                       <td className="py-1 pr-4">
-                        {t("chat.context.totalRow")}
+                        {contextWindowUsage
+                          ? t("chat.context.contextInputRow")
+                          : t("chat.context.totalRow")}
                       </td>
                       <td className="py-1 pr-4 text-right tabular-nums">
-                        {totalTokens.toLocaleString()}
+                        {(
+                          contextWindowUsage?.contextTokens ?? totalTokens
+                        ).toLocaleString()}
                       </td>
                       <td />
                     </tr>
+                    {contextWindowUsage &&
+                      contextWindowUsage.toolTokens > 0 && (
+                        <tr>
+                          <td className="py-1 pr-4">
+                            {t("chat.context.agentToolsRow")}
+                          </td>
+                          <td className="py-1 pr-4 text-right tabular-nums">
+                            {contextWindowUsage.toolTokens.toLocaleString()}
+                          </td>
+                          <td />
+                        </tr>
+                      )}
+                    {contextWindowUsage &&
+                      contextWindowUsage.envelopeTokens > 0 && (
+                        <tr>
+                          <td className="py-1 pr-4">
+                            {t("chat.context.messageFramingRow")}
+                          </td>
+                          <td className="py-1 pr-4 text-right tabular-nums">
+                            {contextWindowUsage.envelopeTokens.toLocaleString()}
+                          </td>
+                          <td />
+                        </tr>
+                      )}
+                    {contextWindowUsage && (
+                      <>
+                        <tr>
+                          <td className="py-1 pr-4">
+                            {t("chat.context.outputReserveRow")}
+                          </td>
+                          <td className="py-1 pr-4 text-right tabular-nums">
+                            {contextWindowUsage.outputReservedTokens.toLocaleString()}
+                          </td>
+                          <td />
+                        </tr>
+                        {contextWindowUsage.safetyMarginTokens > 0 && (
+                          <tr>
+                            <td className="py-1 pr-4">
+                              {t("chat.context.safetyMarginRow")}
+                            </td>
+                            <td className="py-1 pr-4 text-right tabular-nums">
+                              {contextWindowUsage.safetyMarginTokens.toLocaleString()}
+                            </td>
+                            <td />
+                          </tr>
+                        )}
+                        <tr className="border-t border-border font-semibold">
+                          <td className="py-1 pr-4">
+                            {t("chat.context.requestTotalRow")}
+                          </td>
+                          <td className="py-1 pr-4 text-right tabular-nums">
+                            {contextWindowUsage.reservedTotalTokens.toLocaleString()}
+                          </td>
+                          <td />
+                        </tr>
+                      </>
+                    )}
                     {costLabel && (
                       <tr className="text-muted-foreground">
                         <td className="py-1 pr-4 text-xs">
@@ -209,7 +277,7 @@ export function PromptPreviewModal({
                           {t("chat.context.windowFillRow")}
                         </td>
                         <td className="py-1 pr-4 text-right text-xs tabular-nums">
-                          {fillPct}%
+                          {fillLabelPct ?? fillPct}%
                         </td>
                         <td className="py-1 w-32">
                           <div
@@ -219,7 +287,7 @@ export function PromptPreviewModal({
                             aria-valuemin={0}
                             aria-valuemax={100}
                             aria-label={t("chat.context.windowFill", {
-                              pct: fillPct,
+                              pct: fillLabelPct ?? fillPct,
                             })}
                           >
                             <div
