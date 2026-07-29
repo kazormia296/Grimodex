@@ -241,7 +241,11 @@ function collectLongtaskEntries(
 ): void {
   for (const entry of entries) {
     if (entry.entryType !== "longtask") continue;
-    if (target) {
+    // PerformanceObserver delivery is asynchronous. A task that completed
+    // before startPerfSession() can therefore be delivered after the new
+    // session has started; never attribute that stale setup work to the
+    // interaction window.
+    if (target && entry.startTime >= target.startedAt) {
       target.longtasks.push({
         startTime: entry.startTime,
         duration: entry.duration,
@@ -258,6 +262,9 @@ function collectEventEntries(
   if (!target) return;
   for (const entry of entries) {
     if (entry.entryType !== "event") continue;
+    // Event Timing entries can likewise finish and arrive after a new
+    // observer/session boundary. Keep only events that began in this session.
+    if (entry.startTime < target.startedAt) continue;
     target.slowEvents.push({ duration: entry.duration });
   }
 }

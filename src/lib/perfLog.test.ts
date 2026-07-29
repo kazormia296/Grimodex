@@ -29,6 +29,14 @@ class FakePerformanceObserver {
 
   disconnect(): void {}
 
+  deliver(): void {
+    const records = this.records;
+    this.records = [];
+    this.callback({
+      getEntries: () => records as unknown as PerformanceEntryList,
+    });
+  }
+
   takeRecords(): PerformanceEntryList {
     const records = this.records;
     this.records = [];
@@ -37,6 +45,7 @@ class FakePerformanceObserver {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.resetModules();
   FakePerformanceObserver.instances = [];
@@ -59,16 +68,67 @@ describe("performance sessions", () => {
     );
     expect(longtask).toBeDefined();
     expect(event).toBeDefined();
+    const inSessionStart = performance.now() + 1;
     longtask?.records.push({
       entryType: "longtask",
-      startTime: 10,
+      startTime: inSessionStart,
       duration: 60,
     });
     event?.records.push({
       entryType: "event",
-      startTime: 20,
+      startTime: inSessionStart,
       duration: 24,
     });
+
+    const result = endPerfSession();
+
+    expect(result?.longtask).toEqual({ count: 1, totalMs: 60, maxMs: 60 });
+    expect(result?.slowEvent).toEqual({ count: 1, p95Ms: 24, maxMs: 24 });
+  });
+
+  it("does not attribute asynchronously delivered pre-session records to the active interaction", async () => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.stubGlobal(
+      "PerformanceObserver",
+      FakePerformanceObserver as unknown as typeof PerformanceObserver,
+    );
+    const { startPerfSession, endPerfSession } = await import("./perfLog");
+
+    startPerfSession();
+    const longtask = FakePerformanceObserver.instances.find(
+      (observer) => observer.observedType === "longtask",
+    );
+    const event = FakePerformanceObserver.instances.find(
+      (observer) => observer.observedType === "event",
+    );
+    longtask?.records.push(
+      {
+        entryType: "longtask",
+        startTime: 99,
+        duration: 3_478,
+      },
+      {
+        entryType: "longtask",
+        startTime: 101,
+        duration: 60,
+      },
+    );
+    event?.records.push(
+      {
+        entryType: "event",
+        startTime: 99,
+        duration: 3_496,
+      },
+      {
+        entryType: "event",
+        startTime: 101,
+        duration: 24,
+      },
+    );
+    longtask?.deliver();
+    event?.deliver();
+    now = 200;
 
     const result = endPerfSession();
 
