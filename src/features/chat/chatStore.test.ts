@@ -330,6 +330,7 @@ function resetStore() {
     activeSceneId: "scene-1",
     activeProjectId: "proj-1",
     contextTokenCount: 0,
+    contextWindowUsage: null,
     contextWindowSize: null,
     contextModel: null,
     contextProvider: null,
@@ -2647,7 +2648,7 @@ describe("useChatStore", () => {
             id: "gemma4:latest",
             name: "gemma4:latest",
             contextLength: 131_072,
-            effectiveContextLength: 131_072,
+            effectiveContextLength: 4_096,
             effectiveContextSource: "runner",
             supportedParameters: ["tools"],
           },
@@ -2675,6 +2676,15 @@ describe("useChatStore", () => {
           ollamaSettings.ollamaEndpoint,
         );
         expect(mockSendAgentMessage).not.toHaveBeenCalled();
+        expect(useChatStore.getState().contextWindowUsage).toMatchObject({
+          toolTokens: 0,
+          outputReservedTokens: 3_072,
+          contextWindow: 4_096,
+          estimated: false,
+        });
+        expect(
+          useChatStore.getState().contextWindowUsage?.reservedTotalTokens,
+        ).toBeLessThanOrEqual(4_096);
       });
 
       it("keeps an Agent OFF draft unaccepted when only the Ollama model maximum is known", async () => {
@@ -3528,6 +3538,19 @@ describe("useChatStore", () => {
         expect(useChatStore.getState().error).toContain(
           "model maximum 131,072",
         );
+        expect(useChatStore.getState().error).toContain("Breakdown:");
+        expect(useChatStore.getState().error).toContain("Agent tools");
+        expect(useChatStore.getState().contextWindowUsage).toMatchObject({
+          contextWindow: 4_096,
+          outputReservedTokens: 3_072,
+          estimated: false,
+        });
+        expect(
+          useChatStore.getState().contextWindowUsage?.toolTokens,
+        ).toBeGreaterThan(0);
+        expect(
+          useChatStore.getState().contextWindowUsage?.reservedTotalTokens,
+        ).toBeGreaterThan(4_096);
       });
 
       it("invalidates a stale runner value and stops when selected metadata refresh fails", async () => {
@@ -4566,6 +4589,7 @@ describe("useChatStore", () => {
             cacheSegments: ["DIRECT CACHE"],
             volatileTail: "DIRECT TAIL",
             fullyInjectedIds: [],
+            contextWindowUsage: null,
           };
         },
       });
@@ -6223,6 +6247,7 @@ describe("useChatStore", () => {
         prompt: "PREVIEW PROJECT PROMPT",
         layers: [],
         totalTokens: 8,
+        contextWindowUsage: null,
         userMessage: "",
       });
       expect(useChatStore.getState().lastSystemPrompt).toBe(
@@ -6257,6 +6282,7 @@ describe("useChatStore", () => {
         prompt: "",
         layers: [],
         totalTokens: 0,
+        contextWindowUsage: null,
         userMessage: "未送信の入力",
       });
       expect(result.prompt).not.toContain("STALE LIVE ESTIMATE PROMPT");
@@ -6285,6 +6311,7 @@ describe("useChatStore", () => {
         prompt: "",
         layers: [],
         totalTokens: 0,
+        contextWindowUsage: null,
         userMessage: "",
       });
       expect(result.prompt).not.toContain("STALE LIVE ESTIMATE PROMPT");

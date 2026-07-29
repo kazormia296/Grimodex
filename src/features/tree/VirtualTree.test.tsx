@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
-import { useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { makeNodeData } from "@/test-utils/nodeFixture";
 import type { VisibleTreeRow } from "./treeVisibility";
 
@@ -67,12 +67,19 @@ function Harness({
   dragging?: boolean;
 }) {
   const treeRef = useRef<HTMLDivElement>(null);
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const bindScrollElement = useCallback((element: HTMLDivElement | null) => {
+    treeRef.current = element;
+    setScrollElement(element);
+  }, []);
   const orderedNodesRef = useRef(rows.map((row) => row.node));
   return (
-    <div ref={treeRef}>
+    <div ref={bindScrollElement}>
       <VirtualTree
         rows={rows}
-        treeRef={treeRef}
+        scrollElement={scrollElement}
         activeSceneId=""
         selectedIds={[]}
         expandedIds={[]}

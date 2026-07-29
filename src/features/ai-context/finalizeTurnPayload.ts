@@ -128,7 +128,8 @@ export class OllamaContextWindowUnknownError extends Error {
     super(
       `Ollama context allocation is unknown for ${route.model}. ` +
         `This request requires ${usage.reservedTotalTokens.toLocaleString()} tokens; ` +
-        `the model maximum is ${maximumLabel}. Load the model so Grimodex can inspect ` +
+        `${formatUsageBreakdown(usage)} The model maximum is ${maximumLabel}. ` +
+        "Load the model so Grimodex can inspect " +
         "the runner allocation. If automatic detection is unavailable, first set " +
         "Ollama via Modelfile PARAMETER num_ctx or OLLAMA_CONTEXT_LENGTH and reload " +
         "the model, then set the Grimodex fallback to that same verified value.",
@@ -172,7 +173,8 @@ export class OllamaContextWindowTooSmallError extends Error {
     super(
       `Ollama ${limitKind === "effective" ? "effective" : "model maximum"} ` +
         `context window is ${route.contextWindow.toLocaleString()} tokens${maximumDetail}, ` +
-        `but this request requires ${usage.reservedTotalTokens.toLocaleString()} tokens. ${remedy}`,
+        `but this request requires ${usage.reservedTotalTokens.toLocaleString()} tokens. ` +
+        `${formatUsageBreakdown(usage)} ${remedy}`,
     );
     this.name = "OllamaContextWindowTooSmallError";
     this.usage = usage;
@@ -181,6 +183,24 @@ export class OllamaContextWindowTooSmallError extends Error {
     this.availableContextWindow = route.contextWindow;
     this.modelContextWindow = modelContextWindow;
   }
+}
+
+function formatUsageBreakdown(usage: TurnPayloadUsage): string {
+  const promptAndHistory = usage.systemTokens + usage.conversationTokens;
+  const parts = [
+    `prompt/history ${promptAndHistory.toLocaleString()}`,
+    ...(usage.toolTokens > 0
+      ? [`Agent tools ${usage.toolTokens.toLocaleString()}`]
+      : []),
+    ...(usage.envelopeTokens > 0
+      ? [`message framing ${usage.envelopeTokens.toLocaleString()}`]
+      : []),
+    `output reserve ${usage.outputReservedTokens.toLocaleString()}`,
+    ...(usage.safetyMarginTokens > 0
+      ? [`safety margin ${usage.safetyMarginTokens.toLocaleString()}`]
+      : []),
+  ];
+  return `Breakdown: ${parts.join("; ")}.`;
 }
 
 function requirePositiveSafeInteger(value: number, name: string): void {

@@ -518,6 +518,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
+  const contextWindowUsage = useChatStore((s) => s.contextWindowUsage);
   const contextWindowSize = useChatStore((s) => s.contextWindowSize);
   const contextRouteAuthorityKey = useChatStore(
     (s) => s.contextRouteAuthorityKey,
@@ -671,6 +672,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     : materializedContextMatchesRoute
       ? contextWindowSize
       : (intendedRoute?.contextWindow ?? null);
+  const displayedContextWindowUsage = materializedContextMatchesRoute
+    ? contextWindowUsage
+    : null;
   const contextPreviewAuthorityKey = useMemo(
     () =>
       JSON.stringify([
@@ -1241,6 +1245,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onUnpinEntry={handleUnpin}
         onTogglePinChildren={handleTogglePinChildren}
         contextTokenCount={contextTokenCount}
+        contextWindowUsage={displayedContextWindowUsage}
         contextWindowOverride={displayedContextWindow}
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}

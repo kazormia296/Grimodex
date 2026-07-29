@@ -95,6 +95,12 @@ import {
   finalizeTurnPayload,
   selectsCacheSystemDelivery,
 } from "@/features/ai-context/finalizeTurnPayload";
+import {
+  createContextWindowUsage,
+  contextWindowUsageFromError,
+  contextWindowUsageFromTurnPayloadUsage,
+  type ContextWindowUsage,
+} from "@/features/ai-context/contextWindowUsage";
 import { createContextPlan } from "@/features/ai-context/types";
 import { planChatContext } from "./context/chatContextPlanner";
 import {
@@ -450,6 +456,26 @@ function resolveCurrentChatTurnPolicy(input: {
   });
 }
 
+function resolveCurrentTurnWebSearchConfig(input: {
+  agentMode: boolean;
+  ragActive: boolean;
+}): WebSearchConfig | null {
+  const settingsState = useSettingsStore.getState();
+  const controls = parseWebSearchControls({
+    domainMode: settingsState.get("ai.webSearch.domainMode", "off"),
+    domainsJson: settingsState.get("ai.webSearch.domains", "[]"),
+    maxContentTokensRaw: settingsState.get("ai.webSearch.maxContentTokens", ""),
+  });
+  return resolveAgentPrivacyPlan({
+    ...input,
+    webSearchConfig: buildWebSearchConfig(
+      input.ragActive,
+      input.agentMode,
+      controls,
+    ),
+  }).webSearchConfig;
+}
+
 export function resolveCurrentChatDisplayRoute(input: {
   agentMode: boolean;
   ragEnabled: boolean;
@@ -521,6 +547,87 @@ function estimateMessageEnvelopeTokens(
   // Provider tokenizers account for role/message boundaries differently. Keep
   // this explicit and conservative; exact text content is measured separately.
   return messages.length * 4 + (messages.length > 0 ? 2 : 0);
+}
+
+function estimateContextWindowUsage(input: {
+  route: ResolvedChatTurnRoute | null | undefined;
+  contextTokens: number;
+  messages: ReadonlyArray<{ role: string; content: string }>;
+  /** Defined (including an empty list) when the provider uses the Agent path. */
+  tools?: AgentToolDefinition[];
+  webSearch?: WebSearchConfig | null;
+  estimated: boolean;
+}): ContextWindowUsage | null {
+  if (!input.route) return null;
+
+  let toolTokens = 0;
+  let envelopeTokens: number;
+  if (input.tools !== undefined) {
+    toolTokens = renderAgentToolPayloads(
+      input.route,
+      input.tools,
+      input.webSearch,
+    ).reduce((sum, payload) => sum + countTokens(payload), 0);
+    const agentMessages = input.messages.flatMap<AgentMessagePayload>(
+      (message) => {
+        if (message.role === "user") {
+          return [{ role: "user", content: message.content }];
+        }
+        if (message.role === "assistant") {
+          return [
+            {
+              role: "assistant",
+              content: stripToolProtocol(message.content),
+            },
+          ];
+        }
+        return [];
+      },
+    );
+    const rawConversationTokens = agentMessages.reduce(
+      (sum, message) => sum + countTokens(message.content),
+      0,
+    );
+    const renderedConversationTokens = renderAgentConversationPayloads(
+      input.route,
+      agentMessages,
+    ).reduce((sum, payload) => sum + countTokens(payload), 0);
+    envelopeTokens = Math.max(
+      0,
+      renderedConversationTokens - rawConversationTokens,
+    );
+  } else {
+    envelopeTokens = estimateMessageEnvelopeTokens([
+      ...(input.contextTokens > 0 ? [{ role: "system", content: "" }] : []),
+      ...input.messages,
+    ]);
+  }
+
+  return createContextWindowUsage({
+    contextTokens: input.contextTokens,
+    toolTokens,
+    envelopeTokens,
+    safetyMarginTokens: TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+    outputReservedTokens: input.route.wireOutputTokens,
+    contextWindow: input.route.contextWindow,
+    estimated: input.estimated,
+  });
+}
+
+function estimateContextInputOverhead(input: {
+  route: ResolvedChatTurnRoute | null | undefined;
+  messages: ReadonlyArray<{ role: string; content: string }>;
+  tools?: AgentToolDefinition[];
+  webSearch?: WebSearchConfig | null;
+}): number | undefined {
+  // A one-token placeholder makes plain-chat framing include the system
+  // message. Remove it again so only non-context request overhead is returned.
+  const usage = estimateContextWindowUsage({
+    ...input,
+    contextTokens: 1,
+    estimated: true,
+  });
+  return usage ? usage.inputTokens - 1 + usage.safetyMarginTokens : undefined;
 }
 
 function finalizeChatTurnPayload(input: {
@@ -952,6 +1059,7 @@ export type ChatPromptPreviewResult =
       prompt: string;
       layers: LayerBreakdown[];
       totalTokens: number;
+      contextWindowUsage: ContextWindowUsage | null;
       /** プレビューに描画する「これから送る入力メッセージ」。空文字なら非表示。 */
       userMessage: string;
     }
@@ -961,6 +1069,7 @@ export type ChatPromptPreviewResult =
       prompt: "";
       layers: [];
       totalTokens: 0;
+      contextWindowUsage: null;
       userMessage: string;
     };
 
@@ -972,6 +1081,7 @@ function unavailablePromptPreview(
     prompt: "",
     layers: [],
     totalTokens: 0,
+    contextWindowUsage: null,
     userMessage,
   };
 }
@@ -1024,6 +1134,12 @@ interface ChatState {
   activeSceneId: string;
   activeProjectId: string | null;
   contextTokenCount: number;
+  /**
+   * Full request-window usage paired with contextTokenCount. Unlike the legacy
+   * counter, this includes Agent tool schemas, message framing, output reserve,
+   * and the final safety margin.
+   */
+  contextWindowUsage: ContextWindowUsage | null;
   /** Context window used by the finalized turn route (null before resolution). */
   contextWindowSize: number | null;
   /** Model paired with contextTokenCount/contextWindowSize. */
@@ -1310,6 +1426,7 @@ interface ChatState {
     cacheSegments?: string[];
     volatileTail?: string;
     fullyInjectedIds: string[];
+    contextWindowUsage: ContextWindowUsage | null;
   } | null>;
   clearMessages: () => void;
   clearError: () => void;
@@ -2717,6 +2834,7 @@ async function buildOutgoingScenePrompt(
   prompt: string;
   layers: LayerBreakdown[];
   totalTokens: number;
+  contextWindowUsage: ContextWindowUsage | null;
 } | null> {
   const { activeProjectId, activeSessionId, agentMode, ragEnabled, messages } =
     get();
@@ -2726,6 +2844,17 @@ async function buildOutgoingScenePrompt(
     ragEnabled,
   });
   const effectiveAgentMode = routePolicy.useAgentPath;
+  const usageAgentTools = effectiveAgentMode
+    ? agentMode
+      ? (get().sessionAgentToolsSnapshot ?? snapshotAgentTools())
+      : []
+    : undefined;
+  const usageWebSearchConfig = routePolicy.publicWebSearchPath
+    ? resolveCurrentTurnWebSearchConfig({
+        agentMode,
+        ragActive: routePolicy.ragActive,
+      })
+    : null;
   const projectId = activeProjectId ?? getCurrentProjectId();
   const activeSession = activeSessionId
     ? get().sessions.find((session) => session.id === activeSessionId)
@@ -2733,6 +2862,14 @@ async function buildOutgoingScenePrompt(
   if (activeSession && activeSession.projectId !== projectId) {
     throw new Error("chat session project mismatch");
   }
+  const sceneAuthority = routePolicy.publicWebSearchPath
+    ? null
+    : captureSceneTurnAuthority({
+        projectId,
+        sceneId: effectiveSceneId,
+        agentMode: effectiveAgentMode,
+        turnRoute: routePolicy.route ?? undefined,
+      });
   await ensureTokenizer();
   if (
     activeSessionId &&
@@ -2748,19 +2885,30 @@ async function buildOutgoingScenePrompt(
       agentMode,
       commandInstruction: opts.commandInstruction,
     });
+    const totalTokens = countTokens(prompt);
+    const publicMessages = opts.inputText
+      ? [{ role: "user", content: opts.inputText }]
+      : [];
+    const contextWindowUsage = estimateContextWindowUsage({
+      route: routePolicy.route,
+      contextTokens:
+        totalTokens +
+        publicMessages.reduce(
+          (sum, message) => sum + countTokens(message.content),
+          0,
+        ),
+      messages: publicMessages,
+      tools: usageAgentTools,
+      webSearch: usageWebSearchConfig,
+      estimated: false,
+    });
     return {
       prompt,
       layers: [],
-      totalTokens: countTokens(prompt),
+      totalTokens,
+      contextWindowUsage,
     };
   }
-
-  const authority = captureSceneTurnAuthority({
-    projectId,
-    sceneId: effectiveSceneId,
-    agentMode: effectiveAgentMode,
-    turnRoute: routePolicy.route ?? undefined,
-  });
   const [sceneCtx, projectCtx] = await Promise.all([
     fetchSceneContext(effectiveSceneId, projectId),
     fetchRequiredProjectContext(projectId),
@@ -2794,12 +2942,25 @@ async function buildOutgoingScenePrompt(
         ]
       : []),
   ];
+  const inputOverheadTokens = estimateContextInputOverhead({
+    route: routePolicy.route,
+    messages: conversationMessages,
+    tools: usageAgentTools,
+    webSearch: usageWebSearchConfig,
+  });
+  const plannedSceneAuthority: CapturedSceneTurnAuthority = {
+    ...sceneAuthority!,
+    budget: {
+      ...sceneAuthority!.budget,
+      inputOverheadTokens,
+    },
+  };
 
   // sessionStableCodexIds / prefetchedEntries は send 専用(cacheSegments 分割と
   // fetch 重複排除のみで、返す prompt 文字列には影響しない)ため preview/copy では省く。
   const { prompt, layers, totalTokens } = await buildSceneContextPrompt({
     purpose: opts.purpose,
-    authority,
+    authority: plannedSceneAuthority,
     sceneCtx,
     projectCtx,
     activeSessionId,
@@ -2809,7 +2970,15 @@ async function buildOutgoingScenePrompt(
     mentionedCodexIds: opts.mentionedCodexIds,
     semanticRecallSeedMessage: seed,
   });
-  return { prompt, layers, totalTokens };
+  const contextWindowUsage = estimateContextWindowUsage({
+    route: routePolicy.route,
+    contextTokens: totalTokens,
+    messages: conversationMessages,
+    tools: usageAgentTools,
+    webSearch: usageWebSearchConfig,
+    estimated: false,
+  });
+  return { prompt, layers, totalTokens, contextWindowUsage };
 }
 
 /** 糸ごとに表示する他シーンの最大数（構造行は安価だが念のため上限）。 */
@@ -3472,6 +3641,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeSceneId: "",
   activeProjectId: null,
   contextTokenCount: 0,
+  contextWindowUsage: null,
   contextWindowSize: null,
   contextModel: null,
   contextProvider: null,
@@ -3525,6 +3695,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSceneId: "",
       error: null,
       contextTokenCount: 0,
+      contextWindowUsage: null,
       contextWindowSize: null,
       contextModel: null,
       contextProvider: null,
@@ -5358,6 +5529,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }
           set({
             contextTokenCount: ctxResult.totalTokens,
+            contextWindowUsage: estimateContextWindowUsage({
+              route: turnRoute,
+              contextTokens: ctxResult.totalTokens,
+              messages: messagesForCtx,
+              tools: agentModeForThisSend ? turnAgentToolsSnapshot : [],
+              webSearch: webSearchConfigAtTurnStart,
+              estimated: false,
+            }),
             contextWindowSize: turnRoute?.contextWindow ?? null,
             contextModel: turnRoute?.model ?? null,
             contextProvider: turnRoute?.provider ?? null,
@@ -5826,6 +6005,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 sentAgentContextTokenCount = finalized.usage.inputTokens;
                 set({
                   contextTokenCount: finalized.usage.inputTokens,
+                  contextWindowUsage: contextWindowUsageFromTurnPayloadUsage(
+                    finalized.usage,
+                  ),
                   contextWindowSize: finalized.route.contextWindow,
                   contextModel: finalized.route.model,
                   contextProvider: finalized.route.provider,
@@ -6111,7 +6293,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         } else {
           toast.error(i18next.t("chat.agentFailed", { message: msg }));
         }
-        set({ error: msg });
+        const failedContextWindowUsage = contextWindowUsageFromError(e);
+        set({
+          error: msg,
+          ...(failedContextWindowUsage
+            ? {
+                contextTokenCount: failedContextWindowUsage.inputTokens,
+                contextWindowUsage: failedContextWindowUsage,
+                contextWindowSize: failedContextWindowUsage.contextWindow,
+                contextModel: turnRoute?.model ?? null,
+                contextProvider: turnRoute?.provider ?? null,
+                contextRouteAuthorityKey:
+                  resolvedChatTurnRouteAuthorityKey(turnRoute),
+              }
+            : {}),
+        });
       } finally {
         // 例外で抜けた場合も含め、回答待ちの ask_user を確実に解決して
         // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
@@ -6264,6 +6460,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         set({
           contextTokenCount: ctxResult.totalTokens,
+          contextWindowUsage: estimateContextWindowUsage({
+            route: turnRoute,
+            contextTokens: ctxResult.totalTokens,
+            messages: messagesForApi,
+            estimated: false,
+          }),
           contextWindowSize: turnRoute?.contextWindow ?? null,
           contextModel: turnRoute?.model ?? null,
           contextProvider: turnRoute?.provider ?? null,
@@ -6394,6 +6596,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
         set({
           contextTokenCount: finalized.usage.inputTokens,
+          contextWindowUsage: contextWindowUsageFromTurnPayloadUsage(
+            finalized.usage,
+          ),
           contextWindowSize: finalized.route.contextWindow,
           contextModel: finalized.route.model,
           contextProvider: finalized.route.provider,
@@ -7042,7 +7247,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         toast.error(i18next.t("chat.sendFailed", { message: msg }));
       }
 
-      set({ error: msg });
+      const failedContextWindowUsage = contextWindowUsageFromError(e);
+      set({
+        error: msg,
+        ...(failedContextWindowUsage
+          ? {
+              contextTokenCount: failedContextWindowUsage.inputTokens,
+              contextWindowUsage: failedContextWindowUsage,
+              contextWindowSize: failedContextWindowUsage.contextWindow,
+              contextModel: turnRoute?.model ?? null,
+              contextProvider: turnRoute?.provider ?? null,
+              contextRouteAuthorityKey:
+                resolvedChatTurnRouteAuthorityKey(turnRoute),
+            }
+          : {}),
+      });
     } finally {
       if (isCurrentTurn()) {
         // isStreaming is set to false inside onDone/onError callbacks
@@ -7105,6 +7324,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const publicWebSearchPath =
       inferredRoutePolicy?.publicWebSearchPath ?? false;
     const agentPullWillRunTools = effectiveAgentMode;
+    const usageAgentTools = effectiveAgentMode
+      ? requestedAgentMode
+        ? (get().sessionAgentToolsSnapshot ?? snapshotAgentTools())
+        : []
+      : undefined;
+    const usageWebSearchConfig = publicWebSearchPath
+      ? resolveCurrentTurnWebSearchConfig({
+          agentMode: requestedAgentMode,
+          ragActive: inferredRoutePolicy?.ragActive ?? false,
+        })
+      : null;
     // Phase 3b: スレッド focus 中は scene を主題にしない（縦糸を <focus_subject>
     // へ載せる非 scene 枝へ落とす）。chatScope は変えない＝session 保存先不変。
     const effectiveSceneId = opts?.capturedNonSceneAuthority
@@ -7148,6 +7378,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (purpose === "live" || purpose === "send") {
         set({
           contextTokenCount: 0,
+          contextWindowUsage: null,
           contextWindowSize: null,
           contextModel: null,
           contextProvider: null,
@@ -7186,6 +7417,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           commandInstruction: opts?.commandInstruction,
         });
         const totalTokens = countTokens(prompt);
+        const publicMessages = opts?.outgoingUserMessage
+          ? [{ role: "user", content: opts.outgoingUserMessage }]
+          : [];
+        const contextWindowUsage = estimateContextWindowUsage({
+          route: refreshTurnRoute,
+          contextTokens:
+            totalTokens +
+            publicMessages.reduce(
+              (sum, message) => sum + countTokens(message.content),
+              0,
+            ),
+          messages: publicMessages,
+          tools: usageAgentTools,
+          webSearch: usageWebSearchConfig,
+          estimated: purpose === "live",
+        });
         const contextPlan = createContextPlan({
           requestId: crypto.randomUUID(),
           items: [],
@@ -7203,10 +7450,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           layers: [],
           contextPlan,
           fullyInjectedIds: [],
+          contextWindowUsage,
         };
         if (mayPublishRefreshResult()) {
           set({
             contextTokenCount: totalTokens,
+            contextWindowUsage,
             contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
             contextModel: refreshTurnRoute?.model ?? null,
             contextProvider: refreshTurnRoute?.provider ?? null,
@@ -7228,6 +7477,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         if (mayPublishRefreshResult()) {
           set({
             contextTokenCount: 0,
+            contextWindowUsage: null,
             contextWindowSize: null,
             contextModel: null,
             contextProvider: null,
@@ -7258,21 +7508,35 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           route: refreshTurnRoute ?? null,
         });
       const temporalResolution = nonSceneAuthority.temporalResolution;
-      const request = createNonSceneTurnContextRequest({
-        ...nonSceneAuthority.requestSeed,
-        requestId: crypto.randomUUID(),
-        purpose: opts?.purpose ?? "live",
-        sessionId: activeSessionId,
-        messages: conversationMessages,
-        outgoingUserMessage: opts?.outgoingUserMessage ?? "",
-        commandInstruction: opts?.commandInstruction,
-        mentionedSceneIds: opts?.mentionedSceneIds ?? [],
-        mentionedCodexIds: opts?.mentionedCodexIds ?? [],
-      });
 
       try {
         await tokenizerReady;
         markEnd("refreshContextLayers.ensureTokenizer");
+        const inputOverheadTokens =
+          nonSceneAuthority.requestSeed.budget.inputOverheadTokens ??
+          estimateContextInputOverhead({
+            route: refreshTurnRoute,
+            messages: conversationMessages.filter(
+              (message) => !message.isSummarized,
+            ),
+            tools: usageAgentTools,
+            webSearch: usageWebSearchConfig,
+          });
+        const request = createNonSceneTurnContextRequest({
+          ...nonSceneAuthority.requestSeed,
+          budget: {
+            ...nonSceneAuthority.requestSeed.budget,
+            inputOverheadTokens,
+          },
+          requestId: crypto.randomUUID(),
+          purpose,
+          sessionId: activeSessionId,
+          messages: conversationMessages,
+          outgoingUserMessage: opts?.outgoingUserMessage ?? "",
+          commandInstruction: opts?.commandInstruction,
+          mentionedSceneIds: opts?.mentionedSceneIds ?? [],
+          mentionedCodexIds: opts?.mentionedCodexIds ?? [],
+        });
         if (
           activeSessionId &&
           !(await chatApi.getSessionForProject(
@@ -7330,11 +7594,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             },
           }),
         );
+        const contextWindowUsage = estimateContextWindowUsage({
+          route: refreshTurnRoute,
+          contextTokens: planned.totalTokens,
+          messages: request.messages.filter((message) => !message.isSummarized),
+          tools: usageAgentTools,
+          webSearch: usageWebSearchConfig,
+          estimated: purpose === "live",
+        });
+        const result = { ...planned, contextWindowUsage };
         if (mayPublishRefreshResult()) {
           const initializeStableContext =
             opts?.purpose === "send" && !get().sessionStableContextInitialized;
           set({
             contextTokenCount: planned.totalTokens,
+            contextWindowUsage,
             contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
             contextModel: refreshTurnRoute?.model ?? null,
             contextProvider: refreshTurnRoute?.provider ?? null,
@@ -7357,11 +7631,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               : {}),
           });
         }
-        return planned;
+        return result;
       } catch (error) {
         if (mayPublishRefreshResult()) {
           set({
             contextTokenCount: 0,
+            contextWindowUsage: null,
             contextWindowSize: null,
             contextModel: null,
             contextProvider: null,
@@ -7382,6 +7657,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     try {
       await tokenizerReady;
       markEnd("refreshContextLayers.ensureTokenizer");
+      const sceneInputOverheadTokens =
+        sceneAuthority!.budget.inputOverheadTokens ??
+        estimateContextInputOverhead({
+          route: refreshTurnRoute,
+          messages: sceneConversationMessages,
+          tools: usageAgentTools,
+          webSearch: usageWebSearchConfig,
+        });
+      const plannedSceneAuthority: CapturedSceneTurnAuthority = {
+        ...sceneAuthority!,
+        budget: {
+          ...sceneAuthority!.budget,
+          inputOverheadTokens: sceneInputOverheadTokens,
+        },
+      };
       if (
         activeSessionId &&
         !(await chatApi.getSessionForProject(
@@ -7400,8 +7690,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
 
       const ctxResult = await buildSceneContextPrompt({
-        purpose: opts?.purpose ?? "live",
-        authority: sceneAuthority!,
+        purpose,
+        authority: plannedSceneAuthority,
         sceneCtx,
         projectCtx,
         activeSessionId,
@@ -7411,10 +7701,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         mentionedCodexIds: opts?.mentionedCodexIds,
         semanticRecallSeedMessage: opts?.outgoingUserMessage,
       });
+      const contextWindowUsage = estimateContextWindowUsage({
+        route: refreshTurnRoute,
+        contextTokens: ctxResult.totalTokens,
+        messages: sceneConversationMessages,
+        tools: usageAgentTools,
+        webSearch: usageWebSearchConfig,
+        estimated: purpose === "live",
+      });
+      const result = { ...ctxResult, contextWindowUsage };
 
       if (mayPublishRefreshResult()) {
         set({
           contextTokenCount: ctxResult.totalTokens,
+          contextWindowUsage,
           contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
           contextModel: refreshTurnRoute?.model ?? null,
           contextProvider: refreshTurnRoute?.provider ?? null,
@@ -7432,11 +7732,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           pinsVersion: get().pinsVersion + 1,
         });
       }
-      return ctxResult;
+      return result;
     } catch (error) {
       if (mayPublishRefreshResult()) {
         set({
           contextTokenCount: 0,
+          contextWindowUsage: null,
           contextWindowSize: null,
           contextModel: null,
           contextProvider: null,
@@ -7495,11 +7796,32 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             agentMode,
             commandInstruction: draft.commandInstruction,
           });
+          const totalTokens = countTokens(prompt);
+          const publicMessages = draft.markdown
+            ? [{ role: "user", content: draft.markdown }]
+            : [];
+          const contextWindowUsage = estimateContextWindowUsage({
+            route: routePolicy.route,
+            contextTokens:
+              totalTokens +
+              publicMessages.reduce(
+                (sum, message) => sum + countTokens(message.content),
+                0,
+              ),
+            messages: publicMessages,
+            tools: [],
+            webSearch: resolveCurrentTurnWebSearchConfig({
+              agentMode,
+              ragActive: routePolicy.ragActive,
+            }),
+            estimated: false,
+          });
           return {
             status: "ready",
             prompt,
             layers: [],
-            totalTokens: countTokens(prompt),
+            totalTokens,
+            contextWindowUsage,
             userMessage: draft.markdown,
           };
         }
@@ -7536,6 +7858,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           prompt: refreshed.prompt,
           layers: refreshed.layers,
           totalTokens: refreshed.totalTokens,
+          contextWindowUsage: refreshed.contextWindowUsage,
           userMessage: draft.markdown,
         };
       } catch {
@@ -7558,6 +7881,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         prompt: built.prompt,
         layers: built.layers,
         totalTokens: built.totalTokens,
+        contextWindowUsage: built.contextWindowUsage,
         userMessage: draft.markdown,
       };
     } catch {

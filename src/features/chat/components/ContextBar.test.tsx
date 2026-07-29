@@ -151,6 +151,7 @@ function readyPreview(
     prompt,
     layers: [],
     totalTokens,
+    contextWindowUsage: null,
     userMessage: "",
   };
 }
@@ -220,6 +221,47 @@ describe("ContextBar model capability scope", () => {
         name: "実効コンテキスト容量が不明なため、使用率を計算できません",
       }),
     ).toHaveAttribute("data-testid", "context-window-unknown");
+  });
+
+  it("shows the full reserved request instead of only the visible context input", () => {
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[]}
+        contextTokenCount={1_321}
+        contextWindowOverride={4_096}
+        contextWindowUsage={{
+          contextTokens: 1_037,
+          toolTokens: 5_591,
+          envelopeTokens: 0,
+          safetyMarginTokens: 32,
+          inputTokens: 6_628,
+          outputReservedTokens: 3_072,
+          reservedTotalTokens: 9_732,
+          contextWindow: 4_096,
+          remainingTokens: -5_636,
+          overflowTokens: 5_636,
+          estimated: false,
+        }}
+        model="gemma4:latest"
+        provider="ollama"
+      />,
+    );
+
+    const tokenButton = screen.getByRole("button", {
+      name: /~9,732 tokens/,
+    });
+    expect(tokenButton).toHaveAttribute(
+      "title",
+      expect.stringContaining("Agentツール 5,591"),
+    );
+    expect(tokenButton).toHaveAttribute(
+      "title",
+      expect.stringContaining("応答予約 3,072"),
+    );
+
+    const progress = screen.getByRole("progressbar", { name: /238%/ });
+    expect(progress).toHaveAttribute("aria-valuenow", "100");
   });
 });
 
