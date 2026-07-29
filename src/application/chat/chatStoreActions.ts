@@ -11,6 +11,7 @@ export {
 export { createChatSessionStoreActions } from "./chatSessionStoreActions";
 export { createChatTurnRuntime } from "./chatTurnRuntime";
 export { createChatTurnPreflight } from "./chatTurnPreflight";
+export { createConfiguredChatTurnStoreActions } from "./chatTurnStoreActions";
 export {
   createChatUserQuestionRuntime,
   createChatUserQuestionStoreActions,
