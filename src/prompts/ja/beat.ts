@@ -1,5 +1,5 @@
 import type { BeatPromptInput } from "@/features/editor/beat/beatPromptBuilder";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import type { BeatType } from "@/features/editor/beat/beatTypes";
 
 function beatTypeGuidanceJa(beatType: BeatType): string {
   switch (beatType) {

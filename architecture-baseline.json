@@ -58,91 +58,6 @@
     "sccs": [
       {
         "members": [
-          "src/features/chat/chatApi.ts",
-          "src/features/chat/contextBuilder.ts",
-          "src/features/editor/SceneBeatNode.ts",
-          "src/features/editor/SceneBeatNodeView.tsx",
-          "src/features/editor/beat/beatPromptBuilder.ts",
-          "src/features/editor/beat/generateBeatAlternative.ts",
-          "src/features/editor/beat/inferMentionRoles.ts",
-          "src/features/editor/beat/useBeatGeneration.ts",
-          "src/prompts/en/beatGenerate.ts",
-          "src/prompts/index.ts",
-          "src/prompts/ja/beatGenerate.ts"
-        ],
-        "edges": [
-          {
-            "from": "src/features/chat/chatApi.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/chatApi.ts",
-            "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/chat/contextBuilder.ts",
-            "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/editor/beat/beatPromptBuilder.ts",
-            "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/editor/beat/generateBeatAlternative.ts",
-            "to": "src/features/editor/beat/beatPromptBuilder.ts"
-          },
-          {
-            "from": "src/features/editor/beat/inferMentionRoles.ts",
-            "to": "src/features/chat/chatApi.ts"
-          },
-          {
-            "from": "src/features/editor/beat/inferMentionRoles.ts",
-            "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/editor/beat/useBeatGeneration.ts",
-            "to": "src/features/editor/beat/beatPromptBuilder.ts"
-          },
-          {
-            "from": "src/features/editor/beat/useBeatGeneration.ts",
-            "to": "src/features/editor/beat/inferMentionRoles.ts"
-          },
-          {
-            "from": "src/features/editor/SceneBeatNode.ts",
-            "to": "src/features/editor/SceneBeatNodeView.tsx"
-          },
-          {
-            "from": "src/features/editor/SceneBeatNodeView.tsx",
-            "to": "src/features/editor/beat/generateBeatAlternative.ts"
-          },
-          {
-            "from": "src/features/editor/SceneBeatNodeView.tsx",
-            "to": "src/features/editor/beat/useBeatGeneration.ts"
-          },
-          {
-            "from": "src/features/editor/SceneBeatNodeView.tsx",
-            "to": "src/features/editor/SceneBeatNode.ts"
-          },
-          {
-            "from": "src/prompts/en/beatGenerate.ts",
-            "to": "src/features/editor/SceneBeatNode.ts"
-          },
-          {
-            "from": "src/prompts/index.ts",
-            "to": "src/prompts/en/beatGenerate.ts"
-          },
-          {
-            "from": "src/prompts/index.ts",
-            "to": "src/prompts/ja/beatGenerate.ts"
-          },
-          {
-            "from": "src/prompts/ja/beatGenerate.ts",
-            "to": "src/features/editor/SceneBeatNode.ts"
-          }
-        ]
-      },
-      {
-        "members": [
           "src/features/codex/api.ts",
           "src/features/codex/mentionRescanQueue.ts"
         ],
@@ -163,9 +78,9 @@
     "cross-feature-store-import": 45,
     "cross-feature-store-mutation": 0,
     "dynamic-store-import": 0,
-    "cyclic-modules": 13,
-    "largest-scc": 11,
-    "scc-internal-edges": 19,
+    "cyclic-modules": 2,
+    "largest-scc": 2,
+    "scc-internal-edges": 2,
     "chat-store-lines": 8260,
     "chat-store-runtime-imports": 90
   },

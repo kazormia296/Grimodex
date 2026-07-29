@@ -10,7 +10,7 @@ import { createUnplacedBeatExtensions } from "@/features/editor/beat/createUnpla
 import { placeBeatAtEnd } from "@/features/editor/beat/beatOperations";
 import { generateBeatOnce } from "@/features/editor/beat/generateBeatOnce";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
-import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
+import { BEAT_TYPES } from "@/features/editor/beat/beatTypes";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
 import type { Editor as TiptapEditor } from "@tiptap/core";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";

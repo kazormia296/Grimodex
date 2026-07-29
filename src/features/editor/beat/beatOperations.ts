@@ -8,7 +8,7 @@ import { BEAT_STREAM_META } from "@/features/editor/GeneratedProseBlockNode";
 import { findBeatById, findGeneratedBlockForBeat } from "./insertBeatStream";
 import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
 import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import type { BeatType } from "./beatTypes";
 
 /**
  * Delete only the sceneBeat node. The linked generatedProseBlock (if any)
