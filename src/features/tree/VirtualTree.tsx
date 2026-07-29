@@ -12,7 +12,7 @@ const EMPTY_CELLS: Record<string, string> = {};
 
 interface VirtualTreeProps {
   rows: VisibleTreeRow[];
-  treeRef: RefObject<HTMLDivElement | null>;
+  scrollElement: HTMLDivElement | null;
   activeSceneId: string;
   selectedIds: string[];
   expandedIds: string[];
@@ -66,7 +66,7 @@ export function extractTreeVirtualIndexes(
  */
 export function VirtualTree({
   rows,
-  treeRef,
+  scrollElement,
   activeSceneId,
   selectedIds,
   expandedIds,
@@ -110,7 +110,7 @@ export function VirtualTree({
   );
   const virtualizer = useVirtualizer({
     count: rows.length,
-    getScrollElement: () => treeRef.current,
+    getScrollElement: () => scrollElement,
     estimateSize: (index) =>
       viewMode === "outline" && rows[index]?.node.nodeType === "scene"
         ? 64

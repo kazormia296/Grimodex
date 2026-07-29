@@ -144,6 +144,15 @@ export function ScenesPanel() {
 
   const filterRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+  const [treeScrollElement, setTreeScrollElement] =
+    useState<HTMLDivElement | null>(null);
+  const bindTreeScrollElement = useCallback(
+    (element: HTMLDivElement | null) => {
+      treeRef.current = element;
+      setTreeScrollElement(element);
+    },
+    [],
+  );
   const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
   const [aiTree, setAiTree] = useState<OpenAiTreeArgs | null>(null);
   const scenesPanelContextValue = useMemo(
@@ -346,7 +355,7 @@ export function ScenesPanel() {
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <div
-                ref={treeRef}
+                ref={bindTreeScrollElement}
                 className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
                 tabIndex={0}
                 onKeyDown={handleTreeKeyDown}
@@ -381,7 +390,7 @@ export function ScenesPanel() {
                   <>
                     <VirtualTree
                       rows={flatRows}
-                      treeRef={treeRef}
+                      scrollElement={treeScrollElement}
                       activeSceneId={activeSceneId}
                       selectedIds={selectedIds}
                       expandedIds={expandedIds}
