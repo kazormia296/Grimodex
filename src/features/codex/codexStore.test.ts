@@ -5,6 +5,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import { registerCodexAnchorLifecycle } from "@/application/codex/codexAnchorLifecycle";
 
 const mockEntry: CodexEntry = {
   id: "codex-1",
@@ -86,12 +87,6 @@ const { mockOnCodexAnchorDeleted } = vi.hoisted(() => ({
   mockOnCodexAnchorDeleted: vi.fn(),
 }));
 
-vi.mock("@/features/chat/chatStore", () => ({
-  useChatStore: {
-    getState: () => ({ onCodexAnchorDeleted: mockOnCodexAnchorDeleted }),
-  },
-}));
-
 import {
   listCodexEntries,
   listCodexMatchTargets,
@@ -144,6 +139,9 @@ function findCodexUpdateEvent() {
 describe("codexStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    registerCodexAnchorLifecycle({
+      onDeleted: mockOnCodexAnchorDeleted,
+    });
     mockBlockIfUnlicensed.mockReturnValue(false);
     setCodexEditConflictHandler(() => {});
     useProjectStore.setState({ currentProjectId: null });
@@ -1164,6 +1162,16 @@ describe("codexStore", () => {
       await useCodexStore.getState().remove("codex-1");
 
       expect(mockOnCodexAnchorDeleted).toHaveBeenCalledWith("codex-1");
+      expect(mockOnCodexAnchorDeleted).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not notify anchor consumers when deletion fails", async () => {
+      useCodexStore.setState({ entries: [mockEntry] });
+      mockDeleteCodexEntry.mockRejectedValue(new Error("delete failed"));
+
+      await useCodexStore.getState().remove("codex-1");
+
+      expect(mockOnCodexAnchorDeleted).not.toHaveBeenCalled();
     });
   });
 

@@ -15,7 +15,6 @@
       "src/features/chat/chatStore.ts:chat->settings:@/features/settings/settingsStore",
       "src/features/chat/chatStore.ts:chat->tree:@/features/tree/treeStore",
       "src/features/chat/chatStore.ts:chat->tree:@/features/tree/treeStore",
-      "src/features/codex/codexStore.ts:codex->chat:@/features/chat/chatStore",
       "src/features/codex/codexStore.ts:codex->project:@/features/project/projectStore",
       "src/features/codex/codexStore.ts:codex->trash-bin:@/features/trash-bin/trashBinStore",
       "src/features/codex/phaseStore.ts:codex->tree:@/features/tree/treeStore",
@@ -59,246 +58,38 @@
     "sccs": [
       {
         "members": [
-          "src/features/agent-writes/codex.ts",
-          "src/features/agent-writes/event.ts",
-          "src/features/agent-writes/foreshadow.ts",
-          "src/features/agent-writes/snippet.ts",
-          "src/features/chat/agent/agentLoop.ts",
-          "src/features/chat/agent/askUser.ts",
-          "src/features/chat/agent/chronicleReadTools.ts",
-          "src/features/chat/agent/chronicleWriteTools.ts",
-          "src/features/chat/agent/toolExecutors.ts",
           "src/features/chat/chatApi.ts",
-          "src/features/chat/chatStore.ts",
-          "src/features/chat/context/defaultContextPlannerDeps.ts",
-          "src/features/chat/context/nonSceneContextPlanner.ts",
-          "src/features/chat/context/sources/nonSceneContextSource.ts",
-          "src/features/chat/context/sources/sceneContextSource.ts",
           "src/features/chat/contextBuilder.ts",
-          "src/features/chat/conversationHistory.ts",
-          "src/features/chat/summarization.ts",
-          "src/features/codex/CodexMentionExtension.ts",
-          "src/features/codex/childrenBudget.ts",
-          "src/features/codex/codexStore.ts",
           "src/features/editor/SceneBeatNode.ts",
           "src/features/editor/SceneBeatNodeView.tsx",
-          "src/features/editor/beat/RoleSuggestionBadges.tsx",
           "src/features/editor/beat/beatPromptBuilder.ts",
-          "src/features/editor/beat/buildBeatContext.ts",
           "src/features/editor/beat/generateBeatAlternative.ts",
           "src/features/editor/beat/inferMentionRoles.ts",
           "src/features/editor/beat/useBeatGeneration.ts",
-          "src/features/editor/editorStore.ts",
-          "src/features/foreshadow/api.ts",
-          "src/features/foreshadow/foreshadowStore.ts",
-          "src/features/layout/layoutStore.ts",
-          "src/features/timelapse/seedSession.ts",
-          "src/features/timelapse/toggle.ts",
           "src/prompts/en/beatGenerate.ts",
           "src/prompts/index.ts",
-          "src/prompts/ja/beatGenerate.ts",
-          "src/screenshot-scenes/screenshotBootstrap.ts"
+          "src/prompts/ja/beatGenerate.ts"
         ],
         "edges": [
           {
-            "from": "src/features/agent-writes/codex.ts",
-            "to": "src/features/codex/codexStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/event.ts",
-            "to": "src/features/agent-writes/codex.ts"
-          },
-          {
-            "from": "src/features/agent-writes/foreshadow.ts",
-            "to": "src/features/foreshadow/foreshadowStore.ts"
-          },
-          {
-            "from": "src/features/agent-writes/snippet.ts",
-            "to": "src/features/agent-writes/codex.ts"
-          },
-          {
-            "from": "src/features/chat/agent/agentLoop.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/agent/askUser.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/agent/chronicleReadTools.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/agent/chronicleWriteTools.ts",
-            "to": "src/features/agent-writes/event.ts"
-          },
-          {
-            "from": "src/features/chat/agent/chronicleWriteTools.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/agent-writes/codex.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/agent-writes/foreshadow.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/agent-writes/snippet.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/chat/agent/chronicleReadTools.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/chat/agent/chronicleWriteTools.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/agent/toolExecutors.ts",
-            "to": "src/features/foreshadow/api.ts"
-          },
-          {
             "from": "src/features/chat/chatApi.ts",
             "to": "src/features/chat/contextBuilder.ts"
           },
           {
             "from": "src/features/chat/chatApi.ts",
             "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/agent/agentLoop.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/agent/askUser.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/agent/toolExecutors.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/chatApi.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/context/defaultContextPlannerDeps.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/context/nonSceneContextPlanner.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/context/sources/sceneContextSource.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/conversationHistory.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/chat/summarization.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/codex/childrenBudget.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/features/foreshadow/api.ts"
-          },
-          {
-            "from": "src/features/chat/chatStore.ts",
-            "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/chat/context/defaultContextPlannerDeps.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/context/nonSceneContextPlanner.ts",
-            "to": "src/features/chat/context/sources/nonSceneContextSource.ts"
-          },
-          {
-            "from": "src/features/chat/context/nonSceneContextPlanner.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/context/sources/nonSceneContextSource.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/context/sources/nonSceneContextSource.ts",
-            "to": "src/features/codex/childrenBudget.ts"
-          },
-          {
-            "from": "src/features/chat/context/sources/sceneContextSource.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/context/sources/sceneContextSource.ts",
-            "to": "src/features/codex/childrenBudget.ts"
           },
           {
             "from": "src/features/chat/contextBuilder.ts",
             "to": "src/prompts/index.ts"
           },
           {
-            "from": "src/features/chat/conversationHistory.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/summarization.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/chat/summarization.ts",
-            "to": "src/features/chat/conversationHistory.ts"
-          },
-          {
-            "from": "src/features/chat/summarization.ts",
-            "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/codex/childrenBudget.ts",
-            "to": "src/features/chat/contextBuilder.ts"
-          },
-          {
-            "from": "src/features/codex/CodexMentionExtension.ts",
-            "to": "src/features/codex/codexStore.ts"
-          },
-          {
-            "from": "src/features/codex/codexStore.ts",
-            "to": "src/features/chat/chatStore.ts"
-          },
-          {
             "from": "src/features/editor/beat/beatPromptBuilder.ts",
             "to": "src/prompts/index.ts"
           },
           {
-            "from": "src/features/editor/beat/buildBeatContext.ts",
-            "to": "src/features/codex/codexStore.ts"
-          },
-          {
             "from": "src/features/editor/beat/generateBeatAlternative.ts",
             "to": "src/features/editor/beat/beatPromptBuilder.ts"
-          },
-          {
-            "from": "src/features/editor/beat/generateBeatAlternative.ts",
-            "to": "src/features/editor/beat/buildBeatContext.ts"
           },
           {
             "from": "src/features/editor/beat/inferMentionRoles.ts",
@@ -309,28 +100,12 @@
             "to": "src/prompts/index.ts"
           },
           {
-            "from": "src/features/editor/beat/RoleSuggestionBadges.tsx",
-            "to": "src/features/codex/CodexMentionExtension.ts"
-          },
-          {
-            "from": "src/features/editor/beat/useBeatGeneration.ts",
-            "to": "src/features/codex/codexStore.ts"
-          },
-          {
             "from": "src/features/editor/beat/useBeatGeneration.ts",
             "to": "src/features/editor/beat/beatPromptBuilder.ts"
           },
           {
             "from": "src/features/editor/beat/useBeatGeneration.ts",
-            "to": "src/features/editor/beat/buildBeatContext.ts"
-          },
-          {
-            "from": "src/features/editor/beat/useBeatGeneration.ts",
             "to": "src/features/editor/beat/inferMentionRoles.ts"
-          },
-          {
-            "from": "src/features/editor/editorStore.ts",
-            "to": "src/features/chat/chatApi.ts"
           },
           {
             "from": "src/features/editor/SceneBeatNode.ts",
@@ -338,15 +113,7 @@
           },
           {
             "from": "src/features/editor/SceneBeatNodeView.tsx",
-            "to": "src/features/codex/codexStore.ts"
-          },
-          {
-            "from": "src/features/editor/SceneBeatNodeView.tsx",
             "to": "src/features/editor/beat/generateBeatAlternative.ts"
-          },
-          {
-            "from": "src/features/editor/SceneBeatNodeView.tsx",
-            "to": "src/features/editor/beat/RoleSuggestionBadges.tsx"
           },
           {
             "from": "src/features/editor/SceneBeatNodeView.tsx",
@@ -355,42 +122,6 @@
           {
             "from": "src/features/editor/SceneBeatNodeView.tsx",
             "to": "src/features/editor/SceneBeatNode.ts"
-          },
-          {
-            "from": "src/features/foreshadow/api.ts",
-            "to": "src/features/chat/chatApi.ts"
-          },
-          {
-            "from": "src/features/foreshadow/api.ts",
-            "to": "src/features/codex/codexStore.ts"
-          },
-          {
-            "from": "src/features/foreshadow/api.ts",
-            "to": "src/prompts/index.ts"
-          },
-          {
-            "from": "src/features/foreshadow/foreshadowStore.ts",
-            "to": "src/features/editor/editorStore.ts"
-          },
-          {
-            "from": "src/features/foreshadow/foreshadowStore.ts",
-            "to": "src/features/foreshadow/api.ts"
-          },
-          {
-            "from": "src/features/foreshadow/foreshadowStore.ts",
-            "to": "src/features/timelapse/toggle.ts"
-          },
-          {
-            "from": "src/features/layout/layoutStore.ts",
-            "to": "src/screenshot-scenes/screenshotBootstrap.ts"
-          },
-          {
-            "from": "src/features/timelapse/seedSession.ts",
-            "to": "src/features/layout/layoutStore.ts"
-          },
-          {
-            "from": "src/features/timelapse/toggle.ts",
-            "to": "src/features/timelapse/seedSession.ts"
           },
           {
             "from": "src/prompts/en/beatGenerate.ts",
@@ -407,10 +138,6 @@
           {
             "from": "src/prompts/ja/beatGenerate.ts",
             "to": "src/features/editor/SceneBeatNode.ts"
-          },
-          {
-            "from": "src/screenshot-scenes/screenshotBootstrap.ts",
-            "to": "src/features/codex/codexStore.ts"
           }
         ]
       },
@@ -433,12 +160,12 @@
     ]
   },
   "metrics": {
-    "cross-feature-store-import": 46,
+    "cross-feature-store-import": 45,
     "cross-feature-store-mutation": 0,
     "dynamic-store-import": 0,
-    "cyclic-modules": 41,
-    "largest-scc": 39,
-    "scc-internal-edges": 80,
+    "cyclic-modules": 13,
+    "largest-scc": 11,
+    "scc-internal-edges": 19,
     "chat-store-lines": 8260,
     "chat-store-runtime-imports": 90
   },

@@ -35,6 +35,8 @@ import {
 } from "@/application/project/defaultProjectLifecycle";
 import { registerProjectLifecycle } from "@/application/project/projectLifecycle";
 import { registerProjectRuntime } from "@/application/project/projectRuntime";
+import { registerCodexAnchorLifecycle } from "@/application/codex/codexAnchorLifecycle";
+import { codexAnchorLifecycleComposition } from "./codexAnchorLifecycleComposition";
 import { projectRuntimeComposition } from "./projectRuntimeComposition";
 
 const workspaceHydrationDependencies: WorkspaceHydrationDependencies = {
@@ -76,4 +78,5 @@ registerProjectLifecycle(projectLifecycleRegistry, {
   resetPhaseStateForProject,
   resetUnplacedBeatsForProject,
 });
+registerCodexAnchorLifecycle(codexAnchorLifecycleComposition);
 registerProjectRuntime(projectRuntimeComposition);
