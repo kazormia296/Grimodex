@@ -26,7 +26,11 @@ import {
   type ChronicleLayout,
 } from "./chronicleLayout";
 import { buildCausalBezier } from "./chronicleCausalBezier";
-import { laneAtY } from "./chronicleLanePack";
+import {
+  laneAtY,
+  type PackedLane,
+  type PackedMarker,
+} from "./chronicleLanePack";
 import { useLaneReorderTween } from "./chronicleLaneAnim";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { announce } from "@/lib/a11y/announcer";
@@ -132,6 +136,13 @@ function ChronicleMarkerWrapper({
 export interface ChronicleViewportProps {
   /** Keepalive-hidden panels remain mounted, so interaction work must stop. */
   isActive?: boolean;
+  /**
+   * A stale same-scope snapshot may remain visible while refresh is failing,
+   * but it must not accept mutations against an unverified revision.
+   */
+  isInteractive?: boolean;
+  /** Scope/freshness boundary. Changing it cancels every transient gesture. */
+  interactionEpoch?: string;
   view: View;
   onViewChange: (v: View) => void;
   onMeasureTrack: (w: number) => void;
@@ -176,7 +187,8 @@ export interface ChronicleViewportProps {
   onMoveEvent?: (
     id: string,
     newStartDay: number | null,
-    newCodexId: string | null,
+    /** undefined=lane unchanged, null=move to the base unassigned lane. */
+    newCodexId: string | null | undefined,
   ) => void;
   /** 期間端の伸縮（edge=start/end の日を更新）。 */
   onResizeEvent?: (id: string, edge: "start" | "end", newDay: number) => void;
@@ -228,6 +240,8 @@ export interface ChronicleViewportProps {
  */
 export function ChronicleViewport({
   isActive = true,
+  isInteractive = isActive,
+  interactionEpoch,
   view,
   onViewChange,
   onMeasureTrack,
@@ -281,6 +295,7 @@ export function ChronicleViewport({
   const continuousPreviewRef = useRef(false);
   const pendingPreviewViewRef = useRef<View | null>(null);
   const previewActiveRef = useRef(false);
+  const previewRebaseViewRef = useRef(view);
   const wheelCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -441,11 +456,34 @@ export function ChronicleViewport({
   }, []);
   const previewView = useCallback(
     (next: View) => {
+      if (!previewActiveRef.current) {
+        previewRebaseViewRef.current = renderedViewRef.current;
+      }
       previewActiveRef.current = true;
       viewRef.current = next;
       pendingPreviewViewRef.current = next;
       viewPreviewDirtyRef.current = true;
       scheduleViewPreviewFrame();
+
+      // The compositor preview can only reveal data already inside the
+      // horizontal projection window. Reproject before a long wheel/pan burst
+      // consumes its one-viewport overscan, then continue the same gesture
+      // from the newly rendered view.
+      const anchor = previewRebaseViewRef.current;
+      const trackWidth = Math.max(
+        trackElRef.current?.clientWidth || layoutRef.current.scroll.trackW || 0,
+        1,
+      );
+      const panDistance = Math.abs(
+        (anchor.viewStartDay - next.viewStartDay) * next.pxPerDay,
+      );
+      const zoomDistance =
+        Math.abs(next.pxPerDay / Math.max(anchor.pxPerDay, 1e-9) - 1) *
+        trackWidth;
+      if (Math.max(panDistance, zoomDistance) >= trackWidth * 0.65) {
+        previewRebaseViewRef.current = next;
+        onViewChangeRef.current(next);
+      }
     },
     [scheduleViewPreviewFrame],
   );
@@ -453,6 +491,7 @@ export function ChronicleViewport({
     previewActiveRef.current = false;
     pendingPreviewViewRef.current = renderedViewRef.current;
     viewRef.current = renderedViewRef.current;
+    previewRebaseViewRef.current = renderedViewRef.current;
     flushViewPreview();
   }, [flushViewPreview]);
   const commitPreviewView = useCallback(() => {
@@ -527,6 +566,7 @@ export function ChronicleViewport({
     setDragPreview(null);
     setEdgeDrag(null);
     setDragBubble(null);
+    setMenu(null);
     setMiddlePanning(false);
     if (thumbRef.current) {
       thumbRef.current.style.left = `${layoutRef.current.scroll.thumbLeft}px`;
@@ -538,15 +578,18 @@ export function ChronicleViewport({
     setMiddlePanning,
     stopContinuousPreview,
   ]);
+  const previousInteractionEpochRef = useRef(interactionEpoch);
   useEffect(() => {
-    if (isActive) return;
+    const epochChanged =
+      previousInteractionEpochRef.current !== interactionEpoch;
+    previousInteractionEpochRef.current = interactionEpoch;
+    if (isInteractive && !epochChanged) return;
     const hasTransientInteraction =
       dragCleanupRef.current !== null ||
       previewActiveRef.current ||
       continuousPreviewRef.current ||
       viewPreviewFrameRef.current !== null ||
       wheelCommitTimerRef.current !== null;
-    if (!hasTransientInteraction) return;
     if (wheelCommitTimerRef.current !== null) {
       clearTimeout(wheelCommitTimerRef.current);
       wheelCommitTimerRef.current = null;
@@ -556,7 +599,8 @@ export function ChronicleViewport({
     } else {
       cancelTransientInteraction();
     }
-  }, [cancelTransientInteraction, isActive]);
+    if (!hasTransientInteraction) setMenu(null);
+  }, [cancelTransientInteraction, interactionEpoch, isInteractive]);
 
   // document リスナから最新の callback/flag を読むための ref。
   const cbRef = useRef({
@@ -595,14 +639,24 @@ export function ChronicleViewport({
     const maxDist = always
       ? Infinity
       : SNAP_PX / Math.max(viewRef.current.pxPerDay, 1e-9);
+    // layout tick coordinates belong to the last React-rendered view. During a
+    // DOM-only preview, convert them with that same view before snapping the
+    // pointer in the current preview view.
     const tickDays = layoutRef.current.ticks.minor.map((tk) =>
-      xToDay(viewRef.current, tk.x),
+      xToDay(renderedViewRef.current, tk.x),
     );
     return snapDayToTicks(raw, tickDays, maxDist);
   };
   const laneCodexAt = (clientY: number, rect: DOMRect): string | null => {
     const lane = laneAtY(layoutRef.current.pack.lanes, clientY - rect.top);
     return lane ? laneTargetKey(lane) : null;
+  };
+  const projectedWorldX = (worldX: number): number => {
+    const base = renderedViewRef.current;
+    const next = pendingPreviewViewRef.current ?? base;
+    const scale = next.pxPerDay / Math.max(base.pxPerDay, 1e-9);
+    const shift = (base.viewStartDay - next.viewStartDay) * next.pxPerDay;
+    return layoutRef.current.worldOffsetX * scale + shift + worldX * scale;
   };
 
   // document ドラッグの登録/撤去（move + up を1組で）。
@@ -666,7 +720,7 @@ export function ChronicleViewport({
       trackElRef.current = el;
       if (externalTrackElRef) externalTrackElRef.current = el;
       const onWheel = (e: WheelEvent) => {
-        if (!isActive) return;
+        if (!isInteractive) return;
         // Trackpad inertia can end with a synthetic 0,0 sample. It must not be
         // interpreted as zoom-out, nor should it extend the debounce window.
         if (e.deltaX === 0 && e.deltaY === 0) return;
@@ -714,7 +768,7 @@ export function ChronicleViewport({
         }
       };
     },
-    [commitPreviewView, externalTrackElRef, isActive, previewView],
+    [commitPreviewView, externalTrackElRef, isInteractive, previewView],
   );
   useEffect(
     () => () => {
@@ -732,7 +786,7 @@ export function ChronicleViewport({
   // トラック pointerdown を一元処理: 期間端伸縮 / マーカードラッグ（移動 or
   // 別マーカーへ落として因果エッジ）/ 空白パン＋位置選択。3px 超でクリック抑止。
   const onTrackPointerDown = (e: React.MouseEvent) => {
-    if (!isActive) return;
+    if (!isInteractive) return;
     // ── 中ボタンドラッグ = ハンドツール（対象に関わらずパン。Timeline と同挙動） ──
     // 横は view（panByPx）、縦はスクロール領域の scrollTop を直接移動。
     // OS の autoscroll は preventDefault で抑止する。
@@ -783,6 +837,9 @@ export function ChronicleViewport({
     const edgeHandleEl = targetEl.closest("[data-edge-handle]");
     const markerEl = targetEl.closest("[data-event-id]");
     const eventId = markerEl?.getAttribute("data-event-id") ?? null;
+    const markerInstanceId =
+      markerEl?.getAttribute("data-marker-instance-id") ?? eventId;
+    const markerLaneKey = markerEl?.getAttribute("data-lane-key") ?? null;
     const cb = cbRef.current;
     const startX = e.clientX;
     const startY = e.clientY;
@@ -791,11 +848,13 @@ export function ChronicleViewport({
 
     // ── 因果エッジ接続ハンドルからの D&D（別マーカーへ落とすと cause→effect） ──
     if (edgeHandleEl && eventId && !cb.locked && cb.onCreateEdge) {
-      const center = layoutRef.current.pack.centers.get(eventId);
+      const center = markerInstanceId
+        ? layoutRef.current.pack.centers.get(markerInstanceId)
+        : undefined;
       // ガイドはハンドル(末尾の●)位置＝末尾 outX から引く（描画エッジと整合）。
       const fromX =
         (center?.outX ?? center?.cx) != null
-          ? (center?.outX ?? center!.cx) + layoutRef.current.worldOffsetX
+          ? projectedWorldX(center?.outX ?? center!.cx)
           : e.clientX - rect.left;
       const fromY = center?.cy ?? e.clientY - rect.top;
       bindDrag(
@@ -872,15 +931,14 @@ export function ChronicleViewport({
       // これでキーボード操作（←/→ nudge・Delete・Esc）が選択直後から効く。
       el.focus({ preventScroll: true });
       if (!cb.locked && cb.onMoveEvent) {
-        const startLaneCodex = laneCodexAt(startY, rect);
         // 挿入位置はカーソルではなくイベントの先端（開始＝centers.cx）を基準にする。
         // バー中ほどを掴むとカーソルへ開始が飛びドラッグ中とドロップ後がズレる問題への対策。
         // grabOffsetX=掴んだ点と先端の距離。マーカー追従(dx)と整合し、先端が吸着先になる。
-        const worldAnchorX = layoutRef.current.pack.centers.get(eventId)?.cx;
+        const worldAnchorX = markerInstanceId
+          ? layoutRef.current.pack.centers.get(markerInstanceId)?.cx
+          : undefined;
         const startAnchorX =
-          worldAnchorX == null
-            ? undefined
-            : worldAnchorX + layoutRef.current.worldOffsetX;
+          worldAnchorX == null ? undefined : projectedWorldX(worldAnchorX);
         const grabOffsetX =
           startAnchorX != null ? startX - rect.left - startAnchorX : 0;
         // 掴んだマーカーが複数選択の一部なら選択全件を一括移動（=先端の差分を全件へ）。
@@ -948,10 +1006,14 @@ export function ChronicleViewport({
                 }
               } else {
                 // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
-                const newCodex =
+                const laneTarget =
                   Math.abs(ev.clientY - startY) < LANE_DEADZONE
-                    ? startLaneCodex
+                    ? undefined
                     : laneCodexAt(ev.clientY, rect);
+                const originalLaneTarget =
+                  markerLaneKey === "__unassigned" ? null : markerLaneKey;
+                const newCodex =
+                  laneTarget === originalLaneTarget ? undefined : laneTarget;
                 cb.onMoveEvent(eventId, newDay, newCodex);
               }
             }
@@ -1014,6 +1076,7 @@ export function ChronicleViewport({
 
   // 空白ダブルクリック=その位置に新規作成。
   const onTrackDoubleClick = (e: React.MouseEvent) => {
+    if (!isInteractive) return;
     // 出来事上のダブルクリック: インスペクタ（サイドペイン）を開いて編集する。
     // onEditEvent が showInspector を ON にするので、サイドペインが畳まれていても開く。
     // ロック中でも閲覧/編集のため開けるよう、新規作成(onCreateAt)の判定より前に処理する。
@@ -1098,19 +1161,28 @@ export function ChronicleViewport({
   // +/- =ズーム（中央 pivot） / Ctrl(⌘)+←→=横パン / Ctrl(⌘)+↑↓=縦スクロール /
   // PageUp/Down=縦ページ送り / Home/End=データ両端へ。処理したら true。
   const handleViewKey = (e: React.KeyboardEvent): boolean => {
+    const currentView = viewRef.current;
     if (!e.ctrlKey && !e.metaKey && !e.altKey) {
       // "+" は多くの配列で Shift が要るため shift は不問にする。
       if (e.key === "+" || e.key === "=" || e.key === "-" || e.key === "_") {
         const w = trackElRef.current?.clientWidth ?? 0;
         const factor = e.key === "-" || e.key === "_" ? 1 / 1.2 : 1.2;
-        onViewChange(zoomAt({ view, pivotPx: w / 2, factor }));
+        const next = zoomAt({
+          view: currentView,
+          pivotPx: w / 2,
+          factor,
+        });
+        previewView(next);
+        commitPreviewView();
         return true;
       }
     }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         const dx = e.key === "ArrowLeft" ? KBD_PAN_PX : -KBD_PAN_PX;
-        onViewChange(panByPx({ view, dx }));
+        const next = panByPx({ view: currentView, dx });
+        previewView(next);
+        commitPreviewView();
         return true;
       }
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
@@ -1130,12 +1202,14 @@ export function ChronicleViewport({
       return true;
     }
     if (e.key === "Home" || e.key === "End") {
-      const geom = layout.scroll;
-      onViewChange({
-        pxPerDay: view.pxPerDay,
+      const geom = layoutRef.current.scroll;
+      const next = {
+        pxPerDay: currentView.pxPerDay,
         viewStartDay:
           e.key === "Home" ? geom.fullStart : geom.fullStart + geom.denom,
-      });
+      };
+      previewView(next);
+      commitPreviewView();
       return true;
     }
     return false;
@@ -1146,6 +1220,8 @@ export function ChronicleViewport({
   // Home/End=パン・スクロール / Delete=削除 / Esc=選択解除。
   // 検索欄・インスペクタ入力は別 DOM なのでここへは来ない。
   const onTrackKeyDown = (e: React.KeyboardEvent) => {
+    if (!isInteractive) return;
+    settleWheelPreview();
     // ビュー操作（ズーム/パン/スクロール）は選択が無くても効く。
     if (handleViewKey(e)) {
       e.preventDefault();
@@ -1176,17 +1252,20 @@ export function ChronicleViewport({
     e.preventDefault();
     // 現在のズームグリッド由来の移動量（ナッジ/期間端伸縮で共用）。
     const spanDays = (ticks: { x: number }[], fallback: number) =>
-      ticks.length >= 2 && view.pxPerDay > 0
-        ? Math.abs(ticks[1].x - ticks[0].x) / view.pxPerDay
+      ticks.length >= 2
+        ? Math.abs(
+            xToDay(renderedViewRef.current, ticks[1].x) -
+              xToDay(renderedViewRef.current, ticks[0].x),
+          )
         : fallback;
-    const minorStep = spanDays(layout.ticks.minor, 1);
+    const minorStep = spanDays(layoutRef.current.ticks.minor, 1);
     if (e.altKey) {
       // Alt+矢印=ナッジ移動（時間方向のみ）。移動量は現在のズームグリッド由来:
       // Alt=細グリッド1目盛り / Alt+Shift=粗グリッド(major)1目盛り。↑/↓ は対象外。
       if (locked || !hasCalendarAxis || !onNudgeSelected) return;
       if (dir === "left" || dir === "right") {
         const step = e.shiftKey
-          ? spanDays(layout.ticks.major, minorStep * 4)
+          ? spanDays(layoutRef.current.ticks.major, minorStep * 4)
           : minorStep;
         onNudgeSelected(dir === "left" ? -step : step);
       }
@@ -1208,6 +1287,7 @@ export function ChronicleViewport({
 
   // 右クリック=コンテキストメニュー（マーカー上なら編集/削除、空白なら作成）。
   const onTrackContextMenu = (e: React.MouseEvent) => {
+    if (!isInteractive) return;
     e.preventDefault();
     const markerEl = (e.target as HTMLElement).closest("[data-event-id]");
     setMenu({
@@ -1219,7 +1299,7 @@ export function ChronicleViewport({
 
   // スクロールバーつまみドラッグ＝横スクロール。
   const onThumbPointerDown = (e: React.MouseEvent) => {
-    if (!isActive) return;
+    if (!isInteractive) return;
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1258,6 +1338,7 @@ export function ChronicleViewport({
   };
 
   const onThumbKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!isInteractive) return;
     const supported =
       e.key === "ArrowLeft" ||
       e.key === "ArrowRight" ||
@@ -1310,7 +1391,7 @@ export function ChronicleViewport({
   // per-marker の inline closure を作ると全マーカーが毎回再レンダーされる）。
   const handleSelect = useCallback(
     (id: string, e: React.MouseEvent) => {
-      if (draggedRef.current) return;
+      if (!isInteractive || draggedRef.current) return;
       // マウス選択ではキーボード由来の因果チェーン強調を解除（従来のホバー駆動へ戻す）。
       setKbdSelectedId(null);
       // Ctrl/⌘=トグル, Shift=範囲, 修飾なし=単一。
@@ -1319,7 +1400,7 @@ export function ChronicleViewport({
         range: e.shiftKey,
       });
     },
-    [onSelectEvent],
+    [isInteractive, onSelectEvent],
   );
 
   const handleMarkerHover = useCallback((id: string, hovering: boolean) => {
@@ -1397,7 +1478,7 @@ export function ChronicleViewport({
     return [...kept, ...recomputed];
   }, [edges, dragPreview, pack.centers, relations]);
   const windowingEnabled =
-    isActive && eventsById.size > CHRONICLE_WINDOWING_THRESHOLD;
+    isActive && markerById.size > CHRONICLE_WINDOWING_THRESHOLD;
   const verticalRenderWindow = useMemo(
     () =>
       windowingEnabled
@@ -1437,8 +1518,8 @@ export function ChronicleViewport({
   const visibleMarkers = useMemo(() => {
     if (!isActive) return [];
     const result: {
-      lane: (typeof pack.lanes)[number];
-      marker: (typeof pack.lanes)[number]["markers"][number];
+      lane: PackedLane;
+      marker: PackedMarker;
       render: NonNullable<ReturnType<typeof markerById.get>>;
     }[] = [];
     for (const lane of pack.lanes) {
@@ -1542,6 +1623,8 @@ export function ChronicleViewport({
         className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
       >
         <ChronicleLaneGutter
+          isInteractive={isInteractive}
+          interactionEpoch={interactionEpoch ?? ""}
           lanes={pack.lanes}
           gutterX={spacing.gutterX}
           minHeight={contentHeight}
@@ -1558,6 +1641,7 @@ export function ChronicleViewport({
         <div
           id="chronicle-track"
           data-chronicle-total-event-count={eventsById.size}
+          data-chronicle-total-marker-count={markerById.size}
           data-chronicle-rendered-marker-count={visibleMarkers.length}
           data-chronicle-total-edge-count={liveEdges.length}
           data-chronicle-rendered-edge-count={
@@ -1761,6 +1845,9 @@ export function ChronicleViewport({
                   >
                     <EventMarker
                       event={ev}
+                      markerInstanceId={m.eventId}
+                      laneKey={laneKeyOf(lane)}
+                      homeInstance={m.eventId === realId}
                       left={render.left}
                       top={render.top}
                       offsetY={laneOffsetY}
@@ -1772,13 +1859,16 @@ export function ChronicleViewport({
                       conflict={conflictIds.has(realId)}
                       related={relatedIds.has(realId)}
                       labelsOn={labelsOn}
-                      resizable={!locked && render.isInterval}
+                      resizable={
+                        m.eventId === realId && !locked && render.isInterval
+                      }
                       cursor={locked ? "default" : "grab"}
                       dimmed={causalChain ? !causalChain.has(realId) : false}
                       onHover={markerHover}
                       edgeHandle={
                         // 因果エッジハンドルは単一選択時のプライマリのみ。
                         // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
+                        m.eventId === realId &&
                         selectedEventId === realId &&
                         !ev.isScene &&
                         (!selectedIds || selectedIds.size <= 1) &&

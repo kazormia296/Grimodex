@@ -6,6 +6,7 @@ import { useChronicleStore, type ChronicleAxisMode } from "./chronicleStore";
 
 interface UseChronicleViewportControllerOptions {
   workspacePath: string | null;
+  workspaceOpenRevision: number;
   projectId: string | null;
   dataReady: boolean;
   dataStart: number;
@@ -20,6 +21,7 @@ function persistedViewState(): {
   axisMode: ChronicleAxisMode | null;
   viewProjectId: string | null;
   viewWorkspacePath: string | null;
+  viewWorkspaceOpenRevision: number | null;
 } | null {
   const state = useChronicleStore.getState();
   return state.pxPerDay != null && state.viewStartDay != null
@@ -31,12 +33,14 @@ function persistedViewState(): {
         axisMode: state.axisMode,
         viewProjectId: state.viewProjectId,
         viewWorkspacePath: state.viewWorkspacePath,
+        viewWorkspaceOpenRevision: state.viewWorkspaceOpenRevision,
       }
     : null;
 }
 
 export function useChronicleViewportController({
   workspacePath,
+  workspaceOpenRevision,
   projectId,
   dataReady,
   dataStart,
@@ -65,6 +69,9 @@ export function useChronicleViewportController({
   );
   const displayedWorkspacePathRef = useRef<string | null>(
     initialPersistedView?.viewWorkspacePath ?? null,
+  );
+  const displayedWorkspaceOpenRevisionRef = useRef<number | null>(
+    initialPersistedView?.viewWorkspaceOpenRevision ?? null,
   );
   const rulerLevelRef = useRef("day");
   const zoomAnnounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -118,6 +125,7 @@ export function useChronicleViewportController({
       displayedAxisModeRef.current = currentAxisMode;
       displayedProjectIdRef.current = projectId;
       displayedWorkspacePathRef.current = workspacePath;
+      displayedWorkspaceOpenRevisionRef.current = workspaceOpenRevision;
       if (projectId && workspacePath) {
         setChronicleView(
           nextView.pxPerDay,
@@ -125,6 +133,7 @@ export function useChronicleViewportController({
           currentAxisMode,
           projectId,
           workspacePath,
+          workspaceOpenRevision,
         );
       }
     },
@@ -135,6 +144,7 @@ export function useChronicleViewportController({
       scheduleZoomAnnounce,
       setChronicleView,
       workspacePath,
+      workspaceOpenRevision,
     ],
   );
 
@@ -144,6 +154,8 @@ export function useChronicleViewportController({
     displayedAxisModeRef.current = persisted?.axisMode ?? null;
     displayedProjectIdRef.current = persisted?.viewProjectId ?? null;
     displayedWorkspacePathRef.current = persisted?.viewWorkspacePath ?? null;
+    displayedWorkspaceOpenRevisionRef.current =
+      persisted?.viewWorkspaceOpenRevision ?? null;
     if (persisted) {
       lastPxPerDayRef.current = persisted.view.pxPerDay;
       setView(persisted.view);
@@ -168,6 +180,9 @@ export function useChronicleViewportController({
       persisted !== null && persisted.viewProjectId !== projectId;
     const persistedWorkspaceNeedsMigration =
       persisted !== null && persisted.viewWorkspacePath !== workspacePath;
+    const persistedWorkspaceGenerationNeedsMigration =
+      persisted !== null &&
+      persisted.viewWorkspaceOpenRevision !== workspaceOpenRevision;
     const sessionModeChanged =
       persisted === null &&
       displayedAxisModeRef.current !== null &&
@@ -180,6 +195,10 @@ export function useChronicleViewportController({
       persisted === null &&
       displayedWorkspacePathRef.current !== null &&
       displayedWorkspacePathRef.current !== workspacePath;
+    const sessionWorkspaceGenerationChanged =
+      persisted === null &&
+      displayedWorkspaceOpenRevisionRef.current !== null &&
+      displayedWorkspaceOpenRevisionRef.current !== workspaceOpenRevision;
     if (
       !initialFit &&
       !persistedModeNeedsMigration &&
@@ -187,13 +206,16 @@ export function useChronicleViewportController({
       !persistedProjectNeedsMigration &&
       !sessionProjectChanged &&
       !persistedWorkspaceNeedsMigration &&
-      !sessionWorkspaceChanged
+      !sessionWorkspaceChanged &&
+      !persistedWorkspaceGenerationNeedsMigration &&
+      !sessionWorkspaceGenerationChanged
     ) {
       // 同じ Project / 座標モード内の dataStart/dataEnd 変化では user view を
       // 保持する。データ外への pan も意図的なナビゲーションとして尊重する。
       displayedAxisModeRef.current = currentAxisMode;
       displayedProjectIdRef.current = projectId;
       displayedWorkspacePathRef.current = workspacePath;
+      displayedWorkspaceOpenRevisionRef.current = workspaceOpenRevision;
       return;
     }
 
@@ -207,6 +229,7 @@ export function useChronicleViewportController({
     displayedAxisModeRef.current = currentAxisMode;
     displayedProjectIdRef.current = projectId;
     displayedWorkspacePathRef.current = workspacePath;
+    displayedWorkspaceOpenRevisionRef.current = workspaceOpenRevision;
     lastPxPerDayRef.current = nextView.pxPerDay;
     setView(nextView);
 
@@ -216,7 +239,8 @@ export function useChronicleViewportController({
     if (
       persistedModeNeedsMigration ||
       persistedProjectNeedsMigration ||
-      persistedWorkspaceNeedsMigration
+      persistedWorkspaceNeedsMigration ||
+      persistedWorkspaceGenerationNeedsMigration
     ) {
       setChronicleView(
         nextView.pxPerDay,
@@ -224,6 +248,7 @@ export function useChronicleViewportController({
         currentAxisMode,
         projectId,
         workspacePath,
+        workspaceOpenRevision,
       );
     }
   }, [
@@ -237,6 +262,7 @@ export function useChronicleViewportController({
     setChronicleView,
     trackW,
     workspacePath,
+    workspaceOpenRevision,
   ]);
 
   const fit = useCallback(() => {

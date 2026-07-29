@@ -32,6 +32,11 @@ const eventMocks = vi.hoisted(() => ({
 }));
 vi.mock("@/features/agent-writes/event", () => eventMocks);
 
+const bulkMocks = vi.hoisted(() => ({
+  uiMutateChronicleBulk: vi.fn(),
+}));
+vi.mock("@/features/agent-writes/chronicleBulk", () => bulkMocks);
+
 // ── toast（sonner）をモックしてエラー通知の発火だけ検証 ──
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 vi.mock("sonner", () => ({ toast: toastMocks }));
@@ -51,62 +56,70 @@ vi.mock("@/features/editor/tabStore", () => ({
 }));
 
 // ── 暦/季節フックは DB と本文ロードに依存するのでスタブ化 ──
+const seasonMocks = vi.hoisted(() => ({
+  useSeasonConflicts: vi.fn(),
+  retryConflicts: vi.fn(),
+}));
 vi.mock("./useSeasonConflicts", () => ({
-  useSeasonConflicts: () => ({
-    hasCalendar: false,
-    calendar: null,
-    conflicts: [],
-    conflictIds: new Set<string>(),
-    ageConflicts: [],
-    ageConflictIds: new Set<string>(),
-    saveCalendar: vi.fn(),
-    ensureDefaultCalendar: vi.fn(),
-  }),
+  useSeasonConflicts: seasonMocks.useSeasonConflicts,
 }));
 
 // ── 重い子コンポーネントは観測しやすいテストダブルへ差し替える ──
 vi.mock("./ChronicleViewport", () => ({
   ChronicleViewport: ({
     isActive,
+    isInteractive,
     layout,
     eventsById,
     hasCalendarAxis,
     onMoveEvent,
     onDeleteEvent,
+    onCreateAt,
+    onSelectEvent,
     onViewChange,
     onNudgeSelected,
     onResizeSelectedBy,
+    onAssignGroup,
   }: {
     isActive?: boolean;
+    isInteractive?: boolean;
     layout: ChronicleLayout;
     eventsById: Map<string, unknown>;
     hasCalendarAxis?: boolean;
     onMoveEvent?: (
       id: string,
       newStartDay: number | null,
-      newCodexId: string | null,
+      newCodexId: string | null | undefined,
     ) => void;
     onDeleteEvent?: (id: string) => void;
+    onCreateAt?: (day: number | null, codexId: string | null) => void;
+    onSelectEvent?: (
+      id: string,
+      mods?: { toggle: boolean; range: boolean },
+    ) => void;
     onViewChange?: (v: { pxPerDay: number; viewStartDay: number }) => void;
     onNudgeSelected?: (deltaDays: number) => void;
     onResizeSelectedBy?: (edge: "start" | "end", deltaDays: number) => void;
+    onAssignGroup?: (groupId: string | null, codexId: string) => void;
   }) => (
     <div
       data-testid="viewport"
       data-n={eventsById.size}
       data-is-active={isActive}
+      data-is-interactive={isInteractive}
       data-has-calendar-axis={hasCalendarAxis}
       data-ea-is-interval={layout.markerById.get("ea")?.isInterval}
+      data-ids={[...eventsById.keys()].join(",")}
     >
       <button
         data-testid="move-event-btn"
-        onClick={() => onMoveEvent?.("ea", 200, null)}
+        onClick={() => onMoveEvent?.("ea", 200, undefined)}
       >
         move-event
       </button>
       <button
         data-testid="move-undated-event-btn"
-        onClick={() => onMoveEvent?.("undated", 220, null)}
+        onClick={() => onMoveEvent?.("undated", 220, undefined)}
       >
         move-undated-event
       </button>
@@ -118,13 +131,13 @@ vi.mock("./ChronicleViewport", () => ({
       </button>
       <button
         data-testid="move-subday-event-btn"
-        onClick={() => onMoveEvent?.("ea", 200.5, null)}
+        onClick={() => onMoveEvent?.("ea", 200.5, undefined)}
       >
         move-subday-event
       </button>
       <button
         data-testid="move-scene-btn"
-        onClick={() => onMoveEvent?.("scene:sc1", 200, null)}
+        onClick={() => onMoveEvent?.("scene:sc1", 200, undefined)}
       >
         move
       </button>
@@ -133,6 +146,32 @@ vi.mock("./ChronicleViewport", () => ({
         onClick={() => onDeleteEvent?.("scene:sc1")}
       >
         ctx-delete
+      </button>
+      <button
+        data-testid="create-subday-btn"
+        onClick={() => onCreateAt?.(200.5, null)}
+      >
+        create-subday
+      </button>
+      <button
+        data-testid="select-scene-btn"
+        onClick={() => onSelectEvent?.("scene:sc1")}
+      >
+        select-scene
+      </button>
+      <button
+        data-testid="select-range-anchor-btn"
+        onClick={() => onSelectEvent?.("ea")}
+      >
+        select-range-anchor
+      </button>
+      <button
+        data-testid="shift-select-scene-btn"
+        onClick={() =>
+          onSelectEvent?.("scene:sc1", { toggle: false, range: true })
+        }
+      >
+        shift-select-scene
       </button>
       <button
         data-testid="zoom-btn"
@@ -160,6 +199,12 @@ vi.mock("./ChronicleViewport", () => ({
         }}
       >
         rapid-nudge
+      </button>
+      <button
+        data-testid="assign-group-btn"
+        onClick={() => onAssignGroup?.("group-1", "c1")}
+      >
+        assign-group
       </button>
     </div>
   ),
@@ -301,7 +346,10 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useWorkspaceStore.setState({ activeWorkspacePath: "/workspace-a" });
+  useWorkspaceStore.setState({
+    activeWorkspacePath: "/workspace-a",
+    workspaceOpenRevision: 1,
+  });
   useProjectStore.setState({ currentProjectId: null });
   useChronicleStore.setState({
     selectedEventId: null,
@@ -317,6 +365,7 @@ beforeEach(() => {
   // scene-event 書き戻し先のツリーストア action は DB を叩くので mock に差し替える。
   useTreeStore.setState({
     nodes: [],
+    loadTree: vi.fn().mockResolvedValue(undefined),
     updateNodeTitle: vi.fn().mockResolvedValue(undefined),
     updateSynopsis: vi.fn().mockResolvedValue(undefined),
     updatePovCharacter: vi.fn().mockResolvedValue(undefined),
@@ -334,6 +383,57 @@ beforeEach(() => {
   eventMocks.uiRemoveEventRelation.mockResolvedValue(undefined);
   eventMocks.uiLinkSceneEvent.mockResolvedValue(undefined);
   eventMocks.uiUnlinkSceneEvent.mockResolvedValue(undefined);
+  bulkMocks.uiMutateChronicleBulk.mockImplementation(
+    async (
+      operations: Array<{
+        kind: string;
+        eventId?: string;
+        sceneId?: string;
+        baseVersion?: number;
+      }>,
+    ) => ({
+      eventResults: operations.flatMap((operation) =>
+        operation.eventId
+          ? [
+              {
+                kind: operation.kind,
+                eventId: operation.eventId,
+                version:
+                  operation.kind === "eventDelete"
+                    ? null
+                    : (operation.baseVersion ?? 0) + 1,
+              },
+            ]
+          : [],
+      ),
+      sceneResults: operations.flatMap((operation) =>
+        operation.sceneId
+          ? [
+              {
+                kind: operation.kind,
+                sceneId: operation.sceneId,
+                updatedAt: "2026-06-27T00:00:01.000Z",
+              },
+            ]
+          : [],
+      ),
+      changeEventUid: "change-1",
+      undoJournalId: "undo-1",
+    }),
+  );
+  seasonMocks.useSeasonConflicts.mockReturnValue({
+    hasCalendar: false,
+    calendar: null,
+    conflicts: [],
+    conflictIds: new Set<string>(),
+    ageConflicts: [],
+    ageConflictIds: new Set<string>(),
+    saveCalendar: vi.fn(),
+    ensureDefaultCalendar: vi.fn(),
+    conflictStatus: "ready",
+    conflictLoadError: null,
+    retryConflicts: seasonMocks.retryConflicts,
+  });
 });
 
 describe("ChroniclePanel keepalive activity", () => {
@@ -345,15 +445,63 @@ describe("ChroniclePanel keepalive activity", () => {
     expect(await screen.findByTestId("chronicle-panel")).toHaveClass("bg-card");
   });
 
-  it("isActive を viewport へ伝播する", async () => {
+  it("inactive keepalive はqueryを開始せずviewportをmaterializeしない", async () => {
     apiMocks.listEvents.mockResolvedValue([makeEvent()]);
     useProjectStore.setState({ currentProjectId: "p1" });
     render(<ChroniclePanel isActive={false} />);
 
-    expect(await screen.findByTestId("viewport")).toHaveAttribute(
-      "data-is-active",
-      "false",
+    expect(screen.queryByTestId("viewport")).toBeNull();
+    expect(screen.getByTestId("chronicle-loading")).toBeTruthy();
+    expect(apiMocks.listEvents).not.toHaveBeenCalled();
+    expect(seasonMocks.useSeasonConflicts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: false,
+        scope: {
+          workspacePath: "/workspace-a",
+          openRevision: 1,
+          projectId: "p1",
+        },
+      }),
     );
+  });
+
+  it("inactive中のTree更新は重いscene投影へ反映せず、再表示時にまとめて追従する", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    const view = render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+
+    view.rerender(<ChroniclePanel isActive={false} />);
+    seasonMocks.useSeasonConflicts.mockClear();
+    act(() => {
+      useTreeStore.setState({
+        nodes: [makeScene({ id: "sc1" }), makeScene({ id: "sc2" })],
+      });
+    });
+    expect(seasonMocks.useSeasonConflicts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: false,
+        ageExtraEvents: [
+          expect.objectContaining({
+            id: "scene:sc1",
+          }),
+        ],
+      }),
+    );
+
+    view.rerender(<ChroniclePanel isActive />);
+    await waitFor(() => {
+      expect(seasonMocks.useSeasonConflicts).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          enabled: true,
+          ageExtraEvents: [
+            expect.objectContaining({ id: "scene:sc1" }),
+            expect.objectContaining({ id: "scene:sc2" }),
+          ],
+        }),
+      );
+    });
   });
 
   it("query snapshot の読込中は viewport 操作を停止し、到着後に再開する", async () => {
@@ -366,10 +514,8 @@ describe("ChroniclePanel keepalive activity", () => {
     useProjectStore.setState({ currentProjectId: "p1" });
     render(<ChroniclePanel />);
 
-    expect(await screen.findByTestId("viewport")).toHaveAttribute(
-      "data-is-active",
-      "false",
-    );
+    expect(screen.queryByTestId("viewport")).toBeNull();
+    expect(screen.getByTestId("chronicle-loading")).toBeTruthy();
 
     await act(async () => {
       resolveEvents([]);
@@ -380,7 +526,85 @@ describe("ChroniclePanel keepalive activity", () => {
         "data-is-active",
         "true",
       );
+      expect(screen.getByTestId("viewport")).toHaveAttribute(
+        "data-is-interactive",
+        "true",
+      );
     });
+  });
+
+  it("same-scope refresh失敗はlast-goodを表示したままread-only化しretryで復帰する", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-is-interactive",
+      "true",
+    );
+
+    apiMocks.listEventParticipantsForProject.mockRejectedValueOnce(
+      new Error("participants failed"),
+    );
+    act(() => {
+      useChronicleStore.getState().bumpRevision();
+    });
+
+    expect(
+      await screen.findByTestId("chronicle-query-error"),
+    ).toHaveTextContent("読み取り専用");
+    expect(screen.getByTestId("viewport")).toHaveAttribute(
+      "data-is-active",
+      "true",
+    );
+    expect(screen.getByTestId("viewport")).toHaveAttribute(
+      "data-is-interactive",
+      "false",
+    );
+
+    apiMocks.listEventParticipantsForProject.mockResolvedValue([]);
+    fireEvent.click(screen.getByRole("button", { name: "再試行" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("chronicle-query-error")).toBeNull();
+      expect(screen.getByTestId("viewport")).toHaveAttribute(
+        "data-is-interactive",
+        "true",
+      );
+    });
+  });
+
+  it("本文整合チェックの再読込失敗は直前結果を残したまま再試行できる", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent()]);
+    seasonMocks.useSeasonConflicts.mockReturnValue({
+      hasCalendar: false,
+      calendar: null,
+      conflicts: [],
+      conflictIds: new Set<string>(),
+      ageConflicts: [],
+      ageConflictIds: new Set<string>(),
+      saveCalendar: vi.fn(),
+      ensureDefaultCalendar: vi.fn(),
+      conflictStatus: "error",
+      conflictLoadError: new Error("body read failed"),
+      retryConflicts: seasonMocks.retryConflicts,
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    const alert = screen.getByTestId("chronicle-conflict-error");
+    expect(alert).toHaveTextContent("直前の結果");
+    fireEvent.click(alert.querySelector("button") as HTMLButtonElement);
+    expect(seasonMocks.retryConflicts).toHaveBeenCalledTimes(1);
+    expect(seasonMocks.useSeasonConflicts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: true,
+        scope: {
+          workspacePath: "/workspace-a",
+          openRevision: 1,
+          projectId: "p1",
+        },
+      }),
+    );
   });
 });
 
@@ -415,8 +639,6 @@ describe("ChroniclePanel mixed dated/undated axis", () => {
         {
           eventId: "ea",
           baseVersion: 0,
-          primaryCodexId: "",
-          laneGroup: "",
           startTime: 200,
           endTime: 210,
         },
@@ -454,8 +676,6 @@ describe("ChroniclePanel mixed dated/undated axis", () => {
         {
           eventId: "undated",
           baseVersion: 0,
-          primaryCodexId: "",
-          laneGroup: "",
           startTime: 220,
           startGranularity: "day",
         },
@@ -487,8 +707,6 @@ describe("ChroniclePanel mixed dated/undated axis", () => {
         {
           eventId: "undated",
           baseVersion: 0,
-          primaryCodexId: "",
-          laneGroup: "",
           startTime: 220,
           startGranularity: "day",
         },
@@ -572,15 +790,46 @@ describe("ChroniclePanel mixed dated/undated axis", () => {
         {
           eventId: "ea",
           baseVersion: 0,
-          primaryCodexId: "",
-          laneGroup: "",
           startTime: 200,
           startMinute: 720,
+          startGranularity: "time",
           endTime: 202,
           endMinute: 1_080,
+          endGranularity: "time",
         },
         { suppressDocumentNotification: true },
       );
+    });
+  });
+
+  it("hour/minute rulerからの新規作成は同じ日の時刻をstartMinuteへ保持する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        startTime: 100,
+        startGranularity: "time",
+      }),
+    ]);
+    useChronicleStore.setState({
+      pxPerDay: 2_000,
+      viewStartDay: 100,
+      axisMode: "calendar",
+      viewProjectId: "p1",
+      viewWorkspacePath: "/workspace-a",
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    fireEvent.click(screen.getByTestId("create-subday-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiCreateEvent).toHaveBeenCalledWith({
+        title: "新しいイベント",
+        startTime: 200,
+        startMinute: 720,
+        startGranularity: "time",
+      });
     });
   });
 });
@@ -625,6 +874,45 @@ describe("ChroniclePanel project switch", () => {
       resolveP2([]);
       await p2Pending;
     });
+  });
+
+  it("同じprojectIdでもworkspace path/open revision切替で旧snapshotを同期遮断する", async () => {
+    let resolveReopened: (rows: EventRow[]) => void = () => {};
+    const reopened = new Promise<EventRow[]>((resolve) => {
+      resolveReopened = resolve;
+    });
+    apiMocks.listEvents
+      .mockResolvedValueOnce([makeEvent({ id: "ea" })])
+      .mockReturnValueOnce(reopened);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-ids",
+      "ea",
+    );
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+      useWorkspaceStore.setState({
+        activeWorkspacePath: "/workspace-b",
+        workspaceOpenRevision: 2,
+      });
+    });
+
+    expect(screen.queryByTestId("viewport")).toBeNull();
+    expect(screen.getByTestId("chronicle-loading")).toBeTruthy();
+    await waitFor(() => {
+      expect(useChronicleStore.getState().selectedEventId).toBeNull();
+    });
+
+    await act(async () => {
+      resolveReopened([makeEvent({ id: "eb" })]);
+      await reopened;
+    });
+    expect(await screen.findByTestId("viewport")).toHaveAttribute(
+      "data-ids",
+      "eb",
+    );
   });
 });
 
@@ -711,17 +999,36 @@ describe("ChroniclePanel optimistic patch", () => {
     });
   });
 
-  it("rapid nudgeを同一eventのwrite chainで直列化し、latest versionと楽観値を使う", async () => {
+  it("rapid nudgeを同一eventのbulk chainで直列化し、latest versionと投影値を使う", async () => {
     apiMocks.listEvents.mockResolvedValue([
       makeEvent({ id: "ea", startTime: 100, version: 0 }),
     ]);
-    let resolveFirst: (result: { version: number }) => void = () => {};
-    const firstWrite = new Promise<{ version: number }>((resolve) => {
+    type BulkResult = {
+      eventResults: Array<{
+        kind: string;
+        eventId: string;
+        version: number | null;
+      }>;
+      sceneResults: Array<{
+        kind: string;
+        sceneId: string;
+        updatedAt: string;
+      }>;
+      changeEventUid: string;
+      undoJournalId: string;
+    };
+    let resolveFirst: (result: BulkResult) => void = () => {};
+    const firstWrite = new Promise<BulkResult>((resolve) => {
       resolveFirst = resolve;
     });
-    eventMocks.uiUpdateEvent
+    bulkMocks.uiMutateChronicleBulk
       .mockImplementationOnce(() => firstWrite)
-      .mockResolvedValueOnce({ version: 2 });
+      .mockResolvedValueOnce({
+        eventResults: [{ kind: "eventSetDate", eventId: "ea", version: 2 }],
+        sceneResults: [],
+        changeEventUid: "change-2",
+        undoJournalId: "undo-2",
+      });
 
     useProjectStore.setState({ currentProjectId: "p1" });
     render(<ChroniclePanel />);
@@ -732,34 +1039,48 @@ describe("ChroniclePanel optimistic patch", () => {
 
     fireEvent.click(screen.getByTestId("rapid-nudge-btn"));
     await waitFor(() => {
-      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledTimes(1);
+      expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledTimes(1);
     });
-    expect(eventMocks.uiUpdateEvent).toHaveBeenNthCalledWith(
-      1,
+    expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenNthCalledWith(1, [
       {
+        kind: "eventSetDate",
         eventId: "ea",
         baseVersion: 0,
         startTime: 101,
+        startMinute: null,
+        startGranularity: "day",
+        endTime: null,
+        endMinute: null,
+        endGranularity: "none",
       },
-      { suppressDocumentNotification: true },
-    );
+    ]);
+    expect(eventMocks.uiUpdateEvent).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveFirst({ version: 1 });
+      resolveFirst({
+        eventResults: [{ kind: "eventSetDate", eventId: "ea", version: 1 }],
+        sceneResults: [],
+        changeEventUid: "change-1",
+        undoJournalId: "undo-1",
+      });
       await firstWrite;
     });
     await waitFor(() => {
-      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledTimes(2);
+      expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledTimes(2);
     });
-    expect(eventMocks.uiUpdateEvent).toHaveBeenNthCalledWith(
-      2,
+    expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenNthCalledWith(2, [
       {
+        kind: "eventSetDate",
         eventId: "ea",
         baseVersion: 1,
         startTime: 102,
+        startMinute: null,
+        startGranularity: "day",
+        endTime: null,
+        endMinute: null,
+        endGranularity: "none",
       },
-      { suppressDocumentNotification: true },
-    );
+    ]);
   });
 
   it("titleとdetailの並行patchを直列化し、後続失敗でも成功済みversionへ後退しない", async () => {
@@ -841,6 +1162,10 @@ describe("ChroniclePanel optimistic patch", () => {
 describe("ChroniclePanel scene link", () => {
   it("onLinkScene で uiLinkSceneEvent(sceneId, eventId) を呼び、成功後に再ロードする", async () => {
     apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    eventMocks.uiLinkSceneEvent.mockImplementationOnce(async () => {
+      // Production の tracked-write wrapper が成功時に revision を1回だけ更新する。
+      useChronicleStore.getState().bumpRevision();
+    });
     useProjectStore.setState({ currentProjectId: "p1" });
     render(<ChroniclePanel />);
     await screen.findByTestId("viewport");
@@ -854,12 +1179,15 @@ describe("ChroniclePanel scene link", () => {
     await waitFor(() => {
       expect(eventMocks.uiLinkSceneEvent).toHaveBeenCalledWith("s1", "ea");
     });
-    // refresh() が reloadKey を bump → ロード effect 再実行で scene 橋を読み直す。
+    // tracked-write の revision bump だけで scene 橋を1回読み直し、Panel 側から
+    // 重複 refresh を発行しない。
     await waitFor(() => {
-      expect(apiMocks.listSceneEvents.mock.calls.length).toBeGreaterThan(
-        before,
-      );
+      expect(apiMocks.listSceneEvents.mock.calls.length).toBe(before + 1);
     });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(apiMocks.listSceneEvents.mock.calls.length).toBe(before + 1);
     expect(toastMocks.error).not.toHaveBeenCalled();
     // scene 優先: シーン側プロパティへは書き戻さない。
     expect(useTreeStore.getState().updateChronicleDate).not.toHaveBeenCalled();
@@ -962,6 +1290,74 @@ describe("ChroniclePanel scene-event union", () => {
     expect(vp.getAttribute("data-n")).toBe("1"); // scene-event 1件
   });
 
+  it("scene-eventのviewport選択はunion rowのsubday位置とPOV laneを保持する", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({
+      nodes: [
+        makeScene({
+          id: "sc1",
+          povCharacterId: "c1",
+          chronicleStartTime: 100,
+          chronicleStartMinute: 720,
+          chronicleStartGranularity: "time",
+        }),
+      ],
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+
+    fireEvent.click(screen.getByTestId("select-scene-btn"));
+
+    const state = useChronicleStore.getState();
+    expect(state.selectedEventId).toBe("scene:sc1");
+    expect(state.selectedDay).toBeCloseTo(100.5);
+    expect(state.selectedLaneKey).toBe("c1");
+  });
+
+  it("Shift範囲選択はscene-eventを時間順の終端として含める", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        startTime: 50,
+        startGranularity: "day",
+      }),
+      makeEvent({
+        id: "between",
+        ordinal: "a1",
+        startTime: 75,
+        startGranularity: "day",
+      }),
+      makeEvent({
+        id: "after",
+        ordinal: "a2",
+        startTime: 125,
+        startGranularity: "day",
+      }),
+    ]);
+    useTreeStore.setState({
+      nodes: [
+        makeScene({
+          id: "sc1",
+          chronicleStartTime: 100,
+          chronicleStartMinute: 720,
+          chronicleStartGranularity: "time",
+        }),
+      ],
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+
+    fireEvent.click(screen.getByTestId("select-range-anchor-btn"));
+    fireEvent.click(screen.getByTestId("shift-select-scene-btn"));
+
+    const state = useChronicleStore.getState();
+    expect(state.selectedEventIds).toEqual(["ea", "between", "scene:sc1"]);
+    expect(state.selectedEventId).toBe("scene:sc1");
+    expect(state.selectedEventIds).not.toContain("after");
+  });
+
   it("scene-event 選択で isScene モードになり、編集はツリーストアへ書き戻す（uiUpdateEvent は呼ばない）", async () => {
     apiMocks.listEvents.mockResolvedValue([]);
     useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
@@ -1039,7 +1435,7 @@ describe("ChroniclePanel scene-event union", () => {
     expect(eventMocks.uiDeleteEvent).not.toHaveBeenCalled();
   });
 
-  it("一括削除は scene=日付クリア / 実event=削除 に振り分ける（混在で片方も落ちない）", async () => {
+  it("一括削除は scene=日付クリア / 実event=削除 を1つの原子操作へまとめる", async () => {
     apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
     useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
     useProjectStore.setState({ currentProjectId: "p1" });
@@ -1051,20 +1447,44 @@ describe("ChroniclePanel scene-event union", () => {
 
     fireEvent.click(screen.getByTestId("bulk-delete"));
     await waitFor(() => {
-      expect(eventMocks.uiDeleteEvent).toHaveBeenCalledWith("ea", {
-        baseVersion: 0,
-      });
+      expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledWith([
+        {
+          kind: "eventDelete",
+          eventId: "ea",
+          baseVersion: 0,
+        },
+        {
+          kind: "sceneClearDate",
+          sceneId: "sc1",
+          baseUpdatedAt: NOW,
+        },
+      ]);
     });
-    expect(useTreeStore.getState().updateChronicleDate).toHaveBeenCalledWith(
-      "sc1",
-      expect.objectContaining({ chronicleStartTime: null }),
+    expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledTimes(1);
+    expect(eventMocks.uiDeleteEvent).not.toHaveBeenCalled();
+    expect(
+      useTreeStore.getState().nodes.find((node) => node.id === "sc1"),
+    ).toEqual(
+      expect.objectContaining({
+        chronicleStartTime: null,
+        chronicleStartMinute: null,
+        chronicleStartGranularity: "none",
+        chronicleEndTime: null,
+        chronicleEndMinute: null,
+        chronicleEndGranularity: "none",
+        updatedAt: "2026-06-27T00:00:01.000Z",
+      }),
     );
+    expect(useTreeStore.getState().updateChronicleDate).not.toHaveBeenCalled();
+    expect(useChronicleStore.getState().selectedEventIds).toEqual([]);
     expect(toastMocks.error).not.toHaveBeenCalled();
   });
 
-  it("一括レーン割当は scene=POV更新 / 実event=uiUpdateEvent に振り分ける", async () => {
+  it("一括レーン割当は scene=POV更新 / 実event=lane更新 を1つの原子操作へまとめる", async () => {
     apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
-    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useTreeStore.setState({
+      nodes: [makeScene({ id: "sc1", povCharacterId: "c-old" })],
+    });
     useProjectStore.setState({ currentProjectId: "p1" });
     render(<ChroniclePanel />);
     await screen.findByTestId("viewport");
@@ -1074,14 +1494,261 @@ describe("ChroniclePanel scene-event union", () => {
 
     fireEvent.click(screen.getByTestId("bulk-unassign")); // handleBulkAssign("")
     await waitFor(() => {
-      expect(useTreeStore.getState().updatePovCharacter).toHaveBeenCalledWith(
-        "sc1",
-        null,
-      );
+      expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledWith([
+        {
+          kind: "eventSetLane",
+          eventId: "ea",
+          baseVersion: 0,
+          primaryCodexId: null,
+          laneGroup: null,
+        },
+        {
+          kind: "sceneSetPov",
+          sceneId: "sc1",
+          baseUpdatedAt: NOW,
+          povCharacterId: null,
+        },
+      ]);
     });
-    expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ eventId: "ea" }),
-      { suppressDocumentNotification: true },
+    expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledTimes(1);
+    expect(eventMocks.uiUpdateEvent).not.toHaveBeenCalled();
+    expect(useTreeStore.getState().updatePovCharacter).not.toHaveBeenCalled();
+    expect(
+      useTreeStore.getState().nodes.find((node) => node.id === "sc1"),
+    ).toEqual(
+      expect.objectContaining({
+        povCharacterId: null,
+        updatedAt: "2026-06-27T00:00:01.000Z",
+      }),
+    );
+  });
+
+  it("原子一括操作の失敗時はscene投影も選択も部分更新しない", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    bulkMocks.uiMutateChronicleBulk.mockRejectedValueOnce(
+      new Error("version conflict"),
+    );
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelection(["ea", "scene:sc1"], "ea");
+    });
+
+    fireEvent.click(screen.getByTestId("bulk-delete"));
+    await waitFor(() => {
+      expect(toastMocks.error).toHaveBeenCalledTimes(1);
+    });
+    expect(useChronicleStore.getState().selectedEventIds).toEqual([
+      "ea",
+      "scene:sc1",
+    ]);
+    expect(
+      useTreeStore.getState().nodes.find((node) => node.id === "sc1"),
+    ).toEqual(
+      expect.objectContaining({
+        chronicleStartTime: 100,
+        updatedAt: NOW,
+      }),
+    );
+    expect(eventMocks.uiDeleteEvent).not.toHaveBeenCalled();
+    expect(useTreeStore.getState().updateChronicleDate).not.toHaveBeenCalled();
+  });
+
+  it("bulk応答待ち中に新しいscene更新が入った場合は古い結果を投影しない", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    useTreeStore.setState({
+      nodes: [makeScene({ id: "sc1", povCharacterId: "c-old" })],
+    });
+    let resolveBulk: (
+      result: Awaited<ReturnType<typeof bulkMocks.uiMutateChronicleBulk>>,
+    ) => void = () => {};
+    const pending = new Promise<
+      Awaited<ReturnType<typeof bulkMocks.uiMutateChronicleBulk>>
+    >((resolve) => {
+      resolveBulk = resolve;
+    });
+    bulkMocks.uiMutateChronicleBulk.mockReturnValueOnce(pending);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelection(["ea", "scene:sc1"], "ea");
+    });
+
+    fireEvent.click(screen.getByTestId("bulk-unassign"));
+    await waitFor(() => {
+      expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledTimes(1);
+    });
+    act(() => {
+      useTreeStore.setState((state) => ({
+        nodes: state.nodes.map((node) =>
+          node.id === "sc1"
+            ? {
+                ...node,
+                povCharacterId: "c-newer",
+                updatedAt: "2026-06-27T00:00:02.000Z",
+              }
+            : node,
+        ),
+      }));
+    });
+    await act(async () => {
+      resolveBulk({
+        eventResults: [
+          {
+            kind: "eventSetLane",
+            eventId: "ea",
+            version: 1,
+          },
+        ],
+        sceneResults: [
+          {
+            kind: "sceneSetPov",
+            sceneId: "sc1",
+            updatedAt: "2026-06-27T00:00:01.000Z",
+          },
+        ],
+        changeEventUid: "change-1",
+        undoJournalId: "undo-1",
+      });
+      await pending;
+    });
+
+    expect(
+      useTreeStore.getState().nodes.find((node) => node.id === "sc1"),
+    ).toEqual(
+      expect.objectContaining({
+        povCharacterId: "c-newer",
+        updatedAt: "2026-06-27T00:00:02.000Z",
+      }),
+    );
+  });
+
+  it("未割当グループのレーン割当も複数eventを1つの原子操作へまとめる", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({ id: "ea", laneGroup: "group-1", version: 2 }),
+      makeEvent({
+        id: "eb",
+        ordinal: "a1",
+        laneGroup: "group-1",
+        version: 4,
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+
+    fireEvent.click(screen.getByTestId("assign-group-btn"));
+    await waitFor(() => {
+      expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledWith([
+        {
+          kind: "eventSetLane",
+          eventId: "ea",
+          baseVersion: 2,
+          primaryCodexId: "c1",
+          laneGroup: null,
+        },
+        {
+          kind: "eventSetLane",
+          eventId: "eb",
+          baseVersion: 4,
+          primaryCodexId: "c1",
+          laneGroup: null,
+        },
+      ]);
+    });
+    expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledTimes(1);
+    expect(eventMocks.uiUpdateEvent).not.toHaveBeenCalled();
+  });
+
+  it("複数Event/Sceneの連続nudgeを原子bulkへ直列化し、返却tokenを次回へ継承する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        startTime: 10,
+        startGranularity: "day",
+        version: 2,
+      }),
+    ]);
+    useTreeStore.setState({
+      nodes: [
+        makeScene({
+          id: "sc1",
+          chronicleStartTime: 100,
+          chronicleStartGranularity: "day",
+        }),
+      ],
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelection(["ea", "scene:sc1"], "ea");
+    });
+
+    fireEvent.click(screen.getByTestId("rapid-nudge-btn"));
+
+    await waitFor(() => {
+      expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenCalledTimes(2);
+    });
+    expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenNthCalledWith(1, [
+      {
+        kind: "eventSetDate",
+        eventId: "ea",
+        baseVersion: 2,
+        startTime: 11,
+        startMinute: null,
+        startGranularity: "day",
+        endTime: null,
+        endMinute: null,
+        endGranularity: "none",
+      },
+      {
+        kind: "sceneSetDate",
+        sceneId: "sc1",
+        baseUpdatedAt: NOW,
+        startTime: 101,
+        startMinute: null,
+        startGranularity: "day",
+        endTime: null,
+        endMinute: null,
+        endGranularity: "none",
+      },
+    ]);
+    expect(bulkMocks.uiMutateChronicleBulk).toHaveBeenNthCalledWith(2, [
+      {
+        kind: "eventSetDate",
+        eventId: "ea",
+        baseVersion: 3,
+        startTime: 12,
+        startMinute: null,
+        startGranularity: "day",
+        endTime: null,
+        endMinute: null,
+        endGranularity: "none",
+      },
+      {
+        kind: "sceneSetDate",
+        sceneId: "sc1",
+        baseUpdatedAt: "2026-06-27T00:00:01.000Z",
+        startTime: 102,
+        startMinute: null,
+        startGranularity: "day",
+        endTime: null,
+        endMinute: null,
+        endGranularity: "none",
+      },
+    ]);
+    expect(eventMocks.uiUpdateEvent).not.toHaveBeenCalled();
+    expect(
+      useTreeStore.getState().nodes.find((node) => node.id === "sc1"),
+    ).toEqual(
+      expect.objectContaining({
+        chronicleStartTime: 102,
+        updatedAt: "2026-06-27T00:00:01.000Z",
+      }),
     );
   });
 

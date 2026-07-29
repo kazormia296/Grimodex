@@ -209,6 +209,121 @@ describe("externalWriteFeed fan-out", () => {
     expect(h.bumpChronicle).toHaveBeenCalledTimes(1);
   });
 
+  it("fans an initial Chronicle bulk row out to tree, documents, and every affected history", async () => {
+    h.dirtyTabs.add("event-lane");
+    useGlobalHistoryStore.getState().push({
+      kind: "chronicle",
+      label: "mixed bulk",
+      affectedEntities: [
+        { kind: "chronicle", entityId: "event-delete" },
+        { kind: "chronicle", entityId: "event-lane" },
+        { kind: "scenes", entityId: "scene-pov" },
+      ],
+      undo: async () => {},
+      redo: async () => {},
+    });
+    for (const entityId of ["relation-cause", "unrelated-event"]) {
+      useGlobalHistoryStore.getState().push({
+        kind: "chronicle",
+        label: entityId,
+        entityId,
+        undo: async () => {},
+        redo: async () => {},
+      });
+    }
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          entityType: "chronicle_bulk",
+          entityId: "bulk-journal",
+          opType: "chronicle.bulk",
+          payload: JSON.stringify({
+            operations: [
+              { kind: "eventDelete", eventId: "event-delete" },
+              { kind: "eventSetLane", eventId: "event-lane" },
+              { kind: "sceneSetPov", sceneId: "scene-pov" },
+            ],
+            eventIds: ["event-delete", "event-lane"],
+            sceneIds: ["scene-pov"],
+            relatedEventIds: ["relation-cause"],
+          }),
+        }),
+      ],
+      "p1",
+    );
+
+    expect(h.reloadTree).toHaveBeenCalledOnce();
+    expect(h.reloadTree).toHaveBeenCalledWith("p1");
+    expect(h.bumpChronicle).toHaveBeenCalledOnce();
+    expect(
+      useExternalWriteStore.getState().reloadNonce[
+        editorStateKey({ kind: "chronicle-event", id: "event-delete" })
+      ],
+    ).toBe(1);
+    expect(useExternalWriteStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        documentKey: { kind: "chronicle-event", id: "event-lane" },
+        opType: "event.update",
+        entityId: "event-lane",
+      }),
+    ]);
+    expect(
+      useGlobalHistoryStore.getState().past.map((command) => command.entityId),
+    ).toEqual(["unrelated-event"]);
+  });
+
+  it("fans an undo replay bulk row out with restored Event document semantics", async () => {
+    h.dirtyTabs.add("event-restored");
+    useGlobalHistoryStore.getState().push({
+      kind: "chronicle",
+      label: "stale restored event",
+      entityId: "event-restored",
+      undo: async () => {},
+      redo: async () => {},
+    });
+    useGlobalHistoryStore.getState().push({
+      kind: "scenes",
+      label: "stale scene",
+      entityId: "scene-restored",
+      undo: async () => {},
+      redo: async () => {},
+    });
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          entityType: "chronicle_bulk",
+          entityId: "bulk-journal",
+          opType: "chronicle.bulk",
+          payload: JSON.stringify({
+            direction: "undo",
+            operations: [
+              { kind: "eventDelete", eventId: "event-restored" },
+              { kind: "sceneClearDate", sceneId: "scene-restored" },
+            ],
+            eventIds: ["event-restored"],
+            sceneIds: ["scene-restored"],
+            relatedEventIds: [],
+          }),
+        }),
+      ],
+      "p1",
+    );
+
+    expect(h.reloadTree).toHaveBeenCalledWith("p1");
+    expect(useExternalWriteStore.getState().conflicts).toEqual([
+      expect.objectContaining({
+        documentKey: { kind: "chronicle-event", id: "event-restored" },
+        opType: "event.create",
+        entityId: "event-restored",
+      }),
+    ]);
+    expect(useGlobalHistoryStore.getState().past).toEqual([]);
+  });
+
   it("reloads plot threads on plot domain events", async () => {
     await processExternalEventsForTest(
       [ev({ domain: "plot", opType: "plot.update" })],

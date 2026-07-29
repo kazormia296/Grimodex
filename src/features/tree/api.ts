@@ -9,6 +9,29 @@ import {
   serializeSceneWrite,
 } from "@/features/tree/pendingSceneWrites";
 import { debugLog } from "@/lib/debugLog";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  nextTreeNodeMutationTimestamp,
+  publishTreeNodeMutation,
+} from "@/lib/treeNodeMutationRegistry";
+import type { WorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
+function publishPersistedTreeNodeMutation(
+  persisted:
+    | { id: string; projectId: string; updatedAt: string }
+    | null
+    | undefined,
+  workspaceIdentity: WorkspaceIdentity | null,
+): void {
+  if (!persisted) return;
+  publishTreeNodeMutation({
+    workspacePath: workspaceIdentity?.path ?? null,
+    workspaceOpenRevision: workspaceIdentity?.openRevision ?? null,
+    projectId: persisted.projectId,
+    nodeId: persisted.id,
+    updatedAt: persisted.updatedAt,
+  });
+}
 
 /**
  * Derive `unplaced_beat_preview` from a serialized `unplacedBeatsDoc` JSON
@@ -193,7 +216,7 @@ export async function createNode(
       >
     >,
 ): Promise<TreeNode> {
-  const now = new Date().toISOString();
+  const now = nextTreeNodeMutationTimestamp();
   const rows = await db
     .insert(treeNodes)
     .values({ ...data, createdAt: now, updatedAt: now })
@@ -201,7 +224,7 @@ export async function createNode(
   return rows[0];
 }
 
-export async function updateNode(
+export function updateNode(
   id: string,
   data: Partial<
     Pick<
@@ -233,12 +256,22 @@ export async function updateNode(
     >
   >,
 ): Promise<TreeNode | undefined> {
-  const rows = await db
-    .update(treeNodes)
-    .set({ ...data, updatedAt: new Date().toISOString() })
-    .where(eq(treeNodes.id, id))
-    .returning();
-  return rows[0];
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  // Metadata, Chronicle, preview, and content all share one tree_nodes row.
+  // Keep generic metadata writes on the same per-scene issue-order chain as
+  // content writes so their returned updatedAt token cannot arrive out of
+  // order and poison a later Chronicle bulk OCC request.
+  return serializeSceneWrite(id, async () => {
+    const updatedAt = nextTreeNodeMutationTimestamp();
+    const rows = await db
+      .update(treeNodes)
+      .set({ ...data, updatedAt })
+      .where(eq(treeNodes.id, id))
+      .returning();
+    const persisted = rows[0];
+    publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
+    return persisted;
+  });
 }
 
 export async function deleteNode(id: string): Promise<void> {
@@ -302,6 +335,7 @@ export async function saveSceneContentInner(
   sceneId: string,
   payloadOrContent: string | SaveScenePayload,
 ): Promise<DerivedPreviews> {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
   const payload: SaveScenePayload =
     typeof payloadOrContent === "string"
       ? { content: payloadOrContent }
@@ -321,7 +355,7 @@ export async function saveSceneContentInner(
     JSON.stringify({ contentLen: payload.content.length }),
   );
 
-  const contentUpdatedAt = new Date().toISOString();
+  const contentUpdatedAt = nextTreeNodeMutationTimestamp();
 
   // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
   // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
@@ -348,12 +382,25 @@ export async function saveSceneContentInner(
       })
       .where(eq(treeNodes.id, sceneId))
       .returning({
+        id: treeNodes.id,
+        projectId: treeNodes.projectId,
         contentVersion: treeNodes.version,
         contentUpdatedAt: treeNodes.updatedAt,
       }),
   );
   trackSceneContentWrite(sceneId, write);
   const rows = await write;
+  const persisted = rows[0];
+  publishPersistedTreeNodeMutation(
+    persisted
+      ? {
+          id: persisted.id,
+          projectId: persisted.projectId,
+          updatedAt: persisted.contentUpdatedAt,
+        }
+      : null,
+    workspaceIdentity,
+  );
 
   return {
     placedBeatPreview,
@@ -407,19 +454,26 @@ export async function saveSceneBeatsOnly(
   payload: { unplacedBeatsDoc: string },
 ): Promise<{ unplacedBeatPreview: string | null }> {
   const unplacedBeatPreview = deriveUnplacedPreview(payload.unplacedBeatsDoc);
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
-  await serializeSceneWrite(sceneId, () =>
+  const rows = await serializeSceneWrite(sceneId, () =>
     Promise.resolve(
       db
         .update(treeNodes)
         .set({
           unplacedBeatsDoc: payload.unplacedBeatsDoc,
           unplacedBeatPreview,
-          updatedAt: new Date().toISOString(),
+          updatedAt: nextTreeNodeMutationTimestamp(),
         })
-        .where(eq(treeNodes.id, sceneId)),
+        .where(eq(treeNodes.id, sceneId))
+        .returning({
+          id: treeNodes.id,
+          projectId: treeNodes.projectId,
+          updatedAt: treeNodes.updatedAt,
+        }),
     ),
   );
+  publishPersistedTreeNodeMutation(rows[0], workspaceIdentity);
   return { unplacedBeatPreview };
 }
 
@@ -432,18 +486,25 @@ export async function savePlacedBeatPreviewOnly(
   sceneId: string,
   placedBeatPreview: string | null,
 ): Promise<void> {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
-  await serializeSceneWrite(sceneId, () =>
+  const rows = await serializeSceneWrite(sceneId, () =>
     Promise.resolve(
       db
         .update(treeNodes)
         .set({
           placedBeatPreview,
-          updatedAt: new Date().toISOString(),
+          updatedAt: nextTreeNodeMutationTimestamp(),
         })
-        .where(eq(treeNodes.id, sceneId)),
+        .where(eq(treeNodes.id, sceneId))
+        .returning({
+          id: treeNodes.id,
+          projectId: treeNodes.projectId,
+          updatedAt: treeNodes.updatedAt,
+        }),
     ),
   );
+  publishPersistedTreeNodeMutation(rows[0], workspaceIdentity);
 }
 
 /** Load scene content + unplaced beats doc in one query. */

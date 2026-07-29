@@ -39,6 +39,14 @@ import {
   hasExternalEditConflictForId,
   hasExternalEditConflictForKind,
 } from "@/lib/externalEditConflictRegistry";
+import {
+  observeTreeNodeMutationTimestamp,
+  subscribeTreeNodeMutations,
+} from "@/lib/treeNodeMutationRegistry";
+import {
+  serializeSceneWrite,
+  trackSceneContentWrite,
+} from "./pendingSceneWrites";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -112,6 +120,226 @@ export type ChronicleDatePatch = Partial<
     | "chroniclePrecision"
   >
 >;
+
+const CHRONICLE_DATE_KEYS = [
+  "chronicleStartTime",
+  "chronicleStartMinute",
+  "chronicleStartGranularity",
+  "chronicleEndTime",
+  "chronicleEndMinute",
+  "chronicleEndGranularity",
+] as const satisfies readonly (keyof ChronicleDatePatch)[];
+
+const CHRONICLE_GRANULARITIES = new Set([
+  "none",
+  "season",
+  "year",
+  "month",
+  "day",
+  "time",
+]);
+
+type CanonicalChronicleDatePatch = Required<
+  Pick<
+    ChronicleDatePatch,
+    | "chronicleStartTime"
+    | "chronicleStartMinute"
+    | "chronicleStartGranularity"
+    | "chronicleEndTime"
+    | "chronicleEndMinute"
+    | "chronicleEndGranularity"
+  >
+>;
+
+interface ChronicleEndpointState {
+  day: number | null;
+  minute: number | null;
+  granularity: string;
+}
+
+function hasOwn<T extends object, K extends PropertyKey>(
+  value: T,
+  key: K,
+): key is K & keyof T {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function normalizeChronicleEndpoint(
+  label: "start" | "end",
+  current: ChronicleEndpointState,
+  patch: {
+    day?: number | null;
+    minute?: number | null;
+    granularity?: string;
+  },
+): ChronicleEndpointState {
+  const writesDay = hasOwn(patch, "day");
+  const writesMinute = hasOwn(patch, "minute");
+  const writesGranularity = hasOwn(patch, "granularity");
+  const day = writesDay ? (patch.day ?? null) : current.day;
+  const minute = writesMinute ? (patch.minute ?? null) : current.minute;
+  let granularity = writesGranularity
+    ? (patch.granularity ?? "none")
+    : current.granularity;
+
+  // Mirror the native Chronicle resolver for partial human writes. A supplied
+  // minute promotes the endpoint to `time`; clearing its day clears the
+  // endpoint; and the first supplied day creates a day-level endpoint.
+  if (!writesGranularity) {
+    if (day === null) {
+      granularity = "none";
+    } else if (writesMinute) {
+      granularity =
+        minute === null
+          ? granularity === "time" || granularity === "none"
+            ? "day"
+            : granularity
+          : "time";
+    } else if (writesDay && granularity === "none") {
+      // A legacy `none` row can still carry a non-semantic minute residue.
+      // A day-only write creates a day endpoint; it must not resurrect that
+      // residue as an intentional time.
+      granularity = "day";
+    }
+  }
+
+  if (!CHRONICLE_GRANULARITIES.has(granularity)) {
+    throw new Error(
+      `Chronicle ${label} granularity '${granularity}' is not supported`,
+    );
+  }
+  if (granularity === "none") {
+    return { day: null, minute: null, granularity };
+  }
+  if (day === null) {
+    throw new Error(
+      `Chronicle ${label} granularity '${granularity}' needs a day`,
+    );
+  }
+  if (!Number.isSafeInteger(day)) {
+    throw new Error(`Chronicle ${label} day must be a safe integer`);
+  }
+  if (granularity !== "time") {
+    return { day, minute: null, granularity };
+  }
+  if (
+    minute === null ||
+    !Number.isInteger(minute) ||
+    minute < 0 ||
+    minute >= 1440
+  ) {
+    throw new Error(
+      `Chronicle ${label} time granularity needs a minute from 0 to 1439`,
+    );
+  }
+  return { day, minute, granularity };
+}
+
+function canonicalChronicleDatePatch(
+  node: TreeNodeData,
+  patch: ChronicleDatePatch,
+): CanonicalChronicleDatePatch {
+  const start = normalizeChronicleEndpoint(
+    "start",
+    {
+      day: node.chronicleStartTime ?? null,
+      minute: node.chronicleStartMinute ?? null,
+      granularity: node.chronicleStartGranularity ?? "none",
+    },
+    {
+      ...(hasOwn(patch, "chronicleStartTime")
+        ? { day: patch.chronicleStartTime }
+        : {}),
+      ...(hasOwn(patch, "chronicleStartMinute")
+        ? { minute: patch.chronicleStartMinute }
+        : {}),
+      ...(hasOwn(patch, "chronicleStartGranularity")
+        ? { granularity: patch.chronicleStartGranularity }
+        : {}),
+    },
+  );
+  const end = normalizeChronicleEndpoint(
+    "end",
+    {
+      day: node.chronicleEndTime ?? null,
+      minute: node.chronicleEndMinute ?? null,
+      granularity: node.chronicleEndGranularity ?? "none",
+    },
+    {
+      ...(hasOwn(patch, "chronicleEndTime")
+        ? { day: patch.chronicleEndTime }
+        : {}),
+      ...(hasOwn(patch, "chronicleEndMinute")
+        ? { minute: patch.chronicleEndMinute }
+        : {}),
+      ...(hasOwn(patch, "chronicleEndGranularity")
+        ? { granularity: patch.chronicleEndGranularity }
+        : {}),
+    },
+  );
+
+  if (end.granularity !== "none" && start.granularity === "none") {
+    throw new Error("Chronicle end requires a start");
+  }
+  if (start.day !== null && end.day !== null) {
+    const startMinute = start.granularity === "time" ? start.minute! : 0;
+    const endMinute = end.granularity === "time" ? end.minute! : 0;
+    if (
+      end.day < start.day ||
+      (end.day === start.day && endMinute < startMinute)
+    ) {
+      throw new Error("Chronicle end must not precede start");
+    }
+  }
+
+  return {
+    chronicleStartTime: start.day,
+    chronicleStartMinute: start.minute,
+    chronicleStartGranularity: start.granularity,
+    chronicleEndTime: end.day,
+    chronicleEndMinute: end.minute,
+    chronicleEndGranularity: end.granularity,
+  };
+}
+
+function chronicleDateTouched(patch: ChronicleDatePatch): boolean {
+  return CHRONICLE_DATE_KEYS.some((key) => hasOwn(patch, key));
+}
+
+function chroniclePatchChanged(
+  node: TreeNodeData,
+  patch: ChronicleDatePatch,
+): boolean {
+  return Object.entries(patch).some(([key, value]) => {
+    const current = node[key as keyof TreeNodeData];
+    return !Object.is(current ?? null, value ?? null);
+  });
+}
+
+export type ChronicleSceneBulkProjectionOperation =
+  | { kind: "sceneClearDate"; sceneId: string; baseUpdatedAt: string }
+  | {
+      kind: "sceneSetPov";
+      sceneId: string;
+      baseUpdatedAt: string;
+      povCharacterId: string | null;
+    }
+  | {
+      kind: "sceneSetDate";
+      sceneId: string;
+      baseUpdatedAt: string;
+      startTime: number;
+      startMinute: number | null;
+      startGranularity: string;
+      endTime: number | null;
+      endMinute: number | null;
+      endGranularity: string;
+    };
+
+export interface ChronicleSceneBulkProjectionResult {
+  sceneId: string;
+  updatedAt: string;
+}
 
 /** Returns true when a node type can hold children */
 export function canHaveChildren(type: NodeType): boolean {
@@ -391,6 +619,9 @@ export async function prepareTreeHydration(
 
 /** Phase B: synchronously publish a previously prepared tree snapshot. */
 export function applyTreeHydration(snapshot: TreeHydrationSnapshot): void {
+  for (const node of snapshot.nodes) {
+    observeTreeNodeMutationTimestamp(node.updatedAt);
+  }
   useTreeStore.setState({
     nodes: snapshot.nodes,
     scenes: snapshot.scenes,
@@ -509,6 +740,15 @@ interface TreeState {
   updateLocation: (id: string, codexEntryId: string | null) => Promise<void>;
   /** シーンの作中暦日付（chronicle*）を永続化＋store 楽観更新する。 */
   updateChronicleDate: (id: string, patch: ChronicleDatePatch) => Promise<void>;
+  /**
+   * Chronicle の原子的な複数更新結果を、同じ baseUpdatedAt のシーンだけへ反映する。
+   * Tree feature が自身の projection 更新を所有し、遅延応答で新しい編集を潰さない。
+   */
+  applyChronicleBulkSceneProjection: (
+    projectId: string,
+    operations: readonly ChronicleSceneBulkProjectionOperation[],
+    results: readonly ChronicleSceneBulkProjectionResult[],
+  ) => void;
 
   // Multi-selection
   selectNode: (id: string, extend: boolean) => void;
@@ -617,6 +857,103 @@ function nextSortOrder(
 
 /** Sort nodes so parents appear before their children (for restore operations). */
 
+async function persistChronicleDate(
+  id: string,
+  requestedPatch: ChronicleDatePatch,
+  recordHistory: boolean,
+): Promise<void> {
+  const scopedNode = useTreeStore
+    .getState()
+    .nodes.find((node) => node.id === id);
+  if (!scopedNode) return;
+  const projectId = scopedNode.projectId;
+
+  const write = serializeSceneWrite(
+    `chronicle-date:${projectId}:${id}`,
+    async () => {
+      // Resolve partial writes only after every earlier date write for this
+      // exact project/scene has settled. This prevents two individually
+      // valid stale endpoint edits from combining into a reversed range.
+      const node = useTreeStore
+        .getState()
+        .nodes.find(
+          (candidate) =>
+            candidate.id === id && candidate.projectId === projectId,
+        );
+      if (!node) return;
+
+      const touchesDate = chronicleDateTouched(requestedPatch);
+      const canonicalNext = touchesDate
+        ? canonicalChronicleDatePatch(node, requestedPatch)
+        : null;
+      const persistedPatch: ChronicleDatePatch = {
+        ...(canonicalNext ?? {}),
+        ...(hasOwn(requestedPatch, "chroniclePrecision")
+          ? { chroniclePrecision: requestedPatch.chroniclePrecision }
+          : {}),
+      };
+      if (!chroniclePatchChanged(node, persistedPatch)) return;
+
+      let restorePatch: ChronicleDatePatch;
+      if (touchesDate) {
+        // Undo never reintroduces a legacy coarse+minute/none+day tuple. A
+        // reversed or incomplete legacy range has no safe persisted target,
+        // so repairing it establishes the first canonical history boundary.
+        let canonicalBefore: CanonicalChronicleDatePatch;
+        try {
+          canonicalBefore = canonicalChronicleDatePatch(node, {});
+        } catch {
+          canonicalBefore = canonicalNext!;
+        }
+        restorePatch = {
+          ...canonicalBefore,
+          ...(hasOwn(requestedPatch, "chroniclePrecision")
+            ? {
+                chroniclePrecision: node.chroniclePrecision ?? "exact",
+              }
+            : {}),
+        };
+      } else {
+        restorePatch = hasOwn(requestedPatch, "chroniclePrecision")
+          ? {
+              chroniclePrecision: node.chroniclePrecision ?? "exact",
+            }
+          : {};
+      }
+
+      // This outer, project-qualified chain serializes partial-date merge and
+      // validation. api.updateNode then joins the row-wide id chain shared
+      // with content/metadata writes; the keys intentionally differ, so this
+      // nested serialization cannot wait on itself.
+      const persisted = await api.updateNode(id, persistedPatch);
+      const updatedAt = persisted?.updatedAt ?? node.updatedAt;
+      useTreeStore.setState((state) => ({
+        nodes: state.nodes.map((candidate) =>
+          candidate.id === id && candidate.projectId === projectId
+            ? { ...candidate, ...persistedPatch, updatedAt }
+            : candidate,
+        ),
+      }));
+
+      if (recordHistory && !useGlobalHistoryStore.getState().isReplaying) {
+        useGlobalHistoryStore.getState().push({
+          kind: "scenes",
+          label: i18next.t("tree.undo.chronicleDateChanged"),
+          entityId: id,
+          undo: () => persistChronicleDate(id, restorePatch, false),
+          redo: () => persistChronicleDate(id, persistedPatch, false),
+        });
+      }
+    },
+  );
+  // A reader waits by raw scene id, while the merge chain is qualified by
+  // project+scene. Register the outer promise under the raw id immediately,
+  // so a queued (not yet dispatched) date write cannot escape the existing
+  // read-after-write barrier between two inner api.updateNode calls.
+  trackSceneContentWrite(id, write);
+  await write;
+}
+
 export const useTreeStore = create<TreeState>()((set, get) => ({
   nodes: [],
   scenes: [],
@@ -673,6 +1010,63 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     } catch {
       set({ isLoading: false });
     }
+  },
+
+  applyChronicleBulkSceneProjection(projectId, operations, results) {
+    for (const result of results) {
+      observeTreeNodeMutationTimestamp(result.updatedAt);
+    }
+    const updatedAtBySceneId = new Map(
+      results.map((result) => [result.sceneId, result.updatedAt]),
+    );
+    if (updatedAtBySceneId.size === 0) return;
+    const operationBySceneId = new Map(
+      operations.map((operation) => [operation.sceneId, operation]),
+    );
+    set((state) => ({
+      nodes: state.nodes.map((node) => {
+        const operation = operationBySceneId.get(node.id);
+        const updatedAt = updatedAtBySceneId.get(node.id);
+        if (
+          !operation ||
+          !updatedAt ||
+          node.projectId !== projectId ||
+          node.nodeType !== "scene" ||
+          node.updatedAt !== operation.baseUpdatedAt
+        ) {
+          return node;
+        }
+        if (operation.kind === "sceneSetPov") {
+          return {
+            ...node,
+            povCharacterId: operation.povCharacterId,
+            updatedAt,
+          };
+        }
+        if (operation.kind === "sceneSetDate") {
+          return {
+            ...node,
+            chronicleStartTime: operation.startTime,
+            chronicleStartMinute: operation.startMinute,
+            chronicleStartGranularity: operation.startGranularity,
+            chronicleEndTime: operation.endTime,
+            chronicleEndMinute: operation.endMinute,
+            chronicleEndGranularity: operation.endGranularity,
+            updatedAt,
+          };
+        }
+        return {
+          ...node,
+          chronicleStartTime: null,
+          chronicleStartMinute: null,
+          chronicleStartGranularity: "none",
+          chronicleEndTime: null,
+          chronicleEndMinute: null,
+          chronicleEndGranularity: "none",
+          updatedAt,
+        };
+      }),
+    }));
   },
 
   // --- Backward-compat methods ---
@@ -769,15 +1163,27 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       activeSceneId === id ? (remaining[0]?.id ?? "") : activeSceneId;
     set((state) => {
       const nodes = state.nodes.filter((n) => n.id !== id);
-      return { nodes, scenes: computeScenes(nodes), activeSceneId: newActive };
+      return {
+        nodes,
+        scenes: computeScenes(nodes),
+        activeSceneId: newActive,
+      };
     });
     usePhaseStore.getState().recomputeSceneOrder(get().nodes);
   },
 
   async renameScene(id, title) {
-    await api.updateNode(id, { title });
+    const persisted = await api.updateNode(id, { title });
     set((state) => {
-      const nodes = state.nodes.map((n) => (n.id === id ? { ...n, title } : n));
+      const nodes = state.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              title,
+              updatedAt: persisted?.updatedAt ?? n.updatedAt,
+            }
+          : n,
+      );
       return { nodes, scenes: computeScenes(nodes) };
     });
   },
@@ -959,9 +1365,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async updateNodeTitle(id, title) {
     const oldTitle = get().nodes.find((n) => n.id === id)?.title ?? "";
-    await api.updateNode(id, { title });
+    const persisted = await api.updateNode(id, { title });
     set((state) => {
-      const nodes = state.nodes.map((n) => (n.id === id ? { ...n, title } : n));
+      const nodes = state.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              title,
+              updatedAt: persisted?.updatedAt ?? n.updatedAt,
+            }
+          : n,
+      );
       return { nodes, scenes: computeScenes(nodes) };
     });
     if (!useGlobalHistoryStore.getState().isReplaying) {
@@ -969,19 +1383,31 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         kind: "scenes",
         label: i18next.t("tree.undo.renamed"),
         async undo() {
-          await api.updateNode(id, { title: oldTitle });
+          const restored = await api.updateNode(id, { title: oldTitle });
           set((state) => {
             const nodes = state.nodes.map((n) =>
-              n.id === id ? { ...n, title: oldTitle } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    title: oldTitle,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             );
             return { nodes, scenes: computeScenes(nodes) };
           });
         },
         async redo() {
-          await api.updateNode(id, { title });
+          const restored = await api.updateNode(id, { title });
           set((state) => {
             const nodes = state.nodes.map((n) =>
-              n.id === id ? { ...n, title } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    title,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             );
             return { nodes, scenes: computeScenes(nodes) };
           });
@@ -1055,9 +1481,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async updateSynopsis(id, synopsis) {
     const oldSynopsis = get().nodes.find((n) => n.id === id)?.synopsis ?? null;
-    await api.updateNode(id, { synopsis });
+    const persisted = await api.updateNode(id, { synopsis });
     set((state) => ({
-      nodes: state.nodes.map((n) => (n.id === id ? { ...n, synopsis } : n)),
+      nodes: state.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              synopsis,
+              updatedAt: persisted?.updatedAt ?? n.updatedAt,
+            }
+          : n,
+      ),
     }));
     recordChangeEvent({
       domain: "synopsis",
@@ -1072,18 +1506,32 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         kind: "scenes",
         label: i18next.t("tree.undo.synopsisUpdated"),
         async undo() {
-          await api.updateNode(id, { synopsis: oldSynopsis ?? undefined });
+          const restored = await api.updateNode(id, {
+            synopsis: oldSynopsis,
+          });
           set((state) => ({
             nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, synopsis: oldSynopsis } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    synopsis: oldSynopsis,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             ),
           }));
         },
         async redo() {
-          await api.updateNode(id, { synopsis });
+          const restored = await api.updateNode(id, { synopsis });
           set((state) => ({
             nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, synopsis } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    synopsis,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             ),
           }));
         },
@@ -1093,9 +1541,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async updateIntent(id, intent) {
     const oldIntent = get().nodes.find((n) => n.id === id)?.intent ?? null;
-    await api.updateNode(id, { intent });
+    const persisted = await api.updateNode(id, { intent });
     set((state) => ({
-      nodes: state.nodes.map((n) => (n.id === id ? { ...n, intent } : n)),
+      nodes: state.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              intent,
+              updatedAt: persisted?.updatedAt ?? n.updatedAt,
+            }
+          : n,
+      ),
     }));
     recordChangeEvent({
       domain: "intent",
@@ -1110,17 +1566,33 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         kind: "scenes",
         label: i18next.t("tree.undo.intentUpdated"),
         async undo() {
-          await api.updateNode(id, { intent: oldIntent ?? undefined });
+          const restored = await api.updateNode(id, {
+            intent: oldIntent,
+          });
           set((state) => ({
             nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, intent: oldIntent } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    intent: oldIntent,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             ),
           }));
         },
         async redo() {
-          await api.updateNode(id, { intent });
+          const restored = await api.updateNode(id, { intent });
           set((state) => ({
-            nodes: state.nodes.map((n) => (n.id === id ? { ...n, intent } : n)),
+            nodes: state.nodes.map((n) =>
+              n.id === id
+                ? {
+                    ...n,
+                    intent,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
+            ),
           }));
         },
       });
@@ -1129,28 +1601,50 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async setStatus(id, status) {
     const oldStatus = get().nodes.find((n) => n.id === id)?.status ?? null;
-    await api.updateNode(id, { status });
+    const persisted = await api.updateNode(id, { status });
     set((state) => ({
-      nodes: state.nodes.map((n) => (n.id === id ? { ...n, status } : n)),
+      nodes: state.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              status,
+              updatedAt: persisted?.updatedAt ?? n.updatedAt,
+            }
+          : n,
+      ),
     }));
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: i18next.t("tree.undo.statusChanged"),
         async undo() {
-          await api.updateNode(id, {
-            status: (oldStatus as SceneStatus) ?? undefined,
+          const restored = await api.updateNode(id, {
+            status: oldStatus as SceneStatus | null,
           });
           set((state) => ({
             nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, status: oldStatus } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    status: oldStatus,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             ),
           }));
         },
         async redo() {
-          await api.updateNode(id, { status });
+          const restored = await api.updateNode(id, { status });
           set((state) => ({
-            nodes: state.nodes.map((n) => (n.id === id ? { ...n, status } : n)),
+            nodes: state.nodes.map((n) =>
+              n.id === id
+                ? {
+                    ...n,
+                    status,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
+            ),
           }));
         },
       });
@@ -1168,7 +1662,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       storyTimeOrder: order,
     };
     if (label !== undefined) patch.storyTimeLabel = label;
-    await api.updateNode(id, patch);
+    const persisted = await api.updateNode(id, patch);
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id
@@ -1176,6 +1670,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
               ...n,
               storyTimeOrder: order,
               storyTimeLabel: label !== undefined ? label : n.storyTimeLabel,
+              updatedAt: persisted?.updatedAt ?? n.updatedAt,
             }
           : n,
       ),
@@ -1190,18 +1685,23 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             storyTimeOrder: oldOrder,
             storyTimeLabel: oldLabel,
           };
-          await api.updateNode(id, undoPatch);
+          const restored = await api.updateNode(id, undoPatch);
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
-                ? { ...n, storyTimeOrder: oldOrder, storyTimeLabel: oldLabel }
+                ? {
+                    ...n,
+                    storyTimeOrder: oldOrder,
+                    storyTimeLabel: oldLabel,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
                 : n,
             ),
           }));
           usePhaseStore.getState().recomputeSceneOrder(get().nodes);
         },
         async redo() {
-          await api.updateNode(id, patch);
+          const restored = await api.updateNode(id, patch);
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1210,6 +1710,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
                     storyTimeOrder: order,
                     storyTimeLabel:
                       label !== undefined ? label : n.storyTimeLabel,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
                   }
                 : n,
             ),
@@ -1225,10 +1726,18 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!node) return;
     const old = node.povCharacterId ?? null;
     if (old === codexEntryId) return; // 同値は書込み・履歴とも no-op（ドラッグ等の空振り対策）
-    await api.updateNode(id, { povCharacterId: codexEntryId });
+    const persisted = await api.updateNode(id, {
+      povCharacterId: codexEntryId,
+    });
     set((state) => ({
       nodes: state.nodes.map((n) =>
-        n.id === id ? { ...n, povCharacterId: codexEntryId } : n,
+        n.id === id
+          ? {
+              ...n,
+              povCharacterId: codexEntryId,
+              updatedAt: persisted?.updatedAt ?? n.updatedAt,
+            }
+          : n,
       ),
     }));
     if (!useGlobalHistoryStore.getState().isReplaying) {
@@ -1237,18 +1746,32 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         label: i18next.t("tree.undo.povCharacterChanged"),
         entityId: id,
         async undo() {
-          await api.updateNode(id, { povCharacterId: old });
+          const restored = await api.updateNode(id, { povCharacterId: old });
           set((state) => ({
             nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, povCharacterId: old } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    povCharacterId: old,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             ),
           }));
         },
         async redo() {
-          await api.updateNode(id, { povCharacterId: codexEntryId });
+          const restored = await api.updateNode(id, {
+            povCharacterId: codexEntryId,
+          });
           set((state) => ({
             nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, povCharacterId: codexEntryId } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    povCharacterId: codexEntryId,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             ),
           }));
         },
@@ -1261,10 +1784,16 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!node) return;
     const old = node.locationId ?? null;
     if (old === codexEntryId) return; // 同値は no-op
-    await api.updateNode(id, { locationId: codexEntryId });
+    const persisted = await api.updateNode(id, { locationId: codexEntryId });
     set((state) => ({
       nodes: state.nodes.map((n) =>
-        n.id === id ? { ...n, locationId: codexEntryId } : n,
+        n.id === id
+          ? {
+              ...n,
+              locationId: codexEntryId,
+              updatedAt: persisted?.updatedAt ?? n.updatedAt,
+            }
+          : n,
       ),
     }));
     if (!useGlobalHistoryStore.getState().isReplaying) {
@@ -1273,18 +1802,32 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         label: i18next.t("tree.undo.locationChanged"),
         entityId: id,
         async undo() {
-          await api.updateNode(id, { locationId: old });
+          const restored = await api.updateNode(id, { locationId: old });
           set((state) => ({
             nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, locationId: old } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    locationId: old,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             ),
           }));
         },
         async redo() {
-          await api.updateNode(id, { locationId: codexEntryId });
+          const restored = await api.updateNode(id, {
+            locationId: codexEntryId,
+          });
           set((state) => ({
             nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, locationId: codexEntryId } : n,
+              n.id === id
+                ? {
+                    ...n,
+                    locationId: codexEntryId,
+                    updatedAt: restored?.updatedAt ?? n.updatedAt,
+                  }
+                : n,
             ),
           }));
         },
@@ -1293,92 +1836,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async updateChronicleDate(id, patch) {
-    const node = get().nodes.find((n) => n.id === id);
-    if (!node) return;
-    // 変更キーの旧値を集め、実変更が無ければ no-op（履歴を汚さない）。
-    // 時刻/分は nullable → null 復元、粒度/確度は NOT NULL → 既定へ復元。
-    const restore: ChronicleDatePatch = {};
-    let changed = false;
-    if ("chronicleStartTime" in patch) {
-      restore.chronicleStartTime = node.chronicleStartTime ?? null;
-      if (
-        (node.chronicleStartTime ?? null) !== (patch.chronicleStartTime ?? null)
-      )
-        changed = true;
-    }
-    if ("chronicleStartMinute" in patch) {
-      restore.chronicleStartMinute = node.chronicleStartMinute ?? null;
-      if (
-        (node.chronicleStartMinute ?? null) !==
-        (patch.chronicleStartMinute ?? null)
-      )
-        changed = true;
-    }
-    if ("chronicleStartGranularity" in patch) {
-      restore.chronicleStartGranularity =
-        node.chronicleStartGranularity ?? "none";
-      if (
-        (node.chronicleStartGranularity ?? "none") !==
-        (patch.chronicleStartGranularity ?? "none")
-      )
-        changed = true;
-    }
-    if ("chronicleEndTime" in patch) {
-      restore.chronicleEndTime = node.chronicleEndTime ?? null;
-      if ((node.chronicleEndTime ?? null) !== (patch.chronicleEndTime ?? null))
-        changed = true;
-    }
-    if ("chronicleEndMinute" in patch) {
-      restore.chronicleEndMinute = node.chronicleEndMinute ?? null;
-      if (
-        (node.chronicleEndMinute ?? null) !== (patch.chronicleEndMinute ?? null)
-      )
-        changed = true;
-    }
-    if ("chronicleEndGranularity" in patch) {
-      restore.chronicleEndGranularity = node.chronicleEndGranularity ?? "none";
-      if (
-        (node.chronicleEndGranularity ?? "none") !==
-        (patch.chronicleEndGranularity ?? "none")
-      )
-        changed = true;
-    }
-    if ("chroniclePrecision" in patch) {
-      restore.chroniclePrecision = node.chroniclePrecision ?? "exact";
-      if (
-        (node.chroniclePrecision ?? "exact") !==
-        (patch.chroniclePrecision ?? "exact")
-      )
-        changed = true;
-    }
-    if (!changed) return;
-    await api.updateNode(id, patch);
-    set((state) => ({
-      nodes: state.nodes.map((n) => (n.id === id ? { ...n, ...patch } : n)),
-    }));
-    if (!useGlobalHistoryStore.getState().isReplaying) {
-      useGlobalHistoryStore.getState().push({
-        kind: "scenes",
-        label: i18next.t("tree.undo.chronicleDateChanged"),
-        entityId: id,
-        async undo() {
-          await api.updateNode(id, restore);
-          set((state) => ({
-            nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, ...restore } : n,
-            ),
-          }));
-        },
-        async redo() {
-          await api.updateNode(id, patch);
-          set((state) => ({
-            nodes: state.nodes.map((n) =>
-              n.id === id ? { ...n, ...patch } : n,
-            ),
-          }));
-        },
-      });
-    }
+    await persistChronicleDate(id, patch, true);
   },
 
   // --- UI state ---
@@ -1451,7 +1909,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     await moveTreeNode(id, newParentId, afterId, {
       getNodes: () => get().nodes,
       applyNodes: (nodes) => set({ nodes, scenes: computeScenes(nodes) }),
-      persist: (nodeId, patch) => api.updateNode(nodeId, patch).then(() => {}),
+      persist: async (nodeId, patch) => {
+        const persisted = await api.updateNode(nodeId, patch);
+        return persisted ? { updatedAt: persisted.updatedAt } : undefined;
+      },
       recomputeSceneOrder: (nodes) =>
         usePhaseStore.getState().recomputeSceneOrder([...nodes]),
       isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
@@ -1627,6 +2088,28 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set({ pendingRevealId: id, selectedIds: [id] });
   },
 }));
+
+subscribeTreeNodeMutations(
+  (mutation) => {
+    const workspaceIdentity = getCurrentWorkspaceIdentity();
+    if (
+      mutation.workspacePath !== (workspaceIdentity?.path ?? null) ||
+      mutation.workspaceOpenRevision !==
+        (workspaceIdentity?.openRevision ?? null) ||
+      getCurrentProjectId() !== mutation.projectId
+    ) {
+      return;
+    }
+    useTreeStore.setState((state) => ({
+      nodes: state.nodes.map((node) =>
+        node.id === mutation.nodeId && node.projectId === mutation.projectId
+          ? { ...node, updatedAt: mutation.updatedAt }
+          : node,
+      ),
+    }));
+  },
+  { replayCurrent: true },
+);
 
 /**
  * Consumer 用 hook。preview レコードが未生成の id でも安定参照の空オブジェクトを

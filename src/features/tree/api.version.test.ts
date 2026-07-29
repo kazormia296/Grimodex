@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { projects, treeNodes } from "@/db/schema";
@@ -58,6 +58,10 @@ beforeAll(async () => {
   ]);
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("saveSceneContent version bump", () => {
   it("保存のたびに version が +1 される (2回保存 → 2)", async () => {
     const first = await saveSceneContent(SCENE, DOC);
@@ -84,5 +88,18 @@ describe("本文を書かない writer は version を bump しない", () => {
     await savePlacedBeatPreviewOnly(SCENE_NO_BUMP, null);
     await updateNode(SCENE_NO_BUMP, { title: "renamed", synopsis: "s" });
     await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(0);
+  });
+
+  it("同一millisecondの連続metadata writeにも単調増加するISO OCC tokenを付ける", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2100-01-01T00:00:00.000Z"));
+
+    const first = await updateNode(SCENE_NO_BUMP, { title: "first" });
+    const second = await updateNode(SCENE_NO_BUMP, { title: "second" });
+
+    expect(first?.updatedAt).toBe("2100-01-01T00:00:00.000Z");
+    expect(second?.updatedAt).toBe("2100-01-01T00:00:00.001Z");
+    expect(Number.isNaN(Date.parse(first?.updatedAt ?? ""))).toBe(false);
+    expect(Number.isNaN(Date.parse(second?.updatedAt ?? ""))).toBe(false);
   });
 });

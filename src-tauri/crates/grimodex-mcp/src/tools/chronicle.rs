@@ -1322,7 +1322,7 @@ mod tests {
         let json = result_json(&detail);
         assert_eq!(json["version"], 1, "detail must expose the Event OCC token");
         assert_eq!(json["startMinute"], 540);
-        assert_eq!(json["endMinute"], 600);
+        assert!(json["endMinute"].is_null());
         assert_eq!(json["startGranularity"], "time");
         assert_eq!(json["endGranularity"], "day");
 
@@ -1337,9 +1337,45 @@ mod tests {
             .unwrap();
         let snap: serde_json::Value = serde_json::from_str(&after).unwrap();
         assert_eq!(snap["eventData"]["startMinute"], 540);
-        assert_eq!(snap["eventData"]["endMinute"], 600);
+        assert!(snap["eventData"]["endMinute"].is_null());
         assert_eq!(snap["eventData"]["startGranularity"], "time");
         assert_eq!(snap["eventData"]["endGranularity"], "day");
+    }
+
+    #[tokio::test]
+    async fn create_event_infers_omitted_granularity_from_date_components() {
+        let server = make_server(false);
+        let res = create_event(
+            &server,
+            CreateEventParams {
+                title: "Inferred".to_string(),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: Some(3),
+                end_time: Some(4),
+                start_minute: None,
+                end_minute: Some(600),
+                start_granularity: None,
+                end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .await
+        .expect("inferred create");
+        let id = result_json(&res)["id"].as_str().unwrap().to_string();
+        let detail = get_event_detail(&server, GetEventDetailParams { event_id: id })
+            .await
+            .expect("event detail");
+        let json = result_json(&detail);
+        assert_eq!(json["startGranularity"], "day");
+        assert!(json["startMinute"].is_null());
+        assert_eq!(json["endGranularity"], "time");
+        assert_eq!(json["endMinute"], 600);
     }
 
     #[tokio::test]
@@ -1401,7 +1437,7 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                start_time: Some(5),
                 end_time: None,
                 start_minute: Some(720),
                 end_minute: None,
@@ -1422,7 +1458,8 @@ mod tests {
         .await
         .unwrap();
         let json = result_json(&detail);
-        assert_eq!(json["startMinute"], 720);
+        assert_eq!(json["startTime"], 5);
+        assert!(json["startMinute"].is_null());
         assert_eq!(json["startGranularity"], "month");
         // untouched end_* keep the seeded defaults
         assert_eq!(json["endGranularity"], "none");

@@ -216,6 +216,104 @@ function payloadStringArray(
   );
 }
 
+type ChronicleBulkEventKind =
+  | "eventDelete"
+  | "eventClearDate"
+  | "eventSetLane"
+  | "eventSetDate";
+
+interface ChronicleBulkChangeTargets {
+  direction: "initial" | "undo" | "redo";
+  events: ReadonlyMap<string, ChronicleBulkEventKind | "eventUpdate">;
+  sceneIds: ReadonlySet<string>;
+  relatedEventIds: ReadonlySet<string>;
+}
+
+/**
+ * A Chronicle bulk write owns multiple Event and Scene targets while the
+ * change_events row itself is journal-addressed. Decode the explicit target
+ * metadata so one row can fan out to every affected projection and history
+ * command. The id arrays are retained as a forward-compatible fallback if a
+ * newer native operation kind reaches an older renderer.
+ */
+function parseChronicleBulkChangeTargets(
+  event: ChangeEventRow,
+): ChronicleBulkChangeTargets | null {
+  if (
+    event.domain !== "event" ||
+    event.opType !== "chronicle.bulk" ||
+    event.entityType !== "chronicle_bulk"
+  ) {
+    return null;
+  }
+  const payload = parseChangePayload(event.payload);
+  if (!payload) return null;
+
+  const directionValue = payload.direction;
+  const direction =
+    directionValue === "undo" || directionValue === "redo"
+      ? directionValue
+      : "initial";
+  const eventTargets = new Map<
+    string,
+    ChronicleBulkEventKind | "eventUpdate"
+  >();
+  const sceneIds = new Set(payloadStringArray(payload, "sceneIds"));
+  const operations = payload.operations;
+  if (Array.isArray(operations)) {
+    for (const value of operations) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        continue;
+      }
+      const operation = value as Record<string, unknown>;
+      const kind = operation.kind;
+      const eventId = operation.eventId;
+      if (
+        (kind === "eventDelete" ||
+          kind === "eventClearDate" ||
+          kind === "eventSetLane" ||
+          kind === "eventSetDate") &&
+        typeof eventId === "string" &&
+        eventId.length > 0
+      ) {
+        eventTargets.set(eventId, kind);
+      }
+      const sceneId = operation.sceneId;
+      if (
+        (kind === "sceneClearDate" ||
+          kind === "sceneSetPov" ||
+          kind === "sceneSetDate") &&
+        typeof sceneId === "string" &&
+        sceneId.length > 0
+      ) {
+        sceneIds.add(sceneId);
+      }
+    }
+  }
+  for (const eventId of payloadStringArray(payload, "eventIds")) {
+    if (!eventTargets.has(eventId)) {
+      eventTargets.set(eventId, "eventUpdate");
+    }
+  }
+
+  return {
+    direction,
+    events: eventTargets,
+    sceneIds,
+    relatedEventIds: new Set(payloadStringArray(payload, "relatedEventIds")),
+  };
+}
+
+function chronicleBulkDocumentOpType(
+  kind: ChronicleBulkEventKind | "eventUpdate",
+  direction: ChronicleBulkChangeTargets["direction"],
+): string {
+  if (kind === "eventDelete") {
+    return direction === "undo" ? "event.create" : "event.delete";
+  }
+  return "event.update";
+}
+
 /**
  * Relation/stamp change rows represent aggregate metadata, not an editor
  * document-body update. They therefore must not enter notifyEditorDocument,
@@ -309,8 +407,16 @@ async function fanOut(
 ): Promise<void> {
   if (!isAuthoritative()) return;
   const domains = new Set(events.map((e) => e.domain));
+  const bulkTargets = new Map<ChangeEventRow, ChronicleBulkChangeTargets>();
+  for (const event of events) {
+    const targets = parseChronicleBulkChangeTargets(event);
+    if (targets) bulkTargets.set(event, targets);
+  }
 
-  if (domains.has("grid")) {
+  if (
+    domains.has("grid") ||
+    [...bulkTargets.values()].some((targets) => targets.sceneIds.size > 0)
+  ) {
     await useTreeStore.getState().reloadTreeOrThrow(projectId);
     if (!isAuthoritative()) return;
   }
@@ -412,6 +518,28 @@ async function fanOut(
   // Non-editor entity events may still target codex/snippet tabs open in editor.
   for (const ev of events) {
     if (!isAuthoritative()) return;
+    const chronicleBulk = bulkTargets.get(ev);
+    if (chronicleBulk) {
+      for (const [eventId, kind] of chronicleBulk.events) {
+        invalidateHistoryForEntity("event", eventId);
+        notifyEditorDocument(
+          { kind: "chronicle-event", id: eventId },
+          {
+            ...ev,
+            entityType: "event",
+            entityId: eventId,
+            opType: chronicleBulkDocumentOpType(kind, chronicleBulk.direction),
+          },
+          inlineAiPending,
+        );
+      }
+      for (const eventId of chronicleBulk.relatedEventIds) {
+        invalidateHistoryForEntity("event", eventId);
+      }
+      for (const sceneId of chronicleBulk.sceneIds) {
+        invalidateHistoryForEntity("tree_batch", sceneId);
+      }
+    }
     invalidateEventMetadataHistory(ev);
     if (ev.entityType === "codex_entry" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);

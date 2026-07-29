@@ -30,7 +30,10 @@ import {
   hasRetainedRecoveryDraftForDocument,
 } from "@/features/editor/editorSaveRegistry";
 import { runExclusiveDocumentMutation } from "@/features/editor/document/documentSaveCoordinator";
-import type { DocumentKey } from "@/features/editor/document/documentKey";
+import {
+  encodeDocumentKey,
+  type DocumentKey,
+} from "@/features/editor/document/documentKey";
 import { awaitPendingSceneContentWrite } from "@/features/tree/pendingSceneWrites";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import {
@@ -54,6 +57,7 @@ import { EXTERNAL_ROOTS_KEY } from "./types";
 import { cancelWriteBack, hasPendingWriteBack } from "./writeBack";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { scheduleBodyMentionScan } from "@/features/editor/persistSceneBody";
+import { publishExternalDocumentReload } from "@/lib/externalDocumentReloadRegistry";
 
 const ARCHIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RENAME_WINDOW_MS = 5000;
@@ -1053,7 +1057,18 @@ async function applyExternalContent(
     content: pmJson,
     charCount,
   });
+  // Publish the authoritative DB replacement before any fallible metadata,
+  // timelapse, tree, mention, or chat side effect. Mounted editors subscribe
+  // to this exact file-backed document nonce and will reload the canonical DB
+  // body even when a later side effect rejects.
   onContentReplaced?.();
+  publishExternalDocumentReload(
+    encodeDocumentKey({
+      kind: "tree",
+      id: nodeId,
+      storage: "file",
+    }),
+  );
   assertMountAuthorityCurrent(isCurrent);
   await updateNode(nodeId, {
     sourceMtime: sourceMtime ?? new Date().toISOString(),
@@ -1116,27 +1131,6 @@ async function applyExternalContent(
     assertMountAuthorityCurrent(isCurrent);
     await chatState.refreshContextLayers().catch(() => {});
     assertMountAuthorityCurrent(isCurrent);
-  }
-
-  // 取り込んだ内容を表示中の live editor (タブ EditorPane / リニア
-  // LinearSceneBlock) に反映する。リニアはタブを持たないので tab リスト
-  // だけのゲートでは取りこぼし、editor の古い doc が次の autosave で
-  // 取り込み分を上書きしてしまう。
-  const { useLinearEditorStore } =
-    await import("@/features/editor/linearEditorStore");
-  assertMountAuthorityCurrent(isCurrent);
-  const tabState = useTabStore.getState();
-  const hasLiveEditor =
-    tabState.tabs.some((t) => t.nodeId === nodeId) ||
-    tabState.secondaryTabs.some((t) => t.nodeId === nodeId) ||
-    nodeId in useLinearEditorStore.getState().editorsById;
-  if (hasLiveEditor) {
-    assertMountAuthorityCurrent(isCurrent);
-    window.dispatchEvent(
-      new CustomEvent("external-mount:reload-scene", {
-        detail: { sceneId: nodeId, content: pmJson },
-      }),
-    );
   }
 }
 
@@ -1323,37 +1317,44 @@ export async function resolveReloadConflict(
     // already-issued local save. Use that synchronous window to cancel live
     // debounce drafts immediately, before they can become another save.
     let initialWriteBackCancellation: Promise<void> = Promise.resolve();
-    const reload = runExclusiveDocumentMutation(documentKey, async () => {
-      await initialWriteBackCancellation;
-      // A save already running when the user chose Reload can persist and
-      // schedule OUT after the first cancellation snapshot. Drain the DB
-      // chain, discard any failure/pending state it left on the live
-      // AutoSave, then cancel OUT again to a fixed point.
-      await awaitPendingSceneContentWrite(conflict.sceneId);
-      discardAutoSavesForDocument(documentKey);
-      discardRegisteredDocumentDrafts(documentKey);
-      await cancelWriteBack(conflict.sceneId);
-      await awaitPendingSceneContentWrite(conflict.sceneId);
-      await cancelWriteBack(conflict.sceneId);
+    const reload = runExclusiveDocumentMutation(
+      documentKey,
+      async ({ markAuthoritativeMutation }) => {
+        await initialWriteBackCancellation;
+        // A save already running when the user chose Reload can persist and
+        // schedule OUT after the first cancellation snapshot. Drain the DB
+        // chain, discard any failure/pending state it left on the live
+        // AutoSave, then cancel OUT again to a fixed point.
+        await awaitPendingSceneContentWrite(conflict.sceneId);
+        discardAutoSavesForDocument(documentKey);
+        discardRegisteredDocumentDrafts(documentKey);
+        await cancelWriteBack(conflict.sceneId);
+        await awaitPendingSceneContentWrite(conflict.sceneId);
+        await cancelWriteBack(conflict.sceneId);
 
-      // The disk version is now the explicit winner. Muting prevents this
-      // restorative write from re-entering the watcher as another conflict.
-      useExternalRootStore
-        .getState()
-        .mutePath(conflict.rootId, conflict.relPath);
-      await mountApi.writeExternalFile(
-        conflict.rootId,
-        conflict.relPath,
-        conflict.incomingContent,
-      );
-      await applyExternalContent(
-        conflict.sceneId,
-        conflict.rootId,
-        conflict.relPath,
-        conflict.incomingContent,
-        conflict.incomingMtime,
-      );
-    });
+        // The disk version is now the explicit winner. Muting prevents this
+        // restorative write from re-entering the watcher as another conflict.
+        useExternalRootStore
+          .getState()
+          .mutePath(conflict.rootId, conflict.relPath);
+        await mountApi.writeExternalFile(
+          conflict.rootId,
+          conflict.relPath,
+          conflict.incomingContent,
+        );
+        await applyExternalContent(
+          conflict.sceneId,
+          conflict.rootId,
+          conflict.relPath,
+          conflict.incomingContent,
+          conflict.incomingMtime,
+          getCurrentProjectId(),
+          () => true,
+          undefined,
+          markAuthoritativeMutation,
+        );
+      },
+    );
     discardAutoSavesForDocument(documentKey);
     discardRegisteredDocumentDrafts(documentKey);
     initialWriteBackCancellation = cancelWriteBack(conflict.sceneId);

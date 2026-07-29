@@ -19,6 +19,10 @@ export interface ChronicleLaneGutterProps {
   laneOptions?: { id: string; name: string; type: string }[];
   /** 編集ロック中は追加/割当 UI を隠す。 */
   locked?: boolean;
+  /** false になった瞬間、進行中の live reorder を取り消して元順へ戻す。 */
+  isInteractive: boolean;
+  /** scope / snapshot generation の切替時に drag ownership を失効させる。 */
+  interactionEpoch: string;
   /** 未割当レーンを群ごと Codex へ割当（groupId=null は基底未割当）。 */
   onAssignGroup?: (groupId: string | null, codexId: string) => void;
   /** レーン追加（空の未割当レーンを増やす）。 */
@@ -47,6 +51,8 @@ export function ChronicleLaneGutter({
   activeLaneKey,
   laneOptions = [],
   locked = false,
+  isInteractive,
+  interactionEpoch,
   onAssignGroup,
   onAddLane,
   onHideGroup,
@@ -59,11 +65,19 @@ export function ChronicleLaneGutter({
   // ── codex レーンの並べ替え（Grid 方式の順次入替え） ──
   // drag 中は対象 codexId のみ保持（dim 用）。位置は live reorder＋FLIP アニメで示す。
   const [drag, setDrag] = useState<{ codexId: string } | null>(null);
-  const dragCleanupRef = useRef<(() => void) | null>(null);
-  const reorderable = !locked && !!onReorderLanes;
+  const finishReorderRef = useRef<((commit: boolean) => void) | null>(null);
+  const reorderable = isInteractive && !locked && !!onReorderLanes;
 
   const startReorder = (codexId: string, e: React.MouseEvent) => {
-    if (e.button !== 0 || !onReorderLanes || !gutterEl) return;
+    if (
+      e.button !== 0 ||
+      !isInteractive ||
+      locked ||
+      !onReorderLanes ||
+      !gutterEl
+    ) {
+      return;
+    }
     e.preventDefault();
     const onReorder = onReorderLanes;
     const startY = e.clientY;
@@ -88,11 +102,15 @@ export function ChronicleLaneGutter({
     const scrollEl = gutterEl.closest<HTMLElement>(".overflow-y-auto");
     const initialScrollTop = scrollEl?.scrollTop ?? 0;
 
-    dragCleanupRef.current?.();
+    // A second pointer start owns a new transaction. Restore any prior live
+    // preview before taking the next immutable geometry snapshot.
+    finishReorderRef.current?.(false);
     setDrag({ codexId });
     let moved = false;
     let lastOrder = baseOrder;
+    let finished = false;
     const move = (ev: MouseEvent) => {
+      if (finished) return;
       if (!moved && Math.abs(ev.clientY - startY) < 3) return;
       moved = true;
       const scrollDelta = (scrollEl?.scrollTop ?? 0) - initialScrollTop;
@@ -104,25 +122,48 @@ export function ChronicleLaneGutter({
         onReorder(next, false); // 表示のみ（順次入替え）。永続化はドロップ時。
       }
     };
-    const up = () => {
+    const finish = (commit: boolean) => {
+      if (finished) return;
+      finished = true;
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
-      dragCleanupRef.current = null;
+      window.removeEventListener("blur", cancel);
+      if (finishReorderRef.current === finish) {
+        finishReorderRef.current = null;
+      }
       setDrag(null);
-      if (moved && lastOrder.join("\n") !== baseOrder.join("\n")) {
+      const changed = lastOrder.join("\n") !== baseOrder.join("\n");
+      if (!moved || !changed) return;
+      if (commit) {
         onReorder(lastOrder, true); // 確定＝永続化。
+      } else {
+        // live reorder は親の laneOrder を既に更新している。単に listener
+        // を外すだけでは非表示後も未保存順が残るため、開始順を明示的に戻す。
+        onReorder(baseOrder, false);
       }
     };
-    dragCleanupRef.current = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-    };
+    const up = () => finish(true);
+    const cancel = () => finish(false);
+    finishReorderRef.current = finish;
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
+    window.addEventListener("blur", cancel);
   };
 
-  // アンマウント時に進行中ドラッグの document リスナを撤去（取りこぼし防止）。
-  useEffect(() => () => dragCleanupRef.current?.(), []);
+  // keepalive panel の非表示、lock、snapshot/scope 失効はいずれも drop では
+  // ない。document listener を外し、live preview も開始順へロールバックする。
+  useEffect(() => {
+    if (!reorderable) finishReorderRef.current?.(false);
+  }, [reorderable]);
+  useEffect(() => {
+    finishReorderRef.current?.(false);
+  }, [interactionEpoch]);
+  useEffect(
+    () => () => {
+      finishReorderRef.current?.(false);
+    },
+    [],
+  );
 
   const typeJa = (type: string): string =>
     t(`chronicle.laneType.${type}`, type);

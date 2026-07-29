@@ -35,6 +35,15 @@ export interface HistoryCommand {
   operationIds?: readonly string[];
   /** Entity id for per-entry invalidation on external writes. */
   entityId?: string;
+  /**
+   * Every entity owned by a composite command. An external write to any one of
+   * these targets invalidates the whole command rather than leaving a replay
+   * closure whose mixed OCC snapshot is already stale.
+   */
+  affectedEntities?: readonly {
+    kind: HistoryKind;
+    entityId: string;
+  }[];
   /** Exact editor document affected by the command, when one exists. */
   documentKey?: DocumentKey;
   /**
@@ -401,7 +410,11 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   invalidateForEntity(kind, entityId) {
     set((state) => {
       const matches = (c: HistoryCommand) =>
-        c.kind === kind && c.entityId === entityId;
+        (c.kind === kind && c.entityId === entityId) ||
+        c.affectedEntities?.some(
+          (affected) =>
+            affected.kind === kind && affected.entityId === entityId,
+        ) === true;
       const past = state.past.filter((c) => !matches(c));
       const future = state.future.filter((c) => !matches(c));
       return {

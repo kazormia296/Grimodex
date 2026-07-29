@@ -42,13 +42,14 @@ import {
   selectProviderReadiness,
   useAiSettingsStore,
 } from "@/features/chat/store";
+import { useScenesPanelNodes } from "./useScenesPanelNodes";
 
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
 export function ScenesPanel() {
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  const nodes = useTreeStore((s) => s.nodes);
+  const nodes = useScenesPanelNodes();
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const selectedIds = useTreeStore((s) => s.selectedIds);
   const isLoading = useTreeStore((s) => s.isLoading);

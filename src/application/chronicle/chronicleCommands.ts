@@ -6,6 +6,7 @@ export interface ChronicleCreateInput {
   primaryCodexId?: string;
   laneGroup?: string;
   startTime?: number;
+  startMinute?: number;
   startGranularity?: EventRow["startGranularity"];
 }
 

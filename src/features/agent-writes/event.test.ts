@@ -225,6 +225,30 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     });
   });
 
+  it("granularity 省略を native 推論へ渡し、日付を none で上書きしない", async () => {
+    await agentCreateEvent({
+      title: "dated",
+      startTime: 10,
+      startMinute: 720,
+      endTime: 11,
+      endGranularity: "day",
+    });
+
+    const createCall = h.invoke.mock.calls.find(
+      ([command]) => command === "agent_event_create",
+    );
+    const payload = (
+      createCall?.[1] as { payload: Record<string, unknown> } | undefined
+    )?.payload;
+    expect(payload).not.toHaveProperty("startGranularity");
+    expect(payload).toMatchObject({
+      startTime: 10,
+      startMinute: 720,
+      endTime: 11,
+      endGranularity: "day",
+    });
+  });
+
   it("削除済み create replay は renderer side effect を公開しない", async () => {
     h.invoke.mockImplementation(async (command: string) =>
       command === "db_execute" ? { rows: [] } : writeResult,

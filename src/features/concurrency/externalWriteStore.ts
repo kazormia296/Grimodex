@@ -8,6 +8,11 @@ import {
   registerExternalEditConflict,
   unregisterExternalEditConflict,
 } from "@/lib/externalEditConflictRegistry";
+import {
+  clearExternalDocumentReloadRegistry,
+  publishExternalDocumentReload,
+  subscribeExternalDocumentReloads,
+} from "@/lib/externalDocumentReloadRegistry";
 
 type DocumentReference = string | DocumentKey;
 
@@ -69,16 +74,21 @@ export const useExternalWriteStore = create<ExternalWriteState>((set, get) => ({
 
   bumpReloadNonce: (document) => {
     const key = externalDocumentStateKey(document);
-    set((s) => ({
-      reloadNonce: {
-        ...s.reloadNonce,
-        [key]: (s.reloadNonce[key] ?? 0) + 1,
-      },
-    }));
+    publishExternalDocumentReload(key);
   },
 
   clear: () => {
     clearExternalEditConflictRegistry();
+    clearExternalDocumentReloadRegistry();
     set({ conflicts: [], reloadNonce: {} });
   },
 }));
+
+subscribeExternalDocumentReloads((stateKey, nonce) => {
+  useExternalWriteStore.setState((state) => ({
+    reloadNonce: {
+      ...state.reloadNonce,
+      [stateKey]: nonce,
+    },
+  }));
+});

@@ -1,6 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { BeatMention } from "@/features/editor/beat/extractBeatMentions";
+import {
+  getCurrentWorkspaceIdentity,
+  setCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import {
+  _resetSceneBodyCommitRegistryForTests,
+  subscribeSceneBodyCommits,
+  type SceneBodyCommitPublication,
+} from "@/lib/sceneBodyCommitRegistry";
 
 /**
  * Behavioral contract for persistSceneBody — the single source of truth for the
@@ -70,6 +79,7 @@ const h = vi.hoisted(() => ({
   bumpMatrixDataVersion: vi.fn(),
   recordCounter: vi.fn(),
   recordSerializedByteCounter: vi.fn(),
+  publishTreeNodeMutation: vi.fn(),
 }));
 
 vi.mock("@/lib/perfLog", () => ({
@@ -165,6 +175,9 @@ vi.mock("@/features/editor/sceneBodyBundleApi", () => ({
 vi.mock("@/features/matrix/matrixDataVersion", () => ({
   bumpMatrixDataVersion: h.bumpMatrixDataVersion,
 }));
+vi.mock("@/lib/treeNodeMutationRegistry", () => ({
+  publishTreeNodeMutation: h.publishTreeNodeMutation,
+}));
 
 import {
   _resetBodyMentionScanSchedulerForTests,
@@ -176,13 +189,54 @@ const fakeDoc = { toJSON: () => DOC_JSON } as unknown as ProseMirrorNode;
 
 beforeEach(() => {
   _resetBodyMentionScanSchedulerForTests();
+  _resetSceneBodyCommitRegistryForTests();
   vi.clearAllMocks();
+  setCurrentWorkspaceIdentity({
+    path: "/workspace/test",
+    openRevision: 7,
+  });
   h.listCodexMatchTargets.mockResolvedValue([]);
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
   h.state.codexEntries = [];
   h.state.activeChatSceneId = null;
   h.state.fileBacked = false;
   h.state.electron = false;
+});
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+  _resetSceneBodyCommitRegistryForTests();
+});
+
+describe("persistSceneBody — committed-body publication", () => {
+  it("publishes the exact scope immediately after content commit even if a later side effect fails", async () => {
+    const publications: SceneBodyCommitPublication[] = [];
+    const unsubscribe = subscribeSceneBodyCommits((publication) => {
+      publications.push(publication);
+    });
+    h.saveAuthorshipSpans.mockRejectedValueOnce(
+      new Error("authorship side effect failed"),
+    );
+
+    await expect(persistSceneBody("scene-1", fakeDoc)).rejects.toThrow(
+      "authorship side effect failed",
+    );
+
+    expect(getCurrentWorkspaceIdentity()).toEqual({
+      path: "/workspace/test",
+      openRevision: 7,
+    });
+    expect(publications).toEqual([
+      {
+        workspacePath: "/workspace/test",
+        openRevision: 7,
+        projectId: "proj-1",
+        sceneId: "scene-1",
+        contentVersion: 1,
+      },
+    ]);
+    unsubscribe();
+  });
 });
 
 describe("persistSceneBody — DB-native scene", () => {
@@ -214,6 +268,13 @@ describe("persistSceneBody — DB-native scene", () => {
       "editor.coreSave.dbTransaction",
       1,
     );
+    expect(h.publishTreeNodeMutation).toHaveBeenCalledWith({
+      workspacePath: "/workspace/test",
+      workspaceOpenRevision: 7,
+      projectId: "proj-1",
+      nodeId: "scene-1",
+      updatedAt: "2026-07-28T00:00:00.000Z",
+    });
   });
 
   it("saves content with serialized doc JSON + char count", async () => {
@@ -224,6 +285,7 @@ describe("persistSceneBody — DB-native scene", () => {
       unplacedBeatsDoc: "[]",
       charCount: 42,
     });
+    expect(h.publishTreeNodeMutation).not.toHaveBeenCalled();
   });
 
   it("records the serialized scene payload as UTF-8 bytes", async () => {

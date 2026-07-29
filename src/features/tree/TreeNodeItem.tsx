@@ -592,7 +592,7 @@ function TreeNodeItemImpl({
 
             {/* メタ構造 lens バッジ */}
             {node.nodeType === "scene" && !isEditing && (
-              <LensDot sceneId={node.id} updatedAt={node.updatedAt} />
+              <LensDot sceneId={node.id} />
             )}
 
             {/* Word count */}
