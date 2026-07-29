@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate public Phase 0 JSONL records and story-level split isolation."""
+"""Validate public Phase 0 and Phase 0b Gate 2 data contracts."""
 
 from __future__ import annotations
 
@@ -12,6 +12,10 @@ from grimodex_lfm_eval.dataset import (
     load_jsonl,
     load_split_manifest,
     validate_story_splits,
+)
+from grimodex_lfm_eval.reranker_gate2 import (
+    load_gate2_jsonl,
+    load_parity_jsonl,
 )
 
 
@@ -29,7 +33,10 @@ def validate_dataset(data_root: Path) -> dict[str, object]:
         "challenge": [],
     }
     task_counts = {"relevance": 0, "impact": 0}
+    gate2_root = data_root / "gate2"
     for path in sorted(data_root.rglob("*.jsonl")):
+        if gate2_root in path.parents:
+            continue
         for record in load_jsonl(path):
             split = story_to_split.get(record.story_id)
             if split is None:
@@ -40,9 +47,34 @@ def validate_dataset(data_root: Path) -> dict[str, object]:
             task_counts[str(record.task)] += 1
 
     validate_story_splits(records_by_split)
+    gate2_counts = {
+        "candidateQueries": 0,
+        "candidateChunks": 0,
+        "parityPairs": 0,
+    }
+    if gate2_root.is_dir():
+        known_gate2_files: set[Path] = set()
+        for path in sorted(gate2_root.glob("candidates-*.jsonl")):
+            queries = load_gate2_jsonl(path)
+            known_gate2_files.add(path)
+            gate2_counts["candidateQueries"] += len(queries)
+            gate2_counts["candidateChunks"] += sum(
+                len(query.candidates) for query in queries
+            )
+        for path in sorted(gate2_root.glob("parity-pairs-*.jsonl")):
+            pairs = load_parity_jsonl(path, expected_pair_count=12)
+            known_gate2_files.add(path)
+            gate2_counts["parityPairs"] += len(pairs)
+        unknown = set(gate2_root.glob("*.jsonl")) - known_gate2_files
+        if unknown:
+            raise DatasetValidationError(
+                "unsupported Gate 2 JSONL files: "
+                + ", ".join(str(path) for path in sorted(unknown))
+            )
     return {
         "schemaVersion": 1,
         "taskCounts": task_counts,
+        "gate2Counts": gate2_counts,
         "splitCounts": {
             split: len(records)
             for split, records in records_by_split.items()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path, PurePosixPath
 import re
@@ -71,6 +72,51 @@ class SessionPolicy(_ConfigModel):
     inter_op_threads: int = Field(default=1, gt=0)
 
 
+class RerankerReferenceSpec(_ConfigModel):
+    artifact: str = Field(min_length=1)
+    artifact_sha256: str
+    local_snapshot: str = Field(min_length=1)
+    manifest: str = Field(min_length=1)
+    files: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("artifact_sha256")
+    @classmethod
+    def validate_artifact_sha256(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not SHA256_PATTERN.fullmatch(normalized):
+            raise ValueError(
+                "reference artifact_sha256 must be a lowercase SHA-256 digest"
+            )
+        return normalized
+
+    @field_validator("artifact", "local_snapshot", "manifest")
+    @classmethod
+    def validate_relative_path(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if path.is_absolute() or ".." in path.parts or str(path) != value:
+            raise ValueError("reference model paths must be normalized relative paths")
+        return value
+
+    @field_validator("files")
+    @classmethod
+    def validate_files(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("reference model files must be unique")
+        for value in values:
+            path = PurePosixPath(value)
+            if path.is_absolute() or ".." in path.parts or str(path) != value:
+                raise ValueError(
+                    "reference model files must be normalized relative paths"
+                )
+        return values
+
+    @model_validator(mode="after")
+    def validate_artifact_is_selected(self) -> "RerankerReferenceSpec":
+        if self.artifact not in self.files:
+            raise ValueError("reference artifact must be included in files")
+        return self
+
+
 class RerankerModelSpec(_ConfigModel):
     key: str = Field(pattern=r"^[a-z0-9_]+$")
     language: Literal["ja", "en"]
@@ -83,6 +129,7 @@ class RerankerModelSpec(_ConfigModel):
     local_snapshot: str = Field(min_length=1)
     manifest: str = Field(min_length=1)
     files: tuple[str, ...] = Field(min_length=1)
+    reference: RerankerReferenceSpec
 
     @field_validator("revision")
     @classmethod
@@ -179,6 +226,30 @@ def resolve_model_paths(
     return snapshot, manifest, artifact
 
 
+def resolve_reference_paths(
+    config_path: Path,
+    model: RerankerModelSpec,
+) -> tuple[Path, Path, Path]:
+    experiment_root = config_path.resolve().parent.parent
+    snapshot = (experiment_root / model.reference.local_snapshot).resolve()
+    manifest = (experiment_root / model.reference.manifest).resolve()
+    artifact = (snapshot / model.reference.artifact).resolve()
+    for path in (snapshot, manifest, artifact):
+        try:
+            path.relative_to(experiment_root)
+        except ValueError as error:
+            raise ValueError(
+                "Phase 0b reference paths must remain inside the experiment directory"
+            ) from error
+    try:
+        artifact.relative_to(snapshot)
+    except ValueError as error:
+        raise ValueError(
+            "Phase 0b reference artifact must remain inside its snapshot"
+        ) from error
+    return snapshot, manifest, artifact
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -201,6 +272,24 @@ def verify_model_snapshot(
         raise ValueError(
             f"{model.key} artifact SHA-256 mismatch: "
             f"expected {model.artifact_sha256}, got {artifact_hash}"
+        )
+    return snapshot, artifact, actual_manifest_hash
+
+
+def verify_reference_snapshot(
+    config_path: Path,
+    model: RerankerModelSpec,
+) -> tuple[Path, Path, str]:
+    snapshot, manifest_path, artifact = resolve_reference_paths(config_path, model)
+    manifest, expected_manifest_hash = load_manifest(manifest_path)
+    actual_manifest_hash = verify_file_manifest(snapshot, manifest)
+    if actual_manifest_hash != expected_manifest_hash:
+        raise ValueError("reference snapshot manifest hash changed during verification")
+    artifact_hash = sha256_file(artifact)
+    if artifact_hash != model.reference.artifact_sha256:
+        raise ValueError(
+            f"{model.key} reference artifact SHA-256 mismatch: "
+            f"expected {model.reference.artifact_sha256}, got {artifact_hash}"
         )
     return snapshot, artifact, actual_manifest_hash
 
@@ -289,8 +378,20 @@ class OnnxRerankerRuntime:
 class TokenizersPairAdapter:
     """Expose a minimal Transformers-like pair tokenizer without importing Torch."""
 
-    def __init__(self, tokenizer: Any) -> None:
+    def __init__(
+        self,
+        tokenizer: Any,
+        *,
+        pad_id: int,
+        pad_token: str,
+    ) -> None:
+        if pad_id < 0:
+            raise ValueError("pad_id must be non-negative")
+        if not pad_token:
+            raise ValueError("pad_token must not be empty")
         self.tokenizer = tokenizer
+        self.pad_id = pad_id
+        self.pad_token = pad_token
 
     def __call__(
         self,
@@ -301,6 +402,7 @@ class TokenizersPairAdapter:
         padding: bool,
         truncation: bool,
         return_tensors: str,
+        return_special_tokens_mask: bool = False,
     ) -> dict[str, np.ndarray]:
         if len(queries) != len(passages):
             raise ValueError("query and passage counts must match")
@@ -310,12 +412,15 @@ class TokenizersPairAdapter:
             max_length=max_length,
             strategy="longest_first",
         )
-        self.tokenizer.enable_padding()
+        self.tokenizer.enable_padding(
+            pad_id=self.pad_id,
+            pad_token=self.pad_token,
+        )
         encodings = self.tokenizer.encode_batch(
             list(zip(queries, passages, strict=True)),
             add_special_tokens=True,
         )
-        return {
+        output = {
             "input_ids": np.asarray(
                 [encoding.ids for encoding in encodings],
                 dtype=np.int64,
@@ -329,6 +434,12 @@ class TokenizersPairAdapter:
                 dtype=np.int64,
             ),
         }
+        if return_special_tokens_mask:
+            output["special_tokens_mask"] = np.asarray(
+                [encoding.special_tokens_mask for encoding in encodings],
+                dtype=np.int64,
+            )
+        return output
 
 
 def load_onnx_reranker(
@@ -349,8 +460,22 @@ def load_onnx_reranker(
     import onnxruntime as ort
     from tokenizers import Tokenizer
 
+    model_config = json.loads(
+        (snapshot / "config.json").read_text(encoding="utf-8")
+    )
+    tokenizer_config = json.loads(
+        (snapshot / "tokenizer_config.json").read_text(encoding="utf-8")
+    )
+    pad_id = model_config.get("pad_token_id")
+    pad_token = tokenizer_config.get("pad_token")
+    if not isinstance(pad_id, int) or pad_id < 0:
+        raise ValueError(f"{model.key} config does not define a valid pad_token_id")
+    if not isinstance(pad_token, str) or not pad_token:
+        raise ValueError(f"{model.key} tokenizer does not define a valid pad_token")
     tokenizer = TokenizersPairAdapter(
-        Tokenizer.from_file(str(snapshot / "tokenizer.json"))
+        Tokenizer.from_file(str(snapshot / "tokenizer.json")),
+        pad_id=pad_id,
+        pad_token=pad_token,
     )
     options = build_session_options(
         thread_count,
@@ -359,6 +484,56 @@ def load_onnx_reranker(
     )
     session = ort.InferenceSession(
         str(artifact),
+        sess_options=options,
+        providers=["CPUExecutionProvider"],
+    )
+    return (
+        OnnxRerankerRuntime(
+            tokenizer=tokenizer,
+            session=session,
+            max_pair_tokens=config.benchmark.max_pair_tokens,
+        ),
+        manifest_hash,
+    )
+
+
+def load_reference_reranker(
+    config_path: Path,
+    config: Phase0bConfig,
+    model: RerankerModelSpec,
+    *,
+    thread_count: int,
+) -> tuple[OnnxRerankerRuntime, str]:
+    """Load the pinned FP32 ONNX with the Hugging Face tokenizer path."""
+
+    experiment_root = config_path.resolve().parent.parent
+    configure_hugging_face_environment(
+        experiment_root,
+        offline=True,
+        configured_values=config.offline_environment,
+    )
+    candidate_snapshot, _candidate_artifact, _candidate_manifest = (
+        verify_model_snapshot(config_path, model)
+    )
+    _reference_snapshot, reference_artifact, manifest_hash = (
+        verify_reference_snapshot(config_path, model)
+    )
+
+    import onnxruntime as ort
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        candidate_snapshot,
+        local_files_only=True,
+        trust_remote_code=False,
+    )
+    options = build_session_options(
+        thread_count,
+        ort_module=ort,
+        policy=config.session,
+    )
+    session = ort.InferenceSession(
+        str(reference_artifact),
         sess_options=options,
         providers=["CPUExecutionProvider"],
     )

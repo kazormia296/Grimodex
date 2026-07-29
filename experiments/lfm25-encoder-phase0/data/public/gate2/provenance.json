@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-29T22:40:40.383Z",
+  "generator": "experiments/lfm25-encoder-phase0/tools/freeze_gate2_candidates.ts",
+  "contract": "one production dense top-30 + FTS5 top-10 pool per query; retrieval is never rerun per reranker",
+  "sources": {
+    "ja": {
+      "language": "ja",
+      "workspaceFixture": "python3 scripts/seed-sample-ja.py <tmp> --scale medium",
+      "queryCount": 18,
+      "indexStatus": {
+        "indexedChunkCount": 271,
+        "staleChunkCount": 0,
+        "indexedSceneCount": 42,
+        "nonemptySceneCount": 42,
+        "currentModelId": "cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1",
+        "currentEmbeddingDim": 256,
+        "currentChunkerVersion": "semantic-prose-chunker-v1"
+      },
+      "candidateFile": "data/public/gate2/candidates-ja.jsonl",
+      "candidateSha256": "cd1dbf5fbf18c9d28a5f924f0771bcb169c635279300670eb39c2bc053bd0234"
+    },
+    "en": {
+      "language": "en",
+      "workspaceFixture": "python3 scripts/seed-sample-en.py <tmp> --scale medium",
+      "queryCount": 28,
+      "indexStatus": {
+        "indexedChunkCount": 350,
+        "staleChunkCount": 0,
+        "indexedSceneCount": 40,
+        "nonemptySceneCount": 40,
+        "currentModelId": "BAAI/bge-small-en-v1.5@local/model_int8.onnx/en-v1",
+        "currentEmbeddingDim": 384,
+        "currentChunkerVersion": "semantic-prose-chunker-en-v1"
+      },
+      "candidateFile": "data/public/gate2/candidates-en.jsonl",
+      "candidateSha256": "8802c90dd4ff0d20af99000eeee966ddbc32e8fd6ed73d631877ac5cbadfcb79"
+    }
+  },
+  "sourceHashes": {
+    "src/features/semantic-search/searchEvalSets.ts": "d283424edcab6cd783a6e51c89a0c33989030f51eae92f3640bbdbb624bfd3ec",
+    "src/features/chat/semanticRecall.ts": "36902552ddc2d251e077a374655a24dfaf133fb0c8263c46c213cc62cdd8a06b",
+    "src-tauri/crates/grimodex-semantic/src/chunker.rs": "2784479a10931d749144a270c8eb7dd11fa24b59cb2e9725151989c683b99d57",
+    "src-tauri/crates/grimodex-semantic/src/chunker_en.rs": "91a437d403791a14c7236b280f1c0820f0916cb38e6744db43529897e611eeee",
+    "src-tauri/crates/grimodex-semantic/src/search.rs": "c1d9d8ad042ebfbbe430bf5bcdad888725a6831e430b91fd71fbae3041a316f2",
+    "src-tauri/crates/grimodex-semantic/src/spec.rs": "1fbf6d172a74254b190a204782acf44b860d5bc006eaff73d37f50aa5e6796b9",
+    "scripts/seed-sample-ja.py": "77f2f38e495247be1878d756b1105fd6586372e65d0e33ee89d34696b5473de6",
+    "scripts/seed-sample-en.py": "1c706f5067ab1d6ce7f99d4c9e0c4746e786af93725eb6c674d73732bc9bc884",
+    "experiments/lfm25-encoder-phase0/tools/freeze_gate2_candidates.ts": "758848b4363abbcc43d841d114bd87b4f7679d5aeec1a0cbf532551b5febc292"
+  }
+}

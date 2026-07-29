@@ -1,0 +1,12 @@
+{"pairId":"ja-parity-01-positive","groupId":"ja-parity-01","query":"失踪した王女が身分を隠して港から国外へ向かった場面","passage":"夜明け前の港で、旅装の若い女性が王家の紋章を隠し、北行きの船へ乗った。見張りは彼女が失踪中の王女だと気づいた。","relevant":true}
+{"pairId":"ja-parity-01-negative","groupId":"ja-parity-01","query":"失踪した王女が身分を隠して港から国外へ向かった場面","passage":"パン生地へ酵母を加え、室温で発酵させてから予熱した窯で焼く。焼き上がりは網の上で冷ます。","relevant":false}
+{"pairId":"ja-parity-02-positive","groupId":"ja-parity-02","query":"朱紐に触れた瞬間、他人の記憶が流れ込む場面","passage":"朱音が祭壇の朱紐へ指を触れた瞬間、見知らぬ母子の記憶が濁流のように意識へ流れ込んだ。","relevant":true}
+{"pairId":"ja-parity-02-negative","groupId":"ja-parity-02","query":"朱紐に触れた瞬間、他人の記憶が流れ込む場面","passage":"四半期の税務資料を勘定科目ごとに集計し、表計算の合計欄と領収書の金額を照合した。","relevant":false}
+{"pairId":"ja-parity-03-positive","groupId":"ja-parity-03","query":"帰れと書かれ、最後の一行だけ読めない封じ文","passage":"朱紐の下から封じ文が見つかった。表には「帰れ」とあり、末尾の一行だけ墨が滲んで読めなかった。","relevant":true}
+{"pairId":"ja-parity-03-negative","groupId":"ja-parity-03","query":"帰れと書かれ、最後の一行だけ読めない封じ文","passage":"車を平らな場所へ止めて輪止めを置き、ジャッキで持ち上げてから傷んだタイヤを交換する。","relevant":false}
+{"pairId":"ja-parity-04-positive","groupId":"ja-parity-04","query":"十年前の夏の夜に社が燃え、誰かが逃げろと叫んだ回想","passage":"十年前の夏、社は炎に包まれた。幼い朱音が煙の中で立ち尽くすと、誰かが「逃げろ」と叫んだ。","relevant":true}
+{"pairId":"ja-parity-04-negative","groupId":"ja-parity-04","query":"十年前の夏の夜に社が燃え、誰かが逃げろと叫んだ回想","passage":"サッカーでは各チームが相手ゴールへボールを運び、規定時間内の得点数を競う。","relevant":false}
+{"pairId":"ja-parity-05-positive","groupId":"ja-parity-05","query":"陰陽寮の地下にある封書庫と三人の鍵持ち","passage":"陰陽寮の地下には封書庫があり、扉を開くには別々に保管された三本の鍵を持つ者が揃う必要があった。","relevant":true}
+{"pairId":"ja-parity-05-negative","groupId":"ja-parity-05","query":"陰陽寮の地下にある封書庫と三人の鍵持ち","passage":"水彩画では紙を少し湿らせ、薄い色から重ねると柔らかな空のグラデーションを作りやすい。","relevant":false}
+{"pairId":"ja-parity-06-positive","groupId":"ja-parity-06","query":"音羽が訪ねてきて饅頭を差し出す場面","passage":"戸口に立った音羽は何も説明せず、包みを開いてまだ温かい饅頭を朱音へ差し出した。","relevant":true}
+{"pairId":"ja-parity-06-negative","groupId":"ja-parity-06","query":"音羽が訪ねてきて饅頭を差し出す場面","passage":"株式市場の終値を前日と比較し、業種別指数の上昇率と取引量を一覧へ記録した。","relevant":false}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from grimodex_lfm_eval.reranker_gate2 import (
     evaluate_logit_parity,
     evaluate_method,
     load_gate2_jsonl,
+    load_parity_jsonl,
     rank_candidates,
     select_injected_candidates,
 )
@@ -145,6 +147,25 @@ class Gate2DatasetContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate query"):
                 load_gate2_jsonl(path)
 
+    def test_parity_loader_requires_a_positive_and_negative_per_group(self) -> None:
+        rows = [
+            {
+                "pairId": "positive-only",
+                "groupId": "group",
+                "query": "query",
+                "passage": "passage",
+                "relevant": True,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "pairs.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "positive and negative"):
+                load_parity_jsonl(path)
+
 
 class Gate2RankingAndInjectionTests(unittest.TestCase):
     def test_reranker_only_reorders_the_frozen_candidate_ids(self) -> None:
@@ -254,6 +275,33 @@ class Gate2MetricsTests(unittest.TestCase):
         self.assertEqual(reranked.scene.recall_at_1, 1.0)
         self.assertEqual(reranked.injection.gold_scene_inclusion, 1.0)
         self.assertGreaterEqual(reranked.injection.junk_injection_rate, 0.0)
+
+    def test_scene_recall_is_binary_when_a_query_has_multiple_gold_scenes(self) -> None:
+        candidates = _candidates(relevant_rank=4)
+        candidates[0] = candidates[0].model_copy(
+            update={
+                "scene_id": "scene-second-gold",
+                "scene_title": "Second gold scene",
+                "relevant": True,
+            }
+        )
+        query = Gate2Query(
+            schema_version=1,
+            query_id="ja-multi-gold",
+            language="ja",
+            query="二つの正解場面のどちらか",
+            query_slice="semantic",
+            expected_scene_titles=["Gold scene", "Second gold scene"],
+            min_score=0.80,
+            gate_score=0.85,
+            rescue_margin=0.05,
+            candidates=candidates,
+        )
+
+        result = evaluate_method([query], method="rrf")
+
+        self.assertEqual(result.scene.recall_at_1, 1.0)
+        self.assertEqual(result.scene.recall_at_3, 1.0)
 
     def test_quality_gate_uses_paired_bootstrap_and_counts_query_changes(self) -> None:
         queries = [

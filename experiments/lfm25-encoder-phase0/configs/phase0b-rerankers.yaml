@@ -38,6 +38,13 @@ models:
       - special_tokens_map.json
       - tokenizer.json
       - tokenizer_config.json
+    reference:
+      artifact: onnx/model.onnx
+      artifact_sha256: 5cd86065ea62391b97474b0d05e21887fd585cfaa1956bd4c217e15ecb703db0
+      local_snapshot: local/phase0b-reference/ja_tiny/ba95175a4d53058816b971f31929f10c5cad8560/snapshot
+      manifest: local/phase0b-reference/ja_tiny/ba95175a4d53058816b971f31929f10c5cad8560/manifest.json
+      files:
+        - onnx/model.onnx
 
   - key: ja_xsmall
     language: ja
@@ -56,6 +63,13 @@ models:
       - special_tokens_map.json
       - tokenizer.json
       - tokenizer_config.json
+    reference:
+      artifact: onnx/model.onnx
+      artifact_sha256: 4d668ba88cd62107b6d8c0365313ac4d76030873a0ed99dcbfd5c1636f26ada8
+      local_snapshot: local/phase0b-reference/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/snapshot
+      manifest: local/phase0b-reference/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/manifest.json
+      files:
+        - onnx/model.onnx
 
   - key: en_minilm_l4
     language: en
@@ -75,3 +89,10 @@ models:
       - tokenizer.json
       - tokenizer_config.json
       - vocab.txt
+    reference:
+      artifact: onnx/model.onnx
+      artifact_sha256: be236c7578579650f5eb69e6c7c79dc8a5af985dc585d98aafd9c0d3c0abcd20
+      local_snapshot: local/phase0b-reference/en_minilm_l4/777b2f369bc1c2f850df8bd367ed1654bda4497b/snapshot
+      manifest: local/phase0b-reference/en_minilm_l4/777b2f369bc1c2f850df8bd367ed1654bda4497b/manifest.json
+      files:
+        - onnx/model.onnx

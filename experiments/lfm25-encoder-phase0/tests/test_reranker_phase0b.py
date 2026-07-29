@@ -9,6 +9,7 @@ import numpy as np
 
 from grimodex_lfm_eval.reranker_phase0b import (
     OnnxRerankerRuntime,
+    TokenizersPairAdapter,
     build_session_options,
     load_phase0b_config,
 )
@@ -86,6 +87,33 @@ class _FakeSession:
         return [self._logits]
 
 
+class _FakeEncoding:
+    ids = [2, 11, 3]
+    attention_mask = [1, 1, 1]
+    type_ids = [0, 0, 0]
+    special_tokens_mask = [1, 0, 1]
+
+
+class _FakeRawTokenizer:
+    def __init__(self) -> None:
+        self.padding_options: dict[str, object] | None = None
+
+    def enable_truncation(self, **_options: object) -> None:
+        return None
+
+    def enable_padding(self, **options: object) -> None:
+        self.padding_options = options
+
+    def encode_batch(
+        self,
+        pairs: list[tuple[str, str]],
+        *,
+        add_special_tokens: bool,
+    ) -> list[_FakeEncoding]:
+        assert add_special_tokens
+        return [_FakeEncoding() for _pair in pairs]
+
+
 class Phase0bConfigTests(unittest.TestCase):
     def test_config_pins_the_three_official_avx2_artifacts(self) -> None:
         config = load_phase0b_config(CONFIG_PATH)
@@ -158,6 +186,30 @@ class SessionPolicyTests(unittest.TestCase):
 
 
 class OnnxRerankerRuntimeTests(unittest.TestCase):
+    def test_direct_tokenizer_uses_the_model_defined_padding_identity(self) -> None:
+        raw_tokenizer = _FakeRawTokenizer()
+        tokenizer = TokenizersPairAdapter(
+            raw_tokenizer,
+            pad_id=3,
+            pad_token="<pad>",
+        )
+
+        encoded = tokenizer(
+            ["query"],
+            ["passage"],
+            max_length=512,
+            padding=True,
+            truncation=True,
+            return_tensors="np",
+            return_special_tokens_mask=True,
+        )
+
+        self.assertEqual(
+            raw_tokenizer.padding_options,
+            {"pad_id": 3, "pad_token": "<pad>"},
+        )
+        self.assertEqual(encoded["special_tokens_mask"].tolist(), [[1, 0, 1]])
+
     def test_pair_scores_preserve_order_and_filter_tokenizer_outputs(self) -> None:
         tokenizer = _FakeTokenizer()
         session = _FakeSession()
