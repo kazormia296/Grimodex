@@ -41,6 +41,7 @@ import {
   extractAutosaveMetrics,
   extractInteractionFrameMetrics,
 } from "../../scripts/runtime-performance-budget.mjs";
+import { invokeOk, waitUntil } from "./product-journey-harness.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -459,39 +460,6 @@ async function ensureBenchmarkPageForeground(page) {
     undefined,
     { timeout: 10_000 },
   );
-}
-
-/** ブリッジ invoke（envelope 解封。ok:false は throw）。 */
-async function invokeOk(page, cmd, args) {
-  const envelope = await page.evaluate(
-    ([c, a]) => globalThis.grimodex.invoke(c, a),
-    [cmd, args ?? {}],
-  );
-  if (!envelope.ok) throw new Error(`${cmd} rejected: ${envelope.error}`);
-  return envelope.value;
-}
-
-/** fn() が truthy を返すまでポーリング（fn の throw はリトライ扱い）。 */
-async function waitUntil(fn, label, timeoutMs = 30_000, intervalMs = 500) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-  for (;;) {
-    try {
-      const value = await fn();
-      if (value) return value;
-    } catch (e) {
-      lastError = e;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `timeout waiting for: ${label}` +
-          (lastError
-            ? `\n  last error: ${lastError.message ?? lastError}`
-            : ""),
-      );
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
 }
 
 /** 指定 scene の本文が DB に残っているか（ブリッジ経由 SELECT）。 */
