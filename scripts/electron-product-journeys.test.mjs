@@ -66,6 +66,9 @@ test("product runner keeps at least two real boundary journeys", async () => {
   assert.match(source, /open_workspace/);
   assert.match(source, /db_execute/);
   assert.match(source, /workspace-menu-trigger/);
+  assert.match(source, /PENDING_SAVE_AUTOSAVE_DELAY_MS\s*=\s*60_000/);
+  assert.match(source, /pending-editor-draft/);
+  assert.match(source, /workspace B received workspace A pending editor text/);
 });
 
 test("performance smoke reuses the product journey boundary helpers", async () => {
@@ -147,6 +150,7 @@ test("product journey harness retains the renderer screenshot before close", asy
   });
 
   const launched = await harness.launch("editor-persistence/write");
+  harness.recordTimeline("test-authority", { workspace: "workspace-a" });
   await harness.close(launched.app, launched.page, "editor-persistence/write");
   await harness.dispose({
     success: false,
@@ -160,5 +164,49 @@ test("product journey harness retains the renderer screenshot before close", asy
       "utf8",
     ),
     "renderer-state",
+  );
+  const timeline = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "editor-persistence",
+        "runtime",
+        "diagnostics",
+        "authority-timeline.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.ok(
+    timeline.some(
+      (event) =>
+        event.event === "test-authority" && event.workspace === "workspace-a",
+    ),
+  );
+  assert.equal(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "editor-persistence",
+        "runtime",
+        "diagnostics",
+        "main.log",
+      ),
+      "utf8",
+    ),
+    "",
+  );
+  assert.equal(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "editor-persistence",
+        "runtime",
+        "diagnostics",
+        "renderer.log",
+      ),
+      "utf8",
+    ),
+    "",
   );
 });

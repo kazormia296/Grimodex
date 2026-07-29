@@ -14,6 +14,8 @@ const SCENES_PANEL_TITLE = "シーン";
 const CREATE_BUTTON_TITLE = "新規作成";
 const NEW_SCENE_MENU_ITEM = "New scene";
 const JOURNEY_TEXT = `PRODUCT-JOURNEY-${Date.now()}`;
+const PENDING_SAVE_TEXT = `PENDING-SAVE-JOURNEY-${Date.now()}`;
+const PENDING_SAVE_AUTOSAVE_DELAY_MS = 60_000;
 
 function log(message) {
   console.log(`[electron:product] ${message}`);
@@ -61,13 +63,24 @@ function scenesPanelHeader(page) {
   );
 }
 
-async function configureWorkspace(harness, workspace) {
+async function configureWorkspace(
+  harness,
+  workspace,
+  { appSettings = {} } = {},
+) {
   await mkdir(workspace, { recursive: true });
   const launched = await harness.launch("configure");
   try {
     await harness.invokeOk(launched.page, "open_workspace", {
       path: workspace,
     });
+    for (const [key, value] of Object.entries(appSettings)) {
+      await harness.invokeOk(launched.page, "db_execute", {
+        sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+        params: [key, String(value)],
+        method: "run",
+      });
+    }
     const settings = await harness.invokeOk(
       launched.page,
       "get_global_settings",
@@ -109,6 +122,52 @@ async function findSceneWithText(harness, page, text) {
   );
 }
 
+async function createSceneThroughUi(harness, page) {
+  const header = scenesPanelHeader(page);
+  await header.waitFor({ state: "visible", timeout: 60_000 });
+  await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
+  await page
+    .getByRole("menuitem", { name: NEW_SCENE_MENU_ITEM, exact: true })
+    .click();
+
+  const renameInput = page.locator(
+    '[data-droptarget-id="scenes-panel"] input:focus',
+  );
+  if (
+    await renameInput
+      .waitFor({ state: "visible", timeout: 1_000 })
+      .then(() => true)
+      .catch(() => false)
+  ) {
+    await page.keyboard.press("Enter");
+  }
+
+  const editorSurface = page
+    .locator(
+      '[data-editor-loaded-document-id][data-editor-document-loading="false"]:visible',
+    )
+    .last();
+  await editorSurface.waitFor({ state: "visible", timeout: 30_000 });
+  const sceneId = await editorSurface.getAttribute(
+    "data-editor-loaded-document-id",
+  );
+  if (!sceneId) throw new Error("new scene did not expose a document id");
+  const created = await harness.waitUntil(
+    () => findSceneById(harness, page, sceneId),
+    "new scene persistence",
+    10_000,
+  );
+  if (created.title !== DEFAULT_SCENE_TITLE) {
+    throw new Error(`unexpected new scene title: ${String(created.title)}`);
+  }
+
+  const editor = editorSurface
+    .locator('.ProseMirror[contenteditable="true"]')
+    .first();
+  await editor.waitFor({ state: "visible", timeout: 30_000 });
+  return { sceneId, editorSurface, editor };
+}
+
 async function runEditorPersistenceJourney(harness) {
   const workspace = harness.workspacePath("editor-persistence");
   await configureWorkspace(harness, workspace);
@@ -116,48 +175,11 @@ async function runEditorPersistenceJourney(harness) {
   const writing = await harness.launch("editor-persistence/write");
   let sceneId;
   try {
-    const header = scenesPanelHeader(writing.page);
-    await header.waitFor({ state: "visible", timeout: 60_000 });
-    await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
-    await writing.page
-      .getByRole("menuitem", { name: NEW_SCENE_MENU_ITEM, exact: true })
-      .click();
-
-    const renameInput = writing.page.locator(
-      '[data-droptarget-id="scenes-panel"] input:focus',
+    const { sceneId: createdSceneId, editor } = await createSceneThroughUi(
+      harness,
+      writing.page,
     );
-    if (
-      await renameInput
-        .waitFor({ state: "visible", timeout: 1_000 })
-        .then(() => true)
-        .catch(() => false)
-    ) {
-      await writing.page.keyboard.press("Enter");
-    }
-
-    const editorSurface = writing.page
-      .locator(
-        '[data-editor-loaded-document-id][data-editor-document-loading="false"]:visible',
-      )
-      .last();
-    await editorSurface.waitFor({ state: "visible", timeout: 30_000 });
-    sceneId = await editorSurface.getAttribute(
-      "data-editor-loaded-document-id",
-    );
-    if (!sceneId) throw new Error("new scene did not expose a document id");
-    const created = await harness.waitUntil(
-      () => findSceneById(harness, writing.page, sceneId),
-      "new scene persistence",
-      10_000,
-    );
-    if (created.title !== DEFAULT_SCENE_TITLE) {
-      throw new Error(`unexpected new scene title: ${String(created.title)}`);
-    }
-
-    const editor = editorSurface
-      .locator('.ProseMirror[contenteditable="true"]')
-      .first();
-    await editor.waitFor({ state: "visible", timeout: 30_000 });
+    sceneId = createdSceneId;
     await editor.click();
     await writing.page.keyboard.type(JOURNEY_TEXT, { delay: 10 });
     await harness.waitUntil(
@@ -198,35 +220,18 @@ async function runEditorPersistenceJourney(harness) {
   }
 }
 
-async function readJourneyMarker(harness, page) {
-  const result = await harness.invokeOk(page, "db_execute", {
-    sql: "SELECT value FROM app_settings WHERE key = ?",
-    params: ["product.journey.workspace-a"],
-    method: "all",
-  });
-  return result?.rows?.[0]?.value ?? null;
-}
-
 async function runWorkspaceSwitchAuthorityJourney(harness) {
   const workspaceA = harness.workspacePath("workspace-a");
   const workspaceB = harness.workspacePath("workspace-b");
-  await configureWorkspace(harness, workspaceA);
+  await configureWorkspace(harness, workspaceA, {
+    appSettings: {
+      "editor.autoSaveDelay": PENDING_SAVE_AUTOSAVE_DELAY_MS,
+    },
+  });
   await mkdir(workspaceB, { recursive: true });
 
   const prepare = await harness.launch("workspace-switch/prepare");
   try {
-    await harness.waitUntil(
-      async () => {
-        await harness.invokeOk(prepare.page, "db_execute", {
-          sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
-          params: ["product.journey.workspace-a", "workspace-a-marker"],
-          method: "run",
-        });
-        return true;
-      },
-      "workspace A authority before marker write",
-      30_000,
-    );
     await harness.invokeOk(prepare.page, "open_workspace", {
       path: workspaceB,
     });
@@ -245,39 +250,106 @@ async function runWorkspaceSwitchAuthorityJourney(harness) {
         lastSeenReleaseNotesVersion: appVersion(),
       },
     });
+    await harness.invokeOk(prepare.page, "open_workspace", {
+      path: workspaceA,
+    });
+    const restoredSettings = await harness.invokeOk(
+      prepare.page,
+      "get_global_settings",
+    );
+    await harness.invokeOk(prepare.page, "save_global_settings", {
+      settings: {
+        ...restoredSettings,
+        lastActiveWorkspace: workspaceA,
+        trustedWorkspaces: [workspaceA, workspaceB],
+        showLauncherOnStartup: false,
+        hasSeenWelcome: true,
+        acceptedEulaVersion: readEulaVersion(),
+        lastSeenReleaseNotesVersion: appVersion(),
+      },
+    });
   } finally {
     await harness.close(prepare.app, prepare.page, "workspace-switch/prepare");
   }
 
-  const switched = await harness.launch("workspace-switch/ui");
+  const switched = await harness.launch("workspace-switch/pending-save");
   try {
-    let workspaceBMarker = null;
-    await harness.waitUntil(
-      async () => {
-        workspaceBMarker = await readJourneyMarker(harness, switched.page);
-        return true;
-      },
-      "workspace B authority before isolation check",
-      30_000,
+    const { sceneId, editor } = await createSceneThroughUi(
+      harness,
+      switched.page,
     );
-    if (workspaceBMarker) {
-      throw new Error("workspace B inherited workspace A app_settings");
+    await editor.click();
+    await switched.page.keyboard.type(PENDING_SAVE_TEXT);
+    if (await findSceneWithText(harness, switched.page, PENDING_SAVE_TEXT)) {
+      throw new Error(
+        "pending-save journey persisted before the workspace boundary",
+      );
     }
+    harness.recordTimeline("pending-editor-draft", {
+      workspace: workspaceA,
+      sceneId,
+      autosaveDelayMs: PENDING_SAVE_AUTOSAVE_DELAY_MS,
+    });
+
     await switched.page.getByTestId("workspace-menu-trigger").click();
     const dropdown = switched.page.getByTestId("workspace-menu-dropdown");
     await dropdown
-      .getByRole("button", { name: "workspace-a", exact: true })
+      .getByRole("button", { name: "workspace-b", exact: true })
       .click();
     await harness.waitUntil(
-      () => readJourneyMarker(harness, switched.page),
-      "workspace A marker after UI switch",
+      async () =>
+        (
+          await switched.page
+            .getByTestId("workspace-menu-trigger")
+            .textContent()
+        )?.includes("workspace-b"),
+      "workspace B UI authority",
       30_000,
     );
+    harness.recordTimeline("workspace-switch-committed", {
+      from: workspaceA,
+      to: workspaceB,
+      sceneId,
+    });
+
+    if (await findSceneWithText(harness, switched.page, PENDING_SAVE_TEXT)) {
+      throw new Error("workspace B received workspace A pending editor text");
+    }
+
+    await switched.page.getByTestId("workspace-menu-trigger").click();
+    await switched.page
+      .getByTestId("workspace-menu-dropdown")
+      .getByRole("button", { name: "workspace-a", exact: true })
+      .click();
+    const persisted = await harness.waitUntil(
+      () => findSceneWithText(harness, switched.page, PENDING_SAVE_TEXT),
+      "workspace A pending save after reopening",
+      30_000,
+    );
+    if (persisted.id !== sceneId) {
+      throw new Error("workspace A restored pending text under another scene");
+    }
+    const pane = switched.page.locator(
+      `[data-editor-loaded-document-id="${sceneId}"][data-editor-document-loading="false"]`,
+    );
+    await pane.waitFor({ state: "visible", timeout: 30_000 });
+    await pane
+      .locator(`.ProseMirror:has-text("${PENDING_SAVE_TEXT}")`)
+      .first()
+      .waitFor({ state: "visible", timeout: 30_000 });
+    harness.recordTimeline("pending-editor-draft-restored", {
+      workspace: workspaceA,
+      sceneId,
+    });
     log(
-      "Workspace switch authority: UI switch preserved workspace-scoped data",
+      "Workspace switch authority: quiescence drained pending save without cross-DB leakage",
     );
   } finally {
-    await harness.close(switched.app, switched.page, "workspace-switch/ui");
+    await harness.close(
+      switched.app,
+      switched.page,
+      "workspace-switch/pending-save",
+    );
   }
 }
 

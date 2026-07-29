@@ -1,4 +1,4 @@
-import { copyFile, cp, mkdir, rm } from "node:fs/promises";
+import { copyFile, cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -62,11 +62,23 @@ export function createProductJourneyHarness({
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "grimodex-product-"));
   const userDataDir = path.join(tmpRoot, "user-data");
   const retainedRendererPath = path.join(tmpRoot, "last-renderer.png");
+  const mainLog = [];
+  const rendererLog = [];
+  const authorityTimeline = [];
   const lastResources = {
     app: null,
     page: null,
     phase: null,
   };
+
+  function recordTimeline(event, details = {}) {
+    authorityTimeline.push({
+      at: new Date().toISOString(),
+      phase: lastResources.phase,
+      event,
+      ...details,
+    });
+  }
 
   function workspacePath(name) {
     if (!name || name.includes("/") || name.includes("\\")) {
@@ -77,6 +89,7 @@ export function createProductJourneyHarness({
 
   async function launch(phase) {
     await rm(retainedRendererPath, { force: true });
+    recordTimeline("launch-requested", { phase });
     const env = { ...process.env };
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
@@ -89,31 +102,38 @@ export function createProductJourneyHarness({
     lastResources.app = app;
     lastResources.page = null;
     lastResources.phase = phase;
+    const appProcess = typeof app.process === "function" ? app.process() : null;
+    appProcess?.stdout?.on("data", (data) => {
+      const line = `  [product:${phase}:main] ${String(data)}`;
+      mainLog.push(line);
+      process.stdout.write(line);
+    });
+    appProcess?.stderr?.on("data", (data) => {
+      const line = `  [product:${phase}:main] ${String(data)}`;
+      mainLog.push(line);
+      process.stderr.write(line);
+    });
     const page = await app.firstWindow({ timeout: launchTimeoutMs });
     lastResources.page = page;
+    recordTimeline("renderer-window-ready");
 
-    app.process().stdout?.on("data", (data) => {
-      process.stdout.write(`  [product:${phase}:main] ${String(data)}`);
-    });
-    app.process().stderr?.on("data", (data) => {
-      process.stderr.write(`  [product:${phase}:main] ${String(data)}`);
-    });
     page.on("console", (message) => {
       if (!["warning", "error"].includes(message.type())) return;
-      process.stderr.write(
-        `  [product:${phase}:renderer:${message.type()}] ${message.text()}\n`,
-      );
+      const line = `  [product:${phase}:renderer:${message.type()}] ${message.text()}\n`;
+      rendererLog.push(line);
+      process.stderr.write(line);
     });
     page.on("pageerror", (error) => {
-      process.stderr.write(
-        `  [product:${phase}:renderer:pageerror] ${error.message}\n`,
-      );
+      const line = `  [product:${phase}:renderer:pageerror] ${error.message}\n`;
+      rendererLog.push(line);
+      process.stderr.write(line);
     });
     await page.waitForFunction(
       () => globalThis.grimodex?.shell === "electron",
       undefined,
       { timeout: launchTimeoutMs },
     );
+    recordTimeline("renderer-bridge-ready");
     return { app, page };
   }
 
@@ -128,8 +148,10 @@ export function createProductJourneyHarness({
   }
 
   async function close(app, page, phase) {
+    recordTimeline("close-requested", { phase });
     await retainRendererScreenshot(page);
     await closeApp(app, page, phase);
+    recordTimeline("closed", { phase });
     if (lastResources.app === app) {
       lastResources.app = null;
       lastResources.page = null;
@@ -140,6 +162,21 @@ export function createProductJourneyHarness({
   async function captureFailureArtifact(name) {
     if (!artifactRoot) return;
     const destination = path.join(artifactRoot, name);
+    const diagnostics = path.join(tmpRoot, "diagnostics");
+    await mkdir(diagnostics, { recursive: true });
+    await Promise.all([
+      writeFile(path.join(diagnostics, "main.log"), mainLog.join(""), "utf8"),
+      writeFile(
+        path.join(diagnostics, "renderer.log"),
+        rendererLog.join(""),
+        "utf8",
+      ),
+      writeFile(
+        path.join(diagnostics, "authority-timeline.json"),
+        `${JSON.stringify(authorityTimeline, null, 2)}\n`,
+        "utf8",
+      ),
+    ]);
     await mkdir(destination, { recursive: true });
     await retainRendererScreenshot(lastResources.page);
     await copyFile(
@@ -185,6 +222,7 @@ export function createProductJourneyHarness({
     close,
     invokeOk,
     waitUntil,
+    recordTimeline,
     dispose,
   };
 }
