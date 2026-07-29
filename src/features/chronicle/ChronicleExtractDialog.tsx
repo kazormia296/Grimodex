@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Loader2, Sparkles } from "lucide-react";
@@ -14,6 +14,13 @@ import {
   getDescendantScenesInOrder,
 } from "@/features/tree/treeStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+  runAuthoritativeMutation,
+  type MutationAuthority,
+} from "@/features/concurrency/mutationAuthority";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { loadSceneContents } from "@/features/tree/api";
 import type { TreeNodeData } from "@/features/tree/treeStore";
@@ -24,6 +31,24 @@ import {
   importExtractedEvents,
   type EventProposal,
 } from "./extractEventsApi";
+import {
+  chronicleScopeKey,
+  type ChronicleScope,
+  type ChronicleScopeKey,
+} from "./chronicleScope";
+
+export interface ChronicleExtractionSession {
+  scope: ChronicleScope;
+  scopeKey: ChronicleScopeKey;
+  projectId: string;
+  generation: number;
+  authority: MutationAuthority;
+}
+
+interface ChronicleExtractionResult {
+  session: ChronicleExtractionSession;
+  candidates: EventProposal[];
+}
 
 export async function loadChronicleExtractionScenes(
   sceneNodes: readonly Pick<TreeNodeData, "id" | "title">[],
@@ -47,10 +72,14 @@ export function ChronicleExtractDialog({
   open,
   onOpenChange,
   onImported,
+  scope,
+  isActive = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImported?: () => void;
+  scope: ChronicleScope | null;
+  isActive?: boolean;
 }) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
@@ -67,32 +96,112 @@ export function ChronicleExtractDialog({
   const [folderId, setFolderId] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [candidates, setCandidates] = useState<EventProposal[] | null>(null);
+  const [extractionResult, setExtractionResult] =
+    useState<ChronicleExtractionResult | null>(null);
+  const currentScopeKey = scope ? chronicleScopeKey(scope) : null;
+  const generationRef = useRef(0);
+  const dialogScopeKeyRef = useRef<ChronicleScopeKey | null>(null);
+  const openRef = useRef(open);
+  const isActiveRef = useRef(isActive);
+  const currentScopeKeyRef = useRef<ChronicleScopeKey | null>(currentScopeKey);
+  openRef.current = open;
+  isActiveRef.current = isActive;
+  currentScopeKeyRef.current = currentScopeKey;
+
+  const candidates =
+    isActive &&
+    currentScopeKey &&
+    extractionResult?.session.scopeKey === currentScopeKey
+      ? extractionResult.candidates
+      : null;
+
+  const isSessionCurrent = (session: ChronicleExtractionSession): boolean => {
+    const workspace = useWorkspaceStore.getState();
+    return (
+      generationRef.current === session.generation &&
+      openRef.current &&
+      isActiveRef.current &&
+      currentScopeKeyRef.current === session.scopeKey &&
+      workspace.workspaceHydrated &&
+      !workspace.workspaceSwitchInProgress &&
+      workspace.activeWorkspacePath === session.scope.workspacePath &&
+      workspace.workspaceOpenRevision === session.scope.openRevision &&
+      getCurrentProjectId() === session.projectId &&
+      isCurrentMutationAuthority(session.authority)
+    );
+  };
 
   // ダイアログは親側で常時マウントされるため、開く（再オープン含む）たびに
   // 選択フォルダと抽出候補を初期化する。これをしないと前回の候補が残り、
   // 再度「取り込む」を押すと同じ出来事が UUID 違いで二重生成されてしまう。
   useEffect(() => {
-    if (open) {
+    if (!open) {
+      dialogScopeKeyRef.current = null;
+      generationRef.current += 1;
       setFolderId("");
-      setCandidates(null);
+      setExtractionResult(null);
+      setAnalyzing(false);
+      setImporting(false);
+      return;
     }
-  }, [open]);
+
+    if (!isActive || !currentScopeKey) {
+      dialogScopeKeyRef.current = null;
+      generationRef.current += 1;
+      setExtractionResult(null);
+      setAnalyzing(false);
+      setImporting(false);
+      onOpenChange(false);
+      return;
+    }
+
+    if (dialogScopeKeyRef.current === null) {
+      dialogScopeKeyRef.current = currentScopeKey;
+      generationRef.current += 1;
+      setFolderId("");
+      setExtractionResult(null);
+      setAnalyzing(false);
+      setImporting(false);
+      return;
+    }
+
+    if (dialogScopeKeyRef.current !== currentScopeKey) {
+      dialogScopeKeyRef.current = null;
+      generationRef.current += 1;
+      setExtractionResult(null);
+      setAnalyzing(false);
+      setImporting(false);
+      onOpenChange(false);
+    }
+  }, [currentScopeKey, isActive, onOpenChange, open]);
 
   const handleSelectFolder = (id: string) => {
+    if (analyzing || importing) return;
     setFolderId(id);
-    setCandidates(null);
+    setExtractionResult(null);
   };
 
   const handleAnalyze = async () => {
-    if (!folderId || analyzing) return;
-    const projectId = getCurrentProjectId();
-    if (!projectId) return;
+    if (!folderId || analyzing || importing || !scope || !currentScopeKey) {
+      return;
+    }
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    const session: ChronicleExtractionSession = {
+      scope,
+      scopeKey: currentScopeKey,
+      projectId: scope.projectId,
+      generation,
+      authority: captureMutationAuthority(scope.projectId, getCurrentProjectId),
+    };
+    if (!isSessionCurrent(session)) return;
+
     setAnalyzing(true);
-    setCandidates(null);
+    setExtractionResult(null);
     try {
       const activeId = useTreeStore.getState().activeSceneId;
       if (activeId) await saveScene(activeId);
+      if (!isSessionCurrent(session)) return;
 
       // 直下のシーンだけでなく、配下の全シーン（部>章>シーン等の入れ子も）を
       // DFS pre-order（ツリー表示順）で収集する。直下フィルタだと入れ子構造で
@@ -102,26 +211,53 @@ export function ChronicleExtractDialog({
         folderId,
       );
       const scenes = await loadChronicleExtractionScenes(sceneNodes);
-      const existing = await listEvents(projectId);
+      if (!isSessionCurrent(session)) return;
+      const existing = await listEvents(session.projectId);
+      if (!isSessionCurrent(session)) return;
       const result = await proposeEvents({
         scenes,
         existingTitles: existing.map((e) => e.title).filter(Boolean),
       });
-      setCandidates(result);
+      if (!isSessionCurrent(session)) return;
+      setExtractionResult({ session, candidates: result });
     } catch {
-      toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
+      if (isSessionCurrent(session)) {
+        toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
+      }
     } finally {
-      setAnalyzing(false);
+      if (generationRef.current === session.generation) {
+        setAnalyzing(false);
+      }
     }
   };
 
   const handleImport = async () => {
-    if (!candidates || candidates.length === 0 || importing) return;
-    const projectId = getCurrentProjectId();
-    if (!projectId) return;
+    if (
+      !extractionResult ||
+      !candidates ||
+      candidates.length === 0 ||
+      importing
+    ) {
+      return;
+    }
+    const { session } = extractionResult;
+    if (!isSessionCurrent(session)) {
+      setExtractionResult(null);
+      onOpenChange(false);
+      return;
+    }
+
     setImporting(true);
     try {
-      const n = await importExtractedEvents(projectId, candidates);
+      const outcome = await runAuthoritativeMutation(session.authority, () =>
+        importExtractedEvents(session.projectId, candidates),
+      );
+      if (outcome.status === "stale" || !isSessionCurrent(session)) {
+        setExtractionResult(null);
+        onOpenChange(false);
+        return;
+      }
+      const n = outcome.value;
       toast.success(
         t(
           "chronicle.extract.imported",
@@ -132,19 +268,28 @@ export function ChronicleExtractDialog({
         ),
       );
       // 取り込み成功後は候補を即クリアして、再オープン時の二重取り込みを防ぐ。
-      setCandidates(null);
+      setExtractionResult(null);
       onImported?.();
       onOpenChange(false);
     } catch {
       // 失敗時はダイアログを閉じず候補も保持し、再試行できる状態を保つ。
-      toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
+      if (isSessionCurrent(session)) {
+        toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
+      }
     } finally {
-      setImporting(false);
+      if (generationRef.current === session.generation) {
+        setImporting(false);
+      }
     }
   };
 
+  const handleDialogOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && importing) return;
+    onOpenChange(nextOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleDialogOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
@@ -164,6 +309,7 @@ export function ChronicleExtractDialog({
             <select
               value={folderId}
               onChange={(e) => handleSelectFolder(e.target.value)}
+              disabled={analyzing || importing}
               className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm focus:outline-none"
             >
               <option value="">
@@ -178,7 +324,7 @@ export function ChronicleExtractDialog({
             <button
               type="button"
               onClick={handleAnalyze}
-              disabled={!folderId || analyzing}
+              disabled={!folderId || analyzing || importing || !scope}
               className="inline-flex shrink-0 items-center gap-1 rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {analyzing ? (
@@ -234,6 +380,7 @@ export function ChronicleExtractDialog({
           <button
             type="button"
             onClick={() => onOpenChange(false)}
+            disabled={importing}
             className="rounded px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent"
           >
             {t("common.cancel", "キャンセル")}

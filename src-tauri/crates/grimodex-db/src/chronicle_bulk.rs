@@ -25,6 +25,7 @@ use crate::Database;
 
 const BULK_ENTITY_KIND: &str = "chronicle_bulk";
 const BULK_IDEMPOTENCY_DOMAIN: &str = "agent_chronicle_bulk_mutate";
+const MAX_CHRONICLE_BULK_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(
@@ -607,8 +608,8 @@ pub fn agent_chronicle_bulk_mutate_impl(
     if payload.operations.is_empty() {
         anyhow::bail!("chronicle bulk operations must not be empty");
     }
-    if payload.operations.len() > 500 {
-        anyhow::bail!("chronicle bulk operations exceed the 500 item limit");
+    if serde_json::to_vec(&payload)?.len() > MAX_CHRONICLE_BULK_PAYLOAD_BYTES {
+        anyhow::bail!("chronicle bulk payload exceeds the 8 MiB limit");
     }
     let fingerprint_payload = json!({
         "projectId": payload.project_id,
@@ -1273,6 +1274,91 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn more_than_500_targets_remain_one_atomic_journal() {
+        let db = test_db();
+        let project_id = uuid::Uuid::new_v4().to_string();
+        let mut operations = Vec::with_capacity(501);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES (?1, 'Large Chronicle')",
+                rusqlite::params![project_id],
+            )?;
+            for index in 0..501 {
+                let event_id = format!("event-{index}");
+                conn.execute(
+                    "INSERT INTO events
+                     (id, project_id, title, ordinal, start_time,
+                      start_granularity, precision, kind, created_at, updated_at, version)
+                     VALUES (?1, ?2, 'Event', ?3, 20, 'day', 'exact', 'generic',
+                             datetime('now'), datetime('now'), 1)",
+                    rusqlite::params![event_id, project_id, format!("a{index}")],
+                )?;
+                operations.push(ChronicleBulkOperation::EventClearDate {
+                    event_id,
+                    base_version: 1,
+                });
+            }
+            Ok(())
+        })
+        .expect("seed large Chronicle");
+
+        let result = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "large-forward".to_string(),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations,
+            },
+        )
+        .expect("large bulk mutation");
+
+        assert_eq!(result["eventResults"].as_array().map(Vec::len), Some(501));
+        db.with_conn(|conn| {
+            let cleared: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events
+                  WHERE project_id = ?1
+                    AND start_time IS NULL
+                    AND start_granularity = 'none'
+                    AND version = 2",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            let journals: i64 =
+                conn.query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))?;
+            let changes: i64 =
+                conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?;
+            assert_eq!(cleared, 501);
+            assert_eq!(journals, 1);
+            assert_eq!(changes, 1);
+            Ok(())
+        })
+        .expect("verify one atomic journal");
+    }
+
+    #[test]
+    fn oversized_payload_is_rejected_before_database_access() {
+        let db = test_db();
+        let error = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "oversized".to_string(),
+                project_id: "project".to_string(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::EventDelete {
+                    event_id: "e".repeat(MAX_CHRONICLE_BULK_PAYLOAD_BYTES),
+                    base_version: 1,
+                }],
+            },
+        )
+        .expect_err("oversized payload must fail");
+
+        assert!(error.to_string().contains("8 MiB"));
     }
 
     #[test]

@@ -208,20 +208,27 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const { t, i18n } = useTranslation();
   const lang: DateLang = i18n.language?.startsWith("en") ? "en" : "ja";
   const projectId = useProjectStore((s) => s.currentProjectId);
+  const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const workspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
     (s) => s.workspaceOpenRevision,
   );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (s) => s.workspaceSwitchInProgress,
+  );
+  const workspaceHydrated = useWorkspaceStore((s) => s.workspaceHydrated);
+  const workspaceReady =
+    workspaceHydrated && !workspaceSwitchInProgress && workspaceId !== null;
   const chronicleScope = useMemo<ChronicleScope | null>(
     () =>
-      workspacePath && projectId
+      workspaceReady && workspacePath && projectId
         ? {
             workspacePath,
             openRevision: workspaceOpenRevision,
             projectId,
           }
         : null,
-    [projectId, workspaceOpenRevision, workspacePath],
+    [projectId, workspaceOpenRevision, workspacePath, workspaceReady],
   );
   const scopeKey = chronicleScope
     ? makeChronicleScopeKey(chronicleScope)
@@ -465,7 +472,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     retry: retryChronicleQuery,
   } = useChronicleQuery({
     scope: chronicleScope,
-    enabled: isActive,
+    enabled: isActive && workspaceReady,
     reloadKey,
     revisionCounter,
     onScopeChanged: resetProjectTransientState,
@@ -718,8 +725,8 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   }, [eff]);
   const chronicleSnapshotReady = chronicleSnapshotOwned;
   const viewport = useChronicleViewportController({
+    workspaceId,
     workspacePath,
-    workspaceOpenRevision,
     projectId,
     dataReady: chronicleSnapshotReady,
     dataStart: eff.dataStart,
@@ -2070,9 +2077,19 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         : rulerLevel === "hour" || rulerLevel === "minute"
           ? "time"
           : "day";
+  const linePosition =
+    selectedDay != null
+      ? splitDayMinute(selectedDay, lineGran === "time", null)
+      : null;
   const linePosLabel =
-    selectedDay != null && eff.hasCalendarAxis
-      ? formatChronicleDate(selectedDay, 0, lineGran, cal, lang)
+    linePosition && eff.hasCalendarAxis
+      ? formatChronicleDate(
+          linePosition.time,
+          linePosition.minute,
+          lineGran,
+          cal,
+          lang,
+        )
       : null;
   const selStartLabel =
     selected && selected.startGranularity !== "none"
@@ -2396,6 +2413,8 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         open={extractOpen}
         onOpenChange={setExtractOpen}
         onImported={refresh}
+        scope={chronicleScope}
+        isActive={isActive && workspaceReady}
       />
     </div>
   );

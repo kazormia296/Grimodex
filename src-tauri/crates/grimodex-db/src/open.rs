@@ -135,6 +135,7 @@ fn maybe_auto_backup(ws_path: &Path, db: &Database) {
 pub struct OpenWorkspaceResult {
     name: String,
     is_existing: bool,
+    workspace_id: String,
 }
 
 /// `open_workspace` は renderer 供給のパスにディレクトリ + SQLite DB を作成する。
@@ -272,7 +273,7 @@ pub fn open_workspace_sync(
     // Initialize workspace metadata
     let uuid_str = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    workspace::ensure_workspace_meta(&ws_path, &uuid_str, &now)?;
+    let workspace_meta = workspace::ensure_workspace_meta(&ws_path, &uuid_str, &now)?;
 
     // Open database
     let db_path = ws_path.join("grimodex.db");
@@ -360,7 +361,11 @@ pub fn open_workspace_sync(
     }
 
     let name = workspace::workspace_name(path);
-    Ok(OpenWorkspaceResult { name, is_existing })
+    Ok(OpenWorkspaceResult {
+        name,
+        is_existing,
+        workspace_id: workspace_meta.id,
+    })
 }
 
 #[cfg(test)]
@@ -445,6 +450,11 @@ mod tests {
             serde_json::to_value(&first).expect("json")["isExisting"],
             false
         );
+        let first_workspace_id = serde_json::to_value(&first).expect("json")["workspaceId"]
+            .as_str()
+            .expect("workspace id")
+            .to_string();
+        assert!(!first_workspace_id.is_empty());
         assert_eq!(swapped, 1, "on_swapped は swap 後にちょうど 1 回呼ばれる");
         assert!(
             !ws_state.switching.load(std::sync::atomic::Ordering::SeqCst),
@@ -474,6 +484,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&second).expect("json")["isExisting"],
             true
+        );
+        assert_eq!(
+            serde_json::to_value(&second).expect("json")["workspaceId"],
+            first_workspace_id
         );
 
         let _ = std::fs::remove_dir_all(&dir);

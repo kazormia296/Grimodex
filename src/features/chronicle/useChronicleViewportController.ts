@@ -5,8 +5,8 @@ import { fitAll, zoomByCenter, type View } from "./chronicleAxis";
 import { useChronicleStore, type ChronicleAxisMode } from "./chronicleStore";
 
 interface UseChronicleViewportControllerOptions {
+  workspaceId: string | null;
   workspacePath: string | null;
-  workspaceOpenRevision: number;
   projectId: string | null;
   dataReady: boolean;
   dataStart: number;
@@ -20,8 +20,8 @@ function persistedViewState(): {
   view: View;
   axisMode: ChronicleAxisMode | null;
   viewProjectId: string | null;
+  viewWorkspaceId: string | null;
   viewWorkspacePath: string | null;
-  viewWorkspaceOpenRevision: number | null;
 } | null {
   const state = useChronicleStore.getState();
   return state.pxPerDay != null && state.viewStartDay != null
@@ -32,15 +32,15 @@ function persistedViewState(): {
         },
         axisMode: state.axisMode,
         viewProjectId: state.viewProjectId,
+        viewWorkspaceId: state.viewWorkspaceId,
         viewWorkspacePath: state.viewWorkspacePath,
-        viewWorkspaceOpenRevision: state.viewWorkspaceOpenRevision,
       }
     : null;
 }
 
 export function useChronicleViewportController({
+  workspaceId,
   workspacePath,
-  workspaceOpenRevision,
   projectId,
   dataReady,
   dataStart,
@@ -67,11 +67,11 @@ export function useChronicleViewportController({
   const displayedProjectIdRef = useRef<string | null>(
     initialPersistedView?.viewProjectId ?? null,
   );
+  const displayedWorkspaceIdRef = useRef<string | null>(
+    initialPersistedView?.viewWorkspaceId ?? null,
+  );
   const displayedWorkspacePathRef = useRef<string | null>(
     initialPersistedView?.viewWorkspacePath ?? null,
-  );
-  const displayedWorkspaceOpenRevisionRef = useRef<number | null>(
-    initialPersistedView?.viewWorkspaceOpenRevision ?? null,
   );
   const rulerLevelRef = useRef("day");
   const zoomAnnounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -115,7 +115,7 @@ export function useChronicleViewportController({
     (nextView: View) => {
       // Project 切替中の scene-only projection で pan/zoom を保存すると、
       // 後着する実 Event に対する初回 fit が抑止されるため操作を受け付けない。
-      if (!dataReady || !projectId || !workspacePath) return;
+      if (!dataReady || !projectId || !workspaceId || !workspacePath) return;
       if (nextView.pxPerDay !== lastPxPerDayRef.current) {
         lastPxPerDayRef.current = nextView.pxPerDay;
         scheduleZoomAnnounce();
@@ -124,16 +124,16 @@ export function useChronicleViewportController({
       fittedRef.current = true;
       displayedAxisModeRef.current = currentAxisMode;
       displayedProjectIdRef.current = projectId;
+      displayedWorkspaceIdRef.current = workspaceId;
       displayedWorkspacePathRef.current = workspacePath;
-      displayedWorkspaceOpenRevisionRef.current = workspaceOpenRevision;
-      if (projectId && workspacePath) {
+      if (projectId && workspaceId && workspacePath) {
         setChronicleView(
           nextView.pxPerDay,
           nextView.viewStartDay,
           currentAxisMode,
           projectId,
+          workspaceId,
           workspacePath,
-          workspaceOpenRevision,
         );
       }
     },
@@ -143,8 +143,8 @@ export function useChronicleViewportController({
       projectId,
       scheduleZoomAnnounce,
       setChronicleView,
+      workspaceId,
       workspacePath,
-      workspaceOpenRevision,
     ],
   );
 
@@ -153,9 +153,8 @@ export function useChronicleViewportController({
     fittedRef.current = persisted !== null;
     displayedAxisModeRef.current = persisted?.axisMode ?? null;
     displayedProjectIdRef.current = persisted?.viewProjectId ?? null;
+    displayedWorkspaceIdRef.current = persisted?.viewWorkspaceId ?? null;
     displayedWorkspacePathRef.current = persisted?.viewWorkspacePath ?? null;
-    displayedWorkspaceOpenRevisionRef.current =
-      persisted?.viewWorkspaceOpenRevision ?? null;
     if (persisted) {
       lastPxPerDayRef.current = persisted.view.pxPerDay;
       setView(persisted.view);
@@ -165,6 +164,7 @@ export function useChronicleViewportController({
   useEffect(() => {
     if (
       !dataReady ||
+      !workspaceId ||
       !workspacePath ||
       !projectId ||
       trackW <= 0 ||
@@ -179,10 +179,14 @@ export function useChronicleViewportController({
     const persistedProjectNeedsMigration =
       persisted !== null && persisted.viewProjectId !== projectId;
     const persistedWorkspaceNeedsMigration =
-      persisted !== null && persisted.viewWorkspacePath !== workspacePath;
-    const persistedWorkspaceGenerationNeedsMigration =
       persisted !== null &&
-      persisted.viewWorkspaceOpenRevision !== workspaceOpenRevision;
+      (persisted.viewWorkspaceId !== null
+        ? persisted.viewWorkspaceId !== workspaceId
+        : persisted.viewWorkspacePath !== workspacePath);
+    const persistedWorkspaceOwnerNeedsUpgrade =
+      persisted !== null &&
+      persisted.viewWorkspaceId === null &&
+      persisted.viewWorkspacePath === workspacePath;
     const sessionModeChanged =
       persisted === null &&
       displayedAxisModeRef.current !== null &&
@@ -193,12 +197,8 @@ export function useChronicleViewportController({
       displayedProjectIdRef.current !== projectId;
     const sessionWorkspaceChanged =
       persisted === null &&
-      displayedWorkspacePathRef.current !== null &&
-      displayedWorkspacePathRef.current !== workspacePath;
-    const sessionWorkspaceGenerationChanged =
-      persisted === null &&
-      displayedWorkspaceOpenRevisionRef.current !== null &&
-      displayedWorkspaceOpenRevisionRef.current !== workspaceOpenRevision;
+      displayedWorkspaceIdRef.current !== null &&
+      displayedWorkspaceIdRef.current !== workspaceId;
     if (
       !initialFit &&
       !persistedModeNeedsMigration &&
@@ -206,16 +206,27 @@ export function useChronicleViewportController({
       !persistedProjectNeedsMigration &&
       !sessionProjectChanged &&
       !persistedWorkspaceNeedsMigration &&
-      !sessionWorkspaceChanged &&
-      !persistedWorkspaceGenerationNeedsMigration &&
-      !sessionWorkspaceGenerationChanged
+      !sessionWorkspaceChanged
     ) {
       // 同じ Project / 座標モード内の dataStart/dataEnd 変化では user view を
       // 保持する。データ外への pan も意図的なナビゲーションとして尊重する。
       displayedAxisModeRef.current = currentAxisMode;
       displayedProjectIdRef.current = projectId;
+      displayedWorkspaceIdRef.current = workspaceId;
       displayedWorkspacePathRef.current = workspacePath;
-      displayedWorkspaceOpenRevisionRef.current = workspaceOpenRevision;
+      // A path-owned setting from an older build already identifies this
+      // Workspace. Upgrade its owner to the stable UUID without discarding the
+      // user's view.
+      if (persistedWorkspaceOwnerNeedsUpgrade && persisted) {
+        setChronicleView(
+          persisted.view.pxPerDay,
+          persisted.view.viewStartDay,
+          currentAxisMode,
+          projectId,
+          workspaceId,
+          workspacePath,
+        );
+      }
       return;
     }
 
@@ -228,8 +239,8 @@ export function useChronicleViewportController({
     fittedRef.current = true;
     displayedAxisModeRef.current = currentAxisMode;
     displayedProjectIdRef.current = projectId;
+    displayedWorkspaceIdRef.current = workspaceId;
     displayedWorkspacePathRef.current = workspacePath;
-    displayedWorkspaceOpenRevisionRef.current = workspaceOpenRevision;
     lastPxPerDayRef.current = nextView.pxPerDay;
     setView(nextView);
 
@@ -239,16 +250,15 @@ export function useChronicleViewportController({
     if (
       persistedModeNeedsMigration ||
       persistedProjectNeedsMigration ||
-      persistedWorkspaceNeedsMigration ||
-      persistedWorkspaceGenerationNeedsMigration
+      persistedWorkspaceNeedsMigration
     ) {
       setChronicleView(
         nextView.pxPerDay,
         nextView.viewStartDay,
         currentAxisMode,
         projectId,
+        workspaceId,
         workspacePath,
-        workspaceOpenRevision,
       );
     }
   }, [
@@ -261,8 +271,8 @@ export function useChronicleViewportController({
     projectId,
     setChronicleView,
     trackW,
+    workspaceId,
     workspacePath,
-    workspaceOpenRevision,
   ]);
 
   const fit = useCallback(() => {
