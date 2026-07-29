@@ -526,6 +526,12 @@ describe("fetchModels", () => {
           model_info: { "gemma4.context_length": 131072 },
           capabilities: ["completion"],
         }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ done: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          models: [{ name: "gemma4:latest", context_length: 32768 }],
+        }),
       );
 
     await expect(
@@ -535,19 +541,32 @@ describe("fetchModels", () => {
         id: "gemma4:latest",
         name: "gemma4:latest",
         contextLength: 131072,
+        effectiveContextLength: 32768,
+        effectiveContextSource: "runner",
         supportedParameters: [],
       },
     ]);
-    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(mockFetch.mock.calls.map(([url]) => url)).toEqual([
+      "/api/ollama/api/tags",
+      "/api/ollama/api/ps",
+      "/api/ollama/api/show",
+      "/api/ollama/api/generate",
+      "/api/ollama/api/ps",
+    ]);
     expect(JSON.parse(mockFetch.mock.calls[2][1].body)).toEqual({
       model: "gemma4:latest",
     });
+    expect(JSON.parse(mockFetch.mock.calls[3][1].body)).toEqual({
+      model: "gemma4:latest",
+      stream: false,
+    });
   });
 
-  it("aborts a selected Ollama metadata probe at its overall deadline", async () => {
+  it("aborts stalled selected Ollama metadata probes at their deadlines", async () => {
     vi.useFakeTimers();
     try {
-      let requestSignal: AbortSignal | undefined;
+      let showSignal: AbortSignal | undefined;
+      let loadSignal: AbortSignal | undefined;
       mockFetch
         .mockResolvedValueOnce(
           jsonResponse({ models: [{ name: "gemma4:latest" }] }),
@@ -556,8 +575,22 @@ describe("fetchModels", () => {
         .mockImplementationOnce(
           (_url: string, init?: RequestInit) =>
             new Promise<Response>((_resolve, reject) => {
-              requestSignal = init?.signal ?? undefined;
-              requestSignal?.addEventListener(
+              showSignal = init?.signal ?? undefined;
+              showSignal?.addEventListener(
+                "abort",
+                () =>
+                  reject(
+                    new DOMException("The operation was aborted", "AbortError"),
+                  ),
+                { once: true },
+              );
+            }),
+        )
+        .mockImplementationOnce(
+          (_url: string, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              loadSignal = init?.signal ?? undefined;
+              loadSignal?.addEventListener(
                 "abort",
                 () =>
                   reject(
@@ -577,11 +610,13 @@ describe("fetchModels", () => {
 
       await vi.runAllTimersAsync();
       await result;
-      expect(requestSignal?.aborted).toBe(true);
-      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(showSignal?.aborted).toBe(true);
+      expect(loadSignal?.aborted).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(4);
       // Completed /tags and /ps requests need not be retroactively aborted;
-      // the pending /show request must be cancelled at the deadline.
+      // pending metadata and model-load requests must be cancelled.
       expect(mockFetch.mock.calls[2]?.[1].signal?.aborted).toBe(true);
+      expect(mockFetch.mock.calls[3]?.[1].signal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -614,6 +649,12 @@ describe("fetchModels", () => {
             model_info: { "gemma4.context_length": 131_072 },
             capabilities: ["completion", "tools"],
           }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ done: true }))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            models: [{ name: "gemma4:latest", context_length: 16_384 }],
+          }),
         );
 
       const request = fetchModels("ollama", "", {
@@ -624,6 +665,8 @@ describe("fetchModels", () => {
           id: "gemma4:latest",
           name: "gemma4:latest",
           contextLength: 131_072,
+          effectiveContextLength: 16_384,
+          effectiveContextSource: "runner",
           supportedParameters: ["tools"],
         },
       ]);
@@ -631,7 +674,7 @@ describe("fetchModels", () => {
       await vi.advanceTimersByTimeAsync(5_000);
       await result;
       expect(runnerSignal?.aborted).toBe(true);
-      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(mockFetch).toHaveBeenCalledTimes(5);
     } finally {
       vi.useRealTimers();
     }

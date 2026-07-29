@@ -34,7 +34,7 @@ keyring = { version = "3", features = [
 keyring = ["dep:keyring"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["time", "rt", "macros"] }
+tokio = { version = "1", features = ["time", "rt", "macros", "net", "io-util"] }
 
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }

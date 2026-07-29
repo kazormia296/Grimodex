@@ -215,6 +215,11 @@ describe("ContextBar model capability scope", () => {
     );
 
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: "実効コンテキスト容量が不明なため、使用率を計算できません",
+      }),
+    ).toHaveAttribute("data-testid", "context-window-unknown");
   });
 });
 

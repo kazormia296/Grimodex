@@ -83,8 +83,9 @@ export interface BrowserAiConnectionOptions {
   apiVariant?: string | null;
 }
 
-const OLLAMA_SELECTED_METADATA_TIMEOUT_MS = 12_000;
+const OLLAMA_SELECTED_METADATA_TIMEOUT_MS = 95_000;
 const OLLAMA_CATALOG_METADATA_TIMEOUT_MS = 45_000;
+const OLLAMA_MODEL_LOAD_TIMEOUT_MS = 60_000;
 
 export interface BrowserAiRequest {
   operation: BrowserAiOperation;
@@ -469,6 +470,7 @@ function ollamaSupportedParameters(
 async function optionalOllamaJson(
   url: string,
   init: RequestInit = {},
+  timeoutMs = 5_000,
 ): Promise<unknown | undefined> {
   const controller = new AbortController();
   const parentSignal = init.signal;
@@ -478,7 +480,7 @@ async function optionalOllamaJson(
   } else {
     parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   }
-  const timeout = setTimeout(() => controller.abort(), 5_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await browserAiFetch(
       url,
@@ -1219,20 +1221,18 @@ async function fetchModelsInternal(
       runningBodyPromise,
       modelsWithShowPromise,
     ]);
-    const runningModels: OllamaRunner[] =
-      runningBody &&
-      typeof runningBody === "object" &&
-      Array.isArray((runningBody as { models?: unknown }).models)
-        ? ((runningBody as { models: OllamaRunner[] }).models ?? [])
+    const parseRunningModels = (value: unknown): OllamaRunner[] =>
+      value &&
+      typeof value === "object" &&
+      Array.isArray((value as { models?: unknown }).models)
+        ? ((value as { models: OllamaRunner[] }).models ?? [])
         : [];
-
-    return modelsWithShow.map(({ model, show }) => {
-      const modelMaximum = ollamaModelContextLength(show?.model_info);
-      const modelParameterContext = ollamaNumCtx(show?.parameters);
+    let runningModels = parseRunningModels(runningBody);
+    const findRunner = (model: OllamaTag): OllamaRunner | undefined => {
       const normalizedName = normalizeOllamaModelName(
         model.model ?? model.name,
       );
-      const runner = runningModels.find((candidate) => {
+      return runningModels.find((candidate) => {
         if (
           model.digest &&
           candidate.digest &&
@@ -1248,6 +1248,36 @@ async function fetchModelsInternal(
           )
         );
       });
+    };
+
+    // Loading every catalog entry would consume VRAM and surprise the user.
+    // Only the selected send-time probe may load a cold runner so `/api/ps`
+    // can report the allocation Ollama actually chose.
+    const selectedModel = selectedModelId ? models[0] : undefined;
+    if (selectedModel && !findRunner(selectedModel)) {
+      const loaded = await optionalOllamaJson(
+        ollamaApiEndpoint("/api/generate", options),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: selectedModel.name, stream: false }),
+          ...(ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {}),
+        },
+        OLLAMA_MODEL_LOAD_TIMEOUT_MS,
+      );
+      if (loaded !== undefined) {
+        const refreshedRunningBody = await optionalOllamaJson(
+          ollamaApiEndpoint("/api/ps", options),
+          ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {},
+        );
+        runningModels = parseRunningModels(refreshedRunningBody);
+      }
+    }
+
+    return modelsWithShow.map(({ model, show }) => {
+      const modelMaximum = ollamaModelContextLength(show?.model_info);
+      const modelParameterContext = ollamaNumCtx(show?.parameters);
+      const runner = findRunner(model);
       const runnerContext = positiveInteger(runner?.context_length);
       const rawEffectiveContext = runnerContext ?? modelParameterContext;
       const effectiveContextLength =

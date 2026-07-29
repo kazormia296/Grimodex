@@ -271,9 +271,13 @@ test("listAiModels はendpoint overrideを使い、空キーならAuthorization�
   }
 });
 
-test("listAiModels は選択Ollamaモデルだけをshowで照会する", async () => {
+test("listAiModels は選択Ollamaモデルだけをロードしてrunner contextを再取得する", async () => {
   const shownModels = [];
+  const requestedRoutes = [];
+  let psCalls = 0;
+  let preloadBody;
   const { server, baseUrl } = await startMockServer(async (req, res) => {
+    requestedRoutes.push(req.url);
     res.setHeader("content-type", "application/json");
     if (req.url === "/api/tags") {
       res.end(
@@ -287,7 +291,21 @@ test("listAiModels は選択Ollamaモデルだけをshowで照会する", async 
       return;
     }
     if (req.url === "/api/ps") {
-      res.end(JSON.stringify({ models: [] }));
+      psCalls += 1;
+      res.end(
+        JSON.stringify({
+          models:
+            psCalls === 1
+              ? []
+              : [
+                  {
+                    name: "gemma4:latest",
+                    model: "gemma4:latest",
+                    context_length: 16384,
+                  },
+                ],
+        }),
+      );
       return;
     }
     if (req.url === "/api/show") {
@@ -302,6 +320,11 @@ test("listAiModels は選択Ollamaモデルだけをshowで照会する", async 
           capabilities: ["completion", "tools"],
         }),
       );
+      return;
+    }
+    if (req.url === "/api/generate") {
+      preloadBody = await readJson(req);
+      res.end(JSON.stringify({ done: true, done_reason: "load" }));
       return;
     }
     res.writeHead(404);
@@ -327,9 +350,22 @@ test("listAiModels は選択Ollamaモデルだけをshowで照会する", async 
       ),
     );
     assert.deepEqual(shownModels, ["gemma4:latest"]);
+    assert.deepEqual(requestedRoutes, [
+      "/api/tags",
+      "/api/ps",
+      "/api/show",
+      "/api/generate",
+      "/api/ps",
+    ]);
+    assert.deepEqual(preloadBody, {
+      model: "gemma4:latest",
+      stream: false,
+    });
     assert.equal(models.length, 1);
     assert.equal(models[0].id, "gemma4:latest");
     assert.equal(models[0].contextLength, 131072);
+    assert.equal(models[0].effectiveContextLength, 16384);
+    assert.equal(models[0].effectiveContextSource, "runner");
   } finally {
     await closeServer(server);
   }

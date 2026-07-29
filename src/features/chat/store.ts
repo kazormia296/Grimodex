@@ -108,7 +108,9 @@ let settingsLoadGeneration = 0;
 let settingsWriteGeneration = 0;
 let settingsSaveTail: Promise<void> = Promise.resolve();
 let ollamaObservationRequestGeneration = 0;
-const OLLAMA_SELECTED_PROBE_TIMEOUT_MS = 15_000;
+// Rust 側は cold model の preload を最大 60 秒待ってから runner allocation を
+// 再取得する。renderer が先に打ち切って観測結果を捨てないよう、境界側に余裕を持たせる。
+const OLLAMA_SELECTED_PROBE_TIMEOUT_MS = 95_000;
 
 async function withTimeout<T>(
   promise: Promise<T>,

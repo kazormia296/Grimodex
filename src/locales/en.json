@@ -2151,6 +2151,7 @@
       "costNote": "Output not included",
       "windowFill": "Context window usage: {{pct}}%",
       "windowFillOfWindow": "Context window usage: {{pct}}% (of {{window}})",
+      "windowFillUnknown": "Usage cannot be calculated because the effective context window is unknown",
       "windowFillRow": "Window usage",
       "multiSummaryWarning": "{{count}} summaries — new session recommended",
       "cacheRebuilt": "cache rebuilt",
