@@ -4,6 +4,13 @@ import {
   cancelDerivedIpcCallersForLifecycle,
   cancelIpcReadCallersForLifecycle,
 } from "@/lib/ipcQueue";
+import {
+  activateLifecycleTransition,
+  beginLifecycleTransition,
+  isLifecycleTraceEnabled,
+  type LifecycleTransitionInput,
+  type LifecycleTransitionTrace,
+} from "./lifecycleTrace";
 
 export type QuiescenceLeaseReason =
   | "project-load"
@@ -20,6 +27,8 @@ export interface QuiescenceLeaseStateChange {
 
 export interface QuiescenceLease {
   readonly reason: QuiescenceLeaseReason;
+  /** Present only for an explicitly opted-in Project/Workspace transition. */
+  readonly transition: LifecycleTransitionTrace | null;
   /**
    * Opens a controlled target-scope hydration phase after old work drained.
    * The caller must seal again immediately before publishing new authority.
@@ -39,6 +48,7 @@ export interface QuiescenceLease {
 const activeLeases = new Map<symbol, QuiescenceLeaseReason>();
 const ipcReadBarrierReleases = new Map<symbol, () => void>();
 const ipcDerivedBarrierReleases = new Map<symbol, () => void>();
+const lifecycleTransitionDeactivations = new Map<symbol, () => void>();
 const listeners = new Set<(change: QuiescenceLeaseStateChange) => void>();
 const topologyListeners = new Set<() => void>();
 let currentProjectReadAuthorityToken: symbol | null = null;
@@ -97,7 +107,14 @@ export function isProjectWorkspaceLifecycleIdle(): boolean {
  */
 export function acquireQuiescenceLease(
   reason: QuiescenceLeaseReason,
+  options?: {
+    transition?: LifecycleTransitionInput;
+  },
 ): QuiescenceLease {
+  const transition =
+    options?.transition && isLifecycleTraceEnabled()
+      ? beginLifecycleTransition(options.transition)
+      : null;
   const token = Symbol(reason);
   const wasActive = activeLeases.size > 0;
   activeLeases.set(token, reason);
@@ -121,6 +138,16 @@ export function acquireQuiescenceLease(
   if (reason !== "window-close") {
     ipcReadBarrierReleases.set(token, acquireIpcReadAdmissionBarrier());
   }
+  if (transition) {
+    // Admission and IPC barriers are closed before the milestone is observable.
+    // Bind the trace for the full lease interval so a stream that settles
+    // before flushStrictQuiescence still records its real milestones.
+    transition.advance("quiescence-started");
+    lifecycleTransitionDeactivations.set(
+      token,
+      activateLifecycleTransition(transition),
+    );
+  }
   if (!wasActive) {
     notifyLeaseStateChanged({
       active: true,
@@ -132,6 +159,7 @@ export function acquireQuiescenceLease(
   let released = false;
   return {
     reason,
+    transition,
     openTargetReadPhase() {
       if (released || !ownsReadAuthority(token, reason)) return;
       releaseIpcReadBarrier(token);
@@ -151,6 +179,8 @@ export function acquireQuiescenceLease(
       }
       const wasLastLease = activeLeases.size === 1;
       activeLeases.delete(token);
+      lifecycleTransitionDeactivations.get(token)?.();
+      lifecycleTransitionDeactivations.delete(token);
       releaseIpcReadBarrier(token);
       releaseIpcDerivedBarrier(token);
       if (currentProjectReadAuthorityToken === token) {
@@ -264,8 +294,12 @@ export function _resetQuiescenceLeasesForTests(): void {
     activeLeases.values().next().value ?? "window-close";
   for (const release of ipcReadBarrierReleases.values()) release();
   for (const release of ipcDerivedBarrierReleases.values()) release();
+  for (const deactivate of lifecycleTransitionDeactivations.values()) {
+    deactivate();
+  }
   ipcReadBarrierReleases.clear();
   ipcDerivedBarrierReleases.clear();
+  lifecycleTransitionDeactivations.clear();
   activeLeases.clear();
   currentProjectReadAuthorityToken = null;
   preexistingParticipantInvocationDepth = 0;

@@ -301,7 +301,6 @@ export async function launchProductJourneyMcpClient({
         child.off("exit", handleExit);
         resolve(false);
       }, timeoutMs);
-      timeout.unref?.();
       const handleExit = () => {
         clearTimeout(timeout);
         resolve(true);

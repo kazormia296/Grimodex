@@ -32,6 +32,7 @@ permissions:
 jobs:
   quality:
     name: Quality (traceability / impact-selected light gates)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -75,6 +76,7 @@ jobs:
 
   frontend:
     name: Frontend (type-check / lint / test)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -114,6 +116,7 @@ jobs:
 
   browser:
     name: Browser (Vitest browser)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -162,6 +165,7 @@ jobs:
 
   storybook:
     name: Storybook (Vitest browser)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -210,6 +214,7 @@ jobs:
 
   security:
     name: Security (audit)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -244,6 +249,7 @@ jobs:
 
   electron:
     name: Electron (workflow contract / type-check / test / build)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -299,6 +305,7 @@ jobs:
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -384,9 +391,9 @@ jobs:
             ${{
               inputs.product_journey_mode ||
               (github.event_name == 'schedule' && 'all') ||
-              (github.event_name == 'pull_request' && 'affected') ||
+              (github.event_name == 'pull_request' && 'shadow') ||
               (github.event_name == 'push' &&
-               github.ref == 'refs/heads/master' && 'affected') ||
+               github.ref == 'refs/heads/master' && 'shadow') ||
               'all'
             }}
           PRODUCT_JOURNEY_BASE_SHA: >-
@@ -489,6 +496,7 @@ jobs:
 
   electron-windows-installer-contract:
     name: Electron Windows (unit test / NSIS migration contract)
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -570,6 +578,7 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -653,6 +662,7 @@ jobs:
 
   rust:
     name: Shared Rust crates (check / clippy / test)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

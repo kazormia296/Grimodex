@@ -14,6 +14,20 @@ import type { AiModel } from "./types";
 import { toast } from "sonner";
 import { registerChatContextPreparation } from "@/application/chat/chatContextPreparation";
 import { chatContextPreparationComposition } from "@/application/composition/chatContextPreparationComposition";
+import { IpcInvokeError } from "@/lib/tauri";
+import {
+  LIFECYCLE_TRACE_OPT_IN_KEY,
+  activateLifecycleTransition,
+  beginLifecycleTransition,
+  subscribeLifecycleTrace,
+  type LifecycleTraceEvent,
+} from "@/application/lifecycle/lifecycleTrace";
+import {
+  flushStrictQuiescence,
+  type QuiescenceDependencies,
+} from "@/application/lifecycle/quiescenceCoordinator";
+import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
+import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
 
 vi.mock("sonner", () => ({
   toast: {
@@ -319,6 +333,25 @@ function deferred<T>() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+function chatQuiescenceDependencies(options?: {
+  onScopedMutations?: () => void;
+}): QuiescenceDependencies {
+  return {
+    flushAutoSaves: async () => {},
+    flushParticipants: async () => {},
+    flushExternalWriteBacks: async () => {},
+    awaitEditorWrites: async () => {},
+    awaitScopedMutations: () => {
+      options?.onScopedMutations?.();
+      return flushQuiescenceProviderStage("scoped-mutations");
+    },
+    awaitSceneWrites: async () => {},
+    hasUnresolvedEditorChanges: () => false,
+    flushTimelapse: async () => {},
+    awaitIpcActualTasks: async () => {},
+  };
 }
 
 function resetStore() {
@@ -1098,6 +1131,35 @@ describe("useChatStore", () => {
       expect(state.activeSessionId).toBe("session-1");
       expect(state.messages).toHaveLength(2);
       expect(mockListMessages).toHaveBeenCalledWith("session-1");
+    });
+
+    it("treats lifecycle read cancellation as silent scope teardown", async () => {
+      useChatStore.setState({ sessions: [session1, session2] });
+      mockGetSessionForProject.mockRejectedValueOnce(
+        new IpcInvokeError("db_execute", {
+          code: "IPC_READ_CANCELLED",
+          message:
+            "IPC_READ_CANCELLED: read cancelled before lifecycle transition completed: db_execute",
+          retryable: true,
+          outcome: "failed",
+        }),
+      );
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+
+      try {
+        await useChatStore.getState().selectSession("session-1");
+
+        expect(toast.error).not.toHaveBeenCalled();
+        expect(consoleError).not.toHaveBeenCalled();
+        expect(useChatStore.getState()).toMatchObject({
+          activeSessionId: null,
+          isLoadingMessages: false,
+        });
+      } finally {
+        consoleError.mockRestore();
+      }
     });
 
     it("clears messages when selecting null", async () => {
@@ -2015,6 +2077,320 @@ describe("useChatStore", () => {
       expect(messages[1].role).toBe("assistant");
       expect(messages[1].content).toBe("こんにちは！");
       expect(isStreaming).toBe(false);
+    });
+
+    it("traces Stop finalization before the stopped turn finishes persistence", async () => {
+      Object.assign(globalThis, {
+        [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+      });
+      const persistence = deferred<void>();
+      mockAddMessage.mockImplementation(async () => {
+        await persistence.promise;
+        return msg1;
+      });
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, _callbacks: StreamCallbacks) => () => {},
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      const events: LifecycleTraceEvent[] = [];
+      const unsubscribe = subscribeLifecycleTrace((event) =>
+        events.push(event),
+      );
+      const transition = beginLifecycleTransition({
+        kind: "project",
+        from: {
+          workspacePath: "/workspace/chat-store-test",
+          workspaceOpenRevision: 1,
+          projectId: "proj-1",
+        },
+        to: {
+          workspacePath: "/workspace/chat-store-test",
+          workspaceOpenRevision: 1,
+          projectId: "proj-2",
+        },
+      });
+      transition.advance("quiescence-started");
+      const deactivate = activateLifecycleTransition(transition);
+
+      try {
+        const send = useChatStore.getState().sendMessage("Stop target");
+        await vi.waitFor(() =>
+          expect(mockSendChatMessageStream).toHaveBeenCalledOnce(),
+        );
+
+        useChatStore.getState().stopGeneration();
+
+        await vi.waitFor(() =>
+          expect(events.map((event) => event.phase)).toContain(
+            "old-stream-completed",
+          ),
+        );
+        expect(events.map((event) => event.phase)).not.toContain(
+          "old-scope-persisted",
+        );
+        expect(mockAddMessage).toHaveBeenCalledOnce();
+
+        persistence.resolve();
+        await send;
+
+        expect(events.map((event) => event.phase)).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "old-stream-completed",
+          "old-scope-persisted",
+        ]);
+        expect(new Set(events.map((event) => event.transitionId))).toEqual(
+          new Set([transition.transitionId]),
+        );
+        // Stop before any delta persists only the owned user message.
+        expect(mockAddMessage).toHaveBeenCalledOnce();
+      } finally {
+        persistence.resolve();
+        deactivate();
+        unsubscribe();
+        Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+      }
+    });
+
+    it("holds strict quiescence through natural stream completion and persistence", async () => {
+      Object.assign(globalThis, {
+        [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+      });
+      let callbacks: StreamCallbacks | undefined;
+      const persistence = deferred<void>();
+      mockAddMessage.mockImplementation(async () => {
+        await persistence.promise;
+        return msg1;
+      });
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      const events: LifecycleTraceEvent[] = [];
+      const unsubscribe = subscribeLifecycleTrace((event) =>
+        events.push(event),
+      );
+      const transition = beginLifecycleTransition({
+        kind: "project",
+        from: {
+          workspacePath: "/workspace/chat-store-test",
+          workspaceOpenRevision: 1,
+          projectId: "proj-1",
+        },
+        to: {
+          workspacePath: "/workspace/chat-store-test",
+          workspaceOpenRevision: 1,
+          projectId: "proj-2",
+        },
+      });
+      const providerEntered = deferred<void>();
+
+      try {
+        const send = useChatStore.getState().sendMessage("Natural completion");
+        await vi.waitFor(() => expect(callbacks).toBeDefined());
+        let flushSettled = false;
+        const flushing = flushStrictQuiescence(
+          chatQuiescenceDependencies({
+            onScopedMutations: () => providerEntered.resolve(),
+          }),
+          { transition },
+        ).then(() => {
+          flushSettled = true;
+        });
+
+        await providerEntered.promise;
+        expect(flushSettled).toBe(false);
+        expect(events.map((event) => event.phase)).toEqual([
+          "switch-requested",
+          "quiescence-started",
+        ]);
+
+        callbacks?.onTextDelta("late chunk");
+        callbacks?.onDone({ stopReason: "end_turn" });
+        await vi.waitFor(() =>
+          expect(events.map((event) => event.phase)).toContain(
+            "old-stream-completed",
+          ),
+        );
+        expect(flushSettled).toBe(false);
+        expect(events.map((event) => event.phase)).not.toContain(
+          "old-scope-persisted",
+        );
+
+        persistence.resolve();
+        await send;
+        await flushing;
+
+        expect(events.map((event) => event.phase)).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "old-stream-completed",
+          "old-scope-persisted",
+        ]);
+        expect(mockAddMessage).toHaveBeenCalledTimes(2);
+      } finally {
+        persistence.resolve();
+        unsubscribe();
+        Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+      }
+    });
+
+    it("vetoes authority commit when old-scope stream persistence fails", async () => {
+      Object.assign(globalThis, {
+        [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+      });
+      let callbacks: StreamCallbacks | undefined;
+      const persistenceFailure = new Error("old-scope chat write failed");
+      mockAddMessage.mockRejectedValueOnce(persistenceFailure);
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      const events: LifecycleTraceEvent[] = [];
+      const unsubscribe = subscribeLifecycleTrace((event) =>
+        events.push(event),
+      );
+      const send = useChatStore
+        .getState()
+        .sendMessage("Persistence must veto the switch");
+      await vi.waitFor(() => expect(callbacks).toBeDefined());
+      const lease = acquireQuiescenceLease("project-load", {
+        transition: {
+          kind: "project",
+          from: {
+            workspacePath: "/workspace/chat-store-test",
+            workspaceOpenRevision: 1,
+            projectId: "proj-1",
+          },
+          to: {
+            workspacePath: "/workspace/chat-store-test",
+            workspaceOpenRevision: 1,
+            projectId: "proj-2",
+          },
+        },
+      });
+      const providerEntered = deferred<void>();
+      let authorityCommitted = false;
+      const switching = (async () => {
+        await flushStrictQuiescence(
+          chatQuiescenceDependencies({
+            onScopedMutations: () => providerEntered.resolve(),
+          }),
+          { transition: lease.transition },
+        );
+        authorityCommitted = true;
+        lease.transition?.advance("authority-commit");
+      })();
+      const sendFailure = expect(send).rejects.toMatchObject({
+        name: "ChatTurnPersistenceError",
+        cause: persistenceFailure,
+      });
+      const switchFailure = expect(switching).rejects.toMatchObject({
+        name: "StrictQuiescenceError",
+      });
+
+      try {
+        await providerEntered.promise;
+        callbacks?.onTextDelta("completed but not durable");
+        callbacks?.onDone({ stopReason: "end_turn" });
+
+        await sendFailure;
+        await switchFailure;
+
+        expect(authorityCommitted).toBe(false);
+        expect(events.map((event) => event.phase)).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "old-stream-completed",
+        ]);
+        expect(mockAddMessage).toHaveBeenCalledOnce();
+      } finally {
+        lease.release();
+        unsubscribe();
+        Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+      }
+    });
+
+    it("traces a turn that settles after lease acquisition but before strict flush", async () => {
+      Object.assign(globalThis, {
+        [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+      });
+      let callbacks: StreamCallbacks | undefined;
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      const events: LifecycleTraceEvent[] = [];
+      const unsubscribe = subscribeLifecycleTrace((event) =>
+        events.push(event),
+      );
+      const send = useChatStore
+        .getState()
+        .sendMessage("Flush entry before completion");
+      await vi.waitFor(() => expect(callbacks).toBeDefined());
+      const lease = acquireQuiescenceLease("project-load", {
+        transition: {
+          kind: "project",
+          from: {
+            workspacePath: "/workspace/chat-store-test",
+            workspaceOpenRevision: 1,
+            projectId: "proj-1",
+          },
+          to: {
+            workspacePath: "/workspace/chat-store-test",
+            workspaceOpenRevision: 1,
+            projectId: "proj-2",
+          },
+        },
+      });
+
+      try {
+        callbacks?.onTextDelta("completed before flush");
+        callbacks?.onDone({ stopReason: "end_turn" });
+        await send;
+
+        expect(events.map((event) => event.phase)).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "old-stream-completed",
+          "old-scope-persisted",
+        ]);
+
+        await flushStrictQuiescence(chatQuiescenceDependencies(), {
+          transition: lease.transition,
+        });
+        expect(events.map((event) => event.phase)).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "old-stream-completed",
+          "old-scope-persisted",
+        ]);
+      } finally {
+        lease.release();
+        unsubscribe();
+        Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+      }
     });
 
     it("deletes a regenerated answer only after its replacement persists", async () => {
@@ -4345,6 +4721,70 @@ describe("useChatStore", () => {
       expect(useChatStore.getState().messages).toEqual([]);
       expect(useChatStore.getState().streamingDraft).toBeNull();
       expect(useChatStore.getState().isStreaming).toBe(false);
+    });
+
+    it("cancels a pre-transport turn that resumes during strict quiescence", async () => {
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+      });
+
+      const sendPromise = useChatStore
+        .getState()
+        .sendMessage("切替前の準備中質問");
+      expect(useChatStore.getState().isStreaming).toBe(true);
+      const lease = acquireQuiescenceLease("project-load");
+      let flushSettled = false;
+      const providerEntered = deferred<void>();
+      try {
+        const flushing = flushStrictQuiescence(
+          chatQuiescenceDependencies({
+            onScopedMutations: () => providerEntered.resolve(),
+          }),
+        ).then(() => {
+          flushSettled = true;
+        });
+        await providerEntered.promise;
+        expect(flushSettled).toBe(false);
+
+        releaseTokenizer();
+        await sendPromise;
+        await flushing;
+
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toEqual([]);
+        expect(useChatStore.getState().streamingDraft).toBeNull();
+        expect(useChatStore.getState().isStreaming).toBe(false);
+      } finally {
+        releaseTokenizer();
+        lease.release();
+      }
+    });
+
+    it("does not admit a new turn while lifecycle quiescence is active", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      const lease = acquireQuiescenceLease("project-load");
+      try {
+        await useChatStore.getState().sendMessage("切替開始後の質問");
+
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toEqual([]);
+        expect(useChatStore.getState().isStreaming).toBe(false);
+      } finally {
+        lease.release();
+      }
     });
 
     it("keeps a replacement turn authoritative when the stopped pre-transport turn resumes", async () => {

@@ -33,6 +33,7 @@ import {
   type WorkspaceProjectLoadLease,
 } from "@/features/project/projectLoadGate";
 import { hydrateWorkspaceStores } from "@/application/workspace/workspaceHydration";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 export type {
   GlobalSettings,
@@ -189,6 +190,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     openWorkspaceInFlight = true;
     const previousWorkspaceHydrated = get().workspaceHydrated;
     const previousImeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
+    const previousProjectId = getCurrentProjectId();
     let swapDone = false;
     let projectLoadLease: WorkspaceProjectLoadLease | null = null;
     let quiescenceLease: QuiescenceLease | null = null;
@@ -201,7 +203,21 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         workspaceSwitchInProgress: true,
         workspaceHydrated: false,
       });
-      quiescenceLease = acquireQuiescenceLease("workspace-open");
+      quiescenceLease = acquireQuiescenceLease("workspace-open", {
+        transition: {
+          kind: "workspace",
+          from: {
+            workspacePath: get().activeWorkspacePath,
+            workspaceOpenRevision: get().workspaceOpenRevision,
+            projectId: previousProjectId,
+          },
+          to: {
+            workspacePath: path,
+            workspaceOpenRevision: null,
+            projectId: null,
+          },
+        },
+      });
       // Exclude new Project loads, invalidate every load bound to the old DB,
       // and await the complete load operation before quiescing/switching. The
       // lease remains held through initCurrentProject + identity publication.
@@ -215,7 +231,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // 待ち、(c) timelapse recorder の flush。1 件でも失敗した場合は例外を
       // outer catch へ伝え、native open_workspace より前に切替を中断する。
       // 旧 DB/UI binding と dirty editor はそのまま維持される。
-      await flushStrictQuiescence();
+      await flushStrictQuiescence(undefined, {
+        transition: quiescenceLease.transition,
+      });
       clearRetainedEditorRecoveryDraftsForScopeChange();
       // Existing Project lifecycles and every old-scope persistence surface
       // have now settled. Keep the old identity published until this point so
@@ -286,6 +304,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         projectLoadLease.projectLoadContext,
         nextOpenRevision,
       );
+      quiescenceLease.transition?.updateTarget({
+        workspaceOpenRevision: nextOpenRevision,
+        projectId,
+      });
       // Publish identity/ready only after Project critical snapshots and every
       // other mandatory Workspace surface have committed. The gate stays held
       // through this publication, so a queued Project load cannot supersede
@@ -304,9 +326,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         workspaceOpenRevision: nextOpenRevision,
         activeWorkspaceName: result.name,
         globalSettings: settings,
+        workspaceHydrated: false,
+      });
+      quiescenceLease.transition?.advance("authority-commit");
+      set({
         workspaceSwitchInProgress: false,
         workspaceHydrated: true,
       });
+      quiescenceLease.transition?.advance("new-scope-hydrated");
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {

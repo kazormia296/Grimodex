@@ -3,6 +3,7 @@ import i18next from "i18next";
 import { toast } from "sonner";
 import type { CodexEntry } from "@/features/codex/api";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import {
   awaitChatComposerAuthority,
   captureChatComposerAuthority,
@@ -332,6 +333,7 @@ export function useChatPinsController({
         setPinsSnapshot(snapshot);
       })
       .catch((cause) => {
+        if (isIpcLifecycleCancellation(cause)) return;
         if (
           cancelled ||
           readEpoch !== mutationEpochRef.current ||

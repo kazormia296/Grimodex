@@ -3,9 +3,13 @@ import {
   type ResolvedChatTurnRoute,
 } from "@/features/chat/turn/resolveTurnRoute";
 import type { TurnCoordinator } from "@/features/chat/turn/turnCoordinator";
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 
 export interface ChatTurnRuntime {
   coordinator: TurnCoordinator;
+  trackTurn: <T>(turn: Promise<T>) => Promise<T>;
+  hasPendingTurns: () => boolean;
+  awaitPendingTurns: () => Promise<void>;
   scheduleInputPinnedRefresh: (refresh: () => void) => void;
   claimSendPreflight: (scopeKey: string) => string | null;
   releaseSendPreflight: (claimId: string) => void;
@@ -25,7 +29,11 @@ export interface ChatTurnRuntime {
   finalizeStoppedStream: () => void;
 }
 
-export function createChatTurnRuntime(): ChatTurnRuntime {
+export function createChatTurnRuntime(options?: {
+  registerQuiescence?: boolean;
+}): ChatTurnRuntime {
+  const pendingTurns = new Set<Promise<unknown>>();
+  const settledTurnFailures: unknown[] = [];
   let inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let sendPreflightClaimId: string | null = null;
   let sendPreflightClaimScopeKey: string | null = null;
@@ -34,8 +42,51 @@ export function createChatTurnRuntime(): ChatTurnRuntime {
   let flushPendingDelta: (() => void) | null = null;
   let finalizeStoppedStream: (() => void) | null = null;
 
-  return {
+  const runtime: ChatTurnRuntime = {
     coordinator: createTurnCoordinator(),
+
+    trackTurn(turn) {
+      pendingTurns.add(turn);
+      void turn.then(
+        () => pendingTurns.delete(turn),
+        (error) => {
+          pendingTurns.delete(turn);
+          // A lifecycle-bound persistence failure can settle after the lease
+          // closes admission but before the provider stage starts. Latch it
+          // until strict quiescence consumes and reports it.
+          settledTurnFailures.push(error);
+        },
+      );
+      return turn;
+    },
+
+    hasPendingTurns() {
+      return pendingTurns.size > 0 || settledTurnFailures.length > 0;
+    },
+
+    async awaitPendingTurns() {
+      const failures: unknown[] = settledTurnFailures.splice(
+        0,
+        settledTurnFailures.length,
+      );
+      while (pendingTurns.size > 0) {
+        const snapshot = [...pendingTurns];
+        await Promise.allSettled(snapshot);
+        failures.push(
+          ...settledTurnFailures.splice(0, settledTurnFailures.length),
+        );
+      }
+      failures.push(
+        ...settledTurnFailures.splice(0, settledTurnFailures.length),
+      );
+      if (failures.length > 0) {
+        const message =
+          failures.length === 1 && failures[0] instanceof Error
+            ? failures[0].message
+            : "One or more chat turns failed while reaching quiescence";
+        throw new AggregateError(failures, message);
+      }
+    },
 
     scheduleInputPinnedRefresh(refresh) {
       if (inputPinnedRefreshTimer !== null) {
@@ -126,4 +177,18 @@ export function createChatTurnRuntime(): ChatTurnRuntime {
       finalizeStoppedStream?.();
     },
   };
+  if (options?.registerQuiescence) {
+    registerQuiescenceProvider({
+      id: "chat-turn-runtime",
+      stage: "scoped-mutations",
+      flush: async () => {
+        if (!runtime.hasPendingTurns()) return;
+        // Invalidate only an asynchronous preflight. An active stream drains
+        // naturally, including callback finalization and old-scope persistence.
+        runtime.clearSendPreflight();
+        await runtime.awaitPendingTurns();
+      },
+    });
+  }
+  return runtime;
 }

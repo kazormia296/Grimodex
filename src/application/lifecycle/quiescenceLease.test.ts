@@ -7,13 +7,78 @@ import {
   subscribeQuiescenceLease,
 } from "./quiescenceLease";
 import { enqueueIpc, resetIpcQueueForTests } from "@/lib/ipcQueue";
+import {
+  advanceActiveLifecycleTransition,
+  LIFECYCLE_TRACE_OPT_IN_KEY,
+  subscribeLifecycleTrace,
+  type LifecycleTraceEvent,
+} from "./lifecycleTrace";
 
 afterEach(() => {
   _resetQuiescenceLeasesForTests();
   resetIpcQueueForTests();
+  Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
 });
 
 describe("quiescence lease", () => {
+  it("creates the requested transition at Project/Workspace lease acquisition", () => {
+    Object.assign(globalThis, {
+      [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+    });
+    const events: LifecycleTraceEvent[] = [];
+    const admissionAtMilestone: boolean[] = [];
+    const unsubscribe = subscribeLifecycleTrace((event) => {
+      events.push(event);
+      if (event.phase === "quiescence-started") {
+        admissionAtMilestone.push(canScheduleQuiescenceMutation());
+      }
+    });
+    const lease = acquireQuiescenceLease("project-load", {
+      transition: {
+        kind: "project",
+        from: {
+          workspacePath: "/novel",
+          workspaceOpenRevision: 5,
+          projectId: "project-a",
+        },
+        to: {
+          workspacePath: "/novel",
+          workspaceOpenRevision: 5,
+          projectId: "project-b",
+        },
+      },
+    });
+
+    try {
+      expect(lease.transition).not.toBeNull();
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({
+        transitionId: lease.transition?.transitionId,
+        phase: "switch-requested",
+        kind: "project",
+        from: { projectId: "project-a" },
+        to: { projectId: "project-b" },
+      });
+      expect(events[1]).toMatchObject({
+        transitionId: lease.transition?.transitionId,
+        phase: "quiescence-started",
+      });
+      expect(admissionAtMilestone).toEqual([false]);
+      expect(advanceActiveLifecycleTransition("old-stream-completed")).toBe(
+        true,
+      );
+      expect(advanceActiveLifecycleTransition("old-scope-persisted")).toBe(
+        true,
+      );
+    } finally {
+      lease.release();
+      expect(advanceActiveLifecycleTransition("old-stream-completed")).toBe(
+        false,
+      );
+      unsubscribe();
+    }
+  });
+
   it("blocks rebuildable derived work for the full lifecycle lease", async () => {
     const lease = acquireQuiescenceLease("workspace-open");
     const derivedRun = vi.fn(async () => 1);

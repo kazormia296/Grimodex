@@ -116,6 +116,8 @@ import type {
 } from "./chatTurnPreflight";
 import type { ChatTurnRuntime } from "./chatTurnRuntime";
 import type { ChatUserQuestionRuntime } from "./chatUserQuestionRuntime";
+import { advanceActiveLifecycleTransition } from "@/application/lifecycle/lifecycleTrace";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 
 interface ChatTurnStoreActionCompositionPorts extends ChatStoreActionPorts {
   prepareChatTurn: (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision;
@@ -152,6 +154,18 @@ interface ChatTurnStoreActionDependencies {
   errorDetail: typeof errorDetail;
   toast: typeof toast;
   i18next: typeof i18next;
+}
+
+class ChatTurnPersistenceError extends Error {
+  constructor(cause: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : "Failed to persist the completed chat turn",
+      { cause },
+    );
+    this.name = "ChatTurnPersistenceError";
+  }
 }
 
 function createChatTurnStoreActions(
@@ -408,6 +422,7 @@ function createChatTurnStoreActions(
       const shouldAbortTurn = (): boolean =>
         sendControl.aborted ||
         !isCurrentTurn() ||
+        (!transportStarted && !canScheduleQuiescenceMutation()) ||
         !capturedWorkspaceIsCurrent() ||
         !capturedProjectIsCurrent() ||
         !capturedChatAuthorityIsCurrent() ||
@@ -1891,6 +1906,7 @@ function createChatTurnStoreActions(
 
               // draft を一度だけ確定 messages へ移し、以後は通常 message として扱う。
               finalizeStreamingDraft(chatMetadata);
+              advanceActiveLifecycleTransition("old-stream-completed");
 
               // A binding stores the history that existed before this turn. Once
               // both messages are durable, advance it to the exact active-history
@@ -2088,13 +2104,9 @@ function createChatTurnStoreActions(
                 }
               };
 
-              persistToDb()
-                .catch((e) => {
-                  debugLog.error(
-                    "ChatStore",
-                    "persist after stream",
-                    errorDetail(e),
-                  );
+              void persistToDb()
+                .then(() => {
+                  advanceActiveLifecycleTransition("old-scope-persisted");
                 })
                 .finally(() => {
                   turnStreamCleanup?.();
@@ -2102,7 +2114,14 @@ function createChatTurnStoreActions(
                     turnRuntime.clearStreamCleanupIf(turnStreamCleanup);
                   }
                   if (isCurrentTurn()) set({ isStreaming: false });
-                  resolve();
+                })
+                .then(resolve, (error: unknown) => {
+                  debugLog.error(
+                    "ChatStore",
+                    "persist after stream",
+                    errorDetail(error),
+                  );
+                  reject(new ChatTurnPersistenceError(error));
                 });
             },
             onError: (message: string) => {
@@ -2266,6 +2285,14 @@ function createChatTurnStoreActions(
         if (shouldAbortTurn()) {
           cancelBeforeTransport();
           return;
+        }
+        if (
+          e instanceof ChatTurnPersistenceError &&
+          !canScheduleQuiescenceMutation()
+        ) {
+          // A destructive lifecycle must remain on the old authority when the
+          // completed turn could not become durable in that old scope.
+          throw e;
         }
         const kind = classifyError(e);
         const msg = e instanceof Error ? e.message : String(e);
@@ -2442,7 +2469,7 @@ function createChatTurnStoreActions(
 export function createConfiguredChatTurnStoreActions(
   ports: ChatTurnStoreActionCompositionPorts,
 ): Pick<ChatState, "sendMessage" | "stopGeneration"> {
-  return createChatTurnStoreActions({
+  const actions = createChatTurnStoreActions({
     ...ports,
     chatApi,
     cliApi,
@@ -2473,4 +2500,13 @@ export function createConfiguredChatTurnStoreActions(
     toast,
     i18next,
   });
+  return {
+    ...actions,
+    sendMessage(content, commandInstruction, options) {
+      if (!canScheduleQuiescenceMutation()) return Promise.resolve();
+      return ports.turnRuntime.trackTurn(
+        actions.sendMessage(content, commandInstruction, options),
+      );
+    },
+  };
 }

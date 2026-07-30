@@ -55,6 +55,7 @@ import {
   type VersionedSaveOutcome,
 } from "@/lib/saveOutcome";
 import { hasExternalEditConflictForId } from "@/lib/externalEditConflictRegistry";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 
 export type CodexSortOrder =
   | "category"
@@ -353,8 +354,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       } catch (e) {
         if (generation === entriesLoadGeneration) {
           set({ isLoading: false });
-          toast.error(i18next.t("codex.store.loadFailed"));
-          debugLog.error("CodexStore", "loadEntries failed", errorDetail(e));
+          if (!isIpcLifecycleCancellation(e)) {
+            toast.error(i18next.t("codex.store.loadFailed"));
+            debugLog.error("CodexStore", "loadEntries failed", errorDetail(e));
+          }
         }
         throw e;
       }

@@ -69,7 +69,7 @@ import { readRuntimeSetting } from "@/features/settings/runtimeSettings";
 import { markStart, markEnd } from "@/lib/perfLog";
 import { setSnippetDeletedHandler } from "@/features/snippets/anchorNotify";
 
-const turnRuntime = createChatTurnRuntime();
+const turnRuntime = createChatTurnRuntime({ registerQuiescence: true });
 const userQuestionRuntime = createChatUserQuestionRuntime();
 let configuredChatTurnPreflight: ReturnType<
   typeof createChatTurnPreflight

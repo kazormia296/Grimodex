@@ -5,6 +5,10 @@ import {
 } from "@/lib/editorQuiescence";
 import { flushQuiescenceParticipants } from "./quiescenceParticipants";
 import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
+import {
+  activateLifecycleTransition,
+  type LifecycleTransitionTrace,
+} from "./lifecycleTrace";
 
 export type QuiescenceStage =
   | "autosave"
@@ -73,9 +77,17 @@ function markQuiescence(name: string): void {
  */
 export async function flushStrictQuiescence(
   dependencies: QuiescenceDependencies = defaultDependencies,
+  options?: {
+    transition?: LifecycleTransitionTrace | null;
+  },
 ): Promise<void> {
+  const transition = options?.transition ?? null;
+  const deactivateTransition = transition
+    ? activateLifecycleTransition(transition)
+    : null;
   const failures: QuiescenceFailure[] = [];
   markQuiescence("start");
+  transition?.advance("quiescence-started");
   const run = async (
     stage: QuiescenceStage,
     operation: () => Promise<void>,
@@ -90,36 +102,40 @@ export async function flushStrictQuiescence(
     }
   };
 
-  await run("autosave", dependencies.flushAutoSaves);
-  await run("participants", dependencies.flushParticipants);
-  await run("external-write-back", dependencies.flushExternalWriteBacks);
-  await run("editor-writes", dependencies.awaitEditorWrites);
-  await run("scoped-mutations", dependencies.awaitScopedMutations);
-  await run("scene-writes", dependencies.awaitSceneWrites);
-  if (dependencies.hasUnresolvedEditorChanges()) {
-    markQuiescence("unresolved-editor.failed");
-    failures.push({
-      stage: "unresolved-editor",
-      error: new Error(i18next.t("autoSave.unresolvedChanges")),
-    });
-  } else {
-    markQuiescence("unresolved-editor.complete");
-  }
+  try {
+    await run("autosave", dependencies.flushAutoSaves);
+    await run("participants", dependencies.flushParticipants);
+    await run("external-write-back", dependencies.flushExternalWriteBacks);
+    await run("editor-writes", dependencies.awaitEditorWrites);
+    await run("scoped-mutations", dependencies.awaitScopedMutations);
+    await run("scene-writes", dependencies.awaitSceneWrites);
+    if (dependencies.hasUnresolvedEditorChanges()) {
+      markQuiescence("unresolved-editor.failed");
+      failures.push({
+        stage: "unresolved-editor",
+        error: new Error(i18next.t("autoSave.unresolvedChanges")),
+      });
+    } else {
+      markQuiescence("unresolved-editor.complete");
+    }
 
-  // Persistence producers may finish their native mutation while strict
-  // quiescence is waiting. Their renderer-facing continuation can enqueue a
-  // Timelapse event only after that mutation resolves, so drain actual IPC
-  // work before flushing the recorder. The final IPC drain closes over the
-  // recorder's own append command (and any other mutation it synchronously
-  // produces), giving the destructive lifecycle a producer -> IPC ->
-  // Timelapse -> IPC fixed point.
-  await run("ipc-actual-tasks", dependencies.awaitIpcActualTasks);
-  await run("timelapse", dependencies.flushTimelapse);
-  await run("ipc-actual-tasks", dependencies.awaitIpcActualTasks);
+    // Persistence producers may finish their native mutation while strict
+    // quiescence is waiting. Their renderer-facing continuation can enqueue a
+    // Timelapse event only after that mutation resolves, so drain actual IPC
+    // work before flushing the recorder. The final IPC drain closes over the
+    // recorder's own append command (and any other mutation it synchronously
+    // produces), giving the destructive lifecycle a producer -> IPC ->
+    // Timelapse -> IPC fixed point.
+    await run("ipc-actual-tasks", dependencies.awaitIpcActualTasks);
+    await run("timelapse", dependencies.flushTimelapse);
+    await run("ipc-actual-tasks", dependencies.awaitIpcActualTasks);
 
-  if (failures.length > 0) {
-    markQuiescence("failed");
-    throw new StrictQuiescenceError(failures);
+    if (failures.length > 0) {
+      markQuiescence("failed");
+      throw new StrictQuiescenceError(failures);
+    }
+    markQuiescence("complete");
+  } finally {
+    deactivateTransition?.();
   }
-  markQuiescence("complete");
 }

@@ -270,10 +270,10 @@ describe("caller timeout policy（electron 分岐）", () => {
         }),
       ),
     });
-    const [{ invoke }, { flushQuiescenceProviderStage }] = await Promise.all([
-      import("./tauri"),
-      import("./quiescenceProviders"),
-    ]);
+    const [
+      { invoke, isIpcLifecycleCancellation },
+      { flushQuiescenceProviderStage },
+    ] = await Promise.all([import("./tauri"), import("./quiescenceProviders")]);
     const read = invoke("db_execute", {
       sql: "SELECT * FROM projects",
       params: [],
@@ -282,12 +282,32 @@ describe("caller timeout policy（electron 分岐）", () => {
 
     await Promise.resolve();
     await flushQuiescenceProviderStage("ipc-actual-tasks");
-    await expect(read).rejects.toMatchObject({
+    const cancellation = await read.catch((error: unknown) => error);
+    expect(cancellation).toMatchObject({
       name: "IpcInvokeError",
       code: "IPC_READ_CANCELLED",
       retryable: true,
       outcome: "failed",
     });
+    expect(isIpcLifecycleCancellation(cancellation)).toBe(true);
+    const wrappedCancellation = new Error("query adapter failed");
+    Object.defineProperty(wrappedCancellation, "cause", {
+      value: cancellation,
+    });
+    expect(isIpcLifecycleCancellation(wrappedCancellation)).toBe(true);
+    const queryAdapterCancellation = new Error("query adapter failed");
+    Object.defineProperty(queryAdapterCancellation, "cause", {
+      value: {
+        name: "IpcInvokeError",
+        code: "IPC_READ_CANCELLED",
+        retryable: true,
+        outcome: "failed",
+      },
+    });
+    expect(isIpcLifecycleCancellation(queryAdapterCancellation)).toBe(true);
+    expect(isIpcLifecycleCancellation(new Error("ordinary failure"))).toBe(
+      false,
+    );
 
     resolveBridge({ ok: true, value: null });
     await Promise.resolve();

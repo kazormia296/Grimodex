@@ -20,6 +20,7 @@ import type {
   ChatSummary,
 } from "@/features/chat/chatTypes";
 import { scopeSessionKeysEqual } from "@/features/chat/chatScope";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 
 interface ChatSessionRepository {
   listSessions: (
@@ -235,6 +236,7 @@ export function createChatSessionStoreActions(
           return false;
         }
         set({ isLoadingSessions: false });
+        if (isIpcLifecycleCancellation(error)) return false;
         runtime.notifyError(runtime.translate("chat.loadSessionsFailed"));
         runtime.reportError("loadSessions", error);
         return false;
@@ -352,6 +354,7 @@ export function createChatSessionStoreActions(
             messages: [],
             isLoadingMessages: false,
           });
+          if (isIpcLifecycleCancellation(error)) return;
           runtime.notifyError(runtime.translate("chat.loadMessagesFailed"));
           runtime.reportError("selectSession", error);
         }

@@ -227,14 +227,30 @@ export function formatProductJourneyImpactSummary(
       ...(coverage
         ? [
             {
-              heading: "Coverage backlog",
+              heading: "Coverage exemptions",
               values:
-                coverage.plannedJourneyIds.length > 0
+                coverage.exemptedContracts.length +
+                  coverage.exemptedInteractions.length >
+                0
                   ? [
-                      ...coverage.plannedJourneyIds,
-                      `${coverage.plannedContractIds.length} planned contract(s); affected execution remains locked`,
+                      ...coverage.exemptedContracts,
+                      ...coverage.exemptedInteractions,
                     ]
-                  : ["No planned coverage gaps; affected execution is ready"],
+                  : ["No active coverage exemptions"],
+            },
+            {
+              heading: "Coverage backlog",
+              values: [
+                ...(coverage.plannedJourneyIds.length > 0
+                  ? coverage.plannedJourneyIds
+                  : ["No planned coverage gaps"]),
+                coverage.affectedReady
+                  ? "Affected execution is ready"
+                  : `${coverage.plannedContractIds.length} planned contract(s) and ${
+                      coverage.exemptedContracts.length +
+                      coverage.exemptedInteractions.length
+                    } active exemption(s); affected execution remains locked`,
+              ],
             },
           ]
         : []),
@@ -358,6 +374,8 @@ async function main() {
       exemptionCount:
         coverage.exemptedContracts.length +
         coverage.exemptedInteractions.length,
+      exemptedContractIds: coverage.exemptedContracts,
+      exemptedInteractionIds: coverage.exemptedInteractions,
       plannedJourneyIds: coverage.plannedJourneyIds,
       plannedContractIds: coverage.plannedContractIds,
       affectedReady: coverage.affectedReady,

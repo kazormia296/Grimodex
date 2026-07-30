@@ -36,7 +36,15 @@ const AUTHORING_PROMPT = `AUTHORING-JOURNEY-${Date.now()}`;
 const AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
 const PRODUCT_JOURNEY_MODEL = "product-journey-model";
 const PENDING_SAVE_AUTOSAVE_DELAY_MS = 60_000;
-const PRODUCT_JOURNEY_RESULTS_VERSION = 1;
+const PRODUCT_JOURNEY_RESULTS_VERSION = 2;
+const REQUIRED_LIFECYCLE_TRANSITION_PHASES = [
+  "switch-requested",
+  "quiescence-started",
+  "old-stream-completed",
+  "old-scope-persisted",
+  "authority-commit",
+  "new-scope-hydrated",
+];
 const DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR = path.join(
   rootDir,
   ".artifacts",
@@ -112,6 +120,65 @@ async function workspaceOpenRevision(page) {
     throw new Error(`invalid workspace open revision: ${String(value)}`);
   }
   return revision;
+}
+
+function lifecycleScopeMatches(actual, expected = {}) {
+  return Object.entries(expected).every(
+    ([key, value]) => value === undefined || actual?.[key] === value,
+  );
+}
+
+export async function assertLifecycleTransitionOrder(
+  harness,
+  page,
+  { kind, from, to, label },
+) {
+  const events = await harness.readLifecycleTrace(page);
+  const grouped = new Map();
+  for (const event of events) {
+    if (
+      event?.schemaVersion !== 1 ||
+      event.kind !== kind ||
+      !lifecycleScopeMatches(event.from, from) ||
+      !lifecycleScopeMatches(event.to, to)
+    ) {
+      continue;
+    }
+    const group = grouped.get(event.transitionId) ?? [];
+    group.push(event);
+    grouped.set(event.transitionId, group);
+  }
+
+  const candidates = [...grouped.values()].map((group) =>
+    [...group].sort((left, right) => left.sequence - right.sequence),
+  );
+  const matching = candidates.find(
+    (group) =>
+      JSON.stringify(group.map((event) => event.phase)) ===
+        JSON.stringify(REQUIRED_LIFECYCLE_TRANSITION_PHASES) &&
+      group.every((event, index) => event.sequence === index),
+  );
+  if (!matching) {
+    throw new Error(
+      `${label} did not emit the required lifecycle order: ` +
+        `${REQUIRED_LIFECYCLE_TRANSITION_PHASES.join(" -> ")}; observed=${JSON.stringify(
+          candidates.map((group) => ({
+            transitionId: group[0]?.transitionId ?? null,
+            phases: group.map((event) => event.phase),
+            sequences: group.map((event) => event.sequence),
+          })),
+        )}`,
+    );
+  }
+
+  harness.recordTimeline("application-lifecycle-order-verified", {
+    transitionId: matching[0].transitionId,
+    kind,
+    lifecyclePhases: matching.map((event) => event.phase),
+    from: matching[0].from,
+    to: matching.at(-1).to,
+  });
+  return matching;
 }
 
 async function configureWorkspace(
@@ -962,6 +1029,18 @@ async function runChatStreamProjectSwitchJourney(harness) {
       projects.projectB,
       "project B UI authority after chat drain",
     );
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      kind: "project",
+      from: {
+        workspacePath: workspace,
+        projectId: projects.projectA.id,
+      },
+      to: {
+        workspacePath: workspace,
+        projectId: projects.projectB.id,
+      },
+      label: "project chat switch",
+    });
     await sceneA.editorSurface.waitFor({
       state: "detached",
       timeout: 30_000,
@@ -1059,6 +1138,17 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
       workspaceB,
       "workspace B UI authority after chat drain",
     );
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      kind: "workspace",
+      from: {
+        workspacePath: workspaceA,
+        projectId: sceneA.projectId,
+      },
+      to: {
+        workspacePath: workspaceB,
+      },
+      label: "workspace chat switch",
+    });
     const projectB = await currentProjectRow(harness, chat.page);
     const workspaceBRows = await listChatAuthorityRows(
       harness,
@@ -1955,21 +2045,38 @@ export async function runProductJourneys({
       harness = factory();
       await journey.run(harness);
       durationMs = elapsedMilliseconds(clock, startedAt);
+      const diagnostics = (await harness.finalizeDiagnostics?.()) ?? {
+        rendererErrorCount: 0,
+        pageErrors: [],
+        cleanPass: true,
+      };
       await harness.dispose({ success: true, name: journey.id });
       report.journeys.push({
         id: journey.id,
         status: "passed",
         durationMs,
+        ...diagnostics,
       });
       log(`${journey.id}: PASS`);
     } catch (error) {
       durationMs ??= elapsedMilliseconds(clock, startedAt);
       report.status = "failed";
+      const rendererDiagnostics = error?.diagnostics ??
+        harness?.diagnostics?.() ?? {
+          rendererErrorCount: 0,
+          pageErrors: [],
+          cleanPass: true,
+        };
       const failedResult = {
         id: journey.id,
         status: "failed",
         durationMs,
         error: serializeError(error),
+        ...rendererDiagnostics,
+        // cleanPass describes the complete journey outcome. A functional
+        // assertion failure must never be serialized as a clean pass merely
+        // because the renderer itself emitted no errors.
+        cleanPass: false,
       };
       report.journeys.push(failedResult);
       report.journeys.push(
@@ -1990,6 +2097,15 @@ export async function runProductJourneys({
                 : String(cleanupError)
             }`,
           );
+        }
+        const finalRendererDiagnostics =
+          error?.diagnostics ?? harness.diagnostics?.();
+        if (finalRendererDiagnostics) {
+          Object.assign(failedResult, finalRendererDiagnostics, {
+            // A functional failure is never a clean journey even when renderer
+            // shutdown itself emitted no additional diagnostics.
+            cleanPass: false,
+          });
         }
       }
       await writeResults(outputPath, report);

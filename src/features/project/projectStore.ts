@@ -44,6 +44,7 @@ import {
   getCurrentProjectId,
   publishCurrentProjectId,
 } from "@/application/project/currentProjectAuthority";
+import type { LifecycleTransitionTrace } from "@/application/lifecycle/lifecycleTrace";
 
 export { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
@@ -283,8 +284,12 @@ async function commitProjectLoad<T>(operation: () => Promise<T>): Promise<T> {
  * only after every older flush — including its read-cancelling final IPC stage
  * — has settled.
  */
-async function flushProjectStrictQuiescence(): Promise<void> {
-  const run = projectStrictQuiescenceTail.then(() => flushStrictQuiescence());
+async function flushProjectStrictQuiescence(
+  transition?: LifecycleTransitionTrace | null,
+): Promise<void> {
+  const run = projectStrictQuiescenceTail.then(() =>
+    flushStrictQuiescence(undefined, { transition }),
+  );
   projectStrictQuiescenceTail = run.then(
     () => undefined,
     () => undefined,
@@ -477,7 +482,29 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           "Only a Workspace-owned Project load may skip strict quiescence",
         );
       }
-      const quiescenceLease = acquireQuiescenceLease("project-load");
+      const workspaceIdentity = getCurrentWorkspaceIdentity();
+      const quiescenceLease = acquireQuiescenceLease(
+        "project-load",
+        context.owner === "project"
+          ? {
+              transition: {
+                kind: "project",
+                from: {
+                  workspacePath: workspaceIdentity?.path ?? null,
+                  workspaceOpenRevision:
+                    workspaceIdentity?.openRevision ?? null,
+                  projectId: get().currentProjectId,
+                },
+                to: {
+                  workspacePath: workspaceIdentity?.path ?? null,
+                  workspaceOpenRevision:
+                    workspaceIdentity?.openRevision ?? null,
+                  projectId,
+                },
+              },
+            }
+          : undefined,
+      );
       try {
         // プロジェクト切替は reloadProjectData で tab/chat/map 等の in-memory 状態を
         // 破棄し owner エディタを作り替えるため、pending 中は止める (唯一の入口)。
@@ -500,7 +527,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         // Workspace replacement: a failed persistence surface vetoes the switch
         // while the old Project is still fully authoritative.
         if (!options?.skipStrictQuiescence) {
-          await flushProjectStrictQuiescence();
+          await flushProjectStrictQuiescence(quiescenceLease.transition);
           clearRetainedEditorRecoveryDraftsForScopeChange();
         }
         quiescenceLease.openTargetReadPhase();
@@ -539,6 +566,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               useGlobalHistoryStore.getState().clear();
               set({ currentProjectId: projectId });
               applyProjectMetadata(p);
+              quiescenceLease.transition?.advance("authority-commit");
               return true;
             };
             const result = await reloadProjectData(
@@ -563,6 +591,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               projectLoadStatus: degraded.length > 0 ? "degraded" : "ready",
               degradedParticipants: degraded,
             });
+            quiescenceLease.transition?.advance("new-scope-hydrated");
             if (degraded.length > 0) {
               toast.warning(i18next.t("project.loadDegraded"), {
                 action: {

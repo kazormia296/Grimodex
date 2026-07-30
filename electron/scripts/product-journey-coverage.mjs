@@ -4,6 +4,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 import {
+  PRODUCT_CHAT_SCOPES,
   PRODUCT_CONTRACT_EXEMPTIONS,
   PRODUCT_CONTRACT_REQUIREMENTS,
   PRODUCT_DOMAIN_RULES,
@@ -102,7 +103,7 @@ export function formatCoverageError({ kind, id, domains = [] }) {
     "Required action:",
     `  - ${mapping}`,
     "  - add a new journey",
-    "  - add an explicit reviewed exemption with reason and expiry",
+    "  - add an explicit reviewed exemption with reason, tracking issue, and expiry",
   ].join("\n");
 }
 
@@ -125,6 +126,7 @@ export function validateProductJourneyCoverage({
   exemptions = [],
   implementationIds,
   backlog = [],
+  authoritativeChatScopes = [],
   rolloutMode = "shadow",
   now = new Date(),
 }) {
@@ -151,6 +153,9 @@ export function validateProductJourneyCoverage({
   }
   if (!Array.isArray(backlog)) {
     throw new Error("product journey coverage backlog must be an array");
+  }
+  if (!Array.isArray(authoritativeChatScopes)) {
+    throw new Error("authoritative ChatScopes must be an array");
   }
   if (!["shadow", "affected"].includes(rolloutMode)) {
     throw new Error(`unsupported product journey rollout mode: ${rolloutMode}`);
@@ -237,12 +242,6 @@ export function validateProductJourneyCoverage({
       }
     }
   }
-  if (rolloutMode === "affected" && backlog.length > 0) {
-    throw new Error(
-      `Affected product journey execution is blocked by backlog: ${backlog.length} planned journeys and ${plannedContractIds.length} contracts remain.`,
-    );
-  }
-
   if (implementationIds !== undefined) {
     const normalizedImplementationIds = assertStringArray(
       implementationIds,
@@ -412,6 +411,13 @@ export function validateProductJourneyCoverage({
     }
   }
 
+  const authoritativeScopeIds = assertStringArray(
+    authoritativeChatScopes,
+    "authoritative ChatScopes",
+    { allowEmpty: true },
+  );
+  const declaredChatScopeIds = [];
+  const seenScopeTransitions = new Set();
   for (const [index, transition] of scopeTransitions.entries()) {
     if (
       !transition ||
@@ -428,6 +434,20 @@ export function validateProductJourneyCoverage({
       transition.scope,
       `scope transition ${index} scope`,
     );
+    const authority = assertString(
+      transition.authority,
+      `scope transition ${index} authority`,
+    );
+    if (!["chat-scope", "lifecycle"].includes(authority)) {
+      throw new Error(
+        `scope transition ${index} authority must be chat-scope or lifecycle`,
+      );
+    }
+    const transitionKey = `${operation}:${scope}`;
+    if (seenScopeTransitions.has(transitionKey)) {
+      throw new Error(`Duplicate scope transition: ${transitionKey}`);
+    }
+    seenScopeTransitions.add(transitionKey);
     const canonical = `scope-transition:${operation}:${scope}`;
     if (transition.contractId !== canonical) {
       throw new Error(
@@ -439,6 +459,24 @@ export function validateProductJourneyCoverage({
         `Scope transition ${operation}/${scope} is missing required contract ${canonical}`,
       );
     }
+    if (authority === "chat-scope" && operation === "chat-stream") {
+      declaredChatScopeIds.push(scope);
+    }
+  }
+  const missingChatScopes = authoritativeScopeIds.filter(
+    (scope) => !declaredChatScopeIds.includes(scope),
+  );
+  const staleChatScopes = declaredChatScopeIds.filter(
+    (scope) => !authoritativeScopeIds.includes(scope),
+  );
+  if (missingChatScopes.length > 0 || staleChatScopes.length > 0) {
+    throw new Error(
+      [
+        "Product journey chat-stream transitions must exactly match the authoritative ChatScope registry.",
+        `Missing ChatScope transitions: ${missingChatScopes.join(", ") || "(none)"}`,
+        `Stale ChatScope transitions: ${staleChatScopes.join(", ") || "(none)"}`,
+      ].join(" "),
+    );
   }
 
   const activeNativePersistenceContracts = new Set();
@@ -454,7 +492,7 @@ export function validateProductJourneyCoverage({
       persistence.domain,
       `native persistence domain ${index} domain`,
     );
-    const canonical = `roundtrip:${domain}`;
+    const canonical = `native-command-roundtrip:${domain}`;
     if (persistence.contractId !== canonical) {
       throw new Error(
         `Native persistence domain ${domain} must declare canonical contract ${canonical}`,
@@ -479,7 +517,7 @@ export function validateProductJourneyCoverage({
         );
       }
       for (const domain of persistenceDomains) {
-        const canonical = `roundtrip:${domain}`;
+        const canonical = `native-command-roundtrip:${domain}`;
         if (
           !activeNativePersistenceContracts.has(canonical) &&
           !seenPlannedContracts.has(canonical)
@@ -527,6 +565,7 @@ export function validateProductJourneyCoverage({
         );
       }
       assertString(exemption.reason, `exemption ${index} reason`);
+      assertString(exemption.trackingIssue, `exemption ${index} trackingIssue`);
       if (
         exemption.journeyId !== undefined &&
         !journeyIds.includes(exemption.journeyId)
@@ -611,6 +650,18 @@ export function validateProductJourneyCoverage({
     throw new Error(coverageErrors.join("\n\n"));
   }
 
+  const affectedReady =
+    backlog.length === 0 &&
+    exemptedContracts.length === 0 &&
+    exemptedInteractions.length === 0;
+  if (rolloutMode === "affected" && !affectedReady) {
+    throw new Error(
+      `Affected product journey execution is blocked: ${backlog.length} planned journeys, ${plannedContractIds.length} planned contracts, and ${
+        exemptedContracts.length + exemptedInteractions.length
+      } active exemptions remain.`,
+    );
+  }
+
   for (const rule of normalizedDomainRules) {
     if (rule.neutral || rule.contracts.length > 0) continue;
     const unconnectedDomains = rule.domains.filter(
@@ -638,7 +689,7 @@ export function validateProductJourneyCoverage({
     expiredExemptions,
     plannedJourneyIds,
     plannedContractIds,
-    affectedReady: backlog.length === 0,
+    affectedReady,
   };
 }
 
@@ -652,6 +703,7 @@ export function validateCurrentProductJourneyCoverage(options = {}) {
     interactions: PRODUCT_INTERACTION_REQUIREMENTS,
     exemptions: PRODUCT_CONTRACT_EXEMPTIONS,
     backlog: PRODUCT_JOURNEY_COVERAGE_BACKLOG,
+    authoritativeChatScopes: PRODUCT_CHAT_SCOPES,
     rolloutMode: PRODUCT_JOURNEY_ROLLOUT_MODE,
     ...options,
   });

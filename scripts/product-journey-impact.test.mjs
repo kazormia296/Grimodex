@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import {
+  PRODUCT_CHAT_SCOPES,
   PRODUCT_CONTRACT_EXEMPTIONS,
   PRODUCT_CONTRACT_REQUIREMENTS,
   PRODUCT_DOMAIN_RULES,
@@ -39,6 +40,7 @@ function validate(overrides = {}) {
     interactions: PRODUCT_INTERACTION_REQUIREMENTS,
     exemptions: PRODUCT_CONTRACT_EXEMPTIONS,
     backlog: PRODUCT_JOURNEY_COVERAGE_BACKLOG,
+    authoritativeChatScopes: PRODUCT_CHAT_SCOPES,
     implementationIds: PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
     now: new Date("2026-07-30T00:00:00.000Z"),
     ...overrides,
@@ -66,6 +68,12 @@ test("the current catalog has complete journey, contract, and interaction covera
   assert.equal(result.uncoveredContracts.length, 0);
   assert.equal(result.uncoveredInteractions.length, 0);
   assert.deepEqual(result.expiredExemptions, []);
+  assert.deepEqual(result.exemptedContracts, [
+    "scope-transition:chat-stream:folder",
+    "scope-transition:chat-stream:codex",
+    "scope-transition:chat-stream:snippet",
+  ]);
+  assert.equal(result.affectedReady, false);
 });
 
 test("catalog and runner implementation IDs must match exactly", () => {
@@ -99,13 +107,13 @@ test("a required contract without a journey fails with an actionable error", () 
         error.message,
         /Uncovered product contract:\s+scope-transition:chat-stream:branch/,
       );
-      assert.match(
-        error.message,
-        /Affected domains:\s+chat, branch-lifecycle/,
-      );
+      assert.match(error.message, /Affected domains:\s+chat, branch-lifecycle/);
       assert.match(error.message, /map an existing journey to this contract/);
       assert.match(error.message, /add a new journey/);
-      assert.match(error.message, /reviewed exemption with reason and expiry/);
+      assert.match(
+        error.message,
+        /reviewed exemption with reason, tracking issue, and expiry/,
+      );
       return true;
     },
   );
@@ -134,6 +142,7 @@ test("stale contracts and nonexistent journey exemptions are rejected", () => {
             targetId: PRODUCT_CONTRACT_REQUIREMENTS[0].id,
             journeyId: "deleted-journey",
             reason: "Temporary migration.",
+            trackingIssue: "#429",
             expiresOn: "2026-08-30",
           },
         ],
@@ -149,6 +158,7 @@ test("scope and native persistence declarations require their canonical contract
         scopeTransitions: [
           ...PRODUCT_SCOPE_TRANSITIONS,
           {
+            authority: "lifecycle",
             operation: "chat-stream",
             scope: "branch",
             contractId: "scope-transition:chat-stream:missing",
@@ -165,11 +175,11 @@ test("scope and native persistence declarations require their canonical contract
           ...PRODUCT_NATIVE_PERSISTENCE_DOMAINS,
           {
             domain: "timeline",
-            contractId: "roundtrip:missing",
+            contractId: "native-command-roundtrip:missing",
           },
         ],
       }),
-    /native persistence domain.*roundtrip:timeline/i,
+    /native persistence domain.*native-command-roundtrip:timeline/i,
   );
 });
 
@@ -189,10 +199,13 @@ test("new interactions require a covering journey or a live reviewed exemption",
   const coveredByExemption = validate({
     interactions,
     exemptions: [
+      ...PRODUCT_CONTRACT_EXEMPTIONS,
       {
         targetType: "interaction",
         targetId: "plugin->sqlite",
-        reason: "Plugin journey is being implemented in the next rollout phase.",
+        reason:
+          "Plugin journey is being implemented in the next rollout phase.",
+        trackingIssue: "#429",
         expiresOn: "2026-08-30",
       },
     ],
@@ -204,10 +217,12 @@ test("new interactions require a covering journey or a live reviewed exemption",
       validate({
         interactions,
         exemptions: [
+          ...PRODUCT_CONTRACT_EXEMPTIONS,
           {
             targetType: "interaction",
             targetId: "plugin->sqlite",
             reason: "Expired migration.",
+            trackingIssue: "#429",
             expiresOn: "2026-07-29",
           },
         ],
@@ -216,41 +231,19 @@ test("new interactions require a covering journey or a live reviewed exemption",
   );
 });
 
-test("each newly classified persistence or lifecycle domain selects its declared journey", () => {
+test("each newly classified lifecycle or MCP domain selects its declared journey", () => {
   const cases = [
     [
       "src/features/project/ProjectMenu.tsx",
-      [
-        "chat-stream-project-switch",
-        "editor-pending-project-switch",
-      ],
+      ["chat-stream-project-switch", "editor-pending-project-switch"],
     ],
     [
       "src/features/workspace/WorkspaceMenu.tsx",
-      [
-        "workspace-switch-authority",
-        "chat-stream-workspace-switch",
-      ],
+      ["workspace-switch-authority", "chat-stream-workspace-switch"],
     ],
     [
       "src-tauri/crates/grimodex-mcp/src/server.rs",
       ["mcp-external-write-conflict"],
-    ],
-    [
-      "src/features/chronicle/ChroniclePanel.tsx",
-      ["chronicle-native-roundtrip"],
-    ],
-    [
-      "src/features/lint/LinterPanel.tsx",
-      ["lint-native-roundtrip"],
-    ],
-    [
-      "src/features/map/MapPanel.tsx",
-      ["map-native-roundtrip"],
-    ],
-    [
-      "src/features/revision/ProjectSnapshotModal.tsx",
-      ["snapshot-native-roundtrip"],
     ],
   ];
 
@@ -268,24 +261,98 @@ test("each newly classified persistence or lifecycle domain selects its declared
   }
 });
 
+test("only exact Rust sinks select native-command roundtrip journeys", () => {
+  const cases = [
+    [
+      "src-tauri/crates/grimodex-db/src/chronicle_bulk.rs",
+      "chronicle-native-roundtrip",
+    ],
+    ["src-tauri/crates/grimodex-db/src/lint_terms.rs", "lint-native-roundtrip"],
+    ["src-tauri/crates/grimodex-db/src/map_writes.rs", "map-native-roundtrip"],
+    [
+      "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+      "snapshot-native-roundtrip",
+    ],
+  ];
+
+  for (const [changedPath, journeyId] of cases) {
+    const selection = selectProductJourneys({
+      catalog: PRODUCT_JOURNEY_CATALOG,
+      domainRules: PRODUCT_DOMAIN_RULES,
+      changedPaths: [changedPath],
+    });
+    assert.deepEqual(selection.journeyIds, [journeyId]);
+    assert.equal(selection.fallback, false);
+  }
+});
+
+test("native command feature adapters select only their matching native-command roundtrip", () => {
+  const cases = [
+    [
+      "src/features/agent-writes/chronicleBulk.ts",
+      "chronicle-native-roundtrip",
+    ],
+    ["src/features/lint/termDictionaryRepository.ts", "lint-native-roundtrip"],
+    ["src/features/map/mapApi.ts", "map-native-roundtrip"],
+    ["src/features/map/causalityBoard.ts", "map-native-roundtrip"],
+    ["src/features/map/correlationBoard.ts", "map-native-roundtrip"],
+    [
+      "src/features/revision/projectSnapshotNative.ts",
+      "snapshot-native-roundtrip",
+    ],
+  ];
+
+  for (const [changedPath, journeyId] of cases) {
+    const selection = selectProductJourneys({
+      catalog: PRODUCT_JOURNEY_CATALOG,
+      domainRules: PRODUCT_DOMAIN_RULES,
+      changedPaths: [changedPath],
+    });
+    assert.deepEqual(selection.journeyIds, [journeyId]);
+    assert.equal(selection.fallback, false);
+    assert.equal(selection.allSelected, false);
+  }
+});
+
+test("feature UI paths stay in the planned UI backlog and do not select native journeys", () => {
+  const cases = [
+    ["src/features/chronicle/ChroniclePanel.tsx", "chronicle-ui"],
+    ["src/features/lint/LinterPanel.tsx", "lint-ui"],
+    ["src/features/map/MapPanel.tsx", "map-ui"],
+    ["src/features/revision/ProjectSnapshotModal.tsx", "snapshot-ui"],
+  ];
+
+  for (const [changedPath, domain] of cases) {
+    const selection = selectProductJourneys({
+      catalog: PRODUCT_JOURNEY_CATALOG,
+      domainRules: PRODUCT_DOMAIN_RULES,
+      changedPaths: [changedPath],
+    });
+    assert.deepEqual(selection.affectedDomains, [domain]);
+    assert.deepEqual(selection.journeyIds, []);
+    assert.equal(selection.fallback, false);
+    assert.equal(selection.allSelected, false);
+  }
+});
+
 test("coverage errors have a stable human-readable formatter", () => {
   assert.equal(
     formatCoverageError({
       kind: "contract",
-      id: "roundtrip:map",
-      domains: ["map", "native-persistence"],
+      id: "native-command-roundtrip:map-write-bundle",
+      domains: ["map-write-bundle", "sqlite"],
     }),
     [
       "Uncovered product contract:",
-      "  roundtrip:map",
+      "  native-command-roundtrip:map-write-bundle",
       "",
       "Affected domains:",
-      "  map, native-persistence",
+      "  map-write-bundle, sqlite",
       "",
       "Required action:",
       "  - map an existing journey to this contract",
       "  - add a new journey",
-      "  - add an explicit reviewed exemption with reason and expiry",
+      "  - add an explicit reviewed exemption with reason, tracking issue, and expiry",
     ].join("\n"),
   );
 });
@@ -348,35 +415,32 @@ test("declared map and lint changes do not invent a cross-product journey", () =
     catalog: [
       {
         id: "map-native-roundtrip",
-        domains: ["map"],
-        interactions: ["map->sqlite"],
-        contracts: ["roundtrip:map"],
+        domains: ["map-write-bundle"],
+        interactions: ["map-write-bundle->sqlite"],
+        contracts: ["native-command-roundtrip:map-write-bundle"],
         capabilities: ["electron", "napi"],
       },
       {
         id: "lint-native-roundtrip",
-        domains: ["lint"],
-        interactions: ["lint->sqlite"],
-        contracts: ["roundtrip:lint"],
+        domains: ["lint-term-dictionary"],
+        interactions: ["lint-term-dictionary->sqlite"],
+        contracts: ["native-command-roundtrip:lint-term-dictionary"],
         capabilities: ["electron", "napi"],
       },
     ],
     domainRules: [
       {
         id: "map",
-        domains: ["map"],
-        paths: ["src/features/map/**"],
+        domains: ["map-write-bundle"],
+        paths: ["src/native/map_writes.rs"],
       },
       {
         id: "lint",
-        domains: ["lint"],
-        paths: ["src/features/lint/**"],
+        domains: ["lint-term-dictionary"],
+        paths: ["src/native/lint_terms.rs"],
       },
     ],
-    changedPaths: [
-      "src/features/map/mapApi.ts",
-      "src/features/lint/useLinter.ts",
-    ],
+    changedPaths: ["src/native/map_writes.rs", "src/native/lint_terms.rs"],
   });
 
   assert.deepEqual(selection.journeyIds, [
@@ -457,6 +521,23 @@ test("empty, incomplete, and selector-infrastructure diffs select all", () => {
   assert.match(infrastructure.reason, /critical/i);
 });
 
+test("the real preload boundary is classified and forces the safe full catalog", () => {
+  const preload = selectProductJourneys({
+    catalog: PRODUCT_JOURNEY_CATALOG,
+    domainRules: PRODUCT_DOMAIN_RULES,
+    changedPaths: ["electron/preload/index.ts"],
+  });
+
+  assert.deepEqual(preload.unmatchedPaths, []);
+  assert.ok(preload.matchedRuleIds.includes("shared-native-boundary"));
+  assert.equal(preload.fallback, false);
+  assert.equal(preload.allSelected, true);
+  assert.deepEqual(
+    preload.journeyIds,
+    PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
+  );
+});
+
 test("capability order follows the stable registry order", () => {
   const selection = selectProductJourneys({
     catalog: [
@@ -533,6 +614,26 @@ test("affected mode may skip execution and all mode is always explicit full cove
   assert.equal(all.shadow, false);
 });
 
+test("the dependency-free CLI refuses affected mode while coverage is locked", async () => {
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        path.join(repoRoot, "electron/scripts/product-journey-impact.mjs"),
+        "--mode",
+        "affected",
+        "--changed-file",
+        "docs/product-journeys.md",
+      ],
+      { cwd: repoRoot },
+    ),
+    (error) => {
+      assert.equal(error.code, 1);
+      return true;
+    },
+  );
+});
+
 test("impact Markdown distinguishes recommendation from execution", () => {
   const selection = selectProductJourneys({
     catalog: PRODUCT_JOURNEY_CATALOG,
@@ -544,7 +645,12 @@ test("impact Markdown distinguishes recommendation from execution", () => {
     catalog: PRODUCT_JOURNEY_CATALOG,
     selection,
   });
-  const summary = formatProductJourneyImpactSummary(selection, execution);
+  const coverage = validate();
+  const summary = formatProductJourneyImpactSummary(
+    selection,
+    execution,
+    coverage,
+  );
 
   assert.match(summary, /Changed files/);
   assert.match(summary, /Affected domains/);
@@ -552,6 +658,9 @@ test("impact Markdown distinguishes recommendation from execution", () => {
   assert.match(summary, /Execution journeys/);
   assert.match(summary, /Shadow: yes/);
   assert.match(summary, /cross-feature-authoring/);
+  assert.match(summary, /chronicle-ui-roundtrip/);
+  assert.match(summary, /scope-transition:chat-stream:folder/);
+  assert.match(summary, /affected execution remains locked/i);
 });
 
 test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
@@ -595,6 +704,18 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
     report.execution.executionJourneyIds,
     PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
   );
+  assert.equal(report.coverage.affectedReady, false);
+  assert.deepEqual(report.coverage.exemptedContractIds, [
+    "scope-transition:chat-stream:folder",
+    "scope-transition:chat-stream:codex",
+    "scope-transition:chat-stream:snippet",
+  ]);
+  assert.deepEqual(report.coverage.plannedJourneyIds, [
+    "chronicle-ui-roundtrip",
+    "lint-ui-roundtrip",
+    "map-ui-roundtrip",
+    "snapshot-ui-roundtrip",
+  ]);
 
   const githubOutput = await readFile(outputPath, "utf8");
   assert.match(githubOutput, /should_run=true/);

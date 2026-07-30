@@ -46,6 +46,9 @@ test("runner preserves the journey failure and writes results when failure clean
       status: "failed",
       durationMs: 15,
       error: { name: "TypeError", message: "journey boom" },
+      rendererErrorCount: 0,
+      pageErrors: [],
+      cleanPass: false,
       cleanupError: { name: "Error", message: "cleanup boom" },
     },
   ]);

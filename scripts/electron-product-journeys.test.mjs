@@ -27,11 +27,17 @@ function runCommands(job) {
     .join("\n");
 }
 
-test("package.json exposes the isolated Electron product journey runner", async () => {
+test("package.json exposes the runner and canonical product journey contracts", async () => {
   const packageJson = JSON.parse(await read("package.json"));
   assert.equal(
     packageJson.scripts["electron:product-journeys"],
     "node electron/scripts/product-journeys.mjs",
+  );
+  assert.ok(
+    packageJson.scripts["test:product-journey-contracts"]
+      .split(/\s+/)
+      .includes("scripts/product-journey-mcp-client.test.mjs"),
+    "canonical product journey contracts must include the MCP client tests",
   );
 });
 
@@ -66,7 +72,7 @@ test("CI has a dedicated product-journeys gate with native Electron and SQLite",
   );
 });
 
-test("CI plans affected product journeys before dependency setup and schedules nightly all", async () => {
+test("CI plans shadow product journeys for PR and master before dependency setup and schedules nightly all", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const input = workflow.on.workflow_call.inputs.product_journey_mode;
   const manualInput = workflow.on.workflow_dispatch.inputs.product_journey_mode;
@@ -112,9 +118,14 @@ test("CI plans affected product journeys before dependency setup and schedules n
     selector.env.PRODUCT_JOURNEY_MODE,
     /inputs\.product_journey_mode/,
   );
-  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /pull_request/);
-  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /refs\/heads\/master/);
-  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /affected/);
+  assert.match(
+    selector.env.PRODUCT_JOURNEY_MODE,
+    /github\.event_name == 'pull_request' && 'shadow'/,
+  );
+  assert.match(
+    selector.env.PRODUCT_JOURNEY_MODE,
+    /refs\/heads\/master' && 'shadow'/,
+  );
   assert.match(selector.env.PRODUCT_JOURNEY_MODE, /schedule/);
   assert.match(selector.env.PRODUCT_JOURNEY_MODE, /all/);
   assert.match(
@@ -168,6 +179,30 @@ test("CI plans affected product journeys before dependency setup and schedules n
   assert.equal(mcpBuild.run, "pnpm mcp:build");
   assert.match(mcpBuild.if, /should_run.*true/);
   assert.match(mcpBuild.if, /execution_capabilities.*mcp/);
+});
+
+test("nightly schedule skips every non-product CI job", async () => {
+  const workflow = yaml.load(await read(".github/workflows/ci.yml"));
+  const productJourneyJobId = "electron-product-journeys";
+  const jobEntries = Object.entries(workflow.jobs);
+
+  assert.ok(
+    jobEntries.some(([jobId]) => jobId === productJourneyJobId),
+    "electron-product-journeys job is required",
+  );
+  for (const [jobId, job] of jobEntries) {
+    if (jobId === productJourneyJobId) continue;
+    assert.equal(
+      job.if,
+      "github.event_name != 'schedule'",
+      `${jobId} must skip the product-journey-only nightly schedule`,
+    );
+  }
+  assert.notEqual(
+    workflow.jobs[productJourneyJobId].if,
+    "github.event_name != 'schedule'",
+    "the product journey job must remain enabled for the nightly schedule",
+  );
 });
 
 test("catalog and runner implementation IDs match in deterministic order", () => {
@@ -293,6 +328,16 @@ test("product journey harness retains the renderer screenshot before close", asy
     electronLauncher: {
       launch: async () => app,
     },
+    mainProcessNoiseAllowlist: [
+      {
+        id: "test-main-noise-only",
+        phases: ["project-switch"],
+        reason:
+          "Proves a main-only allowance never suppresses renderer errors.",
+        expiresOn: "2026-08-31",
+        pattern: /lifecycle read failed/,
+      },
+    ],
     closeApp: async () => {
       events.push("close");
       pageClosed = true;
@@ -363,4 +408,197 @@ test("product journey harness retains the renderer screenshot before close", asy
     ),
     "",
   );
+  const rendererDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "editor-persistence",
+        "runtime",
+        "diagnostics",
+        "renderer-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(
+    {
+      rendererErrorCount: rendererDiagnostics.rendererErrorCount,
+      pageErrors: rendererDiagnostics.pageErrors,
+      cleanPass: rendererDiagnostics.cleanPass,
+    },
+    {
+      rendererErrorCount: 0,
+      pageErrors: [],
+      cleanPass: true,
+    },
+  );
+});
+
+test("product journey harness keeps warnings diagnostic but fails closed on close-time renderer errors", async (t) => {
+  const listeners = new Map();
+  const page = {
+    isClosed: () => false,
+    on: (event, listener) => {
+      listeners.set(event, listener);
+    },
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async () => {
+      setImmediate(() => {
+        listeners.get("console")?.({
+          type: () => "error",
+          text: () => "[Global] unhandled rejection: lifecycle read failed",
+          location: () => ({
+            url: "app://renderer/main.js",
+            lineNumber: 42,
+            columnNumber: 7,
+          }),
+        });
+        setImmediate(() => {
+          listeners.get("pageerror")?.(
+            Object.assign(new Error("lifecycle read failed"), {
+              stack: "Error: lifecycle read failed\n    at MessageBadge",
+            }),
+          );
+        });
+      });
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const launched = await harness.launch("project-switch");
+  listeners.get("console")?.({
+    type: () => "warning",
+    text: () => "optional renderer warning",
+    location: () => ({}),
+  });
+  await harness.close(launched.app, launched.page, "project-switch");
+
+  const error = await harness.finalizeDiagnostics().then(
+    () => null,
+    (cause) => cause,
+  );
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /renderer diagnostics failed/i);
+  assert.deepEqual(error.diagnostics, {
+    rendererErrorCount: 1,
+    pageErrors: [
+      {
+        phase: "project-switch",
+        name: "Error",
+        message: "lifecycle read failed",
+        stack: "Error: lifecycle read failed\n    at MessageBadge",
+      },
+    ],
+    cleanPass: false,
+  });
+});
+
+test("product journey harness reports a clean pass when renderer output contains warnings only", async (t) => {
+  const listeners = new Map();
+  const page = {
+    isClosed: () => false,
+    on: (event, listener) => {
+      listeners.set(event, listener);
+    },
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async () => undefined,
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const launched = await harness.launch("warning-only");
+  listeners.get("console")?.({
+    type: () => "warning",
+    text: () => "tokenizer heuristic fallback",
+    location: () => ({}),
+  });
+  await harness.close(launched.app, launched.page, "warning-only");
+
+  assert.deepEqual(await harness.finalizeDiagnostics(), {
+    rendererErrorCount: 0,
+    pageErrors: [],
+    cleanPass: true,
+  });
+  await harness.dispose({ success: true, name: "warning-only" });
+});
+
+test("product journey harness opts in before launch and reads structured lifecycle events", async (t) => {
+  const lifecycleEvents = [
+    {
+      schemaVersion: 1,
+      transitionId: "project:trace",
+      sequence: 0,
+      timestampMs: 100,
+      kind: "project",
+      phase: "switch-requested",
+      from: { projectId: "a" },
+      to: { projectId: "b" },
+    },
+  ];
+  let initScriptConfig = null;
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+    evaluate: async (_operation, argument) => {
+      if (typeof argument === "string") return lifecycleEvents;
+      return undefined;
+    },
+  };
+  const app = {
+    context: () => ({
+      addInitScript: async (_operation, config) => {
+        initScriptConfig = config;
+      },
+    }),
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: null }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async () => undefined,
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const launched = await harness.launch("lifecycle-trace");
+  assert.equal(
+    initScriptConfig.optInKey,
+    "__GRIMODEX_PRODUCT_JOURNEY_LIFECYCLE_TRACE__",
+  );
+  assert.equal(initScriptConfig.eventName, "grimodex:lifecycle-trace");
+  assert.deepEqual(
+    await harness.readLifecycleTrace(launched.page),
+    lifecycleEvents,
+  );
+
+  await harness.close(launched.app, launched.page, "lifecycle-trace");
+  await harness.dispose({ success: true, name: "lifecycle-trace" });
 });

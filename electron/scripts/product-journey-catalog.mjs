@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 const freezeEntries = (entries) =>
   Object.freeze(
     entries.map((entry) =>
@@ -18,11 +20,33 @@ export const PRODUCT_JOURNEY_CAPABILITY_ORDER = Object.freeze([
   "mcp",
 ]);
 
+const chatScopeRegistry = JSON.parse(
+  readFileSync(
+    new URL("../../src/features/chat/chatScopeRegistry.json", import.meta.url),
+    "utf8",
+  ),
+);
+if (
+  !chatScopeRegistry ||
+  typeof chatScopeRegistry !== "object" ||
+  Array.isArray(chatScopeRegistry) ||
+  Object.keys(chatScopeRegistry).length === 0 ||
+  Object.values(chatScopeRegistry).some((enabled) => enabled !== true)
+) {
+  throw new Error(
+    "chatScopeRegistry.json must be a non-empty object whose values are true",
+  );
+}
+
+export const PRODUCT_CHAT_SCOPES = Object.freeze(
+  Object.keys(chatScopeRegistry),
+);
+
 /**
- * Affected execution is unlocked only while catalog coverage is complete.
- * The coverage ratchet rejects missing journeys, contracts, or interactions.
+ * Affected execution remains locked while tracked exemptions or planned UI
+ * coverage exist. Shadow mode still records deterministic recommendations.
  */
-export const PRODUCT_JOURNEY_ROLLOUT_MODE = "affected";
+export const PRODUCT_JOURNEY_ROLLOUT_MODE = "shadow";
 
 /**
  * Dependency-free product journey catalog.
@@ -124,30 +148,33 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
   },
   {
     id: "chronicle-native-roundtrip",
-    domains: ["chronicle"],
-    interactions: ["chronicle->sqlite", "sqlite->chronicle"],
-    contracts: ["roundtrip:chronicle"],
+    domains: ["chronicle-bulk"],
+    interactions: ["chronicle-bulk->sqlite", "sqlite->chronicle-bulk"],
+    contracts: ["native-command-roundtrip:chronicle-bulk"],
     capabilities: ["electron", "napi"],
   },
   {
     id: "lint-native-roundtrip",
-    domains: ["lint"],
-    interactions: ["lint->sqlite", "sqlite->lint"],
-    contracts: ["roundtrip:lint"],
+    domains: ["lint-term-dictionary"],
+    interactions: [
+      "lint-term-dictionary->sqlite",
+      "sqlite->lint-term-dictionary",
+    ],
+    contracts: ["native-command-roundtrip:lint-term-dictionary"],
     capabilities: ["electron", "napi"],
   },
   {
     id: "map-native-roundtrip",
-    domains: ["map"],
-    interactions: ["map->sqlite", "sqlite->map"],
-    contracts: ["roundtrip:map"],
+    domains: ["map-write-bundle"],
+    interactions: ["map-write-bundle->sqlite", "sqlite->map-write-bundle"],
+    contracts: ["native-command-roundtrip:map-write-bundle"],
     capabilities: ["electron", "napi"],
   },
   {
     id: "snapshot-native-roundtrip",
-    domains: ["snapshot"],
-    interactions: ["snapshot->sqlite", "sqlite->snapshot"],
-    contracts: ["roundtrip:snapshot"],
+    domains: ["project-snapshot"],
+    interactions: ["project-snapshot->sqlite", "sqlite->project-snapshot"],
+    contracts: ["native-command-roundtrip:project-snapshot"],
     capabilities: ["electron", "napi"],
   },
 ]);
@@ -157,7 +184,36 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
  * PRODUCT_JOURNEY_CATALOG only when their real runner implementation and
  * contract evidence land together.
  */
-export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([]);
+export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([
+  {
+    id: "chronicle-ui-roundtrip",
+    domains: ["chronicle-ui"],
+    interactions: [],
+    contracts: ["ui-roundtrip:chronicle"],
+    capabilities: ["electron", "napi"],
+  },
+  {
+    id: "lint-ui-roundtrip",
+    domains: ["lint-ui"],
+    interactions: [],
+    contracts: ["ui-roundtrip:lint"],
+    capabilities: ["electron", "napi"],
+  },
+  {
+    id: "map-ui-roundtrip",
+    domains: ["map-ui"],
+    interactions: [],
+    contracts: ["ui-roundtrip:map"],
+    capabilities: ["electron", "napi"],
+  },
+  {
+    id: "snapshot-ui-roundtrip",
+    domains: ["snapshot-ui"],
+    interactions: [],
+    contracts: ["ui-roundtrip:snapshot"],
+    capabilities: ["electron", "napi"],
+  },
+]);
 
 /**
  * Rules are deliberately explicit. A path is safe to skip only when it
@@ -191,7 +247,7 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     paths: [
       "electron/main/backend.ts",
       "electron/shared/ipcContract.ts",
-      "electron/preload.ts",
+      "electron/preload/**",
       "electron/native/grimodex-node/**",
     ],
     forceAll: true,
@@ -211,6 +267,7 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     domains: ["scene-scope"],
     paths: [
       "src/features/chat/chatScope.ts",
+      "src/features/chat/chatScopeRegistry.json",
       "src/application/chat/chatSessionAuthority.ts",
     ],
   },
@@ -270,36 +327,68 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     ],
   },
   {
-    id: "chronicle-native-persistence",
-    domains: ["chronicle", "native-persistence"],
+    id: "chronicle-ui",
+    domains: ["chronicle-ui"],
+    paths: ["src/features/chronicle/**"],
+  },
+  {
+    id: "lint-ui",
+    domains: ["lint-ui"],
+    paths: ["src/features/lint/**"],
+  },
+  {
+    id: "map-ui",
+    domains: ["map-ui"],
+    paths: ["src/features/map/**"],
+  },
+  {
+    id: "snapshot-ui",
+    domains: ["snapshot-ui"],
+    paths: ["src/features/revision/**"],
+  },
+  {
+    id: "chronicle-bulk-feature-api",
+    domains: ["chronicle-bulk"],
+    paths: ["src/features/agent-writes/chronicleBulk.ts"],
+  },
+  {
+    id: "lint-term-dictionary-feature-api",
+    domains: ["lint-term-dictionary"],
+    paths: ["src/features/lint/termDictionaryRepository.ts"],
+  },
+  {
+    id: "map-write-bundle-feature-api",
+    domains: ["map-write-bundle"],
     paths: [
-      "src/features/chronicle/**",
-      "src-tauri/crates/grimodex-db/src/chronicle*.rs",
+      "src/features/map/mapApi.ts",
+      "src/features/map/causalityBoard.ts",
+      "src/features/map/correlationBoard.ts",
     ],
   },
   {
-    id: "lint-native-persistence",
-    domains: ["lint", "native-persistence"],
-    paths: [
-      "src/features/lint/**",
-      "src-tauri/crates/grimodex-db/src/lint_*.rs",
-    ],
+    id: "project-snapshot-feature-api",
+    domains: ["project-snapshot"],
+    paths: ["src/features/revision/projectSnapshotNative.ts"],
   },
   {
-    id: "map-native-persistence",
-    domains: ["map", "native-persistence"],
-    paths: [
-      "src/features/map/**",
-      "src-tauri/crates/grimodex-db/src/map_writes.rs",
-    ],
+    id: "chronicle-bulk-native-persistence",
+    domains: ["chronicle-bulk", "native-persistence"],
+    paths: ["src-tauri/crates/grimodex-db/src/chronicle_bulk.rs"],
   },
   {
-    id: "snapshot-native-persistence",
-    domains: ["snapshot", "native-persistence"],
-    paths: [
-      "src/features/revision/**",
-      "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
-    ],
+    id: "lint-term-dictionary-native-persistence",
+    domains: ["lint-term-dictionary", "native-persistence"],
+    paths: ["src-tauri/crates/grimodex-db/src/lint_terms.rs"],
+  },
+  {
+    id: "map-write-bundle-native-persistence",
+    domains: ["map-write-bundle", "native-persistence"],
+    paths: ["src-tauri/crates/grimodex-db/src/map_writes.rs"],
+  },
+  {
+    id: "project-snapshot-native-persistence",
+    domains: ["project-snapshot", "native-persistence"],
+    paths: ["src-tauri/crates/grimodex-db/src/project_snapshots.rs"],
   },
   {
     id: "mcp",
@@ -328,6 +417,18 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
   {
     id: "scope-transition:chat-stream:scene",
     domains: ["chat", "scene-scope"],
+  },
+  {
+    id: "scope-transition:chat-stream:folder",
+    domains: ["chat", "scene-scope"],
+  },
+  {
+    id: "scope-transition:chat-stream:codex",
+    domains: ["chat", "codex"],
+  },
+  {
+    id: "scope-transition:chat-stream:snippet",
+    domains: ["chat", "snippet"],
   },
   {
     id: "scope-transition:editor-pending:workspace",
@@ -373,45 +474,68 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
   },
   {
-    id: "roundtrip:chronicle",
-    domains: ["chronicle", "sqlite"],
+    id: "native-command-roundtrip:chronicle-bulk",
+    domains: ["chronicle-bulk", "sqlite"],
   },
   {
-    id: "roundtrip:lint",
-    domains: ["lint", "sqlite"],
+    id: "native-command-roundtrip:lint-term-dictionary",
+    domains: ["lint-term-dictionary", "sqlite"],
   },
   {
-    id: "roundtrip:map",
-    domains: ["map", "sqlite"],
+    id: "native-command-roundtrip:map-write-bundle",
+    domains: ["map-write-bundle", "sqlite"],
   },
   {
-    id: "roundtrip:snapshot",
-    domains: ["snapshot", "sqlite"],
+    id: "native-command-roundtrip:project-snapshot",
+    domains: ["project-snapshot", "sqlite"],
   },
 ]);
 
 export const PRODUCT_SCOPE_TRANSITIONS = freezeEntries([
   {
+    authority: "chat-scope",
     operation: "chat-stream",
     scope: "scene",
     contractId: "scope-transition:chat-stream:scene",
   },
   {
+    authority: "chat-scope",
+    operation: "chat-stream",
+    scope: "folder",
+    contractId: "scope-transition:chat-stream:folder",
+  },
+  {
+    authority: "chat-scope",
     operation: "chat-stream",
     scope: "project",
     contractId: "scope-transition:chat-stream:project",
   },
   {
+    authority: "chat-scope",
+    operation: "chat-stream",
+    scope: "codex",
+    contractId: "scope-transition:chat-stream:codex",
+  },
+  {
+    authority: "chat-scope",
+    operation: "chat-stream",
+    scope: "snippet",
+    contractId: "scope-transition:chat-stream:snippet",
+  },
+  {
+    authority: "lifecycle",
     operation: "chat-stream",
     scope: "workspace",
     contractId: "scope-transition:chat-stream:workspace",
   },
   {
+    authority: "lifecycle",
     operation: "editor-pending",
     scope: "project",
     contractId: "scope-transition:editor-pending:project",
   },
   {
+    authority: "lifecycle",
     operation: "editor-pending",
     scope: "workspace",
     contractId: "scope-transition:editor-pending:workspace",
@@ -420,24 +544,20 @@ export const PRODUCT_SCOPE_TRANSITIONS = freezeEntries([
 
 export const PRODUCT_NATIVE_PERSISTENCE_DOMAINS = freezeEntries([
   {
-    domain: "editor",
-    contractId: "roundtrip:editor",
+    domain: "chronicle-bulk",
+    contractId: "native-command-roundtrip:chronicle-bulk",
   },
   {
-    domain: "chronicle",
-    contractId: "roundtrip:chronicle",
+    domain: "lint-term-dictionary",
+    contractId: "native-command-roundtrip:lint-term-dictionary",
   },
   {
-    domain: "lint",
-    contractId: "roundtrip:lint",
+    domain: "map-write-bundle",
+    contractId: "native-command-roundtrip:map-write-bundle",
   },
   {
-    domain: "map",
-    contractId: "roundtrip:map",
-  },
-  {
-    domain: "snapshot",
-    contractId: "roundtrip:snapshot",
+    domain: "project-snapshot",
+    contractId: "native-command-roundtrip:project-snapshot",
   },
 ]);
 
@@ -478,18 +598,67 @@ export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
     domains: ["editor", "project-lifecycle"],
   },
   { id: "mcp->sqlite", domains: ["mcp", "sqlite"] },
-  { id: "chronicle->sqlite", domains: ["chronicle", "sqlite"] },
-  { id: "sqlite->chronicle", domains: ["sqlite", "chronicle"] },
-  { id: "lint->sqlite", domains: ["lint", "sqlite"] },
-  { id: "sqlite->lint", domains: ["sqlite", "lint"] },
-  { id: "map->sqlite", domains: ["map", "sqlite"] },
-  { id: "sqlite->map", domains: ["sqlite", "map"] },
-  { id: "snapshot->sqlite", domains: ["snapshot", "sqlite"] },
-  { id: "sqlite->snapshot", domains: ["sqlite", "snapshot"] },
+  {
+    id: "chronicle-bulk->sqlite",
+    domains: ["chronicle-bulk", "sqlite"],
+  },
+  {
+    id: "sqlite->chronicle-bulk",
+    domains: ["sqlite", "chronicle-bulk"],
+  },
+  {
+    id: "lint-term-dictionary->sqlite",
+    domains: ["lint-term-dictionary", "sqlite"],
+  },
+  {
+    id: "sqlite->lint-term-dictionary",
+    domains: ["sqlite", "lint-term-dictionary"],
+  },
+  {
+    id: "map-write-bundle->sqlite",
+    domains: ["map-write-bundle", "sqlite"],
+  },
+  {
+    id: "sqlite->map-write-bundle",
+    domains: ["sqlite", "map-write-bundle"],
+  },
+  {
+    id: "project-snapshot->sqlite",
+    domains: ["project-snapshot", "sqlite"],
+  },
+  {
+    id: "sqlite->project-snapshot",
+    domains: ["sqlite", "project-snapshot"],
+  },
 ]);
 
 /**
- * Exemptions are intentionally empty at foundation time. A temporary entry
- * must name a known contract/interaction and include a reason plus expiry.
+ * Temporary gaps must remain tracked and expiring. Active exemptions keep
+ * affected execution locked in shadow mode.
  */
-export const PRODUCT_CONTRACT_EXEMPTIONS = freezeEntries([]);
+export const PRODUCT_CONTRACT_EXEMPTIONS = freezeEntries([
+  {
+    targetType: "contract",
+    targetId: "scope-transition:chat-stream:folder",
+    reason:
+      "A dedicated streaming folder-scope transition journey has not landed yet.",
+    trackingIssue: "#429",
+    expiresOn: "2026-09-30",
+  },
+  {
+    targetType: "contract",
+    targetId: "scope-transition:chat-stream:codex",
+    reason:
+      "A dedicated streaming Codex-scope transition journey has not landed yet.",
+    trackingIssue: "#429",
+    expiresOn: "2026-09-30",
+  },
+  {
+    targetType: "contract",
+    targetId: "scope-transition:chat-stream:snippet",
+    reason:
+      "A dedicated streaming snippet-scope transition journey has not landed yet.",
+    trackingIssue: "#429",
+    expiresOn: "2026-09-30",
+  },
+]);
