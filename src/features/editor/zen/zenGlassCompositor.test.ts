@@ -38,4 +38,27 @@ describe("buildZenGlassMask", () => {
       ),
     ).toBe("none");
   });
+
+  it("does not add contrast-only Editor chrome as another Glass edge", () => {
+    const svg = decodeMask(
+      buildZenGlassMask(
+        { width: 1_000, height: 600 },
+        {
+          rect: [0.2, 0.1, 0.8, 0.9],
+          feather: [0, 0, 0, 0],
+          cornerRadius: 18,
+        },
+        [
+          {
+            rect: [0.2, 0.8, 0.8, 0.9],
+            feather: [0, 0, 0, 0],
+            cornerRadius: 0,
+            refracts: false,
+          },
+        ],
+      ),
+    );
+
+    expect(svg.match(/<rect /g)).toHaveLength(1);
+  });
 });

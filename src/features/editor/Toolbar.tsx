@@ -52,6 +52,7 @@ import { useCodexReadingRegistrationPrompt } from "@/features/editor/useCodexRea
 import { onWindowResized } from "@/lib/windowControls";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
+import { RubyToolbarGlyph } from "./RubyToolbarGlyph";
 
 function ToolbarButton({
   active,
@@ -607,6 +608,7 @@ export function Toolbar({
       aria-label={t("editor.toolbar.label")}
       data-phone-toolbar={phoneWorkspace ? "true" : undefined}
       data-phone-toolbar-headless={phoneWorkspace ? "true" : undefined}
+      data-editor-tool-surface
       hidden={phoneWorkspace}
       aria-hidden={phoneWorkspace ? true : undefined}
       inert={phoneWorkspace ? true : undefined}
@@ -740,12 +742,7 @@ export function Toolbar({
               >
                 {/* ふり仮名の2段グリフ — 日本語固有機能はアイコン化せず
                     文字のまま (デザイン 1a) */}
-                <span className="flex flex-col items-center leading-none">
-                  <span className="text-[6.5px] tracking-wide text-muted-foreground">
-                    ふり
-                  </span>
-                  <span className="text-[10px] font-semibold">仮名</span>
-                </span>
+                <RubyToolbarGlyph />
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.link")}

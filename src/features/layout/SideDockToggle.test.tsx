@@ -26,7 +26,9 @@ describe("SideDockToggle", () => {
 
   it("is not pressed while the side region is collapsed", () => {
     render(<SideDockToggle region="left" />);
-    expect(screen.getByRole("button", { pressed: false })).toBeDefined();
+    const button = screen.getByRole("button", { pressed: false });
+    expect(button.className).toContain("text-muted-foreground");
+    expect(button.className).not.toMatch(/text-muted-foreground\/\d+/);
   });
 
   it("collapses the left region when clicked while open", async () => {

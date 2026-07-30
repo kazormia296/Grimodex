@@ -50,11 +50,11 @@ export function SideDockToggle({ region }: SideDockToggleProps) {
         open ? collapseLayoutRegion(region) : expandLayoutRegion(region)
       }
       className={cn(
-        "relative z-30 flex h-7 w-7 shrink-0 cursor-default items-center justify-center rounded-full transition-colors",
+        "relative z-30 flex h-[27px] w-[27px] shrink-0 cursor-default items-center justify-center rounded-full transition-colors",
         "ring-1 ring-inset transition-transform duration-75 active:scale-[0.94]",
         open
           ? "bg-accent text-foreground ring-primary/45"
-          : "text-muted-foreground/60 ring-border/70 hover:bg-accent/30 hover:text-foreground hover:ring-primary/30",
+          : "text-muted-foreground ring-border/70 hover:bg-accent/30 hover:text-foreground hover:ring-primary/30",
       )}
     >
       <Icon className="h-4 w-4" strokeWidth={2.25} />

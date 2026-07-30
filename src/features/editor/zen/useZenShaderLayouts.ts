@@ -22,6 +22,8 @@ export interface ZenShaderLayouts {
 export interface ZenGlassLayout extends ZenContrastGuardLayout {
   /** CSS pixels; converted to the shader's framebuffer scale on the GPU. */
   cornerRadius: number;
+  /** False for Editor chrome that needs UI contrast without another Glass edge. */
+  refracts?: boolean;
 }
 
 const EMPTY_LAYOUTS: ZenShaderLayouts = {
@@ -38,9 +40,11 @@ const EMPTY_LAYOUTS: ZenShaderLayouts = {
 };
 
 const LAYOUT_TARGET_SELECTOR =
-  ".zen-editor-paper, [data-editor-area], [data-workspace-glass-root], [data-ambient-glass-surface]";
-const UI_SURFACE_SELECTOR =
-  '[data-workspace-glass-root][data-workspace-fluid-glass="true"] [data-ambient-glass-surface]';
+  ".zen-editor-paper, [data-editor-area], [data-workspace-glass-root], [data-ambient-glass-surface], [data-editor-tool-surface]";
+const UI_SURFACE_SELECTOR = [
+  '[data-workspace-glass-root][data-workspace-fluid-glass="true"] [data-ambient-glass-surface]',
+  '[data-editor-fluid-glass="true"] [data-editor-tool-surface]',
+].join(", ");
 const FULLY_VISIBLE_OPACITY = 0.999;
 
 function nodeContainsLayoutTarget(node: Node) {
@@ -95,7 +99,9 @@ function sameLayouts(current: ZenShaderLayouts, next: ZenShaderLayouts) {
     current.uiSurfaces.every(
       (surface, index) =>
         sameRegion(surface, next.uiSurfaces[index]) &&
-        surface.cornerRadius === next.uiSurfaces[index].cornerRadius,
+        surface.cornerRadius === next.uiSurfaces[index].cornerRadius &&
+        (surface.refracts ?? true) ===
+          (next.uiSurfaces[index].refracts ?? true),
     )
   );
 }
@@ -302,7 +308,13 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
       for (const target of targets) {
         mutationObserver?.observe(target, {
           attributes: true,
-          attributeFilter: ["class", "data-workspace-fluid-glass", "style"],
+          attributeFilter: [
+            "class",
+            "data-editor-fluid-glass",
+            "data-editor-tool-surface",
+            "data-workspace-fluid-glass",
+            "style",
+          ],
         });
       }
     };
@@ -399,6 +411,7 @@ export function useZenShaderLayouts(surfaceRef: RefObject<HTMLElement | null>) {
         cachedUiLayouts = visibleUiSurfaces.map(({ element, rect }) => ({
           ...layoutFor(surfaceRect, rect, 0),
           cornerRadius: surfaceCornerRadius(element, rect),
+          refracts: element.hasAttribute("data-ambient-glass-surface"),
         }));
       }
       const next = {

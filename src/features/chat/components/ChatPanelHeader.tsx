@@ -253,7 +253,8 @@ export function ChatPanelHeader({
   return (
     <div
       data-panel-header
-      className="flex items-center justify-between border-b border-border px-3 py-1.5"
+      data-testid="chat-panel-header"
+      className="flex items-center justify-between border-b border-border px-3 pb-1 pt-2"
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <MessageSquare className="size-3.5 shrink-0 opacity-70" aria-hidden />

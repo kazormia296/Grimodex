@@ -91,6 +91,20 @@ describe("ChatInput editor view readiness", () => {
     expect(() => render(<ChatInput onSend={vi.fn()} />)).not.toThrow();
   });
 
+  it("keeps the composer controls evenly inset with concentric action arcs", () => {
+    render(<ChatInput onSend={vi.fn()} />);
+
+    expect(screen.getByTestId("chat-input-shell")).toHaveClass(
+      "rounded-[25px]",
+    );
+    expect(screen.getByTestId("chat-input-toolbar")).toHaveClass("p-2");
+    expect(screen.getByTestId("chat-input-region")).toHaveClass("pt-3", "pb-2");
+    expect(screen.getByTestId("chat-send")).toHaveClass(
+      "size-8",
+      "rounded-full",
+    );
+  });
+
   it("rechecks view readiness when React reconnects passive effects", () => {
     // Initial render sees a mounted view, but TipTap detaches it before passive
     // effects reconnect. The effect must probe again instead of trusting the

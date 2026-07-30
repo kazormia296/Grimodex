@@ -344,6 +344,11 @@ describe("ChatPanelHeader — Map overlay toggle gated on Map panel visibility",
 });
 
 describe("ChatPanelHeader — 新規セッションボタンの accessible name", () => {
+  it("下罫線を含む外形に対して内容を光学的に中央へ置く", () => {
+    render(<ChatPanelHeader {...baseProps()} />);
+    expect(screen.getByTestId("chat-panel-header")).toHaveClass("pt-2", "pb-1");
+  });
+
   it("Plus ボタンが title と同文言の aria-label を持つ", () => {
     const onNewSession = vi.fn();
     render(<ChatPanelHeader {...baseProps({ onNewSession })} />);

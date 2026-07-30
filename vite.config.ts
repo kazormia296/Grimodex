@@ -1,4 +1,5 @@
-import { defineConfig } from "vite";
+import { realpathSync } from "node:fs";
+import { defineConfig, searchForWorkspaceRoot } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { visualizer } from "rollup-plugin-visualizer";
@@ -6,6 +7,17 @@ import path from "path";
 
 // @ts-expect-error process is a nodejs global
 const analyze = process.env.ANALYZE === "1";
+
+function devServerFsAllow(root: string) {
+  const dependencies = path.resolve(root, "node_modules");
+  let dependencyRoot = dependencies;
+  try {
+    dependencyRoot = realpathSync(dependencies);
+  } catch {
+    // Vite will report the missing install with its normal module error.
+  }
+  return [...new Set([searchForWorkspaceRoot(root), dependencyRoot])];
+}
 
 /**
  * 同梱フォント (@fontsource) の CSS から legacy `.woff` フォールバックを除去する。
@@ -92,6 +104,12 @@ export default defineConfig(async ({ mode }) => {
     server: {
       port: 1430,
       strictPort: true,
+      fs: {
+        // A Codex worktree may reuse node_modules through a symlink. Vite
+        // validates /@fs/ requests against the real path, so allow only that
+        // resolved dependency tree in addition to the workspace itself.
+        allow: devServerFsAllow(__dirname),
+      },
       watch: {
         // Native Rust changes are rebuilt by the N-API workflow, not Vite HMR.
         ignored: ["**/src-tauri/**"],

@@ -1,5 +1,6 @@
 import {
   computeFillerRegion,
+  HORIZONTAL_STRIPE_SIZE,
   regionSplitterPx,
   STRIPE_SIZE,
   STRIPE_GAP_PX,
@@ -68,7 +69,7 @@ export function bottomDockPx(
   // bottom region は content と icon stripe を 1 セル内で縦積みするため、
   // 両者の間の stripe-gap をドック高さに含める。
   const stripeGap = open ? STRIPE_GAP_PX : 0;
-  return STRIPE_SIZE + regionContentPx(open, storedSize) + stripeGap;
+  return HORIZONTAL_STRIPE_SIZE + regionContentPx(open, storedSize) + stripeGap;
 }
 
 export function computeLayoutGridMetrics(
@@ -208,7 +209,7 @@ export function buildLayoutGridTemplateRows(
   metrics: LayoutGridMetrics,
   hasBottom: boolean,
 ): string {
-  const rows = [`${STRIPE_SIZE}px`, `${metrics.gapRowPx}px`, "1fr"];
+  const rows = [`${HORIZONTAL_STRIPE_SIZE}px`, `${metrics.gapRowPx}px`, "1fr"];
   if (hasBottom) rows.push(`${metrics.bottomCellPx}px`);
   return rows.join(" ");
 }
@@ -273,7 +274,7 @@ export function buildZoomGridTemplateRows(
   hasBottom: boolean,
   gapRowPx: number,
 ): string {
-  const rows = [`${STRIPE_SIZE}px`, `${gapRowPx}px`];
+  const rows = [`${HORIZONTAL_STRIPE_SIZE}px`, `${gapRowPx}px`];
   if (zoom === "bottom") {
     return [...rows, "0px", "minmax(0, 1fr)"].join(" ");
   }

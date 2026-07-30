@@ -34,6 +34,7 @@ export function SceneMetaPanel({
   return (
     <div
       data-testid="scene-meta-panel"
+      data-editor-tool-surface
       className="flex h-full w-full flex-col overflow-y-auto border-l border-border bg-muted/20"
     >
       <div className="flex h-8 flex-shrink-0 items-center gap-1.5 border-b border-border px-3">

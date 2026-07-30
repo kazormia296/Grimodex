@@ -25,6 +25,7 @@ export class ZenUiSurfaceUniformBuffer {
       if (!surface) continue;
       this.rects.set(surface.rect, index * 4);
       this.params[index * 4] = surface.cornerRadius;
+      this.params[index * 4 + 1] = surface.refracts === false ? 0 : 1;
     }
     return { rects: this.rects, params: this.params, count };
   }

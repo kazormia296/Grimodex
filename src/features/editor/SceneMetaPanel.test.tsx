@@ -39,7 +39,9 @@ describe("SceneMetaPanel (B-10)", () => {
         setMentionPopup={() => {}}
       />,
     );
-    expect(screen.getByTestId("scene-meta-panel")).toBeTruthy();
+    expect(screen.getByTestId("scene-meta-panel")).toHaveAttribute(
+      "data-editor-tool-surface",
+    );
     expect(screen.getByTestId("scene-meta-panel-close")).toBeTruthy();
   });
 

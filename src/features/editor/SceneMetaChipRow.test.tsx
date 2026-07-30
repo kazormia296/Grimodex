@@ -93,6 +93,9 @@ describe("SceneMetaChipRow の表示条件", () => {
     expect(screen.getByTestId("scene-meta-chip-row")).toHaveClass(
       "glass-editor-chrome",
     );
+    expect(screen.getByTestId("scene-meta-chip-row")).toHaveAttribute(
+      "data-editor-tool-surface",
+    );
     expect(screen.getByText("千早")).toBeTruthy();
     expect(screen.getByText("廃社")).toBeTruthy();
     expect(screen.getByText("千早が帰還する。")).toBeTruthy();
