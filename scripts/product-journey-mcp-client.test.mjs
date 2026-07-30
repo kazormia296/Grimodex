@@ -5,14 +5,22 @@ import test from "node:test";
 
 import { launchProductJourneyMcpClient } from "../electron/scripts/product-journey-mcp-client.mjs";
 
-function createFakeMcpProcess(handler) {
+function createFakeMcpProcess(
+  handler,
+  { exitOnEnd = true, onKill } = {},
+) {
   const child = new EventEmitter();
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.killed = false;
-  child.kill = () => {
+  child.killSignals = [];
+  child.kill = (signal) => {
     child.killed = true;
+    child.killSignals.push(signal);
+    if (onKill) {
+      return onKill(child, signal);
+    }
     queueMicrotask(() => child.emit("exit", 0, null));
     return true;
   };
@@ -34,7 +42,9 @@ function createFakeMcpProcess(handler) {
     }
   });
   child.stdin.on("end", () => {
-    queueMicrotask(() => child.emit("exit", 0, null));
+    if (exitOnEnd) {
+      queueMicrotask(() => child.emit("exit", 0, null));
+    }
   });
   return child;
 }
@@ -200,4 +210,71 @@ test("MCP client rejects protocol and tool-level errors", async () => {
     /tool returned an error.*rejected/i,
   );
   await toolClient.close();
+});
+
+test("MCP client turns stdin pipe errors into request failures", async () => {
+  const child = createFakeMcpProcess((message) => {
+    if (message.method === "initialize") {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          protocolVersion: "2025-11-25",
+          capabilities: { tools: {} },
+          serverInfo: { name: "fake-grimodex", version: "1.0.0" },
+        },
+      };
+    }
+    return undefined;
+  });
+  const client = await launchProductJourneyMcpClient({
+    binaryPath: "/tmp/grimodex-mcp",
+    workspacePath: "/tmp/workspace",
+    projectId: "project-1",
+    spawnProcess: () => child,
+  });
+
+  const pending = client.listTools();
+  child.stdin.emit("error", new Error("write EPIPE"));
+  await assert.rejects(pending, /EPIPE/);
+  await client.close();
+});
+
+test("MCP client escalates shutdown to SIGKILL and waits for exit", async () => {
+  const child = createFakeMcpProcess(
+    (message) => {
+      if (message.method === "initialize") {
+        return {
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-11-25",
+            capabilities: { tools: {} },
+            serverInfo: { name: "fake-grimodex", version: "1.0.0" },
+          },
+        };
+      }
+      return undefined;
+    },
+    {
+      exitOnEnd: false,
+      onKill: (launched, signal) => {
+        if (signal === "SIGKILL") {
+          queueMicrotask(() => launched.emit("exit", null, "SIGKILL"));
+        }
+        return true;
+      },
+    },
+  );
+  const client = await launchProductJourneyMcpClient({
+    binaryPath: "/tmp/grimodex-mcp",
+    workspacePath: "/tmp/workspace",
+    projectId: "project-1",
+    spawnProcess: () => child,
+    shutdownTimeoutMs: 5,
+  });
+
+  await client.close();
+
+  assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
 });

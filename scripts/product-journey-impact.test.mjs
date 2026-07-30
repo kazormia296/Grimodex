@@ -303,6 +303,22 @@ test("one changed domain selects every declared journey that can be affected", (
   assert.equal(selection.allSelected, false);
 });
 
+test("the shared scope picker selects the project chat transition contract", () => {
+  const selection = selectProductJourneys({
+    catalog: PRODUCT_JOURNEY_CATALOG,
+    domainRules: PRODUCT_DOMAIN_RULES,
+    changedPaths: ["src/features/tree/ScopeTreePicker.tsx"],
+  });
+
+  assert.ok(selection.journeyIds.includes("chat-stream-project-switch"));
+  assert.ok(
+    selection.affectedContracts.includes(
+      "scope-transition:chat-stream:project",
+    ),
+  );
+  assert.equal(selection.fallback, false);
+});
+
 test("an interaction endpoint change selects the journey even when its domain list omits that endpoint", () => {
   const selection = selectProductJourneys({
     catalog: [
