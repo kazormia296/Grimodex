@@ -1533,6 +1533,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "semantic_index_scene",
       "semantic_index_status",
       "semantic_reindex_all",
+      "semantic_reranker_shadow_score",
       "semantic_search",
       "send_agent_message",
       "send_chat_message",
@@ -1551,6 +1552,79 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "vacuum_database",
       "validate_workspace_path",
     ]);
+  });
+
+  describe("Semantic reranker shadow score command", () => {
+    const args = {
+      requestId: "request-1",
+      language: "ja",
+      userMessage: "灯台の約束",
+      sceneTail: "海霧の向こうで鐘が鳴った。",
+      candidates: [
+        {
+          candidateId: "scene-a:0:10",
+          text: "灯台の鐘を聞いた。",
+        },
+      ],
+    };
+
+    it("validated top-30 pair requestをnative位置引数へ写像してJSONをparseする", async () => {
+      const method = vi.fn().mockResolvedValue(
+        JSON.stringify({
+          schemaVersion: 1,
+          scores: [{ candidateId: "scene-a:0:10", score: 1.25 }],
+        }),
+      );
+      const { backend } = fakeBackend({
+        semanticRerankerShadowScore: method,
+      });
+
+      const env = await dispatchInvoke(
+        "semantic_reranker_shadow_score",
+        args,
+        { backend, shell: noShell },
+      );
+
+      expect(env).toMatchObject({
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          scores: [{ candidateId: "scene-a:0:10", score: 1.25 }],
+        },
+      });
+      expect(method).toHaveBeenCalledExactlyOnceWith(args);
+    });
+
+    it.each([
+      { ...args, language: "fr" },
+      { ...args, userMessage: "", sceneTail: "" },
+      { ...args, candidates: [] },
+      {
+        ...args,
+        candidates: Array.from({ length: 31 }, (_, index) => ({
+          candidateId: `scene-${index}:0:10`,
+          text: "candidate",
+        })),
+      },
+      {
+        ...args,
+        candidates: [{ candidateId: "scene-a:0:10", text: "" }],
+      },
+    ])("invalid requestをnativeへ渡さない: %#", async (invalidArgs) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        semanticRerankerShadowScore: method,
+      });
+
+      const env = await dispatchInvoke(
+        "semantic_reranker_shadow_score",
+        invalidArgs,
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    });
   });
 
   describe("License Phase 3e コマンド", () => {

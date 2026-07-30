@@ -168,6 +168,95 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("semantic_reranker_shadow_record: 本文を受け付けずsafe JSONLだけを追記する", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-shadow-"));
+    try {
+      const h = buildShellCommandHandlers(null, dir);
+      await expect(
+        h.semantic_reranker_shadow_record({
+          record: {
+            schemaVersion: 1,
+            status: "completed",
+            runId: "run-1",
+            generation: 1,
+            requestId: "request-1",
+            workspaceKey: "workspace-1",
+            workspaceOpenRevision: 7,
+            projectId: "project-1",
+            language: "ja",
+            localInferenceExpected: false,
+            queryHash: "query-hash",
+            candidateSetHash: "candidate-set-hash",
+            modelId: "hotchpotch/japanese-reranker-xsmall-v2",
+            modelRevision: "revision",
+            manifestSha256: "manifest",
+            candidateCount: 1,
+            retrievalLatencyMs: 8,
+            queueLatencyMs: 2,
+            ipcRoundTripMs: 125,
+            nativeLatencyMs: 120,
+            endToEndLatencyMs: 135,
+            modelLoadMs: 0,
+            modelWasCold: false,
+            comparison: {
+              baselineSceneOrder: ["scene-a"],
+              rerankedSceneOrder: ["scene-a"],
+              baselineInjectedSceneIds: ["scene-a"],
+              counterfactualInjectedSceneIds: ["scene-a"],
+              baselineInjectedCandidateHashes: ["candidate-a"],
+              counterfactualInjectedCandidateHashes: ["candidate-a"],
+              injectedSetChanged: false,
+              injectedOrderChanged: false,
+              firstPresentedChanged: false,
+              ranking: [],
+            },
+          },
+        }),
+      ).resolves.toBeNull();
+
+      const persisted = JSON.parse(
+        readFileSync(path.join(dir, "semantic-reranker-shadow.jsonl"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(persisted.workspaceHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(persisted.projectHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(persisted.requestHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(persisted).not.toHaveProperty("workspaceKey");
+      expect(persisted).not.toHaveProperty("projectId");
+      expect(JSON.stringify(persisted)).not.toContain("workspace-1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("semantic_reranker_shadow_record: manuscript-like unknown fields are rejected and never written", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-shadow-"));
+    try {
+      const h = buildShellCommandHandlers(null, dir);
+      await expect(
+        h.semantic_reranker_shadow_record({
+          record: {
+            schemaVersion: 1,
+            status: "failed",
+            runId: "run-1",
+            generation: 1,
+            requestId: "request-1",
+            workspaceKey: "workspace-1",
+            workspaceOpenRevision: 7,
+            projectId: "project-1",
+            language: "ja",
+            localInferenceExpected: false,
+            manuscriptText: "保存してはいけない本文",
+          },
+        }),
+      ).rejects.toThrow(/unknown field.*manuscriptText/);
+      expect(
+        existsSync(path.join(dir, "semantic-reranker-shadow.jsonl")),
+      ).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
