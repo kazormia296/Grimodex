@@ -144,6 +144,9 @@ requirements:
       - src/features/chat/chatRecall.ts
       - src/features/chat/context/chatContextPlanner.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - src/features/impact-review/narrowingCore.ts
+      - experiments/lfm25-encoder-phase0/data/public/gate31/impact-scenes-ja.json
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate31.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
     lightTests:
@@ -151,6 +154,8 @@ requirements:
       - src/features/chat/chatRecall.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - src/features/impact-review/narrowing.test.ts
+      - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
@@ -168,6 +173,9 @@ requirements:
       - src/features/chat/agent/chronicleWriteTools.ts
       - src/features/post-effect/api.ts
       - src/features/post-effect/canonicalize.ts
+      - experiments/lfm25-encoder-phase0/configs/phase0b-impact-gate31.yaml
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate31.py
+      - experiments/lfm25-encoder-phase0/tools/freeze_impact_gate31_scenes.ts
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
     lightTests:
@@ -175,6 +183,7 @@ requirements:
       - src/features/chat/agent/chronicleWriteTools.test.ts
       - src/features/post-effect/api.test.ts
       - src/features/post-effect/canonicalize.test.ts
+      - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src-tauri/src/commands/post_effect.rs
@@ -209,12 +218,15 @@ requirements:
       - scripts/quality/impact-map.mjs
       - evals/impact-map.yaml
       - src/features/ai-verification/aiPathRegistry.ts
+      - experiments/lfm25-encoder-phase0/README.md
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate31_benchmark.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/SHADOW_CORPUS_PROTOCOL.md
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+      - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
@@ -236,6 +248,10 @@ heavyEvaluations:
     suiteId: retrieval-grounding
     command: EMBED_NODE_MODULES=... EMBED_RES_DIR=... node scripts/quality/run-related-scenes-heavy.mjs
     reason: Requires local ONNX runtime dependencies and model resources; the runner generates verified embeddings, executes the eval, and restores prior artifacts.
+  - id: heavy-impact-gate31
+    suiteId: retrieval-grounding
+    command: make -C experiments/lfm25-encoder-phase0 impact-gate31 IMPACT_GATE31_MODEL=ja_xsmall IMPACT_GATE31_FINAL_BATCH_SIZE=4 IMPACT_GATE31_FINAL_THREAD_COUNT=8 IMPACT_GATE31_FINAL_BUCKET_MODE=bucketed && make -C experiments/lfm25-encoder-phase0 impact-gate31 IMPACT_GATE31_MODEL=modernbert_ja_30m IMPACT_GATE31_FINAL_BATCH_SIZE=4 IMPACT_GATE31_FINAL_THREAD_COUNT=physical IMPACT_GATE31_FINAL_BUCKET_MODE=bucketed
+    reason: Requires both pinned local FP32 model snapshots and several minutes of isolated CPU time to measure every window from 30 complete scenes plus the saturated 30-window stress.
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
