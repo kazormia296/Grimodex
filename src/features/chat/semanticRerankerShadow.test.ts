@@ -116,6 +116,7 @@ describe("buildSemanticRerankerShadowComparison", () => {
     expect(comparison.firstPresentedChanged).toBe(true);
     expect(comparison.ranking[0]).toMatchObject({
       candidateHash: "hash-scene-b-10",
+      denseRank: 2,
       rerankedRank: 1,
       denseScore: 0.89,
     });

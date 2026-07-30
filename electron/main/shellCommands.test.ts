@@ -208,8 +208,28 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
               counterfactualInjectedCandidateHashes: ["candidate-a"],
               injectedSetChanged: false,
               injectedOrderChanged: false,
-              firstPresentedChanged: false,
-              ranking: [],
+            firstPresentedChanged: false,
+              ranking: [
+                {
+                  candidateHash: "candidate-a",
+                  sceneId: "scene-a",
+                  denseRank: 1,
+                  currentRank: 1,
+                  rerankedRank: 1,
+                  denseScore: 0.9,
+                  rerankerScore: 2.1,
+                  tokenization: {
+                    queryTokensBefore: 50,
+                    queryTokensAfter: 50,
+                    candidateTokensBefore: 100,
+                    candidateTokensAfter: 100,
+                    queryTruncated: false,
+                    candidateTruncated: false,
+                    userMessageTokensKept: 20,
+                    sceneTailTokensKept: 30,
+                  },
+                },
+              ],
             },
           },
         }),
@@ -224,6 +244,13 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
       expect(persisted).not.toHaveProperty("workspaceKey");
       expect(persisted).not.toHaveProperty("projectId");
       expect(JSON.stringify(persisted)).not.toContain("workspace-1");
+      expect(
+        (
+          persisted.comparison as {
+            ranking: Array<{ denseRank: number }>;
+          }
+        ).ranking[0].denseRank,
+      ).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
