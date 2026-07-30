@@ -69,6 +69,7 @@ export function ScopeTreePickerList({
     <>
       <button
         type="button"
+        data-testid="chat-scope-project"
         onClick={onPickProject}
         className={[
           "flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs",

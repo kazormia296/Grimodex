@@ -19,10 +19,10 @@ export const PRODUCT_JOURNEY_CAPABILITY_ORDER = Object.freeze([
 ]);
 
 /**
- * `affected` remains locked until the planned scope, MCP, and native
- * round-trip journeys land and shadow evidence has been reviewed.
+ * Affected execution is unlocked only while catalog coverage is complete.
+ * The coverage ratchet rejects missing journeys, contracts, or interactions.
  */
-export const PRODUCT_JOURNEY_ROLLOUT_MODE = "shadow";
+export const PRODUCT_JOURNEY_ROLLOUT_MODE = "affected";
 
 /**
  * Dependency-free product journey catalog.
@@ -94,14 +94,6 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     ],
     capabilities: ["electron", "napi"],
   },
-]);
-
-/**
- * Known coverage gaps are explicit while the selector runs in shadow mode.
- * Move an entry into PRODUCT_JOURNEY_CATALOG only when its real runner
- * implementation and contract evidence land together.
- */
-export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([
   {
     id: "chat-stream-project-switch",
     domains: ["chat", "project-lifecycle"],
@@ -132,33 +124,40 @@ export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([
   },
   {
     id: "chronicle-native-roundtrip",
-    domains: ["chronicle", "native-persistence"],
+    domains: ["chronicle"],
     interactions: ["chronicle->sqlite", "sqlite->chronicle"],
     contracts: ["roundtrip:chronicle"],
     capabilities: ["electron", "napi"],
   },
   {
     id: "lint-native-roundtrip",
-    domains: ["lint", "native-persistence"],
+    domains: ["lint"],
     interactions: ["lint->sqlite", "sqlite->lint"],
     contracts: ["roundtrip:lint"],
     capabilities: ["electron", "napi"],
   },
   {
     id: "map-native-roundtrip",
-    domains: ["map", "native-persistence"],
+    domains: ["map"],
     interactions: ["map->sqlite", "sqlite->map"],
     contracts: ["roundtrip:map"],
     capabilities: ["electron", "napi"],
   },
   {
     id: "snapshot-native-roundtrip",
-    domains: ["snapshot", "native-persistence"],
+    domains: ["snapshot"],
     interactions: ["snapshot->sqlite", "sqlite->snapshot"],
     contracts: ["roundtrip:snapshot"],
     capabilities: ["electron", "napi"],
   },
 ]);
+
+/**
+ * Known coverage gaps remain explicit. Entries move into
+ * PRODUCT_JOURNEY_CATALOG only when their real runner implementation and
+ * contract evidence land together.
+ */
+export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([]);
 
 /**
  * Rules are deliberately explicit. A path is safe to skip only when it
@@ -244,6 +243,12 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     id: "project-lifecycle",
     domains: ["project-lifecycle"],
     paths: ["src/features/project/**", "src/application/project/**"],
+  },
+  {
+    id: "chat-project-scope-picker",
+    domains: ["project-lifecycle"],
+    contracts: ["scope-transition:chat-stream:project"],
+    paths: ["src/features/tree/ScopeTreePicker.tsx"],
   },
   {
     id: "external-write-feed",
@@ -347,6 +352,42 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
       "scene-persistence",
     ],
   },
+  {
+    id: "scope-transition:chat-stream:project",
+    domains: ["chat", "project-lifecycle"],
+  },
+  {
+    id: "scope-transition:chat-stream:workspace",
+    domains: ["chat", "workspace-lifecycle"],
+  },
+  {
+    id: "scope-transition:editor-pending:project",
+    domains: ["editor", "project-lifecycle"],
+  },
+  {
+    id: "external-write:mcp:clean",
+    domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
+  },
+  {
+    id: "external-write:mcp:dirty",
+    domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
+  },
+  {
+    id: "roundtrip:chronicle",
+    domains: ["chronicle", "sqlite"],
+  },
+  {
+    id: "roundtrip:lint",
+    domains: ["lint", "sqlite"],
+  },
+  {
+    id: "roundtrip:map",
+    domains: ["map", "sqlite"],
+  },
+  {
+    id: "roundtrip:snapshot",
+    domains: ["snapshot", "sqlite"],
+  },
 ]);
 
 export const PRODUCT_SCOPE_TRANSITIONS = freezeEntries([
@@ -354,6 +395,21 @@ export const PRODUCT_SCOPE_TRANSITIONS = freezeEntries([
     operation: "chat-stream",
     scope: "scene",
     contractId: "scope-transition:chat-stream:scene",
+  },
+  {
+    operation: "chat-stream",
+    scope: "project",
+    contractId: "scope-transition:chat-stream:project",
+  },
+  {
+    operation: "chat-stream",
+    scope: "workspace",
+    contractId: "scope-transition:chat-stream:workspace",
+  },
+  {
+    operation: "editor-pending",
+    scope: "project",
+    contractId: "scope-transition:editor-pending:project",
   },
   {
     operation: "editor-pending",
@@ -366,6 +422,22 @@ export const PRODUCT_NATIVE_PERSISTENCE_DOMAINS = freezeEntries([
   {
     domain: "editor",
     contractId: "roundtrip:editor",
+  },
+  {
+    domain: "chronicle",
+    contractId: "roundtrip:chronicle",
+  },
+  {
+    domain: "lint",
+    contractId: "roundtrip:lint",
+  },
+  {
+    domain: "map",
+    contractId: "roundtrip:map",
+  },
+  {
+    domain: "snapshot",
+    contractId: "roundtrip:snapshot",
   },
 ]);
 
@@ -393,6 +465,27 @@ export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
   { id: "codex->chat", domains: ["codex", "chat"] },
   { id: "chat->editor", domains: ["chat", "editor"] },
   { id: "editor->history", domains: ["editor", "history"] },
+  {
+    id: "project-lifecycle->chat",
+    domains: ["project-lifecycle", "chat"],
+  },
+  {
+    id: "workspace-lifecycle->chat",
+    domains: ["workspace-lifecycle", "chat"],
+  },
+  {
+    id: "editor->project-lifecycle",
+    domains: ["editor", "project-lifecycle"],
+  },
+  { id: "mcp->sqlite", domains: ["mcp", "sqlite"] },
+  { id: "chronicle->sqlite", domains: ["chronicle", "sqlite"] },
+  { id: "sqlite->chronicle", domains: ["sqlite", "chronicle"] },
+  { id: "lint->sqlite", domains: ["lint", "sqlite"] },
+  { id: "sqlite->lint", domains: ["sqlite", "lint"] },
+  { id: "map->sqlite", domains: ["map", "sqlite"] },
+  { id: "sqlite->map", domains: ["sqlite", "map"] },
+  { id: "snapshot->sqlite", domains: ["snapshot", "sqlite"] },
+  { id: "sqlite->snapshot", domains: ["sqlite", "snapshot"] },
 ]);
 
 /**

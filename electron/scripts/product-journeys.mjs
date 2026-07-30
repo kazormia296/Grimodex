@@ -7,7 +7,10 @@ import { performance } from "node:perf_hooks";
 import process from "node:process";
 
 import { rootDir } from "./build.mjs";
+import { PRODUCT_JOURNEY_CATALOG } from "./product-journey-catalog.mjs";
 import { createProductJourneyHarness } from "./product-journey-harness.mjs";
+import { launchProductJourneyMcpClient } from "./product-journey-mcp-client.mjs";
+import { createNativeRoundTripJourneys } from "./product-journey-native-roundtrips.mjs";
 
 const mainCjs = path.join(rootDir, "dist-electron", "main.cjs");
 const DEFAULT_SCENE_TITLE = "シーン 1";
@@ -16,12 +19,18 @@ const CREATE_BUTTON_TITLE = "新規作成";
 const NEW_SCENE_MENU_ITEM = "New scene";
 const JOURNEY_TEXT = `PRODUCT-JOURNEY-${Date.now()}`;
 const PENDING_SAVE_TEXT = `PENDING-SAVE-JOURNEY-${Date.now()}`;
+const PENDING_PROJECT_SAVE_TEXT = `PENDING-PROJECT-SAVE-JOURNEY-${Date.now()}`;
 const CLEAN_EXTERNAL_TEXT = `CLEAN-EXTERNAL-JOURNEY-${Date.now()}`;
 const DIRTY_LOCAL_TEXT = `DIRTY-LOCAL-JOURNEY-${Date.now()}`;
 const DIRTY_EXTERNAL_TEXT = `DIRTY-EXTERNAL-JOURNEY-${Date.now()}`;
 const CHAT_AUTHORITY_PROMPT = `CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
+const PROJECT_CHAT_AUTHORITY_PROMPT = `PROJECT-CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
+const WORKSPACE_CHAT_AUTHORITY_PROMPT = `WORKSPACE-CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
 const CHAT_AUTHORITY_EARLY = "AUTHORITY-OLD-EARLY";
 const CHAT_AUTHORITY_LATE = "AUTHORITY-OLD-LATE";
+const MCP_CLEAN_EXTERNAL_TEXT = `MCP-CLEAN-EXTERNAL-JOURNEY-${Date.now()}`;
+const MCP_DIRTY_LOCAL_TEXT = `MCP-DIRTY-LOCAL-JOURNEY-${Date.now()}`;
+const MCP_DIRTY_EXTERNAL_TEXT = `MCP-DIRTY-EXTERNAL-JOURNEY-${Date.now()}`;
 const CODEX_CONTEXT_MARKER = "CODEX-CONTEXT-JOURNEY";
 const AUTHORING_PROMPT = `AUTHORING-JOURNEY-${Date.now()}`;
 const AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
@@ -32,6 +41,13 @@ const DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR = path.join(
   rootDir,
   ".artifacts",
   "product-journeys",
+);
+const mcpBinary = path.join(
+  rootDir,
+  "src-tauri",
+  "target",
+  "debug",
+  process.platform === "win32" ? "grimodex-mcp.exe" : "grimodex-mcp",
 );
 
 function log(message) {
@@ -53,8 +69,13 @@ function appVersion() {
     .version;
 }
 
-function assertBuildArtifacts() {
-  for (const artifact of [
+function assertBuildArtifacts(journeys) {
+  const selectedIds = new Set(journeys.map((journey) => journey.id));
+  const requiresMcp = PRODUCT_JOURNEY_CATALOG.some(
+    (journey) =>
+      selectedIds.has(journey.id) && journey.capabilities.includes("mcp"),
+  );
+  const artifacts = [
     mainCjs,
     path.join(rootDir, "dist", "index.html"),
     process.env.GRIMODEX_NODE_PATH ??
@@ -65,10 +86,12 @@ function assertBuildArtifacts() {
         "grimodex-node",
         "grimodex-node.node",
       ),
-  ]) {
+  ];
+  if (requiresMcp) artifacts.push(mcpBinary);
+  for (const artifact of artifacts) {
     if (!existsSync(artifact)) {
       throw new Error(
-        `missing Electron product journey artifact: ${artifact}\nRun pnpm napi:build and pnpm electron:build first.`,
+        `missing Electron product journey artifact: ${artifact}\nRun the builds required by the selected journey capabilities first.`,
       );
     }
   }
@@ -143,6 +166,191 @@ async function configureWorkspace(
   }
 }
 
+async function queryRows(harness, page, sql, params = []) {
+  const result = await harness.invokeOk(page, "db_execute", {
+    sql,
+    params,
+    method: "all",
+  });
+  return result?.rows ?? [];
+}
+
+async function currentProjectRow(harness, page) {
+  return harness.waitUntil(async () => {
+    const rows = await queryRows(
+      harness,
+      page,
+      `SELECT p.id, p.title
+       FROM projects p
+       LEFT JOIN app_settings a
+         ON a.key = 'workspace.lastActiveProjectId' AND a.value = p.id
+       ORDER BY CASE WHEN a.value = p.id THEN 0 ELSE 1 END, p.rowid
+       LIMIT 1`,
+    );
+    return rows[0] ?? null;
+  }, "current project database authority");
+}
+
+async function prepareSecondProject(
+  harness,
+  { phase, id, title, projectSettings = {} },
+) {
+  const prepared = await harness.launch(`${phase}/prepare-projects`);
+  try {
+    await prepared.page
+      .getByTestId("project-menu-trigger")
+      .waitFor({ state: "visible", timeout: 30_000 });
+    const projectA = await currentProjectRow(harness, prepared.page);
+    const now = new Date().toISOString();
+    await harness.invokeOk(prepared.page, "db_execute", {
+      sql: `INSERT OR IGNORE INTO projects
+        (id, title, created_at, updated_at)
+        VALUES (?, ?, ?, ?)`,
+      params: [id, title, now, now],
+      method: "run",
+    });
+    for (const [key, value] of Object.entries(projectSettings)) {
+      await harness.invokeOk(prepared.page, "db_execute", {
+        sql: `INSERT OR REPLACE INTO project_settings
+          (project_id, key, value)
+          VALUES (?, ?, ?)`,
+        params: [projectA.id, key, String(value)],
+        method: "run",
+      });
+    }
+    return {
+      projectA: {
+        id: String(projectA.id),
+        title: String(projectA.title),
+      },
+      projectB: { id, title },
+    };
+  } finally {
+    await harness.close(
+      prepared.app,
+      prepared.page,
+      `${phase}/prepare-projects`,
+    );
+  }
+}
+
+async function prepareProjectSettings(harness, phase, settings) {
+  const prepared = await harness.launch(`${phase}/prepare-settings`);
+  try {
+    await prepared.page
+      .getByTestId("project-menu-trigger")
+      .waitFor({ state: "visible", timeout: 30_000 });
+    const project = await currentProjectRow(harness, prepared.page);
+    for (const [key, value] of Object.entries(settings)) {
+      await harness.invokeOk(prepared.page, "db_execute", {
+        sql: `INSERT OR REPLACE INTO project_settings
+          (project_id, key, value)
+          VALUES (?, ?, ?)`,
+        params: [project.id, key, String(value)],
+        method: "run",
+      });
+    }
+    return {
+      id: String(project.id),
+      title: String(project.title),
+    };
+  } finally {
+    await harness.close(
+      prepared.app,
+      prepared.page,
+      `${phase}/prepare-settings`,
+    );
+  }
+}
+
+async function switchProjectThroughUi(harness, page, { id, title }, label) {
+  await page.getByTestId("project-menu-trigger").click();
+  await page.getByTestId(`project-switch-${id}`).click();
+  await harness.waitUntil(async () => {
+    const activeSetting = await queryRows(
+      harness,
+      page,
+      "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
+    );
+    const triggerText = await page
+      .getByTestId("project-menu-trigger")
+      .textContent();
+    return (
+      activeSetting[0]?.value === id &&
+      String(triggerText ?? "").includes(title)
+    );
+  }, label);
+}
+
+async function prepareWorkspacePair(harness, workspaceA, workspaceB, phase) {
+  await mkdir(workspaceB, { recursive: true });
+  const prepared = await harness.launch(`${phase}/prepare-workspaces`);
+  try {
+    await harness.invokeOk(prepared.page, "open_workspace", {
+      path: workspaceB,
+    });
+    const settings = await harness.invokeOk(
+      prepared.page,
+      "get_global_settings",
+    );
+    await harness.invokeOk(prepared.page, "save_global_settings", {
+      settings: {
+        ...settings,
+        lastActiveWorkspace: workspaceB,
+        trustedWorkspaces: [workspaceA, workspaceB],
+        showLauncherOnStartup: false,
+        hasSeenWelcome: true,
+        acceptedEulaVersion: readEulaVersion(),
+        lastSeenReleaseNotesVersion: appVersion(),
+      },
+    });
+    await harness.invokeOk(prepared.page, "open_workspace", {
+      path: workspaceA,
+    });
+    const restoredSettings = await harness.invokeOk(
+      prepared.page,
+      "get_global_settings",
+    );
+    await harness.invokeOk(prepared.page, "save_global_settings", {
+      settings: {
+        ...restoredSettings,
+        lastActiveWorkspace: workspaceA,
+        trustedWorkspaces: [workspaceA, workspaceB],
+        showLauncherOnStartup: false,
+        hasSeenWelcome: true,
+        acceptedEulaVersion: readEulaVersion(),
+        lastSeenReleaseNotesVersion: appVersion(),
+      },
+    });
+  } finally {
+    await harness.close(
+      prepared.app,
+      prepared.page,
+      `${phase}/prepare-workspaces`,
+    );
+  }
+}
+
+async function switchWorkspaceThroughUi(harness, page, workspace, label) {
+  const previousRevision = await workspaceOpenRevision(page);
+  const workspaceName = path.basename(workspace);
+  await page.getByTestId("workspace-menu-trigger").click();
+  await page
+    .getByTestId("workspace-menu-dropdown")
+    .getByRole("button", { name: workspaceName, exact: true })
+    .click();
+  await harness.waitUntil(async () => {
+    const triggerText = await page
+      .getByTestId("workspace-menu-trigger")
+      .textContent();
+    const nextRevision = await workspaceOpenRevision(page);
+    return (
+      String(triggerText ?? "").includes(workspaceName) &&
+      nextRevision > previousRevision
+    );
+  }, label);
+}
+
 async function findSceneById(harness, page, sceneId) {
   const result = await harness.invokeOk(page, "db_execute", {
     sql: "SELECT id, project_id AS projectId, title, content FROM tree_nodes WHERE id = ? AND node_type = 'scene'",
@@ -150,6 +358,18 @@ async function findSceneById(harness, page, sceneId) {
     method: "all",
   });
   return result?.rows?.[0] ?? null;
+}
+
+async function findSceneWithTextForProject(harness, page, projectId, text) {
+  const rows = await queryRows(
+    harness,
+    page,
+    `SELECT id, project_id AS projectId, title, content
+     FROM tree_nodes
+     WHERE project_id = ? AND node_type = 'scene'`,
+    [projectId],
+  );
+  return rows.find((row) => String(row.content ?? "").includes(text)) ?? null;
 }
 
 async function listChatAuthorityRows(harness, page, projectId) {
@@ -170,6 +390,54 @@ async function listChatAuthorityRows(harness, page, projectId) {
     method: "all",
   });
   return result?.rows ?? [];
+}
+
+function assertCompletedChatAuthority(rows, { prompt, label }) {
+  if (
+    !rows.some(
+      (row) =>
+        row.role === "user" && String(row.content ?? "").includes(prompt),
+    )
+  ) {
+    throw new Error(`${label} did not persist the user prompt`);
+  }
+  for (const marker of [CHAT_AUTHORITY_EARLY, CHAT_AUTHORITY_LATE]) {
+    if (
+      !rows.some(
+        (row) =>
+          row.role === "assistant" &&
+          String(row.content ?? "").includes(marker),
+      )
+    ) {
+      throw new Error(`${label} did not drain ${marker} before switching`);
+    }
+  }
+  if (!rows.some((row) => row.systemPrompt != null)) {
+    throw new Error(`${label} did not persist its prompt snapshot`);
+  }
+}
+
+function chatAuthorityLeaks(rows, prompt) {
+  return rows.filter((row) => {
+    const content = String(row.content ?? "");
+    const systemPrompt = String(row.systemPrompt ?? "");
+    return (
+      content.includes(prompt) ||
+      content.includes(CHAT_AUTHORITY_EARLY) ||
+      content.includes(CHAT_AUTHORITY_LATE) ||
+      systemPrompt.includes(prompt)
+    );
+  });
+}
+
+async function setProjectChatScope(page) {
+  const picker = page.getByTestId("chat-scope-picker");
+  await picker.click();
+  await page.getByTestId("chat-scope-project").click();
+  await picker.waitFor({ state: "visible", timeout: 30_000 });
+  if ((await picker.getAttribute("data-chat-scope")) !== "project") {
+    throw new Error("chat scope picker did not commit project authority");
+  }
 }
 
 async function prepareCodexContextEntry(harness) {
@@ -292,6 +560,37 @@ async function commitExternalSceneWrite(
     ],
   });
   return content;
+}
+
+function parseMcpTextResult(result, label) {
+  const textBlock = result?.content?.find(
+    (item) => item?.type === "text" && typeof item.text === "string",
+  );
+  if (!textBlock) {
+    throw new Error(`${label} did not return a text content block`);
+  }
+  try {
+    return JSON.parse(textBlock.text);
+  } catch (error) {
+    throw new Error(`${label} returned invalid JSON: ${textBlock.text}`, {
+      cause: error,
+    });
+  }
+}
+
+async function findProseStage(harness, page, stagingId) {
+  const rows = await queryRows(
+    harness,
+    page,
+    `SELECT id, project_id AS projectId, scene_id AS sceneId,
+      proposed_content AS proposedContent, base_version AS baseVersion,
+      status, source_surface AS sourceSurface,
+      source_session_id AS sourceSessionId
+     FROM prose_staging
+     WHERE id = ?`,
+    [stagingId],
+  );
+  return rows[0] ?? null;
 }
 
 async function findSceneWithText(harness, page, text) {
@@ -423,49 +722,12 @@ async function runWorkspaceSwitchAuthorityJourney(harness) {
       "editor.autoSaveDelay": PENDING_SAVE_AUTOSAVE_DELAY_MS,
     },
   });
-  await mkdir(workspaceB, { recursive: true });
-
-  const prepare = await harness.launch("workspace-switch/prepare");
-  try {
-    await harness.invokeOk(prepare.page, "open_workspace", {
-      path: workspaceB,
-    });
-    const settings = await harness.invokeOk(
-      prepare.page,
-      "get_global_settings",
-    );
-    await harness.invokeOk(prepare.page, "save_global_settings", {
-      settings: {
-        ...settings,
-        lastActiveWorkspace: workspaceB,
-        trustedWorkspaces: [workspaceA, workspaceB],
-        showLauncherOnStartup: false,
-        hasSeenWelcome: true,
-        acceptedEulaVersion: readEulaVersion(),
-        lastSeenReleaseNotesVersion: appVersion(),
-      },
-    });
-    await harness.invokeOk(prepare.page, "open_workspace", {
-      path: workspaceA,
-    });
-    const restoredSettings = await harness.invokeOk(
-      prepare.page,
-      "get_global_settings",
-    );
-    await harness.invokeOk(prepare.page, "save_global_settings", {
-      settings: {
-        ...restoredSettings,
-        lastActiveWorkspace: workspaceA,
-        trustedWorkspaces: [workspaceA, workspaceB],
-        showLauncherOnStartup: false,
-        hasSeenWelcome: true,
-        acceptedEulaVersion: readEulaVersion(),
-        lastSeenReleaseNotesVersion: appVersion(),
-      },
-    });
-  } finally {
-    await harness.close(prepare.app, prepare.page, "workspace-switch/prepare");
-  }
+  await prepareWorkspacePair(
+    harness,
+    workspaceA,
+    workspaceB,
+    "workspace-switch",
+  );
 
   const switched = await harness.launch("workspace-switch/pending-save");
   try {
@@ -663,6 +925,312 @@ async function runChatAuthorityIsolationJourney(harness) {
   }
 }
 
+async function runChatStreamProjectSwitchJourney(harness) {
+  const workspace = harness.workspacePath("chat-stream-project-switch");
+  await configureWorkspace(harness, workspace, {
+    deterministicAi: true,
+  });
+  const projects = await prepareSecondProject(harness, {
+    phase: "chat-stream-project-switch",
+    id: `product-chat-project-b-${Date.now()}`,
+    title: "Product Chat Project B",
+  });
+
+  const chat = await harness.launch("chat-stream-project-switch");
+  try {
+    const sceneA = await createSceneThroughUi(harness, chat.page);
+    if (sceneA.projectId !== projects.projectA.id) {
+      throw new Error("project chat journey started under the wrong project");
+    }
+    await setProjectChatScope(chat.page);
+    await sendChatPrompt(chat.page, PROJECT_CHAT_AUTHORITY_PROMPT);
+    await chat.page
+      .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+      .last()
+      .waitFor({ state: "visible", timeout: 30_000 });
+    harness.recordTimeline("project-chat-stream-started", {
+      workspace,
+      workspaceOpenRevision: await workspaceOpenRevision(chat.page),
+      projectId: sceneA.projectId,
+      sceneId: sceneA.sceneId,
+      earlyChunkVisible: true,
+    });
+
+    await switchProjectThroughUi(
+      harness,
+      chat.page,
+      projects.projectB,
+      "project B UI authority after chat drain",
+    );
+    await sceneA.editorSurface.waitFor({
+      state: "detached",
+      timeout: 30_000,
+    });
+
+    const projectARows = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(
+        harness,
+        chat.page,
+        projects.projectA.id,
+      );
+      try {
+        assertCompletedChatAuthority(rows, {
+          prompt: PROJECT_CHAT_AUTHORITY_PROMPT,
+          label: "project A stream",
+        });
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "project A stream drain before project switch");
+    const projectBRows = await listChatAuthorityRows(
+      harness,
+      chat.page,
+      projects.projectB.id,
+    );
+    if (
+      chatAuthorityLeaks(projectBRows, PROJECT_CHAT_AUTHORITY_PROMPT).length > 0
+    ) {
+      throw new Error(
+        "project B received project A prompt, stream chunk, or prompt snapshot",
+      );
+    }
+    await harness.waitUntil(
+      async () =>
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+          .count()) === 0 &&
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_LATE, { exact: false })
+          .count()) === 0,
+      "project B chat UI isolation",
+    );
+    harness.recordTimeline("project-chat-stream-drained", {
+      workspace,
+      workspaceOpenRevision: await workspaceOpenRevision(chat.page),
+      fromProjectId: projects.projectA.id,
+      toProjectId: projects.projectB.id,
+      sessionIds: [
+        ...new Set(projectARows.map((row) => String(row.sessionId))),
+      ],
+      oldScopeCompleted: true,
+      newScopeLeak: false,
+    });
+    log(
+      "Project chat switch: strict quiescence drained the old stream before authority commit",
+    );
+  } finally {
+    await harness.close(chat.app, chat.page, "chat-stream-project-switch");
+  }
+}
+
+async function runChatStreamWorkspaceSwitchJourney(harness) {
+  const workspaceA = harness.workspacePath("chat-workspace-a");
+  const workspaceB = harness.workspacePath("chat-workspace-b");
+  await configureWorkspace(harness, workspaceA, {
+    deterministicAi: true,
+  });
+  await prepareWorkspacePair(
+    harness,
+    workspaceA,
+    workspaceB,
+    "chat-stream-workspace-switch",
+  );
+
+  const chat = await harness.launch("chat-stream-workspace-switch");
+  try {
+    const sceneA = await createSceneThroughUi(harness, chat.page);
+    await sendChatPrompt(chat.page, WORKSPACE_CHAT_AUTHORITY_PROMPT);
+    await chat.page
+      .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+      .last()
+      .waitFor({ state: "visible", timeout: 30_000 });
+    harness.recordTimeline("workspace-chat-stream-started", {
+      workspace: workspaceA,
+      workspaceOpenRevision: await workspaceOpenRevision(chat.page),
+      projectId: sceneA.projectId,
+      sceneId: sceneA.sceneId,
+      earlyChunkVisible: true,
+    });
+
+    await switchWorkspaceThroughUi(
+      harness,
+      chat.page,
+      workspaceB,
+      "workspace B UI authority after chat drain",
+    );
+    const projectB = await currentProjectRow(harness, chat.page);
+    const workspaceBRows = await listChatAuthorityRows(
+      harness,
+      chat.page,
+      String(projectB.id),
+    );
+    if (
+      chatAuthorityLeaks(workspaceBRows, WORKSPACE_CHAT_AUTHORITY_PROMPT)
+        .length > 0
+    ) {
+      throw new Error(
+        "workspace B received workspace A prompt, stream chunk, or prompt snapshot",
+      );
+    }
+    await harness.waitUntil(
+      async () =>
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+          .count()) === 0 &&
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_LATE, { exact: false })
+          .count()) === 0,
+      "workspace B chat UI isolation",
+    );
+
+    await switchWorkspaceThroughUi(
+      harness,
+      chat.page,
+      workspaceA,
+      "workspace A chat authority after return",
+    );
+    const workspaceARows = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(
+        harness,
+        chat.page,
+        sceneA.projectId,
+      );
+      try {
+        assertCompletedChatAuthority(rows, {
+          prompt: WORKSPACE_CHAT_AUTHORITY_PROMPT,
+          label: "workspace A stream",
+        });
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "workspace A stream drain before workspace switch");
+    harness.recordTimeline("workspace-chat-stream-drained", {
+      from: workspaceA,
+      to: workspaceB,
+      workspaceOpenRevision: await workspaceOpenRevision(chat.page),
+      fromProjectId: sceneA.projectId,
+      toProjectId: String(projectB.id),
+      sessionIds: [
+        ...new Set(workspaceARows.map((row) => String(row.sessionId))),
+      ],
+      oldScopeCompleted: true,
+      newScopeLeak: false,
+    });
+    log(
+      "Workspace chat switch: strict quiescence drained the old stream without cross-database leakage",
+    );
+  } finally {
+    await harness.close(chat.app, chat.page, "chat-stream-workspace-switch");
+  }
+}
+
+async function runEditorPendingProjectSwitchJourney(harness) {
+  const workspace = harness.workspacePath("editor-pending-project-switch");
+  await configureWorkspace(harness, workspace, {
+    appSettings: {
+      "editor.autoSaveDelay": PENDING_SAVE_AUTOSAVE_DELAY_MS,
+    },
+  });
+  const projects = await prepareSecondProject(harness, {
+    phase: "editor-pending-project-switch",
+    id: `product-editor-project-b-${Date.now()}`,
+    title: "Product Editor Project B",
+  });
+
+  const switched = await harness.launch("editor-pending-project-switch");
+  try {
+    const sceneA = await createSceneThroughUi(harness, switched.page);
+    if (sceneA.projectId !== projects.projectA.id) {
+      throw new Error("pending editor journey started under the wrong project");
+    }
+    await sceneA.editor.click();
+    await switched.page.keyboard.type(PENDING_PROJECT_SAVE_TEXT);
+    if (
+      await findSceneWithTextForProject(
+        harness,
+        switched.page,
+        projects.projectA.id,
+        PENDING_PROJECT_SAVE_TEXT,
+      )
+    ) {
+      throw new Error(
+        "pending editor project journey autosaved before the boundary",
+      );
+    }
+    harness.recordTimeline("project-pending-editor-draft", {
+      workspace,
+      projectId: projects.projectA.id,
+      sceneId: sceneA.sceneId,
+      autosaveDelayMs: PENDING_SAVE_AUTOSAVE_DELAY_MS,
+      persistedBeforeSwitch: false,
+    });
+
+    await switchProjectThroughUi(
+      harness,
+      switched.page,
+      projects.projectB,
+      "project B UI authority after pending editor drain",
+    );
+    const persistedAfterSwitch = await harness.waitUntil(async () => {
+      const scene = await findSceneById(harness, switched.page, sceneA.sceneId);
+      return String(scene?.content ?? "").includes(PENDING_PROJECT_SAVE_TEXT)
+        ? scene
+        : null;
+    }, "project A pending editor save");
+    if (persistedAfterSwitch.projectId !== projects.projectA.id) {
+      throw new Error("pending editor text changed project ownership");
+    }
+    if (
+      await findSceneWithTextForProject(
+        harness,
+        switched.page,
+        projects.projectB.id,
+        PENDING_PROJECT_SAVE_TEXT,
+      )
+    ) {
+      throw new Error("project B received project A pending editor text");
+    }
+    await sceneA.editorSurface.waitFor({
+      state: "detached",
+      timeout: 30_000,
+    });
+
+    await switchProjectThroughUi(
+      harness,
+      switched.page,
+      projects.projectA,
+      "project A UI authority after return",
+    );
+    const restoredPane = switched.page.locator(
+      `[data-editor-loaded-document-id="${sceneA.sceneId}"][data-editor-document-loading="false"]`,
+    );
+    await restoredPane.waitFor({ state: "visible", timeout: 30_000 });
+    await restoredPane
+      .locator(`.ProseMirror:has-text("${PENDING_PROJECT_SAVE_TEXT}")`)
+      .first()
+      .waitFor({ state: "visible", timeout: 30_000 });
+    harness.recordTimeline("project-pending-editor-restored", {
+      workspace,
+      projectId: projects.projectA.id,
+      sceneId: sceneA.sceneId,
+      persistedAfterSwitch: true,
+      newProjectLeak: false,
+      restoredAfterReturn: true,
+    });
+    log(
+      "Project editor switch: strict quiescence drained pending text and restored the original scene",
+    );
+  } finally {
+    await harness.close(
+      switched.app,
+      switched.page,
+      "editor-pending-project-switch",
+    );
+  }
+}
+
 async function runExternalWriteConflictJourney(harness) {
   const workspace = harness.workspacePath("external-write-conflict");
   await configureWorkspace(harness, workspace, {
@@ -788,6 +1356,258 @@ async function runExternalWriteConflictJourney(harness) {
       if (!journeyFailure) throw closeError;
       console.error(
         `[electron:product] external-write-conflict cleanup failed after the primary assertion: ${
+          closeError instanceof Error ? closeError.message : String(closeError)
+        }`,
+      );
+    }
+  }
+}
+
+async function runMcpExternalWriteConflictJourney(harness) {
+  const workspace = harness.workspacePath("mcp-external-write-conflict");
+  await configureWorkspace(harness, workspace, {
+    appSettings: {
+      "editor.autoSaveDelay": PENDING_SAVE_AUTOSAVE_DELAY_MS,
+    },
+  });
+  const preparedProject = await prepareProjectSettings(
+    harness,
+    "mcp-external-write-conflict",
+    {
+      "ai.autoAcceptBodyProposals": true,
+    },
+  );
+
+  const external = await harness.launch("mcp-external-write-conflict");
+  let mcpClient = null;
+  let dirtyStagingId = null;
+  let journeyFailure = null;
+  try {
+    const clean = await createSceneThroughUi(harness, external.page);
+    if (clean.projectId !== preparedProject.id) {
+      throw new Error("MCP journey started under the wrong project");
+    }
+    mcpClient = await launchProductJourneyMcpClient({
+      binaryPath: mcpBinary,
+      workspacePath: workspace,
+      projectId: clean.projectId,
+      onStderr: (chunk) =>
+        process.stderr.write(
+          `  [product:mcp-external-write-conflict:mcp] ${String(chunk)}`,
+        ),
+    });
+    const tools = await mcpClient.listTools();
+    if (
+      !Array.isArray(tools.tools) ||
+      !tools.tools.some((tool) => tool?.name === "propose_scene_body")
+    ) {
+      throw new Error("MCP server did not advertise propose_scene_body");
+    }
+
+    const cleanResult = parseMcpTextResult(
+      await mcpClient.callTool("propose_scene_body", {
+        scene_id: clean.sceneId,
+        text: MCP_CLEAN_EXTERNAL_TEXT,
+        mode: "append",
+      }),
+      "clean propose_scene_body",
+    );
+    if (
+      cleanResult.scene_id !== clean.sceneId ||
+      cleanResult.status !== "proposed" ||
+      typeof cleanResult.staging_id !== "string"
+    ) {
+      throw new Error(
+        `clean MCP proposal returned an invalid authority result: ${JSON.stringify(cleanResult)}`,
+      );
+    }
+    const cleanEvidence = await harness.waitUntil(async () => {
+      const [stage, scene] = await Promise.all([
+        findProseStage(harness, external.page, cleanResult.staging_id),
+        findSceneById(harness, external.page, clean.sceneId),
+      ]);
+      return stage?.status === "accepted" &&
+        stage.sourceSurface === "mcp" &&
+        String(scene?.content ?? "").includes(MCP_CLEAN_EXTERNAL_TEXT)
+        ? { stage, scene }
+        : null;
+    }, "MCP clean auto-apply");
+    await clean.editor
+      .locator(`text=${MCP_CLEAN_EXTERNAL_TEXT}`)
+      .waitFor({ state: "visible", timeout: 30_000 });
+    if (
+      await clean.editorSurface.getByTestId("external-edit-conflict").count()
+    ) {
+      throw new Error("clean MCP external write incorrectly opened a conflict");
+    }
+    const cleanEvents = await queryRows(
+      harness,
+      external.page,
+      `SELECT session_id AS sessionId, domain, op_type AS opType,
+        entity_id AS entityId
+       FROM change_events
+       WHERE entity_id = ? AND domain = 'prose' AND op_type = 'prose.propose'`,
+      [cleanResult.staging_id],
+    );
+    if (
+      cleanEvents.length !== 1 ||
+      cleanEvents[0].sessionId !== cleanEvidence.stage.sourceSessionId
+    ) {
+      throw new Error(
+        "clean MCP proposal did not retain its external writer session",
+      );
+    }
+    harness.recordTimeline("mcp-clean-external-write-reloaded", {
+      workspace,
+      projectId: clean.projectId,
+      sceneId: clean.sceneId,
+      stagingId: cleanResult.staging_id,
+      sourceSurface: cleanEvidence.stage.sourceSurface,
+      status: cleanEvidence.stage.status,
+      conflict: false,
+    });
+
+    const dirty = await createSceneThroughUi(harness, external.page);
+    await dirty.editor.click();
+    await external.page.keyboard.type(MCP_DIRTY_LOCAL_TEXT);
+    if (
+      await findSceneWithTextForProject(
+        harness,
+        external.page,
+        dirty.projectId,
+        MCP_DIRTY_LOCAL_TEXT,
+      )
+    ) {
+      throw new Error("dirty MCP setup autosaved before the proposal");
+    }
+    const dirtyResult = parseMcpTextResult(
+      await mcpClient.callTool("propose_scene_body", {
+        scene_id: dirty.sceneId,
+        text: MCP_DIRTY_EXTERNAL_TEXT,
+        mode: "append",
+      }),
+      "dirty propose_scene_body",
+    );
+    dirtyStagingId = String(dirtyResult.staging_id ?? "");
+    if (
+      dirtyResult.scene_id !== dirty.sceneId ||
+      dirtyResult.status !== "proposed" ||
+      !dirtyStagingId
+    ) {
+      throw new Error(
+        `dirty MCP proposal returned an invalid authority result: ${JSON.stringify(dirtyResult)}`,
+      );
+    }
+
+    const conflict = dirty.editorSurface.getByTestId("external-edit-conflict");
+    await conflict.waitFor({ state: "visible", timeout: 30_000 });
+    const dirtyEvidence = await harness.waitUntil(async () => {
+      const [stage, scene] = await Promise.all([
+        findProseStage(harness, external.page, dirtyStagingId),
+        findSceneById(harness, external.page, dirty.sceneId),
+      ]);
+      return stage?.status === "proposed" &&
+        stage.sourceSurface === "mcp" &&
+        String(stage.proposedContent ?? "").includes(MCP_DIRTY_EXTERNAL_TEXT) &&
+        String(scene?.content ?? "").includes(MCP_DIRTY_LOCAL_TEXT) &&
+        !String(scene?.content ?? "").includes(MCP_DIRTY_EXTERNAL_TEXT)
+        ? { stage, scene }
+        : null;
+    }, "MCP dirty stale conflict");
+    if (!(await dirty.editor.textContent())?.includes(MCP_DIRTY_LOCAL_TEXT)) {
+      throw new Error("dirty MCP conflict overwrote the local editor draft");
+    }
+    harness.recordTimeline("mcp-dirty-external-write-conflict", {
+      workspace,
+      projectId: dirty.projectId,
+      sceneId: dirty.sceneId,
+      stagingId: dirtyStagingId,
+      sourceSurface: dirtyEvidence.stage.sourceSurface,
+      status: dirtyEvidence.stage.status,
+      localDraftPersisted: true,
+      externalProposalApplied: false,
+      conflict: true,
+    });
+
+    const reject = external.page.getByRole("button", {
+      name: /Reject/,
+    });
+    await reject.waitFor({ state: "visible", timeout: 30_000 });
+    await external.page.keyboard.press("Escape");
+    await harness.waitUntil(async () => {
+      const stage = await findProseStage(
+        harness,
+        external.page,
+        dirtyStagingId,
+      );
+      return stage?.status === "discarded" ? stage : null;
+    }, "MCP stale proposal discard");
+    await conflict.getByTestId("external-edit-keep").click();
+    await conflict.waitFor({ state: "detached", timeout: 30_000 });
+    log(
+      "MCP external write: clean auto-apply and dirty stale conflict both passed",
+    );
+  } catch (error) {
+    journeyFailure = error;
+    throw error;
+  } finally {
+    if (!external.page.isClosed()) {
+      if (dirtyStagingId) {
+        const stage = await findProseStage(
+          harness,
+          external.page,
+          dirtyStagingId,
+        ).catch(() => null);
+        if (stage?.status === "proposed") {
+          await external.page.keyboard.press("Escape").catch(() => undefined);
+          const afterEscape = await findProseStage(
+            harness,
+            external.page,
+            dirtyStagingId,
+          ).catch(() => null);
+          if (afterEscape?.status === "proposed") {
+            await harness
+              .invokeOk(external.page, "agent_discard_prose_stage", {
+                payload: {
+                  projectId: preparedProject.id,
+                  sessionId: "product-journey-cleanup",
+                  stagingId: dirtyStagingId,
+                },
+              })
+              .catch(() => undefined);
+          }
+        }
+      }
+      const visibleKeep = external.page.locator(
+        '[data-testid="external-edit-conflict"]:visible [data-testid="external-edit-keep"]',
+      );
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        if ((await visibleKeep.count()) === 0) break;
+        await visibleKeep
+          .first()
+          .click()
+          .then(() => external.page.waitForTimeout(250))
+          .catch(() => undefined);
+      }
+    }
+    await mcpClient?.close().catch((error) => {
+      if (!journeyFailure) throw error;
+      console.error(
+        `[electron:product] MCP cleanup failed after the primary assertion: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+    try {
+      await harness.close(
+        external.app,
+        external.page,
+        "mcp-external-write-conflict",
+      );
+    } catch (closeError) {
+      if (!journeyFailure) throw closeError;
+      console.error(
+        `[electron:product] MCP Electron cleanup failed after the primary assertion: ${
           closeError instanceof Error ? closeError.message : String(closeError)
         }`,
       );
@@ -966,6 +1786,21 @@ async function runCrossFeatureAuthoringJourney(harness) {
   }
 }
 
+/**
+ * The isolated native module owns these typed production boundaries and their
+ * restart evidence:
+ * - agent_chronicle_bulk_mutate -> chronicle-native-roundtrip-restored
+ * - lint_term_dictionary_insert / lint_term_dictionary_list
+ *   -> lint-native-roundtrip-restored
+ * - map_write_bundle -> map-native-roundtrip-restored
+ * - project_snapshot_create / project_snapshot_restore_context
+ *   -> snapshot-native-roundtrip-restored
+ */
+const NATIVE_ROUND_TRIP_JOURNEYS = createNativeRoundTripJourneys({
+  configureWorkspace,
+  log,
+});
+
 export const PRODUCT_JOURNEYS = [
   { id: "editor-persistence", run: runEditorPersistenceJourney },
   {
@@ -984,7 +1819,64 @@ export const PRODUCT_JOURNEYS = [
     id: "cross-feature-authoring",
     run: runCrossFeatureAuthoringJourney,
   },
+  {
+    id: "chat-stream-project-switch",
+    run: runChatStreamProjectSwitchJourney,
+  },
+  {
+    id: "chat-stream-workspace-switch",
+    run: runChatStreamWorkspaceSwitchJourney,
+  },
+  {
+    id: "editor-pending-project-switch",
+    run: runEditorPendingProjectSwitchJourney,
+  },
+  {
+    id: "mcp-external-write-conflict",
+    run: runMcpExternalWriteConflictJourney,
+  },
+  ...NATIVE_ROUND_TRIP_JOURNEYS,
 ];
+
+export function resolveSelectedProductJourneys(journeys, serializedIds) {
+  if (serializedIds === undefined) return journeys;
+
+  let requested;
+  try {
+    requested = JSON.parse(serializedIds);
+  } catch (error) {
+    throw new Error("GRIMODEX_PRODUCT_JOURNEY_IDS must be a valid JSON array", {
+      cause: error,
+    });
+  }
+  if (!Array.isArray(requested)) {
+    throw new Error("GRIMODEX_PRODUCT_JOURNEY_IDS must be a valid JSON array");
+  }
+  if (requested.length === 0) {
+    throw new Error(
+      "GRIMODEX_PRODUCT_JOURNEY_IDS must include at least one journey ID",
+    );
+  }
+
+  const requestedIds = new Set();
+  for (const id of requested) {
+    if (typeof id !== "string" || id.trim() !== id || id.length === 0) {
+      throw new Error(
+        "GRIMODEX_PRODUCT_JOURNEY_IDS must contain non-empty canonical strings",
+      );
+    }
+    if (requestedIds.has(id)) {
+      throw new Error(`duplicate product journey ID: ${id}`);
+    }
+    requestedIds.add(id);
+  }
+  const knownIds = new Set(journeys.map((journey) => journey.id));
+  const unknownIds = [...requestedIds].filter((id) => !knownIds.has(id));
+  if (unknownIds.length > 0) {
+    throw new Error(`unknown product journey ID(s): ${unknownIds.join(", ")}`);
+  }
+  return journeys.filter((journey) => requestedIds.has(journey.id));
+}
 
 function serializeError(error) {
   return {
@@ -1038,7 +1930,7 @@ export async function runProductJourneys({
   };
 
   try {
-    await assertArtifacts();
+    await assertArtifacts(journeys);
   } catch (error) {
     report.status = "failed";
     report.error = serializeError(error);
@@ -1111,7 +2003,11 @@ export async function runProductJourneys({
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {
-  runProductJourneys().then(
+  const selectedJourneys = resolveSelectedProductJourneys(
+    PRODUCT_JOURNEYS,
+    process.env.GRIMODEX_PRODUCT_JOURNEY_IDS,
+  );
+  runProductJourneys({ journeys: selectedJourneys }).then(
     () => log("PASS — product journeys completed"),
     (error) => {
       console.error(`[electron:product] FAIL: ${error?.stack ?? error}`);

@@ -265,6 +265,8 @@ export function ChatPanelHeader({
           <button
             ref={triggerRef}
             type="button"
+            data-testid="chat-scope-picker"
+            data-chat-scope={chatScope}
             onClick={handleToggleOpen}
             className="flex max-w-[200px] items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
             title={t("chat.scope.picker")}
