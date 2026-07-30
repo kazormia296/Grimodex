@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 2,
+  "sourceArtifact": "artifacts/phase0b/gate4/seed42-run2-fresh-test/gate4-results.json",
+  "sourceArtifactSha256": "2152a9ae4894ef3d49c1a63775b51ab90a464abd616adcd6ed726dc195a7230b",
+  "historicalRunnerCommit": "1101d583c95dfe5fc36ffebd42b4b8f5f2c62f10",
+  "selectedModel": "modernbert_ja_30m",
+  "selectedMode": "frozen_head",
+  "syntheticMetrics": {
+    "affectedRecall": 1.0,
+    "directContradictionRecall": 1.0,
+    "candidateReduction": 0.45,
+    "challengeAffectedRecall": 1.0
+  },
+  "syntheticProbeAssessment": "signal_detected",
+  "gate31Prerequisite": "hold",
+  "formalGate4Eligible": false,
+  "continueToHumanCorpus": false,
+  "effectiveVerdict": "hold_on_latency_prerequisite",
+  "phase1Ready": false,
+  "testConsumptionFingerprint": "d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7"
+}

@@ -179,6 +179,178 @@ backfill a second chunk, and dense-pass backfill requires the secondary chunk
 itself to meet `minScore`. The reranker changes chunks only inside those fixed
 scene quotas and falls back to the baseline order on any failure.
 
+### Gate 3 Impact Review pre-training speed
+
+Gate 3 asks a narrow lower-bound question before any Impact Review corpus
+construction or fine-tuning: can either selected Japanese backbone process one
+Codex change against 30 preselected candidate windows inside the existing
+Impact latency budget on CPU? The original fixed workload contains 30 windows
+but only 18 distinct scene IDs, so it does not represent 30 complete scenes.
+
+| Key                 | Backbone                                 | Input cap | Head used by this gate |
+| ------------------- | ---------------------------------------- | --------- | ---------------------- |
+| `ja_xsmall`         | `hotchpotch/japanese-reranker-xsmall-v2` | 512       | temporary binary head  |
+| `modernbert_ja_30m` | `sbintuitions/modernbert-ja-30m`         | 512       | temporary binary head  |
+
+The committed workload is derived from the SHA-256-pinned Japanese Gate 2
+candidate file. It serializes one canonical `ImpactDiffPayload` and pairs it
+with exactly 30 public Japanese candidate windows from 18 distinct scenes.
+The diff has a 128-token budget, each window has a 384-token budget, and pair
+truncation preserves the diff while truncating only the scene side.
+
+Both models use the same seed-42 fp32 linear head over masked-mean backbone
+output. The head is intentionally untrained: scores and rankings make no
+quality claim and must not be used for product selection. This gate measures
+only tokenization, backbone forward, and end-to-end preprocessing cost before
+the more expensive corpus and training work.
+
+Bootstrap the exact revisions and verify the complete local manifests:
+
+```bash
+make bootstrap-impact-gate3
+```
+
+Screen batch, bucket, and CPU-thread choices independently for each model:
+
+```bash
+for model in ja_xsmall modernbert_ja_30m; do
+  make impact-gate3-pilot IMPACT_GATE3_MODEL="$model"
+done
+```
+
+Then promote only the best observed configuration for each model to the
+formal run. The runner excludes three warmups, records 30 measured samples and
+five independent cold starts, and writes the full timing, RSS, CPU, token, and
+manifest evidence beneath `artifacts/phase0b/gate3/`:
+
+```bash
+make impact-gate3 \
+  IMPACT_GATE3_MODEL=<model-key> \
+  IMPACT_GATE3_FINAL_BATCH_SIZE=<selected-batch> \
+  IMPACT_GATE3_FINAL_THREAD_COUNT=<selected-threads> \
+  IMPACT_GATE3_FINAL_BUCKET_MODE=<naive-or-bucketed>
+```
+
+The 30-window lower-bound end-to-end p95 bands are Target at 5 seconds or less,
+Conditional at 10 seconds or less, Hold at 20 seconds or less, and Reject
+above 20 seconds. A Target result still requires Gate 3.1 before labeled work
+is formalized: 30 distinct full scenes must be converted with the product
+plain-text path, windowed at 384 tokens with stride 256, fully inferred, and
+aggregated by maximum window score. Gate 3.1 also measures 30 fully occupied
+384-token scene windows as a separate cap stress.
+
+The completed Ryzen 5 3600 measurement is recorded in
+[`PHASE0B_GATE3_RESULTS.md`](./PHASE0B_GATE3_RESULTS.md). Both candidates
+reached Target for the lower-bound workload. Gate 4 implementation may remain
+provisional, but xsmall and ModernBERT do not proceed to a formal labeled
+decision until Gate 3.1 passes.
+
+### Gate 3.1 distinct full-scene correction
+
+Gate 3.1 closes the lower-bound gap before Gate 4 can become a formal
+decision. Its public workload is regenerated from the deterministic medium
+Japanese sample workspace. The exporter runs the production semantic index
+and FTS backend, reuses `fuseSceneCandidates`, reads complete scene documents,
+and converts each ProseMirror document with the product
+`prosemirrorToText` path.
+
+The frozen Codex-style change `記憶。失われた。取り戻した` produces 27
+distinct dense scenes and 34 sparse scenes, for a 38-scene union. The product
+RRF policy fixes the top 30 **inferred** scenes without synthetic padding.
+Explicit semantic links are author-confirmed dependencies: they are always
+retained, bypass the classifier, and do not consume the inferred 30-scene
+limit.
+
+For every model, the runner measures two workloads:
+
+1. all 30 full scenes, tokenized without blind truncation into 384-token
+   windows at stride 256, with every window inferred and each scene aggregated
+   as `max(window score)`; and
+2. 30 real, fully occupied 384-token windows as a separate cap stress.
+
+Both reports include `sceneCount`, `windowCount`, windows-per-scene
+p50/p95/max, attention tokens, and `truncatedSceneCount`. Gate 4 remains
+provisional unless both workloads reach the five-second Target band.
+
+Regenerate the public workload from a disposable medium sample workspace:
+
+```bash
+python3 scripts/seed-sample-ja.py <workspace> --scale medium
+pnpm exec tsx experiments/lfm25-encoder-phase0/tools/freeze_impact_gate31_scenes.ts \
+  --native-module electron/native/grimodex-node/grimodex-node.node \
+  --resources src-tauri/resources/semantic \
+  --workspace <workspace> \
+  --output experiments/lfm25-encoder-phase0/data/public/gate31/impact-scenes-ja.json
+```
+
+Screen configurations, then run only the selected configuration formally:
+
+```bash
+for model in ja_xsmall modernbert_ja_30m; do
+  make impact-gate31-pilot IMPACT_GATE31_MODEL="$model"
+done
+
+make impact-gate31 \
+  IMPACT_GATE31_MODEL=<model-key> \
+  IMPACT_GATE31_FINAL_BATCH_SIZE=<selected-batch> \
+  IMPACT_GATE31_FINAL_THREAD_COUNT=<selected-threads> \
+  IMPACT_GATE31_FINAL_BUCKET_MODE=<naive-or-bucketed>
+```
+
+The completed Ryzen 5 3600 result is recorded in
+[`PHASE0B_GATE31_RESULTS.md`](./PHASE0B_GATE31_RESULTS.md). Both candidates
+reach Target on the isolated 30-window cap stress but fall in Hold on the 184
+windows produced by 30 complete scenes. Gate 4 therefore remains provisional;
+human-corpus expansion and product classifier integration do not proceed.
+
+### Gate 4 minimal Impact probe
+
+Gate 4 compares frozen-head and full-fine-tuning runs for both Gate 3
+backbones on a 240-record controlled public probe. Each production-shaped diff
+has one exact-span positive and one same-change hard negative. The 24 story
+packs are isolated into train 140, validation 40, locked test 40, and
+challenge 20 records.
+
+The data is synthetic and deliberately marked `unreviewed`. Only after the
+Gate 3.1 latency prerequisite passes could a pass here justify collecting a
+larger human-reviewed shadow corpus; it still could not enable candidate
+removal or establish Phase 1 readiness.
+
+Verify that the committed corpus still matches its deterministic builder:
+
+```bash
+make build-impact-gate4-corpus
+make validate
+```
+
+The accepted seed-42 run used the following offline command:
+
+```bash
+make impact-gate4 \
+  IMPACT_GATE4_OUTPUT=artifacts/phase0b/gate4/<new-run-id>
+```
+
+Checkpoint and threshold selection use validation only. Challenge then guards
+against calibration shift before the finalist is selected, and only that
+finalist may claim and open the locked test. With no qualifying finalist the
+runner stops before test prediction. Consumption is keyed by corpus, test
+stories, protocol identity, model revisions, and training modes, so changing
+the output run ID cannot reopen the test. The complete selection order, stop
+rules, and evidence limits are fixed in
+[`IMPACT_GATE4_PROTOCOL.md`](./IMPACT_GATE4_PROTOCOL.md).
+
+The Ryzen 5 3600 seed-42 result is recorded in
+[`PHASE0B_GATE4_RESULTS.md`](./PHASE0B_GATE4_RESULTS.md). Its synthetic
+classifier result is retained only as provisional evidence: the later
+production-shaped full-scene Gate 3.1 placed both finalists in Hold, so this
+probe does not authorize Gate 4 promotion, human-corpus expansion, Phase 1, or
+product integration.
+
+The accepted test fingerprint is committed as consumed. The current command
+is historical reproduction evidence, not permission to rerun the locked test.
+A future runnable Gate 4 requires a Gate 3.1 Pass, a fresh work-isolated
+holdout, and a new protocol identity.
+
 ### Optional shadow corpus diagnostics
 
 Gate 2 public data is fixed as model-selection and regression validation. It
@@ -203,6 +375,12 @@ holdout coverage, named-slice floors, and maximum family contribution for
 positive, no-match, holdout-positive, and holdout-no-match evidence. These
 fields are not product-enablement conditions. Query deduplication is scoped to
 a work family, so the same question remains valid across independent works.
+Human-verified positive
+labels cannot claim a no-match-only slice (`hard-no-match`,
+`same-name-different-character`, `similar-event-wrong-target`,
+`generic-fiction-overlap`, `proper-noun-only`, or
+`scene-tail-distractor`); schema validation rejects that mismatch before slice
+readiness is calculated.
 
 The complete privacy contract, staged sample floors, slice taxonomy, and
 commands are in

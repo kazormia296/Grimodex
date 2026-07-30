@@ -172,6 +172,10 @@ Hard no-match slices are:
 - `proper-noun-only`
 - `scene-tail-distractor`
 
+These six slices are no-match-only. A human-verified `queryKind=positive`
+label containing any of them is invalid and is rejected before slice coverage
+or readiness is counted.
+
 The template automatically adds `truncated-512` when any candidate pair reports
 query or candidate truncation. The human reviewer supplies semantic slices.
 

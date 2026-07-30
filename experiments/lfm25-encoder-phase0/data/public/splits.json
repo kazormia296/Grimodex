@@ -1,7 +1,35 @@
 {
   "schemaVersion": 1,
-  "train": [],
-  "validation": [],
-  "test": [],
-  "challenge": []
+  "train": [
+    "gate4-story-01",
+    "gate4-story-02",
+    "gate4-story-03",
+    "gate4-story-04",
+    "gate4-story-05",
+    "gate4-story-06",
+    "gate4-story-07",
+    "gate4-story-08",
+    "gate4-story-09",
+    "gate4-story-10",
+    "gate4-story-11",
+    "gate4-story-12",
+    "gate4-story-13",
+    "gate4-story-14"
+  ],
+  "validation": [
+    "gate4-story-15",
+    "gate4-story-16",
+    "gate4-story-17",
+    "gate4-story-18"
+  ],
+  "test": [
+    "gate4-story-19",
+    "gate4-story-20",
+    "gate4-story-21",
+    "gate4-story-22"
+  ],
+  "challenge": [
+    "gate4-story-23",
+    "gate4-story-24"
+  ]
 }

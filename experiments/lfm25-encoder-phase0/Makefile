@@ -19,8 +19,27 @@ PHASE0B_GATE2_THREADS ?= 4
 PHASE0B_GATE2_BATCH_SIZE ?= 4
 PHASE0B_GATE2_PARITY_OUTPUT ?= artifacts/phase0b/gate2/parity-$(PHASE0B_MODEL).json
 PHASE0B_GATE2_OUTPUT ?= artifacts/phase0b/gate2/final-$(PHASE0B_MODEL).json
+IMPACT_GATE3_MODEL ?= ja_xsmall
+IMPACT_GATE3_PILOT_BATCH_SIZES ?= 1,2,4,8
+IMPACT_GATE3_PILOT_THREAD_COUNTS ?= 1,2,4,physical,8
+IMPACT_GATE3_PILOT_BUCKET_MODES ?= naive,bucketed
+IMPACT_GATE3_FINAL_BATCH_SIZE ?= 4
+IMPACT_GATE3_FINAL_THREAD_COUNT ?= physical
+IMPACT_GATE3_FINAL_BUCKET_MODE ?= bucketed
+IMPACT_GATE3_PILOT_OUTPUT ?= artifacts/phase0b/gate3/pilot-$(IMPACT_GATE3_MODEL).json
+IMPACT_GATE3_OUTPUT ?= artifacts/phase0b/gate3/final-$(IMPACT_GATE3_MODEL).json
+IMPACT_GATE31_MODEL ?= ja_xsmall
+IMPACT_GATE31_PILOT_BATCH_SIZES ?= 1,2,4,8
+IMPACT_GATE31_PILOT_THREAD_COUNTS ?= 1,2,4,physical,8
+IMPACT_GATE31_PILOT_BUCKET_MODES ?= naive,bucketed
+IMPACT_GATE31_FINAL_BATCH_SIZE ?= 4
+IMPACT_GATE31_FINAL_THREAD_COUNT ?= physical
+IMPACT_GATE31_FINAL_BUCKET_MODE ?= bucketed
+IMPACT_GATE31_PILOT_OUTPUT ?= artifacts/phase0b/gate31/pilot-$(IMPACT_GATE31_MODEL).json
+IMPACT_GATE31_OUTPUT ?= artifacts/phase0b/gate31/final-$(IMPACT_GATE31_MODEL).json
+IMPACT_GATE4_OUTPUT ?= artifacts/phase0b/gate4/manual-seed42
 
-.PHONY: sync-cpu test validate bootstrap smoke pilot early-gate contention bootstrap-rerankers bootstrap-reranker-references reranker-pilot reranker-gate reranker-parity reranker-gate2
+.PHONY: sync-cpu test validate bootstrap smoke pilot early-gate contention bootstrap-rerankers bootstrap-reranker-references reranker-pilot reranker-gate reranker-parity reranker-gate2 bootstrap-impact-gate3 impact-gate3-pilot impact-gate3 impact-gate31-pilot impact-gate31 build-impact-gate4-corpus impact-gate4
 
 sync-cpu:
 	$(UV) sync --frozen --extra cpu
@@ -63,3 +82,24 @@ reranker-parity:
 
 reranker-gate2:
 	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates $(PHASE0B_GATE2_CANDIDATES) --chunk-qrels $(PHASE0B_GATE2_CHUNK_QRELS) --model $(PHASE0B_MODEL) --threads $(PHASE0B_GATE2_THREADS) --batch-size $(PHASE0B_GATE2_BATCH_SIZE) --output $(PHASE0B_GATE2_OUTPUT)
+
+bootstrap-impact-gate3:
+	$(UV) run --frozen --extra cpu python tools/bootstrap_impact_gate3.py --config configs/phase0b-impact-gate3.yaml
+
+impact-gate3-pilot:
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.impact_gate3_benchmark --config configs/phase0b-impact-gate3.yaml --model $(IMPACT_GATE3_MODEL) --mode pilot --batch-sizes $(IMPACT_GATE3_PILOT_BATCH_SIZES) --thread-counts $(IMPACT_GATE3_PILOT_THREAD_COUNTS) --bucket-modes $(IMPACT_GATE3_PILOT_BUCKET_MODES) --skip-cold --output $(IMPACT_GATE3_PILOT_OUTPUT)
+
+impact-gate3:
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.impact_gate3_benchmark --config configs/phase0b-impact-gate3.yaml --model $(IMPACT_GATE3_MODEL) --mode early-gate --batch-sizes $(IMPACT_GATE3_FINAL_BATCH_SIZE) --thread-counts $(IMPACT_GATE3_FINAL_THREAD_COUNT) --bucket-modes $(IMPACT_GATE3_FINAL_BUCKET_MODE) --output $(IMPACT_GATE3_OUTPUT)
+
+impact-gate31-pilot:
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.impact_gate31_benchmark --config configs/phase0b-impact-gate31.yaml --model $(IMPACT_GATE31_MODEL) --mode pilot --batch-sizes $(IMPACT_GATE31_PILOT_BATCH_SIZES) --thread-counts $(IMPACT_GATE31_PILOT_THREAD_COUNTS) --bucket-modes $(IMPACT_GATE31_PILOT_BUCKET_MODES) --pilot-repetitions 1 --output $(IMPACT_GATE31_PILOT_OUTPUT)
+
+impact-gate31:
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.impact_gate31_benchmark --config configs/phase0b-impact-gate31.yaml --model $(IMPACT_GATE31_MODEL) --mode early-gate --batch-sizes $(IMPACT_GATE31_FINAL_BATCH_SIZE) --thread-counts $(IMPACT_GATE31_FINAL_THREAD_COUNT) --bucket-modes $(IMPACT_GATE31_FINAL_BUCKET_MODE) --output $(IMPACT_GATE31_OUTPUT)
+
+build-impact-gate4-corpus:
+	$(UV) run --frozen --extra cpu python tools/build_impact_gate4_corpus.py
+
+impact-gate4:
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.impact_gate4_runner --config configs/phase0b-impact-gate4.yaml --output $(IMPACT_GATE4_OUTPUT)
