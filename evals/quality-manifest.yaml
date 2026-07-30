@@ -219,6 +219,7 @@ requirements:
       - evals/impact-map.yaml
       - src/features/ai-verification/aiPathRegistry.ts
       - experiments/lfm25-encoder-phase0/README.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE31_RESULTS.md
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate31_benchmark.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/SHADOW_CORPUS_PROTOCOL.md
