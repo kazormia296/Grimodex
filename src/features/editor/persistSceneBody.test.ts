@@ -53,8 +53,11 @@ const h = vi.hoisted(() => ({
   scheduleWriteBack: vi.fn(),
   setCharCount: vi.fn(),
   setNodePreview: vi.fn(),
+  setAiRatio: vi.fn(),
   refreshAiRatio: vi.fn(() => Promise.resolve()),
   refreshContextLayers: vi.fn(() => Promise.resolve()),
+  scheduleEditorAnalysisTask: vi.fn(),
+  deriveSceneAiRatio: vi.fn(() => 37 as number | undefined),
   deriveSceneBodySnapshot: vi.fn(() => ({
     contentJson: JSON.stringify({ type: "doc", content: [] }),
     charCount: 42,
@@ -112,6 +115,7 @@ vi.mock("@/features/tree/treeStore", () => ({
       projectId: "proj-1",
       setCharCount: h.setCharCount,
       setNodePreview: h.setNodePreview,
+      setAiRatio: h.setAiRatio,
       refreshAiRatio: h.refreshAiRatio,
     }),
   },
@@ -163,10 +167,14 @@ vi.mock("@/features/chat/chatStore", () => ({
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleSceneIndex: h.scheduleSceneIndex,
 }));
+vi.mock("@/lib/editorAnalysisScheduler", () => ({
+  scheduleEditorAnalysisTask: h.scheduleEditorAnalysisTask,
+}));
 vi.mock("@/lib/shell", () => ({
   isElectron: () => h.state.electron,
 }));
 vi.mock("@/features/editor/sceneBodySnapshot", () => ({
+  deriveSceneAiRatio: h.deriveSceneAiRatio,
   deriveSceneBodySnapshot: h.deriveSceneBodySnapshot,
 }));
 vi.mock("@/features/editor/sceneBodyBundleApi", () => ({
@@ -187,6 +195,16 @@ import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
 
 const DOC_JSON = { type: "doc", content: [] };
 const fakeDoc = { toJSON: () => DOC_JSON } as unknown as ProseMirrorNode;
+
+async function runLatestDerivedTask(): Promise<void> {
+  const call = h.scheduleEditorAnalysisTask.mock.calls.at(-1);
+  expect(call).toBeDefined();
+  const task = call?.[0] as
+    | { kind: string; run: () => void | Promise<void> }
+    | undefined;
+  expect(task?.kind).toBe("derived");
+  await task?.run();
+}
 
 beforeEach(() => {
   _resetBodyMentionScanSchedulerForTests();
@@ -276,6 +294,16 @@ describe("persistSceneBody — DB-native scene", () => {
       nodeId: "scene-1",
       updatedAt: "2026-07-28T00:00:00.000Z",
     });
+    expect(h.refreshAiRatio).not.toHaveBeenCalled();
+    expect(h.setAiRatio).not.toHaveBeenCalled();
+
+    await runLatestDerivedTask();
+
+    expect(h.deriveSceneAiRatio).toHaveBeenCalledWith(
+      h.deriveSceneBodySnapshot.mock.results[0]?.value,
+    );
+    expect(h.setAiRatio).toHaveBeenCalledWith("scene-1", 37);
+    expect(h.refreshAiRatio).not.toHaveBeenCalled();
   });
 
   it("saves content with serialized doc JSON + char count", async () => {
@@ -443,8 +471,12 @@ describe("persistSceneBody — DB-native scene", () => {
       fakeDoc,
     );
     expect(h.setNodePreview).toHaveBeenCalled();
-    expect(h.refreshAiRatio).toHaveBeenCalledWith("scene-1");
+    expect(h.refreshAiRatio).not.toHaveBeenCalled();
     expect(h.scheduleSceneIndex).toHaveBeenCalledWith("scene-1");
+
+    await runLatestDerivedTask();
+
+    expect(h.refreshAiRatio).toHaveBeenCalledWith("scene-1");
   });
 
   it("does not take the file-backed write-back path", async () => {
@@ -454,10 +486,29 @@ describe("persistSceneBody — DB-native scene", () => {
 
   it("refreshes chat context layers only when the scene is the active chat scene", async () => {
     await persistSceneBody("scene-1", fakeDoc);
+    await runLatestDerivedTask();
     expect(h.refreshContextLayers).not.toHaveBeenCalled();
     h.state.activeChatSceneId = "scene-1";
     await persistSceneBody("scene-1", fakeDoc);
+    expect(h.refreshContextLayers).not.toHaveBeenCalled();
+    await runLatestDerivedTask();
     expect(h.refreshContextLayers).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a deferred refresh after workspace authority changes", async () => {
+    h.state.electron = true;
+    h.state.activeChatSceneId = "scene-1";
+    await persistSceneBody("scene-1", fakeDoc);
+
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/reopened",
+      openRevision: 8,
+    });
+    await runLatestDerivedTask();
+
+    expect(h.setAiRatio).not.toHaveBeenCalled();
+    expect(h.refreshAiRatio).not.toHaveBeenCalled();
+    expect(h.refreshContextLayers).not.toHaveBeenCalled();
   });
 });
 

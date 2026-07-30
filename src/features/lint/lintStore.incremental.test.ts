@@ -41,6 +41,40 @@ beforeEach(() => {
 });
 
 describe("lintStore incremental scheduling", () => {
+  it("retains diagnostic identity when an edit does not change lint output", async () => {
+    const initial = [block(0, "alpha", 0), block(1, "bravo", 6)];
+    const unchangedDiagnostic = {
+      rule_id: "en/double-space",
+      severity: "warning" as const,
+      message: "unchanged",
+      range: { start: 0, end: 1 },
+    };
+    mockInvoke.mockResolvedValueOnce({
+      diagnostics: [unchangedDiagnostic],
+      warnings: [],
+      incremental_scope: "block",
+      computed_at: 1,
+    });
+    await useLintStore
+      .getState()
+      .runLint("scene-1", initial, {}, "en", "alpha\nbravo", []);
+    const firstDiagnostics = useLintStore.getState().diagnostics;
+
+    const updated = [initial[0], block(1, "bravo!", 6)];
+    mockInvoke.mockResolvedValueOnce({
+      diagnostics: [],
+      warnings: [],
+      incremental_scope: "block",
+      computed_at: 2,
+    });
+    await useLintStore
+      .getState()
+      .runLint("scene-1", updated, {}, "en", "alpha\nbravo!", []);
+
+    expect(useLintStore.getState().diagnostics).toBe(firstDiagnostics);
+    expect(useLintStore.getState().diagnostics).toEqual([unchangedDiagnostic]);
+  });
+
   it("sends only the changed block to Rust after the first scene pass", async () => {
     const initial = [block(0, "alpha", 0), block(1, "bravo", 6)];
     await useLintStore
