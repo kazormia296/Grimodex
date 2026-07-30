@@ -303,6 +303,39 @@ reach Target on the isolated 30-window cap stress but fall in Hold on the 184
 windows produced by 30 complete scenes. Gate 4 therefore remains provisional;
 human-corpus expansion and product classifier integration do not proceed.
 
+### Gate 4 minimal Impact probe
+
+Gate 4 compares frozen-head and full-fine-tuning runs for both Gate 3
+backbones on a 240-record controlled public probe. Each production-shaped diff
+has one exact-span positive and one same-change hard negative. The 24 story
+packs are isolated into train 140, validation 40, locked test 40, and
+challenge 20 records.
+
+The data is synthetic and deliberately marked `unreviewed`. Passing this gate
+can justify collecting a larger human-reviewed shadow corpus, but cannot
+enable candidate removal or establish Phase 1 readiness.
+
+Verify that the committed corpus still matches its deterministic builder:
+
+```bash
+make build-impact-gate4-corpus
+make validate
+```
+
+After the Gate 3 snapshots have been bootstrapped, run the four fixed
+seed-42 candidates in offline mode:
+
+```bash
+make impact-gate4 \
+  IMPACT_GATE4_OUTPUT=artifacts/phase0b/gate4/<new-run-id>
+```
+
+Checkpoint and threshold selection use validation only. Challenge then guards
+against calibration shift before the finalist is selected, and only that
+finalist may open the write-once locked test. The complete selection order,
+stop rules, and evidence limits are fixed in
+[`IMPACT_GATE4_PROTOCOL.md`](./IMPACT_GATE4_PROTOCOL.md).
+
 ### Optional shadow corpus diagnostics
 
 Gate 2 public data is fixed as model-selection and regression validation. It

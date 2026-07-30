@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": "phase0b-impact-gate4-controlled-v1",
+  "generator": "tools/build_impact_gate4_corpus.py",
+  "corpus": "impact-probe-ja.jsonl",
+  "corpusSha256": "4b65691569dc917d5060836fc23b765f07fb859cbb8ead20fe23e3962b2d021d",
+  "recordCount": 240,
+  "storyCount": 24,
+  "labelCounts": {
+    "negative": 120,
+    "positive": 120
+  },
+  "splitRecordCounts": {
+    "train": 140,
+    "validation": 40,
+    "test": 40,
+    "challenge": 20
+  },
+  "source": "synthetic",
+  "reviewStatus": "unreviewed",
+  "license": "synthetic",
+  "construction": "Controlled old-to-new mutations with one exact-span positive and one same-change hard negative per diff.",
+  "restrictions": [
+    "No private manuscript text is included.",
+    "The corpus is a separability probe, not product-enablement evidence.",
+    "No record may be described as human-verified."
+  ]
+}
