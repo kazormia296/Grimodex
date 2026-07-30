@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createChatTurnRuntime } from "./chatTurnRuntime";
+import {
+  collectQuiescenceProviderRecovery,
+  discardQuiescenceProviders,
+} from "@/lib/quiescenceProviders";
+import { createPendingCompletedTurnPersistenceRegistry } from "./pendingCompletedTurnPersistence";
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -13,6 +18,33 @@ function deferred<T>(): {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+function completedTurnInput(turnId: string, retry: () => Promise<void>) {
+  return {
+    turnId,
+    workspaceIdentity: {
+      path: "/workspaces/novel",
+      openRevision: 1,
+    },
+    projectId: "project-1",
+    sessionId: "session-1",
+    userMessage: {
+      id: `${turnId}-user`,
+      sessionId: "session-1",
+      role: "user" as const,
+      content: "question",
+      createdAt: "2026-07-30T00:00:00.000Z",
+    },
+    assistantMessage: {
+      id: `${turnId}-assistant`,
+      sessionId: "session-1",
+      role: "assistant" as const,
+      content: "answer",
+      createdAt: "2026-07-30T00:00:00.001Z",
+    },
+    retry,
+  };
 }
 
 describe("createChatTurnRuntime", () => {
@@ -92,9 +124,9 @@ describe("createChatTurnRuntime", () => {
       }
     });
 
-    await expect(runtime.persistCompletedTurn("turn-1", retry)).rejects.toThrow(
-      "chat database unavailable",
-    );
+    await expect(
+      runtime.persistCompletedTurn(completedTurnInput("turn-1", retry)),
+    ).rejects.toThrow("chat database unavailable");
     expect(runtime.hasPendingTurns()).toBe(true);
 
     await expect(runtime.awaitPendingTurns()).rejects.toThrow(
@@ -119,8 +151,12 @@ describe("createChatTurnRuntime", () => {
     const retry = vi.fn(() => persistence.promise);
     const replacement = vi.fn(async () => {});
 
-    const first = runtime.persistCompletedTurn("turn-1", retry);
-    const second = runtime.persistCompletedTurn("turn-1", replacement);
+    const first = runtime.persistCompletedTurn(
+      completedTurnInput("turn-1", retry),
+    );
+    const second = runtime.persistCompletedTurn(
+      completedTurnInput("turn-1", replacement),
+    );
 
     expect(second).toBe(first);
     await Promise.resolve();
@@ -130,5 +166,35 @@ describe("createChatTurnRuntime", () => {
     persistence.resolve();
     await Promise.all([first, second]);
     expect(runtime.hasPendingTurns()).toBe(false);
+  });
+
+  it("exports and explicitly discards unresolved completed Chat turns", async () => {
+    const persistence = createPendingCompletedTurnPersistenceRegistry();
+    const runtime = createChatTurnRuntime({
+      registerQuiescence: true,
+      pendingCompletedTurnPersistence: persistence,
+    });
+    await expect(
+      runtime.persistCompletedTurn(
+        completedTurnInput(
+          "turn-recovery",
+          vi.fn().mockRejectedValue(new Error("secret backend value")),
+        ),
+      ),
+    ).rejects.toThrow();
+
+    expect(collectQuiescenceProviderRecovery()).toContainEqual(
+      expect.objectContaining({
+        kind: "chat-completed-turn",
+        turnId: "turn-recovery",
+        userMessage: expect.objectContaining({ content: "question" }),
+        assistantMessage: expect.objectContaining({ content: "answer" }),
+      }),
+    );
+
+    discardQuiescenceProviders();
+
+    expect(runtime.hasPendingTurns()).toBe(false);
+    await expect(runtime.awaitPendingTurns()).resolves.toBeUndefined();
   });
 });

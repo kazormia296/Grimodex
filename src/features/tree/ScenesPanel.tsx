@@ -224,6 +224,7 @@ export function ScenesPanel() {
       }
       createNode({ nodeType: type, parentId, afterId: activeSceneId })
         .then((newNode) => {
+          if (!newNode) return;
           if (newNode.nodeType === "scene" || newNode.nodeType === "note") {
             openEditorDocument(
               {

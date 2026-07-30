@@ -29,6 +29,7 @@ import {
   resetRecorderChain,
   setRecorderEnabled,
 } from "./recorder";
+import { reserveChatMessageAdds } from "./captureChat";
 import { debugLog } from "@/lib/debugLog";
 import { collectQuiescenceProviderRecovery } from "@/lib/quiescenceProviders";
 import {
@@ -210,6 +211,156 @@ describe("recorder", () => {
     expect(rows[2].prevHash).toBe(rows[1].hash);
     expect((await verifyChain(toVerifyEvents(rows))).ok).toBe(true);
     expect(getRecorderChainHead()).toBe(3);
+  });
+
+  it("retains an original mutation timestamp when persistence is retried later", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-original-time");
+    const originalTimestamp = Date.parse("2026-07-30T00:00:00.123Z");
+
+    recordChangeEvent({
+      domain: "chat",
+      opType: "chat.message.add",
+      payload: { messageId: "message-1" },
+      timestamp: originalTimestamp,
+    });
+    await flushNow();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].timestamp).toBe(originalTimestamp);
+  });
+
+  it("holds automatic flush behind an unresolved completed-Chat reservation", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-chat-order");
+
+    reserveChatMessageAdds([
+      {
+        projectId: "p-chat-order",
+        sessionId: "session-1",
+        messageId: "user-1",
+        role: "user",
+        text: "question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      {
+        projectId: "p-chat-order",
+        sessionId: "session-1",
+        messageId: "assistant-1",
+        role: "assistant",
+        text: "answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+    ]);
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { text: "later edit" },
+    });
+    await flushNow();
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(rows).toEqual([]);
+    expect(collectQuiescenceProviderRecovery()).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "timelapse-event",
+          domain: "chat",
+        }),
+      ]),
+    );
+    await expect(flushStrict()).rejects.toThrow(
+      "Timelapse recorder has an unresolved event reservation",
+    );
+  });
+
+  it("commits a completed Chat turn before later events without duplicates", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-chat-order");
+
+    const reservation = reserveChatMessageAdds([
+      {
+        projectId: "p-chat-order",
+        sessionId: "session-1",
+        messageId: "user-1",
+        role: "user",
+        text: "question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      {
+        projectId: "p-chat-order",
+        sessionId: "session-1",
+        messageId: "assistant-1",
+        role: "assistant",
+        text: "answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+    ]);
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { text: "later edit" },
+    });
+
+    reservation.commit();
+    reservation.commit();
+    reservation.discard();
+    await flushNow();
+    await flushNow();
+
+    expect(
+      rows.map(({ sequence, domain, entityId }) => ({
+        sequence,
+        domain,
+        entityId,
+      })),
+    ).toEqual([
+      { sequence: 1, domain: "chat", entityId: "user-1" },
+      { sequence: 2, domain: "chat", entityId: "assistant-1" },
+      { sequence: 3, domain: "editor", entityId: null },
+    ]);
+  });
+
+  it("discards an unresolved completed Chat reservation without a phantom event", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-chat-discard");
+
+    const reservation = reserveChatMessageAdds([
+      {
+        projectId: "p-chat-discard",
+        sessionId: "session-1",
+        messageId: "user-1",
+        role: "user",
+        text: "question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      {
+        projectId: "p-chat-discard",
+        sessionId: "session-1",
+        messageId: "assistant-1",
+        role: "assistant",
+        text: "answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+    ]);
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { text: "later edit" },
+    });
+
+    reservation.discard();
+    reservation.discard();
+    reservation.commit();
+    await flushNow();
+
+    expect(
+      rows.map(({ sequence, domain, entityId }) => ({
+        sequence,
+        domain,
+        entityId,
+      })),
+    ).toEqual([{ sequence: 1, domain: "editor", entityId: null }]);
   });
 
   it("resumes from the project tail when initializing", async () => {

@@ -14,7 +14,7 @@ export interface RootContextMenuProps {
   createNode: (opts: {
     nodeType: NodeType;
     parentId: string | null;
-  }) => Promise<TreeNodeData>;
+  }) => Promise<TreeNodeData | null>;
 }
 
 /**
@@ -31,6 +31,7 @@ export function RootContextMenu({ createNode }: RootContextMenuProps) {
         onSelect={() => {
           createNode({ nodeType: "scene", parentId: null })
             .then((n) => {
+              if (!n) return;
               openEditorDocument(
                 {
                   target: { kind: "scene", documentId: n.id },
@@ -51,6 +52,7 @@ export function RootContextMenu({ createNode }: RootContextMenuProps) {
         onSelect={() => {
           createNode({ nodeType: "note", parentId: null })
             .then((n) => {
+              if (!n) return;
               openEditorDocument(
                 {
                   target: { kind: "scene", documentId: n.id },

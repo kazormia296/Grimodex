@@ -3,6 +3,7 @@ import {
   _resetQuiescenceLeasesForTests,
   acquireQuiescenceLease,
   canScheduleQuiescenceMutation,
+  isAuthorityBlockingLifecycleIdle,
   isQuiescenceLeaseActive,
   subscribeQuiescenceLease,
 } from "./quiescenceLease";
@@ -136,6 +137,64 @@ describe("quiescence lease", () => {
       enqueueIpc("new-scope-read", readRun, 10_000, "read"),
     ).resolves.toBe("new scope");
     expect(readRun).toHaveBeenCalledOnce();
+  });
+
+  it.each(["project-load", "workspace-open", "window-close"] as const)(
+    "rejects data deletion while %s is active",
+    (reason) => {
+      const lifecycleLease = acquireQuiescenceLease(reason);
+
+      try {
+        expect(() => acquireQuiescenceLease("data-delete")).toThrow(
+          "Cannot clear data while another destructive lifecycle is active",
+        );
+      } finally {
+        lifecycleLease.release();
+      }
+
+      expect(isQuiescenceLeaseActive()).toBe(false);
+    },
+  );
+
+  it.each(["project-load", "workspace-open"] as const)(
+    "rejects %s while data deletion is active",
+    (reason) => {
+      const dataDeleteLease = acquireQuiescenceLease("data-delete");
+
+      try {
+        expect(() => acquireQuiescenceLease(reason)).toThrow(
+          `Cannot start ${reason} while data deletion is active`,
+        );
+      } finally {
+        dataDeleteLease.release();
+      }
+
+      expect(isQuiescenceLeaseActive()).toBe(false);
+    },
+  );
+
+  it("allows close to wait for an earlier data deletion", () => {
+    const dataDeleteLease = acquireQuiescenceLease("data-delete");
+    const closeLease = acquireQuiescenceLease("window-close");
+
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(false);
+    dataDeleteLease.release();
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(true);
+    closeLease.release();
+    expect(isQuiescenceLeaseActive()).toBe(false);
+  });
+
+  it("rejects every new lease after renderer teardown", () => {
+    const closeLease = acquireQuiescenceLease("window-close");
+    closeLease.release({ disposition: "renderer-teardown" });
+
+    expect(() => acquireQuiescenceLease("data-delete")).toThrow(
+      "Cannot start data-delete after renderer teardown",
+    );
+    expect(() => acquireQuiescenceLease("project-load")).toThrow(
+      "Cannot start project-load after renderer teardown",
+    );
+    expect(isQuiescenceLeaseActive()).toBe(false);
   });
 
   it("allows a controlled target-read phase and seals it before authority commit", async () => {

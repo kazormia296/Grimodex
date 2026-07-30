@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
+  __discardPendingCompletedChatTurnsForTests,
   awaitChatComposerAuthority,
   captureChatComposerAuthority,
   contextPromptKey,
@@ -26,14 +27,34 @@ import {
   flushStrictQuiescence,
   type QuiescenceDependencies,
 } from "@/application/lifecycle/quiescenceCoordinator";
-import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
-import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+  isQuiescenceLeaseActive,
+} from "@/application/lifecycle/quiescenceLease";
+import {
+  tryAcquireChatAnchorDeletionLease,
+  tryAcquireTreeNavigationLease,
+} from "@/lib/chatNavigationGuard";
+import {
+  flushQuiescenceProviderStage,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
+import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
 
 vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
     warning: vi.fn(),
   },
+}));
+
+vi.mock("@/features/timelapse/captureChat", () => ({
+  recordChatMessageAdd: vi.fn(),
+  reserveChatMessageAdds: vi.fn(() => ({
+    commit: vi.fn(),
+    discard: vi.fn(),
+  })),
 }));
 
 vi.mock("./chatApi", () => ({
@@ -46,6 +67,7 @@ vi.mock("./chatApi", () => ({
   getSessionForProject: vi.fn(),
   createSession: vi.fn(),
   deleteSession: vi.fn(),
+  clearProjectChatHistory: vi.fn(),
   listMessages: vi.fn(),
   listSummaries: vi.fn(() => Promise.resolve([])),
   getSummaryGeneration: vi.fn(() => Promise.resolve(1)),
@@ -290,6 +312,7 @@ const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
 const mockCountTokens = vi.mocked(contextBuilder.countTokens);
 const mockRecordAiUsage = vi.mocked(recordAiUsage);
 const mockGetProject = vi.mocked(projectApi.getProject);
+const mockReserveChatMessageAdds = vi.mocked(reserveChatMessageAdds);
 
 registerChatContextPreparation(chatContextPreparationComposition);
 
@@ -322,6 +345,7 @@ const mockListSessions = vi.mocked(chatApi.listSessions);
 const mockGetSessionForProject = vi.mocked(chatApi.getSessionForProject);
 const mockCreateSession = vi.mocked(chatApi.createSession);
 const mockDeleteSession = vi.mocked(chatApi.deleteSession);
+const mockClearProjectChatHistory = vi.mocked(chatApi.clearProjectChatHistory);
 const mockListMessages = vi.mocked(chatApi.listMessages);
 const mockAddMessage = vi.mocked(chatApi.addMessage);
 
@@ -444,6 +468,7 @@ const msg2: ChatMessage = {
 
 describe("useChatStore", () => {
   beforeEach(() => {
+    __discardPendingCompletedChatTurnsForTests();
     resetStore();
     __resetDynamicModelCapsForTests();
     vi.clearAllMocks();
@@ -1121,6 +1146,51 @@ describe("useChatStore", () => {
   });
 
   describe("selectSession", () => {
+    it("does not stop or switch an active stream", async () => {
+      useChatStore.setState({
+        sessions: [session1, session2],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isStreaming: true,
+      });
+
+      await useChatStore.getState().selectSession(session2.id);
+
+      expect(mockGetSessionForProject).not.toHaveBeenCalled();
+      expect(useChatStore.getState()).toMatchObject({
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isStreaming: true,
+      });
+    });
+
+    it("does not stop a stream that starts while selection is queued", async () => {
+      const createGate = deferred<ChatSession>();
+      useChatStore.setState({
+        sessions: [session1, session2],
+        activeSessionId: session1.id,
+        messages: [msg1],
+      });
+      mockCreateSession.mockReturnValueOnce(createGate.promise);
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "queued", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const selection = useChatStore.getState().selectSession(session2.id);
+      useChatStore.setState({ isStreaming: true });
+
+      createGate.resolve(session2);
+      await Promise.all([create, selection]);
+
+      expect(mockGetSessionForProject).not.toHaveBeenCalled();
+      expect(useChatStore.getState()).toMatchObject({
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isStreaming: true,
+      });
+    });
+
     it("sets active session and loads its messages", async () => {
       useChatStore.setState({ sessions: [session1, session2] });
       mockListMessages.mockResolvedValueOnce([msg1, msg2]);
@@ -1854,6 +1924,129 @@ describe("useChatStore", () => {
     });
   });
 
+  describe("clearProjectChatHistory", () => {
+    it.each(["project-load", "workspace-open", "window-close"] as const)(
+      "does not reach the repository while %s is active",
+      (reason) => {
+        const lifecycleLease = acquireQuiescenceLease(reason);
+
+        try {
+          expect(() =>
+            useChatStore.getState().clearProjectChatHistory("proj-1"),
+          ).toThrow(
+            "Cannot clear data while another destructive lifecycle is active",
+          );
+          expect(mockClearProjectChatHistory).not.toHaveBeenCalled();
+        } finally {
+          lifecycleLease.release();
+        }
+      },
+    );
+
+    it("does not reach the repository after close committed renderer teardown", () => {
+      const closeLease = acquireQuiescenceLease("window-close");
+      closeLease.release({ disposition: "renderer-teardown" });
+
+      try {
+        expect(() =>
+          useChatStore.getState().clearProjectChatHistory("proj-1"),
+        ).toThrow("Cannot start data-delete after renderer teardown");
+        expect(mockClearProjectChatHistory).not.toHaveBeenCalled();
+      } finally {
+        _resetQuiescenceLeasesForTests();
+      }
+    });
+
+    it("waits for strict quiescence, blocks later sessions, and clears stale state", async () => {
+      const flushGate = deferred<void>();
+      const flush = vi.fn(() => flushGate.promise);
+      const unregister = registerQuiescenceProvider({
+        id: "chat-history-clear-test",
+        stage: "scoped-mutations",
+        flush,
+      });
+      useChatStore.setState({
+        sessions: [session1, session2],
+        activeSessionId: session1.id,
+        messages: [msg1, msg2],
+        streamingDraft: {
+          messageId: "assistant-draft",
+          content: "draft",
+        },
+        activeSceneId: "scene-1",
+        chatScope: "scene",
+        error: "stale error",
+      });
+      mockClearProjectChatHistory.mockResolvedValueOnce(undefined);
+
+      try {
+        const clear = useChatStore.getState().clearProjectChatHistory("proj-1");
+        await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+
+        expect(isQuiescenceLeaseActive()).toBe(true);
+        expect(mockClearProjectChatHistory).not.toHaveBeenCalled();
+
+        await useChatStore
+          .getState()
+          .createNewSession("proj-1", "must not overtake", "scene-1");
+        useChatStore.getState().setActiveSceneId("scene-2");
+        expect(mockCreateSession).not.toHaveBeenCalled();
+        expect(useChatStore.getState().activeSceneId).toBe("scene-1");
+
+        flushGate.resolve();
+        await clear;
+
+        expect(mockClearProjectChatHistory).toHaveBeenCalledWith("proj-1");
+        expect(useChatStore.getState()).toMatchObject({
+          sessions: [],
+          activeSessionId: null,
+          messages: [],
+          streamingDraft: null,
+          error: null,
+        });
+        expect(isQuiescenceLeaseActive()).toBe(false);
+
+        await expect(useChatStore.getState().ensureSession()).resolves.toBe(
+          session1.id,
+        );
+        expect(mockCreateSession).toHaveBeenCalledOnce();
+        expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+      } finally {
+        unregister();
+      }
+    });
+
+    it("preserves history and in-memory state when strict quiescence fails", async () => {
+      const failure = new Error("completed turn is not durable");
+      const unregister = registerQuiescenceProvider({
+        id: "chat-history-clear-failure-test",
+        stage: "scoped-mutations",
+        flush: vi.fn().mockRejectedValue(failure),
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1, msg2],
+      });
+
+      try {
+        await expect(
+          useChatStore.getState().clearProjectChatHistory("proj-1"),
+        ).rejects.toThrow("completed turn is not durable");
+
+        expect(mockClearProjectChatHistory).not.toHaveBeenCalled();
+        expect(useChatStore.getState()).toMatchObject({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [msg1, msg2],
+        });
+        expect(isQuiescenceLeaseActive()).toBe(false);
+      } finally {
+        unregister();
+      }
+    });
+  });
+
   describe("persistMessage", () => {
     it("adds a message to the current session", async () => {
       useChatStore.setState({
@@ -2000,6 +2193,46 @@ describe("useChatStore", () => {
   // --- sendMessage tests ---
 
   describe("sendMessage", () => {
+    it("does not admit a turn while Tree navigation holds authority", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+      });
+      const lease = tryAcquireTreeNavigationLease();
+      expect(lease).not.toBeNull();
+
+      try {
+        await useChatStore.getState().sendMessage("Tree切替中の質問");
+
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toEqual([]);
+        expect(useChatStore.getState().isStreaming).toBe(false);
+      } finally {
+        lease?.release();
+      }
+    });
+
+    it("does not admit a turn while an anchor deletion holds authority", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+      });
+      const lease = tryAcquireChatAnchorDeletionLease();
+      expect(lease).not.toBeNull();
+
+      try {
+        await useChatStore.getState().sendMessage("アンカー削除中の質問");
+
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toEqual([]);
+        expect(useChatStore.getState().isStreaming).toBe(false);
+      } finally {
+        lease?.release();
+      }
+    });
+
     it("fails closed and rolls back placeholders when auto-creating a session fails", async () => {
       mockCreateSession.mockRejectedValueOnce(
         new Error("session db unavailable"),
@@ -2404,6 +2637,192 @@ describe("useChatStore", () => {
         thirdLease.release();
         unsubscribe();
         Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+      }
+    });
+
+    it("retries an older completed turn before accepting the next send", async () => {
+      let assistantPersistenceAvailable = false;
+      let transportCalls = 0;
+      const durableMessages: Array<{
+        role: string;
+        content: string;
+        createdAt: string;
+      }> = [];
+      mockAddMessage.mockImplementation(
+        async (sessionId, role, content, extra) => {
+          const createdAt = extra?.createdAt ?? "2026-07-30T00:00:00.000Z";
+          if (
+            role === "assistant" &&
+            content === "answer 1" &&
+            !assistantPersistenceAvailable
+          ) {
+            throw new Error("assistant persistence unavailable");
+          }
+          durableMessages.push({ role, content, createdAt });
+          return {
+            id: extra?.id ?? crypto.randomUUID(),
+            sessionId,
+            role,
+            content,
+            model: extra?.model ?? null,
+            tokensIn: extra?.tokensIn ?? null,
+            tokensOut: extra?.tokensOut ?? null,
+            durationMs: extra?.durationMs ?? null,
+            metadata: extra?.metadata ?? null,
+            createdAt,
+          };
+        },
+      );
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          transportCalls += 1;
+          callbacks.onTextDelta(`answer ${transportCalls}`);
+          callbacks.onDone({ stopReason: "end_turn" });
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+
+      try {
+        // Outside a destructive lifecycle, the completed turn reports its
+        // error in Chat state while the retry record remains sticky.
+        await expect(
+          useChatStore.getState().sendMessage("question 1"),
+        ).resolves.toBeUndefined();
+        expect(transportCalls).toBe(1);
+        expect(mockReserveChatMessageAdds).toHaveBeenCalledOnce();
+        expect(tryAcquireChatAnchorDeletionLease()).toBeNull();
+        const firstReservation =
+          mockReserveChatMessageAdds.mock.results[0]?.value;
+        expect(firstReservation?.commit).not.toHaveBeenCalled();
+        expect(firstReservation?.discard).not.toHaveBeenCalled();
+
+        await expect(
+          useChatStore.getState().sendMessage("question 2"),
+        ).rejects.toMatchObject({ name: "ChatTurnPersistenceError" });
+        expect(transportCalls).toBe(1);
+        expect(firstReservation?.commit).not.toHaveBeenCalled();
+        expect(
+          mockAddMessage.mock.calls.filter((call) => call[2] === "question 2"),
+        ).toHaveLength(0);
+
+        assistantPersistenceAvailable = true;
+        await expect(
+          useChatStore.getState().sendMessage("question 2"),
+        ).resolves.toBeUndefined();
+
+        expect(transportCalls).toBe(2);
+        expect(
+          durableMessages.map(({ role, content }) => ({ role, content })),
+        ).toEqual([
+          { role: "user", content: "question 1" },
+          { role: "assistant", content: "answer 1" },
+          { role: "user", content: "question 2" },
+          { role: "assistant", content: "answer 2" },
+        ]);
+        expect(
+          mockReserveChatMessageAdds.mock.calls.flatMap(([events]) =>
+            events.map((event) => ({
+              projectId: event.projectId,
+              role: event.role,
+              text: event.text,
+            })),
+          ),
+        ).toEqual([
+          { projectId: "proj-1", role: "user", text: "question 1" },
+          { projectId: "proj-1", role: "assistant", text: "answer 1" },
+          { projectId: "proj-1", role: "user", text: "question 2" },
+          { projectId: "proj-1", role: "assistant", text: "answer 2" },
+        ]);
+        expect(firstReservation?.commit).toHaveBeenCalledOnce();
+        const secondReservation =
+          mockReserveChatMessageAdds.mock.results[1]?.value;
+        expect(secondReservation?.commit).toHaveBeenCalledOnce();
+        expect(firstReservation?.discard).not.toHaveBeenCalled();
+        expect(secondReservation?.discard).not.toHaveBeenCalled();
+        expect(
+          mockAddMessage.mock.calls.every(
+            (call) => call[3]?.recordTimelapse === false,
+          ),
+        ).toBe(true);
+        expect(durableMessages.map((message) => message.createdAt)).toEqual(
+          [...durableMessages].map((message) => message.createdAt).sort(),
+        );
+        const deletionAfterRetry = tryAcquireChatAnchorDeletionLease();
+        expect(deletionAfterRetry).not.toBeNull();
+        deletionAfterRetry?.release();
+      } finally {
+        mockAddMessage.mockReset();
+        mockSendChatMessageStream.mockReset();
+      }
+    });
+
+    it("blocks Chat history and Session mutations while a completed turn is pending", async () => {
+      mockStreamResponse("unsaved answer");
+      mockAddMessage.mockImplementation(
+        async (sessionId, role, content, extra) => {
+          if (role === "assistant") {
+            throw new Error("assistant persistence unavailable");
+          }
+          return {
+            id: extra?.id ?? crypto.randomUUID(),
+            sessionId,
+            role,
+            content,
+            createdAt: extra?.createdAt ?? "2026-07-30T00:00:00.000Z",
+          };
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1, session2],
+        activeSessionId: session1.id,
+      });
+
+      try {
+        await expect(
+          useChatStore.getState().sendMessage("question 1"),
+        ).resolves.toBeUndefined();
+        const before = useChatStore.getState();
+        const pendingUser = before.messages.find(
+          (message) => message.role === "user",
+        );
+        const pendingAssistant = before.messages.find(
+          (message) => message.role === "assistant",
+        );
+        expect(pendingUser).toBeDefined();
+        expect(pendingAssistant).toBeDefined();
+        vi.mocked(chatApi.deleteMessage).mockClear();
+        mockDeleteSession.mockClear();
+        mockListMessages.mockClear();
+
+        await useChatStore.getState().deleteMessage(pendingUser?.id ?? "");
+        const editResult = useChatStore
+          .getState()
+          .editUserMessage(pendingUser?.id ?? "");
+        await useChatStore.getState().selectSession(session2.id);
+        await useChatStore.getState().deleteSession(session1.id);
+        useChatStore.getState().setChatScope("project");
+        useChatStore
+          .getState()
+          .syncInsertedToEditorMetadata(pendingAssistant?.id ?? "");
+
+        const after = useChatStore.getState();
+        expect(editResult).toEqual({ content: "" });
+        expect(chatApi.deleteMessage).not.toHaveBeenCalled();
+        expect(mockDeleteSession).not.toHaveBeenCalled();
+        expect(mockListMessages).not.toHaveBeenCalled();
+        expect(after.activeSessionId).toBe(before.activeSessionId);
+        expect(after.messages).toEqual(before.messages);
+        expect(after.chatScope).toBe(before.chatScope);
+        expect(toast.error).toHaveBeenCalledWith(
+          expect.stringContaining("保存待ち"),
+        );
+      } finally {
+        mockAddMessage.mockReset();
+        mockSendChatMessageStream.mockReset();
       }
     });
 
@@ -3354,6 +3773,21 @@ describe("useChatStore", () => {
           ollamaSettings.ollamaEndpoint,
         );
         expect(useChatStore.getState().error).toBeNull();
+        const persistedAgentMessages = useChatStore.getState().messages;
+        const agentUserCall = mockAddMessage.mock.calls.find(
+          (call) => call[1] === "user",
+        );
+        const agentAssistantCall = mockAddMessage.mock.calls.find(
+          (call) => call[1] === "assistant",
+        );
+        expect(agentUserCall?.[3]?.createdAt).toBe(
+          persistedAgentMessages.find((message) => message.role === "user")
+            ?.createdAt,
+        );
+        expect(agentAssistantCall?.[3]?.createdAt).toBe(
+          persistedAgentMessages.find((message) => message.role === "assistant")
+            ?.createdAt,
+        );
       });
 
       it("does not continue with another model selected during the metadata await", async () => {
@@ -4175,11 +4609,20 @@ describe("useChatStore", () => {
         expect(
           JSON.parse(state.messages.at(-1)?.metadata ?? "{}"),
         ).toMatchObject({ stopped: true });
+        const stoppedUser = state.messages.find(
+          (message) => message.role === "user",
+        );
+        const stoppedAssistant = state.messages.find(
+          (message) => message.role === "assistant",
+        );
         expect(chatApi.addMessage).toHaveBeenCalledWith(
           session1.id,
           "user",
           "調べて",
-          expect.objectContaining({ id: expect.any(String) }),
+          expect.objectContaining({
+            id: expect.any(String),
+            createdAt: stoppedUser?.createdAt,
+          }),
         );
         const assistantPersistCall = vi
           .mocked(chatApi.addMessage)
@@ -4189,6 +4632,7 @@ describe("useChatStore", () => {
         expect(assistantPersistCall?.[2]).toBe("途中回答");
         expect(assistantPersistCall?.[3]).toMatchObject({
           id: expect.any(String),
+          createdAt: stoppedAssistant?.createdAt,
         });
         expect(
           JSON.parse(
@@ -4853,6 +5297,34 @@ describe("useChatStore", () => {
       useChatStore.getState().clearMessages();
 
       expect(useChatStore.getState().messages).toHaveLength(0);
+    });
+
+    it("preserves scope and history when destructive mutations are requested during a stream", () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isStreaming: true,
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+      });
+
+      useChatStore.getState().clearMessages();
+      useChatStore.getState().setChatScope("project");
+      useChatStore.getState().setActiveSceneId("scene-2");
+      useChatStore.getState().setActiveProjectId("proj-2");
+      useChatStore.getState().resetForProject("proj-3");
+
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isStreaming: true,
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+      });
     });
   });
 

@@ -35,6 +35,7 @@ import {
   useProjectStore,
 } from "@/features/project/projectStore";
 import i18next from "@/lib/i18n";
+import { isChatNavigationBlocked } from "@/lib/chatNavigationGuard";
 import { useCompactNavigationStore } from "./compactNavigationStore";
 import { PhoneChatSurface } from "./mobile/PhoneChatSurface";
 import { PhoneCodexNavigator } from "./mobile/PhoneCodexNavigator";
@@ -67,7 +68,10 @@ function editorProjectionGroup(documentId: string): 0 | 1 {
 
 function openDocument(documentId: string, beforeOpen?: () => void): boolean {
   const tree = useTreeStore.getState();
-  if (documentId !== tree.activeSceneId && guardInlineAiPending()) {
+  if (
+    documentId !== tree.activeSceneId &&
+    (guardInlineAiPending() || isChatNavigationBlocked())
+  ) {
     return false;
   }
   beforeOpen?.();
@@ -256,7 +260,7 @@ function ConnectedSceneSurface() {
             parentId: activeDocument?.parentId ?? null,
             afterId: activeDocument?.id,
             interaction: "mobile",
-          }).then((created) => openDocument(created.id)),
+          }).then((created) => (created ? openDocument(created.id) : false)),
         );
       }}
       onSceneAction={onSceneAction}

@@ -137,6 +137,7 @@ vi.mock("./chatApi", () => {
     listPinnedSnippetEntries: vi.fn(() => Promise.resolve([])),
     listPinnedStickyEntries: vi.fn(() => Promise.resolve([])),
     generateSessionTitle: vi.fn(() => Promise.resolve(null)),
+    assertMessageMutationAllowed: vi.fn(),
     updateMessageMetadata: vi.fn(() => Promise.resolve()),
   };
 });

@@ -539,6 +539,7 @@ function TreeNodeItemImpl({
                       .getState()
                       .createNode({ nodeType: "scene", parentId: node.id })
                       .then((n) => {
+                        if (!n) return;
                         openEditorDocument(
                           {
                             target: { kind: "scene", documentId: n.id },

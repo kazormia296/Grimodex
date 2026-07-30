@@ -195,14 +195,6 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     let projectLoadLease: WorkspaceProjectLoadLease | null = null;
     let quiescenceLease: QuiescenceLease | null = null;
     try {
-      // Debounced snapshot writes carry the old Project id. Stop them before
-      // any await so they cannot wake up against the replacement database.
-      cancelScheduledImeExports();
-      set({
-        error: null,
-        workspaceSwitchInProgress: true,
-        workspaceHydrated: false,
-      });
       quiescenceLease = acquireQuiescenceLease("workspace-open", {
         transition: {
           kind: "workspace",
@@ -217,6 +209,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
             projectId: null,
           },
         },
+      });
+      // Debounced snapshot writes carry the old Project id. Stop them before
+      // any await so they cannot wake up against the replacement database.
+      cancelScheduledImeExports();
+      set({
+        error: null,
+        workspaceSwitchInProgress: true,
+        workspaceHydrated: false,
       });
       // Exclude new Project loads, invalidate every load bound to the old DB,
       // and await the complete load operation before quiescing/switching. The

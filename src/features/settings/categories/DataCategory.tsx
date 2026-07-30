@@ -18,8 +18,9 @@ import {
 } from "@/features/codex/mentionRescanQueue";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { CapabilityGate } from "@/runtime/runtimeCapabilitiesContext";
-import { clearProjectChatHistory } from "@/features/chat/chatApi";
+import { useChatStore } from "@/features/chat/chatStore";
 import { getProjectDataStats, type ProjectDataStats } from "../dataApi";
+import { useQuiescenceLeaseActive } from "@/application/lifecycle/useQuiescenceLeaseActive";
 
 async function triggerDownload(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -47,6 +48,10 @@ export function DataCategory() {
   const rescanRunning = useRescanStore((s) => s.isRunning);
   const rescanProgress = useRescanStore((s) => s.progress);
   const rescanTotal = useRescanStore((s) => s.total);
+  const clearProjectChatHistory = useChatStore(
+    (state) => state.clearProjectChatHistory,
+  );
+  const lifecycleLocked = useQuiescenceLeaseActive();
 
   function handleRebuildMentionCache() {
     void enqueueRescan(null);
@@ -102,6 +107,7 @@ export function DataCategory() {
   }
 
   async function handleClearChatHistory() {
+    if (lifecycleLocked) return;
     if (!confirmClear) {
       setConfirmClear(true);
       setTimeout(() => setConfirmClear(false), 5000);
@@ -278,8 +284,9 @@ export function DataCategory() {
             </div>
             <button
               type="button"
+              data-testid="clear-chat-history-button"
               onClick={handleClearChatHistory}
-              disabled={isClearingChat}
+              disabled={isClearingChat || lifecycleLocked}
               className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-50 ${
                 confirmClear
                   ? "border-destructive bg-destructive/10 text-destructive"

@@ -18,3 +18,12 @@ export function notifyCodexAnchorDeleted(entryId: string): void {
   }
   registeredCodexAnchorLifecycle.onDeleted(entryId);
 }
+
+/**
+ * Low-level deletion paths also run during rollback and startup composition.
+ * Their durable success must not be converted into a failure solely because
+ * the optional renderer consumer has not been installed yet.
+ */
+export function notifyCodexAnchorDeletedIfRegistered(entryId: string): void {
+  registeredCodexAnchorLifecycle?.onDeleted(entryId);
+}

@@ -7,6 +7,12 @@ import { CodexVersionConflictError } from "./occ";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { markImpactBaselinePhasesRestricted } from "./impactBaselineVisibility";
 import type { CodexEntryType } from "./codexMatchTargets";
+import { chatPersistenceDeletionGuard } from "@/lib/chatPersistenceDeletionGuard";
+import {
+  ChatAnchorDeletionBlockedError,
+  tryAcquireChatAnchorDeletionLease,
+} from "@/lib/chatNavigationGuard";
+import { notifyCodexAnchorDeletedIfRegistered } from "@/application/codex/codexAnchorLifecycle";
 
 export {
   listCodexMatchTargets,
@@ -377,10 +383,20 @@ export async function deleteCodexEntry(
   projectId: string,
   id: string,
 ): Promise<void> {
-  await db
-    .delete(codexEntries)
-    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
-  scheduleImeExportRefresh(projectId);
+  const deletionAuthority = tryAcquireChatAnchorDeletionLease();
+  if (!deletionAuthority) throw new ChatAnchorDeletionBlockedError();
+  try {
+    chatPersistenceDeletionGuard.assertDeletionAllowed();
+    await db
+      .delete(codexEntries)
+      .where(
+        and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
+      );
+    notifyCodexAnchorDeletedIfRegistered(id);
+    scheduleImeExportRefresh(projectId);
+  } finally {
+    deletionAuthority.release();
+  }
 }
 
 export async function listCodexEntriesByMessageId(

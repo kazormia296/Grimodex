@@ -8,12 +8,12 @@ import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNav
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useTreeStore, type TreeNodeData } from "./treeStore";
 
-const initialSceneCreations = new Map<string, Promise<TreeNodeData>>();
+const initialSceneCreations = new Map<string, Promise<TreeNodeData | null>>();
 
 function createInitialSceneOnce(
   scopeKey: string,
   createNode: ReturnType<typeof useTreeStore.getState>["createNode"],
-): Promise<TreeNodeData> {
+): Promise<TreeNodeData | null> {
   const existing = initialSceneCreations.get(scopeKey);
   if (existing) return existing;
 
@@ -90,6 +90,9 @@ export function PhoneEmptySceneBootstrap() {
     }
 
     const created = await createInitialSceneOnce(scopeKey, createNode);
+    if (!created) {
+      throw new Error("Initial Scene creation is blocked by active authority");
+    }
     return created.id;
   }, [createNode, nodes, scopeKey]);
 

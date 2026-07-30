@@ -118,6 +118,8 @@ import type { ChatTurnRuntime } from "./chatTurnRuntime";
 import type { ChatUserQuestionRuntime } from "./chatUserQuestionRuntime";
 import { advanceActiveLifecycleTransition } from "@/application/lifecycle/lifecycleTrace";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
+import { tryAcquireChatTurnAdmissionLease } from "@/lib/chatNavigationGuard";
 
 interface ChatTurnStoreActionCompositionPorts extends ChatStoreActionPorts {
   prepareChatTurn: (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision;
@@ -343,22 +345,74 @@ function createChatTurnStoreActions(
         routeAuthorityKey: turnRouteAuthorityKey,
       });
       const sendTurnId = turnRequest.requestId;
-      const persistCompletedTurn = async (
-        retry: () => Promise<void>,
-      ): Promise<void> => {
-        await turnRuntime.persistCompletedTurn(sendTurnId, async () => {
-          // A completed turn can predate a later retrying lifecycle. Emit both
-          // actual durability boundaries in whichever transition is draining
-          // the retained old-scope payload.
-          advanceActiveLifecycleTransition("old-stream-completed");
-          try {
-            await retry();
-          } catch (error) {
-            throw error instanceof ChatTurnPersistenceError
-              ? error
-              : new ChatTurnPersistenceError(error);
-          }
-          advanceActiveLifecycleTransition("old-scope-persisted");
+      const persistCompletedTurn = async (input: {
+        retry: () => Promise<void>;
+        sessionId: string;
+        userMetadata?: string;
+        assistantMessage?: ChatMessage;
+      }): Promise<void> => {
+        await turnRuntime.persistCompletedTurn({
+          turnId: sendTurnId,
+          workspaceIdentity: turnWorkspaceIdentity,
+          projectId: turnProjectId,
+          sessionId: input.sessionId,
+          userMessage: {
+            ...userMsg,
+            sessionId: input.sessionId,
+            content,
+            ...(input.userMetadata ? { metadata: input.userMetadata } : {}),
+          },
+          ...(input.assistantMessage
+            ? {
+                assistantMessage: {
+                  ...input.assistantMessage,
+                  sessionId: input.sessionId,
+                },
+              }
+            : {}),
+          onRegister: () => {
+            const reservation = reserveChatMessageAdds([
+              {
+                projectId: turnProjectId,
+                sessionId: input.sessionId,
+                messageId: userMsg.id,
+                role: "user",
+                text: content,
+                createdAt: userMsg.createdAt,
+              },
+              ...(input.assistantMessage
+                ? [
+                    {
+                      projectId: turnProjectId,
+                      sessionId: input.sessionId,
+                      messageId: input.assistantMessage.id,
+                      role: input.assistantMessage.role,
+                      text: input.assistantMessage.content,
+                      model: input.assistantMessage.model,
+                      createdAt: input.assistantMessage.createdAt,
+                    },
+                  ]
+                : []),
+            ]);
+            return {
+              onPersisted: reservation.commit,
+              onDiscarded: reservation.discard,
+            };
+          },
+          retry: async () => {
+            // A completed turn can predate a later retrying lifecycle. Emit
+            // both durability boundaries in whichever transition drains the
+            // retained old-scope payload.
+            advanceActiveLifecycleTransition("old-stream-completed");
+            try {
+              await input.retry();
+            } catch (error) {
+              throw error instanceof ChatTurnPersistenceError
+                ? error
+                : new ChatTurnPersistenceError(error);
+            }
+            advanceActiveLifecycleTransition("old-scope-persisted");
+          },
         });
       };
       const sendControl = createTurnControl({
@@ -676,6 +730,17 @@ function createChatTurnStoreActions(
             const latestAssistant = get().messages.find(
               (message) => message.id === assistantMsg.id,
             );
+            const recoverableStoppedAssistant =
+              latestAssistant?.role === "assistant" &&
+              latestAssistant.content &&
+              sessionIdForPersist
+                ? {
+                    ...latestAssistant,
+                    sessionId: sessionIdForPersist,
+                    model: currentAgentModel || null,
+                    metadata: stoppedMetadata,
+                  }
+                : undefined;
             turnCoordinator.transition(sendControl, "persisting");
             const persistStoppedAgentTurn =
               createRetryableCompletedTurnPersistence({
@@ -687,6 +752,8 @@ function createChatTurnStoreActions(
                     content,
                     {
                       id: userMsg.id,
+                      createdAt: userMsg.createdAt,
+                      recordTimelapse: false,
                       ...(userMetadata ? { metadata: userMetadata } : {}),
                     },
                   );
@@ -722,6 +789,8 @@ function createChatTurnStoreActions(
                             id: assistantMsg.id,
                             model: currentAgentModel || undefined,
                             metadata: stoppedMetadata,
+                            createdAt: assistantMsg.createdAt,
+                            recordTimelapse: false,
                           },
                         );
                         await commitAssistantReplacement();
@@ -730,7 +799,14 @@ function createChatTurnStoreActions(
                   : {}),
               });
             try {
-              await persistCompletedTurn(persistStoppedAgentTurn);
+              await persistCompletedTurn({
+                retry: persistStoppedAgentTurn,
+                sessionId: sessionIdForPersist,
+                ...(userMetadata ? { userMetadata } : {}),
+                ...(recoverableStoppedAssistant
+                  ? { assistantMessage: recoverableStoppedAssistant }
+                  : {}),
+              });
             } catch (error) {
               debugLog.warn(
                 "ChatStore",
@@ -1381,11 +1457,26 @@ function createChatTurnStoreActions(
           // 実際に使用したモデル（xprov / agent ロール / chat 一時 override）を
           // 完了payloadへ固定し、retryでも同じID・同じ値を使用する。
           const agentModel = currentModel || undefined;
+          const recoverableAgentAssistant =
+            lastMsg?.role === "assistant" &&
+            lastMsg.content &&
+            sessionIdForPersist
+              ? {
+                  ...lastMsg,
+                  sessionId: sessionIdForPersist,
+                  model: agentModel ?? null,
+                  tokensIn: agentTokensIn ?? null,
+                  tokensOut: agentTokensOut ?? null,
+                  metadata: finalAgentMetadata,
+                }
+              : undefined;
           const persistAgentTurn = createRetryableCompletedTurnPersistence({
             persistUser: async () => {
               if (!sessionIdForPersist) return;
               await chatApi.addMessage(sessionIdForPersist, "user", content, {
                 id: userMsg.id,
+                createdAt: userMsg.createdAt,
+                recordTimelapse: false,
                 ...(userMetadata ? { metadata: userMetadata } : {}),
               });
               // Cache/plain のうち最後の Agent iteration が実際に送った
@@ -1424,6 +1515,8 @@ function createChatTurnStoreActions(
                         tokensIn: agentTokensIn ?? undefined,
                         tokensOut: agentTokensOut ?? undefined,
                         metadata: finalAgentMetadata,
+                        createdAt: assistantMsg.createdAt,
+                        recordTimelapse: false,
                       },
                     );
                     await commitAssistantReplacement();
@@ -1505,7 +1598,14 @@ function createChatTurnStoreActions(
               }
             },
           });
-          await persistCompletedTurn(persistAgentTurn);
+          await persistCompletedTurn({
+            retry: persistAgentTurn,
+            sessionId: sessionIdForPersist,
+            ...(userMetadata ? { userMetadata } : {}),
+            ...(recoverableAgentAssistant
+              ? { assistantMessage: recoverableAgentAssistant }
+              : {}),
+          });
         } catch (caught) {
           let e: unknown = caught;
           if (
@@ -2056,6 +2156,20 @@ function createChatTurnStoreActions(
                     })
                   : undefined;
               turnCoordinator.transition(sendControl, "persisting");
+              const recoverableAssistant =
+                lastMsg?.role === "assistant" &&
+                lastMsg.content &&
+                sessionIdForPersist
+                  ? {
+                      ...lastMsg,
+                      sessionId: sessionIdForPersist,
+                      model: chatModel || null,
+                      tokensIn: info.inputTokens,
+                      tokensOut: info.outputTokens,
+                      durationMs: chatDurationMs,
+                      ...(chatMetadata ? { metadata: chatMetadata } : {}),
+                    }
+                  : undefined;
               const persistToDb = createRetryableCompletedTurnPersistence({
                 persistUser: async () => {
                   if (!sessionIdForPersist) return;
@@ -2065,6 +2179,8 @@ function createChatTurnStoreActions(
                     content,
                     {
                       id: userMsg.id,
+                      createdAt: userMsg.createdAt,
+                      recordTimelapse: false,
                       ...(userMetadata ? { metadata: userMetadata } : {}),
                     },
                   );
@@ -2105,6 +2221,8 @@ function createChatTurnStoreActions(
                             tokensOut: info.outputTokens,
                             durationMs: chatDurationMs,
                             ...(chatMetadata ? { metadata: chatMetadata } : {}),
+                            createdAt: assistantMsg.createdAt,
+                            recordTimelapse: false,
                           },
                         );
                         await commitAssistantReplacement();
@@ -2214,7 +2332,14 @@ function createChatTurnStoreActions(
                 },
               });
 
-              void persistCompletedTurn(persistToDb)
+              void persistCompletedTurn({
+                retry: persistToDb,
+                sessionId: sessionIdForPersist,
+                ...(userMetadata ? { userMetadata } : {}),
+                ...(recoverableAssistant
+                  ? { assistantMessage: recoverableAssistant }
+                  : {}),
+              })
                 .finally(() => {
                   turnStreamCleanup?.();
                   if (turnStreamCleanup) {
@@ -2613,11 +2738,25 @@ export function createConfiguredChatTurnStoreActions(
   });
   return {
     ...actions,
-    sendMessage(content, commandInstruction, options) {
-      if (!canScheduleQuiescenceMutation()) return Promise.resolve();
-      return ports.turnRuntime.trackTurn(
-        actions.sendMessage(content, commandInstruction, options),
-      );
+    async sendMessage(content, commandInstruction, options) {
+      const navigationAdmission = tryAcquireChatTurnAdmissionLease();
+      if (!navigationAdmission) return;
+      try {
+        if (!canScheduleQuiescenceMutation()) return;
+        // A completed turn owns the next persistence position until its retry
+        // succeeds. Keep this gate outside trackTurn: a failed admission retry
+        // must remain sticky in the registry, not become a second settled turn
+        // failure.
+        if (ports.turnRuntime.hasPendingCompletedTurnPersistence()) {
+          await ports.turnRuntime.retryPendingCompletedTurns();
+        }
+        if (!canScheduleQuiescenceMutation()) return;
+        return await ports.turnRuntime.trackTurn(
+          actions.sendMessage(content, commandInstruction, options),
+        );
+      } finally {
+        navigationAdmission.release();
+      }
     },
   };
 }

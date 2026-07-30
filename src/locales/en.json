@@ -2080,6 +2080,7 @@
     "createSessionFailed": "Failed to create session",
     "deleteSessionFailed": "Failed to delete session",
     "saveMessageFailed": "Failed to save message",
+    "pendingCompletedTurnPersistence": "A completed Chat turn is still waiting to be saved. Retry sending, switch again after storage recovers, or export recovery data before changing this history.",
     "invalidApiKey": "Invalid API key. Please check your settings.",
     "networkError": "A network error occurred. Please check your connection.",
     "agentFailed": "Agent execution failed: {{message}}",

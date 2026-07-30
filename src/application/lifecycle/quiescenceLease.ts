@@ -15,6 +15,7 @@ import {
 export type QuiescenceLeaseReason =
   | "project-load"
   | "workspace-open"
+  | "data-delete"
   | "window-close";
 
 export type QuiescenceLeaseReleaseDisposition = "resume" | "renderer-teardown";
@@ -43,6 +44,16 @@ export interface QuiescenceLease {
   release: (options?: {
     disposition?: QuiescenceLeaseReleaseDisposition;
   }) => void;
+}
+
+export class QuiescenceLeaseConflictError extends Error {
+  readonly requestedReason: QuiescenceLeaseReason;
+
+  constructor(requestedReason: QuiescenceLeaseReason, message: string) {
+    super(message);
+    this.name = "QuiescenceLeaseConflictError";
+    this.requestedReason = requestedReason;
+  }
 }
 
 const activeLeases = new Map<symbol, QuiescenceLeaseReason>();
@@ -86,15 +97,21 @@ function notifyLeaseTopologyChanged(): void {
   for (const listener of [...topologyListeners]) listener();
 }
 
-function hasProjectOrWorkspaceLifecycle(): boolean {
+function hasAuthorityBlockingLifecycle(): boolean {
   for (const reason of activeLeases.values()) {
-    if (reason === "project-load" || reason === "workspace-open") return true;
+    if (
+      reason === "project-load" ||
+      reason === "workspace-open" ||
+      reason === "data-delete"
+    ) {
+      return true;
+    }
   }
   return false;
 }
 
-export function isProjectWorkspaceLifecycleIdle(): boolean {
-  return !hasProjectOrWorkspaceLifecycle();
+export function isAuthorityBlockingLifecycleIdle(): boolean {
+  return !hasAuthorityBlockingLifecycle();
 }
 
 /**
@@ -111,6 +128,34 @@ export function acquireQuiescenceLease(
     transition?: LifecycleTransitionInput;
   },
 ): QuiescenceLease {
+  if (rendererTeardownStarted) {
+    throw new QuiescenceLeaseConflictError(
+      reason,
+      `Cannot start ${reason} after renderer teardown`,
+    );
+  }
+  const dataDeleteActive = [...activeLeases.values()].some(
+    (activeReason) => activeReason === "data-delete",
+  );
+  if (reason === "data-delete" && activeLeases.size > 0) {
+    throw new QuiescenceLeaseConflictError(
+      reason,
+      "Cannot clear data while another destructive lifecycle is active",
+    );
+  }
+  if (
+    dataDeleteActive &&
+    (reason === "project-load" || reason === "workspace-open")
+  ) {
+    throw new QuiescenceLeaseConflictError(
+      reason,
+      `Cannot start ${reason} while data deletion is active`,
+    );
+  }
+  // A close requested after data deletion began is allowed to acquire its
+  // own lease. The close controller observes data-delete as authority-blocking
+  // and waits for it; the reverse direction above prevents deletion from
+  // entering after close has started or committed.
   const transition =
     options?.transition && isLifecycleTraceEnabled()
       ? beginLifecycleTransition(options.transition)
@@ -251,8 +296,8 @@ export function subscribeQuiescenceLease(
 }
 
 /**
- * Waits until every Project/Workspace lifecycle that can replace the active
- * database binding has completed.
+ * Waits until every Project/Workspace lifecycle or destructive data operation
+ * that can replace or mutate the active database binding has completed.
  *
  * Window-close leases are deliberately ignored. The caller owns one itself,
  * and separate renderer windows may also close concurrently; waiting on those
@@ -260,10 +305,10 @@ export function subscribeQuiescenceLease(
  * lets a cancelled close attempt detach its waiter without releasing or
  * disturbing the lifecycle operation it was waiting for.
  */
-export function waitForProjectWorkspaceLifecycleIdle(
+export function waitForAuthorityBlockingLifecycleIdle(
   signal?: AbortSignal,
 ): Promise<void> {
-  if (signal?.aborted || isProjectWorkspaceLifecycleIdle()) {
+  if (signal?.aborted || isAuthorityBlockingLifecycleIdle()) {
     return Promise.resolve();
   }
 
@@ -277,7 +322,7 @@ export function waitForProjectWorkspaceLifecycleIdle(
       resolve();
     };
     const check = (): void => {
-      if (signal?.aborted || isProjectWorkspaceLifecycleIdle()) finish();
+      if (signal?.aborted || isAuthorityBlockingLifecycleIdle()) finish();
     };
 
     topologyListeners.add(check);

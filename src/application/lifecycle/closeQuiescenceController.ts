@@ -1,8 +1,8 @@
 import type { WindowCloseRequestedEvent } from "@/lib/windowControls";
 import {
   acquireQuiescenceLease,
-  isProjectWorkspaceLifecycleIdle,
-  waitForProjectWorkspaceLifecycleIdle,
+  isAuthorityBlockingLifecycleIdle,
+  waitForAuthorityBlockingLifecycleIdle,
   type QuiescenceLease,
 } from "./quiescenceLease";
 
@@ -52,7 +52,8 @@ export function createCloseQuiescenceController(
     ensureLease();
     // A failed close leaves its authority barrier sealed. Re-open the
     // controlled read phase so retry can run persistence and so an existing
-    // Project/Workspace lifecycle can finish before we attempt teardown.
+    // Project/Workspace lifecycle or destructive data operation can finish
+    // before we attempt teardown.
     lease?.openTargetReadPhase();
     const attempt = ++generation;
     const abortController = new AbortController();
@@ -61,18 +62,18 @@ export function createCloseQuiescenceController(
       // Re-check synchronously after each wake-up and invoke flush in the same
       // microtask that observes idle. A lifecycle scheduled after the close
       // request but before this attempt runs is therefore included as well.
-      while (attempt === generation && !isProjectWorkspaceLifecycleIdle()) {
-        await waitForProjectWorkspaceLifecycleIdle(abortController.signal);
+      while (attempt === generation && !isAuthorityBlockingLifecycleIdle()) {
+        await waitForAuthorityBlockingLifecycleIdle(abortController.signal);
       }
       if (attempt !== generation) return;
       await options.flush();
       if (attempt !== generation) return;
 
-      // A lifecycle can be scheduled while the async flush is draining.
-      // Wait once more before closing so its native swap/hydration cannot be
-      // cut off by renderer teardown.
-      while (attempt === generation && !isProjectWorkspaceLifecycleIdle()) {
-        await waitForProjectWorkspaceLifecycleIdle(abortController.signal);
+      // An authority-blocking lifecycle can be scheduled while the async
+      // flush is draining. Wait once more before closing so its native work
+      // cannot be cut off by renderer teardown.
+      while (attempt === generation && !isAuthorityBlockingLifecycleIdle()) {
+        await waitForAuthorityBlockingLifecycleIdle(abortController.signal);
       }
       if (attempt !== generation) return;
       // No await may occur between the final idle observation and sealing:
@@ -130,8 +131,8 @@ export function createCloseQuiescenceController(
       const abortController = new AbortController();
       waitAbortController = abortController;
       const runDiscard = async (): Promise<void> => {
-        while (attempt === generation && !isProjectWorkspaceLifecycleIdle()) {
-          await waitForProjectWorkspaceLifecycleIdle(abortController.signal);
+        while (attempt === generation && !isAuthorityBlockingLifecycleIdle()) {
+          await waitForAuthorityBlockingLifecycleIdle(abortController.signal);
         }
         if (attempt !== generation) return;
         lease?.sealReadsForAuthorityCommit();

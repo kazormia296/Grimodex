@@ -19,6 +19,7 @@ import * as projectApi from "./api";
 import type { Project } from "./api";
 import {
   _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
   canScheduleQuiescenceMutation,
   isQuiescenceLeaseActive,
 } from "@/application/lifecycle/quiescenceLease";
@@ -439,6 +440,24 @@ describe("useProjectStore", () => {
   });
 
   describe("loadProject", () => {
+    it("does not start a Project load while data deletion is active", async () => {
+      const getProjectSpy = vi.spyOn(projectApi, "getProject");
+      const dataDeleteLease = acquireQuiescenceLease("data-delete");
+
+      try {
+        await expect(
+          useProjectStore.getState().loadProject(PROJECT_ID),
+        ).rejects.toThrow(
+          "Cannot start project-load while data deletion is active",
+        );
+        expect(getProjectSpy).not.toHaveBeenCalled();
+        expect(mockedReload).not.toHaveBeenCalled();
+      } finally {
+        dataDeleteLease.release();
+        getProjectSpy.mockRestore();
+      }
+    });
+
     it("uses the Workspace-owned no-preflush path and stamps the target revision", async () => {
       const now = new Date().toISOString();
       await db.insert(projects).values({

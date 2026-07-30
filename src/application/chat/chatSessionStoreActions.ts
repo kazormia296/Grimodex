@@ -4,6 +4,7 @@ import {
   captureSessionMutationAuthority,
   clearedSessionScopeState,
   enqueueSessionMutation,
+  invalidateSessionScopeAuthority,
   isSameCapturedSession,
   isSessionListLoadAuthorityCurrent,
   isSessionMutationAuthorityCurrent,
@@ -14,6 +15,11 @@ import {
   requestedSessionListScopeKey,
   type SessionListLoadAuthority,
 } from "./chatSessionAuthority";
+import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
+import {
+  acquireQuiescenceLease,
+  canScheduleQuiescenceMutation,
+} from "@/application/lifecycle/quiescenceLease";
 import type {
   ChatMessage,
   ChatSession,
@@ -21,6 +27,7 @@ import type {
 } from "@/features/chat/chatTypes";
 import { scopeSessionKeysEqual } from "@/features/chat/chatScope";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
+import { isTreeNavigationLeaseActive } from "@/lib/chatNavigationGuard";
 
 interface ChatSessionRepository {
   listSessions: (
@@ -52,11 +59,13 @@ interface ChatSessionRepository {
     sessionId: string;
     expectedWorkspacePath: string;
   }) => Promise<void>;
+  clearProjectChatHistory: (projectId: string) => Promise<void>;
 }
 
 interface ChatSessionActionRuntime {
   snapshotAgentTools: () => ChatState["sessionAgentToolsSnapshot"];
   resetRecallPromote: () => void;
+  hasPendingCompletedTurnPersistence: () => boolean;
   translate: (key: string, options?: Record<string, unknown>) => string;
   notifyError: (message: string) => void;
   reportError: (operation: string, error: unknown) => void;
@@ -71,6 +80,7 @@ type ChatSessionActions = Pick<
   | "createNewSession"
   | "ensureSession"
   | "deleteSession"
+  | "clearProjectChatHistory"
 >;
 
 export function createChatSessionStoreActions(
@@ -80,9 +90,79 @@ export function createChatSessionStoreActions(
   },
 ): ChatSessionActions {
   const { get, set, repository, runtime } = ports;
+  const blockSessionMutation = (): boolean => {
+    if (!canScheduleQuiescenceMutation() || isTreeNavigationLeaseActive()) {
+      return true;
+    }
+    if (!runtime.hasPendingCompletedTurnPersistence()) return false;
+    runtime.notifyError(
+      runtime.translate("chat.pendingCompletedTurnPersistence"),
+    );
+    return true;
+  };
 
   return {
+    clearProjectChatHistory: (projectId: string) => {
+      // Admission must close synchronously with the confirmed user action.
+      // Otherwise a new turn can start before the first await and recreate a
+      // session that the destructive DELETE is about to remove.
+      const quiescenceLease = acquireQuiescenceLease("data-delete");
+      const authority = captureSessionMutationAuthority(get());
+      const failStaleAuthority = (): never => {
+        throw new Error("Chat history clear authority changed");
+      };
+
+      const operation = enqueueSessionMutation(async () => {
+        try {
+          if (
+            authority.projectId !== projectId ||
+            !isSessionMutationAuthorityCurrent(authority, get())
+          ) {
+            failStaleAuthority();
+          }
+
+          await flushStrictQuiescence(undefined, {
+            transition: quiescenceLease.transition,
+          });
+
+          if (!isSessionMutationAuthorityCurrent(authority, get())) {
+            failStaleAuthority();
+          }
+
+          // Strict quiescence has drained old work. Keep reads sealed across
+          // the destructive statement and the in-memory authority reset.
+          quiescenceLease.sealReadsForAuthorityCommit();
+          await repository.clearProjectChatHistory(projectId);
+
+          if (!isSessionMutationAuthorityCurrent(authority, get())) {
+            failStaleAuthority();
+          }
+
+          invalidateSessionScopeAuthority();
+          get()._cancelPendingUserQuestion();
+          runtime.resetRecallPromote();
+          set({
+            ...clearedSessionScopeState(),
+            error: null,
+          });
+        } catch (error) {
+          runtime.reportError("clearProjectChatHistory", error);
+          throw error;
+        } finally {
+          quiescenceLease.release();
+        }
+      });
+
+      // The lease belongs to this operation even if the session queue itself
+      // unexpectedly rejects before invoking it.
+      return operation.catch((error: unknown) => {
+        quiescenceLease.release();
+        throw error;
+      });
+    },
+
     createLinkedSession: async () => {
+      if (blockSessionMutation()) return;
       const invocationState = get();
       if (invocationState.isStreaming) return;
       const authority = captureSessionMutationAuthority(invocationState);
@@ -163,6 +243,7 @@ export function createChatSessionStoreActions(
       codexAnchorId?: string | null,
       snippetAnchorId?: string | null,
     ) => {
+      if (blockSessionMutation()) return false;
       const invocationState = get();
       if (invocationState.isStreaming) return false;
       const capturedActiveSessionId = invocationState.activeSessionId;
@@ -244,7 +325,9 @@ export function createChatSessionStoreActions(
     },
 
     selectSession: async (sessionId: string | null) => {
+      if (blockSessionMutation()) return;
       const invocationState = get();
+      if (invocationState.isStreaming) return;
       const authority = captureSessionMutationAuthority(invocationState);
       const capturedSession =
         sessionId === null
@@ -262,7 +345,10 @@ export function createChatSessionStoreActions(
       return enqueueSessionMutation(async () => {
         const generation = nextSessionSelectionGeneration();
         if (!isSessionMutationAuthorityCurrent(authority, get())) return;
-        if (get().isStreaming) get().stopGeneration();
+        // Session changes are destructive to the visible turn. Stop is an
+        // explicit user action; selection must not stop and immediately tear
+        // down a stream whose final persistence is still in flight.
+        if (get().isStreaming) return;
         if (!isSessionMutationAuthorityCurrent(authority, get())) return;
         get()._cancelPendingUserQuestion();
         runtime.resetRecallPromote();
@@ -368,6 +454,7 @@ export function createChatSessionStoreActions(
       codexAnchorId?: string,
       snippetAnchorId?: string,
     ) => {
+      if (blockSessionMutation()) return;
       const invocationState = get();
       if (invocationState.isStreaming) return;
       const authority = captureSessionMutationAuthority(invocationState);
@@ -429,6 +516,7 @@ export function createChatSessionStoreActions(
     },
 
     ensureSession: async () => {
+      if (blockSessionMutation()) return null;
       const invocationState = get();
       if (invocationState.isLoadingSessions) return null;
       const authority = captureSessionMutationAuthority(invocationState);
@@ -487,6 +575,7 @@ export function createChatSessionStoreActions(
     },
 
     deleteSession: async (sessionId: string) => {
+      if (blockSessionMutation()) return;
       const invocationState = get();
       if (invocationState.isStreaming) return;
       const authority = captureSessionMutationAuthority(invocationState);
@@ -533,7 +622,8 @@ export function createChatSessionStoreActions(
           }
           if (
             get().isStreaming ||
-            !isSessionMutationAuthorityCurrent(authority, get())
+            !isSessionMutationAuthorityCurrent(authority, get()) ||
+            blockSessionMutation()
           ) {
             return;
           }

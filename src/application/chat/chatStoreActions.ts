@@ -2,6 +2,10 @@ export {
   contextPromptKey,
   createChatContextStoreActions,
 } from "./chatContextStoreActions";
+export {
+  createChatScopeStoreActions,
+  isChatAuthorityMutationBlocked,
+} from "./chatScopeStoreActions";
 export { createChatPersistenceStoreActions } from "./chatPersistenceStoreActions";
 export { createChatContinuationStoreActions } from "./chatContinuationStoreActions";
 export {
@@ -16,3 +20,4 @@ export {
   createChatUserQuestionRuntime,
   createChatUserQuestionStoreActions,
 } from "./chatUserQuestionRuntime";
+export { setChatNavigationBlocker } from "@/lib/chatNavigationGuard";

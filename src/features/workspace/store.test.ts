@@ -16,6 +16,7 @@ import {
 } from "@/features/project/projectLoadGate";
 import {
   _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
   isQuiescenceLeaseActive,
 } from "@/application/lifecycle/quiescenceLease";
 import { createCloseQuiescenceController } from "@/application/lifecycle/closeQuiescenceController";
@@ -183,6 +184,35 @@ describe("useWorkspaceStore", () => {
   });
 
   describe("openWorkspace", () => {
+    it("does not start the native Workspace swap while data deletion is active", async () => {
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: "D:\\Novels\\Existing",
+        workspaceHydrated: true,
+      });
+      const dataDeleteLease = acquireQuiescenceLease("data-delete");
+
+      try {
+        await useWorkspaceStore
+          .getState()
+          .openWorkspace("D:\\Novels\\Replacement");
+
+        expect(mockInvoke).not.toHaveBeenCalledWith(
+          "open_workspace",
+          expect.anything(),
+        );
+        expect(cancelScheduledImeExportsMock).not.toHaveBeenCalled();
+        expect(useWorkspaceStore.getState()).toMatchObject({
+          view: "editor",
+          activeWorkspacePath: "D:\\Novels\\Existing",
+          workspaceSwitchInProgress: false,
+          workspaceHydrated: true,
+        });
+      } finally {
+        dataDeleteLease.release();
+      }
+    });
+
     it("blocks Workspace replacement before state changes while inline AI is pending", async () => {
       useWorkspaceStore.setState({
         view: "editor",

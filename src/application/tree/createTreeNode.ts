@@ -16,6 +16,10 @@ interface CreateTreeNodeRecord {
   sortOrder: string;
 }
 
+interface TreeNavigationAuthority {
+  release(): void;
+}
+
 export interface CreateTreeNodePorts {
   ensureWritable(): void;
   getProjectId(): string;
@@ -25,6 +29,7 @@ export interface CreateTreeNodePorts {
   createPersisted(record: CreateTreeNodeRecord): Promise<TreeNodeData>;
   deletePersisted(id: string): Promise<void>;
   recreatePersisted(node: TreeNodeData): Promise<TreeNodeData>;
+  tryAcquireNavigationAuthority(): TreeNavigationAuthority | null;
   applyCreated(node: TreeNodeData, mode: "create" | "redo"): void;
   applyRemoved(id: string): void;
   recomputeSceneOrder(nodes: readonly TreeNodeData[]): void;
@@ -191,6 +196,19 @@ function resolveTitle(
 export async function createTreeNode(
   opts: CreateNodeOpts,
   ports: CreateTreeNodePorts,
+): Promise<TreeNodeData | null> {
+  const navigationAuthority = ports.tryAcquireNavigationAuthority();
+  if (!navigationAuthority) return null;
+  try {
+    return await createTreeNodeWithAuthority(opts, ports);
+  } finally {
+    navigationAuthority.release();
+  }
+}
+
+async function createTreeNodeWithAuthority(
+  opts: CreateNodeOpts,
+  ports: CreateTreeNodePorts,
 ): Promise<TreeNodeData> {
   ports.ensureWritable();
   const nodes = [...ports.getNodes()];
@@ -235,22 +253,34 @@ export async function createTreeNode(
       label,
       entityId: captured.id,
       async undo() {
-        await ports.deletePersisted(captured.id);
-        if (!ports.isCurrentAuthority()) return;
-        ports.applyRemoved(captured.id);
-        ports.recomputeSceneOrder(ports.getNodes());
-        ports.closeTabs(captured.id);
+        const navigationAuthority = ports.tryAcquireNavigationAuthority();
+        if (!navigationAuthority) return;
+        try {
+          await ports.deletePersisted(captured.id);
+          if (!ports.isCurrentAuthority()) return;
+          ports.applyRemoved(captured.id);
+          ports.recomputeSceneOrder(ports.getNodes());
+          ports.closeTabs(captured.id);
+        } finally {
+          navigationAuthority.release();
+        }
       },
       async redo() {
-        const recreated = await ports.recreatePersisted(captured);
-        if (!ports.isCurrentAuthority()) return;
-        ports.applyCreated(recreated, "redo");
-        ports.recomputeSceneOrder(ports.getNodes());
-        if (
-          opts.interaction !== "mobile" &&
-          (recreated.nodeType === "scene" || recreated.nodeType === "note")
-        ) {
-          ports.revealEditorDocument(recreated.id);
+        const navigationAuthority = ports.tryAcquireNavigationAuthority();
+        if (!navigationAuthority) return;
+        try {
+          const recreated = await ports.recreatePersisted(captured);
+          if (!ports.isCurrentAuthority()) return;
+          ports.applyCreated(recreated, "redo");
+          ports.recomputeSceneOrder(ports.getNodes());
+          if (
+            opts.interaction !== "mobile" &&
+            (recreated.nodeType === "scene" || recreated.nodeType === "note")
+          ) {
+            ports.revealEditorDocument(recreated.id);
+          }
+        } finally {
+          navigationAuthority.release();
         }
       },
     });

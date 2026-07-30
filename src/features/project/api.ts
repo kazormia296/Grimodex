@@ -13,6 +13,7 @@ import {
 } from "@/features/ime/scheduler";
 import { removeImeProjectExportWithRetry } from "@/features/ime/api";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
+import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -120,6 +121,11 @@ export async function updateProject(
 
 export async function deleteProject(id: string): Promise<void> {
   const imeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
+  pendingCompletedTurnPersistence.assertNone({
+    kind: "project",
+    workspaceIdentity: imeWorkspaceIdentity,
+    projectId: id,
+  });
   // A pending pre-delete refresh would otherwise race the native remove gate:
   // refresh can become latest, fail on the deleted DB row, and leave the old
   // plaintext snapshot behind.

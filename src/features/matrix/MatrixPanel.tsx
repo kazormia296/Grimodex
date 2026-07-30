@@ -288,6 +288,7 @@ export function MatrixPanel() {
       nodeType: "scene",
       parentId,
     });
+    if (!newNode) return;
     if (synopsis.trim()) {
       await treeState.patchNode(newNode.id, { synopsis: synopsis.trim() });
     }

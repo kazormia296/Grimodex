@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
@@ -48,6 +48,13 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleChatIndex: vi.fn(),
 }));
 
+vi.mock("@/features/ime/workspaceScope", () => ({
+  getCurrentImeWorkspaceIdentity: () => ({
+    path: "/workspaces/novel",
+    openRevision: 3,
+  }),
+}));
+
 vi.mock("@/features/timelapse/captureChat", () => ({
   recordChatMessageAdd: vi.fn(),
   recordChatMessageDelete: vi.fn(),
@@ -67,9 +74,13 @@ import {
   getSessionForProject,
   createSession,
   deleteSession,
+  deleteMessage,
+  deleteMessagesFrom,
+  clearProjectChatHistory,
   getSessionTitleForMessage,
   listMessages,
   addMessage,
+  updateMessageMetadata,
   updateSessionTitle,
   unpinStickyEntry,
   saveMessagePrompt,
@@ -79,6 +90,7 @@ import {
   sendChatMessageWithThinking,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
+import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 
 // Helper to set up chained drizzle query mock
 function mockSelectChain(rows: Record<string, unknown>[]) {
@@ -130,9 +142,42 @@ function mockDeleteChain() {
   return chain;
 }
 
+async function registerPendingCompletedTurn(): Promise<void> {
+  await expect(
+    pendingCompletedTurnPersistence.persist({
+      turnId: "turn-pending",
+      workspaceIdentity: {
+        path: "/workspaces/novel",
+        openRevision: 3,
+      },
+      projectId: "project-1",
+      sessionId: "session-1",
+      userMessage: {
+        id: "user-pending",
+        sessionId: "session-1",
+        role: "user",
+        content: "unsaved question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      assistantMessage: {
+        id: "assistant-pending",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "unsaved answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+      retry: vi.fn().mockRejectedValue(new Error("database unavailable")),
+    }),
+  ).rejects.toThrow("database unavailable");
+}
+
 describe("chatApi - session/message persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pendingCompletedTurnPersistence.discard();
+  });
+  afterEach(() => {
+    pendingCompletedTurnPersistence.discard();
   });
 
   describe("pinCodexEntry", () => {
@@ -427,6 +472,42 @@ describe("chatApi - session/message persistence", () => {
 
       expect(mockDb.delete).toHaveBeenCalled();
     });
+
+    it("refuses to delete a Session owned by an unresolved turn", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(deleteSession("session-1")).rejects.toThrow(
+        "still waiting to be saved",
+      );
+      expect(mockDb.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("destructive message operations", () => {
+    it.each([
+      ["the pending message", () => deleteMessage("assistant-pending")],
+      [
+        "the pending Session suffix",
+        () => deleteMessagesFrom("session-1", "2026-07-30T00:00:00.000Z"),
+      ],
+    ])("refuses to delete %s", async (_label, operation) => {
+      await registerPendingCompletedTurn();
+
+      await expect(operation()).rejects.toThrow("still waiting to be saved");
+      expect(mockDb.delete).not.toHaveBeenCalled();
+    });
+
+    it("refuses metadata mutation before the pending row is durable", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(
+        updateMessageMetadata("assistant-pending", {
+          insertedToEditor: true,
+        }),
+      ).rejects.toThrow("still waiting to be saved");
+      expect(mockDb.select).not.toHaveBeenCalled();
+      expect(mockDb.update).not.toHaveBeenCalled();
+    });
   });
 
   describe("getSessionTitleForMessage", () => {
@@ -483,6 +564,67 @@ describe("chatApi - session/message persistence", () => {
   });
 
   describe("addMessage", () => {
+    it("retains the preflight createdAt in the row and timelapse event", async () => {
+      const createdAt = "2026-07-30T00:00:00.123Z";
+      const insert = mockInsertChain([
+        {
+          id: "msg-original-time",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "retry-safe answer",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt,
+        },
+      ]);
+      mockUpdateChain();
+
+      await addMessage("session-1", "assistant", "retry-safe answer", {
+        id: "msg-original-time",
+        createdAt,
+      });
+
+      expect(insert.values).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "msg-original-time", createdAt }),
+      );
+      expect(mockRecordChatMessageAdd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: "msg-original-time",
+          createdAt,
+        }),
+      );
+    });
+
+    it("does not duplicate a completed turn event reserved before DB retry", async () => {
+      mockInsertChain([
+        {
+          id: "msg-reserved-event",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "already captured",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2026-07-30T00:00:00.123Z",
+        },
+      ]);
+      mockUpdateChain();
+
+      await addMessage("session-1", "assistant", "already captured", {
+        id: "msg-reserved-event",
+        createdAt: "2026-07-30T00:00:00.123Z",
+        recordTimelapse: false,
+      });
+
+      expect(mockRecordChatMessageAdd).not.toHaveBeenCalled();
+      expect(mockScheduleChatIndex).toHaveBeenCalledWith("msg-reserved-event");
+    });
+
     it("inserts a message and returns it", async () => {
       // Mock insert for message
       mockInsertChain([
@@ -632,6 +774,31 @@ describe("chatApi - session/message persistence", () => {
       ).rejects.toThrow("chat message id collision");
     });
 
+    it("rejects an explicit message id retry with a different createdAt", async () => {
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          id: "msg-time-collision",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "same answer",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2026-07-30T00:00:00.000Z",
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "same answer", {
+          id: "msg-time-collision",
+          createdAt: "2026-07-30T00:00:01.000Z",
+        }),
+      ).rejects.toThrow("chat message id collision");
+    });
+
     it("schedules episodic index for a non-empty user/assistant message", async () => {
       mockScheduleChatIndex.mockClear();
       mockInsertChain([{ id: "msg-x", sessionId: "s1", role: "assistant" }]);
@@ -653,6 +820,17 @@ describe("chatApi - session/message persistence", () => {
       mockUpdateChain();
       await addMessage("s1", "user", "   ", { id: "blank" });
       expect(mockScheduleChatIndex).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("clearProjectChatHistory", () => {
+    it("refuses to delete the retry target of an unresolved completed turn", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(clearProjectChatHistory("project-1")).rejects.toThrow(
+        "still waiting to be saved",
+      );
+      expect(mockDb.delete).not.toHaveBeenCalled();
     });
   });
 

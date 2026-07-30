@@ -4,6 +4,7 @@ import type { DocumentKey } from "@/features/editor/document/documentKey";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
+import { isChatNavigationBlocked } from "@/lib/chatNavigationGuard";
 
 type AsyncFn = () => Promise<void>;
 
@@ -254,8 +255,10 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     // lifecycle lease. Refuse before touching either stack so a shortcut
     // cannot create a post-quiescence DB write or consume a no-op command.
     if (!canScheduleQuiescenceMutation()) return;
-    // Veto while an inline-AI diff is pending (would destroy un-accepted text).
-    if (replayGuard?.()) return;
+    // Tree history can replace the active Scene as part of create/delete
+    // replay. Keep the source stack intact while either editor or Chat owns
+    // authority that must not be navigated away from.
+    if (replayGuard?.() || isChatNavigationBlocked()) return;
     const cmd = past[past.length - 1];
     set({ isReplaying: true });
     let versionConflict = false;
@@ -327,8 +330,8 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     const { future, isReplaying } = get();
     if (future.length === 0 || isReplaying) return;
     if (!canScheduleQuiescenceMutation()) return;
-    // Veto while an inline-AI diff is pending (would destroy un-accepted text).
-    if (replayGuard?.()) return;
+    // See undo: both guards must run before consuming the future entry.
+    if (replayGuard?.() || isChatNavigationBlocked()) return;
     const cmd = future[0];
     set({ isReplaying: true });
     let versionConflict = false;

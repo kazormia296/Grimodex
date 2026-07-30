@@ -53,6 +53,11 @@ import {
   trackSceneContentWrite,
 } from "./pendingSceneWrites";
 import type { NodeType, SceneStatus, TreeNodeData } from "./types";
+import {
+  isChatNavigationBlocked,
+  tryAcquireTreeNavigationLease,
+} from "@/lib/chatNavigationGuard";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 
 export type { NodeType, SceneStatus, TreeNodeData } from "./types";
 
@@ -64,6 +69,23 @@ function activeEditorHasExternalConflict(): boolean {
   return [tabs.activeTabId, tabs.secondaryActiveTabId].some(
     (id) => id !== null && hasExternalEditConflictForId(id),
   );
+}
+
+async function withTreeNavigationAuthority<T>(
+  operation: () => Promise<T>,
+): Promise<T | null> {
+  const navigationAuthority = tryAcquireTreeNavigationAuthority();
+  if (!navigationAuthority) return null;
+  try {
+    return await operation();
+  } finally {
+    navigationAuthority.release();
+  }
+}
+
+function tryAcquireTreeNavigationAuthority() {
+  if (!canScheduleQuiescenceMutation()) return null;
+  return tryAcquireTreeNavigationLease();
 }
 
 /**
@@ -706,14 +728,14 @@ interface TreeState {
 
   // Backward-compat API (used by ChatPanel, ExportAgentTraceButton, SceneEditor)
   loadScenes: (projectId: string, chapterId: string) => Promise<void>;
-  createScene: () => Promise<string>;
-  createNote: () => Promise<string>;
+  createScene: () => Promise<string | null>;
+  createNote: () => Promise<string | null>;
   deleteScene: (id: string) => Promise<void>;
   renameScene: (id: string, title: string) => Promise<void>;
   setActiveScene: (id: string) => void;
 
   // New tree operations
-  createNode: (opts: CreateNodeOpts) => Promise<TreeNodeData>;
+  createNode: (opts: CreateNodeOpts) => Promise<TreeNodeData | null>;
   patchNode: (id: string, patch: TreeNodePatch) => Promise<void>;
   updateNodeTitle: (id: string, title: string) => Promise<void>;
   deleteNode: (id: string) => Promise<void>;
@@ -1074,101 +1096,111 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async createScene() {
-    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
-    const { projectId, nodes } = get();
-    const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
-    const siblings = nodes.filter(
-      (n) => n.parentId === (chapterNode?.id ?? null),
-    );
-    const sortOrder = nextSortOrder(siblings, null);
-    const created = await api.createNode({
-      id: crypto.randomUUID(),
-      projectId,
-      parentId: chapterNode?.id ?? null,
-      nodeType: "scene",
-      title: `${i18next.t("tree.defaultScene")} ${siblings.filter((n) => n.nodeType === "scene").length + 1}`,
-      sortOrder,
+    return withTreeNavigationAuthority(async () => {
+      if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
+      const { projectId, nodes } = get();
+      const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
+      const siblings = nodes.filter(
+        (n) => n.parentId === (chapterNode?.id ?? null),
+      );
+      const sortOrder = nextSortOrder(siblings, null);
+      const created = await api.createNode({
+        id: crypto.randomUUID(),
+        projectId,
+        parentId: chapterNode?.id ?? null,
+        nodeType: "scene",
+        title: `${i18next.t("tree.defaultScene")} ${siblings.filter((n) => n.nodeType === "scene").length + 1}`,
+        sortOrder,
+      });
+      const newNode = toNodeData(created);
+      set((state) => {
+        const nodes = [...state.nodes, newNode];
+        return { nodes, scenes: computeScenes(nodes) };
+      });
+      recomputeCodexSceneOrder(get().nodes);
+      recordChangeEvent({
+        domain: "grid",
+        opType: "scene.create",
+        entityType: "scene",
+        entityId: created.id,
+        sceneId: created.id,
+        payload: {
+          parentId: newNode.parentId,
+          sortOrder: newNode.sortOrder,
+          title: newNode.title,
+        },
+      });
+      return created.id;
     });
-    const newNode = toNodeData(created);
-    set((state) => {
-      const nodes = [...state.nodes, newNode];
-      return { nodes, scenes: computeScenes(nodes) };
-    });
-    recomputeCodexSceneOrder(get().nodes);
-    recordChangeEvent({
-      domain: "grid",
-      opType: "scene.create",
-      entityType: "scene",
-      entityId: created.id,
-      sceneId: created.id,
-      payload: {
-        parentId: newNode.parentId,
-        sortOrder: newNode.sortOrder,
-        title: newNode.title,
-      },
-    });
-    return created.id;
   },
 
   async createNote() {
-    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
-    const { projectId, nodes } = get();
-    const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
-    const siblings = nodes.filter(
-      (n) => n.parentId === (chapterNode?.id ?? null),
-    );
-    const sortOrder = nextSortOrder(siblings, null);
-    const created = await api.createNode({
-      id: crypto.randomUUID(),
-      projectId,
-      parentId: chapterNode?.id ?? null,
-      nodeType: "note",
-      title: i18next.t("tree.defaultNewNote"),
-      sortOrder,
+    return withTreeNavigationAuthority(async () => {
+      if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
+      const { projectId, nodes } = get();
+      const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
+      const siblings = nodes.filter(
+        (n) => n.parentId === (chapterNode?.id ?? null),
+      );
+      const sortOrder = nextSortOrder(siblings, null);
+      const created = await api.createNode({
+        id: crypto.randomUUID(),
+        projectId,
+        parentId: chapterNode?.id ?? null,
+        nodeType: "note",
+        title: i18next.t("tree.defaultNewNote"),
+        sortOrder,
+      });
+      const newNode = toNodeData(created);
+      set((state) => {
+        const nodes = [...state.nodes, newNode];
+        return { nodes, scenes: computeScenes(nodes) };
+      });
+      recordChangeEvent({
+        domain: "grid",
+        opType: "note.create",
+        entityType: "note",
+        entityId: created.id,
+        payload: {
+          parentId: newNode.parentId,
+          sortOrder: newNode.sortOrder,
+          title: newNode.title,
+        },
+      });
+      return created.id;
     });
-    const newNode = toNodeData(created);
-    set((state) => {
-      const nodes = [...state.nodes, newNode];
-      return { nodes, scenes: computeScenes(nodes) };
-    });
-    recordChangeEvent({
-      domain: "grid",
-      opType: "note.create",
-      entityType: "note",
-      entityId: created.id,
-      payload: {
-        parentId: newNode.parentId,
-        sortOrder: newNode.sortOrder,
-        title: newNode.title,
-      },
-    });
-    return created.id;
   },
 
   async deleteScene(id) {
-    const { scenes } = get();
-    await api.deleteNode(id);
-    recordChangeEvent({
-      domain: "grid",
-      opType: "scene.delete",
-      entityType: "scene",
-      entityId: id,
-      sceneId: null,
-      payload: { id },
-    });
-    const { activeSceneId } = get();
-    const remaining = scenes.filter((s) => s.id !== id);
-    const newActive =
-      activeSceneId === id ? (remaining[0]?.id ?? "") : activeSceneId;
-    set((state) => {
-      const nodes = state.nodes.filter((n) => n.id !== id);
-      return {
-        nodes,
-        scenes: computeScenes(nodes),
-        activeSceneId: newActive,
-      };
-    });
-    recomputeCodexSceneOrder(get().nodes);
+    const navigationAuthority = tryAcquireTreeNavigationAuthority();
+    if (!navigationAuthority) return;
+    try {
+      const { scenes } = get();
+      await api.deleteNode(id);
+      recordChangeEvent({
+        domain: "grid",
+        opType: "scene.delete",
+        entityType: "scene",
+        entityId: id,
+        sceneId: null,
+        payload: { id },
+      });
+      const { activeSceneId } = get();
+      const remaining = scenes.filter((s) => s.id !== id);
+      const newActive =
+        activeSceneId === id ? (remaining[0]?.id ?? "") : activeSceneId;
+      set((state) => {
+        const nodes = state.nodes.filter((n) => n.id !== id);
+        return {
+          nodes,
+          scenes: computeScenes(nodes),
+          activeSceneId: newActive,
+        };
+      });
+      recomputeCodexSceneOrder(get().nodes);
+    } finally {
+      navigationAuthority.release();
+    }
   },
 
   async renameScene(id, title) {
@@ -1204,6 +1236,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // 二重防御。TabBar 系の主防御 (tabStore guard) を素通りした直接呼び出しや、
     // activeSceneId 起点の ensure-tab → openPreview 経路を pending 中に止める。
     if (id !== get().activeSceneId && guardInlineAiPending()) return;
+    if (id !== get().activeSceneId && !canScheduleQuiescenceMutation()) return;
+    if (id !== get().activeSceneId && isChatNavigationBlocked()) return;
     if (id !== get().activeSceneId && activeEditorHasExternalConflict()) return;
     markStart("treeStore.setActiveScene");
     try {
@@ -1217,6 +1251,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   selectNode(id, extend) {
     // selectNode は activeSceneId=id を必ずセットする (= owner エディタが reload)。
     if (id !== get().activeSceneId && guardInlineAiPending()) return;
+    if (id !== get().activeSceneId && !canScheduleQuiescenceMutation()) return;
+    if (id !== get().activeSceneId && isChatNavigationBlocked()) return;
     if (id !== get().activeSceneId && activeEditorHasExternalConflict()) return;
     if (extend) {
       set((state) => {
@@ -1309,6 +1345,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           });
           return toNodeData(recreated);
         },
+        tryAcquireNavigationAuthority: tryAcquireTreeNavigationAuthority,
         applyCreated: (node, mode) => {
           set((state) => {
             const nodes = [...state.nodes, node];
@@ -1427,6 +1464,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   async deleteNode(id) {
     await deleteTreeSubtree(id, {
       guardPending: guardInlineAiPending,
+      tryAcquireNavigationAuthority: tryAcquireTreeNavigationAuthority,
       getNodes: () => get().nodes,
       getActiveSceneId: () => get().activeSceneId,
       loadSceneContent: (nodeId) => api.loadSceneContent(nodeId),

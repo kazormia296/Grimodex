@@ -5,6 +5,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { EditorNavigationPorts } from "@/application/editor/openEditorDocument";
+import { isChatNavigationBlocked } from "@/lib/chatNavigationGuard";
 
 /** Composition adapter: feature stores are wired here, outside the pure command. */
 export const defaultEditorNavigationPorts: EditorNavigationPorts = {
@@ -33,7 +34,7 @@ export const defaultEditorNavigationPorts: EditorNavigationPorts = {
     setActiveScene: (documentId) =>
       useTreeStore.getState().setActiveScene(documentId),
   },
-  isNavigationBlocked: isInlineAiPending,
+  isNavigationBlocked: () => isInlineAiPending() || isChatNavigationBlocked(),
 };
 
 /** Install the application-level navigation sink once from the renderer root. */
