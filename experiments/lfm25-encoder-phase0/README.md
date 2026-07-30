@@ -1,0 +1,420 @@
+# Grimodex LFM2.5 Encoder Phase 0
+
+This directory is an offline research harness for deciding whether
+`LiquidAI/LFM2.5-Encoder-230M` is worth carrying into a product-integration
+phase. It does not alter Semantic Recall, Impact Review, Kouetsu, Electron,
+Rust, N-API, or MCP behavior.
+
+Phase 0 keeps two independent tracks:
+
+- Semantic Recall reranking: the encoder is pure added latency, so it must
+  improve ranking while meeting the strict 12/30-candidate warm budgets.
+- Impact Review triage: the encoder may be slower, but only if retained
+  candidates reduce downstream generation time and cost without losing
+  affected scenes.
+
+No Phase 0 result removes a product candidate. All decisions are shadow
+evaluation only.
+
+## Implemented scope
+
+The current PR 1 scope includes:
+
+- versioned relevance and impact data contracts;
+- story-level split leakage and stable-ID validation;
+- canonical pair serialization;
+- masked-mean binary classifier with fp32 logits;
+- exact model revision pinning and SHA-256 snapshot manifests;
+- offline-only model/tokenizer loading after manifest verification;
+- C0 CPU and available-GPU forward/backward smoke;
+- cold, warm, length, batch, bucket, and CPU-thread benchmark primitives;
+- automatic Target / Conditional / Hold / Reject speed decisions;
+- host profile, RSS, and Node event-loop contention evidence;
+- lightweight CI tests that never download the model.
+
+Corpus builders, production dev exporters, frozen probes, full fine-tuning,
+locked-test quality evaluation, and final break-even reporting remain gated on
+the C0.5 result. A track that lands in Reject does not proceed to corpus
+expansion.
+
+The first host's C0 and C0.5 outcome is recorded in
+[`RESULTS.md`](./RESULTS.md). Both warm tracks reached Reject, so this branch
+intentionally stops at PR 1.
+
+## Phase 0b quantized reranker gate
+
+Phase 0b is a separate follow-up speed gate. It does not reopen the rejected
+LFM path, create a corpus, run fine-tuning, or change product behavior. It
+measures the official AVX2 quantized ONNX artifacts for three smaller
+language-specific rerankers:
+
+| Key            | Model                                    | Pinned artifact          | License    |
+| -------------- | ---------------------------------------- | ------------------------ | ---------- |
+| `ja_tiny`      | `hotchpotch/japanese-reranker-tiny-v2`   | `model_qint8_avx2.onnx`  | MIT        |
+| `ja_xsmall`    | `hotchpotch/japanese-reranker-xsmall-v2` | `model_qint8_avx2.onnx`  | MIT        |
+| `en_minilm_l4` | `cross-encoder/ms-marco-MiniLM-L4-v2`    | `model_quint8_avx2.onnx` | Apache-2.0 |
+
+Exact Hugging Face revisions, upstream ONNX SHA-256 digests, selected
+tokenizer files, and local manifest paths are fixed in
+`configs/phase0b-rerankers.yaml`. Bootstrap downloads only those files; it
+does not download PyTorch or safetensors weights:
+
+```bash
+uv run --frozen --extra cpu \
+  python tools/bootstrap_rerankers.py \
+  --config configs/phase0b-rerankers.yaml
+```
+
+Every offline load verifies the complete selected snapshot manifest and the
+upstream ONNX digest before creating a session. ONNX Runtime is pinned to
+1.24.2, matching the current product-side runtime line. The session explicitly
+disables memory-pattern optimization and the CPU memory arena because
+reranker inputs vary by shape.
+
+The warm benchmark includes tokenization, ONNX inference, and score extraction.
+It uses deterministic Japanese or English query/passage pairs over four length
+tiers, truncates each combined pair to 512 tokens, and evaluates 12- and
+30-candidate groups. Generated snapshots and reports remain ignored beneath
+`local/phase0b/` and `artifacts/phase0b/`.
+
+First screen batch, bucket, and thread settings for each model:
+
+```bash
+for model in ja_tiny ja_xsmall en_minilm_l4; do
+  HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    uv run --frozen --extra cpu \
+    python -m grimodex_lfm_eval.reranker_benchmark \
+    --config configs/phase0b-rerankers.yaml \
+    --model "$model" \
+    --mode pilot \
+    --batch-sizes 4,8,16 \
+    --thread-counts 4,physical,8 \
+    --bucket-modes naive,bucketed \
+    --skip-cold
+done
+```
+
+Then run each model's best observed configuration with the formal 30-sample
+floor and five independent cold starts:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  uv run --frozen --extra cpu \
+  python -m grimodex_lfm_eval.reranker_benchmark \
+  --config configs/phase0b-rerankers.yaml \
+  --model <model-key> \
+  --mode early-gate \
+  --batch-sizes <selected-batch> \
+  --thread-counts <selected-threads> \
+  --bucket-modes <naive-or-bucketed>
+```
+
+The Semantic Recall C0.5 budgets remain unchanged: 12 candidates must stay at
+or below 4 seconds and 30 candidates at or below 8 seconds to avoid Reject.
+Only models that pass this speed gate may proceed to the existing locked
+retrieval-quality evaluation. Impact Review windowing and task-specific
+fine-tuning remain later, separately gated work.
+
+The initial Ryzen 5 3600 Gate 1 outcome is recorded in
+[`PHASE0B_RESULTS.md`](./PHASE0B_RESULTS.md). All three candidates reached the
+Target latency band; this permits quality evaluation but does not select a
+production model.
+
+### Gate 2 fixed-candidate quality evaluation
+
+Gate 2 freezes one production-generated candidate pool per query before any
+reranker runs. The committed Japanese and English JSONL records carry the
+chunk text, dense score/rank, sparse rank, current RRF rank, scene identity,
+and relevance label for exactly 30 candidates. Rerankers may reorder these
+IDs, but cannot retrieve again or replace the current dense/sparse admission
+thresholds.
+
+Before quality evaluation, the direct quantized tokenizer/ONNX path is checked
+against the pinned official FP32 ONNX and Hugging Face tokenizer on 12 fixed
+positive/negative pairs. Token IDs, masks, special tokens, truncation, score
+direction, and ranking agreement must pass; MiniLM also verifies
+`token_type_ids`.
+
+Bootstrap the separately pinned reference artifacts:
+
+```bash
+make bootstrap-reranker-references
+```
+
+Run parity and Gate 2 for a selected model. Choose the matching Japanese or
+English candidate and parity files:
+
+```bash
+make reranker-parity \
+  PHASE0B_MODEL=ja_xsmall \
+  PHASE0B_GATE2_CANDIDATES=data/public/gate2/candidates-ja.jsonl \
+  PHASE0B_GATE2_PAIRS=data/public/gate2/parity-pairs-ja.jsonl \
+  PHASE0B_GATE2_THREADS=4
+
+make reranker-gate2 \
+  PHASE0B_MODEL=ja_xsmall \
+  PHASE0B_GATE2_CANDIDATES=data/public/gate2/candidates-ja.jsonl \
+  PHASE0B_GATE2_THREADS=4
+```
+
+The runner reports chunk MRR/NDCG@3, scene MRR/Recall@1/Recall@3, final
+injection behavior, paired bootstrap intervals, query improvements and
+regressions, named slices, hard negatives, candidate-depth effects, and 30
+real-corpus latency samples. Cross-encoder logits are ordering signals only;
+they are never compared with the current cosine/BGE thresholds.
+
+The completed Ryzen 5 3600 result and exact reproduction commands are recorded
+in [`PHASE0B_GATE2_RESULTS.md`](./PHASE0B_GATE2_RESULTS.md). Japanese xsmall
+top-30 and English MiniLM-L4 top-30 pass the Gate 2 promotion rule for a later
+shadow integration; Japanese xsmall top-12 fails the final-injection safety
+guard. No product path changes in this experiment.
+
+### Shadow corpus expansion
+
+Gate 2 public data is now fixed as model-selection validation. It must not be
+reused as blind product-enablement evidence. The development shadow can be
+joined to hash-only private human labels without persisting a query, candidate,
+or manuscript text:
+
+```text
+gate2-public       -> validation
+shadow-private-dev -> local investigation
+frozen-holdout     -> work-isolated promotion evidence
+```
+
+The corpus manager creates the human judgment pool from the union of dense,
+current hybrid, and selected-reranker top 10. It validates grades 0–3,
+positive/no-match contracts, human-assigned work-family split isolation, exact
+30-candidate evidence, and a non-overwriting frozen-holdout fingerprint. Its
+report contains aggregate counts and rates only, with separate
+candidate-generation, conditional-reranker, method-specific/common admission,
+and end-to-end denominators. Readiness separately reports quantity, holdout
+coverage, named-slice floors, and maximum family contribution for positive,
+no-match, holdout-positive, and holdout-no-match evidence; it never enables
+the reranker by itself. Query deduplication is scoped to a work family, so the
+same question remains valid across independent works.
+
+The complete privacy contract, staged sample floors, slice taxonomy, and
+commands are in
+[`SHADOW_CORPUS_PROTOCOL.md`](./SHADOW_CORPUS_PROTOCOL.md). These tools prepare
+evidence; they do not enable or apply a reranker.
+
+## Fixed supply-chain inputs
+
+- Model: `LiquidAI/LFM2.5-Encoder-230M`
+- Revision: `0b649ad0c684378b03d4d8304f7577a662ab89bc`
+- Transformers: `5.5.0`, excluding the known pre-5.5 remote-code-execution ranges
+- Environment resolver: `uv 0.11.29`
+
+The model contains custom Python code. `trust_remote_code=True` is never used
+against the network model ID. Bootstrap downloads without importing the model,
+writes a full-file SHA-256 manifest, lists custom code files, and the runtime
+only enables custom code from that verified local snapshot.
+
+If a floating revision such as `main` is supplied, bootstrap resolves and
+prints the commit SHA but exits before downloading. Update `common.yaml` with
+the exact SHA and rerun.
+
+## Environment
+
+Python 3.11–3.14 is supported. Python 3.12 is the recommended shared baseline.
+Install the pinned `uv` release, then select exactly one PyTorch backend:
+
+```bash
+cd experiments/lfm25-encoder-phase0
+
+# Phase 0 CPU baseline and CI
+uv sync --frozen --extra cpu
+
+# NVIDIA CUDA 12.8
+uv sync --frozen --extra cu128
+
+# AMD ROCm 7.2 on Linux
+uv sync --frozen --extra rocm72
+```
+
+The extras conflict intentionally, preventing a lock or environment from
+silently mixing accelerator builds. CPU is the normative C0.5 gate. GPU smoke
+is additional compatibility evidence, not a substitute for CPU measurements.
+
+Capture the exact installed environment alongside a run:
+
+```bash
+uv pip freeze > artifacts/environment-lock.txt
+```
+
+`uv.lock` is committed. `.venv*/`, snapshots, checkpoints, private data, and
+generated artifacts are ignored.
+
+## Lightweight verification
+
+These commands do not download or execute model custom code:
+
+```bash
+uv run --frozen --extra cpu pytest
+uv run --frozen --extra cpu python tools/validate_dataset.py data/public
+```
+
+The tests cover schema validation, exact spans, canonical serialization,
+story leakage, deterministic sampling, metric math, validation-only threshold
+selection, manifest drift, privacy redaction, sample floors, warmup exclusion,
+speed budgets, masked pooling, batch-order equivalence, hash-only shadow label
+pooling, work-level holdout isolation, and holdout drift detection.
+
+## Bootstrap and offline smoke
+
+Bootstrap is the only online model command:
+
+```bash
+uv run --frozen --extra cpu \
+  python tools/bootstrap_model.py --config configs/common.yaml
+```
+
+After bootstrap, disconnect the network or explicitly retain offline mode. The
+CPU smoke verifies eight 256-token samples and one optimizer step:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  uv run --frozen --extra cpu \
+  python -m grimodex_lfm_eval.train \
+  --config configs/relevance-1024.yaml \
+  --smoke
+```
+
+An accelerator backend must use a separate environment so the CPU baseline is
+not replaced. For example, CUDA smoke is:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-cu128 uv sync --frozen --extra cu128
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  UV_PROJECT_ENVIRONMENT=.venv-cu128 \
+  uv run --frozen --extra cu128 \
+  python -m grimodex_lfm_eval.train \
+  --config configs/relevance-1024.yaml \
+  --smoke
+```
+
+The smoke runner always measures CPU and then the default CUDA/ROCm device
+exposed by the selected Torch build.
+
+The report is written beneath `artifacts/smoke/`. Any file added, removed, or
+changed in the local snapshot causes loading to fail before custom code runs.
+
+## C0.5 early performance gate
+
+The CPU configuration measures:
+
+- independent-process cold start, at least five runs;
+- warm single pairs at 256, 512, 1,024, 2,048, 4,096, and 8,192 tokens;
+- 30 measured iterations for inputs through 2,048 tokens and 10 for longer
+  inputs, excluding warmup;
+- tokenization, forward, post-processing, and end-to-end timings;
+- relevance groups of 12 and 30 candidates;
+- impact groups of 30 candidates at 2,048 tokens;
+- batch sizes 1, 2, 4, and 8;
+- naive and length-bucketed order;
+- 1, 2, 4, 8, and physical-core thread counts;
+- p50, p95, maximum, bootstrap p95 interval, resident RSS, and peak RSS.
+
+Do not begin with the complete final cross-product. It is intentionally
+expensive because every selected configuration receives the formal sample
+floor. First use one-sample pilots to choose promising batch, bucket, and
+thread settings. For example, screen the larger batches on physical and eight
+threads without repeating the independent length sweep:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  uv run --frozen --extra cpu \
+  python -m grimodex_lfm_eval.benchmark \
+  --config configs/benchmark-cpu.yaml \
+  --mode pilot \
+  --skip-length-sweep \
+  --batch-sizes 4,8 \
+  --thread-counts physical,8 \
+  --bucket-modes naive,bucketed \
+  --impact-context-modes full
+```
+
+Pilot artifacts are explicitly labelled `measurementStage: "pilot"`, accept
+as few as one measured sample, and never emit a gate decision. They are only
+configuration-search evidence.
+
+Then run the best selected configuration in a fresh process with the formal
+30-sample floor and five independent cold starts:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  uv run --frozen --extra cpu \
+  python -m grimodex_lfm_eval.benchmark \
+  --config configs/benchmark-cpu.yaml \
+  --mode early-gate \
+  --skip-length-sweep \
+  --batch-sizes <selected-batch> \
+  --thread-counts <selected-threads> \
+  --bucket-modes <naive-or-bucketed> \
+  --impact-context-modes <full-or-windowed> \
+  --checkpoint artifacts/early-gate/final.checkpoint.json
+```
+
+The checkpoint atomically retains every completed workload sample. Repeating
+the same command after an interruption validates the model/configuration key
+and measures only the missing samples.
+
+The JSON artifact is written beneath `artifacts/early-gate/`. Render a compact
+decision report with:
+
+```bash
+uv run --frozen --extra cpu \
+  python -m grimodex_lfm_eval.report \
+  --performance-run artifacts/early-gate/<run>.json \
+  --output artifacts/early-gate/<run>.md
+```
+
+### Speed budgets
+
+| Workload                          | Target | Conditional | Hold | Reject |
+| --------------------------------- | -----: | ----------: | ---: | -----: |
+| Relevance, 12 candidates warm p95 |    ≤1s |         ≤2s |  ≤4s |    >4s |
+| Relevance, 30 candidates warm p95 |    ≤2s |         ≤4s |  ≤8s |    >8s |
+| Impact, 30 candidates warm p95    |    ≤5s |        ≤10s | ≤20s |   >20s |
+| Cold start                        |    ≤5s |        ≤15s | >15s |      — |
+
+The final runner selects the best measured configuration present in that
+formal report before classifying each track. A cold Hold does not reject a
+warm-viable track, but it requires lazy or idle preload in Phase 1.
+
+## Host contention proxy
+
+After choosing a thread cap, compare Node event-loop delay with and without a
+continuous 30-candidate encoder workload:
+
+```bash
+node tools/host_contention_probe.mjs \
+  --config configs/benchmark-contention.yaml \
+  --output artifacts/contention.json
+```
+
+This is a host-contention proxy, not renderer input-latency proof. A regression
+requires worker isolation, a thread cap, and priority control in Phase 1.
+
+## Data and privacy invariants
+
+- Split by `storyId`, never by pair.
+- Keep test locked until configuration and validation thresholds are fixed.
+- Use Japanese as the primary evaluation and report English separately.
+- Keep private corpus under `data/private/`.
+- Private IDs, story IDs, paths, queries, diffs, and text are redacted from
+  report-safe records by default.
+- Do not put snapshots, model weights, checkpoints, generated predictions, or
+  private text in Git.
+
+`data/public/splits.json` is the split authority. Every JSONL story must appear
+in exactly one of `train`, `validation`, `test`, or `challenge`.
+
+## Exit criteria for PR 1
+
+PR 1 is complete when the fixed environment and lightweight tests pass,
+bootstrap can reproduce and verify the exact snapshot, offline C0 smoke passes,
+and C0.5 produces workload decisions. The last two require the local 924 MB
+snapshot and are manual evidence by design; CI never downloads it.

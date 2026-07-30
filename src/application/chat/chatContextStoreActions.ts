@@ -332,6 +332,9 @@ export function createChatContextStoreActions(
         purpose,
         privacy: publicWebSearchPath ? "public-web" : "private",
         projectId,
+        ...(seed?.workspaceIdentity
+          ? { workspaceIdentity: { ...seed.workspaceIdentity } }
+          : {}),
         sessionId: activeSessionId,
         effectiveSceneId: publicWebSearchPath ? null : effectiveSceneId,
         activeSceneId,

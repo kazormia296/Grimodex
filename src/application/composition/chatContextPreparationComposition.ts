@@ -422,6 +422,9 @@ async function prepareCapturedScene(
     requestId: input.requestId,
     purpose: input.purpose,
     projectId: input.projectId,
+    ...(input.workspaceIdentity
+      ? { workspaceIdentity: { ...input.workspaceIdentity } }
+      : {}),
     sessionId: input.sessionId,
     sceneId,
     mode: input.mode,

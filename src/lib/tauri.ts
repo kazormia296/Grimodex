@@ -180,6 +180,7 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["list_cli_models", AI_IPC_TIMEOUT_MS],
   ["codex_app_list_models", AI_IPC_TIMEOUT_MS],
   ["semantic_search", AI_IPC_TIMEOUT_MS],
+  ["semantic_reranker_shadow_score", AI_IPC_TIMEOUT_MS],
   ["codex_semantic_search", AI_IPC_TIMEOUT_MS],
   ["events_semantic_search", AI_IPC_TIMEOUT_MS],
   ["chat_message_search", AI_IPC_TIMEOUT_MS],

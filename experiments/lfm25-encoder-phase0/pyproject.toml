@@ -1,0 +1,75 @@
+[project]
+name = "grimodex-lfm-eval"
+version = "0.2.0"
+description = "Reproducible offline evaluation for Grimodex encoder and reranker Phase 0 gates"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "huggingface-hub==1.5.0",
+  "onnxruntime==1.24.2",
+  "psutil==7.2.2",
+  "pydantic==2.12.5",
+  "pyyaml==6.0.3",
+  "tokenizers==0.22.2",
+  "transformers==5.5.0",
+]
+
+[project.optional-dependencies]
+cpu = ["torch==2.11.0"]
+cu128 = ["torch==2.11.0"]
+rocm72 = [
+  "pytorch-triton-rocm",
+  "torch==2.11.0",
+  "triton-rocm",
+]
+
+[build-system]
+requires = ["setuptools==81.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["grimodex_lfm_eval*"]
+
+[dependency-groups]
+dev = ["pytest==9.0.2"]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cu128" },
+    { extra = "rocm72" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-rocm72", extra = "rocm72" },
+]
+pytorch-triton-rocm = [
+  { index = "pytorch-rocm72", extra = "rocm72" },
+]
+triton-rocm = [
+  { index = "pytorch-rocm72", extra = "rocm72" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm72"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+pythonpath = ["."]
+testpaths = ["tests"]

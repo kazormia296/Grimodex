@@ -74,6 +74,7 @@ export function unavailablePromptPreview(
 export type ChatContextTurnSeed = Pick<
   ChatContextPreparationInput,
   | "projectId"
+  | "workspaceIdentity"
   | "effectiveSceneId"
   | "activeSceneId"
   | "activeProjectId"

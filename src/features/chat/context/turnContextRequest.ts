@@ -50,6 +50,11 @@ interface TurnContextRequestBase {
   requestId: string;
   purpose: ContextPlanningPurpose;
   projectId: string;
+  /** Workspace DB generation captured before any async context source read. */
+  workspaceIdentity?: {
+    workspaceKey: string;
+    workspaceOpenRevision: number;
+  };
   sessionId: string | null;
   mode: "chat" | "agent";
   route: ResolvedChatTurnRoute | null;

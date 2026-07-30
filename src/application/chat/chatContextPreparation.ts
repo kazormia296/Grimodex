@@ -27,6 +27,11 @@ export interface ChatContextPreparationInput {
   purpose: ContextPlanningPurpose;
   privacy: ChatContextPrivacy;
   projectId: string;
+  /** Workspace DB generation captured before send preflight can yield. */
+  workspaceIdentity?: {
+    workspaceKey: string;
+    workspaceOpenRevision: number;
+  };
   sessionId: string | null;
   effectiveSceneId: string | null;
   activeSceneId: string;

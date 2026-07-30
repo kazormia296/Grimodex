@@ -11,6 +11,7 @@ import type { SemanticSearchHit } from "../semantic-search/api";
 import {
   buildSemanticRecallQuery,
   selectSemanticRecallChunks,
+  selectHybridRecallHits,
   selectHybridRecallChunks,
   fetchSemanticRecall,
   recallParamsForLang,
@@ -319,6 +320,39 @@ describe("selectHybridRecallChunks", () => {
     ];
     const chunks = selectHybridRecallChunks(hits, [], { excludeSceneIds: [] });
     expect(chunks.map((c) => c.sceneId)).toEqual(["win", "second"]);
+  });
+
+  it("uses the same hit selection contract as the production chunk adapter", () => {
+    const hits = [
+      makeHit({ sceneId: "a", score: GATE + 0.05, chunkText: "a-best" }),
+      makeHit({ sceneId: "a", score: FLOOR + 0.01, chunkText: "a-second" }),
+      makeHit({ sceneId: "b", score: RESCUE_BAND, chunkText: "b-best" }),
+    ];
+    const options = {
+      excludeSceneIds: [] as string[],
+      minScore: FLOOR,
+      gateScore: GATE,
+      maxChunks: 3,
+      maxChunkChars: 600,
+      rescueMargin: SEMANTIC_RECALL_RESCUE_MARGIN,
+    };
+
+    const selectedHits = selectHybridRecallHits(hits, ["b"], options);
+    const chunks = selectHybridRecallChunks(hits, ["b"], options);
+
+    expect(
+      chunks.map((chunk) => ({
+        sceneId: chunk.sceneId,
+        chunkText: chunk.chunkText,
+        score: chunk.score,
+      })),
+    ).toEqual(
+      selectedHits.map((selected) => ({
+        sceneId: selected.sceneId,
+        chunkText: selected.chunkText,
+        score: selected.score,
+      })),
+    );
   });
 
   it("injects nothing when there is no dense winner and no sparse rescue", () => {
