@@ -169,6 +169,61 @@ top-30 and English MiniLM-L4 top-30 pass the Gate 2 promotion rule for a later
 shadow integration; Japanese xsmall top-12 fails the final-injection safety
 guard. No product path changes in this experiment.
 
+### Gate 3 Impact Review pre-training speed
+
+Gate 3 asks a narrower question before any Impact Review corpus construction
+or fine-tuning: can either selected Japanese backbone process one Codex change
+against 30 scenes inside the existing Impact latency budget on CPU?
+
+| Key                 | Backbone                                 | Input cap | Head used by this gate |
+| ------------------- | ---------------------------------------- | --------- | ---------------------- |
+| `ja_xsmall`         | `hotchpotch/japanese-reranker-xsmall-v2` | 512       | temporary binary head  |
+| `modernbert_ja_30m` | `sbintuitions/modernbert-ja-30m`         | 512       | temporary binary head  |
+
+The committed workload is derived from the SHA-256-pinned Japanese Gate 2
+candidate file. It serializes one canonical `ImpactDiffPayload` and pairs it
+with exactly 30 public Japanese scenes. The diff has a 128-token budget, each
+scene has a 384-token budget, and pair truncation preserves the diff while
+truncating only the scene.
+
+Both models use the same seed-42 fp32 linear head over masked-mean backbone
+output. The head is intentionally untrained: scores and rankings make no
+quality claim and must not be used for product selection. This gate measures
+only tokenization, backbone forward, and end-to-end preprocessing cost before
+the more expensive corpus and training work.
+
+Bootstrap the exact revisions and verify the complete local manifests:
+
+```bash
+make bootstrap-impact-gate3
+```
+
+Screen batch, bucket, and CPU-thread choices independently for each model:
+
+```bash
+for model in ja_xsmall modernbert_ja_30m; do
+  make impact-gate3-pilot IMPACT_GATE3_MODEL="$model"
+done
+```
+
+Then promote only the best observed configuration for each model to the
+formal run. The runner excludes three warmups, records 30 measured samples and
+five independent cold starts, and writes the full timing, RSS, CPU, token, and
+manifest evidence beneath `artifacts/phase0b/gate3/`:
+
+```bash
+make impact-gate3 \
+  IMPACT_GATE3_MODEL=<model-key> \
+  IMPACT_GATE3_FINAL_BATCH_SIZE=<selected-batch> \
+  IMPACT_GATE3_FINAL_THREAD_COUNT=<selected-threads> \
+  IMPACT_GATE3_FINAL_BUCKET_MODE=<naive-or-bucketed>
+```
+
+The 30-scene end-to-end p95 bands are Target at 5 seconds or less,
+Conditional at 10 seconds or less, Hold at 20 seconds or less, and Reject
+above 20 seconds. Passing permits Impact corpus/training design; it does not
+enable a product path or establish Impact quality.
+
 ### Shadow corpus expansion
 
 Gate 2 public data is now fixed as model-selection validation. It must not be
