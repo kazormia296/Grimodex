@@ -175,6 +175,87 @@ describe("performance sessions", () => {
     expect(snapshotPerfSession()).toBeNull();
   });
 
+  it("persists overlapping marks and retains unattributed long-task time", async () => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.stubGlobal(
+      "PerformanceObserver",
+      FakePerformanceObserver as unknown as typeof PerformanceObserver,
+    );
+    const {
+      startPerfSession,
+      endPerfSession,
+      recordMark,
+      checkpointPerfSession,
+    } = await import("./perfLog");
+
+    startPerfSession();
+    recordMark("editor.autoRevision.serialize", 20, 110);
+    recordMark("editor.save.finalize", 10, 125);
+    const longtask = FakePerformanceObserver.instances.find(
+      (observer) => observer.observedType === "longtask",
+    );
+    longtask?.records.push({
+      entryType: "longtask",
+      startTime: 105,
+      duration: 50,
+    });
+    longtask?.deliver();
+    now = 160;
+
+    const typing = checkpointPerfSession("typing");
+    const result = endPerfSession();
+
+    expect(typing?.longTaskEntries).toEqual([
+      {
+        startTime: 105,
+        duration: 50,
+        overlappingMarks: [
+          {
+            label: "editor.autoRevision.serialize",
+            start: 110,
+            duration: 20,
+          },
+          {
+            label: "editor.save.finalize",
+            start: 125,
+            duration: 10,
+          },
+        ],
+        unattributedMs: 25,
+      },
+    ]);
+    expect(result?.segments.typing).toEqual(typing);
+  });
+
+  it("keeps a fully unattributed long task in session evidence", async () => {
+    vi.stubGlobal(
+      "PerformanceObserver",
+      FakePerformanceObserver as unknown as typeof PerformanceObserver,
+    );
+    const { startPerfSession, endPerfSession } = await import("./perfLog");
+
+    startPerfSession();
+    const longtask = FakePerformanceObserver.instances.find(
+      (observer) => observer.observedType === "longtask",
+    );
+    longtask?.records.push({
+      entryType: "longtask",
+      startTime: performance.now() + 1,
+      duration: 75,
+    });
+    longtask?.deliver();
+
+    expect(endPerfSession()?.longTaskEntries).toEqual([
+      {
+        startTime: expect.any(Number),
+        duration: 75,
+        overlappingMarks: [],
+        unattributedMs: 75,
+      },
+    ]);
+  });
+
   it("records maxima and synchronous frame work without timing when idle", async () => {
     vi.stubGlobal(
       "PerformanceObserver",
