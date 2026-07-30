@@ -21,6 +21,8 @@ requirements:
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/features/chat/chatStore.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerMode.ts
       - src/lib/browser-ai.ts
       - src/lib/browser-mock.ts
     lightTests:
@@ -30,6 +32,8 @@ requirements:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/chatApi.test.ts
       - src/features/chat/chatStore.test.ts
+      - src/features/chat/semanticRerankerApply.test.ts
+      - src/features/chat/semanticRerankerMode.test.ts
       - src/lib/browser-ai.test.ts
       - src/lib/browser-mock.ai-runtime.test.ts
     heavyTests:
@@ -47,10 +51,16 @@ requirements:
     implementedBy:
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/features/chat/context/chatContextPlanner.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerMode.ts
+      - src/features/settings/categories/AiProjectSettings.tsx
       - src/features/ai-policy/policyGuard.ts
     lightTests:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
+      - src/features/chat/semanticRerankerApply.test.ts
+      - src/features/chat/semanticRerankerMode.test.ts
+      - src/features/settings/categories/AiProjectSettings.test.tsx
       - src/features/ai-policy/policyGuard.test.ts
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
@@ -143,6 +153,10 @@ requirements:
       - src/features/chat/citationVerify.ts
       - src/features/chat/chatRecall.ts
       - src/features/chat/context/chatContextPlanner.ts
+      - src/features/chat/hybridRecallSelection.ts
+      - src/features/chat/semanticRecall.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerShadow.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
@@ -150,11 +164,15 @@ requirements:
       - src/features/chat/citationVerify.test.ts
       - src/features/chat/chatRecall.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
+      - src/features/chat/semanticRecall.test.ts
+      - src/features/chat/semanticRerankerApply.test.ts
+      - src/features/chat/semanticRerankerShadow.test.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
       - scripts/quality/run-related-scenes-heavy.mjs
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/reranker_gate2_runner.py
     evaluatedBy:
       - eval-ground-search-events
       - eval-ground-get-scene
@@ -209,12 +227,15 @@ requirements:
       - scripts/quality/impact-map.mjs
       - evals/impact-map.yaml
       - src/features/ai-verification/aiPathRegistry.ts
+      - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE2_RESULTS.md
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/SHADOW_CORPUS_PROTOCOL.md
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+      - scripts/semantic-reranker-release.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
@@ -236,6 +257,10 @@ heavyEvaluations:
     suiteId: retrieval-grounding
     command: EMBED_NODE_MODULES=... EMBED_RES_DIR=... node scripts/quality/run-related-scenes-heavy.mjs
     reason: Requires local ONNX runtime dependencies and model resources; the runner generates verified embeddings, executes the eval, and restores prior artifacts.
+  - id: heavy-semantic-reranker-fixed-fixture
+    suiteId: retrieval-grounding
+    command: cd experiments/lfm25-encoder-phase0 && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-ja.jsonl --model ja_xsmall --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-ja-xsmall.json && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-en.jsonl --model en_minilm_l4 --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-en-minilm-l4.json
+    reason: Product opt-in depends on the pinned Gate 2 quality, admission-safety, and top-30 CPU latency gates; requires verified local model snapshots and a comparable CPU host.
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture

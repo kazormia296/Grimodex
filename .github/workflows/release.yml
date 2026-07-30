@@ -354,6 +354,20 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: 0.11.29
+          enable-cache: true
+          cache-dependency-glob: experiments/lfm25-encoder-phase0/uv.lock
+
+      - name: Bootstrap pinned Semantic Recall rerankers
+        working-directory: experiments/lfm25-encoder-phase0
+        run: >-
+          uv run --frozen --no-dev python tools/bootstrap_rerankers.py
+          --config configs/phase0b-rerankers.yaml
+          --model ja_xsmall
+          --model en_minilm_l4
+
       - name: Import Apple Developer ID certificate
         if: >-
           matrix.id == 'mac' &&

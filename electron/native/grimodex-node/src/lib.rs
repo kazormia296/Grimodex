@@ -1660,8 +1660,8 @@ impl Backend {
         .await
     }
 
-    /// Score a frozen Semantic Recall candidate set for the development-only
-    /// shadow path. This command neither reads the active workspace nor owns
+    /// Score a frozen Semantic Recall candidate set for diagnostic shadow or
+    /// opt-in apply. This command neither reads the active workspace nor owns
     /// admission; it only returns logits, hashes, and truncation counters.
     #[napi]
     pub async fn semantic_reranker_shadow_score(

@@ -24,6 +24,10 @@ import {
   fetchSemanticRecall,
   SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS,
 } from "@/features/chat/semanticRecall";
+import {
+  isSemanticRerankerDevShadowEnabled,
+  resolveSemanticRerankerMode,
+} from "@/features/chat/semanticRerankerMode";
 import { fetchChatRecall } from "@/features/chat/chatRecall";
 import { planChatContext } from "@/features/chat/context/chatContextPlanner";
 import { createDefaultContextPlannerDeps } from "@/features/chat/context/defaultContextPlannerDeps";
@@ -189,12 +193,20 @@ function focusedContextTab(): SceneTurnContextRequest["activeTab"] {
 
 function contextSettings(): SceneTurnContextRequest["settings"] {
   const settings = useSettingsStore.getState();
+  const semanticRecallEnabled = settings.getBoolean("ai.semanticRecall", true);
+  const hybridRecallEnabled = settings.getBoolean("ai.hybridRecall", true);
   return {
     injectBeats: settings.getBoolean("beat.injectIntoContext", true),
     chronicleEnabled: settings.getBoolean("aiPrompt.chronicle.enabled", true),
-    semanticRecallEnabled: settings.getBoolean("ai.semanticRecall", true),
+    semanticRecallEnabled,
     episodicRecallEnabled: settings.getBoolean("ai.chatRecall", true),
-    hybridRecallEnabled: settings.getBoolean("ai.hybridRecall", true),
+    hybridRecallEnabled,
+    semanticRerankerMode: resolveSemanticRerankerMode({
+      applyEnabled: settings.getBoolean("ai.semanticReranker", false),
+      devShadowEnabled: isSemanticRerankerDevShadowEnabled(),
+      semanticRecallEnabled,
+      hybridRecallEnabled,
+    }),
     customChatInstruction: settings.get("aiPrompt.custom.chat", ""),
   };
 }

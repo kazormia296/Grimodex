@@ -24,6 +24,7 @@ export function AiProjectSettings() {
   const autoAcceptBody = useSettingBoolean("ai.autoAcceptBodyProposals", false);
   const semanticRecall = useSettingBoolean("ai.semanticRecall", true);
   const hybridRecall = useSettingBoolean("ai.hybridRecall", true);
+  const semanticReranker = useSettingBoolean("ai.semanticReranker", false);
   const chatRecall = useSettingBoolean("ai.chatRecall", true);
 
   if (isLoading || !project) return null;
@@ -209,6 +210,25 @@ export function AiProjectSettings() {
             checked={hybridRecall.value}
             disabled={!semanticRecall.value}
             onChange={(e) => hybridRecall.setValue(e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.project.aiSemanticReranker",
+            "Semantic reranking（実験的）",
+          )}
+          description={t(
+            "settings.project.aiSemanticRerankerDesc",
+            "関連シーン候補をローカルモデルで再順位付けします。処理に時間がかかる場合は従来の検索結果を使用します。",
+          )}
+          disabled={!semanticRecall.value || !hybridRecall.value}
+        >
+          <input
+            type="checkbox"
+            checked={semanticReranker.value}
+            disabled={!semanticRecall.value || !hybridRecall.value}
+            onChange={(e) => semanticReranker.setValue(e.target.checked)}
             className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
           />
         </SettingRow>

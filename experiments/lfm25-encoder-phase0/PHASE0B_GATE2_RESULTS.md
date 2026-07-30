@@ -2,8 +2,8 @@
 
 ## Decision
 
-Gate 2 promotes two direct top-30 configurations to a later product shadow
-integration:
+Gate 2 promotes two direct top-30 configurations to an experimental,
+project-scoped opt-in product integration:
 
 - Japanese: `hotchpotch/japanese-reranker-xsmall-v2`, top 30.
 - English: `cross-encoder/ms-marco-MiniLM-L4-v2`, top 30.
@@ -18,9 +18,12 @@ Japanese xsmall top 12 is not promoted. It is faster, but loses one final gold
 scene inclusion and increases non-gold injection. Scoring all 30 candidates
 rescues `ja-r02` from below rank 12 and still stays in the Target latency band.
 
-This is permission for a shadow integration and broader real-workspace
-validation, not permission to ship a default reranker. Impact Review was not
-evaluated and remains a separate track. No cascade is selected.
+This is sufficient evidence for an experimental opt-in reranker, not for
+default enablement or a claim of cross-work generalization. The product path
+must preserve the fixed-fixture quality and latency results below, keep the
+existing admission policy authoritative, and return the exact baseline order
+on model absence, inference failure, timeout, or stale authority. Impact
+Review was not evaluated and remains a separate track. No cascade is selected.
 
 ## Fixed implementation and environment
 
@@ -161,8 +164,10 @@ configuration introduces a no-match regression relative to its hybrid
 baseline.
 
 Only xsmall's Recall@1 paired lower bound is strictly positive. The other
-intervals touch or cross zero because these public positive sets are small;
-that uncertainty is why the decision stops at shadow integration.
+intervals touch or cross zero because these public positive sets are small.
+English is therefore described only as improving the order of candidates
+already found by production retrieval; it does not claim to repair
+candidate-generation misses or no-match admission.
 
 ## Named slices and hard negatives
 
@@ -200,6 +205,21 @@ path.
 | JA xsmall / 12    |      30 | 0.384s | 0.587s |         0.518–1.156s |     1s |        4s | Target  |
 | JA xsmall / 30    |      30 | 0.857s | 1.139s |         1.031–1.338s |     2s |        8s | Target  |
 | EN MiniLM-L4 / 30 |      30 | 0.514s | 0.759s |         0.550–0.900s |     2s |        8s | Target  |
+
+### Experimental apply revalidation — 2026-07-30
+
+The two packaged configurations were rerun from the pinned local manifests
+after adding the opt-in apply path. Quality was byte-for-byte deterministic at
+the aggregate level and both 30-candidate latency gates remained Target:
+
+| Model / depth     | Manifest                                                           | Scene MRR | Recall@1 | Recall@3 | Worsened positive | p95    | Bootstrap p95 95% CI | Verdict |
+| ----------------- | ------------------------------------------------------------------ | --------: | -------: | -------: | -----------------: | ------: | -------------------: | ------- |
+| JA xsmall / 30    | `8d4ad4f8d50496941fd5e6b4960df3dccdfc8aa1811c7cff68a5f470f9e1c24f` |     1.000 |   100.0% |   100.0% |                  0 | 1.235s |         1.018–1.464s | Promote |
+| EN MiniLM-L4 / 30 | `e6b043a0b69a61c3b9b54c59ea512149bfa5fbd15ce2778877c283ef4aae9813` |     0.795 |    77.3% |    77.3% |                  0 | 0.478s |         0.468–0.493s | Promote |
+
+This revalidation covers fixed-fixture model quality and direct ONNX CPU
+latency. Renderer timeout/fallback, admission invariance, and stale authority
+are covered separately by deterministic product contract tests.
 
 ## Reproduction commands
 
@@ -323,7 +343,22 @@ The generated report JSON files stay ignored under
 `artifacts/phase0b/gate2/`; this Markdown file is the committed decision
 record.
 
-## Development shadow operation
+## Product modes and optional development shadow
+
+The project setting **Semantic reranking (experimental)** is off by default.
+The runtime modes are:
+
+```text
+off    -> do not run the cross-encoder
+shadow -> record counterfactual order only (developer diagnostic)
+apply  -> apply the reranked order after existing admission
+```
+
+`apply` has a 2.5 second hard timeout and returns the current order on timeout,
+model/resource failure, inference error, native-lane contention, reindexing,
+workspace change, or superseded query generation. It never admits a new
+candidate: dense gate, floor, sparse rescue, exclusions, and the three-chunk
+cap run before the reranker ordering callback.
 
 The promoted models can be observed in Electron development without changing
 the current prompt:
@@ -336,8 +371,9 @@ VITE_SEMANTIC_RERANKER_SHADOW=1 pnpm electron:dev
 The default model root is
 `experiments/lfm25-encoder-phase0/local/phase0b`. A different verified local
 root may be supplied with the absolute-path-only
-`GRIMODEX_RERANKER_RESOURCE_ROOT` environment variable. Packaged builds do not
-receive a reranker resource root.
+`GRIMODEX_RERANKER_RESOURCE_ROOT` environment variable. Release builds
+bootstrap the two selected pinned snapshots and package them under the fixed
+reranker resource root.
 
 Only real `send` context builds enqueue the shadow job. The existing injected
 chunks are returned immediately; a concurrency-one, latest-pending background
@@ -348,11 +384,11 @@ identity, memory, and latency, but no query, candidate, or manuscript text.
 New records retain the exact dense rank as well as current hybrid and reranker
 ranks so the three-method top-10 annotation union can be reconstructed without
 storing text.
-Counterfactual injection is logged and never applied. Semantic Recall and its
-hybrid retrieval setting must both be enabled because Gate 2 promoted the
-frozen hybrid top-30 configuration.
+Counterfactual injection is logged and never applied in `shadow`. Semantic
+Recall and its hybrid retrieval setting must both be enabled because Gate 2
+promoted the frozen hybrid top-30 configuration.
 
-## Corpus role and promotion boundary
+## Corpus role
 
 The committed Gate 2 corpus remains model-selection validation:
 
@@ -361,12 +397,12 @@ The committed Gate 2 corpus remains model-selection validation:
 | Japanese |       12 |        6 |                 1 |
 | English  |       22 |        6 |                 1 |
 
-It is enough for the shadow choice above, but not for claims about
-generalization, no-match safety, opt-in readiness, or default enablement. The
-next evidence uses work-level-separated `shadow-private-dev` and
-`frozen-holdout` labels. The first floor is 50 positive and 30 no-match queries
-per language across at least three works; opt-in and default decisions require
-larger floors and a valid frozen-holdout lock.
+It is enough for model selection and experimental opt-in integration, but not
+for claims about cross-work generalization, absolute no-match quality, or
+default enablement. Work-level-separated `shadow-private-dev` and
+`frozen-holdout` labels remain available for optional investigation. Their
+sample floors and readiness fields are research diagnostics, not
+product-enablement conditions.
 
 The hash-only label schema, four-grade union-pooling contract, hard-case
 slices, stage targets, commands, and aggregate report schema are recorded in
@@ -384,14 +420,16 @@ The measured conclusion is:
 
 It does not prove user-corpus generalization, absolute no-match quality,
 memory behavior under Electron contention, or product UX latency after IPC.
-The implemented development shadow:
+The implemented integration:
 
 1. keeps the current candidate admission gate unchanged;
 2. runs xsmall top 30 for Japanese and MiniLM-L4 top 30 for English;
-3. records current versus reranked scene order without changing injection;
-4. supplies text-free evidence for locally reviewed private workspaces; and
-5. remains ineligible for opt-in or default use until the corpus protocol,
-   frozen holdout, quality gates, and product performance gates pass.
+3. applies only the order of already-admitted candidates when the explicit
+   project toggle is enabled;
+4. returns the exact baseline on timeout, failure, contention, reindexing, or
+   stale workspace/query authority;
+5. retains the text-free shadow log as an optional diagnostic; and
+6. keeps default enablement outside this decision.
 
 Impact Review remains `not-evaluated`. Off-the-shelf relevance logits must not
 remove Impact candidates.

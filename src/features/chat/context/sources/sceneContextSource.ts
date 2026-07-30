@@ -145,7 +145,8 @@ export interface SceneContextSourceDeps {
     query: string;
     excludeSceneIds: string[];
     hybrid: boolean;
-    shadow?: {
+    reranker?: {
+      mode: "shadow" | "apply";
       requestId: string;
       scope: {
         workspaceKey: string;
@@ -1278,9 +1279,11 @@ export async function collectSceneContext(
               hybrid: request.settings.hybridRecallEnabled,
               ...(request.purpose === "send" &&
               semanticQueryParts &&
-              request.workspaceIdentity
+              request.workspaceIdentity &&
+              request.settings.semanticRerankerMode !== "off"
                 ? {
-                    shadow: {
+                    reranker: {
+                      mode: request.settings.semanticRerankerMode,
                       requestId: request.requestId,
                       scope: {
                         workspaceKey: request.workspaceIdentity.workspaceKey,

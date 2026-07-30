@@ -1239,6 +1239,8 @@
       "aiSemanticRecallDesc": "On chat send, search for excerpts from past scenes semantically related to what you're writing and auto-inject them into the AI context. Nothing is injected for projects without an index.",
       "aiHybridRecall": "Also match proper nouns by keyword (hybrid search)",
       "aiHybridRecallDesc": "Fuse semantic search with full-text search (FTS5/bm25) via rank fusion (RRF) so proper nouns like character and place names help surface related scenes. Disabled when auto-injecting related scenes is off.",
+      "aiSemanticReranker": "Semantic reranking (experimental)",
+      "aiSemanticRerankerDesc": "Rerank related-scene candidates with a local model. If processing takes too long, Grimodex uses the original search order.",
       "aiChatRecall": "Auto-inject past conversations (episodic memory)",
       "aiChatRecallDesc": "On chat send, search past conversations (chat history) semantically related to what you're writing and auto-inject them into the AI context. Toggled independently from related-scene injection, so turning it off stops only past-conversation injection while keeping scene injection. Excludes the in-progress session.",
       "trashBin": "Trash bin",

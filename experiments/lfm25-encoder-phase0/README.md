@@ -13,8 +13,9 @@ Phase 0 keeps two independent tracks:
   candidates reduce downstream generation time and cost without losing
   affected scenes.
 
-No Phase 0 result removes a product candidate. All decisions are shadow
-evaluation only.
+The rejected LFM path remains research-only. Phase 0b's selected small
+rerankers are consumed by a separate experimental opt-in product integration;
+this directory remains the offline evidence and reproduction harness.
 
 ## Implemented scope
 
@@ -44,9 +45,10 @@ intentionally stops at PR 1.
 ## Phase 0b quantized reranker gate
 
 Phase 0b is a separate follow-up speed gate. It does not reopen the rejected
-LFM path, create a corpus, run fine-tuning, or change product behavior. It
-measures the official AVX2 quantized ONNX artifacts for three smaller
-language-specific rerankers:
+LFM path, create a corpus, or run fine-tuning. It measures the official AVX2
+quantized ONNX artifacts for three smaller language-specific rerankers; the
+two selected models are now used by the separate experimental opt-in product
+path:
 
 | Key            | Model                                    | Pinned artifact          | License    |
 | -------------- | ---------------------------------------- | ------------------------ | ---------- |
@@ -165,21 +167,22 @@ they are never compared with the current cosine/BGE thresholds.
 
 The completed Ryzen 5 3600 result and exact reproduction commands are recorded
 in [`PHASE0B_GATE2_RESULTS.md`](./PHASE0B_GATE2_RESULTS.md). Japanese xsmall
-top-30 and English MiniLM-L4 top-30 pass the Gate 2 promotion rule for a later
-shadow integration; Japanese xsmall top-12 fails the final-injection safety
-guard. No product path changes in this experiment.
+top-30 and English MiniLM-L4 top-30 pass the Gate 2 promotion rule for
+experimental opt-in integration; Japanese xsmall top-12 fails the
+final-injection safety guard. The product path keeps the current admission
+policy authoritative and falls back to the baseline order on any failure.
 
-### Shadow corpus expansion
+### Optional shadow corpus diagnostics
 
-Gate 2 public data is now fixed as model-selection validation. It must not be
-reused as blind product-enablement evidence. The development shadow can be
-joined to hash-only private human labels without persisting a query, candidate,
-or manuscript text:
+Gate 2 public data is fixed as model-selection and regression validation. It
+must not be presented as proof of cross-work generalization. The development
+shadow can optionally be joined to hash-only private human labels without
+persisting a query, candidate, or manuscript text:
 
 ```text
 gate2-public       -> validation
 shadow-private-dev -> local investigation
-frozen-holdout     -> work-isolated promotion evidence
+frozen-holdout     -> optional work-isolated evidence
 ```
 
 The corpus manager creates the human judgment pool from the union of dense,
@@ -188,16 +191,17 @@ positive/no-match contracts, human-assigned work-family split isolation, exact
 30-candidate evidence, and a non-overwriting frozen-holdout fingerprint. Its
 report contains aggregate counts and rates only, with separate
 candidate-generation, conditional-reranker, method-specific/common admission,
-and end-to-end denominators. Readiness separately reports quantity, holdout
-coverage, named-slice floors, and maximum family contribution for positive,
-no-match, holdout-positive, and holdout-no-match evidence; it never enables
-the reranker by itself. Query deduplication is scoped to a work family, so the
-same question remains valid across independent works.
+and end-to-end denominators. Diagnostic readiness separately reports quantity,
+holdout coverage, named-slice floors, and maximum family contribution for
+positive, no-match, holdout-positive, and holdout-no-match evidence. These
+fields are not product-enablement conditions. Query deduplication is scoped to
+a work family, so the same question remains valid across independent works.
 
 The complete privacy contract, staged sample floors, slice taxonomy, and
 commands are in
-[`SHADOW_CORPUS_PROTOCOL.md`](./SHADOW_CORPUS_PROTOCOL.md). These tools prepare
-evidence; they do not enable or apply a reranker.
+[`SHADOW_CORPUS_PROTOCOL.md`](./SHADOW_CORPUS_PROTOCOL.md). These optional
+tools prepare research evidence; they do not enable, disable, or apply the
+product setting.
 
 ## Fixed supply-chain inputs
 

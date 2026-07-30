@@ -8,6 +8,7 @@ import {
   selectDenseRecallHitsWithPolicy,
   selectHybridRecallHitsWithPolicy,
 } from "./hybridRecallSelection";
+import { isSemanticRerankerDevShadowEnabled } from "./semanticRerankerMode";
 
 export type SemanticRerankerShadowLanguage = "ja" | "en";
 
@@ -140,7 +141,7 @@ export interface SemanticRerankerShadowRecord {
   comparison?: SemanticRerankerShadowComparison;
 }
 
-interface ScoreRequest extends Record<string, unknown> {
+export interface SemanticRerankerScoreRequest extends Record<string, unknown> {
   requestId: string;
   language: SemanticRerankerShadowLanguage;
   userMessage: string;
@@ -152,7 +153,9 @@ export interface SemanticRerankerShadowCoordinatorDeps {
   enabled: () => boolean;
   isReindexing: () => boolean;
   isScopeCurrent: (scope: SemanticRerankerShadowScope) => boolean;
-  score: (request: ScoreRequest) => Promise<SemanticRerankerScoreResult>;
+  score: (
+    request: SemanticRerankerScoreRequest,
+  ) => Promise<SemanticRerankerScoreResult>;
   record: (record: SemanticRerankerShadowRecord) => Promise<void>;
   now: () => number;
   createRunId: () => string;
@@ -165,7 +168,7 @@ interface QueuedJob {
   input: SemanticRerankerShadowInput;
 }
 
-function snapshotShadowInput(
+export function snapshotSemanticRerankerInput(
   input: SemanticRerankerShadowInput,
 ): SemanticRerankerShadowInput {
   const copyHit = (hit: SemanticSearchHit): SemanticSearchHit => ({ ...hit });
@@ -460,6 +463,19 @@ export function buildSemanticRerankerShadowComparison(
   };
 }
 
+/**
+ * Reorder only candidates admitted by the existing production policy.
+ * Dense gates, sparse rescue, exclusions, and the injection cap stay
+ * authoritative inside `counterfactualInjection`.
+ */
+export function buildSemanticRerankerAppliedHits(
+  input: SemanticRerankerShadowInput,
+  result: SemanticRerankerScoreResult,
+): SemanticSearchHit[] {
+  const { ranking } = rerankedCandidates(input, result);
+  return counterfactualInjection(input, ranking);
+}
+
 function shadowErrorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/resource|model|manifest|hash|tokenizer|ONNX|ORT/i.test(message)) {
@@ -487,7 +503,7 @@ class SemanticRerankerShadowCoordinator {
     const job: QueuedJob = {
       generation,
       queuedAtMs: this.deps.now(),
-      input: snapshotShadowInput(input),
+      input: snapshotSemanticRerankerInput(input),
     };
     if (this.deps.isReindexing()) {
       const runId = this.deps.createRunId();
@@ -751,12 +767,6 @@ export function createSemanticRerankerShadowCoordinator(
   return new SemanticRerankerShadowCoordinator(deps);
 }
 
-function explicitDevShadowEnabled(): boolean {
-  return (
-    import.meta.env.DEV && import.meta.env.VITE_SEMANTIC_RERANKER_SHADOW === "1"
-  );
-}
-
 function currentScopeMatches(scope: SemanticRerankerShadowScope): boolean {
   return (
     isCurrentWorkspaceIdentity({
@@ -774,7 +784,7 @@ function createRunId(): string {
 }
 
 const productionCoordinator = createSemanticRerankerShadowCoordinator({
-  enabled: explicitDevShadowEnabled,
+  enabled: isSemanticRerankerDevShadowEnabled,
   isReindexing: () => useReindexProgressStore.getState().running,
   isScopeCurrent: currentScopeMatches,
   score: (request) =>

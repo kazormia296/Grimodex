@@ -134,8 +134,9 @@ pub struct AppState {
     /// runtime。EventQueue cloneは同じTSFn sinkを指すため、progress 2chも
     /// backend.onEvent → main → 全窓broadcastへ載る。
     pub semantic: Arc<grimodex_semantic::runtime::SemanticRuntime>,
-    /// Development-only Gate 2 cross-encoder cache. The outer mutex is both
-    /// the native concurrency=1 guard and Session::run's mutable owner.
+    /// Gate 2 cross-encoder cache shared by diagnostic shadow and opt-in apply.
+    /// The outer mutex is both the native concurrency=1 guard and
+    /// Session::run's mutable owner.
     pub semantic_reranker: Mutex<grimodex_semantic::reranker::RerankerRuntime>,
 }
 

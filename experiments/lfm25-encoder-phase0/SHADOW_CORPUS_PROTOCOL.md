@@ -1,9 +1,10 @@
 # Semantic Recall shadow corpus protocol
 
-## Decision boundary
+## Optional diagnostic boundary
 
 The public Gate 2 corpus is sufficient for selecting a model for an
-observational shadow, but it is not product-enablement evidence.
+experimental opt-in integration. It is not proof of cross-work
+generalization or default-enablement evidence.
 
 | Language | Positive queries | No-match queries | Independent works |
 | -------- | ---------------: | ---------------: | ----------------: |
@@ -21,12 +22,14 @@ The three corpus roles are fixed:
 ```text
 gate2-public       -> model-selection validation; committed and unchanged
 shadow-private-dev -> local investigation and failure analysis
-frozen-holdout     -> untouched work-level promotion evidence
+frozen-holdout     -> optional untouched work-level evidence
 ```
 
-No quantity or metric produced by this workflow enables the reranker in the
-product. The integration remains development-only, asynchronous, and
-non-applying.
+No quantity, holdout count, slice floor, or readiness field produced by this
+workflow is a prerequisite for the experimental product toggle. The product
+toggle is governed by the fixed Gate 2 quality/speed evidence and runtime
+authority/fail-safe contracts. This workflow remains an optional,
+asynchronous, non-applying diagnostic.
 
 ## Privacy and storage contract
 
@@ -172,15 +175,15 @@ Hard no-match slices are:
 The template automatically adds `truncated-512` when any candidate pair reports
 query or candidate truncation. The human reviewer supplies semantic slices.
 
-## Staged quantity targets
+## Optional staged quantity targets
 
-Readiness is reported independently for Japanese and English.
+Diagnostic readiness is reported independently for Japanese and English.
 
-| Stage               | Positive | No-match | Work families | Holdout works | Holdout positive | Holdout no-match | Max one-family share |
-| ------------------- | -------: | -------: | ------------: | ------------: | ---------------: | ---------------: | -------------------: |
-| Shadow initial      |       50 |       30 |             3 |             0 |                0 |                0 |                  50% |
-| Experimental opt-in |      100 |       60 |             4 |             1 |               20 |               10 |                  40% |
-| Default candidate   |      200 |      100 |             5 |             2 |               50 |               30 |                  35% |
+| Stage                                | Positive | No-match | Work families | Holdout works | Holdout positive | Holdout no-match | Max one-family share |
+| ------------------------------------ | -------: | -------: | ------------: | ------------: | ---------------: | ---------------: | -------------------: |
+| Shadow initial                       |       50 |       30 |             3 |             0 |                0 |                0 |                  50% |
+| Experimental opt-in (diagnostic)     |      100 |       60 |             4 |             1 |               20 |               10 |                  40% |
+| Default candidate (diagnostic)       |      200 |      100 |             5 |             2 |               50 |               30 |                  35% |
 
 All counts are per language. These are minimum corpus floors, not statistical
 guarantees. The one-family cap is evaluated independently for positive,
@@ -188,18 +191,18 @@ no-match, holdout-positive, and holdout-no-match queries. A large positive
 pool therefore cannot hide a no-match or holdout subset contributed by one
 story family.
 
-Named slice floors begin at the opt-in stage:
+Named slice floors begin at the extended diagnostic stage:
 
-| Stage               | Hard no-match | Scene-tail distractor | Truncated 512 | Similar scene |
-| ------------------- | ------------: | --------------------: | ------------: | ------------: |
-| Shadow initial      |             0 |                     0 |             0 |             0 |
-| Experimental opt-in |            15 |                    10 |            15 |            10 |
-| Default candidate   |            25 |                    15 |            30 |            20 |
+| Stage                                | Hard no-match | Scene-tail distractor | Truncated 512 | Similar scene |
+| ------------------------------------ | ------------: | --------------------: | ------------: | ------------: |
+| Shadow initial                       |             0 |                     0 |             0 |             0 |
+| Experimental opt-in (diagnostic)     |            15 |                    10 |            15 |            10 |
+| Default candidate (diagnostic)       |            25 |                    15 |            30 |            20 |
 
 The report exposes `quantityReady`, `holdoutReady`, `contributionReady`, and
 `sliceReady` independently. `evidenceReady` requires all four, but means only
-that the evidence package is ready for a product decision; it is not itself a
-product-enablement verdict.
+that this optional research package reached its selected diagnostic floor. It
+is not a product-enablement verdict or release prerequisite.
 
 ## Commands
 
