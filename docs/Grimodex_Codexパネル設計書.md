@@ -2563,7 +2563,7 @@ Mentionsタブの「Manuscript」セクションに、手動タグ由来の関�
 - `scene_codex_mentions(source = 'semantic')` はMatrix / Galaxy向けの再構築可能な派生キャッシュとして保存する。本文Markが常に正本で、新規DB migrationは不要。Impact Reviewは保存直後の派生キャッシュ遅延を避けるため、プロジェクト内シーンの本文Markを直接確認する
 - Mentions表示では自動一致数と明示リンク数を分けて表示する。同一Codexが同一シーンで両方に該当しても統合消去しない
 - Chatでは、リンク先エントリを既存のPhase解決・`context_mode`・除外ポリシーに通したうえでLayer 4候補に加える。さらにLayer 3の本文直前へ `選択範囲 → 現在のCodex名 (entryId)` の対応を渡し、文脈依存のdisambiguationを保持する
-- Consistency / Impact Reviewも明示リンクを候補選定に使用する。`hidden` / `suppress`、明示除外、削除済みIDはAIへ渡さない
+- Consistency / Impact Reviewも明示リンクを候補選定に使用する。Impact Reviewではauthor-confirmedな明示リンク先を常に保持してclassifier判定を迂回させ、dense / sparseから推定した候補だけを上限30件でclassifierへ渡す（明示リンク数は推定候補枠を消費せず、合計は30件を超えうる）。`hidden` / `suppress`、明示除外、削除済みIDはAIへ渡さない
 - Impact Reviewは送信直前にCodex・フェーズ・baseline CAS・候補集合・候補シーン本文を再照合し、一致した最終読取時点のSQLite接続epoch / `total_changes()` / `data_version`をsource guardとして渡す。候補集合を変えない派生mention/indexだけの遅延更新は最新guardへ安全に張り直す。開始時はshared Rustが`BEGIN IMMEDIATE`内でguard照合→cache判定→run作成を原子的に行う。候補ゼロ時のbaseline更新も同じguardとbaseline CASを単一SQLite文で検証する。最終照合後の同一接続Undo/restore、別接続MCP更新、workspace交換、baseline前進、候補追加、または送信元本文・設定の変化が介在した場合はAI送信もbaseline更新もせず再実行を促す
 - Codex削除後のMarkは本文から破壊的に消さず、`label`付きのdangling linkとして残す。通常Undoで同じIDが復元されれば再接続し、そうでなければユーザーが解除または再割当する
 

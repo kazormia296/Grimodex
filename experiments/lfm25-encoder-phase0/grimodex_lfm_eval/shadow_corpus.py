@@ -57,6 +57,16 @@ CorpusSlice = Literal[
     "proper-noun-only",
     "scene-tail-distractor",
 ]
+NO_MATCH_ONLY_SLICES: frozenset[CorpusSlice] = frozenset(
+    {
+        "hard-no-match",
+        "same-name-different-character",
+        "similar-event-wrong-target",
+        "generic-fiction-overlap",
+        "proper-noun-only",
+        "scene-tail-distractor",
+    }
+)
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 
 
@@ -327,6 +337,14 @@ class ShadowLabelRecord(_CorpusModel):
                 "human-verified judgments require relevanceGrade"
             )
         if self.query_kind == "positive":
+            invalid_slices = sorted(
+                set(self.slices).intersection(NO_MATCH_ONLY_SLICES)
+            )
+            if invalid_slices:
+                raise ValueError(
+                    "positive queries cannot use no-match-only slice(s): "
+                    + ", ".join(invalid_slices)
+                )
             if self.no_match_type is not None:
                 raise ValueError("positive queries cannot define noMatchType")
             if not self.reference_scene_hashes:

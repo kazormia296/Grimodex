@@ -245,6 +245,58 @@ reached Target for the lower-bound workload. Gate 4 implementation may remain
 provisional, but xsmall and ModernBERT do not proceed to a formal labeled
 decision until Gate 3.1 passes.
 
+### Gate 3.1 distinct full-scene correction
+
+Gate 3.1 closes the lower-bound gap before Gate 4 can become a formal
+decision. Its public workload is regenerated from the deterministic medium
+Japanese sample workspace. The exporter runs the production semantic index
+and FTS backend, reuses `fuseSceneCandidates`, reads complete scene documents,
+and converts each ProseMirror document with the product
+`prosemirrorToText` path.
+
+The frozen Codex-style change `記憶。失われた。取り戻した` produces 27
+distinct dense scenes and 34 sparse scenes, for a 38-scene union. The product
+RRF policy fixes the top 30 **inferred** scenes without synthetic padding.
+Explicit semantic links are author-confirmed dependencies: they are always
+retained, bypass the classifier, and do not consume the inferred 30-scene
+limit.
+
+For every model, the runner measures two workloads:
+
+1. all 30 full scenes, tokenized without blind truncation into 384-token
+   windows at stride 256, with every window inferred and each scene aggregated
+   as `max(window score)`; and
+2. 30 real, fully occupied 384-token windows as a separate cap stress.
+
+Both reports include `sceneCount`, `windowCount`, windows-per-scene
+p50/p95/max, attention tokens, and `truncatedSceneCount`. Gate 4 remains
+provisional unless both workloads reach the five-second Target band.
+
+Regenerate the public workload from a disposable medium sample workspace:
+
+```bash
+python3 scripts/seed-sample-ja.py <workspace> --scale medium
+pnpm exec tsx experiments/lfm25-encoder-phase0/tools/freeze_impact_gate31_scenes.ts \
+  --native-module electron/native/grimodex-node/grimodex-node.node \
+  --resources src-tauri/resources/semantic \
+  --workspace <workspace> \
+  --output experiments/lfm25-encoder-phase0/data/public/gate31/impact-scenes-ja.json
+```
+
+Screen configurations, then run only the selected configuration formally:
+
+```bash
+for model in ja_xsmall modernbert_ja_30m; do
+  make impact-gate31-pilot IMPACT_GATE31_MODEL="$model"
+done
+
+make impact-gate31 \
+  IMPACT_GATE31_MODEL=<model-key> \
+  IMPACT_GATE31_FINAL_BATCH_SIZE=<selected-batch> \
+  IMPACT_GATE31_FINAL_THREAD_COUNT=<selected-threads> \
+  IMPACT_GATE31_FINAL_BUCKET_MODE=<naive-or-bucketed>
+```
+
 ### Optional shadow corpus diagnostics
 
 Gate 2 public data is fixed as model-selection and regression validation. It
@@ -269,6 +321,12 @@ holdout coverage, named-slice floors, and maximum family contribution for
 positive, no-match, holdout-positive, and holdout-no-match evidence. These
 fields are not product-enablement conditions. Query deduplication is scoped to
 a work family, so the same question remains valid across independent works.
+Human-verified positive
+labels cannot claim a no-match-only slice (`hard-no-match`,
+`same-name-different-character`, `similar-event-wrong-target`,
+`generic-fiction-overlap`, `proper-noun-only`, or
+`scene-tail-distractor`); schema validation rejects that mismatch before slice
+readiness is calculated.
 
 The complete privacy contract, staged sample floors, slice taxonomy, and
 commands are in
