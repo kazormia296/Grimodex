@@ -234,6 +234,11 @@ Conditional at 10 seconds or less, Hold at 20 seconds or less, and Reject
 above 20 seconds. Passing permits Impact corpus/training design; it does not
 enable a product path or establish Impact quality.
 
+The completed Ryzen 5 3600 measurement is recorded in
+[`PHASE0B_GATE3_RESULTS.md`](./PHASE0B_GATE3_RESULTS.md). Both candidates
+reached Target, so xsmall as the primary initialization and ModernBERT as the
+neutral baseline may proceed to the separately gated minimal labeled probe.
+
 ### Optional shadow corpus diagnostics
 
 Gate 2 public data is fixed as model-selection and regression validation. It
