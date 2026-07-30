@@ -297,6 +297,12 @@ make impact-gate31 \
   IMPACT_GATE31_FINAL_BUCKET_MODE=<naive-or-bucketed>
 ```
 
+The completed Ryzen 5 3600 result is recorded in
+[`PHASE0B_GATE31_RESULTS.md`](./PHASE0B_GATE31_RESULTS.md). Both candidates
+reach Target on the isolated 30-window cap stress but fall in Hold on the 184
+windows produced by 30 complete scenes. Gate 4 therefore remains provisional;
+human-corpus expansion and product classifier integration do not proceed.
+
 ### Optional shadow corpus diagnostics
 
 Gate 2 public data is fixed as model-selection and regression validation. It
