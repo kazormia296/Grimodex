@@ -3,6 +3,11 @@
   "generatedAt": "2026-07-29T22:40:40.383Z",
   "generator": "experiments/lfm25-encoder-phase0/tools/freeze_gate2_candidates.ts",
   "contract": "one production dense top-30 + FTS5 top-10 pool per query; retrieval is never rerun per reranker",
+  "chunkQrels": {
+    "file": "data/public/gate2/chunk-qrels.json",
+    "sha256": "f1daa108130041781e80235a3b74ef915616484a38396b758524be108f17cef3",
+    "contract": "human-reviewed exact candidate ranges; scene-title labels are not expanded to every chunk in the scene"
+  },
   "sources": {
     "ja": {
       "language": "ja",

@@ -14,10 +14,11 @@ import {
   type SemanticRerankerShadowScope,
 } from "./semanticRerankerShadow";
 
-export const SEMANTIC_RERANKER_APPLY_TIMEOUT_MS = 2_500;
+export const SEMANTIC_RERANKER_CALLER_WAIT_TIMEOUT_MS = 2_500;
 
 export type SemanticRerankerFallbackReason =
   | "busy"
+  | "circuit-open"
   | "empty-candidate-set"
   | "reindexing"
   | "scope-stale"
@@ -31,6 +32,8 @@ export type SemanticRerankerApplyResult =
       status: "fallback";
       reason: SemanticRerankerFallbackReason;
       hits: SemanticSearchHit[];
+      timedOutButStillRunning?: true;
+      circuitBreakerOpen?: true;
     };
 
 export interface SemanticRerankerApplyCoordinatorDeps {
@@ -47,6 +50,7 @@ const TIMEOUT = Symbol("semantic-reranker-timeout");
 class SemanticRerankerApplyCoordinator {
   private generation = 0;
   private activeToken: symbol | null = null;
+  private readonly openSessionCircuits = new Set<string>();
 
   constructor(private readonly deps: SemanticRerankerApplyCoordinatorDeps) {}
 
@@ -57,14 +61,23 @@ class SemanticRerankerApplyCoordinator {
     const baseline = input.baselineInjectedHits;
     const fallback = (
       reason: SemanticRerankerFallbackReason,
+      telemetry: {
+        timedOutButStillRunning?: true;
+        circuitBreakerOpen?: true;
+      } = {},
     ): SemanticRerankerApplyResult => ({
       status: "fallback",
       reason,
       hits: baseline,
+      ...telemetry,
     });
 
     if (this.deps.isReindexing()) return fallback("reindexing");
     if (!this.deps.isScopeCurrent(input.scope)) return fallback("scope-stale");
+    const sessionCircuitKey = this.sessionCircuitKey(input);
+    if (this.openSessionCircuits.has(sessionCircuitKey)) {
+      return fallback("circuit-open", { circuitBreakerOpen: true });
+    }
     if (this.activeToken) return fallback("busy");
 
     const snapshot = snapshotSemanticRerankerInput(input);
@@ -95,7 +108,8 @@ class SemanticRerankerApplyCoordinator {
     );
 
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutMs = this.deps.timeoutMs ?? SEMANTIC_RERANKER_APPLY_TIMEOUT_MS;
+    const timeoutMs =
+      this.deps.timeoutMs ?? SEMANTIC_RERANKER_CALLER_WAIT_TIMEOUT_MS;
     const timeoutPromise = new Promise<typeof TIMEOUT>((resolve) => {
       timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);
     });
@@ -116,11 +130,14 @@ class SemanticRerankerApplyCoordinator {
     }
 
     if (result === TIMEOUT) {
+      this.openSessionCircuits.add(sessionCircuitKey);
       debugLog.warn(
         "SemanticRerankerApply",
-        `hard timeout after ${timeoutMs}ms; keeping baseline order`,
+        `caller wait timeout after ${timeoutMs}ms; keeping baseline order; ` +
+          "timedOutButStillRunning=true sessionCircuitOpened=true " +
+          `localInferenceExpected=${input.localInferenceExpected}`,
       );
-      return fallback("timeout");
+      return fallback("timeout", { timedOutButStillRunning: true });
     }
     if (generation !== this.generation) return fallback("superseded");
     if (this.deps.isReindexing()) return fallback("reindexing");
@@ -145,6 +162,15 @@ class SemanticRerankerApplyCoordinator {
 
   private release(token: symbol): void {
     if (this.activeToken === token) this.activeToken = null;
+  }
+
+  private sessionCircuitKey(input: SemanticRerankerShadowInput): string {
+    return JSON.stringify([
+      input.scope.workspaceKey,
+      input.scope.workspaceOpenRevision,
+      input.scope.projectId,
+      input.sessionId ?? null,
+    ]);
   }
 }
 

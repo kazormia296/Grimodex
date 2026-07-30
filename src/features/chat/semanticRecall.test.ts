@@ -731,4 +731,43 @@ describe("fetchSemanticRecall (hybrid mode)", () => {
     expect(rerankerMocks.scheduleShadow).toHaveBeenCalledOnce();
     expect(rerankerMocks.apply).not.toHaveBeenCalled();
   });
+
+  it.each(["zh", "ko"])(
+    "keeps baseline order and never invokes a reranker for unsupported language %s",
+    async (language) => {
+      const first = makeHit({ sceneId: "first", score: 0.94 });
+      const second = makeHit({ sceneId: "second", score: 0.9 });
+      routeInvoke({
+        dense: [first, second],
+        sparse: [
+          { sourceType: "scene", id: "first", title: "First", excerpt: "" },
+          { sourceType: "scene", id: "second", title: "Second", excerpt: "" },
+        ],
+      });
+
+      const chunks = await fetchSemanticRecall({
+        projectId: "p1",
+        query: "灯台の約束",
+        excludeSceneIds: [],
+        hybrid: true,
+        reranker: {
+          mode: "apply",
+          requestId: "request-unsupported",
+          scope: {
+            workspaceKey: "/workspace",
+            workspaceOpenRevision: 3,
+            projectId: "p1",
+          },
+          userMessage: "約束を思い出して",
+          sceneTail: "灯台の鐘が鳴った。",
+          language,
+          localInferenceExpected: true,
+        },
+      });
+
+      expect(chunks.map((chunk) => chunk.sceneId)).toEqual(["first", "second"]);
+      expect(rerankerMocks.apply).not.toHaveBeenCalled();
+      expect(rerankerMocks.scheduleShadow).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -13,6 +13,7 @@ PHASE0B_FINAL_BATCH_SIZE ?= 8
 PHASE0B_FINAL_THREAD_COUNT ?= physical
 PHASE0B_FINAL_BUCKET_MODE ?= bucketed
 PHASE0B_GATE2_CANDIDATES ?= data/public/gate2/candidates-ja.jsonl
+PHASE0B_GATE2_CHUNK_QRELS ?= data/public/gate2/chunk-qrels.json
 PHASE0B_GATE2_PAIRS ?= data/public/gate2/parity-pairs-ja.jsonl
 PHASE0B_GATE2_THREADS ?= 4
 PHASE0B_GATE2_BATCH_SIZE ?= 4
@@ -61,4 +62,4 @@ reranker-parity:
 	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.reranker_parity --config configs/phase0b-rerankers.yaml --candidates $(PHASE0B_GATE2_CANDIDATES) --pairs $(PHASE0B_GATE2_PAIRS) --model $(PHASE0B_MODEL) --threads $(PHASE0B_GATE2_THREADS) --output $(PHASE0B_GATE2_PARITY_OUTPUT)
 
 reranker-gate2:
-	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates $(PHASE0B_GATE2_CANDIDATES) --model $(PHASE0B_MODEL) --threads $(PHASE0B_GATE2_THREADS) --batch-size $(PHASE0B_GATE2_BATCH_SIZE) --output $(PHASE0B_GATE2_OUTPUT)
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(UV) run --frozen --extra cpu python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates $(PHASE0B_GATE2_CANDIDATES) --chunk-qrels $(PHASE0B_GATE2_CHUNK_QRELS) --model $(PHASE0B_MODEL) --threads $(PHASE0B_GATE2_THREADS) --batch-size $(PHASE0B_GATE2_BATCH_SIZE) --output $(PHASE0B_GATE2_OUTPUT)

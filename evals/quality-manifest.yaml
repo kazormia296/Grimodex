@@ -158,6 +158,8 @@ requirements:
       - src/features/chat/semanticRerankerApply.ts
       - src/features/chat/semanticRerankerShadow.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - experiments/lfm25-encoder-phase0/data/public/gate2/chunk-qrels.json
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/reranker_gate2.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
     lightTests:
@@ -168,6 +170,7 @@ requirements:
       - src/features/chat/semanticRerankerApply.test.ts
       - src/features/chat/semanticRerankerShadow.test.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - experiments/lfm25-encoder-phase0/tests/test_reranker_gate2.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
@@ -259,7 +262,7 @@ heavyEvaluations:
     reason: Requires local ONNX runtime dependencies and model resources; the runner generates verified embeddings, executes the eval, and restores prior artifacts.
   - id: heavy-semantic-reranker-fixed-fixture
     suiteId: retrieval-grounding
-    command: cd experiments/lfm25-encoder-phase0 && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-ja.jsonl --model ja_xsmall --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-ja-xsmall.json && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-en.jsonl --model en_minilm_l4 --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-en-minilm-l4.json
+    command: cd experiments/lfm25-encoder-phase0 && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-ja.jsonl --chunk-qrels data/public/gate2/chunk-qrels.json --model ja_xsmall --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-ja-xsmall.json && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-en.jsonl --chunk-qrels data/public/gate2/chunk-qrels.json --model en_minilm_l4 --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-en-minilm-l4.json
     reason: Product opt-in depends on the pinned Gate 2 quality, admission-safety, and top-30 CPU latency gates; requires verified local model snapshots and a comparable CPU host.
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract

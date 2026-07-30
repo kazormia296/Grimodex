@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveSemanticRerankerMode } from "./semanticRerankerMode";
+import {
+  resolveSemanticRerankerCapability,
+  resolveSemanticRerankerLanguage,
+  resolveSemanticRerankerMode,
+} from "./semanticRerankerMode";
+
+const availableCapability = {
+  language: "ja",
+  electronRuntime: true,
+  resourcesAvailable: true,
+};
 
 describe("resolveSemanticRerankerMode", () => {
   it("keeps the product path off by default", () => {
@@ -10,6 +20,7 @@ describe("resolveSemanticRerankerMode", () => {
         devShadowEnabled: false,
         semanticRecallEnabled: true,
         hybridRecallEnabled: true,
+        capability: availableCapability,
       }),
     ).toBe("off");
   });
@@ -21,6 +32,7 @@ describe("resolveSemanticRerankerMode", () => {
         devShadowEnabled: true,
         semanticRecallEnabled: true,
         hybridRecallEnabled: true,
+        capability: availableCapability,
       }),
     ).toBe("apply");
   });
@@ -32,6 +44,7 @@ describe("resolveSemanticRerankerMode", () => {
         devShadowEnabled: true,
         semanticRecallEnabled: true,
         hybridRecallEnabled: true,
+        capability: availableCapability,
       }),
     ).toBe("shadow");
   });
@@ -44,8 +57,71 @@ describe("resolveSemanticRerankerMode", () => {
       resolveSemanticRerankerMode({
         applyEnabled: true,
         devShadowEnabled: true,
+        capability: availableCapability,
         ...prerequisites,
       }),
     ).toBe("off");
+  });
+
+  it.each([
+    { language: "zh", electronRuntime: true, resourcesAvailable: true },
+    { language: "ko", electronRuntime: true, resourcesAvailable: true },
+    { language: "ja", electronRuntime: false, resourcesAvailable: true },
+    { language: "en", electronRuntime: true, resourcesAvailable: false },
+  ])(
+    "fails closed when the local reranker is unavailable: %o",
+    (capability) => {
+      expect(
+        resolveSemanticRerankerMode({
+          applyEnabled: true,
+          devShadowEnabled: true,
+          semanticRecallEnabled: true,
+          hybridRecallEnabled: true,
+          capability,
+        }),
+      ).toBe("off");
+    },
+  );
+});
+
+describe("semantic reranker capability", () => {
+  it.each([
+    ["ja", "ja"],
+    ["ja-JP", "ja"],
+    ["en", "en"],
+    ["en-US", "en"],
+    ["zh", null],
+    ["ko-KR", null],
+    ["", null],
+  ] as const)(
+    "resolves %s without collapsing unsupported languages",
+    (input, expected) => {
+      expect(resolveSemanticRerankerLanguage(input)).toBe(expected);
+    },
+  );
+
+  it("reports one shared language, host, and resource gate", () => {
+    expect(
+      resolveSemanticRerankerCapability({
+        language: "ja-JP",
+        electronRuntime: true,
+        resourcesAvailable: true,
+      }),
+    ).toEqual({
+      available: true,
+      language: "ja",
+      unavailableReason: null,
+    });
+    expect(
+      resolveSemanticRerankerCapability({
+        language: "zh",
+        electronRuntime: true,
+        resourcesAvailable: true,
+      }),
+    ).toEqual({
+      available: false,
+      language: null,
+      unavailableReason: "unsupported-language",
+    });
   });
 });

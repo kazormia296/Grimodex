@@ -10,6 +10,7 @@ import {
   selectDenseRecallHitsWithPolicy,
   selectHybridRecallHitsWithPolicy,
 } from "./hybridRecallSelection";
+import { resolveSemanticRerankerLanguage } from "./semanticRerankerMode";
 
 /**
  * Layer4 RAG (semantic recall): drafting チャットの文脈に、意味検索で見つけた
@@ -342,6 +343,7 @@ export async function fetchSemanticRecall(args: {
   reranker?: {
     mode: "shadow" | "apply";
     requestId: string;
+    sessionId?: string | null;
     scope: SemanticRerankerShadowScope;
     userMessage: string;
     sceneTail: string;
@@ -409,14 +411,16 @@ export async function fetchSemanticRecall(args: {
   let injectedHits = baselineInjectedHits;
 
   const retrievalFinishedAtMs = globalThis.performance?.now() ?? Date.now();
+  const rerankerLanguage = resolveSemanticRerankerLanguage(
+    args.reranker?.language,
+  );
   const rerankerInput =
-    args.hybrid && args.reranker && hits.length > 0
+    args.hybrid && args.reranker && rerankerLanguage && hits.length > 0
       ? {
           requestId: args.reranker.requestId,
+          sessionId: args.reranker.sessionId ?? null,
           scope: args.reranker.scope,
-          language: args.reranker.language.startsWith("en")
-            ? ("en" as const)
-            : ("ja" as const),
+          language: rerankerLanguage,
           query: {
             userMessage: args.reranker.userMessage,
             sceneTail: args.reranker.sceneTail,

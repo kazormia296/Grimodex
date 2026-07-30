@@ -2,6 +2,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { RuntimeCapabilitiesProvider } from "@/runtime/runtimeCapabilitiesContext";
 import { AiProjectSettings } from "./AiProjectSettings";
 
 const settings = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ const settings = vi.hoisted(() => ({
   } as Record<string, boolean>,
   setters: new Map<string, ReturnType<typeof vi.fn>>(),
 }));
+const projectState = vi.hoisted(() => ({ language: "ja" }));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -24,6 +26,7 @@ vi.mock("react-i18next", () => ({
 vi.mock("../hooks/useProjectSettings", () => ({
   useProjectSettings: () => ({
     project: {
+      language: projectState.language,
       aiPolicy: null,
       outline: null,
       targetReaders: null,
@@ -54,7 +57,16 @@ beforeEach(() => {
   settings.values["ai.hybridRecall"] = true;
   settings.values["ai.semanticReranker"] = false;
   settings.setters.clear();
+  projectState.language = "ja";
 });
+
+function renderSettings(target: "electron" | "web" = "electron") {
+  return render(
+    <RuntimeCapabilitiesProvider target={target}>
+      <AiProjectSettings />
+    </RuntimeCapabilitiesProvider>,
+  );
+}
 
 function rerankerCheckbox(container: HTMLElement): HTMLInputElement {
   const label = screen.getByText("Semantic reranking（実験的）");
@@ -69,7 +81,7 @@ function rerankerCheckbox(container: HTMLElement): HTMLInputElement {
 
 describe("AiProjectSettings semantic reranker", () => {
   it("renders an opt-in toggle and persists explicit enablement", () => {
-    const { container } = render(<AiProjectSettings />);
+    const { container } = renderSettings();
     const checkbox = rerankerCheckbox(container);
 
     expect(checkbox.checked).toBe(false);
@@ -88,8 +100,34 @@ describe("AiProjectSettings semantic reranker", () => {
 
   it("is inert unless semantic and hybrid recall are both enabled", () => {
     settings.values["ai.hybridRecall"] = false;
-    const { container } = render(<AiProjectSettings />);
+    const { container } = renderSettings();
 
     expect(rerankerCheckbox(container).disabled).toBe(true);
+  });
+
+  it.each(["zh", "ko"])(
+    "is disabled for unsupported project language %s",
+    (language) => {
+      projectState.language = language;
+      const { container } = renderSettings();
+
+      expect(rerankerCheckbox(container).disabled).toBe(true);
+      expect(
+        screen.getByText(
+          "現在は日本語・英語のデスクトップ版でのみ利用できます。",
+        ),
+      ).toBeTruthy();
+    },
+  );
+
+  it("is disabled in the Web Editor even for a supported language", () => {
+    const { container } = renderSettings("web");
+
+    expect(rerankerCheckbox(container).disabled).toBe(true);
+    expect(
+      screen.getByText(
+        "現在は日本語・英語のデスクトップ版でのみ利用できます。",
+      ),
+    ).toBeTruthy();
   });
 });

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SemanticSearchHit } from "../semantic-search/api";
 import {
   createSemanticRerankerApplyCoordinator,
-  SEMANTIC_RERANKER_APPLY_TIMEOUT_MS,
+  SEMANTIC_RERANKER_CALLER_WAIT_TIMEOUT_MS,
 } from "./semanticRerankerApply";
 import type {
   SemanticRerankerScoreResult,
@@ -68,6 +68,7 @@ function input(
 ): SemanticRerankerShadowInput {
   return {
     requestId: "request-1",
+    sessionId: "session-1",
     scope: {
       workspaceKey: "workspace-1",
       workspaceOpenRevision: 7,
@@ -114,8 +115,8 @@ function coordinator(
 }
 
 describe("SemanticRerankerApplyCoordinator", () => {
-  it("uses the fixed 2.5 second hard timeout", () => {
-    expect(SEMANTIC_RERANKER_APPLY_TIMEOUT_MS).toBe(2_500);
+  it("uses the fixed 2.5 second caller-wait timeout", () => {
+    expect(SEMANTIC_RERANKER_CALLER_WAIT_TIMEOUT_MS).toBe(2_500);
   });
 
   it("applies reranker order only after production admission", async () => {
@@ -160,7 +161,7 @@ describe("SemanticRerankerApplyCoordinator", () => {
     });
   });
 
-  it("times out to baseline and keeps the native lane busy until scoring settles", async () => {
+  it("opens a session circuit after caller timeout while native scoring settles", async () => {
     vi.useFakeTimers();
     try {
       let resolveFirst!: (value: SemanticRerankerScoreResult) => void;
@@ -173,20 +174,34 @@ describe("SemanticRerankerApplyCoordinator", () => {
         .mockResolvedValue(scoreResult());
       const apply = coordinator({ score });
 
-      const firstRun = apply.apply(input({ requestId: "request-1" }));
-      await vi.advanceTimersByTimeAsync(SEMANTIC_RERANKER_APPLY_TIMEOUT_MS);
+      const firstRun = apply.apply(
+        input({
+          requestId: "request-1",
+          localInferenceExpected: true,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(
+        SEMANTIC_RERANKER_CALLER_WAIT_TIMEOUT_MS,
+      );
       await expect(firstRun).resolves.toEqual({
         status: "fallback",
         reason: "timeout",
         hits: [a, b, c],
+        timedOutButStillRunning: true,
       });
 
       await expect(
-        apply.apply(input({ requestId: "request-2" })),
+        apply.apply(
+          input({
+            requestId: "request-2",
+            localInferenceExpected: true,
+          }),
+        ),
       ).resolves.toEqual({
         status: "fallback",
-        reason: "busy",
+        reason: "circuit-open",
         hits: [a, b, c],
+        circuitBreakerOpen: true,
       });
       expect(score).toHaveBeenCalledTimes(1);
 
@@ -195,10 +210,28 @@ describe("SemanticRerankerApplyCoordinator", () => {
       await Promise.resolve();
 
       await expect(
-        apply.apply(input({ requestId: "request-3" })),
-      ).resolves.toMatchObject({
-        status: "applied",
+        apply.apply(
+          input({
+            requestId: "request-3",
+            localInferenceExpected: true,
+          }),
+        ),
+      ).resolves.toEqual({
+        status: "fallback",
+        reason: "circuit-open",
+        hits: [a, b, c],
+        circuitBreakerOpen: true,
       });
+      expect(score).toHaveBeenCalledTimes(1);
+
+      await expect(
+        apply.apply(
+          input({
+            requestId: "request-new-session",
+            sessionId: "session-2",
+          }),
+        ),
+      ).resolves.toMatchObject({ status: "applied" });
       expect(score).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();

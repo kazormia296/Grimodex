@@ -15,6 +15,7 @@ from grimodex_lfm_eval.reranker_gate2 import (
     compare_to_hybrid,
     evaluate_logit_parity,
     evaluate_method,
+    load_chunk_qrels,
     load_gate2_jsonl,
     load_parity_jsonl,
     rank_candidates,
@@ -69,6 +70,9 @@ def _query(
         query="失踪した王女が港へ向かった場面",
         query_slice=query_slice,
         expected_scene_titles=expected,
+        expected_candidate_ids=(
+            [f"candidate-{relevant_rank:02d}"] if expected else []
+        ),
         min_score=0.80,
         gate_score=0.85,
         rescue_margin=0.05,
@@ -147,6 +151,66 @@ class Gate2DatasetContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate query"):
                 load_gate2_jsonl(path)
 
+    def test_chunk_qrels_bind_exact_ranges_without_expanding_to_the_scene(self) -> None:
+        query = _query()
+        same_scene = query.candidates[4].model_copy(
+            update={
+                "candidate_id": "same-scene-wrong-range",
+                "scene_id": "scene-gold",
+                "scene_title": "Gold scene",
+                "char_start": 999,
+                "char_end": 1009,
+                "relevant": True,
+            }
+        )
+        query = query.model_copy(
+            update={
+                "candidates": (
+                    *query.candidates[:4],
+                    same_scene,
+                    *query.candidates[5:],
+                )
+            }
+        )
+        payload = {
+            "schemaVersion": 1,
+            "annotations": [
+                {
+                    "queryId": query.query_id,
+                    "relevantCandidateIds": ["candidate-04"],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "chunk-qrels.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            attached = load_chunk_qrels(path, [query], require_exact=True)
+
+        self.assertEqual(attached[0].expected_candidate_ids, ("candidate-04",))
+        self.assertNotIn(
+            "same-scene-wrong-range",
+            attached[0].expected_candidate_ids,
+        )
+
+    def test_chunk_qrels_reject_an_unlabelled_candidate_present_positive(self) -> None:
+        query = _query()
+        payload = {
+            "schemaVersion": 1,
+            "annotations": [
+                {
+                    "queryId": query.query_id,
+                    "relevantCandidateIds": [],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "chunk-qrels.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "requires an exact chunk qrel"):
+                load_chunk_qrels(path, [query], require_exact=True)
+
     def test_parity_loader_requires_a_positive_and_negative_per_group(self) -> None:
         rows = [
             {
@@ -214,7 +278,7 @@ class Gate2RankingAndInjectionTests(unittest.TestCase):
 
         self.assertNotIn("inadmissible", [candidate.candidate_id for candidate in injected])
 
-    def test_injection_prioritizes_distinct_scenes_then_backfills(self) -> None:
+    def test_injection_preserves_admitted_scene_quotas_but_uses_chunk_scores(self) -> None:
         query = _query()
         first = query.candidates[0].model_copy(
             update={"scene_id": "same", "scene_title": "Same"}
@@ -246,19 +310,48 @@ class Gate2RankingAndInjectionTests(unittest.TestCase):
             candidate.candidate_id: 100.0 - index
             for index, candidate in enumerate(query.candidates)
         }
+        scores[second.candidate_id] = 101.0
 
         ranking = rank_candidates(query, method="reranker", scores=scores)
         injected = select_injected_candidates(query, ranking, hybrid=True)
 
         self.assertEqual(
             [candidate.candidate_id for candidate in injected],
-            [first.candidate_id, third.candidate_id, second.candidate_id],
+            [second.candidate_id, first.candidate_id, third.candidate_id],
+        )
+        baseline = select_injected_candidates(
+            query,
+            rank_candidates(query, method="rrf"),
+            hybrid=True,
+        )
+        self.assertCountEqual(
+            [candidate.scene_id for candidate in injected],
+            [candidate.scene_id for candidate in baseline],
         )
 
 
 class Gate2MetricsTests(unittest.TestCase):
     def test_evaluation_reports_chunk_scene_and_injection_metrics(self) -> None:
         query = _query(relevant_rank=4)
+        first = query.candidates[0].model_copy(
+            update={
+                "scene_id": "scene-gold",
+                "scene_title": "Gold scene",
+                "relevant": True,
+            }
+        )
+        query = Gate2Query.model_validate(
+            {
+                **query.model_dump(),
+                "candidates": [
+                    first.model_dump(),
+                    *[
+                        candidate.model_dump()
+                        for candidate in query.candidates[1:]
+                    ],
+                ],
+            }
+        )
         hybrid = evaluate_method([query], method="rrf")
         scores = {candidate.candidate_id: 0.0 for candidate in query.candidates}
         scores["candidate-04"] = 10.0
@@ -269,11 +362,12 @@ class Gate2MetricsTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(hybrid.chunk.mrr, 0.25)
-        self.assertAlmostEqual(hybrid.scene.mrr, 0.25)
+        self.assertAlmostEqual(hybrid.scene.mrr, 1.0)
         self.assertEqual(hybrid.queries[0].positive_chunk_rank, 4)
         self.assertEqual(reranked.chunk.mrr, 1.0)
         self.assertEqual(reranked.scene.recall_at_1, 1.0)
         self.assertEqual(reranked.injection.gold_scene_inclusion, 1.0)
+        self.assertEqual(reranked.injection.gold_chunk_inclusion, 1.0)
         self.assertGreaterEqual(reranked.injection.junk_injection_rate, 0.0)
 
     def test_scene_recall_is_binary_when_a_query_has_multiple_gold_scenes(self) -> None:
@@ -292,6 +386,7 @@ class Gate2MetricsTests(unittest.TestCase):
             query="二つの正解場面のどちらか",
             query_slice="semantic",
             expected_scene_titles=["Gold scene", "Second gold scene"],
+            expected_candidate_ids=["candidate-01", "candidate-04"],
             min_score=0.80,
             gate_score=0.85,
             rescue_margin=0.05,
@@ -339,9 +434,30 @@ class Gate2MetricsTests(unittest.TestCase):
 
     def test_top30_reports_rescues_below_twelve_and_added_hard_negatives(self) -> None:
         query = _query(relevant_rank=20)
+        first = query.candidates[0].model_copy(
+            update={
+                "scene_id": "scene-gold",
+                "scene_title": "Gold scene",
+                "relevant": True,
+            }
+        )
+        query = Gate2Query.model_validate(
+            {
+                **query.model_dump(),
+                "candidates": [
+                    first.model_dump(),
+                    *[
+                        candidate.model_dump()
+                        for candidate in query.candidates[1:]
+                    ],
+                ],
+            }
+        )
         scores = {
             candidate.candidate_id: (
-                10.0 if candidate.relevant else -float(candidate.rrf_rank)
+                10.0
+                if candidate.candidate_id in query.expected_candidate_ids
+                else -float(candidate.rrf_rank)
             )
             for candidate in query.candidates
         }

@@ -4,10 +4,6 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { invoke } from "@/lib/tauri";
 import { isCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { isCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
-import {
-  selectDenseRecallHitsWithPolicy,
-  selectHybridRecallHitsWithPolicy,
-} from "./hybridRecallSelection";
 import { isSemanticRerankerDevShadowEnabled } from "./semanticRerankerMode";
 
 export type SemanticRerankerShadowLanguage = "ja" | "en";
@@ -52,6 +48,7 @@ export interface SemanticRerankerScoreResult {
 
 export interface SemanticRerankerShadowInput {
   requestId: string;
+  sessionId?: string | null;
   scope: SemanticRerankerShadowScope;
   language: SemanticRerankerShadowLanguage;
   query: {
@@ -311,37 +308,27 @@ function counterfactualInjection(
   input: SemanticRerankerShadowInput,
   ranking: readonly SemanticSearchHit[],
 ): SemanticSearchHit[] {
-  const rerankedScenePosition = new Map<string, number>();
-  for (const hit of ranking) {
-    if (!rerankedScenePosition.has(hit.sceneId)) {
-      rerankedScenePosition.set(hit.sceneId, rerankedScenePosition.size);
-    }
-  }
-  const rankScenes = (admittedScenes: readonly SemanticSearchHit[]) =>
-    [...admittedScenes].sort(
-      (left, right) =>
-        (rerankedScenePosition.get(left.sceneId) ?? Number.MAX_SAFE_INTEGER) -
-          (rerankedScenePosition.get(right.sceneId) ??
-            Number.MAX_SAFE_INTEGER) ||
-        left.sceneId.localeCompare(right.sceneId),
+  const remainingByScene = new Map<string, number>();
+  for (const hit of input.baselineInjectedHits) {
+    remainingByScene.set(
+      hit.sceneId,
+      (remainingByScene.get(hit.sceneId) ?? 0) + 1,
     );
-  return input.hybrid
-    ? selectHybridRecallHitsWithPolicy(input.denseHits, input.sparseSceneIds, {
-        excludeSceneIds: input.excludeSceneIds,
-        minScore: input.minScore,
-        gateScore: input.gateScore,
-        maxChunks: input.maxChunks,
-        rescueMargin: input.rescueMargin,
-        rrfK: input.rrfK ?? 60,
-        rankScenes,
-      })
-    : selectDenseRecallHitsWithPolicy(input.denseHits, {
-        excludeSceneIds: input.excludeSceneIds,
-        minScore: input.minScore,
-        gateScore: input.gateScore,
-        maxChunks: input.maxChunks,
-        rankScenes,
-      });
+  }
+
+  const selected: SemanticSearchHit[] = [];
+  for (const hit of ranking) {
+    const remaining = remainingByScene.get(hit.sceneId) ?? 0;
+    if (remaining <= 0) continue;
+    selected.push(hit);
+    remainingByScene.set(hit.sceneId, remaining - 1);
+  }
+  if (selected.length !== input.baselineInjectedHits.length) {
+    throw new Error(
+      "semantic reranker could not preserve admitted scene quotas",
+    );
+  }
+  return selected;
 }
 
 function goldPosition(
@@ -464,9 +451,10 @@ export function buildSemanticRerankerShadowComparison(
 }
 
 /**
- * Reorder only candidates admitted by the existing production policy.
- * Dense gates, sparse rescue, exclusions, and the injection cap stay
- * authoritative inside `counterfactualInjection`.
+ * Keep the scene quotas admitted by the existing production policy, then let
+ * the reranker choose and order chunks only within those admitted scenes.
+ * Dense gates, sparse rescue, exclusions, and the injection cap remain
+ * authoritative through `baselineInjectedHits`.
  */
 export function buildSemanticRerankerAppliedHits(
   input: SemanticRerankerShadowInput,

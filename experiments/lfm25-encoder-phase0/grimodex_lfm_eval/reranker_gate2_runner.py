@@ -24,12 +24,14 @@ from .reranker_gate2 import (
     compare_candidate_depths,
     compare_to_hybrid,
     evaluate_method,
+    load_chunk_qrels,
     load_gate2_jsonl,
 )
 from .reranker_phase0b import (
     OnnxRerankerRuntime,
     load_onnx_reranker,
     load_phase0b_config,
+    sha256_file,
 )
 
 
@@ -194,6 +196,10 @@ def _quality_payload(
             reranker.injection.gold_scene_inclusion
             - rrf.injection.gold_scene_inclusion
         ),
+        "goldChunkInclusionDelta": (
+            reranker.injection.gold_chunk_inclusion
+            - rrf.injection.gold_chunk_inclusion
+        ),
         "junkInjectionRateDelta": (
             reranker.injection.junk_injection_rate
             - rrf.injection.junk_injection_rate
@@ -205,6 +211,7 @@ def _quality_payload(
     }
     product_safety["passed"] = (
         product_safety["goldSceneInclusionDelta"] >= -1e-12
+        and product_safety["goldChunkInclusionDelta"] >= -1e-12
         and product_safety["junkInjectionRateDelta"] <= 1e-12
         and product_safety["noMatchInjectionRateDelta"] <= 1e-12
     )
@@ -223,13 +230,17 @@ def run_gate2(
     *,
     config_path: Path,
     candidate_path: Path,
+    chunk_qrels_path: Path,
     model_key: str,
     thread_count: int,
     batch_size: int,
 ) -> dict[str, Any]:
     config = load_phase0b_config(config_path)
     model = config.model(model_key)
-    all_queries = load_gate2_jsonl(candidate_path)
+    all_queries = load_chunk_qrels(
+        chunk_qrels_path,
+        load_gate2_jsonl(candidate_path),
+    )
     queries = [query for query in all_queries if query.language == model.language]
     if not queries:
         raise ValueError(
@@ -327,7 +338,7 @@ def run_gate2(
     else:
         overall = "Hold"
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "createdAt": datetime.now(UTC).isoformat(),
         "modelKey": model.key,
         "modelId": model.model_id,
@@ -336,6 +347,9 @@ def run_gate2(
         "artifactSha256": model.artifact_sha256,
         "manifestHash": manifest_hash,
         "candidateFile": str(candidate_path),
+        "candidateFileSha256": sha256_file(candidate_path),
+        "chunkQrelsFile": str(chunk_qrels_path),
+        "chunkQrelsSha256": sha256_file(chunk_qrels_path),
         "queryCount": len(queries),
         "positiveQueryCount": sum(
             bool(query.expected_scene_titles) for query in queries
@@ -366,6 +380,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--candidates", type=Path, required=True)
+    parser.add_argument("--chunk-qrels", type=Path, required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--threads", type=int, required=True)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -375,6 +390,7 @@ def main() -> int:
         report = run_gate2(
             config_path=arguments.config.resolve(),
             candidate_path=arguments.candidates.resolve(),
+            chunk_qrels_path=arguments.chunk_qrels.resolve(),
             model_key=arguments.model,
             thread_count=arguments.threads,
             batch_size=arguments.batch_size,
