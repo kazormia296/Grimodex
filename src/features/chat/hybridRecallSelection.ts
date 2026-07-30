@@ -1,5 +1,22 @@
 import type { SemanticSearchHit } from "@/features/semantic-search/api";
 
+type RecallSceneRanker = (
+  admittedScenes: readonly SemanticSearchHit[],
+) => readonly SemanticSearchHit[];
+
+export interface DenseRecallHitSelectionOptions {
+  excludeSceneIds: readonly string[];
+  minScore: number;
+  gateScore: number;
+  maxChunks: number;
+  /**
+   * Reorder only scenes already admitted by the production dense policy.
+   * Secondary chunks stay attached to their admitted scene and cannot be
+   * introduced by the callback.
+   */
+  rankScenes?: RecallSceneRanker;
+}
+
 export interface HybridRecallHitSelectionOptions {
   excludeSceneIds: readonly string[];
   minScore: number;
@@ -11,9 +28,91 @@ export interface HybridRecallHitSelectionOptions {
    * Reorder the already-admitted best chunk for each scene. The callback
    * cannot add candidates or replace a scene's production-authoritative hit.
    */
-  rankScenes?: (
-    admittedScenes: readonly SemanticSearchHit[],
-  ) => readonly SemanticSearchHit[];
+  rankScenes?: RecallSceneRanker;
+}
+
+function applySceneRanking(
+  admittedScenes: readonly SemanticSearchHit[],
+  rankScenes: RecallSceneRanker | undefined,
+): SemanticSearchHit[] {
+  const defaultRanked = [...admittedScenes];
+  if (!rankScenes) return defaultRanked;
+
+  const admittedByScene = new Map(
+    defaultRanked.map((hit) => [hit.sceneId, hit] as const),
+  );
+  const seen = new Set<string>();
+  const customRanked: SemanticSearchHit[] = [];
+  for (const rankedHit of rankScenes(defaultRanked)) {
+    const admitted = admittedByScene.get(rankedHit.sceneId);
+    if (!admitted || seen.has(admitted.sceneId)) continue;
+    seen.add(admitted.sceneId);
+    customRanked.push(admitted);
+  }
+  for (const hit of defaultRanked) {
+    if (seen.has(hit.sceneId)) continue;
+    seen.add(hit.sceneId);
+    customRanked.push(hit);
+  }
+  return customRanked;
+}
+
+/**
+ * Production-authoritative dense-only admission shared by the live fallback
+ * and reranker shadow. The admitted candidate set matches the historical
+ * distinct-scene-first/backfill selector; an optional ranker may reorder only
+ * those admitted scene groups.
+ */
+export function selectDenseRecallHitsWithPolicy(
+  denseHits: readonly SemanticSearchHit[],
+  options: DenseRecallHitSelectionOptions,
+): SemanticSearchHit[] {
+  if (options.maxChunks <= 0) return [];
+
+  const excluded = new Set(options.excludeSceneIds);
+  const sorted = denseHits
+    .filter(
+      (hit) => !excluded.has(hit.sceneId) && hit.score >= options.minScore,
+    )
+    .sort((left, right) => right.score - left.score);
+  if (sorted.length === 0 || sorted[0]!.score < options.gateScore) return [];
+
+  const seenScenes = new Set<string>();
+  const distinct: SemanticSearchHit[] = [];
+  const leftovers: SemanticSearchHit[] = [];
+  for (const hit of sorted) {
+    if (seenScenes.has(hit.sceneId)) leftovers.push(hit);
+    else {
+      seenScenes.add(hit.sceneId);
+      distinct.push(hit);
+    }
+  }
+
+  const productionRanked = [...distinct, ...leftovers]
+    .slice(0, options.maxChunks)
+    .sort((left, right) => right.score - left.score);
+  if (!options.rankScenes) return productionRanked;
+
+  const admittedSceneWinners: SemanticSearchHit[] = [];
+  const admittedSceneIds = new Set<string>();
+  for (const hit of productionRanked) {
+    if (admittedSceneIds.has(hit.sceneId)) continue;
+    admittedSceneIds.add(hit.sceneId);
+    admittedSceneWinners.push(hit);
+  }
+  const rerankedScenes = applySceneRanking(
+    admittedSceneWinners,
+    options.rankScenes,
+  );
+  const scenePosition = new Map(
+    rerankedScenes.map((hit, index) => [hit.sceneId, index] as const),
+  );
+  return [...productionRanked].sort(
+    (left, right) =>
+      (scenePosition.get(left.sceneId) ?? Number.MAX_SAFE_INTEGER) -
+        (scenePosition.get(right.sceneId) ?? Number.MAX_SAFE_INTEGER) ||
+      right.score - left.score,
+  );
 }
 
 /**
@@ -77,26 +176,7 @@ export function selectHybridRecallHitsWithPolicy(
       left.hit.sceneId.localeCompare(right.hit.sceneId),
   );
   const defaultRanked = eligible.map(({ hit }) => hit);
-  let ranked = defaultRanked;
-  if (options.rankScenes) {
-    const admittedByScene = new Map(
-      defaultRanked.map((hit) => [hit.sceneId, hit] as const),
-    );
-    const seen = new Set<string>();
-    const customRanked: SemanticSearchHit[] = [];
-    for (const rankedHit of options.rankScenes(defaultRanked)) {
-      const admitted = admittedByScene.get(rankedHit.sceneId);
-      if (!admitted || seen.has(admitted.sceneId)) continue;
-      seen.add(admitted.sceneId);
-      customRanked.push(admitted);
-    }
-    for (const hit of defaultRanked) {
-      if (seen.has(hit.sceneId)) continue;
-      seen.add(hit.sceneId);
-      customRanked.push(hit);
-    }
-    ranked = customRanked;
-  }
+  const ranked = applySceneRanking(defaultRanked, options.rankScenes);
 
   const chosen = ranked.slice(0, options.maxChunks);
   if (densePass && chosen.length < options.maxChunks) {

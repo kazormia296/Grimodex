@@ -184,6 +184,34 @@ describe("buildSemanticRerankerShadowComparison", () => {
       "hash-scene-b-20",
     ]);
   });
+
+  it("matches dense-only production injection when sparse fallback is active", () => {
+    const aBest = hit("scene-a", 0.95, 0);
+    const aSecond = hit("scene-a", 0.94, 10);
+    const bBest = hit("scene-b", 0.81, 20);
+    const baselineInjectedHits = [aBest, aSecond, bBest];
+    const comparison = buildSemanticRerankerShadowComparison(
+      input({
+        denseHits: baselineInjectedHits,
+        sparseSceneIds: [],
+        baselineInjectedHits,
+        hybrid: false,
+      }),
+      scoreResult(baselineInjectedHits),
+    );
+
+    expect(comparison.baselineInjectedCandidateHashes).toEqual([
+      "hash-scene-a-0",
+      "hash-scene-a-10",
+      "hash-scene-b-20",
+    ]);
+    expect(comparison.counterfactualInjectedCandidateHashes).toEqual(
+      comparison.baselineInjectedCandidateHashes,
+    );
+    expect(comparison.injectedSetChanged).toBe(false);
+    expect(comparison.injectedOrderChanged).toBe(false);
+    expect(comparison.firstPresentedChanged).toBe(false);
+  });
 });
 
 describe("SemanticRerankerShadowCoordinator", () => {

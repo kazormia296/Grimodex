@@ -189,8 +189,10 @@ positive/no-match contracts, human-assigned work-family split isolation, exact
 report contains aggregate counts and rates only, with separate
 candidate-generation, conditional-reranker, method-specific/common admission,
 and end-to-end denominators. Readiness separately reports quantity, holdout
-coverage, and maximum contribution from one work family; it never enables the
-reranker by itself.
+coverage, named-slice floors, and maximum family contribution for positive,
+no-match, holdout-positive, and holdout-no-match evidence; it never enables
+the reranker by itself. Query deduplication is scoped to a work family, so the
+same question remains valid across independent works.
 
 The complete privacy contract, staged sample floors, slice taxonomy, and
 commands are in

@@ -133,6 +133,7 @@ function isPrivateIpv4(hostname: string): boolean {
 
 function isPrivateIpv6(hostname: string): boolean {
   const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!normalized.includes(":")) return false;
   return (
     normalized === "::1" ||
     normalized === "::" ||

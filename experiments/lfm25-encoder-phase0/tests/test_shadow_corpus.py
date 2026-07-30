@@ -164,6 +164,7 @@ def _verified_label(
     work_family_name: str | None = None,
     relevant_candidate_hash: str | None = None,
     reference_scene_hashes: tuple[str, ...] = (_hash("reference-scene"),),
+    slices: tuple[str, ...] = ("long-query", "truncated-512"),
 ) -> ShadowLabelRecord:
     payload = draft.model_dump(by_alias=True)
     payload["workFamilyHash"] = _hash(
@@ -172,7 +173,7 @@ def _verified_label(
     payload["reviewStatus"] = "human-verified"
     payload["queryKind"] = query_kind
     payload["noMatchType"] = no_match_type
-    payload["slices"] = ["long-query", "truncated-512"]
+    payload["slices"] = list(slices)
     payload["referenceSceneHashes"] = list(reference_scene_hashes)
     if split is not None:
         payload["split"] = split
@@ -343,6 +344,64 @@ class ShadowCorpusLabelContractTests(unittest.TestCase):
         with self.assertRaisesRegex(CorpusValidationError, "work family leakage"):
             pair_shadow_records(records, labels)
 
+    def test_pairing_allows_the_same_query_in_independent_work_families(
+        self,
+    ) -> None:
+        records = _load_records(
+            _shadow_record(
+                query_name="shared-question",
+                project_name="independent-work-a",
+            ),
+            _shadow_record(
+                query_name="shared-question",
+                project_name="independent-work-b",
+            ),
+        )
+        drafts = build_label_template(
+            records,
+            split="shadow-private-dev",
+        )
+        labels = [
+            _verified_label(
+                draft,
+                work_family_name=f"family-{draft.work_hash}",
+            )
+            for draft in drafts
+        ]
+
+        self.assertEqual(len(pair_shadow_records(records, labels)), 2)
+
+    def test_pairing_rejects_the_same_query_within_one_work_family(
+        self,
+    ) -> None:
+        records = _load_records(
+            _shadow_record(
+                query_name="shared-question",
+                project_name="derived-copy-a",
+            ),
+            _shadow_record(
+                query_name="shared-question",
+                project_name="derived-copy-b",
+            ),
+        )
+        drafts = build_label_template(
+            records,
+            split="shadow-private-dev",
+        )
+        labels = [
+            _verified_label(
+                draft,
+                work_family_name="shared-story-family",
+            )
+            for draft in drafts
+        ]
+
+        with self.assertRaisesRegex(
+            CorpusValidationError,
+            "duplicate query hash within one work family",
+        ):
+            pair_shadow_records(records, labels)
+
     def test_pairing_rejects_missing_or_extra_top_ten_union_candidates(self) -> None:
         records = _load_records(_shadow_record(reverse_reranker=True))
         draft = build_label_template(
@@ -511,6 +570,7 @@ class ShadowCorpusReportTests(unittest.TestCase):
         serialized = json.dumps(report, ensure_ascii=False)
         readiness = report["stageReadiness"]["shadow-initial"]["ja"]
 
+        self.assertEqual(report["schemaVersion"], 2)
         self.assertFalse(readiness["quantityReady"])
         self.assertEqual(readiness["deficits"]["positive"], 49)
         self.assertEqual(readiness["deficits"]["noMatch"], 30)
@@ -577,7 +637,7 @@ class ShadowCorpusReportTests(unittest.TestCase):
                     holdout_works=2,
                     holdout_positive=1,
                     holdout_no_match=1,
-                    max_work_contribution=0.5,
+                    max_work_contribution=1.0,
                     requires_frozen_holdout=True,
                 )
             },
@@ -637,7 +697,306 @@ class ShadowCorpusReportTests(unittest.TestCase):
         self.assertTrue(readiness["holdoutReady"])
         self.assertFalse(readiness["contributionReady"])
         self.assertFalse(readiness["evidenceReady"])
-        self.assertEqual(readiness["observed"]["maxWorkContribution"], 0.75)
+        self.assertEqual(
+            readiness["observed"]["maxPositiveFamilyContribution"],
+            0.75,
+        )
+
+    def test_contribution_readiness_caps_positive_and_no_match_separately(
+        self,
+    ) -> None:
+        records = _load_records(
+            *(
+                _shadow_record(
+                    query_name=f"positive-{index}",
+                    project_name=f"positive-work-{index}",
+                )
+                for index in range(4)
+            ),
+            _shadow_record(
+                query_name="no-match-a",
+                project_name="no-match-work-a",
+                relevant_scene_rank=None,
+            ),
+            _shadow_record(
+                query_name="no-match-b",
+                project_name="no-match-work-b",
+                relevant_scene_rank=None,
+            ),
+        )
+        drafts = build_label_template(
+            records,
+            split="shadow-private-dev",
+        )
+        labels = []
+        no_match_hashes = {_hash("no-match-a"), _hash("no-match-b")}
+        for draft in drafts:
+            if draft.query_hash in no_match_hashes:
+                labels.append(
+                    _verified_label(
+                        draft,
+                        query_kind="no-match",
+                        no_match_type="unsupported-in-workspace",
+                        work_family_name="no-match-monopoly",
+                        reference_scene_hashes=(),
+                    )
+                )
+            else:
+                labels.append(
+                    _verified_label(
+                        draft,
+                        work_family_name=f"family-{draft.work_hash}",
+                        relevant_candidate_hash=_hash("candidate-1"),
+                    )
+                )
+
+        report = build_safe_report(
+            pair_shadow_records(records, labels),
+            holdout_lock_valid=False,
+            stage_targets={
+                "review": StageTarget(
+                    positive=4,
+                    no_match=2,
+                    works=5,
+                    holdout_works=0,
+                    holdout_positive=0,
+                    holdout_no_match=0,
+                    max_work_contribution=0.5,
+                    requires_frozen_holdout=False,
+                )
+            },
+        )
+        readiness = report["stageReadiness"]["review"]["ja"]
+
+        self.assertTrue(readiness["quantityReady"])
+        self.assertEqual(
+            readiness["observed"]["maxPositiveFamilyContribution"],
+            0.25,
+        )
+        self.assertEqual(
+            readiness["observed"]["maxNoMatchFamilyContribution"],
+            1.0,
+        )
+        self.assertFalse(readiness["contributionReady"])
+        self.assertFalse(readiness["evidenceReady"])
+
+    def test_contribution_readiness_caps_holdout_query_kinds_separately(
+        self,
+    ) -> None:
+        query_specs = (
+            ("holdout-positive-a", "holdout", "positive"),
+            ("holdout-positive-b", "holdout", "positive"),
+            ("dev-positive-a", "dev", "positive"),
+            ("dev-positive-b", "dev", "positive"),
+            ("holdout-no-match-a", "holdout", "no-match"),
+            ("holdout-no-match-b", "holdout", "no-match"),
+            ("dev-no-match-a", "dev", "no-match"),
+            ("dev-no-match-b", "dev", "no-match"),
+        )
+        records = _load_records(
+            *(
+                _shadow_record(
+                    query_name=query_name,
+                    project_name=f"project-{query_name}",
+                    relevant_scene_rank=(
+                        None if query_kind == "no-match" else 1
+                    ),
+                )
+                for query_name, _split, query_kind in query_specs
+            )
+        )
+        specs_by_hash = {
+            _hash(query_name): (query_name, split, query_kind)
+            for query_name, split, query_kind in query_specs
+        }
+        drafts = build_label_template(
+            records,
+            split="shadow-private-dev",
+        )
+        labels = []
+        for draft in drafts:
+            query_name, split, query_kind = specs_by_hash[draft.query_hash]
+            family_name = (
+                f"monopoly-{query_kind}"
+                if split == "holdout"
+                else f"family-{query_name}"
+            )
+            labels.append(
+                _verified_label(
+                    draft,
+                    query_kind=query_kind,
+                    no_match_type=(
+                        "unsupported-in-workspace"
+                        if query_kind == "no-match"
+                        else None
+                    ),
+                    split=(
+                        "frozen-holdout"
+                        if split == "holdout"
+                        else None
+                    ),
+                    work_family_name=family_name,
+                    relevant_candidate_hash=(
+                        _hash("candidate-1")
+                        if query_kind == "positive"
+                        else None
+                    ),
+                    reference_scene_hashes=(
+                        (_hash("reference-scene"),)
+                        if query_kind == "positive"
+                        else ()
+                    ),
+                )
+            )
+
+        report = build_safe_report(
+            pair_shadow_records(records, labels),
+            holdout_lock_valid=True,
+            stage_targets={
+                "review": StageTarget(
+                    positive=4,
+                    no_match=4,
+                    works=6,
+                    holdout_works=2,
+                    holdout_positive=2,
+                    holdout_no_match=2,
+                    max_work_contribution=0.5,
+                    requires_frozen_holdout=True,
+                )
+            },
+        )
+        readiness = report["stageReadiness"]["review"]["ja"]
+
+        self.assertTrue(readiness["quantityReady"])
+        self.assertTrue(readiness["holdoutReady"])
+        self.assertEqual(
+            readiness["observed"]["maxPositiveFamilyContribution"],
+            0.5,
+        )
+        self.assertEqual(
+            readiness["observed"]["maxNoMatchFamilyContribution"],
+            0.5,
+        )
+        self.assertEqual(
+            readiness["observed"][
+                "maxHoldoutPositiveFamilyContribution"
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            readiness["observed"][
+                "maxHoldoutNoMatchFamilyContribution"
+            ],
+            1.0,
+        )
+        self.assertFalse(readiness["contributionReady"])
+        self.assertFalse(readiness["evidenceReady"])
+
+    def test_evidence_readiness_requires_named_slice_floors(self) -> None:
+        records = _load_records(
+            _shadow_record(
+                query_name="positive",
+                project_name="positive-work",
+            ),
+            _shadow_record(
+                query_name="no-match",
+                project_name="no-match-work",
+                relevant_scene_rank=None,
+            ),
+        )
+        drafts = build_label_template(
+            records,
+            split="shadow-private-dev",
+        )
+        labels = []
+        for draft in drafts:
+            if draft.query_hash == _hash("no-match"):
+                labels.append(
+                    _verified_label(
+                        draft,
+                        query_kind="no-match",
+                        no_match_type="unsupported-in-workspace",
+                        reference_scene_hashes=(),
+                        slices=("question-only",),
+                    )
+                )
+            else:
+                labels.append(
+                    _verified_label(
+                        draft,
+                        relevant_candidate_hash=_hash("candidate-1"),
+                        slices=("question-only",),
+                    )
+                )
+
+        target = StageTarget(
+            positive=1,
+            no_match=1,
+            works=2,
+            holdout_works=0,
+            holdout_positive=0,
+            holdout_no_match=0,
+            max_work_contribution=1.0,
+            requires_frozen_holdout=False,
+            slice_minimums={
+                "hard-no-match": 1,
+                "scene-tail-distractor": 1,
+                "truncated-512": 1,
+                "similar-scene": 1,
+            },
+        )
+        report = build_safe_report(
+            pair_shadow_records(records, labels),
+            holdout_lock_valid=False,
+            stage_targets={"review": target},
+        )
+        readiness = report["stageReadiness"]["review"]["ja"]
+
+        self.assertTrue(readiness["quantityReady"])
+        self.assertTrue(readiness["contributionReady"])
+        self.assertFalse(readiness["sliceReady"])
+        self.assertFalse(readiness["evidenceReady"])
+        self.assertEqual(
+            readiness["deficits"]["slices"],
+            {
+                "hard-no-match": 1,
+                "scene-tail-distractor": 1,
+                "similar-scene": 1,
+                "truncated-512": 1,
+            },
+        )
+
+        covered_labels = []
+        for draft in drafts:
+            if draft.query_hash == _hash("no-match"):
+                covered_labels.append(
+                    _verified_label(
+                        draft,
+                        query_kind="no-match",
+                        no_match_type="unsupported-in-workspace",
+                        reference_scene_hashes=(),
+                        slices=(
+                            "hard-no-match",
+                            "scene-tail-distractor",
+                            "truncated-512",
+                        ),
+                    )
+                )
+            else:
+                covered_labels.append(
+                    _verified_label(
+                        draft,
+                        relevant_candidate_hash=_hash("candidate-1"),
+                        slices=("similar-scene",),
+                    )
+                )
+        covered = build_safe_report(
+            pair_shadow_records(records, covered_labels),
+            holdout_lock_valid=False,
+            stage_targets={"review": target},
+        )["stageReadiness"]["review"]["ja"]
+        self.assertTrue(covered["sliceReady"])
+        self.assertTrue(covered["evidenceReady"])
 
     def test_holdout_lock_detects_label_or_ranking_drift(self) -> None:
         records = _load_records(

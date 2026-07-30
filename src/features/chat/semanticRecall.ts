@@ -5,7 +5,10 @@ import {
   scheduleSemanticRerankerShadow,
   type SemanticRerankerShadowScope,
 } from "./semanticRerankerShadow";
-import { selectHybridRecallHitsWithPolicy } from "./hybridRecallSelection";
+import {
+  selectDenseRecallHitsWithPolicy,
+  selectHybridRecallHitsWithPolicy,
+} from "./hybridRecallSelection";
 
 /**
  * Layer4 RAG (semantic recall): drafting チャットの文脈に、意味検索で見つけた
@@ -188,36 +191,12 @@ export function selectSemanticRecallChunks(
   const gateScore = opts.gateScore ?? SEMANTIC_RECALL_TOP1_GATE;
   const maxChunks = opts.maxChunks ?? SEMANTIC_RECALL_MAX_CHUNKS;
   const maxChunkChars = opts.maxChunkChars ?? SEMANTIC_RECALL_MAX_CHUNK_CHARS;
-  const excluded = new Set(opts.excludeSceneIds);
-
-  // 除外シーンを除き、床 (minScore) 以上だけをスコア降順に。
-  const sorted = hits
-    .filter((h) => !excluded.has(h.sceneId) && h.score >= minScore)
-    .sort((a, b) => b.score - a.score);
-
-  // top-1 ゲート: 最良候補がゲートに届かなければ何も注入しない (precision)。
-  if (sorted.length === 0 || sorted[0].score < gateScore) return [];
-
-  // distinct シーン優先 + backfill: まず各シーンの最良チャンク (distinct) を集め、
-  // 枠が余ったら同一シーンの二番手チャンク (leftover) で埋める。これにより
-  // 「別シーンという多様な選択肢がある時だけ」二番手パッセージを譲る — 関連シーンが
-  // 少ないときは同一シーンの別チャンク (別内容) を取りこぼさない。
-  const seenScenes = new Set<string>();
-  const distinct: SemanticSearchHit[] = [];
-  const leftover: SemanticSearchHit[] = [];
-  for (const h of sorted) {
-    if (seenScenes.has(h.sceneId)) {
-      leftover.push(h);
-    } else {
-      seenScenes.add(h.sceneId);
-      distinct.push(h);
-    }
-  }
-  const chosen = [...distinct, ...leftover]
-    .slice(0, maxChunks)
-    .sort((a, b) => b.score - a.score);
-
-  return chosen.map((h) => ({
+  return selectDenseRecallHitsWithPolicy(hits, {
+    excludeSceneIds: opts.excludeSceneIds,
+    minScore,
+    gateScore,
+    maxChunks,
+  }).map((h) => ({
     sceneId: h.sceneId,
     sceneTitle: h.sceneTitle,
     chunkText: truncateChunk(h.chunkText, maxChunkChars),

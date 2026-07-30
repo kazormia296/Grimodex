@@ -4,7 +4,10 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { invoke } from "@/lib/tauri";
 import { isCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { isCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
-import { selectHybridRecallHitsWithPolicy } from "./hybridRecallSelection";
+import {
+  selectDenseRecallHitsWithPolicy,
+  selectHybridRecallHitsWithPolicy,
+} from "./hybridRecallSelection";
 
 export type SemanticRerankerShadowLanguage = "ja" | "en";
 
@@ -311,27 +314,31 @@ function counterfactualInjection(
       rerankedScenePosition.set(hit.sceneId, rerankedScenePosition.size);
     }
   }
-  return selectHybridRecallHitsWithPolicy(
-    input.denseHits,
-    input.hybrid ? input.sparseSceneIds : [],
-    {
-      excludeSceneIds: input.excludeSceneIds,
-      minScore: input.minScore,
-      gateScore: input.gateScore,
-      maxChunks: input.maxChunks,
-      rescueMargin: input.rescueMargin,
-      rrfK: input.rrfK ?? 60,
-      rankScenes: (admittedScenes) =>
-        [...admittedScenes].sort(
-          (left, right) =>
-            (rerankedScenePosition.get(left.sceneId) ??
-              Number.MAX_SAFE_INTEGER) -
-              (rerankedScenePosition.get(right.sceneId) ??
-                Number.MAX_SAFE_INTEGER) ||
-            left.sceneId.localeCompare(right.sceneId),
-        ),
-    },
-  );
+  const rankScenes = (admittedScenes: readonly SemanticSearchHit[]) =>
+    [...admittedScenes].sort(
+      (left, right) =>
+        (rerankedScenePosition.get(left.sceneId) ?? Number.MAX_SAFE_INTEGER) -
+          (rerankedScenePosition.get(right.sceneId) ??
+            Number.MAX_SAFE_INTEGER) ||
+        left.sceneId.localeCompare(right.sceneId),
+    );
+  return input.hybrid
+    ? selectHybridRecallHitsWithPolicy(input.denseHits, input.sparseSceneIds, {
+        excludeSceneIds: input.excludeSceneIds,
+        minScore: input.minScore,
+        gateScore: input.gateScore,
+        maxChunks: input.maxChunks,
+        rescueMargin: input.rescueMargin,
+        rrfK: input.rrfK ?? 60,
+        rankScenes,
+      })
+    : selectDenseRecallHitsWithPolicy(input.denseHits, {
+        excludeSceneIds: input.excludeSceneIds,
+        minScore: input.minScore,
+        gateScore: input.gateScore,
+        maxChunks: input.maxChunks,
+        rankScenes,
+      });
 }
 
 function goldPosition(

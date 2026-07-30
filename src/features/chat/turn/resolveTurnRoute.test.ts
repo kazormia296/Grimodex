@@ -159,27 +159,34 @@ describe("resolveChatTurnRoute", () => {
     expect(isLocalInferenceRoute(route)).toBe(true);
   });
 
-  it("does not classify a public OpenAI-compatible endpoint as local", () => {
-    const route = resolveChatTurnRoute({
-      surface: "chat",
-      activeSettings: {
-        ...DEFAULT_AI_SETTINGS,
-        provider: "openai-compatible",
-        model: "remote-model",
-        openaiCompatibleEndpoints: [
-          {
-            id: "remote",
-            label: "Remote",
-            baseUrl: "https://inference.example.com/v1",
-          },
-        ],
-        activeOpenaiCompatibleEndpointId: "remote",
-      },
-      taskEffort: "medium",
-    });
+  it.each([
+    "https://inference.example.com/v1",
+    "https://fda.gov/v1",
+    "https://feature.example.com/v1",
+  ])(
+    "does not classify a public OpenAI-compatible endpoint as local: %s",
+    (baseUrl) => {
+      const route = resolveChatTurnRoute({
+        surface: "chat",
+        activeSettings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openai-compatible",
+          model: "remote-model",
+          openaiCompatibleEndpoints: [
+            {
+              id: "remote",
+              label: "Remote",
+              baseUrl,
+            },
+          ],
+          activeOpenaiCompatibleEndpointId: "remote",
+        },
+        taskEffort: "medium",
+      });
 
-    expect(isLocalInferenceRoute(route)).toBe(false);
-  });
+      expect(isLocalInferenceRoute(route)).toBe(false);
+    },
+  );
 
   it("routes Codex app-server and auto modes through the resident transport", () => {
     for (const codexTransport of ["app-server", "auto"] as const) {

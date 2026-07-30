@@ -76,12 +76,12 @@ union selected reranker top 10
 
 Every candidate in that deduplicated union receives exactly one grade:
 
-| Grade | Meaning                                      |
-| ----: | -------------------------------------------- |
-|     3 | Directly needed to answer the query          |
-|     2 | Useful and relevant                          |
-|     1 | Weakly related but not sufficient            |
-|     0 | Irrelevant, misleading, or unsupported       |
+| Grade | Meaning                                |
+| ----: | -------------------------------------- |
+|     3 | Directly needed to answer the query    |
+|     2 | Useful and relevant                    |
+|     1 | Weakly related but not sufficient      |
+|     0 | Irrelevant, misleading, or unsupported |
 
 Grades 2 and 3 count as relevant for binary Recall and injection summaries.
 The graded values remain available for a later NDCG report.
@@ -113,10 +113,13 @@ frozen-holdout
 ```
 
 Queries are never randomly divided across those splits. Both direct project
-leakage and derived-project family leakage are rejected. Duplicate query
-hashes are also rejected so repeated shadow runs cannot inflate the independent
-sample count. A language report also rejects mixed model IDs, revisions, or
-manifests; evidence from different model snapshots must be reported separately.
+leakage and derived-project family leakage are rejected. Repeated executions
+are deduplicated by `(workFamilyHash, queryHash)`, falling back to `workHash`
+while a draft label has no family assignment. The same natural-language
+question is therefore allowed in independent works, but cannot inflate the
+sample count within one story family. A language report also rejects mixed
+model IDs, revisions, or manifests; evidence from different model snapshots
+must be reported separately.
 
 After holdout labels are complete, `freeze-holdout` hashes the canonical
 combination of:
@@ -180,10 +183,23 @@ Readiness is reported independently for Japanese and English.
 | Default candidate   |      200 |      100 |             5 |             2 |               50 |               30 |                  35% |
 
 All counts are per language. These are minimum corpus floors, not statistical
-guarantees. The report exposes `quantityReady`, `holdoutReady`, and
-`contributionReady` independently. `evidenceReady` requires all three, but
-means only that the evidence package is ready for a product decision; it is
-not itself a product-enablement verdict.
+guarantees. The one-family cap is evaluated independently for positive,
+no-match, holdout-positive, and holdout-no-match queries. A large positive
+pool therefore cannot hide a no-match or holdout subset contributed by one
+story family.
+
+Named slice floors begin at the opt-in stage:
+
+| Stage               | Hard no-match | Scene-tail distractor | Truncated 512 | Similar scene |
+| ------------------- | ------------: | --------------------: | ------------: | ------------: |
+| Shadow initial      |             0 |                     0 |             0 |             0 |
+| Experimental opt-in |            15 |                    10 |            15 |            10 |
+| Default candidate   |            25 |                    15 |            30 |            20 |
+
+The report exposes `quantityReady`, `holdoutReady`, `contributionReady`, and
+`sliceReady` independently. `evidenceReady` requires all four, but means only
+that the evidence package is ready for a product decision; it is not itself a
+product-enablement verdict.
 
 ## Commands
 

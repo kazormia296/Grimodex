@@ -9,7 +9,7 @@ query, candidate, and scene identifier.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import math
@@ -366,6 +366,7 @@ class StageTarget:
     holdout_no_match: int
     max_work_contribution: float
     requires_frozen_holdout: bool
+    slice_minimums: Mapping[CorpusSlice, int] = field(default_factory=dict)
 
 
 DEFAULT_STAGE_TARGETS: Mapping[str, StageTarget] = {
@@ -388,6 +389,12 @@ DEFAULT_STAGE_TARGETS: Mapping[str, StageTarget] = {
         holdout_no_match=10,
         max_work_contribution=0.4,
         requires_frozen_holdout=True,
+        slice_minimums={
+            "hard-no-match": 15,
+            "scene-tail-distractor": 10,
+            "truncated-512": 15,
+            "similar-scene": 10,
+        },
     ),
     "default-candidate": StageTarget(
         positive=200,
@@ -398,6 +405,12 @@ DEFAULT_STAGE_TARGETS: Mapping[str, StageTarget] = {
         holdout_no_match=30,
         max_work_contribution=0.35,
         requires_frozen_holdout=True,
+        slice_minimums={
+            "hard-no-match": 25,
+            "scene-tail-distractor": 15,
+            "truncated-512": 30,
+            "similar-scene": 20,
+        },
     ),
 }
 
@@ -646,7 +659,7 @@ def pair_shadow_records(
     """Join private labels to safe shadow evidence and enforce work isolation."""
 
     indexed_records = _unique_records(records)
-    seen_queries: set[str] = set()
+    seen_queries: set[tuple[str, str]] = set()
     seen_label_keys: set[tuple[str, str]] = set()
     split_by_work: dict[str, CorpusSplit] = {}
     split_by_work_family: dict[str, CorpusSplit] = {}
@@ -661,11 +674,14 @@ def pair_shadow_records(
                 "duplicate private label for one work/query hash"
             )
         seen_label_keys.add(key)
-        if label.query_hash in seen_queries:
+        dedupe_family = label.work_family_hash or label.work_hash
+        query_key = (dedupe_family, label.query_hash)
+        if query_key in seen_queries:
             raise CorpusValidationError(
-                "duplicate query hash would over-count one query"
+                "duplicate query hash within one work family would "
+                "over-count one query"
             )
-        seen_queries.add(label.query_hash)
+        seen_queries.add(query_key)
 
         record = indexed_records.get(key)
         if record is None:
@@ -939,6 +955,18 @@ def _quality_summary(
     }
 
 
+def _max_family_contribution(
+    cases: Sequence[PairedShadowCase],
+) -> float | None:
+    if not cases:
+        return None
+    family_counts = Counter(
+        case.label.work_family_hash or case.label.work_hash
+        for case in cases
+    )
+    return max(family_counts.values()) / len(cases)
+
+
 def _language_summary(
     cases: Sequence[PairedShadowCase],
     language: CorpusLanguage,
@@ -976,16 +1004,6 @@ def _language_summary(
         for case in no_matches
         if case.label.split == "frozen-holdout"
     ]
-    family_counts = Counter(
-        case.label.work_family_hash
-        for case in verified
-        if case.label.work_family_hash is not None
-    )
-    max_work_contribution = (
-        max(family_counts.values()) / len(verified)
-        if verified and family_counts
-        else None
-    )
     no_match_types = Counter(
         case.label.no_match_type
         for case in no_matches
@@ -1019,7 +1037,14 @@ def _language_summary(
         "holdoutWorks": len(holdout_works),
         "holdoutPositive": len(holdout_positives),
         "holdoutNoMatch": len(holdout_no_matches),
-        "maxWorkContribution": max_work_contribution,
+        "maxPositiveFamilyContribution": _max_family_contribution(positives),
+        "maxNoMatchFamilyContribution": _max_family_contribution(no_matches),
+        "maxHoldoutPositiveFamilyContribution": _max_family_contribution(
+            holdout_positives
+        ),
+        "maxHoldoutNoMatchFamilyContribution": _max_family_contribution(
+            holdout_no_matches
+        ),
         "judgedCandidates": judged_candidates,
         "truncatedQueries": truncated_queries,
         "noMatchTypes": dict(sorted(no_match_types.items())),
@@ -1077,14 +1102,46 @@ def build_safe_report(
                     and not any(holdout_deficits.values())
                 )
             )
-            observed_contribution = observed["maxWorkContribution"]
-            contribution_ready = (
-                target.positive + target.no_match == 0
-                if observed_contribution is None
-                else observed_contribution <= target.max_work_contribution
+            contribution_fields = (
+                "maxPositiveFamilyContribution",
+                "maxNoMatchFamilyContribution",
+                "maxHoldoutPositiveFamilyContribution",
+                "maxHoldoutNoMatchFamilyContribution",
             )
+            contribution_deficits: dict[str, float | None] = {}
+            contribution_ready = True
+            for field_name in contribution_fields:
+                observed_contribution = observed[field_name]
+                if observed_contribution is None:
+                    contribution_deficits[field_name] = None
+                    continue
+                contribution_deficits[field_name] = max(
+                    0.0,
+                    observed_contribution - target.max_work_contribution,
+                )
+                contribution_ready = (
+                    contribution_ready
+                    and observed_contribution
+                    <= target.max_work_contribution
+                )
+            slice_targets = dict(sorted(target.slice_minimums.items()))
+            observed_slices = {
+                slice_name: observed["slices"].get(slice_name, 0)
+                for slice_name in slice_targets
+            }
+            slice_deficits = {
+                slice_name: max(
+                    0,
+                    required_count - observed_slices[slice_name],
+                )
+                for slice_name, required_count in slice_targets.items()
+            }
+            slice_ready = not any(slice_deficits.values())
             evidence_ready = (
-                quantity_ready and holdout_ready and contribution_ready
+                quantity_ready
+                and holdout_ready
+                and contribution_ready
+                and slice_ready
             )
             readiness[stage_name][language] = {
                 "targets": {
@@ -1094,7 +1151,8 @@ def build_safe_report(
                     "holdoutWorks": target.holdout_works,
                     "holdoutPositive": target.holdout_positive,
                     "holdoutNoMatch": target.holdout_no_match,
-                    "maxWorkContribution": target.max_work_contribution,
+                    "maxFamilyContribution": target.max_work_contribution,
+                    "slices": slice_targets,
                 },
                 "observed": {
                     "positive": observed["positive"],
@@ -1103,29 +1161,27 @@ def build_safe_report(
                     "holdoutWorks": observed["holdoutWorks"],
                     "holdoutPositive": observed["holdoutPositive"],
                     "holdoutNoMatch": observed["holdoutNoMatch"],
-                    "maxWorkContribution": observed_contribution,
+                    **{
+                        field_name: observed[field_name]
+                        for field_name in contribution_fields
+                    },
+                    "slices": observed_slices,
                 },
                 "deficits": {
                     **deficits,
                     **holdout_deficits,
-                    "maxWorkContribution": (
-                        None
-                        if observed_contribution is None
-                        else max(
-                            0.0,
-                            observed_contribution
-                            - target.max_work_contribution,
-                        )
-                    ),
+                    **contribution_deficits,
+                    "slices": slice_deficits,
                 },
                 "quantityReady": quantity_ready,
                 "holdoutReady": holdout_ready,
                 "contributionReady": contribution_ready,
+                "sliceReady": slice_ready,
                 "evidenceReady": evidence_ready,
                 "requiresFrozenHoldout": target.requires_frozen_holdout,
             }
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "privacyBoundary": (
             "aggregate-only; no workspace, project, query, candidate, scene, "
             "path, or manuscript identifiers"
