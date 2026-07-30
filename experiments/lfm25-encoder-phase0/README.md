@@ -201,7 +201,7 @@ evidence; they do not enable or apply a reranker.
 
 - Model: `LiquidAI/LFM2.5-Encoder-230M`
 - Revision: `0b649ad0c684378b03d4d8304f7577a662ab89bc`
-- Transformers: `5.1.0`, matching the pinned model configuration
+- Transformers: `5.5.0`, excluding the known pre-5.5 remote-code-execution ranges
 - Environment resolver: `uv 0.11.29`
 
 The model contains custom Python code. `trust_remote_code=True` is never used

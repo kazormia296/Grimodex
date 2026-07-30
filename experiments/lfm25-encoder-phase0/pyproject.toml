@@ -4,13 +4,13 @@ version = "0.2.0"
 description = "Reproducible offline evaluation for Grimodex encoder and reranker Phase 0 gates"
 requires-python = ">=3.11,<3.15"
 dependencies = [
-  "huggingface-hub==1.4.1",
+  "huggingface-hub==1.5.0",
   "onnxruntime==1.24.2",
   "psutil==7.2.2",
   "pydantic==2.12.5",
   "pyyaml==6.0.3",
   "tokenizers==0.22.2",
-  "transformers==5.1.0",
+  "transformers==5.5.0",
 ]
 
 [project.optional-dependencies]
