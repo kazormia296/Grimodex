@@ -127,9 +127,11 @@ production model.
 Gate 2 freezes one production-generated candidate pool per query before any
 reranker runs. The committed Japanese and English JSONL records carry the
 chunk text, dense score/rank, sparse rank, current RRF rank, scene identity,
-and relevance label for exactly 30 candidates. Rerankers may reorder these
-IDs, but cannot retrieve again or replace the current dense/sparse admission
-thresholds.
+and scene relevance label for exactly 30 candidates. Human-reviewed
+chunk-level qrels in `data/public/gate2/chunk-qrels.json` identify the exact
+passage ranges that answer each query. Rerankers may reorder these IDs and
+choose a better chunk inside an admitted scene, but cannot retrieve again or
+replace the current dense/sparse scene-admission thresholds.
 
 Before quality evaluation, the direct quantized tokenizer/ONNX path is checked
 against the pinned official FP32 ONNX and Hugging Face tokenizer on 12 fixed
@@ -156,6 +158,7 @@ make reranker-parity \
 make reranker-gate2 \
   PHASE0B_MODEL=ja_xsmall \
   PHASE0B_GATE2_CANDIDATES=data/public/gate2/candidates-ja.jsonl \
+  PHASE0B_GATE2_CHUNK_QRELS=data/public/gate2/chunk-qrels.json \
   PHASE0B_GATE2_THREADS=4
 ```
 
@@ -168,9 +171,11 @@ they are never compared with the current cosine/BGE thresholds.
 The completed Ryzen 5 3600 result and exact reproduction commands are recorded
 in [`PHASE0B_GATE2_RESULTS.md`](./PHASE0B_GATE2_RESULTS.md). Japanese xsmall
 top-30 and English MiniLM-L4 top-30 pass the Gate 2 promotion rule for
-experimental opt-in integration; Japanese xsmall top-12 fails the
-final-injection safety guard. The product path keeps the current admission
-policy authoritative and falls back to the baseline order on any failure.
+experimental opt-in integration. Top 30 additionally improves exact-passage
+inclusion on the Japanese fixture while staying in the Target latency band.
+The product path keeps current scene admission authoritative, reranks chunks
+only inside those scene quotas, and falls back to the baseline order on any
+failure.
 
 ### Optional shadow corpus diagnostics
 
