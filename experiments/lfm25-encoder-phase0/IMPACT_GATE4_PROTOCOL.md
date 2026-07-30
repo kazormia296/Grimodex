@@ -23,6 +23,12 @@ authorize human-corpus collection.
 - Models: the exact xsmall and ModernBERT revisions verified in Gate 3.
 - Training modes: frozen masked-mean linear head and full fine-tuning.
 - One fixed exploratory seed, 42.
+- Accepted historical selection-protocol snapshot identity:
+  `phase0b-impact-gate4-selection-v2`, SHA-256
+  `98c01672ef1a550f4209598f8708d577ea4a70313af54aac76f4159715f3c33b`.
+- Gate 3.1 prerequisite: `hold`; formal Gate 4 eligibility: `false`.
+- Test-consumption registry:
+  `data/public/gate4/test-consumption/`.
 
 Every controlled change creates exactly two records with the same production-
 shaped diff payload:
@@ -49,26 +55,57 @@ The runner performs these stages in order:
 5. Rank qualifying candidates by challenge recall, challenge reduction,
    validation Average Precision, validation reduction, validation recall,
    validation Brier score, then the declared deterministic tie-breakers.
-6. Open the locked test exactly once for the selected finalist. The report is
-   created with exclusive-file semantics and cannot overwrite prior evidence.
+6. If no candidate qualifies on both validation and challenge, emit
+   `stop_before_locked_test`; do not select a fallback, run test prediction, or
+   create a locked-test report.
+7. Before the selected finalist can access test prediction, exclusively claim
+   a corpus/protocol-level consumption fingerprint outside the run output.
+   Only then open the locked test once.
 
 Test labels never select a checkpoint, threshold, model, or training mode.
 If the selection protocol changes after test has been opened, that test split
 is consumed and a fresh holdout is required.
 
+Changing `--output` does not change the consumption identity. Its fingerprint
+is the SHA-256 of the corpus digest, test story IDs, selection protocol
+version/digest, exact model revisions, and training modes. The committed
+consumption record for the accepted test is:
+
+```text
+data/public/gate4/test-consumption/
+  d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
+```
+
+The registry uses exclusive creation. A crash after the claim still consumes
+the test, because rerunning after partial test access would no longer be blind.
+
 ## Probe decision
 
-`continue_to_human_corpus` requires all of:
+The synthetic assessment is `signal_detected` only when all of these hold:
 
 - locked-test affected recall at least 0.95;
 - locked-test synthetic direct-contradiction recall 1.00;
 - locked-test candidate reduction at least 0.30;
 - challenge affected recall at least 0.80.
 
-Failure yields `stop_probe`. Passing is intentionally capped at
-`continue_to_human_corpus`; `phase1Ready` is always false because this corpus
-has no human-verified direct-contradiction subset and does not represent real
-manuscript distributions.
+Failure yields `insufficient_signal`. This synthetic field is separate from
+the project decision. For the frozen provisional config, every report also
+emits:
+
+```json
+{
+  "gate31Prerequisite": "hold",
+  "formalGate4Eligible": false,
+  "continueToHumanCorpus": false,
+  "effectiveVerdict": "hold_on_latency_prerequisite",
+  "phase1Ready": false
+}
+```
+
+If the synthetic metrics fail, `effectiveVerdict` is
+`stop_on_synthetic_probe`. If no finalist clears validation and challenge,
+the test stays unopened and `effectiveVerdict` is
+`stop_before_locked_test`.
 
 The runner verdict is local to this synthetic probe. Project promotion also
 requires a Gate 3.1 Pass. Only after that prerequisite passes may the next
@@ -76,10 +113,11 @@ evidence stage add work-isolated human labels from real shadow data, retain a
 fresh holdout, raise the target recall toward 0.99, and repeat calibration and
 runtime checks.
 
-## Reproduction
+## Historical reproduction boundary
 
 The Gate 3 local snapshots must already exist and pass their complete manifest
-and weight SHA-256 checks.
+and weight SHA-256 checks. The following is the accepted historical invocation;
+the current test fingerprint is now consumed and must not be rerun:
 
 ```bash
 cd experiments/lfm25-encoder-phase0
@@ -95,6 +133,8 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   --output artifacts/phase0b/gate4/<new-run-id>
 ```
 
-Generated checkpoints, probabilities, and locked reports stay under ignored
-`artifacts/`. Only aggregate, report-safe results are promoted to the
-committed decision record.
+Changing `<new-run-id>` cannot bypass the committed consumption registry. A
+future run requires a Gate 3.1 Pass, a newly frozen work-isolated holdout, and
+an intentionally updated protocol identity. Generated checkpoints,
+probabilities, and locked reports stay under ignored `artifacts/`; the
+consumption record and aggregate decision evidence are committed.

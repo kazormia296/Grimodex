@@ -323,8 +323,7 @@ make build-impact-gate4-corpus
 make validate
 ```
 
-After the Gate 3 snapshots have been bootstrapped, run the four fixed
-seed-42 candidates in offline mode:
+The accepted seed-42 run used the following offline command:
 
 ```bash
 make impact-gate4 \
@@ -333,8 +332,11 @@ make impact-gate4 \
 
 Checkpoint and threshold selection use validation only. Challenge then guards
 against calibration shift before the finalist is selected, and only that
-finalist may open the write-once locked test. The complete selection order,
-stop rules, and evidence limits are fixed in
+finalist may claim and open the locked test. With no qualifying finalist the
+runner stops before test prediction. Consumption is keyed by corpus, test
+stories, protocol identity, model revisions, and training modes, so changing
+the output run ID cannot reopen the test. The complete selection order, stop
+rules, and evidence limits are fixed in
 [`IMPACT_GATE4_PROTOCOL.md`](./IMPACT_GATE4_PROTOCOL.md).
 
 The Ryzen 5 3600 seed-42 result is recorded in
@@ -343,6 +345,11 @@ classifier result is retained only as provisional evidence: the later
 production-shaped full-scene Gate 3.1 placed both finalists in Hold, so this
 probe does not authorize Gate 4 promotion, human-corpus expansion, Phase 1, or
 product integration.
+
+The accepted test fingerprint is committed as consumed. The current command
+is historical reproduction evidence, not permission to rerun the locked test.
+A future runnable Gate 4 requires a Gate 3.1 Pass, a fresh work-isolated
+holdout, and a new protocol identity.
 
 ### Optional shadow corpus diagnostics
 

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import inspect
 import json
 from pathlib import Path
+import subprocess
 import time
 from typing import Any, Iterable, Literal, Sequence
 
@@ -22,9 +23,13 @@ from .impact_gate4 import (
     ImpactGate4Config,
     ImpactProbeAssessment,
     assess_probe_signal,
+    build_locked_test_consumption_identity,
     build_impact_probe_split_manifest,
+    claim_locked_test_consumption,
+    impact_probe_assessment_report,
     load_impact_gate4_config,
     load_impact_gate4_records,
+    locked_test_consumption_path,
     write_locked_test_report,
 )
 from .metrics import BinaryMetrics, binary_classification_metrics
@@ -788,7 +793,7 @@ def _selection_rank(
 def select_finalist(
     candidates: Sequence[CandidateSelection],
     challenges: Sequence[ChallengeSelection],
-) -> CandidateSelection:
+) -> CandidateSelection | None:
     if not candidates:
         raise ValueError("Gate 4 needs at least one trained candidate")
     challenge_by_candidate = {
@@ -797,8 +802,18 @@ def select_finalist(
     }
     if len(challenge_by_candidate) != len(candidates):
         raise ValueError("Gate 4 needs one challenge result per candidate")
+    eligible = [
+        candidate
+        for candidate in candidates
+        if candidate.qualifies_on_validation
+        and challenge_by_candidate[
+            (candidate.model_key, candidate.mode)
+        ].qualifies
+    ]
+    if not eligible:
+        return None
     return max(
-        candidates,
+        eligible,
         key=lambda candidate: _selection_rank(
             candidate,
             challenge_by_candidate[(candidate.model_key, candidate.mode)],
@@ -895,6 +910,22 @@ def _slice_metrics(
     }
 
 
+def _git_head_commit(experiment_root: Path) -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=experiment_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commit = completed.stdout.strip().lower()
+    if len(commit) != 40 or any(
+        character not in "0123456789abcdef" for character in commit
+    ):
+        raise RuntimeError("Gate 4 could not resolve a full Git HEAD commit")
+    return commit
+
+
 def evaluate_locked_finalist(
     *,
     config_path: Path,
@@ -903,6 +934,18 @@ def evaluate_locked_finalist(
     candidate: CandidateSelection,
     output_root: Path,
 ) -> dict[str, Any]:
+    opened_at = datetime.now(UTC).isoformat()
+    consumption_identity = build_locked_test_consumption_identity(config)
+    consumption_record = claim_locked_test_consumption(
+        locked_test_consumption_path(
+            config_path,
+            config,
+            consumption_identity,
+        ),
+        consumption_identity,
+        opened_at_commit=_git_head_commit(config_path.parent.parent),
+        opened_at=opened_at,
+    )
     split_indexes = _split_indexes(records)
     runtime, encoded, auxiliary = _load_selected_runtime(
         config_path=config_path,
@@ -954,10 +997,13 @@ def evaluate_locked_finalist(
             config.thresholds.minimum_candidate_reduction
         ),
         minimum_challenge_recall=config.thresholds.minimum_challenge_recall,
+        gate31_prerequisite=config.protocol.gate31_prerequisite,
+        formal_gate4_eligible=config.protocol.formal_gate4_eligible,
     )
+    assessment_report = impact_probe_assessment_report(assessment)
     report = {
-        "schemaVersion": 1,
-        "createdAt": datetime.now(UTC).isoformat(),
+        "schemaVersion": 2,
+        "createdAt": opened_at,
         "split": "test",
         "thresholdSource": "validation",
         "threshold": threshold,
@@ -967,13 +1013,15 @@ def evaluate_locked_finalist(
         "testMetrics": test_metrics,
         "testDirectRecall": test_direct_recall,
         "challengeMetrics": challenge_metrics,
-        "assessment": assessment,
+        "assessment": assessment_report,
         "phase1Ready": False,
+        "consumption": consumption_record,
         "corpusReviewStatus": "unreviewed",
         "limitations": [
             "controlled synthetic probe only",
             "no human-verified direct-contradiction subset",
             "single fixed seed",
+            "Gate 3.1 full-scene latency prerequisite is Hold",
             "not authorization for product candidate removal",
         ],
         "sliceMetrics": _slice_metrics(
@@ -1068,24 +1116,68 @@ def run_gate4(config_path: Path, output_root: Path) -> Path:
             qualifies=challenge.qualifies,
         )
     finalist = select_finalist(candidates, challenges)
+    selection_phase = {
+        "dataScope": (
+            "validation checkpoint and threshold selection plus "
+            "challenge robustness only"
+        ),
+        "testStatus": (
+            "unopened_at_selection"
+            if finalist is not None
+            else "not_opened_no_eligible_finalist"
+        ),
+    }
+    _write_json(
+        output_root / "selection.json",
+        {
+            "schemaVersion": 2,
+            "selectionPhase": selection_phase,
+            "selected": finalist,
+            "candidates": candidates,
+            "challenges": challenges,
+        },
+    )
+    if finalist is None:
+        _progress(
+            "selection_stopped",
+            reason="no_eligible_finalist",
+            testStatus="not_opened",
+        )
+        report_path = output_root / "gate4-results.json"
+        _write_json(
+            report_path,
+            {
+                "schemaVersion": 2,
+                "createdAt": datetime.now(UTC).isoformat(),
+                "config": str(config_path),
+                "corpusSha256": config.corpus.sha256,
+                "recordCount": len(records),
+                "selectionPhase": selection_phase,
+                "candidates": candidates,
+                "challenges": challenges,
+                "selected": None,
+                "lockedTestPhase": {
+                    "status": "not_opened",
+                    "reason": "no_eligible_finalist",
+                },
+                "syntheticProbeAssessment": "not_evaluated",
+                "gate31Prerequisite": (
+                    config.protocol.gate31_prerequisite
+                ),
+                "formalGate4Eligible": (
+                    config.protocol.formal_gate4_eligible
+                ),
+                "continueToHumanCorpus": False,
+                "effectiveVerdict": "stop_before_locked_test",
+                "phase1Ready": False,
+            },
+        )
+        return report_path
     _progress(
         "finalist_selected",
         model=finalist.model_key,
         mode=finalist.mode,
         threshold=finalist.low_threshold,
-    )
-    _write_json(
-        output_root / "selection.json",
-        {
-            "schemaVersion": 1,
-            "selectionData": (
-                "validation threshold and checkpoint selection plus "
-                "challenge robustness; test unopened"
-            ),
-            "selected": finalist,
-            "candidates": candidates,
-            "challenges": challenges,
-        },
     )
     locked_test = evaluate_locked_finalist(
         config_path=config_path,
@@ -1099,22 +1191,37 @@ def run_gate4(config_path: Path, output_root: Path) -> Path:
         assessment=locked_test["assessment"],
         testMetrics=locked_test["testMetrics"],
     )
+    assessment = locked_test["assessment"]
+    if not isinstance(assessment, dict):
+        raise TypeError("Gate 4 locked assessment must be a JSON object")
+    locked_test_phase: dict[str, Any] = {"status": "opened_once"}
+    consumption = locked_test.get("consumption")
+    if isinstance(consumption, dict):
+        fingerprint = consumption.get("fingerprintSha256")
+        if isinstance(fingerprint, str):
+            locked_test_phase["consumptionFingerprint"] = fingerprint
     report_path = output_root / "gate4-results.json"
     _write_json(
         report_path,
         {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "createdAt": datetime.now(UTC).isoformat(),
             "config": str(config_path),
             "corpusSha256": config.corpus.sha256,
             "recordCount": len(records),
-            "selectionData": (
-                "validation threshold and checkpoint selection plus "
-                "challenge robustness; test unopened"
-            ),
+            "selectionPhase": selection_phase,
             "candidates": candidates,
             "challenges": challenges,
             "selected": finalist,
+            "lockedTestPhase": locked_test_phase,
+            "syntheticProbeAssessment": assessment[
+                "syntheticProbeAssessment"
+            ],
+            "gate31Prerequisite": assessment["gate31Prerequisite"],
+            "formalGate4Eligible": assessment["formalGate4Eligible"],
+            "continueToHumanCorpus": assessment["continueToHumanCorpus"],
+            "effectiveVerdict": assessment["effectiveVerdict"],
+            "phase1Ready": assessment["phase1Ready"],
             "lockedTest": locked_test,
         },
     )
