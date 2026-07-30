@@ -11,12 +11,14 @@ from grimodex_lfm_eval.impact_gate4 import (
     build_locked_test_consumption_identity,
     claim_locked_test_consumption,
     load_impact_gate4_config,
+    load_impact_gate4_records,
     locked_test_consumption_path,
 )
 from grimodex_lfm_eval import impact_gate4_runner
 from grimodex_lfm_eval.impact_gate4_runner import (
     CandidateSelection,
     ChallengeSelection,
+    evaluate_locked_finalist,
     run_gate4,
     select_finalist,
 )
@@ -197,19 +199,87 @@ class Gate4LockedTestConsumptionTests(unittest.TestCase):
         )
 
         record = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["schemaVersion"], 1)
         self.assertTrue(record["consumed"])
+        self.assertEqual(
+            record_path.name,
+            f"{identity.fingerprint_sha256}.json",
+        )
         self.assertEqual(
             record["fingerprintSha256"],
             identity.fingerprint_sha256,
         )
         self.assertEqual(record["corpusSha256"], config.corpus.sha256)
+        self.assertEqual(record["testStoryIds"], list(identity.test_story_ids))
         self.assertEqual(
             record["selectionProtocolVersion"],
             config.protocol.selection_protocol_version,
         )
+        self.assertEqual(
+            record["selectionProtocolSha256"],
+            config.protocol.selection_protocol_sha256,
+        )
+        self.assertEqual(record["modelSet"], list(identity.model_set))
+        self.assertEqual(
+            record["openedAtCommit"],
+            "1101d583c95dfe5fc36ffebd42b4b8f5f2c62f10",
+        )
+
+    def test_consumed_fingerprint_stops_before_test_runtime_load(self) -> None:
+        config = load_impact_gate4_config(CONFIG_PATH)
+        records = load_impact_gate4_records(CONFIG_PATH, config)
+        candidate = _candidate(
+            "modernbert_ja_30m",
+            "frozen_head",
+            qualifies=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch.object(
+                impact_gate4_runner,
+                "_load_selected_runtime",
+                side_effect=AssertionError("test runtime must not load"),
+            ) as runtime_load:
+                with self.assertRaisesRegex(
+                    LockedTestEvaluationError,
+                    "already consumed",
+                ):
+                    evaluate_locked_finalist(
+                        config_path=CONFIG_PATH,
+                        config=config,
+                        records=records,
+                        candidate=candidate,
+                        output_root=Path(temporary_directory),
+                    )
+
+            runtime_load.assert_not_called()
+            self.assertFalse(
+                (Path(temporary_directory) / "locked-test.json").exists()
+            )
 
 
 class Gate4ReportPhaseTests(unittest.TestCase):
+    def test_committed_decision_never_authorizes_human_corpus(self) -> None:
+        decision = json.loads(
+            (
+                EXPERIMENT_ROOT / "PHASE0B_GATE4_DECISION.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(decision["schemaVersion"], 2)
+        self.assertEqual(
+            decision["syntheticProbeAssessment"],
+            "signal_detected",
+        )
+        self.assertEqual(decision["gate31Prerequisite"], "hold")
+        self.assertFalse(decision["formalGate4Eligible"])
+        self.assertFalse(decision["continueToHumanCorpus"])
+        self.assertEqual(
+            decision["effectiveVerdict"],
+            "hold_on_latency_prerequisite",
+        )
+        self.assertFalse(decision["phase1Ready"])
+
     def test_final_report_separates_selection_and_locked_test_phases(self) -> None:
         def pass_challenge(
             *,

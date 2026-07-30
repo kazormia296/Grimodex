@@ -19,6 +19,12 @@
   "source": "synthetic",
   "reviewStatus": "unreviewed",
   "license": "synthetic",
+  "selectionProtocolVersion": "phase0b-impact-gate4-selection-v2",
+  "selectionProtocolSha256": "98c01672ef1a550f4209598f8708d577ea4a70313af54aac76f4159715f3c33b",
+  "testConsumptionFingerprint": "d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7",
+  "testConsumptionRecord": "test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json",
+  "gate31Prerequisite": "hold",
+  "formalGate4Eligible": false,
   "construction": "Controlled old-to-new mutations with one exact-span positive and one same-change hard negative per diff.",
   "restrictions": [
     "No private manuscript text is included.",

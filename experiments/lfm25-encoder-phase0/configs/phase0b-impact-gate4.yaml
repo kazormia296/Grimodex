@@ -10,6 +10,13 @@ corpus:
     test: 4
     challenge: 2
 
+protocol:
+  selection_protocol_version: phase0b-impact-gate4-selection-v2
+  selection_protocol_sha256: 98c01672ef1a550f4209598f8708d577ea4a70313af54aac76f4159715f3c33b
+  test_consumption_registry: data/public/gate4/test-consumption
+  gate31_prerequisite: hold
+  formal_gate4_eligible: false
+
 training:
   modes: [frozen_head, full_finetune]
   seed: 42

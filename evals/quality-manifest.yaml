@@ -152,6 +152,8 @@ requirements:
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_RESULTS.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
+      - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
       - src/features/chat/citationVerify.test.ts
       - src/features/chat/chatRecall.test.ts
@@ -161,6 +163,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
       - scripts/quality/run-related-scenes-heavy.mjs
@@ -184,8 +187,11 @@ requirements:
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
+      - experiments/lfm25-encoder-phase0/configs/phase0b-impact-gate4.yaml
       - experiments/lfm25-encoder-phase0/tools/build_impact_gate4_corpus.py
       - experiments/lfm25-encoder-phase0/data/public/gate4/provenance.json
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
+      - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/chronicleWriteTools.test.ts
@@ -194,6 +200,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
       - src-tauri/src/commands/post_effect.rs
       - src/features/codex/candidateJudgment.live.test.ts
@@ -218,6 +225,7 @@ requirements:
       - scripts/quality/eval-fixtures.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4_runner.py
@@ -239,6 +247,9 @@ requirements:
       - experiments/lfm25-encoder-phase0/SHADOW_CORPUS_PROTOCOL.md
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_RESULTS.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
+      - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
@@ -246,6 +257,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
+      - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4_runner.py
@@ -271,10 +283,6 @@ heavyEvaluations:
     suiteId: retrieval-grounding
     command: make -C experiments/lfm25-encoder-phase0 impact-gate31 IMPACT_GATE31_MODEL=ja_xsmall IMPACT_GATE31_FINAL_BATCH_SIZE=4 IMPACT_GATE31_FINAL_THREAD_COUNT=8 IMPACT_GATE31_FINAL_BUCKET_MODE=bucketed && make -C experiments/lfm25-encoder-phase0 impact-gate31 IMPACT_GATE31_MODEL=modernbert_ja_30m IMPACT_GATE31_FINAL_BATCH_SIZE=4 IMPACT_GATE31_FINAL_THREAD_COUNT=physical IMPACT_GATE31_FINAL_BUCKET_MODE=bucketed
     reason: Requires both pinned local FP32 model snapshots and several minutes of isolated CPU time to measure every window from 30 complete scenes plus the saturated 30-window stress.
-  - id: heavy-impact-gate4-probe
-    suiteId: retrieval-grounding
-    command: cd experiments/lfm25-encoder-phase0 && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false uv run --frozen --extra cpu python -m grimodex_lfm_eval.impact_gate4_runner --config configs/phase0b-impact-gate4.yaml --output artifacts/phase0b/gate4/<new-run-id>
-    reason: Requires two locally bootstrapped and manifest-verified model snapshots, CPU-heavy frozen/full training, generated checkpoints, and a fresh write-once output directory; CI must not download model weights or reuse locked evidence.
   - id: heavy-rust-post-effect-live
     suiteId: prompt-contract
     command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
@@ -284,6 +292,10 @@ heavyEvaluations:
     command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
     reason: Preserved desktop prompt-surface validation; requires a billed OpenRouter model, and wording checks alone are Light evidence.
 blockedEvaluations:
+  - id: blocked-impact-gate4-fresh-holdout
+    suiteId: retrieval-grounding
+    reason: The current synthetic test fingerprint is consumed and Gate 3.1 full-scene latency is Hold, so changing the run output cannot authorize another locked-test evaluation.
+    requiredAction: First pass the same Gate 3.1 full-scene workload, then freeze a new work-isolated holdout and intentionally update the selection protocol identity before registering a new runnable Heavy command.
   - id: blocked-web-ai-consent-live
     suiteId: tool-policy
     reason: No isolated browser runner proves the consent dialog, refusal-before-provider behavior, and teardown against a real user-selected HTTP Local LLM or BYOK provider.

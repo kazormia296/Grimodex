@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -116,9 +117,30 @@ class ImpactGate4ThresholdConfig(_ConfigModel):
     minimum_challenge_recall: Literal[0.80]
 
 
+class ImpactGate4ProtocolConfig(_ConfigModel):
+    selection_protocol_version: Literal["phase0b-impact-gate4-selection-v2"]
+    selection_protocol_sha256: str
+    test_consumption_registry: Literal[
+        "data/public/gate4/test-consumption"
+    ]
+    gate31_prerequisite: Literal["hold"]
+    formal_gate4_eligible: Literal[False]
+
+    @field_validator("selection_protocol_sha256")
+    @classmethod
+    def validate_protocol_sha256(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not SHA256_PATTERN.fullmatch(normalized):
+            raise ValueError(
+                "Gate 4 selection protocol SHA-256 must be a lowercase digest"
+            )
+        return normalized
+
+
 class ImpactGate4Config(_ConfigModel):
     schema_version: Literal[1]
     corpus: ImpactGate4CorpusConfig
+    protocol: ImpactGate4ProtocolConfig
     training: ImpactGate4TrainingConfig
     thresholds: ImpactGate4ThresholdConfig
     offline_environment: dict[str, str] = Field(default_factory=dict)
@@ -143,9 +165,29 @@ class ImpactGate4Config(_ConfigModel):
 
 @dataclass(frozen=True)
 class ImpactProbeAssessment:
-    verdict: Literal["continue_to_human_corpus", "stop_probe"]
+    synthetic_probe_assessment: Literal[
+        "signal_detected",
+        "insufficient_signal",
+    ]
+    gate31_prerequisite: Literal["hold"]
+    formal_gate4_eligible: Literal[False]
+    continue_to_human_corpus: Literal[False]
+    effective_verdict: Literal[
+        "hold_on_latency_prerequisite",
+        "stop_on_synthetic_probe",
+    ]
     phase1_ready: Literal[False]
     failed_requirements: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LockedTestConsumptionIdentity:
+    fingerprint_sha256: str
+    corpus_sha256: str
+    test_story_ids: tuple[str, ...]
+    selection_protocol_version: str
+    selection_protocol_sha256: str
+    model_set: tuple[dict[str, Any], ...]
 
 
 class LockedTestEvaluationError(RuntimeError):
@@ -755,6 +797,139 @@ def load_impact_gate4_records(
     return records
 
 
+def build_locked_test_consumption_identity(
+    config: ImpactGate4Config,
+) -> LockedTestConsumptionIdentity:
+    split_manifest = build_impact_probe_split_manifest()
+    model_set = tuple(
+        {
+            "key": model.key,
+            "revision": model.revision,
+            "trainingModes": list(config.training.modes),
+        }
+        for model in config.models
+    )
+    fingerprint_payload = {
+        "corpusSha256": config.corpus.sha256,
+        "testStoryIds": list(split_manifest.test),
+        "selectionProtocolVersion": (
+            config.protocol.selection_protocol_version
+        ),
+        "selectionProtocolSha256": (
+            config.protocol.selection_protocol_sha256
+        ),
+        "modelSet": list(model_set),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return LockedTestConsumptionIdentity(
+        fingerprint_sha256=fingerprint,
+        corpus_sha256=config.corpus.sha256,
+        test_story_ids=tuple(split_manifest.test),
+        selection_protocol_version=(
+            config.protocol.selection_protocol_version
+        ),
+        selection_protocol_sha256=(
+            config.protocol.selection_protocol_sha256
+        ),
+        model_set=model_set,
+    )
+
+
+def locked_test_consumption_path(
+    config_path: Path,
+    config: ImpactGate4Config,
+    identity: LockedTestConsumptionIdentity,
+) -> Path:
+    registry = _experiment_path(
+        config_path,
+        config.protocol.test_consumption_registry,
+    )
+    return registry / f"{identity.fingerprint_sha256}.json"
+
+
+def _locked_test_consumption_payload(
+    identity: LockedTestConsumptionIdentity,
+    *,
+    opened_at_commit: str,
+    opened_at: str,
+) -> dict[str, Any]:
+    normalized_commit = opened_at_commit.strip().lower()
+    if len(normalized_commit) != 40 or any(
+        character not in "0123456789abcdef"
+        for character in normalized_commit
+    ):
+        raise LockedTestEvaluationError(
+            "locked test consumption needs a 40-character Git commit"
+        )
+    return {
+        "schemaVersion": 1,
+        "fingerprintSha256": identity.fingerprint_sha256,
+        "corpusSha256": identity.corpus_sha256,
+        "testStoryIds": list(identity.test_story_ids),
+        "selectionProtocolVersion": identity.selection_protocol_version,
+        "selectionProtocolSha256": identity.selection_protocol_sha256,
+        "modelSet": list(identity.model_set),
+        "openedAt": opened_at,
+        "openedAtCommit": normalized_commit,
+        "consumed": True,
+    }
+
+
+def claim_locked_test_consumption(
+    path: Path,
+    identity: LockedTestConsumptionIdentity,
+    *,
+    opened_at_commit: str,
+    opened_at: str,
+) -> dict[str, Any]:
+    payload = _locked_test_consumption_payload(
+        identity,
+        opened_at_commit=opened_at_commit,
+        opened_at=opened_at,
+    )
+    destination = path.resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with destination.open("x", encoding="utf-8") as output:
+            json.dump(
+                payload,
+                output,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            output.write("\n")
+    except FileExistsError as error:
+        raise LockedTestEvaluationError(
+            "locked test split is already consumed for fingerprint "
+            f"{identity.fingerprint_sha256}: {destination}"
+        ) from error
+    return payload
+
+
+def impact_probe_assessment_report(
+    assessment: ImpactProbeAssessment,
+) -> dict[str, Any]:
+    return {
+        "syntheticProbeAssessment": (
+            assessment.synthetic_probe_assessment
+        ),
+        "gate31Prerequisite": assessment.gate31_prerequisite,
+        "formalGate4Eligible": assessment.formal_gate4_eligible,
+        "continueToHumanCorpus": assessment.continue_to_human_corpus,
+        "effectiveVerdict": assessment.effective_verdict,
+        "phase1Ready": assessment.phase1_ready,
+        "failedRequirements": list(assessment.failed_requirements),
+    }
+
+
 def assess_probe_signal(
     *,
     positive_recall: float,
@@ -765,6 +940,8 @@ def assess_probe_signal(
     minimum_direct_recall: float = 1.0,
     minimum_candidate_reduction: float = 0.30,
     minimum_challenge_recall: float = 0.80,
+    gate31_prerequisite: Literal["hold"] = "hold",
+    formal_gate4_eligible: Literal[False] = False,
 ) -> ImpactProbeAssessment:
     metrics = {
         "positive_recall": positive_recall,
@@ -789,8 +966,16 @@ def assess_probe_signal(
         if observed < minimum
     )
     return ImpactProbeAssessment(
-        verdict=(
-            "continue_to_human_corpus" if not failed else "stop_probe"
+        synthetic_probe_assessment=(
+            "signal_detected" if not failed else "insufficient_signal"
+        ),
+        gate31_prerequisite=gate31_prerequisite,
+        formal_gate4_eligible=formal_gate4_eligible,
+        continue_to_human_corpus=False,
+        effective_verdict=(
+            "hold_on_latency_prerequisite"
+            if not failed
+            else "stop_on_synthetic_probe"
         ),
         phase1_ready=False,
         failed_requirements=failed,

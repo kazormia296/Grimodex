@@ -41,12 +41,13 @@ false negative:
 | Brier score                           |       0.103 |  reported |
 | Expected Calibration Error            |       0.250 |  reported |
 
-The runner-local machine verdict is `continue_to_human_corpus`, with
-`phase1Ready: false`. It describes only the synthetic classifier probe and is
-non-authorizing once the Gate 3.1 prerequisite is applied. The effective
-project verdict is **Hold**. The corpus is controlled, synthetic, and
-`unreviewed`; it has no human-verified contradiction subset and does not
-represent real manuscript distributions.
+The accepted schema-1 artifact used an overly broad continuation label for
+this synthetic signal. The corrected schema-2 contract records
+`syntheticProbeAssessment: signal_detected` separately from
+`effectiveVerdict: hold_on_latency_prerequisite`, and fixes
+`continueToHumanCorpus: false` plus `phase1Ready: false`. The corpus is
+controlled, synthetic, and `unreviewed`; it has no human-verified
+contradiction subset and does not represent real manuscript distributions.
 
 The result supports one conclusion only:
 
@@ -56,6 +57,36 @@ The result supports one conclusion only:
 It does not support product candidate removal, a default-enabled triage path,
 human-corpus expansion, or a claim that 45% of real Impact candidates can
 safely be discarded.
+
+## Machine-readable decision and locked-test consumption
+
+The provisional runner now emits this project-level decision independently of
+the synthetic metric assessment. The normalized accepted result is committed
+as [`PHASE0B_GATE4_DECISION.json`](./PHASE0B_GATE4_DECISION.json):
+
+```json
+{
+  "syntheticProbeAssessment": "signal_detected",
+  "gate31Prerequisite": "hold",
+  "formalGate4Eligible": false,
+  "continueToHumanCorpus": false,
+  "effectiveVerdict": "hold_on_latency_prerequisite",
+  "phase1Ready": false
+}
+```
+
+The accepted replacement test is consumed under fingerprint
+`d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7`.
+Its committed record binds corpus SHA-256, test story IDs, protocol
+version/digest, both model revisions, and both training modes to the historical
+opening at runner commit
+`1101d583c95dfe5fc36ffebd42b4b8f5f2c62f10`. A different run output directory
+does not change that identity and cannot reopen the test.
+
+The runner also records `selectionPhase.testStatus: unopened_at_selection` and
+`lockedTestPhase.status: opened_once` as separate stages. If validation and
+challenge produce no eligible finalist, it instead emits
+`stop_before_locked_test` without test prediction or a locked-test report.
 
 ## Four-candidate comparison
 
@@ -81,10 +112,11 @@ selected because it kept 100% challenge recall while reducing 50% of
 challenge candidates, versus 40% for xsmall frozen.
 
 This is not evidence that ModernBERT is universally better than xsmall. It is
-the deterministic winner for this small synthetic probe. The next human-data
-gate should retain xsmall frozen as a comparator and should not promote
-xsmall full fine-tuning without a larger calibration set or a more
-conservative threshold rule.
+the deterministic winner for this small synthetic probe. If a future latency
+design passes Gate 3.1 and a fresh holdout is authorized, that experiment
+should retain xsmall frozen as a comparator and should not promote xsmall full
+fine-tuning without a larger calibration set or a more conservative threshold
+rule.
 
 ## Locked-test details
 
@@ -145,7 +177,8 @@ The first measurement run exposed a selection-protocol defect. It selected
 xsmall full fine-tuning from validation alone because that candidate had the
 lowest validation Brier score. Its then-opened test happened to pass at recall
 1.00 and reduction 0.50, but the separately evaluated challenge recall was
-only 0.20. Under the original rule the run correctly emitted `stop_probe`.
+only 0.20. Under the original rule the run correctly stopped the synthetic
+probe.
 
 Post-run diagnostics showed that both frozen candidates retained challenge
 recall 1.00. The failure was therefore not absence of backbone signal; it was
@@ -188,7 +221,10 @@ optimizer-loop times recorded by the runner exclude model loading,
 tokenization, and frozen-backbone embedding extraction, so they are not
 end-to-end training-time claims.
 
-## Exact commands
+## Historical accepted commands
+
+These commands document the already-consumed accepted run. The current config
+must not be used to reopen its locked test:
 
 ```bash
 cd experiments/lfm25-encoder-phase0
@@ -215,8 +251,10 @@ pnpm eval:impact -- --run \
 The first sandboxed impact-gate attempt failed because `tsx` could not create
 its local IPC socket (`listen EPERM`). The identical canonical command passed
 outside that socket restriction: quality-workflow, ai-routing, tool-policy,
-prompt-contract, and retrieval-grounding all passed. The model-training heavy
-evaluation remains manual by design and is registered as deferred CI evidence.
+prompt-contract, and retrieval-grounding all passed. The consumed Gate 4
+holdout is now registered as blocked rather than a runnable Heavy evaluation.
+It can be reopened only by first passing Gate 3.1 and freezing a new
+work-isolated holdout with a new protocol identity.
 
 ## Stop condition and possible restart
 
