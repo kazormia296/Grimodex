@@ -4,6 +4,12 @@ Gate 4 asks whether either Gate 3 backbone contains enough signal to justify
 collecting a larger, human-reviewed Impact Review corpus. It does not authorize
 candidate removal, product integration, Phase 1, or model-weight distribution.
 
+Formal use of this protocol requires both Gate 3.1 full-scene and saturated
+30-window workloads to reach the Target band. The recorded Gate 3.1 run placed
+both finalists in Hold on full scenes, so the implementation and synthetic run
+are retained as provisional research evidence only. They do not currently
+authorize human-corpus collection.
+
 ## Fixed scope
 
 - Japanese only.
@@ -64,9 +70,11 @@ Failure yields `stop_probe`. Passing is intentionally capped at
 has no human-verified direct-contradiction subset and does not represent real
 manuscript distributions.
 
-Before any product-default decision, the next evidence stage must add
-work-isolated human labels from real shadow data, retain a fresh holdout, raise
-the target recall toward 0.99, and repeat calibration and runtime checks.
+The runner verdict is local to this synthetic probe. Project promotion also
+requires a Gate 3.1 Pass. Only after that prerequisite passes may the next
+evidence stage add work-isolated human labels from real shadow data, retain a
+fresh holdout, raise the target recall toward 0.99, and repeat calibration and
+runtime checks.
 
 ## Reproduction
 

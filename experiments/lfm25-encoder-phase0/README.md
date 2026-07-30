@@ -301,9 +301,10 @@ has one exact-span positive and one same-change hard negative. The 24 story
 packs are isolated into train 140, validation 40, locked test 40, and
 challenge 20 records.
 
-The data is synthetic and deliberately marked `unreviewed`. Passing this gate
-can justify collecting a larger human-reviewed shadow corpus, but cannot
-enable candidate removal or establish Phase 1 readiness.
+The data is synthetic and deliberately marked `unreviewed`. Only after the
+Gate 3.1 latency prerequisite passes could a pass here justify collecting a
+larger human-reviewed shadow corpus; it still could not enable candidate
+removal or establish Phase 1 readiness.
 
 Verify that the committed corpus still matches its deterministic builder:
 
@@ -325,6 +326,13 @@ against calibration shift before the finalist is selected, and only that
 finalist may open the write-once locked test. The complete selection order,
 stop rules, and evidence limits are fixed in
 [`IMPACT_GATE4_PROTOCOL.md`](./IMPACT_GATE4_PROTOCOL.md).
+
+The Ryzen 5 3600 seed-42 result is recorded in
+[`PHASE0B_GATE4_RESULTS.md`](./PHASE0B_GATE4_RESULTS.md). Its synthetic
+classifier result is retained only as provisional evidence: the later
+production-shaped full-scene Gate 3.1 placed both finalists in Hold, so this
+probe does not authorize Gate 4 promotion, human-corpus expansion, Phase 1, or
+product integration.
 
 ### Shadow corpus expansion
 

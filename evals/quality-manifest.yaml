@@ -151,6 +151,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
+      - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_RESULTS.md
     lightTests:
       - src/features/chat/citationVerify.test.ts
       - src/features/chat/chatRecall.test.ts
