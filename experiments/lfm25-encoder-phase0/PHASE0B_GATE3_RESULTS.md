@@ -4,14 +4,18 @@ Date: 2026-07-30
 
 Host: AMD Ryzen 5 3600, 6 physical / 12 logical cores
 
-Verdict: **Target for both candidates; proceed to Gate 4**
+Verdict: **Target lower bound for both candidates; Gate 3.1 required before
+Gate 4 is formalized**
 
 ## Decision
 
 Gate 3 measures only the preprocessing cost of a future Impact Review binary
-classifier. It does not train or evaluate affected/unaffected quality. Both
-candidates process the fixed 30-scene workload inside the five-second Target
-band with the same untrained seed-42 binary head:
+classifier. It does not train or evaluate affected/unaffected quality. The
+original workload contains 30 candidate chunks/windows but only 18 distinct
+scene IDs; it therefore does **not** establish the cost of 30 complete Impact
+scenes. Both candidates process this fixed 30-window lower-bound workload
+inside the five-second Target band with the same untrained seed-42 binary
+head:
 
 | Candidate | Selected configuration | End-to-end p50 | End-to-end p95 | Bootstrap 95% CI for p95 | Maximum | Target use | Verdict |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -20,7 +24,7 @@ band with the same untrained seed-42 binary head:
 
 The Gate 3 boundaries are:
 
-| Band | 30-scene end-to-end p95 |
+| Band | 30-window lower-bound end-to-end p95 |
 | --- | ---: |
 | Target | <= 5 seconds |
 | Conditional | <= 10 seconds |
@@ -28,7 +32,19 @@ The Gate 3 boundaries are:
 | Reject / hard stop | > 20 seconds |
 
 The observed p95 values retain 14.58x and 11.94x headroom respectively
-against the hard stop. The intended Gate 4 ordering remains:
+against the hard stop for this lower-bound workload. They do not authorize
+labeled work by themselves. Before the Gate 4 probe is treated as formal,
+Gate 3.1 must measure both candidates against:
+
+1. a production-shaped workload of distinct full scenes, using the product
+   plain-text conversion, 384-token scene windows, 256-token stride, inference
+   over every window, and `max(window score)` scene aggregation; and
+2. a separate 30-window cap stress with a 128-token diff and 384 scene tokens
+   occupied in every pair.
+
+Gate 3.1 must report `sceneCount`, `windowCount`, windows-per-scene
+p50/p95/max, attention tokens, and any source truncation. The intended model
+ordering remains:
 
 1. `japanese-reranker-xsmall-v2` as the primary Impact initialization.
 2. `modernbert-ja-30m` as the neutral backbone baseline.
@@ -37,9 +53,10 @@ against the hard stop. The intended Gate 4 ordering remains:
 
 ## Fixed workload
 
-The workload reuses one query's 30 public Japanese candidate scenes only as a
-stable speed distribution. It does not reuse the Gate 2 relevance labels as
-Impact labels.
+The workload reuses one query's 30 public Japanese candidate chunks/windows
+only as a stable lower-bound speed distribution. Those windows collapse to 18
+distinct scene IDs and are not complete scene documents. It does not reuse the
+Gate 2 relevance labels as Impact labels.
 
 | Input | Fixed value |
 | --- | --- |
@@ -47,7 +64,8 @@ Impact labels.
 | Source SHA-256 | `cd1dbf5fbf18c9d28a5f924f0771bcb169c635279300670eb39c2bc053bd0234` |
 | Source query | `ja-r01` |
 | Canonical diff SHA-256 | `c5899c8f683283e3b16e4554bc26378f31f8759d520796401ec4f329d4c8b48e` |
-| Candidate count | 30 |
+| Candidate windows | 30 |
+| Distinct scene IDs | 18 |
 | Diff budget | 128 tokens |
 | Scene budget | 384 tokens |
 | Pair cap | 512 tokens, `only_second` truncation |
@@ -63,10 +81,10 @@ Both tokenizers produced the same distribution for this workload:
 | Scene maximum | 291 |
 | Scenes truncated at 384 | 0 |
 
-The real public scenes are shorter than the cap. This result therefore covers
-the selected 30-scene distribution, not a synthetic worst case of 30 fully
-occupied 384-token windows. Gate 4 must retain the window/stride contract when
-building longer-scene examples.
+The selected public chunks are shorter than the cap. This result therefore
+covers only the selected 30-window lower bound, not 30 complete scenes and not
+a synthetic worst case of 30 fully occupied 384-token windows. Gate 3.1 owns
+both missing measurements.
 
 ## Supply-chain identity
 
@@ -239,9 +257,10 @@ passed, and the committed public dataset valid.
 
 ## Final scope
 
-Gate 3 succeeded as an early cost gate. It authorizes the proposed Gate 4
-minimal Impact probe of 200–300 labeled cases comparing frozen-head and
-full-fine-tuning variants for both initializations. It does not authorize:
+Gate 3 succeeded only as a 30-window lower-bound cost check. Gate 4 work may be
+implemented as a provisional probe, but no labeled result may be promoted to a
+formal Gate 4 decision until Gate 3.1 passes the production-shaped full-scene
+and 30-cap-window workloads. Gate 3 does not authorize:
 
 - using current relevance logits for affected/unaffected decisions;
 - deleting, hiding, or deprioritizing an Impact candidate in the product;
