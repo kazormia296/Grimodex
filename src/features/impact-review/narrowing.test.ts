@@ -90,7 +90,7 @@ describe("fuseSceneCandidates", () => {
     ]);
   });
 
-  it("prioritizes semantic-linked scenes before applying the result limit", () => {
+  it("prioritizes semantic-linked scenes outside the inferred limit", () => {
     const out = fuseSceneCandidates(["dense-1", "dense-2"], [], {
       semanticSceneIds: ["semantic-scene"],
       limit: 2,
@@ -98,7 +98,40 @@ describe("fuseSceneCandidates", () => {
     expect(out.map((candidate) => candidate.sceneId)).toEqual([
       "semantic-scene",
       "dense-1",
+      "dense-2",
     ]);
+  });
+
+  it("retains explicit links outside the inferred candidate limit", () => {
+    const inferred = Array.from({ length: 40 }, (_, index) => `dense-${index}`);
+    const out = fuseSceneCandidates(inferred, [], {
+      semanticSceneIds: ["explicit-1", "explicit-2"],
+      limit: 30,
+    });
+
+    expect(out).toHaveLength(32);
+    expect(out.slice(0, 2).map((candidate) => candidate.sceneId)).toEqual([
+      "explicit-1",
+      "explicit-2",
+    ]);
+    expect(
+      out.filter((candidate) => !candidate.matchedBy.includes("semantic")),
+    ).toHaveLength(30);
+  });
+
+  it("does not charge an inferred overlap twice against the limit", () => {
+    const inferred = [
+      "explicit",
+      ...Array.from({ length: 35 }, (_, index) => `dense-${index}`),
+    ];
+    const out = fuseSceneCandidates(inferred, [], {
+      semanticSceneIds: ["explicit"],
+      limit: 30,
+    });
+
+    expect(out).toHaveLength(31);
+    expect(new Set(out.map((candidate) => candidate.sceneId)).size).toBe(31);
+    expect(out[0].sceneId).toBe("explicit");
   });
 
   it("dedupes a scene id repeated within one arm", () => {
