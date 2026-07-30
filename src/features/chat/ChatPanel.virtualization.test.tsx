@@ -117,6 +117,7 @@ vi.mock("./contextBuilder", async () => {
 
 import { ChatPanel } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
+import { useAiSettingsStore } from "./store";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import * as chatApi from "./chatApi";
 
@@ -167,6 +168,7 @@ describe("ChatPanel virtualization contract", () => {
       selectSession: async () => {},
       refreshContextLayers: async () => null,
     });
+    useAiSettingsStore.setState({ loadSettings: async () => {} });
     virtualizerCapture.opts = null;
     perfCapture.marks.length = 0;
     perfCapture.counters.length = 0;
