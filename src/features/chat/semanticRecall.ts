@@ -1,6 +1,7 @@
 import { semanticSearch, type SemanticSearchHit } from "../semantic-search/api";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { applySemanticReranker } from "./semanticRerankerApply";
 import {
   scheduleSemanticRerankerShadow,
   type SemanticRerankerShadowScope,
@@ -9,6 +10,7 @@ import {
   selectDenseRecallHitsWithPolicy,
   selectHybridRecallHitsWithPolicy,
 } from "./hybridRecallSelection";
+import { resolveSemanticRerankerLanguage } from "./semanticRerankerMode";
 
 /**
  * Layer4 RAG (semantic recall): drafting チャットの文脈に、意味検索で見つけた
@@ -210,24 +212,16 @@ function truncateChunk(text: string, maxChunkChars: number): string {
     : text;
 }
 
-function resolveSelectedHits(
-  chunks: readonly SemanticRecallChunk[],
+function recallHitsToChunks(
   hits: readonly SemanticSearchHit[],
   maxChunkChars: number,
-): SemanticSearchHit[] {
-  const used = new Set<number>();
-  return chunks.flatMap((chunk) => {
-    const index = hits.findIndex(
-      (hit, candidateIndex) =>
-        !used.has(candidateIndex) &&
-        hit.sceneId === chunk.sceneId &&
-        hit.score === chunk.score &&
-        truncateChunk(hit.chunkText, maxChunkChars) === chunk.chunkText,
-    );
-    if (index < 0) return [];
-    used.add(index);
-    return [hits[index]!];
-  });
+): SemanticRecallChunk[] {
+  return hits.map((hit) => ({
+    sceneId: hit.sceneId,
+    sceneTitle: hit.sceneTitle,
+    chunkText: truncateChunk(hit.chunkText, maxChunkChars),
+    score: hit.score,
+  }));
 }
 
 /**
@@ -346,8 +340,10 @@ export async function fetchSemanticRecall(args: {
   query: string;
   excludeSceneIds: string[];
   hybrid?: boolean;
-  shadow?: {
+  reranker?: {
+    mode: "shadow" | "apply";
     requestId: string;
+    sessionId?: string | null;
     scope: SemanticRerankerShadowScope;
     userMessage: string;
     sceneTail: string;
@@ -399,20 +395,71 @@ export async function fetchSemanticRecall(args: {
     sparsePromise,
   ]);
 
-  const selected =
+  const baselineInjectedHits =
     args.hybrid && sparseSceneIds.length > 0
-      ? selectHybridRecallChunks(hits, sparseSceneIds, {
+      ? selectHybridRecallHits(hits, sparseSceneIds, {
           excludeSceneIds: args.excludeSceneIds,
           minScore: params.minScore,
           gateScore: params.gateScore,
-          maxChunkChars: params.maxChunkChars,
         })
-      : selectSemanticRecallChunks(hits, {
+      : selectDenseRecallHitsWithPolicy(hits, {
           excludeSceneIds: args.excludeSceneIds,
           minScore: params.minScore,
           gateScore: params.gateScore,
-          maxChunkChars: params.maxChunkChars,
+          maxChunks: SEMANTIC_RECALL_MAX_CHUNKS,
         });
+  let injectedHits = baselineInjectedHits;
+
+  const retrievalFinishedAtMs = globalThis.performance?.now() ?? Date.now();
+  const rerankerLanguage = resolveSemanticRerankerLanguage(
+    args.reranker?.language,
+  );
+  const rerankerInput =
+    args.hybrid && args.reranker && rerankerLanguage && hits.length > 0
+      ? {
+          requestId: args.reranker.requestId,
+          sessionId: args.reranker.sessionId ?? null,
+          scope: args.reranker.scope,
+          language: rerankerLanguage,
+          query: {
+            userMessage: args.reranker.userMessage,
+            sceneTail: args.reranker.sceneTail,
+          },
+          denseHits: hits,
+          sparseSceneIds,
+          excludeSceneIds: args.excludeSceneIds,
+          baselineInjectedHits,
+          hybrid: sparseSceneIds.length > 0,
+          minScore: params.minScore,
+          gateScore: params.gateScore,
+          rescueMargin: SEMANTIC_RECALL_RESCUE_MARGIN,
+          maxChunks: SEMANTIC_RECALL_MAX_CHUNKS,
+          maxChunkChars: params.maxChunkChars,
+          rrfK: RRF_K,
+          retrievalStartedAtMs,
+          retrievalLatencyMs: Math.max(
+            0,
+            retrievalFinishedAtMs - retrievalStartedAtMs,
+          ),
+          localInferenceExpected: args.reranker.localInferenceExpected,
+          ...(args.reranker.expectedSceneIds
+            ? { expectedSceneIds: args.reranker.expectedSceneIds }
+            : {}),
+        }
+      : null;
+
+  let rerankerStatus = "off";
+  if (rerankerInput && args.reranker?.mode === "apply") {
+    const result = await applySemanticReranker(rerankerInput);
+    injectedHits = result.hits;
+    rerankerStatus =
+      result.status === "applied" ? "applied" : `fallback:${result.reason}`;
+  } else if (rerankerInput && args.reranker?.mode === "shadow") {
+    scheduleSemanticRerankerShadow(rerankerInput);
+    rerankerStatus = "shadow";
+  }
+
+  const selected = recallHitsToChunks(injectedHits, params.maxChunkChars);
   // 注入判定の可観測性: 取得モード / 生ヒット数 / sparse 件数 / 注入数 / トップスコア。
   // 閾値・融合が実データに合っているかはこの行で見る。
   const topScore =
@@ -421,45 +468,9 @@ export async function fetchSemanticRecall(args: {
     "SemanticRecall",
     `mode=${args.hybrid ? "hybrid" : "dense"} hits=${hits.length} ` +
       `sparse=${sparseSceneIds.length} injected=${selected.length} ` +
-      `gate=${params.gateScore} floor=${params.minScore}`,
+      `gate=${params.gateScore} floor=${params.minScore} ` +
+      `reranker=${rerankerStatus}`,
     topScore !== null ? `topScore=${topScore.toFixed(3)}` : "no hits",
   );
-  if (args.hybrid && args.shadow && hits.length > 0) {
-    const retrievalFinishedAtMs = globalThis.performance?.now() ?? Date.now();
-    const baselineInjectedHits = resolveSelectedHits(
-      selected,
-      hits,
-      params.maxChunkChars,
-    );
-    scheduleSemanticRerankerShadow({
-      requestId: args.shadow.requestId,
-      scope: args.shadow.scope,
-      language: args.shadow.language.startsWith("en") ? "en" : "ja",
-      query: {
-        userMessage: args.shadow.userMessage,
-        sceneTail: args.shadow.sceneTail,
-      },
-      denseHits: hits,
-      sparseSceneIds,
-      excludeSceneIds: args.excludeSceneIds,
-      baselineInjectedHits,
-      hybrid: sparseSceneIds.length > 0,
-      minScore: params.minScore,
-      gateScore: params.gateScore,
-      rescueMargin: SEMANTIC_RECALL_RESCUE_MARGIN,
-      maxChunks: SEMANTIC_RECALL_MAX_CHUNKS,
-      maxChunkChars: params.maxChunkChars,
-      rrfK: RRF_K,
-      retrievalStartedAtMs,
-      retrievalLatencyMs: Math.max(
-        0,
-        retrievalFinishedAtMs - retrievalStartedAtMs,
-      ),
-      localInferenceExpected: args.shadow.localInferenceExpected,
-      ...(args.shadow.expectedSceneIds
-        ? { expectedSceneIds: args.shadow.expectedSceneIds }
-        : {}),
-    });
-  }
   return selected;
 }

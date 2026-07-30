@@ -62,7 +62,7 @@ describe("editorAnalysisScheduler", () => {
     const runs: string[] = [];
     const schedule = (task: {
       key: string;
-      kind: "save" | "codex-match" | "lint" | "semantic";
+      kind: "save" | "codex-match" | "lint" | "derived" | "semantic";
     }) => {
       scheduleEditorAnalysisTask({
         key: task.key,
@@ -77,10 +77,11 @@ describe("editorAnalysisScheduler", () => {
     // These mirror the four producer namespaces. Sharing an entity suffix
     // must not coalesce tasks owned by different producers.
     schedule({ key: "semantic-scene:scene-1", kind: "semantic" });
+    schedule({ key: "derived:scene-1", kind: "derived" });
     schedule({ key: "lint:scene-1", kind: "lint" });
     schedule({ key: "codex-match:scene-1", kind: "codex-match" });
     schedule({ key: "autosave:scene-1", kind: "save" });
-    expect(_pendingEditorAnalysisTaskCount()).toBe(4);
+    expect(_pendingEditorAnalysisTaskCount()).toBe(5);
 
     await vi.advanceTimersByTimeAsync(50);
     expect(runs).toEqual(["save"]);
@@ -92,7 +93,16 @@ describe("editorAnalysisScheduler", () => {
     expect(runs).toEqual(["save", "codex-match", "lint"]);
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(runs).toEqual(["save", "codex-match", "lint", "semantic"]);
+    expect(runs).toEqual(["save", "codex-match", "lint", "derived"]);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runs).toEqual([
+      "save",
+      "codex-match",
+      "lint",
+      "derived",
+      "semantic",
+    ]);
   });
 
   it("keeps the launch spacing when a running task re-enters the scheduler", async () => {

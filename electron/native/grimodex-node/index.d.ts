@@ -327,8 +327,8 @@ export declare class Backend {
   semanticIndexScene(sceneId: string): Promise<string>
   semanticSearch(projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
   /**
-   * Score a frozen Semantic Recall candidate set for the development-only
-   * shadow path. This command neither reads the active workspace nor owns
+   * Score a frozen Semantic Recall candidate set for diagnostic shadow or
+   * opt-in apply. This command neither reads the active workspace nor owns
    * admission; it only returns logits, hashes, and truncation counters.
    */
   semanticRerankerShadowScore(request: any): Promise<string>

@@ -33,7 +33,7 @@ usage 台帳 / session_id routing）ではない。
 | **② 単発** (JS でプロンプト構築→Rust で 1 往復)   | synopsis / セッションタイトル / 要約 / 伏線監査ほか / beat role / map / tree                    | `runLiveSingleShot` ＋**本番のプロンプトビルダーと本番パーサ**         |
 | **③ post-effect** (Rust が全オーケストレーション) | 校閲 graders（intent drift / review / consistency / timeline / pseudo_comment / impact review） | **Rust 側ライブテスト**（`call_post_effect_api` を実プロバイダに直接） |
 | **④ CLI**                                         | claude/codex/opencode サブプロセス                                                              | 自動検証不可（stub・実機 smoke のみ）                                  |
-| **➖ 埋め込み/検索**                              | semantic_search / fts_search                                                                    | LLM 生成でない（n/a・決定的 eval で別途）                              |
+| **➖ 埋め込み/検索**                              | semantic_search / semantic reranker / fts_search                                                | LLM 生成でない（n/a・決定的 eval で別途）                              |
 
 ## Web Editor AI の同意境界
 

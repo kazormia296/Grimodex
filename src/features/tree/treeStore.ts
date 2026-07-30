@@ -810,6 +810,7 @@ interface TreeState {
   // Display settings
   setCharCount: (id: string, count: number) => void;
   setAiRatios: (ratios: Record<string, number>) => void;
+  setAiRatio: (nodeId: string, ratio: number | undefined) => void;
   refreshAiRatio: (nodeId: string) => Promise<void>;
   setShowWordCounts: (v: boolean) => void;
   setShowStatusDots: (v: boolean) => void;
@@ -2022,6 +2023,22 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set({ aiRatios: ratios });
   },
 
+  setAiRatio(nodeId, ratio) {
+    set((state) => {
+      const hasCurrent = nodeId in state.aiRatios;
+      if (
+        (ratio === undefined && !hasCurrent) ||
+        (ratio !== undefined && hasCurrent && state.aiRatios[nodeId] === ratio)
+      ) {
+        return state;
+      }
+      const next = { ...state.aiRatios };
+      if (ratio === undefined) delete next[nodeId];
+      else next[nodeId] = ratio;
+      return { aiRatios: next };
+    });
+  },
+
   async refreshAiRatio(nodeId) {
     const projectId = get().hydratedProjectId;
     const workspaceOpenRevision = get().hydratedWorkspaceOpenRevision;
@@ -2039,12 +2056,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       // 結果に無いノード (シーンが空になった等) は key ごと削除する。
       // spread マージだけだと旧 % がツリー再ロードまで残留するし、
       // 0 を書くと初期一括ロード (省略=key無し) と表示が食い違う。
-      set((state) => {
-        const next = { ...state.aiRatios };
-        if (nodeId in ratios) next[nodeId] = ratios[nodeId];
-        else delete next[nodeId];
-        return { aiRatios: next };
-      });
+      get().setAiRatio(nodeId, ratios[nodeId]);
     } catch {
       // ignore
     }

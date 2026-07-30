@@ -2,8 +2,8 @@
 
 ## Decision
 
-Gate 2 promotes two direct top-30 configurations to a later product shadow
-integration:
+Gate 2 promotes two direct top-30 configurations to an experimental,
+project-scoped opt-in product integration:
 
 - Japanese: `hotchpotch/japanese-reranker-xsmall-v2`, top 30.
 - English: `cross-encoder/ms-marco-MiniLM-L4-v2`, top 30.
@@ -14,21 +14,32 @@ Japanese configuration. Its paired interval includes a possible MRR/Recall@1
 regression and one query worsened, while xsmall reached perfect scene ranking
 on this fixture with no worsened query.
 
-Japanese xsmall top 12 is not promoted. It is faster, but loses one final gold
-scene inclusion and increases non-gold injection. Scoring all 30 candidates
-rescues `ja-r02` from below rank 12 and still stays in the Target latency band.
+After adding exact-passage qrels and aligning final injection with the product
+algorithm, Japanese xsmall top 12 also clears the numerical gate. Top 30
+remains selected because it raises exact-passage inclusion from 75.0% to
+83.3%, rescues the labelled `ja-r02` passage from below rank 12, and remains
+in the Target latency band.
 
-This is permission for a shadow integration and broader real-workspace
-validation, not permission to ship a default reranker. Impact Review was not
-evaluated and remains a separate track. No cascade is selected.
+This is sufficient evidence for an experimental opt-in reranker, not for
+default enablement or a claim of cross-work generalization. The product path
+must preserve the fixed-fixture quality and latency results below, keep the
+existing admission policy authoritative, and return the exact baseline order
+on model absence, inference failure, timeout, or stale authority. Impact
+Review was not evaluated and remains a separate track. No cascade is selected.
 
 ## Fixed implementation and environment
 
-- Gate 2 implementation commit:
+- Gate 2 original implementation commit:
   `a80ff6cee575f2be362b037fab02c6b00b865f88`
+- Exact-passage qrels and product-aligned injection fix commit:
+  `d225999c4b12f6cc5e027ac797c0f1ae384b695e`
+- Rescue/backfill admission-boundary parity fix:
+  co-committed with this decision record and covered by the
+  `test_rescue_only_does_not_backfill_a_rescued_scene` and
+  `test_dense_pass_does_not_backfill_below_min_score` contracts.
 - Runner: `grimodex-lfm-eval` 0.2.0,
   `python -m grimodex_lfm_eval.reranker_gate2_runner`
-- Report schema version: 1
+- Report schema version: 2
 - `uv.lock` SHA-256:
   `89d58201e3c583672c9189ed176eea5d8e9447aec0a016cd059afefba92984d3`
 - Runtime: Python 3.14.6, ONNX Runtime 1.24.2, tokenizers 0.22.2
@@ -38,9 +49,15 @@ evaluated and remains a separate track. No cascade is selected.
 - Pair truncation: `longest_first`, maximum 512 tokens
 - Warm latency: three excluded warmups, then 30 measured queries
 
-The cross-encoder logit is used only to order a frozen candidate set. Final
-injection still applies the existing dense gate/floor and sparse-rescue
-policy. Cross-encoder logits are never compared with cosine/BGE thresholds.
+The cross-encoder logit is used only to order a frozen candidate set. The
+baseline evaluator first sorts by dense score, separates each scene's best
+chunk from its leftovers, and applies dense/sparse admission only to those
+scene winners. A rescue-only result never creates a secondary chunk quota.
+Leftovers are added only when `densePass=true` and the leftover itself is at
+or above `minScore`. Final injection freezes the resulting scenes and
+per-scene quotas; the reranker may choose a different retrieved chunk only
+inside those quotas. Cross-encoder logits are never compared with cosine/BGE
+thresholds.
 
 ## Frozen product candidate sets
 
@@ -54,6 +71,14 @@ rerun per reranker.
 | -------- | ------: | -------: | -------: | --------------------: | ------------------------------------------------------------------ |
 | Japanese |      18 |       12 |        6 |                42/271 | `cd1dbf5fbf18c9d28a5f924f0771bcb169c635279300670eb39c2bc053bd0234` |
 | English  |      28 |       22 |        6 |                40/350 | `8802c90dd4ff0d20af99000eeee966ddbc32e8fd6ed73d631877ac5cbadfcb79` |
+
+Exact-passage labels are stored separately in
+`data/public/gate2/chunk-qrels.json` (SHA-256
+`f1daa108130041781e80235a3b74ef915616484a38396b758524be108f17cef3`).
+Each positive annotation names the specific frozen chunk range that answers
+the query; labels are not expanded to every chunk sharing the expected scene
+title. Empty positive qrels are allowed only for the three English
+candidate-generation misses.
 
 The Japanese pool uses
 `cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1` and the Japanese
@@ -116,27 +141,24 @@ invalidate the promotion decision.
 
 ## Top-30 aggregate quality
 
-Scene Recall is query-level binary recall: a query succeeds when any labelled
-relevant scene appears within the cutoff. Injection allows at most three
-chunks and prioritizes distinct scenes before backfill.
+Scene Recall remains query-level binary recall. Chunk MRR/NDCG and exact
+injection now use the reviewed candidate-range qrels. Injection freezes the
+baseline scene multiset and quota before applying reranker chunk order.
 
-| Language / method     | Chunk MRR | Chunk NDCG@3 | Scene MRR | Recall@1 | Recall@3 | Gold injection | Non-gold injection | No-match injection |
-| --------------------- | --------: | -----------: | --------: | -------: | -------: | -------------: | -----------------: | -----------------: |
-| JA dense              |     0.828 |        0.776 |     0.829 |    75.0% |    91.7% |          83.3% |              63.3% |               0.0% |
-| JA hybrid RRF         |     0.829 |        0.776 |     0.829 |    75.0% |    91.7% |          83.3% |              63.3% |               0.0% |
-| JA hybrid + tiny      |     0.958 |        0.885 |     0.958 |    91.7% |   100.0% |          83.3% |              63.3% |               0.0% |
-| JA hybrid + xsmall    |     1.000 |        0.916 |     1.000 |   100.0% |   100.0% |          83.3% |              63.3% |               0.0% |
-| EN dense              |     0.595 |        0.609 |     0.606 |    45.5% |    77.3% |          77.3% |              74.3% |              50.0% |
-| EN hybrid RRF         |     0.716 |        0.665 |     0.716 |    63.6% |    72.7% |          72.7% |              76.9% |              66.7% |
-| EN hybrid + MiniLM-L4 |     0.783 |        0.751 |     0.795 |    77.3% |    77.3% |          77.3% |              75.6% |              66.7% |
+| Language / method     | Chunk MRR | Chunk NDCG@3 | Scene MRR | Recall@1 | Recall@3 | Gold scene injection | Gold chunk injection | Non-gold chunk injection | No-match injection |
+| --------------------- | --------: | -----------: | --------: | -------: | -------: | -------------------: | -------------------: | -----------------------: | -----------------: |
+| JA dense              |     0.817 |        0.803 |     0.829 |    75.0% |    91.7% |                83.3% |                75.0% |                    66.7% |               0.0% |
+| JA hybrid RRF         |     0.806 |        0.803 |     0.829 |    75.0% |    91.7% |                83.3% |                75.0% |                    66.7% |               0.0% |
+| JA hybrid + tiny      |     0.958 |        0.969 |     0.958 |    91.7% |   100.0% |                83.3% |                83.3% |                    63.3% |               0.0% |
+| JA hybrid + xsmall    |     1.000 |        1.000 |     1.000 |   100.0% |   100.0% |                83.3% |                83.3% |                    63.3% |               0.0% |
+| EN dense              |     0.595 |        0.637 |     0.606 |    45.5% |    77.3% |                77.3% |                77.3% |                    74.3% |              50.0% |
+| EN hybrid RRF         |     0.716 |        0.694 |     0.716 |    63.6% |    72.7% |                72.7% |                72.7% |                    76.9% |              66.7% |
+| EN hybrid + MiniLM-L4 |     0.783 |        0.773 |     0.795 |    77.3% |    77.3% |                72.7% |                72.7% |                    76.9% |              66.7% |
 
-The public qrels name expected scenes but do not exhaustively label every
-related scene. For that reason, `Non-gold injection` is the precise
-interpretation of the report field named `junk_injection_rate`; it can
-overstate truly irrelevant injection. Schema version 1 remains unchanged so
-the committed evidence stays reproducible. The next report schema will rename
-`junk_injection_rate` to `non_gold_injection_rate` (and the corresponding
-delta field) without changing its calculation.
+`Non-gold chunk injection` means the injected range is not one of the explicit
+exact-passage qrels. It is a conservative label and may still overstate truly
+irrelevant injection. The separate scene columns retain the broader
+scene-title judgement.
 
 ## Promotion rule and paired evidence
 
@@ -146,8 +168,9 @@ The planned ranking rule is:
   percentage points;
 - Recall@3 may not regress by more than 1 point.
 
-Gate 2 additionally requires final gold inclusion not to decrease, non-gold
-injection not to increase, and no-match injection not to increase.
+Gate 2 additionally requires final gold-scene and exact-gold-chunk inclusion
+not to decrease, non-gold chunk injection not to increase, and no-match
+injection not to increase.
 
 | Configuration       | Δ scene MRR, paired 95% CI | Δ Recall@1, paired 95% CI | Δ Recall@3, paired 95% CI | Improved / worsened / unchanged | Final safety | Gate                      |
 | ------------------- | -------------------------: | ------------------------: | ------------------------: | ------------------------------: | ------------ | ------------------------- |
@@ -161,8 +184,10 @@ configuration introduces a no-match regression relative to its hybrid
 baseline.
 
 Only xsmall's Recall@1 paired lower bound is strictly positive. The other
-intervals touch or cross zero because these public positive sets are small;
-that uncertainty is why the decision stops at shadow integration.
+intervals touch or cross zero because these public positive sets are small.
+English is therefore described only as improving the order of candidates
+already found by production retrieval; it does not claim to repair
+candidate-generation misses or no-match admission.
 
 ## Named slices and hard negatives
 
@@ -176,16 +201,16 @@ that uncertainty is why the decision stops at shadow integration.
 
 ## Xsmall top 12 versus top 30
 
-| Depth           | Scene MRR | Recall@1 | Recall@3 | Gold injection | Non-gold injection | Product safety |
-| --------------- | --------: | -------: | -------: | -------------: | -----------------: | -------------- |
-| Hybrid baseline |     0.829 |    75.0% |    91.7% |          83.3% |              63.3% | —              |
-| Xsmall top 12   |     0.933 |    91.7% |    91.7% |          75.0% |              66.7% | Fail           |
-| Xsmall top 30   |     1.000 |   100.0% |   100.0% |          83.3% |              63.3% | Pass           |
+| Depth           | Scene MRR | Recall@1 | Recall@3 | Gold scene injection | Gold chunk injection | Non-gold chunk injection | Product safety |
+| --------------- | --------: | -------: | -------: | -------------------: | -------------------: | -----------------------: | -------------- |
+| Hybrid baseline |     0.829 |    75.0% |    91.7% |                83.3% |                75.0% |                    66.7% | —              |
+| Xsmall top 12   |     0.933 |    91.7% |    91.7% |                83.3% |                75.0% |                    66.7% | Pass           |
+| Xsmall top 30   |     1.000 |   100.0% |   100.0% |                83.3% |                83.3% |                    63.3% | Pass           |
 
-Top 30 adds 324 candidate-query pairs, 321 of which are non-gold under the
-sparse qrels. One labelled relevant candidate below rank 12 rescues `ja-r02`.
-The top-12 ranking rule alone would pass, but its final-injection regression
-overrides that result.
+Top 30 adds 324 candidate-query pairs. One exact-passage qrel below rank 12
+lets `ja-r02` replace the dense-selected chunk inside an already-admitted
+scene. It therefore provides a product-visible exact-passage improvement
+without changing scene admission.
 
 ## Real-corpus latency
 
@@ -196,10 +221,47 @@ path.
 
 | Model / depth     | Samples |    p50 |    p95 | Bootstrap p95 95% CI | Target | Hard stop | Verdict |
 | ----------------- | ------: | -----: | -----: | -------------------: | -----: | --------: | ------- |
-| JA tiny / 30      |      30 | 0.246s | 0.303s |         0.276–0.350s |     2s |        8s | Target  |
-| JA xsmall / 12    |      30 | 0.384s | 0.587s |         0.518–1.156s |     1s |        4s | Target  |
-| JA xsmall / 30    |      30 | 0.857s | 1.139s |         1.031–1.338s |     2s |        8s | Target  |
-| EN MiniLM-L4 / 30 |      30 | 0.514s | 0.759s |         0.550–0.900s |     2s |        8s | Target  |
+| JA tiny / 30      |      30 | 0.279s | 0.378s |         0.346–0.427s |     2s |        8s | Target  |
+| JA xsmall / 12    |      30 | 0.315s | 0.529s |         0.391–0.560s |     1s |        4s | Target  |
+| JA xsmall / 30    |      30 | 0.852s | 1.044s |         0.949–1.135s |     2s |        8s | Target  |
+| EN MiniLM-L4 / 30 |      30 | 0.510s | 0.643s |         0.565–0.900s |     2s |        8s | Target  |
+
+### Admission-boundary-corrected apply revalidation — 2026-07-31
+
+The selected configurations were rerun from the pinned local manifests after
+aligning the evaluator with the product's scene-winner admission and
+dense-only backfill boundary. Aggregate quality and safety values are
+unchanged from the prior chunk-corrected run. Both 30-candidate latency gates
+remain Target:
+
+| Model / depth     | Manifest                                                           | Chunk MRR | Scene MRR | Gold chunk | Worsened positive |    p95 | Bootstrap p95 95% CI | Verdict |
+| ----------------- | ------------------------------------------------------------------ | --------: | --------: | ---------: | ----------------: | -----: | -------------------: | ------- |
+| JA xsmall / 30    | `8d4ad4f8d50496941fd5e6b4960df3dccdfc8aa1811c7cff68a5f470f9e1c24f` |     1.000 |     1.000 |      83.3% |                 0 | 1.044s |         0.949–1.135s | Promote |
+| EN MiniLM-L4 / 30 | `e6b043a0b69a61c3b9b54c59ea512149bfa5fbd15ce2778877c283ef4aae9813` |     0.783 |     0.795 |      72.7% |                 0 | 0.643s |         0.565–0.900s | Promote |
+
+| Model / depth     | Run timestamp (UTC)                | Report SHA-256                                                     |
+| ----------------- | ---------------------------------- | ------------------------------------------------------------------ |
+| JA xsmall / 30    | `2026-07-30T18:17:55.250818+00:00` | `fb3367306fb1f7831e96a8bf9f72c549397ea10ab652a839341e97d3c19a06d1` |
+| EN MiniLM-L4 / 30 | `2026-07-30T18:18:38.698068+00:00` | `17fab2421f1219958ff3f922e9a9f4678a24ba6a99027c05e93f4127dd870138` |
+
+JA xsmall top 12 also remains `Promote`; its latest p95 is `0.529s`
+with bootstrap p95 95% CI `0.391–0.560s`.
+
+This revalidation covers fixed-fixture model quality and direct ONNX CPU
+latency. Renderer timeout/fallback, admission invariance, and stale authority
+are covered separately by deterministic product contract tests.
+
+### Local LLM contention diagnostic — 2026-07-31
+
+A reproducible diagnostic ran three one-token Ollama generations before and
+during the JA xsmall Gate 2 load on the same host. The warmed
+`gemma4-lowvram:latest` median rose from 1.171s to 1.564s
+(+0.392s, 1.335x); the contended maximum was 1.748s. This small `n=3`
+measurement is diagnostic only, but confirms that an uncancelled reranker can
+slow a concurrent local LLM. The apply path therefore opens a per-session
+circuit after a caller-wait timeout and exposes
+`timedOutButStillRunning=true`; it does not claim that the current native run
+was cancelled.
 
 ## Reproduction commands
 
@@ -280,6 +342,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   .venv/bin/python -m grimodex_lfm_eval.reranker_gate2_runner \
   --config configs/phase0b-rerankers.yaml \
   --candidates data/public/gate2/candidates-ja.jsonl \
+  --chunk-qrels data/public/gate2/chunk-qrels.json \
   --model ja_tiny \
   --threads 6 \
   --batch-size 4 \
@@ -289,6 +352,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   .venv/bin/python -m grimodex_lfm_eval.reranker_gate2_runner \
   --config configs/phase0b-rerankers.yaml \
   --candidates data/public/gate2/candidates-ja.jsonl \
+  --chunk-qrels data/public/gate2/chunk-qrels.json \
   --model ja_xsmall \
   --threads 4 \
   --batch-size 4 \
@@ -298,10 +362,27 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   .venv/bin/python -m grimodex_lfm_eval.reranker_gate2_runner \
   --config configs/phase0b-rerankers.yaml \
   --candidates data/public/gate2/candidates-en.jsonl \
+  --chunk-qrels data/public/gate2/chunk-qrels.json \
   --model en_minilm_l4 \
   --threads 4 \
   --batch-size 4 \
   --output artifacts/phase0b/gate2/final-en-minilm-l4.json
+```
+
+### Local LLM contention diagnostic
+
+```bash
+.venv/bin/python tools/local_llm_reranker_contention_probe.py \
+  --endpoint http://127.0.0.1:11434 \
+  --local-model gemma4-lowvram:latest \
+  --config configs/phase0b-rerankers.yaml \
+  --candidates data/public/gate2/candidates-ja.jsonl \
+  --chunk-qrels data/public/gate2/chunk-qrels.json \
+  --reranker-model ja_xsmall \
+  --threads 4 \
+  --batch-size 4 \
+  --samples 3 \
+  --output artifacts/phase0b/gate2/contention-gemma4-lowvram-ja-xsmall.json
 ```
 
 ### Contract verification
@@ -323,7 +404,30 @@ The generated report JSON files stay ignored under
 `artifacts/phase0b/gate2/`; this Markdown file is the committed decision
 record.
 
-## Development shadow operation
+## Product modes and optional development shadow
+
+The project setting **Semantic reranking (experimental)** is off by default.
+The runtime modes are:
+
+```text
+off    -> do not run the cross-encoder
+shadow -> record counterfactual order only (developer diagnostic)
+apply  -> apply the reranked order after existing admission
+```
+
+`apply` has a 2.5 second caller-wait timeout and returns the current order on
+timeout, model/resource failure, inference error, native-lane contention,
+reindexing, workspace change, or superseded query generation. A timeout does
+not claim native cancellation: it emits `timedOutButStillRunning=true` and
+opens a circuit that skips later reranks in the same session. It never admits
+a new scene: dense gate, floor, sparse rescue, exclusions, and the three-chunk
+cap determine the baseline scene quota before reranker chunk selection.
+
+The setting and execution path use the same language, runtime, and resource
+capability resolver. Chinese, Korean, and Web Editor cases stay `off` without
+invoking native scoring. Packaged Electron releases advertise the fixed
+resource capability; a missing or corrupted file discovered during scoring
+still returns the exact baseline through the scorer-level fail-safe.
 
 The promoted models can be observed in Electron development without changing
 the current prompt:
@@ -336,8 +440,9 @@ VITE_SEMANTIC_RERANKER_SHADOW=1 pnpm electron:dev
 The default model root is
 `experiments/lfm25-encoder-phase0/local/phase0b`. A different verified local
 root may be supplied with the absolute-path-only
-`GRIMODEX_RERANKER_RESOURCE_ROOT` environment variable. Packaged builds do not
-receive a reranker resource root.
+`GRIMODEX_RERANKER_RESOURCE_ROOT` environment variable. Release builds
+bootstrap the two selected pinned snapshots and package them under the fixed
+reranker resource root.
 
 Only real `send` context builds enqueue the shadow job. The existing injected
 chunks are returned immediately; a concurrency-one, latest-pending background
@@ -348,11 +453,11 @@ identity, memory, and latency, but no query, candidate, or manuscript text.
 New records retain the exact dense rank as well as current hybrid and reranker
 ranks so the three-method top-10 annotation union can be reconstructed without
 storing text.
-Counterfactual injection is logged and never applied. Semantic Recall and its
-hybrid retrieval setting must both be enabled because Gate 2 promoted the
-frozen hybrid top-30 configuration.
+Counterfactual injection is logged and never applied in `shadow`. Semantic
+Recall and its hybrid retrieval setting must both be enabled because Gate 2
+promoted the frozen hybrid top-30 configuration.
 
-## Corpus role and promotion boundary
+## Corpus role
 
 The committed Gate 2 corpus remains model-selection validation:
 
@@ -361,12 +466,12 @@ The committed Gate 2 corpus remains model-selection validation:
 | Japanese |       12 |        6 |                 1 |
 | English  |       22 |        6 |                 1 |
 
-It is enough for the shadow choice above, but not for claims about
-generalization, no-match safety, opt-in readiness, or default enablement. The
-next evidence uses work-level-separated `shadow-private-dev` and
-`frozen-holdout` labels. The first floor is 50 positive and 30 no-match queries
-per language across at least three works; opt-in and default decisions require
-larger floors and a valid frozen-holdout lock.
+It is enough for model selection and experimental opt-in integration, but not
+for claims about cross-work generalization, absolute no-match quality, or
+default enablement. Work-level-separated `shadow-private-dev` and
+`frozen-holdout` labels remain available for optional investigation. Their
+sample floors and readiness fields are research diagnostics, not
+product-enablement conditions.
 
 The hash-only label schema, four-grade union-pooling contract, hard-case
 slices, stage targets, commands, and aggregate report schema are recorded in
@@ -382,16 +487,20 @@ The measured conclusion is:
 > language-specific quantized cross-encoder, on the public medium fixtures and
 > Ryzen 5 3600 host
 
-It does not prove user-corpus generalization, absolute no-match quality,
-memory behavior under Electron contention, or product UX latency after IPC.
-The implemented development shadow:
+It does not prove user-corpus generalization, absolute no-match quality, or
+product UX latency after IPC. The small local-LLM overlap measurement is a
+diagnostic, not a contention gate.
+The implemented integration:
 
 1. keeps the current candidate admission gate unchanged;
 2. runs xsmall top 30 for Japanese and MiniLM-L4 top 30 for English;
-3. records current versus reranked scene order without changing injection;
-4. supplies text-free evidence for locally reviewed private workspaces; and
-5. remains ineligible for opt-in or default use until the corpus protocol,
-   frozen holdout, quality gates, and product performance gates pass.
+3. preserves admitted scene quotas while applying reranker-selected chunks
+   from those scenes when the explicit project toggle is enabled;
+4. fails closed outside supported Electron JA/EN capability;
+5. returns the exact baseline on timeout, failure, contention, reindexing, or
+   stale workspace/query authority and opens a session circuit after timeout;
+6. retains the text-free shadow log as an optional diagnostic; and
+7. keeps default enablement outside this decision.
 
 Impact Review remains `not-evaluated`. Off-the-shelf relevance logits must not
 remove Impact candidates.

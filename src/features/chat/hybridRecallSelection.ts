@@ -59,7 +59,7 @@ function applySceneRanking(
 
 /**
  * Production-authoritative dense-only admission shared by the live fallback
- * and reranker shadow. The admitted candidate set matches the historical
+ * and reranker modes. The admitted candidate set matches the historical
  * distinct-scene-first/backfill selector; an optional ranker may reorder only
  * those admitted scene groups.
  */
@@ -117,7 +117,7 @@ export function selectDenseRecallHitsWithPolicy(
 
 /**
  * Production-authoritative hybrid admission shared by the live selector and
- * reranker shadow. A shadow model may only reorder admitted scene winners;
+ * reranker modes. A reranker may only reorder admitted scene winners;
  * dense/sparse gates and backfill remain identical to production.
  */
 export function selectHybridRecallHitsWithPolicy(

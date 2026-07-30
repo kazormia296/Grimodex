@@ -26,7 +26,10 @@ import { useChatStore } from "@/features/chat/chatStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { isElectron } from "@/lib/shell";
-import { deriveSceneBodySnapshot } from "./sceneBodySnapshot";
+import {
+  deriveSceneAiRatio,
+  deriveSceneBodySnapshot,
+} from "./sceneBodySnapshot";
 import { saveSceneBodyBundle } from "./sceneBodyBundleApi";
 import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
 import { listCodexMatchTargets } from "@/features/codex/api";
@@ -41,6 +44,7 @@ import { publishSceneBodyCommit } from "@/lib/sceneBodyCommitRegistry";
 import { publishTreeNodeMutation } from "@/lib/treeNodeMutationRegistry";
 import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
+import { scheduleEditorAnalysisTask } from "@/lib/editorAnalysisScheduler";
 
 export interface BodyMentionScanRequest {
   projectId: string;
@@ -65,6 +69,90 @@ function isBodyMentionScanAuthoritative(
     return isCurrentWorkspaceIdentity(request.workspaceIdentity);
   }
   return getCurrentWorkspaceIdentity() === null;
+}
+
+type AiRatioRefresh =
+  | { kind: "precomputed"; value: number | undefined }
+  | { kind: "database" }
+  | { kind: "skip" };
+
+interface PostSaveDerivedRefreshRequest {
+  sceneId: string;
+  projectId: string;
+  workspaceIdentity: WorkspaceIdentity | null;
+  aiRatio: AiRatioRefresh;
+  refreshContextLayers: boolean;
+}
+
+function isPostSaveAuthorityCurrent(
+  request: PostSaveDerivedRefreshRequest,
+): boolean {
+  const sameWorkspace = request.workspaceIdentity
+    ? isCurrentWorkspaceIdentity(request.workspaceIdentity)
+    : getCurrentWorkspaceIdentity() === null;
+  return (
+    sameWorkspace && useTreeStore.getState().projectId === request.projectId
+  );
+}
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Keep non-authoritative projections out of the durable save task. The latest
+ * save for a scene replaces a pending refresh, and workspace/project checks
+ * prevent a delayed result from publishing after a switch.
+ */
+function schedulePostSaveDerivedRefresh(
+  request: PostSaveDerivedRefreshRequest,
+): void {
+  const workspaceKey = request.workspaceIdentity
+    ? `${request.workspaceIdentity.path}:${request.workspaceIdentity.openRevision}`
+    : "browser";
+  scheduleEditorAnalysisTask({
+    key: `derived-save:${workspaceKey}:${request.projectId}:${request.sceneId}`,
+    kind: "derived",
+    delayMs: 0,
+    run: async () => {
+      if (!isPostSaveAuthorityCurrent(request)) return;
+
+      if (request.aiRatio.kind !== "skip") {
+        markStart("editor.postSave.refreshAiRatio");
+        try {
+          const treeState = useTreeStore.getState();
+          if (request.aiRatio.kind === "precomputed") {
+            treeState.setAiRatio(request.sceneId, request.aiRatio.value);
+          } else {
+            await treeState.refreshAiRatio(request.sceneId);
+          }
+        } catch {
+          // A derived badge refresh must not turn a committed save into an
+          // error. The next tree hydration or save refreshes it again.
+        } finally {
+          markEnd("editor.postSave.refreshAiRatio");
+        }
+      }
+
+      if (!request.refreshContextLayers) return;
+      // Let the AI-ratio store notification and its React subscribers commit
+      // before context preparation begins. This is a real event-loop boundary,
+      // not merely another Promise microtask.
+      await yieldToMainThread();
+      if (!isPostSaveAuthorityCurrent(request)) return;
+      const chatState = useChatStore.getState();
+      if (chatState.activeSceneId !== request.sceneId) return;
+
+      markStart("editor.postSave.refreshContextLayers");
+      try {
+        await chatState.refreshContextLayers();
+      } catch {
+        // Context is rebuilt again before send; preserve the committed save.
+      } finally {
+        markEnd("editor.postSave.refreshContextLayers");
+      }
+    },
+  });
 }
 
 async function runBodyMentionScan(sceneId: string): Promise<void> {
@@ -384,13 +472,14 @@ export async function persistSceneBody(
       sceneVersion: contentVersion,
       sceneUpdatedAt: contentUpdatedAt,
     });
-    const chatState = useChatStore.getState();
-    if (chatState.activeSceneId === id) {
-      markStart("editor.coreSave.refreshContextLayers");
-      chatState
-        .refreshContextLayers()
-        .catch(() => {})
-        .finally(() => markEnd("editor.coreSave.refreshContextLayers"));
+    if (useChatStore.getState().activeSceneId === id) {
+      schedulePostSaveDerivedRefresh({
+        sceneId: id,
+        projectId,
+        workspaceIdentity,
+        aiRatio: { kind: "skip" },
+        refreshContextLayers: true,
+      });
     }
     return;
   }
@@ -409,20 +498,15 @@ export async function persistSceneBody(
     sceneVersion: contentVersion,
     sceneUpdatedAt: contentUpdatedAt,
   });
-  markStart("editor.coreSave.refreshAiRatio");
-  useTreeStore
-    .getState()
-    .refreshAiRatio(id)
-    .catch(() => {})
-    .finally(() => markEnd("editor.coreSave.refreshAiRatio"));
-  const chatState = useChatStore.getState();
-  if (chatState.activeSceneId === id) {
-    markStart("editor.coreSave.refreshContextLayers");
-    chatState
-      .refreshContextLayers()
-      .catch(() => {})
-      .finally(() => markEnd("editor.coreSave.refreshContextLayers"));
-  }
+  schedulePostSaveDerivedRefresh({
+    sceneId: id,
+    projectId,
+    workspaceIdentity,
+    aiRatio: nativeSnapshot
+      ? { kind: "precomputed", value: deriveSceneAiRatio(nativeSnapshot) }
+      : { kind: "database" },
+    refreshContextLayers: useChatStore.getState().activeSceneId === id,
+  });
   // セマンティック検索の再インデックスを debounce 付きで予約する。
   // 連続入力中は 2.5s おきに後ろへずれ、ユーザが手を止めてから 1 度だけ
   // Rust 側 `semantic_index_scene` を呼ぶ。正しさは Rust 側 content_hash

@@ -62,15 +62,18 @@ describe("resolveRerankerResourceRoot", () => {
     );
   });
 
-  it("packageではshadow model rootを注入しない", () => {
+  it("packageでは検証済みreranker resourcesの固定rootを使う", () => {
     expect(
       resolveRerankerResourceRoot(
         {
           isPackaged: true,
+          resourcesPath: "/opt/Grimodex/resources",
           mainDir: "/opt/Grimodex/resources/app.asar/dist-electron",
         },
         { GRIMODEX_RERANKER_RESOURCE_ROOT: "/models/rerankers" },
       ),
-    ).toBeNull();
+    ).toBe(
+      path.join("/opt/Grimodex/resources", "resources", "reranker", "phase0b"),
+    );
   });
 });

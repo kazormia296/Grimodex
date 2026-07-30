@@ -1,4 +1,4 @@
-//! Development-only Semantic Recall cross-encoder shadow runtime.
+//! Semantic Recall cross-encoder runtime for diagnostic shadow and opt-in apply.
 //!
 //! The runtime owns pinned Gate 2 model identities, verifies every local
 //! snapshot file before first use, and scores at most 30 frozen candidates.
@@ -527,7 +527,7 @@ impl RerankerRuntime {
         let root = self
             .resource_root
             .as_deref()
-            .ok_or_else(|| anyhow!("semantic reranker shadow resources are not configured"))?;
+            .ok_or_else(|| anyhow!("semantic reranker resources are not configured"))?;
         let total_started = Instant::now();
         let model_was_cold = !self.models.contains_key(spec.key);
         let load_started = Instant::now();

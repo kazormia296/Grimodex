@@ -156,6 +156,31 @@ function applyIgnoreFilter(
     .filterDiagnostics(sceneId, diagnostics, sceneText);
 }
 
+function diagnosticListsEqual(
+  left: readonly Diagnostic[],
+  right: readonly Diagnostic[],
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (
+      a.rule_id !== b.rule_id ||
+      a.severity !== b.severity ||
+      a.message !== b.message ||
+      a.range.start !== b.range.start ||
+      a.range.end !== b.range.end ||
+      a.fix?.label !== b.fix?.label ||
+      a.fix?.replacement !== b.fix?.replacement ||
+      a.fix?.range.start !== b.fix?.range.start ||
+      a.fix?.range.end !== b.fix?.range.end
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Incremental lint helpers
 // ---------------------------------------------------------------------------
@@ -567,8 +592,18 @@ export const useLintStore = create<LintState>()((set, get) => {
             ? (currentSceneContentKey ?? sceneContentKey(blocks))
             : "";
         set((s) => ({
-          rawDiagnostics: freshDiagnostics,
-          diagnostics: filtered,
+          rawDiagnostics: diagnosticListsEqual(
+            s.rawDiagnostics,
+            freshDiagnostics,
+          )
+            ? s.rawDiagnostics
+            : freshDiagnostics,
+          // Preserve identity when an edit leaves diagnostics unchanged.
+          // useLinter subscribes to this exact slice; retaining the reference
+          // avoids a redundant full-document decoration transaction.
+          diagnostics: diagnosticListsEqual(s.diagnostics, filtered)
+            ? s.diagnostics
+            : filtered,
           lastSceneText: sceneText,
           warnings: mergeWarnings(s.warnings, freshWarnings),
           isLinting: false,

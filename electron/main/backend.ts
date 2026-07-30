@@ -27,6 +27,7 @@ interface SemanticResourceResolution {
 
 interface RerankerResourceResolution {
   isPackaged: boolean;
+  resourcesPath?: string;
   mainDir: string;
 }
 
@@ -81,18 +82,26 @@ export function resolveSemanticResourceRoot(
 }
 
 /**
- * Gate 2 reranker snapshots are experiment-local and intentionally excluded
- * from packaged resources. Development may point at a different verified
- * snapshot root with an absolute override.
+ * Selected Gate 2 reranker snapshots are bundled at a fixed package path.
+ * Development may point at a different verified snapshot root with an
+ * absolute override.
  */
 export function resolveRerankerResourceRoot(
   resolution: RerankerResourceResolution = {
     isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
     mainDir: __dirname,
   },
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (resolution.isPackaged) return null;
+  if (resolution.isPackaged) {
+    return path.join(
+      resolution.resourcesPath ?? process.resourcesPath,
+      "resources",
+      "reranker",
+      "phase0b",
+    );
+  }
   const override = env.GRIMODEX_RERANKER_RESOURCE_ROOT?.trim();
   if (override) {
     if (!path.isAbsolute(override)) {

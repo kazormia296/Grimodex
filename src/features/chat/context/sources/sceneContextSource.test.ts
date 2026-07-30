@@ -125,6 +125,7 @@ interface RequestOverrides {
   excludedAutoEntryIds?: string[];
   semanticRecallEnabled?: boolean;
   hybridRecallEnabled?: boolean;
+  semanticRerankerMode?: "off" | "shadow" | "apply";
   route?: ReturnType<typeof resolveChatTurnRoute> | null;
   workspaceIdentity?: {
     workspaceKey: string;
@@ -163,6 +164,7 @@ function request(overrides: RequestOverrides = {}) {
       semanticRecallEnabled: overrides.semanticRecallEnabled ?? false,
       episodicRecallEnabled: false,
       hybridRecallEnabled: overrides.hybridRecallEnabled ?? false,
+      semanticRerankerMode: overrides.semanticRerankerMode ?? "off",
       customChatInstruction: "",
     },
     trackRecallPromote: false,
@@ -316,7 +318,7 @@ describe("collectSceneContext", () => {
     }
   });
 
-  it("marks a local OpenAI-compatible route in send-time shadow telemetry", async () => {
+  it("passes the immutable apply mode and local route identity only at send time", async () => {
     const localSettings: AiSettings = {
       ...DEFAULT_AI_SETTINGS,
       provider: "openai-compatible",
@@ -338,6 +340,7 @@ describe("collectSceneContext", () => {
         outgoingUserMessage: "Find the lighthouse promise",
         semanticRecallEnabled: true,
         hybridRecallEnabled: true,
+        semanticRerankerMode: "apply",
         route: resolveChatTurnRoute({
           surface: "chat",
           activeSettings: localSettings,
@@ -353,7 +356,8 @@ describe("collectSceneContext", () => {
 
     expect(fetchSemanticRecall).toHaveBeenCalledWith(
       expect.objectContaining({
-        shadow: expect.objectContaining({
+        reranker: expect.objectContaining({
+          mode: "apply",
           localInferenceExpected: true,
           scope: {
             workspaceKey: "/private/workspace",
@@ -362,6 +366,29 @@ describe("collectSceneContext", () => {
           },
         }),
       }),
+    );
+  });
+
+  it("never exposes an apply request from a live context refresh", async () => {
+    const fetchSemanticRecall = vi.fn(async () => []);
+
+    await collectSceneContext(
+      request({
+        purpose: "live",
+        outgoingUserMessage: "Find the lighthouse promise",
+        semanticRecallEnabled: true,
+        hybridRecallEnabled: true,
+        semanticRerankerMode: "apply",
+        workspaceIdentity: {
+          workspaceKey: "/private/workspace",
+          workspaceOpenRevision: 9,
+        },
+      }),
+      createSceneContextSourceDeps({ fetchSemanticRecall }),
+    );
+
+    expect(fetchSemanticRecall).toHaveBeenCalledWith(
+      expect.not.objectContaining({ reranker: expect.anything() }),
     );
   });
 

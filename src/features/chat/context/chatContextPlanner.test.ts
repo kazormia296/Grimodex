@@ -36,6 +36,7 @@ function request(overrides: Record<string, unknown> = {}) {
       semanticRecallEnabled: false,
       episodicRecallEnabled: false,
       hybridRecallEnabled: false,
+      semanticRerankerMode: "off",
       customChatInstruction: "",
     },
     trackRecallPromote: false,

@@ -14,6 +14,7 @@ from grimodex_lfm_eval.dataset import (
     validate_story_splits,
 )
 from grimodex_lfm_eval.reranker_gate2 import (
+    load_chunk_qrels,
     load_gate2_jsonl,
     load_parity_jsonl,
 )
@@ -50,12 +51,15 @@ def validate_dataset(data_root: Path) -> dict[str, object]:
     gate2_counts = {
         "candidateQueries": 0,
         "candidateChunks": 0,
+        "chunkQrelQueries": 0,
         "parityPairs": 0,
     }
     if gate2_root.is_dir():
         known_gate2_files: set[Path] = set()
+        gate2_queries = []
         for path in sorted(gate2_root.glob("candidates-*.jsonl")):
             queries = load_gate2_jsonl(path)
+            gate2_queries.extend(queries)
             known_gate2_files.add(path)
             gate2_counts["candidateQueries"] += len(queries)
             gate2_counts["candidateChunks"] += sum(
@@ -65,6 +69,13 @@ def validate_dataset(data_root: Path) -> dict[str, object]:
             pairs = load_parity_jsonl(path, expected_pair_count=12)
             known_gate2_files.add(path)
             gate2_counts["parityPairs"] += len(pairs)
+        chunk_qrels_path = gate2_root / "chunk-qrels.json"
+        attached_queries = load_chunk_qrels(
+            chunk_qrels_path,
+            gate2_queries,
+            require_exact=True,
+        )
+        gate2_counts["chunkQrelQueries"] = len(attached_queries)
         unknown = set(gate2_root.glob("*.jsonl")) - known_gate2_files
         if unknown:
             raise DatasetValidationError(

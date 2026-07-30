@@ -2,6 +2,7 @@ export type EditorAnalysisTaskKind =
   | "save"
   | "codex-match"
   | "lint"
+  | "derived"
   | "semantic";
 
 export interface EditorAnalysisTask {
@@ -23,7 +24,8 @@ const PRIORITY: Readonly<Record<EditorAnalysisTaskKind, number>> = {
   save: 0,
   "codex-match": 1,
   lint: 2,
-  semantic: 3,
+  derived: 3,
+  semantic: 4,
 };
 
 /**

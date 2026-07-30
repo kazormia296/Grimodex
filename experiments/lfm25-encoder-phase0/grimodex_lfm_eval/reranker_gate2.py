@@ -66,6 +66,7 @@ class Gate2Query(_Gate2Model):
     query: str = Field(min_length=1)
     query_slice: Gate2Slice = Field(alias="slice")
     expected_scene_titles: tuple[str, ...]
+    expected_candidate_ids: tuple[str, ...] = ()
     min_score: float
     gate_score: float
     rescue_margin: float = Field(ge=0.0)
@@ -103,6 +104,51 @@ class Gate2Query(_Gate2Model):
             raise ValueError("no_match queries cannot name an expected scene")
         if self.query_slice != "no_match" and not expected:
             raise ValueError("positive queries must name an expected scene")
+        expected_candidate_ids = set(self.expected_candidate_ids)
+        if len(expected_candidate_ids) != len(self.expected_candidate_ids):
+            raise ValueError("expected candidate ids must be unique")
+        candidate_by_id = {
+            candidate.candidate_id: candidate for candidate in self.candidates
+        }
+        unknown = expected_candidate_ids - candidate_by_id.keys()
+        if unknown:
+            raise ValueError(
+                f"expected candidate ids are absent from the frozen pool: "
+                f"{sorted(unknown)}"
+            )
+        if any(
+            not candidate_by_id[candidate_id].relevant
+            for candidate_id in expected_candidate_ids
+        ):
+            raise ValueError(
+                "expected candidate ids must belong to an expected scene"
+            )
+        if self.query_slice == "no_match" and expected_candidate_ids:
+            raise ValueError("no_match queries cannot name an expected candidate")
+        return self
+
+
+class Gate2ChunkQrel(_Gate2Model):
+    query_id: str = Field(min_length=1)
+    relevant_candidate_ids: tuple[str, ...]
+
+    @field_validator("relevant_candidate_ids")
+    @classmethod
+    def validate_unique_candidate_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("relevant candidate ids must be unique")
+        return value
+
+
+class Gate2ChunkQrelManifest(_Gate2Model):
+    schema_version: Literal[1]
+    annotations: tuple[Gate2ChunkQrel, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_query_ids(self) -> "Gate2ChunkQrelManifest":
+        query_ids = [annotation.query_id for annotation in self.annotations]
+        if len(query_ids) != len(set(query_ids)):
+            raise ValueError("chunk qrel query ids must be unique")
         return self
 
 
@@ -134,6 +180,52 @@ def load_gate2_jsonl(path: Path) -> list[Gate2Query]:
     if not records:
         raise ValueError(f"Gate 2 candidate file is empty: {path}")
     return records
+
+
+def load_chunk_qrels(
+    path: Path,
+    queries: Sequence[Gate2Query],
+    *,
+    require_exact: bool = False,
+) -> list[Gate2Query]:
+    try:
+        manifest = Gate2ChunkQrelManifest.model_validate_json(
+            path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as error:
+        raise ValueError(f"{path}: {error}") from error
+
+    annotation_by_id = {
+        annotation.query_id: annotation for annotation in manifest.annotations
+    }
+    query_ids = {query.query_id for query in queries}
+    missing = query_ids - annotation_by_id.keys()
+    if missing:
+        raise ValueError(f"chunk qrels are missing queries: {sorted(missing)}")
+    if require_exact:
+        unknown = annotation_by_id.keys() - query_ids
+        if unknown:
+            raise ValueError(f"chunk qrels contain unknown queries: {sorted(unknown)}")
+
+    attached: list[Gate2Query] = []
+    for query in queries:
+        annotation = annotation_by_id[query.query_id]
+        if (
+            query.query_slice != "no_match"
+            and any(candidate.relevant for candidate in query.candidates)
+            and not annotation.relevant_candidate_ids
+        ):
+            raise ValueError(
+                f"{path}:{query.query_id}: candidate-present positive query "
+                "requires an exact chunk qrel"
+            )
+        payload = query.model_dump()
+        payload["expected_candidate_ids"] = annotation.relevant_candidate_ids
+        try:
+            attached.append(Gate2Query.model_validate(payload))
+        except ValueError as error:
+            raise ValueError(f"{path}:{query.query_id}: {error}") from error
+    return attached
 
 
 def load_parity_jsonl(
@@ -232,18 +324,40 @@ def select_injected_candidates(
     hybrid: bool,
     max_chunks: int = 3,
 ) -> list[Gate2Candidate]:
-    """Apply the existing dense admission policy, then distinct-scene backfill."""
+    """Freeze production admission, then rerank chunks inside its scene quotas."""
 
     if max_chunks <= 0:
         return []
+    selected_ids = {candidate.candidate_id for candidate in ranking}
+    by_dense_score = sorted(
+        (
+            candidate
+            for candidate in query.candidates
+            if candidate.candidate_id in selected_ids
+        ),
+        key=lambda candidate: (
+            -candidate.dense_score,
+            candidate.dense_rank,
+            candidate.candidate_id,
+        ),
+    )
+    scene_winners: list[Gate2Candidate] = []
+    leftovers: list[Gate2Candidate] = []
+    seen_scenes: set[str] = set()
+    for candidate in by_dense_score:
+        if candidate.scene_id in seen_scenes:
+            leftovers.append(candidate)
+        else:
+            seen_scenes.add(candidate.scene_id)
+            scene_winners.append(candidate)
+
     dense_pass = (
-        bool(query.candidates)
-        and max(candidate.dense_score for candidate in query.candidates)
-        >= query.gate_score
+        bool(scene_winners)
+        and scene_winners[0].dense_score >= query.gate_score
     )
     rescue_floor = query.min_score - query.rescue_margin
-    eligible: list[Gate2Candidate] = []
-    for candidate in ranking:
+    eligible_scene_winners: list[Gate2Candidate] = []
+    for candidate in scene_winners:
         dense_confident = candidate.dense_score >= query.min_score
         sparse_rescue = (
             hybrid
@@ -251,20 +365,40 @@ def select_injected_candidates(
             and candidate.dense_score >= rescue_floor
         )
         if sparse_rescue or (dense_pass and dense_confident):
-            eligible.append(candidate)
-    if not eligible:
+            eligible_scene_winners.append(candidate)
+    if not eligible_scene_winners:
         return []
 
-    distinct: list[Gate2Candidate] = []
-    backfill: list[Gate2Candidate] = []
-    seen_scenes: set[str] = set()
-    for candidate in eligible:
-        if candidate.scene_id in seen_scenes:
-            backfill.append(candidate)
-        else:
-            seen_scenes.add(candidate.scene_id)
-            distinct.append(candidate)
-    return [*distinct, *backfill][:max_chunks]
+    eligible_scene_winners.sort(
+        key=lambda candidate: (
+            candidate.rrf_rank if hybrid else candidate.dense_rank,
+            candidate.candidate_id,
+        )
+    )
+    baseline = eligible_scene_winners[:max_chunks]
+    if dense_pass and len(baseline) < max_chunks:
+        remaining = max_chunks - len(baseline)
+        baseline.extend(
+            [
+                candidate
+                for candidate in leftovers
+                if candidate.dense_score >= query.min_score
+            ][:remaining]
+        )
+
+    remaining_by_scene: dict[str, int] = {}
+    for candidate in baseline:
+        remaining_by_scene[candidate.scene_id] = (
+            remaining_by_scene.get(candidate.scene_id, 0) + 1
+        )
+    reranked: list[Gate2Candidate] = []
+    for candidate in ranking:
+        remaining = remaining_by_scene.get(candidate.scene_id, 0)
+        if remaining <= 0:
+            continue
+        reranked.append(candidate)
+        remaining_by_scene[candidate.scene_id] = remaining - 1
+    return reranked
 
 
 @dataclass(frozen=True)
@@ -280,6 +414,7 @@ class QueryEvaluation:
     injected_candidate_ids: tuple[str, ...]
     injected_scene_ids: tuple[str, ...]
     gold_scene_included: bool
+    gold_chunk_included: bool
     injected_junk_count: int
     is_no_match: bool
 
@@ -300,6 +435,7 @@ class SceneAggregate:
 @dataclass(frozen=True)
 class InjectionAggregate:
     gold_scene_inclusion: float
+    gold_chunk_inclusion: float
     junk_injection_rate: float
     no_match_injection_rate: float
 
@@ -324,13 +460,17 @@ def _evaluate_query(
     *,
     hybrid: bool,
 ) -> QueryEvaluation:
-    chunk_grades = [int(candidate.relevant) for candidate in ranking]
+    expected_candidate_ids = set(query.expected_candidate_ids)
+    chunk_grades = [
+        int(candidate.candidate_id in expected_candidate_ids)
+        for candidate in ranking
+    ]
     chunk_metrics = ranking_metrics(chunk_grades, k_values=(3,))
     positive_chunk_rank = next(
         (
             rank
             for rank, candidate in enumerate(ranking, start=1)
-            if candidate.relevant
+            if candidate.candidate_id in expected_candidate_ids
         ),
         None,
     )
@@ -352,8 +492,15 @@ def _evaluate_query(
     )
 
     injected = select_injected_candidates(query, ranking, hybrid=hybrid)
-    gold_included = any(candidate.relevant for candidate in injected)
-    junk_count = sum(not candidate.relevant for candidate in injected)
+    gold_scene_included = any(candidate.relevant for candidate in injected)
+    gold_chunk_included = any(
+        candidate.candidate_id in expected_candidate_ids
+        for candidate in injected
+    )
+    junk_count = sum(
+        candidate.candidate_id not in expected_candidate_ids
+        for candidate in injected
+    )
     return QueryEvaluation(
         query_id=query.query_id,
         query_slice=query.query_slice,
@@ -374,7 +521,8 @@ def _evaluate_query(
             candidate.candidate_id for candidate in injected
         ),
         injected_scene_ids=tuple(candidate.scene_id for candidate in injected),
-        gold_scene_included=gold_included,
+        gold_scene_included=gold_scene_included,
+        gold_chunk_included=gold_chunk_included,
         injected_junk_count=junk_count,
         is_no_match=not query.expected_scene_titles,
     )
@@ -392,6 +540,18 @@ def evaluate_method(
     query_ids = [query.query_id for query in queries]
     if len(query_ids) != len(set(query_ids)):
         raise ValueError("Gate 2 evaluation query ids must be unique")
+    missing_chunk_qrels = [
+        query.query_id
+        for query in queries
+        if query.query_slice != "no_match"
+        and any(candidate.relevant for candidate in query.candidates)
+        and not query.expected_candidate_ids
+    ]
+    if missing_chunk_qrels:
+        raise ValueError(
+            "Gate 2 evaluation requires exact chunk qrels: "
+            f"{sorted(missing_chunk_qrels)}"
+        )
 
     results: list[QueryEvaluation] = []
     for query in queries:
@@ -431,6 +591,9 @@ def evaluate_method(
         injection=InjectionAggregate(
             gold_scene_inclusion=_mean(
                 [float(result.gold_scene_included) for result in positives]
+            ),
+            gold_chunk_inclusion=_mean(
+                [float(result.gold_chunk_included) for result in positives]
             ),
             junk_injection_rate=(
                 junk_count / injected_count if injected_count else 0.0
@@ -680,15 +843,16 @@ def compare_candidate_depths(
         before = top12_by_id[query.query_id]
         after = top30_by_id[query.query_id]
         injected_after = set(after.injected_candidate_ids)
+        expected_candidate_ids = set(query.expected_candidate_ids)
         rescued_from_tail = any(
-            candidate.relevant
+            candidate.candidate_id in expected_candidate_ids
             and candidate.rrf_rank > 12
             and candidate.candidate_id in injected_after
             for candidate in query.candidates
         )
         if (
-            not before.gold_scene_included
-            and after.gold_scene_included
+            not before.gold_chunk_included
+            and after.gold_chunk_included
             and rescued_from_tail
         ):
             rescue_ids.append(query.query_id)

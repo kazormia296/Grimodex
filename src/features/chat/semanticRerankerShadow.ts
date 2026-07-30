@@ -4,10 +4,7 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { invoke } from "@/lib/tauri";
 import { isCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { isCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
-import {
-  selectDenseRecallHitsWithPolicy,
-  selectHybridRecallHitsWithPolicy,
-} from "./hybridRecallSelection";
+import { isSemanticRerankerDevShadowEnabled } from "./semanticRerankerMode";
 
 export type SemanticRerankerShadowLanguage = "ja" | "en";
 
@@ -51,6 +48,7 @@ export interface SemanticRerankerScoreResult {
 
 export interface SemanticRerankerShadowInput {
   requestId: string;
+  sessionId?: string | null;
   scope: SemanticRerankerShadowScope;
   language: SemanticRerankerShadowLanguage;
   query: {
@@ -140,7 +138,7 @@ export interface SemanticRerankerShadowRecord {
   comparison?: SemanticRerankerShadowComparison;
 }
 
-interface ScoreRequest extends Record<string, unknown> {
+export interface SemanticRerankerScoreRequest extends Record<string, unknown> {
   requestId: string;
   language: SemanticRerankerShadowLanguage;
   userMessage: string;
@@ -152,7 +150,9 @@ export interface SemanticRerankerShadowCoordinatorDeps {
   enabled: () => boolean;
   isReindexing: () => boolean;
   isScopeCurrent: (scope: SemanticRerankerShadowScope) => boolean;
-  score: (request: ScoreRequest) => Promise<SemanticRerankerScoreResult>;
+  score: (
+    request: SemanticRerankerScoreRequest,
+  ) => Promise<SemanticRerankerScoreResult>;
   record: (record: SemanticRerankerShadowRecord) => Promise<void>;
   now: () => number;
   createRunId: () => string;
@@ -165,7 +165,7 @@ interface QueuedJob {
   input: SemanticRerankerShadowInput;
 }
 
-function snapshotShadowInput(
+export function snapshotSemanticRerankerInput(
   input: SemanticRerankerShadowInput,
 ): SemanticRerankerShadowInput {
   const copyHit = (hit: SemanticSearchHit): SemanticSearchHit => ({ ...hit });
@@ -308,37 +308,27 @@ function counterfactualInjection(
   input: SemanticRerankerShadowInput,
   ranking: readonly SemanticSearchHit[],
 ): SemanticSearchHit[] {
-  const rerankedScenePosition = new Map<string, number>();
-  for (const hit of ranking) {
-    if (!rerankedScenePosition.has(hit.sceneId)) {
-      rerankedScenePosition.set(hit.sceneId, rerankedScenePosition.size);
-    }
-  }
-  const rankScenes = (admittedScenes: readonly SemanticSearchHit[]) =>
-    [...admittedScenes].sort(
-      (left, right) =>
-        (rerankedScenePosition.get(left.sceneId) ?? Number.MAX_SAFE_INTEGER) -
-          (rerankedScenePosition.get(right.sceneId) ??
-            Number.MAX_SAFE_INTEGER) ||
-        left.sceneId.localeCompare(right.sceneId),
+  const remainingByScene = new Map<string, number>();
+  for (const hit of input.baselineInjectedHits) {
+    remainingByScene.set(
+      hit.sceneId,
+      (remainingByScene.get(hit.sceneId) ?? 0) + 1,
     );
-  return input.hybrid
-    ? selectHybridRecallHitsWithPolicy(input.denseHits, input.sparseSceneIds, {
-        excludeSceneIds: input.excludeSceneIds,
-        minScore: input.minScore,
-        gateScore: input.gateScore,
-        maxChunks: input.maxChunks,
-        rescueMargin: input.rescueMargin,
-        rrfK: input.rrfK ?? 60,
-        rankScenes,
-      })
-    : selectDenseRecallHitsWithPolicy(input.denseHits, {
-        excludeSceneIds: input.excludeSceneIds,
-        minScore: input.minScore,
-        gateScore: input.gateScore,
-        maxChunks: input.maxChunks,
-        rankScenes,
-      });
+  }
+
+  const selected: SemanticSearchHit[] = [];
+  for (const hit of ranking) {
+    const remaining = remainingByScene.get(hit.sceneId) ?? 0;
+    if (remaining <= 0) continue;
+    selected.push(hit);
+    remainingByScene.set(hit.sceneId, remaining - 1);
+  }
+  if (selected.length !== input.baselineInjectedHits.length) {
+    throw new Error(
+      "semantic reranker could not preserve admitted scene quotas",
+    );
+  }
+  return selected;
 }
 
 function goldPosition(
@@ -460,6 +450,20 @@ export function buildSemanticRerankerShadowComparison(
   };
 }
 
+/**
+ * Keep the scene quotas admitted by the existing production policy, then let
+ * the reranker choose and order chunks only within those admitted scenes.
+ * Dense gates, sparse rescue, exclusions, and the injection cap remain
+ * authoritative through `baselineInjectedHits`.
+ */
+export function buildSemanticRerankerAppliedHits(
+  input: SemanticRerankerShadowInput,
+  result: SemanticRerankerScoreResult,
+): SemanticSearchHit[] {
+  const { ranking } = rerankedCandidates(input, result);
+  return counterfactualInjection(input, ranking);
+}
+
 function shadowErrorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/resource|model|manifest|hash|tokenizer|ONNX|ORT/i.test(message)) {
@@ -487,7 +491,7 @@ class SemanticRerankerShadowCoordinator {
     const job: QueuedJob = {
       generation,
       queuedAtMs: this.deps.now(),
-      input: snapshotShadowInput(input),
+      input: snapshotSemanticRerankerInput(input),
     };
     if (this.deps.isReindexing()) {
       const runId = this.deps.createRunId();
@@ -751,12 +755,6 @@ export function createSemanticRerankerShadowCoordinator(
   return new SemanticRerankerShadowCoordinator(deps);
 }
 
-function explicitDevShadowEnabled(): boolean {
-  return (
-    import.meta.env.DEV && import.meta.env.VITE_SEMANTIC_RERANKER_SHADOW === "1"
-  );
-}
-
 function currentScopeMatches(scope: SemanticRerankerShadowScope): boolean {
   return (
     isCurrentWorkspaceIdentity({
@@ -774,7 +772,7 @@ function createRunId(): string {
 }
 
 const productionCoordinator = createSemanticRerankerShadowCoordinator({
-  enabled: explicitDevShadowEnabled,
+  enabled: isSemanticRerankerDevShadowEnabled,
   isReindexing: () => useReindexProgressStore.getState().running,
   isScopeCurrent: currentScopeMatches,
   score: (request) =>

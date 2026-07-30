@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { deriveSceneBodySnapshot } from "./sceneBodySnapshot";
+import {
+  deriveSceneAiRatio,
+  deriveSceneBodySnapshot,
+} from "./sceneBodySnapshot";
 
 function mark(name: string, attrs: Record<string, unknown>) {
   return { type: { name }, attrs };
@@ -149,5 +152,76 @@ describe("deriveSceneBodySnapshot", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("deriveSceneAiRatio", () => {
+  it("uses body char count as the denominator without re-reading the database", () => {
+    expect(
+      deriveSceneAiRatio({
+        charCount: 100,
+        authorshipSpans: [
+          {
+            fromPos: 1,
+            toPos: 11,
+            source: "ai",
+            model: "model",
+            timestamp: null,
+            chatMsgId: null,
+            traceId: null,
+          },
+        ],
+      }),
+    ).toBe(10);
+  });
+
+  it("keeps the ratio at or below 100 when sidecar text exceeds body char count", () => {
+    expect(
+      deriveSceneAiRatio({
+        charCount: 100,
+        authorshipSpans: [
+          {
+            fromPos: 1,
+            toPos: 201,
+            source: "ai",
+            model: "model",
+            timestamp: null,
+            chatMsgId: null,
+            traceId: null,
+          },
+          {
+            fromPos: 201,
+            toPos: 231,
+            source: "unknown",
+            model: null,
+            timestamp: null,
+            chatMsgId: null,
+            traceId: null,
+          },
+        ],
+      }),
+    ).toBe(Math.round((200 / 230) * 100));
+  });
+
+  it("omits an empty scene and does not count unknown text as AI", () => {
+    expect(
+      deriveSceneAiRatio({ charCount: 0, authorshipSpans: [] }),
+    ).toBeUndefined();
+    expect(
+      deriveSceneAiRatio({
+        charCount: 100,
+        authorshipSpans: [
+          {
+            fromPos: 1,
+            toPos: 51,
+            source: "unknown",
+            model: null,
+            timestamp: null,
+            chatMsgId: null,
+            traceId: null,
+          },
+        ],
+      }),
+    ).toBe(0);
   });
 });

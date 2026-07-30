@@ -59,6 +59,10 @@ import {
   buildSemanticRecallQueryParts,
   type SemanticRecallChunk,
 } from "../../semanticRecall";
+import {
+  resolveSemanticRerankerLanguage,
+  type SemanticRerankerLanguage,
+} from "../../semanticRerankerMode";
 import type { ChatRecallMessage } from "../../chatRecall";
 import {
   allocateLayerBudgets,
@@ -145,8 +149,10 @@ export interface SceneContextSourceDeps {
     query: string;
     excludeSceneIds: string[];
     hybrid: boolean;
-    shadow?: {
+    reranker?: {
+      mode: "shadow" | "apply";
       requestId: string;
+      sessionId?: string | null;
       scope: {
         workspaceKey: string;
         workspaceOpenRevision: number;
@@ -154,7 +160,7 @@ export interface SceneContextSourceDeps {
       };
       userMessage: string;
       sceneTail: string;
-      language: string;
+      language: SemanticRerankerLanguage;
       localInferenceExpected: boolean;
     };
   }) => Promise<SemanticRecallChunk[]>;
@@ -1221,6 +1227,9 @@ export async function collectSceneContext(
         })
       : null;
   const semanticQuery = semanticQueryParts?.query ?? "";
+  const rerankerLanguage = resolveSemanticRerankerLanguage(
+    request.sourceSnapshot.project?.language,
+  );
   const episodicQuery =
     request.settings.episodicRecallEnabled && request.outgoingUserMessage
       ? buildSemanticRecallQuery({
@@ -1278,10 +1287,14 @@ export async function collectSceneContext(
               hybrid: request.settings.hybridRecallEnabled,
               ...(request.purpose === "send" &&
               semanticQueryParts &&
-              request.workspaceIdentity
+              request.workspaceIdentity &&
+              rerankerLanguage &&
+              request.settings.semanticRerankerMode !== "off"
                 ? {
-                    shadow: {
+                    reranker: {
+                      mode: request.settings.semanticRerankerMode,
                       requestId: request.requestId,
+                      sessionId: request.sessionId,
                       scope: {
                         workspaceKey: request.workspaceIdentity.workspaceKey,
                         workspaceOpenRevision:
@@ -1290,8 +1303,7 @@ export async function collectSceneContext(
                       },
                       userMessage: semanticQueryParts.userMessage,
                       sceneTail: semanticQueryParts.sceneTail,
-                      language:
-                        request.sourceSnapshot.project?.language ?? "ja",
+                      language: rerankerLanguage,
                       localInferenceExpected: isLocalInferenceRoute(
                         request.route,
                       ),

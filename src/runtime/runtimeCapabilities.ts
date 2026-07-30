@@ -10,6 +10,8 @@ export interface RuntimeCapabilities {
   secureSecretStore: boolean;
   localDatabase: boolean;
   localAi: boolean;
+  /** Packaged JA/EN fixed-model reranker resources and native inference path. */
+  localSemanticReranker: boolean;
   /** Direct browser transport configured by the user (Local LLM / BYOK). */
   browserDirectAi: boolean;
   externalMount: boolean;
@@ -27,6 +29,7 @@ const ELECTRON_CAPABILITIES: RuntimeCapabilities = {
   secureSecretStore: true,
   localDatabase: true,
   localAi: true,
+  localSemanticReranker: true,
   browserDirectAi: false,
   externalMount: true,
   mcpServer: true,
@@ -43,6 +46,7 @@ const WEB_CAPABILITIES: RuntimeCapabilities = {
   secureSecretStore: false,
   localDatabase: true,
   localAi: false,
+  localSemanticReranker: false,
   browserDirectAi: true,
   externalMount: false,
   mcpServer: false,
@@ -59,6 +63,7 @@ const MOBILE_NATIVE_CAPABILITIES: RuntimeCapabilities = {
   secureSecretStore: true,
   localDatabase: true,
   localAi: false,
+  localSemanticReranker: false,
   browserDirectAi: false,
   externalMount: false,
   mcpServer: false,

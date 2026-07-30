@@ -141,7 +141,7 @@ describe("buildSemanticRerankerShadowComparison", () => {
     ]);
   });
 
-  it("does not backfill a second chunk from a rescued scene without a dense winner", () => {
+  it("lets the reranker choose the chunk inside an already-admitted rescued scene", () => {
     const aBest = hit("scene-a", 0.77, 0);
     const aSecond = hit("scene-a", 0.76, 10);
     const bBest = hit("scene-b", 0.76, 20);
@@ -158,12 +158,16 @@ describe("buildSemanticRerankerShadowComparison", () => {
     );
 
     expect(comparison.counterfactualInjectedCandidateHashes).toEqual([
-      "hash-scene-a-0",
+      "hash-scene-a-10",
       "hash-scene-b-20",
+    ]);
+    expect(comparison.counterfactualInjectedSceneIds).toEqual([
+      "scene-a",
+      "scene-b",
     ]);
   });
 
-  it("never backfills a secondary chunk below the dense floor", () => {
+  it("preserves scene admission while replacing its dense winner chunk", () => {
     const aBest = hit("scene-a", 0.9, 0);
     const aSecond = hit("scene-a", 0.76, 10);
     const bBest = hit("scene-b", 0.82, 20);
@@ -180,9 +184,27 @@ describe("buildSemanticRerankerShadowComparison", () => {
     );
 
     expect(comparison.counterfactualInjectedCandidateHashes).toEqual([
-      "hash-scene-a-0",
+      "hash-scene-a-10",
       "hash-scene-b-20",
     ]);
+    expect(comparison.counterfactualInjectedSceneIds).toEqual([
+      "scene-a",
+      "scene-b",
+    ]);
+  });
+
+  it("rejects an inconsistent baseline quota instead of silently dropping it", () => {
+    const excluded = hit("scene-excluded", 0.9, 0);
+    expect(() =>
+      buildSemanticRerankerShadowComparison(
+        input({
+          denseHits: [excluded],
+          excludeSceneIds: ["scene-excluded"],
+          baselineInjectedHits: [excluded],
+        }),
+        scoreResult([]),
+      ),
+    ).toThrow("could not preserve admitted scene quotas");
   });
 
   it("matches dense-only production injection when sparse fallback is active", () => {
@@ -197,7 +219,7 @@ describe("buildSemanticRerankerShadowComparison", () => {
         baselineInjectedHits,
         hybrid: false,
       }),
-      scoreResult(baselineInjectedHits),
+      scoreResult([aSecond, aBest, bBest]),
     );
 
     expect(comparison.baselineInjectedCandidateHashes).toEqual([
@@ -205,12 +227,14 @@ describe("buildSemanticRerankerShadowComparison", () => {
       "hash-scene-a-10",
       "hash-scene-b-20",
     ]);
-    expect(comparison.counterfactualInjectedCandidateHashes).toEqual(
-      comparison.baselineInjectedCandidateHashes,
-    );
+    expect(comparison.counterfactualInjectedCandidateHashes).toEqual([
+      "hash-scene-a-10",
+      "hash-scene-a-0",
+      "hash-scene-b-20",
+    ]);
     expect(comparison.injectedSetChanged).toBe(false);
-    expect(comparison.injectedOrderChanged).toBe(false);
-    expect(comparison.firstPresentedChanged).toBe(false);
+    expect(comparison.injectedOrderChanged).toBe(true);
+    expect(comparison.firstPresentedChanged).toBe(true);
   });
 });
 

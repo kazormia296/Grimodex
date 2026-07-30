@@ -89,17 +89,30 @@ rules:
     suites:
       - prompt-contract
   - id: retrieval-grounding
-    reason: Recall, context planning, citation, and related-scene changes affect grounding.
+    reason: Recall, reranker admission authority, context planning, citation, and related-scene changes affect grounding.
     paths:
+      - src/application/composition/chatContextPreparationComposition.ts
       - src/features/chat/chatRecall.ts
       - src/features/chat/chatRecall.test.ts
       - src/features/chat/chatRecallPromote.ts
       - src/features/chat/chatRecallPromote.test.ts
       - src/features/chat/citationVerify.ts
       - src/features/chat/citationVerify.test.ts
+      - src/features/chat/hybridRecallSelection.ts
+      - src/features/chat/semanticRecall.ts
+      - src/features/chat/semanticRecall.test.ts
+      - src/features/chat/semanticRerankerApply.ts
+      - src/features/chat/semanticRerankerApply.test.ts
+      - src/features/chat/semanticRerankerMode.ts
+      - src/features/chat/semanticRerankerMode.test.ts
+      - src/features/chat/semanticRerankerShadow.ts
+      - src/features/chat/semanticRerankerShadow.test.ts
       - src/features/chat/context/**
       - src/features/chat/contextBuilder.chatRecall.test.ts
       - src/features/related-scenes/**
+      - src/features/settings/types.ts
+      - src/features/settings/categories/AiProjectSettings.tsx
+      - src/features/settings/categories/AiProjectSettings.test.tsx
       - scripts/fixtures/**
     requirements:
       - GDX-GROUND-001

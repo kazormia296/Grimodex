@@ -39,6 +39,24 @@ describe("treeStore.refreshAiRatio", () => {
     expect(useTreeStore.getState().aiRatios).toEqual({ s1: 25, s2: 40 });
   });
 
+  it("applies a precomputed ratio without a database read", () => {
+    useTreeStore.setState({ aiRatios: { s1: 10, s2: 40 } });
+
+    useTreeStore.getState().setAiRatio("s1", 25);
+
+    expect(useTreeStore.getState().aiRatios).toEqual({ s1: 25, s2: 40 });
+    expect(loadBatchAiRatioMock).not.toHaveBeenCalled();
+  });
+
+  it("removes an empty scene's precomputed ratio", () => {
+    useTreeStore.setState({ aiRatios: { s1: 50, s2: 40 } });
+
+    useTreeStore.getState().setAiRatio("s1", undefined);
+
+    expect(useTreeStore.getState().aiRatios).toEqual({ s2: 40 });
+    expect(loadBatchAiRatioMock).not.toHaveBeenCalled();
+  });
+
   it("clears stale ratio when the node is absent from the result", async () => {
     // AIテキスト全削除で spans が消え、シーンも空 (charCount 0) になった場合
     // loadBatchAiRatio は当該ノードを結果から省く。旧値を残すと

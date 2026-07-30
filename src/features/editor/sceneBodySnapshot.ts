@@ -58,6 +58,25 @@ export interface SceneBodyDerivedSnapshot {
   docContentSize: number;
 }
 
+/**
+ * Derive the tree badge ratio from the exact sidecars already persisted by
+ * Electron's scene-body bundle. This mirrors projectStats' denominator rule
+ * without issuing a second DB read immediately after save.
+ */
+export function deriveSceneAiRatio(
+  snapshot: Pick<SceneBodyDerivedSnapshot, "charCount" | "authorshipSpans">,
+): number | undefined {
+  let ai = 0;
+  let unknown = 0;
+  for (const span of snapshot.authorshipSpans) {
+    const length = Math.max(0, span.toPos - span.fromPos);
+    if (span.source === "ai") ai += length;
+    else if (span.source === "unknown") unknown += length;
+  }
+  const total = Math.max(snapshot.charCount, ai + unknown);
+  return total > 0 ? Math.round((ai / total) * 100) : undefined;
+}
+
 const ROLE_PRIORITY: Record<MentionRole, number> = {
   actor: 2,
   target: 1,

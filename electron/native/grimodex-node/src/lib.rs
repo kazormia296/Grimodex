@@ -23,7 +23,7 @@ mod state;
 mod test_link_stubs;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, TryLockError};
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadSafeCallContext;
@@ -78,6 +78,26 @@ use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventTsfn};
+
+const SEMANTIC_RERANKER_BUSY_MARKER: &str = "RERANKER_BUSY:";
+
+fn try_with_semantic_reranker_lane<T, R>(
+    lane: &Mutex<T>,
+    operation: impl FnOnce(&mut T) -> anyhow::Result<R>,
+) -> anyhow::Result<R> {
+    let mut runtime = match lane.try_lock() {
+        Ok(runtime) => runtime,
+        Err(TryLockError::WouldBlock) => {
+            return Err(anyhow::anyhow!(
+                "{SEMANTIC_RERANKER_BUSY_MARKER} semantic reranker lane is occupied"
+            ));
+        }
+        Err(TryLockError::Poisoned(error)) => {
+            return Err(anyhow::anyhow!("semantic reranker lock poisoned: {error}"));
+        }
+    };
+    operation(&mut runtime)
+}
 
 /// spawn_blocking + `AppError` → `napi::Error` 写像の定形。Tauri 側 M3 方針
 /// (「db コマンドは async、長時間系は spawn_blocking」) の写像 (§4.2)。
@@ -1660,8 +1680,8 @@ impl Backend {
         .await
     }
 
-    /// Score a frozen Semantic Recall candidate set for the development-only
-    /// shadow path. This command neither reads the active workspace nor owns
+    /// Score a frozen Semantic Recall candidate set for diagnostic shadow or
+    /// opt-in apply. This command neither reads the active workspace nor owns
     /// admission; it only returns logits, hashes, and truncation counters.
     #[napi]
     pub async fn semantic_reranker_shadow_score(
@@ -1707,11 +1727,9 @@ impl Backend {
                     })
                     .collect(),
             };
-            let mut runtime = state
-                .semantic_reranker
-                .lock()
-                .map_err(|error| anyhow::anyhow!("semantic reranker lock poisoned: {error}"))?;
-            Ok(serde_json::to_string(&runtime.score(request)?)?)
+            try_with_semantic_reranker_lane(&state.semantic_reranker, |runtime| {
+                Ok(serde_json::to_string(&runtime.score(request)?)?)
+            })
         })
         .await
         .map_err(join_err_to_napi)?
@@ -3303,5 +3321,55 @@ mod ime_workspace_tests {
         drop(snapshot);
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod semantic_reranker_lane_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn occupied_lane_returns_busy_without_queuing_later_inference() {
+        let lane = Arc::new(Mutex::new(()));
+        let first_inference = lane.lock().expect("first inference owns lane");
+        let inference_starts = Arc::new(AtomicUsize::new(0));
+        let lane_for_second = Arc::clone(&lane);
+        let starts_for_second = Arc::clone(&inference_starts);
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let second = thread::spawn(move || {
+            let result = try_with_semantic_reranker_lane(&lane_for_second, |_| {
+                starts_for_second.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, anyhow::Error>(())
+            })
+            .map_err(|error| format!("{error:#}"));
+            result_tx.send(result).expect("send second result");
+        });
+
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("occupied lane must reject immediately")
+            .expect_err("second inference must be rejected as busy");
+        assert!(
+            error.starts_with("RERANKER_BUSY:"),
+            "stable marker must cross the N-API wire: {error}"
+        );
+        assert_eq!(
+            inference_starts.load(Ordering::SeqCst),
+            0,
+            "busy request must not enter inference"
+        );
+
+        drop(first_inference);
+        second.join().expect("second request thread");
+        assert_eq!(
+            inference_starts.load(Ordering::SeqCst),
+            0,
+            "releasing the first inference must not start rejected work later"
+        );
     }
 }

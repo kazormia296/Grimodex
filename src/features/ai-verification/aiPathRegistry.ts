@@ -424,6 +424,16 @@ export const AI_PATHS: AiPathEntry[] = [
     note: "LLM 生成ではなく埋め込み推論。品質は searchEval.ts / 決定的 eval で別途評価。",
   },
   {
+    id: "semantic_reranker",
+    label: "関連シーン候補のローカル再順位付け",
+    surface: "chat/semanticRerankerApply.ts applySemanticReranker",
+    layer: "embedding",
+    transport: "semantic_reranker_score (Rust ONNX)",
+    verifier: "n/a",
+    testRef: null,
+    note: "LLM 生成ではない固定モデル推論。Gate 2 の固定fixture・速度評価と semanticRerankerApply.test.ts の admission不変/fail-safe 契約で検証する。",
+  },
+  {
     id: "fts_search",
     label: "全文検索（FTS5 / BM25 sparse）",
     surface: "chat/semanticRecall.ts fts_search",

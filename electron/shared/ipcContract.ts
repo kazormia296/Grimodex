@@ -26,6 +26,7 @@
 export type IpcErrorCode =
   | "WORKSPACE_SWITCHING"
   | "NO_WORKSPACE_OPEN"
+  | "RERANKER_BUSY"
   | "IPC_UNIMPLEMENTED"
   | "IPC_BACKEND_UNAVAILABLE"
   | "IPC_SECRETS_UNAVAILABLE"
@@ -118,6 +119,9 @@ export function classifyKnownIpcError(
   }
   if (/No workspace is open/i.test(message)) {
     return { ...base, code: "NO_WORKSPACE_OPEN", retryable: true };
+  }
+  if (message.includes("RERANKER_BUSY:")) {
+    return { ...base, code: "RERANKER_BUSY", retryable: true };
   }
   if (message.includes(IPC_UNIMPLEMENTED_MARKER)) {
     return { ...base, code: "IPC_UNIMPLEMENTED", retryable: false };
