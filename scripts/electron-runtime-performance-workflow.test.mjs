@@ -90,8 +90,8 @@ test("runtime frame gate pins active-foreground Chromium timing semantics", asyn
   );
   assert.equal(
     source.match(/await ensureBenchmarkPageForeground\(page\);/g)?.length,
-    3,
-    "launch, Timeline, and Chronicle must all establish an active Page",
+    5,
+    "launch, autosave, gesture driver, Timeline, and Chronicle must all establish an active Page",
   );
 });
 

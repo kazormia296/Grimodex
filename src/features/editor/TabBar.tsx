@@ -445,6 +445,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               >
                 <div
                   draggable
+                  data-editor-tab-id={tab.nodeId}
                   className={cn(
                     "group relative flex shrink-0 cursor-pointer items-center gap-1",
                     "border-r border-border px-3 py-1.5 text-xs",

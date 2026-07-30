@@ -680,13 +680,14 @@ test("runtime fixture opens the measured scene without a harness click", () => {
   assert.match(insert.sql, /'default-project', 'editor\.tabState'/);
   const tabState = JSON.parse(insert.params[0]);
   assert.equal(tabState.activeTabId, RUNTIME_PERFORMANCE_FIXTURE.sceneId);
-  assert.deepEqual(tabState.tabs, [
-    {
-      nodeId: RUNTIME_PERFORMANCE_FIXTURE.sceneId,
+  assert.deepEqual(
+    tabState.tabs,
+    RUNTIME_PERFORMANCE_FIXTURE.autosaveSampleScenes.map((scene) => ({
+      nodeId: scene.id,
       isPreview: false,
       contentType: "scene",
-    },
-  ]);
+    })),
+  );
 });
 
 test("runtime fixture preserves project-scale surface cardinality", () => {
@@ -720,7 +721,9 @@ test("runtime fixture preserves project-scale surface cardinality", () => {
   assert.equal(RUNTIME_PERFORMANCE_FIXTURE.collectionSceneCount, 500);
   assert.equal(
     fixtureSceneInserts.length,
-    RUNTIME_PERFORMANCE_FIXTURE.collectionSceneCount + 2,
+    RUNTIME_PERFORMANCE_FIXTURE.collectionSceneCount +
+      RUNTIME_PERFORMANCE_FIXTURE.autosaveExtraSceneCount +
+      2,
   );
   assert.equal(
     mapPositionInserts.length,
@@ -777,8 +780,8 @@ test("smoke measures the seeded long scene before running the independent persis
     path.join(repoRoot, "electron", "scripts", "smoke.mjs"),
     "utf8",
   );
-  const inputTargetSelection = source.indexOf(
-    "await focusRuntimeInputAnchor(page)",
+  const sampleLoop = source.indexOf(
+    "for (const [index, scene] of PERF_AUTOSAVE_SAMPLE_SCENES.entries())",
   );
   const seedBatch = source.indexOf('await invokeOk(page, "db_execute_batch"');
   const actualCardinalityQuery = source.indexOf(
@@ -793,17 +796,28 @@ test("smoke measures the seeded long scene before running the independent persis
     "performanceMetrics.fixture.actualCardinality =",
     actualCardinalityInvoke,
   );
+  const measurementHelper = source.indexOf(
+    "async function measureRuntimeAutosaveSample(",
+  );
+  const inputTargetSelection = source.indexOf(
+    "await focusRuntimeInputAnchor(page, anchorText)",
+    measurementHelper,
+  );
   const perfSessionStart = source.indexOf(
     "globalThis.startPerfSession?.()",
     inputTargetSelection,
   );
-  const longSceneInput = source.indexOf("page.keyboard.type(PERF_INPUT_TEXT");
-  const inputSnapshot = source.indexOf(
-    "globalThis.snapshotPerfSession?.()",
+  const longSceneInput = source.indexOf(
+    "page.keyboard.type(inputText",
+    perfSessionStart,
+  );
+  const typingCheckpoint = source.indexOf(
+    'globalThis.checkpointPerfSession?.("typing")',
     longSceneInput,
   );
   const longSceneAutosave = source.indexOf(
-    "sceneContainsTextInDb(page, PERF_SCENE_ID, PERF_INPUT_TEXT)",
+    "sceneContainsTextInDb(page, sceneId, inputText)",
+    typingCheckpoint,
   );
   const smokeSceneCreate = source.indexOf(
     'header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click()',
@@ -813,31 +827,44 @@ test("smoke measures the seeded long scene before running the independent persis
     "globalThis.endPerfSession?.()",
     longSceneAutosave,
   );
+  const foregroundSwitches = source.indexOf(
+    "args.push(...RUNTIME_PERFORMANCE_FOREGROUND_SWITCHES)",
+  );
+  const linuxDisplaySwitch = source.indexOf(
+    'args.push("--ozone-platform=x11")',
+  );
+  const electronEntry = source.indexOf("args.push(mainCjs)");
 
   assert.ok(perfSessionStart >= 0);
+  assert.ok(foregroundSwitches >= 0);
+  assert.ok(foregroundSwitches < electronEntry);
+  assert.ok(linuxDisplaySwitch < electronEntry);
   assert.ok(seedBatch >= 0);
   assert.ok(seedBatch < actualCardinalityQuery);
   assert.ok(actualCardinalityQuery < actualCardinalityInvoke);
   assert.ok(actualCardinalityInvoke < actualCardinalityAssignment);
-  assert.ok(actualCardinalityAssignment < inputTargetSelection);
-  const idleDrain = source.indexOf("await waitForRuntimeEditorIdle(page)");
+  assert.ok(actualCardinalityAssignment < sampleLoop);
+  const idleDrain = source.indexOf(
+    "await waitForRuntimeEditorIdle(page)",
+    actualCardinalityAssignment,
+  );
   assert.ok(idleDrain >= 0);
-  assert.ok(idleDrain < inputTargetSelection);
+  assert.ok(idleDrain < sampleLoop);
   assert.ok(inputTargetSelection < perfSessionStart);
   assert.ok(perfSessionStart < longSceneInput);
-  assert.ok(longSceneInput < inputSnapshot);
-  assert.ok(inputSnapshot < longSceneAutosave);
+  assert.ok(longSceneInput < typingCheckpoint);
+  assert.ok(typingCheckpoint < longSceneAutosave);
   assert.ok(longSceneInput < longSceneAutosave);
   assert.ok(longSceneAutosave < perfSessionEnd);
-  assert.ok(perfSessionEnd < smokeSceneCreate);
+  assert.ok(sampleLoop < smokeSceneCreate);
   assert.ok(smokeSceneCreate < smokeSceneInput);
   assert.match(
     source,
-    /performanceMetrics\.fixture\.editorInputSceneId = PERF_SCENE_ID/,
+    /performanceMetrics\.fixture\.editorInputSceneId = scene\.id/,
   );
   assert.match(
     source,
-    /performanceMetrics\.fixture\.autosaveSceneId = PERF_SCENE_ID/,
+    /performanceMetrics\.fixture\.autosaveSceneId = scene\.id/,
   );
   assert.match(
     source,
@@ -845,13 +872,16 @@ test("smoke measures the seeded long scene before running the independent persis
   );
   assert.match(source, /grimodex\.editorInputReady/);
   assert.doesNotMatch(source, /await perfScene\.click\(\)/);
+  assert.match(source, /performanceSamples\.initialAutosave\.push/);
+  assert.match(source, /performanceSamples\.steadyStateAutosave\.push/);
+  assert.match(source, /performanceSamples\.postSaveDrain\.push/);
   assert.equal(
     source.match(/globalThis\.startPerfSession\?\.\(\)/g)?.length,
     11,
   );
   assert.equal(
     source.match(/globalThis\.snapshotPerfSession\?\.\(\)/g)?.length,
-    2,
+    3,
   );
   assert.equal(source.match(/globalThis\.endPerfSession\?\.\(\)/g)?.length, 11);
   assert.match(source, /performanceMetrics\.interactions\.treeFilter = \{/);
@@ -1019,7 +1049,11 @@ test("smoke measures the seeded long scene before running the independent persis
   assert.match(source, /action: "cleanup"/);
   assert.match(source, /interactions\.chatDraft = \{/);
   assert.match(source, /data-editor-loaded-document-id="\$\{PERF_SCENE_ID\}"/);
-  assert.match(source, /const smokeSceneId = await smokeEditorSurface/);
+  assert.match(source, /const loadedDocumentIdsBeforeCreate = await page/);
+  assert.match(
+    source,
+    /const smokeSceneIdHandle = await page\.waitForFunction/,
+  );
   assert.doesNotMatch(source, /getByText\(DEFAULT_SCENE_TITLE/);
   assert.match(source, /const initialEditorPane = page/);
   assert.match(source, /if \(initialDocumentId !== persistedSmokeScene\.id\)/);
