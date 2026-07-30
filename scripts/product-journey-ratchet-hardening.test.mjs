@@ -67,9 +67,22 @@ test("a new native-persistence domain rule requires an active or planned roundtr
     /native persistence domain.*roundtrip:map/i,
   );
 
-  assert.equal(
-    validateCurrentProductJourneyCoverage().affectedReady,
-    false,
+  assert.equal(validateCurrentProductJourneyCoverage().affectedReady, false);
+});
+
+test("a native-persistence rule must name a concrete persistence domain", () => {
+  assert.throws(
+    () =>
+      baseCoverage({
+        domainRules: [
+          {
+            id: "native-marker-only",
+            domains: ["native-persistence"],
+            paths: ["src/native/**"],
+          },
+        ],
+      }),
+    /domain rule native-marker-only.*native-persistence.*concrete domain/i,
   );
 });
 
@@ -109,6 +122,45 @@ test("every non-neutral domain rule must connect to active or planned coverage",
         },
       ],
     }),
+  );
+});
+
+test("interaction domains cannot contain the serialized arrow delimiter", () => {
+  assert.throws(
+    () =>
+      baseCoverage({
+        catalog: [
+          {
+            id: "ambiguous-interaction",
+            domains: ["a"],
+            interactions: ["a->b->c"],
+            contracts: ["connection:a-bc"],
+            capabilities: ["electron"],
+          },
+        ],
+        domainRules: [
+          {
+            id: "ambiguous-domain",
+            domains: ["b->c"],
+            paths: ["src/ambiguous/**"],
+          },
+        ],
+        requiredContracts: [
+          {
+            id: "connection:a-bc",
+            domains: ["a", "b->c"],
+          },
+        ],
+        nativePersistenceDomains: [],
+        interactions: [
+          {
+            id: "a->b->c",
+            domains: ["a", "b->c"],
+          },
+        ],
+        implementationIds: ["ambiguous-interaction"],
+      }),
+    /interaction a->b->c domain.*must not contain ->/i,
   );
 });
 
