@@ -329,25 +329,35 @@ def select_injected_candidates(
     if max_chunks <= 0:
         return []
     selected_ids = {candidate.candidate_id for candidate in ranking}
-    baseline_ranking = sorted(
+    by_dense_score = sorted(
         (
             candidate
             for candidate in query.candidates
             if candidate.candidate_id in selected_ids
         ),
         key=lambda candidate: (
-            candidate.rrf_rank if hybrid else candidate.dense_rank,
+            -candidate.dense_score,
+            candidate.dense_rank,
             candidate.candidate_id,
         ),
     )
+    scene_winners: list[Gate2Candidate] = []
+    leftovers: list[Gate2Candidate] = []
+    seen_scenes: set[str] = set()
+    for candidate in by_dense_score:
+        if candidate.scene_id in seen_scenes:
+            leftovers.append(candidate)
+        else:
+            seen_scenes.add(candidate.scene_id)
+            scene_winners.append(candidate)
+
     dense_pass = (
-        bool(baseline_ranking)
-        and max(candidate.dense_score for candidate in baseline_ranking)
-        >= query.gate_score
+        bool(scene_winners)
+        and scene_winners[0].dense_score >= query.gate_score
     )
     rescue_floor = query.min_score - query.rescue_margin
-    eligible: list[Gate2Candidate] = []
-    for candidate in baseline_ranking:
+    eligible_scene_winners: list[Gate2Candidate] = []
+    for candidate in scene_winners:
         dense_confident = candidate.dense_score >= query.min_score
         sparse_rescue = (
             hybrid
@@ -355,24 +365,26 @@ def select_injected_candidates(
             and candidate.dense_score >= rescue_floor
         )
         if sparse_rescue or (dense_pass and dense_confident):
-            eligible.append(candidate)
-    if not eligible:
+            eligible_scene_winners.append(candidate)
+    if not eligible_scene_winners:
         return []
 
-    distinct: list[Gate2Candidate] = []
-    backfill: list[Gate2Candidate] = []
-    seen_scenes: set[str] = set()
-    for candidate in eligible:
-        if candidate.scene_id in seen_scenes:
-            backfill.append(candidate)
-        else:
-            seen_scenes.add(candidate.scene_id)
-            distinct.append(candidate)
-    baseline = [*distinct, *backfill][:max_chunks]
-    if [candidate.candidate_id for candidate in ranking] == [
-        candidate.candidate_id for candidate in baseline_ranking
-    ]:
-        return baseline
+    eligible_scene_winners.sort(
+        key=lambda candidate: (
+            candidate.rrf_rank if hybrid else candidate.dense_rank,
+            candidate.candidate_id,
+        )
+    )
+    baseline = eligible_scene_winners[:max_chunks]
+    if dense_pass and len(baseline) < max_chunks:
+        remaining = max_chunks - len(baseline)
+        baseline.extend(
+            [
+                candidate
+                for candidate in leftovers
+                if candidate.dense_score >= query.min_score
+            ][:remaining]
+        )
 
     remaining_by_scene: dict[str, int] = {}
     for candidate in baseline:

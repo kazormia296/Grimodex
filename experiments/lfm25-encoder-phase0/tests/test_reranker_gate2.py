@@ -85,6 +85,59 @@ def _query(
     )
 
 
+def _admission_boundary_query(
+    *,
+    first_scene_score: float,
+    second_scene_score: float,
+    first_scene_leftover_score: float,
+) -> Gate2Query:
+    query = _query(query_slice="no_match")
+    first_scene_winner = query.candidates[0].model_copy(
+        update={
+            "scene_id": "scene-a",
+            "scene_title": "Scene A",
+            "dense_score": first_scene_score,
+            "sparse_rank": 1,
+        }
+    )
+    second_scene_winner = query.candidates[1].model_copy(
+        update={
+            "scene_id": "scene-b",
+            "scene_title": "Scene B",
+            "dense_score": second_scene_score,
+            "sparse_rank": 2,
+        }
+    )
+    first_scene_leftover = query.candidates[2].model_copy(
+        update={
+            "scene_id": "scene-a",
+            "scene_title": "Scene A",
+            "dense_score": first_scene_leftover_score,
+            "sparse_rank": 1,
+        }
+    )
+    remaining = [
+        candidate.model_copy(
+            update={
+                "dense_score": 0.10,
+                "sparse_rank": None,
+            }
+        )
+        for candidate in query.candidates[3:]
+    ]
+    return Gate2Query.model_validate(
+        {
+            **query.model_dump(),
+            "candidates": [
+                first_scene_winner.model_dump(),
+                second_scene_winner.model_dump(),
+                first_scene_leftover.model_dump(),
+                *[candidate.model_dump() for candidate in remaining],
+            ],
+        }
+    )
+
+
 class Gate2ReferenceConfigTests(unittest.TestCase):
     def test_every_model_pins_a_separate_official_reference_onnx(self) -> None:
         config = load_phase0b_config(CONFIG_PATH)
@@ -327,6 +380,42 @@ class Gate2RankingAndInjectionTests(unittest.TestCase):
         self.assertCountEqual(
             [candidate.scene_id for candidate in injected],
             [candidate.scene_id for candidate in baseline],
+        )
+
+    def test_rescue_only_does_not_backfill_a_rescued_scene(self) -> None:
+        query = _admission_boundary_query(
+            first_scene_score=0.77,
+            second_scene_score=0.76,
+            first_scene_leftover_score=0.76,
+        )
+
+        injected = select_injected_candidates(
+            query,
+            rank_candidates(query, method="rrf"),
+            hybrid=True,
+        )
+
+        self.assertEqual(
+            [candidate.candidate_id for candidate in injected],
+            ["candidate-01", "candidate-02"],
+        )
+
+    def test_dense_pass_does_not_backfill_below_min_score(self) -> None:
+        query = _admission_boundary_query(
+            first_scene_score=0.90,
+            second_scene_score=0.82,
+            first_scene_leftover_score=0.79,
+        )
+
+        injected = select_injected_candidates(
+            query,
+            rank_candidates(query, method="rrf"),
+            hybrid=True,
+        )
+
+        self.assertEqual(
+            [candidate.candidate_id for candidate in injected],
+            ["candidate-01", "candidate-02"],
         )
 
 

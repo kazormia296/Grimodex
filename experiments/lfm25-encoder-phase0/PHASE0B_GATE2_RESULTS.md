@@ -33,6 +33,10 @@ Review was not evaluated and remains a separate track. No cascade is selected.
   `a80ff6cee575f2be362b037fab02c6b00b865f88`
 - Exact-passage qrels and product-aligned injection fix commit:
   `d225999c4b12f6cc5e027ac797c0f1ae384b695e`
+- Rescue/backfill admission-boundary parity fix:
+  co-committed with this decision record and covered by the
+  `test_rescue_only_does_not_backfill_a_rescued_scene` and
+  `test_dense_pass_does_not_backfill_below_min_score` contracts.
 - Runner: `grimodex-lfm-eval` 0.2.0,
   `python -m grimodex_lfm_eval.reranker_gate2_runner`
 - Report schema version: 2
@@ -45,11 +49,15 @@ Review was not evaluated and remains a separate track. No cascade is selected.
 - Pair truncation: `longest_first`, maximum 512 tokens
 - Warm latency: three excluded warmups, then 30 measured queries
 
-The cross-encoder logit is used only to order a frozen candidate set. Final
-injection freezes the scenes and per-scene quotas selected by the existing
-dense gate/floor and sparse-rescue policy. The reranker may choose a different
-retrieved chunk only inside those admitted scene quotas. Cross-encoder logits
-are never compared with cosine/BGE thresholds.
+The cross-encoder logit is used only to order a frozen candidate set. The
+baseline evaluator first sorts by dense score, separates each scene's best
+chunk from its leftovers, and applies dense/sparse admission only to those
+scene winners. A rescue-only result never creates a secondary chunk quota.
+Leftovers are added only when `densePass=true` and the leftover itself is at
+or above `minScore`. Final injection freezes the resulting scenes and
+per-scene quotas; the reranker may choose a different retrieved chunk only
+inside those quotas. Cross-encoder logits are never compared with cosine/BGE
+thresholds.
 
 ## Frozen product candidate sets
 
@@ -214,20 +222,30 @@ path.
 | Model / depth     | Samples |    p50 |    p95 | Bootstrap p95 95% CI | Target | Hard stop | Verdict |
 | ----------------- | ------: | -----: | -----: | -------------------: | -----: | --------: | ------- |
 | JA tiny / 30      |      30 | 0.279s | 0.378s |         0.346–0.427s |     2s |        8s | Target  |
-| JA xsmall / 12    |      30 | 0.292s | 0.361s |         0.352–0.368s |     1s |        4s | Target  |
-| JA xsmall / 30    |      30 | 0.854s | 1.002s |         0.937–1.013s |     2s |        8s | Target  |
-| EN MiniLM-L4 / 30 |      30 | 0.454s | 0.559s |         0.514–0.578s |     2s |        8s | Target  |
+| JA xsmall / 12    |      30 | 0.315s | 0.529s |         0.391–0.560s |     1s |        4s | Target  |
+| JA xsmall / 30    |      30 | 0.852s | 1.044s |         0.949–1.135s |     2s |        8s | Target  |
+| EN MiniLM-L4 / 30 |      30 | 0.510s | 0.643s |         0.565–0.900s |     2s |        8s | Target  |
 
-### Chunk-corrected apply revalidation — 2026-07-31
+### Admission-boundary-corrected apply revalidation — 2026-07-31
 
 The selected configurations were rerun from the pinned local manifests after
-aligning the evaluator and product with admitted-scene/exact-chunk semantics.
-Both 30-candidate latency gates remained Target:
+aligning the evaluator with the product's scene-winner admission and
+dense-only backfill boundary. Aggregate quality and safety values are
+unchanged from the prior chunk-corrected run. Both 30-candidate latency gates
+remain Target:
 
 | Model / depth     | Manifest                                                           | Chunk MRR | Scene MRR | Gold chunk | Worsened positive |    p95 | Bootstrap p95 95% CI | Verdict |
 | ----------------- | ------------------------------------------------------------------ | --------: | --------: | ---------: | ----------------: | -----: | -------------------: | ------- |
-| JA xsmall / 30    | `8d4ad4f8d50496941fd5e6b4960df3dccdfc8aa1811c7cff68a5f470f9e1c24f` |     1.000 |     1.000 |      83.3% |                 0 | 1.002s |         0.937–1.013s | Promote |
-| EN MiniLM-L4 / 30 | `e6b043a0b69a61c3b9b54c59ea512149bfa5fbd15ce2778877c283ef4aae9813` |     0.783 |     0.795 |      72.7% |                 0 | 0.559s |         0.514–0.578s | Promote |
+| JA xsmall / 30    | `8d4ad4f8d50496941fd5e6b4960df3dccdfc8aa1811c7cff68a5f470f9e1c24f` |     1.000 |     1.000 |      83.3% |                 0 | 1.044s |         0.949–1.135s | Promote |
+| EN MiniLM-L4 / 30 | `e6b043a0b69a61c3b9b54c59ea512149bfa5fbd15ce2778877c283ef4aae9813` |     0.783 |     0.795 |      72.7% |                 0 | 0.643s |         0.565–0.900s | Promote |
+
+| Model / depth     | Run timestamp (UTC)                | Report SHA-256                                                     |
+| ----------------- | ---------------------------------- | ------------------------------------------------------------------ |
+| JA xsmall / 30    | `2026-07-30T18:17:55.250818+00:00` | `fb3367306fb1f7831e96a8bf9f72c549397ea10ab652a839341e97d3c19a06d1` |
+| EN MiniLM-L4 / 30 | `2026-07-30T18:18:38.698068+00:00` | `17fab2421f1219958ff3f922e9a9f4678a24ba6a99027c05e93f4127dd870138` |
+
+JA xsmall top 12 also remains `Promote`; its latest p95 is `0.529s`
+with bootstrap p95 95% CI `0.391–0.560s`.
 
 This revalidation covers fixed-fixture model quality and direct ONNX CPU
 latency. Renderer timeout/fallback, admission invariance, and stale authority

@@ -173,9 +173,11 @@ in [`PHASE0B_GATE2_RESULTS.md`](./PHASE0B_GATE2_RESULTS.md). Japanese xsmall
 top-30 and English MiniLM-L4 top-30 pass the Gate 2 promotion rule for
 experimental opt-in integration. Top 30 additionally improves exact-passage
 inclusion on the Japanese fixture while staying in the Target latency band.
-The product path keeps current scene admission authoritative, reranks chunks
-only inside those scene quotas, and falls back to the baseline order on any
-failure.
+The product path keeps current scene admission authoritative: admission is
+applied only to each scene's best dense chunk, rescue-only results never
+backfill a second chunk, and dense-pass backfill requires the secondary chunk
+itself to meet `minScore`. The reranker changes chunks only inside those fixed
+scene quotas and falls back to the baseline order on any failure.
 
 ### Optional shadow corpus diagnostics
 
