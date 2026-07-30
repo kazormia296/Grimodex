@@ -54,6 +54,7 @@ const AI_TRANSPORT_COMMANDS: Record<string, string[]> = {
   // 埋め込み / 全文検索（LLM 生成ではないが AI サーフェスとして網羅対象）。
   semantic_search: ["semantic_search (Rust ONNX)"],
   fts_search: ["fts_search (Rust SQLite)"],
+  semantic_reranker_shadow_score: ["semantic_reranker_score (Rust ONNX)"],
 };
 
 /**

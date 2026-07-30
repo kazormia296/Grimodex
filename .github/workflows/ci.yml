@@ -315,6 +315,7 @@ jobs:
           scripts/electron-product-journey-cleanup-results.test.mjs
           scripts/electron-product-journeys.test.mjs
           scripts/generate-licenses.test.mjs
+          scripts/semantic-reranker-release.test.mjs
 
       - name: Electron type-check
         run: pnpm exec tsc -p electron/tsconfig.json --noEmit
