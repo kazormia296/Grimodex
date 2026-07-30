@@ -1300,7 +1300,7 @@ export function EditorPane({
 
   // Linter — scene-only, primary group only.
   const lintSceneId = groupIndex === 0 && !isEntryMode ? nodeId : null;
-  useLinter(mountedEditor, lintSceneId);
+  useLinter(mountedEditor, lintSceneId, getCurrentProjectId());
   const navigationSceneId =
     !isEntryMode &&
     (phoneWorkspace

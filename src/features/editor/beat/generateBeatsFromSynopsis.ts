@@ -3,8 +3,7 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getProject } from "@/features/project/api";
 import { streamInlineAiText } from "./streamInlineAiText";
-import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import { isBeatType, type BeatType } from "./beatTypes";
 import { getPromptCatalog } from "@/prompts/index";
 import i18next from "@/lib/i18n";
 
@@ -47,13 +46,7 @@ function parseBeatJson(raw: string): RawBeat[] | null {
 }
 
 function toBeatType(value: unknown): BeatType {
-  if (
-    typeof value === "string" &&
-    (BEAT_TYPES as readonly string[]).includes(value)
-  ) {
-    return value as BeatType;
-  }
-  return "free";
+  return isBeatType(value) ? value : "free";
 }
 
 /**

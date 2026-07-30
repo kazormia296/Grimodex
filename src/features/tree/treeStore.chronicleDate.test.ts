@@ -85,6 +85,40 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+describe("patchNode", () => {
+  beforeEach(() => reset());
+
+  it("persists first and applies the returned revision to the Tree projection", async () => {
+    vi.mocked(api.updateNode).mockResolvedValueOnce(
+      persistedAt("2024-01-01T00:00:01Z"),
+    );
+
+    await useTreeStore.getState().patchNode("scene-1", {
+      contextMode: "all",
+      aliases: '["hero"]',
+    });
+
+    expect(api.updateNode).toHaveBeenCalledWith("scene-1", {
+      contextMode: "all",
+      aliases: '["hero"]',
+    });
+    expect(useTreeStore.getState().nodes[0]).toMatchObject({
+      contextMode: "all",
+      aliases: '["hero"]',
+      updatedAt: "2024-01-01T00:00:01Z",
+    });
+  });
+
+  it("does not mutate the projection when persistence fails", async () => {
+    vi.mocked(api.updateNode).mockRejectedValueOnce(new Error("disk full"));
+
+    await expect(
+      useTreeStore.getState().patchNode("scene-1", { title: "New title" }),
+    ).rejects.toThrow("disk full");
+    expect(useTreeStore.getState().nodes[0].title).toBe("Scene 1");
+  });
+});
+
 describe("updateChronicleDate (tracked)", () => {
   beforeEach(() => reset());
   afterEach(() => {

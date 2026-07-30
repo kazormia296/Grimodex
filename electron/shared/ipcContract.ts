@@ -321,6 +321,37 @@ export function clampZoomFactor(factor: unknown): number {
 export interface NapiBackendLike {
   dbExecute(sql: string, params: unknown, method: string): Promise<string>;
   dbExecuteBatch(statements: unknown): Promise<string>;
+  lintIgnoreList?(projectId: string): Promise<string>;
+  lintIgnoreListScene?(projectId: string, sceneId: string): Promise<string>;
+  lintIgnoreCreate?(payload: unknown): Promise<string>;
+  lintIgnoreDelete?(projectId: string, id: string): Promise<void>;
+  lintIgnoreCopy?(payload: unknown): Promise<string>;
+  lintIgnoreMove?(payload: unknown): Promise<string>;
+  lintTermDictionaryList?(projectId: string): Promise<string>;
+  lintTermDictionaryInsert?(payload: unknown): Promise<string>;
+  lintTermDictionaryUpdate?(payload: unknown): Promise<string>;
+  lintTermDictionarySetEnabled?(
+    projectId: string,
+    id: string,
+    enabled: boolean,
+    updatedAt: number,
+  ): Promise<string>;
+  lintTermDictionaryDelete?(projectId: string, id: string): Promise<void>;
+  eventGetVersion?(projectId: string, eventId: string): Promise<string>;
+  eventSetParticipants?(payload: unknown): Promise<string>;
+  authorshipReplaceLane?(payload: unknown): Promise<void>;
+  entityTagsSet?(payload: unknown): Promise<void>;
+  codexRenameUndo?(payload: unknown): Promise<void>;
+  scanStagingProjectCreate?(payload: unknown): Promise<void>;
+  treePlanUndo?(payload: unknown): Promise<void>;
+  mapWriteBundle?(payload: unknown): Promise<void>;
+  projectSnapshotCreate?(payload: unknown): Promise<void>;
+  projectSnapshotRestoreContext?(
+    projectId: string,
+    snapshotId: string,
+    scopes: unknown,
+  ): Promise<string>;
+  projectSnapshotApplyRestore?(payload: unknown): Promise<void>;
   saveSceneBodyBundle?(payload: unknown): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
@@ -769,6 +800,641 @@ function requireNonEmptyString(
     );
   }
   return value;
+}
+
+function requireSafeInteger(
+  args: CommandArgs,
+  key: string,
+  command: string,
+): number {
+  const value = requireNumber(args, key, command);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a safe integer`,
+    );
+  }
+  return value;
+}
+
+function requireLintIgnoreCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "lint_ignore_create";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["id", "projectId", "sceneId", "ruleId"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  for (const key of ["textSnippet", "contextBefore", "contextAfter"]) {
+    requireString(payload, key, command);
+  }
+  const note = requirePresent(payload, "note", command);
+  if (note !== null && typeof note !== "string") {
+    throw new Error(
+      `invalid args \`note\` for command \`${command}\`: expected a string or null`,
+    );
+  }
+  const createdAt = requireNumber(payload, "createdAt", command);
+  if (!Number.isSafeInteger(createdAt)) {
+    throw new Error(
+      `invalid args \`createdAt\` for command \`${command}\`: expected a safe integer`,
+    );
+  }
+  return payload;
+}
+
+function requireLintIgnoreCopyPayload(args: CommandArgs): CommandArgs {
+  const command = "lint_ignore_copy";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["projectId", "fromSceneId", "toSceneId"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  return payload;
+}
+
+function requireLintIgnoreMovePayload(args: CommandArgs): CommandArgs {
+  const command = "lint_ignore_move";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "toSceneId", command);
+  const fromSceneIds = requireArray(payload, "fromSceneIds", command);
+  fromSceneIds.forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`fromSceneIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  return payload;
+}
+
+function requireLintTermDictionaryPayload(
+  args: CommandArgs,
+  command: "lint_term_dictionary_insert" | "lint_term_dictionary_update",
+): CommandArgs {
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["id", "projectId", "preferred"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const variants = requireArray(payload, "variants", command);
+  if (variants.length === 0) {
+    throw new Error(
+      `invalid args \`variants\` for command \`${command}\`: expected at least one string`,
+    );
+  }
+  variants.forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`variants[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  const severity = requireString(payload, "severity", command);
+  if (severity !== "warning" && severity !== "info") {
+    throw new Error(
+      `invalid args \`severity\` for command \`${command}\`: expected warning or info`,
+    );
+  }
+  const note = requirePresent(payload, "note", command);
+  if (note !== null && typeof note !== "string") {
+    throw new Error(
+      `invalid args \`note\` for command \`${command}\`: expected a string or null`,
+    );
+  }
+  requireBoolean(payload, "enabled", command);
+  const integerKeys =
+    command === "lint_term_dictionary_insert"
+      ? (["sortOrder", "createdAt", "updatedAt"] as const)
+      : (["updatedAt"] as const);
+  for (const key of integerKeys) {
+    requireSafeInteger(payload, key, command);
+  }
+  return payload;
+}
+
+function requireEventSetParticipantsPayload(args: CommandArgs): CommandArgs {
+  const command = "event_set_participants";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "eventId", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  const baseVersion = requireSafeInteger(payload, "baseVersion", command);
+  if (baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  requireArray(payload, "codexEntryIds", command).forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`codexEntryIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  return payload;
+}
+
+function requireNullableStringField(
+  args: CommandArgs,
+  key: string,
+  command: string,
+): string | null {
+  const value = requirePresent(args, key, command);
+  if (value !== null && typeof value !== "string") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a string or null`,
+    );
+  }
+  return value;
+}
+
+function requireAuthorshipReplaceLanePayload(args: CommandArgs): CommandArgs {
+  const command = "authorship_replace_lane";
+  const payload = requireRecord(args, "payload", command);
+  const lane = requireRecord(payload, "lane", command);
+  const kind = requireString(lane, "kind", command);
+  switch (kind) {
+    case "node":
+      requireNonEmptyString(lane, "nodeId", command);
+      break;
+    case "codex":
+      requireNonEmptyString(lane, "codexEntryId", command);
+      break;
+    case "snippet":
+      requireNonEmptyString(lane, "snippetId", command);
+      break;
+    case "detail":
+      requireNonEmptyString(lane, "detailValueId", command);
+      requireNonEmptyString(lane, "codexEntryId", command);
+      break;
+    case "phase":
+      requireNonEmptyString(lane, "phaseId", command);
+      requireNonEmptyString(lane, "codexEntryId", command);
+      break;
+    default:
+      throw new Error(
+        `invalid args \`lane.kind\` for command \`${command}\`: expected a supported authorship owner lane`,
+      );
+  }
+  requireArray(payload, "spans", command).forEach((value, index) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(
+        `invalid args \`spans[${index}]\` for command \`${command}\`: expected an object`,
+      );
+    }
+    const span = value as CommandArgs;
+    requireNonEmptyString(span, "id", command);
+    const fromPos = requireSafeInteger(span, "fromPos", command);
+    const toPos = requireSafeInteger(span, "toPos", command);
+    if (fromPos < 0 || toPos < fromPos) {
+      throw new Error(
+        `invalid args \`spans[${index}]\` for command \`${command}\`: invalid position range`,
+      );
+    }
+    const source = requireString(span, "source", command);
+    if (source !== "human" && source !== "ai" && source !== "unknown") {
+      throw new Error(
+        `invalid args \`spans[${index}].source\` for command \`${command}\`: expected human, ai, or unknown`,
+      );
+    }
+    for (const key of ["model", "timestamp", "chatMsgId", "traceId"]) {
+      requireNullableStringField(span, key, command);
+    }
+  });
+  return payload;
+}
+
+function requireEntityTagsSetPayload(args: CommandArgs): CommandArgs {
+  const command = "entity_tags_set";
+  const payload = requireRecord(args, "payload", command);
+  const kind = requireString(payload, "entityKind", command);
+  if (kind !== "codex" && kind !== "snippet") {
+    throw new Error(
+      `invalid args \`entityKind\` for command \`${command}\`: expected codex or snippet`,
+    );
+  }
+  requireNonEmptyString(payload, "entityId", command);
+  requireArray(payload, "tagIds", command).forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`tagIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  const updatedAt = requireNullableStringField(payload, "updatedAt", command);
+  if (kind === "codex" && !updatedAt) {
+    throw new Error(
+      `invalid args \`updatedAt\` for command \`${command}\`: expected a non-empty string for codex`,
+    );
+  }
+  return payload;
+}
+
+const CODEX_RENAME_UNDO_KINDS = new Set([
+  "scene-body",
+  "node-title",
+  "node-synopsis",
+  "codex-summary",
+  "codex-content",
+  "codex-notes",
+  "codex-detail",
+  "codex-relation-label",
+]);
+
+function requireCodexRenameUndoPayload(args: CommandArgs): CommandArgs {
+  const command = "codex_rename_undo";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  requireArray(payload, "updates", command).forEach((value, index) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(
+        `invalid args \`updates[${index}]\` for command \`${command}\`: expected an object`,
+      );
+    }
+    const update = value as CommandArgs;
+    const kind = requireString(update, "kind", command);
+    if (!CODEX_RENAME_UNDO_KINDS.has(kind)) {
+      throw new Error(
+        `invalid args \`updates[${index}].kind\` for command \`${command}\`: expected a supported rename source`,
+      );
+    }
+    requireNonEmptyString(update, "refId", command);
+    requireString(update, "value", command);
+    const detailDefinitionId = requireNullableStringField(
+      update,
+      "detailDefinitionId",
+      command,
+    );
+    if (kind === "codex-detail" && !detailDefinitionId) {
+      throw new Error(
+        `invalid args \`updates[${index}].detailDefinitionId\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+    const charCount = requirePresent(update, "charCount", command);
+    if (
+      charCount !== null &&
+      (typeof charCount !== "number" ||
+        !Number.isSafeInteger(charCount) ||
+        charCount < 0)
+    ) {
+      throw new Error(
+        `invalid args \`updates[${index}].charCount\` for command \`${command}\`: expected a non-negative safe integer or null`,
+      );
+    }
+    if (kind === "scene-body" && charCount === null) {
+      throw new Error(
+        `invalid args \`updates[${index}].charCount\` for command \`${command}\`: scene body requires a count`,
+      );
+    }
+    requireNullableStringField(update, "placedBeatPreview", command);
+  });
+  return payload;
+}
+
+function requireScanStagingProjectCreatePayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "scan_staging_project_create";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["id", "title", "createdAt"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const language = requireString(payload, "language", command);
+  if (language !== "ja" && language !== "en") {
+    throw new Error(
+      `invalid args \`language\` for command \`${command}\`: expected ja or en`,
+    );
+  }
+  return payload;
+}
+
+function requireTreePlanUndoPayload(args: CommandArgs): CommandArgs {
+  const command = "tree_plan_undo";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  requireArray(payload, "beforeStates", command).forEach((value, index) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(
+        `invalid args \`beforeStates[${index}]\` for command \`${command}\`: expected an object`,
+      );
+    }
+    const state = value as CommandArgs;
+    requireNonEmptyString(state, "id", command);
+    requireNonEmptyString(state, "sortOrder", command);
+    requireString(state, "title", command);
+    requireNullableStringField(state, "parentId", command);
+  });
+  requireArray(payload, "createdIds", command).forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`createdIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  return payload;
+}
+
+function requireMapWriteStringArray(
+  payload: CommandArgs,
+  key: string,
+  command: string,
+): unknown[] {
+  const values = requireArray(payload, key, command);
+  values.forEach((value, index) => {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `invalid args \`${key}[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  return values;
+}
+
+function requireMapWritePayload(args: CommandArgs): CommandArgs {
+  const command = "map_write_bundle";
+  const payload = requireRecord(args, "payload", command);
+  const kind = requireString(payload, "kind", command);
+  requireNonEmptyString(payload, "projectId", command);
+
+  switch (kind) {
+    case "create-board":
+      requireSnapshotScalarRow(
+        requirePresent(payload, "board", command),
+        "board",
+        command,
+      );
+      for (const key of ["stickies", "positions", "edges", "frames"]) {
+        requireSnapshotRows(payload, key, command);
+      }
+      break;
+    case "create-ai-branch":
+    case "restore-ai-branch":
+      requireSnapshotScalarRow(
+        requirePresent(payload, "branch", command),
+        "branch",
+        command,
+      );
+      requireSnapshotScalarRow(
+        requirePresent(payload, "branchPosition", command),
+        "branchPosition",
+        command,
+      );
+      for (const key of ["stickies", "positions", "edges", "spans"]) {
+        requireSnapshotRows(payload, key, command);
+      }
+      break;
+    case "promote-sticky": {
+      for (const key of [
+        "boardId",
+        "targetType",
+        "newEntityId",
+        "title",
+        "body",
+        "positionId",
+        "stickyId",
+        "createdAt",
+        "updatedAt",
+      ]) {
+        requireNonEmptyString(payload, key, command);
+      }
+      const targetType = requireString(payload, "targetType", command);
+      if (
+        targetType !== "scene" &&
+        targetType !== "note" &&
+        targetType !== "snippet" &&
+        targetType !== "codex"
+      ) {
+        throw new Error(
+          `invalid args \`targetType\` for command \`${command}\`: expected scene, note, snippet, or codex`,
+        );
+      }
+      requireNullableStringField(payload, "parentId", command);
+      const sortOrder = requireNullableStringField(
+        payload,
+        "sortOrder",
+        command,
+      );
+      const codexType = requireNullableStringField(
+        payload,
+        "codexType",
+        command,
+      );
+      if ((targetType === "scene" || targetType === "note") && !sortOrder) {
+        throw new Error(
+          `invalid args \`sortOrder\` for command \`${command}\`: tree target requires a sort order`,
+        );
+      }
+      if (targetType === "codex" && !codexType) {
+        throw new Error(
+          `invalid args \`codexType\` for command \`${command}\`: codex target requires a type`,
+        );
+      }
+      break;
+    }
+    case "erase-ai-branch":
+      requireNonEmptyString(payload, "branchId", command);
+      for (const key of ["spanIds", "stickyPositionIds", "stickyIds"]) {
+        requireMapWriteStringArray(payload, key, command);
+      }
+      break;
+    case "extract-frame-to-codex":
+      for (const key of [
+        "boardId",
+        "codexId",
+        "codexType",
+        "title",
+        "content",
+        "frameId",
+        "createdAt",
+        "updatedAt",
+      ]) {
+        requireNonEmptyString(payload, key, command);
+      }
+      requireMapWriteStringArray(payload, "stickyIds", command);
+      break;
+    default:
+      throw new Error(
+        `invalid args \`kind\` for command \`${command}\`: expected a supported map aggregate write`,
+      );
+  }
+  return payload;
+}
+
+const PROJECT_SNAPSHOT_RESTORE_SCOPES = new Set([
+  "body",
+  "codex",
+  "snippet",
+  "map",
+  "foreshadow",
+  "labels",
+  "lint",
+]);
+
+const PROJECT_SNAPSHOT_RESTORE_TABLES = new Set([
+  "codex_types",
+  "codex_entries",
+  "codex_tags",
+  "codex_detail_definitions",
+  "codex_entry_tags",
+  "codex_detail_values",
+  "codex_entry_phases",
+  "codex_phase_detail_overrides",
+  "codex_quick_pins",
+  "codex_dismissed_relations",
+  "codex_relations",
+  "tree_nodes",
+  "authorship_spans",
+  "generation_logs",
+  "post_effect_annotations",
+  "post_effect_annotation_relations",
+  "scene_codex_pins",
+  "scene_codex_mentions",
+  "scene_beat_pov_cache",
+  "plot_threads",
+  "plot_thread_scene_links",
+  "plot_thread_branches",
+  "events",
+  "scene_events",
+  "event_participants",
+  "event_relations",
+  "project_calendar",
+  "snippets",
+  "snippet_entry_tags",
+  "labels",
+  "tree_node_labels",
+  "foreshadows",
+  "foreshadow_setups",
+  "foreshadow_codex_links",
+  "map_boards",
+  "map_ai_branches",
+  "map_stickies",
+  "map_frames",
+  "map_node_positions",
+  "map_edges",
+  "lint_term_dictionary",
+  "lint_ignored_diagnostics",
+]);
+
+function requireProjectSnapshotScopes(
+  args: CommandArgs,
+  key: string,
+  command: string,
+): unknown[] {
+  const scopes = requireArray(args, key, command);
+  scopes.forEach((scope, index) => {
+    if (
+      typeof scope !== "string" ||
+      !PROJECT_SNAPSHOT_RESTORE_SCOPES.has(scope)
+    ) {
+      throw new Error(
+        `invalid args \`${key}[${index}]\` for command \`${command}\`: expected a project snapshot restore scope`,
+      );
+    }
+  });
+  return scopes;
+}
+
+function requireSnapshotScalarRow(
+  value: unknown,
+  key: string,
+  command: string,
+): CommandArgs {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected an object`,
+    );
+  }
+  const row = value as CommandArgs;
+  if (Object.keys(row).length === 0) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected at least one SQLite scalar field`,
+    );
+  }
+  for (const [column, field] of Object.entries(row)) {
+    if (
+      field !== null &&
+      typeof field !== "string" &&
+      (typeof field !== "number" || !Number.isFinite(field))
+    ) {
+      throw new Error(
+        `invalid args \`${key}.${column}\` for command \`${command}\`: expected a SQLite scalar`,
+      );
+    }
+  }
+  return row;
+}
+
+function requireSnapshotRows(
+  payload: CommandArgs,
+  key: string,
+  command: string,
+): unknown[] {
+  const rows = requireArray(payload, key, command);
+  rows.forEach((row, index) => {
+    requireSnapshotScalarRow(row, `${key}[${index}]`, command);
+  });
+  return rows;
+}
+
+function requireProjectSnapshotCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "project_snapshot_create";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["projectId", "snapshotId", "name", "createdAt"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const description = requirePresent(payload, "description", command);
+  if (description !== null && typeof description !== "string") {
+    throw new Error(
+      `invalid args \`description\` for command \`${command}\`: expected a string or null`,
+    );
+  }
+  for (const key of ["treeRows", "codexRows", "snippetRows"]) {
+    requireSnapshotRows(payload, key, command);
+  }
+  requireArray(payload, "versionIds", command).forEach((versionId, index) => {
+    if (typeof versionId !== "string" || versionId.length === 0) {
+      throw new Error(
+        `invalid args \`versionIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  });
+  return payload;
+}
+
+function requireProjectSnapshotApplyPayload(args: CommandArgs): CommandArgs {
+  const command = "project_snapshot_apply_restore";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "snapshotId", command);
+  requireProjectSnapshotScopes(payload, "scopes", command);
+  const inserts = requireArray(payload, "inserts", command);
+  inserts.forEach((value, index) => {
+    const insert = requirePlotSnapshotRecord(
+      value,
+      `inserts[${index}]`,
+      command,
+    );
+    const table = requireString(insert, "table", command);
+    if (!PROJECT_SNAPSHOT_RESTORE_TABLES.has(table)) {
+      throw new Error(
+        `invalid args \`inserts[${index}].table\` for command \`${command}\`: expected an allowlisted snapshot table`,
+      );
+    }
+    const mode = requireString(insert, "mode", command);
+    if (
+      (mode !== "insert" && mode !== "replace") ||
+      (mode === "replace" && table !== "codex_types")
+    ) {
+      throw new Error(
+        `invalid args \`inserts[${index}].mode\` for command \`${command}\`: expected insert, or replace for codex_types`,
+      );
+    }
+    requireSnapshotScalarRow(
+      requirePresent(insert, "row", command),
+      `inserts[${index}].row`,
+      command,
+    );
+  });
+  return payload;
 }
 
 function requirePlotSnapshotRecord(
@@ -1793,6 +2459,267 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requirePresent(a, "statements", "db_execute_batch"),
         ),
       ),
+  },
+  lint_ignore_list: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreList,
+          "lintIgnoreList",
+        )(requireNonEmptyString(a, "projectId", "lint_ignore_list")),
+      ),
+  },
+  lint_ignore_list_scene: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreListScene,
+          "lintIgnoreListScene",
+        )(
+          requireNonEmptyString(a, "projectId", "lint_ignore_list_scene"),
+          requireNonEmptyString(a, "sceneId", "lint_ignore_list_scene"),
+        ),
+      ),
+  },
+  lint_ignore_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreCreate,
+          "lintIgnoreCreate",
+        )(requireLintIgnoreCreatePayload(a)),
+      ),
+  },
+  lint_ignore_delete: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.lintIgnoreDelete,
+        "lintIgnoreDelete",
+      )(
+        requireNonEmptyString(a, "projectId", "lint_ignore_delete"),
+        requireNonEmptyString(a, "id", "lint_ignore_delete"),
+      );
+      return null;
+    },
+  },
+  lint_ignore_copy: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreCopy,
+          "lintIgnoreCopy",
+        )(requireLintIgnoreCopyPayload(a)),
+      ),
+  },
+  lint_ignore_move: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintIgnoreMove,
+          "lintIgnoreMove",
+        )(requireLintIgnoreMovePayload(a)),
+      ),
+  },
+  lint_term_dictionary_list: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintTermDictionaryList,
+          "lintTermDictionaryList",
+        )(requireNonEmptyString(a, "projectId", "lint_term_dictionary_list")),
+      ),
+  },
+  lint_term_dictionary_insert: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintTermDictionaryInsert,
+          "lintTermDictionaryInsert",
+        )(requireLintTermDictionaryPayload(a, "lint_term_dictionary_insert")),
+      ),
+  },
+  lint_term_dictionary_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintTermDictionaryUpdate,
+          "lintTermDictionaryUpdate",
+        )(requireLintTermDictionaryPayload(a, "lint_term_dictionary_update")),
+      ),
+  },
+  lint_term_dictionary_set_enabled: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.lintTermDictionarySetEnabled,
+          "lintTermDictionarySetEnabled",
+        )(
+          requireNonEmptyString(
+            a,
+            "projectId",
+            "lint_term_dictionary_set_enabled",
+          ),
+          requireNonEmptyString(a, "id", "lint_term_dictionary_set_enabled"),
+          requireBoolean(a, "enabled", "lint_term_dictionary_set_enabled"),
+          requireSafeInteger(
+            a,
+            "updatedAt",
+            "lint_term_dictionary_set_enabled",
+          ),
+        ),
+      ),
+  },
+  lint_term_dictionary_delete: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.lintTermDictionaryDelete,
+        "lintTermDictionaryDelete",
+      )(
+        requireNonEmptyString(a, "projectId", "lint_term_dictionary_delete"),
+        requireNonEmptyString(a, "id", "lint_term_dictionary_delete"),
+      );
+      return null;
+    },
+  },
+  event_get_version: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventGetVersion,
+          "eventGetVersion",
+        )(
+          requireNonEmptyString(a, "projectId", "event_get_version"),
+          requireNonEmptyString(a, "eventId", "event_get_version"),
+        ),
+      ),
+  },
+  event_set_participants: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventSetParticipants,
+          "eventSetParticipants",
+        )(requireEventSetParticipantsPayload(a)),
+      ),
+  },
+  authorship_replace_lane: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.authorshipReplaceLane,
+        "authorshipReplaceLane",
+      )(requireAuthorshipReplaceLanePayload(a));
+      return null;
+    },
+  },
+  entity_tags_set: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.entityTagsSet,
+        "entityTagsSet",
+      )(requireEntityTagsSetPayload(a));
+      return null;
+    },
+  },
+  codex_rename_undo: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.codexRenameUndo,
+        "codexRenameUndo",
+      )(requireCodexRenameUndoPayload(a));
+      return null;
+    },
+  },
+  scan_staging_project_create: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.scanStagingProjectCreate,
+        "scanStagingProjectCreate",
+      )(requireScanStagingProjectCreatePayload(a));
+      return null;
+    },
+  },
+  tree_plan_undo: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.treePlanUndo,
+        "treePlanUndo",
+      )(requireTreePlanUndoPayload(a));
+      return null;
+    },
+  },
+  map_write_bundle: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.mapWriteBundle,
+        "mapWriteBundle",
+      )(requireMapWritePayload(a));
+      return null;
+    },
+  },
+  project_snapshot_create: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.projectSnapshotCreate,
+        "projectSnapshotCreate",
+      )(requireProjectSnapshotCreatePayload(a));
+      return null;
+    },
+  },
+  project_snapshot_restore_context: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.projectSnapshotRestoreContext,
+          "projectSnapshotRestoreContext",
+        )(
+          requireNonEmptyString(
+            a,
+            "projectId",
+            "project_snapshot_restore_context",
+          ),
+          requireNonEmptyString(
+            a,
+            "snapshotId",
+            "project_snapshot_restore_context",
+          ),
+          requireProjectSnapshotScopes(
+            a,
+            "scopes",
+            "project_snapshot_restore_context",
+          ),
+        ),
+      ),
+  },
+  project_snapshot_apply_restore: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.projectSnapshotApplyRestore,
+        "projectSnapshotApplyRestore",
+      )(requireProjectSnapshotApplyPayload(a));
+      return null;
+    },
   },
   save_scene_body_bundle: {
     run: async (b, a) =>

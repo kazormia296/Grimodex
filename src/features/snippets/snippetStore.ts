@@ -8,9 +8,11 @@ import type { Snippet, NewSnippet } from "./api";
 import { SnippetVersionConflictError } from "./occ";
 import { searchSnippets } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
-import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  cancelPendingTrash,
+  captureSnippetDeletion,
+} from "@/features/trash-bin/captureHooks";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { notifySnippetDeleted } from "./anchorNotify";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import {
@@ -426,7 +428,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       label: i18next.t("history.snippets.deleted"),
       entityId: captured.id,
       async undo() {
-        useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
+        cancelPendingTrash(trashTempId);
         await snippetApi.createSnippet({
           id: captured.id,
           projectId: captured.projectId,

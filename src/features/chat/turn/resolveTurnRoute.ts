@@ -25,6 +25,20 @@ import {
   type AiSettings,
 } from "../types";
 
+export {
+  createTurnControl,
+  createTurnCoordinator,
+  createTurnRequest,
+} from "./turnCoordinator";
+export type {
+  TurnControl,
+  TurnPhase,
+  TurnRequest,
+  TurnSurface,
+  TurnTransport,
+  TurnWorkspaceAuthority,
+} from "./turnCoordinator";
+
 export interface TurnRouteCandidate {
   model?: string | null;
   provider?: AiProvider | null;

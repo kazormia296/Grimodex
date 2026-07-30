@@ -132,6 +132,21 @@ describe("createNode interaction intent", () => {
     expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
   });
 
+  it("tags create, rename, and status history with the scene identity", async () => {
+    const created = await useTreeStore
+      .getState()
+      .createNode({ nodeType: "scene", parentId: null });
+
+    await useTreeStore.getState().updateNodeTitle(created.id, created.title);
+    await useTreeStore.getState().setStatus(created.id, "draft");
+
+    expect(useGlobalHistoryStore.getState().past).toEqual([
+      expect.objectContaining({ kind: "scenes", entityId: created.id }),
+      expect.objectContaining({ kind: "scenes", entityId: created.id }),
+      expect.objectContaining({ kind: "scenes", entityId: created.id }),
+    ]);
+  });
+
   it("suppresses history and pending rename for an implicit bootstrap scene", async () => {
     const created = await useTreeStore.getState().createNode({
       nodeType: "scene",

@@ -22,7 +22,6 @@ import {
   Type,
   Underline,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
@@ -33,6 +32,7 @@ import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext"
 import type { ToolbarActions } from "./Toolbar";
 import type { InlineAiCommand } from "./inlineAi/inlineAiTypes";
 import { BubbleAiMenu } from "./BubbleAiMenu";
+import { BubbleButton, Sep } from "./bubbleMenuPrimitives";
 
 const GAP = 8;
 const EDGE = 8;
@@ -103,50 +103,6 @@ export function computeBubblePosition(
   const max = vw - halfW - EDGE;
   const left = max < min ? vw / 2 : Math.min(Math.max(centerX, min), max);
   return { top, left, placeBelow };
-}
-
-export function BubbleButton({
-  testId,
-  label,
-  active,
-  onClick,
-  children,
-  phone = false,
-  disabled = false,
-}: {
-  testId: string;
-  label: string;
-  active?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-  phone?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      data-testid={testId}
-      aria-label={label}
-      title={label}
-      {...(active !== undefined ? { "aria-pressed": active } : {})}
-      // 押下でエディタの選択が外れない (= 直後のコマンドが選択へ効く) よう preventDefault。
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      className={cn(
-        "flex items-center justify-center rounded text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-        phone ? "min-h-11 min-w-11 px-2" : "h-7 min-w-[28px] px-1",
-        active && "bg-accent text-foreground",
-        disabled && "cursor-not-allowed opacity-50",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-export function Sep() {
-  return <div aria-hidden className="mx-0.5 h-4 w-px bg-border" />;
 }
 
 /**

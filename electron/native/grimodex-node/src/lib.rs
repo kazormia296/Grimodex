@@ -34,6 +34,11 @@ use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::agent_writes;
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
+use grimodex_db::chronicle::{self, SetParticipantsPayload};
+use grimodex_db::domain_writes::{
+    self, CodexRenameUndoPayload, CreateScanStagingProjectPayload, ReplaceAuthorshipLanePayload,
+    SetEntityTagsPayload, UndoTreePlanPayload,
+};
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
@@ -45,14 +50,21 @@ use grimodex_db::ime_export::{
     resolve_options_from_preferences, set_active_project, ImeExportOptions, ImeExportRequestGate,
     ImeExportRequestToken, ImeIntegrationMode,
 };
+use grimodex_db::lint_ignores::{self, CopyPayload, CreatePayload, MovePayload};
+use grimodex_db::lint_terms::{
+    self, InsertPayload as LintTermInsertPayload, UpdatePayload as LintTermUpdatePayload,
+};
+use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
     self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
     PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
-    PlotThreadPatch,
-    PlotThreadRestoreSnapshotPayload,
+    PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
+use grimodex_db::project_snapshots::{
+    self, ApplyProjectSnapshotRestorePayload, CreateProjectSnapshotPayload, RestoreScope,
+};
 use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
@@ -486,6 +498,291 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let rows = db.execute_batch_tx_renderer(&statements)?;
                 Ok(serde_json::to_string(&QueryResult { rows })?)
+            })
+        })
+        .await
+    }
+
+    /// Project-scoped lint diagnostic ignore-list commands. The renderer
+    /// receives a domain DTO instead of owning SQL strings or generic DB
+    /// parameters; all scene ownership checks happen in grimodex-db.
+    #[napi]
+    pub async fn lint_ignore_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::list_for_project(db, project_id)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_list_scene(
+        &self,
+        project_id: String,
+        scene_id: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::list_for_scene(db, project_id, scene_id)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::create(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_delete(&self, project_id: String, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| lint_ignores::delete(db, project_id, id))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_copy(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CopyPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::copy(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_ignore_move(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: MovePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_ignores::encode(lint_ignores::move_to_scene(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    /// Project-scoped term-dictionary commands. SQL and project ownership stay
+    /// in grimodex-db; the renderer only sends domain DTOs.
+    #[napi]
+    pub async fn lint_term_dictionary_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::list(db, project_id)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_insert(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: LintTermInsertPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::insert(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_update(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: LintTermUpdatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::update(db, payload)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_set_enabled(
+        &self,
+        project_id: String,
+        id: String,
+        enabled: bool,
+        updated_at: i64,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                lint_terms::encode(lint_terms::set_enabled(
+                    db, project_id, id, enabled, updated_at,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn lint_term_dictionary_delete(&self, project_id: String, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| lint_terms::delete(db, project_id, id)))
+            .await
+    }
+
+    /// Chronicle aggregate OCC reads and participant replacement. The latter
+    /// advances the event version and replaces participants in one DB tx.
+    #[napi]
+    pub async fn event_get_version(&self, project_id: String, event_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&chronicle::get_event_version(
+                    db, project_id, event_id,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn event_set_participants(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SetParticipantsPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&chronicle::set_event_participants(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    /// Renderer domain aggregates that previously crossed the preload
+    /// boundary as renderer-authored SQL batches.
+    #[napi]
+    pub async fn authorship_replace_lane(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ReplaceAuthorshipLanePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::replace_authorship_lane(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn entity_tags_set(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: SetEntityTagsPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| domain_writes::set_entity_tags(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_rename_undo(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CodexRenameUndoPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::undo_codex_rename(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn scan_staging_project_create(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreateScanStagingProjectPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                domain_writes::create_scan_staging_project(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn tree_plan_undo(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: UndoTreePlanPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| domain_writes::undo_tree_plan(db, payload))
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn map_write_bundle(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: MapWritePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| map_writes::apply_map_write(db, payload))
+        })
+        .await
+    }
+
+    /// Project snapshots are a typed aggregate: renderer computes the
+    /// dependency-safe row plan while shared Rust owns all SQL, project
+    /// ownership checks, and transaction boundaries.
+    #[napi]
+    pub async fn project_snapshot_create(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: CreateProjectSnapshotPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                project_snapshots::create_project_snapshot(db, payload)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn project_snapshot_restore_context(
+        &self,
+        project_id: String,
+        snapshot_id: String,
+        scopes: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let scopes: Vec<RestoreScope> = from_wire("scopes", scopes)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &project_snapshots::project_snapshot_restore_context(
+                        db,
+                        project_id,
+                        snapshot_id,
+                        scopes,
+                    )?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn project_snapshot_apply_restore(&self, payload: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ApplyProjectSnapshotRestorePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                project_snapshots::apply_project_snapshot_restore(db, payload)
             })
         })
         .await
@@ -2157,10 +2454,7 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn agent_chronicle_bulk_mutate(
-        &self,
-        payload: serde_json::Value,
-    ) -> Result<String> {
+    pub async fn agent_chronicle_bulk_mutate(&self, payload: serde_json::Value) -> Result<String> {
         agent_write_cmd(
             Arc::clone(&self.state),
             "payload",

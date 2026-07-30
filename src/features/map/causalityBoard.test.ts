@@ -1,15 +1,15 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-// invoke: db_execute_batch の statements を捕捉、それ以外(listBoards)は空 rows。
+// map aggregate payload を捕捉し、それ以外(listBoards)は空 rows を返す。
 const { mockInvoke, captured } = vi.hoisted(() => {
-  const captured: {
-    statements: Array<{ sql: string; params: unknown[]; method: string }>;
-  } = { statements: [] };
+  const captured: { payload: Record<string, unknown> | null } = {
+    payload: null,
+  };
   const mockInvoke = vi.fn(
-    async (cmd: string, args: { statements?: typeof captured.statements }) => {
-      if (cmd === "db_execute_batch") {
-        captured.statements = args.statements ?? [];
+    async (cmd: string, args: { payload?: Record<string, unknown> }) => {
+      if (cmd === "map_write_bundle") {
+        captured.payload = args.payload ?? null;
         return [];
       }
       return { rows: [] };
@@ -52,7 +52,7 @@ const ENGINE = { engine: new SyncForceLayoutEngine() };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  captured.statements = [];
+  captured.payload = null;
   listAnnotationsMock.mockResolvedValue({ annotations: [] });
   setScenes([]);
 });
@@ -70,13 +70,20 @@ describe("generateCausalityBoard", () => {
     expect(result.cycleCount).toBe(0);
     expect(result.boardId).toBeTruthy();
 
-    // board + positions + edges の statement が書き込まれた
-    expect(captured.statements.length).toBeGreaterThanOrEqual(3);
-    const allParams = captured.statements.flatMap((s) => s.params);
-    // scene ノードとして配置
-    expect(allParams).toContain("scene");
-    // 有向 edge
-    expect(allParams).toContain("forward");
+    expect(captured.payload).toMatchObject({
+      kind: "create-board",
+      projectId: "p1",
+      stickies: [],
+      frames: [],
+    });
+    const positions = captured.payload?.positions as Array<{
+      nodeRefType: string;
+    }>;
+    const edges = captured.payload?.edges as Array<{ direction: string }>;
+    expect(positions).toHaveLength(3);
+    expect(positions.every((row) => row.nodeRefType === "scene")).toBe(true);
+    expect(edges).toHaveLength(2);
+    expect(edges.every((row) => row.direction === "forward")).toBe(true);
   });
 
   it("解決可能な因果辺が無ければ boardId=null で board を作らない", async () => {
@@ -84,7 +91,7 @@ describe("generateCausalityBoard", () => {
     listAnnotationsMock.mockResolvedValue({ annotations: [] });
     const result = await generateCausalityBoard("p1", ENGINE);
     expect(result).toEqual({ boardId: null, edgeCount: 0, cycleCount: 0 });
-    expect(captured.statements).toEqual([]);
+    expect(captured.payload).toBeNull();
   });
 
   it("実在しないシーンを指す causality 辺は board に出ない", async () => {
@@ -102,7 +109,7 @@ describe("generateCausalityBoard", () => {
       annotations: [causalAnn("b", "a")],
     });
     await expect(generateCausalityBoard("p1", ENGINE)).rejects.toThrow();
-    expect(captured.statements).toEqual([]);
+    expect(captured.payload).toBeNull();
   });
 
   it("循環があれば cycleCount に反映する", async () => {

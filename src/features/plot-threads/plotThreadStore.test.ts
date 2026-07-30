@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const currentProject = { value: "p1" };
-vi.mock("@/features/project/projectStore", () => ({
+vi.mock("@/application/project/currentProjectAuthority", () => ({
   getCurrentProjectId: () => currentProject.value,
 }));
 vi.mock("@/features/timelapse/recorder", () => ({

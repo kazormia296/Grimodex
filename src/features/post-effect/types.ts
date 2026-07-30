@@ -375,3 +375,7 @@ export interface RunDetailResponse extends PostEffectRun {
   relations: PostEffectAnnotationRelation[];
   lens_data: SceneLensData[];
 }
+/** persist:false is used by automatic panel-follow without changing settings. */
+export interface LayerSetOptions {
+  persist?: boolean;
+}

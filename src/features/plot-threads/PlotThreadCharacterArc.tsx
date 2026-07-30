@@ -1,8 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { inArray } from "drizzle-orm";
-import { db } from "@/db/client";
-import { sceneCodexMentions } from "@/db/schema";
 import { usePlotThreadStore } from "./plotThreadStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -11,6 +8,7 @@ import {
   computeThreadCharacterArc,
   type ArcMentionRow,
 } from "./threadCharacterArc";
+import { listSceneCodexMentions } from "@/features/codex/sceneCodexPinsApi";
 
 const MAX_ROWS = 8;
 
@@ -41,15 +39,7 @@ export function PlotThreadCharacterArc({ threadId }: { threadId: string }) {
     }
     let cancelled = false;
     const handle = setTimeout(() => {
-      void db
-        .select({
-          sceneId: sceneCodexMentions.sceneId,
-          codexEntryId: sceneCodexMentions.codexEntryId,
-          source: sceneCodexMentions.source,
-          role: sceneCodexMentions.role,
-        })
-        .from(sceneCodexMentions)
-        .where(inArray(sceneCodexMentions.sceneId, threadNodeIds))
+      void listSceneCodexMentions(threadNodeIds)
         .then((rows) => {
           if (!cancelled) setMentions(rows as ArcMentionRow[]);
         })

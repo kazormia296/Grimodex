@@ -59,6 +59,7 @@ import {
   getSessionForProject,
   createSession,
   deleteSession,
+  getSessionTitleForMessage,
   listMessages,
   addMessage,
   updateSessionTitle,
@@ -96,6 +97,7 @@ function mockInsertChain(rows: Record<string, unknown>[]) {
 function mockSelectLimitChain(rows: Record<string, unknown>[]) {
   const chain = {
     from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     limit: vi.fn().mockResolvedValue(rows),
   };
@@ -416,6 +418,16 @@ describe("chatApi - session/message persistence", () => {
       await deleteSession("session-1");
 
       expect(mockDb.delete).toHaveBeenCalled();
+    });
+  });
+
+  describe("getSessionTitleForMessage", () => {
+    it("returns the owning session title through the typed query", async () => {
+      mockSelectLimitChain([{ title: "Source session" }]);
+
+      await expect(getSessionTitleForMessage("message-1")).resolves.toBe(
+        "Source session",
+      );
     });
   });
 

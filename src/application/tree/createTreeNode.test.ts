@@ -66,6 +66,10 @@ describe("createTreeNode", () => {
 
     expect(created.title).toBe("シーン 1");
     expect(testPorts.history).toHaveLength(1);
+    expect(testPorts.history[0]).toMatchObject({
+      kind: "scenes",
+      entityId: created.id,
+    });
     await testPorts.history[0]!.undo();
     expect(testPorts.closeTabs).toHaveBeenCalledWith(created.id);
     await testPorts.history[0]!.redo();

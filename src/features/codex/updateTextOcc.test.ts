@@ -10,9 +10,19 @@ vi.mock("./api", async (importOriginal) => {
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
 }));
-vi.mock("@/features/project/projectStore", () => ({
-  getCurrentProjectId: () => "proj-1",
-}));
+vi.mock(
+  "@/application/project/currentProjectAuthority",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/application/project/currentProjectAuthority")
+      >();
+    return {
+      ...actual,
+      getCurrentProjectId: () => "proj-1",
+    };
+  },
+);
 
 import { useCodexStore, setCodexEditConflictHandler } from "./codexStore";
 import { CodexVersionConflictError } from "./occ";

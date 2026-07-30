@@ -251,19 +251,25 @@ describe("applyAiTreePlan — orchestration", () => {
     expect(h.pushed).toBeDefined();
   });
 
-  it("undo runs cascade-safe statements and closes created tabs", async () => {
+  it("undo sends the typed restore snapshot and closes created tabs", async () => {
     setGroupNodes();
     await applyAiTreePlan(groupPlan, ctx());
     (invoke as Mock).mockClear();
     h.isReplaying = true;
     await h.pushed!.undo();
     expect(invoke).toHaveBeenCalledTimes(1);
-    const undoStmts = (invoke as Mock).mock.calls[0][1].statements as {
-      sql: string;
-    }[];
-    // first ops are restores (update), last is delete of the created folder
-    expect(sqlKind(undoStmts[0].sql)).toBe("update");
-    expect(sqlKind(undoStmts[undoStmts.length - 1].sql)).toBe("delete");
+    expect((invoke as Mock).mock.calls[0][0]).toBe("tree_plan_undo");
+    expect((invoke as Mock).mock.calls[0][1]).toMatchObject({
+      payload: {
+        projectId: "proj-1",
+        beforeStates: expect.arrayContaining([
+          expect.objectContaining({ id: "x1" }),
+          expect.objectContaining({ id: "x2" }),
+        ]),
+        createdIds: [expect.any(String)],
+        updatedAt: expect.any(String),
+      },
+    });
     expect(h.closeTab).toHaveBeenCalled();
   });
 
@@ -364,14 +370,14 @@ describe("applyAiTreePlan — orchestration", () => {
     h.isReplaying = true;
     (invoke as Mock).mockClear();
     await h.pushed!.undo();
-    const undoStmts = (invoke as Mock).mock.calls[0][1].statements as {
-      sql: string;
-      params: unknown[];
-    }[];
-    const restores = undoStmts.filter(
-      (s) => sqlKind(s.sql) === "update" && s.params.includes("x1"),
-    );
-    expect(restores.length).toBeGreaterThan(0);
+    expect((invoke as Mock).mock.calls[0][0]).toBe("tree_plan_undo");
+    expect((invoke as Mock).mock.calls[0][1].payload.beforeStates).toEqual([
+      expect.objectContaining({
+        id: "x1",
+        parentId: null,
+        title: "x1",
+      }),
+    ]);
   });
 
   it("rejects a mutual-afterRef plan (after_cycle) and writes nothing", async () => {

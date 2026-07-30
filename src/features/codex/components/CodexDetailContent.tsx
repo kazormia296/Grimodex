@@ -18,9 +18,6 @@ import { useRevisionStore } from "@/features/revision/revisionStore";
 import { createRevision, pruneRevisions } from "@/features/revision/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
-import { db } from "@/db/client";
-import { chatMessages, chatSessions } from "@/db/schema";
-import { eq } from "drizzle-orm";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexStore } from "../codexStore";
 import { parseAliases } from "../codexMatcher";
@@ -36,6 +33,7 @@ import { inferReadings } from "../codexYomi";
 import { prepareRenamePropagation } from "../rename/renameEngine";
 import { useRenamePropagationStore } from "../rename/renamePropagationStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getSessionTitleForMessage } from "@/features/chat/chatApi";
 import { getCodexEntry, type CodexEntry, type CodexEntryType } from "../api";
 import type { ChildrenBudgetPreset } from "../childrenBudget";
 import { listEntryTags } from "../tagApi";
@@ -463,13 +461,8 @@ export function CodexDetailContent({
       setSourceSessionTitle(null);
       return;
     }
-    db.select({ title: chatSessions.title })
-      .from(chatMessages)
-      .innerJoin(chatSessions, eq(chatMessages.sessionId, chatSessions.id))
-      .where(eq(chatMessages.id, entry.sourceChatMessageId))
-      .then((rows) => {
-        setSourceSessionTitle(rows[0]?.title ?? null);
-      })
+    getSessionTitleForMessage(entry.sourceChatMessageId)
+      .then(setSourceSessionTitle)
       .catch(() => setSourceSessionTitle(null));
   }, [entry.sourceChatMessageId]);
 

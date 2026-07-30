@@ -1148,6 +1148,7 @@ export function ContextBar({
               <div ref={pinContainerRef} className="relative">
                 <button
                   type="button"
+                  data-testid="context-pin-entry"
                   onClick={() => setPinOpen((v) => !v)}
                   disabled={spotlightDisabled}
                   className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
@@ -1159,6 +1160,7 @@ export function ContextBar({
                 <PinCodexDialog
                   open={pinOpen}
                   containerRef={pinContainerRef}
+                  anchorRef={pinContainerRef}
                   pinnedIds={pinnedCodexIds}
                   // スコープアンカーは <focus_subject> として固定注入されるため、
                   // 通常の永続 pin と混ぜず checked + disabled で表示する。

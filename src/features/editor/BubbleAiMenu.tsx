@@ -6,7 +6,7 @@ import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { getVisibleInlineAiCommands } from "./inlineAi/inlineAiCommands";
 import type { InlineAiCommand } from "./inlineAi/inlineAiTypes";
-import { Sep } from "./EditorBubbleMenu";
+import { Sep } from "./bubbleMenuPrimitives";
 
 interface BubbleAiMenuProps {
   onCommand: (cmd: InlineAiCommand) => void;

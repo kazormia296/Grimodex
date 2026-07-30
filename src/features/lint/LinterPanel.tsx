@@ -408,7 +408,7 @@ function CurrentLinterView() {
     async (d: Diagnostic) => {
       if (!currentSceneId) return;
       try {
-        await addIgnore(currentSceneId, d, sceneText);
+        await addIgnore(currentSceneId, d, sceneText, getCurrentProjectId());
         reapplyIgnores(currentSceneId);
       } catch (err) {
         console.error("addIgnore failed", err);
@@ -1037,7 +1037,12 @@ function ProjectLinterView() {
   const onIgnore = useCallback(
     async (scene: ScannedScene, d: Diagnostic) => {
       try {
-        await addIgnore(scene.sceneId, d, scene.sceneText);
+        await addIgnore(
+          scene.sceneId,
+          d,
+          scene.sceneText,
+          getCurrentProjectId(),
+        );
         // Re-apply the ignore filter against the *raw* store diagnostics,
         // not `scene.diagnostics` (which is the severity/query-filtered
         // closure snapshot). Writing the filtered-subset back would

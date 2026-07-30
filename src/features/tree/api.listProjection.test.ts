@@ -7,6 +7,7 @@ import {
   listAllNodes,
   listExpiredArchivedNodeIds,
   listNoteContents,
+  listProjectSceneDocuments,
   loadSceneContents,
   saveSceneContent,
   updateNode,
@@ -165,6 +166,23 @@ describe("listNoteContents", () => {
     expect(map.get("n1")).toBe(NOTE_DOC);
     expect(map.has("s1")).toBe(false);
     expect(map.has("f1")).toBe(false);
+  });
+});
+
+describe("listProjectSceneDocuments", () => {
+  it("returns scene identity, title, and content without notes or folders", async () => {
+    await insertNode({
+      id: "s1",
+      title: "Scene",
+      nodeType: "scene",
+      content: SCENE_DOC,
+    });
+    await insertNode({ id: "n1", nodeType: "note", content: NOTE_DOC });
+    await insertNode({ id: "f1", nodeType: "folder" });
+
+    await expect(listProjectSceneDocuments(PROJECT_ID)).resolves.toEqual([
+      { id: "s1", title: "Scene", content: SCENE_DOC },
+    ]);
   });
 });
 

@@ -1,9 +1,8 @@
-import { ensureTokenizer } from "../contextBuilder";
+import { buildSystemPrompt, ensureTokenizer } from "../contextBuilder";
 import {
   createContextPlannerDeps,
   type ContextPlannerDeps,
 } from "./contextPlannerDeps";
-import { renderLegacyPrompt } from "./legacyPromptAdapter";
 
 /**
  * Production composition root. Source adapters are supplied explicitly while
@@ -15,7 +14,7 @@ export function createDefaultContextPlannerDeps(
 ): ContextPlannerDeps {
   return createContextPlannerDeps({
     ensureTokenizer,
-    renderPrompt: renderLegacyPrompt,
+    renderPrompt: buildSystemPrompt,
     ...sources,
   });
 }

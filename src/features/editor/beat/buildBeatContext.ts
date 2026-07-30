@@ -9,7 +9,7 @@ import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { findBeatById } from "./insertBeatStream";
 import { extractBeatMentions } from "./extractBeatMentions";
 import { extractBeatTextFromNode } from "./listPlacedBeats";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import type { BeatType } from "./beatTypes";
 
 type TreeNode = ReturnType<typeof useTreeStore.getState>["nodes"][number];
 type CodexEntries = ReturnType<typeof useCodexStore.getState>["entries"];

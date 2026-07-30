@@ -1,2 +1,2 @@
 /** Fallback project ID when DB lookup fails during workspace bootstrap. */
-export const PROJECT_ID = "default-project";
+export { FALLBACK_PROJECT_ID as PROJECT_ID } from "@/application/project/currentProjectAuthority";

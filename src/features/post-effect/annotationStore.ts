@@ -1,11 +1,15 @@
 import { create } from "zustand";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-import type { PostEffectAnnotation, PostEffectStatus } from "./types";
+import {
+  readRuntimeSettingBoolean,
+  writeRuntimeSetting,
+} from "@/features/settings/runtimeSettings";
+import type {
+  LayerSetOptions,
+  PostEffectAnnotation,
+  PostEffectStatus,
+} from "./types";
 
-/** persist:false はパネル連動 (Auto) の自動追従用 — 設定を汚さない。 */
-export interface LayerSetOptions {
-  persist?: boolean;
-}
+export type { LayerSetOptions } from "./types";
 
 interface AnnotationState {
   /** Annotations for the currently open scene, keyed by sceneId */
@@ -65,7 +69,7 @@ export const useAnnotationStore = create<AnnotationState>()((set, get) => ({
 
   setShowAnnotations: (visible, opts) => {
     if (opts?.persist !== false) {
-      useSettingsStore.getState().set("display.layerReview", String(visible));
+      writeRuntimeSetting("display.layerReview", String(visible));
     }
     set({ showAnnotations: visible });
   },
@@ -74,9 +78,7 @@ export const useAnnotationStore = create<AnnotationState>()((set, get) => ({
 
   setShowReaderComments: (visible, opts) => {
     if (opts?.persist !== false) {
-      useSettingsStore
-        .getState()
-        .set("display.layerReaderComments", String(visible));
+      writeRuntimeSetting("display.layerReaderComments", String(visible));
     }
     set({ showReaderComments: visible });
   },
@@ -87,10 +89,12 @@ export const useAnnotationStore = create<AnnotationState>()((set, get) => ({
   setFocusedAnnotationId: (id) => set({ focusedAnnotationId: id }),
 
   initFromSettings: () => {
-    const s = useSettingsStore.getState();
     set({
-      showAnnotations: s.getBoolean("display.layerReview", true),
-      showReaderComments: s.getBoolean("display.layerReaderComments", true),
+      showAnnotations: readRuntimeSettingBoolean("display.layerReview", true),
+      showReaderComments: readRuntimeSettingBoolean(
+        "display.layerReaderComments",
+        true,
+      ),
     });
   },
 }));

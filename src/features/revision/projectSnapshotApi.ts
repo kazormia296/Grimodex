@@ -1,11 +1,7 @@
 import { db } from "@/db/client";
-import { invoke } from "@/lib/tauri";
 import {
   projectSnapshots,
   projectSnapshotEntries,
-  projectSnapshotTreeNodes,
-  projectSnapshotCodexEntries,
-  projectSnapshotSnippets,
   projectSnapshotAux,
   contentVersions,
   treeNodes,
@@ -23,21 +19,22 @@ import {
 } from "@/features/timelapse/toggle";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import {
-  AUX_SCOPES,
-  AUX_SCOPE_OWNER,
-  AUX_TABLE,
-  AUX_PROJECT_FILTER,
-  AUX_BODY_DEPENDENCY,
-  AUX_CODEX_DEPENDENCY,
   emptySkipReport,
   fullRestoreScopeSet,
   parseAuxPayload,
-  serializeAuxPayload,
   type AuxScope,
   type RawRow,
   type RestoreScope,
   type SkipReport,
 } from "./projectSnapshotScopes";
+import {
+  applyNativeProjectSnapshotRestore,
+  createNativeProjectSnapshot,
+  loadNativeProjectSnapshotRestoreContext,
+  type ProjectSnapshotRestoreContext,
+  type SnapshotInsertPlan,
+  type SnapshotRestoreTable,
+} from "./projectSnapshotNative";
 
 export interface ProjectSnapshotMeta {
   id: string;
@@ -57,74 +54,16 @@ export interface RestoreResult {
   skipped: SkipReport;
 }
 
-// ── raw SQL helpers ────────────────────────────────────────────────
-
-type SqlParam = string | number | null;
-
-interface BatchStmt {
-  sql: string;
-  params: SqlParam[];
-  method: string;
-}
-
-async function rawAll(
-  sqlText: string,
-  params: SqlParam[] = [],
-): Promise<RawRow[]> {
-  const res = await invoke<{ rows: RawRow[] }>("db_execute", {
-    sql: sqlText,
-    params,
-    method: "all",
-  });
-  return res.rows;
-}
-
-async function rawBatch(statements: BatchStmt[]): Promise<void> {
-  if (statements.length === 0) return;
-  await invoke("db_execute_batch", { statements });
-}
-
-function inPlaceholders(n: number): string {
-  return n === 0 ? "NULL" : Array(n).fill("?").join(", ");
-}
-
 /**
- * Build an INSERT statement from an object's keys. Use `mode='replace'` to
- * generate `INSERT OR REPLACE` (handy for legacy-content overwrite where
- * cascade is acceptable); default `mode='insert'` is plain INSERT.
- *
- * For tables where conflict is expected (re-running into pre-existing rows),
- * use `mode='ignore'`.
+ * Build a typed restore-plan insert. SQL generation and execution stay in the
+ * shared Rust snapshot domain; renderer only computes dependency-safe rows.
  */
 function buildInsert(
-  table: string,
-  row: Record<string, SqlParam>,
-  mode: "insert" | "ignore" | "replace" = "insert",
-): BatchStmt {
-  const keys = Object.keys(row);
-  const cols = keys.map((k) => `"${k}"`).join(", ");
-  const ph = keys.map(() => "?").join(", ");
-  const prefix =
-    mode === "ignore"
-      ? "INSERT OR IGNORE"
-      : mode === "replace"
-        ? "INSERT OR REPLACE"
-        : "INSERT";
-  return {
-    sql: `${prefix} INTO "${table}" (${cols}) VALUES (${ph})`,
-    params: keys.map((k) => row[k]),
-    method: "run",
-  };
-}
-
-/**
- * Convert a drizzle insert query's `.toSQL()` output into a db_execute_batch
- * statement (mirrors src/features/attribution/api.ts の toSQL 取り回し). The
- * snapshot tables are all TEXT/INTEGER columns, so `.toSQL()` only emits
- * string/number/null params — the `SqlParam[]` cast is a widening no-op.
- */
-function toBatchStmt(query: { sql: string; params: unknown[] }): BatchStmt {
-  return { sql: query.sql, params: query.params as SqlParam[], method: "run" };
+  table: SnapshotRestoreTable,
+  row: RawRow,
+  mode: "insert" | "replace" = "insert",
+): SnapshotInsertPlan {
+  return { table, row, mode };
 }
 
 // ── createProjectSnapshot ──────────────────────────────────────────
@@ -160,9 +99,9 @@ async function getOrCreateRevisionId(
  * Create a named project snapshot capturing the current state of every scope
  * (structural metadata + body content via content_versions pointer +
  * ancillary tables as aux JSON). The snapshot header row and every body row
- * (tree_nodes / codex / snippets / entries / aux) are written in a single
- * db_execute_batch transaction, so a mid-write failure rolls back the whole
- * snapshot instead of leaving an incomplete one behind as a restore candidate.
+ * (tree_nodes / codex / snippets / entries / aux) are written by the typed
+ * native snapshot repository in one transaction, so a mid-write failure rolls
+ * back the whole snapshot instead of leaving an incomplete restore candidate.
  * Body content is materialised into content_versions *before* the batch (via
  * getOrCreateRevisionId); those pointer rows are the only non-transactional
  * part, and any partial-failure leftovers there are harmless and prunable.
@@ -177,26 +116,6 @@ export async function createProjectSnapshot(params: {
   const snapshotId = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  // すべての書き込みを 1 バッチに積み、db_execute_batch(Rust 側 execute_batch_tx
-  // = 単一 lock 内 BEGIN..COMMIT)で原子的に実行する。ヘッダ行を先頭に置くことで
-  // 本体行 → ヘッダ の FK(snapshot_id)が同一トランザクション内で満たされ、途中
-  // 失敗なら全ロールバックされる（不完全スナップショットを復元候補に残さない）。
-  const statements: BatchStmt[] = [];
-  statements.push(
-    toBatchStmt(
-      db
-        .insert(projectSnapshots)
-        .values({
-          id: snapshotId,
-          projectId: PROJECT_ID,
-          name,
-          description: description ?? null,
-          createdAt: now,
-        })
-        .toSQL(),
-    ),
-  );
-
   // Capture tree_nodes (scenes / notes / folders).
   // Folders have empty content; getOrCreateRevisionId is skipped for them.
   const nodes = await db
@@ -204,7 +123,7 @@ export async function createProjectSnapshot(params: {
     .from(treeNodes)
     .where(eq(treeNodes.projectId, PROJECT_ID));
 
-  const treeNodeRows: (typeof projectSnapshotTreeNodes.$inferInsert)[] = [];
+  const treeNodeRows: RawRow[] = [];
   const versionIds: string[] = [];
   for (const node of nodes) {
     const isContentEntity =
@@ -219,40 +138,33 @@ export async function createProjectSnapshot(params: {
       if (bodyVersionId) versionIds.push(bodyVersionId);
     }
     treeNodeRows.push({
-      snapshotId,
-      nodeId: node.id,
-      parentId: node.parentId ?? null,
-      nodeType: node.nodeType,
+      snapshot_id: snapshotId,
+      node_id: node.id,
+      parent_id: node.parentId ?? null,
+      node_type: node.nodeType,
       title: node.title,
       synopsis: node.synopsis ?? null,
       intent: node.intent ?? null,
-      sortOrder: node.sortOrder,
-      storyTimeOrder: node.storyTimeOrder ?? null,
-      storyTimeLabel: node.storyTimeLabel ?? null,
-      povCharacterId: node.povCharacterId ?? null,
-      locationId: node.locationId ?? null,
+      sort_order: node.sortOrder,
+      story_time_order: node.storyTimeOrder ?? null,
+      story_time_label: node.storyTimeLabel ?? null,
+      pov_character_id: node.povCharacterId ?? null,
+      location_id: node.locationId ?? null,
       // Chronicle（作中暦日付）: events と同じ日付モデルをシーンにも保存。
-      chronicleStartTime: node.chronicleStartTime ?? null,
-      chronicleStartMinute: node.chronicleStartMinute ?? null,
-      chronicleStartGranularity: node.chronicleStartGranularity ?? "none",
-      chronicleEndTime: node.chronicleEndTime ?? null,
-      chronicleEndMinute: node.chronicleEndMinute ?? null,
-      chronicleEndGranularity: node.chronicleEndGranularity ?? "none",
-      chroniclePrecision: node.chroniclePrecision ?? "exact",
+      chronicle_start_time: node.chronicleStartTime ?? null,
+      chronicle_start_minute: node.chronicleStartMinute ?? null,
+      chronicle_start_granularity: node.chronicleStartGranularity ?? "none",
+      chronicle_end_time: node.chronicleEndTime ?? null,
+      chronicle_end_minute: node.chronicleEndMinute ?? null,
+      chronicle_end_granularity: node.chronicleEndGranularity ?? "none",
+      chronicle_precision: node.chroniclePrecision ?? "exact",
       status: node.status ?? null,
-      bodyVersionId,
-      unplacedBeatsDoc: node.unplacedBeatsDoc,
-      charCount: node.charCount,
-      createdAt: node.createdAt,
-      updatedAt: node.updatedAt,
+      body_version_id: bodyVersionId,
+      unplaced_beats_doc: node.unplacedBeatsDoc,
+      char_count: node.charCount,
+      created_at: node.createdAt,
+      updated_at: node.updatedAt,
     });
-  }
-  if (treeNodeRows.length > 0) {
-    statements.push(
-      toBatchStmt(
-        db.insert(projectSnapshotTreeNodes).values(treeNodeRows).toSQL(),
-      ),
-    );
   }
 
   // Capture codex_entries
@@ -261,7 +173,7 @@ export async function createProjectSnapshot(params: {
     .from(codexEntries)
     .where(eq(codexEntries.projectId, PROJECT_ID));
 
-  const codexSnapRows: (typeof projectSnapshotCodexEntries.$inferInsert)[] = [];
+  const codexSnapRows: RawRow[] = [];
   for (const entry of codexRows) {
     let bodyVersionId: string | null = null;
     if (entry.content && entry.content !== "{}") {
@@ -273,29 +185,22 @@ export async function createProjectSnapshot(params: {
       if (bodyVersionId) versionIds.push(bodyVersionId);
     }
     codexSnapRows.push({
-      snapshotId,
-      entryId: entry.id,
+      snapshot_id: snapshotId,
+      entry_id: entry.id,
       type: entry.type,
       name: entry.name,
-      parentId: entry.parentId ?? null,
+      parent_id: entry.parentId ?? null,
       aliases: entry.aliases ?? null,
-      excludedAliases: entry.excludedAliases ?? null,
+      excluded_aliases: entry.excludedAliases ?? null,
       summary: entry.summary ?? null,
       icon: entry.icon ?? null,
-      contextMode: entry.contextMode,
-      childrenBudget: entry.childrenBudget,
+      context_mode: entry.contextMode,
+      children_budget: entry.childrenBudget,
       notes: entry.notes ?? null,
-      bodyVersionId,
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt,
+      body_version_id: bodyVersionId,
+      created_at: entry.createdAt,
+      updated_at: entry.updatedAt,
     });
-  }
-  if (codexSnapRows.length > 0) {
-    statements.push(
-      toBatchStmt(
-        db.insert(projectSnapshotCodexEntries).values(codexSnapRows).toSQL(),
-      ),
-    );
   }
 
   // Capture snippets
@@ -304,7 +209,7 @@ export async function createProjectSnapshot(params: {
     .from(snippets)
     .where(eq(snippets.projectId, PROJECT_ID));
 
-  const snippetSnapRows: (typeof projectSnapshotSnippets.$inferInsert)[] = [];
+  const snippetSnapRows: RawRow[] = [];
   for (const snippet of snippetRows) {
     let bodyVersionId: string | null = null;
     if (snippet.content && snippet.content !== "{}") {
@@ -316,72 +221,28 @@ export async function createProjectSnapshot(params: {
       if (bodyVersionId) versionIds.push(bodyVersionId);
     }
     snippetSnapRows.push({
-      snapshotId,
-      snippetId: snippet.id,
+      snapshot_id: snapshotId,
+      snippet_id: snippet.id,
       title: snippet.title,
-      sceneId: snippet.sceneId ?? null,
-      sourceChatMessageId: snippet.sourceChatMessageId ?? null,
-      bodyVersionId,
-      createdAt: snippet.createdAt,
-      updatedAt: snippet.updatedAt,
+      scene_id: snippet.sceneId ?? null,
+      source_chat_message_id: snippet.sourceChatMessageId ?? null,
+      body_version_id: bodyVersionId,
+      created_at: snippet.createdAt,
+      updated_at: snippet.updatedAt,
     });
   }
-  if (snippetSnapRows.length > 0) {
-    statements.push(
-      toBatchStmt(
-        db.insert(projectSnapshotSnippets).values(snippetSnapRows).toSQL(),
-      ),
-    );
-  }
 
-  // Legacy mirror table: keep one row per body_version_id so older clients
-  // can still derive entryCount and the "content-only" restore path works.
-  if (versionIds.length > 0) {
-    statements.push(
-      toBatchStmt(
-        db
-          .insert(projectSnapshotEntries)
-          .values(versionIds.map((versionId) => ({ snapshotId, versionId })))
-          .toSQL(),
-      ),
-    );
-  }
-
-  // Aux scopes: one JSON row per aux scope, capturing the current project's
-  // rows of the source table verbatim. The per-scope WHERE predicate
-  // (AUX_PROJECT_FILTER) scopes the capture to PROJECT_ID, mirroring the set
-  // restore wipes — capturing other projects' rows would collide on restore's
-  // re-INSERT (their originals are never wiped). Some aux tables may not exist
-  // in the current DB (browser-mock omits tables it doesn't need) — treat
-  // those as empty payloads rather than failing the whole snapshot.
-  const auxInserts: (typeof projectSnapshotAux.$inferInsert)[] = [];
-  for (const scope of AUX_SCOPES) {
-    const table = AUX_TABLE[scope];
-    const filter = AUX_PROJECT_FILTER[scope];
-    let rows: RawRow[];
-    try {
-      rows = await rawAll(
-        `SELECT * FROM "${table}" WHERE ${filter.where}`,
-        Array(filter.binds).fill(PROJECT_ID),
-      );
-    } catch {
-      // table likely doesn't exist in this DB; record an empty payload so
-      // restore stays a no-op for this scope.
-      rows = [];
-    }
-    auxInserts.push({
-      snapshotId,
-      scope,
-      payloadJson: serializeAuxPayload({ rows }),
-    });
-  }
-  if (auxInserts.length > 0) {
-    statements.push(
-      toBatchStmt(db.insert(projectSnapshotAux).values(auxInserts).toSQL()),
-    );
-  }
-
-  await rawBatch(statements);
+  await createNativeProjectSnapshot({
+    projectId: PROJECT_ID,
+    snapshotId,
+    name,
+    description: description ?? null,
+    createdAt: now,
+    treeRows: treeNodeRows,
+    codexRows: codexSnapRows,
+    snippetRows: snippetSnapRows,
+    versionIds,
+  });
   return { id: snapshotId, entryCount: versionIds.length };
 }
 
@@ -503,266 +364,50 @@ async function restoreLegacyContentOnly(snapshotId: string): Promise<number> {
   return restored;
 }
 
-/**
- * Structural restore. Builds a single transactional batch of statements:
- *
- *  1. `PRAGMA defer_foreign_keys = ON` — checks run at COMMIT, so INSERT
- *     order across FK edges doesn't matter.
- *  2. Pre-NULL cross-scope CASCADE FKs whose target scope is being wiped
- *     but whose source scope is not (otherwise CASCADE silently deletes the
- *     source rows during wipe — e.g. wiping body cascade-deletes
- *     map_node_positions even when the map scope was excluded).
- *  3. Wipe selected scopes (DELETE on each top-level table; CASCADE handles
- *     owned children).
- *  4. Restore selected scopes by INSERTing every snapshot row, applying
- *     skip / NULL rules from `AUX_BODY_DEPENDENCY` / `AUX_CODEX_DEPENDENCY`
- *     for cross-scope references that the user excluded.
- *  5. COMMIT — defer_foreign_keys is automatically reset.
- */
+/** Build the dependency-safe insert plan; Rust owns wipe + transaction SQL. */
 async function restoreStructural(
   snapshotId: string,
   scopes: ReadonlySet<RestoreScope>,
+  context: ProjectSnapshotRestoreContext,
 ): Promise<{ restoredCount: number; skipped: SkipReport }> {
   const PROJECT_ID = getCurrentProjectId();
   const skipped = emptySkipReport();
-  const stmts: BatchStmt[] = [];
+  const inserts: SnapshotInsertPlan[] = [];
 
   // Live table set: snapshots may carry data for aux tables that don't
   // exist in this DB instance (e.g. browser-mock omits some). Filter any
-  // statement whose target table isn't present.
-  const liveTables = new Set<string>();
-  {
-    const rows = await rawAll(
-      `SELECT name FROM sqlite_master WHERE type = 'table'`,
-    );
-    for (const r of rows) {
-      if (typeof r.name === "string") liveTables.add(r.name);
-    }
-  }
-  function pushStmt(s: BatchStmt): void {
-    const m =
-      /(?:INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?\s+INTO|UPDATE|DELETE\s+FROM)\s+"?([a-zA-Z_][a-zA-Z0-9_]*)"?/i.exec(
-        s.sql,
-      );
-    if (m && !liveTables.has(m[1])) return;
-    stmts[stmts.length] = s;
+  // insert whose target table isn't present.
+  const liveTables = new Set(context.liveTables);
+  function pushStmt(insert: SnapshotInsertPlan): void {
+    if (!liveTables.has(insert.table)) return;
+    inserts.push(insert);
   }
 
-  // Pre-flight reads from snapshot tables
-  const treeRows = await rawAll(
-    `SELECT * FROM project_snapshot_tree_nodes WHERE snapshot_id = ?`,
-    [snapshotId],
-  );
-  const codexRows = await rawAll(
-    `SELECT * FROM project_snapshot_codex_entries WHERE snapshot_id = ?`,
-    [snapshotId],
-  );
-  const snippetRows = await rawAll(
-    `SELECT * FROM project_snapshot_snippets WHERE snapshot_id = ?`,
-    [snapshotId],
-  );
-  const auxRows = await rawAll(
-    `SELECT scope, payload_json FROM project_snapshot_aux WHERE snapshot_id = ?`,
-    [snapshotId],
-  );
+  const { treeRows, codexRows, snippetRows } = context;
   const auxByScope = new Map<AuxScope, RawRow[]>();
-  for (const r of auxRows) {
+  for (const r of context.auxRows) {
     const scope = r.scope as AuxScope;
-    const json = String(r.payload_json ?? "");
-    auxByScope.set(scope, parseAuxPayload(json).rows);
+    auxByScope.set(scope, parseAuxPayload(r.payloadJson).rows);
   }
 
-  // Resolve body content via content_versions
-  const bodyVersionIds = [
-    ...treeRows
-      .map((r) => r.body_version_id)
-      .filter((x): x is string => typeof x === "string"),
-    ...codexRows
-      .map((r) => r.body_version_id)
-      .filter((x): x is string => typeof x === "string"),
-    ...snippetRows
-      .map((r) => r.body_version_id)
-      .filter((x): x is string => typeof x === "string"),
-  ];
-  const contentById = new Map<string, string>();
-  if (bodyVersionIds.length > 0) {
-    const versions = await rawAll(
-      `SELECT id, content FROM content_versions WHERE id IN (${inPlaceholders(bodyVersionIds.length)})`,
-      bodyVersionIds,
-    );
-    for (const v of versions) {
-      if (typeof v.id === "string" && typeof v.content === "string") {
-        contentById.set(v.id, v.content);
-      }
-    }
-  }
+  const contentById = new Map(
+    context.contentRows.map((row) => [row.id, row.content]),
+  );
 
   // Live codex_entry ids that exist now — used when codex scope is not
   // selected to decide whether `pov_character_id` / `location_id` on
   // restored tree_nodes can keep their value or must be NULLed.
-  const liveCodexIds = new Set<string>();
-  if (!scopes.has("codex")) {
-    const liveCodex = await rawAll(
-      `SELECT id FROM codex_entries WHERE project_id = ?`,
-      [PROJECT_ID],
-    );
-    for (const r of liveCodex) {
-      if (typeof r.id === "string") liveCodexIds.add(r.id);
-    }
-  }
+  const liveCodexIds = new Set(context.liveCodexIds);
 
   // Live tree_node ids — used when body scope is not selected to decide
   // whether cross-scope FKs to tree_nodes can keep their value.
-  const liveTreeNodeIds = new Set<string>();
-  if (!scopes.has("body")) {
-    const live = await rawAll(
-      `SELECT id FROM tree_nodes WHERE project_id = ?`,
-      [PROJECT_ID],
-    );
-    for (const r of live) {
-      if (typeof r.id === "string") liveTreeNodeIds.add(r.id);
-    }
-  }
+  const liveTreeNodeIds = new Set(context.liveTreeNodeIds);
 
   // Live codex_tag ids — used by snippet_entry_tags / codex_entry_tags when
   // codex scope is not selected (the codex_tags row may have been removed
   // post-snapshot).
-  const liveCodexTagIds = new Set<string>();
-  if (!scopes.has("codex")) {
-    const live = await rawAll(`SELECT id FROM codex_tags`);
-    for (const r of live) {
-      if (typeof r.id === "string") liveCodexTagIds.add(r.id);
-    }
-  }
+  const liveCodexTagIds = new Set(context.liveCodexTagIds);
 
-  // ── 1. defer_foreign_keys ────────────────────────────────────
-  stmts.push({
-    sql: "PRAGMA defer_foreign_keys = ON",
-    params: [],
-    method: "run",
-  });
-
-  // ── 2. Pre-NULL cross-scope CASCADE FKs ─────────────────────
-  // map_node_positions has CASCADE on tree_node_id and codex_entry_id.
-  // If we wipe their target without rebuilding the map scope, the position
-  // rows would silently disappear.
-  if (scopes.has("body") && !scopes.has("map")) {
-    pushStmt({
-      sql: "UPDATE map_node_positions SET tree_node_id = NULL WHERE tree_node_id IS NOT NULL",
-      params: [],
-      method: "run",
-    });
-  }
-  if (scopes.has("codex") && !scopes.has("map")) {
-    pushStmt({
-      sql: "UPDATE map_node_positions SET codex_entry_id = NULL WHERE codex_entry_id IS NOT NULL",
-      params: [],
-      method: "run",
-    });
-  }
-
-  // ── 3. Wipe selected scopes ─────────────────────────────────
-  if (scopes.has("body")) {
-    pushStmt({
-      sql: "DELETE FROM tree_nodes WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-    // plot_threads FK projects (NOT tree_nodes), so the tree_nodes wipe does
-    // not clear them — and re-inserting captured threads would PK-collide.
-    // Explicitly wipe them here; this also cascades plot_thread_scene_links
-    // and plot_thread_branches (so the body-scope capture==wipe set holds).
-    pushStmt({
-      sql: "DELETE FROM plot_threads WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-    // Chronicle (作中年表): events / event_relations / project_calendar FK
-    // projects (NOT tree_nodes), so the tree_nodes wipe leaves them as orphans.
-    // Explicitly wipe them; deleting events cascades scene_events,
-    // event_participants and event_relations (so the body-scope capture==wipe
-    // set holds), and project_calendar is wiped on its own.
-    if (auxByScope.has("events")) {
-      pushStmt({
-        sql: "DELETE FROM events WHERE project_id = ?",
-        params: [PROJECT_ID],
-        method: "run",
-      });
-    }
-    if (auxByScope.has("project_calendar")) {
-      pushStmt({
-        sql: "DELETE FROM project_calendar WHERE project_id = ?",
-        params: [PROJECT_ID],
-        method: "run",
-      });
-    }
-  }
-  if (scopes.has("codex")) {
-    pushStmt({
-      sql: "DELETE FROM codex_entries WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-    pushStmt({
-      sql: "DELETE FROM codex_types WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-    pushStmt({
-      sql: "DELETE FROM codex_tags WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-    pushStmt({
-      sql: "DELETE FROM codex_detail_definitions WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-  }
-  if (scopes.has("snippet")) {
-    pushStmt({
-      sql: "DELETE FROM snippets WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-  }
-  if (scopes.has("map")) {
-    pushStmt({
-      sql: "DELETE FROM map_boards WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-  }
-  if (scopes.has("foreshadow")) {
-    pushStmt({
-      sql: "DELETE FROM foreshadows WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-  }
-  if (scopes.has("labels")) {
-    pushStmt({
-      sql: "DELETE FROM labels WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-  }
-  if (scopes.has("lint")) {
-    // Scene-scoped: only wipe this project's ignored diagnostics so a restore
-    // can't clobber other projects' lint state (mirrors the scoped capture).
-    pushStmt({
-      sql: "DELETE FROM lint_ignored_diagnostics WHERE scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?)",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-    pushStmt({
-      sql: "DELETE FROM lint_term_dictionary WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-  }
-
-  // ── 4. Restore inserts ──────────────────────────────────────
   let restoredCount = 0;
 
   // codex
@@ -1192,7 +837,12 @@ async function restoreStructural(
     }
   }
 
-  await rawBatch(stmts);
+  await applyNativeProjectSnapshotRestore({
+    projectId: PROJECT_ID,
+    snapshotId,
+    scopes: [...scopes],
+    inserts,
+  });
   return { restoredCount, skipped };
 }
 
@@ -1286,16 +936,15 @@ export async function restoreProjectSnapshot(
     name: `Before restore to '${snapshotName}' (${new Date().toISOString()})`,
   });
 
-  // 2. Detect format. New-format snapshots always write at least one row
-  // to project_snapshot_aux (one per aux scope, even when empty). Legacy
-  // snapshots have no aux rows. tree_nodes count alone misclassifies
-  // codex-only / snippet-only projects.
-  const structural = await rawAll(
-    `SELECT 1 FROM project_snapshot_aux WHERE snapshot_id = ? LIMIT 1`,
-    [snapshotId],
+  // 2. Load the project-scoped restore context through the typed native
+  // repository. The backend rejects snapshots owned by another project.
+  const context = await loadNativeProjectSnapshotRestoreContext(
+    getCurrentProjectId(),
+    snapshotId,
+    scopes,
   );
 
-  if (structural.length === 0) {
+  if (!context.structural) {
     const restoredCount = await restoreLegacyContentOnly(snapshotId);
     await recordRestoreAndRebaseline(
       snapshotId,
@@ -1314,6 +963,7 @@ export async function restoreProjectSnapshot(
   const { restoredCount, skipped } = await restoreStructural(
     snapshotId,
     scopes,
+    context,
   );
   if (scopes.has("codex")) {
     scheduleImeExportRefresh(getCurrentProjectId());
@@ -1324,12 +974,6 @@ export async function restoreProjectSnapshot(
     restoredCount,
     scopes,
   );
-  // Silence: AUX_SCOPE_OWNER / AUX_BODY_DEPENDENCY / AUX_CODEX_DEPENDENCY
-  // are exported for tests and future tooling. Reference them here so an
-  // unused-import lint doesn't trip during incremental development.
-  void AUX_SCOPE_OWNER;
-  void AUX_BODY_DEPENDENCY;
-  void AUX_CODEX_DEPENDENCY;
   return {
     restoredCount,
     safetySnapshotId: safety.id,

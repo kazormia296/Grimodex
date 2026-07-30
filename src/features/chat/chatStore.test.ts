@@ -12,6 +12,8 @@ import { setCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 import type { AiModel } from "./types";
 import { toast } from "sonner";
+import { registerChatContextPreparation } from "@/application/chat/chatContextPreparation";
+import { chatContextPreparationComposition } from "@/application/composition/chatContextPreparationComposition";
 
 vi.mock("sonner", () => ({
   toast: {
@@ -275,6 +277,8 @@ const mockCountTokens = vi.mocked(contextBuilder.countTokens);
 const mockRecordAiUsage = vi.mocked(recordAiUsage);
 const mockGetProject = vi.mocked(projectApi.getProject);
 
+registerChatContextPreparation(chatContextPreparationComposition);
+
 /**
  * Helper: set up sendChatMessageStream mock to immediately call onTextDelta + onDone.
  */
@@ -335,15 +339,12 @@ function resetStore() {
     contextModel: null,
     contextProvider: null,
     contextPlan: null,
-    // スコープ/プロンプトキーはテスト間で漏れると stale 判定や copy 経路の
-    // 分岐が前のテストの構成で動いてしまうため必ず初期化する
     chatScope: "scene",
     scopeAnchorId: null,
     scopeAnchor: null,
     includeBodies: true,
     includeMapBoard: false,
     mapBoardId: null,
-    lastSystemPromptKey: null,
     // prefix cache バッジ系も毎テスト初期化する。これらは resetStore で戻さないと
     // sendMessage 冒頭のモデル一致判定が前テストの残留値で分岐し、後続テストへ
     // 漏れる (cache badge テスト群の afterEach だけに依存させない)。
@@ -1546,6 +1547,51 @@ describe("useChatStore", () => {
   });
 
   describe("createLinkedSession", () => {
+    it("creates a linked session, selects it, and publishes the reference message", async () => {
+      const linkedSession = {
+        ...session2,
+        title: `Linked: ${session1.title}`,
+      };
+      const linkMessage: ChatMessage = {
+        id: "linked-reference",
+        sessionId: linkedSession.id,
+        role: "system",
+        content: "linked reference",
+        createdAt: "2025-01-01T00:02:00Z",
+      };
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+      });
+      mockCreateSession.mockResolvedValueOnce(linkedSession);
+      mockAddMessage.mockResolvedValueOnce(linkMessage);
+
+      await useChatStore.getState().createLinkedSession();
+
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        "proj-1",
+        `Linked: ${session1.title}`,
+        "scene-1",
+        undefined,
+        undefined,
+      );
+      expect(mockAddMessage).toHaveBeenCalledWith(
+        linkedSession.id,
+        "system",
+        expect.stringContaining(session1.title),
+      );
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [linkedSession, session1],
+        activeSessionId: linkedSession.id,
+        messages: [linkMessage],
+        summaryCount: 0,
+        maxSummaryGeneration: 0,
+        sessionStableCodexIds: [],
+        sessionStableContextInitialized: false,
+      });
+    });
+
     it("does not replace the active session while a turn is streaming", async () => {
       useChatStore.setState({
         sessions: [session1],
@@ -2477,6 +2523,33 @@ describe("useChatStore", () => {
       expect(call?.[7] ?? null).toBeNull();
 
       useAiSettingsStore.setState({ settings: null, chatModelOverride: null });
+    });
+
+    it("publishes non-Ollama placeholders synchronously before tokenizer initialization", async () => {
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      mockStreamResponse("ok");
+
+      const send = useChatStore.getState().sendMessage("テスト");
+      const published = useChatStore.getState();
+
+      expect(published.isStreaming).toBe(true);
+      expect(published.messages).toHaveLength(2);
+      expect(published.messages.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+      ]);
+      expect(published.streamingDraft).toEqual({
+        messageId: published.messages[1].id,
+        content: "",
+      });
+
+      releaseTokenizer();
+      await send;
     });
 
     it("coalesces multiple text deltas into the final assistant content without dropping the tail", async () => {
@@ -4631,9 +4704,7 @@ describe("useChatStore", () => {
       expect(passedMessages[0].role).toBe("user");
     });
 
-    // B2 回帰ガード: スコープ切替直後の即送信は、前のスコープ構成で組まれた
-    // lastSystemPrompt（stale）を流用せず、同期的に再構築してから送る。
-    it("sendMessage rebuilds when lastSystemPrompt was built for a different scope", async () => {
+    it("sendMessage rebuilds instead of reusing a prompt from another scope", async () => {
       useChatStore.setState({
         activeSceneId: "",
         activeProjectId: "proj-1",
@@ -4641,13 +4712,6 @@ describe("useChatStore", () => {
         chatScope: "project",
         scopeAnchorId: null,
         lastSystemPrompt: "OLD PROMPT (scene scope)",
-        lastSystemPromptKey: contextPromptKey({
-          chatScope: "scene",
-          scopeAnchorId: null,
-          activeSceneId: "old-scene",
-          activeSessionId: "session-1",
-          threadFocusOverride: null,
-        }),
         includeMapBoard: false,
         mapBoardId: null,
       });
@@ -4665,7 +4729,7 @@ describe("useChatStore", () => {
       expect(passedMessages[0].content).toBe("NEW PROMPT (project scope)");
     });
 
-    it("sendMessage rebuilds even when the UI prompt key still matches", async () => {
+    it("sendMessage always rebuilds even when the UI prompt is populated", async () => {
       useChatStore.setState({
         activeSceneId: "",
         activeProjectId: "proj-1",
@@ -4675,9 +4739,6 @@ describe("useChatStore", () => {
         lastSystemPrompt: "CURRENT PROMPT",
         includeMapBoard: false,
         mapBoardId: null,
-      });
-      useChatStore.setState({
-        lastSystemPromptKey: contextPromptKey(useChatStore.getState()),
       });
       mockBuildSystemPrompt.mockReturnValueOnce({
         prompt: "FRESH TURN PROMPT",
@@ -4860,14 +4921,12 @@ describe("useChatStore", () => {
         chatScope: "project",
         scopeAnchorId: null,
         lastSystemPrompt: "STALE OTHER PROJECT PROMPT",
-        lastSystemPromptKey: "stale-key",
       });
 
       await useChatStore.getState().sendMessage("テスト");
 
       expect(mockSendChatMessageStream).not.toHaveBeenCalled();
       expect(useChatStore.getState().lastSystemPrompt).toBe("");
-      expect(useChatStore.getState().lastSystemPromptKey).toBeNull();
     });
 
     it("buildPromptForCopy rebuilds instead of reading lastSystemPrompt", async () => {
@@ -6099,8 +6158,7 @@ describe("useChatStore", () => {
 
       await useChatStore.getState().refreshContextLayers();
 
-      // fetchSceneContext は呼ばれるが、buildSceneContextPrompt 内で sceneCtx.content
-      // を空にしてから buildSystemPrompt に渡される ⇒ scene.content === ""
+      // composition は scene を取得し、planner が eco 指定に従って本文を空にする。
       const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
       expect(args?.scene.content).toBe("");
       // 一方 synopsis は残り、scene.title も残る
@@ -6434,8 +6492,7 @@ describe("useChatStore", () => {
       const preview = await useChatStore.getState().buildPreviewPrompt();
       const copy = await useChatStore.getState().buildPromptForCopy("共通入力");
 
-      // 両経路とも buildOutgoingScenePrompt 経由で buildSystemPrompt に到達する
-      // (どちらかが早期 return すると 2 にならない)
+      // 両経路とも同じ application preparation port から planner に到達する。
       expect(mockBuildSystemPrompt).toHaveBeenCalledTimes(2);
       // 両経路とも同一 system prompt を返す
       expect(preview.prompt).toBe("UNIFIED SYS");

@@ -12,6 +12,7 @@ const {
   mockAgentCreateSnippet,
   mockAgentCreateEvent,
   mockProjectId,
+  mockDbRows,
 } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
   mockListOpenForeshadows: vi.fn(),
@@ -23,6 +24,7 @@ const {
   mockAgentCreateSnippet: vi.fn(),
   mockAgentCreateEvent: vi.fn(),
   mockProjectId: vi.fn<() => string>(),
+  mockDbRows: vi.fn<() => unknown[]>(),
 }));
 
 vi.mock("@/features/agent-writes/codex", () => ({
@@ -69,9 +71,18 @@ vi.mock("@/features/project/projectStore", () => ({
 vi.mock("@/db/client", () => {
   const chain = {
     select: vi.fn().mockReturnThis(),
+    selectDistinct: vi.fn().mockReturnThis(),
     from: vi.fn().mockReturnThis(),
     innerJoin: vi.fn().mockReturnThis(),
-    where: vi.fn().mockResolvedValue([]),
+    leftJoin: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    groupBy: vi.fn().mockReturnThis(),
+    orderBy: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
+    then: (
+      resolve: (value: unknown[]) => unknown,
+      reject: (reason: unknown) => unknown,
+    ) => Promise.resolve(mockDbRows()).then(resolve, reject),
   };
   return { db: chain };
 });
@@ -104,6 +115,8 @@ import {
 
 beforeEach(() => {
   mockProjectId.mockReturnValue("project-1");
+  mockDbRows.mockReset();
+  mockDbRows.mockReturnValue([]);
 });
 
 // ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
@@ -599,11 +612,10 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
     });
 
   it("search_scenes (FTS path) returns a plain-text excerpt, not raw ProseMirror JSON", async () => {
-    mockInvoke.mockResolvedValue({
-      rows: [
-        { id: "s1", title: "T", content: pmDoc("ドラゴンが火を吹いた。") },
-      ],
-    });
+    mockInvoke.mockResolvedValue([{ sourceType: "scene", id: "s1" }]);
+    mockDbRows.mockReturnValue([
+      { id: "s1", title: "T", content: pmDoc("ドラゴンが火を吹いた。") },
+    ]);
     const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
     const [row] = res.content as Array<{ excerpt: string }>;
     expect(row.excerpt).toBe("ドラゴンが火を吹いた。");
@@ -611,9 +623,9 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
   });
 
   it("search_scenes (LIKE fallback) also plain-texts the excerpt", async () => {
-    mockInvoke.mockResolvedValue({
-      rows: [{ id: "s1", title: "T", content: pmDoc("火を吹いた。") }],
-    });
+    mockDbRows.mockReturnValue([
+      { id: "s1", title: "T", content: pmDoc("火を吹いた。") },
+    ]);
     const res = await executeTool("search_scenes", "c", { query: "火" });
     const [row] = res.content as Array<{ excerpt: string }>;
     expect(row.excerpt).toBe("火を吹いた。");
@@ -621,9 +633,10 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
 
   it("search_scenes centers the excerpt around the first matched token", async () => {
     const long = "あ".repeat(300) + "ドラゴン" + "い".repeat(300);
-    mockInvoke.mockResolvedValue({
-      rows: [{ id: "s1", title: "T", content: pmDoc(long) }],
-    });
+    mockInvoke.mockResolvedValue([{ sourceType: "scene", id: "s1" }]);
+    mockDbRows.mockReturnValue([
+      { id: "s1", title: "T", content: pmDoc(long) },
+    ]);
     const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
     const [row] = res.content as Array<{ excerpt: string }>;
     expect(row.excerpt).toContain("ドラゴン");
@@ -633,28 +646,26 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
   });
 
   it("search_scenes tolerates NULL content", async () => {
-    mockInvoke.mockResolvedValue({
-      rows: [{ id: "s1", title: "T", content: null }],
-    });
+    mockInvoke.mockResolvedValue([{ sourceType: "scene", id: "s1" }]);
+    mockDbRows.mockReturnValue([{ id: "s1", title: "T", content: null }]);
     const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
     const [row] = res.content as Array<{ excerpt: string }>;
     expect(row.excerpt).toBe("");
   });
 
   it("search_snippets returns tag names (string[]) and a plain-text preview", async () => {
-    mockInvoke.mockResolvedValue({
-      rows: [
-        {
-          id: "n1",
-          title: "雨",
-          tags_cache: JSON.stringify([
-            { name: "伏線", color: "#fff" },
-            { name: "終盤", color: null },
-          ]),
-          content: pmDoc("雨の描写。"),
-        },
-      ],
-    });
+    mockInvoke.mockResolvedValue([{ sourceType: "snippet", id: "n1" }]);
+    mockDbRows.mockReturnValue([
+      {
+        id: "n1",
+        title: "雨",
+        tagsCache: JSON.stringify([
+          { name: "伏線", color: "#fff" },
+          { name: "終盤", color: null },
+        ]),
+        content: pmDoc("雨の描写。"),
+      },
+    ]);
     const res = await executeTool("search_snippets", "c", {
       query: "雨の描写",
     });
@@ -666,20 +677,16 @@ describe("search result shaping — plain-text excerpts & tag names", () => {
 });
 
 // ── project スコープ不変条件 (security audit XPROJ-1) ─────────────────────────
-// agent の read ツールはアクティブプロジェクトに限定されなければならない
-// (単一 grimodex.db に複数プロジェクトが同居するため、述語が欠けると別プロジェクト
-// の本文/設定資料/スニペットが漏れる)。raw-SQL 経路は SQL に project_id 述語と
-// 束縛パラメータが入ることを assert し、全 read ツールは projectId 未設定時に
-// fail-closed (DB を引かず "No active project") であることを assert する。
-// いずれかのツールから述語を外すと当該テストが落ちる差分検証。
+// agent の read ツールはアクティブプロジェクトに限定されなければならない。
+// FTS は typed command の projectId を assert し、全 read ツールは projectId
+// 未設定時に fail-closed (DBを引かず "No active project") を守る。
 describe("project scoping — agent read tools (XPROJ-1)", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
     mockTreeProjectId.mockReset();
   });
 
-  // db_execute (raw SQL) に直接到達し、先行する Drizzle ゲートを持たないツール。
-  const RAW_SQL_TOOLS = [
+  const PROJECT_SCOPED_TOOLS = [
     { tool: "search_codex", params: { query: "ドラゴン" } },
     { tool: "search_scenes", params: { query: "ドラゴン" } },
     { tool: "search_snippets", params: { query: "ドラゴン" } },
@@ -687,31 +694,28 @@ describe("project scoping — agent read tools (XPROJ-1)", () => {
     { tool: "list_codex_tags", params: {} },
   ];
 
-  it.each(RAW_SQL_TOOLS)(
-    "$tool binds the active project_id into its SQL",
+  it.each(PROJECT_SCOPED_TOOLS)(
+    "$tool uses typed FTS/Drizzle without the generic DB bridge",
     async ({ tool, params }) => {
       mockTreeProjectId.mockReturnValue("proj-A");
-      mockInvoke.mockResolvedValue({ rows: [] });
+      mockInvoke.mockResolvedValue([]);
 
       const res = await executeTool(tool, "c", params);
       expect(res.error).toBeUndefined();
 
-      const dbExecCalls = mockInvoke.mock.calls.filter(
-        (c) => c[0] === "db_execute",
-      );
-      expect(dbExecCalls.length).toBeGreaterThan(0);
-      const call = dbExecCalls[dbExecCalls.length - 1][1] as {
-        sql: string;
-        params: unknown[];
-      };
-      expect(call.sql).toContain("project_id");
-      expect(call.params).toContain("proj-A");
+      expect(
+        mockInvoke.mock.calls.some((call) => call[0] === "db_execute"),
+      ).toBe(false);
+      for (const [, args] of mockInvoke.mock.calls.filter(
+        (call) => call[0] === "fts_search",
+      )) {
+        expect(args).toMatchObject({ projectId: "proj-A" });
+      }
     },
   );
 
-  // raw-SQL + Drizzle 両系統の全 read ツール。projectId 未設定で必ず fail-closed。
   const ALL_READ_TOOLS = [
-    ...RAW_SQL_TOOLS,
+    ...PROJECT_SCOPED_TOOLS,
     { tool: "find_related_entries", params: { id: "e1" } },
     { tool: "list_codex_by_type", params: { type: "character" } },
     { tool: "list_chapters", params: {} },
@@ -728,15 +732,13 @@ describe("project scoping — agent read tools (XPROJ-1)", () => {
     "$tool fails closed (no DB query) when no project is active",
     async ({ tool, params }) => {
       mockTreeProjectId.mockReturnValue(null);
-      mockInvoke.mockResolvedValue({ rows: [] });
+      mockInvoke.mockResolvedValue([]);
 
       const res = await executeTool(tool, "c", params);
       expect(res.error).toBeUndefined();
       expect(res.summary).toContain("No active project");
-      const dbExecCalls = mockInvoke.mock.calls.filter(
-        (c) => c[0] === "db_execute",
-      );
-      expect(dbExecCalls.length).toBe(0);
+      expect(mockInvoke).not.toHaveBeenCalled();
+      expect(mockDbRows).not.toHaveBeenCalled();
     },
   );
 
@@ -770,6 +772,14 @@ describe("search_codex hybrid fusion (段階3)", () => {
   });
 
   it("fuses dense and sparse results", async () => {
+    mockDbRows.mockReturnValue([
+      {
+        id: "e-sparse",
+        name: "SparseHit",
+        type: "location",
+        summary: "s",
+      },
+    ]);
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "codex_semantic_search") {
         return Promise.resolve([
@@ -782,19 +792,10 @@ describe("search_codex hybrid fusion (段階3)", () => {
           },
         ]);
       }
-      if (cmd === "db_execute") {
-        return Promise.resolve({
-          rows: [
-            {
-              id: "e-sparse",
-              name: "SparseHit",
-              type: "location",
-              summary: "s",
-            },
-          ],
-        });
+      if (cmd === "fts_search") {
+        return Promise.resolve([{ sourceType: "codex", id: "e-sparse" }]);
       }
-      return Promise.resolve({ rows: [] });
+      return Promise.resolve([]);
     });
 
     const res = await executeTool("search_codex", "c", {
@@ -810,23 +811,22 @@ describe("search_codex hybrid fusion (段階3)", () => {
   });
 
   it("falls back to sparse-only when dense search rejects", async () => {
+    mockDbRows.mockReturnValue([
+      {
+        id: "e-sparse",
+        name: "SparseHit",
+        type: "location",
+        summary: "s",
+      },
+    ]);
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "codex_semantic_search") {
         return Promise.reject(new Error("semantic-embedding disabled"));
       }
-      if (cmd === "db_execute") {
-        return Promise.resolve({
-          rows: [
-            {
-              id: "e-sparse",
-              name: "SparseHit",
-              type: "location",
-              summary: "s",
-            },
-          ],
-        });
+      if (cmd === "fts_search") {
+        return Promise.resolve([{ sourceType: "codex", id: "e-sparse" }]);
       }
-      return Promise.resolve({ rows: [] });
+      return Promise.resolve([]);
     });
 
     const res = await executeTool("search_codex", "c", {
