@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -72,7 +73,7 @@ test("CI has a dedicated product-journeys gate with native Electron and SQLite",
   );
 });
 
-test("CI plans shadow product journeys for PR and master before dependency setup and schedules nightly all", async () => {
+test("CI exposes only all/shadow manually, plans shadow for PR and master before setup, and schedules nightly all", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const input = workflow.on.workflow_call.inputs.product_journey_mode;
   const manualInput = workflow.on.workflow_dispatch.inputs.product_journey_mode;
@@ -98,7 +99,7 @@ test("CI plans shadow product journeys for PR and master before dependency setup
     required: true,
     type: "choice",
     default: "all",
-    options: ["all", "affected", "shadow"],
+    options: ["all", "shadow"],
   });
   assert.deepEqual(workflow.on.schedule, [{ cron: "17 18 * * *" }]);
   assert.ok(checkoutIndex >= 0, "product journey checkout is required");
@@ -308,6 +309,7 @@ test("product journey harness retains the renderer screenshot before close", asy
   );
   let pageClosed = false;
   const events = [];
+  const mainStderr = new EventEmitter();
   const page = {
     isClosed: () => pageClosed,
     on: () => undefined,
@@ -319,7 +321,7 @@ test("product journey harness retains the renderer screenshot before close", asy
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: null }),
+    process: () => ({ stdout: null, stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -331,16 +333,17 @@ test("product journey harness retains the renderer screenshot before close", asy
     mainProcessNoiseAllowlist: [
       {
         id: "test-main-noise-only",
-        phases: ["project-switch"],
+        phases: ["editor-persistence/write"],
         reason:
           "Proves a main-only allowance never suppresses renderer errors.",
-        expiresOn: "2026-08-31",
+        expiresOn: "2099-12-31",
         pattern: /lifecycle read failed/,
       },
     ],
     closeApp: async () => {
       events.push("close");
       pageClosed = true;
+      mainStderr.emit("end");
     },
   });
   t.after(async () => {
@@ -349,6 +352,7 @@ test("product journey harness retains the renderer screenshot before close", asy
   });
 
   const launched = await harness.launch("editor-persistence/write");
+  mainStderr.emit("data", "Error: lifecycle read failed\n");
   harness.recordTimeline("test-authority", { workspace: "workspace-a" });
   await harness.close(launched.app, launched.page, "editor-persistence/write");
   await harness.dispose({
@@ -393,7 +397,7 @@ test("product journey harness retains the renderer screenshot before close", asy
       ),
       "utf8",
     ),
-    "",
+    "  [product:editor-persistence/write:main] Error: lifecycle read failed\n",
   );
   assert.equal(
     await readFile(
@@ -424,18 +428,60 @@ test("product journey harness retains the renderer screenshot before close", asy
     {
       rendererErrorCount: rendererDiagnostics.rendererErrorCount,
       pageErrors: rendererDiagnostics.pageErrors,
+      mainErrorCount: rendererDiagnostics.mainErrorCount,
+      unallowedMainErrors: rendererDiagnostics.unallowedMainErrors,
+      mainCleanPass: rendererDiagnostics.mainCleanPass,
       cleanPass: rendererDiagnostics.cleanPass,
     },
     {
       rendererErrorCount: 0,
       pageErrors: [],
+      mainErrorCount: 1,
+      unallowedMainErrors: [],
+      mainCleanPass: true,
       cleanPass: true,
     },
+  );
+  const mainDiagnostics = JSON.parse(
+    await readFile(
+      path.join(
+        artifactRoot,
+        "editor-persistence",
+        "runtime",
+        "diagnostics",
+        "main-diagnostics.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(
+    mainDiagnostics.map(({ phase, message, classification, allowance }) => ({
+      phase,
+      message,
+      classification,
+      allowance,
+    })),
+    [
+      {
+        phase: "editor-persistence/write",
+        message: "Error: lifecycle read failed\n",
+        classification: "error",
+        allowance: {
+          id: "test-main-noise-only",
+          phases: ["editor-persistence/write"],
+          reason:
+            "Proves a main-only allowance never suppresses renderer errors.",
+          expiresOn: "2099-12-31",
+          pattern: "/lifecycle read failed/",
+        },
+      },
+    ],
   );
 });
 
 test("product journey harness keeps warnings diagnostic but fails closed on close-time renderer errors", async (t) => {
   const listeners = new Map();
+  const mainStderr = new EventEmitter();
   const page = {
     isClosed: () => false,
     on: (event, listener) => {
@@ -446,7 +492,7 @@ test("product journey harness keeps warnings diagnostic but fails closed on clos
   };
   const app = {
     firstWindow: async () => page,
-    process: () => ({ stdout: null, stderr: null }),
+    process: () => ({ stdout: null, stderr: mainStderr }),
   };
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
@@ -454,7 +500,17 @@ test("product journey harness keeps warnings diagnostic but fails closed on clos
     electronLauncher: {
       launch: async () => app,
     },
+    mainProcessNoiseAllowlist: [
+      {
+        id: "renderer-is-never-allowlisted",
+        phases: ["project-switch"],
+        reason: "This allowance applies only to matching main stderr.",
+        expiresOn: "2099-12-31",
+        pattern: /lifecycle read failed/,
+      },
+    ],
     closeApp: async () => {
+      mainStderr.emit("end");
       setImmediate(() => {
         listeners.get("console")?.({
           type: () => "error",
@@ -478,6 +534,7 @@ test("product journey harness keeps warnings diagnostic but fails closed on clos
   t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
 
   const launched = await harness.launch("project-switch");
+  mainStderr.emit("data", "Error: lifecycle read failed\n");
   listeners.get("console")?.({
     type: () => "warning",
     text: () => "optional renderer warning",
@@ -501,6 +558,9 @@ test("product journey harness keeps warnings diagnostic but fails closed on clos
         stack: "Error: lifecycle read failed\n    at MessageBadge",
       },
     ],
+    mainErrorCount: 1,
+    unallowedMainErrors: [],
+    mainCleanPass: true,
     cleanPass: false,
   });
 });
@@ -540,9 +600,274 @@ test("product journey harness reports a clean pass when renderer output contains
   assert.deepEqual(await harness.finalizeDiagnostics(), {
     rendererErrorCount: 0,
     pageErrors: [],
+    mainErrorCount: 0,
+    unallowedMainErrors: [],
+    mainCleanPass: true,
     cleanPass: true,
   });
   await harness.dispose({ success: true, name: "warning-only" });
+});
+
+test("product journey harness fails closed on unallowed error-class main stderr", async (t) => {
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    mainProcessNoiseAllowlist: [
+      {
+        id: "known-current-phase",
+        phases: ["main-gate"],
+        reason: "Known bounded shutdown error in this exact phase.",
+        expiresOn: "2099-12-31",
+        pattern: /known shutdown error/,
+      },
+      {
+        id: "wrong-phase",
+        phases: ["another-phase"],
+        reason: "Must not match outside the declared phase.",
+        expiresOn: "2099-12-31",
+        pattern: /phase mismatch/,
+      },
+      {
+        id: "expired",
+        phases: ["main-gate"],
+        reason: "Must not match after its expiry.",
+        expiresOn: "2000-01-01",
+        pattern: /expired allowance/,
+      },
+      {
+        id: "wrong-pattern",
+        phases: ["main-gate"],
+        reason: "Must not match a different stderr message.",
+        expiresOn: "2099-12-31",
+        pattern: /a different failure/,
+      },
+    ],
+    closeApp: async () => {
+      mainStderr.emit("end");
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const launched = await harness.launch("main-gate");
+  mainStderr.emit(
+    "data",
+    "Debugger ending on ws://127.0.0.1:9229/session\nFor help, see: https://nodejs.org/\n",
+  );
+  mainStderr.emit("data", "Error: known shutdown error\n");
+  mainStderr.emit("data", "Error: phase mismatch\n");
+  mainStderr.emit("data", "Error: expired allowance\n");
+  mainStderr.emit("data", "Fatal: unmatched failure\n");
+  mainStderr.emit("data", "UnhandledPromiseRejectionWarning: write rejected\n");
+  await harness.close(launched.app, launched.page, "main-gate");
+
+  const error = await harness.finalizeDiagnostics().then(
+    () => null,
+    (cause) => cause,
+  );
+  assert.equal(error?.name, "MainProcessDiagnosticsError");
+  assert.match(error.message, /main-process diagnostics failed/i);
+  const { unallowedMainErrors, ...summary } = error.diagnostics;
+  assert.deepEqual(summary, {
+    rendererErrorCount: 0,
+    pageErrors: [],
+    mainErrorCount: 5,
+    mainCleanPass: false,
+    cleanPass: false,
+  });
+  assert.deepEqual(
+    unallowedMainErrors.map(({ phase, message }) => ({ phase, message })),
+    [
+      { phase: "main-gate", message: "Error: phase mismatch\n" },
+      { phase: "main-gate", message: "Error: expired allowance\n" },
+      { phase: "main-gate", message: "Fatal: unmatched failure\n" },
+      {
+        phase: "main-gate",
+        message: "UnhandledPromiseRejectionWarning: write rejected\n",
+      },
+    ],
+  );
+});
+
+test("product journey harness frames main stderr lines before applying allowances", async (t) => {
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    mainProcessNoiseAllowlist: [
+      {
+        id: "known-current-phase",
+        phases: ["main-framing"],
+        reason: "Only this one complete stderr line is known noise.",
+        expiresOn: "2099-12-31",
+        pattern: /^Error: known shutdown error\n$/,
+      },
+    ],
+    closeApp: async () => {
+      mainStderr.emit("end");
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const launched = await harness.launch("main-framing");
+  mainStderr.emit(
+    "data",
+    "Error: known shutdown error\nFatal: coalesced database corruption\nErr",
+  );
+  mainStderr.emit(
+    "data",
+    "or: split-boundary persistence failure\nTypeError: trailing fragment",
+  );
+  await harness.close(launched.app, launched.page, "main-framing");
+
+  const error = await harness.finalizeDiagnostics().then(
+    () => null,
+    (cause) => cause,
+  );
+  assert.equal(error?.name, "MainProcessDiagnosticsError");
+  assert.deepEqual(
+    error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+      phase,
+      message,
+    })),
+    [
+      {
+        phase: "main-framing",
+        message: "Fatal: coalesced database corruption\n",
+      },
+      {
+        phase: "main-framing",
+        message: "Error: split-boundary persistence failure\n",
+      },
+      {
+        phase: "main-framing",
+        message: "TypeError: trailing fragment",
+      },
+    ],
+  );
+  assert.equal(error.diagnostics.mainErrorCount, 4);
+});
+
+test("product journey harness waits for delayed main stderr before finalizing", async (t) => {
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    mainProcessDrainTimeoutMs: 250,
+    closeApp: async () => {
+      setTimeout(() => {
+        mainStderr.emit("data", "Fatal: emitted after process exit\n");
+        mainStderr.emit("end");
+      }, 20);
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const launched = await harness.launch("main-delayed");
+  await harness.close(launched.app, launched.page, "main-delayed");
+
+  const error = await harness.finalizeDiagnostics().then(
+    () => null,
+    (cause) => cause,
+  );
+  assert.equal(error?.name, "MainProcessDiagnosticsError");
+  assert.deepEqual(
+    error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+      phase,
+      message,
+    })),
+    [
+      {
+        phase: "main-delayed",
+        message: "Fatal: emitted after process exit\n",
+      },
+    ],
+  );
+});
+
+test("product journey harness fails closed when main stderr never drains", async (t) => {
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    mainProcessDrainTimeoutMs: 20,
+    closeApp: async () => undefined,
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const launched = await harness.launch("main-drain-timeout");
+  await harness.close(launched.app, launched.page, "main-drain-timeout");
+
+  const error = await harness.finalizeDiagnostics().then(
+    () => null,
+    (cause) => cause,
+  );
+  assert.equal(error?.name, "MainProcessDiagnosticsError");
+  assert.deepEqual(
+    error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+      phase,
+      message,
+    })),
+    [
+      {
+        phase: "main-drain-timeout",
+        message:
+          "Main stderr stream did not end or close within 20ms after application close.",
+      },
+    ],
+  );
 });
 
 test("product journey harness opts in before launch and reads structured lifecycle events", async (t) => {

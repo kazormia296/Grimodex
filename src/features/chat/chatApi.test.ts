@@ -48,11 +48,19 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleChatIndex: vi.fn(),
 }));
 
+vi.mock("@/features/timelapse/captureChat", () => ({
+  recordChatMessageAdd: vi.fn(),
+  recordChatMessageDelete: vi.fn(),
+  recordChatMessagesDeleteFrom: vi.fn(),
+}));
+
 import { db } from "@/db/client";
 import { invoke } from "@/lib/tauri";
 const mockDb = vi.mocked(db);
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
+import { recordChatMessageAdd } from "@/features/timelapse/captureChat";
+const mockRecordChatMessageAdd = vi.mocked(recordChatMessageAdd);
 
 import {
   listSessions,
@@ -87,7 +95,7 @@ function mockInsertChain(rows: Record<string, unknown>[]) {
   const chain = {
     values: vi.fn().mockReturnThis(),
     returning: vi.fn().mockResolvedValue(rows),
-    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+    onConflictDoNothing: vi.fn().mockReturnThis(),
     onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
   };
   mockDb.insert.mockReturnValue(chain as never);
@@ -499,6 +507,129 @@ describe("chatApi - session/message persistence", () => {
       expect(result.sessionId).toBe("session-1");
       expect(result.role).toBe("user");
       expect(result.content).toBe("テストメッセージ");
+    });
+
+    it("treats an exact existing explicit message id as an idempotent retry", async () => {
+      const existing = {
+        id: "msg-retry",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "復旧後も同じ回答",
+        model: "model-1",
+        tokensIn: 12,
+        tokensOut: 8,
+        durationMs: 100,
+        metadata: '{"retry":true}',
+        createdAt: "2025-01-01T00:00:00Z",
+      };
+      const insert = mockInsertChain([]);
+      mockSelectLimitChain([existing]);
+      mockUpdateChain();
+
+      const result = await addMessage(
+        "session-1",
+        "assistant",
+        "復旧後も同じ回答",
+        {
+          id: "msg-retry",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        },
+      );
+
+      expect(insert.onConflictDoNothing).toHaveBeenCalledWith({
+        target: "id",
+      });
+      expect(result).toMatchObject(existing);
+      expect(mockRecordChatMessageAdd).not.toHaveBeenCalled();
+      expect(mockScheduleChatIndex).not.toHaveBeenCalled();
+    });
+
+    it("accepts additive metadata after a committed insert and retries only the failed session update", async () => {
+      const initial = {
+        id: "msg-retry-metadata",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "挿入後も失わない回答",
+        model: "model-1",
+        tokensIn: 12,
+        tokensOut: 8,
+        durationMs: 100,
+        metadata: '{"retry":true}',
+        createdAt: "2025-01-01T00:00:00Z",
+      };
+      mockInsertChain([initial]);
+      const update = {
+        set: vi.fn().mockReturnThis(),
+        where: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("session updatedAt failed"))
+          .mockResolvedValue(undefined),
+      };
+      mockDb.update.mockReturnValue(update as never);
+
+      await expect(
+        addMessage("session-1", "assistant", "挿入後も失わない回答", {
+          id: "msg-retry-metadata",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        }),
+      ).rejects.toThrow("session updatedAt failed");
+
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          ...initial,
+          metadata: '{"retry":true,"insertedToEditor":true}',
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "挿入後も失わない回答", {
+          id: "msg-retry-metadata",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        }),
+      ).resolves.toMatchObject({
+        id: "msg-retry-metadata",
+        metadata: '{"retry":true,"insertedToEditor":true}',
+      });
+
+      expect(mockRecordChatMessageAdd).toHaveBeenCalledTimes(1);
+      expect(mockScheduleChatIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects an explicit message id collision with different content", async () => {
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          id: "msg-collision",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "別の回答",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2025-01-01T00:00:00Z",
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "期待した回答", {
+          id: "msg-collision",
+        }),
+      ).rejects.toThrow("chat message id collision");
     });
 
     it("schedules episodic index for a non-empty user/assistant message", async () => {

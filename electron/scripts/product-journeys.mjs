@@ -36,7 +36,7 @@ const AUTHORING_PROMPT = `AUTHORING-JOURNEY-${Date.now()}`;
 const AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
 const PRODUCT_JOURNEY_MODEL = "product-journey-model";
 const PENDING_SAVE_AUTOSAVE_DELAY_MS = 60_000;
-const PRODUCT_JOURNEY_RESULTS_VERSION = 2;
+const PRODUCT_JOURNEY_RESULTS_VERSION = 3;
 const REQUIRED_LIFECYCLE_TRANSITION_PHASES = [
   "switch-requested",
   "quiescence-started",
@@ -1983,6 +1983,18 @@ function elapsedMilliseconds(clock, startedAt) {
   return Math.max(0, Math.round(duration));
 }
 
+function normalizeProductJourneyDiagnostics(diagnostics) {
+  return {
+    rendererErrorCount: 0,
+    pageErrors: [],
+    mainErrorCount: 0,
+    unallowedMainErrors: [],
+    mainCleanPass: true,
+    cleanPass: true,
+    ...(diagnostics ?? {}),
+  };
+}
+
 function resolveResultsPath(resultsPath) {
   if (resultsPath) return path.resolve(rootDir, resultsPath);
   const artifactDir =
@@ -2045,11 +2057,9 @@ export async function runProductJourneys({
       harness = factory();
       await journey.run(harness);
       durationMs = elapsedMilliseconds(clock, startedAt);
-      const diagnostics = (await harness.finalizeDiagnostics?.()) ?? {
-        rendererErrorCount: 0,
-        pageErrors: [],
-        cleanPass: true,
-      };
+      const diagnostics = normalizeProductJourneyDiagnostics(
+        await harness.finalizeDiagnostics?.(),
+      );
       await harness.dispose({ success: true, name: journey.id });
       report.journeys.push({
         id: journey.id,
@@ -2061,18 +2071,15 @@ export async function runProductJourneys({
     } catch (error) {
       durationMs ??= elapsedMilliseconds(clock, startedAt);
       report.status = "failed";
-      const rendererDiagnostics = error?.diagnostics ??
-        harness?.diagnostics?.() ?? {
-          rendererErrorCount: 0,
-          pageErrors: [],
-          cleanPass: true,
-        };
+      const journeyDiagnostics = normalizeProductJourneyDiagnostics(
+        error?.diagnostics ?? harness?.diagnostics?.(),
+      );
       const failedResult = {
         id: journey.id,
         status: "failed",
         durationMs,
         error: serializeError(error),
-        ...rendererDiagnostics,
+        ...journeyDiagnostics,
         // cleanPass describes the complete journey outcome. A functional
         // assertion failure must never be serialized as a clean pass merely
         // because the renderer itself emitted no errors.
@@ -2098,14 +2105,18 @@ export async function runProductJourneys({
             }`,
           );
         }
-        const finalRendererDiagnostics =
+        const finalJourneyDiagnostics =
           error?.diagnostics ?? harness.diagnostics?.();
-        if (finalRendererDiagnostics) {
-          Object.assign(failedResult, finalRendererDiagnostics, {
-            // A functional failure is never a clean journey even when renderer
-            // shutdown itself emitted no additional diagnostics.
-            cleanPass: false,
-          });
+        if (finalJourneyDiagnostics) {
+          Object.assign(
+            failedResult,
+            normalizeProductJourneyDiagnostics(finalJourneyDiagnostics),
+            {
+              // A functional failure is never a clean journey even when renderer
+              // shutdown itself emitted no additional diagnostics.
+              cleanPass: false,
+            },
+          );
         }
       }
       await writeResults(outputPath, report);

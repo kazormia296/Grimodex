@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import { _electron } from "playwright";
 
@@ -20,6 +21,7 @@ const LIFECYCLE_TRACE_BUFFER_KEY =
 const LIFECYCLE_TRACE_LISTENER_KEY =
   "__GRIMODEX_PRODUCT_JOURNEY_LIFECYCLE_LISTENER__";
 const MAX_LIFECYCLE_TRACE_EVENTS = 256;
+const MAIN_PROCESS_DRAIN_TIMEOUT_MS = 2_000;
 
 /**
  * Renderer failures are never allowlisted. This schema exists only for
@@ -27,6 +29,19 @@ const MAX_LIFECYCLE_TRACE_EVENTS = 256;
  * phase, an owner-readable reason, and a short expiry.
  */
 export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([]);
+
+const MAIN_PROCESS_ERROR_PATTERNS = Object.freeze([
+  /\b(?:errors?|exceptions?|failed|failure|fatal|panic(?:ked)?|uncaught|unhandled|crash(?:ed)?)\b/i,
+  /\b(?:UnhandledPromiseRejection(?:Warning)?|unhandledRejection|uncaughtException)\b/i,
+  /\b(?:Assertion failed|Segmentation fault|core dumped)\b/i,
+  /\b(?:AggregateError|EvalError|RangeError|ReferenceError|SyntaxError|TypeError|URIError)\b/,
+  /\b(?:EACCES|EADDRINUSE|ECONNREFUSED|ENOENT|ENOMEM|EPERM|ETIMEDOUT)\b/,
+]);
+
+export function isMainProcessErrorMessage(message) {
+  const text = String(message ?? "");
+  return MAIN_PROCESS_ERROR_PATTERNS.some((pattern) => pattern.test(text));
+}
 
 function boundedDiagnosticText(value) {
   const text = String(value ?? "");
@@ -109,6 +124,22 @@ export class RendererDiagnosticsError extends Error {
   }
 }
 
+export class MainProcessDiagnosticsError extends Error {
+  constructor(diagnostics) {
+    const summaries = diagnostics.unallowedMainErrors.map(
+      (issue) => `[${issue.phase}] main stderr: ${issue.message}`,
+    );
+    super(
+      `Main-process diagnostics failed (${diagnostics.mainErrorCount} error-class stderr message(s), ` +
+        `${diagnostics.unallowedMainErrors.length} unallowed)${
+          summaries.length > 0 ? `: ${summaries.slice(0, 4).join(" | ")}` : ""
+        }`,
+    );
+    this.name = "MainProcessDiagnosticsError";
+    this.diagnostics = diagnostics;
+  }
+}
+
 function installLifecycleTraceCapture({
   optInKey,
   eventName,
@@ -182,12 +213,21 @@ export function createProductJourneyHarness({
   mainCjs,
   electronBin = require("electron"),
   launchTimeoutMs = 60_000,
+  mainProcessDrainTimeoutMs = MAIN_PROCESS_DRAIN_TIMEOUT_MS,
   artifactRoot = process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
   electronLauncher = _electron,
   closeApp = closeElectronAppWithDiagnostics,
   mainProcessNoiseAllowlist = MAIN_PROCESS_NOISE_ALLOWLIST,
 } = {}) {
   if (!mainCjs) throw new Error("product journey harness requires mainCjs");
+  if (
+    !Number.isFinite(mainProcessDrainTimeoutMs) ||
+    mainProcessDrainTimeoutMs <= 0
+  ) {
+    throw new Error(
+      "product journey harness requires a positive mainProcessDrainTimeoutMs",
+    );
+  }
   validateMainProcessNoiseAllowlist(mainProcessNoiseAllowlist);
 
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "grimodex-product-"));
@@ -200,6 +240,7 @@ export function createProductJourneyHarness({
   const rendererErrors = [];
   const pageErrors = [];
   const pendingDiagnosticWork = new Set();
+  const mainDiagnosticTrackers = new Map();
   const authorityTimeline = [];
   const recordedLifecycleEvents = new Set();
   const lastResources = {
@@ -244,19 +285,190 @@ export function createProductJourneyHarness({
     }
   }
 
+  function recordMainProcessDiagnostic(
+    phase,
+    message,
+    { forceError = false, allowAllowance = true } = {},
+  ) {
+    const isError = forceError || isMainProcessErrorMessage(message);
+    const allowance =
+      isError && allowAllowance
+        ? resolveMainProcessNoiseAllowance(
+            phase,
+            message,
+            mainProcessNoiseAllowlist,
+          )
+        : undefined;
+    mainDiagnostics.push({
+      at: new Date().toISOString(),
+      phase,
+      message: boundedDiagnosticText(message),
+      classification: isError ? "error" : "noise",
+      allowance: allowance
+        ? {
+            id: allowance.id,
+            phases: [...allowance.phases],
+            reason: allowance.reason,
+            expiresOn: allowance.expiresOn,
+            pattern: allowance.pattern.toString(),
+          }
+        : null,
+    });
+  }
+
+  function attachMainDiagnosticStream(app, stream, phase) {
+    if (!stream || typeof stream.on !== "function") return;
+
+    const decoder = new StringDecoder("utf8");
+    let bufferedText = "";
+    let settled = false;
+    let resolveDone;
+    const done = new Promise((resolve) => {
+      resolveDone = resolve;
+    });
+
+    const recordCompleteLines = () => {
+      for (;;) {
+        const newlineIndex = bufferedText.indexOf("\n");
+        if (newlineIndex < 0) return;
+        const message = bufferedText.slice(0, newlineIndex + 1);
+        bufferedText = bufferedText.slice(newlineIndex + 1);
+        recordMainProcessDiagnostic(phase, message);
+      }
+    };
+
+    const onData = (data) => {
+      const message =
+        typeof data === "string" ? data : decoder.write(Buffer.from(data));
+      if (!message) return;
+      const line = `  [product:${phase}:main] ${message}`;
+      mainLog.push(line);
+      process.stderr.write(line);
+      bufferedText += message;
+      recordCompleteLines();
+    };
+
+    let onEnd;
+    let onClose;
+    let onError;
+    const removeListeners = () => {
+      const remove =
+        typeof stream.off === "function"
+          ? stream.off.bind(stream)
+          : stream.removeListener?.bind(stream);
+      if (!remove) return;
+      remove("data", onData);
+      remove("end", onEnd);
+      remove("close", onClose);
+      remove("error", onError);
+    };
+    const finish = (failureMessage) => {
+      if (settled) return;
+      settled = true;
+      const decoderTail = decoder.end();
+      if (decoderTail) bufferedText += decoderTail;
+      if (bufferedText) {
+        recordMainProcessDiagnostic(phase, bufferedText);
+        bufferedText = "";
+      }
+      if (failureMessage) {
+        recordMainProcessDiagnostic(phase, failureMessage, {
+          forceError: true,
+          allowAllowance: false,
+        });
+      }
+      removeListeners();
+      resolveDone();
+    };
+    onEnd = () => finish();
+    onClose = () => finish();
+    onError = (error) =>
+      finish(
+        `Main stderr stream error: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    stream.on("close", onClose);
+    stream.on("error", onError);
+
+    const tracker = {
+      phase,
+      done,
+      get settled() {
+        return settled;
+      },
+      failDrain() {
+        finish(
+          `Main stderr stream did not end or close within ${mainProcessDrainTimeoutMs}ms after application close.`,
+        );
+      },
+    };
+    mainDiagnosticTrackers.set(app, tracker);
+
+    if (stream.readableEnded === true || stream.closed === true) {
+      finish();
+    }
+  }
+
+  async function awaitMainDiagnosticTracker(tracker) {
+    if (!tracker || tracker.settled) return;
+    let timeoutId;
+    const outcome = await Promise.race([
+      tracker.done.then(() => "drained"),
+      new Promise((resolve) => {
+        timeoutId = globalThis.setTimeout(
+          () => resolve("timeout"),
+          mainProcessDrainTimeoutMs,
+        );
+      }),
+    ]);
+    if (timeoutId) globalThis.clearTimeout(timeoutId);
+    if (outcome === "timeout") tracker.failDrain();
+    await tracker.done;
+  }
+
+  async function drainMainDiagnosticStream(app) {
+    await awaitMainDiagnosticTracker(mainDiagnosticTrackers.get(app));
+  }
+
+  async function drainMainDiagnosticStreams() {
+    await Promise.all(
+      [...mainDiagnosticTrackers.values()].map(awaitMainDiagnosticTracker),
+    );
+  }
+
   function diagnostics() {
+    const mainErrors = mainDiagnostics.filter(
+      (issue) => issue.classification === "error",
+    );
+    const unallowedMainErrors = mainErrors
+      .filter((issue) => issue.allowance === null)
+      .map(({ at, phase, message }) => ({ at, phase, message }));
+    const rendererCleanPass =
+      rendererErrors.length === 0 && pageErrors.length === 0;
+    const mainCleanPass = unallowedMainErrors.length === 0;
     return {
       rendererErrorCount: rendererErrors.length,
       pageErrors: pageErrors.map((issue) => ({ ...issue })),
-      cleanPass: rendererErrors.length === 0 && pageErrors.length === 0,
+      mainErrorCount: mainErrors.length,
+      unallowedMainErrors,
+      mainCleanPass,
+      cleanPass: rendererCleanPass && mainCleanPass,
     };
   }
 
   async function finalizeDiagnostics() {
+    await drainMainDiagnosticStreams();
     await drainDiagnosticWork();
     const summary = diagnostics();
-    if (!summary.cleanPass) {
+    if (summary.rendererErrorCount > 0 || summary.pageErrors.length > 0) {
       throw new RendererDiagnosticsError(summary, rendererErrors);
+    }
+    if (!summary.mainCleanPass) {
+      throw new MainProcessDiagnosticsError(summary);
     }
     return summary;
   }
@@ -325,29 +537,7 @@ export function createProductJourneyHarness({
       mainLog.push(line);
       process.stdout.write(line);
     });
-    appProcess?.stderr?.on("data", (data) => {
-      const message = String(data);
-      const line = `  [product:${phase}:main] ${message}`;
-      mainLog.push(line);
-      const allowance = resolveMainProcessNoiseAllowance(
-        phase,
-        message,
-        mainProcessNoiseAllowlist,
-      );
-      mainDiagnostics.push({
-        at: new Date().toISOString(),
-        phase,
-        message: boundedDiagnosticText(message),
-        allowance: allowance
-          ? {
-              id: allowance.id,
-              reason: allowance.reason,
-              expiresOn: allowance.expiresOn,
-            }
-          : null,
-      });
-      process.stderr.write(line);
-    });
+    attachMainDiagnosticStream(app, appProcess?.stderr, phase);
     const page = await app.firstWindow({ timeout: launchTimeoutMs });
     lastResources.page = page;
     if (typeof page.evaluate === "function") {
@@ -411,6 +601,7 @@ export function createProductJourneyHarness({
     await readLifecycleTrace(page).catch(() => undefined);
     await retainRendererScreenshot(page);
     await closeApp(app, page, phase);
+    await drainMainDiagnosticStream(app);
     // Renderer failures frequently arrive while lifecycle shutdown is
     // cancelling reads. Do not clear phase authority until every event already
     // delivered by Playwright has been serialized.
@@ -425,6 +616,7 @@ export function createProductJourneyHarness({
 
   async function captureFailureArtifact(name) {
     if (!artifactRoot) return;
+    await drainMainDiagnosticStreams();
     await drainDiagnosticWork();
     const destination = path.join(artifactRoot, name);
     const diagnosticsDir = path.join(tmpRoot, "diagnostics");
@@ -503,6 +695,7 @@ export function createProductJourneyHarness({
           lastResources.page,
           `failure:${name}`,
         ).catch(() => undefined);
+        await drainMainDiagnosticStream(lastResources.app);
         await drainDiagnosticWork();
         lastResources.app = null;
         lastResources.page = null;

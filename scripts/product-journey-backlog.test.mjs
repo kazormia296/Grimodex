@@ -50,14 +50,18 @@ const EXEMPTED_CHAT_SCOPE_CONTRACT_IDS = [
   "scope-transition:chat-stream:snippet",
 ];
 
-const PLANNED_UI_JOURNEY_IDS = [
+const PLANNED_JOURNEY_IDS = [
+  "agent-stream-project-switch",
+  "agent-stream-workspace-switch",
   "chronicle-ui-roundtrip",
   "lint-ui-roundtrip",
   "map-ui-roundtrip",
   "snapshot-ui-roundtrip",
 ];
 
-const PLANNED_UI_CONTRACT_IDS = [
+const PLANNED_CONTRACT_IDS = [
+  "scope-transition:agent-stream:project",
+  "scope-transition:agent-stream:workspace",
   "ui-roundtrip:chronicle",
   "ui-roundtrip:lint",
   "ui-roundtrip:map",
@@ -121,7 +125,7 @@ test("ChatScope is derived from one registry and has exact ratchet parity", asyn
   );
 });
 
-test("tracked scope exemptions and UI backlog keep affected execution locked", () => {
+test("tracked scope exemptions and planned journeys keep affected execution locked", () => {
   assert.equal(PRODUCT_JOURNEY_ROLLOUT_MODE, "shadow");
   assert.deepEqual(
     [...IMPLEMENTED_CONTRACT_IDS, ...EXEMPTED_CHAT_SCOPE_CONTRACT_IDS].filter(
@@ -144,12 +148,19 @@ test("tracked scope exemptions and UI backlog keep affected execution locked", (
 
   assert.deepEqual(
     PRODUCT_JOURNEY_COVERAGE_BACKLOG.map((journey) => journey.id),
-    PLANNED_UI_JOURNEY_IDS,
+    PLANNED_JOURNEY_IDS,
   );
   assert.deepEqual(
     PRODUCT_JOURNEY_COVERAGE_BACKLOG.flatMap((journey) => journey.contracts),
-    PLANNED_UI_CONTRACT_IDS,
+    PLANNED_CONTRACT_IDS,
   );
+  for (const plannedAgentJourney of PRODUCT_JOURNEY_COVERAGE_BACKLOG.filter(
+    (journey) => journey.id.startsWith("agent-stream-"),
+  )) {
+    assert.equal(plannedAgentJourney.trackingIssue, "#429");
+    assert.equal(plannedAgentJourney.expiresOn, "2026-09-30");
+    assert.ok(plannedAgentJourney.reason.length > 0);
+  }
 
   const coverage = validateCurrentProductJourneyCoverage();
   assert.equal(coverage.affectedReady, false);
@@ -157,6 +168,6 @@ test("tracked scope exemptions and UI backlog keep affected execution locked", (
     coverage.exemptedContracts,
     EXEMPTED_CHAT_SCOPE_CONTRACT_IDS,
   );
-  assert.deepEqual(coverage.plannedJourneyIds, PLANNED_UI_JOURNEY_IDS);
-  assert.deepEqual(coverage.plannedContractIds, PLANNED_UI_CONTRACT_IDS);
+  assert.deepEqual(coverage.plannedJourneyIds, PLANNED_JOURNEY_IDS);
+  assert.deepEqual(coverage.plannedContractIds, PLANNED_CONTRACT_IDS);
 });

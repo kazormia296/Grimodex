@@ -53,6 +53,14 @@ test("product runner records deterministic results while preserving serial fresh
       events.push(`create:${index}`);
       return {
         index,
+        finalizeDiagnostics: async () => ({
+          rendererErrorCount: 0,
+          pageErrors: [],
+          mainErrorCount: index === 1 ? 1 : 0,
+          unallowedMainErrors: [],
+          mainCleanPass: true,
+          cleanPass: true,
+        }),
         dispose: async ({ success, name }) => {
           events.push(`dispose:${index}:${success}:${name}`);
         },
@@ -72,7 +80,7 @@ test("product runner records deterministic results while preserving serial fresh
     "dispose:2:true:second",
   ]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 2);
+  assert.equal(report.version, 3);
   assert.equal(report.status, "passed");
   assert.deepEqual(report.journeys, [
     {
@@ -81,6 +89,9 @@ test("product runner records deterministic results while preserving serial fresh
       durationMs: 25,
       rendererErrorCount: 0,
       pageErrors: [],
+      mainErrorCount: 1,
+      unallowedMainErrors: [],
+      mainCleanPass: true,
       cleanPass: true,
     },
     {
@@ -89,6 +100,9 @@ test("product runner records deterministic results while preserving serial fresh
       durationMs: 60,
       rendererErrorCount: 0,
       pageErrors: [],
+      mainErrorCount: 0,
+      unallowedMainErrors: [],
+      mainCleanPass: true,
       cleanPass: true,
     },
   ]);
@@ -152,7 +166,7 @@ test("product runner writes the failed and fail-fast results before rethrowing",
 
   assert.deepEqual(events, ["create", "run:broken", "dispose:false:broken"]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 2);
+  assert.equal(report.version, 3);
   assert.equal(report.status, "failed");
   assert.ok(
     report.journeys.every(
@@ -173,6 +187,9 @@ test("product runner writes the failed and fail-fast results before rethrowing",
           message: "late shutdown error",
         },
       ],
+      mainErrorCount: 0,
+      unallowedMainErrors: [],
+      mainCleanPass: true,
       cleanPass: false,
     },
     {
@@ -207,7 +224,7 @@ test("product runner still writes a versioned report when artifact preflight fai
   );
 
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 2);
+  assert.equal(report.version, 3);
   assert.equal(report.status, "failed");
   assert.deepEqual(report.error, {
     name: "Error",
@@ -237,6 +254,9 @@ test("product runner fails closed when renderer diagnostics are not clean", asyn
         message: "unhandled renderer rejection",
       },
     ],
+    mainErrorCount: 0,
+    unallowedMainErrors: [],
+    mainCleanPass: true,
     cleanPass: false,
   };
   t.after(() => rm(outputRoot, { recursive: true, force: true }));
@@ -265,7 +285,7 @@ test("product runner fails closed when renderer diagnostics are not clean", asyn
 
   assert.deepEqual(events, ["finalize", "dispose:false:renderer-broken"]);
   const report = await readJson(resultsPath);
-  assert.equal(report.version, 2);
+  assert.equal(report.version, 3);
   assert.equal(report.status, "failed");
   assert.deepEqual(report.journeys, [
     {

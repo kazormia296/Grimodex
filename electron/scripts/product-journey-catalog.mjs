@@ -186,6 +186,28 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
  */
 export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([
   {
+    id: "agent-stream-project-switch",
+    domains: ["chat", "project-lifecycle"],
+    interactions: ["project-lifecycle->chat"],
+    contracts: ["scope-transition:agent-stream:project"],
+    capabilities: ["electron", "napi"],
+    reason:
+      "Agent transport lifecycle is unit-covered but still needs a deterministic Electron journey.",
+    trackingIssue: "#429",
+    expiresOn: "2026-09-30",
+  },
+  {
+    id: "agent-stream-workspace-switch",
+    domains: ["chat", "workspace-lifecycle"],
+    interactions: ["workspace-lifecycle->chat"],
+    contracts: ["scope-transition:agent-stream:workspace"],
+    capabilities: ["electron", "napi"],
+    reason:
+      "Agent transport lifecycle is unit-covered but still needs a deterministic Electron journey.",
+    trackingIssue: "#429",
+    expiresOn: "2026-09-30",
+  },
+  {
     id: "chronicle-ui-roundtrip",
     domains: ["chronicle-ui"],
     interactions: [],

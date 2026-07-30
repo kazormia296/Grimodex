@@ -2244,13 +2244,19 @@ describe("useChatStore", () => {
       }
     });
 
-    it("vetoes authority commit when old-scope stream persistence fails", async () => {
+    it("keeps a partially persisted turn sticky across switches until retry succeeds", async () => {
       Object.assign(globalThis, {
         [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
       });
       let callbacks: StreamCallbacks | undefined;
       const persistenceFailure = new Error("old-scope chat write failed");
-      mockAddMessage.mockRejectedValueOnce(persistenceFailure);
+      let assistantPersistenceAvailable = false;
+      mockAddMessage.mockImplementation(async (_sessionId, role) => {
+        if (role === "assistant" && !assistantPersistenceAvailable) {
+          throw persistenceFailure;
+        }
+        return role === "user" ? msg1 : msg2;
+      });
       mockSendChatMessageStream.mockImplementation(
         async (_messages, _params, streamCallbacks: StreamCallbacks) => {
           callbacks = streamCallbacks;
@@ -2265,24 +2271,25 @@ describe("useChatStore", () => {
       const unsubscribe = subscribeLifecycleTrace((event) =>
         events.push(event),
       );
+      const transitionInput = {
+        kind: "project" as const,
+        from: {
+          workspacePath: "/workspace/chat-store-test",
+          workspaceOpenRevision: 1,
+          projectId: "proj-1",
+        },
+        to: {
+          workspacePath: "/workspace/chat-store-test",
+          workspaceOpenRevision: 1,
+          projectId: "proj-2",
+        },
+      };
       const send = useChatStore
         .getState()
         .sendMessage("Persistence must veto the switch");
       await vi.waitFor(() => expect(callbacks).toBeDefined());
       const lease = acquireQuiescenceLease("project-load", {
-        transition: {
-          kind: "project",
-          from: {
-            workspacePath: "/workspace/chat-store-test",
-            workspaceOpenRevision: 1,
-            projectId: "proj-1",
-          },
-          to: {
-            workspacePath: "/workspace/chat-store-test",
-            workspaceOpenRevision: 1,
-            projectId: "proj-2",
-          },
-        },
+        transition: transitionInput,
       });
       const providerEntered = deferred<void>();
       let authorityCommitted = false;
@@ -2313,14 +2320,88 @@ describe("useChatStore", () => {
         await switchFailure;
 
         expect(authorityCommitted).toBe(false);
-        expect(events.map((event) => event.phase)).toEqual([
+        expect(
+          events
+            .filter(
+              (event) => event.transitionId === lease.transition?.transitionId,
+            )
+            .map((event) => event.phase),
+        ).toEqual([
           "switch-requested",
           "quiescence-started",
           "old-stream-completed",
         ]);
-        expect(mockAddMessage).toHaveBeenCalledOnce();
+        expect(mockAddMessage.mock.calls.map((call) => call[1])).toEqual([
+          "user",
+          "assistant",
+        ]);
       } finally {
         lease.release();
+      }
+
+      const secondLease = acquireQuiescenceLease("project-load", {
+        transition: transitionInput,
+      });
+      try {
+        await expect(
+          flushStrictQuiescence(chatQuiescenceDependencies(), {
+            transition: secondLease.transition,
+          }),
+        ).rejects.toMatchObject({ name: "StrictQuiescenceError" });
+        expect(
+          events
+            .filter(
+              (event) =>
+                event.transitionId === secondLease.transition?.transitionId,
+            )
+            .map((event) => event.phase),
+        ).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "old-stream-completed",
+        ]);
+        expect(mockAddMessage.mock.calls.map((call) => call[1])).toEqual([
+          "user",
+          "assistant",
+          "assistant",
+        ]);
+      } finally {
+        secondLease.release();
+      }
+
+      assistantPersistenceAvailable = true;
+      const thirdLease = acquireQuiescenceLease("project-load", {
+        transition: transitionInput,
+      });
+      try {
+        await expect(
+          flushStrictQuiescence(chatQuiescenceDependencies(), {
+            transition: thirdLease.transition,
+          }),
+        ).resolves.toBeUndefined();
+        thirdLease.transition?.advance("authority-commit");
+        expect(
+          events
+            .filter(
+              (event) =>
+                event.transitionId === thirdLease.transition?.transitionId,
+            )
+            .map((event) => event.phase),
+        ).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "old-stream-completed",
+          "old-scope-persisted",
+          "authority-commit",
+        ]);
+        expect(mockAddMessage.mock.calls.map((call) => call[1])).toEqual([
+          "user",
+          "assistant",
+          "assistant",
+          "assistant",
+        ]);
+      } finally {
+        thirdLease.release();
         unsubscribe();
         Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
       }
@@ -4122,6 +4203,226 @@ describe("useChatStore", () => {
         useAiSettingsStore.setState({ settings: null });
       }
     });
+
+    it("vetoes lifecycle authority when stopped Agent persistence fails", async () => {
+      Object.assign(globalThis, {
+        [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+      });
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        agentMode: true,
+      });
+      let rejectSecondCall!: (error: Error) => void;
+      mockSendAgentMessage
+        .mockResolvedValueOnce({
+          blocks: [
+            { type: "text", content: "停止前のAgent回答" },
+            {
+              type: "tool_use",
+              id: "tool-stop-persist",
+              name: "undeclared_tool",
+              input: {},
+            },
+          ],
+          stopReason: "tool_use",
+        })
+        .mockImplementationOnce(
+          () =>
+            new Promise((_, reject) => {
+              rejectSecondCall = reject;
+            }),
+        );
+      const persistenceFailure = new Error("stopped Agent write failed");
+      mockAddMessage.mockRejectedValue(persistenceFailure);
+      const events: LifecycleTraceEvent[] = [];
+      const unsubscribe = subscribeLifecycleTrace((event) =>
+        events.push(event),
+      );
+      const send = useChatStore.getState().sendMessage("Agentを停止する");
+      await vi.waitFor(() =>
+        expect(useChatStore.getState().messages.at(-1)?.content).toBe(
+          "停止前のAgent回答",
+        ),
+      );
+      const lease = acquireQuiescenceLease("project-load", {
+        transition: {
+          kind: "project",
+          from: {
+            workspacePath: "/workspace/chat-store-test",
+            workspaceOpenRevision: 1,
+            projectId: "proj-1",
+          },
+          to: {
+            workspacePath: "/workspace/chat-store-test",
+            workspaceOpenRevision: 1,
+            projectId: "proj-2",
+          },
+        },
+      });
+      const providerEntered = deferred<void>();
+      let authorityCommitted = false;
+      const switching = (async () => {
+        await flushStrictQuiescence(
+          chatQuiescenceDependencies({
+            onScopedMutations: () => providerEntered.resolve(),
+          }),
+          { transition: lease.transition },
+        );
+        authorityCommitted = true;
+        lease.transition?.advance("authority-commit");
+      })();
+      const sendFailure = expect(send).rejects.toMatchObject({
+        name: "ChatTurnPersistenceError",
+        cause: persistenceFailure,
+      });
+      const switchFailure = expect(switching).rejects.toMatchObject({
+        name: "StrictQuiescenceError",
+      });
+
+      try {
+        await providerEntered.promise;
+        useChatStore.getState().stopGeneration();
+        rejectSecondCall(new Error("aborted by stop"));
+
+        await sendFailure;
+        await switchFailure;
+        expect(authorityCommitted).toBe(false);
+        expect(
+          events
+            .filter(
+              (event) => event.transitionId === lease.transition?.transitionId,
+            )
+            .map((event) => event.phase),
+        ).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "old-stream-completed",
+        ]);
+      } finally {
+        lease.release();
+        mockAddMessage.mockResolvedValue(msg1);
+        await flushQuiescenceProviderStage("scoped-mutations");
+        unsubscribe();
+        Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
+    it.each(["project", "workspace"] as const)(
+      "propagates Agent persistence failure through %s strict lifecycle quiescence",
+      async (transitionKind) => {
+        Object.assign(globalThis, {
+          [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+        });
+        useAiSettingsStore.setState({
+          settings: {
+            ...DEFAULT_AI_SETTINGS,
+            provider: "openrouter",
+            model: "openrouter/anthropic/claude-sonnet-4.6",
+          },
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+        });
+        const agentResponse =
+          deferred<Awaited<ReturnType<typeof chatApi.sendAgentMessage>>>();
+        mockSendAgentMessage.mockImplementationOnce(
+          () => agentResponse.promise,
+        );
+        const persistenceFailure = new Error("Agent chat write failed");
+        mockAddMessage.mockRejectedValue(persistenceFailure);
+        const events: LifecycleTraceEvent[] = [];
+        const unsubscribe = subscribeLifecycleTrace((event) =>
+          events.push(event),
+        );
+        const send = useChatStore.getState().sendMessage("Agentで調べて");
+        await vi.waitFor(() => expect(mockSendAgentMessage).toHaveBeenCalled());
+        const lease = acquireQuiescenceLease(
+          transitionKind === "project" ? "project-load" : "workspace-open",
+          {
+            transition: {
+              kind: transitionKind,
+              from: {
+                workspacePath: "/workspace/chat-store-test",
+                workspaceOpenRevision: 1,
+                projectId: "proj-1",
+              },
+              to: {
+                workspacePath:
+                  transitionKind === "workspace"
+                    ? "/workspace/next"
+                    : "/workspace/chat-store-test",
+                workspaceOpenRevision: transitionKind === "workspace" ? 2 : 1,
+                projectId: "proj-2",
+              },
+            },
+          },
+        );
+        const providerEntered = deferred<void>();
+        let authorityCommitted = false;
+        const switching = (async () => {
+          await flushStrictQuiescence(
+            chatQuiescenceDependencies({
+              onScopedMutations: () => providerEntered.resolve(),
+            }),
+            { transition: lease.transition },
+          );
+          authorityCommitted = true;
+          lease.transition?.advance("authority-commit");
+        })();
+
+        try {
+          await providerEntered.promise;
+          agentResponse.resolve({
+            blocks: [{ type: "text", content: "Agent回答" }],
+            stopReason: "end_turn",
+          });
+
+          await expect(send).rejects.toMatchObject({
+            name: "ChatTurnPersistenceError",
+            cause: persistenceFailure,
+          });
+          await expect(switching).rejects.toMatchObject({
+            name: "StrictQuiescenceError",
+          });
+
+          expect(authorityCommitted).toBe(false);
+          expect(
+            events
+              .filter(
+                (event) =>
+                  event.transitionId === lease.transition?.transitionId,
+              )
+              .map((event) => event.phase),
+          ).toEqual([
+            "switch-requested",
+            "quiescence-started",
+            "old-stream-completed",
+          ]);
+        } finally {
+          lease.release();
+          mockAddMessage.mockResolvedValue(msg1);
+          await flushQuiescenceProviderStage("scoped-mutations");
+          unsubscribe();
+          Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+          useChatStore.setState({ agentMode: false, ragEnabled: false });
+          useAiSettingsStore.setState({ settings: null });
+        }
+      },
+    );
 
     it("public RAGはprivate historyを除外しつつcommandInstructionを保持する", async () => {
       useAiSettingsStore.setState({

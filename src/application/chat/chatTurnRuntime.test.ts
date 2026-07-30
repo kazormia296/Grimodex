@@ -82,4 +82,53 @@ describe("createChatTurnRuntime", () => {
     );
     expect(runtime.hasPendingTurns()).toBe(false);
   });
+
+  it("keeps failed completed-turn persistence sticky until a retry succeeds", async () => {
+    const runtime = createChatTurnRuntime();
+    let databaseAvailable = false;
+    const retry = vi.fn(async () => {
+      if (!databaseAvailable) {
+        throw new Error("chat database unavailable");
+      }
+    });
+
+    await expect(runtime.persistCompletedTurn("turn-1", retry)).rejects.toThrow(
+      "chat database unavailable",
+    );
+    expect(runtime.hasPendingTurns()).toBe(true);
+
+    await expect(runtime.awaitPendingTurns()).rejects.toThrow(
+      "chat database unavailable",
+    );
+    expect(runtime.hasPendingTurns()).toBe(true);
+
+    await expect(runtime.awaitPendingTurns()).rejects.toThrow(
+      "chat database unavailable",
+    );
+    expect(runtime.hasPendingTurns()).toBe(true);
+
+    databaseAvailable = true;
+    await expect(runtime.awaitPendingTurns()).resolves.toBeUndefined();
+    expect(runtime.hasPendingTurns()).toBe(false);
+    expect(retry).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps a completed-turn persistence retry single-flight", async () => {
+    const runtime = createChatTurnRuntime();
+    const persistence = deferred<void>();
+    const retry = vi.fn(() => persistence.promise);
+    const replacement = vi.fn(async () => {});
+
+    const first = runtime.persistCompletedTurn("turn-1", retry);
+    const second = runtime.persistCompletedTurn("turn-1", replacement);
+
+    expect(second).toBe(first);
+    await Promise.resolve();
+    expect(retry).toHaveBeenCalledOnce();
+    expect(replacement).not.toHaveBeenCalled();
+
+    persistence.resolve();
+    await Promise.all([first, second]);
+    expect(runtime.hasPendingTurns()).toBe(false);
+  });
 });

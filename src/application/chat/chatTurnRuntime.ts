@@ -5,9 +5,20 @@ import {
 import type { TurnCoordinator } from "@/features/chat/turn/turnCoordinator";
 import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 
+interface PendingTurnPersistence {
+  turnId: string;
+  retry: () => Promise<void>;
+  lastError: unknown;
+  inFlight: Promise<void> | null;
+}
+
 export interface ChatTurnRuntime {
   coordinator: TurnCoordinator;
   trackTurn: <T>(turn: Promise<T>) => Promise<T>;
+  persistCompletedTurn: (
+    turnId: string,
+    retry: () => Promise<void>,
+  ) => Promise<void>;
   hasPendingTurns: () => boolean;
   awaitPendingTurns: () => Promise<void>;
   scheduleInputPinnedRefresh: (refresh: () => void) => void;
@@ -34,6 +45,7 @@ export function createChatTurnRuntime(options?: {
 }): ChatTurnRuntime {
   const pendingTurns = new Set<Promise<unknown>>();
   const settledTurnFailures: unknown[] = [];
+  const pendingTurnPersistence = new Map<string, PendingTurnPersistence>();
   let inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let sendPreflightClaimId: string | null = null;
   let sendPreflightClaimScopeKey: string | null = null;
@@ -41,6 +53,33 @@ export function createChatTurnRuntime(options?: {
   let streamCleanup: (() => void) | null = null;
   let flushPendingDelta: (() => void) | null = null;
   let finalizeStoppedStream: (() => void) | null = null;
+
+  const retryTurnPersistence = (
+    pending: PendingTurnPersistence,
+  ): Promise<void> => {
+    if (pending.inFlight) return pending.inFlight;
+
+    const attempt = Promise.resolve()
+      .then(() => pending.retry())
+      .then(
+        () => {
+          if (pendingTurnPersistence.get(pending.turnId) === pending) {
+            pendingTurnPersistence.delete(pending.turnId);
+          }
+        },
+        (error: unknown) => {
+          pending.lastError = error;
+          throw error;
+        },
+      );
+    pending.inFlight = attempt;
+    void attempt
+      .finally(() => {
+        if (pending.inFlight === attempt) pending.inFlight = null;
+      })
+      .catch(() => {});
+    return attempt;
+  };
 
   const runtime: ChatTurnRuntime = {
     coordinator: createTurnCoordinator(),
@@ -60,8 +99,26 @@ export function createChatTurnRuntime(options?: {
       return turn;
     },
 
+    persistCompletedTurn(turnId, retry) {
+      let pending = pendingTurnPersistence.get(turnId);
+      if (!pending) {
+        pending = {
+          turnId,
+          retry,
+          lastError: null,
+          inFlight: null,
+        };
+        pendingTurnPersistence.set(turnId, pending);
+      }
+      return retryTurnPersistence(pending);
+    },
+
     hasPendingTurns() {
-      return pendingTurns.size > 0 || settledTurnFailures.length > 0;
+      return (
+        pendingTurns.size > 0 ||
+        settledTurnFailures.length > 0 ||
+        pendingTurnPersistence.size > 0
+      );
     },
 
     async awaitPendingTurns() {
@@ -79,6 +136,17 @@ export function createChatTurnRuntime(options?: {
       failures.push(
         ...settledTurnFailures.splice(0, settledTurnFailures.length),
       );
+      // A rejection observed from the tracked send is reported first without
+      // immediately repeating the same failed write in the same lifecycle.
+      // Later lifecycle attempts retry every unresolved completed turn.
+      if (failures.length === 0 && pendingTurnPersistence.size > 0) {
+        const retries = await Promise.allSettled(
+          [...pendingTurnPersistence.values()].map(retryTurnPersistence),
+        );
+        for (const result of retries) {
+          if (result.status === "rejected") failures.push(result.reason);
+        }
+      }
       if (failures.length > 0) {
         const message =
           failures.length === 1 && failures[0] instanceof Error

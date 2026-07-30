@@ -212,6 +212,34 @@ export function validateProductJourneyCoverage({
         );
       }
     }
+    const temporaryMetadataFields = ["reason", "trackingIssue", "expiresOn"];
+    const declaredTemporaryMetadataFields = temporaryMetadataFields.filter(
+      (field) => Object.hasOwn(journey, field),
+    );
+    if (
+      declaredTemporaryMetadataFields.length > 0 &&
+      declaredTemporaryMetadataFields.length !== temporaryMetadataFields.length
+    ) {
+      throw new Error(
+        `planned journey ${journey.id} temporary metadata must include reason, trackingIssue, and expiresOn together`,
+      );
+    }
+    if (declaredTemporaryMetadataFields.length > 0) {
+      assertString(journey.reason, `planned journey ${journey.id} reason`);
+      assertString(
+        journey.trackingIssue,
+        `planned journey ${journey.id} trackingIssue`,
+      );
+      const expiry = parseExpiry(
+        journey.expiresOn,
+        `planned journey ${journey.id} expiresOn`,
+      );
+      if (expiry.getTime() < now.getTime()) {
+        throw new Error(
+          `Expired planned journey: ${journey.id} (${journey.expiresOn})`,
+        );
+      }
+    }
     for (const contractId of contracts) {
       if (contractIds.has(contractId)) {
         throw new Error(

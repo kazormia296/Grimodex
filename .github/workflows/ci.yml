@@ -16,7 +16,6 @@ on:
         default: all
         options:
           - all
-          - affected
           - shadow
   workflow_call:
     inputs:

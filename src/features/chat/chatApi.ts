@@ -701,6 +701,49 @@ export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
   return rows.map(toMessage);
 }
 
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonSubset(expected: unknown, actual: unknown): boolean {
+  if (Object.is(expected, actual)) {
+    return true;
+  }
+  if (Array.isArray(expected)) {
+    return (
+      Array.isArray(actual) &&
+      expected.length === actual.length &&
+      expected.every((value, index) => isJsonSubset(value, actual[index]))
+    );
+  }
+  if (!isJsonRecord(expected) || !isJsonRecord(actual)) {
+    return false;
+  }
+  return Object.entries(expected).every(
+    ([key, value]) =>
+      Object.hasOwn(actual, key) && isJsonSubset(value, actual[key]),
+  );
+}
+
+function isRetryCompatibleMetadata(
+  expected: string | null,
+  actual: string | null,
+): boolean {
+  if (expected === actual) {
+    return true;
+  }
+  try {
+    const actualValue = actual === null ? null : JSON.parse(actual);
+    if (expected === null) {
+      return isJsonRecord(actualValue);
+    }
+    return isJsonSubset(JSON.parse(expected), actualValue);
+  } catch {
+    // Legacy non-JSON metadata remains byte-for-byte only.
+    return false;
+  }
+}
+
 export async function addMessage(
   sessionId: string,
   role: MessageRole,
@@ -716,44 +759,75 @@ export async function addMessage(
 ): Promise<ChatMessage> {
   const id = extra?.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
+  const values = {
+    id,
+    sessionId,
+    role,
+    content,
+    model: extra?.model ?? null,
+    tokensIn: extra?.tokensIn ?? null,
+    tokensOut: extra?.tokensOut ?? null,
+    durationMs: extra?.durationMs ?? null,
+    metadata: extra?.metadata ?? null,
+    createdAt: now,
+  };
   const rows = await db
     .insert(chatMessages)
-    .values({
-      id,
-      sessionId,
-      role,
-      content,
-      model: extra?.model ?? null,
-      tokensIn: extra?.tokensIn ?? null,
-      tokensOut: extra?.tokensOut ?? null,
-      durationMs: extra?.durationMs ?? null,
-      metadata: extra?.metadata ?? null,
-      createdAt: now,
-    })
+    .values(values)
+    .onConflictDoNothing({ target: chatMessages.id })
     .returning();
+  const inserted = rows[0] !== undefined;
+  let stored = rows[0];
+  if (!stored) {
+    const existing = await db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.id, id))
+      .limit(1);
+    stored = existing[0];
+    if (
+      !stored ||
+      stored.sessionId !== values.sessionId ||
+      stored.role !== values.role ||
+      stored.content !== values.content ||
+      stored.model !== values.model ||
+      stored.tokensIn !== values.tokensIn ||
+      stored.tokensOut !== values.tokensOut ||
+      stored.durationMs !== values.durationMs ||
+      !isRetryCompatibleMetadata(values.metadata, stored.metadata)
+    ) {
+      throw new Error(`chat message id collision: ${id}`);
+    }
+  }
+
+  if (inserted) {
+    // 執筆タイムラプス: 会話フローの forward-only 記録 (§17 P0)。
+    // session updatedAt が失敗して同じIDをretryしても二重記録しないよう、
+    // insertの成否を境界にする。
+    recordChatMessageAdd({
+      sessionId,
+      messageId: id,
+      role,
+      text: content,
+      model: extra?.model ?? null,
+      createdAt: now,
+    });
+
+    // エピソード記憶 index: user/assistant の非空メッセージを意味検索に載せる
+    // (system / 空本文は Rust 側でも対象外)。2.5s デバウンスで畳む。
+    if (
+      (role === "user" || role === "assistant") &&
+      content.trim().length > 0
+    ) {
+      scheduleChatIndex(id);
+    }
+  }
 
   await db
     .update(chatSessions)
     .set({ updatedAt: now })
     .where(eq(chatSessions.id, sessionId));
-
-  // 執筆タイムラプス: 会話フローの forward-only 記録 (§17 P0)。fire-and-forget。
-  recordChatMessageAdd({
-    sessionId,
-    messageId: id,
-    role,
-    text: content,
-    model: extra?.model ?? null,
-    createdAt: now,
-  });
-
-  // エピソード記憶 index: user/assistant の非空メッセージを意味検索に載せる
-  // (system / 空本文は Rust 側でも対象外)。2.5s デバウンスで畳む。fire-and-forget。
-  if ((role === "user" || role === "assistant") && content.trim().length > 0) {
-    scheduleChatIndex(id);
-  }
-
-  return toMessage(rows[0]);
+  return toMessage(stored);
 }
 
 export async function deleteMessage(messageId: string): Promise<void> {

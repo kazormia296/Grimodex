@@ -711,6 +711,8 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
     "scope-transition:chat-stream:snippet",
   ]);
   assert.deepEqual(report.coverage.plannedJourneyIds, [
+    "agent-stream-project-switch",
+    "agent-stream-workspace-switch",
     "chronicle-ui-roundtrip",
     "lint-ui-roundtrip",
     "map-ui-roundtrip",

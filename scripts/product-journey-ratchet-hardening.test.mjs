@@ -243,6 +243,81 @@ test("impossible exemption dates cannot extend uncovered coverage", () => {
   );
 });
 
+test("an expired temporary Agent journey cannot remain in the coverage backlog", () => {
+  assert.throws(
+    () =>
+      baseCoverage({
+        backlog: [
+          {
+            id: "agent-stream-project-switch",
+            domains: ["chat", "project-lifecycle"],
+            interactions: ["project-lifecycle->chat"],
+            contracts: ["scope-transition:agent-stream:project"],
+            capabilities: ["electron", "napi"],
+            reason:
+              "Agent transport still needs a deterministic Electron journey.",
+            trackingIssue: "#429",
+            expiresOn: "2026-07-29",
+          },
+        ],
+      }),
+    /expired planned journey.*agent-stream-project-switch/i,
+  );
+});
+
+test("temporary backlog metadata is all-or-nothing and date-valid", () => {
+  const temporaryJourney = {
+    id: "agent-stream-project-switch",
+    domains: ["chat", "project-lifecycle"],
+    interactions: ["project-lifecycle->chat"],
+    contracts: ["scope-transition:agent-stream:project"],
+    capabilities: ["electron", "napi"],
+  };
+
+  assert.throws(
+    () =>
+      baseCoverage({
+        backlog: [
+          {
+            ...temporaryJourney,
+            reason: "Agent journey pending.",
+          },
+        ],
+      }),
+    /temporary metadata.*reason, trackingIssue, and expiresOn together/i,
+  );
+  assert.throws(
+    () =>
+      baseCoverage({
+        backlog: [
+          {
+            ...temporaryJourney,
+            reason: "Agent journey pending.",
+            trackingIssue: "#429",
+            expiresOn: "2026-02-30",
+          },
+        ],
+      }),
+    /planned journey agent-stream-project-switch expiresOn.*valid date/i,
+  );
+});
+
+test("permanent UI backlog entries remain valid without temporary metadata", () => {
+  assert.doesNotThrow(() =>
+    baseCoverage({
+      backlog: [
+        {
+          id: "chronicle-ui-roundtrip",
+          domains: ["chronicle-ui"],
+          interactions: [],
+          contracts: ["ui-roundtrip:chronicle"],
+          capabilities: ["electron", "napi"],
+        },
+      ],
+    }),
+  );
+});
+
 test("chat-stream scope transitions exactly match the authoritative ChatScope registry", () => {
   const requiredContracts = [
     {
