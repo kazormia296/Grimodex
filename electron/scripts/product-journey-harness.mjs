@@ -85,6 +85,15 @@ export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
     pattern:
       /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/context_group\.cc:\d+\] ContextResult::kFatalFailure: WebGL2 blocklisted\r?\n?$/,
   }),
+  Object.freeze({
+    id: "ubuntu-xvfb-shared-image-mailbox",
+    phases: Object.freeze(["configure"]),
+    reason:
+      "Observed on GitHub-hosted Ubuntu Xvfb only as an isolated configure-process teardown burst after setup completed; all journey assertion phases remain gated.",
+    expiresOn: "2026-09-30",
+    pattern:
+      /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/shared_image\/shared_image_manager\.cc:\d+\] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox\.\r?\n?$/,
+  }),
 ]);
 
 const MAIN_PROCESS_ERROR_PATTERNS = Object.freeze([

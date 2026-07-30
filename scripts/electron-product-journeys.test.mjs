@@ -729,7 +729,7 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
   });
   t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
 
-  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 3);
+  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 4);
   const launched = await harness.launch("configure");
   mainStderr.emit(
     "data",
@@ -743,6 +743,10 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
     "data",
     "[6468:0730/134521.502865:ERROR:gpu/command_buffer/service/context_group.cc:148] ContextResult::kFatalFailure: WebGL2 blocklisted\n",
   );
+  mainStderr.emit(
+    "data",
+    "[8054:0730/135929.157713:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox.\n",
+  );
   mainStderr.emit("data", "Fatal: database corruption\n");
   await harness.close(launched.app, launched.page, "configure");
 
@@ -751,13 +755,78 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
     (cause) => cause,
   );
   assert.equal(error?.name, "MainProcessDiagnosticsError");
-  assert.equal(error.diagnostics.mainErrorCount, 4);
+  assert.equal(error.diagnostics.mainErrorCount, 5);
   assert.deepEqual(
     error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
       phase,
       message,
     })),
     [{ phase: "configure", message: "Fatal: database corruption\n" }],
+  );
+});
+
+test("shared-image mailbox noise remains gated outside configure and for near matches", async (t) => {
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async () => {
+      mainStderr.emit("end");
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  const launched = await harness.launch("chat-stream-project-switch");
+  mainStderr.emit(
+    "data",
+    "[8054:0730/135929.157713:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox.\n",
+  );
+  mainStderr.emit(
+    "data",
+    "[8054:0730/135929.157830:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n",
+  );
+  await harness.close(
+    launched.app,
+    launched.page,
+    "chat-stream-project-switch",
+  );
+
+  const error = await harness.finalizeDiagnostics().then(
+    () => null,
+    (cause) => cause,
+  );
+  assert.equal(error?.name, "MainProcessDiagnosticsError");
+  assert.equal(error.diagnostics.mainErrorCount, 2);
+  assert.deepEqual(
+    error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+      phase,
+      message,
+    })),
+    [
+      {
+        phase: "chat-stream-project-switch",
+        message:
+          "[8054:0730/135929.157713:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox.\n",
+      },
+      {
+        phase: "chat-stream-project-switch",
+        message:
+          "[8054:0730/135929.157830:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n",
+      },
+    ],
   );
 });
 
