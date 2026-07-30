@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
 
+import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
 import { createProductJourneyHarness } from "../electron/scripts/product-journey-harness.mjs";
+import { PRODUCT_JOURNEYS } from "../electron/scripts/product-journeys.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -59,13 +61,116 @@ test("CI has a dedicated product-journeys gate with native Electron and SQLite",
   assert.equal(upload.with["retention-days"], 14);
 });
 
-test("product runner keeps all five real boundary journeys", async () => {
+test("CI plans product journeys before dependency setup while shadow mode still runs all", async () => {
+  const workflow = yaml.load(await read(".github/workflows/ci.yml"));
+  const input = workflow.on.workflow_call.inputs.product_journey_mode;
+  const manualInput = workflow.on.workflow_dispatch.inputs.product_journey_mode;
+  const job = workflow.jobs["electron-product-journeys"];
+  const checkoutIndex = job.steps.findIndex((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  const selectorIndex = job.steps.findIndex(
+    (step) => step.id === "product-journey-impact",
+  );
+  const nativeDependenciesIndex = job.steps.findIndex(
+    (step) => step.name === "Native build dependencies",
+  );
+
+  assert.deepEqual(input, {
+    description: "Product journey selection mode",
+    required: false,
+    type: "string",
+    default: "all",
+  });
+  assert.deepEqual(manualInput, {
+    description: "Product journey selection mode",
+    required: true,
+    type: "choice",
+    default: "all",
+    options: ["all", "shadow"],
+  });
+  assert.ok(checkoutIndex >= 0, "product journey checkout is required");
+  assert.equal(job.steps[checkoutIndex].with["fetch-depth"], 0);
+  assert.equal(
+    selectorIndex,
+    checkoutIndex + 1,
+    "selector must run immediately after checkout",
+  );
+  assert.ok(
+    selectorIndex < nativeDependenciesIndex,
+    "selector must run before native dependency setup",
+  );
+
+  const selector = job.steps[selectorIndex];
+  assert.match(
+    selector.env.PRODUCT_JOURNEY_MODE,
+    /inputs\.product_journey_mode/,
+  );
+  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /pull_request/);
+  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /refs\/heads\/master/);
+  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /shadow/);
+  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /all/);
+  assert.match(
+    selector.env.PRODUCT_JOURNEY_BASE_SHA,
+    /github\.event\.pull_request\.base\.sha/,
+  );
+  assert.match(selector.env.PRODUCT_JOURNEY_BASE_SHA, /github\.event\.before/);
+  assert.match(
+    selector.env.PRODUCT_JOURNEY_HEAD_SHA,
+    /github\.event\.pull_request\.head\.sha/,
+  );
+  assert.match(selector.env.PRODUCT_JOURNEY_HEAD_SHA, /github\.sha/);
+  assert.match(
+    selector.run,
+    /node electron\/scripts\/product-journey-impact\.mjs/,
+  );
+  assert.match(selector.run, /--mode "\$PRODUCT_JOURNEY_MODE"/);
+  assert.match(selector.run, /--base "\$PRODUCT_JOURNEY_BASE_SHA"/);
+  assert.match(selector.run, /--head "\$PRODUCT_JOURNEY_HEAD_SHA"/);
+  assert.match(
+    selector.run,
+    /--report "\$GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR\/impact\.json"/,
+  );
+
+  const gate = job.steps.find((step) => step.name === "Product journey gate");
+  const shouldRunCondition =
+    "steps.product-journey-impact.outputs.should_run == 'true'";
+  const gateIndex = job.steps.indexOf(gate);
+  for (const step of job.steps.slice(
+    nativeDependenciesIndex,
+    gateIndex + 1,
+  )) {
+    if (step.name === "Build selected MCP journey dependency") continue;
+    assert.equal(
+      step.if,
+      shouldRunCondition,
+      `${step.name ?? step.uses ?? step.run} must skip expensive setup when no journey is selected`,
+    );
+  }
+  assert.equal(gate.if, shouldRunCondition);
+  assert.equal(
+    gate.run,
+    'xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys',
+  );
+
+  const mcpBuild = job.steps.find(
+    (step) => step.name === "Build selected MCP journey dependency",
+  );
+  assert.ok(mcpBuild, "capability-gated MCP build is required");
+  assert.equal(mcpBuild.run, "pnpm mcp:build");
+  assert.match(mcpBuild.if, /should_run.*true/);
+  assert.match(mcpBuild.if, /execution_capabilities.*mcp/);
+});
+
+test("catalog and runner implementation IDs match in deterministic order", () => {
+  assert.deepEqual(
+    PRODUCT_JOURNEYS.map((journey) => journey.id),
+    PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
+  );
+});
+
+test("product runner keeps the real boundary assertions", async () => {
   const source = await read("electron/scripts/product-journeys.mjs");
-  assert.match(source, /editor-persistence/);
-  assert.match(source, /chat-authority-isolation/);
-  assert.match(source, /workspace-switch-authority/);
-  assert.match(source, /external-write-conflict/);
-  assert.match(source, /cross-feature-authoring/);
   assert.match(source, /open_workspace/);
   assert.match(source, /db_execute/);
   assert.match(source, /workspace-menu-trigger/);
