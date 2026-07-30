@@ -74,6 +74,7 @@ export interface SemanticRerankerShadowInput {
 export interface SemanticRerankerShadowRanking {
   candidateHash: string;
   sceneId: string;
+  denseRank: number;
   currentRank: number;
   rerankedRank: number;
   denseScore: number;
@@ -355,10 +356,18 @@ export function buildSemanticRerankerShadowComparison(
   };
   const baselineHashes = input.baselineInjectedHits.map(hashFor);
   const counterfactualHashes = counterfactual.map(hashFor);
+  const excludedScenes = new Set(input.excludeSceneIds);
   const baselineRankById = new Map(
     baselineRanking.map(
       (hit, index) => [semanticRerankerCandidateId(hit), index + 1] as const,
     ),
+  );
+  const denseRankById = new Map(
+    input.denseHits
+      .filter((hit) => !excludedScenes.has(hit.sceneId))
+      .map(
+        (hit, index) => [semanticRerankerCandidateId(hit), index + 1] as const,
+      ),
   );
   const rerankedRankById = new Map(
     reranked.map(
@@ -372,6 +381,7 @@ export function buildSemanticRerankerShadowComparison(
     return {
       candidateHash: score.candidateHash,
       sceneId: hit.sceneId,
+      denseRank: denseRankById.get(candidateId) ?? 0,
       currentRank: baselineRankById.get(candidateId) ?? 0,
       rerankedRank: rerankedRankById.get(candidateId) ?? 0,
       denseScore: hit.score,
@@ -383,7 +393,6 @@ export function buildSemanticRerankerShadowComparison(
   const expected = input.expectedSceneIds;
   const isNoMatch = expected === undefined ? null : expected.length === 0;
   const expectedSet = new Set(expected ?? []);
-  const excludedScenes = new Set(input.excludeSceneIds);
   const goldCandidatePresent =
     expected === undefined || expected.length === 0
       ? null

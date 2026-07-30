@@ -345,9 +345,34 @@ job writes comparison metadata to
 `~/.grimodex/logs/semantic-reranker-shadow.jsonl`. The persisted record
 contains hashed identifiers, ranks, scores, token/truncation counts, model
 identity, memory, and latency, but no query, candidate, or manuscript text.
+New records retain the exact dense rank as well as current hybrid and reranker
+ranks so the three-method top-10 annotation union can be reconstructed without
+storing text.
 Counterfactual injection is logged and never applied. Semantic Recall and its
 hybrid retrieval setting must both be enabled because Gate 2 promoted the
 frozen hybrid top-30 configuration.
+
+## Corpus role and promotion boundary
+
+The committed Gate 2 corpus remains model-selection validation:
+
+| Language | Positive | No-match | Independent works |
+| -------- | -------: | -------: | ----------------: |
+| Japanese |       12 |        6 |                 1 |
+| English  |       22 |        6 |                 1 |
+
+It is enough for the shadow choice above, but not for claims about
+generalization, no-match safety, opt-in readiness, or default enablement. The
+next evidence uses work-level-separated `shadow-private-dev` and
+`frozen-holdout` labels. The first floor is 50 positive and 30 no-match queries
+per language across at least three works; opt-in and default decisions require
+larger floors and a valid frozen-holdout lock.
+
+The hash-only label schema, four-grade union-pooling contract, hard-case
+slices, stage targets, commands, and aggregate report schema are recorded in
+[`SHADOW_CORPUS_PROTOCOL.md`](./SHADOW_CORPUS_PROTOCOL.md). Private labels and
+locks stay ignored under `data/private/`; generated reports disclose neither
+source text nor hashed identifiers.
 
 ## Scope boundary and next step
 
@@ -359,14 +384,14 @@ The measured conclusion is:
 
 It does not prove user-corpus generalization, absolute no-match quality,
 memory behavior under Electron contention, or product UX latency after IPC.
-The next justified step is a separate shadow integration that:
+The implemented development shadow:
 
 1. keeps the current candidate admission gate unchanged;
 2. runs xsmall top 30 for Japanese and MiniLM-L4 top 30 for English;
 3. records current versus reranked scene order without changing injection;
-4. validates real private workspaces locally without committing their text;
-5. stops if Recall@3, gold inclusion, no-match behavior, or UI latency
-   regresses.
+4. supplies text-free evidence for locally reviewed private workspaces; and
+5. remains ineligible for opt-in or default use until the corpus protocol,
+   frozen holdout, quality gates, and product performance gates pass.
 
 Impact Review remains `not-evaluated`. Off-the-shelf relevance logits must not
 remove Impact candidates.

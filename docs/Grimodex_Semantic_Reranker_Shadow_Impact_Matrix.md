@@ -43,6 +43,7 @@ is outside this change.
 The JSONL schema retains enough metadata to compute:
 
 - baseline versus reranked scene order;
+- exact dense, current hybrid, and reranker rank for every frozen candidate;
 - baseline versus counterfactual final-three injection order and set changes;
 - first-presented chunk changes;
 - query/candidate token counts and truncation rates;
@@ -53,4 +54,13 @@ The JSONL schema retains enough metadata to compute:
 
 Gold inclusion, gold injection position/MRR, candidate-generation misses, and
 no-match injection remain label-derived metrics. Private labels stay outside
-the repository and join to the log by query and scene hashes.
+the repository and join to the log by work, query, candidate-set, candidate,
+and scene hashes.
+
+The canonical expansion workflow is
+`experiments/lfm25-encoder-phase0/SHADOW_CORPUS_PROTOCOL.md`. It pools the
+union of dense/current-hybrid/reranker top 10 for four-grade human review,
+rejects work leakage between private development and holdout, reports
+candidate-generation/conditional-reranker/admission/end-to-end denominators
+separately, and fingerprints the frozen holdout without retaining text. These
+artifacts remain observational evidence and cannot toggle product behavior.

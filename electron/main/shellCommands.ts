@@ -275,6 +275,7 @@ const SHADOW_COMPARISON_KEYS = new Set([
 const SHADOW_RANKING_KEYS = new Set([
   "candidateHash",
   "sceneId",
+  "denseRank",
   "currentRank",
   "rerankedRank",
   "denseScore",
@@ -416,13 +417,17 @@ function sanitizeShadowComparison(
     for (const key of ["queryTruncated", "candidateTruncated"] as const) {
       safeTokenization[key] = requireSafeBoolean(tokenization, key, command);
     }
+    const denseRank = requireFiniteNumber(ranking, "denseRank", command);
     const currentRank = requireFiniteNumber(ranking, "currentRank", command);
     const rerankedRank = requireFiniteNumber(ranking, "rerankedRank", command);
     if (
+      !Number.isSafeInteger(denseRank) ||
       !Number.isSafeInteger(currentRank) ||
       !Number.isSafeInteger(rerankedRank) ||
+      denseRank < 1 ||
       currentRank < 1 ||
       rerankedRank < 1 ||
+      denseRank > 30 ||
       currentRank > 30 ||
       rerankedRank > 30
     ) {
@@ -437,6 +442,7 @@ function sanitizeShadowComparison(
         "scene",
         requireSafeString(ranking, "sceneId", command),
       ),
+      denseRank,
       currentRank,
       rerankedRank,
       denseScore: requireFiniteNumber(ranking, "denseScore", command),

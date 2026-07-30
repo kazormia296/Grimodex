@@ -169,6 +169,31 @@ top-30 and English MiniLM-L4 top-30 pass the Gate 2 promotion rule for a later
 shadow integration; Japanese xsmall top-12 fails the final-injection safety
 guard. No product path changes in this experiment.
 
+### Shadow corpus expansion
+
+Gate 2 public data is now fixed as model-selection validation. It must not be
+reused as blind product-enablement evidence. The development shadow can be
+joined to hash-only private human labels without persisting a query, candidate,
+or manuscript text:
+
+```text
+gate2-public       -> validation
+shadow-private-dev -> local investigation
+frozen-holdout     -> work-isolated promotion evidence
+```
+
+The corpus manager creates the human judgment pool from the union of dense,
+current hybrid, and selected-reranker top 10. It validates grades 0–3,
+positive/no-match contracts, work-level split isolation, exact 30-candidate
+evidence, and a non-overwriting frozen-holdout fingerprint. Its report contains
+aggregate counts and rates only, with separate candidate-generation,
+conditional-reranker, admission, and end-to-end denominators.
+
+The complete privacy contract, staged sample floors, slice taxonomy, and
+commands are in
+[`SHADOW_CORPUS_PROTOCOL.md`](./SHADOW_CORPUS_PROTOCOL.md). These tools prepare
+evidence; they do not enable or apply a reranker.
+
 ## Fixed supply-chain inputs
 
 - Model: `LiquidAI/LFM2.5-Encoder-230M`
@@ -228,7 +253,8 @@ uv run --frozen --extra cpu python tools/validate_dataset.py data/public
 The tests cover schema validation, exact spans, canonical serialization,
 story leakage, deterministic sampling, metric math, validation-only threshold
 selection, manifest drift, privacy redaction, sample floors, warmup exclusion,
-speed budgets, masked pooling, and batch-order equivalence.
+speed budgets, masked pooling, batch-order equivalence, hash-only shadow label
+pooling, work-level holdout isolation, and holdout drift detection.
 
 ## Bootstrap and offline smoke
 

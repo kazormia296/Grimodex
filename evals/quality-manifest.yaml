@@ -144,11 +144,14 @@ requirements:
       - src/features/chat/chatRecall.ts
       - src/features/chat/context/chatContextPlanner.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
     lightTests:
       - src/features/chat/citationVerify.test.ts
       - src/features/chat/chatRecall.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
       - scripts/quality/run-related-scenes-heavy.mjs
@@ -165,11 +168,14 @@ requirements:
       - src/features/chat/agent/chronicleWriteTools.ts
       - src/features/post-effect/api.ts
       - src/features/post-effect/canonicalize.ts
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/tools/manage_shadow_corpus.py
     lightTests:
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/chronicleWriteTools.test.ts
       - src/features/post-effect/api.test.ts
       - src/features/post-effect/canonicalize.test.ts
+      - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src-tauri/src/commands/post_effect.rs
       - src/features/codex/candidateJudgment.live.test.ts
@@ -186,8 +192,10 @@ requirements:
     implementedBy:
       - scripts/quality/eval-fixtures.mjs
       - evals/fixtures/routing.yaml
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
     lightTests:
       - scripts/quality/eval-fixtures.test.mjs
+      - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -201,10 +209,13 @@ requirements:
       - scripts/quality/impact-map.mjs
       - evals/impact-map.yaml
       - src/features/ai-verification/aiPathRegistry.ts
+      - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
+      - experiments/lfm25-encoder-phase0/SHADOW_CORPUS_PROTOCOL.md
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+      - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
     evaluatedBy:
