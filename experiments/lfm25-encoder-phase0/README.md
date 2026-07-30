@@ -181,9 +181,11 @@ scene quotas and falls back to the baseline order on any failure.
 
 ### Gate 3 Impact Review pre-training speed
 
-Gate 3 asks a narrower question before any Impact Review corpus construction
-or fine-tuning: can either selected Japanese backbone process one Codex change
-against 30 scenes inside the existing Impact latency budget on CPU?
+Gate 3 asks a narrow lower-bound question before any Impact Review corpus
+construction or fine-tuning: can either selected Japanese backbone process one
+Codex change against 30 preselected candidate windows inside the existing
+Impact latency budget on CPU? The original fixed workload contains 30 windows
+but only 18 distinct scene IDs, so it does not represent 30 complete scenes.
 
 | Key                 | Backbone                                 | Input cap | Head used by this gate |
 | ------------------- | ---------------------------------------- | --------- | ---------------------- |
@@ -192,9 +194,9 @@ against 30 scenes inside the existing Impact latency budget on CPU?
 
 The committed workload is derived from the SHA-256-pinned Japanese Gate 2
 candidate file. It serializes one canonical `ImpactDiffPayload` and pairs it
-with exactly 30 public Japanese scenes. The diff has a 128-token budget, each
-scene has a 384-token budget, and pair truncation preserves the diff while
-truncating only the scene.
+with exactly 30 public Japanese candidate windows from 18 distinct scenes.
+The diff has a 128-token budget, each window has a 384-token budget, and pair
+truncation preserves the diff while truncating only the scene side.
 
 Both models use the same seed-42 fp32 linear head over masked-mean backbone
 output. The head is intentionally untrained: scores and rankings make no
@@ -229,15 +231,19 @@ make impact-gate3 \
   IMPACT_GATE3_FINAL_BUCKET_MODE=<naive-or-bucketed>
 ```
 
-The 30-scene end-to-end p95 bands are Target at 5 seconds or less,
+The 30-window lower-bound end-to-end p95 bands are Target at 5 seconds or less,
 Conditional at 10 seconds or less, Hold at 20 seconds or less, and Reject
-above 20 seconds. Passing permits Impact corpus/training design; it does not
-enable a product path or establish Impact quality.
+above 20 seconds. A Target result still requires Gate 3.1 before labeled work
+is formalized: 30 distinct full scenes must be converted with the product
+plain-text path, windowed at 384 tokens with stride 256, fully inferred, and
+aggregated by maximum window score. Gate 3.1 also measures 30 fully occupied
+384-token scene windows as a separate cap stress.
 
 The completed Ryzen 5 3600 measurement is recorded in
 [`PHASE0B_GATE3_RESULTS.md`](./PHASE0B_GATE3_RESULTS.md). Both candidates
-reached Target, so xsmall as the primary initialization and ModernBERT as the
-neutral baseline may proceed to the separately gated minimal labeled probe.
+reached Target for the lower-bound workload. Gate 4 implementation may remain
+provisional, but xsmall and ModernBERT do not proceed to a formal labeled
+decision until Gate 3.1 passes.
 
 ### Optional shadow corpus diagnostics
 
