@@ -92,6 +92,17 @@ async function runAutoRevision(key: string): Promise<void> {
       if (!revision) return;
       useRevisionStore.getState().recordAutoRevision(key);
       await pruneRevisions("scene", request.sceneId, request.keepCount);
+    } catch (error) {
+      // Revisions are non-critical follow-up work. In particular, a
+      // Workspace/Project lifecycle closes read admission before strict
+      // quiescence drains this queue, so the latest-revision lookup can be
+      // cancelled deliberately. The durable scene save has already succeeded;
+      // do not turn that expected cancellation into a failed scope change.
+      debugLog.warn(
+        "AutoSave",
+        "revision failed (content saved)",
+        errorDetail(error),
+      );
     } finally {
       recordCounter("editor.postSave.autoRevision.settled");
       markEnd("editor.postSave.autoRevision");

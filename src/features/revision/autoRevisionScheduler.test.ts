@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   recordAutoRevision: vi.fn(),
   shouldAutoRevision: vi.fn(() => true),
   recordCounter: vi.fn(),
+  debugWarn: vi.fn(),
 }));
 
 vi.mock("@/lib/editorAnalysisScheduler", () => ({
@@ -48,7 +49,7 @@ vi.mock("@/lib/perfLog", () => ({
   recordCounter: h.recordCounter,
 }));
 vi.mock("@/lib/debugLog", () => ({
-  debugLog: { warn: vi.fn() },
+  debugLog: { warn: h.debugWarn },
   errorDetail: (error: unknown) => error,
 }));
 
@@ -174,6 +175,26 @@ describe("autoRevisionScheduler", () => {
     await flushQuiescenceProviderStage("scoped-mutations");
 
     expect(h.createRevision).toHaveBeenCalledOnce();
+    expect(h.scheduled.size).toBe(0);
+  });
+
+  it("does not fail scoped quiescence when a revision read is cancelled", async () => {
+    const cancellation = new Error(
+      "IPC_READ_CANCELLED: read cancelled before lifecycle transition completed: db_execute",
+    );
+    h.createRevision.mockRejectedValueOnce(cancellation);
+    scheduleAutoRevision(request(7));
+
+    await expect(
+      flushQuiescenceProviderStage("scoped-mutations"),
+    ).resolves.toBeUndefined();
+
+    expect(h.recordAutoRevision).not.toHaveBeenCalled();
+    expect(h.debugWarn).toHaveBeenCalledWith(
+      "AutoSave",
+      "revision failed (content saved)",
+      cancellation,
+    );
     expect(h.scheduled.size).toBe(0);
   });
 
