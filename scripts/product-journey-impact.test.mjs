@@ -482,7 +482,11 @@ test("shadow mode records affected recommendations but executes the full catalog
     execution.executionJourneyIds,
     PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
   );
-  assert.deepEqual(execution.executionCapabilities, ["electron", "napi"]);
+  assert.deepEqual(execution.executionCapabilities, [
+    "electron",
+    "napi",
+    "mcp",
+  ]);
   assert.equal(execution.shouldRun, true);
   assert.equal(execution.shadow, true);
 });
@@ -582,7 +586,10 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
     githubOutput,
     /selected_journey_ids=\["cross-feature-authoring"\]/,
   );
-  assert.match(githubOutput, /execution_capabilities=\["electron","napi"\]/);
+  assert.match(
+    githubOutput,
+    /execution_capabilities=\["electron","napi","mcp"\]/,
+  );
   assert.match(
     await readFile(summaryPath, "utf8"),
     /Grimodex product journey impact/,
