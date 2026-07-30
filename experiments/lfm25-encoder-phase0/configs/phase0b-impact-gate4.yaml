@@ -1,0 +1,76 @@
+schema_version: 1
+
+corpus:
+  path: data/public/gate4/impact-probe-ja.jsonl
+  sha256: 4b65691569dc917d5060836fc23b765f07fb859cbb8ead20fe23e3962b2d021d
+  record_count: 240
+  story_counts:
+    train: 14
+    validation: 4
+    test: 4
+    challenge: 2
+
+training:
+  modes: [frozen_head, full_finetune]
+  seed: 42
+  max_pair_tokens: 512
+  batch_size: 4
+  frozen_learning_rate: 0.01
+  full_learning_rate: 0.00003
+  weight_decay: 0.1
+  frozen_epoch_cap: 40
+  full_epoch_cap: 10
+  early_stop_patience: 3
+  model_threads:
+    ja_xsmall: 8
+    modernbert_ja_30m: 6
+
+thresholds:
+  minimum_recall: 0.95
+  minimum_direct_recall: 1.0
+  minimum_candidate_reduction: 0.30
+  minimum_challenge_recall: 0.80
+
+offline_environment:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_HUB_DISABLE_PROGRESS_BARS: "1"
+  TOKENIZERS_PARALLELISM: "false"
+
+models:
+  - key: ja_xsmall
+    id: hotchpotch/japanese-reranker-xsmall-v2
+    revision: de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a
+    license: MIT
+    dtype: float32
+    weight: model.safetensors
+    weight_sha256: 93a48c41e3deeb772a024057ed163f803dfe550052b9e2155cbe2b9631602961
+    local_snapshot: local/phase0b-impact/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/snapshot
+    manifest: local/phase0b-impact/ja_xsmall/de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a/manifest.json
+    files:
+      - README.md
+      - config.json
+      - model.safetensors
+      - special_tokens_map.json
+      - tokenizer.json
+      - tokenizer.model
+      - tokenizer_config.json
+
+  - key: modernbert_ja_30m
+    id: sbintuitions/modernbert-ja-30m
+    revision: 8cb03f54cb9e30e72459e5f1cedc6d89c7d8dcb5
+    license: MIT
+    dtype: float32
+    weight: model.safetensors
+    weight_sha256: de292c27183e6b158bafbe91e61afd4c107aeed702b94394ac643f2f6aa62065
+    local_snapshot: local/phase0b-impact/modernbert_ja_30m/8cb03f54cb9e30e72459e5f1cedc6d89c7d8dcb5/snapshot
+    manifest: local/phase0b-impact/modernbert_ja_30m/8cb03f54cb9e30e72459e5f1cedc6d89c7d8dcb5/manifest.json
+    files:
+      - LICENSE
+      - README.md
+      - config.json
+      - model.safetensors
+      - special_tokens_map.json
+      - tokenizer.json
+      - tokenizer.model
+      - tokenizer_config.json
