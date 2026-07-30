@@ -12,6 +12,9 @@ export function WorkspaceMenu() {
   const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
   const showLauncher = useWorkspaceStore((s) => s.showLauncher);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (s) => s.workspaceOpenRevision,
+  );
 
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -55,6 +58,7 @@ export function WorkspaceMenu() {
       <button
         type="button"
         data-testid="workspace-menu-trigger"
+        data-workspace-open-revision={workspaceOpenRevision}
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
       >

@@ -68,7 +68,7 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     h.blockIfPolicyOff.mockReturnValue(false);
     h.invoke.mockClear();
     h.invoke.mockImplementation(async (command: string) =>
-      command === "db_execute" ? { rows: [{ version: 0 }] } : writeResult,
+      command === "event_get_version" ? 0 : writeResult,
     );
     h.bumpRevision.mockClear();
     h.push.mockClear();
@@ -194,7 +194,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     h.blockIfPolicyOff.mockReturnValue(false);
     h.invoke.mockClear();
     h.invoke.mockImplementation(async (command: string) =>
-      command === "db_execute" ? { rows: [{ version: 0 }] } : writeResult,
+      command === "event_get_version" ? 0 : writeResult,
     );
     h.bumpRevision.mockClear();
     h.push.mockClear();
@@ -251,7 +251,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
 
   it("削除済み create replay は renderer side effect を公開しない", async () => {
     h.invoke.mockImplementation(async (command: string) =>
-      command === "db_execute" ? { rows: [] } : writeResult,
+      command === "event_get_version" ? null : writeResult,
     );
 
     await expect(
@@ -299,11 +299,9 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
   });
 
   it("version 読み込み中に Project が変わった update を別 Project へ送らない", async () => {
-    let resolveVersion:
-      | ((value: { rows: Array<{ version: number }> }) => void)
-      | undefined;
+    let resolveVersion: ((value: number) => void) | undefined;
     h.invoke.mockImplementation((command: string) => {
-      if (command === "db_execute") {
+      if (command === "event_get_version") {
         return new Promise((resolve) => {
           resolveVersion = resolve;
         });
@@ -313,14 +311,13 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
 
     const update = agentUpdateEvent({ eventId: "shared-id", title: "old" });
     await vi.waitFor(() =>
-      expect(h.invoke).toHaveBeenCalledWith("db_execute", {
-        sql: expect.any(String),
-        params: ["shared-id", "p1"],
-        method: "all",
+      expect(h.invoke).toHaveBeenCalledWith("event_get_version", {
+        eventId: "shared-id",
+        projectId: "p1",
       }),
     );
     h.currentProjectId = "p2";
-    resolveVersion?.({ rows: [{ version: 7 }] });
+    resolveVersion?.(7);
 
     await expect(update).rejects.toThrow("event write authority changed");
     expect(

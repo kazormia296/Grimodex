@@ -269,6 +269,8 @@ class CandidateJudgment(_CorpusModel):
 class ShadowLabelRecord(_CorpusModel):
     schema_version: Literal[1]
     split: CorpusSplit
+    # Human-assigned family for copies/exports derived from the same work.
+    work_family_hash: Sha256 | None = None
     work_hash: Sha256
     query_hash: Sha256
     candidate_set_hash: Sha256
@@ -307,6 +309,10 @@ class ShadowLabelRecord(_CorpusModel):
 
         if self.review_status == "unreviewed":
             return self
+        if self.work_family_hash is None:
+            raise ValueError(
+                "human-verified labels require workFamilyHash"
+            )
         if self.query_kind is None:
             raise ValueError(
                 "human-verified labels require queryKind"
@@ -356,6 +362,9 @@ class StageTarget:
     no_match: int
     works: int
     holdout_works: int
+    holdout_positive: int
+    holdout_no_match: int
+    max_work_contribution: float
     requires_frozen_holdout: bool
 
 
@@ -365,6 +374,9 @@ DEFAULT_STAGE_TARGETS: Mapping[str, StageTarget] = {
         no_match=30,
         works=3,
         holdout_works=0,
+        holdout_positive=0,
+        holdout_no_match=0,
+        max_work_contribution=0.5,
         requires_frozen_holdout=False,
     ),
     "experimental-opt-in": StageTarget(
@@ -372,6 +384,9 @@ DEFAULT_STAGE_TARGETS: Mapping[str, StageTarget] = {
         no_match=60,
         works=4,
         holdout_works=1,
+        holdout_positive=20,
+        holdout_no_match=10,
+        max_work_contribution=0.4,
         requires_frozen_holdout=True,
     ),
     "default-candidate": StageTarget(
@@ -379,6 +394,9 @@ DEFAULT_STAGE_TARGETS: Mapping[str, StageTarget] = {
         no_match=100,
         works=5,
         holdout_works=2,
+        holdout_positive=50,
+        holdout_no_match=30,
+        max_work_contribution=0.35,
         requires_frozen_holdout=True,
     ),
 }
@@ -592,6 +610,7 @@ def build_label_template(
             ShadowLabelRecord(
                 schema_version=1,
                 split=split,
+                work_family_hash=None,
                 work_hash=record.project_hash,
                 query_hash=record.query_hash,
                 candidate_set_hash=record.candidate_set_hash,
@@ -630,6 +649,7 @@ def pair_shadow_records(
     seen_queries: set[str] = set()
     seen_label_keys: set[tuple[str, str]] = set()
     split_by_work: dict[str, CorpusSplit] = {}
+    split_by_work_family: dict[str, CorpusSplit] = {}
     language_by_work: dict[str, CorpusLanguage] = {}
     model_by_language: dict[CorpusLanguage, tuple[str, str, str]] = {}
     cases: list[PairedShadowCase] = []
@@ -710,6 +730,16 @@ def pair_shadow_records(
                 "work leakage: one work appears in shadow-private-dev and "
                 "frozen-holdout"
             )
+        if label.work_family_hash is not None:
+            previous_family_split = split_by_work_family.setdefault(
+                label.work_family_hash,
+                label.split,
+            )
+            if previous_family_split != label.split:
+                raise CorpusValidationError(
+                    "work family leakage: derived projects from one work "
+                    "family cannot span shadow-private-dev and frozen-holdout"
+                )
         previous_language = language_by_work.setdefault(
             label.work_hash,
             label.language,
@@ -804,10 +834,20 @@ def _quality_summary(
     candidate_present = [
         case for case in positives if _reference_scene_present(case)
     ]
-    admission_eligible = [
+    baseline_admission_eligible = [
+        case
+        for case in candidate_present
+        if _ranking_recall_at_3(case, "current_rank")
+    ]
+    reranker_admission_eligible = [
         case
         for case in candidate_present
         if _ranking_recall_at_3(case, "reranked_rank")
+    ]
+    common_admission_eligible = [
+        case
+        for case in baseline_admission_eligible
+        if case in reranker_admission_eligible
     ]
 
     def ranking_block(cases: Sequence[PairedShadowCase]) -> dict[str, Any]:
@@ -831,25 +871,51 @@ def _quality_summary(
         "endToEnd": ranking_block(positives),
         "conditionalReranker": ranking_block(candidate_present),
         "admission": {
-            "queries": len(admission_eligible),
-            "baselineRelevantInjectionRate": _rate(
-                [
-                    _injection_has_relevant(
-                        case,
-                        case.shadow.comparison.baseline_injected_candidate_hashes,
-                    )
-                    for case in admission_eligible
-                ]
-            ),
-            "rerankerRelevantInjectionRate": _rate(
-                [
-                    _injection_has_relevant(
-                        case,
-                        case.shadow.comparison.counterfactual_injected_candidate_hashes,
-                    )
-                    for case in admission_eligible
-                ]
-            ),
+            "baseline": {
+                "queries": len(baseline_admission_eligible),
+                "relevantInjectionRate": _rate(
+                    [
+                        _injection_has_relevant(
+                            case,
+                            case.shadow.comparison.baseline_injected_candidate_hashes,
+                        )
+                        for case in baseline_admission_eligible
+                    ]
+                ),
+            },
+            "reranker": {
+                "queries": len(reranker_admission_eligible),
+                "relevantInjectionRate": _rate(
+                    [
+                        _injection_has_relevant(
+                            case,
+                            case.shadow.comparison.counterfactual_injected_candidate_hashes,
+                        )
+                        for case in reranker_admission_eligible
+                    ]
+                ),
+            },
+            "common": {
+                "queries": len(common_admission_eligible),
+                "baselineRelevantInjectionRate": _rate(
+                    [
+                        _injection_has_relevant(
+                            case,
+                            case.shadow.comparison.baseline_injected_candidate_hashes,
+                        )
+                        for case in common_admission_eligible
+                    ]
+                ),
+                "rerankerRelevantInjectionRate": _rate(
+                    [
+                        _injection_has_relevant(
+                            case,
+                            case.shadow.comparison.counterfactual_injected_candidate_hashes,
+                        )
+                        for case in common_admission_eligible
+                    ]
+                ),
+            },
         },
         "noMatch": {
             "queries": len(no_matches),
@@ -889,12 +955,37 @@ def _language_summary(
     no_matches = [
         case for case in verified if case.label.query_kind == "no-match"
     ]
-    works = {case.label.work_hash for case in verified}
+    works = {
+        case.label.work_family_hash
+        for case in verified
+        if case.label.work_family_hash is not None
+    }
     holdout_works = {
-        case.label.work_hash
+        case.label.work_family_hash
         for case in verified
         if case.label.split == "frozen-holdout"
+        and case.label.work_family_hash is not None
     }
+    holdout_positives = [
+        case
+        for case in positives
+        if case.label.split == "frozen-holdout"
+    ]
+    holdout_no_matches = [
+        case
+        for case in no_matches
+        if case.label.split == "frozen-holdout"
+    ]
+    family_counts = Counter(
+        case.label.work_family_hash
+        for case in verified
+        if case.label.work_family_hash is not None
+    )
+    max_work_contribution = (
+        max(family_counts.values()) / len(verified)
+        if verified and family_counts
+        else None
+    )
     no_match_types = Counter(
         case.label.no_match_type
         for case in no_matches
@@ -926,6 +1017,9 @@ def _language_summary(
         "noMatch": len(no_matches),
         "works": len(works),
         "holdoutWorks": len(holdout_works),
+        "holdoutPositive": len(holdout_positives),
+        "holdoutNoMatch": len(holdout_no_matches),
+        "maxWorkContribution": max_work_contribution,
         "judgedCandidates": judged_candidates,
         "truncatedQueries": truncated_queries,
         "noMatchTypes": dict(sorted(no_match_types.items())),
@@ -960,18 +1054,37 @@ def build_safe_report(
                 "positive": max(0, target.positive - observed["positive"]),
                 "noMatch": max(0, target.no_match - observed["noMatch"]),
                 "works": max(0, target.works - observed["works"]),
+            }
+            holdout_deficits = {
                 "holdoutWorks": max(
                     0,
                     target.holdout_works - observed["holdoutWorks"],
                 ),
+                "holdoutPositive": max(
+                    0,
+                    target.holdout_positive - observed["holdoutPositive"],
+                ),
+                "holdoutNoMatch": max(
+                    0,
+                    target.holdout_no_match - observed["holdoutNoMatch"],
+                ),
             }
             quantity_ready = not any(deficits.values())
-            decision_ready = (
-                quantity_ready
-                and (
-                    not target.requires_frozen_holdout
-                    or holdout_lock_valid
+            holdout_ready = (
+                not target.requires_frozen_holdout
+                or (
+                    holdout_lock_valid
+                    and not any(holdout_deficits.values())
                 )
+            )
+            observed_contribution = observed["maxWorkContribution"]
+            contribution_ready = (
+                target.positive + target.no_match == 0
+                if observed_contribution is None
+                else observed_contribution <= target.max_work_contribution
+            )
+            evidence_ready = (
+                quantity_ready and holdout_ready and contribution_ready
             )
             readiness[stage_name][language] = {
                 "targets": {
@@ -979,16 +1092,36 @@ def build_safe_report(
                     "noMatch": target.no_match,
                     "works": target.works,
                     "holdoutWorks": target.holdout_works,
+                    "holdoutPositive": target.holdout_positive,
+                    "holdoutNoMatch": target.holdout_no_match,
+                    "maxWorkContribution": target.max_work_contribution,
                 },
                 "observed": {
                     "positive": observed["positive"],
                     "noMatch": observed["noMatch"],
                     "works": observed["works"],
                     "holdoutWorks": observed["holdoutWorks"],
+                    "holdoutPositive": observed["holdoutPositive"],
+                    "holdoutNoMatch": observed["holdoutNoMatch"],
+                    "maxWorkContribution": observed_contribution,
                 },
-                "deficits": deficits,
+                "deficits": {
+                    **deficits,
+                    **holdout_deficits,
+                    "maxWorkContribution": (
+                        None
+                        if observed_contribution is None
+                        else max(
+                            0.0,
+                            observed_contribution
+                            - target.max_work_contribution,
+                        )
+                    ),
+                },
                 "quantityReady": quantity_ready,
-                "decisionReady": decision_ready,
+                "holdoutReady": holdout_ready,
+                "contributionReady": contribution_ready,
+                "evidenceReady": evidence_ready,
                 "requiresFrozenHoldout": target.requires_frozen_holdout,
             }
     return {
@@ -1063,7 +1196,11 @@ def create_holdout_lock(
         split="frozen-holdout",
         case_count=len(payload),
         work_count=len(
-            {case.label.work_hash for case in holdout_cases}
+            {
+                case.label.work_family_hash
+                for case in holdout_cases
+                if case.label.work_family_hash is not None
+            }
         ),
         by_language=by_language,
         fingerprint_sha256=_holdout_fingerprint(cases),

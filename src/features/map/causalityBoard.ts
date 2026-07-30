@@ -11,15 +11,7 @@
  *
  * LLM の hallucination は buildCausalityDag が実在シーン解決で吸収済み。
  */
-import { db } from "@/db/client";
-import {
-  mapBoards,
-  mapNodePositions,
-  mapEdges,
-  type NewMapBoard,
-  type NewMapNodePosition,
-  type NewMapEdge,
-} from "@/db/schema";
+import type { NewMapBoard, NewMapNodePosition, NewMapEdge } from "@/db/schema";
 import { invoke } from "@/lib/tauri";
 import { listAnnotationsForProject } from "@/features/post-effect/api";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -34,20 +26,7 @@ import type { ShowFlags } from "./types";
 import { extractCausalEdges, buildCausalityDag } from "./causalityDag";
 import i18next from "@/lib/i18n";
 
-const INSERT_CHUNK = 50;
 const CAUSAL_EDGE_COLOR = "#dc2626";
-
-type BatchStatement = { sql: string; params: unknown[]; method: string };
-
-function toStatement(q: { sql: string; params: unknown[] }): BatchStatement {
-  return { sql: q.sql, params: q.params, method: "run" };
-}
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
 
 export interface GenerateCausalityOptions {
   title?: string;
@@ -181,19 +160,18 @@ export async function generateCausalityBoard(
     });
   }
 
-  // 8. db_execute_batch で 1 tx 書き込み。
-  const statements: BatchStatement[] = [
-    toStatement(db.insert(mapBoards).values(boardRow).toSQL()),
-  ];
-  for (const part of chunk(positionRows, INSERT_CHUNK)) {
-    statements.push(
-      toStatement(db.insert(mapNodePositions).values(part).toSQL()),
-    );
-  }
-  for (const part of chunk(edgeRows, INSERT_CHUNK)) {
-    statements.push(toStatement(db.insert(mapEdges).values(part).toSQL()));
-  }
-  await invoke("db_execute_batch", { statements });
+  // 8. Rust-owned aggregate write で所有権検証と 1 tx 書き込み。
+  await invoke("map_write_bundle", {
+    payload: {
+      kind: "create-board",
+      projectId,
+      board: boardRow,
+      stickies: [],
+      positions: positionRows,
+      edges: edgeRows,
+      frames: [],
+    },
+  });
 
   return {
     boardId,

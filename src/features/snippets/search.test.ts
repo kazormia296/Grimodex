@@ -1,65 +1,73 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snippet } from "./api";
 
-// Mock invoke before importing search module
-const mockInvoke = vi.fn();
+const { mockInvoke, mockDbWhere } = vi.hoisted(() => ({
+  mockInvoke: vi.fn(),
+  mockDbWhere: vi.fn(),
+}));
+
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
+vi.mock("@/db/client", () => {
+  const chain = {
+    select: vi.fn().mockReturnThis(),
+    from: vi.fn().mockReturnThis(),
+    where: (...args: unknown[]) => mockDbWhere(...args),
+  };
+  return { db: chain };
+});
 
 const { searchSnippets } = await import("./search");
 
+const fakeSnippet: Snippet = {
+  id: "snippet-1",
+  projectId: "default-project",
+  title: "森の描写メモ",
+  content: "暗い森の中、一筋の光が差し込んだ。",
+  tagsCache: '["描写","森"]',
+  contentSource: null,
+  sceneId: null,
+  sourceChatMessageId: null,
+  usageCount: 0,
+  version: 0,
+  createdAt: "2025-01-01T00:00:00Z",
+  updatedAt: "2025-01-01T00:00:00Z",
+};
+
 beforeEach(() => {
   mockInvoke.mockReset();
+  mockDbWhere.mockReset();
+  mockDbWhere.mockResolvedValue([]);
 });
 
 describe("searchSnippets", () => {
-  const fakeSnippet: Snippet = {
-    id: "snippet-1",
-    projectId: "default-project",
-    title: "森の描写メモ",
-    content: "暗い森の中、一筋の光が差し込んだ。",
-    tagsCache: '["描写","森"]',
-    contentSource: null,
-    sceneId: null,
-    sourceChatMessageId: null,
-    usageCount: 0,
-    version: 0,
-    createdAt: "2025-01-01T00:00:00Z",
-    updatedAt: "2025-01-01T00:00:00Z",
-  };
-
-  it("uses MATCH for queries with 3+ characters", async () => {
-    mockInvoke.mockResolvedValue({ rows: [fakeSnippet] });
+  it("uses typed project FTS and hydrates the complete snippet", async () => {
+    mockInvoke.mockResolvedValue([
+      { sourceType: "snippet", id: fakeSnippet.id },
+    ]);
+    mockDbWhere.mockResolvedValue([fakeSnippet]);
 
     const results = await searchSnippets("森の描写");
 
-    expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
-      sql: expect.stringContaining("MATCH"),
-      params: expect.any(Array),
-      method: "all",
+    expect(mockInvoke).toHaveBeenCalledExactlyOnceWith("fts_search", {
+      projectId: "default-project",
+      query: "森の描写",
+      scope: "snippets",
+      limit: 50,
     });
-    expect(results).toHaveLength(1);
-    expect(results[0].title).toBe("森の描写メモ");
+    expect(results).toEqual([fakeSnippet]);
   });
 
-  it("uses LIKE for queries with fewer than 3 characters", async () => {
-    mockInvoke.mockResolvedValue({ rows: [fakeSnippet] });
+  it("returns empty without hydrating when FTS has no hit", async () => {
+    mockInvoke.mockResolvedValue([]);
 
-    const results = await searchSnippets("描写");
-
-    expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
-      sql: expect.stringContaining("LIKE"),
-      params: expect.any(Array),
-      method: "all",
-    });
-    expect(results).toHaveLength(1);
+    expect(await searchSnippets("不存在")).toEqual([]);
+    expect(mockDbWhere).not.toHaveBeenCalled();
   });
 
-  it("returns empty array for empty query", async () => {
-    const results = await searchSnippets("");
-
+  it("returns empty for an empty query", async () => {
+    expect(await searchSnippets("")).toEqual([]);
     expect(mockInvoke).not.toHaveBeenCalled();
-    expect(results).toEqual([]);
   });
 });

@@ -55,6 +55,50 @@ export declare class Backend {
    */
   dbExecuteBatch(statements: any): Promise<string>
   /**
+   * Project-scoped lint diagnostic ignore-list commands. The renderer
+   * receives a domain DTO instead of owning SQL strings or generic DB
+   * parameters; all scene ownership checks happen in grimodex-db.
+   */
+  lintIgnoreList(projectId: string): Promise<string>
+  lintIgnoreListScene(projectId: string, sceneId: string): Promise<string>
+  lintIgnoreCreate(payload: any): Promise<string>
+  lintIgnoreDelete(projectId: string, id: string): Promise<void>
+  lintIgnoreCopy(payload: any): Promise<string>
+  lintIgnoreMove(payload: any): Promise<string>
+  /**
+   * Project-scoped term-dictionary commands. SQL and project ownership stay
+   * in grimodex-db; the renderer only sends domain DTOs.
+   */
+  lintTermDictionaryList(projectId: string): Promise<string>
+  lintTermDictionaryInsert(payload: any): Promise<string>
+  lintTermDictionaryUpdate(payload: any): Promise<string>
+  lintTermDictionarySetEnabled(projectId: string, id: string, enabled: boolean, updatedAt: number): Promise<string>
+  lintTermDictionaryDelete(projectId: string, id: string): Promise<void>
+  /**
+   * Chronicle aggregate OCC reads and participant replacement. The latter
+   * advances the event version and replaces participants in one DB tx.
+   */
+  eventGetVersion(projectId: string, eventId: string): Promise<string>
+  eventSetParticipants(payload: any): Promise<string>
+  /**
+   * Renderer domain aggregates that previously crossed the preload
+   * boundary as renderer-authored SQL batches.
+   */
+  authorshipReplaceLane(payload: any): Promise<void>
+  entityTagsSet(payload: any): Promise<void>
+  codexRenameUndo(payload: any): Promise<void>
+  scanStagingProjectCreate(payload: any): Promise<void>
+  treePlanUndo(payload: any): Promise<void>
+  mapWriteBundle(payload: any): Promise<void>
+  /**
+   * Project snapshots are a typed aggregate: renderer computes the
+   * dependency-safe row plan while shared Rust owns all SQL, project
+   * ownership checks, and transaction boundaries.
+   */
+  projectSnapshotCreate(payload: any): Promise<void>
+  projectSnapshotRestoreContext(projectId: string, snapshotId: string, scopes: any): Promise<string>
+  projectSnapshotApplyRestore(payload: any): Promise<void>
+  /**
    * Scene content and every document-derived sidecar are committed in one
    * SQLite transaction. The renderer performs one PM traversal and passes
    * the typed snapshot as camelCase JSON.

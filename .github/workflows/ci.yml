@@ -280,6 +280,7 @@ jobs:
           scripts/windows-release-workflow.test.mjs
           scripts/electron-v2-cleanup.test.mjs
           scripts/electron-runtime-performance-workflow.test.mjs
+          scripts/electron-product-journeys.test.mjs
           scripts/generate-licenses.test.mjs
 
       - name: Electron type-check
@@ -359,6 +360,71 @@ jobs:
           name: electron-runtime-performance-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/electron-runtime-performance/runtime-metrics.json
           if-no-files-found: error
+          retention-days: 14
+
+  electron-product-journeys:
+    name: Electron product journeys (persistence / workspace authority)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/product-journeys
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Native build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libdbus-1-dev \
+            libsecret-1-dev \
+            pkg-config
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: |
+            src-tauri
+            electron/native/grimodex-node
+          key: electron-product-journeys
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Electron system dependencies
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Build native module and production Electron app
+        run: |
+          pnpm napi:build
+          pnpm electron:build
+
+      - name: Product journey gate
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys
+
+      - name: Upload product journey failure artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: electron-product-journeys-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/product-journeys
+          if-no-files-found: ignore
           retention-days: 14
 
   electron-windows-installer-contract:

@@ -194,6 +194,21 @@ export async function listNoteContents(
   return out;
 }
 
+export async function listProjectSceneDocuments(
+  projectId: string,
+): Promise<Array<{ id: string; title: string; content: string | null }>> {
+  return db
+    .select({
+      id: treeNodes.id,
+      title: treeNodes.title,
+      content: treeNodes.content,
+    })
+    .from(treeNodes)
+    .where(
+      and(eq(treeNodes.projectId, projectId), eq(treeNodes.nodeType, "scene")),
+    );
+}
+
 export async function getNode(id: string): Promise<TreeNode | undefined> {
   const rows = await db.select().from(treeNodes).where(eq(treeNodes.id, id));
   return rows[0];

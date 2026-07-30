@@ -140,6 +140,50 @@ describe("buildSemanticRerankerShadowComparison", () => {
       "scene-c",
     ]);
   });
+
+  it("does not backfill a second chunk from a rescued scene without a dense winner", () => {
+    const aBest = hit("scene-a", 0.77, 0);
+    const aSecond = hit("scene-a", 0.76, 10);
+    const bBest = hit("scene-b", 0.76, 20);
+    const comparison = buildSemanticRerankerShadowComparison(
+      input({
+        denseHits: [aBest, aSecond, bBest],
+        sparseSceneIds: ["scene-a", "scene-b"],
+        baselineInjectedHits: [aBest, bBest],
+        minScore: 0.8,
+        gateScore: 0.85,
+        rescueMargin: 0.05,
+      }),
+      scoreResult([aSecond, aBest, bBest]),
+    );
+
+    expect(comparison.counterfactualInjectedCandidateHashes).toEqual([
+      "hash-scene-a-0",
+      "hash-scene-b-20",
+    ]);
+  });
+
+  it("never backfills a secondary chunk below the dense floor", () => {
+    const aBest = hit("scene-a", 0.9, 0);
+    const aSecond = hit("scene-a", 0.76, 10);
+    const bBest = hit("scene-b", 0.82, 20);
+    const comparison = buildSemanticRerankerShadowComparison(
+      input({
+        denseHits: [aBest, bBest, aSecond],
+        sparseSceneIds: ["scene-a"],
+        baselineInjectedHits: [aBest, bBest],
+        minScore: 0.8,
+        gateScore: 0.85,
+        rescueMargin: 0.05,
+      }),
+      scoreResult([aSecond, aBest, bBest]),
+    );
+
+    expect(comparison.counterfactualInjectedCandidateHashes).toEqual([
+      "hash-scene-a-0",
+      "hash-scene-b-20",
+    ]);
+  });
 });
 
 describe("SemanticRerankerShadowCoordinator", () => {
@@ -212,6 +256,51 @@ describe("SemanticRerankerShadowCoordinator", () => {
     ).toEqual([
       ["stale", "superseded"],
       ["completed", undefined],
+    ]);
+  });
+
+  it("does not start inference when a newer generation supersedes the job during preflight", async () => {
+    const score = vi.fn().mockResolvedValue(scoreResult());
+    const records: SemanticRerankerShadowRecord[] = [];
+    let supersededDuringPreflight = false;
+    const coordinator = createSemanticRerankerShadowCoordinator({
+      enabled: () => true,
+      isReindexing: () => false,
+      isScopeCurrent: () => {
+        if (!supersededDuringPreflight) {
+          supersededDuringPreflight = true;
+          coordinator.schedule(input({ requestId: "request-2" }));
+        }
+        return true;
+      },
+      score,
+      record: async (record) => {
+        records.push(record);
+      },
+      now: () => 100,
+      createRunId: vi
+        .fn()
+        .mockReturnValueOnce("run-1")
+        .mockReturnValueOnce("run-2"),
+      defer: (task) => task(),
+    });
+
+    coordinator.schedule(input({ requestId: "request-1" }));
+    await coordinator.whenIdleForTests();
+
+    expect(score).toHaveBeenCalledTimes(1);
+    expect(score).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "request-2" }),
+    );
+    expect(
+      records.map((record) => [
+        record.requestId,
+        record.status,
+        record.staleReason,
+      ]),
+    ).toEqual([
+      ["request-1", "stale", "superseded"],
+      ["request-2", "completed", undefined],
     ]);
   });
 

@@ -8,6 +8,8 @@ import type { PinnedCodexEntryWithData } from "../../chatApi";
 import type { ChatMessage } from "../../chatTypes";
 import { buildSystemPrompt } from "../../contextBuilder";
 import { createSceneTurnContextRequest } from "../turnContextRequest";
+import { resolveChatTurnRoute } from "../../turn/resolveTurnRoute";
+import { DEFAULT_AI_SETTINGS, type AiSettings } from "../../types";
 import {
   collectSceneContext,
   createSceneContextSourceDeps,
@@ -108,6 +110,7 @@ const sceneNode: TreeNodeData = {
 };
 
 interface RequestOverrides {
+  purpose?: "live" | "send";
   includeBodies?: boolean;
   entries?: CodexContextEntry[];
   sceneContent?: string;
@@ -121,17 +124,26 @@ interface RequestOverrides {
   sessionId?: string | null;
   excludedAutoEntryIds?: string[];
   semanticRecallEnabled?: boolean;
+  hybridRecallEnabled?: boolean;
+  route?: ReturnType<typeof resolveChatTurnRoute> | null;
+  workspaceIdentity?: {
+    workspaceKey: string;
+    workspaceOpenRevision: number;
+  };
 }
 
 function request(overrides: RequestOverrides = {}) {
   return createSceneTurnContextRequest({
     requestId: "request-1",
-    purpose: "live",
+    purpose: overrides.purpose ?? "live",
     projectId: "project-1",
+    ...(overrides.workspaceIdentity
+      ? { workspaceIdentity: overrides.workspaceIdentity }
+      : {}),
     sessionId: overrides.sessionId ?? null,
     sceneId: "scene-1",
     mode: "chat",
-    route: null,
+    route: overrides.route ?? null,
     budget: { contextWindow: 16_384, deliveryMode: "plain" },
     messages: overrides.messages ?? [],
     outgoingUserMessage: overrides.outgoingUserMessage ?? "",
@@ -150,7 +162,7 @@ function request(overrides: RequestOverrides = {}) {
       chronicleEnabled: false,
       semanticRecallEnabled: overrides.semanticRecallEnabled ?? false,
       episodicRecallEnabled: false,
-      hybridRecallEnabled: false,
+      hybridRecallEnabled: overrides.hybridRecallEnabled ?? false,
       customChatInstruction: "",
     },
     trackRecallPromote: false,
@@ -302,6 +314,55 @@ describe("collectSceneContext", () => {
       expect(diagnostic.latencyMs).toEqual(expect.any(Number));
       expect(diagnostic.latencyMs).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it("marks a local OpenAI-compatible route in send-time shadow telemetry", async () => {
+    const localSettings: AiSettings = {
+      ...DEFAULT_AI_SETTINGS,
+      provider: "openai-compatible",
+      model: "local-model",
+      openaiCompatibleEndpoints: [
+        {
+          id: "lm-studio",
+          label: "LM Studio",
+          baseUrl: "http://127.0.0.1:1234/v1",
+        },
+      ],
+      activeOpenaiCompatibleEndpointId: "lm-studio",
+    };
+    const fetchSemanticRecall = vi.fn(async () => []);
+
+    await collectSceneContext(
+      request({
+        purpose: "send",
+        outgoingUserMessage: "Find the lighthouse promise",
+        semanticRecallEnabled: true,
+        hybridRecallEnabled: true,
+        route: resolveChatTurnRoute({
+          surface: "chat",
+          activeSettings: localSettings,
+          taskEffort: "medium",
+        }),
+        workspaceIdentity: {
+          workspaceKey: "/private/workspace",
+          workspaceOpenRevision: 9,
+        },
+      }),
+      createSceneContextSourceDeps({ fetchSemanticRecall }),
+    );
+
+    expect(fetchSemanticRecall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        shadow: expect.objectContaining({
+          localInferenceExpected: true,
+          scope: {
+            workspaceKey: "/private/workspace",
+            workspaceOpenRevision: 9,
+            projectId: "project-1",
+          },
+        }),
+      }),
+    );
   });
 
   it("applies eco mode from the immutable request snapshot", async () => {

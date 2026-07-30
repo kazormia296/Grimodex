@@ -39,6 +39,7 @@ import {
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";
+import { isLocalInferenceRoute } from "@/features/chat/turn/resolveTurnRoute";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import { buildPendingBeatsSection } from "@/features/editor/beat/pendingBeatsContext";
 import type {
@@ -1291,8 +1292,9 @@ export async function collectSceneContext(
                       sceneTail: semanticQueryParts.sceneTail,
                       language:
                         request.sourceSnapshot.project?.language ?? "ja",
-                      localInferenceExpected:
-                        request.route?.provider === "ollama",
+                      localInferenceExpected: isLocalInferenceRoute(
+                        request.route,
+                      ),
                     },
                   }
                 : {}),

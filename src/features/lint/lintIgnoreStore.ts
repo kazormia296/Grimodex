@@ -1,6 +1,12 @@
 import { create } from "zustand";
-import { invoke } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import {
+  copyLintIgnores,
+  createLintIgnore,
+  deleteLintIgnore,
+  listLintIgnoresForScene,
+  moveLintIgnores,
+} from "./lintIgnoreApi";
 import type { Diagnostic } from "./types";
 
 /**
@@ -16,10 +22,6 @@ export interface LintIgnoreEntry {
   context_after: string;
   note: string | null;
   created_at: number;
-}
-
-interface QueryResult {
-  rows: Record<string, unknown>[];
 }
 
 /** Chars of surrounding context recorded with each ignore entry. */
@@ -62,20 +64,25 @@ interface LintIgnoreState {
   bySceneId: Record<string, LintIgnoreEntry[]>;
   loading: Record<string, boolean>;
 
-  loadScene: (sceneId: string) => Promise<void>;
+  loadScene: (sceneId: string, projectId: string) => Promise<void>;
   addIgnore: (
     sceneId: string,
     d: Diagnostic,
     sceneText: string,
+    projectId: string,
     note?: string,
   ) => Promise<LintIgnoreEntry>;
-  deleteIgnore: (id: string) => Promise<void>;
+  deleteIgnore: (id: string, projectId: string) => Promise<void>;
   /**
    * Copy all ignore entries from one scene to another.
    * Used during scene-split: call for each of the two new scene IDs
    * before the old scene is deleted.
    */
-  copyIgnoresToScene: (fromSceneId: string, toSceneId: string) => Promise<void>;
+  copyIgnoresToScene: (
+    fromSceneId: string,
+    toSceneId: string,
+    projectId: string,
+  ) => Promise<void>;
   /**
    * Move all ignore entries from one or more scenes to a target scene.
    * Used during scene-merge: call with both source scene IDs before
@@ -84,6 +91,7 @@ interface LintIgnoreState {
   moveIgnoresToScene: (
     fromSceneIds: string[],
     toSceneId: string,
+    projectId: string,
   ) => Promise<void>;
   /** Filter a diagnostic list, dropping ones matched by stored ignores. */
   filterDiagnostics: (
@@ -94,45 +102,15 @@ interface LintIgnoreState {
   clear: () => void;
 }
 
-async function dbExec<T = unknown>(
-  sql: string,
-  params: unknown[],
-  method: "run" | "all" | "get" | "values",
-): Promise<T> {
-  const r = await invoke<QueryResult>("db_execute", { sql, params, method });
-  return r as unknown as T;
-}
-
-function rowToEntry(row: Record<string, unknown>): LintIgnoreEntry {
-  return {
-    id: String(row.id),
-    rule_id: String(row.rule_id),
-    scene_id: String(row.scene_id),
-    text_snippet: String(row.text_snippet),
-    context_before: String(row.context_before),
-    context_after: String(row.context_after),
-    note: row.note === null || row.note === undefined ? null : String(row.note),
-    created_at: Number(row.created_at ?? 0),
-  };
-}
-
 export const useLintIgnoreStore = create<LintIgnoreState>()((set, get) => ({
   bySceneId: {},
   loading: {},
 
-  loadScene: async (sceneId) => {
+  loadScene: async (sceneId, projectId) => {
     if (get().loading[sceneId]) return;
     set((s) => ({ loading: { ...s.loading, [sceneId]: true } }));
     try {
-      const r = await dbExec<QueryResult>(
-        `SELECT id, rule_id, scene_id, text_snippet, context_before, context_after, note, created_at
-         FROM lint_ignored_diagnostics
-         WHERE scene_id = ?
-         ORDER BY created_at DESC`,
-        [sceneId],
-        "all",
-      );
-      const entries = r.rows.map(rowToEntry);
+      const entries = await listLintIgnoresForScene(sceneId, projectId);
       set((s) => ({
         bySceneId: { ...s.bySceneId, [sceneId]: entries },
         loading: { ...s.loading, [sceneId]: false },
@@ -143,7 +121,7 @@ export const useLintIgnoreStore = create<LintIgnoreState>()((set, get) => ({
     }
   },
 
-  addIgnore: async (sceneId, d, sceneText, note) => {
+  addIgnore: async (sceneId, d, sceneText, projectId, note) => {
     const ctx = extractContext(sceneText, d);
     const entry: LintIgnoreEntry = {
       id: crypto.randomUUID(),
@@ -155,46 +133,27 @@ export const useLintIgnoreStore = create<LintIgnoreState>()((set, get) => ({
       note: note ?? null,
       created_at: Date.now(),
     };
-    await dbExec(
-      `INSERT INTO lint_ignored_diagnostics
-         (id, rule_id, scene_id, text_snippet, context_before, context_after, note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        entry.id,
-        entry.rule_id,
-        entry.scene_id,
-        entry.text_snippet,
-        entry.context_before,
-        entry.context_after,
-        entry.note,
-        entry.created_at,
-      ],
-      "run",
-    );
+    const persisted = await createLintIgnore(entry, projectId);
     set((s) => ({
       bySceneId: {
         ...s.bySceneId,
-        [sceneId]: [entry, ...(s.bySceneId[sceneId] ?? [])],
+        [sceneId]: [persisted, ...(s.bySceneId[sceneId] ?? [])],
       },
     }));
     recordChangeEvent({
       domain: "lint",
       opType: "ignore.add",
       entityType: "lint_ignore",
-      entityId: entry.id,
+      entityId: persisted.id,
       // sceneId kept in payload (not the FK column) — scene_id may not be a
       // live tree_nodes row and a bad FK would wedge the flush loop.
-      payload: { ignoreId: entry.id, ruleId: entry.rule_id, sceneId },
+      payload: { ignoreId: persisted.id, ruleId: persisted.rule_id, sceneId },
     });
-    return entry;
+    return persisted;
   },
 
-  deleteIgnore: async (id) => {
-    await dbExec(
-      `DELETE FROM lint_ignored_diagnostics WHERE id = ?`,
-      [id],
-      "run",
-    );
+  deleteIgnore: async (id, projectId) => {
+    await deleteLintIgnore(id, projectId);
     set((s) => {
       const next: Record<string, LintIgnoreEntry[]> = {};
       for (const [k, arr] of Object.entries(s.bySceneId)) {
@@ -211,39 +170,15 @@ export const useLintIgnoreStore = create<LintIgnoreState>()((set, get) => ({
     });
   },
 
-  copyIgnoresToScene: async (fromSceneId, toSceneId) => {
+  copyIgnoresToScene: async (fromSceneId, toSceneId, projectId) => {
     // Resolve source entries: prefer cache, fall back to DB load.
     let source = get().bySceneId[fromSceneId];
     if (!source) {
-      await get().loadScene(fromSceneId);
+      await get().loadScene(fromSceneId, projectId);
       source = get().bySceneId[fromSceneId] ?? [];
     }
     if (source.length === 0) return;
-    const copies: LintIgnoreEntry[] = source.map((e) => ({
-      ...e,
-      id: crypto.randomUUID(),
-      scene_id: toSceneId,
-      created_at: Date.now(),
-    }));
-    // Batch insert via individual executions (db_execute handles one at a time).
-    for (const c of copies) {
-      await dbExec(
-        `INSERT INTO lint_ignored_diagnostics
-           (id, rule_id, scene_id, text_snippet, context_before, context_after, note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          c.id,
-          c.rule_id,
-          c.scene_id,
-          c.text_snippet,
-          c.context_before,
-          c.context_after,
-          c.note,
-          c.created_at,
-        ],
-        "run",
-      );
-    }
+    const copies = await copyLintIgnores(fromSceneId, toSceneId, projectId);
     set((s) => ({
       bySceneId: {
         ...s.bySceneId,
@@ -252,20 +187,17 @@ export const useLintIgnoreStore = create<LintIgnoreState>()((set, get) => ({
     }));
   },
 
-  moveIgnoresToScene: async (fromSceneIds, toSceneId) => {
+  moveIgnoresToScene: async (fromSceneIds, toSceneId, projectId) => {
     if (fromSceneIds.length === 0) return;
-    const placeholders = fromSceneIds.map(() => "?").join(", ");
-    await dbExec(
-      `UPDATE lint_ignored_diagnostics SET scene_id = ? WHERE scene_id IN (${placeholders})`,
-      [toSceneId, ...fromSceneIds],
-      "run",
+    const movedEntries = await moveLintIgnores(
+      fromSceneIds,
+      toSceneId,
+      projectId,
     );
     set((s) => {
-      const movedEntries: LintIgnoreEntry[] = [];
       const next: Record<string, LintIgnoreEntry[]> = {};
       for (const [k, arr] of Object.entries(s.bySceneId)) {
         if (fromSceneIds.includes(k)) {
-          movedEntries.push(...arr.map((e) => ({ ...e, scene_id: toSceneId })));
           next[k] = [];
         } else {
           next[k] = arr;

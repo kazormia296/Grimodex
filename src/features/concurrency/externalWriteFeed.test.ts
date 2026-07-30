@@ -101,6 +101,7 @@ import {
   pollExternalWritesForTest,
   getExternalWriteCursorForTest,
 } from "./externalWriteFeed";
+import { registerExternalWriteProjectors } from "@/application/externalWrites/externalWriteProjectors";
 import { useExternalWriteStore } from "./externalWriteStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
@@ -156,6 +157,12 @@ function deferred<T>(): {
 describe("externalWriteFeed fan-out", () => {
   beforeEach(() => {
     stopExternalWriteFeed();
+    registerExternalWriteProjectors({
+      reloadForeshadows: (projectId) => h.loadForeshadows(projectId),
+      bumpChronicleRevision: () => h.bumpChronicle(),
+      reloadPlotThreads: (projectId) => h.loadPlot(projectId),
+      reloadLabels: (projectId) => h.loadLabels(projectId),
+    });
     h.reloadTree.mockClear();
     h.loadCodex.mockClear();
     h.loadSnippets.mockClear();

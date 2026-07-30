@@ -30,6 +30,10 @@ vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => currentProjectIdRef.value,
 }));
 
+vi.mock("@/application/project/currentProjectAuthority", () => ({
+  getCurrentProjectId: () => currentProjectIdRef.value,
+}));
+
 vi.mock("@/lib/tauri", () => ({
   isTauri: () => false,
   invoke: (cmd: string, args?: Record<string, unknown>) =>

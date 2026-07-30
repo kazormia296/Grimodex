@@ -38,6 +38,8 @@ import {
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { enqueueIpc, resetIpcQueueForTests } from "@/lib/ipcQueue";
 import i18next from "@/lib/i18n";
+import { registerProjectRuntime } from "@/application/project/projectRuntime";
+import { projectRuntimeComposition } from "@/application/composition/projectRuntimeComposition";
 
 const backgroundH = vi.hoisted(() => ({
   startExternalWriteFeed: vi.fn(async () => {}),
@@ -134,6 +136,7 @@ function deferred<T>(): {
 }
 
 beforeEach(async () => {
+  registerProjectRuntime(projectRuntimeComposition);
   _resetQuiescenceLeasesForTests();
   resetIpcQueueForTests();
   resetProjectLoadGateForTests();

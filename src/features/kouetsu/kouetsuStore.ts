@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { TreeNodeData } from "@/features/tree/treeStore";
+import type { TreeNodeData } from "@/features/tree/types";
 import type { FullCheckStepId } from "./fullCheckStore";
 import type { IssueCat } from "./triage/issueModel";
 

@@ -8,17 +8,12 @@ import {
   beginWorkspaceSwitch,
   endWorkspaceSwitch,
 } from "@/features/timelapse/recorder";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
-import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
-import { loadAndSyncChronicleSettings } from "@/features/chronicle/chronicleStore";
-import { useMapStore } from "@/features/map/mapStore";
-import { useGridStore } from "@/features/grid/gridStore";
 import {
-  useProjectStore,
-  getCurrentProjectId,
-  invalidateProjectLoadsForWorkspaceSwitch,
-} from "@/features/project/projectStore";
+  ensureProjectActive,
+  hydrateWorkspaceProject,
+  initializeWorkspaceProject,
+  invalidateWorkspaceProjectLoads,
+} from "@/application/project/workspaceProjectCommands";
 import { toast } from "sonner";
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
 import { cancelScheduledImeExports } from "@/features/ime/scheduler";
@@ -37,6 +32,7 @@ import {
   acquireWorkspaceProjectLoadLease,
   type WorkspaceProjectLoadLease,
 } from "@/features/project/projectLoadGate";
+import { hydrateWorkspaceStores } from "@/application/workspace/workspaceHydration";
 
 export type {
   GlobalSettings,
@@ -210,7 +206,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // and await the complete load operation before quiescing/switching. The
       // lease remains held through initCurrentProject + identity publication.
       projectLoadLease = await acquireWorkspaceProjectLoadLease(
-        invalidateProjectLoadsForWorkspaceSwitch,
+        invalidateWorkspaceProjectLoads,
       );
       // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
       // swap を跨いだ in-flight write が旧 workspace の内容を新 workspace の
@@ -268,52 +264,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       quiescenceLease.openTargetReadPhase();
       // Resolve the current Project before the editor view renders so that
       // panels reading currentProjectId have a value to work with.
-      await useProjectStore.getState().initCurrentProject();
+      const projectId = await initializeWorkspaceProject();
       // Re-read global settings after open_workspace updated them
       const settings = await globalSettingsRepository.read();
-      // Migrate app_settings → userPreferences + project_settings (runs once per workspace)
-      const {
-        migrateAppSettingsToScopedStores,
-        migrateModelRoleKeys,
-        removeRetiredDisplaySettings,
-        seedProjectSettingsFromDefaults,
-      } = await import("@/features/settings/migration");
-      await migrateAppSettingsToScopedStores();
-      await removeRetiredDisplaySettings();
-      await migrateModelRoleKeys();
-      // Seed project defaults for brand-new workspaces
-      if (!result.isExisting) {
-        await seedProjectSettingsFromDefaults();
-      }
-      // Load persisted editor settings and apply to runtime stores
-      await useSettingsStore.getState().loadAll(getCurrentProjectId());
-      useCursorSettingsStore.getState().initFromSettings();
-      {
-        const { useCodexHighlightStore } =
-          await import("@/features/editor/codexHighlightStore");
-        useCodexHighlightStore.getState().initFromSettings();
-        // 本文レイヤーの表示トグル (帰属 / 校閲) も設定から復元する
-        const { useAttributionStore } =
-          await import("@/features/attribution/attributionStore");
-        useAttributionStore.getState().initFromSettings();
-        const { useAnnotationStore } =
-          await import("@/features/post-effect/annotationStore");
-        useAnnotationStore.getState().initFromSettings();
-      }
-      // Lint config depends on settings being loaded first.
-      const { useLintConfigStore } =
-        await import("@/features/lint/lintConfigStore");
-      useLintConfigStore.getState().load();
-      if (settings.timeline) {
-        loadAndSyncTimelineSettings(settings.timeline);
-      }
-      if (settings.chronicle) {
-        loadAndSyncChronicleSettings(settings.chronicle);
-      }
-      useMapStore.getState().loadFromSettings(settings);
-      useGridStore.getState().loadFromSettings(settings);
-      const { useMatrixStore } = await import("@/features/matrix/matrixStore");
-      useMatrixStore.getState().loadFromSettings(settings);
+      await hydrateWorkspaceStores({
+        projectId,
+        settings,
+        isExisting: result.isExisting,
+      });
       const nextOpenRevision = get().workspaceOpenRevision + 1;
       if (!projectLoadLease) {
         throw new Error("Workspace Project-load lease was released too early");
@@ -323,16 +281,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // deliberately skips a second strict flush: the old UI was drained
       // before native open, and flushing it after the swap could write stale
       // content into the replacement database.
-      await useProjectStore
-        .getState()
-        .loadProjectWithinLifecycle(
-          getCurrentProjectId(),
-          projectLoadLease.projectLoadContext,
-          {
-            skipStrictQuiescence: true,
-            workspaceOpenRevision: nextOpenRevision,
-          },
-        );
+      await hydrateWorkspaceProject(
+        projectId,
+        projectLoadLease.projectLoadContext,
+        nextOpenRevision,
+      );
       // Publish identity/ready only after Project critical snapshots and every
       // other mandatory Workspace surface have committed. The gate stays held
       // through this publication, so a queued Project load cannot supersede
@@ -566,10 +519,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         });
       }
       await get().openWorkspace(result.path);
-      if (useProjectStore.getState().currentProjectId !== result.projectId) {
-        await useProjectStore.getState().loadProject(result.projectId);
-      }
-      if (useProjectStore.getState().currentProjectId !== result.projectId) {
+      if (!(await ensureProjectActive(result.projectId))) {
         throw new Error("Tutorial project did not become active");
       }
       set({ showSampleTour: true });

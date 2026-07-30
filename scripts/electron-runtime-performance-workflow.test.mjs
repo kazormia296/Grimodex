@@ -265,3 +265,27 @@ test("Electron close does not mistake Page closure for process exit", async () =
     },
   );
 });
+
+test("Electron close can diagnose a startup failure without a Page", async () => {
+  const childProcess = new FakeElectronProcess();
+  await assert.rejects(
+    closeElectronAppWithDiagnostics(
+      {
+        process: () => childProcess,
+        close: pendingPromise,
+      },
+      null,
+      "startup",
+      {
+        timeoutMs: 5,
+        processExitGraceMs: 5,
+        pageDiagnosticsTimeoutMs: 5,
+      },
+    ),
+    (error) => {
+      assert.match(error.message, /^startup app close timed out:/);
+      assert.match(error.message, /"pageUnavailable":true/);
+      return true;
+    },
+  );
+});

@@ -48,6 +48,7 @@
     "electron:build": "tsc -p electron/tsconfig.json --noEmit && node electron/scripts/build.mjs && pnpm build",
     "electron:start": "node electron/scripts/start.mjs",
     "electron:smoke": "node electron/scripts/smoke.mjs",
+    "electron:product-journeys": "node electron/scripts/product-journeys.mjs",
     "electron:perf": "node electron/scripts/performance-benchmark.mjs",
     "electron:perf:ci": "node electron/scripts/performance-benchmark.mjs --output .artifacts/electron-runtime-performance/runtime-metrics.json",
     "napi:build": "pnpm --dir electron/native/grimodex-node build",

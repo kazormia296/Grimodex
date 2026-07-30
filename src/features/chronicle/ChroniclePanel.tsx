@@ -1539,7 +1539,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       setSelectedEventId(id);
       const e = renderEvents.find((x) => x.id === id);
       setSelectedPosition(
-        eff.byId.get(id)?.startDay ?? null,
+        e?.startTime != null ? (eff.byId.get(id)?.startDay ?? null) : null,
         e?.primaryCodexId ?? null,
       );
     },

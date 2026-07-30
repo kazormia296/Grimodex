@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import {
   abortVivliostyleBuild,
   onVivliostylePreviewExited,

@@ -166,6 +166,12 @@ vi.mock("./ChronicleViewport", () => ({
         select-range-anchor
       </button>
       <button
+        data-testid="select-undated-btn"
+        onClick={() => onSelectEvent?.("undated")}
+      >
+        select-undated
+      </button>
+      <button
         data-testid="shift-select-scene-btn"
         onClick={() =>
           onSelectEvent?.("scene:sc1", { toggle: false, range: true })
@@ -209,7 +215,25 @@ vi.mock("./ChronicleViewport", () => ({
     </div>
   ),
 }));
-vi.mock("./ChronicleToolbar", () => ({ ChronicleToolbar: () => null }));
+vi.mock("./ChronicleToolbar", () => ({
+  ChronicleToolbar: ({
+    onNew,
+    disabled,
+    creating,
+  }: {
+    onNew: () => void;
+    disabled?: boolean;
+    creating?: boolean;
+  }) => (
+    <button
+      data-testid="toolbar-new"
+      disabled={disabled || creating}
+      onClick={onNew}
+    >
+      new
+    </button>
+  ),
+}));
 vi.mock("./ChronicleInspector", () => ({
   ChronicleInspector: ({
     event,
@@ -659,6 +683,39 @@ describe("ChroniclePanel keepalive activity", () => {
 });
 
 describe("ChroniclePanel mixed dated/undated axis", () => {
+  it("undated proxy の選択を位置表示やToolbar新規作成へ流出させない", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        startGranularity: "day",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+        startTime: null,
+        startGranularity: "none",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    fireEvent.click(screen.getByTestId("select-undated-btn"));
+
+    expect(useChronicleStore.getState().selectedEventId).toBe("undated");
+    expect(useChronicleStore.getState().selectedDay).toBeNull();
+    expect(screen.queryByText(/位置:/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("toolbar-new"));
+    await waitFor(() => {
+      expect(eventMocks.uiCreateEvent).toHaveBeenCalledWith({
+        title: "新しいイベント",
+      });
+    });
+  });
+
   it("暦軸と期間表示を維持し、dated interval の横移動で開始・終了を同時にずらす", async () => {
     apiMocks.listEvents.mockResolvedValue([
       makeEvent({

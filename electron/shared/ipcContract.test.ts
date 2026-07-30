@@ -819,6 +819,593 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({ ok: true, value: { rows: [] } });
   });
 
+  it("lint_ignore_create: typed payload を位置引数のJSONへ写像する", async () => {
+    const lintIgnoreCreate = vi
+      .fn()
+      .mockResolvedValue(
+        '{"id":"ignore-1","ruleId":"style/repetition","sceneId":"scene-1","textSnippet":"x","contextBefore":"","contextAfter":"","note":null,"createdAt":1,"sceneTitle":"Scene"}',
+      );
+    const { backend } = fakeBackend({
+      lintIgnoreCreate: lintIgnoreCreate as never,
+    });
+    const payload = {
+      id: "ignore-1",
+      projectId: "project-1",
+      sceneId: "scene-1",
+      ruleId: "style/repetition",
+      textSnippet: "x",
+      contextBefore: "",
+      contextAfter: "",
+      note: null,
+      createdAt: 1,
+    };
+    const env = await dispatchInvoke(
+      "lint_ignore_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(lintIgnoreCreate).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        id: "ignore-1",
+        ruleId: "style/repetition",
+        sceneId: "scene-1",
+        textSnippet: "x",
+        contextBefore: "",
+        contextAfter: "",
+        note: null,
+        createdAt: 1,
+        sceneTitle: "Scene",
+      },
+    });
+  });
+
+  it("lint_ignore_create: 必須フィールド不正時はbackendを呼ばない", async () => {
+    const lintIgnoreCreate = vi.fn();
+    const { backend } = fakeBackend({
+      lintIgnoreCreate: lintIgnoreCreate as never,
+    });
+    const env = await dispatchInvoke(
+      "lint_ignore_create",
+      { payload: { id: "", projectId: "p1" } },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(lintIgnoreCreate).not.toHaveBeenCalled();
+    if (!env.ok) {
+      expect(env.error).toContain("invalid args `id`");
+    }
+  });
+
+  it("lint_term_dictionary_insert: typed payload を検証してJSONへ写像する", async () => {
+    const lintTermDictionaryInsert = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        id: "term-1",
+        preferred: "子ども",
+        variants: ["子供"],
+        severity: "warning",
+        note: null,
+        enabled: true,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    const { backend } = fakeBackend({
+      lintTermDictionaryInsert: lintTermDictionaryInsert as never,
+    });
+    const payload = {
+      id: "term-1",
+      projectId: "project-1",
+      preferred: "子ども",
+      variants: ["子供"],
+      severity: "warning",
+      note: null,
+      enabled: true,
+      sortOrder: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const env = await dispatchInvoke(
+      "lint_term_dictionary_insert",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(lintTermDictionaryInsert).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        id: "term-1",
+        preferred: "子ども",
+        variants: ["子供"],
+        severity: "warning",
+        note: null,
+        enabled: true,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+  });
+
+  it("lint_term_dictionary_insert: 不正payloadと旧nativeを明示的に拒否する", async () => {
+    const lintTermDictionaryInsert = vi.fn();
+    const { backend } = fakeBackend({
+      lintTermDictionaryInsert: lintTermDictionaryInsert as never,
+    });
+    const invalid = await dispatchInvoke(
+      "lint_term_dictionary_insert",
+      {
+        payload: {
+          id: "term-1",
+          projectId: "project-1",
+          preferred: "子ども",
+          variants: [],
+          severity: "warning",
+          note: null,
+          enabled: true,
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(invalid.ok).toBe(false);
+    expect(lintTermDictionaryInsert).not.toHaveBeenCalled();
+
+    const oldNative = await dispatchInvoke(
+      "lint_term_dictionary_list",
+      { projectId: "project-1" },
+      { backend: fakeBackend().backend, shell: noShell },
+    );
+    expect(oldNative).toEqual({
+      ok: false,
+      error: "IPC_BACKEND_UNAVAILABLE: native method lintTermDictionaryList",
+      errorInfo: {
+        code: "IPC_BACKEND_UNAVAILABLE",
+        message:
+          "IPC_BACKEND_UNAVAILABLE: native method lintTermDictionaryList",
+        retryable: false,
+        outcome: "failed",
+      },
+    });
+  });
+
+  it("Chronicle typed commands は project/OCC payload を明示写像する", async () => {
+    const eventGetVersion = vi.fn().mockResolvedValue("3");
+    const eventSetParticipants = vi.fn().mockResolvedValue("4");
+    const { backend } = fakeBackend({
+      eventGetVersion: eventGetVersion as never,
+      eventSetParticipants: eventSetParticipants as never,
+    });
+    const version = await dispatchInvoke(
+      "event_get_version",
+      { projectId: "project-1", eventId: "event-1" },
+      { backend, shell: noShell },
+    );
+    expect(eventGetVersion).toHaveBeenCalledExactlyOnceWith(
+      "project-1",
+      "event-1",
+    );
+    expect(version).toEqual({ ok: true, value: 3 });
+
+    const payload = {
+      projectId: "project-1",
+      eventId: "event-1",
+      codexEntryIds: ["codex-1"],
+      baseVersion: 3,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    };
+    const participants = await dispatchInvoke(
+      "event_set_participants",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(eventSetParticipants).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(participants).toEqual({ ok: true, value: 4 });
+  });
+
+  it("event_set_participants は不正payloadと旧nativeを拒否する", async () => {
+    const eventSetParticipants = vi.fn();
+    const { backend } = fakeBackend({
+      eventSetParticipants: eventSetParticipants as never,
+    });
+    const invalid = await dispatchInvoke(
+      "event_set_participants",
+      {
+        payload: {
+          projectId: "project-1",
+          eventId: "event-1",
+          codexEntryIds: [""],
+          baseVersion: 0,
+          updatedAt: "2026-07-30T00:00:00.000Z",
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(invalid.ok).toBe(false);
+    expect(eventSetParticipants).not.toHaveBeenCalled();
+
+    const oldNative = await dispatchInvoke(
+      "event_get_version",
+      { projectId: "project-1", eventId: "event-1" },
+      { backend: fakeBackend().backend, shell: noShell },
+    );
+    expect(oldNative).toMatchObject({
+      ok: false,
+      error: "IPC_BACKEND_UNAVAILABLE: native method eventGetVersion",
+    });
+  });
+
+  it("renderer aggregate writes は typed payload を native へ明示写像する", async () => {
+    const authorshipReplaceLane = vi.fn().mockResolvedValue(undefined);
+    const entityTagsSet = vi.fn().mockResolvedValue(undefined);
+    const codexRenameUndo = vi.fn().mockResolvedValue(undefined);
+    const scanStagingProjectCreate = vi.fn().mockResolvedValue(undefined);
+    const treePlanUndo = vi.fn().mockResolvedValue(undefined);
+    const mapWriteBundle = vi.fn().mockResolvedValue(undefined);
+    const { backend } = fakeBackend({
+      authorshipReplaceLane: authorshipReplaceLane as never,
+      entityTagsSet: entityTagsSet as never,
+      codexRenameUndo: codexRenameUndo as never,
+      scanStagingProjectCreate: scanStagingProjectCreate as never,
+      treePlanUndo: treePlanUndo as never,
+      mapWriteBundle: mapWriteBundle as never,
+    });
+    const calls = [
+      [
+        "authorship_replace_lane",
+        {
+          payload: {
+            lane: { kind: "node", nodeId: "scene-1" },
+            spans: [
+              {
+                id: "span-1",
+                fromPos: 1,
+                toPos: 3,
+                source: "ai",
+                model: null,
+                timestamp: "now",
+                chatMsgId: null,
+                traceId: null,
+              },
+            ],
+          },
+        },
+        authorshipReplaceLane,
+      ],
+      [
+        "entity_tags_set",
+        {
+          payload: {
+            entityKind: "codex",
+            entityId: "codex-1",
+            tagIds: ["tag-1"],
+            updatedAt: "now",
+          },
+        },
+        entityTagsSet,
+      ],
+      [
+        "codex_rename_undo",
+        {
+          payload: {
+            projectId: "project-1",
+            updatedAt: "now",
+            updates: [
+              {
+                kind: "node-title",
+                refId: "scene-1",
+                detailDefinitionId: null,
+                value: "Old title",
+                charCount: null,
+                placedBeatPreview: null,
+              },
+            ],
+          },
+        },
+        codexRenameUndo,
+      ],
+      [
+        "scan_staging_project_create",
+        {
+          payload: {
+            id: "project-1",
+            title: "Import",
+            language: "ja",
+            createdAt: "now",
+          },
+        },
+        scanStagingProjectCreate,
+      ],
+      [
+        "tree_plan_undo",
+        {
+          payload: {
+            projectId: "project-1",
+            beforeStates: [
+              {
+                id: "scene-1",
+                parentId: null,
+                sortOrder: "a0",
+                title: "Scene",
+              },
+            ],
+            createdIds: ["folder-1"],
+            updatedAt: "now",
+          },
+        },
+        treePlanUndo,
+      ],
+      [
+        "map_write_bundle",
+        {
+          payload: {
+            kind: "erase-ai-branch",
+            projectId: "project-1",
+            branchId: "branch-1",
+            spanIds: [],
+            stickyPositionIds: [],
+            stickyIds: [],
+          },
+        },
+        mapWriteBundle,
+      ],
+    ] as const;
+
+    for (const [command, args, method] of calls) {
+      await expect(
+        dispatchInvoke(command, args, { backend, shell: noShell }),
+      ).resolves.toEqual({ ok: true, value: null });
+      expect(method).toHaveBeenCalledExactlyOnceWith(args.payload);
+    }
+  });
+
+  it("renderer aggregate writes は不正payloadと旧nativeを拒否する", async () => {
+    const authorshipReplaceLane = vi.fn();
+    const invalid = await dispatchInvoke(
+      "authorship_replace_lane",
+      {
+        payload: {
+          lane: { kind: "node", nodeId: "scene-1" },
+          spans: [
+            {
+              id: "span-1",
+              fromPos: 3,
+              toPos: 1,
+              source: "invalid",
+              model: null,
+              timestamp: null,
+              chatMsgId: null,
+              traceId: null,
+            },
+          ],
+        },
+      },
+      {
+        backend: fakeBackend({
+          authorshipReplaceLane: authorshipReplaceLane as never,
+        }).backend,
+        shell: noShell,
+      },
+    );
+    expect(invalid.ok).toBe(false);
+    expect(authorshipReplaceLane).not.toHaveBeenCalled();
+
+    for (const command of [
+      "authorship_replace_lane",
+      "codex_rename_undo",
+      "entity_tags_set",
+      "scan_staging_project_create",
+      "tree_plan_undo",
+      "map_write_bundle",
+    ]) {
+      const oldNative = await dispatchInvoke(
+        command,
+        command === "authorship_replace_lane"
+          ? {
+              payload: { lane: { kind: "node", nodeId: "scene-1" }, spans: [] },
+            }
+          : command === "codex_rename_undo"
+            ? {
+                payload: {
+                  projectId: "project-1",
+                  updatedAt: "now",
+                  updates: [],
+                },
+              }
+            : command === "entity_tags_set"
+              ? {
+                  payload: {
+                    entityKind: "snippet",
+                    entityId: "snippet-1",
+                    tagIds: [],
+                    updatedAt: null,
+                  },
+                }
+              : command === "scan_staging_project_create"
+                ? {
+                    payload: {
+                      id: "project-1",
+                      title: "Import",
+                      language: "en",
+                      createdAt: "now",
+                    },
+                  }
+                : command === "map_write_bundle"
+                  ? {
+                      payload: {
+                        kind: "erase-ai-branch",
+                        projectId: "project-1",
+                        branchId: "branch-1",
+                        spanIds: [],
+                        stickyPositionIds: [],
+                        stickyIds: [],
+                      },
+                    }
+                  : {
+                      payload: {
+                        projectId: "project-1",
+                        beforeStates: [],
+                        createdIds: [],
+                        updatedAt: "now",
+                      },
+                    },
+        { backend: fakeBackend().backend, shell: noShell },
+      );
+      expect(oldNative).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE"),
+      });
+    }
+  });
+
+  it("project snapshot typed commands は集約payloadを明示写像する", async () => {
+    const projectSnapshotCreate = vi.fn().mockResolvedValue(undefined);
+    const projectSnapshotRestoreContext = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        structural: true,
+        liveTables: ["tree_nodes"],
+        treeRows: [],
+        codexRows: [],
+        snippetRows: [],
+        auxRows: [],
+        contentRows: [],
+        liveCodexIds: [],
+        liveTreeNodeIds: [],
+        liveCodexTagIds: [],
+      }),
+    );
+    const projectSnapshotApplyRestore = vi.fn().mockResolvedValue(undefined);
+    const { backend } = fakeBackend({
+      projectSnapshotCreate: projectSnapshotCreate as never,
+      projectSnapshotRestoreContext: projectSnapshotRestoreContext as never,
+      projectSnapshotApplyRestore: projectSnapshotApplyRestore as never,
+    });
+    const createPayload = {
+      projectId: "project-1",
+      snapshotId: "snapshot-1",
+      name: "Before edit",
+      description: null,
+      createdAt: "2026-07-30T00:00:00.000Z",
+      treeRows: [
+        {
+          snapshot_id: "snapshot-1",
+          node_id: "scene-1",
+          char_count: 1,
+        },
+      ],
+      codexRows: [],
+      snippetRows: [],
+      versionIds: ["version-1"],
+    };
+    const created = await dispatchInvoke(
+      "project_snapshot_create",
+      { payload: createPayload },
+      { backend, shell: noShell },
+    );
+    expect(projectSnapshotCreate).toHaveBeenCalledExactlyOnceWith(
+      createPayload,
+    );
+    expect(created).toEqual({ ok: true, value: null });
+
+    const context = await dispatchInvoke(
+      "project_snapshot_restore_context",
+      {
+        projectId: "project-1",
+        snapshotId: "snapshot-1",
+        scopes: ["body", "map"],
+      },
+      { backend, shell: noShell },
+    );
+    expect(projectSnapshotRestoreContext).toHaveBeenCalledExactlyOnceWith(
+      "project-1",
+      "snapshot-1",
+      ["body", "map"],
+    );
+    expect(context).toMatchObject({
+      ok: true,
+      value: { structural: true, liveTables: ["tree_nodes"] },
+    });
+
+    const applyPayload = {
+      projectId: "project-1",
+      snapshotId: "snapshot-1",
+      scopes: ["body"],
+      inserts: [
+        {
+          table: "tree_nodes",
+          row: { id: "scene-1", project_id: "project-1" },
+          mode: "insert",
+        },
+      ],
+    };
+    const applied = await dispatchInvoke(
+      "project_snapshot_apply_restore",
+      { payload: applyPayload },
+      { backend, shell: noShell },
+    );
+    expect(projectSnapshotApplyRestore).toHaveBeenCalledExactlyOnceWith(
+      applyPayload,
+    );
+    expect(applied).toEqual({ ok: true, value: null });
+  });
+
+  it("project snapshot commands は不正scope/tableと旧nativeを拒否する", async () => {
+    const projectSnapshotApplyRestore = vi.fn();
+    const { backend } = fakeBackend({
+      projectSnapshotApplyRestore: projectSnapshotApplyRestore as never,
+    });
+    const invalidScope = await dispatchInvoke(
+      "project_snapshot_restore_context",
+      {
+        projectId: "project-1",
+        snapshotId: "snapshot-1",
+        scopes: ["everything"],
+      },
+      { backend, shell: noShell },
+    );
+    expect(invalidScope.ok).toBe(false);
+
+    const invalidTable = await dispatchInvoke(
+      "project_snapshot_apply_restore",
+      {
+        payload: {
+          projectId: "project-1",
+          snapshotId: "snapshot-1",
+          scopes: ["body"],
+          inserts: [
+            {
+              table: "projects",
+              row: { id: "project-2" },
+              mode: "insert",
+            },
+          ],
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(invalidTable.ok).toBe(false);
+    expect(projectSnapshotApplyRestore).not.toHaveBeenCalled();
+
+    const oldNative = await dispatchInvoke(
+      "project_snapshot_restore_context",
+      {
+        projectId: "project-1",
+        snapshotId: "snapshot-1",
+        scopes: ["body"],
+      },
+      { backend: fakeBackend().backend, shell: noShell },
+    );
+    expect(oldNative).toMatchObject({
+      ok: false,
+      error:
+        "IPC_BACKEND_UNAVAILABLE: native method projectSnapshotRestoreContext",
+    });
+  });
+
   it("save_scene_body_bundle: typed snapshot を1 payloadで渡して結果をparseする", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -1443,6 +2030,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "agent_scene_event_unlink",
       "agent_snippet_create",
       "agent_write_bundle",
+      "authorship_replace_lane",
       "chat_index_message",
       "chat_index_status",
       "chat_message_search",
@@ -1452,10 +2040,14 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "codex_match_text",
       "codex_rebuild_matcher",
       "codex_reindex_all",
+      "codex_rename_undo",
       "codex_semantic_search",
       "db_execute",
       "db_execute_batch",
       "deactivate_license",
+      "entity_tags_set",
+      "event_get_version",
+      "event_set_participants",
       "events_index_entry",
       "events_index_status",
       "events_reindex_all",
@@ -1495,6 +2087,17 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "ime_export_set_active_project",
       "import_web_editor_workspace",
       "integrity_check",
+      "lint_ignore_copy",
+      "lint_ignore_create",
+      "lint_ignore_delete",
+      "lint_ignore_list",
+      "lint_ignore_list_scene",
+      "lint_ignore_move",
+      "lint_term_dictionary_delete",
+      "lint_term_dictionary_insert",
+      "lint_term_dictionary_list",
+      "lint_term_dictionary_set_enabled",
+      "lint_term_dictionary_update",
       "lint_text",
       "list_ai_models",
       "list_annotations_for_project",
@@ -1503,6 +2106,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "list_post_effect_runs",
       "list_scene_lens_for_project",
       "list_system_fonts",
+      "map_write_bundle",
       "open_workspace",
       "plot_thread_branch_create",
       "plot_thread_create",
@@ -1516,6 +2120,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_move_marker_bundle",
       "plot_thread_restore_snapshot",
       "plot_thread_update",
+      "project_snapshot_apply_restore",
+      "project_snapshot_create",
+      "project_snapshot_restore_context",
       "repair_integrity",
       "reply_to_annotation",
       "restore_backup",
@@ -1524,6 +2131,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_global_settings",
       "save_post_effect_annotations",
       "save_scene_body_bundle",
+      "scan_staging_project_create",
       "seed_sample_workspace",
       "segment_bunsetsu",
       "semantic_cancel_background",
@@ -1548,6 +2156,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "trash_bin_delete",
       "trash_bin_list",
       "trash_bin_prune",
+      "tree_plan_undo",
       "update_annotation_status",
       "vacuum_database",
       "validate_workspace_path",

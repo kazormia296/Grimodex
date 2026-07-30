@@ -1,18 +1,18 @@
-import { invoke } from "@/lib/tauri";
-
-interface QueryResult {
-  rows: Array<{ version: number }>;
-}
+import { db } from "@/db/client";
+import { codexEntries } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
 
 /** Read optimistic-lock version for a codex entry (column added by migration). */
 export async function getCodexEntryVersion(
   projectId: string,
   entryId: string,
 ): Promise<number> {
-  const result = await invoke<QueryResult>("db_execute", {
-    sql: "SELECT COALESCE(version, 0) AS version FROM codex_entries WHERE id = ? AND project_id = ?",
-    params: [entryId, projectId],
-    method: "all",
-  });
-  return result.rows[0]?.version ?? 0;
+  const [entry] = await db
+    .select({ version: codexEntries.version })
+    .from(codexEntries)
+    .where(
+      and(eq(codexEntries.id, entryId), eq(codexEntries.projectId, projectId)),
+    )
+    .limit(1);
+  return entry?.version ?? 0;
 }

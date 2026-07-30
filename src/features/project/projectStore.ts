@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { useSettingsStore } from "@/features/settings/settingsStore";
 import { PROJECT_ID as FALLBACK_PROJECT_ID } from "./constants";
 import {
   listProjects,
@@ -8,7 +7,6 @@ import {
   deleteProject as deleteProjectRow,
   type Project,
 } from "./api";
-import { usePhaseStore } from "@/features/codex/phaseStore";
 import { ensureBuiltinTypes } from "@/features/codex/typeApi";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import {
@@ -36,6 +34,19 @@ import {
 } from "@/features/concurrency/mutationAuthority";
 import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 import { runProjectLoadWithFailureToast } from "./projectLoadFailure";
+import {
+  applyProjectMetadata,
+  getFallbackProjectLanguage,
+  initializeProjectTimelapse,
+  prepareExternalWriteFeedStop,
+  startProjectExternalWriteFeed,
+} from "@/application/project/projectRuntime";
+import {
+  getCurrentProjectId,
+  publishCurrentProjectId,
+} from "@/application/project/currentProjectAuthority";
+
+export { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 interface CreateProjectInput {
   title: string;
@@ -84,18 +95,6 @@ interface ProjectState {
   createNewProject: (input: CreateProjectInput) => Promise<Project>;
   /** Delete a Project. Switches away if deleting the current one. */
   deleteProjectById: (projectId: string) => Promise<void>;
-}
-
-function applyProjectMetadata(project: Project): void {
-  if (project.language && typeof document !== "undefined") {
-    document.documentElement.lang = project.language;
-  }
-  if (project.language) {
-    useSettingsStore.getState().applyProjectLanguage(project.language);
-  }
-  if (project.phaseResolutionMode) {
-    usePhaseStore.getState().setResolutionMode(project.phaseResolutionMode);
-  }
 }
 
 let loadProjectGeneration = 0;
@@ -334,52 +333,11 @@ function scheduleTimelapseInitialization(
 ): void {
   const authority = captureProjectBackgroundAuthority(projectId, generation);
   const run = timelapseInitTail.then(async () => {
-    if (!canStartProjectBackgroundMutation(authority)) return;
-
-    const [toggle, recorder] = await Promise.all([
-      import("@/features/timelapse/toggle"),
-      import("@/features/timelapse/recorder"),
-    ]);
-    if (!canStartProjectBackgroundMutation(authority)) return;
-
-    // Drain the previous project's pending queue BEFORE calling
-    // setRecorderEnabled so the flush still runs with the old project's
-    // enabled=true state (flushNow is a no-op when the queue is empty).
-    // workspace 切替後 (束縛無効中) はこの drain 自体が no-op — 旧
-    // キューは beginWorkspaceSwitch で破棄済みで、ここで流すと旧
-    // イベントが新 workspace の chain に混入する (M3 review C1)。
-    if (!isCurrentMutationAuthority(authority.mutation)) return;
-    // Do not rebind after a failed old-Project drain. recorder retains the
-    // queue, its timelapse quiescence provider retries/reports it, and this
-    // tracked task makes an overlapping strict boundary fail immediately.
-    await recorder.flushNow();
-    if (!isCurrentMutationAuthority(authority.mutation)) return;
-
-    const enabled = await toggle.isTimelapseEnabled(projectId);
-    if (!isCurrentMutationAuthority(authority.mutation)) return;
-
-    // setRecorderEnabled must precede init: when disabled, init only binds
-    // projectId and skips the chain-tail read (recorder.ts).
-    recorder.setRecorderEnabled(enabled);
-    if (!isCurrentMutationAuthority(authority.mutation)) return;
-    const bound = await recorder.initRecorderForProject(projectId);
-    if (!isCurrentMutationAuthority(authority.mutation)) return;
-
-    if (enabled && bound) {
-      // default-ON 経路では明示トグルが無く scene baseline が焼かれない
-      // ため、genesis (記録履歴が空) のとき一度だけ焼く。
-      await toggle.ensureGenesisBaselines(projectId, () =>
-        isCurrentMutationAuthority(authority.mutation),
-      );
-      if (!isCurrentMutationAuthority(authority.mutation)) return;
-
-      const { seedWorkspaceSnapshot } =
-        await import("@/features/timelapse/seedSession");
-      if (!isCurrentMutationAuthority(authority.mutation)) return;
-      await seedWorkspaceSnapshot(projectId, () =>
-        isCurrentMutationAuthority(authority.mutation),
-      );
-    }
+    await initializeProjectTimelapse({
+      projectId,
+      canStart: () => canStartProjectBackgroundMutation(authority),
+      isMutationCurrent: () => isCurrentMutationAuthority(authority.mutation),
+    });
   });
   trackProjectBackgroundMutation(run);
 
@@ -402,34 +360,11 @@ function scheduleExternalWriteFeedStart(
 ): void {
   const authority = captureProjectBackgroundAuthority(projectId, generation);
   const run = externalWriteFeedStartTail.then(async () => {
-    if (!canStartProjectBackgroundMutation(authority)) return;
-
-    const feed = await import("@/features/concurrency/externalWriteFeed");
-    if (!canStartProjectBackgroundMutation(authority)) return;
-
-    await feed.startExternalWriteFeed(projectId);
-    if (!isCurrentMutationAuthority(authority.mutation)) {
-      // A newer load has already stopped the previous feed. start may have
-      // resumed after that stop while reading its cursor, so close it again;
-      // the serialized latest start runs immediately after this task.
-      feed.stopExternalWriteFeed();
-      return;
-    }
-
-    const { setupAutoAcceptProseConsumer, drainProposedProse } =
-      await import("@/features/agent-writes/autoAcceptFeed");
-    if (!isCurrentMutationAuthority(authority.mutation)) {
-      feed.stopExternalWriteFeed();
-      return;
-    }
-
-    setupAutoAcceptProseConsumer();
-    await drainProposedProse(projectId, () =>
-      isCurrentMutationAuthority(authority.mutation),
-    );
-    if (!isCurrentMutationAuthority(authority.mutation)) {
-      feed.stopExternalWriteFeed();
-    }
+    await startProjectExternalWriteFeed({
+      projectId,
+      canStart: () => canStartProjectBackgroundMutation(authority),
+      isMutationCurrent: () => isCurrentMutationAuthority(authority.mutation),
+    });
   });
   trackProjectBackgroundMutation(run);
 
@@ -581,12 +516,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           if (!isCurrentProjectLoad(generation)) return;
           if (!p) throw new Error(`Project not found: ${projectId}`);
 
-          const [{ reloadProjectData }, { setSetting }, externalWriteFeed] =
+          const [{ reloadProjectData }, { setSetting }, stopExternalWriteFeed] =
             await Promise.all([
               import("./reloadProjectData"),
               import("@/features/settings/api"),
               realBrowserRuntime
-                ? import("@/features/concurrency/externalWriteFeed")
+                ? prepareExternalWriteFeedStop()
                 : Promise.resolve(null),
             ]);
           if (!isCurrentProjectLoad(generation)) return;
@@ -601,7 +536,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               if (!isCurrentProjectLoad(generation)) return false;
               quiescenceLease.sealReadsForAuthorityCommit();
               committed = true;
-              externalWriteFeed?.stopExternalWriteFeed();
+              stopExternalWriteFeed?.();
               useGlobalHistoryStore.getState().clear();
               set({ currentProjectId: projectId });
               applyProjectMetadata(p);
@@ -935,13 +870,12 @@ subscribeCurrentWorkspaceIdentity((identity) => {
   );
 });
 
-/**
- * Current Project id for non-React modules. Falls back to the bootstrap
- * Project id in the window before initCurrentProject has resolved.
- */
-export function getCurrentProjectId(): string {
-  return useProjectStore.getState().currentProjectId ?? FALLBACK_PROJECT_ID;
-}
+publishCurrentProjectId(useProjectStore.getState().currentProjectId);
+useProjectStore.subscribe((state, previous) => {
+  if (state.currentProjectId !== previous.currentProjectId) {
+    publishCurrentProjectId(state.currentProjectId);
+  }
+});
 
 /**
  * Current Project language for non-React modules (post-effect run callbacks
@@ -957,7 +891,7 @@ export function getCurrentProjectLanguage(): string {
   // loadProject は settingsStore.projectLanguage を更新するが、projects 一覧が
   // 空/古いとき getCurrentProjectLanguage が "ja" に落ちて英語文が分割されない
   // （Alt+Shift 色帯・swap が無反応になる）のを防ぐ。
-  const fromSettings = useSettingsStore.getState().projectLanguage;
+  const fromSettings = getFallbackProjectLanguage();
   if (fromSettings) return fromSettings;
   return "ja";
 }

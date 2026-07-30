@@ -172,19 +172,40 @@ def _freeze_holdout(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
-def _hash_scene_id(_args: argparse.Namespace) -> dict[str, object]:
-    scene_id = sys.stdin.readline().rstrip("\r\n")
-    if not scene_id:
+def _hash_stdin_value(
+    *,
+    command: str,
+    domain: str,
+    output_key: str,
+) -> dict[str, object]:
+    value = sys.stdin.readline().rstrip("\r\n")
+    if not value:
         raise CorpusValidationError(
-            "hash-scene-id expects one non-empty scene ID on stdin"
+            f"{command} expects one non-empty value on stdin"
         )
     digest = hashlib.sha256(
-        f"scene\0{scene_id}".encode("utf-8")
+        f"{domain}\0{value}".encode("utf-8")
     ).hexdigest()
     return {
         "schemaVersion": 1,
-        "sceneHash": digest,
+        output_key: digest,
     }
+
+
+def _hash_scene_id(_args: argparse.Namespace) -> dict[str, object]:
+    return _hash_stdin_value(
+        command="hash-scene-id",
+        domain="scene",
+        output_key="sceneHash",
+    )
+
+
+def _hash_work_family(_args: argparse.Namespace) -> dict[str, object]:
+    return _hash_stdin_value(
+        command="hash-work-family",
+        domain="work-family",
+        output_key="workFamilyHash",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -233,6 +254,14 @@ def _parser() -> argparse.ArgumentParser:
         help="read one local scene ID from stdin and emit its privacy hash",
     )
     hash_scene.set_defaults(handler=_hash_scene_id)
+    hash_family = subparsers.add_parser(
+        "hash-work-family",
+        help=(
+            "read one stable local work-family ID from stdin and emit its "
+            "privacy hash"
+        ),
+    )
+    hash_family.set_defaults(handler=_hash_work_family)
     return parser
 
 

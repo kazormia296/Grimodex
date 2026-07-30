@@ -6,7 +6,7 @@ import {
   saveContainerId,
   clearContainerId,
 } from "./gridContainerPersistence";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { findTreeNodeSummary } from "@/features/tree/treeProjection";
 import { toggleSceneSelection, rangeSelectScenes } from "./gridSelection";
 
 export interface GridDisplaySettings {
@@ -162,8 +162,7 @@ export const useGridStore = create<GridState>((set, get) => ({
       return;
     }
     // Validate: node must exist and be a folder
-    const nodes = useTreeStore.getState().nodes;
-    const node = nodes.find((n) => n.id === stored);
+    const node = findTreeNodeSummary(stored);
     if (!node || node.nodeType !== "folder") {
       // Stale ID — remove it
       await clearContainerId(projectId);

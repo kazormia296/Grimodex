@@ -24,7 +24,7 @@ import {
   isCreateResultEntityPresent,
 } from "@/lib/createResultMetadata";
 import { loadSceneContents, saveSceneContent } from "@/features/tree/api";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
@@ -40,11 +40,16 @@ import type { ProposedSetup } from "./api";
 import { safeParseAiEvaluation } from "./types";
 import type { AuditCandidate } from "./types";
 import { deriveLabel } from "./deriveLabel";
-import { useEditorStore } from "@/features/editor/editorStore";
-import { useSceneStore } from "@/features/tree/store";
+import { getActiveEditor } from "@/features/editor/editorProjection";
+import {
+  getActiveTreeSceneId,
+  listTreeSceneSummaries,
+} from "@/features/tree/treeProjection";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { captureForeshadowDeletion } from "@/features/trash-bin/captureHooks";
-import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
+import {
+  cancelPendingTrash,
+  captureForeshadowDeletion,
+} from "@/features/trash-bin/captureHooks";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import {
   createPendingCreateRequestRegistry,
@@ -371,8 +376,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       await updateForeshadow(id, patch);
 
       if (patch.payoffSceneId === null) {
-        const editor = useEditorStore.getState().editor;
-        const activeSceneId = useSceneStore.getState().activeSceneId;
+        const editor = getActiveEditor();
+        const activeSceneId = getActiveTreeSceneId();
         if (editor && activeSceneId) {
           unsetForeshadowPayoffMarksByForeshadowIds(
             (fn) => {
@@ -423,8 +428,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       async undo() {
         await updateForeshadow(id, undoPatch);
         if (releasedPayoffSnapshot) {
-          const editor = useEditorStore.getState().editor;
-          const activeSceneId = useSceneStore.getState().activeSceneId;
+          const editor = getActiveEditor();
+          const activeSceneId = getActiveTreeSceneId();
           if (
             editor &&
             activeSceneId &&
@@ -449,8 +454,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       async redo() {
         await updateForeshadow(id, patch);
         if (releasedPayoffSnapshot) {
-          const editor = useEditorStore.getState().editor;
-          const activeSceneId = useSceneStore.getState().activeSceneId;
+          const editor = getActiveEditor();
+          const activeSceneId = getActiveTreeSceneId();
           if (
             editor &&
             activeSceneId &&
@@ -509,7 +514,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       label: i18next.t("foreshadow.store.historyDelete"),
       async undo() {
         // 1500ms 以内 Ctrl+Z 吸収: trash 保留を cancel
-        useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
+        cancelPendingTrash(trashTempId);
         const restored = await restoreForeshadowWithRetainedRequest(
           undoRequests,
           cap,
@@ -567,8 +572,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   },
 
   reanchorSetup: async (setupId, foreshadowId) => {
-    const editor = useEditorStore.getState().editor;
-    const activeSceneId = useSceneStore.getState().activeSceneId;
+    const editor = getActiveEditor();
+    const activeSceneId = getActiveTreeSceneId();
     if (!editor || !activeSceneId) {
       toast.error(
         i18next.t(
@@ -658,8 +663,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   },
 
   reinsertSetup: async (setupId, foreshadowId) => {
-    const editor = useEditorStore.getState().editor;
-    const activeSceneId = useSceneStore.getState().activeSceneId;
+    const editor = getActiveEditor();
+    const activeSceneId = getActiveTreeSceneId();
     if (!editor || !activeSceneId) {
       toast.error(
         i18next.t(
@@ -841,15 +846,14 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     try {
       // DB content を読む前に、編集中シーンの debounce 未 flush 保存を確定させる
       // (ChatPanel.handleSend と同じ仕組み)。
-      const activeSceneId = useSceneStore.getState().activeSceneId;
+      const activeSceneId = getActiveTreeSceneId();
       if (activeSceneId) await saveScene(activeSceneId);
 
-      const nodes = useSceneStore.getState().nodes;
+      const nodes = listTreeSceneSummaries();
       const payoffNode = nodes.find((n) => n.id === foreshadow.payoffSceneId);
       const sceneNodes = nodes
         .filter(
           (n) =>
-            n.nodeType === "scene" &&
             n.id !== foreshadow.payoffSceneId &&
             (payoffNode ? n.sortOrder < payoffNode.sortOrder : true),
         )
@@ -997,8 +1001,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   },
 
   adoptInsertedNewSetup: async (foreshadowId, candidateIdx) => {
-    const editor = useEditorStore.getState().editor;
-    const activeSceneId = useSceneStore.getState().activeSceneId;
+    const editor = getActiveEditor();
+    const activeSceneId = getActiveTreeSceneId();
 
     const candidate = get().proposeResults[foreshadowId]?.[candidateIdx];
     if (!candidate || candidate.kind !== "inserted_new") return;
@@ -1125,8 +1129,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         await recordForeshadowMarkBake(capSceneId);
         // If the editor is currently displaying this scene, also reset its content
         // without firing onUpdate (second arg false).
-        const ed = useEditorStore.getState().editor;
-        const curScene = useSceneStore.getState().activeSceneId;
+        const ed = getActiveEditor();
+        const curScene = getActiveTreeSceneId();
         if (ed && curScene === capSceneId) {
           try {
             ed.commands.setContent(JSON.parse(capBefore), {
@@ -1149,8 +1153,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         await createForeshadowSetup(setupPayload);
         await saveSceneContent(capSceneId, capAfter);
         await recordForeshadowMarkBake(capSceneId);
-        const ed = useEditorStore.getState().editor;
-        const curScene = useSceneStore.getState().activeSceneId;
+        const ed = getActiveEditor();
+        const curScene = getActiveTreeSceneId();
         if (ed && curScene === capSceneId) {
           try {
             ed.commands.setContent(JSON.parse(capAfter), { emitUpdate: false });
@@ -1181,12 +1185,12 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     try {
       // DB content を読む前に、編集中シーンの debounce 未 flush 保存を確定させる
       // (ChatPanel.handleSend と同じ仕組み)。
-      const activeSceneId = useSceneStore.getState().activeSceneId;
+      const activeSceneId = getActiveTreeSceneId();
       if (activeSceneId) await saveScene(activeSceneId);
 
-      const nodes = useSceneStore.getState().nodes;
+      const nodes = listTreeSceneSummaries();
       const sceneNodes = nodes
-        .filter((n) => n.nodeType === "scene" && n.parentId === chapterId)
+        .filter((n) => n.parentId === chapterId)
         .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
 
       const sceneContents = await loadSceneContents(

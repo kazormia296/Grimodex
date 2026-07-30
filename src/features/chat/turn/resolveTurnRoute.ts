@@ -25,6 +25,20 @@ import {
   type AiSettings,
 } from "../types";
 
+export {
+  createTurnControl,
+  createTurnCoordinator,
+  createTurnRequest,
+} from "./turnCoordinator";
+export type {
+  TurnControl,
+  TurnPhase,
+  TurnRequest,
+  TurnSurface,
+  TurnTransport,
+  TurnWorkspaceAuthority,
+} from "./turnCoordinator";
+
 export interface TurnRouteCandidate {
   model?: string | null;
   provider?: AiProvider | null;
@@ -94,6 +108,66 @@ export function resolvedChatTurnRouteAuthorityKey(
     route.outputBudget,
     route.effectiveSettings,
   ]);
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (
+    parts.length !== 4 ||
+    parts.some(
+      (part) =>
+        !/^\d{1,3}$/.test(part) || Number(part) < 0 || Number(part) > 255,
+    )
+  ) {
+    return false;
+  }
+  const [first, second] = parts.map(Number);
+  return (
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  );
+}
+
+function isPrivateIpv6(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return (
+    normalized === "::1" ||
+    normalized === "::" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    /^fe[89ab]/.test(normalized)
+  );
+}
+
+/** Whether the frozen route executes inference on this device or its LAN. */
+export function isLocalInferenceRoute(
+  route: ResolvedChatTurnRoute | null | undefined,
+): boolean {
+  if (!route) return false;
+  if (route.provider === "ollama") return true;
+  if (route.provider !== "openai-compatible") return false;
+  const endpoint = resolveActiveOpenaiCompatibleEndpoint(
+    route.effectiveSettings,
+    route.resolvedEndpointId,
+  );
+  if (!endpoint?.baseUrl?.trim()) return false;
+  try {
+    const hostname = new URL(endpoint.baseUrl).hostname
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost") ||
+      hostname.endsWith(".local") ||
+      isPrivateIpv4(hostname) ||
+      isPrivateIpv6(hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function nonEmpty(value: string | null | undefined): string | null {

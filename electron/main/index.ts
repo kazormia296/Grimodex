@@ -53,6 +53,10 @@ import {
   registerSecurityHandlers,
 } from "./security.js";
 import { parseWebEditorHandoffProtocolRequest } from "./webEditorHandoffProtocol.js";
+import {
+  shouldUseProductJourneyAi,
+  wrapBackendForProductJourneyAi,
+} from "./productJourneyAi.js";
 
 const WEB_EDITOR_HANDOFF_EVENT = "web-editor-handoff:requested";
 const WEB_EDITOR_HANDOFF_PAYLOAD = {
@@ -141,7 +145,10 @@ if (!gotSingleInstanceLock) {
       registerAppProtocolHandler(path.join(__dirname, "..", "dist"));
     }
     // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
-    const backend = initBackend();
+    const backend = wrapBackendForProductJourneyAi(
+      initBackend(),
+      shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
+    );
     // Phase 4: final Tauri releaseのOS keyringかsafeStorageへ、1回だけ
     // copyする。旧keyringはrollback用に残し、plaintextはmainから出さない。
     // 全キーの暗号化・復号検証が成功するまでmarker/暗号文を確定しない。

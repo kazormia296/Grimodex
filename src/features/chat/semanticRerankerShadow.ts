@@ -4,6 +4,7 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { invoke } from "@/lib/tauri";
 import { isCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { isCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { selectHybridRecallHitsWithPolicy } from "./hybridRecallSelection";
 
 export type SemanticRerankerShadowLanguage = "ja" | "en";
 
@@ -304,30 +305,33 @@ function counterfactualInjection(
   input: SemanticRerankerShadowInput,
   ranking: readonly SemanticSearchHit[],
 ): SemanticSearchHit[] {
-  if (input.maxChunks <= 0 || ranking.length === 0) return [];
-  const densePass =
-    Math.max(...ranking.map((hit) => hit.score)) >= input.gateScore;
-  const sparseScenes = new Set(input.sparseSceneIds);
-  const rescueFloor = input.minScore - input.rescueMargin;
-  const eligible = ranking.filter((hit) => {
-    const denseConfident = hit.score >= input.minScore;
-    const sparseRescue =
-      input.hybrid && sparseScenes.has(hit.sceneId) && hit.score >= rescueFloor;
-    return sparseRescue || (densePass && denseConfident);
-  });
-  if (eligible.length === 0) return [];
-
-  const seenScenes = new Set<string>();
-  const distinct: SemanticSearchHit[] = [];
-  const backfill: SemanticSearchHit[] = [];
-  for (const hit of eligible) {
-    if (seenScenes.has(hit.sceneId)) backfill.push(hit);
-    else {
-      seenScenes.add(hit.sceneId);
-      distinct.push(hit);
+  const rerankedScenePosition = new Map<string, number>();
+  for (const hit of ranking) {
+    if (!rerankedScenePosition.has(hit.sceneId)) {
+      rerankedScenePosition.set(hit.sceneId, rerankedScenePosition.size);
     }
   }
-  return [...distinct, ...backfill].slice(0, input.maxChunks);
+  return selectHybridRecallHitsWithPolicy(
+    input.denseHits,
+    input.hybrid ? input.sparseSceneIds : [],
+    {
+      excludeSceneIds: input.excludeSceneIds,
+      minScore: input.minScore,
+      gateScore: input.gateScore,
+      maxChunks: input.maxChunks,
+      rescueMargin: input.rescueMargin,
+      rrfK: input.rrfK ?? 60,
+      rankScenes: (admittedScenes) =>
+        [...admittedScenes].sort(
+          (left, right) =>
+            (rerankedScenePosition.get(left.sceneId) ??
+              Number.MAX_SAFE_INTEGER) -
+              (rerankedScenePosition.get(right.sceneId) ??
+                Number.MAX_SAFE_INTEGER) ||
+            left.sceneId.localeCompare(right.sceneId),
+        ),
+    },
+  );
 }
 
 function goldPosition(
@@ -535,6 +539,14 @@ class SemanticRerankerShadowCoordinator {
       await this.safeRecord(
         this.baseRecord(job, runId, "suppressed", {
           staleReason: "reindex-running",
+        }),
+      );
+      return;
+    }
+    if (job.generation !== this.latestGeneration) {
+      await this.safeRecord(
+        this.baseRecord(job, runId, "stale", {
+          staleReason: "superseded",
         }),
       );
       return;

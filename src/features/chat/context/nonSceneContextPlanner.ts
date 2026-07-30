@@ -1,10 +1,10 @@
 import { createContextPlan } from "@/features/ai-context/types";
 import {
   countTokens,
+  type SystemPromptResult,
   type BuildSystemPromptInput,
   type LayerBreakdown,
 } from "../contextBuilder";
-import type { LegacyPromptResult } from "./legacyPromptAdapter";
 import {
   collectNonSceneContext,
   type NonSceneContextCollection,
@@ -30,7 +30,7 @@ export interface NonSceneContextPlannerDeps {
     deps: NonSceneContextSourceDeps,
   ) => Promise<NonSceneContextCollection>;
   source: NonSceneContextSourceDeps;
-  renderPrompt: (input: BuildSystemPromptInput) => LegacyPromptResult;
+  renderPrompt: (input: BuildSystemPromptInput) => SystemPromptResult;
 }
 
 export interface NonSceneContextPlanResult {

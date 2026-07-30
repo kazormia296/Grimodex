@@ -339,72 +339,20 @@ export async function setEventParticipants(
   if (!ev) return null;
   const baseVersion = opts?.baseVersion ?? ev.version;
   const resultVersion = baseVersion + 1;
-  // Each guarded statement keys off this per-write marker. If the CAS misses,
-  // the participant DELETE/INSERT statements become no-ops in the same tx.
   const finalUpdatedAt = new Date().toISOString();
-  // Transient transaction-only marker. The last guarded UPDATE replaces it
-  // with a valid ISO timestamp before COMMIT and returns the CAS outcome.
-  const writeMarker = `occ:${crypto.randomUUID()}`;
-  const bump = db
-    .update(events)
-    .set({ version: resultVersion, updatedAt: writeMarker })
-    .where(
-      and(
-        eq(events.id, eventId),
-        eq(events.projectId, projectId),
-        eq(events.version, baseVersion),
-      ),
-    )
-    .toSQL();
-  // 全削除→再挿入を db_execute_batch(Rust 側 execute_batch_tx = 単一 lock 内
-  // BEGIN..COMMIT)で原子化し、insert 失敗時に delete を巻き戻して参加者集合が
-  // 中途半端に空になるのを防ぐ。sqlite-proxy では db.transaction の BEGIN/COMMIT が
-  // 別 IPC となり共有接続上の無関係な書込みを巻き込むため使わない（attribution/api.ts
-  // の replaceAuthorshipSpansForLaneAtomic と同じ流儀）。
-  const statements: { sql: string; params: unknown[]; method: string }[] = [
-    { sql: bump.sql, params: bump.params, method: "run" },
+  const committedVersion = await invoke<number | null>(
+    "event_set_participants",
     {
-      sql: `DELETE FROM event_participants
-            WHERE event_id = ?
-              AND EXISTS (
-                SELECT 1 FROM events
-                WHERE id = ? AND project_id = ? AND version = ? AND updated_at = ?
-              )`,
-      params: [eventId, eventId, projectId, resultVersion, writeMarker],
-      method: "run",
-    },
-  ];
-  for (const codexEntryId of codexEntryIds) {
-    statements.push({
-      sql: `INSERT INTO event_participants (event_id, codex_entry_id, role)
-            SELECT ?, ?, NULL
-            WHERE EXISTS (
-              SELECT 1 FROM events
-              WHERE id = ? AND project_id = ? AND version = ? AND updated_at = ?
-            )`,
-      params: [
-        eventId,
-        codexEntryId,
+      payload: {
         eventId,
         projectId,
-        resultVersion,
-        writeMarker,
-      ],
-      method: "run",
-    });
-  }
-  statements.push({
-    sql: `UPDATE events SET updated_at = ?
-          WHERE id = ? AND project_id = ? AND version = ? AND updated_at = ?
-          RETURNING version`,
-    params: [finalUpdatedAt, eventId, projectId, resultVersion, writeMarker],
-    method: "all",
-  });
-  const result = await invoke<{ rows: Array<{ version: number }> }>(
-    "db_execute_batch",
-    { statements },
+        codexEntryIds,
+        baseVersion,
+        updatedAt: finalUpdatedAt,
+      },
+    },
   );
-  if (Number(result.rows?.[0]?.version ?? -1) !== resultVersion) {
+  if (committedVersion !== resultVersion) {
     throw new EventVersionConflictError(eventId);
   }
   bumpChronicleRevision();

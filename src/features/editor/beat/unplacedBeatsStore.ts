@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import type { BeatType } from "./beatTypes";
 
 export interface UnplacedBeat {
   id: string;

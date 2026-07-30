@@ -42,7 +42,8 @@ text, scene title, workspace path, project ID, or manuscript text.
 
 Private labels contain only:
 
-- privacy hashes for a work, query, candidate set, candidate, and scene;
+- privacy hashes for a project, human-assigned work family, query, candidate
+  set, candidate, and scene;
 - dense, current hybrid, and reranker ranks;
 - standardized slice tags and no-match type;
 - a human relevance grade.
@@ -99,15 +100,21 @@ All pooled candidates for a no-match query must have grade 0.
 ## Work-level isolation and holdout
 
 The `workHash` is the privacy-safe product/project identity from the shadow
-record. One work may appear in only one of:
+record and remains the join key. The human reviewer must also set
+`workFamilyHash` from a stable local identifier for the underlying story.
+Copies, exports, restored backups, and derived projects of the same story use
+the same family hash even when their `workHash` values differ.
+
+One work family may appear in only one of:
 
 ```text
 shadow-private-dev
 frozen-holdout
 ```
 
-Queries are never randomly divided across those splits. Duplicate query hashes
-are also rejected so repeated shadow runs cannot inflate the independent
+Queries are never randomly divided across those splits. Both direct project
+leakage and derived-project family leakage are rejected. Duplicate query
+hashes are also rejected so repeated shadow runs cannot inflate the independent
 sample count. A language report also rejects mixed model IDs, revisions, or
 manifests; evidence from different model snapshots must be reported separately.
 
@@ -166,15 +173,17 @@ query or candidate truncation. The human reviewer supplies semantic slices.
 
 Readiness is reported independently for Japanese and English.
 
-| Stage               | Positive / language | No-match / language | Works | Frozen holdout works |
-| ------------------- | -------------------: | ------------------: | ----: | -------------------: |
-| Shadow initial      |                   50 |                  30 |     3 |                    0 |
-| Experimental opt-in |                  100 |                  60 |     4 |                    1 |
-| Default candidate   |                  200 |                 100 |     5 |                    2 |
+| Stage               | Positive | No-match | Work families | Holdout works | Holdout positive | Holdout no-match | Max one-family share |
+| ------------------- | -------: | -------: | ------------: | ------------: | ---------------: | ---------------: | -------------------: |
+| Shadow initial      |       50 |       30 |             3 |             0 |                0 |                0 |                  50% |
+| Experimental opt-in |      100 |       60 |             4 |             1 |               20 |               10 |                  40% |
+| Default candidate   |      200 |      100 |             5 |             2 |               50 |               30 |                  35% |
 
-These are minimum corpus floors, not statistical guarantees. The report keeps
-`quantityReady` separate from `decisionReady`. Opt-in and default-candidate
-decision readiness additionally require a valid frozen-holdout lock.
+All counts are per language. These are minimum corpus floors, not statistical
+guarantees. The report exposes `quantityReady`, `holdoutReady`, and
+`contributionReady` independently. `evidenceReady` requires all three, but
+means only that the evidence package is ready for a product decision; it is
+not itself a product-enablement verdict.
 
 ## Commands
 
@@ -190,8 +199,18 @@ Create a draft hash-only label file from completed shadow records:
 ```
 
 The command refuses to overwrite an existing label file. Edit the private
-JSONL locally, set `reviewStatus` to `human-verified`, assign query metadata,
-and fill every `relevanceGrade`.
+JSONL locally, set `workFamilyHash`, set `reviewStatus` to `human-verified`,
+assign query metadata, and fill every `relevanceGrade`.
+
+Derive `workFamilyHash` without placing the stable local family identifier in
+shell history:
+
+```bash
+.venv/bin/python tools/manage_shadow_corpus.py hash-work-family
+```
+
+Use the same local family identifier for every copy or derived project of one
+story. The tool emits only its privacy hash.
 
 When a positive reference scene is outside the candidate union, derive the
 same privacy hash used by the product without placing the scene ID in shell
@@ -239,7 +258,8 @@ The aggregate report deliberately separates:
 - candidate generation: reference scene present in the frozen top 30 or miss;
 - conditional reranker: Recall@3 only when a reference scene is in the pool;
 - end to end: Recall@3 over every positive query;
-- admission: relevant injection after the unchanged product admission policy;
+- admission: relevant injection after the unchanged product admission policy,
+  reported with baseline-specific, reranker-specific, and common denominators;
 - no-match: baseline and counterfactual any-injection rates.
 
 This prevents an English candidate-generation miss, a reranker ranking miss,
