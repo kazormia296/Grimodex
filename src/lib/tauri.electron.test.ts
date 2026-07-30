@@ -132,6 +132,27 @@ describe("envelope 解封 = typed error + legacy wire compatibility", () => {
     expect(String(caught)).toContain("WORKSPACE_SWITCHING");
   });
 
+  it("RERANKER_BUSYをretryableなtyped errorへ正規化する", async () => {
+    installBridge({
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: "RERANKER_BUSY: semantic reranker lane is occupied",
+      }),
+    });
+    const { invoke, IpcInvokeError } = await import("./tauri");
+
+    await expect(
+      invoke("semantic_reranker_shadow_score", {
+        requestId: "request-1",
+      }),
+    ).rejects.toMatchObject({
+      name: IpcInvokeError.name,
+      code: "RERANKER_BUSY",
+      retryable: true,
+      outcome: "failed",
+    });
+  });
+
   it("errorInfo があれば legacy error 文字列の推測より優先する", async () => {
     installBridge({
       invoke: vi.fn().mockResolvedValue({

@@ -135,8 +135,9 @@ pub struct AppState {
     /// backend.onEvent → main → 全窓broadcastへ載る。
     pub semantic: Arc<grimodex_semantic::runtime::SemanticRuntime>,
     /// Gate 2 cross-encoder cache shared by diagnostic shadow and opt-in apply.
-    /// The outer mutex is both the native concurrency=1 guard and
-    /// Session::run's mutable owner.
+    /// The outer mutex is both the non-queuing native concurrency=1 guard and
+    /// Session::run's mutable owner. Callers must use `try_lock` and return the
+    /// stable `RERANKER_BUSY` marker instead of waiting behind an inference.
     pub semantic_reranker: Mutex<grimodex_semantic::reranker::RerankerRuntime>,
 }
 

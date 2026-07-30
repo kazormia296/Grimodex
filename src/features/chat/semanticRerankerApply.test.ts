@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { IpcInvokeError } from "@/lib/tauri";
 import type { SemanticSearchHit } from "../semantic-search/api";
 import {
   createSemanticRerankerApplyCoordinator,
@@ -159,6 +160,31 @@ describe("SemanticRerankerApplyCoordinator", () => {
       reason: "score-failed",
       hits: baseline,
     });
+  });
+
+  it("classifies native lane contention as busy without opening the session circuit", async () => {
+    const score = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new IpcInvokeError("semantic_reranker_shadow_score", {
+          code: "RERANKER_BUSY",
+          message: "RERANKER_BUSY: semantic reranker lane is occupied",
+          retryable: true,
+          outcome: "failed",
+        }),
+      )
+      .mockResolvedValue(scoreResult());
+    const apply = coordinator({ score });
+
+    await expect(apply.apply(input())).resolves.toEqual({
+      status: "fallback",
+      reason: "busy",
+      hits: [a, b, c],
+    });
+    await expect(
+      apply.apply(input({ requestId: "request-after-busy" })),
+    ).resolves.toMatchObject({ status: "applied" });
+    expect(score).toHaveBeenCalledTimes(2);
   });
 
   it("opens a session circuit after caller timeout while native scoring settles", async () => {

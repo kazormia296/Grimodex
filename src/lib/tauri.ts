@@ -23,6 +23,7 @@ const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
 export type IpcInvokeErrorCode =
   | "WORKSPACE_SWITCHING"
   | "NO_WORKSPACE_OPEN"
+  | "RERANKER_BUSY"
   | "IPC_UNIMPLEMENTED"
   | "IPC_BACKEND_UNAVAILABLE"
   | "IPC_SECRETS_UNAVAILABLE"
@@ -109,6 +110,9 @@ function classifyLegacyIpcError(message: string): IpcInvokeFailureInfo {
   }
   if (/No workspace is open/i.test(message)) {
     return { ...base, code: "NO_WORKSPACE_OPEN", retryable: true };
+  }
+  if (message.includes("RERANKER_BUSY:")) {
+    return { ...base, code: "RERANKER_BUSY", retryable: true };
   }
   if (message.includes("IPC_UNIMPLEMENTED:")) {
     return { ...base, code: "IPC_UNIMPLEMENTED", retryable: false };

@@ -1,7 +1,7 @@
 import { useReindexProgressStore } from "@/features/semantic-search/reindexProgressStore";
 import type { SemanticSearchHit } from "@/features/semantic-search/api";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import { invoke } from "@/lib/tauri";
+import { invoke, IpcInvokeError } from "@/lib/tauri";
 import { isCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { isCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import {
@@ -119,6 +119,13 @@ class SemanticRerankerApplyCoordinator {
       result = await Promise.race([scorePromise, timeoutPromise]);
     } catch (error) {
       if (generation !== this.generation) return fallback("superseded");
+      if (error instanceof IpcInvokeError && error.code === "RERANKER_BUSY") {
+        debugLog.debug(
+          "SemanticRerankerApply",
+          "native reranker lane occupied; keeping baseline order",
+        );
+        return fallback("busy");
+      }
       debugLog.warn(
         "SemanticRerankerApply",
         "scoring failed; keeping baseline order",

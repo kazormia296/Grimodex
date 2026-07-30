@@ -759,6 +759,37 @@ describe("dispatchInvoke", () => {
     });
   });
 
+  it("native reranker contention は待機させずretryable busy envelopeにする", async () => {
+    const { backend } = fakeBackend({
+      semanticRerankerShadowScore: () =>
+        Promise.reject(
+          new Error("RERANKER_BUSY: semantic reranker lane is occupied"),
+        ),
+    });
+    const env = await dispatchInvoke(
+      "semantic_reranker_shadow_score",
+      {
+        requestId: "request-1",
+        language: "ja",
+        userMessage: "query",
+        sceneTail: "",
+        candidates: [{ candidateId: "scene-a:0:10", text: "candidate" }],
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: false,
+      error: "RERANKER_BUSY: semantic reranker lane is occupied",
+      errorInfo: {
+        code: "RERANKER_BUSY",
+        message: "RERANKER_BUSY: semantic reranker lane is occupied",
+        retryable: true,
+        outcome: "failed",
+      },
+    });
+  });
+
   it("native license commandは残存shell stubに遮られない", async () => {
     const { backend, methods } = fakeLicenseBackend();
     const getLicenseStateStub = vi.fn().mockResolvedValue({
@@ -2188,11 +2219,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         semanticRerankerShadowScore: method,
       });
 
-      const env = await dispatchInvoke(
-        "semantic_reranker_shadow_score",
-        args,
-        { backend, shell: noShell },
-      );
+      const env = await dispatchInvoke("semantic_reranker_shadow_score", args, {
+        backend,
+        shell: noShell,
+      });
 
       expect(env).toMatchObject({
         ok: true,
