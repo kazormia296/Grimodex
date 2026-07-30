@@ -378,6 +378,9 @@ describe("ChatPanel virtualization contract", () => {
     await vi.waitFor(() =>
       expect(screen.getByTestId("streaming-indicator")).toBeTruthy(),
     );
+    await vi.waitFor(() =>
+      expect(screen.getByText("生成中", { exact: true })).toBeTruthy(),
+    );
     await act(
       () =>
         new Promise<void>((resolve) =>

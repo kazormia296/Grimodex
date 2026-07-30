@@ -39,8 +39,7 @@ import {
   createChatTurnRuntime,
   createChatUserQuestionRuntime,
   createChatUserQuestionStoreActions,
-  isChatAuthorityMutationBlocked,
-  setChatNavigationBlocker,
+  installChatNavigationBlockers,
   type ChatComposerAuthority,
 } from "@/application/chat/chatStoreActions";
 export { contextPromptKey };
@@ -393,13 +392,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 }));
 
-setChatNavigationBlocker(() => {
-  const state = useChatStore.getState();
-  return isChatAuthorityMutationBlocked({
-    isStreaming: state.isStreaming,
-    hasPendingCompletedTurnPersistence:
-      turnRuntime.hasPendingCompletedTurnPersistence(),
-  });
+installChatNavigationBlockers({
+  getState: useChatStore.getState,
+  hasPendingPersistence: turnRuntime.hasPendingCompletedTurnPersistence,
+  activeTurnSurface: () => turnRuntime.coordinator.current()?.surface ?? null,
 });
 
 // Snippet 削除 → snippet スコープを scene へ戻す。snippetStore からの直接 import は

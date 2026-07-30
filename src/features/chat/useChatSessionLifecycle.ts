@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useReducer } from "react";
 import { useChatStore } from "./chatStore";
 import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
 import { markEnd, markStart } from "@/lib/perfLog";
+import { subscribeQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
 
 export interface ChatSessionLifecycleOptions {
   isActive: boolean;
@@ -51,9 +52,27 @@ export function useChatSessionLifecycle({
   selectSession,
   refreshContextLayers,
 }: ChatSessionLifecycleOptions): void {
+  const [authorityResumeRevision, notifyAuthorityResumed] = useReducer(
+    (revision: number) => revision + 1,
+    0,
+  );
+
   useEffect(() => {
     loadAiSettings();
   }, [loadAiSettings]);
+
+  useEffect(
+    () =>
+      subscribeQuiescenceLease((change) => {
+        if (
+          !change.active &&
+          change.releaseDisposition !== "renderer-teardown"
+        ) {
+          notifyAuthorityResumed();
+        }
+      }),
+    [],
+  );
 
   useEffect(() => {
     markStart("chatPanel.mirrorEffect");
@@ -114,6 +133,7 @@ export function useChatSessionLifecycle({
     treeActiveSceneId,
     chatScope,
     scopeAnchorId,
+    authorityResumeRevision,
     loadSessions,
     selectSession,
   ]);

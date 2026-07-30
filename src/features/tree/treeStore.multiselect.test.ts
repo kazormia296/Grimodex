@@ -4,7 +4,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import {
   __resetChatNavigationGuardForTests,
-  setChatNavigationBlocker,
+  setChatSceneTransitionBlocker,
 } from "@/lib/chatNavigationGuard";
 
 // Mock the API module
@@ -163,13 +163,13 @@ describe("treeStore multi-selection", () => {
       expect(useTreeStore.getState().selectedIds).toEqual(["scene-1"]);
     });
 
-    it("does not split Tree and Chat authority while Chat navigation is blocked", () => {
+    it("does not split Tree and Chat authority while Scene transition is blocked", () => {
       useTreeStore.setState({
         nodes: NODES,
         activeSceneId: "scene-1",
         selectedIds: ["scene-1"],
       });
-      setChatNavigationBlocker(() => true);
+      setChatSceneTransitionBlocker(() => true);
 
       useTreeStore.getState().setActiveScene("scene-2");
       useTreeStore.getState().selectNode("scene-2", false);

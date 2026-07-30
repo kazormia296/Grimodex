@@ -661,7 +661,17 @@ export function EditorPane({
               .getState()
               .getNumber("revision.keepCount", 50);
             import("@/features/revision/api").then(({ pruneRevisions }) => {
-              pruneRevisions("scene", id, keepCount).catch(console.error);
+              pruneRevisions("scene", id, keepCount).catch((error) => {
+                // Pruning is best-effort maintenance. A renderer teardown may
+                // close the DB after the durable editor save but before this
+                // detached query finishes; keep that non-critical outcome out
+                // of the fail-closed renderer error channel.
+                debugLog.warn(
+                  "AutoSave",
+                  "revision prune failed",
+                  errorDetail(error),
+                );
+              });
             });
           }
         }

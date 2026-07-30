@@ -1,6 +1,7 @@
 type ChatNavigationBlocker = () => boolean;
 
 let blocker: ChatNavigationBlocker | null = null;
+let sceneTransitionBlocker: ChatNavigationBlocker | null = null;
 let activeTreeNavigationToken: symbol | null = null;
 let activeAnchorDeletionToken: symbol | null = null;
 const activeChatAdmissionTokens = new Set<symbol>();
@@ -28,20 +29,44 @@ export function setChatNavigationBlocker(
   blocker = next;
 }
 
+/**
+ * Accepted normal Chat streams can transition by stopping into their captured
+ * authority. Sticky persistence and Agent streams cannot, so the Chat
+ * composition registers those stricter Scene-transition vetoes separately.
+ */
+export function setChatSceneTransitionBlocker(
+  next: ChatNavigationBlocker | null,
+): void {
+  sceneTransitionBlocker = next;
+}
+
 export function isChatNavigationBlocked(): boolean {
   return activeChatAdmissionTokens.size > 0 || (blocker?.() ?? false);
 }
 
 /**
- * Atomically reserves Tree navigation before its first async persistence step.
- * Chat owns the blocker callback; a preflight admission token closes the small
- * gap before Chat publishes `isStreaming`.
+ * Scene creation / selection can safely stop an accepted turn because the turn
+ * keeps its captured persistence authority. Only the synchronous preflight
+ * window (and anchor deletion) must stay closed so neither side can capture a
+ * half-published authority.
  */
-export function tryAcquireTreeNavigationLease(): ChatNavigationLease | null {
+export function isChatSceneTransitionBlocked(): boolean {
+  return (
+    activeChatAdmissionTokens.size > 0 ||
+    activeAnchorDeletionToken !== null ||
+    (sceneTransitionBlocker?.() ?? false)
+  );
+}
+
+function acquireTreeNavigationLease(
+  respectActiveChatRuntime: boolean,
+): ChatNavigationLease | null {
   if (
     activeTreeNavigationToken !== null ||
+    activeAnchorDeletionToken !== null ||
     activeChatAdmissionTokens.size > 0 ||
-    isChatNavigationBlocked()
+    (sceneTransitionBlocker?.() ?? false) ||
+    (respectActiveChatRuntime && (blocker?.() ?? false))
   ) {
     return null;
   }
@@ -60,9 +85,28 @@ export function tryAcquireTreeNavigationLease(): ChatNavigationLease | null {
 }
 
 /**
- * Synchronous Chat send admission. Holding this through the tracked turn keeps
- * an async Tree create/delete from starting before Chat publishes its runtime
- * state or completed-turn persistence registration.
+ * Atomically reserves Tree navigation before its first async persistence step.
+ * Chat owns the blocker callback; a preflight admission token closes the small
+ * gap before Chat publishes `isStreaming`.
+ */
+export function tryAcquireTreeNavigationLease(): ChatNavigationLease | null {
+  return acquireTreeNavigationLease(true);
+}
+
+/**
+ * Non-destructive creation may become the next active Scene after transport
+ * admission. Captured Chat authority isolates and persists the stopped turn;
+ * destructive Tree operations continue to use the stricter lease above.
+ */
+export function tryAcquireTreeCreationLease(): ChatNavigationLease | null {
+  return acquireTreeNavigationLease(false);
+}
+
+/**
+ * Synchronous Chat send admission. Callers release this when transport
+ * acceptance publishes the turn; the fallback release covers rejected
+ * preflight. This closes the race without disabling accepted-turn Scene
+ * isolation.
  */
 export function tryAcquireChatTurnAdmissionLease(): ChatNavigationLease | null {
   if (
@@ -118,6 +162,7 @@ export function isTreeNavigationLeaseActive(): boolean {
 
 export function __resetChatNavigationGuardForTests(): void {
   blocker = null;
+  sceneTransitionBlocker = null;
   activeTreeNavigationToken = null;
   activeAnchorDeletionToken = null;
   activeChatAdmissionTokens.clear();

@@ -126,14 +126,17 @@ function parseProcStat(contents) {
 
 async function readProcRecords() {
   if (process.platform !== "linux") return [];
-  const entries = await readdir("/proc", { withFileTypes: true });
+  // Numeric /proc entries can disappear between readdir and Dirent type
+  // resolution. Read names only so every process-exit race is contained by the
+  // per-stat try/catch below instead of rejecting the whole measurement.
+  const entries = await readdir("/proc");
   const records = await Promise.all(
     entries
-      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .filter((entry) => /^\d+$/.test(entry))
       .map(async (entry) => {
         try {
           return parseProcStat(
-            await readFile(path.join("/proc", entry.name, "stat"), "utf8"),
+            await readFile(path.join("/proc", entry, "stat"), "utf8"),
           );
         } catch {
           return undefined;
@@ -243,6 +246,13 @@ export async function measureCommand(
     stdio,
     detached: process.platform === "linux",
   });
+  // Subscribe before the initial /proc sample. A very short command can close
+  // while that asynchronous scan is still running; attaching afterward misses
+  // the event and leaves the benchmark Promise pending forever.
+  const childCompletion = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
+  });
 
   let peakRssBytes = 0;
   let peakPssBytes = 0;
@@ -317,10 +327,7 @@ export async function measureCommand(
 
   let completion;
   try {
-    completion = await new Promise((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
-    });
+    completion = await childCompletion;
   } catch (error) {
     if (invocation.temporaryDirectory !== null) {
       await rm(invocation.temporaryDirectory, { recursive: true, force: true });

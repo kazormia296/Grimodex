@@ -22,7 +22,7 @@
     "scc-internal-edges": 0,
     "app-root-lines": 81,
     "largest-host-lines": 292,
-    "chat-store-lines": 410,
+    "chat-store-lines": 406,
     "chat-store-runtime-imports": 23,
     "renderer-drizzle-mutation": 179,
     "renderer-raw-sql-read": 0,

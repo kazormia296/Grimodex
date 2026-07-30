@@ -173,18 +173,27 @@ export function createChatScopeStoreActions(
             !activeSession.codexAnchorId &&
             !activeSession.snippetAnchorId);
         // scene scope では active scene が session authority そのもの。
-        // それ以外の scope でも active scene は次の turn context へ影響するため、
-        // active turn / unresolved persistence と並行して変更しない。
+        // それ以外の scope でも active scene は次の turn context へ影響する。
         const resetSceneScope =
           current.chatScope === "scene" &&
           (id !== current.activeSceneId || !activeSessionTargetsScene);
+        // This action is the commit sink for already-published Tree authority,
+        // not the user-request admission gate. Request paths veto preflight,
+        // Agent, and sticky persistence before publishing the Tree id. Once
+        // published, Chat must mirror it even if persistence becomes sticky
+        // between the two synchronous store notifications.
         if (
           (id !== current.activeSceneId || resetSceneScope) &&
-          blockDestructiveMutation()
+          !canScheduleQuiescenceMutation() &&
+          !isTreeNavigationLeaseActive()
         ) {
           return;
         }
         if (resetSceneScope) {
+          // An accepted turn owns immutable old-scope persistence payloads.
+          // Stop/finalize it before clearing the visible Scene projection; a
+          // failed write remains sticky in the recovery registry.
+          if (current.isStreaming) current.stopGeneration();
           invalidateSessionScopeAuthority();
           get()._cancelPendingUserQuestion();
           runtime.resetRecallPromote();

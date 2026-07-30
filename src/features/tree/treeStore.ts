@@ -54,10 +54,12 @@ import {
 } from "./pendingSceneWrites";
 import type { NodeType, SceneStatus, TreeNodeData } from "./types";
 import {
-  isChatNavigationBlocked,
+  isChatSceneTransitionBlocked,
+  tryAcquireTreeCreationLease,
   tryAcquireTreeNavigationLease,
 } from "@/lib/chatNavigationGuard";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { publishSceneAuthorityCommit } from "@/application/tree/sceneAuthorityRegistry";
 
 export type { NodeType, SceneStatus, TreeNodeData } from "./types";
 
@@ -71,10 +73,10 @@ function activeEditorHasExternalConflict(): boolean {
   );
 }
 
-async function withTreeNavigationAuthority<T>(
+async function withTreeCreationAuthority<T>(
   operation: () => Promise<T>,
 ): Promise<T | null> {
-  const navigationAuthority = tryAcquireTreeNavigationAuthority();
+  const navigationAuthority = tryAcquireTreeCreationAuthority();
   if (!navigationAuthority) return null;
   try {
     return await operation();
@@ -86,6 +88,11 @@ async function withTreeNavigationAuthority<T>(
 function tryAcquireTreeNavigationAuthority() {
   if (!canScheduleQuiescenceMutation()) return null;
   return tryAcquireTreeNavigationLease();
+}
+
+function tryAcquireTreeCreationAuthority() {
+  if (!canScheduleQuiescenceMutation()) return null;
+  return tryAcquireTreeCreationLease();
 }
 
 /**
@@ -1096,7 +1103,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async createScene() {
-    return withTreeNavigationAuthority(async () => {
+    return withTreeCreationAuthority(async () => {
       if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
       const { projectId, nodes } = get();
       const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
@@ -1135,7 +1142,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async createNote() {
-    return withTreeNavigationAuthority(async () => {
+    return withTreeCreationAuthority(async () => {
       if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
       const { projectId, nodes } = get();
       const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
@@ -1197,6 +1204,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           activeSceneId: newActive,
         };
       });
+      publishSceneAuthorityCommit(newActive);
       recomputeCodexSceneOrder(get().nodes);
     } finally {
       navigationAuthority.release();
@@ -1237,11 +1245,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // activeSceneId 起点の ensure-tab → openPreview 経路を pending 中に止める。
     if (id !== get().activeSceneId && guardInlineAiPending()) return;
     if (id !== get().activeSceneId && !canScheduleQuiescenceMutation()) return;
-    if (id !== get().activeSceneId && isChatNavigationBlocked()) return;
+    if (id !== get().activeSceneId && isChatSceneTransitionBlocked()) return;
     if (id !== get().activeSceneId && activeEditorHasExternalConflict()) return;
     markStart("treeStore.setActiveScene");
     try {
       set({ activeSceneId: id });
+      publishSceneAuthorityCommit(id);
     } finally {
       markEnd("treeStore.setActiveScene");
     }
@@ -1252,7 +1261,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // selectNode は activeSceneId=id を必ずセットする (= owner エディタが reload)。
     if (id !== get().activeSceneId && guardInlineAiPending()) return;
     if (id !== get().activeSceneId && !canScheduleQuiescenceMutation()) return;
-    if (id !== get().activeSceneId && isChatNavigationBlocked()) return;
+    if (id !== get().activeSceneId && isChatSceneTransitionBlocked()) return;
     if (id !== get().activeSceneId && activeEditorHasExternalConflict()) return;
     if (extend) {
       set((state) => {
@@ -1267,6 +1276,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     } else {
       set({ selectedIds: [id], activeSceneId: id });
     }
+    publishSceneAuthorityCommit(id);
   },
 
   rangeSelectNode(id, orderedNodes) {
@@ -1345,6 +1355,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           });
           return toNodeData(recreated);
         },
+        tryAcquireCreationAuthority: tryAcquireTreeCreationAuthority,
         tryAcquireNavigationAuthority: tryAcquireTreeNavigationAuthority,
         applyCreated: (node, mode) => {
           set((state) => {
@@ -1358,7 +1369,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
               scenes: computeScenes(nodes),
               activeSceneId:
                 node.nodeType === "scene" &&
-                (mode === "redo" || !isInlineAiPending())
+                (mode === "redo" || !isInlineAiPending()) &&
+                !isChatSceneTransitionBlocked()
                   ? node.id
                   : state.activeSceneId,
               expandedIds,
@@ -1374,6 +1386,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
                   : state.pendingRevealId,
             };
           });
+          if (get().activeSceneId === node.id) {
+            publishSceneAuthorityCommit(node.id);
+          }
         },
         applyRemoved: (id) => {
           set((state) => {

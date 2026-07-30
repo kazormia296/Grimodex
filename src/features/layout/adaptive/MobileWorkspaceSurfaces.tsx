@@ -35,7 +35,7 @@ import {
   useProjectStore,
 } from "@/features/project/projectStore";
 import i18next from "@/lib/i18n";
-import { isChatNavigationBlocked } from "@/lib/chatNavigationGuard";
+import { isChatSceneTransitionBlocked } from "@/lib/chatNavigationGuard";
 import { useCompactNavigationStore } from "./compactNavigationStore";
 import { PhoneChatSurface } from "./mobile/PhoneChatSurface";
 import { PhoneCodexNavigator } from "./mobile/PhoneCodexNavigator";
@@ -70,13 +70,13 @@ function openDocument(documentId: string, beforeOpen?: () => void): boolean {
   const tree = useTreeStore.getState();
   if (
     documentId !== tree.activeSceneId &&
-    (guardInlineAiPending() || isChatNavigationBlocked())
+    (guardInlineAiPending() || isChatSceneTransitionBlocked())
   ) {
     return false;
   }
-  beforeOpen?.();
   tree.setActiveScene(documentId);
-  useChatStore.getState().setActiveSceneId(documentId);
+  if (useTreeStore.getState().activeSceneId !== documentId) return false;
+  beforeOpen?.();
   useCompactNavigationStore.getState().openSurface("editor");
   useEditorSessionStore
     .getState()

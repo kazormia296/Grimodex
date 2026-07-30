@@ -34,6 +34,7 @@ import {
 } from "@/application/lifecycle/quiescenceLease";
 import {
   tryAcquireChatAnchorDeletionLease,
+  tryAcquireTreeCreationLease,
   tryAcquireTreeNavigationLease,
 } from "@/lib/chatNavigationGuard";
 import {
@@ -399,6 +400,7 @@ function resetStore() {
     chatScope: "scene",
     scopeAnchorId: null,
     scopeAnchor: null,
+    agentMode: false,
     includeBodies: true,
     includeMapBoard: false,
     mapBoardId: null,
@@ -2211,6 +2213,44 @@ describe("useChatStore", () => {
       } finally {
         lease?.release();
       }
+    });
+
+    it("reopens non-destructive Scene creation after transport acceptance", async () => {
+      let completeStream!: () => void;
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, nextCallbacks: StreamCallbacks) => {
+          completeStream = () =>
+            nextCallbacks.onDone({ stopReason: "end_turn" });
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-1",
+      });
+
+      const send = useChatStore.getState().sendMessage("Scene切替前の質問");
+      await vi.waitFor(() =>
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce(),
+      );
+
+      expect(tryAcquireTreeNavigationLease()).toBeNull();
+      const creation = tryAcquireTreeCreationLease();
+      expect(creation).not.toBeNull();
+      creation?.release();
+
+      completeStream();
+      await send;
+    });
+
+    it("keeps Scene creation closed for an accepted Agent turn", () => {
+      useChatStore.setState({
+        isStreaming: true,
+        agentMode: true,
+      });
+
+      expect(tryAcquireTreeCreationLease()).toBeNull();
     });
 
     it("does not admit a turn while an anchor deletion holds authority", async () => {
@@ -5299,7 +5339,7 @@ describe("useChatStore", () => {
       expect(useChatStore.getState().messages).toHaveLength(0);
     });
 
-    it("preserves scope and history when destructive mutations are requested during a stream", () => {
+    it("preserves destructive scope and history mutations during a stream", () => {
       useChatStore.setState({
         sessions: [session1],
         activeSessionId: session1.id,
@@ -5312,7 +5352,6 @@ describe("useChatStore", () => {
 
       useChatStore.getState().clearMessages();
       useChatStore.getState().setChatScope("project");
-      useChatStore.getState().setActiveSceneId("scene-2");
       useChatStore.getState().setActiveProjectId("proj-2");
       useChatStore.getState().resetForProject("proj-3");
 
@@ -5325,6 +5364,66 @@ describe("useChatStore", () => {
         activeProjectId: "proj-1",
         chatScope: "scene",
       });
+    });
+
+    it("stops an accepted Scene turn before switching its visible scope", () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        isStreaming: true,
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+      });
+
+      useChatStore.getState().setActiveSceneId("scene-2");
+
+      expect(useChatStore.getState()).toMatchObject({
+        sessions: [],
+        activeSessionId: null,
+        messages: [],
+        isStreaming: false,
+        activeSceneId: "scene-2",
+        activeProjectId: "proj-1",
+        chatScope: "scene",
+      });
+    });
+
+    it("mirrors a created Tree Scene before its creation lease releases", () => {
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        chatScope: "scene",
+      });
+      const creation = tryAcquireTreeCreationLease();
+      expect(creation).not.toBeNull();
+
+      try {
+        useChatStore.getState().setActiveSceneId("scene-2");
+
+        expect(useChatStore.getState().activeSceneId).toBe("scene-2");
+      } finally {
+        creation?.release();
+      }
+    });
+
+    it("mirrors a Tree-owned Scene commit that drains during lifecycle quiescence", () => {
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        chatScope: "scene",
+      });
+      const creation = tryAcquireTreeCreationLease();
+      expect(creation).not.toBeNull();
+      const lifecycle = acquireQuiescenceLease("project-load");
+
+      try {
+        useChatStore.getState().setActiveSceneId("scene-2");
+
+        expect(useChatStore.getState().activeSceneId).toBe("scene-2");
+      } finally {
+        lifecycle.release();
+        creation?.release();
+      }
     });
   });
 

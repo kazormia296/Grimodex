@@ -2741,6 +2741,12 @@ export function createConfiguredChatTurnStoreActions(
     async sendMessage(content, commandInstruction, options) {
       const navigationAdmission = tryAcquireChatTurnAdmissionLease();
       if (!navigationAdmission) return;
+      let admissionReleased = false;
+      const releaseNavigationAdmission = (): void => {
+        if (admissionReleased) return;
+        admissionReleased = true;
+        navigationAdmission.release();
+      };
       try {
         if (!canScheduleQuiescenceMutation()) return;
         // A completed turn owns the next persistence position until its retry
@@ -2751,11 +2757,21 @@ export function createConfiguredChatTurnStoreActions(
           await ports.turnRuntime.retryPendingCompletedTurns();
         }
         if (!canScheduleQuiescenceMutation()) return;
+        const admittedOptions = {
+          ...options,
+          _onAccepted: () => {
+            // `notifyAccepted` runs after turn placeholders/finalizers exist
+            // and immediately before transport starts. From this point a Scene
+            // transition can stop the turn and persist to captured authority.
+            releaseNavigationAdmission();
+            options?._onAccepted?.();
+          },
+        };
         return await ports.turnRuntime.trackTurn(
-          actions.sendMessage(content, commandInstruction, options),
+          actions.sendMessage(content, commandInstruction, admittedOptions),
         );
       } finally {
-        navigationAdmission.release();
+        releaseNavigationAdmission();
       }
     },
   };

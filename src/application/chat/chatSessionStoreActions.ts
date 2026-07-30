@@ -243,7 +243,11 @@ export function createChatSessionStoreActions(
       codexAnchorId?: string | null,
       snippetAnchorId?: string | null,
     ) => {
-      if (blockSessionMutation()) return false;
+      // Scope history loading is read-only. It may follow an already-published
+      // Tree creation lease and may inspect the new scope while an old
+      // completed turn remains recoverable. Project/Workspace lifecycle still
+      // closes it until the target authority is fully committed.
+      if (!canScheduleQuiescenceMutation()) return false;
       const invocationState = get();
       if (invocationState.isStreaming) return false;
       const capturedActiveSessionId = invocationState.activeSessionId;

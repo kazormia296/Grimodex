@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useChatStore } from "@/features/chat/chatStore";
 import { resolvePhoneEditorGroup } from "@/features/editor/phoneEditorGroup";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -62,7 +61,7 @@ export function PhoneEmptySceneBootstrap() {
   );
 
   const activate = useCallback(
-    (documentId: string) => {
+    (documentId: string): boolean => {
       const tabs = useTabStore.getState();
       const editorOwnerGroup = resolvePhoneEditorGroup(
         {
@@ -74,9 +73,14 @@ export function PhoneEmptySceneBootstrap() {
         documentId,
       );
       setActiveScene(documentId);
-      useChatStore.getState().setActiveSceneId(documentId);
+      // Tree owns Scene request admission. Chat is only the commit sink for an
+      // authority that Tree actually published, so a sticky turn, Agent
+      // stream, preflight, or another navigation veto cannot split the two
+      // projections during phone bootstrap.
+      if (useTreeStore.getState().activeSceneId !== documentId) return false;
       useCompactNavigationStore.getState().openSurface("editor");
       useEditorSessionStore.getState().requestEditorFocus(editorOwnerGroup);
+      return true;
     },
     [setActiveScene],
   );
@@ -123,7 +127,11 @@ export function PhoneEmptySceneBootstrap() {
         ) {
           return;
         }
-        activate(documentId);
+        if (!activate(documentId)) {
+          throw new Error(
+            "Initial Scene activation is blocked by active authority",
+          );
+        }
         setFailed(false);
       })
       .catch(() => {

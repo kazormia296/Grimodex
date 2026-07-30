@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   __resetChatNavigationGuardForTests,
   isChatNavigationBlocked,
+  isChatSceneTransitionBlocked,
   isTreeNavigationLeaseActive,
   setChatNavigationBlocker,
+  setChatSceneTransitionBlocker,
   tryAcquireChatAnchorDeletionLease,
   tryAcquireChatTurnAdmissionLease,
+  tryAcquireTreeCreationLease,
   tryAcquireTreeNavigationLease,
 } from "./chatNavigationGuard";
 
@@ -23,6 +26,24 @@ describe("chatNavigationGuard", () => {
 
     expect(tryAcquireTreeNavigationLease()).toBeNull();
     expect(isTreeNavigationLeaseActive()).toBe(false);
+  });
+
+  it("allows non-destructive Tree creation after Chat preflight is published", () => {
+    setChatNavigationBlocker(() => true);
+
+    const creation = tryAcquireTreeCreationLease();
+
+    expect(creation).not.toBeNull();
+    expect(isTreeNavigationLeaseActive()).toBe(true);
+    creation?.release();
+  });
+
+  it("keeps Scene creation and selection blocked for sticky persistence", () => {
+    setChatNavigationBlocker(() => true);
+    setChatSceneTransitionBlocker(() => true);
+
+    expect(isChatSceneTransitionBlocked()).toBe(true);
+    expect(tryAcquireTreeCreationLease()).toBeNull();
   });
 
   it("closes Chat admission for the full Tree navigation lease", () => {
@@ -44,6 +65,7 @@ describe("chatNavigationGuard", () => {
     expect(chat).not.toBeNull();
     expect(isChatNavigationBlocked()).toBe(true);
     expect(tryAcquireTreeNavigationLease()).toBeNull();
+    expect(tryAcquireTreeCreationLease()).toBeNull();
 
     chat?.release();
     const tree = tryAcquireTreeNavigationLease();

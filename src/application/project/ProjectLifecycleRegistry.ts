@@ -1,3 +1,5 @@
+import { schedulePreexistingParticipantMutation } from "@/application/lifecycle/quiescenceLease";
+
 export interface ProjectLifecycleContext {
   projectId: string;
   /**
@@ -139,14 +141,16 @@ export function createProjectLifecycleRegistry(
 
       // Phase B: no await until all critical snapshots and singleton resets
       // have been published. UI events cannot observe an old/new mixture.
-      for (const participant of resetParticipants) {
-        participant.reset!(context);
-      }
-      for (const commit of preparedCommits) commit();
-      for (const participant of commitParticipants) {
-        participant.commitCritical!(context);
-      }
-      reloadOptions?.afterCommit?.();
+      schedulePreexistingParticipantMutation(() => {
+        for (const participant of resetParticipants) {
+          participant.reset!(context);
+        }
+        for (const commit of preparedCommits) commit();
+        for (const participant of commitParticipants) {
+          participant.commitCritical!(context);
+        }
+        reloadOptions?.afterCommit?.();
+      });
 
       for (const participant of criticalParticipants) {
         await participant.hydrateCritical!(context);

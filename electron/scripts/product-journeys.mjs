@@ -675,6 +675,14 @@ async function findSceneWithText(harness, page, text) {
 async function createSceneThroughUi(harness, page) {
   const header = scenesPanelHeader(page);
   await header.waitFor({ state: "visible", timeout: 60_000 });
+  const before = await harness.invokeOk(page, "db_execute", {
+    sql: "SELECT id FROM tree_nodes WHERE node_type = 'scene'",
+    params: [],
+    method: "all",
+  });
+  const existingSceneIds = new Set(
+    (before?.rows ?? []).map((row) => String(row.id)),
+  );
   await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
   await page
     .getByRole("menuitem", { name: NEW_SCENE_MENU_ITEM, exact: true })
@@ -692,21 +700,28 @@ async function createSceneThroughUi(harness, page) {
     await page.keyboard.press("Enter");
   }
 
+  const created = await harness.waitUntil(async () => {
+    const result = await harness.invokeOk(page, "db_execute", {
+      sql: `SELECT id, project_id AS projectId, title, content
+        FROM tree_nodes
+        WHERE node_type = 'scene'
+        ORDER BY created_at DESC`,
+      params: [],
+      method: "all",
+    });
+    return (
+      (result?.rows ?? []).find(
+        (row) => !existingSceneIds.has(String(row.id)),
+      ) ?? null
+    );
+  }, "new scene persistence");
+  const sceneId = String(created.id);
   const editorSurface = page
     .locator(
-      '[data-editor-loaded-document-id][data-editor-document-loading="false"]:visible',
+      `[data-editor-loaded-document-id="${sceneId}"][data-editor-document-loading="false"]:visible`,
     )
     .last();
   await editorSurface.waitFor({ state: "visible", timeout: 30_000 });
-  const sceneId = await editorSurface.getAttribute(
-    "data-editor-loaded-document-id",
-  );
-  if (!sceneId) throw new Error("new scene did not expose a document id");
-  const created = await harness.waitUntil(
-    () => findSceneById(harness, page, sceneId),
-    "new scene persistence",
-    10_000,
-  );
   if (
     created.title !== DEFAULT_SCENE_TITLE &&
     !/^シーン \d+$/.test(String(created.title))

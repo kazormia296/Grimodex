@@ -41,6 +41,7 @@ function ports(nodes: TreeNodeData[]): CreateTreeNodePorts & {
     createPersisted: vi.fn(async (record) => makeNode(record.id, record.title)),
     deletePersisted: vi.fn().mockResolvedValue(undefined),
     recreatePersisted: vi.fn(async (node) => node),
+    tryAcquireCreationAuthority: () => ({ release: vi.fn() }),
     tryAcquireNavigationAuthority: () => ({ release: vi.fn() }),
     applyCreated: (node) => {
       state.nodes = [...state.nodes, node];

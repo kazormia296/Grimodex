@@ -9,13 +9,16 @@ import {
 } from "@/runtime/workspaceIdentity";
 import {
   __resetChatNavigationGuardForTests,
+  isTreeNavigationLeaseActive,
   setChatNavigationBlocker,
+  setChatSceneTransitionBlocker,
   tryAcquireChatTurnAdmissionLease,
 } from "@/lib/chatNavigationGuard";
 import {
   _resetQuiescenceLeasesForTests,
   acquireQuiescenceLease,
 } from "@/application/lifecycle/quiescenceLease";
+import { registerSceneAuthorityCommitSink } from "@/application/tree/sceneAuthorityRegistry";
 
 const { mockRecomputeSceneOrder, mockRecordChangeEvent } = vi.hoisted(() => ({
   mockRecomputeSceneOrder: vi.fn(),
@@ -68,6 +71,7 @@ const DEFAULTS = {
 beforeEach(() => {
   vi.clearAllMocks();
   __resetChatNavigationGuardForTests();
+  registerSceneAuthorityCommitSink(null);
   _resetQuiescenceLeasesForTests();
   useGlobalHistoryStore.getState().clear();
   useProjectStore.setState({ currentProjectId: "proj-1" });
@@ -96,6 +100,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetChatNavigationGuardForTests();
+  registerSceneAuthorityCommitSink(null);
   _resetQuiescenceLeasesForTests();
   useProjectStore.setState({ currentProjectId: null });
   setCurrentWorkspaceIdentity(null);
@@ -140,7 +145,23 @@ describe("createNode Phase scene-time invalidation", () => {
 });
 
 describe("createNode interaction intent", () => {
-  it("does not persist or move Tree authority when Chat navigation is blocked", async () => {
+  it("mirrors created Scene authority before releasing the creation lease", async () => {
+    const mirroredSceneIds: string[] = [];
+    registerSceneAuthorityCommitSink((sceneId) => {
+      expect(isTreeNavigationLeaseActive()).toBe(true);
+      mirroredSceneIds.push(sceneId);
+    });
+
+    const created = await useTreeStore
+      .getState()
+      .createNode({ nodeType: "scene", parentId: null });
+
+    expect(created).not.toBeNull();
+    expect(mirroredSceneIds).toEqual([created!.id]);
+    expect(isTreeNavigationLeaseActive()).toBe(false);
+  });
+
+  it("allows non-destructive creation after Chat publishes turn authority", async () => {
     const current = {
       id: "scene-current",
       projectId: "proj-1",
@@ -161,9 +182,104 @@ describe("createNode interaction intent", () => {
       .getState()
       .createNode({ nodeType: "scene", parentId: null });
 
+    expect(created).not.toBeNull();
+    expect(mockCreatePersistedNode).toHaveBeenCalledOnce();
+    expect(useTreeStore.getState().nodes).toContainEqual(
+      expect.objectContaining({ id: created!.id }),
+    );
+    expect(useTreeStore.getState().activeSceneId).toBe(created!.id);
+  });
+
+  it("does not persist or move Tree authority during Chat preflight", async () => {
+    const current = {
+      id: "scene-current",
+      projectId: "proj-1",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: "Current",
+      sortOrder: "a0",
+      ...DEFAULTS,
+    };
+    useTreeStore.setState({
+      nodes: [current],
+      scenes: [current],
+      activeSceneId: current.id,
+    });
+    const chatAdmission = tryAcquireChatTurnAdmissionLease();
+    expect(chatAdmission).not.toBeNull();
+
+    try {
+      const created = await useTreeStore
+        .getState()
+        .createNode({ nodeType: "scene", parentId: null });
+
+      expect(created).toBeNull();
+      expect(mockCreatePersistedNode).not.toHaveBeenCalled();
+      expect(useTreeStore.getState().nodes).toEqual([current]);
+      expect(useTreeStore.getState().activeSceneId).toBe(current.id);
+    } finally {
+      chatAdmission?.release();
+    }
+  });
+
+  it("does not create a new Scene while completed-turn persistence is sticky", async () => {
+    setChatSceneTransitionBlocker(() => true);
+
+    const created = await useTreeStore
+      .getState()
+      .createNode({ nodeType: "scene", parentId: null });
+
     expect(created).toBeNull();
     expect(mockCreatePersistedNode).not.toHaveBeenCalled();
-    expect(useTreeStore.getState().nodes).toEqual([current]);
+  });
+
+  it("does not activate a created Scene when persistence becomes sticky in flight", async () => {
+    const current = {
+      id: "scene-current",
+      projectId: "proj-1",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: "Current",
+      sortOrder: "a0",
+      ...DEFAULTS,
+    };
+    useTreeStore.setState({
+      nodes: [current],
+      scenes: [current],
+      activeSceneId: current.id,
+    });
+    let persistencePending = false;
+    setChatSceneTransitionBlocker(() => persistencePending);
+    let resolveCreate:
+      | ((node: Awaited<ReturnType<typeof createPersistedNode>>) => void)
+      | undefined;
+    mockCreatePersistedNode.mockImplementationOnce(
+      (_record) =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    const creation = useTreeStore
+      .getState()
+      .createNode({ nodeType: "scene", parentId: null });
+    await vi.waitFor(() =>
+      expect(mockCreatePersistedNode).toHaveBeenCalledOnce(),
+    );
+    persistencePending = true;
+    const persistedInput = mockCreatePersistedNode.mock.calls[0]![0];
+    resolveCreate?.({
+      ...persistedInput,
+      parentId: persistedInput.parentId ?? null,
+      ...DEFAULTS,
+    } as Awaited<ReturnType<typeof createPersistedNode>>);
+
+    await expect(creation).resolves.toEqual(
+      expect.objectContaining({ id: persistedInput.id }),
+    );
+    expect(useTreeStore.getState().nodes).toContainEqual(
+      expect.objectContaining({ id: persistedInput.id }),
+    );
     expect(useTreeStore.getState().activeSceneId).toBe(current.id);
   });
 
@@ -235,14 +351,19 @@ describe("createNode interaction intent", () => {
     );
   });
 
-  it("keeps legacy create paths as explicit no-ops while Chat owns authority", async () => {
-    setChatNavigationBlocker(() => true);
+  it("keeps legacy create paths as explicit no-ops during Chat preflight", async () => {
+    const chatAdmission = tryAcquireChatTurnAdmissionLease();
+    expect(chatAdmission).not.toBeNull();
 
-    await expect(useTreeStore.getState().createScene()).resolves.toBeNull();
-    await expect(useTreeStore.getState().createNote()).resolves.toBeNull();
+    try {
+      await expect(useTreeStore.getState().createScene()).resolves.toBeNull();
+      await expect(useTreeStore.getState().createNote()).resolves.toBeNull();
 
-    expect(mockCreatePersistedNode).not.toHaveBeenCalled();
-    expect(useTreeStore.getState().nodes).toEqual([]);
+      expect(mockCreatePersistedNode).not.toHaveBeenCalled();
+      expect(useTreeStore.getState().nodes).toEqual([]);
+    } finally {
+      chatAdmission?.release();
+    }
   });
 
   it("does not persist or navigate through direct Tree paths during data deletion", async () => {

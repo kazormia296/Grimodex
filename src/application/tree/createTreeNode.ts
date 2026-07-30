@@ -29,6 +29,7 @@ export interface CreateTreeNodePorts {
   createPersisted(record: CreateTreeNodeRecord): Promise<TreeNodeData>;
   deletePersisted(id: string): Promise<void>;
   recreatePersisted(node: TreeNodeData): Promise<TreeNodeData>;
+  tryAcquireCreationAuthority(): TreeNavigationAuthority | null;
   tryAcquireNavigationAuthority(): TreeNavigationAuthority | null;
   applyCreated(node: TreeNodeData, mode: "create" | "redo"): void;
   applyRemoved(id: string): void;
@@ -197,7 +198,7 @@ export async function createTreeNode(
   opts: CreateNodeOpts,
   ports: CreateTreeNodePorts,
 ): Promise<TreeNodeData | null> {
-  const navigationAuthority = ports.tryAcquireNavigationAuthority();
+  const navigationAuthority = ports.tryAcquireCreationAuthority();
   if (!navigationAuthority) return null;
   try {
     return await createTreeNodeWithAuthority(opts, ports);
