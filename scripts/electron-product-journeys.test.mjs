@@ -136,10 +136,7 @@ test("CI plans product journeys before dependency setup while shadow mode still 
   const shouldRunCondition =
     "steps.product-journey-impact.outputs.should_run == 'true'";
   const gateIndex = job.steps.indexOf(gate);
-  for (const step of job.steps.slice(
-    nativeDependenciesIndex,
-    gateIndex + 1,
-  )) {
+  for (const step of job.steps.slice(nativeDependenciesIndex, gateIndex + 1)) {
     if (step.name === "Build selected MCP journey dependency") continue;
     assert.equal(
       step.if,

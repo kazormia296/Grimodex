@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import process from "node:process";
 
 import { rootDir } from "./build.mjs";
@@ -26,6 +27,12 @@ const AUTHORING_PROMPT = `AUTHORING-JOURNEY-${Date.now()}`;
 const AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
 const PRODUCT_JOURNEY_MODEL = "product-journey-model";
 const PENDING_SAVE_AUTOSAVE_DELAY_MS = 60_000;
+const PRODUCT_JOURNEY_RESULTS_VERSION = 1;
+const DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR = path.join(
+  rootDir,
+  ".artifacts",
+  "product-journeys",
+);
 
 function log(message) {
   console.log(`[electron:product] ${message}`);
@@ -979,25 +986,128 @@ export const PRODUCT_JOURNEYS = [
   },
 ];
 
-export async function runProductJourneys({ createHarness } = {}) {
-  assertBuildArtifacts();
+function serializeError(error) {
+  return {
+    name: error instanceof Error ? error.name : "Error",
+    message: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function elapsedMilliseconds(clock, startedAt) {
+  const duration = clock() - startedAt;
+  if (!Number.isFinite(duration)) {
+    throw new Error("product journey clock returned a non-finite duration");
+  }
+  return Math.max(0, Math.round(duration));
+}
+
+function resolveResultsPath(resultsPath) {
+  if (resultsPath) return path.resolve(rootDir, resultsPath);
+  const artifactDir =
+    process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ??
+    DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR;
+  return path.resolve(rootDir, artifactDir, "results.json");
+}
+
+async function writeResults(resultsPath, report) {
+  await mkdir(path.dirname(resultsPath), { recursive: true });
+  await writeFile(resultsPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+}
+
+function notRunResults(journeys, reason) {
+  return journeys.map((journey) => ({
+    id: journey.id,
+    status: "not-run",
+    durationMs: 0,
+    reason,
+  }));
+}
+
+export async function runProductJourneys({
+  createHarness,
+  journeys = PRODUCT_JOURNEYS,
+  assertArtifacts = assertBuildArtifacts,
+  clock = () => performance.now(),
+  resultsPath,
+} = {}) {
+  const outputPath = resolveResultsPath(resultsPath);
+  const report = {
+    version: PRODUCT_JOURNEY_RESULTS_VERSION,
+    status: "passed",
+    journeys: [],
+  };
+
+  try {
+    await assertArtifacts();
+  } catch (error) {
+    report.status = "failed";
+    report.error = serializeError(error);
+    report.journeys.push(
+      ...notRunResults(journeys, "Artifact preflight failed."),
+    );
+    await writeResults(outputPath, report);
+    throw error;
+  }
+
   const factory =
     createHarness ??
     (() =>
       createProductJourneyHarness({
         mainCjs,
       }));
-  for (const journey of PRODUCT_JOURNEYS) {
-    const harness = factory();
+  for (const [index, journey] of journeys.entries()) {
+    const startedAt = clock();
+    let durationMs = null;
+    let harness = null;
     try {
+      harness = factory();
       await journey.run(harness);
+      durationMs = elapsedMilliseconds(clock, startedAt);
       await harness.dispose({ success: true, name: journey.id });
+      report.journeys.push({
+        id: journey.id,
+        status: "passed",
+        durationMs,
+      });
       log(`${journey.id}: PASS`);
     } catch (error) {
-      await harness.dispose({ success: false, name: journey.id });
-      throw new Error(`${journey.id}: ${error?.stack ?? error}`);
+      durationMs ??= elapsedMilliseconds(clock, startedAt);
+      report.status = "failed";
+      const failedResult = {
+        id: journey.id,
+        status: "failed",
+        durationMs,
+        error: serializeError(error),
+      };
+      report.journeys.push(failedResult);
+      report.journeys.push(
+        ...notRunResults(
+          journeys.slice(index + 1),
+          `Fail-fast after ${journey.id}.`,
+        ),
+      );
+      if (harness) {
+        try {
+          await harness.dispose({ success: false, name: journey.id });
+        } catch (cleanupError) {
+          failedResult.cleanupError = serializeError(cleanupError);
+          console.error(
+            `[electron:product] ${journey.id} failure cleanup also failed: ${
+              cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError)
+            }`,
+          );
+        }
+      }
+      await writeResults(outputPath, report);
+      throw new Error(`${journey.id}: ${error?.stack ?? error}`, {
+        cause: error,
+      });
     }
   }
+  await writeResults(outputPath, report);
+  return report;
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {

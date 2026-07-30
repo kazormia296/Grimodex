@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import {
-  mkdtemp,
-  readFile,
-  rm,
-} from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -16,6 +12,7 @@ import {
   PRODUCT_DOMAIN_RULES,
   PRODUCT_INTERACTION_REQUIREMENTS,
   PRODUCT_JOURNEY_CATALOG,
+  PRODUCT_JOURNEY_COVERAGE_BACKLOG,
   PRODUCT_NATIVE_PERSISTENCE_DOMAINS,
   PRODUCT_SCOPE_TRANSITIONS,
 } from "../electron/scripts/product-journey-catalog.mjs";
@@ -41,6 +38,7 @@ function validate(overrides = {}) {
     nativePersistenceDomains: PRODUCT_NATIVE_PERSISTENCE_DOMAINS,
     interactions: PRODUCT_INTERACTION_REQUIREMENTS,
     exemptions: PRODUCT_CONTRACT_EXEMPTIONS,
+    backlog: PRODUCT_JOURNEY_COVERAGE_BACKLOG,
     implementationIds: PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
     now: new Date("2026-07-30T00:00:00.000Z"),
     ...overrides,
@@ -50,16 +48,13 @@ function validate(overrides = {}) {
 test("the current catalog has complete journey, contract, and interaction coverage", () => {
   const result = validate();
 
-  assert.deepEqual(
-    result.journeyIds,
-    [
-      "editor-persistence",
-      "chat-authority-isolation",
-      "workspace-switch-authority",
-      "external-write-conflict",
-      "cross-feature-authoring",
-    ],
-  );
+  assert.deepEqual(result.journeyIds, [
+    "editor-persistence",
+    "chat-authority-isolation",
+    "workspace-switch-authority",
+    "external-write-conflict",
+    "cross-feature-authoring",
+  ]);
   assert.equal(result.uncoveredContracts.length, 0);
   assert.equal(result.uncoveredInteractions.length, 0);
   assert.deepEqual(result.expiredExemptions, []);
@@ -87,13 +82,23 @@ test("a required contract without a journey fails with an actionable error", () 
   ];
 
   assert.throws(
-    () => validate({ requiredContracts }),
+    () =>
+      validate({
+        requiredContracts,
+        backlog: PRODUCT_JOURNEY_COVERAGE_BACKLOG.filter(
+          (journey) =>
+            !journey.contracts.includes("scope-transition:chat-stream:project"),
+        ),
+      }),
     (error) => {
       assert.match(
         error.message,
         /Uncovered product contract:\s+scope-transition:chat-stream:project/,
       );
-      assert.match(error.message, /Affected domains:\s+chat, project-lifecycle/);
+      assert.match(
+        error.message,
+        /Affected domains:\s+chat, project-lifecycle/,
+      );
       assert.match(error.message, /map an existing journey to this contract/);
       assert.match(error.message, /add a new journey/);
       assert.match(error.message, /reviewed exemption with reason and expiry/);
@@ -416,9 +421,7 @@ test("shadow mode records affected recommendations but executes the full catalog
     selection,
   });
 
-  assert.deepEqual(execution.selectedJourneyIds, [
-    "cross-feature-authoring",
-  ]);
+  assert.deepEqual(execution.selectedJourneyIds, ["cross-feature-authoring"]);
   assert.deepEqual(
     execution.executionJourneyIds,
     PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
@@ -519,7 +522,10 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
 
   const githubOutput = await readFile(outputPath, "utf8");
   assert.match(githubOutput, /should_run=true/);
-  assert.match(githubOutput, /selected_journey_ids=\["cross-feature-authoring"\]/);
+  assert.match(
+    githubOutput,
+    /selected_journey_ids=\["cross-feature-authoring"\]/,
+  );
   assert.match(githubOutput, /execution_capabilities=\["electron","napi"\]/);
   assert.match(
     await readFile(summaryPath, "utf8"),
