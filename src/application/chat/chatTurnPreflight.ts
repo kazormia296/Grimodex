@@ -167,6 +167,17 @@ export function createChatTurnPreflight(
   },
 ): (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision {
   const { get, set, provider, runtime } = ports;
+  let lastMessageTimestamp = Number.NEGATIVE_INFINITY;
+  const nextMessageCreatedAt = (): string => {
+    const candidate = runtime.nowIso();
+    const candidateTimestamp = Date.parse(candidate);
+    if (!Number.isFinite(candidateTimestamp)) return candidate;
+    lastMessageTimestamp = Math.max(
+      candidateTimestamp,
+      lastMessageTimestamp + 1,
+    );
+    return new Date(lastMessageTimestamp).toISOString();
+  };
 
   return ({ content, commandInstruction, options }) => {
     const captureSendPreflightScopeKey = (): string => {
@@ -552,19 +563,21 @@ export function createChatTurnPreflight(
         const preparationSnapshot =
           captureChatContextPreparationSnapshot(snapshotInput);
         const sessionId = activeSessionId ?? "";
+        const userCreatedAt = nextMessageCreatedAt();
+        const assistantCreatedAt = nextMessageCreatedAt();
         const userMsg: ChatMessage = {
           id: runtime.randomUuid(),
           sessionId,
           role: "user",
           content,
-          createdAt: runtime.nowIso(),
+          createdAt: userCreatedAt,
         };
         const assistantMsg: ChatMessage = {
           id: runtime.randomUuid(),
           sessionId,
           role: "assistant",
           content: "",
-          createdAt: runtime.nowIso(),
+          createdAt: assistantCreatedAt,
         };
 
         return Object.freeze({

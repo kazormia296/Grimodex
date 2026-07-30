@@ -16,6 +16,7 @@ import {
 } from "@/features/project/projectLoadGate";
 import {
   _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
   isQuiescenceLeaseActive,
 } from "@/application/lifecycle/quiescenceLease";
 import { createCloseQuiescenceController } from "@/application/lifecycle/closeQuiescenceController";
@@ -25,6 +26,11 @@ import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
+import {
+  LIFECYCLE_TRACE_OPT_IN_KEY,
+  subscribeLifecycleTrace,
+  type LifecycleTraceEvent,
+} from "@/application/lifecycle/lifecycleTrace";
 
 const cancelScheduledImeExportsMock = vi.hoisted(() => vi.fn());
 
@@ -178,6 +184,35 @@ describe("useWorkspaceStore", () => {
   });
 
   describe("openWorkspace", () => {
+    it("does not start the native Workspace swap while data deletion is active", async () => {
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: "D:\\Novels\\Existing",
+        workspaceHydrated: true,
+      });
+      const dataDeleteLease = acquireQuiescenceLease("data-delete");
+
+      try {
+        await useWorkspaceStore
+          .getState()
+          .openWorkspace("D:\\Novels\\Replacement");
+
+        expect(mockInvoke).not.toHaveBeenCalledWith(
+          "open_workspace",
+          expect.anything(),
+        );
+        expect(cancelScheduledImeExportsMock).not.toHaveBeenCalled();
+        expect(useWorkspaceStore.getState()).toMatchObject({
+          view: "editor",
+          activeWorkspacePath: "D:\\Novels\\Existing",
+          workspaceSwitchInProgress: false,
+          workspaceHydrated: true,
+        });
+      } finally {
+        dataDeleteLease.release();
+      }
+    });
+
     it("blocks Workspace replacement before state changes while inline AI is pending", async () => {
       useWorkspaceStore.setState({
         view: "editor",
@@ -820,6 +855,125 @@ describe("useWorkspaceStore", () => {
         useProjectStore.setState({
           loadProjectWithinLifecycle: previousLoadProject,
         });
+      }
+    });
+
+    it("traces the successful Workspace transition through ready publication with one id", async () => {
+      const oldPath = "D:\\Novels\\Existing";
+      const nextPath = "D:\\Novels\\Replacement";
+      const settings = {
+        recentWorkspaces: [],
+        lastActiveWorkspace: nextPath,
+        theme: "system",
+        uiLanguage: "ja",
+        uiScale: 1,
+        showLauncherOnStartup: false,
+        trustedWorkspaces: [nextPath],
+      };
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: oldPath,
+        workspaceOpenRevision: 8,
+        workspaceHydrated: true,
+      });
+      setCurrentImeWorkspaceIdentity({
+        path: oldPath,
+        openRevision: 8,
+      });
+      mockInvoke.mockImplementation((command: string) => {
+        if (command === "open_workspace") {
+          return Promise.resolve({
+            name: "Replacement",
+            isExisting: true,
+            workspaceId: "workspace-b",
+          });
+        }
+        if (command === "get_global_settings") {
+          return Promise.resolve(settings);
+        }
+        if (command === "db_execute") {
+          return Promise.resolve({ rows: [] });
+        }
+        return Promise.resolve(undefined);
+      });
+      const events: LifecycleTraceEvent[] = [];
+      const publicationSnapshots: Array<{
+        phase: LifecycleTraceEvent["phase"];
+        activeWorkspacePath: string | null;
+        workspaceHydrated: boolean;
+        identity: ReturnType<typeof getCurrentImeWorkspaceIdentity>;
+      }> = [];
+      Object.assign(globalThis, {
+        [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+      });
+      const unsubscribe = subscribeLifecycleTrace((event) => {
+        if (event.kind !== "workspace") return;
+        events.push(event);
+        if (
+          event.phase === "authority-commit" ||
+          event.phase === "new-scope-hydrated"
+        ) {
+          const state = useWorkspaceStore.getState();
+          publicationSnapshots.push({
+            phase: event.phase,
+            activeWorkspacePath: state.activeWorkspacePath,
+            workspaceHydrated: state.workspaceHydrated,
+            identity: getCurrentImeWorkspaceIdentity(),
+          });
+        }
+      });
+
+      try {
+        await useWorkspaceStore.getState().openWorkspace(nextPath);
+
+        expect(events.map((event) => event.phase)).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "authority-commit",
+          "new-scope-hydrated",
+        ]);
+        expect(new Set(events.map((event) => event.transitionId)).size).toBe(1);
+        expect(events[0]).toMatchObject({
+          from: {
+            workspacePath: oldPath,
+            workspaceOpenRevision: 8,
+          },
+          to: {
+            workspacePath: nextPath,
+          },
+        });
+        expect(events.at(-1)?.to).toMatchObject({
+          workspacePath: nextPath,
+          workspaceOpenRevision: 9,
+        });
+        expect(publicationSnapshots).toEqual([
+          {
+            phase: "authority-commit",
+            activeWorkspacePath: nextPath,
+            workspaceHydrated: false,
+            identity: {
+              path: nextPath,
+              openRevision: 9,
+            },
+          },
+          {
+            phase: "new-scope-hydrated",
+            activeWorkspacePath: nextPath,
+            workspaceHydrated: true,
+            identity: {
+              path: nextPath,
+              openRevision: 9,
+            },
+          },
+        ]);
+        expect(useWorkspaceStore.getState()).toMatchObject({
+          activeWorkspacePath: nextPath,
+          workspaceOpenRevision: 9,
+          workspaceHydrated: true,
+        });
+      } finally {
+        unsubscribe();
+        Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
       }
     });
   });

@@ -32,9 +32,15 @@ import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
 import { listCodexMatchTargets } from "@/features/codex/api";
 import { recordBodyMentionScans } from "@/features/codex/bodyMentionIndexState";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
-import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  getCurrentWorkspaceIdentity,
+  isCurrentWorkspaceIdentity,
+  type WorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
 import { publishSceneBodyCommit } from "@/lib/sceneBodyCommitRegistry";
 import { publishTreeNodeMutation } from "@/lib/treeNodeMutationRegistry";
+import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 
 export interface BodyMentionScanRequest {
   projectId: string;
@@ -44,41 +50,48 @@ export interface BodyMentionScanRequest {
   sceneUpdatedAt: string;
 }
 
-const pendingBodyMentionScans = new Map<string, BodyMentionScanRequest>();
+interface ScheduledBodyMentionScan extends BodyMentionScanRequest {
+  workspaceIdentity: WorkspaceIdentity | null;
+}
+
+const pendingBodyMentionScans = new Map<string, ScheduledBodyMentionScan>();
 const bodyMentionScanTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const bodyMentionScanRunning = new Set<string>();
+const bodyMentionScanTasks = new Map<string, Promise<void>>();
 
-/**
- * Coalesce scene-body mention scans without borrowing the Codex panel's
- * filter-dependent collection. The complete project projection is resolved at
- * execution time so live saves and external imports use the same authority.
- */
-export function scheduleBodyMentionScan(request: BodyMentionScanRequest): void {
-  const { sceneId } = request;
-  pendingBodyMentionScans.set(sceneId, request);
-  if (
-    bodyMentionScanTimers.has(sceneId) ||
-    bodyMentionScanRunning.has(sceneId)
-  ) {
-    return;
+function isBodyMentionScanAuthoritative(
+  request: ScheduledBodyMentionScan,
+): boolean {
+  if (request.workspaceIdentity) {
+    return isCurrentWorkspaceIdentity(request.workspaceIdentity);
   }
+  return getCurrentWorkspaceIdentity() === null;
+}
 
-  const run = async () => {
-    bodyMentionScanTimers.delete(sceneId);
-    const current = pendingBodyMentionScans.get(sceneId);
-    pendingBodyMentionScans.delete(sceneId);
-    if (!current) return;
-    bodyMentionScanRunning.add(sceneId);
+async function runBodyMentionScan(sceneId: string): Promise<void> {
+  const existing = bodyMentionScanTasks.get(sceneId);
+  if (existing) return existing;
 
+  const timer = bodyMentionScanTimers.get(sceneId);
+  if (timer) clearTimeout(timer);
+  bodyMentionScanTimers.delete(sceneId);
+  const current = pendingBodyMentionScans.get(sceneId);
+  pendingBodyMentionScans.delete(sceneId);
+  if (!current) return;
+
+  const task = (async () => {
     markStart("editor.coreSave.bodyMentionUpsert");
     try {
+      if (!isBodyMentionScanAuthoritative(current)) return;
       const allEntries = await listCodexMatchTargets(current.projectId);
-      if (allEntries.length === 0) return;
+      if (allEntries.length === 0 || !isBodyMentionScanAuthoritative(current)) {
+        return;
+      }
       await upsertSceneBodyMentions(
         current.sceneId,
         current.docJsonStr,
         allEntries,
       );
+      if (!isBodyMentionScanAuthoritative(current)) return;
       await recordBodyMentionScans(current.projectId, allEntries, [
         {
           sceneId: current.sceneId,
@@ -87,29 +100,78 @@ export function scheduleBodyMentionScan(request: BodyMentionScanRequest): void {
         },
       ]);
     } catch (error) {
-      debugLog.error(
-        "persistSceneBody",
-        "upsertSceneBodyMentions failed",
-        errorDetail(error),
-      );
-    } finally {
-      markEnd("editor.coreSave.bodyMentionUpsert");
-      bodyMentionScanRunning.delete(sceneId);
       if (
-        pendingBodyMentionScans.has(sceneId) &&
-        !bodyMentionScanTimers.has(sceneId)
+        !isIpcLifecycleCancellation(error) &&
+        isBodyMentionScanAuthoritative(current)
       ) {
-        bodyMentionScanTimers.set(
-          sceneId,
-          setTimeout(() => void run(), 0),
+        debugLog.error(
+          "persistSceneBody",
+          "upsertSceneBodyMentions failed",
+          errorDetail(error),
         );
       }
+    } finally {
+      markEnd("editor.coreSave.bodyMentionUpsert");
     }
-  };
+  })();
+  bodyMentionScanTasks.set(sceneId, task);
+  try {
+    await task;
+  } finally {
+    if (bodyMentionScanTasks.get(sceneId) === task) {
+      bodyMentionScanTasks.delete(sceneId);
+    }
+    if (
+      pendingBodyMentionScans.has(sceneId) &&
+      !bodyMentionScanTimers.has(sceneId)
+    ) {
+      bodyMentionScanTimers.set(
+        sceneId,
+        setTimeout(() => void runBodyMentionScan(sceneId), 0),
+      );
+    }
+  }
+}
+
+async function flushBodyMentionScans(): Promise<void> {
+  for (;;) {
+    for (const timer of bodyMentionScanTimers.values()) clearTimeout(timer);
+    bodyMentionScanTimers.clear();
+    for (const sceneId of pendingBodyMentionScans.keys()) {
+      if (!bodyMentionScanTasks.has(sceneId)) {
+        void runBodyMentionScan(sceneId);
+      }
+    }
+    const tasks = [...bodyMentionScanTasks.values()];
+    if (tasks.length > 0) await Promise.all(tasks);
+    if (
+      pendingBodyMentionScans.size === 0 &&
+      bodyMentionScanTimers.size === 0 &&
+      bodyMentionScanTasks.size === 0
+    ) {
+      return;
+    }
+  }
+}
+
+/**
+ * Coalesce scene-body mention scans without borrowing the Codex panel's
+ * filter-dependent collection. The complete project projection is resolved at
+ * execution time so live saves and external imports use the same authority.
+ */
+export function scheduleBodyMentionScan(request: BodyMentionScanRequest): void {
+  const { sceneId } = request;
+  pendingBodyMentionScans.set(sceneId, {
+    ...request,
+    workspaceIdentity: getCurrentWorkspaceIdentity(),
+  });
+  if (bodyMentionScanTimers.has(sceneId) || bodyMentionScanTasks.has(sceneId)) {
+    return;
+  }
 
   bodyMentionScanTimers.set(
     sceneId,
-    setTimeout(() => void run(), 0),
+    setTimeout(() => void runBodyMentionScan(sceneId), 0),
   );
 }
 
@@ -118,8 +180,15 @@ export function _resetBodyMentionScanSchedulerForTests(): void {
   for (const timer of bodyMentionScanTimers.values()) clearTimeout(timer);
   pendingBodyMentionScans.clear();
   bodyMentionScanTimers.clear();
-  bodyMentionScanRunning.clear();
+  bodyMentionScanTasks.clear();
 }
+
+registerQuiescenceProvider({
+  id: "scene-body-mention-scans",
+  stage: "scoped-mutations",
+  flush: flushBodyMentionScans,
+  discard: _resetBodyMentionScanSchedulerForTests,
+});
 
 /**
  * Persist a scene body document and orchestrate every doc-derived side-effect.

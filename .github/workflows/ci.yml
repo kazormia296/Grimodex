@@ -5,7 +5,25 @@ on:
     branches: [master]
   pull_request:
     types: [opened, synchronize, reopened]
+  schedule:
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+    inputs:
+      product_journey_mode:
+        description: Product journey selection mode
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - shadow
   workflow_call:
+    inputs:
+      product_journey_mode:
+        description: Product journey selection mode
+        required: false
+        type: string
+        default: all
 
 permissions:
   contents: read
@@ -13,6 +31,7 @@ permissions:
 jobs:
   quality:
     name: Quality (traceability / impact-selected light gates)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -56,6 +75,7 @@ jobs:
 
   frontend:
     name: Frontend (type-check / lint / test)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -95,6 +115,7 @@ jobs:
 
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -120,6 +141,7 @@ jobs:
 
   browser:
     name: Browser (Vitest browser)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -168,6 +190,7 @@ jobs:
 
   storybook:
     name: Storybook (Vitest browser)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -216,6 +239,7 @@ jobs:
 
   security:
     name: Security (audit)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -250,6 +274,7 @@ jobs:
 
   electron:
     name: Electron (workflow contract / type-check / test / build)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -280,6 +305,14 @@ jobs:
           scripts/windows-release-workflow.test.mjs
           scripts/electron-v2-cleanup.test.mjs
           scripts/electron-runtime-performance-workflow.test.mjs
+          scripts/impact/core.test.mjs
+          scripts/product-journey-impact.test.mjs
+          scripts/product-journey-ratchet-hardening.test.mjs
+          scripts/product-journey-explicit-all.test.mjs
+          scripts/product-journey-backlog.test.mjs
+          scripts/product-journey-mcp-client.test.mjs
+          scripts/electron-product-journey-results.test.mjs
+          scripts/electron-product-journey-cleanup-results.test.mjs
           scripts/electron-product-journeys.test.mjs
           scripts/generate-licenses.test.mjs
 
@@ -297,6 +330,7 @@ jobs:
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -372,8 +406,50 @@ jobs:
       GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/product-journeys
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Select product journeys
+        id: product-journey-impact
+        env:
+          PRODUCT_JOURNEY_MODE: >-
+            ${{
+              inputs.product_journey_mode ||
+              (github.event_name == 'schedule' && 'all') ||
+              (github.event_name == 'pull_request' && 'shadow') ||
+              (github.event_name == 'push' &&
+               github.ref == 'refs/heads/master' && 'shadow') ||
+              'all'
+            }}
+          PRODUCT_JOURNEY_BASE_SHA: >-
+            ${{
+              (github.event_name == 'pull_request' &&
+               github.event.pull_request.base.sha) ||
+              (github.event_name == 'push' &&
+               github.ref == 'refs/heads/master' &&
+               github.event.before) ||
+              ''
+            }}
+          PRODUCT_JOURNEY_HEAD_SHA: >-
+            ${{
+              (github.event_name == 'pull_request' &&
+               github.event.pull_request.head.sha) ||
+              github.sha
+            }}
+        run: |
+          set -euo pipefail
+          selector_args=(
+            --mode "$PRODUCT_JOURNEY_MODE"
+            --head "$PRODUCT_JOURNEY_HEAD_SHA"
+            --report "$GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR/impact.json"
+          )
+          if [[ -n "$PRODUCT_JOURNEY_BASE_SHA" ]]; then
+            selector_args+=(--base "$PRODUCT_JOURNEY_BASE_SHA")
+          fi
+          node electron/scripts/product-journey-impact.mjs "${selector_args[@]}"
 
       - name: Native build dependencies
+        if: steps.product-journey-impact.outputs.should_run == 'true'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -386,36 +462,52 @@ jobs:
             pkg-config
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        if: steps.product-journey-impact.outputs.should_run == 'true'
         with:
           version: 10.33.0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.product-journey-impact.outputs.should_run == 'true'
         with:
           node-version: 20
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: steps.product-journey-impact.outputs.should_run == 'true'
         with:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        if: steps.product-journey-impact.outputs.should_run == 'true'
         with:
           workspaces: |
             src-tauri
             electron/native/grimodex-node
           key: electron-product-journeys
 
-      - run: pnpm install --frozen-lockfile
+      - if: steps.product-journey-impact.outputs.should_run == 'true'
+        run: pnpm install --frozen-lockfile
 
       - name: Electron system dependencies
+        if: steps.product-journey-impact.outputs.should_run == 'true'
         run: pnpm exec playwright install-deps chromium
 
       - name: Build native module and production Electron app
+        if: steps.product-journey-impact.outputs.should_run == 'true'
         run: |
           pnpm napi:build
           pnpm electron:build
 
+      - name: Build selected MCP journey dependency
+        if: >-
+          steps.product-journey-impact.outputs.should_run == 'true' &&
+          contains(fromJSON(steps.product-journey-impact.outputs.execution_capabilities), 'mcp')
+        run: pnpm mcp:build
+
       - name: Product journey gate
+        if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          GRIMODEX_PRODUCT_JOURNEY_IDS: ${{ steps.product-journey-impact.outputs.execution_journey_ids }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys
 
       - name: Upload product journey failure artifacts
@@ -429,6 +521,7 @@ jobs:
 
   electron-windows-installer-contract:
     name: Electron Windows (unit test / NSIS migration contract)
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -510,6 +603,7 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -593,6 +687,7 @@ jobs:
 
   rust:
     name: Shared Rust crates (check / clippy / test)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

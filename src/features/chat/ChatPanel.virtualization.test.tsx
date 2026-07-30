@@ -100,6 +100,7 @@ vi.mock("./chatApi", () => ({
   listPinnedSnippetEntries: vi.fn(() => Promise.resolve([])),
   listPinnedStickyEntries: vi.fn(() => Promise.resolve([])),
   generateSessionTitle: vi.fn(() => Promise.resolve(null)),
+  assertMessageMutationAllowed: vi.fn(),
   updateMessageMetadata: vi.fn(() => Promise.resolve()),
 }));
 
@@ -116,6 +117,7 @@ vi.mock("./contextBuilder", async () => {
 
 import { ChatPanel } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
+import { useAiSettingsStore } from "./store";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import * as chatApi from "./chatApi";
 
@@ -166,6 +168,7 @@ describe("ChatPanel virtualization contract", () => {
       selectSession: async () => {},
       refreshContextLayers: async () => null,
     });
+    useAiSettingsStore.setState({ loadSettings: async () => {} });
     virtualizerCapture.opts = null;
     perfCapture.marks.length = 0;
     perfCapture.counters.length = 0;
@@ -376,6 +379,9 @@ describe("ChatPanel virtualization contract", () => {
     // double-rAF を commit barrier にして、delta 自身の再描画だけを測る。
     await vi.waitFor(() =>
       expect(screen.getByTestId("streaming-indicator")).toBeTruthy(),
+    );
+    await vi.waitFor(() =>
+      expect(screen.getByText("生成中", { exact: true })).toBeTruthy(),
     );
     await act(
       () =>

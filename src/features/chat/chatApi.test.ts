@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
@@ -48,20 +48,39 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleChatIndex: vi.fn(),
 }));
 
+vi.mock("@/features/ime/workspaceScope", () => ({
+  getCurrentImeWorkspaceIdentity: () => ({
+    path: "/workspaces/novel",
+    openRevision: 3,
+  }),
+}));
+
+vi.mock("@/features/timelapse/captureChat", () => ({
+  recordChatMessageAdd: vi.fn(),
+  recordChatMessageDelete: vi.fn(),
+  recordChatMessagesDeleteFrom: vi.fn(),
+}));
+
 import { db } from "@/db/client";
 import { invoke } from "@/lib/tauri";
 const mockDb = vi.mocked(db);
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
+import { recordChatMessageAdd } from "@/features/timelapse/captureChat";
+const mockRecordChatMessageAdd = vi.mocked(recordChatMessageAdd);
 
 import {
   listSessions,
   getSessionForProject,
   createSession,
   deleteSession,
+  deleteMessage,
+  deleteMessagesFrom,
+  clearProjectChatHistory,
   getSessionTitleForMessage,
   listMessages,
   addMessage,
+  updateMessageMetadata,
   updateSessionTitle,
   unpinStickyEntry,
   saveMessagePrompt,
@@ -71,6 +90,7 @@ import {
   sendChatMessageWithThinking,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
+import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 
 // Helper to set up chained drizzle query mock
 function mockSelectChain(rows: Record<string, unknown>[]) {
@@ -87,7 +107,7 @@ function mockInsertChain(rows: Record<string, unknown>[]) {
   const chain = {
     values: vi.fn().mockReturnThis(),
     returning: vi.fn().mockResolvedValue(rows),
-    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+    onConflictDoNothing: vi.fn().mockReturnThis(),
     onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
   };
   mockDb.insert.mockReturnValue(chain as never);
@@ -122,9 +142,42 @@ function mockDeleteChain() {
   return chain;
 }
 
+async function registerPendingCompletedTurn(): Promise<void> {
+  await expect(
+    pendingCompletedTurnPersistence.persist({
+      turnId: "turn-pending",
+      workspaceIdentity: {
+        path: "/workspaces/novel",
+        openRevision: 3,
+      },
+      projectId: "project-1",
+      sessionId: "session-1",
+      userMessage: {
+        id: "user-pending",
+        sessionId: "session-1",
+        role: "user",
+        content: "unsaved question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      assistantMessage: {
+        id: "assistant-pending",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "unsaved answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+      retry: vi.fn().mockRejectedValue(new Error("database unavailable")),
+    }),
+  ).rejects.toThrow("database unavailable");
+}
+
 describe("chatApi - session/message persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pendingCompletedTurnPersistence.discard();
+  });
+  afterEach(() => {
+    pendingCompletedTurnPersistence.discard();
   });
 
   describe("pinCodexEntry", () => {
@@ -419,6 +472,42 @@ describe("chatApi - session/message persistence", () => {
 
       expect(mockDb.delete).toHaveBeenCalled();
     });
+
+    it("refuses to delete a Session owned by an unresolved turn", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(deleteSession("session-1")).rejects.toThrow(
+        "still waiting to be saved",
+      );
+      expect(mockDb.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("destructive message operations", () => {
+    it.each([
+      ["the pending message", () => deleteMessage("assistant-pending")],
+      [
+        "the pending Session suffix",
+        () => deleteMessagesFrom("session-1", "2026-07-30T00:00:00.000Z"),
+      ],
+    ])("refuses to delete %s", async (_label, operation) => {
+      await registerPendingCompletedTurn();
+
+      await expect(operation()).rejects.toThrow("still waiting to be saved");
+      expect(mockDb.delete).not.toHaveBeenCalled();
+    });
+
+    it("refuses metadata mutation before the pending row is durable", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(
+        updateMessageMetadata("assistant-pending", {
+          insertedToEditor: true,
+        }),
+      ).rejects.toThrow("still waiting to be saved");
+      expect(mockDb.select).not.toHaveBeenCalled();
+      expect(mockDb.update).not.toHaveBeenCalled();
+    });
   });
 
   describe("getSessionTitleForMessage", () => {
@@ -475,6 +564,67 @@ describe("chatApi - session/message persistence", () => {
   });
 
   describe("addMessage", () => {
+    it("retains the preflight createdAt in the row and timelapse event", async () => {
+      const createdAt = "2026-07-30T00:00:00.123Z";
+      const insert = mockInsertChain([
+        {
+          id: "msg-original-time",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "retry-safe answer",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt,
+        },
+      ]);
+      mockUpdateChain();
+
+      await addMessage("session-1", "assistant", "retry-safe answer", {
+        id: "msg-original-time",
+        createdAt,
+      });
+
+      expect(insert.values).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "msg-original-time", createdAt }),
+      );
+      expect(mockRecordChatMessageAdd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: "msg-original-time",
+          createdAt,
+        }),
+      );
+    });
+
+    it("does not duplicate a completed turn event reserved before DB retry", async () => {
+      mockInsertChain([
+        {
+          id: "msg-reserved-event",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "already captured",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2026-07-30T00:00:00.123Z",
+        },
+      ]);
+      mockUpdateChain();
+
+      await addMessage("session-1", "assistant", "already captured", {
+        id: "msg-reserved-event",
+        createdAt: "2026-07-30T00:00:00.123Z",
+        recordTimelapse: false,
+      });
+
+      expect(mockRecordChatMessageAdd).not.toHaveBeenCalled();
+      expect(mockScheduleChatIndex).toHaveBeenCalledWith("msg-reserved-event");
+    });
+
     it("inserts a message and returns it", async () => {
       // Mock insert for message
       mockInsertChain([
@@ -501,6 +651,154 @@ describe("chatApi - session/message persistence", () => {
       expect(result.content).toBe("テストメッセージ");
     });
 
+    it("treats an exact existing explicit message id as an idempotent retry", async () => {
+      const existing = {
+        id: "msg-retry",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "復旧後も同じ回答",
+        model: "model-1",
+        tokensIn: 12,
+        tokensOut: 8,
+        durationMs: 100,
+        metadata: '{"retry":true}',
+        createdAt: "2025-01-01T00:00:00Z",
+      };
+      const insert = mockInsertChain([]);
+      mockSelectLimitChain([existing]);
+      mockUpdateChain();
+
+      const result = await addMessage(
+        "session-1",
+        "assistant",
+        "復旧後も同じ回答",
+        {
+          id: "msg-retry",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        },
+      );
+
+      expect(insert.onConflictDoNothing).toHaveBeenCalledWith({
+        target: "id",
+      });
+      expect(result).toMatchObject(existing);
+      expect(mockRecordChatMessageAdd).not.toHaveBeenCalled();
+      expect(mockScheduleChatIndex).not.toHaveBeenCalled();
+    });
+
+    it("accepts additive metadata after a committed insert and retries only the failed session update", async () => {
+      const initial = {
+        id: "msg-retry-metadata",
+        sessionId: "session-1",
+        role: "assistant",
+        content: "挿入後も失わない回答",
+        model: "model-1",
+        tokensIn: 12,
+        tokensOut: 8,
+        durationMs: 100,
+        metadata: '{"retry":true}',
+        createdAt: "2025-01-01T00:00:00Z",
+      };
+      mockInsertChain([initial]);
+      const update = {
+        set: vi.fn().mockReturnThis(),
+        where: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("session updatedAt failed"))
+          .mockResolvedValue(undefined),
+      };
+      mockDb.update.mockReturnValue(update as never);
+
+      await expect(
+        addMessage("session-1", "assistant", "挿入後も失わない回答", {
+          id: "msg-retry-metadata",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        }),
+      ).rejects.toThrow("session updatedAt failed");
+
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          ...initial,
+          metadata: '{"retry":true,"insertedToEditor":true}',
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "挿入後も失わない回答", {
+          id: "msg-retry-metadata",
+          model: "model-1",
+          tokensIn: 12,
+          tokensOut: 8,
+          durationMs: 100,
+          metadata: '{"retry":true}',
+        }),
+      ).resolves.toMatchObject({
+        id: "msg-retry-metadata",
+        metadata: '{"retry":true,"insertedToEditor":true}',
+      });
+
+      expect(mockRecordChatMessageAdd).toHaveBeenCalledTimes(1);
+      expect(mockScheduleChatIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects an explicit message id collision with different content", async () => {
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          id: "msg-collision",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "別の回答",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2025-01-01T00:00:00Z",
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "期待した回答", {
+          id: "msg-collision",
+        }),
+      ).rejects.toThrow("chat message id collision");
+    });
+
+    it("rejects an explicit message id retry with a different createdAt", async () => {
+      mockInsertChain([]);
+      mockSelectLimitChain([
+        {
+          id: "msg-time-collision",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "same answer",
+          model: null,
+          tokensIn: null,
+          tokensOut: null,
+          durationMs: null,
+          metadata: null,
+          createdAt: "2026-07-30T00:00:00.000Z",
+        },
+      ]);
+
+      await expect(
+        addMessage("session-1", "assistant", "same answer", {
+          id: "msg-time-collision",
+          createdAt: "2026-07-30T00:00:01.000Z",
+        }),
+      ).rejects.toThrow("chat message id collision");
+    });
+
     it("schedules episodic index for a non-empty user/assistant message", async () => {
       mockScheduleChatIndex.mockClear();
       mockInsertChain([{ id: "msg-x", sessionId: "s1", role: "assistant" }]);
@@ -522,6 +820,17 @@ describe("chatApi - session/message persistence", () => {
       mockUpdateChain();
       await addMessage("s1", "user", "   ", { id: "blank" });
       expect(mockScheduleChatIndex).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("clearProjectChatHistory", () => {
+    it("refuses to delete the retry target of an unresolved completed turn", async () => {
+      await registerPendingCompletedTurn();
+
+      await expect(clearProjectChatHistory("project-1")).rejects.toThrow(
+        "still waiting to be saved",
+      );
+      expect(mockDb.delete).not.toHaveBeenCalled();
     });
   });
 

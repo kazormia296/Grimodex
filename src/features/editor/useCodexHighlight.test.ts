@@ -132,10 +132,14 @@ function makeEditor(): Editor {
 // ---------------------------------------------------------------------------
 
 import { useCodexHighlight } from "./useCodexHighlight";
+import { listCodexTypes } from "@/features/codex/typeApi";
+
+const mockListCodexTypes = vi.mocked(listCodexTypes);
 
 describe("useCodexHighlight — skipMatchedIds dependency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockListCodexTypes.mockResolvedValue([]);
     mockEntries = [
       {
         id: "c1",
@@ -274,5 +278,28 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
       renderHook(() => useCodexHighlight(editor, { skipMatchedIds: true })),
     ).not.toThrow();
     expect(mockRebuildAndSchedule).not.toHaveBeenCalled();
+  });
+
+  it("terminates an optional type-color query failure inside the effect", async () => {
+    const editor = makeEditor();
+    const consoleWarning = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    mockListCodexTypes.mockRejectedValueOnce(
+      new Error("type color query unavailable"),
+    );
+
+    try {
+      renderHook(() => useCodexHighlight(editor));
+
+      await vi.waitFor(() => {
+        expect(consoleWarning).toHaveBeenCalledWith(
+          "[codex-highlight] type color projection unavailable",
+          expect.any(String),
+        );
+      });
+    } finally {
+      consoleWarning.mockRestore();
+    }
   });
 });

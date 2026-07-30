@@ -21,9 +21,16 @@
  *   なので、完了時の snapshot のみ。打鍵感が要れば後方互換で stream を足せる。
  */
 
-import { recordChangeEvent } from "./recorder";
+import {
+  recordChangeEvent,
+  reserveChangeEvents,
+  type ChangeEventReservation,
+  type RecordEventInput,
+} from "./recorder";
 
-export function recordChatMessageAdd(input: {
+export interface ChatMessageAddEventInput {
+  /** Owning Project when the caller has captured immutable turn authority. */
+  projectId?: string;
   sessionId: string;
   messageId: string;
   role: string;
@@ -31,13 +38,20 @@ export function recordChatMessageAdd(input: {
   model?: string | null;
   /** ISO timestamp from chat_messages.createdAt (照合用)。 */
   createdAt: string;
-}): void {
-  recordChangeEvent({
+}
+
+function chatMessageAddEvent(
+  input: ChatMessageAddEventInput,
+): RecordEventInput {
+  const timestamp = Date.parse(input.createdAt);
+  return {
     domain: "chat",
     opType: "chat.message.add",
+    ...(input.projectId ? { projectId: input.projectId } : {}),
     entityType: "chat_message",
     entityId: input.messageId,
     sceneId: null,
+    ...(Number.isFinite(timestamp) ? { timestamp } : {}),
     payload: {
       sessionId: input.sessionId,
       messageId: input.messageId,
@@ -46,7 +60,22 @@ export function recordChatMessageAdd(input: {
       ...(input.model ? { model: input.model } : {}),
       createdAt: input.createdAt,
     },
-  });
+  };
+}
+
+export function recordChatMessageAdd(input: ChatMessageAddEventInput): void {
+  recordChangeEvent(chatMessageAddEvent(input));
+}
+
+/**
+ * Holds completed-turn add events behind an in-memory Chronicle barrier until
+ * the corresponding Chat rows are durable. Later events cannot overtake the
+ * reservation, while failed/discarded turns never become phantom history.
+ */
+export function reserveChatMessageAdds(
+  inputs: readonly ChatMessageAddEventInput[],
+): ChangeEventReservation {
+  return reserveChangeEvents(inputs.map(chatMessageAddEvent));
 }
 
 /**

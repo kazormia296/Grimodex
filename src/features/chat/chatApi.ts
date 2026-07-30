@@ -45,6 +45,8 @@ import { getProject } from "@/features/project/api";
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload";
 import type { AiProvider } from "./types";
+import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
+import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 
 // --- AI message sending (existing) ---
 
@@ -664,6 +666,10 @@ export async function createSession(
 }
 
 export async function deleteSession(id: string): Promise<void> {
+  pendingCompletedTurnPersistence.assertNone({
+    kind: "session-id",
+    sessionId: id,
+  });
   await db.delete(chatSessions).where(eq(chatSessions.id, id));
 }
 
@@ -677,6 +683,11 @@ export async function deleteSession(id: string): Promise<void> {
 export async function clearProjectChatHistory(
   projectId: string,
 ): Promise<void> {
+  pendingCompletedTurnPersistence.assertNone({
+    kind: "project",
+    workspaceIdentity: getCurrentImeWorkspaceIdentity(),
+    projectId,
+  });
   await db.delete(chatSessions).where(eq(chatSessions.projectId, projectId));
 }
 
@@ -701,6 +712,49 @@ export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
   return rows.map(toMessage);
 }
 
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonSubset(expected: unknown, actual: unknown): boolean {
+  if (Object.is(expected, actual)) {
+    return true;
+  }
+  if (Array.isArray(expected)) {
+    return (
+      Array.isArray(actual) &&
+      expected.length === actual.length &&
+      expected.every((value, index) => isJsonSubset(value, actual[index]))
+    );
+  }
+  if (!isJsonRecord(expected) || !isJsonRecord(actual)) {
+    return false;
+  }
+  return Object.entries(expected).every(
+    ([key, value]) =>
+      Object.hasOwn(actual, key) && isJsonSubset(value, actual[key]),
+  );
+}
+
+function isRetryCompatibleMetadata(
+  expected: string | null,
+  actual: string | null,
+): boolean {
+  if (expected === actual) {
+    return true;
+  }
+  try {
+    const actualValue = actual === null ? null : JSON.parse(actual);
+    if (expected === null) {
+      return isJsonRecord(actualValue);
+    }
+    return isJsonSubset(JSON.parse(expected), actualValue);
+  } catch {
+    // Legacy non-JSON metadata remains byte-for-byte only.
+    return false;
+  }
+}
+
 export async function addMessage(
   sessionId: string,
   role: MessageRole,
@@ -712,51 +766,95 @@ export async function addMessage(
     tokensOut?: number;
     durationMs?: number;
     metadata?: string;
+    /** Stable completion time captured before transport; retained on retry. */
+    createdAt?: string;
+    /**
+     * Completed turns reserve their forward-only Chronicle events before the
+     * durable write. Their retries disable the legacy insert-time capture.
+     */
+    recordTimelapse?: boolean;
   },
 ): Promise<ChatMessage> {
   const id = extra?.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
+  const createdAt = extra?.createdAt ?? now;
+  const values = {
+    id,
+    sessionId,
+    role,
+    content,
+    model: extra?.model ?? null,
+    tokensIn: extra?.tokensIn ?? null,
+    tokensOut: extra?.tokensOut ?? null,
+    durationMs: extra?.durationMs ?? null,
+    metadata: extra?.metadata ?? null,
+    createdAt,
+  };
   const rows = await db
     .insert(chatMessages)
-    .values({
-      id,
-      sessionId,
-      role,
-      content,
-      model: extra?.model ?? null,
-      tokensIn: extra?.tokensIn ?? null,
-      tokensOut: extra?.tokensOut ?? null,
-      durationMs: extra?.durationMs ?? null,
-      metadata: extra?.metadata ?? null,
-      createdAt: now,
-    })
+    .values(values)
+    .onConflictDoNothing({ target: chatMessages.id })
     .returning();
+  const inserted = rows[0] !== undefined;
+  let stored = rows[0];
+  if (!stored) {
+    const existing = await db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.id, id))
+      .limit(1);
+    stored = existing[0];
+    if (
+      !stored ||
+      stored.sessionId !== values.sessionId ||
+      stored.role !== values.role ||
+      stored.content !== values.content ||
+      stored.model !== values.model ||
+      stored.tokensIn !== values.tokensIn ||
+      stored.tokensOut !== values.tokensOut ||
+      stored.durationMs !== values.durationMs ||
+      (extra?.createdAt !== undefined &&
+        stored.createdAt !== values.createdAt) ||
+      !isRetryCompatibleMetadata(values.metadata, stored.metadata)
+    ) {
+      throw new Error(`chat message id collision: ${id}`);
+    }
+  }
+
+  if (inserted) {
+    // 執筆タイムラプス: 会話フローの forward-only 記録 (§17 P0)。
+    // session updatedAt が失敗して同じIDをretryしても二重記録しないよう、
+    // insertの成否を境界にする。
+    if (extra?.recordTimelapse !== false) {
+      recordChatMessageAdd({
+        sessionId,
+        messageId: id,
+        role,
+        text: content,
+        model: extra?.model ?? null,
+        createdAt,
+      });
+    }
+
+    // エピソード記憶 index: user/assistant の非空メッセージを意味検索に載せる
+    // (system / 空本文は Rust 側でも対象外)。2.5s デバウンスで畳む。
+    if (
+      (role === "user" || role === "assistant") &&
+      content.trim().length > 0
+    ) {
+      scheduleChatIndex(id);
+    }
+  }
 
   await db
     .update(chatSessions)
     .set({ updatedAt: now })
     .where(eq(chatSessions.id, sessionId));
-
-  // 執筆タイムラプス: 会話フローの forward-only 記録 (§17 P0)。fire-and-forget。
-  recordChatMessageAdd({
-    sessionId,
-    messageId: id,
-    role,
-    text: content,
-    model: extra?.model ?? null,
-    createdAt: now,
-  });
-
-  // エピソード記憶 index: user/assistant の非空メッセージを意味検索に載せる
-  // (system / 空本文は Rust 側でも対象外)。2.5s デバウンスで畳む。fire-and-forget。
-  if ((role === "user" || role === "assistant") && content.trim().length > 0) {
-    scheduleChatIndex(id);
-  }
-
-  return toMessage(rows[0]);
+  return toMessage(stored);
 }
 
 export async function deleteMessage(messageId: string): Promise<void> {
+  assertMessageMutationAllowed(messageId);
   await db.delete(chatMessages).where(eq(chatMessages.id, messageId));
   recordChatMessageDelete({ messageId });
 }
@@ -765,6 +863,10 @@ export async function deleteMessagesFrom(
   sessionId: string,
   fromCreatedAt: string,
 ): Promise<void> {
+  pendingCompletedTurnPersistence.assertNone({
+    kind: "session-id",
+    sessionId,
+  });
   await db
     .delete(chatMessages)
     .where(
@@ -780,6 +882,7 @@ export async function updateMessageMetadata(
   messageId: string,
   metadataUpdate: Record<string, unknown>,
 ): Promise<void> {
+  assertMessageMutationAllowed(messageId);
   const rows = await db
     .select({ metadata: chatMessages.metadata })
     .from(chatMessages)
@@ -800,6 +903,17 @@ export async function updateMessageMetadata(
   // weight 列を更新するため再 index をスケジュール。content 不変でも hash に signal を
   // 含めるため Rust 側で列が更新される。fire-and-forget。
   scheduleChatIndex(messageId);
+}
+
+/**
+ * Synchronous guard for cross-feature actions (Editor insert, Codex/Snippet
+ * extraction) whose side effect must not outrun the source Chat row.
+ */
+export function assertMessageMutationAllowed(messageId: string): void {
+  pendingCompletedTurnPersistence.assertNone({
+    kind: "message-id",
+    messageId,
+  });
 }
 
 /** 過去メッセージのプロンプト確認用スナップショット (chat_message_prompts)。 */

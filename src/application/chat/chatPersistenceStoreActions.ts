@@ -25,6 +25,9 @@ interface ChatPersistenceRepository {
 }
 
 interface ChatPersistenceRuntime {
+  hasPendingCompletedTurnPersistence: () => boolean;
+  hasPendingCompletedTurnPersistenceForMessage: (messageId: string) => boolean;
+  notifyPendingCompletedTurnPersistence: () => void;
   notifySaveFailure: () => void;
   notifyDeleteFailure: () => void;
   reportError: (operation: string, error: unknown) => void;
@@ -41,11 +44,21 @@ export function createChatPersistenceStoreActions(
   },
 ): Pick<
   ChatState,
-  "persistMessage" | "appendAdoptedAbTurn" | "deleteMessage" | "editUserMessage"
+  | "persistMessage"
+  | "appendAdoptedAbTurn"
+  | "deleteMessage"
+  | "editUserMessage"
+  | "syncInsertedToEditorMetadata"
 > {
   const { set, get, repository, runtime } = deps;
+  const blockForPendingCompletedTurn = (): boolean => {
+    if (!runtime.hasPendingCompletedTurnPersistence()) return false;
+    runtime.notifyPendingCompletedTurnPersistence();
+    return true;
+  };
   return {
     persistMessage: async (role: MessageRole, content: string) => {
+      if (blockForPendingCompletedTurn()) return;
       const { activeSessionId } = get();
       if (!activeSessionId) return;
 
@@ -71,6 +84,7 @@ export function createChatPersistenceStoreActions(
       assistantText,
       model,
     }) => {
+      if (blockForPendingCompletedTurn()) return false;
       // A/B ダイアログはスコープを変えずに開くため、ensureSession は現在のスコープ
       // (scene/folder/project/codex/snippet) に対応する正しいセッションを返す。
       const sessionId = await get().ensureSession();
@@ -137,6 +151,7 @@ export function createChatPersistenceStoreActions(
     },
 
     deleteMessage: async (messageId) => {
+      if (blockForPendingCompletedTurn()) return;
       const { activeSessionId, messages } = get();
       const index = messages.findIndex((message) => message.id === messageId);
       if (index === -1) return;
@@ -169,6 +184,7 @@ export function createChatPersistenceStoreActions(
     },
 
     editUserMessage: (messageId) => {
+      if (blockForPendingCompletedTurn()) return { content: "" };
       const { activeSessionId, messages } = get();
       const index = messages.findIndex((message) => message.id === messageId);
       if (index === -1) return { content: "" };
@@ -187,6 +203,36 @@ export function createChatPersistenceStoreActions(
       }
       set({ messages: messages.slice(0, index) });
       return mentionedSceneIds ? { content, mentionedSceneIds } : { content };
+    },
+
+    syncInsertedToEditorMetadata: (messageId) => {
+      if (runtime.hasPendingCompletedTurnPersistenceForMessage(messageId)) {
+        runtime.notifyPendingCompletedTurnPersistence();
+        return;
+      }
+      set((state) => ({
+        messages: state.messages.map((message) => {
+          if (message.id !== messageId) return message;
+          let metadata: Record<string, unknown> = {};
+          if (message.metadata) {
+            try {
+              metadata = JSON.parse(message.metadata) as Record<
+                string,
+                unknown
+              >;
+            } catch {
+              metadata = {};
+            }
+          }
+          return {
+            ...message,
+            metadata: JSON.stringify({
+              ...metadata,
+              insertedToEditor: true,
+            }),
+          };
+        }),
+      }));
     },
   };
 }

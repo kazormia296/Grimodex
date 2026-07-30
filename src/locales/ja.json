@@ -2079,6 +2079,7 @@
     "createSessionFailed": "セッションの作成に失敗しました",
     "deleteSessionFailed": "セッションの削除に失敗しました",
     "saveMessageFailed": "メッセージの保存に失敗しました",
+    "pendingCompletedTurnPersistence": "保存待ちの完了済みChatターンがあります。保存先の復旧後に再送信または再切替するか、recoveryデータを出力してから履歴を変更してください。",
     "invalidApiKey": "APIキーが無効です。設定を確認してください。",
     "networkError": "ネットワークエラーが発生しました。接続を確認してください。",
     "agentFailed": "エージェント実行に失敗しました: {{message}}",

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { eq, getTableName } from "drizzle-orm";
 import { projects } from "@/db/schema";
@@ -40,6 +40,7 @@ vi.mock("@/db/client", () => ({
 }));
 
 import { deleteProject, updateProject } from "./api";
+import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 
 // In-memory store simulating SQLite via the proxy interface
 function createTestDb() {
@@ -186,9 +187,13 @@ describe("updateProject", () => {
 
 describe("deleteProject", () => {
   beforeEach(() => {
+    pendingCompletedTurnPersistence.discard();
     cancelScheduledImeExportsMock.mockClear();
     deleteWhereMock.mockClear();
     removeImeProjectExportWithRetryMock.mockClear();
+  });
+  afterEach(() => {
+    pendingCompletedTurnPersistence.discard();
   });
 
   it("cancels a pending refresh before deleting and removing its snapshot", async () => {
@@ -213,5 +218,38 @@ describe("deleteProject", () => {
     ).toBeLessThan(
       removeImeProjectExportWithRetryMock.mock.invocationCallOrder[0],
     );
+  });
+
+  it("does not cascade-delete a Project containing an unresolved Chat turn", async () => {
+    await expect(
+      pendingCompletedTurnPersistence.persist({
+        turnId: "turn-pending",
+        workspaceIdentity: imeWorkspaceIdentity,
+        projectId: "default-project",
+        sessionId: "session-1",
+        userMessage: {
+          id: "user-1",
+          sessionId: "session-1",
+          role: "user",
+          content: "unsaved question",
+          createdAt: "2026-07-30T00:00:00.000Z",
+        },
+        assistantMessage: {
+          id: "assistant-1",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "unsaved answer",
+          createdAt: "2026-07-30T00:00:00.001Z",
+        },
+        retry: vi.fn().mockRejectedValue(new Error("database unavailable")),
+      }),
+    ).rejects.toThrow("database unavailable");
+
+    await expect(deleteProject("default-project")).rejects.toThrow(
+      "still waiting to be saved",
+    );
+    expect(cancelScheduledImeExportsMock).not.toHaveBeenCalled();
+    expect(deleteWhereMock).not.toHaveBeenCalled();
+    expect(removeImeProjectExportWithRetryMock).not.toHaveBeenCalled();
   });
 });

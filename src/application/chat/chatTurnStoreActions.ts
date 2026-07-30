@@ -116,6 +116,10 @@ import type {
 } from "./chatTurnPreflight";
 import type { ChatTurnRuntime } from "./chatTurnRuntime";
 import type { ChatUserQuestionRuntime } from "./chatUserQuestionRuntime";
+import { advanceActiveLifecycleTransition } from "@/application/lifecycle/lifecycleTrace";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
+import { tryAcquireChatTurnAdmissionLease } from "@/lib/chatNavigationGuard";
 
 interface ChatTurnStoreActionCompositionPorts extends ChatStoreActionPorts {
   prepareChatTurn: (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision;
@@ -152,6 +156,53 @@ interface ChatTurnStoreActionDependencies {
   errorDetail: typeof errorDetail;
   toast: typeof toast;
   i18next: typeof i18next;
+}
+
+class ChatTurnPersistenceError extends Error {
+  constructor(cause: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : "Failed to persist the completed chat turn",
+      { cause },
+    );
+    this.name = "ChatTurnPersistenceError";
+  }
+}
+
+interface CompletedTurnPersistenceSteps {
+  persistUser: () => Promise<void>;
+  persistAssistant?: () => Promise<void>;
+  finalize?: () => Promise<void>;
+}
+
+/**
+ * Preserves per-row progress across lifecycle retries. Message IDs are stable,
+ * but a user insert can succeed before the assistant insert fails; retrying
+ * only the unfinished step avoids turning that partial success into a primary
+ * key conflict.
+ */
+function createRetryableCompletedTurnPersistence(
+  steps: CompletedTurnPersistenceSteps,
+): () => Promise<void> {
+  let userPersisted = false;
+  let assistantPersisted = steps.persistAssistant === undefined;
+  let finalized = steps.finalize === undefined;
+
+  return async () => {
+    if (!userPersisted) {
+      await steps.persistUser();
+      userPersisted = true;
+    }
+    if (!assistantPersisted && steps.persistAssistant) {
+      await steps.persistAssistant();
+      assistantPersisted = true;
+    }
+    if (!finalized && steps.finalize) {
+      await steps.finalize();
+      finalized = true;
+    }
+  };
 }
 
 function createChatTurnStoreActions(
@@ -294,6 +345,76 @@ function createChatTurnStoreActions(
         routeAuthorityKey: turnRouteAuthorityKey,
       });
       const sendTurnId = turnRequest.requestId;
+      const persistCompletedTurn = async (input: {
+        retry: () => Promise<void>;
+        sessionId: string;
+        userMetadata?: string;
+        assistantMessage?: ChatMessage;
+      }): Promise<void> => {
+        await turnRuntime.persistCompletedTurn({
+          turnId: sendTurnId,
+          workspaceIdentity: turnWorkspaceIdentity,
+          projectId: turnProjectId,
+          sessionId: input.sessionId,
+          userMessage: {
+            ...userMsg,
+            sessionId: input.sessionId,
+            content,
+            ...(input.userMetadata ? { metadata: input.userMetadata } : {}),
+          },
+          ...(input.assistantMessage
+            ? {
+                assistantMessage: {
+                  ...input.assistantMessage,
+                  sessionId: input.sessionId,
+                },
+              }
+            : {}),
+          onRegister: () => {
+            const reservation = reserveChatMessageAdds([
+              {
+                projectId: turnProjectId,
+                sessionId: input.sessionId,
+                messageId: userMsg.id,
+                role: "user",
+                text: content,
+                createdAt: userMsg.createdAt,
+              },
+              ...(input.assistantMessage
+                ? [
+                    {
+                      projectId: turnProjectId,
+                      sessionId: input.sessionId,
+                      messageId: input.assistantMessage.id,
+                      role: input.assistantMessage.role,
+                      text: input.assistantMessage.content,
+                      model: input.assistantMessage.model,
+                      createdAt: input.assistantMessage.createdAt,
+                    },
+                  ]
+                : []),
+            ]);
+            return {
+              onPersisted: reservation.commit,
+              onDiscarded: reservation.discard,
+            };
+          },
+          retry: async () => {
+            // A completed turn can predate a later retrying lifecycle. Emit
+            // both durability boundaries in whichever transition drains the
+            // retained old-scope payload.
+            advanceActiveLifecycleTransition("old-stream-completed");
+            try {
+              await input.retry();
+            } catch (error) {
+              throw error instanceof ChatTurnPersistenceError
+                ? error
+                : new ChatTurnPersistenceError(error);
+            }
+            advanceActiveLifecycleTransition("old-scope-persisted");
+          },
+        });
+      };
       const sendControl = createTurnControl({
         request: turnRequest,
         surface: useAgentPath ? "agent" : "chat",
@@ -408,6 +529,7 @@ function createChatTurnStoreActions(
       const shouldAbortTurn = (): boolean =>
         sendControl.aborted ||
         !isCurrentTurn() ||
+        (!transportStarted && !canScheduleQuiescenceMutation()) ||
         !capturedWorkspaceIsCurrent() ||
         !capturedProjectIsCurrent() ||
         !capturedChatAuthorityIsCurrent() ||
@@ -597,67 +719,101 @@ function createChatTurnStoreActions(
               ),
             }));
 
-            if (!sessionIdForPersist) return true;
-
-            try {
-              const userMetadata =
-                options?.mentionedSceneIds &&
-                options.mentionedSceneIds.length > 0
-                  ? JSON.stringify({
-                      mentioned_scene_ids: options.mentionedSceneIds,
-                    })
-                  : undefined;
-              await chatApi.addMessage(sessionIdForPersist, "user", content, {
-                id: userMsg.id,
-                ...(userMetadata ? { metadata: userMetadata } : {}),
-              });
-
-              const promptSnapshot =
-                sentSystemPromptForAgent || systemPromptForAgent;
-              if (promptSnapshot) {
-                void chatApi
-                  .saveMessagePrompt(userMsg.id, {
-                    systemPrompt: promptSnapshot,
-                    layers: sentAgentContextLayers,
-                    totalTokens: sentAgentContextTokenCount,
-                    model: currentAgentModel || null,
-                    provider: turnRoute?.provider ?? null,
-                    contextWindow: turnRoute?.contextWindow ?? null,
+            const userMetadata =
+              options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
+                ? JSON.stringify({
+                    mentioned_scene_ids: options.mentionedSceneIds,
                   })
-                  .catch((error) =>
-                    debugLog.warn(
-                      "ChatStore",
-                      "saveMessagePrompt",
-                      errorDetail(error),
-                    ),
+                : undefined;
+            const promptSnapshot =
+              sentSystemPromptForAgent || systemPromptForAgent;
+            const latestAssistant = get().messages.find(
+              (message) => message.id === assistantMsg.id,
+            );
+            const recoverableStoppedAssistant =
+              latestAssistant?.role === "assistant" &&
+              latestAssistant.content &&
+              sessionIdForPersist
+                ? {
+                    ...latestAssistant,
+                    sessionId: sessionIdForPersist,
+                    model: currentAgentModel || null,
+                    metadata: stoppedMetadata,
+                  }
+                : undefined;
+            turnCoordinator.transition(sendControl, "persisting");
+            const persistStoppedAgentTurn =
+              createRetryableCompletedTurnPersistence({
+                persistUser: async () => {
+                  if (!sessionIdForPersist) return;
+                  await chatApi.addMessage(
+                    sessionIdForPersist,
+                    "user",
+                    content,
+                    {
+                      id: userMsg.id,
+                      createdAt: userMsg.createdAt,
+                      recordTimelapse: false,
+                      ...(userMetadata ? { metadata: userMetadata } : {}),
+                    },
                   );
-              }
-
-              const latestAssistant = get().messages.find(
-                (message) => message.id === assistantMsg.id,
-              );
-              if (
+                  if (promptSnapshot) {
+                    void chatApi
+                      .saveMessagePrompt(userMsg.id, {
+                        systemPrompt: promptSnapshot,
+                        layers: sentAgentContextLayers,
+                        totalTokens: sentAgentContextTokenCount,
+                        model: currentAgentModel || null,
+                        provider: turnRoute?.provider ?? null,
+                        contextWindow: turnRoute?.contextWindow ?? null,
+                      })
+                      .catch((error) =>
+                        debugLog.warn(
+                          "ChatStore",
+                          "saveMessagePrompt",
+                          errorDetail(error),
+                        ),
+                      );
+                  }
+                },
+                ...(sessionIdForPersist &&
                 latestAssistant?.role === "assistant" &&
                 latestAssistant.content
-              ) {
-                await chatApi.addMessage(
-                  sessionIdForPersist,
-                  "assistant",
-                  latestAssistant.content,
-                  {
-                    id: assistantMsg.id,
-                    model: currentAgentModel || undefined,
-                    metadata: stoppedMetadata,
-                  },
-                );
-                await commitAssistantReplacement();
-              }
+                  ? {
+                      persistAssistant: async () => {
+                        await chatApi.addMessage(
+                          sessionIdForPersist,
+                          "assistant",
+                          latestAssistant.content,
+                          {
+                            id: assistantMsg.id,
+                            model: currentAgentModel || undefined,
+                            metadata: stoppedMetadata,
+                            createdAt: assistantMsg.createdAt,
+                            recordTimelapse: false,
+                          },
+                        );
+                        await commitAssistantReplacement();
+                      },
+                    }
+                  : {}),
+              });
+            try {
+              await persistCompletedTurn({
+                retry: persistStoppedAgentTurn,
+                sessionId: sessionIdForPersist,
+                ...(userMetadata ? { userMetadata } : {}),
+                ...(recoverableStoppedAssistant
+                  ? { assistantMessage: recoverableStoppedAssistant }
+                  : {}),
+              });
             } catch (error) {
               debugLog.warn(
                 "ChatStore",
                 "persist stopped agent turn",
                 errorDetail(error),
               );
+              throw error;
             }
             return true;
           };
@@ -1287,67 +1443,96 @@ function createChatTurnStoreActions(
 
           // Persist
           turnCoordinator.transition(sendControl, "persisting");
-          if (sessionIdForPersist) {
-            const userMetadata =
-              options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
-                ? JSON.stringify({
-                    mentioned_scene_ids: options.mentionedSceneIds,
-                  })
-                : undefined;
-            await chatApi.addMessage(sessionIdForPersist, "user", content, {
-              id: userMsg.id,
-              ...(userMetadata ? { metadata: userMetadata } : {}),
-            });
-            // 過去メッセージのプロンプト確認用スナップショット (fire-and-forget)。
-            // Cache/plain のうち、最後の Agent iteration が実際に送った system
-            // representation を保存する。canonical fallback は次 iteration の
-            // budget downgrade 用に不変で保持する。
-            const promptSnapshot =
-              sentSystemPromptForAgent || systemPromptForAgent;
-            if (promptSnapshot) {
-              void chatApi
-                .saveMessagePrompt(userMsg.id, {
-                  systemPrompt: promptSnapshot,
-                  layers: sentAgentContextLayers,
-                  totalTokens: sentAgentContextTokenCount,
-                  model: currentModel || null,
-                  provider: turnRoute?.provider ?? null,
-                  contextWindow: turnRoute?.contextWindow ?? null,
+          const userMetadata =
+            options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
+              ? JSON.stringify({
+                  mentioned_scene_ids: options.mentionedSceneIds,
                 })
-                .catch((e) =>
-                  debugLog.warn(
-                    "ChatStore",
-                    "saveMessagePrompt",
-                    errorDetail(e),
-                  ),
-                );
-            }
-            const lastMsg = get().messages.find(
-              (message) => message.id === assistantMsg.id,
-            );
-            if (lastMsg?.role === "assistant" && lastMsg.content) {
-              // 実際に使用したモデル（xprov / agent ロール / chat 一時 override を
-              // 反映した currentModel）で永続化・usage 記録する。既定モデルを再読み
-              // すると override 時に chat_messages.model と ai_usage が誤ったモデルへ
-              // ひも付き、コスト推定もずれる（streaming 経路 / research サブエージェント
-              // は既に実モデルで記録している）。currentModel が空文字なら undefined。
-              const agentModel = currentModel || undefined;
-              await chatApi.addMessage(
-                sessionIdForPersist,
-                "assistant",
-                lastMsg.content,
-                {
-                  id: assistantMsg.id,
-                  model: agentModel,
-                  // N4: 従来エージェントターンは tokens_* が常に null だった。
-                  // runAgentLoop が全ターン合算したトークンをここで埋める。
-                  tokensIn: agentTokensIn ?? undefined,
-                  tokensOut: agentTokensOut ?? undefined,
+              : undefined;
+          const promptSnapshot =
+            sentSystemPromptForAgent || systemPromptForAgent;
+          const lastMsg = get().messages.find(
+            (message) => message.id === assistantMsg.id,
+          );
+          // 実際に使用したモデル（xprov / agent ロール / chat 一時 override）を
+          // 完了payloadへ固定し、retryでも同じID・同じ値を使用する。
+          const agentModel = currentModel || undefined;
+          const recoverableAgentAssistant =
+            lastMsg?.role === "assistant" &&
+            lastMsg.content &&
+            sessionIdForPersist
+              ? {
+                  ...lastMsg,
+                  sessionId: sessionIdForPersist,
+                  model: agentModel ?? null,
+                  tokensIn: agentTokensIn ?? null,
+                  tokensOut: agentTokensOut ?? null,
                   metadata: finalAgentMetadata,
-                },
-              );
-              await commitAssistantReplacement();
-              // N4: エージェントターンの usage を台帳にも記録 (cost は OpenRouter 実値)。
+                }
+              : undefined;
+          const persistAgentTurn = createRetryableCompletedTurnPersistence({
+            persistUser: async () => {
+              if (!sessionIdForPersist) return;
+              await chatApi.addMessage(sessionIdForPersist, "user", content, {
+                id: userMsg.id,
+                createdAt: userMsg.createdAt,
+                recordTimelapse: false,
+                ...(userMetadata ? { metadata: userMetadata } : {}),
+              });
+              // Cache/plain のうち最後の Agent iteration が実際に送った
+              // system representation を、user行の確定後に保存する。
+              if (promptSnapshot) {
+                void chatApi
+                  .saveMessagePrompt(userMsg.id, {
+                    systemPrompt: promptSnapshot,
+                    layers: sentAgentContextLayers,
+                    totalTokens: sentAgentContextTokenCount,
+                    model: currentModel || null,
+                    provider: turnRoute?.provider ?? null,
+                    contextWindow: turnRoute?.contextWindow ?? null,
+                  })
+                  .catch((e) =>
+                    debugLog.warn(
+                      "ChatStore",
+                      "saveMessagePrompt",
+                      errorDetail(e),
+                    ),
+                  );
+              }
+            },
+            ...(sessionIdForPersist &&
+            lastMsg?.role === "assistant" &&
+            lastMsg.content
+              ? {
+                  persistAssistant: async () => {
+                    await chatApi.addMessage(
+                      sessionIdForPersist,
+                      "assistant",
+                      lastMsg.content,
+                      {
+                        id: assistantMsg.id,
+                        model: agentModel,
+                        tokensIn: agentTokensIn ?? undefined,
+                        tokensOut: agentTokensOut ?? undefined,
+                        metadata: finalAgentMetadata,
+                        createdAt: assistantMsg.createdAt,
+                        recordTimelapse: false,
+                      },
+                    );
+                    await commitAssistantReplacement();
+                  },
+                }
+              : {}),
+            finalize: async () => {
+              if (
+                !sessionIdForPersist ||
+                lastMsg?.role !== "assistant" ||
+                !lastMsg.content
+              ) {
+                return;
+              }
+              // N4: エージェントターンの usage を台帳にも記録
+              // (cost は OpenRouter 実値)。
               void recordAiUsage({
                 surface: "agent",
                 model: agentModel,
@@ -1380,13 +1565,13 @@ function createChatTurnStoreActions(
                 (s) => s.id === sessionIdForPersist,
               );
               if (isFirstAgentResponse && currentSession?.titleManual === 0) {
-                const agentModel =
+                const titleModel =
                   useAiSettingsStore.getState().settings?.model ?? "";
                 chatApi
                   .generateSessionTitle(
                     content,
                     lastMsg.content,
-                    agentModel,
+                    titleModel,
                     projectCtx?.language ?? "ja",
                   )
                   .then(async (title) => {
@@ -1411,15 +1596,42 @@ function createChatTurnStoreActions(
                     );
                   });
               }
-            }
+            },
+          });
+          await persistCompletedTurn({
+            retry: persistAgentTurn,
+            sessionId: sessionIdForPersist,
+            ...(userMetadata ? { userMetadata } : {}),
+            ...(recoverableAgentAssistant
+              ? { assistantMessage: recoverableAgentAssistant }
+              : {}),
+          });
+        } catch (caught) {
+          let e: unknown = caught;
+          if (
+            e instanceof ChatTurnPersistenceError &&
+            !canScheduleQuiescenceMutation()
+          ) {
+            throw e;
           }
-        } catch (e) {
           if (shouldAbortTurn()) {
-            if (await finalizeStoppedAgentTurnAfterTransport()) {
+            try {
+              if (await finalizeStoppedAgentTurnAfterTransport()) {
+                return;
+              }
+            } catch (error) {
+              e = error;
+              if (
+                e instanceof ChatTurnPersistenceError &&
+                !canScheduleQuiescenceMutation()
+              ) {
+                throw e;
+              }
+            }
+            if (!(e instanceof ChatTurnPersistenceError)) {
+              cancelBeforeTransport();
               return;
             }
-            cancelBeforeTransport();
-            return;
           }
           const kind = classifyError(e);
           const msg = e instanceof Error ? e.message : String(e);
@@ -1933,176 +2145,219 @@ function createChatTurnStoreActions(
                   : null;
 
               // Persist to DB
-              const persistToDb = async () => {
-                if (!sessionIdForPersist) return;
-                turnCoordinator.transition(sendControl, "persisting");
-                const lastMsg = get().messages.find(
-                  (message) => message.id === assistantMsg.id,
-                );
-                const userMetadata =
-                  options?.mentionedSceneIds &&
-                  options.mentionedSceneIds.length > 0
-                    ? JSON.stringify({
-                        mentioned_scene_ids: options.mentionedSceneIds,
-                      })
-                    : undefined;
-                await chatApi.addMessage(sessionIdForPersist, "user", content, {
-                  id: userMsg.id,
-                  ...(userMetadata ? { metadata: userMetadata } : {}),
-                });
-                // 過去メッセージのプロンプト確認用スナップショット (fire-and-forget)。
-                // user メッセージ行が存在してから FK 付きで保存する。
-                if (sentSystemPrompt) {
-                  void chatApi
-                    .saveMessagePrompt(userMsg.id, {
-                      systemPrompt: sentSystemPrompt,
-                      layers: sentContextLayers,
-                      totalTokens: sentContextTokenCount,
-                      model: chatModel || null,
-                      provider: turnRoute?.provider ?? null,
-                      contextWindow: turnRoute?.contextWindow ?? null,
+              const lastMsg = get().messages.find(
+                (message) => message.id === assistantMsg.id,
+              );
+              const userMetadata =
+                options?.mentionedSceneIds &&
+                options.mentionedSceneIds.length > 0
+                  ? JSON.stringify({
+                      mentioned_scene_ids: options.mentionedSceneIds,
                     })
-                    .catch((e) =>
-                      debugLog.warn(
-                        "ChatStore",
-                        "saveMessagePrompt",
-                        errorDetail(e),
-                      ),
-                    );
-                }
-                if (
-                  lastMsg &&
-                  lastMsg.role === "assistant" &&
-                  lastMsg.content
-                ) {
-                  await chatApi.addMessage(
-                    sessionIdForPersist,
-                    "assistant",
-                    lastMsg.content,
-                    {
-                      id: assistantMsg.id,
-                      model: chatModel || undefined,
+                  : undefined;
+              turnCoordinator.transition(sendControl, "persisting");
+              const recoverableAssistant =
+                lastMsg?.role === "assistant" &&
+                lastMsg.content &&
+                sessionIdForPersist
+                  ? {
+                      ...lastMsg,
+                      sessionId: sessionIdForPersist,
+                      model: chatModel || null,
                       tokensIn: info.inputTokens,
                       tokensOut: info.outputTokens,
                       durationMs: chatDurationMs,
                       ...(chatMetadata ? { metadata: chatMetadata } : {}),
+                    }
+                  : undefined;
+              const persistToDb = createRetryableCompletedTurnPersistence({
+                persistUser: async () => {
+                  if (!sessionIdForPersist) return;
+                  await chatApi.addMessage(
+                    sessionIdForPersist,
+                    "user",
+                    content,
+                    {
+                      id: userMsg.id,
+                      createdAt: userMsg.createdAt,
+                      recordTimelapse: false,
+                      ...(userMetadata ? { metadata: userMetadata } : {}),
                     },
                   );
-                  await commitAssistantReplacement();
-                }
-
-                if (completedCodexBinding) {
-                  try {
-                    const nextHistoryRevision =
-                      await completedCodexBinding.nextHistoryRevision;
-                    const liveHistoryRevision =
-                      await computeChatHistoryRevision(
-                        get().messages.map((message) => ({ ...message })),
+                  // 過去メッセージのプロンプト確認用スナップショット
+                  // (fire-and-forget)。user 行が存在してから FK 付きで保存する。
+                  if (sentSystemPrompt) {
+                    void chatApi
+                      .saveMessagePrompt(userMsg.id, {
+                        systemPrompt: sentSystemPrompt,
+                        layers: sentContextLayers,
+                        totalTokens: sentContextTokenCount,
+                        model: chatModel || null,
+                        provider: turnRoute?.provider ?? null,
+                        contextWindow: turnRoute?.contextWindow ?? null,
+                      })
+                      .catch((e) =>
+                        debugLog.warn(
+                          "ChatStore",
+                          "saveMessagePrompt",
+                          errorDetail(e),
+                        ),
                       );
-                    if (liveHistoryRevision !== nextHistoryRevision) {
+                  }
+                },
+                ...(sessionIdForPersist &&
+                lastMsg?.role === "assistant" &&
+                lastMsg.content
+                  ? {
+                      persistAssistant: async () => {
+                        await chatApi.addMessage(
+                          sessionIdForPersist,
+                          "assistant",
+                          lastMsg.content,
+                          {
+                            id: assistantMsg.id,
+                            model: chatModel || undefined,
+                            tokensIn: info.inputTokens,
+                            tokensOut: info.outputTokens,
+                            durationMs: chatDurationMs,
+                            ...(chatMetadata ? { metadata: chatMetadata } : {}),
+                            createdAt: assistantMsg.createdAt,
+                            recordTimelapse: false,
+                          },
+                        );
+                        await commitAssistantReplacement();
+                      },
+                    }
+                  : {}),
+                finalize: async () => {
+                  if (!sessionIdForPersist) return;
+                  if (completedCodexBinding) {
+                    try {
+                      const nextHistoryRevision =
+                        await completedCodexBinding.nextHistoryRevision;
+                      const liveHistoryRevision =
+                        await computeChatHistoryRevision(
+                          get().messages.map((message) => ({ ...message })),
+                        );
+                      if (liveHistoryRevision !== nextHistoryRevision) {
+                        debugLog.warn(
+                          "ChatStore",
+                          "skip Codex history revision after concurrent history mutation",
+                        );
+                      } else {
+                        await codexAppApi.advanceCodexHistoryRevision({
+                          projectId: turnProjectId,
+                          sessionId: sessionIdForPersist,
+                          grimodexTurnId: sendTurnId,
+                          codexThreadId: completedCodexBinding.threadId,
+                          codexTurnId: completedCodexBinding.turnId,
+                          expectedHistoryRevision:
+                            completedCodexBinding.expectedHistoryRevision,
+                          nextHistoryRevision,
+                        });
+                      }
+                    } catch (error: unknown) {
+                      // Persistence already succeeded. Keeping the old revision is
+                      // the fail-safe: the next send archives instead of resuming a
+                      // thread whose local history could be stale.
                       debugLog.warn(
                         "ChatStore",
-                        "skip Codex history revision after concurrent history mutation",
+                        "advance Codex history revision",
+                        errorDetail(error),
                       );
-                    } else {
-                      await codexAppApi.advanceCodexHistoryRevision({
-                        projectId: turnProjectId,
-                        sessionId: sessionIdForPersist,
-                        grimodexTurnId: sendTurnId,
-                        codexThreadId: completedCodexBinding.threadId,
-                        codexTurnId: completedCodexBinding.turnId,
-                        expectedHistoryRevision:
-                          completedCodexBinding.expectedHistoryRevision,
-                        nextHistoryRevision,
-                      });
                     }
-                  } catch (error: unknown) {
-                    // Persistence already succeeded. Keeping the old revision is
-                    // the fail-safe: the next send archives instead of resuming a
-                    // thread whose local history could be stale.
-                    debugLog.warn(
-                      "ChatStore",
-                      "advance Codex history revision",
-                      errorDetail(error),
-                    );
                   }
-                }
 
-                // セッションタイトル自動生成 (P1-2) — fire-and-forget
-                const currentSession = get().sessions.find(
-                  (s) => s.id === sessionIdForPersist,
-                );
-                if (
-                  isFirstResponse &&
-                  currentSession &&
-                  currentSession.titleManual === 0 &&
-                  lastMsg?.role === "assistant" &&
-                  lastMsg.content
-                ) {
-                  chatApi
-                    .generateSessionTitle(
-                      content,
-                      lastMsg.content,
-                      chatModel,
-                      projectCtx?.language ?? "ja",
-                    )
-                    .then(async (title) => {
-                      if (!title) {
-                        title = content.slice(0, 30);
-                      }
-                      if (sessionIdForPersist) {
-                        await chatApi.updateSessionTitle(
-                          sessionIdForPersist,
-                          title,
-                        );
-                        if (isCodexAppServer && turnWorkspaceIdentity) {
-                          void codexAppApi
-                            .setCodexSessionThreadName({
-                              projectId: turnProjectId,
-                              sessionId: sessionIdForPersist,
-                              expectedWorkspacePath: turnWorkspaceIdentity.path,
-                              name: title,
-                            })
-                            .catch((error: unknown) =>
-                              debugLog.warn(
-                                "ChatStore",
-                                "sync Codex thread title",
-                                errorDetail(error),
-                              ),
-                            );
-                        }
-                        set((state) => ({
-                          sessions: state.sessions.map((s) =>
-                            s.id === sessionIdForPersist ? { ...s, title } : s,
-                          ),
-                        }));
-                      }
-                    })
-                    .catch((e) => {
-                      debugLog.error(
-                        "ChatStore",
-                        "title generation",
-                        errorDetail(e),
-                      );
-                    });
-                }
-              };
-
-              persistToDb()
-                .catch((e) => {
-                  debugLog.error(
-                    "ChatStore",
-                    "persist after stream",
-                    errorDetail(e),
+                  // セッションタイトル自動生成 (P1-2) — fire-and-forget
+                  const currentSession = get().sessions.find(
+                    (s) => s.id === sessionIdForPersist,
                   );
-                })
+                  if (
+                    isFirstResponse &&
+                    currentSession &&
+                    currentSession.titleManual === 0 &&
+                    lastMsg?.role === "assistant" &&
+                    lastMsg.content
+                  ) {
+                    chatApi
+                      .generateSessionTitle(
+                        content,
+                        lastMsg.content,
+                        chatModel,
+                        projectCtx?.language ?? "ja",
+                      )
+                      .then(async (title) => {
+                        if (!title) {
+                          title = content.slice(0, 30);
+                        }
+                        if (sessionIdForPersist) {
+                          await chatApi.updateSessionTitle(
+                            sessionIdForPersist,
+                            title,
+                          );
+                          if (isCodexAppServer && turnWorkspaceIdentity) {
+                            void codexAppApi
+                              .setCodexSessionThreadName({
+                                projectId: turnProjectId,
+                                sessionId: sessionIdForPersist,
+                                expectedWorkspacePath:
+                                  turnWorkspaceIdentity.path,
+                                name: title,
+                              })
+                              .catch((error: unknown) =>
+                                debugLog.warn(
+                                  "ChatStore",
+                                  "sync Codex thread title",
+                                  errorDetail(error),
+                                ),
+                              );
+                          }
+                          set((state) => ({
+                            sessions: state.sessions.map((s) =>
+                              s.id === sessionIdForPersist
+                                ? { ...s, title }
+                                : s,
+                            ),
+                          }));
+                        }
+                      })
+                      .catch((e) => {
+                        debugLog.error(
+                          "ChatStore",
+                          "title generation",
+                          errorDetail(e),
+                        );
+                      });
+                  }
+                },
+              });
+
+              void persistCompletedTurn({
+                retry: persistToDb,
+                sessionId: sessionIdForPersist,
+                ...(userMetadata ? { userMetadata } : {}),
+                ...(recoverableAssistant
+                  ? { assistantMessage: recoverableAssistant }
+                  : {}),
+              })
                 .finally(() => {
                   turnStreamCleanup?.();
                   if (turnStreamCleanup) {
                     turnRuntime.clearStreamCleanupIf(turnStreamCleanup);
                   }
                   if (isCurrentTurn()) set({ isStreaming: false });
-                  resolve();
+                })
+                .then(resolve, (error: unknown) => {
+                  debugLog.error(
+                    "ChatStore",
+                    "persist after stream",
+                    errorDetail(error),
+                  );
+                  reject(
+                    error instanceof ChatTurnPersistenceError
+                      ? error
+                      : new ChatTurnPersistenceError(error),
+                  );
                 });
             },
             onError: (message: string) => {
@@ -2263,7 +2518,15 @@ function createChatTurnStoreActions(
             });
         });
       } catch (e) {
-        if (shouldAbortTurn()) {
+        if (
+          e instanceof ChatTurnPersistenceError &&
+          !canScheduleQuiescenceMutation()
+        ) {
+          // A destructive lifecycle must remain on the old authority when the
+          // completed turn could not become durable in that old scope.
+          throw e;
+        }
+        if (shouldAbortTurn() && !(e instanceof ChatTurnPersistenceError)) {
           cancelBeforeTransport();
           return;
         }
@@ -2442,7 +2705,7 @@ function createChatTurnStoreActions(
 export function createConfiguredChatTurnStoreActions(
   ports: ChatTurnStoreActionCompositionPorts,
 ): Pick<ChatState, "sendMessage" | "stopGeneration"> {
-  return createChatTurnStoreActions({
+  const actions = createChatTurnStoreActions({
     ...ports,
     chatApi,
     cliApi,
@@ -2473,4 +2736,43 @@ export function createConfiguredChatTurnStoreActions(
     toast,
     i18next,
   });
+  return {
+    ...actions,
+    async sendMessage(content, commandInstruction, options) {
+      const navigationAdmission = tryAcquireChatTurnAdmissionLease();
+      if (!navigationAdmission) return;
+      let admissionReleased = false;
+      const releaseNavigationAdmission = (): void => {
+        if (admissionReleased) return;
+        admissionReleased = true;
+        navigationAdmission.release();
+      };
+      try {
+        if (!canScheduleQuiescenceMutation()) return;
+        // A completed turn owns the next persistence position until its retry
+        // succeeds. Keep this gate outside trackTurn: a failed admission retry
+        // must remain sticky in the registry, not become a second settled turn
+        // failure.
+        if (ports.turnRuntime.hasPendingCompletedTurnPersistence()) {
+          await ports.turnRuntime.retryPendingCompletedTurns();
+        }
+        if (!canScheduleQuiescenceMutation()) return;
+        const admittedOptions = {
+          ...options,
+          _onAccepted: () => {
+            // `notifyAccepted` runs after turn placeholders/finalizers exist
+            // and immediately before transport starts. From this point a Scene
+            // transition can stop the turn and persist to captured authority.
+            releaseNavigationAdmission();
+            options?._onAccepted?.();
+          },
+        };
+        return await ports.turnRuntime.trackTurn(
+          actions.sendMessage(content, commandInstruction, admittedOptions),
+        );
+      } finally {
+        releaseNavigationAdmission();
+      }
+    },
+  };
 }

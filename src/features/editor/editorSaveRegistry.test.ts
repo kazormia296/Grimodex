@@ -408,10 +408,10 @@ describe("エディタの save handler 登録 (ソース invariant)", () => {
       "utf-8",
     );
     expect(projectStore).toMatch(
-      /flushProjectStrictQuiescence\(\);[\s\S]{0,160}?clearRetainedEditorRecoveryDraftsForScopeChange\(\)/,
+      /flushProjectStrictQuiescence\([^;]*\);[\s\S]{0,160}?clearRetainedEditorRecoveryDraftsForScopeChange\(\)/,
     );
     expect(workspaceStore).toMatch(
-      /flushStrictQuiescence\(\);[\s\S]{0,160}?clearRetainedEditorRecoveryDraftsForScopeChange\(\)/,
+      /flushStrictQuiescence\([^;]*\);[\s\S]{0,160}?clearRetainedEditorRecoveryDraftsForScopeChange\(\)/,
     );
   });
 });

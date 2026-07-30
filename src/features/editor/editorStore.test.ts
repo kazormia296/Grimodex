@@ -3,10 +3,14 @@ import type { Editor } from "@tiptap/core";
 import { useEditorStore } from "./editorStore";
 
 vi.mock("@/features/chat/chatApi", () => ({
+  assertMessageMutationAllowed: vi.fn(),
   updateMessageMetadata: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { updateMessageMetadata } from "@/features/chat/chatApi";
+import {
+  assertMessageMutationAllowed,
+  updateMessageMetadata,
+} from "@/features/chat/chatApi";
 
 function makeEditor(overrides = {}) {
   const state = {
@@ -46,6 +50,7 @@ function resetStore() {
 
 describe("useEditorStore", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     resetStore();
   });
 
@@ -86,6 +91,22 @@ describe("useEditorStore", () => {
         .insertFromChat("テスト", "msg-1");
 
       expect(result).toBe(false);
+    });
+
+    it("does not mutate the Editor while the source Chat message is pending", () => {
+      const editor = makeEditor();
+      useEditorStore.getState().setEditor(editor);
+      vi.mocked(assertMessageMutationAllowed).mockImplementationOnce(() => {
+        throw new Error("pending");
+      });
+
+      const result = useEditorStore
+        .getState()
+        .insertFromChat("未永続化の回答", "pending-message");
+
+      expect(result).toBe(false);
+      expect(editor.chain).not.toHaveBeenCalled();
+      expect(updateMessageMetadata).not.toHaveBeenCalled();
     });
 
     it("inserts text at cursor position", () => {

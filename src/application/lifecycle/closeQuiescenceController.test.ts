@@ -289,6 +289,28 @@ describe("createCloseQuiescenceController", () => {
     },
   );
 
+  it("waits for data deletion that began before the close request", async () => {
+    const dataDeleteLease = acquireQuiescenceLease("data-delete");
+    const flush = vi.fn(async () => {});
+    const close = vi.fn(async () => {});
+    const controller = createCloseQuiescenceController({
+      hasImmediateVeto: () => false,
+      flush,
+      close,
+      onFailure: vi.fn(),
+    });
+
+    controller.handleCloseRequest({ preventDefault: vi.fn() });
+    await Promise.resolve();
+    expect(flush).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+
+    dataDeleteLease.release();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(flush).toHaveBeenCalledOnce();
+    expect(isQuiescenceLeaseActive()).toBe(false);
+  });
+
   it("cancels safely while waiting for a Workspace lifecycle", async () => {
     const workspaceLease = acquireQuiescenceLease("workspace-open");
     const flush = vi.fn(async () => {});

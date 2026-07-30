@@ -205,6 +205,8 @@ export interface ChatState {
    */
   ensureSession: () => Promise<string | null>;
   deleteSession: (sessionId: string) => Promise<void>;
+  /** Persist all admitted Chat work, then atomically clear this Project's history. */
+  clearProjectChatHistory: (projectId: string) => Promise<void>;
   persistMessage: (role: MessageRole, content: string) => Promise<void>;
   /**
    * チャット A/B 比較で採用した応答を、現在のチャットセッションの会話履歴へ

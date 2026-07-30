@@ -96,11 +96,22 @@ export interface RecordEventInput {
   sceneId?: string | null;
   entityType?: string | null;
   entityId?: string | null;
+  /** Original domain mutation time when a durable retry records it later. */
+  timestamp?: number;
 }
 
-interface PendingEvent extends Required<RecordEventInput> {
+type PendingEventStatus = "reserved" | "committed";
+
+interface PendingEvent extends Omit<Required<RecordEventInput>, "timestamp"> {
   eventUid: string;
   timestamp: number;
+  status: PendingEventStatus;
+  reservationId: string | null;
+}
+
+export interface ChangeEventReservation {
+  commit: () => void;
+  discard: () => void;
 }
 
 interface TimelapseAppendEvent {
@@ -460,8 +471,8 @@ export function _resetRecorderForTests(): void {
  * never awaits the flush. If the recorder is disabled or no project bound
  * yet, the call is silently dropped.
  */
-export function recordChangeEvent(input: RecordEventInput): void {
-  if (input.projectId && input.projectId !== state.projectId) return;
+function canCaptureChangeEvent(input: RecordEventInput): boolean {
+  if (input.projectId && input.projectId !== state.projectId) return false;
   if (state.switchInProgress || state.bindingInvalidated) {
     // 束縛が無効 (切替中 or 正規 rebind 未完了): 誤った束縛で新 workspace の
     // hash chain へ混入させるより破棄が正しい。ただし無警告にしない —
@@ -473,10 +484,20 @@ export function recordChangeEvent(input: RecordEventInput): void {
       );
     }
     state.droppedWhileInvalidated += 1;
-    return;
+    return false;
   }
-  if (!state.enabled || !state.projectId) return;
-  state.queue.push({
+  return state.enabled && state.projectId !== null;
+}
+
+function createPendingEvent(
+  input: RecordEventInput,
+  status: PendingEventStatus,
+  reservationId: string | null,
+): PendingEvent {
+  if (!state.projectId) {
+    throw new Error("Timelapse recorder is not bound to a Project");
+  }
+  return {
     eventUid: crypto.randomUUID(),
     domain: input.domain,
     opType: input.opType,
@@ -485,7 +506,71 @@ export function recordChangeEvent(input: RecordEventInput): void {
     sceneId: input.sceneId ?? null,
     entityType: input.entityType ?? null,
     entityId: input.entityId ?? null,
-    timestamp: Date.now(),
+    timestamp: input.timestamp ?? Date.now(),
+    status,
+    reservationId,
+  };
+}
+
+/**
+ * Reserves one contiguous position in the forward-only Chronicle without
+ * making the events flushable. This lets a completed Chat turn retain its
+ * original order while its durable rows are retried. A reservation must be
+ * committed only after the source mutation is durable, or discarded when the
+ * source payload is explicitly abandoned.
+ */
+export function reserveChangeEvents(
+  inputs: readonly RecordEventInput[],
+): ChangeEventReservation {
+  if (
+    inputs.length === 0 ||
+    !inputs.every((input) => canCaptureChangeEvent(input))
+  ) {
+    return {
+      commit() {},
+      discard() {},
+    };
+  }
+
+  const reservationId = crypto.randomUUID();
+  state.queue.push(
+    ...inputs.map((input) =>
+      createPendingEvent(input, "reserved", reservationId),
+    ),
+  );
+  let active = true;
+  return {
+    commit() {
+      if (!active) return;
+      active = false;
+      let committed = false;
+      for (const event of state.queue) {
+        if (event.reservationId !== reservationId) continue;
+        event.status = "committed";
+        event.reservationId = null;
+        committed = true;
+      }
+      if (committed) scheduleFlush();
+    },
+    discard() {
+      if (!active) return;
+      active = false;
+      const retained = state.queue.filter(
+        (event) => event.reservationId !== reservationId,
+      );
+      if (retained.length === state.queue.length) return;
+      state.queue = retained;
+      if (state.queue.some((event) => event.status === "committed")) {
+        scheduleFlush();
+      }
+    },
+  };
+}
+
+export function recordChangeEvent(input: RecordEventInput): void {
+  if (!canCaptureChangeEvent(input)) return;
+  state.queue.push({
+    ...createPendingEvent(input, "committed", null),
   });
   scheduleFlush();
 }
@@ -536,8 +621,14 @@ export async function flushNow(): Promise<void> {
     }
     if (state.queue.length === 0) return;
 
-    const batch = state.queue;
-    state.queue = [];
+    const firstReservedIndex = state.queue.findIndex(
+      (event) => event.status === "reserved",
+    );
+    const batchEnd =
+      firstReservedIndex === -1 ? state.queue.length : firstReservedIndex;
+    if (batchEnd === 0) return;
+    const batch = state.queue.slice(0, batchEnd);
+    state.queue = state.queue.slice(batchEnd);
 
     const events: TimelapseAppendEvent[] = batch.map((ev) => ({
       eventUid: ev.eventUid,
@@ -621,6 +712,11 @@ export async function flushStrict(): Promise<void> {
         completed = true;
         return;
       }
+      if (state.queue[0]?.status === "reserved") {
+        throw new Error(
+          "Timelapse recorder has an unresolved event reservation",
+        );
+      }
     }
     throw new Error("Timelapse recorder did not reach quiescence");
   } finally {
@@ -648,18 +744,20 @@ registerQuiescenceProvider({
   flush: flushStrict,
   discard: discardPendingTimelapseEvents,
   recovery: () =>
-    state.queue.map((event) => ({
-      kind: "timelapse-event",
-      projectId: event.projectId,
-      eventUid: event.eventUid,
-      sceneId: event.sceneId,
-      domain: event.domain,
-      opType: event.opType,
-      entityType: event.entityType,
-      entityId: event.entityId,
-      payload: event.payload,
-      timestamp: event.timestamp,
-    })),
+    state.queue
+      .filter((event) => event.status === "committed")
+      .map((event) => ({
+        kind: "timelapse-event",
+        projectId: event.projectId,
+        eventUid: event.eventUid,
+        sceneId: event.sceneId,
+        domain: event.domain,
+        opType: event.opType,
+        entityType: event.entityType,
+        entityId: event.entityId,
+        payload: event.payload,
+        timestamp: event.timestamp,
+      })),
 });
 
 function canonicalisePayload(p: unknown): string {

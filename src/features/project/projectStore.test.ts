@@ -19,6 +19,7 @@ import * as projectApi from "./api";
 import type { Project } from "./api";
 import {
   _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
   canScheduleQuiescenceMutation,
   isQuiescenceLeaseActive,
 } from "@/application/lifecycle/quiescenceLease";
@@ -40,6 +41,11 @@ import { enqueueIpc, resetIpcQueueForTests } from "@/lib/ipcQueue";
 import i18next from "@/lib/i18n";
 import { registerProjectRuntime } from "@/application/project/projectRuntime";
 import { projectRuntimeComposition } from "@/application/composition/projectRuntimeComposition";
+import {
+  LIFECYCLE_TRACE_OPT_IN_KEY,
+  subscribeLifecycleTrace,
+  type LifecycleTraceEvent,
+} from "@/application/lifecycle/lifecycleTrace";
 
 const backgroundH = vi.hoisted(() => ({
   startExternalWriteFeed: vi.fn(async () => {}),
@@ -434,6 +440,24 @@ describe("useProjectStore", () => {
   });
 
   describe("loadProject", () => {
+    it("does not start a Project load while data deletion is active", async () => {
+      const getProjectSpy = vi.spyOn(projectApi, "getProject");
+      const dataDeleteLease = acquireQuiescenceLease("data-delete");
+
+      try {
+        await expect(
+          useProjectStore.getState().loadProject(PROJECT_ID),
+        ).rejects.toThrow(
+          "Cannot start project-load while data deletion is active",
+        );
+        expect(getProjectSpy).not.toHaveBeenCalled();
+        expect(mockedReload).not.toHaveBeenCalled();
+      } finally {
+        dataDeleteLease.release();
+        getProjectSpy.mockRestore();
+      }
+    });
+
     it("uses the Workspace-owned no-preflush path and stamps the target revision", async () => {
       const now = new Date().toISOString();
       await db.insert(projects).values({
@@ -549,6 +573,57 @@ describe("useProjectStore", () => {
         "workspace.lastActiveProjectId",
         "proj-b",
       );
+    });
+
+    it("traces the successful Project transition through hydration with one id", async () => {
+      const now = new Date().toISOString();
+      await db.insert(projects).values({
+        id: "proj-b",
+        title: "Second Novel",
+        createdAt: now,
+        updatedAt: now,
+      });
+      setCurrentWorkspaceIdentity({
+        path: "/novel",
+        openRevision: 4,
+      });
+      useProjectStore.setState({ currentProjectId: PROJECT_ID });
+      const events: LifecycleTraceEvent[] = [];
+      Object.assign(globalThis, {
+        [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+      });
+      const unsubscribe = subscribeLifecycleTrace((event) => {
+        if (event.kind === "project") events.push(event);
+      });
+
+      try {
+        await useProjectStore.getState().loadProject("proj-b");
+
+        expect(events.map((event) => event.phase)).toEqual([
+          "switch-requested",
+          "quiescence-started",
+          "authority-commit",
+          "new-scope-hydrated",
+        ]);
+        expect(new Set(events.map((event) => event.transitionId)).size).toBe(1);
+        expect(events[0]).toMatchObject({
+          from: {
+            workspacePath: "/novel",
+            workspaceOpenRevision: 4,
+            projectId: PROJECT_ID,
+          },
+          to: {
+            workspacePath: "/novel",
+            workspaceOpenRevision: 4,
+            projectId: "proj-b",
+          },
+        });
+        expect(events.at(-1)?.to.projectId).toBe("proj-b");
+        expect(useProjectStore.getState().projectLoadStatus).toBe("ready");
+      } finally {
+        unsubscribe();
+        Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+      }
     });
 
     it("switching project clears undo history even when reloadProjectData is mocked", async () => {

@@ -9,8 +9,13 @@ interface TrashCapture {
   tempId: string;
 }
 
+interface TreeNavigationAuthority {
+  release(): void;
+}
+
 export interface DeleteTreeSubtreePorts {
   guardPending(): boolean;
+  tryAcquireNavigationAuthority(): TreeNavigationAuthority | null;
   getNodes(): readonly TreeNodeData[];
   getActiveSceneId(): string;
   loadSceneContent(id: string): Promise<string>;
@@ -79,6 +84,19 @@ export async function deleteTreeSubtree(
   ports: DeleteTreeSubtreePorts,
 ): Promise<void> {
   if (ports.guardPending()) return;
+  const navigationAuthority = ports.tryAcquireNavigationAuthority();
+  if (!navigationAuthority) return;
+  try {
+    await deleteTreeSubtreeWithAuthority(id, ports);
+  } finally {
+    navigationAuthority.release();
+  }
+}
+
+async function deleteTreeSubtreeWithAuthority(
+  id: string,
+  ports: DeleteTreeSubtreePorts,
+): Promise<void> {
   const nodes = [...ports.getNodes()];
   const targetIds = descendants(nodes, id);
   const deletedNodes = nodes.filter((node) => targetIds.has(node.id));
@@ -158,33 +176,45 @@ export async function deleteTreeSubtree(
       entityId: node.id,
     })),
     async undo() {
-      for (const tempId of trashTempIds.values()) ports.cancelTrash(tempId);
-      for (const node of parentsFirst(deletedNodes)) {
-        await ports.restorePersisted(node);
-        if (
-          node.nodeType === "scene" &&
-          contentSnapshots[node.id] !== undefined
-        ) {
-          await ports.saveSceneContent(node.id, contentSnapshots[node.id]!);
+      const navigationAuthority = ports.tryAcquireNavigationAuthority();
+      if (!navigationAuthority) return;
+      try {
+        for (const tempId of trashTempIds.values()) ports.cancelTrash(tempId);
+        for (const node of parentsFirst(deletedNodes)) {
+          await ports.restorePersisted(node);
+          if (
+            node.nodeType === "scene" &&
+            contentSnapshots[node.id] !== undefined
+          ) {
+            await ports.saveSceneContent(node.id, contentSnapshots[node.id]!);
+          }
         }
+        const restored = [...ports.getNodes(), ...deletedNodes];
+        ports.applyNodes(restored, previousActiveSceneId);
+        ports.recomputeSceneOrder(restored);
+      } finally {
+        navigationAuthority.release();
       }
-      const restored = [...ports.getNodes(), ...deletedNodes];
-      ports.applyNodes(restored, previousActiveSceneId);
-      ports.recomputeSceneOrder(restored);
     },
     async redo() {
-      const current = [...ports.getNodes()];
-      const currentIds = descendants(current, id);
-      for (const deletedId of [...currentIds].reverse()) {
-        await ports.deletePersisted(deletedId);
+      const navigationAuthority = ports.tryAcquireNavigationAuthority();
+      if (!navigationAuthority) return;
+      try {
+        const current = [...ports.getNodes()];
+        const currentIds = descendants(current, id);
+        for (const deletedId of [...currentIds].reverse()) {
+          await ports.deletePersisted(deletedId);
+        }
+        const next = current.filter((node) => !currentIds.has(node.id));
+        const active = currentIds.has(ports.getActiveSceneId())
+          ? (next.find((node) => node.nodeType === "scene")?.id ?? "")
+          : ports.getActiveSceneId();
+        ports.applyNodes(next, active);
+        ports.recomputeSceneOrder(next);
+        for (const deletedId of currentIds) ports.closeTabs(deletedId);
+      } finally {
+        navigationAuthority.release();
       }
-      const next = current.filter((node) => !currentIds.has(node.id));
-      const active = currentIds.has(ports.getActiveSceneId())
-        ? (next.find((node) => node.nodeType === "scene")?.id ?? "")
-        : ports.getActiveSceneId();
-      ports.applyNodes(next, active);
-      ports.recomputeSceneOrder(next);
-      for (const deletedId of currentIds) ports.closeTabs(deletedId);
     },
   });
 }

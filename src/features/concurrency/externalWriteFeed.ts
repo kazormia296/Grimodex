@@ -26,6 +26,7 @@ import { loadLatestProposedProse } from "@/features/agent-writes/prose";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import type { DocumentKey } from "@/features/editor/document/documentKey";
 import { getExternalWriteProjectors } from "@/application/externalWrites/externalWriteProjectors";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 
 const POLL_MS = 750;
 
@@ -629,7 +630,9 @@ async function pollTick(
     if (!isAuthoritative()) return;
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
-    console.warn("[externalWriteFeed] poll failed; cursor retained", err);
+    if (!isIpcLifecycleCancellation(err)) {
+      console.warn("[externalWriteFeed] poll failed; cursor retained", err);
+    }
   } finally {
     if (pollInFlightToken === inFlightToken) {
       pollInFlightToken = null;

@@ -9,6 +9,12 @@ import {
   enqueueIpc,
   resetIpcQueueForTests,
 } from "@/lib/ipcQueue";
+import {
+  LIFECYCLE_TRACE_OPT_IN_KEY,
+  beginLifecycleTransition,
+  subscribeLifecycleTrace,
+  type LifecycleTraceEvent,
+} from "./lifecycleTrace";
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -94,6 +100,62 @@ describe("flushStrictQuiescence", () => {
       "timelapse",
       "ipc-actual-tasks",
     ]);
+  });
+
+  it("activates the lease transition before flushing persistence", async () => {
+    Object.assign(globalThis, {
+      [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+    });
+    const order: string[] = [];
+    const events: LifecycleTraceEvent[] = [];
+    const unsubscribe = subscribeLifecycleTrace((event) => {
+      events.push(event);
+      order.push(event.phase);
+    });
+    const transition = beginLifecycleTransition({
+      kind: "project",
+      from: {
+        workspacePath: "/novel",
+        workspaceOpenRevision: 1,
+        projectId: "project-a",
+      },
+      to: {
+        workspacePath: "/novel",
+        workspaceOpenRevision: 1,
+        projectId: "project-b",
+      },
+    });
+    let ipcDrain = 0;
+    const deps = dependencies({
+      flushAutoSaves: vi.fn(async () => {
+        order.push("autosave-complete");
+      }),
+      awaitIpcActualTasks: vi.fn(async () => {
+        ipcDrain += 1;
+        order.push(`ipc-${ipcDrain}-complete`);
+      }),
+      flushTimelapse: vi.fn(async () => {
+        order.push("timelapse-complete");
+      }),
+    });
+
+    try {
+      await flushStrictQuiescence(deps, { transition });
+
+      expect(events.map((event) => event.phase)).toEqual([
+        "switch-requested",
+        "quiescence-started",
+      ]);
+      expect(order.indexOf("quiescence-started")).toBeLessThan(
+        order.indexOf("autosave-complete"),
+      );
+      expect(order).toContain("ipc-1-complete");
+      expect(order).toContain("timelapse-complete");
+      expect(order).toContain("ipc-2-complete");
+    } finally {
+      unsubscribe();
+      Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+    }
   });
 
   it("flushes an event produced by a delayed IPC caller before resolving", async () => {

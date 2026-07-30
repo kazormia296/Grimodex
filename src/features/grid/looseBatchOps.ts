@@ -21,7 +21,7 @@ export async function convertLooseToChapter(
   containerId: string | null,
   looseSceneIds: string[],
   chapterTitle?: string,
-): Promise<string> {
+): Promise<string | null> {
   const { createNode, moveNode, nodes } = useTreeStore.getState();
 
   // Auto-number: count existing folders under this container
@@ -35,6 +35,7 @@ export async function convertLooseToChapter(
     parentId: containerId,
     title,
   });
+  if (!newNode) return null;
 
   for (const sceneId of looseSceneIds) {
     await moveNode(sceneId, newNode.id, undefined);

@@ -183,6 +183,7 @@ import {
   _resetBodyMentionScanSchedulerForTests,
   persistSceneBody,
 } from "@/features/editor/persistSceneBody";
+import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
 
 const DOC_JSON = { type: "doc", content: [] };
 const fakeDoc = { toJSON: () => DOC_JSON } as unknown as ProseMirrorNode;
@@ -361,6 +362,50 @@ describe("persistSceneBody — DB-native scene", () => {
       JSON.stringify({ type: "doc", content: [{ text: "second" }] }),
       h.state.codexEntries,
     );
+  });
+
+  it("strict quiescence drains a deferred body mention scan before scope replacement", async () => {
+    h.state.codexEntries = [{ id: "codex-1" }];
+    h.listCodexMatchTargets.mockResolvedValue(h.state.codexEntries);
+    let releaseUpsert!: () => void;
+    h.upsertSceneBodyMentions.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseUpsert = resolve;
+        }),
+    );
+
+    await persistSceneBody("scene-1", fakeDoc);
+    const flushing = flushQuiescenceProviderStage("scoped-mutations");
+    await vi.waitFor(() => {
+      expect(h.upsertSceneBodyMentions).toHaveBeenCalledTimes(1);
+    });
+    let settled = false;
+    void flushing.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseUpsert();
+    await expect(flushing).resolves.toBeUndefined();
+    expect(h.recordBodyMentionScans).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a deferred body mention scan after its Workspace authority changes", async () => {
+    h.state.codexEntries = [{ id: "codex-1" }];
+    h.listCodexMatchTargets.mockResolvedValue(h.state.codexEntries);
+
+    await persistSceneBody("scene-1", fakeDoc);
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/replacement",
+      openRevision: 8,
+    });
+    await flushQuiescenceProviderStage("scoped-mutations");
+
+    expect(h.listCodexMatchTargets).not.toHaveBeenCalled();
+    expect(h.upsertSceneBodyMentions).not.toHaveBeenCalled();
+    expect(h.recordBodyMentionScans).not.toHaveBeenCalled();
   });
 
   it("skips body parsing and scan-state writes when the project has no match targets", async () => {

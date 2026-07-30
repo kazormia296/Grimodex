@@ -45,6 +45,7 @@ vi.mock("./chatApi", () => ({
   addMessage: vi.fn(() => Promise.resolve({})),
   deleteMessage: vi.fn(() => Promise.resolve()),
   deleteMessagesFrom: vi.fn(() => Promise.resolve()),
+  assertMessageMutationAllowed: vi.fn(),
   updateMessageMetadata: vi.fn(() => Promise.resolve()),
   updateSessionTitle: vi.fn(() => Promise.resolve()),
   listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),

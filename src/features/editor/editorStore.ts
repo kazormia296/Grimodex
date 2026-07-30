@@ -6,6 +6,7 @@ import type { AttributedSegment } from "@/lib/clipboardAttribution";
 import { incrementSnippetUsageCount } from "@/features/snippets/api";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import * as chatApi from "@/features/chat/chatApi";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 
 export interface InsertRange {
   from: number;
@@ -62,6 +63,12 @@ export const useEditorStore = create<EditorState>()((set, get) => {
     },
 
     insertFromChat: (text: string, chatMessageId: string, model?: string) => {
+      try {
+        if (!canScheduleQuiescenceMutation()) return false;
+        chatApi.assertMessageMutationAllowed(chatMessageId);
+      } catch {
+        return false;
+      }
       const { editor } = get();
       if (!editor) return false;
 

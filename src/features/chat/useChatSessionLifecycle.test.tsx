@@ -1,12 +1,17 @@
 // @vitest-environment happy-dom
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatSession } from "./chatTypes";
 import {
   type ChatSessionLifecycleOptions,
   useChatSessionLifecycle,
 } from "./useChatSessionLifecycle";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+  canScheduleQuiescenceMutation,
+} from "@/application/lifecycle/quiescenceLease";
 
 const mocks = vi.hoisted(() => ({
   state: {
@@ -70,6 +75,27 @@ describe("useChatSessionLifecycle", () => {
       sessions: [],
       activeSessionId: null,
     };
+  });
+
+  afterEach(() => {
+    _resetQuiescenceLeasesForTests();
+  });
+
+  it("retries scope history after a lifecycle authority lease releases", async () => {
+    const lease = acquireQuiescenceLease("project-load");
+    const loadSessions = vi.fn(async () => canScheduleQuiescenceMutation());
+
+    renderHook(() =>
+      useChatSessionLifecycle(lifecycleOptions({ loadSessions })),
+    );
+
+    await waitFor(() => expect(loadSessions).toHaveBeenCalledOnce());
+    expect(await loadSessions.mock.results[0]?.value).toBe(false);
+
+    act(() => lease.release());
+
+    await waitFor(() => expect(loadSessions).toHaveBeenCalledTimes(2));
+    expect(await loadSessions.mock.results[1]?.value).toBe(true);
   });
 
   it("preserves an existing active session after refreshing the list", async () => {

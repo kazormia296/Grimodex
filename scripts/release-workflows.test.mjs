@@ -48,6 +48,7 @@ describe("release workflow boundary", () => {
     assert.equal(workflow.concurrency["cancel-in-progress"], false);
     assert.equal(workflow.concurrency.queue, "max");
     assert.equal(workflow.jobs.ci.uses, "./.github/workflows/ci.yml");
+    assert.equal(workflow.jobs.ci.with.product_journey_mode, "all");
 
     const matrix = RELEASE_BUILD_TARGETS;
     assert.deepEqual(

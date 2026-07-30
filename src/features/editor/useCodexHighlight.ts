@@ -13,6 +13,8 @@ import {
 import { resolveCodexColor } from "@/lib/resolveCodexColors";
 import { rebuildAndSchedule, scheduleMatch } from "./codexMatchOrchestrator";
 import { isEditorViewReady } from "./isEditorViewReady";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 
 interface CodexHighlightOptions {
   excludeEntryIds?: string[];
@@ -82,32 +84,41 @@ export function useCodexHighlight(
         : theme === "light"
           ? false
           : window.matchMedia("(prefers-color-scheme: dark)").matches;
-    listCodexTypes(getCurrentProjectId()).then((types) => {
-      const map: Record<string, ReturnType<typeof resolveCodexColor>> = {};
-      for (const t of types) {
-        map[t.slug] = resolveCodexColor(
-          t.paletteIndex ?? null,
-          t.color,
-          colorTheme,
-          isDark,
-        );
-      }
-      setTypeColorMap(map);
-      // Re-run the async matcher so codexHighlightResult rebuilds decorations
-      // with the updated typeColorMap (fixes stale colors after theme toggle).
-      if (isEditorViewReady(editor) && editor.state) {
-        const targets = targetsRef.current;
-        if (targets.length > 0) {
-          scheduleMatch(
-            editor,
-            targets,
-            excludeRef.current,
-            0,
-            skipMatchedIdsRef.current,
+    void listCodexTypes(getCurrentProjectId())
+      .then((types) => {
+        const map: Record<string, ReturnType<typeof resolveCodexColor>> = {};
+        for (const t of types) {
+          map[t.slug] = resolveCodexColor(
+            t.paletteIndex ?? null,
+            t.color,
+            colorTheme,
+            isDark,
           );
         }
-      }
-    });
+        setTypeColorMap(map);
+        // Re-run the async matcher so codexHighlightResult rebuilds decorations
+        // with the updated typeColorMap (fixes stale colors after theme toggle).
+        if (isEditorViewReady(editor) && editor.state) {
+          const targets = targetsRef.current;
+          if (targets.length > 0) {
+            scheduleMatch(
+              editor,
+              targets,
+              excludeRef.current,
+              0,
+              skipMatchedIdsRef.current,
+            );
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        if (isIpcLifecycleCancellation(error)) return;
+        debugLog.warn(
+          "codex-highlight",
+          "type color projection unavailable",
+          errorDetail(error),
+        );
+      });
   }, [completionTargets, enabled, editor, setTypeColorMap, colorTheme, theme]);
 
   // Panel entries are filter/search dependent. Matching always consumes the

@@ -73,6 +73,35 @@ export class IpcInvokeError extends Error {
   }
 }
 
+/**
+ * Read/derived work rejected by a destructive lifecycle is cancellation, not
+ * an application failure. Callers that own optional/background projections
+ * use this guard to avoid surfacing expected scope teardown as an error.
+ */
+export function isIpcLifecycleCancellation(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current = error;
+  while (current !== null && typeof current === "object") {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    // Lazy renderer chunks can carry the same typed IPC error through an
+    // adapter boundary with a different constructor identity. The canonical
+    // code remains the stable contract across those boundaries.
+    const code =
+      "code" in current
+        ? (current as { readonly code?: unknown }).code
+        : undefined;
+    if (code === "IPC_READ_CANCELLED" || code === "IPC_DERIVED_CANCELLED") {
+      return true;
+    }
+    current =
+      "cause" in current
+        ? (current as { readonly cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
+}
+
 function classifyLegacyIpcError(message: string): IpcInvokeFailureInfo {
   const base = { message, outcome: "failed" as const };
   if (message.includes("WORKSPACE_SWITCHING")) {

@@ -41,6 +41,8 @@ const mocks = vi.hoisted(() => ({
   unpinCodexEntry: vi.fn(async () => {}),
   unpinStickyEntry: vi.fn(async () => {}),
   togglePinChildren: vi.fn(async () => {}),
+  debugError: vi.fn(),
+  isIpcLifecycleCancellation: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -80,6 +82,19 @@ vi.mock("./chatApi", () => ({
   unpinCodexEntry: mocks.unpinCodexEntry,
   unpinStickyEntry: mocks.unpinStickyEntry,
   togglePinChildren: mocks.togglePinChildren,
+}));
+
+vi.mock("@/lib/debugLog", () => ({
+  debugLog: {
+    error: mocks.debugError,
+    warn: vi.fn(),
+  },
+  errorDetail: (error: unknown) =>
+    error instanceof Error ? error.message : String(error),
+}));
+
+vi.mock("@/lib/tauri", () => ({
+  isIpcLifecycleCancellation: mocks.isIpcLifecycleCancellation,
 }));
 
 function codex(id: string): CodexEntry {
@@ -127,6 +142,40 @@ describe("useChatPinsController current-input mentions", () => {
     mocks.unpinCodexEntry.mockResolvedValue(undefined);
     mocks.unpinStickyEntry.mockResolvedValue(undefined);
     mocks.togglePinChildren.mockResolvedValue(undefined);
+    mocks.debugError.mockReset();
+    mocks.isIpcLifecycleCancellation.mockReset().mockReturnValue(false);
+  });
+
+  it("ignores a lifecycle-cancelled pin read without an application console error", async () => {
+    mocks.activeSessionId = "session-1";
+    const cancellation = new Error("read cancelled");
+    mocks.listPinnedCodexEntries.mockRejectedValueOnce(cancellation);
+    mocks.isIpcLifecycleCancellation.mockImplementation(
+      (error) => error === cancellation,
+    );
+
+    renderHook(() =>
+      useChatPinsController({
+        isActive: true,
+        activeSessionId: "session-1",
+        pinsVersion: 0,
+        mutationsDisabled: false,
+        allCodexEntries: [],
+        ensureSession: async () => "session-1",
+        removeEntryFromAuto: vi.fn(),
+        excludeEntryFromAuto: vi.fn(),
+        clearAutoExclusion: vi.fn(),
+        refreshContextLayers: vi.fn(async () => null),
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.listPinnedCodexEntries).toHaveBeenCalledWith("session-1"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.debugError).not.toHaveBeenCalled();
   });
 
   it("persists Spotlight and publishes the refreshed pinned entry", async () => {

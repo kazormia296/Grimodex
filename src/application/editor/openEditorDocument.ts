@@ -36,7 +36,7 @@ export interface EditorNavigationPorts {
   tree: {
     setActiveScene(documentId: string): void;
   };
-  isNavigationBlocked?(): boolean;
+  isNavigationBlocked?(command: OpenEditorDocumentCommand): boolean;
 }
 
 function openScene(
@@ -74,7 +74,7 @@ export function openEditorDocument(
   command: OpenEditorDocumentCommand,
   ports: EditorNavigationPorts,
 ): void {
-  if (ports.isNavigationBlocked?.()) return;
+  if (ports.isNavigationBlocked?.(command)) return;
 
   switch (command.target.kind) {
     case "scene":

@@ -10,14 +10,20 @@ import {
 } from "@/application/lifecycle/quiescenceLease";
 import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
 import { IpcInvokeError } from "@/lib/tauri";
+import {
+  __resetChatNavigationGuardForTests,
+  setChatNavigationBlocker,
+} from "@/lib/chatNavigationGuard";
 
 describe("useGlobalHistoryStore", () => {
   beforeEach(() => {
     _resetQuiescenceLeasesForTests();
+    __resetChatNavigationGuardForTests();
     useGlobalHistoryStore.getState().clear();
   });
 
   afterEach(() => {
+    __resetChatNavigationGuardForTests();
     _resetQuiescenceLeasesForTests();
   });
 
@@ -736,6 +742,33 @@ describe("useGlobalHistoryStore", () => {
       setHistoryReplayGuard(() => false);
       await useGlobalHistoryStore.getState().undo();
       expect(undoCalled).toBe(true);
+    });
+
+    it("keeps undo and redo on their source stack while Chat navigation is blocked", async () => {
+      const undo = vi.fn(async () => {});
+      const redo = vi.fn(async () => {});
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "Tree authority change",
+        undo,
+        redo,
+      });
+      setChatNavigationBlocker(() => true);
+
+      await useGlobalHistoryStore.getState().undo();
+
+      expect(undo).not.toHaveBeenCalled();
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+
+      setChatNavigationBlocker(null);
+      await useGlobalHistoryStore.getState().undo();
+      expect(undo).toHaveBeenCalledOnce();
+      expect(useGlobalHistoryStore.getState().future).toHaveLength(1);
+
+      setChatNavigationBlocker(() => true);
+      await useGlobalHistoryStore.getState().redo();
+      expect(redo).not.toHaveBeenCalled();
+      expect(useGlobalHistoryStore.getState().future).toHaveLength(1);
     });
   });
 

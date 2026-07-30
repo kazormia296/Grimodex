@@ -141,6 +141,7 @@ describe("ChatPanelHeader — scope dropdown tabs (Spotlight 形式)", () => {
 
   it("opens with a Scene/Codex/Snippet tablist, Scene tab active for tree scopes", () => {
     render(<ChatPanelHeader {...baseProps({ chatScope: "scene" })} />);
+    expect(screen.getByTestId("chat-scope-picker")).toBeInTheDocument();
     openDropdown();
 
     expect(screen.getByRole("tablist")).toBeInTheDocument();
@@ -157,6 +158,7 @@ describe("ChatPanelHeader — scope dropdown tabs (Spotlight 形式)", () => {
     expect(
       screen.getByRole("button", { name: /chat\.scope\.project/ }),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("chat-scope-project")).toBeInTheDocument();
   });
 
   it("Codex tab lists codex entries and picking one fires onScopeChange('codex', id)", () => {

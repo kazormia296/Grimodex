@@ -32,22 +32,21 @@ import {
   createChatContextStoreActions,
   createChatContinuationStoreActions,
   createChatPersistenceStoreActions,
+  createChatScopeStoreActions,
   createChatSessionStoreActions,
   createConfiguredChatTurnStoreActions,
   createChatTurnPreflight,
   createChatTurnRuntime,
   createChatUserQuestionRuntime,
   createChatUserQuestionStoreActions,
+  installChatNavigationBlockers,
   type ChatComposerAuthority,
 } from "@/application/chat/chatStoreActions";
 export { contextPromptKey };
 import {
-  clearedSessionScopeState,
   getSessionMutationTail,
   hasPendingSessionMutations,
-  invalidateSessionScopeAuthority,
   isCapturedWorkspaceCurrent,
-  sessionScopeChanged,
 } from "@/application/chat/chatSessionAuthority";
 import {
   createSessionForCurrentRuntime,
@@ -66,10 +65,9 @@ import * as codexAppApi from "./codexAppApi";
 
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { readRuntimeSetting } from "@/features/settings/runtimeSettings";
-import { markStart, markEnd } from "@/lib/perfLog";
 import { setSnippetDeletedHandler } from "@/features/snippets/anchorNotify";
 
-const turnRuntime = createChatTurnRuntime();
+const turnRuntime = createChatTurnRuntime({ registerQuiescence: true });
 const userQuestionRuntime = createChatUserQuestionRuntime();
 let configuredChatTurnPreflight: ReturnType<
   typeof createChatTurnPreflight
@@ -153,6 +151,10 @@ export function awaitChatComposerAuthority(
   return composerAuthority.awaitCurrent(authority);
 }
 
+export function __discardPendingCompletedChatTurnsForTests(): void {
+  turnRuntime.discardPendingCompletedTurns();
+}
+
 function awaitWritableChatComposerAuthority(
   authority: ChatComposerAuthority,
 ): Promise<boolean> {
@@ -215,60 +217,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   sessionAgentToolsSnapshot: null,
   _lastCachedModel: null,
 
-  resetForProject: (projectId) => {
-    if (get().isStreaming) get().stopGeneration();
-    invalidateSessionScopeAuthority();
-    set({
-      activeSessionId: null,
-      isLoadingSessions: false,
-      isLoadingMessages: false,
-      messages: [],
-      streamingDraft: null,
-      sessions: [],
-      isStreaming: false,
-      activeProjectId: projectId,
-      activeSceneId: "",
-      error: null,
-      contextTokenCount: 0,
-      contextWindowUsage: null,
-      contextWindowSize: null,
-      contextModel: null,
-      contextProvider: null,
-      contextRouteAuthorityKey: null,
-      contextLayers: [],
-      contextPlan: null,
-      lastSystemPrompt: "",
-      chatRecallPromoteSuggestion: null,
-      pinsVersion: 0,
-      projectOutline: undefined,
-      chapterOutlines: [],
-      detectedEntries: [],
-      alwaysEntries: [],
-      scopeAnchor: null,
-      threadFocusOverride: null,
-      excludedAutoEntryIds: [],
-      inputPinnedEntryIds: [],
-      agentMode: false,
-      agentProgress: null,
-      subAgentProgress: null,
-      agentContinuation: null,
-      pendingUserQuestion: null,
-      ragEnabled: false,
-      chatScope: "scene",
-      scopeAnchorId: null,
-      includeBodies: true,
-      includeMapBoard: false,
-      mapBoardId: null,
-      pendingLookupText: null,
-      summaryCount: 0,
-      maxSummaryGeneration: 0,
-      cacheInvalidatedReason: null,
-      sessionStableCodexIds: [],
-      sessionStableContextInitialized: false,
-      sessionAgentToolsSnapshot: null,
-      _lastCachedModel: null,
-    });
-  },
+  ...createChatScopeStoreActions({
+    set,
+    get,
+    runtime: {
+      hasPendingCompletedTurnPersistence: () =>
+        turnRuntime.hasPendingCompletedTurnPersistence(),
+      notifyPendingCompletedTurnPersistence: () =>
+        toast.error(i18next.t("chat.pendingCompletedTurnPersistence")),
+      resetRecallPromote: () => resetRecallPromote(recallPromoteTracker),
+    },
+  }),
 
   invalidateContextCache: (reason) => {
     set({ cacheInvalidatedReason: reason });
@@ -276,26 +235,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   dismissCacheInvalidated: () => {
     set({ cacheInvalidatedReason: null });
-  },
-
-  syncInsertedToEditorMetadata: (messageId) => {
-    set((s) => ({
-      messages: s.messages.map((m) => {
-        if (m.id !== messageId) return m;
-        let meta: Record<string, unknown> = {};
-        if (m.metadata) {
-          try {
-            meta = JSON.parse(m.metadata) as Record<string, unknown>;
-          } catch {
-            meta = {};
-          }
-        }
-        return {
-          ...m,
-          metadata: JSON.stringify({ ...meta, insertedToEditor: true }),
-        };
-      }),
-    }));
   },
 
   onCodexAnchorDeleted: (entryId: string) => {
@@ -345,10 +284,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         chatApi.addMessage(sessionId, "system", content),
       archiveSessionThread: (input) =>
         codexAppApi.archiveCodexSessionThread(input),
+      clearProjectChatHistory: (projectId) =>
+        chatApi.clearProjectChatHistory(projectId),
     },
     runtime: {
       snapshotAgentTools,
       resetRecallPromote: () => resetRecallPromote(recallPromoteTracker),
+      hasPendingCompletedTurnPersistence: () =>
+        turnRuntime.hasPendingCompletedTurnPersistence(),
       translate: (key, options) => i18next.t(key, options),
       notifyError: (message) => toast.error(message),
       reportError: (operation, error) =>
@@ -371,6 +314,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       deleteMessage: (messageId) => chatApi.deleteMessage(messageId),
     },
     runtime: {
+      hasPendingCompletedTurnPersistence: () =>
+        turnRuntime.hasPendingCompletedTurnPersistence(),
+      hasPendingCompletedTurnPersistenceForMessage: (messageId) =>
+        turnRuntime.hasPendingCompletedTurnPersistence({
+          kind: "message-id",
+          messageId,
+        }),
+      notifyPendingCompletedTurnPersistence: () =>
+        toast.error(i18next.t("chat.pendingCompletedTurnPersistence")),
       notifySaveFailure: () => toast.error(i18next.t("chat.saveMessageFailed")),
       notifyDeleteFailure: () =>
         toast.error(i18next.t("chat.deleteMessageFailed")),
@@ -416,45 +368,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     },
   }),
 
-  setChatScope: (scope, anchorId) => {
-    const current = get();
-    if (current.isStreaming) current.stopGeneration();
-    // scope === "folder" / "codex" / "snippet" のとき anchorId 必須。空指定なら scene に fallback。
-    // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, それ以外=false。
-    // project では本文集約しないので値自体は影響しないが false に揃える。
-    // スコープ切替で非永続のスレッド focus はクリア（別スコープへ leak させない）。
-    let nextScope = scope;
-    let nextAnchorId: string | null = null;
-    let nextIncludeBodies = scope === "scene";
-    if (scope === "folder" || scope === "codex" || scope === "snippet") {
-      if (!anchorId) {
-        nextScope = "scene";
-        nextIncludeBodies = true;
-      } else {
-        nextAnchorId = anchorId;
-        nextIncludeBodies = false;
-      }
-    }
-
-    const boundaryChanged = sessionScopeChanged(current, {
-      activeSceneId: current.activeSceneId,
-      chatScope: nextScope,
-      scopeAnchorId: nextAnchorId,
-    });
-    if (boundaryChanged) {
-      invalidateSessionScopeAuthority();
-      get()._cancelPendingUserQuestion();
-      resetRecallPromote(recallPromoteTracker);
-    }
-    set({
-      ...(boundaryChanged ? clearedSessionScopeState() : {}),
-      ...(boundaryChanged ? { scopeAnchor: null } : {}),
-      chatScope: nextScope,
-      scopeAnchorId: nextAnchorId,
-      includeBodies: nextIncludeBodies,
-      threadFocusOverride: null,
-    });
-  },
   setIncludeBodies: (on: boolean) => set({ includeBodies: on }),
   setIncludeMapBoard: (on, options) => {
     // 現状 source は telemetry / 将来拡張用。動作上は user/auto 共通で
@@ -470,10 +383,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     set(next);
   },
 
-  clearMessages: () => {
-    if (get().isStreaming) return;
-    set({ messages: [], agentContinuation: null });
-  },
   clearError: () => set({ error: null }),
   dismissChatRecallPromote: (messageId: string) => {
     dismissRecallPromote(recallPromoteTracker, messageId);
@@ -481,60 +390,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({ chatRecallPromoteSuggestion: null });
     }
   },
-  setActiveSceneId: (id: string) => {
-    markStart("chatStore.setActiveSceneId");
-    try {
-      const { activeSceneId, activeSessionId, chatScope, sessions } = get();
-      const activeSession = sessions.find(
-        (session) => session.id === activeSessionId,
-      );
-      const activeSessionTargetsScene =
-        !activeSession ||
-        (activeSession.nodeId === id &&
-          !activeSession.codexAnchorId &&
-          !activeSession.snippetAnchorId);
-      // tree の active scene が変わったときは activeSceneId を更新。
-      // scope === "scene" のときは anchor が active scene を追従するため、
-      // セッション一覧を含む scene-scoped state と遅延読込をリセット。
-      // scope === "folder" / "project" のときは scope axis が sticky で、
-      // anchor は user 選択を維持する（=セッションも維持）。
-      const resetSceneScope =
-        chatScope === "scene" &&
-        (id !== activeSceneId || !activeSessionTargetsScene);
-      if (resetSceneScope) {
-        invalidateSessionScopeAuthority();
-        if (get().isStreaming) get().stopGeneration();
-        get()._cancelPendingUserQuestion();
-        resetRecallPromote(recallPromoteTracker);
-        set({
-          ...clearedSessionScopeState(),
-          scopeAnchor: null,
-          activeSceneId: id,
-        });
-      } else {
-        set({ activeSceneId: id });
-      }
-    } finally {
-      markEnd("chatStore.setActiveSceneId");
-    }
-  },
-  setActiveProjectId: (id: string | null) => {
-    const current = get();
-    if (current.activeProjectId !== id) {
-      if (current.isStreaming) current.stopGeneration();
-      invalidateSessionScopeAuthority();
-      get()._cancelPendingUserQuestion();
-      resetRecallPromote(recallPromoteTracker);
-      set({
-        ...clearedSessionScopeState(),
-        scopeAnchor: null,
-        activeProjectId: id,
-      });
-      return;
-    }
-    set({ activeProjectId: id });
-  },
 }));
+
+installChatNavigationBlockers({
+  getState: useChatStore.getState,
+  hasPendingPersistence: turnRuntime.hasPendingCompletedTurnPersistence,
+  activeTurnSurface: () => turnRuntime.coordinator.current()?.surface ?? null,
+});
 
 // Snippet 削除 → snippet スコープを scene へ戻す。snippetStore からの直接 import は
 // module graph 汚染になるため leaf DI (anchorNotify) 経由で受ける。

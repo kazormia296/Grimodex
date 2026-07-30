@@ -72,6 +72,8 @@ jobs:
        (needs.release-gate.outputs.prerelease == 'false' &&
         needs.bridge-signing-preflight.result == 'success'))
     uses: ./.github/workflows/ci.yml
+    with:
+      product_journey_mode: all
 
   release-gate:
     name: Resolve v2 release or debug identity

@@ -43,6 +43,7 @@ function ports(nodes: TreeNodeData[]): DeleteTreeSubtreePorts & {
     },
     history,
     guardPending: () => false,
+    tryAcquireNavigationAuthority: () => ({ release: vi.fn() }),
     getNodes: () => state.nodes,
     getActiveSceneId: () => state.active,
     loadSceneContent: vi.fn().mockResolvedValue("content"),

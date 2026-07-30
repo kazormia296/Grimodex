@@ -28,12 +28,7 @@ vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
 }));
 
-vi.mock("./anchorNotify", () => ({
-  notifySnippetDeleted: vi.fn(),
-}));
-
 import * as snippetApi from "./api";
-import { notifySnippetDeleted } from "./anchorNotify";
 import * as snippetSearch from "./search";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 
@@ -550,16 +545,6 @@ describe("snippetStore", () => {
       );
       expect(useSnippetStore.getState().entries).toHaveLength(1);
       expect(useSnippetStore.getState().entries[0].id).toBe("snippet-2");
-    });
-
-    it("notifies the snippet anchor deletion (chat scope fallback hook)", async () => {
-      const s1 = fakeSnippet({ id: "snippet-1" });
-      useSnippetStore.setState({ entries: [s1] });
-      mockDeleteSnippet.mockResolvedValue(undefined);
-
-      await useSnippetStore.getState().remove("snippet-1");
-
-      expect(vi.mocked(notifySnippetDeleted)).toHaveBeenCalledWith("snippet-1");
     });
   });
 });

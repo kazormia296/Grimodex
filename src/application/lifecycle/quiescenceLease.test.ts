@@ -3,17 +3,83 @@ import {
   _resetQuiescenceLeasesForTests,
   acquireQuiescenceLease,
   canScheduleQuiescenceMutation,
+  isAuthorityBlockingLifecycleIdle,
   isQuiescenceLeaseActive,
   subscribeQuiescenceLease,
 } from "./quiescenceLease";
 import { enqueueIpc, resetIpcQueueForTests } from "@/lib/ipcQueue";
+import {
+  advanceActiveLifecycleTransition,
+  LIFECYCLE_TRACE_OPT_IN_KEY,
+  subscribeLifecycleTrace,
+  type LifecycleTraceEvent,
+} from "./lifecycleTrace";
 
 afterEach(() => {
   _resetQuiescenceLeasesForTests();
   resetIpcQueueForTests();
+  Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
 });
 
 describe("quiescence lease", () => {
+  it("creates the requested transition at Project/Workspace lease acquisition", () => {
+    Object.assign(globalThis, {
+      [LIFECYCLE_TRACE_OPT_IN_KEY]: true,
+    });
+    const events: LifecycleTraceEvent[] = [];
+    const admissionAtMilestone: boolean[] = [];
+    const unsubscribe = subscribeLifecycleTrace((event) => {
+      events.push(event);
+      if (event.phase === "quiescence-started") {
+        admissionAtMilestone.push(canScheduleQuiescenceMutation());
+      }
+    });
+    const lease = acquireQuiescenceLease("project-load", {
+      transition: {
+        kind: "project",
+        from: {
+          workspacePath: "/novel",
+          workspaceOpenRevision: 5,
+          projectId: "project-a",
+        },
+        to: {
+          workspacePath: "/novel",
+          workspaceOpenRevision: 5,
+          projectId: "project-b",
+        },
+      },
+    });
+
+    try {
+      expect(lease.transition).not.toBeNull();
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({
+        transitionId: lease.transition?.transitionId,
+        phase: "switch-requested",
+        kind: "project",
+        from: { projectId: "project-a" },
+        to: { projectId: "project-b" },
+      });
+      expect(events[1]).toMatchObject({
+        transitionId: lease.transition?.transitionId,
+        phase: "quiescence-started",
+      });
+      expect(admissionAtMilestone).toEqual([false]);
+      expect(advanceActiveLifecycleTransition("old-stream-completed")).toBe(
+        true,
+      );
+      expect(advanceActiveLifecycleTransition("old-scope-persisted")).toBe(
+        true,
+      );
+    } finally {
+      lease.release();
+      expect(advanceActiveLifecycleTransition("old-stream-completed")).toBe(
+        false,
+      );
+      unsubscribe();
+    }
+  });
+
   it("blocks rebuildable derived work for the full lifecycle lease", async () => {
     const lease = acquireQuiescenceLease("workspace-open");
     const derivedRun = vi.fn(async () => 1);
@@ -71,6 +137,64 @@ describe("quiescence lease", () => {
       enqueueIpc("new-scope-read", readRun, 10_000, "read"),
     ).resolves.toBe("new scope");
     expect(readRun).toHaveBeenCalledOnce();
+  });
+
+  it.each(["project-load", "workspace-open", "window-close"] as const)(
+    "rejects data deletion while %s is active",
+    (reason) => {
+      const lifecycleLease = acquireQuiescenceLease(reason);
+
+      try {
+        expect(() => acquireQuiescenceLease("data-delete")).toThrow(
+          "Cannot clear data while another destructive lifecycle is active",
+        );
+      } finally {
+        lifecycleLease.release();
+      }
+
+      expect(isQuiescenceLeaseActive()).toBe(false);
+    },
+  );
+
+  it.each(["project-load", "workspace-open"] as const)(
+    "rejects %s while data deletion is active",
+    (reason) => {
+      const dataDeleteLease = acquireQuiescenceLease("data-delete");
+
+      try {
+        expect(() => acquireQuiescenceLease(reason)).toThrow(
+          `Cannot start ${reason} while data deletion is active`,
+        );
+      } finally {
+        dataDeleteLease.release();
+      }
+
+      expect(isQuiescenceLeaseActive()).toBe(false);
+    },
+  );
+
+  it("allows close to wait for an earlier data deletion", () => {
+    const dataDeleteLease = acquireQuiescenceLease("data-delete");
+    const closeLease = acquireQuiescenceLease("window-close");
+
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(false);
+    dataDeleteLease.release();
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(true);
+    closeLease.release();
+    expect(isQuiescenceLeaseActive()).toBe(false);
+  });
+
+  it("rejects every new lease after renderer teardown", () => {
+    const closeLease = acquireQuiescenceLease("window-close");
+    closeLease.release({ disposition: "renderer-teardown" });
+
+    expect(() => acquireQuiescenceLease("data-delete")).toThrow(
+      "Cannot start data-delete after renderer teardown",
+    );
+    expect(() => acquireQuiescenceLease("project-load")).toThrow(
+      "Cannot start project-load after renderer teardown",
+    );
+    expect(isQuiescenceLeaseActive()).toBe(false);
   });
 
   it("allows a controlled target-read phase and seals it before authority commit", async () => {

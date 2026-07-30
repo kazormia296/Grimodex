@@ -1,10 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createProjectLifecycleRegistry,
   type ProjectLifecycleParticipant,
 } from "./ProjectLifecycleRegistry";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+  canScheduleQuiescenceMutation,
+} from "@/application/lifecycle/quiescenceLease";
 
 describe("ProjectLifecycleRegistry", () => {
+  afterEach(() => {
+    _resetQuiescenceLeasesForTests();
+  });
+
   it("resets once and completes critical hydration before optional work", async () => {
     const events: string[] = [];
     const participants: ProjectLifecycleParticipant[] = [
@@ -86,6 +95,28 @@ describe("ProjectLifecycleRegistry", () => {
     expect(beforeCommit).not.toHaveBeenCalled();
     expect(reset).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("authorizes the synchronous authority commit inside a lifecycle lease", async () => {
+    const lease = acquireQuiescenceLease("project-load");
+    const schedulingStates: boolean[] = [];
+    const registry = createProjectLifecycleRegistry([
+      {
+        id: "chat-reset",
+        reset: () => {
+          schedulingStates.push(canScheduleQuiescenceMutation());
+        },
+        commitCritical: () => {
+          schedulingStates.push(canScheduleQuiescenceMutation());
+        },
+      },
+    ]);
+
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    await registry.reload({ projectId: "project-b" });
+    expect(schedulingStates).toEqual([true, true]);
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    lease.release();
   });
 
   it("keeps optional hydration best effort and reports failures", async () => {
