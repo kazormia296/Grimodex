@@ -9,7 +9,10 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
 import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
-import { createProductJourneyHarness } from "../electron/scripts/product-journey-harness.mjs";
+import {
+  createProductJourneyHarness,
+  MAIN_PROCESS_NOISE_ALLOWLIST,
+} from "../electron/scripts/product-journey-harness.mjs";
 import { PRODUCT_JOURNEYS } from "../electron/scripts/product-journeys.mjs";
 
 const repoRoot = path.resolve(
@@ -699,6 +702,62 @@ test("product journey harness fails closed on unallowed error-class main stderr"
         message: "UnhandledPromiseRejectionWarning: write rejected\n",
       },
     ],
+  );
+});
+
+test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics", async (t) => {
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => ({ stdout: null, stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    electronLauncher: {
+      launch: async () => app,
+    },
+    closeApp: async () => {
+      mainStderr.emit("end");
+    },
+  });
+  t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 3);
+  const launched = await harness.launch("configure");
+  mainStderr.emit(
+    "data",
+    '[6341:0730/134519.105645:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")\n',
+  );
+  mainStderr.emit(
+    "data",
+    "[6341:0730/134519.106425:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n",
+  );
+  mainStderr.emit(
+    "data",
+    "[6468:0730/134521.502865:ERROR:gpu/command_buffer/service/context_group.cc:148] ContextResult::kFatalFailure: WebGL2 blocklisted\n",
+  );
+  mainStderr.emit("data", "Fatal: database corruption\n");
+  await harness.close(launched.app, launched.page, "configure");
+
+  const error = await harness.finalizeDiagnostics().then(
+    () => null,
+    (cause) => cause,
+  );
+  assert.equal(error?.name, "MainProcessDiagnosticsError");
+  assert.equal(error.diagnostics.mainErrorCount, 4);
+  assert.deepEqual(
+    error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+      phase,
+      message,
+    })),
+    [{ phase: "configure", message: "Fatal: database corruption\n" }],
   );
 });
 

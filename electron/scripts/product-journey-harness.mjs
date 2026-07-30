@@ -28,7 +28,64 @@ const MAIN_PROCESS_DRAIN_TIMEOUT_MS = 2_000;
  * unavoidable main-process/Chromium stderr noise and deliberately requires a
  * phase, an owner-readable reason, and a short expiry.
  */
-export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([]);
+const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
+  "configure",
+  "editor-persistence/write",
+  "editor-persistence/restart",
+  "chat-authority-isolation",
+  "workspace-switch/prepare-workspaces",
+  "workspace-switch/pending-save",
+  "external-write-conflict",
+  "cross-feature-authoring/prepare",
+  "cross-feature-authoring/write",
+  "cross-feature-authoring/restart",
+  "chat-stream-project-switch/prepare-projects",
+  "chat-stream-project-switch",
+  "chat-stream-workspace-switch/prepare-workspaces",
+  "chat-stream-workspace-switch",
+  "editor-pending-project-switch/prepare-projects",
+  "editor-pending-project-switch",
+  "mcp-external-write-conflict/prepare-settings",
+  "mcp-external-write-conflict",
+  "chronicle-native-roundtrip/write",
+  "chronicle-native-roundtrip/restart",
+  "lint-native-roundtrip/write",
+  "lint-native-roundtrip/restart",
+  "map-native-roundtrip/write",
+  "map-native-roundtrip/restart",
+  "snapshot-native-roundtrip/write",
+  "snapshot-native-roundtrip/restart",
+]);
+
+export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
+  Object.freeze({
+    id: "ubuntu-xvfb-dbus-address",
+    phases: PRODUCT_JOURNEY_ELECTRON_PHASES,
+    reason:
+      "GitHub-hosted Ubuntu Xvfb has no desktop D-Bus address; product journeys do not exercise desktop bus integration.",
+    expiresOn: "2026-09-30",
+    pattern:
+      /^\[\d+:\d+\/\d+\.\d+:ERROR:dbus\/bus\.cc:\d+\] Failed to connect to the bus: Could not parse server address: Unknown address type \(examples of valid types are "tcp" and on UNIX "unix"\)\r?\n?$/,
+  }),
+  Object.freeze({
+    id: "ubuntu-xvfb-dbus-owner",
+    phases: PRODUCT_JOURNEY_ELECTRON_PHASES,
+    reason:
+      "GitHub-hosted Ubuntu Xvfb has no desktop D-Bus owner service; product journeys do not exercise desktop bus integration.",
+    expiresOn: "2026-09-30",
+    pattern:
+      /^\[\d+:\d+\/\d+\.\d+:ERROR:dbus\/object_proxy\.cc:\d+\] Failed to call method: org\.freedesktop\.DBus\.NameHasOwner: object_path= \/org\/freedesktop\/DBus: unknown error type: ?\r?\n?$/,
+  }),
+  Object.freeze({
+    id: "ubuntu-xvfb-webgl2-blocklist",
+    phases: PRODUCT_JOURNEY_ELECTRON_PHASES,
+    reason:
+      "GitHub-hosted Ubuntu Xvfb blocklists WebGL2; these journeys assert persistence and lifecycle behavior outside WebGL rendering.",
+    expiresOn: "2026-09-30",
+    pattern:
+      /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/context_group\.cc:\d+\] ContextResult::kFatalFailure: WebGL2 blocklisted\r?\n?$/,
+  }),
+]);
 
 const MAIN_PROCESS_ERROR_PATTERNS = Object.freeze([
   /\b(?:errors?|exceptions?|failed|failure|fatal|panic(?:ked)?|uncaught|unhandled|crash(?:ed)?)\b/i,
