@@ -67,7 +67,7 @@ test("a new native-persistence domain rule requires an active or planned roundtr
     /native persistence domain.*roundtrip:map/i,
   );
 
-  assert.equal(validateCurrentProductJourneyCoverage().affectedReady, false);
+  assert.equal(validateCurrentProductJourneyCoverage().affectedReady, true);
 });
 
 test("a native-persistence rule must name a concrete persistence domain", () => {

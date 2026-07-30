@@ -54,6 +54,14 @@ test("the current catalog has complete journey, contract, and interaction covera
     "workspace-switch-authority",
     "external-write-conflict",
     "cross-feature-authoring",
+    "chat-stream-project-switch",
+    "chat-stream-workspace-switch",
+    "editor-pending-project-switch",
+    "mcp-external-write-conflict",
+    "chronicle-native-roundtrip",
+    "lint-native-roundtrip",
+    "map-native-roundtrip",
+    "snapshot-native-roundtrip",
   ]);
   assert.equal(result.uncoveredContracts.length, 0);
   assert.equal(result.uncoveredInteractions.length, 0);
@@ -76,8 +84,8 @@ test("a required contract without a journey fails with an actionable error", () 
   const requiredContracts = [
     ...PRODUCT_CONTRACT_REQUIREMENTS,
     {
-      id: "scope-transition:chat-stream:project",
-      domains: ["chat", "project-lifecycle"],
+      id: "scope-transition:chat-stream:branch",
+      domains: ["chat", "branch-lifecycle"],
     },
   ];
 
@@ -85,19 +93,15 @@ test("a required contract without a journey fails with an actionable error", () 
     () =>
       validate({
         requiredContracts,
-        backlog: PRODUCT_JOURNEY_COVERAGE_BACKLOG.filter(
-          (journey) =>
-            !journey.contracts.includes("scope-transition:chat-stream:project"),
-        ),
       }),
     (error) => {
       assert.match(
         error.message,
-        /Uncovered product contract:\s+scope-transition:chat-stream:project/,
+        /Uncovered product contract:\s+scope-transition:chat-stream:branch/,
       );
       assert.match(
         error.message,
-        /Affected domains:\s+chat, project-lifecycle/,
+        /Affected domains:\s+chat, branch-lifecycle/,
       );
       assert.match(error.message, /map an existing journey to this contract/);
       assert.match(error.message, /add a new journey/);
@@ -146,12 +150,12 @@ test("scope and native persistence declarations require their canonical contract
           ...PRODUCT_SCOPE_TRANSITIONS,
           {
             operation: "chat-stream",
-            scope: "project",
+            scope: "branch",
             contractId: "scope-transition:chat-stream:missing",
           },
         ],
       }),
-    /scope transition.*scope-transition:chat-stream:project/i,
+    /scope transition.*scope-transition:chat-stream:branch/i,
   );
 
   assert.throws(
@@ -160,12 +164,12 @@ test("scope and native persistence declarations require their canonical contract
         nativePersistenceDomains: [
           ...PRODUCT_NATIVE_PERSISTENCE_DOMAINS,
           {
-            domain: "map",
+            domain: "timeline",
             contractId: "roundtrip:missing",
           },
         ],
       }),
-    /native persistence domain.*roundtrip:map/i,
+    /native persistence domain.*roundtrip:timeline/i,
   );
 });
 
@@ -173,13 +177,13 @@ test("new interactions require a covering journey or a live reviewed exemption",
   const interactions = [
     ...PRODUCT_INTERACTION_REQUIREMENTS,
     {
-      id: "mcp->sqlite",
-      domains: ["mcp", "sqlite"],
+      id: "plugin->sqlite",
+      domains: ["plugin", "sqlite"],
     },
   ];
   assert.throws(
     () => validate({ interactions }),
-    /Uncovered product interaction:\s+mcp->sqlite/i,
+    /Uncovered product interaction:\s+plugin->sqlite/i,
   );
 
   const coveredByExemption = validate({
@@ -187,13 +191,13 @@ test("new interactions require a covering journey or a live reviewed exemption",
     exemptions: [
       {
         targetType: "interaction",
-        targetId: "mcp->sqlite",
-        reason: "MCP journey is being implemented in the next rollout phase.",
+        targetId: "plugin->sqlite",
+        reason: "Plugin journey is being implemented in the next rollout phase.",
         expiresOn: "2026-08-30",
       },
     ],
   });
-  assert.deepEqual(coveredByExemption.exemptedInteractions, ["mcp->sqlite"]);
+  assert.deepEqual(coveredByExemption.exemptedInteractions, ["plugin->sqlite"]);
 
   assert.throws(
     () =>
@@ -202,14 +206,66 @@ test("new interactions require a covering journey or a live reviewed exemption",
         exemptions: [
           {
             targetType: "interaction",
-            targetId: "mcp->sqlite",
+            targetId: "plugin->sqlite",
             reason: "Expired migration.",
             expiresOn: "2026-07-29",
           },
         ],
       }),
-    /expired exemption.*mcp->sqlite/i,
+    /expired exemption.*plugin->sqlite/i,
   );
+});
+
+test("each newly classified persistence or lifecycle domain selects its declared journey", () => {
+  const cases = [
+    [
+      "src/features/project/ProjectMenu.tsx",
+      [
+        "chat-stream-project-switch",
+        "editor-pending-project-switch",
+      ],
+    ],
+    [
+      "src/features/workspace/WorkspaceMenu.tsx",
+      [
+        "workspace-switch-authority",
+        "chat-stream-workspace-switch",
+      ],
+    ],
+    [
+      "src-tauri/crates/grimodex-mcp/src/server.rs",
+      ["mcp-external-write-conflict"],
+    ],
+    [
+      "src/features/chronicle/ChroniclePanel.tsx",
+      ["chronicle-native-roundtrip"],
+    ],
+    [
+      "src/features/lint/LinterPanel.tsx",
+      ["lint-native-roundtrip"],
+    ],
+    [
+      "src/features/map/MapPanel.tsx",
+      ["map-native-roundtrip"],
+    ],
+    [
+      "src/features/revision/ProjectSnapshotModal.tsx",
+      ["snapshot-native-roundtrip"],
+    ],
+  ];
+
+  for (const [changedPath, journeyIds] of cases) {
+    const selection = selectProductJourneys({
+      catalog: PRODUCT_JOURNEY_CATALOG,
+      domainRules: PRODUCT_DOMAIN_RULES,
+      changedPaths: [changedPath],
+    });
+    assert.deepEqual(
+      selection.journeyIds,
+      journeyIds,
+      `unexpected selection for ${changedPath}`,
+    );
+  }
 });
 
 test("coverage errors have a stable human-readable formatter", () => {

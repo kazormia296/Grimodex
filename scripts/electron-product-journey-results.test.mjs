@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runProductJourneys } from "../electron/scripts/product-journeys.mjs";
+import {
+  PRODUCT_JOURNEYS,
+  resolveSelectedProductJourneys,
+  runProductJourneys,
+} from "../electron/scripts/product-journeys.mjs";
 
 function deterministicClock(values) {
   let index = 0;
@@ -172,4 +176,55 @@ test("product runner still writes a versioned report when artifact preflight fai
       reason: "Artifact preflight failed.",
     },
   ]);
+});
+
+test("affected execution resolves a strict catalog-ordered runner subset", () => {
+  const selected = resolveSelectedProductJourneys(
+    PRODUCT_JOURNEYS,
+    JSON.stringify([
+      "map-native-roundtrip",
+      "editor-persistence",
+      "mcp-external-write-conflict",
+    ]),
+  );
+
+  assert.deepEqual(
+    selected.map((journey) => journey.id),
+    [
+      "editor-persistence",
+      "mcp-external-write-conflict",
+      "map-native-roundtrip",
+    ],
+  );
+});
+
+test("runner selection rejects malformed, duplicate, empty, and unknown IDs", () => {
+  assert.throws(
+    () => resolveSelectedProductJourneys(PRODUCT_JOURNEYS, "not-json"),
+    /valid JSON array/i,
+  );
+  assert.throws(
+    () =>
+      resolveSelectedProductJourneys(
+        PRODUCT_JOURNEYS,
+        JSON.stringify(["editor-persistence", "editor-persistence"]),
+      ),
+    /duplicate.*editor-persistence/i,
+  );
+  assert.throws(
+    () => resolveSelectedProductJourneys(PRODUCT_JOURNEYS, "[]"),
+    /at least one journey ID/i,
+  );
+  assert.throws(
+    () =>
+      resolveSelectedProductJourneys(
+        PRODUCT_JOURNEYS,
+        JSON.stringify(["deleted-journey"]),
+      ),
+    /unknown.*deleted-journey/i,
+  );
+  assert.equal(
+    resolveSelectedProductJourneys(PRODUCT_JOURNEYS, undefined),
+    PRODUCT_JOURNEYS,
+  );
 });

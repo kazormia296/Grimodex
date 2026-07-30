@@ -38,6 +38,7 @@ test("package.json exposes the isolated Electron product journey runner", async 
 test("CI has a dedicated product-journeys gate with native Electron and SQLite", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const job = workflow.jobs["electron-product-journeys"];
+  const electronJob = workflow.jobs.electron;
 
   assert.ok(job, "electron-product-journeys job is required");
   assert.equal(job["runs-on"], "ubuntu-24.04");
@@ -59,9 +60,13 @@ test("CI has a dedicated product-journeys gate with native Electron and SQLite",
   assert.equal(upload.if, "always()");
   assert.equal(upload.with.path, ".artifacts/product-journeys");
   assert.equal(upload.with["retention-days"], 14);
+  assert.match(
+    runCommands(electronJob),
+    /scripts\/product-journey-mcp-client\.test\.mjs/,
+  );
 });
 
-test("CI plans product journeys before dependency setup while shadow mode still runs all", async () => {
+test("CI plans affected product journeys before dependency setup and schedules nightly all", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const input = workflow.on.workflow_call.inputs.product_journey_mode;
   const manualInput = workflow.on.workflow_dispatch.inputs.product_journey_mode;
@@ -87,8 +92,9 @@ test("CI plans product journeys before dependency setup while shadow mode still 
     required: true,
     type: "choice",
     default: "all",
-    options: ["all", "shadow"],
+    options: ["all", "affected", "shadow"],
   });
+  assert.deepEqual(workflow.on.schedule, [{ cron: "17 18 * * *" }]);
   assert.ok(checkoutIndex >= 0, "product journey checkout is required");
   assert.equal(job.steps[checkoutIndex].with["fetch-depth"], 0);
   assert.equal(
@@ -108,7 +114,8 @@ test("CI plans product journeys before dependency setup while shadow mode still 
   );
   assert.match(selector.env.PRODUCT_JOURNEY_MODE, /pull_request/);
   assert.match(selector.env.PRODUCT_JOURNEY_MODE, /refs\/heads\/master/);
-  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /shadow/);
+  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /affected/);
+  assert.match(selector.env.PRODUCT_JOURNEY_MODE, /schedule/);
   assert.match(selector.env.PRODUCT_JOURNEY_MODE, /all/);
   assert.match(
     selector.env.PRODUCT_JOURNEY_BASE_SHA,
@@ -145,6 +152,10 @@ test("CI plans product journeys before dependency setup while shadow mode still 
     );
   }
   assert.equal(gate.if, shouldRunCondition);
+  assert.equal(
+    gate.env.GRIMODEX_PRODUCT_JOURNEY_IDS,
+    "${{ steps.product-journey-impact.outputs.execution_journey_ids }}",
+  );
   assert.equal(
     gate.run,
     'xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys',
@@ -190,6 +201,21 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /promptIncludedCodex:\s*true/);
   assert.match(source, /aiAttributionPersisted:\s*true/);
   assert.match(source, /cross-feature-authoring-restored/);
+  assert.match(source, /project-chat-stream-drained/);
+  assert.match(source, /workspace-chat-stream-drained/);
+  assert.match(source, /project-pending-editor-restored/);
+  assert.match(source, /mcp-clean-external-write-reloaded/);
+  assert.match(source, /mcp-dirty-external-write-conflict/);
+  assert.match(source, /agent_chronicle_bulk_mutate/);
+  assert.match(source, /chronicle-native-roundtrip-restored/);
+  assert.match(source, /lint_term_dictionary_insert/);
+  assert.match(source, /lint_term_dictionary_list/);
+  assert.match(source, /lint-native-roundtrip-restored/);
+  assert.match(source, /map_write_bundle/);
+  assert.match(source, /map-native-roundtrip-restored/);
+  assert.match(source, /project_snapshot_create/);
+  assert.match(source, /project_snapshot_restore_context/);
+  assert.match(source, /snapshot-native-roundtrip-restored/);
 });
 
 test("product harness enables only the deterministic main-boundary AI provider", async () => {
