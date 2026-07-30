@@ -14,7 +14,7 @@ describe("useChronicleViewportController", () => {
       axisMode: null,
       viewProjectId: null,
       viewWorkspacePath: null,
-      viewWorkspaceOpenRevision: null,
+      viewWorkspaceId: null,
     });
   });
 
@@ -22,7 +22,7 @@ describe("useChronicleViewportController", () => {
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
-        workspaceOpenRevision: 1,
+        workspaceId: "workspace-a-id",
         projectId: "project-a",
         dataReady: true,
         dataStart: 0,
@@ -44,7 +44,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
 
     act(() => result.current.centerOnDay(110));
@@ -55,7 +55,7 @@ describe("useChronicleViewportController", () => {
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
-        workspaceOpenRevision: 1,
+        workspaceId: "workspace-a-id",
         projectId: "project-a",
         dataReady: true,
         dataStart: 0,
@@ -77,12 +77,12 @@ describe("useChronicleViewportController", () => {
       axisMode: null,
       viewProjectId: null,
       viewWorkspacePath: null,
-      viewWorkspaceOpenRevision: null,
+      viewWorkspaceId: null,
     });
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
-        workspaceOpenRevision: 1,
+        workspaceId: "workspace-a-id",
         projectId: "project-a",
         dataReady: true,
         dataStart: 96_000,
@@ -101,7 +101,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
   });
 
@@ -112,12 +112,12 @@ describe("useChronicleViewportController", () => {
       axisMode: "sequence",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
-        workspaceOpenRevision: 1,
+        workspaceId: "workspace-a-id",
         projectId: "project-a",
         dataReady: true,
         // 旧 sequence view の day=0 は bounding range 内だが、calendar event
@@ -138,7 +138,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
   });
 
@@ -149,13 +149,13 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
     const { result, rerender } = renderHook(
       ({ dataStart, dataEnd }: { dataStart: number; dataEnd: number }) =>
         useChronicleViewportController({
           workspacePath: "/workspace-a",
-          workspaceOpenRevision: 1,
+          workspaceId: "workspace-a-id",
           projectId: "project-a",
           dataReady: true,
           dataStart,
@@ -181,7 +181,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
   });
 
@@ -192,13 +192,13 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
     const { result, rerender } = renderHook(
       ({ projectId }: { projectId: string }) =>
         useChronicleViewportController({
           workspacePath: "/workspace-a",
-          workspaceOpenRevision: 1,
+          workspaceId: "workspace-a-id",
           projectId,
           dataReady: true,
           dataStart: 0,
@@ -223,7 +223,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-b",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
   });
 
@@ -234,12 +234,12 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-a",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-a",
-        workspaceOpenRevision: 1,
+        workspaceId: "workspace-a-id",
         projectId: "project-b",
         dataReady: true,
         dataStart: 0,
@@ -258,7 +258,7 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "project-b",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
   });
 
@@ -269,12 +269,12 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "default-project",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
     const { result } = renderHook(() =>
       useChronicleViewportController({
         workspacePath: "/workspace-b",
-        workspaceOpenRevision: 1,
+        workspaceId: "workspace-b-id",
         projectId: "default-project",
         dataReady: true,
         dataStart: 0,
@@ -293,39 +293,65 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "default-project",
       viewWorkspacePath: "/workspace-b",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-b-id",
     });
   });
 
-  it("同じ workspace path と project ID でも再open後の view は再 fit する", () => {
+  it("再マウント後も同じ Workspace UUID の persisted view を復元する", () => {
+    useChronicleStore.setState({
+      pxPerDay: 4,
+      viewStartDay: 50_000,
+      axisMode: "calendar",
+      viewProjectId: "project-a",
+      viewWorkspacePath: "/workspace-a",
+      viewWorkspaceId: "workspace-a-id",
+    });
+    const { result } = renderHook(() =>
+      useChronicleViewportController({
+        workspacePath: "/workspace-a",
+        workspaceId: "workspace-a-id",
+        projectId: "project-a",
+        dataReady: true,
+        dataStart: 0,
+        dataEnd: 10,
+        eventCount: 2,
+        focusDay: 5,
+        hasCalendarAxis: true,
+      }),
+    );
+
+    act(() => result.current.setTrackW(400));
+
+    expect(result.current.view).toEqual({
+      pxPerDay: 4,
+      viewStartDay: 50_000,
+    });
+  });
+
+  it("同じ workspace path と project ID でも Workspace UUID が違えば再 fit する", () => {
     useChronicleStore.setState({
       pxPerDay: 4,
       viewStartDay: 50_000,
       axisMode: "calendar",
       viewProjectId: "default-project",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 1,
+      viewWorkspaceId: "workspace-a-id",
     });
-    const { result, rerender } = renderHook(
-      ({ workspaceOpenRevision }: { workspaceOpenRevision: number }) =>
-        useChronicleViewportController({
-          workspacePath: "/workspace-a",
-          workspaceOpenRevision,
-          projectId: "default-project",
-          dataReady: true,
-          dataStart: 0,
-          dataEnd: 10,
-          eventCount: 2,
-          focusDay: 5,
-          hasCalendarAxis: true,
-        }),
-      { initialProps: { workspaceOpenRevision: 1 } },
+    const { result } = renderHook(() =>
+      useChronicleViewportController({
+        workspacePath: "/workspace-a",
+        workspaceId: "replacement-workspace-id",
+        projectId: "default-project",
+        dataReady: true,
+        dataStart: 0,
+        dataEnd: 10,
+        eventCount: 2,
+        focusDay: 5,
+        hasCalendarAxis: true,
+      }),
     );
 
     act(() => result.current.setTrackW(400));
-    expect(result.current.view.viewStartDay).toBe(50_000);
-
-    rerender({ workspaceOpenRevision: 2 });
 
     expect(result.current.view.viewStartDay).toBeLessThan(100);
     expect(useChronicleStore.getState()).toMatchObject({
@@ -333,7 +359,43 @@ describe("useChronicleViewportController", () => {
       axisMode: "calendar",
       viewProjectId: "default-project",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 2,
+      viewWorkspaceId: "replacement-workspace-id",
+    });
+  });
+
+  it("旧path ownerは同じWorkspaceならviewを保ったままUUID ownerへ移行する", () => {
+    useChronicleStore.setState({
+      pxPerDay: 4,
+      viewStartDay: 50_000,
+      axisMode: "calendar",
+      viewProjectId: "project-a",
+      viewWorkspaceId: null,
+      viewWorkspacePath: "/workspace-a",
+    });
+    const { result } = renderHook(() =>
+      useChronicleViewportController({
+        workspacePath: "/workspace-a",
+        workspaceId: "workspace-a-id",
+        projectId: "project-a",
+        dataReady: true,
+        dataStart: 0,
+        dataEnd: 10,
+        eventCount: 2,
+        focusDay: 5,
+        hasCalendarAxis: true,
+      }),
+    );
+
+    act(() => result.current.setTrackW(400));
+
+    expect(result.current.view.viewStartDay).toBe(50_000);
+    expect(useChronicleStore.getState()).toMatchObject({
+      pxPerDay: 4,
+      viewStartDay: 50_000,
+      axisMode: "calendar",
+      viewProjectId: "project-a",
+      viewWorkspaceId: "workspace-a-id",
+      viewWorkspacePath: "/workspace-a",
     });
   });
 
@@ -342,7 +404,7 @@ describe("useChronicleViewportController", () => {
       ({ dataReady }: { dataReady: boolean }) =>
         useChronicleViewportController({
           workspacePath: "/workspace-a",
-          workspaceOpenRevision: 1,
+          workspaceId: "workspace-a-id",
           projectId: "project-a",
           dataReady,
           dataStart: 0,
@@ -381,7 +443,7 @@ describe("useChronicleViewportController", () => {
       }) =>
         useChronicleViewportController({
           workspacePath: "/workspace-a",
-          workspaceOpenRevision: 1,
+          workspaceId: "workspace-a-id",
           projectId: "project-a",
           dataReady: true,
           dataStart,

@@ -84,7 +84,9 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     openWorkspace: record(
       "openWorkspace",
-      Promise.resolve('{"name":"ws","isExisting":true}'),
+      Promise.resolve(
+        '{"name":"ws","isExisting":true,"workspaceId":"workspace-id"}',
+      ),
     ) as never,
     validateWorkspacePath: record("validateWorkspacePath", true) as never,
     getGlobalSettings: record(
@@ -1528,7 +1530,14 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend, shell: noShell },
     );
     expect(calls).toEqual([{ method: "openWorkspace", args: ["/tmp/ws"] }]);
-    expect(env).toEqual({ ok: true, value: { name: "ws", isExisting: true } });
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        name: "ws",
+        isExisting: true,
+        workspaceId: "workspace-id",
+      },
+    });
   });
 
   it("import_web_editor_workspace: {handoffJson} → importWebEditorWorkspace(handoffJson)", async () => {
@@ -3545,6 +3554,59 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       method: "agentChronicleBulkMutate",
       args: [payload],
     });
+  });
+
+  it("agent_chronicle_bulk_mutate: 501 operationsも一つのpayloadとして通す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      requestId: "chronicle-bulk-501",
+      projectId: "p1",
+      sessionId: "s1",
+      surface: "manual",
+      operations: Array.from({ length: 501 }, (_, index) => ({
+        kind: "eventDelete",
+        eventId: `event-${index}`,
+        baseVersion: 1,
+      })),
+    };
+
+    const env = await dispatchInvoke(
+      "agent_chronicle_bulk_mutate",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(calls).toContainEqual({
+      method: "agentChronicleBulkMutate",
+      args: [payload],
+    });
+  });
+
+  it("agent_chronicle_bulk_mutate: 8 MiB超のpayloadはbackend前に拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "agent_chronicle_bulk_mutate",
+      {
+        payload: {
+          requestId: "chronicle-bulk-oversized",
+          projectId: "p1",
+          sessionId: "s1",
+          operations: [
+            {
+              kind: "eventDelete",
+              eventId: "e".repeat(8 * 1024 * 1024),
+              baseVersion: 1,
+            },
+          ],
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    if (!env.ok) expect(env.error).toContain("8 MiB");
+    expect(calls).toHaveLength(0);
   });
 
   it("agent_chronicle_bulk_mutate: 旧native bindingのmethod欠落を明示エラーにする", async () => {

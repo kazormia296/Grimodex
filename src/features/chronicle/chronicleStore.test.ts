@@ -19,8 +19,8 @@ function reset() {
     viewStartDay: null,
     axisMode: null,
     viewProjectId: null,
+    viewWorkspaceId: null,
     viewWorkspacePath: null,
-    viewWorkspaceOpenRevision: null,
     selectedEventId: null,
     selectedEventIds: [],
   });
@@ -77,15 +77,22 @@ describe("chronicleStore persistent subscriber", () => {
   it("setChronicleView は view と現在の axisMode を一体で永続化する", async () => {
     useChronicleStore
       .getState()
-      .setChronicleView(4, 10, "calendar", "project-a", "/workspace-a", 7);
+      .setChronicleView(
+        4,
+        10,
+        "calendar",
+        "project-a",
+        "workspace-a-id",
+        "/workspace-a",
+      );
 
     expect(useChronicleStore.getState()).toMatchObject({
       pxPerDay: 4,
       viewStartDay: 10,
       axisMode: "calendar",
       viewProjectId: "project-a",
+      viewWorkspaceId: "workspace-a-id",
       viewWorkspacePath: "/workspace-a",
-      viewWorkspaceOpenRevision: 7,
     });
     await vi.runAllTimersAsync();
     expect(invoke).toHaveBeenCalledWith(
@@ -97,8 +104,8 @@ describe("chronicleStore persistent subscriber", () => {
             viewStartDay: 10,
             axisMode: "calendar",
             viewProjectId: "project-a",
+            viewWorkspaceId: "workspace-a-id",
             viewWorkspacePath: "/workspace-a",
-            viewWorkspaceOpenRevision: 7,
           }),
         }),
       }),
@@ -116,8 +123,8 @@ describe("chronicleStore persistent subscriber", () => {
       viewStartDay: 10,
       axisMode: null,
       viewProjectId: null,
+      viewWorkspaceId: null,
       viewWorkspacePath: null,
-      viewWorkspaceOpenRevision: null,
     });
   });
 });

@@ -30,10 +30,12 @@ export interface ChronicleSettings {
    * 別 Project の座標を誤って復元しないため現在 Project へ再フィットする。
    */
   viewProjectId: string | null;
-  /** 永続 view の所有 Workspace path（null=legacy / 未設定）。 */
+  /**
+   * 永続 view の所有 Workspace UUID。null は導入前の path owner または未設定。
+   */
+  viewWorkspaceId: string | null;
+  /** 永続 view の所有 Workspace path（UUID導入前の移行判定にも使用）。 */
   viewWorkspacePath: string | null;
-  /** 永続 view の所有 Workspace open generation（null=legacy / 未設定）。 */
-  viewWorkspaceOpenRevision: number | null;
   /**
    * 編集ロック。on でグラフ上の直接操作（マーカーのドラッグ移動・期間端の伸縮・
    * D&D による因果エッジ作成・空白のダブルクリック/右クリック作成）を無効化する。
@@ -58,10 +60,10 @@ interface ChronicleState {
   axisMode: ChronicleAxisMode | null;
   /** 永続 view の所有 Project（null=legacy / 未設定）。 */
   viewProjectId: string | null;
-  /** 永続 view の所有 Workspace path（null=legacy / 未設定）。 */
+  /** 永続 view の所有 Workspace UUID（null=legacy / 未設定）。 */
+  viewWorkspaceId: string | null;
+  /** 永続 view の所有 Workspace path（UUID導入前の移行判定にも使用）。 */
   viewWorkspacePath: string | null;
-  /** 永続 view の所有 Workspace open generation（null=legacy / 未設定）。 */
-  viewWorkspaceOpenRevision: number | null;
   /**
    * 選択中の出来事(events.id)＝プライマリ（最後にクリック＝範囲選択のアンカー）。
    * Inspector が読む（単一選択時のみ詳細編集を出す）。
@@ -95,8 +97,8 @@ interface ChronicleState {
     viewStartDay: number,
     axisMode: ChronicleAxisMode,
     viewProjectId: string,
+    viewWorkspaceId: string,
     viewWorkspacePath: string,
-    viewWorkspaceOpenRevision: number,
   ) => void;
   toggleShowOffpage: () => void;
   /** 単一選択（複数選択も [id] に畳む）。null で全解除。 */
@@ -149,8 +151,8 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
   viewStartDay: null,
   axisMode: null,
   viewProjectId: null,
+  viewWorkspaceId: null,
   viewWorkspacePath: null,
-  viewWorkspaceOpenRevision: null,
   selectedEventId: null,
   selectedEventIds: [],
   locked: false,
@@ -164,16 +166,16 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
     viewStartDay,
     axisMode,
     viewProjectId,
+    viewWorkspaceId,
     viewWorkspacePath,
-    viewWorkspaceOpenRevision,
   ) =>
     set({
       pxPerDay,
       viewStartDay,
       axisMode,
       viewProjectId,
+      viewWorkspaceId,
       viewWorkspacePath,
-      viewWorkspaceOpenRevision,
     }),
   toggleShowOffpage: () => set((s) => ({ showOffpage: !s.showOffpage })),
   setSelectedEventId: (selectedEventId) => {
@@ -238,13 +240,13 @@ export const useChronicleStore = create<ChronicleState>((set, get) => ({
         typeof settings.viewProjectId === "string"
           ? settings.viewProjectId
           : null,
+      viewWorkspaceId:
+        typeof settings.viewWorkspaceId === "string"
+          ? settings.viewWorkspaceId
+          : null,
       viewWorkspacePath:
         typeof settings.viewWorkspacePath === "string"
           ? settings.viewWorkspacePath
-          : null,
-      viewWorkspaceOpenRevision:
-        typeof settings.viewWorkspaceOpenRevision === "number"
-          ? settings.viewWorkspaceOpenRevision
           : null,
       locked: settings.locked ?? false,
     }),
@@ -261,8 +263,8 @@ function snapshotPersistent(
     viewStartDay: state.viewStartDay,
     axisMode: state.axisMode,
     viewProjectId: state.viewProjectId,
+    viewWorkspaceId: state.viewWorkspaceId,
     viewWorkspacePath: state.viewWorkspacePath,
-    viewWorkspaceOpenRevision: state.viewWorkspaceOpenRevision,
     locked: state.locked,
   };
 }

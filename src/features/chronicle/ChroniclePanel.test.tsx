@@ -166,6 +166,12 @@ vi.mock("./ChronicleViewport", () => ({
         select-range-anchor
       </button>
       <button
+        data-testid="select-undated-btn"
+        onClick={() => onSelectEvent?.("undated")}
+      >
+        select-undated
+      </button>
+      <button
         data-testid="shift-select-scene-btn"
         onClick={() =>
           onSelectEvent?.("scene:sc1", { toggle: false, range: true })
@@ -209,7 +215,25 @@ vi.mock("./ChronicleViewport", () => ({
     </div>
   ),
 }));
-vi.mock("./ChronicleToolbar", () => ({ ChronicleToolbar: () => null }));
+vi.mock("./ChronicleToolbar", () => ({
+  ChronicleToolbar: ({
+    onNew,
+    disabled,
+    creating,
+  }: {
+    onNew: () => void;
+    disabled?: boolean;
+    creating?: boolean;
+  }) => (
+    <button
+      data-testid="toolbar-new"
+      disabled={disabled || creating}
+      onClick={onNew}
+    >
+      new
+    </button>
+  ),
+}));
 vi.mock("./ChronicleInspector", () => ({
   ChronicleInspector: ({
     event,
@@ -347,8 +371,11 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
 beforeEach(() => {
   vi.clearAllMocks();
   useWorkspaceStore.setState({
+    activeWorkspaceId: "workspace-a-id",
     activeWorkspacePath: "/workspace-a",
     workspaceOpenRevision: 1,
+    workspaceSwitchInProgress: false,
+    workspaceHydrated: true,
   });
   useProjectStore.setState({ currentProjectId: null });
   useChronicleStore.setState({
@@ -358,6 +385,7 @@ beforeEach(() => {
     viewStartDay: null,
     axisMode: null,
     viewProjectId: null,
+    viewWorkspaceId: null,
     viewWorkspacePath: null,
   });
   useCodexStore.setState({ entries: [] });
@@ -459,6 +487,52 @@ describe("ChroniclePanel keepalive activity", () => {
         scope: {
           workspacePath: "/workspace-a",
           openRevision: 1,
+          projectId: "p1",
+        },
+      }),
+    );
+  });
+
+  it("Workspace切替中は旧scopeのqueryを開始せず、hydrate完了後だけ新scopeを読む", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent()]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    useWorkspaceStore.setState({
+      workspaceSwitchInProgress: true,
+      workspaceHydrated: false,
+    });
+    render(<ChroniclePanel />);
+
+    expect(screen.queryByTestId("viewport")).toBeNull();
+    expect(screen.getByTestId("chronicle-loading")).toBeTruthy();
+    expect(apiMocks.listEvents).not.toHaveBeenCalled();
+    expect(seasonMocks.useSeasonConflicts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: false,
+        scope: null,
+      }),
+    );
+
+    act(() => {
+      useWorkspaceStore.setState({
+        activeWorkspaceId: "workspace-b-id",
+        activeWorkspacePath: "/workspace-b",
+        workspaceOpenRevision: 2,
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: true,
+      });
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.listEvents).toHaveBeenCalledTimes(1);
+      expect(apiMocks.listEvents).toHaveBeenCalledWith("p1");
+      expect(screen.getByTestId("viewport")).toBeTruthy();
+    });
+    expect(seasonMocks.useSeasonConflicts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: true,
+        scope: {
+          workspacePath: "/workspace-b",
+          openRevision: 2,
           projectId: "p1",
         },
       }),
@@ -609,6 +683,39 @@ describe("ChroniclePanel keepalive activity", () => {
 });
 
 describe("ChroniclePanel mixed dated/undated axis", () => {
+  it("undated proxy の選択を位置表示やToolbar新規作成へ流出させない", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        ordinal: "a0",
+        startTime: 100,
+        startGranularity: "day",
+      }),
+      makeEvent({
+        id: "undated",
+        ordinal: "a1",
+        startTime: null,
+        startGranularity: "none",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    fireEvent.click(screen.getByTestId("select-undated-btn"));
+
+    expect(useChronicleStore.getState().selectedEventId).toBe("undated");
+    expect(useChronicleStore.getState().selectedDay).toBeNull();
+    expect(screen.queryByText(/位置:/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("toolbar-new"));
+    await waitFor(() => {
+      expect(eventMocks.uiCreateEvent).toHaveBeenCalledWith({
+        title: "新しいイベント",
+      });
+    });
+  });
+
   it("暦軸と期間表示を維持し、dated interval の横移動で開始・終了を同時にずらす", async () => {
     apiMocks.listEvents.mockResolvedValue([
       makeEvent({
@@ -831,6 +938,36 @@ describe("ChroniclePanel mixed dated/undated axis", () => {
         startGranularity: "time",
       });
     });
+  });
+
+  it("hour zoom の位置ステータスは端数日を HH:MM として表示する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        startTime: 100,
+        startMinute: 360,
+        startGranularity: "time",
+      }),
+    ]);
+    useChronicleStore.setState({
+      pxPerDay: 2_000,
+      viewStartDay: 100,
+      axisMode: "calendar",
+      viewProjectId: "p1",
+      viewWorkspaceId: "workspace-a-id",
+      viewWorkspacePath: "/workspace-a",
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelectedPosition(100.75);
+    });
+
+    const status = await screen.findByTestId("chronicle-status-bar");
+    expect(status).toHaveTextContent("18:00");
+    expect(status).not.toHaveTextContent("00:00");
   });
 });
 

@@ -5,9 +5,8 @@
 //! the mixed selection one SQLite transaction, one undo journal entry, and one
 //! change event instead of renderer-side writes with partial commits.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -25,6 +24,9 @@ use crate::Database;
 
 const BULK_ENTITY_KIND: &str = "chronicle_bulk";
 const BULK_IDEMPOTENCY_DOMAIN: &str = "agent_chronicle_bulk_mutate";
+const MAX_CHRONICLE_BULK_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CHRONICLE_BULK_JOURNAL_BYTES: usize = 16 * 1024 * 1024;
+const SQLITE_READ_CHUNK_ROWS: usize = 400;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(
@@ -93,8 +95,79 @@ pub struct AgentChronicleBulkPayload {
 struct BulkEventState {
     kind: String,
     event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     snapshot: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fields: Option<BulkEventFields>,
     last_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(
+    tag = "stateKind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum BulkEventFields {
+    Date {
+        start_time: Option<i64>,
+        start_minute: Option<i64>,
+        start_granularity: String,
+        end_time: Option<i64>,
+        end_minute: Option<i64>,
+        end_granularity: String,
+        updated_at: String,
+        version: i64,
+    },
+    Lane {
+        primary_codex_id: Option<String>,
+        lane_group: Option<String>,
+        updated_at: String,
+        version: i64,
+    },
+}
+
+impl BulkEventFields {
+    fn version(&self) -> i64 {
+        match self {
+            Self::Date { version, .. } | Self::Lane { version, .. } => *version,
+        }
+    }
+
+    fn set_version(&mut self, next: i64) {
+        match self {
+            Self::Date { version, .. } | Self::Lane { version, .. } => *version = next,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BulkEventRecord {
+    event_id: String,
+    primary_codex_id: Option<String>,
+    lane_group: Option<String>,
+    start_time: Option<i64>,
+    start_minute: Option<i64>,
+    start_granularity: String,
+    end_time: Option<i64>,
+    end_minute: Option<i64>,
+    end_granularity: String,
+    updated_at: String,
+    version: i64,
+}
+
+#[derive(Debug, Clone)]
+struct BulkSceneRecord {
+    scene_id: String,
+    pov_character_id: Option<String>,
+    chronicle_start_time: Option<i64>,
+    chronicle_start_minute: Option<i64>,
+    chronicle_start_granularity: String,
+    chronicle_end_time: Option<i64>,
+    chronicle_end_minute: Option<i64>,
+    chronicle_end_granularity: String,
+    chronicle_precision: String,
+    updated_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -143,12 +216,6 @@ struct AgentChronicleBulkResult {
     scene_results: Vec<BulkSceneResult>,
     change_event_uid: String,
     undo_journal_id: String,
-}
-
-fn event_snapshot_project(snapshot: &Value) -> anyhow::Result<&str> {
-    snapshot["eventData"]["projectId"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("chronicle bulk event snapshot missing projectId"))
 }
 
 fn event_snapshot_version(snapshot: &Value) -> anyhow::Result<i64> {
@@ -286,87 +353,165 @@ pub(crate) fn enrich_replay_change_payload(
     Ok(())
 }
 
-fn ensure_event_snapshot(
+fn load_event_records(
     conn: &rusqlite::Connection,
     project_id: &str,
-    event_id: &str,
-    base_version: i64,
-) -> anyhow::Result<Value> {
-    if base_version < 0 {
-        anyhow::bail!("event '{event_id}' has invalid negative base version");
-    }
-    let snapshot = collect_event_snapshot(conn, event_id)
-        .map_err(|_| anyhow::anyhow!("event '{event_id}' not found"))?;
-    if event_snapshot_project(&snapshot)? != project_id {
-        anyhow::bail!("event '{event_id}' not found in project '{project_id}'");
-    }
-    let found = event_snapshot_version(&snapshot)?;
-    if found != base_version {
-        anyhow::bail!(
-            "event '{event_id}' version conflict: expected {base_version}, found {found}"
+    event_ids: &BTreeSet<String>,
+) -> anyhow::Result<BTreeMap<String, BulkEventRecord>> {
+    let mut records = BTreeMap::new();
+    let ids = event_ids.iter().collect::<Vec<_>>();
+    for chunk in ids.chunks(SQLITE_READ_CHUNK_ROWS) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT id, primary_codex_id, lane_group,
+                    start_time, start_minute, start_granularity,
+                    end_time, end_minute, end_granularity,
+                    updated_at, version
+               FROM events
+              WHERE project_id = ? AND id IN ({placeholders})"
         );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(
+                std::iter::once(project_id).chain(chunk.iter().map(|id| id.as_str())),
+            ),
+            |row| {
+                Ok(BulkEventRecord {
+                    event_id: row.get(0)?,
+                    primary_codex_id: row.get(1)?,
+                    lane_group: row.get(2)?,
+                    start_time: row.get(3)?,
+                    start_minute: row.get(4)?,
+                    start_granularity: row.get(5)?,
+                    end_time: row.get(6)?,
+                    end_minute: row.get(7)?,
+                    end_granularity: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    version: row.get(10)?,
+                })
+            },
+        )?;
+        for row in rows {
+            let record = row?;
+            records.insert(record.event_id.clone(), record);
+        }
     }
-    Ok(snapshot)
+    Ok(records)
 }
 
-fn collect_scene_state(
+fn load_scene_records(
     conn: &rusqlite::Connection,
     project_id: &str,
-    scene_id: &str,
-    base_updated_at: &str,
-    kind: &str,
-) -> anyhow::Result<BulkSceneState> {
-    let state = conn
-        .query_row(
-            "SELECT pov_character_id,
+    scene_ids: &BTreeSet<String>,
+) -> anyhow::Result<BTreeMap<String, BulkSceneRecord>> {
+    let mut records = BTreeMap::new();
+    let ids = scene_ids.iter().collect::<Vec<_>>();
+    for chunk in ids.chunks(SQLITE_READ_CHUNK_ROWS) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT id, pov_character_id,
                     chronicle_start_time, chronicle_start_minute,
                     chronicle_start_granularity,
                     chronicle_end_time, chronicle_end_minute,
                     chronicle_end_granularity, chronicle_precision, updated_at
                FROM tree_nodes
-              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
-            rusqlite::params![scene_id, project_id],
+              WHERE project_id = ? AND node_type = 'scene'
+                AND id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(
+                std::iter::once(project_id).chain(chunk.iter().map(|id| id.as_str())),
+            ),
             |row| {
-                Ok(BulkSceneState {
-                    kind: kind.to_string(),
-                    scene_id: scene_id.to_string(),
-                    pov_character_id: row.get(0)?,
-                    chronicle_start_time: row.get(1)?,
-                    chronicle_start_minute: row.get(2)?,
-                    chronicle_start_granularity: row.get(3)?,
-                    chronicle_end_time: row.get(4)?,
-                    chronicle_end_minute: row.get(5)?,
-                    chronicle_end_granularity: row.get(6)?,
-                    chronicle_precision: row.get(7)?,
-                    updated_at: row.get(8)?,
+                Ok(BulkSceneRecord {
+                    scene_id: row.get(0)?,
+                    pov_character_id: row.get(1)?,
+                    chronicle_start_time: row.get(2)?,
+                    chronicle_start_minute: row.get(3)?,
+                    chronicle_start_granularity: row.get(4)?,
+                    chronicle_end_time: row.get(5)?,
+                    chronicle_end_minute: row.get(6)?,
+                    chronicle_end_granularity: row.get(7)?,
+                    chronicle_precision: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             },
-        )
-        .optional()?
-        .ok_or_else(|| anyhow::anyhow!("scene '{scene_id}' not found in project '{project_id}'"))?;
-    if state.updated_at != base_updated_at {
-        anyhow::bail!(
-            "scene '{scene_id}' update conflict: expected updatedAt '{base_updated_at}', found '{}'",
-            state.updated_at
-        );
+        )?;
+        for row in rows {
+            let record = row?;
+            records.insert(record.scene_id.clone(), record);
+        }
     }
-    Ok(state)
+    Ok(records)
 }
 
-fn ensure_codex_in_project(
+fn ensure_codex_ids_in_project(
     conn: &rusqlite::Connection,
     project_id: &str,
-    codex_id: &str,
+    codex_ids: &BTreeSet<String>,
 ) -> anyhow::Result<()> {
-    let exists: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
-        rusqlite::params![codex_id, project_id],
-        |row| row.get(0),
-    )?;
-    if exists == 0 {
-        anyhow::bail!("codex entry '{codex_id}' not found in project '{project_id}'");
+    let ids = codex_ids.iter().collect::<Vec<_>>();
+    let mut found = BTreeSet::new();
+    for chunk in ids.chunks(SQLITE_READ_CHUNK_ROWS) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT id FROM codex_entries
+              WHERE project_id = ? AND id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(
+                std::iter::once(project_id).chain(chunk.iter().map(|id| id.as_str())),
+            ),
+            |row| row.get::<_, String>(0),
+        )?;
+        for row in rows {
+            found.insert(row?);
+        }
+    }
+    if let Some(missing) = codex_ids.iter().find(|id| !found.contains(*id)) {
+        anyhow::bail!("codex entry '{missing}' not found in project '{project_id}'");
     }
     Ok(())
+}
+
+fn event_fields(record: &BulkEventRecord, kind: &str) -> anyhow::Result<BulkEventFields> {
+    match kind {
+        "eventClearDate" | "eventSetDate" => Ok(BulkEventFields::Date {
+            start_time: record.start_time,
+            start_minute: record.start_minute,
+            start_granularity: record.start_granularity.clone(),
+            end_time: record.end_time,
+            end_minute: record.end_minute,
+            end_granularity: record.end_granularity.clone(),
+            updated_at: record.updated_at.clone(),
+            version: record.version,
+        }),
+        "eventSetLane" => Ok(BulkEventFields::Lane {
+            primary_codex_id: record.primary_codex_id.clone(),
+            lane_group: record.lane_group.clone(),
+            updated_at: record.updated_at.clone(),
+            version: record.version,
+        }),
+        other => anyhow::bail!("chronicle bulk operation '{other}' has no compact event state"),
+    }
+}
+
+fn scene_state(record: &BulkSceneRecord, kind: &str) -> BulkSceneState {
+    BulkSceneState {
+        kind: kind.to_string(),
+        scene_id: record.scene_id.clone(),
+        pov_character_id: record.pov_character_id.clone(),
+        chronicle_start_time: record.chronicle_start_time,
+        chronicle_start_minute: record.chronicle_start_minute,
+        chronicle_start_granularity: record.chronicle_start_granularity.clone(),
+        chronicle_end_time: record.chronicle_end_time,
+        chronicle_end_minute: record.chronicle_end_minute,
+        chronicle_end_granularity: record.chronicle_end_granularity.clone(),
+        chronicle_precision: record.chronicle_precision.clone(),
+        updated_at: record.updated_at.clone(),
+    }
 }
 
 fn update_scene_to_state(
@@ -374,8 +519,7 @@ fn update_scene_to_state(
     project_id: &str,
     expected_updated_at: &str,
     target: &BulkSceneState,
-) -> anyhow::Result<String> {
-    let next_updated_at = fresh_updated_at(expected_updated_at);
+) -> anyhow::Result<()> {
     let updated = conn.execute(
         "UPDATE tree_nodes
             SET pov_character_id = ?1,
@@ -398,7 +542,7 @@ fn update_scene_to_state(
             target.chronicle_end_minute,
             target.chronicle_end_granularity,
             target.chronicle_precision,
-            next_updated_at,
+            target.updated_at,
             target.scene_id,
             project_id,
             expected_updated_at,
@@ -411,7 +555,126 @@ fn update_scene_to_state(
             expected_updated_at
         );
     }
-    Ok(next_updated_at)
+    Ok(())
+}
+
+fn event_state_version(state: &BulkEventState) -> anyhow::Result<Option<i64>> {
+    match (&state.fields, &state.snapshot) {
+        (Some(fields), None) => Ok(Some(fields.version())),
+        (None, Some(snapshot)) => Ok(Some(event_snapshot_version(snapshot)?)),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("chronicle bulk event state mixes compact and composite snapshots")
+        }
+    }
+}
+
+fn update_event_to_fields(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+    expected_version: i64,
+    target: &mut BulkEventFields,
+) -> anyhow::Result<i64> {
+    let next = checked_next_version(expected_version)?;
+    let updated = match target {
+        BulkEventFields::Date {
+            start_time,
+            start_minute,
+            start_granularity,
+            end_time,
+            end_minute,
+            end_granularity,
+            updated_at,
+            ..
+        } => conn.execute(
+            "UPDATE events
+                SET start_time = ?1, start_minute = ?2,
+                    start_granularity = ?3, end_time = ?4,
+                    end_minute = ?5, end_granularity = ?6,
+                    updated_at = ?7, version = ?8
+              WHERE id = ?9 AND project_id = ?10 AND version = ?11",
+            rusqlite::params![
+                *start_time,
+                *start_minute,
+                start_granularity.as_str(),
+                *end_time,
+                *end_minute,
+                end_granularity.as_str(),
+                updated_at.as_str(),
+                next,
+                event_id,
+                project_id,
+                expected_version,
+            ],
+        )?,
+        BulkEventFields::Lane {
+            primary_codex_id,
+            lane_group,
+            updated_at,
+            ..
+        } => conn.execute(
+            "UPDATE events
+                SET primary_codex_id = ?1, lane_group = ?2,
+                    updated_at = ?3, version = ?4
+              WHERE id = ?5 AND project_id = ?6 AND version = ?7",
+            rusqlite::params![
+                primary_codex_id.as_deref(),
+                lane_group.as_deref(),
+                updated_at.as_str(),
+                next,
+                event_id,
+                project_id,
+                expected_version,
+            ],
+        )?,
+    };
+    if updated != 1 {
+        anyhow::bail!("event '{event_id}' version conflict: expected {expected_version}");
+    }
+    target.set_version(next);
+    Ok(next)
+}
+
+fn load_event_versions(
+    conn: &rusqlite::Connection,
+    event_ids: &BTreeSet<String>,
+) -> anyhow::Result<BTreeMap<String, (String, i64)>> {
+    let mut versions = BTreeMap::new();
+    let ids = event_ids.iter().collect::<Vec<_>>();
+    for chunk in ids.chunks(SQLITE_READ_CHUNK_ROWS) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql =
+            format!("SELECT id, project_id, version FROM events WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(chunk.iter().map(|id| id.as_str())),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
+        for row in rows {
+            let (event_id, project_id, version) = row?;
+            versions.insert(event_id, (project_id, version));
+        }
+    }
+    Ok(versions)
+}
+
+fn serialize_bounded_journal(
+    before: &ChronicleBulkSnapshot,
+    after: &ChronicleBulkSnapshot,
+) -> anyhow::Result<(String, String)> {
+    let before_json = serde_json::to_string(before)?;
+    let after_json = serde_json::to_string(after)?;
+    if before_json.len().saturating_add(after_json.len()) > MAX_CHRONICLE_BULK_JOURNAL_BYTES {
+        anyhow::bail!("chronicle bulk undo snapshot exceeds the 16 MiB limit");
+    }
+    Ok((before_json, after_json))
 }
 
 fn validate_snapshot_pair(
@@ -425,51 +688,24 @@ fn validate_snapshot_pair(
         if target.event_id != current.event_id || target.kind != current.kind {
             anyhow::bail!("chronicle bulk event journal identity mismatch");
         }
+        event_state_version(target)?;
+        event_state_version(current)?;
+        match (&target.fields, &current.fields) {
+            (Some(target_fields), Some(current_fields))
+                if std::mem::discriminant(target_fields)
+                    != std::mem::discriminant(current_fields) =>
+            {
+                anyhow::bail!("chronicle bulk compact event journal shape mismatch");
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                anyhow::bail!("chronicle bulk compact event journal state mismatch");
+            }
+            _ => {}
+        }
     }
     for (target, current) in target.scenes.iter().zip(&current.scenes) {
         if target.scene_id != current.scene_id || target.kind != current.kind {
             anyhow::bail!("chronicle bulk scene journal identity mismatch");
-        }
-    }
-    Ok(())
-}
-
-fn verify_event_current_state(
-    conn: &rusqlite::Connection,
-    project_id: &str,
-    state: &BulkEventState,
-) -> anyhow::Result<()> {
-    match &state.snapshot {
-        Some(snapshot) => {
-            let expected = event_snapshot_version(snapshot)?;
-            let found = conn
-                .query_row(
-                    "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
-                    rusqlite::params![state.event_id, project_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?;
-            if found != Some(expected) {
-                anyhow::bail!(
-                    "event '{}' version conflict during chronicle bulk replay: expected {}, found {:?}",
-                    state.event_id,
-                    expected,
-                    found
-                );
-            }
-        }
-        None => {
-            let exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM events WHERE id = ?1",
-                rusqlite::params![state.event_id],
-                |row| row.get(0),
-            )?;
-            if exists != 0 {
-                anyhow::bail!(
-                    "event '{}' was recreated before chronicle bulk replay",
-                    state.event_id
-                );
-            }
         }
     }
     Ok(())
@@ -503,26 +739,72 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     )?;
     validate_snapshot_pair(&target, &current)?;
 
-    // Validate the complete observed state before touching either table.
+    // Validate the complete observed state with chunked set-based reads before
+    // touching either table.
+    let event_ids = current
+        .events
+        .iter()
+        .map(|state| state.event_id.clone())
+        .collect::<BTreeSet<_>>();
+    let versions = load_event_versions(conn, &event_ids)?;
     for state in &current.events {
-        verify_event_current_state(conn, project_id, state)?;
+        match event_state_version(state)? {
+            Some(expected) => {
+                let found = versions.get(&state.event_id);
+                if !matches!(found, Some((owner, version)) if owner == project_id && *version == expected)
+                {
+                    anyhow::bail!(
+                        "event '{}' version conflict during chronicle bulk replay: expected {}, found {:?}",
+                        state.event_id,
+                        expected,
+                        found
+                    );
+                }
+            }
+            None if versions.contains_key(&state.event_id) => {
+                anyhow::bail!(
+                    "event '{}' was recreated before chronicle bulk replay",
+                    state.event_id
+                );
+            }
+            None => {}
+        }
     }
+
+    let scene_ids = current
+        .scenes
+        .iter()
+        .map(|state| state.scene_id.clone())
+        .collect::<BTreeSet<_>>();
+    let scene_records = load_scene_records(conn, project_id, &scene_ids)?;
     for state in &current.scenes {
-        let found = conn
-            .query_row(
-                "SELECT updated_at FROM tree_nodes
-                  WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
-                rusqlite::params![state.scene_id, project_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        if found.as_deref() != Some(state.updated_at.as_str()) {
+        if scene_records
+            .get(&state.scene_id)
+            .map(|record| record.updated_at.as_str())
+            != Some(state.updated_at.as_str())
+        {
             anyhow::bail!(
                 "scene '{}' update conflict during chronicle bulk replay",
                 state.scene_id
             );
         }
     }
+
+    let mut target_codex_ids = target
+        .scenes
+        .iter()
+        .filter_map(|state| state.pov_character_id.clone())
+        .collect::<BTreeSet<_>>();
+    for state in &target.events {
+        if let Some(BulkEventFields::Lane {
+            primary_codex_id: Some(codex_id),
+            ..
+        }) = state.fields.as_ref()
+        {
+            target_codex_ids.insert(codex_id.clone());
+        }
+    }
+    ensure_codex_ids_in_project(conn, project_id, &target_codex_ids)?;
 
     // Restore/delete event rows first. Associations for restored deletes are
     // deferred until every selected event row exists, so a relation between
@@ -531,6 +813,19 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     for (index, (target_state, current_state)) in
         target.events.iter_mut().zip(&current.events).enumerate()
     {
+        if let (Some(target_fields), Some(current_fields)) =
+            (target_state.fields.as_mut(), current_state.fields.as_ref())
+        {
+            let next = update_event_to_fields(
+                conn,
+                project_id,
+                &target_state.event_id,
+                current_fields.version(),
+                target_fields,
+            )?;
+            target_state.last_version = next;
+            continue;
+        }
         match (&mut target_state.snapshot, &current_state.snapshot) {
             (Some(target_snapshot), Some(current_snapshot)) => {
                 let expected = event_snapshot_version(current_snapshot)?;
@@ -570,11 +865,8 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     }
 
     for (target_state, current_state) in target.scenes.iter_mut().zip(&current.scenes) {
-        if let Some(codex_id) = target_state.pov_character_id.as_deref() {
-            ensure_codex_in_project(conn, project_id, codex_id)?;
-        }
-        target_state.updated_at =
-            update_scene_to_state(conn, project_id, &current_state.updated_at, target_state)?;
+        target_state.updated_at = fresh_updated_at(&current_state.updated_at);
+        update_scene_to_state(conn, project_id, &current_state.updated_at, target_state)?;
     }
 
     let serialized = serde_json::to_string(&target)?;
@@ -607,8 +899,8 @@ pub fn agent_chronicle_bulk_mutate_impl(
     if payload.operations.is_empty() {
         anyhow::bail!("chronicle bulk operations must not be empty");
     }
-    if payload.operations.len() > 500 {
-        anyhow::bail!("chronicle bulk operations exceed the 500 item limit");
+    if serde_json::to_vec(&payload)?.len() > MAX_CHRONICLE_BULK_PAYLOAD_BYTES {
+        anyhow::bail!("chronicle bulk payload exceeds the 8 MiB limit");
     }
     let fingerprint_payload = json!({
         "projectId": payload.project_id,
@@ -633,9 +925,12 @@ pub fn agent_chronicle_bulk_mutate_impl(
                 return Ok(existing);
             }
             let mut targets = BTreeSet::new();
-            let mut before = ChronicleBulkSnapshot::default();
+            let mut event_ids = BTreeSet::new();
+            let mut scene_ids = BTreeSet::new();
+            let mut codex_ids = BTreeSet::new();
 
-            // Capture and validate every observed token before the first write.
+            // Validate operation-local input and collect every lookup key before
+            // the first database read.
             for operation in &payload.operations {
                 match operation {
                     ChronicleBulkOperation::EventDelete {
@@ -656,34 +951,238 @@ pub fn agent_chronicle_bulk_mutate_impl(
                         base_version,
                         ..
                     } => {
+                        if *base_version < 0 {
+                            anyhow::bail!("event '{event_id}' has invalid negative base version");
+                        }
                         if !targets.insert(format!("event:{event_id}")) {
                             anyhow::bail!("duplicate chronicle bulk event '{event_id}'");
                         }
-                        let snapshot = ensure_event_snapshot(
-                            conn,
-                            &payload.project_id,
-                            event_id,
-                            *base_version,
-                        )?;
-                        let kind = match operation {
-                            ChronicleBulkOperation::EventDelete { .. } => "eventDelete",
-                            ChronicleBulkOperation::EventClearDate { .. } => "eventClearDate",
-                            ChronicleBulkOperation::EventSetLane { .. } => "eventSetLane",
-                            _ => "eventSetDate",
-                        };
-                        before.events.push(BulkEventState {
-                            kind: kind.to_string(),
-                            event_id: event_id.clone(),
-                            snapshot: Some(snapshot),
-                            last_version: *base_version,
-                        });
+                        event_ids.insert(event_id.clone());
                         if let ChronicleBulkOperation::EventSetLane {
                             primary_codex_id: Some(codex_id),
                             ..
                         } = operation
                         {
-                            ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
+                            codex_ids.insert(codex_id.clone());
                         }
+                        if let ChronicleBulkOperation::EventSetDate {
+                            start_time,
+                            start_minute,
+                            start_granularity,
+                            end_time,
+                            end_minute,
+                            end_granularity,
+                            ..
+                        } = operation
+                        {
+                            validate_absolute_date(
+                                *start_time,
+                                *start_minute,
+                                start_granularity,
+                                *end_time,
+                                *end_minute,
+                                end_granularity,
+                            )?;
+                        }
+                    }
+                    ChronicleBulkOperation::SceneClearDate { scene_id, .. }
+                    | ChronicleBulkOperation::SceneSetPov { scene_id, .. }
+                    | ChronicleBulkOperation::SceneSetDate { scene_id, .. } => {
+                        if !targets.insert(format!("scene:{scene_id}")) {
+                            anyhow::bail!("duplicate chronicle bulk scene '{scene_id}'");
+                        }
+                        scene_ids.insert(scene_id.clone());
+                        if let ChronicleBulkOperation::SceneSetPov {
+                            pov_character_id: Some(codex_id),
+                            ..
+                        } = operation
+                        {
+                            codex_ids.insert(codex_id.clone());
+                        }
+                        if let ChronicleBulkOperation::SceneSetDate {
+                            start_time,
+                            start_minute,
+                            start_granularity,
+                            end_time,
+                            end_minute,
+                            end_granularity,
+                            ..
+                        } = operation
+                        {
+                            validate_absolute_date(
+                                *start_time,
+                                *start_minute,
+                                start_granularity,
+                                *end_time,
+                                *end_minute,
+                                end_granularity,
+                            )?;
+                        }
+                    }
+                }
+            }
+
+            let event_records = load_event_records(conn, &payload.project_id, &event_ids)?;
+            let scene_records = load_scene_records(conn, &payload.project_id, &scene_ids)?;
+            ensure_codex_ids_in_project(conn, &payload.project_id, &codex_ids)?;
+
+            let mut before = ChronicleBulkSnapshot::default();
+            let mut after = ChronicleBulkSnapshot::default();
+
+            // Build both journal sides before writing. Field-only operations
+            // never materialize Event detail/associations; delete alone keeps
+            // the full cascade-restorable composite.
+            for operation in &payload.operations {
+                match operation {
+                    ChronicleBulkOperation::EventDelete {
+                        event_id,
+                        base_version,
+                    }
+                    | ChronicleBulkOperation::EventClearDate {
+                        event_id,
+                        base_version,
+                    }
+                    | ChronicleBulkOperation::EventSetLane {
+                        event_id,
+                        base_version,
+                        ..
+                    }
+                    | ChronicleBulkOperation::EventSetDate {
+                        event_id,
+                        base_version,
+                        ..
+                    } => {
+                        let record = event_records.get(event_id).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "event '{event_id}' not found in project '{}'",
+                                payload.project_id
+                            )
+                        })?;
+                        if record.version != *base_version {
+                            anyhow::bail!(
+                                "event '{event_id}' version conflict: expected {base_version}, found {}",
+                                record.version
+                            );
+                        }
+                        let kind = match operation {
+                            ChronicleBulkOperation::EventDelete { .. } => "eventDelete",
+                            ChronicleBulkOperation::EventClearDate { .. } => "eventClearDate",
+                            ChronicleBulkOperation::EventSetLane { .. } => "eventSetLane",
+                            ChronicleBulkOperation::EventSetDate { .. } => "eventSetDate",
+                            _ => unreachable!(),
+                        };
+
+                        if matches!(operation, ChronicleBulkOperation::EventDelete { .. }) {
+                            let snapshot = collect_event_snapshot(conn, event_id)?;
+                            before.events.push(BulkEventState {
+                                kind: kind.to_string(),
+                                event_id: event_id.clone(),
+                                snapshot: Some(snapshot),
+                                fields: None,
+                                last_version: *base_version,
+                            });
+                            after.events.push(BulkEventState {
+                                kind: kind.to_string(),
+                                event_id: event_id.clone(),
+                                snapshot: None,
+                                fields: None,
+                                last_version: *base_version,
+                            });
+                            continue;
+                        }
+
+                        let fields = event_fields(record, kind)?;
+                        let mut next_fields = fields.clone();
+                        let next_version = checked_next_version(*base_version)?;
+                        match (operation, &mut next_fields) {
+                            (
+                                ChronicleBulkOperation::EventClearDate { .. },
+                                BulkEventFields::Date {
+                                    start_time,
+                                    start_minute,
+                                    start_granularity,
+                                    end_time,
+                                    end_minute,
+                                    end_granularity,
+                                    updated_at,
+                                    version,
+                                },
+                            ) => {
+                                *start_time = None;
+                                *start_minute = None;
+                                *start_granularity = "none".to_string();
+                                *end_time = None;
+                                *end_minute = None;
+                                *end_granularity = "none".to_string();
+                                *updated_at = fresh_updated_at(&record.updated_at);
+                                *version = next_version;
+                            }
+                            (
+                                ChronicleBulkOperation::EventSetLane {
+                                    primary_codex_id,
+                                    lane_group,
+                                    ..
+                                },
+                                BulkEventFields::Lane {
+                                    primary_codex_id: next_primary,
+                                    lane_group: next_group,
+                                    updated_at,
+                                    version,
+                                },
+                            ) => {
+                                *next_primary = primary_codex_id.clone();
+                                *next_group = lane_group.clone();
+                                *updated_at = fresh_updated_at(&record.updated_at);
+                                *version = next_version;
+                            }
+                            (
+                                ChronicleBulkOperation::EventSetDate {
+                                    start_time: next_start,
+                                    start_minute: next_start_minute,
+                                    start_granularity: next_start_granularity,
+                                    end_time: next_end,
+                                    end_minute: next_end_minute,
+                                    end_granularity: next_end_granularity,
+                                    ..
+                                },
+                                BulkEventFields::Date {
+                                    start_time,
+                                    start_minute,
+                                    start_granularity,
+                                    end_time,
+                                    end_minute,
+                                    end_granularity,
+                                    updated_at,
+                                    version,
+                                },
+                            ) => {
+                                *start_time = Some(*next_start);
+                                *start_minute = *next_start_minute;
+                                *start_granularity = next_start_granularity.clone();
+                                *end_time = *next_end;
+                                *end_minute = *next_end_minute;
+                                *end_granularity = next_end_granularity.clone();
+                                *updated_at = fresh_updated_at(&record.updated_at);
+                                *version = next_version;
+                            }
+                            _ => anyhow::bail!(
+                                "chronicle bulk compact event state does not match '{kind}'"
+                            ),
+                        }
+                        before.events.push(BulkEventState {
+                            kind: kind.to_string(),
+                            event_id: event_id.clone(),
+                            snapshot: None,
+                            fields: Some(fields),
+                            last_version: *base_version,
+                        });
+                        after.events.push(BulkEventState {
+                            kind: kind.to_string(),
+                            event_id: event_id.clone(),
+                            snapshot: None,
+                            fields: Some(next_fields),
+                            last_version: next_version,
+                        });
                     }
                     ChronicleBulkOperation::SceneClearDate {
                         scene_id,
@@ -699,38 +1198,70 @@ pub fn agent_chronicle_bulk_mutate_impl(
                         base_updated_at,
                         ..
                     } => {
-                        if !targets.insert(format!("scene:{scene_id}")) {
-                            anyhow::bail!("duplicate chronicle bulk scene '{scene_id}'");
+                        let record = scene_records.get(scene_id).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "scene '{scene_id}' not found in project '{}'",
+                                payload.project_id
+                            )
+                        })?;
+                        if record.updated_at != *base_updated_at {
+                            anyhow::bail!(
+                                "scene '{scene_id}' update conflict: expected updatedAt '{base_updated_at}', found '{}'",
+                                record.updated_at
+                            );
                         }
                         let kind = match operation {
                             ChronicleBulkOperation::SceneClearDate { .. } => "sceneClearDate",
                             ChronicleBulkOperation::SceneSetPov { .. } => "sceneSetPov",
-                            _ => "sceneSetDate",
+                            ChronicleBulkOperation::SceneSetDate { .. } => "sceneSetDate",
+                            _ => unreachable!(),
                         };
-                        before.scenes.push(collect_scene_state(
-                            conn,
-                            &payload.project_id,
-                            scene_id,
-                            base_updated_at,
-                            kind,
-                        )?);
-                        if let ChronicleBulkOperation::SceneSetPov {
-                            pov_character_id: Some(codex_id),
-                            ..
-                        } = operation
-                        {
-                            ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
+                        let current = scene_state(record, kind);
+                        let mut next = current.clone();
+                        next.updated_at = fresh_updated_at(&record.updated_at);
+                        match operation {
+                            ChronicleBulkOperation::SceneClearDate { .. } => {
+                                next.chronicle_start_time = None;
+                                next.chronicle_start_minute = None;
+                                next.chronicle_start_granularity = "none".to_string();
+                                next.chronicle_end_time = None;
+                                next.chronicle_end_minute = None;
+                                next.chronicle_end_granularity = "none".to_string();
+                            }
+                            ChronicleBulkOperation::SceneSetPov {
+                                pov_character_id, ..
+                            } => next.pov_character_id = pov_character_id.clone(),
+                            ChronicleBulkOperation::SceneSetDate {
+                                start_time,
+                                start_minute,
+                                start_granularity,
+                                end_time,
+                                end_minute,
+                                end_granularity,
+                                ..
+                            } => {
+                                next.chronicle_start_time = Some(*start_time);
+                                next.chronicle_start_minute = *start_minute;
+                                next.chronicle_start_granularity = start_granularity.clone();
+                                next.chronicle_end_time = *end_time;
+                                next.chronicle_end_minute = *end_minute;
+                                next.chronicle_end_granularity = end_granularity.clone();
+                            }
+                            _ => unreachable!(),
                         }
+                        before.scenes.push(current);
+                        after.scenes.push(next);
                     }
                 }
             }
 
-            let mut after = before.clone();
+            // Bound the fully expanded journal before the first UPDATE/DELETE.
+            let (before_json, after_json) = serialize_bounded_journal(&before, &after)?;
+
             let mut event_results = Vec::new();
             let mut scene_results = Vec::new();
             let mut event_index = 0;
             let mut scene_index = 0;
-
             for operation in &payload.operations {
                 match operation {
                     ChronicleBulkOperation::EventDelete {
@@ -743,9 +1274,6 @@ pub fn agent_chronicle_bulk_mutate_impl(
                             event_id,
                             Some(*base_version),
                         )?;
-                        let state = &mut after.events[event_index];
-                        state.snapshot = None;
-                        state.last_version = *base_version;
                         event_results.push(BulkEventResult {
                             kind: "eventDelete".to_string(),
                             event_id: event_id.clone(),
@@ -756,223 +1284,51 @@ pub fn agent_chronicle_bulk_mutate_impl(
                     ChronicleBulkOperation::EventClearDate {
                         event_id,
                         base_version,
-                    } => {
-                        let version = checked_next_version(*base_version)?;
-                        let previous_updated_at = after.events[event_index]
-                            .snapshot
-                            .as_ref()
-                            .and_then(|snapshot| snapshot["eventData"]["updatedAt"].as_str())
-                            .unwrap_or("");
-                        let updated_at = fresh_updated_at(previous_updated_at);
-                        let updated = conn.execute(
-                            "UPDATE events
-                                SET start_time = NULL, end_time = NULL,
-                                    start_minute = NULL, end_minute = NULL,
-                                    start_granularity = 'none',
-                                    end_granularity = 'none',
-                                    updated_at = ?1, version = ?2
-                              WHERE id = ?3 AND project_id = ?4 AND version = ?5",
-                            rusqlite::params![
-                                updated_at,
-                                version,
-                                event_id,
-                                payload.project_id,
-                                base_version
-                            ],
-                        )?;
-                        if updated != 1 {
-                            anyhow::bail!(
-                                "event '{event_id}' version conflict: expected {base_version}"
-                            );
-                        }
-                        let state = &mut after.events[event_index];
-                        state.snapshot = Some(collect_event_snapshot(conn, event_id)?);
-                        state.last_version = version;
-                        event_results.push(BulkEventResult {
-                            kind: "eventClearDate".to_string(),
-                            event_id: event_id.clone(),
-                            version: Some(version),
-                        });
-                        event_index += 1;
                     }
-                    ChronicleBulkOperation::EventSetLane {
+                    | ChronicleBulkOperation::EventSetLane {
                         event_id,
                         base_version,
-                        primary_codex_id,
-                        lane_group,
-                    } => {
-                        let version = checked_next_version(*base_version)?;
-                        let previous_updated_at = after.events[event_index]
-                            .snapshot
-                            .as_ref()
-                            .and_then(|snapshot| snapshot["eventData"]["updatedAt"].as_str())
-                            .unwrap_or("");
-                        let updated_at = fresh_updated_at(previous_updated_at);
-                        let updated = conn.execute(
-                            "UPDATE events
-                                SET primary_codex_id = ?1, lane_group = ?2,
-                                    updated_at = ?3, version = ?4
-                              WHERE id = ?5 AND project_id = ?6 AND version = ?7",
-                            rusqlite::params![
-                                primary_codex_id,
-                                lane_group,
-                                updated_at,
-                                version,
-                                event_id,
-                                payload.project_id,
-                                base_version
-                            ],
-                        )?;
-                        if updated != 1 {
-                            anyhow::bail!(
-                                "event '{event_id}' version conflict: expected {base_version}"
-                            );
-                        }
-                        let state = &mut after.events[event_index];
-                        state.snapshot = Some(collect_event_snapshot(conn, event_id)?);
-                        state.last_version = version;
-                        event_results.push(BulkEventResult {
-                            kind: "eventSetLane".to_string(),
-                            event_id: event_id.clone(),
-                            version: Some(version),
-                        });
-                        event_index += 1;
+                        ..
                     }
-                    ChronicleBulkOperation::EventSetDate {
+                    | ChronicleBulkOperation::EventSetDate {
                         event_id,
                         base_version,
-                        start_time,
-                        start_minute,
-                        start_granularity,
-                        end_time,
-                        end_minute,
-                        end_granularity,
-                    } => {
-                        validate_absolute_date(
-                            *start_time,
-                            *start_minute,
-                            start_granularity,
-                            *end_time,
-                            *end_minute,
-                            end_granularity,
-                        )?;
-                        let version = checked_next_version(*base_version)?;
-                        let previous_updated_at = after.events[event_index]
-                            .snapshot
-                            .as_ref()
-                            .and_then(|snapshot| snapshot["eventData"]["updatedAt"].as_str())
-                            .unwrap_or("");
-                        let updated_at = fresh_updated_at(previous_updated_at);
-                        let updated = conn.execute(
-                            "UPDATE events
-                                SET start_time = ?1, start_minute = ?2,
-                                    start_granularity = ?3, end_time = ?4,
-                                    end_minute = ?5, end_granularity = ?6,
-                                    updated_at = ?7, version = ?8
-                              WHERE id = ?9 AND project_id = ?10 AND version = ?11",
-                            rusqlite::params![
-                                start_time,
-                                start_minute,
-                                start_granularity,
-                                end_time,
-                                end_minute,
-                                end_granularity,
-                                updated_at,
-                                version,
-                                event_id,
-                                payload.project_id,
-                                base_version,
-                            ],
-                        )?;
-                        if updated != 1 {
-                            anyhow::bail!(
-                                "event '{event_id}' version conflict: expected {base_version}"
-                            );
-                        }
-                        let state = &mut after.events[event_index];
-                        state.snapshot = Some(collect_event_snapshot(conn, event_id)?);
-                        state.last_version = version;
-                        event_results.push(BulkEventResult {
-                            kind: "eventSetDate".to_string(),
-                            event_id: event_id.clone(),
-                            version: Some(version),
-                        });
-                        event_index += 1;
-                    }
-                    ChronicleBulkOperation::SceneClearDate { .. } => {
-                        let state = &mut after.scenes[scene_index];
-                        state.chronicle_start_time = None;
-                        state.chronicle_start_minute = None;
-                        state.chronicle_start_granularity = "none".to_string();
-                        state.chronicle_end_time = None;
-                        state.chronicle_end_minute = None;
-                        state.chronicle_end_granularity = "none".to_string();
-                        let base_updated_at = before.scenes[scene_index].updated_at.clone();
-                        state.updated_at = update_scene_to_state(
-                            conn,
-                            &payload.project_id,
-                            &base_updated_at,
-                            state,
-                        )?;
-                        scene_results.push(BulkSceneResult {
-                            kind: "sceneClearDate".to_string(),
-                            scene_id: state.scene_id.clone(),
-                            updated_at: state.updated_at.clone(),
-                        });
-                        scene_index += 1;
-                    }
-                    ChronicleBulkOperation::SceneSetPov {
-                        pov_character_id, ..
-                    } => {
-                        let state = &mut after.scenes[scene_index];
-                        state.pov_character_id = pov_character_id.clone();
-                        let base_updated_at = before.scenes[scene_index].updated_at.clone();
-                        state.updated_at = update_scene_to_state(
-                            conn,
-                            &payload.project_id,
-                            &base_updated_at,
-                            state,
-                        )?;
-                        scene_results.push(BulkSceneResult {
-                            kind: "sceneSetPov".to_string(),
-                            scene_id: state.scene_id.clone(),
-                            updated_at: state.updated_at.clone(),
-                        });
-                        scene_index += 1;
-                    }
-                    ChronicleBulkOperation::SceneSetDate {
-                        start_time,
-                        start_minute,
-                        start_granularity,
-                        end_time,
-                        end_minute,
-                        end_granularity,
                         ..
                     } => {
-                        validate_absolute_date(
-                            *start_time,
-                            *start_minute,
-                            start_granularity,
-                            *end_time,
-                            *end_minute,
-                            end_granularity,
-                        )?;
-                        let state = &mut after.scenes[scene_index];
-                        state.chronicle_start_time = Some(*start_time);
-                        state.chronicle_start_minute = *start_minute;
-                        state.chronicle_start_granularity = start_granularity.clone();
-                        state.chronicle_end_time = *end_time;
-                        state.chronicle_end_minute = *end_minute;
-                        state.chronicle_end_granularity = end_granularity.clone();
-                        let base_updated_at = before.scenes[scene_index].updated_at.clone();
-                        state.updated_at = update_scene_to_state(
+                        let state = &mut after.events[event_index];
+                        let fields = state.fields.as_mut().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "chronicle bulk compact state missing for event '{event_id}'"
+                            )
+                        })?;
+                        let version = update_event_to_fields(
                             conn,
                             &payload.project_id,
-                            &base_updated_at,
+                            event_id,
+                            *base_version,
+                            fields,
+                        )?;
+                        state.last_version = version;
+                        event_results.push(BulkEventResult {
+                            kind: state.kind.clone(),
+                            event_id: event_id.clone(),
+                            version: Some(version),
+                        });
+                        event_index += 1;
+                    }
+                    ChronicleBulkOperation::SceneClearDate { .. }
+                    | ChronicleBulkOperation::SceneSetPov { .. }
+                    | ChronicleBulkOperation::SceneSetDate { .. } => {
+                        let before_state = &before.scenes[scene_index];
+                        let state = &after.scenes[scene_index];
+                        update_scene_to_state(
+                            conn,
+                            &payload.project_id,
+                            &before_state.updated_at,
                             state,
                         )?;
                         scene_results.push(BulkSceneResult {
-                            kind: "sceneSetDate".to_string(),
+                            kind: state.kind.clone(),
                             scene_id: state.scene_id.clone(),
                             updated_at: state.updated_at.clone(),
                         });
@@ -980,9 +1336,6 @@ pub fn agent_chronicle_bulk_mutate_impl(
                     }
                 }
             }
-
-            let before_json = serde_json::to_string(&before)?;
-            let after_json = serde_json::to_string(&after)?;
             insert_undo_journal_in_tx(
                 conn,
                 UndoJournalInsert {
@@ -1273,6 +1626,304 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn more_than_500_targets_remain_one_atomic_journal() {
+        let db = test_db();
+        let project_id = uuid::Uuid::new_v4().to_string();
+        let mut operations = Vec::with_capacity(501);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES (?1, 'Large Chronicle')",
+                rusqlite::params![project_id],
+            )?;
+            for index in 0..501 {
+                let event_id = format!("event-{index}");
+                conn.execute(
+                    "INSERT INTO events
+                     (id, project_id, title, ordinal, start_time,
+                      start_granularity, precision, kind, created_at, updated_at, version)
+                     VALUES (?1, ?2, 'Event', ?3, 20, 'day', 'exact', 'generic',
+                             datetime('now'), datetime('now'), 1)",
+                    rusqlite::params![event_id, project_id, format!("a{index}")],
+                )?;
+                operations.push(ChronicleBulkOperation::EventClearDate {
+                    event_id,
+                    base_version: 1,
+                });
+            }
+            Ok(())
+        })
+        .expect("seed large Chronicle");
+
+        let result = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "large-forward".to_string(),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations,
+            },
+        )
+        .expect("large bulk mutation");
+
+        assert_eq!(result["eventResults"].as_array().map(Vec::len), Some(501));
+        db.with_conn(|conn| {
+            let cleared: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events
+                  WHERE project_id = ?1
+                    AND start_time IS NULL
+                    AND start_granularity = 'none'
+                    AND version = 2",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            let journals: i64 =
+                conn.query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))?;
+            let changes: i64 =
+                conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?;
+            assert_eq!(cleared, 501);
+            assert_eq!(journals, 1);
+            assert_eq!(changes, 1);
+            Ok(())
+        })
+        .expect("verify one atomic journal");
+    }
+
+    #[test]
+    fn oversized_payload_is_rejected_before_database_access() {
+        let db = test_db();
+        let error = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "oversized".to_string(),
+                project_id: "project".to_string(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::EventDelete {
+                    event_id: "e".repeat(MAX_CHRONICLE_BULK_PAYLOAD_BYTES),
+                    base_version: 1,
+                }],
+            },
+        )
+        .expect_err("oversized payload must fail");
+
+        assert!(error.to_string().contains("8 MiB"));
+    }
+
+    #[test]
+    fn field_updates_store_compact_journal_state_without_event_composites() {
+        let db = test_db();
+        let (project_id, _codex_id, _event_delete_id, event_id, _scene_id) = setup(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE events SET detail = ?1 WHERE id = ?2",
+                rusqlite::params!["x".repeat(256 * 1024), event_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed large event detail");
+
+        agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "compact-journal".to_string(),
+                project_id,
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::EventClearDate {
+                    event_id,
+                    base_version: 1,
+                }],
+            },
+        )
+        .expect("clear date");
+
+        db.with_conn(|conn| {
+            let (before_raw, after_raw): (String, String) = conn.query_row(
+                "SELECT before_json, after_json FROM undo_journal LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert!(before_raw.len() + after_raw.len() < 4 * 1024);
+            assert!(!before_raw.contains("\"detail\""));
+            assert!(!after_raw.contains("\"relations\""));
+
+            let before: Value = serde_json::from_str(&before_raw)?;
+            let after: Value = serde_json::from_str(&after_raw)?;
+            assert!(before["events"][0].get("snapshot").is_none());
+            assert!(after["events"][0].get("snapshot").is_none());
+            assert_eq!(before["events"][0]["fields"]["stateKind"], "date");
+            assert_eq!(before["events"][0]["fields"]["startTime"], 20);
+            assert_eq!(after["events"][0]["fields"]["startTime"], Value::Null);
+            Ok(())
+        })
+        .expect("inspect compact journal");
+    }
+
+    #[test]
+    fn legacy_full_event_update_journal_remains_replayable() {
+        let db = test_db();
+        let (project_id, _codex_id, _event_delete_id, event_id, _scene_id) = setup(&db);
+        let before_snapshot = db
+            .with_conn(|conn| collect_event_snapshot(conn, &event_id))
+            .expect("legacy before snapshot");
+        let result = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "legacy-forward".to_string(),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::EventClearDate {
+                    event_id: event_id.clone(),
+                    base_version: 1,
+                }],
+            },
+        )
+        .expect("forward");
+        let after_snapshot = db
+            .with_conn(|conn| collect_event_snapshot(conn, &event_id))
+            .expect("legacy after snapshot");
+
+        let legacy_before = ChronicleBulkSnapshot {
+            events: vec![BulkEventState {
+                kind: "eventClearDate".to_string(),
+                event_id: event_id.clone(),
+                snapshot: Some(before_snapshot),
+                fields: None,
+                last_version: 1,
+            }],
+            scenes: Vec::new(),
+        };
+        let legacy_after = ChronicleBulkSnapshot {
+            events: vec![BulkEventState {
+                kind: "eventClearDate".to_string(),
+                event_id: event_id.clone(),
+                snapshot: Some(after_snapshot),
+                fields: None,
+                last_version: 2,
+            }],
+            scenes: Vec::new(),
+        };
+        let before_raw = serde_json::to_string(&legacy_before).expect("serialize legacy before");
+        let after_raw = serde_json::to_string(&legacy_after).expect("serialize legacy after");
+        assert!(!before_raw.contains("\"fields\""));
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE undo_journal SET before_json = ?1, after_json = ?2 WHERE id = ?3",
+                rusqlite::params![
+                    before_raw,
+                    after_raw,
+                    result["undoJournalId"].as_str().expect("journal id")
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("replace with legacy journal");
+
+        crate::agent_writes::agent_undo_journal_impl(
+            &db,
+            crate::agent_writes::AgentUndoJournalPayload {
+                request_id: Some("legacy-undo".to_string()),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                journal_id: result["undoJournalId"]
+                    .as_str()
+                    .expect("journal id")
+                    .to_string(),
+                direction: "undo".to_string(),
+            },
+        )
+        .expect("undo legacy journal");
+
+        db.with_conn(|conn| {
+            let restored: (Option<i64>, String, i64) = conn.query_row(
+                "SELECT start_time, start_granularity, version FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(restored, (Some(20), "time".to_string(), 3));
+            Ok(())
+        })
+        .expect("verify legacy replay");
+
+        crate::agent_writes::agent_undo_journal_impl(
+            &db,
+            crate::agent_writes::AgentUndoJournalPayload {
+                request_id: Some("legacy-redo".to_string()),
+                project_id,
+                session_id: "session".to_string(),
+                journal_id: result["undoJournalId"]
+                    .as_str()
+                    .expect("journal id")
+                    .to_string(),
+                direction: "redo".to_string(),
+            },
+        )
+        .expect("redo legacy journal");
+        db.with_conn(|conn| {
+            let redone: (Option<i64>, String, i64) = conn.query_row(
+                "SELECT start_time, start_granularity, version FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(redone, (None, "none".to_string(), 4));
+            Ok(())
+        })
+        .expect("verify legacy redo");
+    }
+
+    #[test]
+    fn expanded_journal_limit_rejects_before_the_first_write() {
+        let db = test_db();
+        let (project_id, _codex_id, event_id, _event_clear_id, _scene_id) = setup(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE events SET detail = ?1 WHERE id = ?2",
+                rusqlite::params!["x".repeat(16 * 1024 * 1024 + 1), event_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed oversized delete snapshot");
+
+        let error = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "oversized-journal".to_string(),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::EventDelete {
+                    event_id: event_id.clone(),
+                    base_version: 1,
+                }],
+            },
+        )
+        .expect_err("expanded journal must be bounded");
+        assert!(
+            error
+                .to_string()
+                .contains("undo snapshot exceeds the 16 MiB limit"),
+            "{error:#}"
+        );
+
+        db.with_conn(|conn| {
+            let still_present: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| row.get(0),
+            )?;
+            let journals: i64 =
+                conn.query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))?;
+            let changes: i64 =
+                conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?;
+            assert_eq!((still_present, journals, changes), (1, 0, 0));
+            Ok(())
+        })
+        .expect("oversized journal rollback");
     }
 
     #[test]

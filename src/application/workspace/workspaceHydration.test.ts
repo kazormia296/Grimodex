@@ -85,6 +85,7 @@ const settings = {
     viewStartDay: null,
     axisMode: null,
     viewProjectId: null,
+    viewWorkspaceId: null,
     viewWorkspacePath: null,
     viewWorkspaceOpenRevision: null,
     locked: false,

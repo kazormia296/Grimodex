@@ -44,12 +44,16 @@ export type AppView = "loading" | "welcome" | "launcher" | "editor";
 interface OpenWorkspaceResult {
   name: string;
   isExisting: boolean;
+  /** Stable UUID from `.grimodex/workspace.json` (missing only on an old backend). */
+  workspaceId?: string;
 }
 
 interface WorkspaceState {
   view: AppView;
   globalSettings: GlobalSettings | null;
   activeWorkspacePath: string | null;
+  /** Stable persisted Workspace identity; unlike openRevision, survives restarts. */
+  activeWorkspaceId: string | null;
   /**
    * In-memory identity for the currently opened DB instance. Incremented on
    * every successful open, including a same-path reopen after sample reseed or
@@ -94,6 +98,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   view: "loading",
   globalSettings: null,
   activeWorkspacePath: null,
+  activeWorkspaceId: null,
   workspaceOpenRevision: 0,
   workspaceSwitchInProgress: false,
   workspaceHydrated: false,
@@ -293,6 +298,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       set({
         view: "editor",
         activeWorkspacePath: path,
+        // Keep an old native binding usable during a rolling development
+        // upgrade. Current backends always return workspaceId.
+        activeWorkspaceId: result.workspaceId ?? path,
         workspaceOpenRevision: nextOpenRevision,
         activeWorkspaceName: result.name,
         globalSettings: settings,
