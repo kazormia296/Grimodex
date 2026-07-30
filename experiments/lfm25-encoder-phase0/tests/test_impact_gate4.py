@@ -44,6 +44,16 @@ class ImpactGate4ConfigTests(unittest.TestCase):
         self.assertEqual(config.thresholds.minimum_candidate_reduction, 0.30)
         self.assertEqual(config.thresholds.minimum_challenge_recall, 0.80)
         self.assertEqual(
+            config.protocol.selection_protocol_version,
+            "phase0b-impact-gate4-selection-v2",
+        )
+        self.assertEqual(config.protocol.gate31_prerequisite, "hold")
+        self.assertFalse(config.protocol.formal_gate4_eligible)
+        self.assertEqual(
+            config.protocol.test_consumption_registry,
+            "data/public/gate4/test-consumption",
+        )
+        self.assertEqual(
             {model.key: model.revision for model in config.models},
             {
                 "ja_xsmall": "de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a",
@@ -158,7 +168,7 @@ class ImpactGate4CorpusTests(unittest.TestCase):
 
 
 class ImpactGate4DecisionTests(unittest.TestCase):
-    def test_probe_signal_never_claims_phase1_readiness(self) -> None:
+    def test_probe_signal_is_separate_from_formal_project_decision(self) -> None:
         promoted = assess_probe_signal(
             positive_recall=0.95,
             direct_recall=1.0,
@@ -172,9 +182,21 @@ class ImpactGate4DecisionTests(unittest.TestCase):
             challenge_recall=1.0,
         )
 
-        self.assertEqual(promoted.verdict, "continue_to_human_corpus")
+        self.assertEqual(promoted.synthetic_probe_assessment, "signal_detected")
+        self.assertEqual(promoted.gate31_prerequisite, "hold")
+        self.assertFalse(promoted.formal_gate4_eligible)
+        self.assertFalse(promoted.continue_to_human_corpus)
+        self.assertEqual(
+            promoted.effective_verdict,
+            "hold_on_latency_prerequisite",
+        )
         self.assertFalse(promoted.phase1_ready)
-        self.assertEqual(stopped.verdict, "stop_probe")
+        self.assertEqual(
+            stopped.synthetic_probe_assessment,
+            "insufficient_signal",
+        )
+        self.assertEqual(stopped.effective_verdict, "stop_on_synthetic_probe")
+        self.assertFalse(stopped.continue_to_human_corpus)
         self.assertFalse(stopped.phase1_ready)
 
     def test_locked_test_report_requires_validation_threshold_and_is_write_once(
