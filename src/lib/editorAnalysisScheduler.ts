@@ -1,8 +1,11 @@
+import { recordCounter } from "@/lib/perfLog";
+
 export type EditorAnalysisTaskKind =
   | "save"
   | "codex-match"
   | "lint"
   | "derived"
+  | "revision"
   | "semantic";
 
 export interface EditorAnalysisTask {
@@ -25,20 +28,17 @@ const PRIORITY: Readonly<Record<EditorAnalysisTaskKind, number>> = {
   "codex-match": 1,
   lint: 2,
   derived: 3,
-  semantic: 4,
+  revision: 4,
+  semantic: 5,
 };
 
-/**
- * Keep simultaneously-due work in separate macrotasks. One millisecond is
- * enough to avoid a single callback burst while remaining imperceptible next
- * to the 150ms-2.5s producer debounces.
- */
-const DUE_TASK_SPACING_MS = 1;
-
 const tasks = new Map<string, ScheduledEditorAnalysisTask>();
+const BACKGROUND_LANE_DEADLINE_MS = 1_000;
 let wakeTimer: ReturnType<typeof setTimeout> | null = null;
 let sequence = 0;
-let nextLaunchAt = 0;
+let pendingBackgroundTask: ScheduledEditorAnalysisTask | null = null;
+let cancelPendingBackgroundLaunch: (() => void) | null = null;
+let activeCriticalSaveCount = 0;
 
 function normalizeDelay(delayMs: number): number {
   return Number.isFinite(delayMs) ? Math.max(0, delayMs) : 0;
@@ -50,9 +50,16 @@ function clearWakeTimer(): void {
   wakeTimer = null;
 }
 
+function clearPendingBackgroundLaunch(): void {
+  cancelPendingBackgroundLaunch?.();
+  cancelPendingBackgroundLaunch = null;
+  pendingBackgroundTask = null;
+}
+
 function nextDueAt(): number | null {
   let earliest: number | null = null;
   for (const task of tasks.values()) {
+    if (activeCriticalSaveCount > 0 && task.kind !== "save") continue;
     if (earliest === null || task.dueAt < earliest) earliest = task.dueAt;
   }
   return earliest;
@@ -83,6 +90,27 @@ function startTask(task: ScheduledEditorAnalysisTask): void {
   }
 }
 
+function startCriticalSave(task: ScheduledEditorAnalysisTask): void {
+  activeCriticalSaveCount++;
+  try {
+    const result = task.run();
+    if (result && typeof result.then === "function") {
+      void Promise.resolve(result)
+        .catch((error: unknown) => {
+          reportTaskFailure(task, error);
+        })
+        .finally(() => {
+          activeCriticalSaveCount--;
+          armWakeTimer();
+        });
+      return;
+    }
+  } catch (error) {
+    reportTaskFailure(task, error);
+  }
+  activeCriticalSaveCount--;
+}
+
 function compareDueTasks(
   left: ScheduledEditorAnalysisTask,
   right: ScheduledEditorAnalysisTask,
@@ -94,29 +122,149 @@ function compareDueTasks(
   );
 }
 
-function armWakeTimer(): void {
-  clearWakeTimer();
-  const earliest = nextDueAt();
-  if (earliest === null) return;
-  const delay = Math.max(0, Math.max(earliest, nextLaunchAt) - Date.now());
-  wakeTimer = setTimeout(() => {
-    wakeTimer = null;
-    const now = Date.now();
-    const next = [...tasks.values()]
-      .filter((task) => task.dueAt <= now)
-      .sort(compareDueTasks)[0];
+function scheduleAnimationFrameTask(run: () => void): () => void {
+  if (typeof requestAnimationFrame !== "function") {
+    const timer = setTimeout(run, 16);
+    return () => clearTimeout(timer);
+  }
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const frame = requestAnimationFrame(() => {
+    timeout = setTimeout(run, 0);
+  });
+  return () => {
+    cancelAnimationFrame(frame);
+    if (timeout !== null) clearTimeout(timeout);
+  };
+}
 
-    if (!next) {
+function scheduleBackgroundTask(run: () => void): () => void {
+  const runtimeScheduler = (
+    globalThis as typeof globalThis & {
+      scheduler?: {
+        postTask: (
+          callback: () => void,
+          options: { priority: "background"; signal: AbortSignal },
+        ) => Promise<void>;
+      };
+    }
+  ).scheduler;
+  if (runtimeScheduler?.postTask) {
+    const controller = new AbortController();
+    let cancelled = false;
+    let started = false;
+    let cancelFallback: (() => void) | null = null;
+    let deadline: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      if (cancelled || started) return;
+      recordCounter("editor.scheduler.background.deadline");
+      controller.abort();
+      runOnce();
+    }, BACKGROUND_LANE_DEADLINE_MS);
+    const runOnce = () => {
+      if (cancelled || started) return;
+      started = true;
+      if (deadline !== null) {
+        clearTimeout(deadline);
+        deadline = null;
+      }
+      run();
+    };
+    void runtimeScheduler
+      .postTask(runOnce, {
+        priority: "background",
+        signal: controller.signal,
+      })
+      .catch((error: unknown) => {
+        if (
+          !cancelled &&
+          !(error instanceof DOMException && error.name === "AbortError")
+        ) {
+          cancelFallback = scheduleAnimationFrameTask(runOnce);
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (deadline !== null) clearTimeout(deadline);
+      controller.abort();
+      cancelFallback?.();
+    };
+  }
+  if (typeof requestIdleCallback === "function") {
+    const idleCallback = requestIdleCallback(run, { timeout: 1_000 });
+    return () => cancelIdleCallback(idleCallback);
+  }
+  return scheduleAnimationFrameTask(run);
+}
+
+function launchBackgroundTask(task: ScheduledEditorAnalysisTask): void {
+  pendingBackgroundTask = task;
+  const launch = () => {
+    if (pendingBackgroundTask !== task) return;
+    cancelPendingBackgroundLaunch = null;
+    pendingBackgroundTask = null;
+
+    // Durable persistence owns the critical lane from debounce scheduling
+    // through completion. Move this background task behind the earliest save
+    // unless a newer payload for the same key already replaced it.
+    let pendingSaveDueAt: number | null = null;
+    for (const candidate of tasks.values()) {
+      if (
+        candidate.kind === "save" &&
+        (pendingSaveDueAt === null || candidate.dueAt < pendingSaveDueAt)
+      ) {
+        pendingSaveDueAt = candidate.dueAt;
+      }
+    }
+    if (activeCriticalSaveCount > 0 || pendingSaveDueAt !== null) {
+      if (!tasks.has(task.key)) {
+        tasks.set(task.key, {
+          ...task,
+          dueAt:
+            pendingSaveDueAt === null
+              ? task.dueAt
+              : Math.max(task.dueAt, pendingSaveDueAt),
+        });
+      }
       armWakeTimer();
       return;
     }
 
+    recordCounter(`editor.scheduler.${task.kind}.started`);
+    startTask(task);
+    armWakeTimer();
+  };
+  cancelPendingBackgroundLaunch =
+    task.kind === "lint"
+      ? scheduleAnimationFrameTask(launch)
+      : scheduleBackgroundTask(launch);
+}
+
+function armWakeTimer(): void {
+  clearWakeTimer();
+  const earliest = nextDueAt();
+  if (earliest === null) return;
+  const delay = Math.max(0, earliest - Date.now());
+  wakeTimer = setTimeout(() => {
+    wakeTimer = null;
+    const now = Date.now();
+    const due = [...tasks.values()]
+      .filter((task) => task.dueAt <= now)
+      .sort(compareDueTasks);
+    const next =
+      due.find((task) => task.kind === "save") ??
+      (pendingBackgroundTask ? undefined : due[0]);
+
+    if (!next) {
+      if (!pendingBackgroundTask) armWakeTimer();
+      return;
+    }
+
     tasks.delete(next.key);
-    // Store this globally before invoking producer code. A synchronous run or
-    // Promise continuation may re-enter scheduleEditorAnalysisTask(), and
-    // every such re-arm must retain the inter-task launch spacing.
-    nextLaunchAt = now + DUE_TASK_SPACING_MS;
-    startTask(next);
+    recordCounter(`editor.scheduler.${next.kind}.dequeued`);
+    if (next.kind === "save") {
+      startCriticalSave(next);
+    } else {
+      launchBackgroundTask(next);
+    }
     armWakeTimer();
   }, delay);
 }
@@ -130,17 +278,25 @@ function armWakeTimer(): void {
  */
 export function scheduleEditorAnalysisTask(task: EditorAnalysisTask): void {
   if (!task.key) return;
+  if (pendingBackgroundTask?.key === task.key) {
+    clearPendingBackgroundLaunch();
+  }
   tasks.set(task.key, {
     ...task,
     delayMs: normalizeDelay(task.delayMs),
     dueAt: Date.now() + normalizeDelay(task.delayMs),
     sequence: sequence++,
   });
+  recordCounter(`editor.scheduler.${task.kind}.scheduled`);
   armWakeTimer();
 }
 
 export function cancelEditorAnalysisTask(key: string): boolean {
-  const removed = tasks.delete(key);
+  let removed = tasks.delete(key);
+  if (pendingBackgroundTask?.key === key) {
+    clearPendingBackgroundLaunch();
+    removed = true;
+  }
   if (removed) armWakeTimer();
   return removed;
 }
@@ -151,7 +307,8 @@ export function _pendingEditorAnalysisTaskCount(): number {
 
 export function _resetEditorAnalysisSchedulerForTests(): void {
   clearWakeTimer();
+  clearPendingBackgroundLaunch();
   tasks.clear();
   sequence = 0;
-  nextLaunchAt = 0;
+  activeCriticalSaveCount = 0;
 }

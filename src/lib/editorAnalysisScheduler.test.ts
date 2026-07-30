@@ -14,6 +14,7 @@ describe("editorAnalysisScheduler", () => {
 
   afterEach(() => {
     _resetEditorAnalysisSchedulerForTests();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -52,7 +53,7 @@ describe("editorAnalysisScheduler", () => {
     expect(runs).toEqual(["latest-save"]);
     expect(vi.getTimerCount()).toBe(1);
 
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual(["latest-save", "lint"]);
     expect(_pendingEditorAnalysisTaskCount()).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
@@ -86,16 +87,16 @@ describe("editorAnalysisScheduler", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(runs).toEqual(["save"]);
 
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual(["save", "codex-match"]);
 
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual(["save", "codex-match", "lint"]);
 
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual(["save", "codex-match", "lint", "derived"]);
 
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual([
       "save",
       "codex-match",
@@ -138,9 +139,9 @@ describe("editorAnalysisScheduler", () => {
     expect(runs).toEqual(["save"]);
     expect(vi.getTimerCount()).toBe(1);
 
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual(["save", "codex-match"]);
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual(["save", "codex-match", "lint"]);
   });
 
@@ -170,6 +171,8 @@ describe("editorAnalysisScheduler", () => {
     await vi.advanceTimersByTimeAsync(99);
     expect(runs).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
+    expect(runs).toEqual([]);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual(["later"]);
   });
 
@@ -201,7 +204,126 @@ describe("editorAnalysisScheduler", () => {
     );
     expect(runs).toEqual([]);
 
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(17);
     expect(runs).toEqual(["lint"]);
+  });
+
+  it("lets a newly due durable save preempt a waiting background task", async () => {
+    const runs: string[] = [];
+
+    scheduleEditorAnalysisTask({
+      key: "lint:waiting",
+      kind: "lint",
+      delayMs: 0,
+      run: () => {
+        runs.push("lint");
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runs).toEqual([]);
+
+    scheduleEditorAnalysisTask({
+      key: "save:critical",
+      kind: "save",
+      delayMs: 0,
+      run: () => {
+        runs.push("save");
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runs).toEqual(["save"]);
+
+    await vi.advanceTimersByTimeAsync(17);
+    expect(runs).toEqual(["save", "lint"]);
+  });
+
+  it("holds background work until an in-flight durable save settles", async () => {
+    const runs: string[] = [];
+    let finishSave: () => void = () => {
+      throw new Error("save did not start");
+    };
+
+    scheduleEditorAnalysisTask({
+      key: "save:in-flight",
+      kind: "save",
+      delayMs: 0,
+      run: () =>
+        new Promise<void>((resolve) => {
+          runs.push("save-start");
+          finishSave = () => {
+            runs.push("save-end");
+            resolve();
+          };
+        }),
+    });
+    scheduleEditorAnalysisTask({
+      key: "lint:after-save",
+      kind: "lint",
+      delayMs: 0,
+      run: () => {
+        runs.push("lint");
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(runs).toEqual(["save-start"]);
+
+    finishSave();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(17);
+    expect(runs).toEqual(["save-start", "save-end", "lint"]);
+  });
+
+  it("moves ready background work behind a future durable save", async () => {
+    const runs: string[] = [];
+
+    scheduleEditorAnalysisTask({
+      key: "lint:ready",
+      kind: "lint",
+      delayMs: 0,
+      run: () => {
+        runs.push("lint");
+      },
+    });
+    scheduleEditorAnalysisTask({
+      key: "save:soon",
+      kind: "save",
+      delayMs: 50,
+      run: () => {
+        runs.push("save");
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(49);
+    expect(runs).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runs).toEqual(["save"]);
+    await vi.advanceTimersByTimeAsync(17);
+    expect(runs).toEqual(["save", "lint"]);
+  });
+
+  it("falls back once when an accepted background postTask is starved", async () => {
+    const run = vi.fn();
+    const postTask = vi.fn(() => new Promise<void>(() => {}));
+    vi.stubGlobal("scheduler", { postTask });
+
+    scheduleEditorAnalysisTask({
+      key: "revision:starved",
+      kind: "revision",
+      delayMs: 0,
+      run,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(postTask).toHaveBeenCalledOnce();
+    expect(run).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(run).toHaveBeenCalledOnce();
   });
 });

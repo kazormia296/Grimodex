@@ -54,6 +54,12 @@ export interface BodyMentionScanRequest {
   sceneUpdatedAt: string;
 }
 
+export interface PersistedSceneBody {
+  contentJson: string;
+  contentVersion: number;
+  contentUpdatedAt: string;
+}
+
 interface ScheduledBodyMentionScan extends BodyMentionScanRequest {
   workspaceIdentity: WorkspaceIdentity | null;
 }
@@ -110,46 +116,52 @@ function schedulePostSaveDerivedRefresh(
   const workspaceKey = request.workspaceIdentity
     ? `${request.workspaceIdentity.path}:${request.workspaceIdentity.openRevision}`
     : "browser";
+  recordCounter("editor.postSave.derived.scheduled");
   scheduleEditorAnalysisTask({
     key: `derived-save:${workspaceKey}:${request.projectId}:${request.sceneId}`,
     kind: "derived",
     delayMs: 0,
     run: async () => {
-      if (!isPostSaveAuthorityCurrent(request)) return;
-
-      if (request.aiRatio.kind !== "skip") {
-        markStart("editor.postSave.refreshAiRatio");
-        try {
-          const treeState = useTreeStore.getState();
-          if (request.aiRatio.kind === "precomputed") {
-            treeState.setAiRatio(request.sceneId, request.aiRatio.value);
-          } else {
-            await treeState.refreshAiRatio(request.sceneId);
-          }
-        } catch {
-          // A derived badge refresh must not turn a committed save into an
-          // error. The next tree hydration or save refreshes it again.
-        } finally {
-          markEnd("editor.postSave.refreshAiRatio");
-        }
-      }
-
-      if (!request.refreshContextLayers) return;
-      // Let the AI-ratio store notification and its React subscribers commit
-      // before context preparation begins. This is a real event-loop boundary,
-      // not merely another Promise microtask.
-      await yieldToMainThread();
-      if (!isPostSaveAuthorityCurrent(request)) return;
-      const chatState = useChatStore.getState();
-      if (chatState.activeSceneId !== request.sceneId) return;
-
-      markStart("editor.postSave.refreshContextLayers");
+      recordCounter("editor.postSave.derived.started");
       try {
-        await chatState.refreshContextLayers();
-      } catch {
-        // Context is rebuilt again before send; preserve the committed save.
+        if (!isPostSaveAuthorityCurrent(request)) return;
+
+        if (request.aiRatio.kind !== "skip") {
+          markStart("editor.postSave.refreshAiRatio");
+          try {
+            const treeState = useTreeStore.getState();
+            if (request.aiRatio.kind === "precomputed") {
+              treeState.setAiRatio(request.sceneId, request.aiRatio.value);
+            } else {
+              await treeState.refreshAiRatio(request.sceneId);
+            }
+          } catch {
+            // A derived badge refresh must not turn a committed save into an
+            // error. The next tree hydration or save refreshes it again.
+          } finally {
+            markEnd("editor.postSave.refreshAiRatio");
+          }
+        }
+
+        if (!request.refreshContextLayers) return;
+        // Let the AI-ratio store notification and its React subscribers commit
+        // before context preparation begins. This is a real event-loop boundary,
+        // not merely another Promise microtask.
+        await yieldToMainThread();
+        if (!isPostSaveAuthorityCurrent(request)) return;
+        const chatState = useChatStore.getState();
+        if (chatState.activeSceneId !== request.sceneId) return;
+
+        markStart("editor.postSave.refreshContextLayers");
+        try {
+          await chatState.refreshContextLayers();
+        } catch {
+          // Context is rebuilt again before send; preserve the committed save.
+        } finally {
+          markEnd("editor.postSave.refreshContextLayers");
+        }
       } finally {
-        markEnd("editor.postSave.refreshContextLayers");
+        recordCounter("editor.postSave.derived.settled");
       }
     },
   });
@@ -167,7 +179,8 @@ async function runBodyMentionScan(sceneId: string): Promise<void> {
   if (!current) return;
 
   const task = (async () => {
-    markStart("editor.coreSave.bodyMentionUpsert");
+    recordCounter("editor.postSave.bodyMention.started");
+    markStart("editor.postSave.bodyMention");
     try {
       if (!isBodyMentionScanAuthoritative(current)) return;
       const allEntries = await listCodexMatchTargets(current.projectId);
@@ -199,7 +212,8 @@ async function runBodyMentionScan(sceneId: string): Promise<void> {
         );
       }
     } finally {
-      markEnd("editor.coreSave.bodyMentionUpsert");
+      recordCounter("editor.postSave.bodyMention.settled");
+      markEnd("editor.postSave.bodyMention");
     }
   })();
   bodyMentionScanTasks.set(sceneId, task);
@@ -249,6 +263,7 @@ async function flushBodyMentionScans(): Promise<void> {
  */
 export function scheduleBodyMentionScan(request: BodyMentionScanRequest): void {
   const { sceneId } = request;
+  recordCounter("editor.postSave.bodyMention.scheduled");
   pendingBodyMentionScans.set(sceneId, {
     ...request,
     workspaceIdentity: getCurrentWorkspaceIdentity(),
@@ -303,7 +318,7 @@ registerQuiescenceProvider({
 export async function persistSceneBody(
   id: string,
   doc: ProseMirrorNode,
-): Promise<void> {
+): Promise<PersistedSceneBody> {
   const beats = useUnplacedBeatsStore.getState().getBeats(id);
   const projectId = useTreeStore.getState().projectId;
   const workspaceIdentity = getCurrentWorkspaceIdentity();
@@ -455,16 +470,52 @@ export async function persistSceneBody(
     }
     return previews;
   });
-
   if (fileBackedUri && isFileBacked) {
-    scheduleWriteBack(id, fileBackedUri, sceneJsonStr);
-    useTreeStore.getState().setCharCount(id, charCount);
-    scheduleSceneIndex(id);
+    markStart("editor.save.finalize");
+    try {
+      scheduleWriteBack(id, fileBackedUri, sceneJsonStr);
+      useTreeStore.getState().setCharCount(id, charCount);
+      scheduleSceneIndex(id);
 
-    // file-backed Scene でも schema 非依存の Codex 本文検出とチャット
-    // context 再構築は実行する。他の schema 依存処理
-    // (authorship/foreshadow/annotation/sceneBeat/aiRatio) は
-    // file-backed editor 拡張で外しているため空打ちになるのでスキップ。
+      // file-backed Scene でも schema 非依存の Codex 本文検出とチャット
+      // context 再構築は実行する。他の schema 依存処理
+      // (authorship/foreshadow/annotation/sceneBeat/aiRatio) は
+      // file-backed editor 拡張で外しているため空打ちになるのでスキップ。
+      scheduleBodyMentionScan({
+        projectId,
+        sceneId: id,
+        docJsonStr: sceneJsonStr,
+        sceneVersion: contentVersion,
+        sceneUpdatedAt: contentUpdatedAt,
+      });
+      if (useChatStore.getState().activeSceneId === id) {
+        schedulePostSaveDerivedRefresh({
+          sceneId: id,
+          projectId,
+          workspaceIdentity,
+          aiRatio: { kind: "skip" },
+          refreshContextLayers: true,
+        });
+      }
+    } finally {
+      markEnd("editor.save.finalize");
+    }
+    return {
+      contentJson: sceneJsonStr,
+      contentVersion,
+      contentUpdatedAt,
+    };
+  }
+
+  markStart("editor.save.finalize");
+  try {
+    markStart("editor.coreSave.treeMirror");
+    useTreeStore.getState().setNodePreview(id, {
+      placed: placedBeatPreview ?? null,
+      unplaced: unplacedBeatPreview ?? null,
+    });
+    markEnd("editor.coreSave.treeMirror");
+    // Deferred body-mention scan — does not block the save response
     scheduleBodyMentionScan({
       projectId,
       sceneId: id,
@@ -472,44 +523,26 @@ export async function persistSceneBody(
       sceneVersion: contentVersion,
       sceneUpdatedAt: contentUpdatedAt,
     });
-    if (useChatStore.getState().activeSceneId === id) {
-      schedulePostSaveDerivedRefresh({
-        sceneId: id,
-        projectId,
-        workspaceIdentity,
-        aiRatio: { kind: "skip" },
-        refreshContextLayers: true,
-      });
-    }
-    return;
+    schedulePostSaveDerivedRefresh({
+      sceneId: id,
+      projectId,
+      workspaceIdentity,
+      aiRatio: nativeSnapshot
+        ? { kind: "precomputed", value: deriveSceneAiRatio(nativeSnapshot) }
+        : { kind: "database" },
+      refreshContextLayers: useChatStore.getState().activeSceneId === id,
+    });
+    // セマンティック検索の再インデックスを debounce 付きで予約する。
+    // 連続入力中は 2.5s おきに後ろへずれ、ユーザが手を止めてから 1 度だけ
+    // Rust 側 `semantic_index_scene` を呼ぶ。正しさは Rust 側 content_hash
+    // 再検証で担保される (§3.4)。
+    scheduleSceneIndex(id);
+  } finally {
+    markEnd("editor.save.finalize");
   }
-
-  markStart("editor.coreSave.treeMirror");
-  useTreeStore.getState().setNodePreview(id, {
-    placed: placedBeatPreview ?? null,
-    unplaced: unplacedBeatPreview ?? null,
-  });
-  markEnd("editor.coreSave.treeMirror");
-  // Deferred body-mention scan — does not block the save response
-  scheduleBodyMentionScan({
-    projectId,
-    sceneId: id,
-    docJsonStr: sceneJsonStr,
-    sceneVersion: contentVersion,
-    sceneUpdatedAt: contentUpdatedAt,
-  });
-  schedulePostSaveDerivedRefresh({
-    sceneId: id,
-    projectId,
-    workspaceIdentity,
-    aiRatio: nativeSnapshot
-      ? { kind: "precomputed", value: deriveSceneAiRatio(nativeSnapshot) }
-      : { kind: "database" },
-    refreshContextLayers: useChatStore.getState().activeSceneId === id,
-  });
-  // セマンティック検索の再インデックスを debounce 付きで予約する。
-  // 連続入力中は 2.5s おきに後ろへずれ、ユーザが手を止めてから 1 度だけ
-  // Rust 側 `semantic_index_scene` を呼ぶ。正しさは Rust 側 content_hash
-  // 再検証で担保される (§3.4)。
-  scheduleSceneIndex(id);
+  return {
+    contentJson: sceneJsonStr,
+    contentVersion,
+    contentUpdatedAt,
+  };
 }

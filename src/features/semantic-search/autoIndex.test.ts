@@ -30,6 +30,7 @@ const {
     workspaceHydrated: true,
     projectId: "p1" as string | null,
     panelWindow: false,
+    performanceCapability: false,
   },
 }));
 
@@ -63,6 +64,9 @@ vi.mock("@/features/project/projectStore", () => ({
 }));
 vi.mock("@/features/layout/multiwindow/panelWindow", () => ({
   isPanelWindow: () => runtime.panelWindow,
+}));
+vi.mock("@/lib/perfLog", () => ({
+  hasRuntimePerformanceCapability: () => runtime.performanceCapability,
 }));
 
 import {
@@ -115,10 +119,19 @@ beforeEach(() => {
   runtime.workspaceHydrated = true;
   runtime.projectId = "p1";
   runtime.panelWindow = false;
+  runtime.performanceCapability = false;
   useReindexProgressStore.getState().clear();
 });
 
 describe("ensureSemanticModelForProject", () => {
+  it("does not download a model inside the deterministic runtime fixture", async () => {
+    runtime.performanceCapability = true;
+
+    await ensureSemanticModelForProject("p1", "/workspace/a");
+
+    expect(mockDownloadSemanticModel).not.toHaveBeenCalled();
+  });
+
   it("retries A after its result becomes stale during an A -> B -> A switch", async () => {
     runtime.projectId = "default-project";
     let finishA: (status: string) => void = () => {};
