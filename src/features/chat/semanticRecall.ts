@@ -1,6 +1,14 @@
 import { semanticSearch, type SemanticSearchHit } from "../semantic-search/api";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import {
+  scheduleSemanticRerankerShadow,
+  type SemanticRerankerShadowScope,
+} from "./semanticRerankerShadow";
+import {
+  selectDenseRecallHitsWithPolicy,
+  selectHybridRecallHitsWithPolicy,
+} from "./hybridRecallSelection";
 
 /**
  * Layer4 RAG (semantic recall): drafting チャットの文脈に、意味検索で見つけた
@@ -128,13 +136,31 @@ export function buildSemanticRecallQuery(args: {
   userMessage: string;
   sceneBody?: string;
 }): string {
+  return buildSemanticRecallQueryParts(args).query;
+}
+
+export interface SemanticRecallQueryParts {
+  userMessage: string;
+  sceneTail: string;
+  query: string;
+}
+
+/** Preserve the two real query components for shadow truncation telemetry. */
+export function buildSemanticRecallQueryParts(args: {
+  userMessage: string;
+  sceneBody?: string;
+}): SemanticRecallQueryParts {
   const message = args.userMessage.trim();
   const body = (args.sceneBody ?? "").trim();
   const tail =
     body.length > SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS
       ? body.slice(-SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS)
       : body;
-  return [message, tail].filter((s) => s.length > 0).join("\n");
+  return {
+    userMessage: message,
+    sceneTail: tail,
+    query: [message, tail].filter((s) => s.length > 0).join("\n"),
+  };
 }
 
 /**
@@ -165,36 +191,12 @@ export function selectSemanticRecallChunks(
   const gateScore = opts.gateScore ?? SEMANTIC_RECALL_TOP1_GATE;
   const maxChunks = opts.maxChunks ?? SEMANTIC_RECALL_MAX_CHUNKS;
   const maxChunkChars = opts.maxChunkChars ?? SEMANTIC_RECALL_MAX_CHUNK_CHARS;
-  const excluded = new Set(opts.excludeSceneIds);
-
-  // 除外シーンを除き、床 (minScore) 以上だけをスコア降順に。
-  const sorted = hits
-    .filter((h) => !excluded.has(h.sceneId) && h.score >= minScore)
-    .sort((a, b) => b.score - a.score);
-
-  // top-1 ゲート: 最良候補がゲートに届かなければ何も注入しない (precision)。
-  if (sorted.length === 0 || sorted[0].score < gateScore) return [];
-
-  // distinct シーン優先 + backfill: まず各シーンの最良チャンク (distinct) を集め、
-  // 枠が余ったら同一シーンの二番手チャンク (leftover) で埋める。これにより
-  // 「別シーンという多様な選択肢がある時だけ」二番手パッセージを譲る — 関連シーンが
-  // 少ないときは同一シーンの別チャンク (別内容) を取りこぼさない。
-  const seenScenes = new Set<string>();
-  const distinct: SemanticSearchHit[] = [];
-  const leftover: SemanticSearchHit[] = [];
-  for (const h of sorted) {
-    if (seenScenes.has(h.sceneId)) {
-      leftover.push(h);
-    } else {
-      seenScenes.add(h.sceneId);
-      distinct.push(h);
-    }
-  }
-  const chosen = [...distinct, ...leftover]
-    .slice(0, maxChunks)
-    .sort((a, b) => b.score - a.score);
-
-  return chosen.map((h) => ({
+  return selectDenseRecallHitsWithPolicy(hits, {
+    excludeSceneIds: opts.excludeSceneIds,
+    minScore,
+    gateScore,
+    maxChunks,
+  }).map((h) => ({
     sceneId: h.sceneId,
     sceneTitle: h.sceneTitle,
     chunkText: truncateChunk(h.chunkText, maxChunkChars),
@@ -206,6 +208,26 @@ function truncateChunk(text: string, maxChunkChars: number): string {
   return text.length > maxChunkChars
     ? `${text.slice(0, maxChunkChars)}…`
     : text;
+}
+
+function resolveSelectedHits(
+  chunks: readonly SemanticRecallChunk[],
+  hits: readonly SemanticSearchHit[],
+  maxChunkChars: number,
+): SemanticSearchHit[] {
+  const used = new Set<number>();
+  return chunks.flatMap((chunk) => {
+    const index = hits.findIndex(
+      (hit, candidateIndex) =>
+        !used.has(candidateIndex) &&
+        hit.sceneId === chunk.sceneId &&
+        hit.score === chunk.score &&
+        truncateChunk(hit.chunkText, maxChunkChars) === chunk.chunkText,
+    );
+    if (index < 0) return [];
+    used.add(index);
+    return [hits[index]!];
+  });
 }
 
 /**
@@ -243,72 +265,42 @@ export function selectHybridRecallChunks(
   const maxChunks = opts.maxChunks ?? SEMANTIC_RECALL_MAX_CHUNKS;
   const maxChunkChars = opts.maxChunkChars ?? SEMANTIC_RECALL_MAX_CHUNK_CHARS;
   const rescueMargin = opts.rescueMargin ?? SEMANTIC_RECALL_RESCUE_MARGIN;
-  const rescueFloor = minScore - rescueMargin;
-  const excluded = new Set(opts.excludeSceneIds);
-
-  // sparse 順位 map (除外シーンを除いた連番)。値が小さいほど上位。
-  const sparseRank = new Map<string, number>();
-  for (const id of sparseSceneIdsRanked) {
-    if (excluded.has(id) || sparseRank.has(id)) continue;
-    sparseRank.set(id, sparseRank.size);
-  }
-
-  // dense pool: 除外を除き、scene ごとの最良チャンクと二番手以降 (backfill 用) に分ける。
-  const byScoreDesc = denseHits
-    .filter((h) => !excluded.has(h.sceneId))
-    .sort((a, b) => b.score - a.score);
-  const bestByScene = new Map<string, SemanticSearchHit>();
-  const leftover: SemanticSearchHit[] = [];
-  for (const h of byScoreDesc) {
-    if (bestByScene.has(h.sceneId)) leftover.push(h);
-    else bestByScene.set(h.sceneId, h);
-  }
-
-  // dense 順位 = 最良チャンクの cosine 降順。値が小さいほど上位。
-  const denseScenes = [...bestByScene.values()].sort(
-    (a, b) => b.score - a.score,
-  );
-  const denseRank = new Map<string, number>();
-  denseScenes.forEach((h, i) => denseRank.set(h.sceneId, i));
-  const densePass = denseScenes.length > 0 && denseScenes[0].score >= gateScore;
-
-  const eligible: { hit: SemanticSearchHit; rrf: number }[] = [];
-  for (const h of denseScenes) {
-    const dRank = denseRank.get(h.sceneId)!;
-    const sRank = sparseRank.get(h.sceneId);
-    const inSparse = sRank !== undefined;
-    const sparseRescue = inSparse && h.score >= rescueFloor;
-    const denseConfident = h.score >= minScore;
-    if (!sparseRescue && !(densePass && denseConfident)) continue;
-    const rrf = 1 / (RRF_K + dRank) + (inSparse ? 1 / (RRF_K + sRank) : 0);
-    eligible.push({ hit: h, rrf });
-  }
-  if (eligible.length === 0) return [];
-
-  eligible.sort(
-    (a, b) =>
-      b.rrf - a.rrf ||
-      b.hit.score - a.hit.score ||
-      a.hit.sceneId.localeCompare(b.hit.sceneId),
-  );
-  const chosen: SemanticSearchHit[] = eligible
-    .slice(0, maxChunks)
-    .map((e) => e.hit);
-
-  // backfill: 勝者がいる時だけ、余り枠を床以上シーンの二番手チャンクで埋める。
-  // rescue-only regime では団子混入を避けるため埋めない。
-  if (densePass && chosen.length < maxChunks) {
-    const room = maxChunks - chosen.length;
-    const fillers = leftover.filter((h) => h.score >= minScore).slice(0, room);
-    chosen.push(...fillers);
-  }
-
-  return chosen.map((h) => ({
+  return selectHybridRecallHitsWithPolicy(denseHits, sparseSceneIdsRanked, {
+    excludeSceneIds: opts.excludeSceneIds,
+    minScore,
+    gateScore,
+    maxChunks,
+    rescueMargin,
+    rrfK: RRF_K,
+  }).map((h) => ({
     sceneId: h.sceneId,
     sceneTitle: h.sceneTitle,
     chunkText: truncateChunk(h.chunkText, maxChunkChars),
     score: h.score,
   }));
+}
+
+/** Return the exact production hybrid selection before text truncation. */
+export function selectHybridRecallHits(
+  denseHits: SemanticSearchHit[],
+  sparseSceneIdsRanked: string[],
+  opts: {
+    excludeSceneIds: string[];
+    minScore?: number;
+    gateScore?: number;
+    maxChunks?: number;
+    rescueMargin?: number;
+    rrfK?: number;
+  },
+): SemanticSearchHit[] {
+  return selectHybridRecallHitsWithPolicy(denseHits, sparseSceneIdsRanked, {
+    excludeSceneIds: opts.excludeSceneIds,
+    minScore: opts.minScore ?? SEMANTIC_RECALL_MIN_SCORE,
+    gateScore: opts.gateScore ?? SEMANTIC_RECALL_TOP1_GATE,
+    maxChunks: opts.maxChunks ?? SEMANTIC_RECALL_MAX_CHUNKS,
+    rescueMargin: opts.rescueMargin ?? SEMANTIC_RECALL_RESCUE_MARGIN,
+    rrfK: opts.rrfK ?? RRF_K,
+  });
 }
 
 interface FtsSceneRow {
@@ -354,8 +346,18 @@ export async function fetchSemanticRecall(args: {
   query: string;
   excludeSceneIds: string[];
   hybrid?: boolean;
+  shadow?: {
+    requestId: string;
+    scope: SemanticRerankerShadowScope;
+    userMessage: string;
+    sceneTail: string;
+    language: string;
+    localInferenceExpected: boolean;
+    expectedSceneIds?: string[];
+  };
 }): Promise<SemanticRecallChunk[]> {
   if (!args.query.trim()) return [];
+  const retrievalStartedAtMs = globalThis.performance?.now() ?? Date.now();
   const params = recallParamsForLang();
   const fetchLimit = args.hybrid
     ? SEMANTIC_RECALL_HYBRID_FETCH_LIMIT
@@ -422,5 +424,42 @@ export async function fetchSemanticRecall(args: {
       `gate=${params.gateScore} floor=${params.minScore}`,
     topScore !== null ? `topScore=${topScore.toFixed(3)}` : "no hits",
   );
+  if (args.hybrid && args.shadow && hits.length > 0) {
+    const retrievalFinishedAtMs = globalThis.performance?.now() ?? Date.now();
+    const baselineInjectedHits = resolveSelectedHits(
+      selected,
+      hits,
+      params.maxChunkChars,
+    );
+    scheduleSemanticRerankerShadow({
+      requestId: args.shadow.requestId,
+      scope: args.shadow.scope,
+      language: args.shadow.language.startsWith("en") ? "en" : "ja",
+      query: {
+        userMessage: args.shadow.userMessage,
+        sceneTail: args.shadow.sceneTail,
+      },
+      denseHits: hits,
+      sparseSceneIds,
+      excludeSceneIds: args.excludeSceneIds,
+      baselineInjectedHits,
+      hybrid: sparseSceneIds.length > 0,
+      minScore: params.minScore,
+      gateScore: params.gateScore,
+      rescueMargin: SEMANTIC_RECALL_RESCUE_MARGIN,
+      maxChunks: SEMANTIC_RECALL_MAX_CHUNKS,
+      maxChunkChars: params.maxChunkChars,
+      rrfK: RRF_K,
+      retrievalStartedAtMs,
+      retrievalLatencyMs: Math.max(
+        0,
+        retrievalFinishedAtMs - retrievalStartedAtMs,
+      ),
+      localInferenceExpected: args.shadow.localInferenceExpected,
+      ...(args.shadow.expectedSceneIds
+        ? { expectedSceneIds: args.shadow.expectedSceneIds }
+        : {}),
+    });
+  }
   return selected;
 }

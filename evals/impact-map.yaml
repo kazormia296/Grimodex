@@ -106,6 +106,19 @@ rules:
       - GDX-ISOLATION-001
     suites:
       - retrieval-grounding
+  - id: semantic-retrieval-experiments
+    reason: Offline retrieval fixtures, private-label contracts, and shadow evidence must preserve grounding, isolation, artifact validation, and traceability.
+    paths:
+      - experiments/lfm25-encoder-phase0/**
+      - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
+    requirements:
+      - GDX-GROUND-001
+      - GDX-ARTIFACT-001
+      - GDX-ISOLATION-001
+      - GDX-TRACE-001
+    suites:
+      - quality-workflow
+      - retrieval-grounding
   - id: web-editor-ai
     reason: Web Editor must expose every user-selected HTTP provider through explicit Local LLM or BYOK routes with no application-owned credential or managed provider.
     paths:

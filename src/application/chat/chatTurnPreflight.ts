@@ -505,6 +505,14 @@ export function createChatTurnPreflight(
         const contextStateAtTurnStart = get();
         const preparationSeed: ChatContextTurnSeed = {
           projectId: turnProjectId,
+          ...(turnWorkspaceIdentity
+            ? {
+                workspaceIdentity: {
+                  workspaceKey: turnWorkspaceIdentity.path,
+                  workspaceOpenRevision: turnWorkspaceIdentity.openRevision,
+                },
+              }
+            : {}),
           effectiveSceneId: publicWebSearchPath ? null : effectiveSceneId,
           activeSceneId,
           activeProjectId,

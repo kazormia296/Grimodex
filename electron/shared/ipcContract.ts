@@ -467,6 +467,7 @@ export interface NapiBackendLike {
     sceneScope?: string | null,
     descriptionMode?: boolean | null,
   ): Promise<string>;
+  semanticRerankerShadowScore?(request: unknown): Promise<string>;
   codexIndexEntry?(entryId: string): Promise<string>;
   codexSemanticSearch?(
     projectId: string,
@@ -1829,6 +1830,93 @@ function requireArray(args: CommandArgs, key: string, cmd: string): unknown[] {
   return value;
 }
 
+function requireSemanticRerankerShadowRequest(args: CommandArgs): CommandArgs {
+  const command = "semantic_reranker_shadow_score";
+  const allowedRequestKeys = new Set([
+    "requestId",
+    "language",
+    "userMessage",
+    "sceneTail",
+    "candidates",
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowedRequestKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+
+  const requestId = requireNonEmptyString(args, "requestId", command);
+  if (requestId.length > 128) {
+    throw new Error(
+      `invalid args \`requestId\` for command \`${command}\`: too long`,
+    );
+  }
+  const language = requireString(args, "language", command);
+  if (language !== "ja" && language !== "en") {
+    throw new Error(
+      `invalid args \`language\` for command \`${command}\`: expected ja or en`,
+    );
+  }
+  const userMessage = requireString(args, "userMessage", command);
+  const sceneTail = requireString(args, "sceneTail", command);
+  if (userMessage.trim().length === 0 && sceneTail.trim().length === 0) {
+    throw new Error(
+      `invalid args \`userMessage\` for command \`${command}\`: query must not be empty`,
+    );
+  }
+  if (userMessage.length > 100_000 || sceneTail.length > 10_000) {
+    throw new Error(
+      `invalid args for command \`${command}\`: query input is too large`,
+    );
+  }
+
+  const candidates = requireArray(args, "candidates", command);
+  if (candidates.length < 1 || candidates.length > 30) {
+    throw new Error(
+      `invalid args \`candidates\` for command \`${command}\`: expected 1..30 items`,
+    );
+  }
+  const candidateIds = new Set<string>();
+  for (const [index, value] of candidates.entries()) {
+    const candidate = requireSceneBundleRecord(
+      value,
+      `candidates[${index}]`,
+      command,
+    );
+    for (const key of Object.keys(candidate)) {
+      if (key !== "candidateId" && key !== "text") {
+        throw new Error(
+          `invalid args \`candidates[${index}].${key}\` for command \`${command}\`: unknown field`,
+        );
+      }
+    }
+    const candidateId = requireNonEmptyString(
+      candidate,
+      "candidateId",
+      command,
+    );
+    const text = requireNonEmptyString(candidate, "text", command);
+    if (
+      candidateId.length > 512 ||
+      text.trim().length === 0 ||
+      text.length > 100_000
+    ) {
+      throw new Error(
+        `invalid args \`candidates[${index}]\` for command \`${command}\`: invalid candidate size`,
+      );
+    }
+    if (candidateIds.has(candidateId)) {
+      throw new Error(
+        `invalid args \`candidates[${index}].candidateId\` for command \`${command}\`: duplicate`,
+      );
+    }
+    candidateIds.add(candidateId);
+  }
+  return args;
+}
+
 function requireSceneBundleRecord(
   value: unknown,
   key: string,
@@ -3062,6 +3150,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  semantic_reranker_shadow_score: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticRerankerShadowScore,
+          "semanticRerankerShadowScore",
+        )(requireSemanticRerankerShadowRequest(a)),
+      ),
+  },
   codex_index_entry: {
     run: async (b, a) =>
       parseWire(
@@ -4172,6 +4270,7 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   "export_save_text",
   "export_save_bytes",
   "open_log_dir",
+  "semantic_reranker_shadow_record",
   "external_mount_register",
   "external_mount_unregister",
   "external_mount_read_file",

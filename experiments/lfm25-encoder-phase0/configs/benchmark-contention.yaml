@@ -1,0 +1,27 @@
+{
+  "extends": "common.yaml",
+  "contention":
+    {
+      "duration_seconds": 30,
+      "sample_interval_ms": 10,
+      "event_loop_resolution_ms": 1,
+      "candidate_count": 30,
+      "encoder_command":
+        [
+          ".venv/bin/python",
+          "-m",
+          "grimodex_lfm_eval.benchmark",
+          "--config",
+          "configs/benchmark-cpu.yaml",
+          "--mode",
+          "early-gate",
+          "--contention-child",
+          "--duration-seconds",
+          "30",
+          "--thread-count",
+          "6",
+          "--batch-size",
+          "8",
+        ],
+    },
+}

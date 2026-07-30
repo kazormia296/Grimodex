@@ -7,6 +7,7 @@ import {
 } from "../agent/dynamicModelCaps";
 import { DEFAULT_AI_SETTINGS, ollamaContextLengthSettingKey } from "../types";
 import {
+  isLocalInferenceRoute,
   resolveChatTurnRoute,
   resolvedChatTurnRouteAuthorityKey,
 } from "./resolveTurnRoute";
@@ -126,7 +127,66 @@ describe("resolveChatTurnRoute", () => {
 
     expect(route.resolvedOllamaEndpoint).toBe("http://127.0.0.1:11434/");
     expect(route.resolvedEndpointId).toBeNull();
+    expect(isLocalInferenceRoute(route)).toBe(true);
   });
+
+  it.each([
+    "http://localhost:1234/v1",
+    "http://127.0.0.1:8080/v1",
+    "http://[::1]:8080/v1",
+    "http://192.168.1.25:1234/v1",
+    "http://172.20.0.5:1234/v1",
+    "http://10.10.0.4:1234/v1",
+  ])("recognizes a local OpenAI-compatible endpoint at %s", (baseUrl) => {
+    const route = resolveChatTurnRoute({
+      surface: "chat",
+      activeSettings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "openai-compatible",
+        model: "local-model",
+        openaiCompatibleEndpoints: [
+          {
+            id: "local",
+            label: "Local",
+            baseUrl,
+          },
+        ],
+        activeOpenaiCompatibleEndpointId: "local",
+      },
+      taskEffort: "medium",
+    });
+
+    expect(isLocalInferenceRoute(route)).toBe(true);
+  });
+
+  it.each([
+    "https://inference.example.com/v1",
+    "https://fda.gov/v1",
+    "https://feature.example.com/v1",
+  ])(
+    "does not classify a public OpenAI-compatible endpoint as local: %s",
+    (baseUrl) => {
+      const route = resolveChatTurnRoute({
+        surface: "chat",
+        activeSettings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openai-compatible",
+          model: "remote-model",
+          openaiCompatibleEndpoints: [
+            {
+              id: "remote",
+              label: "Remote",
+              baseUrl,
+            },
+          ],
+          activeOpenaiCompatibleEndpointId: "remote",
+        },
+        taskEffort: "medium",
+      });
+
+      expect(isLocalInferenceRoute(route)).toBe(false);
+    },
+  );
 
   it("routes Codex app-server and auto modes through the resident transport", () => {
     for (const codexTransport of ["app-server", "auto"] as const) {

@@ -9,7 +9,14 @@
  *    Promise reject に変換する）
  */
 import { readFileSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  appendFile,
+  mkdir,
+  readdir,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -64,6 +71,537 @@ function requireArgString(args: CommandArgs, key: string, cmd: string): string {
     );
   }
   return value;
+}
+
+function requirePlainRecord(
+  value: unknown,
+  key: string,
+  command: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected an object`,
+    );
+  }
+  return value as Record<string, unknown>;
+}
+
+function assertAllowedRecordKeys(
+  value: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  command: string,
+): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new Error(
+        `invalid args for command \`${command}\`: unknown field \`${key}\``,
+      );
+    }
+  }
+}
+
+function requireSafeString(
+  value: Record<string, unknown>,
+  key: string,
+  command: string,
+  maxLength = 512,
+): string {
+  const candidate = value[key];
+  if (
+    typeof candidate !== "string" ||
+    candidate.length === 0 ||
+    candidate.length > maxLength
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a bounded non-empty string`,
+    );
+  }
+  return candidate;
+}
+
+function optionalSafeString(
+  value: Record<string, unknown>,
+  key: string,
+  command: string,
+  maxLength = 512,
+): string | undefined {
+  if (!Object.hasOwn(value, key) || value[key] === undefined) return undefined;
+  return requireSafeString(value, key, command, maxLength);
+}
+
+function requireSafeIdentifier(
+  value: Record<string, unknown>,
+  key: string,
+  command: string,
+  maxLength = 512,
+): string {
+  const identifier = requireSafeString(value, key, command, maxLength);
+  if (!/^[A-Za-z0-9._/-]+$/.test(identifier)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a safe identifier`,
+    );
+  }
+  return identifier;
+}
+
+function requireFiniteNumber(
+  value: Record<string, unknown>,
+  key: string,
+  command: string,
+): number {
+  const candidate = value[key];
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a finite number`,
+    );
+  }
+  return candidate;
+}
+
+function optionalFiniteNumber(
+  value: Record<string, unknown>,
+  key: string,
+  command: string,
+): number | undefined {
+  if (!Object.hasOwn(value, key) || value[key] === undefined) return undefined;
+  return requireFiniteNumber(value, key, command);
+}
+
+function requireSafeBoolean(
+  value: Record<string, unknown>,
+  key: string,
+  command: string,
+): boolean {
+  const candidate = value[key];
+  if (typeof candidate !== "boolean") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a boolean`,
+    );
+  }
+  return candidate;
+}
+
+function optionalSafeBoolean(
+  value: Record<string, unknown>,
+  key: string,
+  command: string,
+): boolean | undefined {
+  if (!Object.hasOwn(value, key) || value[key] === undefined) return undefined;
+  return requireSafeBoolean(value, key, command);
+}
+
+function privacyHash(domain: string, value: string): string {
+  return createHash("sha256")
+    .update(domain)
+    .update("\0")
+    .update(value)
+    .digest("hex");
+}
+
+function normalizeHash(domain: string, value: string): string {
+  return /^[a-f0-9]{64}$/.test(value) ? value : privacyHash(domain, value);
+}
+
+function safeStringArray(
+  value: unknown,
+  key: string,
+  command: string,
+  maxItems = 30,
+): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > maxItems ||
+    value.some(
+      (entry) =>
+        typeof entry !== "string" || entry.length === 0 || entry.length > 512,
+    )
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected bounded string[]`,
+    );
+  }
+  return value;
+}
+
+const SHADOW_RECORD_KEYS = new Set([
+  "schemaVersion",
+  "status",
+  "runId",
+  "generation",
+  "requestId",
+  "workspaceKey",
+  "workspaceOpenRevision",
+  "projectId",
+  "language",
+  "localInferenceExpected",
+  "staleReason",
+  "errorCode",
+  "queryHash",
+  "candidateSetHash",
+  "modelId",
+  "modelRevision",
+  "manifestSha256",
+  "candidateCount",
+  "retrievalLatencyMs",
+  "queueLatencyMs",
+  "ipcRoundTripMs",
+  "nativeLatencyMs",
+  "endToEndLatencyMs",
+  "modelLoadMs",
+  "modelWasCold",
+  "comparison",
+]);
+
+const SHADOW_COMPARISON_KEYS = new Set([
+  "baselineSceneOrder",
+  "rerankedSceneOrder",
+  "baselineInjectedSceneIds",
+  "counterfactualInjectedSceneIds",
+  "baselineInjectedCandidateHashes",
+  "counterfactualInjectedCandidateHashes",
+  "injectedSetChanged",
+  "injectedOrderChanged",
+  "firstPresentedChanged",
+  "goldCandidatePresent",
+  "baselineGoldPosition",
+  "counterfactualGoldPosition",
+  "baselineGoldInjectionMrr",
+  "counterfactualGoldInjectionMrr",
+  "isNoMatch",
+  "failureLayer",
+  "ranking",
+]);
+
+const SHADOW_RANKING_KEYS = new Set([
+  "candidateHash",
+  "sceneId",
+  "denseRank",
+  "currentRank",
+  "rerankedRank",
+  "denseScore",
+  "rerankerScore",
+  "tokenization",
+]);
+
+const SHADOW_TOKENIZATION_KEYS = new Set([
+  "queryTokensBefore",
+  "queryTokensAfter",
+  "candidateTokensBefore",
+  "candidateTokensAfter",
+  "queryTruncated",
+  "candidateTruncated",
+  "userMessageTokensKept",
+  "sceneTailTokensKept",
+]);
+
+function sanitizeShadowComparison(
+  value: unknown,
+  command: string,
+): Record<string, unknown> {
+  const comparison = requirePlainRecord(value, "comparison", command);
+  assertAllowedRecordKeys(comparison, SHADOW_COMPARISON_KEYS, command);
+  const sceneArrays = [
+    "baselineSceneOrder",
+    "rerankedSceneOrder",
+    "baselineInjectedSceneIds",
+    "counterfactualInjectedSceneIds",
+  ] as const;
+  const candidateArrays = [
+    "baselineInjectedCandidateHashes",
+    "counterfactualInjectedCandidateHashes",
+  ] as const;
+  const sanitized: Record<string, unknown> = {};
+  for (const key of sceneArrays) {
+    sanitized[key] = safeStringArray(
+      comparison[key],
+      `comparison.${key}`,
+      command,
+    ).map((id) => privacyHash("scene", id));
+  }
+  for (const key of candidateArrays) {
+    sanitized[key] = safeStringArray(
+      comparison[key],
+      `comparison.${key}`,
+      command,
+    ).map((hash) => normalizeHash("candidate", hash));
+  }
+  for (const key of [
+    "injectedSetChanged",
+    "injectedOrderChanged",
+    "firstPresentedChanged",
+  ] as const) {
+    sanitized[key] = requireSafeBoolean(comparison, key, command);
+  }
+
+  for (const key of ["goldCandidatePresent", "isNoMatch"] as const) {
+    if (comparison[key] === null) sanitized[key] = null;
+    else {
+      const optional = optionalSafeBoolean(comparison, key, command);
+      if (optional !== undefined) sanitized[key] = optional;
+    }
+  }
+  for (const key of [
+    "baselineGoldPosition",
+    "counterfactualGoldPosition",
+    "baselineGoldInjectionMrr",
+    "counterfactualGoldInjectionMrr",
+  ] as const) {
+    if (comparison[key] === null) sanitized[key] = null;
+    else {
+      const optional = optionalFiniteNumber(comparison, key, command);
+      if (optional !== undefined) {
+        const isPosition = key.endsWith("Position");
+        if (
+          (isPosition &&
+            (!Number.isSafeInteger(optional) ||
+              optional < 1 ||
+              optional > 3)) ||
+          (!isPosition && (optional <= 0 || optional > 1))
+        ) {
+          throw new Error(`invalid shadow gold metric: ${key}`);
+        }
+        sanitized[key] = optional;
+      }
+    }
+  }
+  const failureLayer = optionalSafeString(
+    comparison,
+    "failureLayer",
+    command,
+    32,
+  );
+  if (failureLayer !== undefined) {
+    if (
+      !["candidate-generation", "ranking", "admission", "none"].includes(
+        failureLayer,
+      )
+    ) {
+      throw new Error(`invalid shadow failureLayer: ${failureLayer}`);
+    }
+    sanitized.failureLayer = failureLayer;
+  }
+
+  if (!Array.isArray(comparison.ranking) || comparison.ranking.length > 30) {
+    throw new Error(
+      `invalid args \`comparison.ranking\` for command \`${command}\``,
+    );
+  }
+  sanitized.ranking = comparison.ranking.map((raw, index) => {
+    const ranking = requirePlainRecord(
+      raw,
+      `comparison.ranking[${index}]`,
+      command,
+    );
+    assertAllowedRecordKeys(ranking, SHADOW_RANKING_KEYS, command);
+    const tokenization = requirePlainRecord(
+      ranking.tokenization,
+      `comparison.ranking[${index}].tokenization`,
+      command,
+    );
+    assertAllowedRecordKeys(tokenization, SHADOW_TOKENIZATION_KEYS, command);
+    const safeTokenization: Record<string, unknown> = {};
+    for (const key of [
+      "queryTokensBefore",
+      "queryTokensAfter",
+      "candidateTokensBefore",
+      "candidateTokensAfter",
+      "userMessageTokensKept",
+      "sceneTailTokensKept",
+    ] as const) {
+      const count = requireFiniteNumber(tokenization, key, command);
+      if (!Number.isSafeInteger(count) || count < 0 || count > 1_000_000) {
+        throw new Error(`invalid shadow token count: ${key}`);
+      }
+      safeTokenization[key] = count;
+    }
+    for (const key of ["queryTruncated", "candidateTruncated"] as const) {
+      safeTokenization[key] = requireSafeBoolean(tokenization, key, command);
+    }
+    const denseRank = requireFiniteNumber(ranking, "denseRank", command);
+    const currentRank = requireFiniteNumber(ranking, "currentRank", command);
+    const rerankedRank = requireFiniteNumber(ranking, "rerankedRank", command);
+    if (
+      !Number.isSafeInteger(denseRank) ||
+      !Number.isSafeInteger(currentRank) ||
+      !Number.isSafeInteger(rerankedRank) ||
+      denseRank < 1 ||
+      currentRank < 1 ||
+      rerankedRank < 1 ||
+      denseRank > 30 ||
+      currentRank > 30 ||
+      rerankedRank > 30
+    ) {
+      throw new Error("invalid shadow ranking position");
+    }
+    return {
+      candidateHash: normalizeHash(
+        "candidate",
+        requireSafeString(ranking, "candidateHash", command),
+      ),
+      sceneHash: privacyHash(
+        "scene",
+        requireSafeString(ranking, "sceneId", command),
+      ),
+      denseRank,
+      currentRank,
+      rerankedRank,
+      denseScore: requireFiniteNumber(ranking, "denseScore", command),
+      rerankerScore: requireFiniteNumber(ranking, "rerankerScore", command),
+      tokenization: safeTokenization,
+    };
+  });
+  return sanitized;
+}
+
+function sanitizeSemanticRerankerShadowRecord(
+  args: CommandArgs,
+): Record<string, unknown> {
+  const command = "semantic_reranker_shadow_record";
+  const record = requirePlainRecord(args.record, "record", command);
+  assertAllowedRecordKeys(record, SHADOW_RECORD_KEYS, command);
+  const schemaVersion = requireFiniteNumber(record, "schemaVersion", command);
+  if (schemaVersion !== 1) {
+    throw new Error("unsupported semantic reranker shadow schemaVersion");
+  }
+  const status = requireSafeString(record, "status", command, 16);
+  if (!["completed", "stale", "suppressed", "failed"].includes(status)) {
+    throw new Error(`invalid semantic reranker shadow status: ${status}`);
+  }
+  const language = requireSafeString(record, "language", command, 2);
+  if (language !== "ja" && language !== "en") {
+    throw new Error(`invalid semantic reranker shadow language: ${language}`);
+  }
+  const generation = requireFiniteNumber(record, "generation", command);
+  const workspaceOpenRevision = requireFiniteNumber(
+    record,
+    "workspaceOpenRevision",
+    command,
+  );
+  if (
+    !Number.isSafeInteger(generation) ||
+    generation < 1 ||
+    !Number.isSafeInteger(workspaceOpenRevision) ||
+    workspaceOpenRevision < 0
+  ) {
+    throw new Error("invalid semantic reranker shadow generation");
+  }
+
+  const safe: Record<string, unknown> = {
+    schemaVersion,
+    recordedAt: new Date().toISOString(),
+    status,
+    runHash: privacyHash(
+      "run",
+      requireSafeIdentifier(record, "runId", command, 80),
+    ),
+    generation,
+    requestHash: privacyHash(
+      "request",
+      requireSafeString(record, "requestId", command, 128),
+    ),
+    workspaceHash: privacyHash(
+      "workspace",
+      requireSafeString(record, "workspaceKey", command, 4096),
+    ),
+    workspaceOpenRevision,
+    projectHash: privacyHash(
+      "project",
+      requireSafeString(record, "projectId", command, 512),
+    ),
+    language,
+    localInferenceExpected: requireSafeBoolean(
+      record,
+      "localInferenceExpected",
+      command,
+    ),
+    mainProcessRssBytes: process.memoryUsage().rss,
+  };
+
+  const staleReason = optionalSafeString(record, "staleReason", command, 64);
+  if (staleReason !== undefined) {
+    const allowed = [
+      "superseded",
+      "workspace-scope-changed",
+      "reindex-running",
+      "reindex-started",
+      "empty-candidate-set",
+    ];
+    if (!allowed.includes(staleReason)) {
+      throw new Error(`invalid semantic reranker staleReason: ${staleReason}`);
+    }
+    safe.staleReason = staleReason;
+  }
+  const errorCode = optionalSafeString(record, "errorCode", command, 64);
+  if (errorCode !== undefined) {
+    if (!/^[A-Z0-9_]+$/.test(errorCode)) {
+      throw new Error("invalid semantic reranker errorCode");
+    }
+    safe.errorCode = errorCode;
+  }
+
+  for (const [key, domain] of [
+    ["queryHash", "query"],
+    ["candidateSetHash", "candidate-set"],
+    ["manifestSha256", "manifest"],
+  ] as const) {
+    const value = optionalSafeString(record, key, command, 128);
+    if (value !== undefined) safe[key] = normalizeHash(domain, value);
+  }
+  for (const key of ["modelId", "modelRevision"] as const) {
+    if (!Object.hasOwn(record, key) || record[key] === undefined) continue;
+    const value = requireSafeIdentifier(record, key, command, 256);
+    if (value !== undefined) safe[key] = value;
+  }
+  for (const key of [
+    "candidateCount",
+    "retrievalLatencyMs",
+    "queueLatencyMs",
+    "ipcRoundTripMs",
+    "nativeLatencyMs",
+    "endToEndLatencyMs",
+    "modelLoadMs",
+  ] as const) {
+    const value = optionalFiniteNumber(record, key, command);
+    if (value !== undefined) {
+      if (value < 0) throw new Error(`invalid negative shadow metric: ${key}`);
+      if (
+        key === "candidateCount" &&
+        (!Number.isSafeInteger(value) || value < 1 || value > 30)
+      ) {
+        throw new Error("invalid semantic reranker candidateCount");
+      }
+      safe[key] = value;
+    }
+  }
+  const modelWasCold = optionalSafeBoolean(record, "modelWasCold", command);
+  if (modelWasCold !== undefined) safe.modelWasCold = modelWasCold;
+  if (record.comparison !== undefined) {
+    if (status !== "completed") {
+      throw new Error(
+        "shadow comparison is allowed only for completed records",
+      );
+    }
+    safe.comparison = sanitizeShadowComparison(record.comparison, command);
+  }
+  return safe;
+}
+
+let semanticShadowLogWriteTail: Promise<void> = Promise.resolve();
+
+function appendSemanticShadowRecord(
+  logDir: string,
+  safeRecord: Record<string, unknown>,
+): Promise<void> {
+  const write = semanticShadowLogWriteTail.then(async () => {
+    await mkdir(logDir, { recursive: true });
+    await appendFile(
+      path.join(logDir, "semantic-reranker-shadow.jsonl"),
+      `${JSON.stringify(safeRecord)}\n`,
+      "utf8",
+    );
+  });
+  semanticShadowLogWriteTail = write.catch(() => {});
+  return write;
 }
 
 /**
@@ -147,6 +685,11 @@ export function buildShellCommandHandlers(
       if (openError !== "") {
         throw new Error(`ログフォルダを開けませんでした: ${openError}`);
       }
+      return null;
+    },
+    semantic_reranker_shadow_record: async (args: CommandArgs) => {
+      const safeRecord = sanitizeSemanticRerankerShadowRecord(args);
+      await appendSemanticShadowRecord(logDir, safeRecord);
       return null;
     },
   };

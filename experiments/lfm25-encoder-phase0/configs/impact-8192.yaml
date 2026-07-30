@@ -1,0 +1,6 @@
+extends: impact-2048.yaml
+
+max_tokens: 8192
+context_mode: full
+gradient_checkpointing: true
+requires_phase0_finalist: true

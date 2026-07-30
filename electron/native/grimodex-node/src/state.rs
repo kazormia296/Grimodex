@@ -134,10 +134,22 @@ pub struct AppState {
     /// runtime。EventQueue cloneは同じTSFn sinkを指すため、progress 2chも
     /// backend.onEvent → main → 全窓broadcastへ載る。
     pub semantic: Arc<grimodex_semantic::runtime::SemanticRuntime>,
+    /// Development-only Gate 2 cross-encoder cache. The outer mutex is both
+    /// the native concurrency=1 guard and Session::run's mutable owner.
+    pub semantic_reranker: Mutex<grimodex_semantic::reranker::RerankerRuntime>,
 }
 
 impl AppState {
+    #[cfg(test)]
     pub fn new(app_data_dir: &str, semantic_resource_root: &str) -> anyhow::Result<Self> {
+        Self::new_with_reranker_root(app_data_dir, semantic_resource_root, None)
+    }
+
+    pub fn new_with_reranker_root(
+        app_data_dir: &str,
+        semantic_resource_root: &str,
+        reranker_resource_root: Option<&str>,
+    ) -> anyhow::Result<Self> {
         let dir = PathBuf::from(app_data_dir);
         anyhow::ensure!(
             dir.is_absolute(),
@@ -149,6 +161,17 @@ impl AppState {
             "semanticResourceRoot must be an absolute path: {}",
             semantic_resource_root.display()
         );
+        let reranker_resource_root = reranker_resource_root
+            .map(PathBuf::from)
+            .map(|path| {
+                anyhow::ensure!(
+                    path.is_absolute(),
+                    "rerankerResourceRoot must be an absolute path: {}",
+                    path.display()
+                );
+                Ok(path)
+            })
+            .transpose()?;
         // Tauri 側 (lib.rs setup の `create_dir_all(&app_dir).ok()`) と同じ
         // best-effort。失敗しても global-settings の read は default へ
         // フォールバックし、write 時に改めてエラーになる。
@@ -187,6 +210,9 @@ impl AppState {
                 dir.join("license.json"),
             )),
             semantic,
+            semantic_reranker: Mutex::new(grimodex_semantic::reranker::RerankerRuntime::new(
+                reranker_resource_root,
+            )),
         })
     }
 }

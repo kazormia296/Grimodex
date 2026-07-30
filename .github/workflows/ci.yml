@@ -93,6 +93,31 @@ jobs:
       - name: Web Editor-only production artifact
         run: pnpm build:web-editor
 
+  lfm-encoder-phase0:
+    name: LFM Encoder Phase 0 (contracts / offline unit tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: experiments/lfm25-encoder-phase0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: 0.11.29
+          enable-cache: true
+          cache-dependency-glob: experiments/lfm25-encoder-phase0/uv.lock
+
+      - name: Sync fixed CPU environment
+        run: uv sync --frozen --extra cpu
+
+      - name: Unit and contract tests
+        run: uv run --frozen --extra cpu pytest
+
+      - name: Public dataset contracts
+        run: uv run --frozen --extra cpu python tools/validate_dataset.py data/public
+
   browser:
     name: Browser (Vitest browser)
     runs-on: ubuntu-latest
