@@ -278,3 +278,46 @@ test("MCP client escalates shutdown to SIGKILL and waits for exit", async () => 
 
   assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
 });
+
+test("MCP client does not treat a kill error as process exit", async () => {
+  const child = createFakeMcpProcess(
+    (message) => {
+      if (message.method === "initialize") {
+        return {
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-11-25",
+            capabilities: { tools: {} },
+            serverInfo: { name: "fake-grimodex", version: "1.0.0" },
+          },
+        };
+      }
+      return undefined;
+    },
+    {
+      exitOnEnd: false,
+      onKill: (launched, signal) => {
+        if (signal === "SIGTERM") {
+          queueMicrotask(() =>
+            launched.emit("error", new Error("kill EPERM")),
+          );
+        } else if (signal === "SIGKILL") {
+          queueMicrotask(() => launched.emit("exit", null, "SIGKILL"));
+        }
+        return true;
+      },
+    },
+  );
+  const client = await launchProductJourneyMcpClient({
+    binaryPath: "/tmp/grimodex-mcp",
+    workspacePath: "/tmp/workspace",
+    projectId: "project-1",
+    spawnProcess: () => child,
+    shutdownTimeoutMs: 5,
+  });
+
+  await client.close();
+
+  assert.deepEqual(child.killSignals, ["SIGTERM", "SIGKILL"]);
+});
