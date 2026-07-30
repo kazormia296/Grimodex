@@ -28,6 +28,7 @@ import {
   subscribeCurrentWorkspaceIdentity,
   type WorkspaceIdentity,
 } from "@/runtime/workspaceIdentity";
+import { setCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
@@ -917,6 +918,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     });
   },
 }));
+
+setCurrentRuntimeProjectId(FALLBACK_PROJECT_ID);
+useProjectStore.subscribe((state, previous) => {
+  if (state.currentProjectId === previous.currentProjectId) return;
+  setCurrentRuntimeProjectId(state.currentProjectId ?? FALLBACK_PROJECT_ID);
+});
 
 subscribeCurrentWorkspaceIdentity((identity) => {
   if (!identity || !deferredProjectBackgroundActivation) return;

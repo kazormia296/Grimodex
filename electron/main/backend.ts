@@ -15,12 +15,18 @@ interface GrimodexNodeModule {
   Backend: new (
     appDataDir: string,
     semanticResourceRoot?: string | null,
+    rerankerResourceRoot?: string | null,
   ) => NapiBackendLike;
 }
 
 interface SemanticResourceResolution {
   isPackaged: boolean;
   resourcesPath: string;
+  mainDir: string;
+}
+
+interface RerankerResourceResolution {
+  isPackaged: boolean;
   mainDir: string;
 }
 
@@ -75,6 +81,38 @@ export function resolveSemanticResourceRoot(
 }
 
 /**
+ * Gate 2 reranker snapshots are experiment-local and intentionally excluded
+ * from packaged resources. Development may point at a different verified
+ * snapshot root with an absolute override.
+ */
+export function resolveRerankerResourceRoot(
+  resolution: RerankerResourceResolution = {
+    isPackaged: app.isPackaged,
+    mainDir: __dirname,
+  },
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (resolution.isPackaged) return null;
+  const override = env.GRIMODEX_RERANKER_RESOURCE_ROOT?.trim();
+  if (override) {
+    if (!path.isAbsolute(override)) {
+      throw new Error(
+        "GRIMODEX_RERANKER_RESOURCE_ROOT must be an absolute path",
+      );
+    }
+    return override;
+  }
+  return path.join(
+    resolution.mainDir,
+    "..",
+    "experiments",
+    "lfm25-encoder-phase0",
+    "local",
+    "phase0b",
+  );
+}
+
+/**
  * app ready 後に 1 回だけ呼ぶ。Backend コンストラクタには起動ロック前に
  * `configureAppUserData` が確定した `app.getPath("userData")` を明示注入する。
  * packaged版は既存Tauriのdata_dir、developmentはGrimodexElectronDevを使う。
@@ -83,6 +121,7 @@ export function initBackend(): NapiBackendLike | null {
   const binaryPath = resolveNodeBinaryPath();
   const semanticResourceRoot = resolveSemanticResourceRoot();
   try {
+    const rerankerResourceRoot = resolveRerankerResourceRoot();
     if (!existsSync(binaryPath)) {
       throw new Error(
         `grimodex-node.node が見つかりません: ${binaryPath}\n` +
@@ -92,7 +131,11 @@ export function initBackend(): NapiBackendLike | null {
     // esbuild バンドル外の実行時 require（*.node は external — §3.2）
     const requireNative = createRequire(__filename);
     const mod = requireNative(binaryPath) as GrimodexNodeModule;
-    instance = new mod.Backend(app.getPath("userData"), semanticResourceRoot);
+    instance = new mod.Backend(
+      app.getPath("userData"),
+      semanticResourceRoot,
+      rerankerResourceRoot,
+    );
     console.log(`[grimodex-electron] napi backend loaded: ${binaryPath}`);
     return instance;
   } catch (e) {

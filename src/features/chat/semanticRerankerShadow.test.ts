@@ -206,7 +206,9 @@ describe("SemanticRerankerShadowCoordinator", () => {
     expect(score.mock.calls[1][0]).toMatchObject({
       requestId: "request-3",
     });
-    expect(records.map((record) => [record.status, record.staleReason])).toEqual([
+    expect(
+      records.map((record) => [record.status, record.staleReason]),
+    ).toEqual([
       ["stale", "superseded"],
       ["completed", undefined],
     ]);

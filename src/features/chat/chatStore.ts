@@ -3104,6 +3104,10 @@ function buildPlotThreadScenesInput(
 interface CapturedSceneTurnAuthority {
   projectId: string;
   sceneId: string;
+  workspaceIdentity?: {
+    workspaceKey: string;
+    workspaceOpenRevision: number;
+  };
   mode: "chat" | "agent";
   route: ResolvedChatTurnRoute | null;
   budget: SceneTurnContextRequest["budget"];
@@ -3125,6 +3129,7 @@ function captureSceneTurnAuthority(input: {
   agentMode: boolean;
   turnRoute?: ResolvedChatTurnRoute;
   inputOverheadTokens?: number;
+  workspaceIdentity?: ImeWorkspaceIdentity | null;
 }): CapturedSceneTurnAuthority {
   const aiState = useAiSettingsStore.getState();
   const aiSettings = aiState.settings;
@@ -3174,6 +3179,14 @@ function captureSceneTurnAuthority(input: {
   return {
     projectId: input.projectId,
     sceneId: input.sceneId,
+    ...(input.workspaceIdentity
+      ? {
+          workspaceIdentity: {
+            workspaceKey: input.workspaceIdentity.path,
+            workspaceOpenRevision: input.workspaceIdentity.openRevision,
+          },
+        }
+      : {}),
     mode: input.agentMode ? "agent" : "chat",
     route: input.turnRoute ?? null,
     budget: {
@@ -3374,6 +3387,9 @@ async function buildSceneContextPrompt(
     requestId: crypto.randomUUID(),
     purpose: opts.purpose,
     projectId: authority.projectId,
+    ...(authority.workspaceIdentity
+      ? { workspaceIdentity: authority.workspaceIdentity }
+      : {}),
     sessionId: opts.activeSessionId,
     sceneId: authority.sceneId,
     mode: authority.mode,
@@ -4999,6 +5015,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           agentMode: useAgentPath,
           turnRoute: turnRoute ?? undefined,
           inputOverheadTokens: contextInputOverheadTokens,
+          workspaceIdentity: turnWorkspaceIdentity,
         })
       : null;
     const sessionId = activeSessionId ?? "";

@@ -1,6 +1,10 @@
 import { semanticSearch, type SemanticSearchHit } from "../semantic-search/api";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import {
+  scheduleSemanticRerankerShadow,
+  type SemanticRerankerShadowScope,
+} from "./semanticRerankerShadow";
 
 /**
  * Layer4 RAG (semantic recall): drafting チャットの文脈に、意味検索で見つけた
@@ -128,13 +132,31 @@ export function buildSemanticRecallQuery(args: {
   userMessage: string;
   sceneBody?: string;
 }): string {
+  return buildSemanticRecallQueryParts(args).query;
+}
+
+export interface SemanticRecallQueryParts {
+  userMessage: string;
+  sceneTail: string;
+  query: string;
+}
+
+/** Preserve the two real query components for shadow truncation telemetry. */
+export function buildSemanticRecallQueryParts(args: {
+  userMessage: string;
+  sceneBody?: string;
+}): SemanticRecallQueryParts {
   const message = args.userMessage.trim();
   const body = (args.sceneBody ?? "").trim();
   const tail =
     body.length > SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS
       ? body.slice(-SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS)
       : body;
-  return [message, tail].filter((s) => s.length > 0).join("\n");
+  return {
+    userMessage: message,
+    sceneTail: tail,
+    query: [message, tail].filter((s) => s.length > 0).join("\n"),
+  };
 }
 
 /**
@@ -206,6 +228,26 @@ function truncateChunk(text: string, maxChunkChars: number): string {
   return text.length > maxChunkChars
     ? `${text.slice(0, maxChunkChars)}…`
     : text;
+}
+
+function resolveSelectedHits(
+  chunks: readonly SemanticRecallChunk[],
+  hits: readonly SemanticSearchHit[],
+  maxChunkChars: number,
+): SemanticSearchHit[] {
+  const used = new Set<number>();
+  return chunks.flatMap((chunk) => {
+    const index = hits.findIndex(
+      (hit, candidateIndex) =>
+        !used.has(candidateIndex) &&
+        hit.sceneId === chunk.sceneId &&
+        hit.score === chunk.score &&
+        truncateChunk(hit.chunkText, maxChunkChars) === chunk.chunkText,
+    );
+    if (index < 0) return [];
+    used.add(index);
+    return [hits[index]!];
+  });
 }
 
 /**
@@ -354,8 +396,18 @@ export async function fetchSemanticRecall(args: {
   query: string;
   excludeSceneIds: string[];
   hybrid?: boolean;
+  shadow?: {
+    requestId: string;
+    scope: SemanticRerankerShadowScope;
+    userMessage: string;
+    sceneTail: string;
+    language: string;
+    localInferenceExpected: boolean;
+    expectedSceneIds?: string[];
+  };
 }): Promise<SemanticRecallChunk[]> {
   if (!args.query.trim()) return [];
+  const retrievalStartedAtMs = globalThis.performance?.now() ?? Date.now();
   const params = recallParamsForLang();
   const fetchLimit = args.hybrid
     ? SEMANTIC_RECALL_HYBRID_FETCH_LIMIT
@@ -422,5 +474,42 @@ export async function fetchSemanticRecall(args: {
       `gate=${params.gateScore} floor=${params.minScore}`,
     topScore !== null ? `topScore=${topScore.toFixed(3)}` : "no hits",
   );
+  if (args.hybrid && args.shadow && hits.length > 0) {
+    const retrievalFinishedAtMs = globalThis.performance?.now() ?? Date.now();
+    const baselineInjectedHits = resolveSelectedHits(
+      selected,
+      hits,
+      params.maxChunkChars,
+    );
+    scheduleSemanticRerankerShadow({
+      requestId: args.shadow.requestId,
+      scope: args.shadow.scope,
+      language: args.shadow.language.startsWith("en") ? "en" : "ja",
+      query: {
+        userMessage: args.shadow.userMessage,
+        sceneTail: args.shadow.sceneTail,
+      },
+      denseHits: hits,
+      sparseSceneIds,
+      excludeSceneIds: args.excludeSceneIds,
+      baselineInjectedHits,
+      hybrid: sparseSceneIds.length > 0,
+      minScore: params.minScore,
+      gateScore: params.gateScore,
+      rescueMargin: SEMANTIC_RECALL_RESCUE_MARGIN,
+      maxChunks: SEMANTIC_RECALL_MAX_CHUNKS,
+      maxChunkChars: params.maxChunkChars,
+      rrfK: RRF_K,
+      retrievalStartedAtMs,
+      retrievalLatencyMs: Math.max(
+        0,
+        retrievalFinishedAtMs - retrievalStartedAtMs,
+      ),
+      localInferenceExpected: args.shadow.localInferenceExpected,
+      ...(args.shadow.expectedSceneIds
+        ? { expectedSceneIds: args.shadow.expectedSceneIds }
+        : {}),
+    });
+  }
   return selected;
 }

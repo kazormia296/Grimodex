@@ -9,7 +9,7 @@ export declare class Backend {
    * (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
    * com.miyakey.grimodex には触らない)。
    */
-  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null)
+  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
   /**
    * Main-process-only bridge used during the Electron v2 first-run
    * credential migration. This method is deliberately absent from
@@ -282,6 +282,12 @@ export declare class Backend {
   semanticDownloadModel(language: string): Promise<string>
   semanticIndexScene(sceneId: string): Promise<string>
   semanticSearch(projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
+  /**
+   * Score a frozen Semantic Recall candidate set for the development-only
+   * shadow path. This command neither reads the active workspace nor owns
+   * admission; it only returns logits, hashes, and truncation counters.
+   */
+  semanticRerankerShadowScore(request: any): Promise<string>
   codexIndexEntry(entryId: string): Promise<string>
   codexSemanticSearch(projectId: string, query: string, limit: number): Promise<string>
   codexIndexStatus(projectId: string): Promise<string>

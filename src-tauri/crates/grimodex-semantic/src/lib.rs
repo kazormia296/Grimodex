@@ -23,3 +23,5 @@ pub mod spec;
 pub mod download;
 #[cfg(feature = "semantic-embedding")]
 pub mod embedding;
+#[cfg(feature = "semantic-embedding")]
+pub mod reranker;

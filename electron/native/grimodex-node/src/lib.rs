@@ -334,7 +334,11 @@ impl Backend {
     /// (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
     /// com.miyakey.grimodex には触らない)。
     #[napi(constructor)]
-    pub fn new(app_data_dir: String, semantic_resource_root: Option<String>) -> Result<Backend> {
+    pub fn new(
+        app_data_dir: String,
+        semantic_resource_root: Option<String>,
+        reranker_resource_root: Option<String>,
+    ) -> Result<Backend> {
         // 旧 .node E2E / 外部callerとのconstructor互換を維持する。省略時はcwdや
         // build-time manifestへfallbackせず、必ず存在しないappData配下sentinelを使い、
         // Backend全体ではなくsemantic invokeだけをmodel missingで失敗させる。
@@ -344,8 +348,12 @@ impl Backend {
                 .to_string_lossy()
                 .into_owned()
         });
-        let state = AppState::new(&app_data_dir, &semantic_resource_root)
-            .map_err(|e| Error::from_reason(format!("{e:#}")))?;
+        let state = AppState::new_with_reranker_root(
+            &app_data_dir,
+            &semantic_resource_root,
+            reranker_resource_root.as_deref(),
+        )
+        .map_err(|e| Error::from_reason(format!("{e:#}")))?;
         // §7.1 の end-to-end 実証チャネルその 1。onEvent 登録前なので
         // EventQueue にバッファされ、登録時に flush される。schemaVersion は
         // スモークテストが PRAGMA user_version との一致検証に使う。
@@ -1353,6 +1361,64 @@ impl Backend {
             )
         })
         .await
+    }
+
+    /// Score a frozen Semantic Recall candidate set for the development-only
+    /// shadow path. This command neither reads the active workspace nor owns
+    /// admission; it only returns logits, hashes, and truncation counters.
+    #[napi]
+    pub async fn semantic_reranker_shadow_score(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct CandidateDto {
+            candidate_id: String,
+            text: String,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RequestDto {
+            request_id: String,
+            language: String,
+            user_message: String,
+            scene_tail: String,
+            candidates: Vec<CandidateDto>,
+        }
+
+        let dto: RequestDto = serde_json::from_value(request)
+            .map_err(|error| Error::from_reason(format!("invalid reranker request: {error}")))?;
+        if dto.request_id.trim().is_empty() {
+            return Err(Error::from_reason(
+                "invalid reranker request: requestId must not be empty",
+            ));
+        }
+        let state = Arc::clone(&self.state);
+        napi::tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let request = grimodex_semantic::reranker::RerankerRequest {
+                language: dto.language,
+                user_message: dto.user_message,
+                scene_tail: dto.scene_tail,
+                candidates: dto
+                    .candidates
+                    .into_iter()
+                    .map(|candidate| grimodex_semantic::reranker::RerankerCandidate {
+                        candidate_id: candidate.candidate_id,
+                        text: candidate.text,
+                    })
+                    .collect(),
+            };
+            let mut runtime = state
+                .semantic_reranker
+                .lock()
+                .map_err(|error| anyhow::anyhow!("semantic reranker lock poisoned: {error}"))?;
+            Ok(serde_json::to_string(&runtime.score(request)?)?)
+        })
+        .await
+        .map_err(join_err_to_napi)?
+        .map_err(|error| Error::from_reason(format!("{error:#}")))
     }
 
     #[napi]
