@@ -1,8 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
-import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
+import {
+  useInlineAiDiff,
+  type InlineAiProjectionAuthority,
+} from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
@@ -37,10 +40,25 @@ export function useLinearInlineAi(params: {
   sceneId: string;
   editor: Editor | null;
   inlineAiEditor: Editor | null;
+  projection: InlineAiProjectionAuthority;
+  projectionKey: string;
+  projectionReady: boolean;
+  projectionWritable: boolean;
 }) {
-  const { sceneId, editor, inlineAiEditor } = params;
-  const { generate, accept, rejectOrAbort, retry } =
-    useInlineAiDiff(inlineAiEditor);
+  const {
+    sceneId,
+    editor,
+    inlineAiEditor,
+    projection,
+    projectionKey,
+    projectionReady,
+    projectionWritable,
+  } = params;
+  const { generate, accept, rejectOrAbort, retry, rollback } = useInlineAiDiff(
+    inlineAiEditor,
+    null,
+    projection,
+  );
 
   const isOwner = useLinearEditorStore(
     (s) => s.inlineAiOwnerSceneId === sceneId,
@@ -49,6 +67,32 @@ export function useLinearInlineAi(params: {
   const [paletteCommand, setPaletteCommand] = useState<InlineAiCommand | null>(
     null,
   );
+  const seenProjectionKeyRef = useRef("");
+
+  useEffect(() => {
+    const projectionChanged =
+      seenProjectionKeyRef.current !== "" &&
+      seenProjectionKeyRef.current !== projectionKey;
+    seenProjectionKeyRef.current = projectionKey;
+    if (!projectionChanged && projectionReady && projectionWritable) return;
+
+    setPaletteOpen(false);
+    setPaletteCommand(null);
+    const ai = useInlineAiStore.getState();
+    if (
+      inlineAiEditor &&
+      ai.activeEditor === inlineAiEditor &&
+      ai.status !== "idle"
+    ) {
+      rollback(ai.sessionId);
+    }
+  }, [
+    inlineAiEditor,
+    projectionKey,
+    projectionReady,
+    projectionWritable,
+    rollback,
+  ]);
 
   // 引数を組み立てて generate を叩く。EditorPane.onSlashCommand と同じ
   // コンテキスト構築 (projectTitle / sceneTitle / 検出 Codex / 選択 or カーソル)。
@@ -107,10 +151,10 @@ export function useLinearInlineAi(params: {
       }
       // file-backed シーンは Inline AI 非対象 (slash 拡張も無いので通常届かない)。
       if (!inlineAiEditor) return;
-      // UI を伴う進行中セッション (generating/diffShown) の扱い。error は次の
-      // startGeneration が上書きするので idle 同様に新規発火を許す。
+      // UI を伴う進行中セッションを別の startGeneration で置き換えない。
+      // error も部分生成を含み得るため、明示的な Reject/rollback を要求する。
       const status = useInlineAiStore.getState().status;
-      if (status === "generating" || status === "diffShown") {
+      if (status !== "idle") {
         const linState = useLinearEditorStore.getState();
         const owner = linState.inlineAiOwnerSceneId;
         const ownerMounted =
@@ -121,10 +165,13 @@ export function useLinearInlineAi(params: {
           toast.info(i18next.t("inlineAi.sessionBusy"));
           return;
         }
-        // owner 不在 (タブモードの残骸など、リニア外で開始されたセッション) は
-        // 画面に解決手段が無いので畳んでから続行する — でないと linear AI が
-        // 解決不能なまま恒久ブロックされる。
-        useInlineAiStore.getState().reset();
+        const current = useInlineAiStore.getState();
+        if (current.activeEditor === inlineAiEditor) {
+          rollback(current.sessionId);
+        } else {
+          toast.info(i18next.t("inlineAi.sessionBusy"));
+          return;
+        }
       }
       useLinearEditorStore.getState().setInlineAiOwner(sceneId);
       if (cmd.needsArg) {
@@ -138,7 +185,7 @@ export function useLinearInlineAi(params: {
     return () => {
       dom.removeEventListener("inlineai:slash-command", onSlashCommand);
     };
-  }, [editor, inlineAiEditor, sceneId, runGenerate]);
+  }, [editor, inlineAiEditor, rollback, sceneId, runGenerate]);
 
   // owner ブロックが未 accept のセッションを抱えたままアンマウントされたら
   // セッションを畳む (reset = AbortController abort + store idle)。挿入済みの
@@ -151,12 +198,14 @@ export function useLinearInlineAi(params: {
     return () => {
       if (
         useLinearEditorStore.getState().inlineAiOwnerSceneId === sceneId &&
-        useInlineAiStore.getState().status !== "idle"
+        useInlineAiStore.getState().status !== "idle" &&
+        useInlineAiStore.getState().activeEditor === inlineAiEditor
       ) {
-        useInlineAiStore.getState().reset();
+        const ai = useInlineAiStore.getState();
+        rollback(ai.sessionId);
       }
     };
-  }, [sceneId]);
+  }, [inlineAiEditor, rollback, sceneId]);
 
   return {
     isOwner,
@@ -167,5 +216,6 @@ export function useLinearInlineAi(params: {
     onAccept: accept,
     onReject: rejectOrAbort,
     onRetry: retry,
+    rollback,
   };
 }

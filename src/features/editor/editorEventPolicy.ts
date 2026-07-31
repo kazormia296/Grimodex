@@ -4,9 +4,22 @@ import type { Domain } from "@/features/timelapse/recorder";
 export interface EditorUpdatePolicyInput {
   docChanged: boolean;
   isApplyingExternalUpdate: boolean;
+  isInlineAiRollback?: boolean;
   inlineAiStatus: InlineAiStatus;
   activeEditor: unknown;
   editor: unknown;
+}
+
+/** True when the editor owns an unaccepted inline-AI preview. */
+export function isInlineAiSaveBlocked({
+  inlineAiStatus,
+  activeEditor,
+  editor,
+}: Pick<
+  EditorUpdatePolicyInput,
+  "inlineAiStatus" | "activeEditor" | "editor"
+>): boolean {
+  return inlineAiStatus !== "idle" && activeEditor === editor;
 }
 
 /**
@@ -18,12 +31,15 @@ export interface EditorUpdatePolicyInput {
 export function shouldHandleEditorUpdate({
   docChanged,
   isApplyingExternalUpdate,
+  isInlineAiRollback = false,
   inlineAiStatus,
   activeEditor,
   editor,
 }: EditorUpdatePolicyInput): boolean {
-  if (!docChanged || isApplyingExternalUpdate) return false;
-  return inlineAiStatus === "idle" || activeEditor !== editor;
+  if (!docChanged || isApplyingExternalUpdate || isInlineAiRollback) {
+    return false;
+  }
+  return !isInlineAiSaveBlocked({ inlineAiStatus, activeEditor, editor });
 }
 
 export interface EditorTimelapseCapture {

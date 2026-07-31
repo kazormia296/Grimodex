@@ -51,11 +51,23 @@ describe("saveEditorDocument", () => {
   it.each([
     [
       "scene",
-      { kind: "tree", id: "scene-1", nodeType: "scene", storage: "database" },
+      {
+        kind: "tree",
+        id: "scene-1",
+        nodeType: "scene",
+        storage: "database",
+        loadedVersion: 8,
+      },
     ],
     [
       "note",
-      { kind: "tree", id: "note-1", nodeType: "note", storage: "database" },
+      {
+        kind: "tree",
+        id: "note-1",
+        nodeType: "note",
+        storage: "database",
+        loadedVersion: 3,
+      },
     ],
   ] as const)(
     "routes %s through persistSceneBody once",
@@ -65,10 +77,15 @@ describe("saveEditorDocument", () => {
       const result = await saveEditorDocument(binding, doc, services);
 
       expect(services.persistSceneBody).toHaveBeenCalledOnce();
-      expect(services.persistSceneBody).toHaveBeenCalledWith(binding.id, doc);
+      expect(services.persistSceneBody).toHaveBeenCalledWith(binding.id, doc, {
+        baseVersion: binding.loadedVersion,
+      });
       expect(services.updateCodexText).not.toHaveBeenCalled();
       expect(services.updateSnippet).not.toHaveBeenCalled();
-      expect(result.binding).toEqual(binding);
+      expect(result.binding).toEqual({
+        ...binding,
+        loadedVersion: persistedSceneBody.contentVersion,
+      });
       expect(result.persistedSceneBody).toEqual(persistedSceneBody);
     },
   );

@@ -18,6 +18,97 @@ import type { GroupIndex } from "@/features/editor/tabStore";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
+export interface InlineAiProjectionAuthority {
+  keyRef: { current: string };
+  readyRef: { current: boolean };
+  writableRef?: { current: boolean };
+}
+
+function isProjectionCurrent(
+  projection: InlineAiProjectionAuthority | undefined,
+  projectionKey: string | null,
+): boolean {
+  return (
+    projection == null ||
+    (projection.readyRef.current && projection.keyRef.current === projectionKey)
+  );
+}
+
+function isProjectionWritable(
+  projection: InlineAiProjectionAuthority | undefined,
+): boolean {
+  return projection?.writableRef?.current ?? true;
+}
+
+function isSessionOwnedByEditor(
+  editor: Editor,
+  projection: InlineAiProjectionAuthority | undefined,
+  projectionKey: string | null,
+): boolean {
+  const state = useInlineAiStore.getState();
+  // activeEditor=null is the legacy single-editor contract. Once a caller
+  // supplies a projection authority, a session must also carry that exact key.
+  const editorMatches =
+    state.activeEditor === editor ||
+    (projection == null && state.activeEditor === null);
+  return (
+    editorMatches &&
+    state.projectionKey === projectionKey &&
+    isProjectionCurrent(projection, projectionKey)
+  );
+}
+
+/**
+ * Remove an unaccepted preview only when the session still owns the editor.
+ * If the projection has already changed, the old absolute range is no longer
+ * meaningful and must not be applied to the new document; the canonical load
+ * will replace that document instead. `inlineAiRollback` is consumed by the
+ * editor update policy so cleanup never becomes a persisted body edit.
+ */
+export function rollbackInlineAiSession(
+  editor: Editor | null,
+  projection: InlineAiProjectionAuthority | undefined,
+  expectedSessionId?: string | null,
+): boolean {
+  if (!editor) return false;
+  const state = useInlineAiStore.getState();
+  const editorMatches =
+    state.activeEditor === editor ||
+    (projection == null && state.activeEditor === null);
+  if (!editorMatches) return false;
+  if (expectedSessionId != null && state.sessionId !== expectedSessionId) {
+    return false;
+  }
+
+  const generatedRange = state.generatedRange;
+  const canDeletePreview =
+    generatedRange != null &&
+    generatedRange.from < generatedRange.to &&
+    !editor.isDestroyed &&
+    isEditorViewReady(editor) &&
+    isProjectionCurrent(projection, state.projectionKey) &&
+    generatedRange.to <= editor.state.doc.content.size;
+
+  state.reset();
+  if (editor.isDestroyed || !isEditorViewReady(editor)) return true;
+
+  try {
+    const transaction = editor.state.tr
+      .setMeta("inlineAiDiffUpdate", true)
+      .setMeta("inlineAiRollback", true)
+      .setMeta("preventUpdate", true)
+      .setMeta("addToHistory", false);
+    if (canDeletePreview) {
+      transaction.delete(generatedRange!.from, generatedRange!.to);
+    }
+    editor.view.dispatch(transaction);
+  } catch {
+    // The editor may be destroyed between the readiness check and dispatch.
+    // The store reset is still the safe outcome; never rethrow during cleanup.
+  }
+  return true;
+}
+
 /**
  * Manages the full Inline AI lifecycle:
  * - Plugin registration
@@ -27,12 +118,16 @@ const DEFAULT_MODEL = "claude-sonnet-4-6";
 export function useInlineAiDiff(
   editor: Editor | null,
   activeEditorGroup: GroupIndex | null = null,
+  projection?: InlineAiProjectionAuthority,
 ) {
   const lastCallRef = useRef<{
     command: InlineAiCommand;
     context: InlineAiContext;
     traceId: string;
     sceneNodeId: string | null;
+    ownerEditor: Editor;
+    projectionKey: string | null;
+    sessionId: string;
     /** Full prompt sent to the model, captured on a successful generation so
      * the process-disclosure export can show it. Set after generateInlineAi
      * resolves; absent on abort/error. */
@@ -75,6 +170,12 @@ export function useInlineAiDiff(
     [],
   );
 
+  const rollback = useCallback(
+    (expectedSessionId?: string | null) =>
+      rollbackInlineAiSession(editor, projection, expectedSessionId),
+    [editor, projection],
+  );
+
   const generate = useCallback(
     async (command: InlineAiCommand, context: InlineAiContext) => {
       if (!editor) return;
@@ -83,9 +184,30 @@ export function useInlineAiDiff(
       // 塞ぐ。store 変異 (startGeneration) より前に判定する。
       if (blockIfPolicyOff("bodyWrite")) return;
       if (blockIfUnlicensed()) return;
+      if (
+        (projection && !projection.readyRef.current) ||
+        !isProjectionWritable(projection)
+      ) {
+        return;
+      }
+      const existingState = useInlineAiStore.getState();
+      if (existingState.status !== "idle") {
+        existingState.requestAttention();
+        return;
+      }
+      const projectionKey = projection?.keyRef.current ?? null;
+      const sessionId = crypto.randomUUID();
       const traceId = crypto.randomUUID();
       const sceneNodeId = useTreeStore.getState().activeSceneId || null;
-      lastCallRef.current = { command, context, traceId, sceneNodeId };
+      lastCallRef.current = {
+        command,
+        context,
+        traceId,
+        sceneNodeId,
+        ownerEditor: editor,
+        projectionKey,
+        sessionId,
+      };
 
       const { from, to } = editor.state.selection;
       const isReplace = command.mode === "replace" && from !== to;
@@ -96,7 +218,7 @@ export function useInlineAiDiff(
       const insertPos = isReplace ? null : from;
 
       const abortController = new AbortController();
-      useInlineAiStore.getState().startGeneration({
+      const started = useInlineAiStore.getState().startGeneration({
         commandId: command.id,
         mode: isReplace ? "replace" : "insert",
         originalRange,
@@ -105,7 +227,10 @@ export function useInlineAiDiff(
         abortController,
         activeEditor: editor,
         activeEditorGroup,
+        projectionKey,
+        sessionId,
       });
+      if (!started) return;
 
       try {
         // 置換モードでは元テキストを残したまま選択末尾の直後に生成テキストを
@@ -129,7 +254,25 @@ export function useInlineAiDiff(
           (chunk) => {
             // Abort 後に遅れて届いた chunk を受け取って挿入してしまう race を
             // 防ぐ。store の status が generating 以外になっていれば破棄する。
-            if (useInlineAiStore.getState().status !== "generating") return;
+            const state = useInlineAiStore.getState();
+            if (
+              state.status !== "generating" ||
+              state.activeEditor !== editor ||
+              state.projectionKey !== projectionKey ||
+              state.sessionId !== sessionId ||
+              !isProjectionCurrent(projection, projectionKey) ||
+              !isProjectionWritable(projection)
+            ) {
+              abortController.abort();
+              if (
+                state.activeEditor === editor &&
+                state.projectionKey === projectionKey &&
+                state.sessionId === sessionId
+              ) {
+                rollback(sessionId);
+              }
+              return;
+            }
             useInlineAiStore.getState().appendChunk(chunk);
             insertChunkHistoryLess(editor, insertedTo, chunk);
             insertedTo += chunk.length;
@@ -146,6 +289,25 @@ export function useInlineAiDiff(
         // ていれば書かない。
         if (lastCallRef.current?.traceId === traceId) {
           lastCallRef.current.promptText = result.promptText;
+        }
+
+        const stateAfterGeneration = useInlineAiStore.getState();
+        if (
+          stateAfterGeneration.activeEditor !== editor ||
+          stateAfterGeneration.projectionKey !== projectionKey ||
+          stateAfterGeneration.sessionId !== sessionId ||
+          !isProjectionCurrent(projection, projectionKey) ||
+          !isProjectionWritable(projection)
+        ) {
+          abortController.abort();
+          if (
+            stateAfterGeneration.activeEditor === editor &&
+            stateAfterGeneration.projectionKey === projectionKey &&
+            stateAfterGeneration.sessionId === sessionId
+          ) {
+            rollback(sessionId);
+          }
+          return;
         }
 
         // Toolbar からの早押し abort が先に店じまいを終えているケースは
@@ -166,22 +328,55 @@ export function useInlineAiDiff(
       } catch (err) {
         // AbortController.abort() 起因のキャンセルは generateInlineAi 内部で
         // onDone("stopped") に化けるため、ここには来ない想定。通信エラー等のみ。
+        const stateAfterError = useInlineAiStore.getState();
+        if (
+          stateAfterError.activeEditor !== editor ||
+          stateAfterError.projectionKey !== projectionKey ||
+          stateAfterError.sessionId !== sessionId ||
+          !isProjectionCurrent(projection, projectionKey)
+        ) {
+          return;
+        }
         const msg =
           err instanceof Error
             ? err.message
             : i18next.t("inlineAi.generateFailed");
-        useInlineAiStore.getState().setError(msg);
+        if (!isProjectionWritable(projection)) {
+          rollback(sessionId);
+        } else {
+          useInlineAiStore.getState().setError(msg);
+        }
       }
     },
-    [activeEditorGroup, editor, dispatchDiffUpdate, insertChunkHistoryLess],
+    [
+      activeEditorGroup,
+      editor,
+      dispatchDiffUpdate,
+      insertChunkHistoryLess,
+      projection,
+      rollback,
+    ],
   );
 
   const accept = useCallback(() => {
     if (!editor) return;
     const state = useInlineAiStore.getState();
+    const projectionKey = projection?.keyRef.current ?? null;
+    if (
+      !isSessionOwnedByEditor(editor, projection, projectionKey) ||
+      !isProjectionWritable(projection)
+    ) {
+      rollback(state.sessionId);
+      return;
+    }
     const { generatedRange, originalRange, mode, model } = state;
     const authorshipType = editor.schema.marks["authorship"];
-    const lastCall = lastCallRef.current;
+    const lastCall =
+      lastCallRef.current?.ownerEditor === editor &&
+      lastCallRef.current.projectionKey === projectionKey &&
+      lastCallRef.current.sessionId === state.sessionId
+        ? lastCallRef.current
+        : null;
     const traceId = lastCall?.traceId ?? null;
     const resolvedModel = model ?? DEFAULT_MODEL;
 
@@ -257,11 +452,17 @@ export function useInlineAiDiff(
         });
       }
     }
-  }, [editor, dispatchDiffUpdate]);
+  }, [editor, dispatchDiffUpdate, projection, rollback]);
 
   const reject = useCallback(() => {
     if (!editor) return;
-    const { generatedRange } = useInlineAiStore.getState();
+    const state = useInlineAiStore.getState();
+    const projectionKey = projection?.keyRef.current ?? null;
+    if (!isSessionOwnedByEditor(editor, projection, projectionKey)) {
+      rollback(state.sessionId);
+      return;
+    }
+    const { generatedRange } = state;
 
     // accept と同じく、先に idle に戻してから削除トランザクションを発行する。
     useInlineAiStore.getState().reset();
@@ -273,7 +474,7 @@ export function useInlineAiDiff(
         editor.chain().focus().deleteRange({ from, to }).run();
       }
     }
-  }, [editor, dispatchDiffUpdate]);
+  }, [editor, dispatchDiffUpdate, projection, rollback]);
 
   /**
    * ストリーミング中 Escape 時に呼ばれる想定。
@@ -282,21 +483,48 @@ export function useInlineAiDiff(
    */
   const rejectOrAbort = useCallback(() => {
     if (!editor) return;
-    const status = useInlineAiStore.getState().status;
+    const state = useInlineAiStore.getState();
+    const projectionKey = projection?.keyRef.current ?? null;
+    if (!isSessionOwnedByEditor(editor, projection, projectionKey)) {
+      rollback(state.sessionId);
+      return;
+    }
+    const status = state.status;
     if (status === "generating") {
       useInlineAiStore.getState().abortGeneration(DEFAULT_MODEL);
       dispatchDiffUpdate(editor);
     } else {
       reject();
     }
-  }, [editor, dispatchDiffUpdate, reject]);
+  }, [editor, dispatchDiffUpdate, projection, reject, rollback]);
 
   const retry = useCallback(async () => {
-    if (!lastCallRef.current) return;
+    const lastCall = lastCallRef.current;
+    if (!lastCall || !editor) return;
+    const projectionKey = projection?.keyRef.current ?? null;
+    const state = useInlineAiStore.getState();
+    if (
+      lastCall.ownerEditor !== editor ||
+      lastCall.projectionKey !== projectionKey ||
+      !isSessionOwnedByEditor(editor, projection, projectionKey) ||
+      state.projectionKey !== projectionKey
+    ) {
+      return;
+    }
     reject();
-    const { command, context } = lastCallRef.current;
-    setTimeout(() => generate(command, context), 50);
-  }, [generate, reject]);
+    setTimeout(() => {
+      if (!isProjectionCurrent(projection, projectionKey)) return;
+      const current = useInlineAiStore.getState();
+      if (
+        current.status !== "idle" ||
+        current.activeEditor !== null ||
+        current.projectionKey !== null
+      ) {
+        return;
+      }
+      void generate(lastCall.command, lastCall.context);
+    }, 50);
+  }, [editor, generate, projection, reject]);
 
   /**
    * Show pre-generated agent/MCP text in the diff UI (no streaming).
@@ -315,6 +543,19 @@ export function useInlineAiDiff(
       if (!editor) return;
       if (blockIfPolicyOff("bodyWrite")) return;
       if (blockIfUnlicensed()) return;
+      if (
+        (projection && !projection.readyRef.current) ||
+        !isProjectionWritable(projection)
+      ) {
+        return;
+      }
+      const existingState = useInlineAiStore.getState();
+      if (existingState.status !== "idle") {
+        existingState.requestAttention();
+        return;
+      }
+      const projectionKey = projection?.keyRef.current ?? null;
+      const sessionId = crypto.randomUUID();
 
       const isReplace = opts.mode === "replace" && opts.originalRange != null;
       const originalRange = isReplace ? opts.originalRange! : null;
@@ -326,7 +567,7 @@ export function useInlineAiDiff(
         ? null
         : (opts.insertPos ?? editor.state.selection.from);
 
-      useInlineAiStore.getState().startGeneration({
+      const started = useInlineAiStore.getState().startGeneration({
         commandId: "agent-prose",
         mode: isReplace ? "replace" : "insert",
         originalRange,
@@ -335,7 +576,10 @@ export function useInlineAiDiff(
         abortController: new AbortController(),
         activeEditor: editor,
         activeEditorGroup,
+        projectionKey,
+        sessionId,
       });
+      if (!started) return;
       if (opts.stagingId) {
         useInlineAiStore.setState({ stagingId: opts.stagingId });
       }
@@ -357,7 +601,13 @@ export function useInlineAiDiff(
       useInlineAiStore.getState().finishGeneration(opts.model ?? DEFAULT_MODEL);
       dispatchDiffUpdate(editor);
     },
-    [activeEditorGroup, editor, dispatchDiffUpdate, insertChunkHistoryLess],
+    [
+      activeEditorGroup,
+      editor,
+      dispatchDiffUpdate,
+      insertChunkHistoryLess,
+      projection,
+    ],
   );
 
   const getActiveStagingId = useCallback(
@@ -372,6 +622,7 @@ export function useInlineAiDiff(
     rejectOrAbort,
     retry,
     showProvidedText,
+    rollback,
     getActiveStagingId,
   };
 }

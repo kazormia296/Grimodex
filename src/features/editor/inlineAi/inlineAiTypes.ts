@@ -33,6 +33,8 @@ export interface InlineAiContext {
 }
 
 export interface InlineAiState {
+  /** Unique identity for one generated preview. Async chunks must match it. */
+  sessionId: string | null;
   status: InlineAiStatus;
   mode: InlineAiMode;
   activeCommandId: string | null;
@@ -49,4 +51,6 @@ export interface InlineAiState {
   error: string | null;
   model: string | null;
   stagingId: string | null;
+  /** Projection token captured when this session started. */
+  projectionKey: string | null;
 }

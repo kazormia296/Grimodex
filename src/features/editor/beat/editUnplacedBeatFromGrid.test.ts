@@ -44,7 +44,17 @@ beforeEach(() => {
   _resetGridBeatMutationQueueForTests();
   useUnplacedBeatsStore.setState({ sceneBeats: {} });
   vi.clearAllMocks();
-  mockSaveSceneBeatsOnly.mockResolvedValue({ unplacedBeatPreview: "preview" });
+  mockLoadSceneFull.mockResolvedValue({
+    content: "",
+    unplacedBeatsDoc: "[]",
+    projectId: "project-1",
+    version: 0,
+  });
+  mockSaveSceneBeatsOnly.mockResolvedValue({
+    unplacedBeatPreview: "preview",
+    contentVersion: 1,
+    contentUpdatedAt: "2026-01-01T00:00:00.000Z",
+  });
 });
 
 describe("beatToPlainText", () => {
@@ -72,6 +82,8 @@ describe("loadBeatTextByIndex", () => {
     mockLoadSceneFull.mockResolvedValue({
       content: "",
       unplacedBeatsDoc: JSON.stringify(beats),
+      projectId: "project-1",
+      version: 0,
     });
 
     const result = await loadBeatTextByIndex("s1", 0);
@@ -154,7 +166,11 @@ describe("editUnplacedBeatFromGrid", () => {
     useUnplacedBeatsStore.getState().setBeats("s1", beats, "load");
     mockSaveSceneBeatsOnly
       .mockImplementationOnce(() => firstSave)
-      .mockResolvedValueOnce({ unplacedBeatPreview: "latest preview" });
+      .mockResolvedValueOnce({
+        unplacedBeatPreview: "latest preview",
+        contentVersion: 1,
+        contentUpdatedAt: "2026-01-01T00:00:00.000Z",
+      });
 
     const firstMutation = editUnplacedBeatFromGrid("s1", "b1", "first");
     const firstFailure = expect(firstMutation).rejects.toThrow("disk full");

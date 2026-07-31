@@ -18,6 +18,7 @@ export interface EditorDocumentServices {
   persistSceneBody: (
     id: string,
     doc: ProseMirrorNode,
+    options: { baseVersion: number },
   ) => Promise<PersistedSceneBody>;
   updateCodexPhase: (
     phaseId: string,
@@ -87,11 +88,20 @@ export async function saveEditorDocument(
   services: EditorDocumentServices = defaultEditorDocumentServices,
 ): Promise<SaveEditorDocumentResult> {
   switch (binding.kind) {
-    case "tree":
+    case "tree": {
+      const persistedSceneBody = await services.persistSceneBody(
+        binding.id,
+        doc,
+        { baseVersion: binding.loadedVersion },
+      );
       return {
-        binding,
-        persistedSceneBody: await services.persistSceneBody(binding.id, doc),
+        binding: {
+          ...binding,
+          loadedVersion: persistedSceneBody.contentVersion,
+        },
+        persistedSceneBody,
       };
+    }
 
     case "codex": {
       const content = JSON.stringify(doc.toJSON());

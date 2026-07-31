@@ -37,7 +37,17 @@ beforeEach(() => {
   _resetGridBeatMutationQueueForTests();
   useUnplacedBeatsStore.setState({ sceneBeats: {} });
   vi.clearAllMocks();
-  mockSaveSceneBeatsOnly.mockResolvedValue({ unplacedBeatPreview: "preview" });
+  mockLoadSceneFull.mockResolvedValue({
+    content: "",
+    unplacedBeatsDoc: "[]",
+    projectId: "project-1",
+    version: 0,
+  });
+  mockSaveSceneBeatsOnly.mockResolvedValue({
+    unplacedBeatPreview: "preview",
+    contentVersion: 1,
+    contentUpdatedAt: "2026-01-01T00:00:00.000Z",
+  });
 });
 
 describe("addUnplacedBeatFromGrid", () => {
@@ -51,6 +61,8 @@ describe("addUnplacedBeatFromGrid", () => {
     mockLoadSceneFull.mockResolvedValue({
       content: "",
       unplacedBeatsDoc: JSON.stringify(existingBeats),
+      projectId: "project-1",
+      version: 0,
     });
 
     await addUnplacedBeatFromGrid("s1", "新しいBeat");
@@ -66,13 +78,13 @@ describe("addUnplacedBeatFromGrid", () => {
     });
   });
 
-  it("ストアに既存 beat があるとき DB 問い合わせをスキップする", async () => {
+  it("ストアに既存 beat があるときも最新の OCC revision を読む", async () => {
     const existing = [makeExistingBeat("b-existing", "既存")];
     useUnplacedBeatsStore.getState().setBeats("s1", existing, "load");
 
     await addUnplacedBeatFromGrid("s1", "追加Beat");
 
-    expect(mockLoadSceneFull).not.toHaveBeenCalled();
+    expect(mockLoadSceneFull).toHaveBeenCalledOnce();
 
     const savedDoc = JSON.parse(
       mockSaveSceneBeatsOnly.mock.calls[0][1].unplacedBeatsDoc,
@@ -84,6 +96,8 @@ describe("addUnplacedBeatFromGrid", () => {
     mockLoadSceneFull.mockResolvedValue({
       content: "",
       unplacedBeatsDoc: "[]",
+      projectId: "project-1",
+      version: 0,
     });
 
     await addUnplacedBeatFromGrid("s1", "初beat");
@@ -102,6 +116,8 @@ describe("addUnplacedBeatFromGrid", () => {
     mockLoadSceneFull.mockResolvedValue({
       content: "",
       unplacedBeatsDoc: "invalid-json",
+      projectId: "project-1",
+      version: 0,
     });
 
     await expect(addUnplacedBeatFromGrid("s1", "beat")).rejects.toThrow();
@@ -112,18 +128,22 @@ describe("addUnplacedBeatFromGrid", () => {
     mockLoadSceneFull.mockResolvedValue({
       content: "",
       unplacedBeatsDoc: "[]",
+      projectId: "project-1",
+      version: 0,
     });
 
     await addUnplacedBeatFromGrid("s1", "first");
     await addUnplacedBeatFromGrid("s1", "second");
 
-    expect(mockLoadSceneFull).toHaveBeenCalledOnce();
+    expect(mockLoadSceneFull).toHaveBeenCalledTimes(2);
   });
 
   it("追加後に saveSceneBeatsOnly を呼ぶ", async () => {
     mockLoadSceneFull.mockResolvedValue({
       content: "",
       unplacedBeatsDoc: "[]",
+      projectId: "project-1",
+      version: 0,
     });
 
     await addUnplacedBeatFromGrid("s1", "テスト");

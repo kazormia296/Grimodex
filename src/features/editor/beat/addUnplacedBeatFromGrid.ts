@@ -19,18 +19,30 @@ function hasHydratedScene(sceneId: string): boolean {
  * array is cached as hydrated; malformed/unavailable data rejects instead of
  * being overwritten as though the scene had no existing Beats.
  */
+export interface GridBeatWriteSnapshot {
+  projectId: string;
+  baseVersion: number;
+}
+
 export async function prepareUnplacedBeatsForGrid(
   sceneId: string,
-): Promise<void> {
-  if (hasHydratedScene(sceneId)) return;
-  const { unplacedBeatsDoc } = await loadSceneFull(sceneId);
+): Promise<GridBeatWriteSnapshot> {
+  // Always read the aggregate revision immediately before a mutation. The
+  // in-memory beat list may be reused, but its OCC baseline must not be.
+  const { unplacedBeatsDoc, projectId, version } = await loadSceneFull(sceneId);
   const parsed: unknown = JSON.parse(unplacedBeatsDoc);
   if (!Array.isArray(parsed)) {
     throw new Error(`Invalid unplaced Beats document for scene: ${sceneId}`);
   }
-  useUnplacedBeatsStore
-    .getState()
-    .setBeats(sceneId, parsed as UnplacedBeat[], "load");
+  if (!hasHydratedScene(sceneId)) {
+    useUnplacedBeatsStore
+      .getState()
+      .setBeats(sceneId, parsed as UnplacedBeat[], "load");
+  }
+  if (!projectId) {
+    throw new Error(`Scene project identity is unavailable: ${sceneId}`);
+  }
+  return { projectId, baseVersion: version };
 }
 
 /**
@@ -60,7 +72,7 @@ export async function saveUnplacedBeatDraftFromGrid(
   text: string,
 ): Promise<void> {
   await runGridBeatMutation(sceneId, async () => {
-    await prepareUnplacedBeatsForGrid(sceneId);
+    const writeSnapshot = await prepareUnplacedBeatsForGrid(sceneId);
     const store = useUnplacedBeatsStore.getState();
     const prevBeats = store.getBeats(sceneId);
     const trimmed = text.trim();
@@ -88,6 +100,8 @@ export async function saveUnplacedBeatDraftFromGrid(
     try {
       ({ unplacedBeatPreview } = await saveSceneBeatsOnly(sceneId, {
         unplacedBeatsDoc,
+        projectId: writeSnapshot.projectId,
+        baseVersion: writeSnapshot.baseVersion,
       }));
     } catch (error) {
       store.setBeats(sceneId, prevBeats);

@@ -121,6 +121,7 @@ const inlineAiSpies = vi.hoisted(() => ({
   reject: vi.fn(),
   rejectOrAbort: vi.fn(),
   retry: vi.fn(),
+  rollback: vi.fn(() => useInlineAiStore.getState().reset()),
 }));
 vi.mock("@/features/editor/inlineAi/useInlineAiDiff", () => ({
   useInlineAiDiff: () => ({
@@ -129,6 +130,7 @@ vi.mock("@/features/editor/inlineAi/useInlineAiDiff", () => ({
     reject: inlineAiSpies.reject,
     rejectOrAbort: inlineAiSpies.rejectOrAbort,
     retry: inlineAiSpies.retry,
+    rollback: inlineAiSpies.rollback,
     showProvidedText: vi.fn(),
     getActiveStagingId: () => null,
   }),
@@ -392,7 +394,13 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     lastEditor().commands.insertContentAt(1, "追記");
     unmount();
     await waitFor(() => {
-      expect(mockPersist).toHaveBeenCalledWith("scene-0001", expect.anything());
+      expect(mockPersist).toHaveBeenCalledWith(
+        "scene-0001",
+        expect.anything(),
+        {
+          baseVersion: 0,
+        },
+      );
     });
   });
 
@@ -663,7 +671,9 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
 
     lastEditor().commands.insertContentAt(1, "追記");
     await saveScene("scene-0001");
-    expect(mockPersist).toHaveBeenCalledWith("scene-0001", expect.anything());
+    expect(mockPersist).toHaveBeenCalledWith("scene-0001", expect.anything(), {
+      baseVersion: 0,
+    });
 
     unmount();
     expect(registeredSaveHandlerIds()).not.toContain("scene-0001");
@@ -1027,18 +1037,16 @@ describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
     expect(mockToastInfo).toHaveBeenCalled();
   });
 
-  it("オーナー不在の残存セッション (別モードの残骸) は畳んで続行する", async () => {
+  it("オーナー不在の残存セッション (別モードの残骸) は安全のため弾く", async () => {
     await renderLoaded({ isActive: true });
     startSession(); // status = generating だが owner は null のまま
 
     dispatchSlashCommand({ id: "continue", mode: "insert" });
 
-    // 解決手段が画面に無いので弾かず、stale を畳んで新規生成へ進む
-    expect(mockToastInfo).not.toHaveBeenCalled();
-    expect(inlineAiSpies.generate).toHaveBeenCalledTimes(1);
-    expect(useLinearEditorStore.getState().inlineAiOwnerSceneId).toBe(
-      "scene-0001",
-    );
+    // ownership と rollback の経路が不明な残骸を自動 reset すると、別の
+    // editor に残った生成本文を孤児化する。解決可能な owner が現れるまで弾く。
+    expect(mockToastInfo).toHaveBeenCalled();
+    expect(inlineAiSpies.generate).not.toHaveBeenCalled();
   });
 
   it("オーナーのときだけ Inline AI ツールバーを描画する", async () => {
@@ -1081,6 +1089,9 @@ describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
       useLinearEditorStore.getState().setInlineAiOwner("scene-0001");
     });
     startSession();
+    act(() => {
+      useInlineAiStore.setState({ activeEditor: lastEditor() });
+    });
     expect(useInlineAiStore.getState().status).toBe("generating");
 
     unmount();

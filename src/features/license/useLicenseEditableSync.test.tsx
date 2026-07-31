@@ -122,14 +122,14 @@ describe("useLicenseEditableSync lifecycle barrier", () => {
       "utf8",
     );
     expect(source).toMatch(
-      /useLicenseEditableSync\([\s\S]{0,100}?readOnly \|\| !activeLoadedDocumentKey,[\s\S]{0,80}?documentLeaseKey/,
+      /useLicenseEditableSync\([\s\S]{0,100}?readOnly \|\| !inputProjectionReady,[\s\S]{0,80}?documentLeaseKey/,
     );
     expect(source).toMatch(
-      /const loadedMountedEditor = activeLoadedDocumentKey \? mountedEditor : null/,
+      /const loadedMountedEditor = inputProjectionReady \? mountedEditor : null/,
     );
     expect(source).toMatch(/setGlobalEditor\(loadedMountedEditor\)/);
     expect(source).toMatch(
-      /getEditor: \(\) =>[\s\S]{0,120}?loadedDocumentKeyRef\.current\?\.id === nodeId[\s\S]{0,80}?: null/,
+      /getEditor: \(\) =>[\s\S]{0,160}?editorWritableRef\.current[\s\S]{0,100}?inputProjectionReadyRef\.current[\s\S]{0,80}?editorRef\.current/,
     );
     expect(source).toMatch(
       /onFocus\(\) \{[\s\S]{0,1200}?loadedDocumentKeyRef\.current\?\.id === nodeId[\s\S]{0,1200}?setCurrent\(\{ kind, id: nodeId \}, editorRef\.current\)/,

@@ -72,7 +72,9 @@ function GridSceneCardImpl({
   const beatInputRef = useRef<HTMLTextAreaElement>(null);
   const addingBeatRef = useRef(false);
   const mountedRef = useRef(true);
-  const beatPrepareInFlightRef = useRef<Promise<void> | null>(null);
+  const beatPrepareInFlightRef = useRef<ReturnType<
+    typeof prepareUnplacedBeatsForGrid
+  > | null>(null);
   const beatController = useLatestValueDraftController(
     `grid-add-beat:${scene.id}`,
     { beatId: "", text: "" },

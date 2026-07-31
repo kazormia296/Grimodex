@@ -157,7 +157,12 @@ vi.mock("@/features/tree/api", () => {
     Promise.resolve("シーン本文"),
   );
   const loadSceneFull = vi.fn((_id: string) =>
-    Promise.resolve({ content: "{}", unplacedBeatsDoc: "[]" }),
+    Promise.resolve({
+      content: "{}",
+      unplacedBeatsDoc: "[]",
+      projectId: "proj-1",
+      version: 0,
+    }),
   );
   return {
     loadSceneContent,
@@ -7155,15 +7160,24 @@ describe("useChatStore", () => {
           return Promise.resolve({
             content: beatDoc("b1", "シーンAのビート"),
             unplacedBeatsDoc: unplacedDoc,
+            projectId: "proj-1",
+            version: 0,
           });
         }
         if (id === "sB") {
           return Promise.resolve({
             content: beatDoc("b2", "シーンBのビート"),
             unplacedBeatsDoc: "[]",
+            projectId: "proj-1",
+            version: 0,
           });
         }
-        return Promise.resolve({ content: "{}", unplacedBeatsDoc: "[]" });
+        return Promise.resolve({
+          content: "{}",
+          unplacedBeatsDoc: "[]",
+          projectId: "proj-1",
+          version: 0,
+        });
       });
       mockBuildSystemPrompt.mockReturnValue({
         prompt: "p",
@@ -7325,6 +7339,8 @@ describe("useChatStore", () => {
             content: [{ type: "text", text: "レガシー未配置" }],
           },
         ]),
+        projectId: "proj-1",
+        version: 0,
       });
       mockBuildSystemPrompt.mockReturnValue({
         prompt: "p",
@@ -8263,6 +8279,8 @@ describe("useChatStore", () => {
       mockLoadSceneFull.mockResolvedValue({
         content: beatDoc,
         unplacedBeatsDoc: "[]",
+        projectId: "proj-1",
+        version: 0,
       });
       mockBuildSystemPrompt.mockReturnValue({
         prompt: "nested-beats-prompt",

@@ -7,6 +7,7 @@ const binding: LoadedEditorBinding = {
   id: "scene-1",
   nodeType: "scene",
   storage: "database",
+  loadedVersion: 0,
 };
 
 describe("EditorMutationGate", () => {
