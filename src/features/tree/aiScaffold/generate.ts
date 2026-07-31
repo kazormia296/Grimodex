@@ -10,6 +10,7 @@
 import { invoke } from "@/lib/tauri";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
+import { assertSingleShotTransportSupported } from "@/features/chat/singleShotTransport";
 import { cmpKeys } from "../fractionalIndex";
 import type { TreeNodeData, NodeType } from "../treeStore";
 import type { AiTreePlan, AiTreeOp } from "./types";
@@ -388,6 +389,7 @@ export async function generateAiTreePlan(
   ];
 
   const ov = resolveRoleSendOverride("tree_scaffold");
+  assertSingleShotTransportSupported(ov.provider);
   const response = await invoke<LLMResponsePayload>("send_chat_message", {
     messages,
     thinking: null,

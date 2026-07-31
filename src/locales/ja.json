@@ -939,6 +939,7 @@
         "staleModelOption": "{{model}}（一覧に無し）",
         "reset": "リセット",
         "cacheNote": "注意: あるロールに既定と別プロバイダのモデルを選ぶと、その経路のプロンプトキャッシュが分断され、課金・レイテンシが悪化することがあります。",
+        "cliSingleShotUnsupported": "Codex CLI（exec / App Server）はこの単発AI機能に未対応です。機能別モデルで対象ロールに OpenRouter などのHTTPプロバイダを割り当ててください。",
         "conversation": {
           "label": "会話（本文チャット）",
           "description": "本文チャット。最高品質。プロンプトキャッシュを最も使う。"
@@ -2307,6 +2308,7 @@
       "judge": "AI で評価",
       "judging": "評価中…",
       "judgeFailed": "AI 評価に失敗しました",
+      "judgeNoResult": "AIから有効な評価結果を取得できませんでした。モデル設定を確認して再試行してください。",
       "acceptAlias": "「{{name}}」の別名として登録",
       "acceptNew": "別名にせず新規エントリとして作成",
       "aliasHint": "「{{name}}」の別名?",
@@ -2491,6 +2493,8 @@
       "label": "読み（ふりがな）",
       "placeholder": "ふりがな…",
       "estimate": "AIで推定",
+      "estimateFailed": "読みの推定に失敗しました",
+      "estimateNoResult": "AIから有効な読みを取得できませんでした。モデル設定を確認して再試行してください。",
       "manage": "読みを管理",
       "heroLabel": "代表読み",
       "heroPlaceholder": "読みを入力…",

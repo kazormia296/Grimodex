@@ -90,6 +90,8 @@ import {
   sendChatMessageWithThinking,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
+import { useAiSettingsStore } from "./store";
+import { DEFAULT_AI_SETTINGS } from "./types";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 
 // Helper to set up chained drizzle query mock
@@ -917,6 +919,58 @@ describe("chatApi - Ollama endpoint snapshots", () => {
         resolvedToolProtocol: "native",
         expectedOllamaEndpoint: "http://127.0.0.1:11434",
       }),
+    );
+  });
+});
+
+describe("chatApi - unsupported CLI single-shot transport", () => {
+  afterEach(() => {
+    useAiSettingsStore.setState({ settings: { ...DEFAULT_AI_SETTINGS } });
+  });
+
+  it("rejects before IPC when Codex App Server is the active provider", async () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "cli",
+        cli: { kind: "codex", codexTransport: "app-server" },
+      },
+    });
+    vi.mocked(invoke).mockClear();
+
+    await expect(
+      sendChatMessageWithThinking([{ role: "user", content: "hello" }]),
+    ).rejects.toMatchObject({ code: "AI_SINGLE_SHOT_CLI_UNSUPPORTED" });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("allows an HTTP role override while the active provider remains CLI", async () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "cli",
+        cli: { kind: "codex", codexTransport: "app-server" },
+      },
+    });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "ok" }],
+      stopReason: "end_turn",
+    });
+
+    await expect(
+      sendChatMessageWithThinking(
+        [{ role: "user", content: "hello" }],
+        undefined,
+        undefined,
+        null,
+        undefined,
+        null,
+        "openrouter",
+      ),
+    ).resolves.toMatchObject({ text: "ok" });
+    expect(invoke).toHaveBeenCalledWith(
+      "send_chat_message",
+      expect.objectContaining({ provider: "openrouter" }),
     );
   });
 });

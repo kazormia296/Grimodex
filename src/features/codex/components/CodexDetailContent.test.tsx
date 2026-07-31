@@ -20,6 +20,14 @@ import {
 } from "@/lib/editorQuiescence";
 import { flushAllAutoSaves } from "@/hooks/useAutoSave";
 import { CodexDetailContent } from "./CodexDetailContent";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -245,6 +253,32 @@ describe("CodexDetailContent draft integrity", () => {
         surfaces: ["刹那"],
       }),
     ]);
+  });
+
+  it("reports an AI reading transport failure instead of failing silently", async () => {
+    const entry: CodexEntry = { ...INITIAL_ENTRY, name: "刹那" };
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry });
+    mockInferReadings.mockRejectedValueOnce(
+      new Error("single-shot transport unavailable"),
+    );
+
+    render(
+      <CodexDetailContent
+        entry={entry}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("estimate-readings"));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "読みの推定に失敗しました",
+        expect.objectContaining({
+          description: "single-shot transport unavailable",
+        }),
+      ),
+    );
   });
 
   it("saves a hero reading edit while preserving alternate and alias readings", async () => {

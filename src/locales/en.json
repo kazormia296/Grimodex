@@ -940,6 +940,7 @@
         "staleModelOption": "{{model}} (not in list)",
         "reset": "Reset",
         "cacheNote": "Note: picking a model from a different provider than your default for a role splits that path's prompt cache, which can raise cost and latency.",
+        "cliSingleShotUnsupported": "Codex CLI (exec / App Server) does not support this one-shot AI feature. Assign an HTTP provider such as OpenRouter to the relevant role under per-feature models.",
         "conversation": {
           "label": "Conversation (chat)",
           "description": "Main editor chat. Highest quality; uses prompt caching the most."
@@ -2308,6 +2309,7 @@
       "judge": "Evaluate with AI",
       "judging": "Evaluating…",
       "judgeFailed": "AI evaluation failed",
+      "judgeNoResult": "AI returned no valid evaluation results. Check the model settings and try again.",
       "acceptAlias": "Register as an alias of \"{{name}}\"",
       "acceptNew": "Create as a new entry instead",
       "aliasHint": "alias of \"{{name}}\"?",
@@ -2497,6 +2499,8 @@
       "label": "Readings (furigana)",
       "placeholder": "Reading...",
       "estimate": "Estimate with AI",
+      "estimateFailed": "Reading estimation failed",
+      "estimateNoResult": "AI returned no valid readings. Check the model settings and try again.",
       "manage": "Manage readings",
       "heroLabel": "Primary reading",
       "heroPlaceholder": "Add reading…",

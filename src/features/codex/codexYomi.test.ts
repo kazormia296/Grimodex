@@ -1,5 +1,25 @@
-import { describe, it, expect } from "vitest";
-import { parseYomiResponse } from "./codexYomi";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mockSend = vi.hoisted(() => vi.fn());
+const mockBlock = vi.hoisted(() => vi.fn(() => false));
+
+vi.mock("@/features/chat/chatApi", () => ({
+  sendChatMessageWithThinking: mockSend,
+}));
+vi.mock("@/features/ai-policy/policyGuard", () => ({
+  blockIfPolicyOff: mockBlock,
+}));
+vi.mock("@/features/ai-usage/recordAiUsage", () => ({
+  recordAiUsage: vi.fn(),
+}));
+vi.mock("@/features/project/api", () => ({
+  getProject: vi.fn().mockResolvedValue({ language: "ja" }),
+}));
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: { getState: () => ({ projectId: "p1" }) },
+}));
+
+import { inferReadings, parseYomiResponse } from "./codexYomi";
 
 const valid = () =>
   new Map<string, Set<string>>([
@@ -92,5 +112,32 @@ describe("parseYomiResponse", () => {
       '{"readings":[{"id":"e1","yomi":"せつな"},{"surface":"刹那","yomi":"せつな"},{"id":"e1","surface":"刹那","yomi":123},{"id":"e1","surface":"剣聖","yomi":"けんせい"}]}';
     const m = parseYomiResponse(text, valid());
     expect(m.get("e1")).toEqual([{ surface: "剣聖", yomi: "けんせい" }]);
+  });
+});
+
+describe("inferReadings failure reporting", () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockBlock.mockReturnValue(false);
+  });
+
+  it("propagates a transport failure instead of returning an empty result", async () => {
+    mockSend.mockRejectedValue(new Error("transport unavailable"));
+
+    await expect(
+      inferReadings([{ id: "e1", category: "人物", surfaces: ["刹那"] }]),
+    ).rejects.toThrow("transport unavailable");
+  });
+
+  it("rejects a response with no valid readings", async () => {
+    mockSend.mockResolvedValue({
+      text: "no json here",
+      inputTokens: 1,
+      outputTokens: 1,
+    });
+
+    await expect(
+      inferReadings([{ id: "e1", category: "人物", surfaces: ["刹那"] }]),
+    ).rejects.toMatchObject({ code: "CODEX_YOMI_NO_VALID_RESULT" });
   });
 });

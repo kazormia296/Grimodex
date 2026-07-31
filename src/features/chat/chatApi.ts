@@ -47,6 +47,7 @@ import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload
 import type { AiProvider } from "./types";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
+import { assertSingleShotTransportSupported } from "./singleShotTransport";
 
 // --- AI message sending (existing) ---
 
@@ -72,6 +73,7 @@ export async function sendChatMessage(
   model?: string | null,
 ): Promise<void> {
   const payload = messages.map((m) => ({ role: m.role, content: m.content }));
+  assertSingleShotTransportSupported();
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages: payload,
     thinking: null,
@@ -112,6 +114,7 @@ export async function sendChatMessageOnceAb(
    */
   endpointId?: string | null,
 ): Promise<{ text: string; inputTokens?: number; outputTokens?: number }> {
+  assertSingleShotTransportSupported(provider);
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
     thinking: null,
@@ -155,6 +158,7 @@ export async function generateSynopsisFromContent(
     },
   ];
   const ov = resolveRoleSendOverride("synopsis");
+  assertSingleShotTransportSupported(ov.provider);
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
     thinking: null,
@@ -278,6 +282,7 @@ export async function sendChatMessageWithThinking(
   /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
   expectedOllamaEndpoint?: string | null,
 ): Promise<ChatMessageResult> {
+  assertSingleShotTransportSupported(resolvedProvider ?? provider);
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
     thinking: thinkingParams?.thinking ?? null,
@@ -476,6 +481,7 @@ export async function generateSessionTitle(
         ),
       },
     ];
+    assertSingleShotTransportSupported(ov.provider);
     const response = await invoke<ChatResponsePayload>("send_chat_message", {
       messages,
       thinking: thinkingParams.thinking ?? null,

@@ -112,13 +112,22 @@ describe("judgeCandidates", () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it("壊れた AI 出力では空 Map", async () => {
+  it("壊れた AI 出力は失敗として通知できるよう reject する", async () => {
     mockSend.mockResolvedValue({
       text: "no json here",
       inputTokens: 0,
       outputTokens: 0,
     });
-    const m = await judgeCandidates([cand("円明")], []);
-    expect(m.size).toBe(0);
+    await expect(judgeCandidates([cand("円明")], [])).rejects.toMatchObject({
+      code: "CODEX_JUDGMENT_NO_VALID_RESULT",
+    });
+  });
+
+  it("transport 失敗を空 Map にせず呼び出し元へ伝える", async () => {
+    mockSend.mockRejectedValue(new Error("transport unavailable"));
+
+    await expect(judgeCandidates([cand("円明")], [])).rejects.toThrow(
+      "transport unavailable",
+    );
   });
 });

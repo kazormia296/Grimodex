@@ -744,12 +744,21 @@ export function CodexDetailContent({
         (s) => needsAiReading(s) && !(base[s]?.length ?? 0),
       );
       if (need.length === 0) return;
-      // inferReadings は内部で例外を握り潰し空 Map を返す (reject しない)。
-      // estimating フラグは promise の finally で確実に戻す。
       setEstimatingReadings(true);
-      const m = await inferReadings([
-        { id: entry.id, category: resolveCategoryLabel(), surfaces: need },
-      ]).finally(() => setEstimatingReadings(false));
+      let m: Awaited<ReturnType<typeof inferReadings>>;
+      try {
+        m = await inferReadings([
+          { id: entry.id, category: resolveCategoryLabel(), surfaces: need },
+        ]);
+      } catch (error) {
+        toast.error(i18next.t("codex.readings.estimateFailed"), {
+          description: rootCause(error),
+        });
+        debugLog.error("CodexReading", "estimate failed", errorDetail(error));
+        return;
+      } finally {
+        setEstimatingReadings(false);
+      }
       const results = m.get(entry.id);
       if (!results?.length) return;
       // 最新の永続 readings (store が真実源) へ非破壊マージする。AI 応答待ちの間に
