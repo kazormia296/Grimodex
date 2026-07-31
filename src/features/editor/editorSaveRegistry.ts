@@ -16,6 +16,10 @@ import type { LoadedEditorBinding } from "./document/types";
 type SaveHandler = () => Promise<void>;
 type DiscardHandler = () => void;
 type DocumentReference = string | DocumentKey;
+type PersistedBindingHandler = (
+  binding: LoadedEditorBinding,
+  persistedContent?: object,
+) => void;
 export interface EditorRecoveryDraft {
   documentId: string;
   documentKey: string;
@@ -38,7 +42,7 @@ const LEGACY_INSTANCE = "__legacy__";
 const handlers = new Map<string, HandlerBucket>();
 const persistedBindingHandlers = new Map<
   string,
-  Map<string, (binding: LoadedEditorBinding) => void>
+  Map<string, PersistedBindingHandler>
 >();
 const discardHandlers = new Map<
   string,
@@ -158,7 +162,7 @@ export function unregisterSaveHandler(
 export function registerPersistedBindingHandler(
   documentKey: DocumentKey,
   instanceId: EditorInstanceId,
-  handler: (binding: LoadedEditorBinding) => void,
+  handler: PersistedBindingHandler,
 ): void {
   const encoded = encodeDocumentKey(documentKey);
   const bucket = persistedBindingHandlers.get(encoded) ?? new Map();
@@ -169,7 +173,7 @@ export function registerPersistedBindingHandler(
 export function unregisterPersistedBindingHandler(
   documentKey: DocumentKey,
   instanceId: EditorInstanceId,
-  handler?: (binding: LoadedEditorBinding) => void,
+  handler?: PersistedBindingHandler,
 ): void {
   const encoded = encodeDocumentKey(documentKey);
   const bucket = persistedBindingHandlers.get(encoded);
@@ -384,11 +388,14 @@ export function announcePersistedBinding(
   documentKey: DocumentKey,
   originInstanceId: EditorInstanceId,
   binding: LoadedEditorBinding,
+  persistedContent?: object,
 ): void {
   const bucket = persistedBindingHandlers.get(encodeDocumentKey(documentKey));
   if (!bucket) return;
   for (const [instanceId, handler] of bucket) {
-    if (instanceId !== originInstanceId) handler(binding);
+    if (instanceId !== originInstanceId) {
+      handler(binding, persistedContent);
+    }
   }
 }
 

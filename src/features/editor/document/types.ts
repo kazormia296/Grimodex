@@ -61,6 +61,8 @@ export interface LoadedEditorDocument {
   content: EditorDocumentContent;
   title?: string;
   unplacedBeatsDoc?: string;
+  /** Present for tree documents so aggregate backfills retain project OCC. */
+  projectId?: string;
 }
 
 /** Build the loaded binding for the current tab after its content is applied. */

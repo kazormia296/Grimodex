@@ -277,8 +277,16 @@ describe("editorSaveRegistry", () => {
       id: "snippet-2",
       loadedVersion: 9,
     });
-    const peerHandler = (binding: LoadedEditorBinding) => {
+    const persistedContent = {
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "peer" }] },
+      ],
+    };
+    const peerContents: object[] = [];
+    const peerHandler = (binding: LoadedEditorBinding, content?: object) => {
       peerGate.advancePeerSave(binding);
+      if (content) peerContents.push(content);
     };
     const originHandler = vi.fn();
     const otherHandler = (binding: LoadedEditorBinding) => {
@@ -288,15 +296,21 @@ describe("editorSaveRegistry", () => {
     registerPersistedBindingHandler(key, peerId, peerHandler);
     registerPersistedBindingHandler(otherKey, otherId, otherHandler);
 
-    announcePersistedBinding(key, firstId, {
-      ...initial,
-      loadedVersion: 4,
-    });
+    announcePersistedBinding(
+      key,
+      firstId,
+      {
+        ...initial,
+        loadedVersion: 4,
+      },
+      persistedContent,
+    );
 
     expect(peerGate.captureSave()?.binding).toMatchObject({
       id: "snippet-1",
       loadedVersion: 4,
     });
+    expect(peerContents).toEqual([persistedContent]);
     peerGate.markEdited();
     expect(peerGate.captureSave()?.binding).toMatchObject({
       id: "snippet-1",
@@ -375,6 +389,39 @@ describe("エディタの save handler 登録 (ソース invariant)", () => {
     );
     expect(src).toMatch(/dirtyGatedSaveHandler\(/);
     expect(src).not.toMatch(/registerSaveHandler\(sceneId, saveFn\)/);
+  });
+
+  it("LinearSceneBlock は保存済み本文と OCC binding を同じ peer 通知へ載せる", () => {
+    const src = readFileSync(
+      resolve(__dirname, "./LinearSceneBlock.tsx"),
+      "utf-8",
+    );
+    const persistedContentIndex = src.indexOf(
+      "const persistedContent = docAtStart.toJSON()",
+    );
+    const announcementIndex = src.indexOf(
+      "announcePersistedBinding(",
+      persistedContentIndex,
+    );
+    const announcementContentIndex = src.indexOf(
+      "persistedContent",
+      announcementIndex,
+    );
+    expect(persistedContentIndex).toBeGreaterThan(-1);
+    expect(announcementIndex).toBeGreaterThan(persistedContentIndex);
+    expect(announcementContentIndex).toBeGreaterThan(announcementIndex);
+
+    const handlerIndex = src.indexOf("const persistedBindingHandler =");
+    const handlerSetContentIndex = src.indexOf(
+      "currentEditor.commands.setContent(persistedContent",
+      handlerIndex,
+    );
+    const handlerVersionIndex = src.indexOf(
+      "sceneVersionRef.current = binding.loadedVersion",
+      handlerIndex,
+    );
+    expect(handlerSetContentIndex).toBeGreaterThan(handlerIndex);
+    expect(handlerVersionIndex).toBeGreaterThan(handlerSetContentIndex);
   });
 
   it("EditorPane は inline-AI 非 idle 遷移で armed autosave を cancel する", () => {

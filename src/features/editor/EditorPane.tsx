@@ -17,10 +17,7 @@ import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { useTreeStore } from "@/features/tree/treeStore";
-import {
-  getSceneVersion,
-  savePlacedBeatPreviewOnly,
-} from "@/features/tree/api";
+import { getSceneVersion } from "@/features/tree/api";
 import { extractPlacedBeatPreview } from "@/features/editor/beat/placedBeatPreview";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
@@ -191,6 +188,7 @@ import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
 import { useParagraphReorderOverlay } from "@/features/editor/reorder/useParagraphReorderOverlay";
 import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
+import { backfillPlacedBeatPreview } from "@/features/editor/placedBeatPreviewBackfill";
 import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
@@ -725,6 +723,7 @@ export function EditorPane({
           documentKeyFromBinding(result.binding),
           editorInstanceIdRef.current,
           result.binding,
+          doc.toJSON(),
         );
       } finally {
         markEnd("editor.save.durableComplete");
@@ -804,13 +803,41 @@ export function EditorPane({
     );
     const persistedBindingHandler = (
       binding: Parameters<typeof mutationGate.advancePeerSave>[0],
+      persistedContent?: object,
     ) => {
-      // A peer's persisted version is not safe to adopt while this editor
-      // still has an unsaved local document. The following peer content
-      // callback may be queued behind this notification; adopting the
-      // version here would let that stale full-document write overwrite the
-      // local draft on the next save.
       if (!inputProjectionReadyRef.current || isDirtyRef.current) return;
+      const currentBinding = mutationGate.captureSave()?.binding;
+      if (
+        !currentBinding ||
+        binding.loadedVersion < currentBinding.loadedVersion
+      ) {
+        return;
+      }
+      const currentEditor = editorRef.current;
+      if (persistedContent && currentEditor && !currentEditor.isDestroyed) {
+        const finishExternalUpdate = beginApplyingExternalUpdate();
+        try {
+          mutationGate.runProgrammatic(() => {
+            runProgrammaticProjectionUpdate(() => {
+              currentEditor.commands.setContent(persistedContent, {
+                emitUpdate: false,
+                ...((binding.kind === "tree" || binding.kind === "codex") && {
+                  errorOnInvalidContent: true,
+                }),
+              });
+            });
+          });
+        } catch (error) {
+          debugLog.error(
+            "EditorPane",
+            "peer persisted snapshot failed",
+            errorDetail(error),
+          );
+          return;
+        } finally {
+          finishExternalUpdate();
+        }
+      }
       mutationGate.advancePeerSave(binding);
     };
     registerPersistedBindingHandler(
@@ -839,7 +866,14 @@ export function EditorPane({
         persistedBindingHandler,
       );
     };
-  }, [activeLoadedDocumentKey, saveFn, isDirtyRef, mutationGate]);
+  }, [
+    activeLoadedDocumentKey,
+    beginApplyingExternalUpdate,
+    isDirtyRef,
+    mutationGate,
+    runProgrammaticProjectionUpdate,
+    saveFn,
+  ]);
 
   // Sync isDirty to the tab store for unsaved-changes detection
   useEffect(() => {
@@ -2159,6 +2193,7 @@ export function EditorPane({
             },
           });
           if (cancelled) return;
+          let loadedBinding = loaded.binding;
           if (loaded.title !== undefined) {
             setChronicleEventTitle(loaded.title);
           }
@@ -2196,7 +2231,16 @@ export function EditorPane({
             if (curPreview?.placed == null) {
               const preview = extractPlacedBeatPreview(editor!.getJSON());
               if (preview !== "[]") {
-                savePlacedBeatPreviewOnly(nodeId, preview).catch(() => {});
+                loadedBinding = await backfillPlacedBeatPreview(
+                  loaded.binding,
+                  loaded.projectId ?? "",
+                  preview,
+                );
+                announcePersistedBinding(
+                  documentKeyFromBinding(loadedBinding),
+                  editorInstanceIdRef.current,
+                  loadedBinding,
+                );
                 useTreeStore
                   .getState()
                   .setNodePreview(nodeId, { placed: preview });
@@ -2220,7 +2264,6 @@ export function EditorPane({
           // editable hook re-enable input while isApplyingExternalUpdate still
           // suppresses dirty/autosave, making those keystrokes losable.
           if (cancelled) return;
-          const loadedBinding = loaded.binding;
           setLoadedPhaseId(
             loadedBinding.kind === "codex" ? loadedBinding.phaseId : null,
           );

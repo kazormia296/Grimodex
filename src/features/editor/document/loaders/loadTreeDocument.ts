@@ -7,9 +7,12 @@ import type {
 } from "../types";
 
 export interface TreeDocumentLoadServices {
-  loadSceneFull: (
-    id: string,
-  ) => Promise<{ content: string; unplacedBeatsDoc: string; version: number }>;
+  loadSceneFull: (id: string) => Promise<{
+    content: string;
+    unplacedBeatsDoc: string;
+    projectId?: string;
+    version: number;
+  }>;
 }
 
 const defaultTreeDocumentLoadServices: TreeDocumentLoadServices = {
@@ -26,9 +29,8 @@ export async function loadTreeDocument(
   services: TreeDocumentLoadServices = defaultTreeDocumentLoadServices,
 ): Promise<LoadedEditorDocument> {
   markStart("sceneLoad.loadSceneFull");
-  const { content, unplacedBeatsDoc, version } = await services.loadSceneFull(
-    binding.id,
-  );
+  const { content, unplacedBeatsDoc, projectId, version } =
+    await services.loadSceneFull(binding.id);
   markEnd("sceneLoad.loadSceneFull");
 
   markStart(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
@@ -39,5 +41,6 @@ export async function loadTreeDocument(
     binding: { ...binding, loadedVersion: version },
     content: parsed,
     unplacedBeatsDoc,
+    projectId,
   };
 }

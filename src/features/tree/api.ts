@@ -546,12 +546,21 @@ export async function saveSceneBeatsOnly(
 /**
  * Persist only the cached `placed_beat_preview` column. Used by the lazy
  * backfill path when a legacy scene is loaded that has placed sceneBeat
- * nodes but no cached preview yet.
+ * nodes but no cached preview yet. The cache lives on the same tree_nodes
+ * aggregate as content, so the write uses the loaded project/version token
+ * and advances that version exactly like other aggregate mutations.
  */
 export async function savePlacedBeatPreviewOnly(
   sceneId: string,
-  placedBeatPreview: string | null,
-): Promise<void> {
+  payload: {
+    placedBeatPreview: string | null;
+    projectId: string;
+    baseVersion: number;
+  },
+): Promise<{
+  contentVersion: number;
+  contentUpdatedAt: string;
+}> {
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
   const rows = await serializeSceneWrite(sceneId, () =>
@@ -559,18 +568,41 @@ export async function savePlacedBeatPreviewOnly(
       db
         .update(treeNodes)
         .set({
-          placedBeatPreview,
+          placedBeatPreview: payload.placedBeatPreview,
+          version: sql`${treeNodes.version} + 1`,
           updatedAt: nextTreeNodeMutationTimestamp(),
         })
-        .where(eq(treeNodes.id, sceneId))
+        .where(
+          and(
+            eq(treeNodes.id, sceneId),
+            eq(treeNodes.projectId, payload.projectId),
+            eq(treeNodes.version, payload.baseVersion),
+          ),
+        )
         .returning({
           id: treeNodes.id,
           projectId: treeNodes.projectId,
-          updatedAt: treeNodes.updatedAt,
+          contentVersion: treeNodes.version,
+          contentUpdatedAt: treeNodes.updatedAt,
         }),
     ),
   );
-  publishPersistedTreeNodeMutation(rows[0], workspaceIdentity);
+  const persisted = rows[0];
+  if (!persisted) {
+    throw new SceneContentConflictError(sceneId);
+  }
+  publishPersistedTreeNodeMutation(
+    {
+      id: persisted.id,
+      projectId: persisted.projectId,
+      updatedAt: persisted.contentUpdatedAt,
+    },
+    workspaceIdentity,
+  );
+  return {
+    contentVersion: persisted.contentVersion,
+    contentUpdatedAt: persisted.contentUpdatedAt,
+  };
 }
 
 /** Load scene content + unplaced beats doc in one query. */
