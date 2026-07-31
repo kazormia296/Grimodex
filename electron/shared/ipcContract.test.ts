@@ -670,6 +670,7 @@ describe("dispatchInvoke", () => {
         "updater_check",
         "updater_download",
         "updater_install",
+        "mozkey_download_and_install",
       ]),
     );
   });

@@ -4,10 +4,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import en from "@/locales/en.json";
 import ja from "@/locales/ja.json";
 
-const { openExternalUrlMock, platformRuntime } = vi.hoisted(() => ({
-  openExternalUrlMock: vi.fn(),
-  platformRuntime: { linux: false },
-}));
+const { downloadAndInstallMozkeyMock, openExternalUrlMock, platformRuntime } =
+  vi.hoisted(() => ({
+    downloadAndInstallMozkeyMock: vi.fn(),
+    openExternalUrlMock: vi.fn(),
+    platformRuntime: { linux: false, desktop: true },
+  }));
 
 const modeSetMock = vi.fn();
 const excludeHiddenSetMock = vi.fn();
@@ -21,6 +23,12 @@ const getImeExportStatusMock = vi.fn();
 
 vi.mock("@/features/ime/linuxPlatform", () => ({
   isLinuxImeHost: () => platformRuntime.linux,
+}));
+
+vi.mock("@/features/ime/mozkeyInstaller", () => ({
+  canInstallMozkeyFromApp: () => platformRuntime.desktop,
+  downloadAndInstallMozkey: (...args: unknown[]) =>
+    downloadAndInstallMozkeyMock(...args),
 }));
 
 vi.mock("@/lib/safeUrl", () => ({
@@ -71,7 +79,12 @@ describe("ImeIntegrationSection", () => {
     setActiveImeProjectMock.mockReset().mockResolvedValue({});
     clearImeExportsMock.mockReset().mockResolvedValue(undefined);
     openExternalUrlMock.mockReset();
+    downloadAndInstallMozkeyMock.mockReset().mockResolvedValue({
+      version: "1.2.3",
+      assetName: "MozkeyIbG_v1.2.3_x64.msi",
+    });
     platformRuntime.linux = false;
+    platformRuntime.desktop = true;
     getImeExportStatusMock.mockReset().mockResolvedValue({
       rootPath: "/tmp/ime",
       consumers: [],
@@ -167,6 +180,7 @@ describe("ImeIntegrationSection", () => {
 
   it("shows generic Linux IME guidance when no consumer is present", async () => {
     platformRuntime.linux = true;
+    platformRuntime.desktop = false;
 
     render(<ImeIntegrationSection />);
 
@@ -224,10 +238,16 @@ describe("ImeIntegrationSection", () => {
     expect(
       screen.queryByText("対応する Linux IME が見つかりません"),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: ja.settings.codex.imeMozkeyInstallAction,
+      }),
+    ).toBeInTheDocument();
   });
 
   it("opens the IME distribution page without assuming a package name", async () => {
     platformRuntime.linux = true;
+    platformRuntime.desktop = false;
     render(<ImeIntegrationSection />);
 
     fireEvent.click(
@@ -236,6 +256,45 @@ describe("ImeIntegrationSection", () => {
     expect(openExternalUrlMock).toHaveBeenCalledWith(
       "https://github.com/kazormia296/mozkey-ibg",
     );
+  });
+
+  it("downloads and starts the Mozkey IbG installer from desktop settings", async () => {
+    render(<ImeIntegrationSection />);
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: ja.settings.codex.imeMozkeyInstallAction,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(downloadAndInstallMozkeyMock).toHaveBeenCalledOnce(),
+    );
+    expect(
+      await screen.findByText(
+        ja.settings.codex.imeMozkeyInstallStarted.replace(
+          "{{version}}",
+          "1.2.3",
+        ),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the installer failure visible and retryable", async () => {
+    downloadAndInstallMozkeyMock.mockRejectedValueOnce(
+      new Error("No public release"),
+    );
+    render(<ImeIntegrationSection />);
+
+    const installButton = await screen.findByRole("button", {
+      name: ja.settings.codex.imeMozkeyInstallAction,
+    });
+    fireEvent.click(installButton);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "No public release",
+    );
+    expect(installButton).toBeEnabled();
   });
 
   it("ships the Linux guidance in Japanese and English", () => {
