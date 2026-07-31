@@ -2495,6 +2495,7 @@
     },
     "readings": {
       "label": "Readings (furigana)",
+      "placeholder": "Reading...",
       "estimate": "Estimate with AI",
       "manage": "Manage readings",
       "auto": "Auto: {{yomi}}",

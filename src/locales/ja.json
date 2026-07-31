@@ -2489,6 +2489,7 @@
     },
     "readings": {
       "label": "読み（ふりがな）",
+      "placeholder": "ふりがな…",
       "estimate": "AIで推定",
       "manage": "読みを管理",
       "auto": "自動: {{yomi}}",

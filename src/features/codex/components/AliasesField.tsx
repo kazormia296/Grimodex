@@ -9,6 +9,8 @@ interface AliasesFieldProps {
   aliases: string[];
   onChange: (aliases: string[]) => void;
   fieldId?: string;
+  /** Input placeholder. Defaults to the alias-specific copy. */
+  placeholder?: string;
   /** "compact": label-above pill row (legacy). "hero": inline label + bordered chips (header). */
   variant?: Variant;
 }
@@ -18,9 +20,11 @@ export function AliasesField({
   aliases,
   onChange,
   fieldId = "aliases",
+  placeholder,
   variant = "compact",
 }: AliasesFieldProps) {
   const { t } = useTranslation();
+  const inputPlaceholder = placeholder ?? t("codex.aliasPlaceholder");
   const [isAdding, setIsAdding] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -39,7 +43,10 @@ export function AliasesField({
     setIsAdding(false);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // IME conversion confirmation also emits Enter. Submitting here would read
+    // the value before compositionend/onChange has committed the final text.
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter") {
       e.preventDefault();
       handleSubmit();
@@ -99,7 +106,7 @@ export function AliasesField({
             onKeyDown={handleKeyDown}
             onBlur={handleSubmit}
             className="w-24 rounded border border-input bg-background px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
-            placeholder={t("codex.aliasPlaceholder")}
+            placeholder={inputPlaceholder}
           />
         ) : (
           <button
@@ -149,7 +156,7 @@ export function AliasesField({
             onKeyDown={handleKeyDown}
             onBlur={handleSubmit}
             className="w-24 rounded border border-input bg-background px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
-            placeholder={t("codex.aliasPlaceholder")}
+            placeholder={inputPlaceholder}
           />
         ) : (
           <button

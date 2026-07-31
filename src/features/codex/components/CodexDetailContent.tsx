@@ -646,8 +646,6 @@ export function CodexDetailContent({
         ...(readingsChanged ? { readings: serializeReadings(reconciled) } : {}),
       });
       if (readingsChanged) setReadings(reconciled);
-      // 新しい表記が漢字を含み読み未設定なら AI 推定 (承認フロー無し, §3.3)。
-      void estimateReadingsFor([trimmed], reconciled);
       // Offer to propagate the rename to plain-text occurrences (Item C).
       // id-keyed references (@mentions, relations, pins, AI context) already
       // follow automatically; this covers prose / free-text the matcher finds.
@@ -695,9 +693,6 @@ export function CodexDetailContent({
       aliases: JSON.stringify(newAliases),
       ...(readingsChanged ? { readings: serializeReadings(reconciled) } : {}),
     });
-    // 追加された表記が漢字を含み読み未設定なら AI 推定 (§3.3)。
-    const added = newSurfaces.filter((s) => !oldSurfaces.includes(s));
-    if (added.length > 0) void estimateReadingsFor(added, reconciled);
   };
 
   const handleReadingsChange = async (next: ReadingMap) => {
