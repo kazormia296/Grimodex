@@ -57,7 +57,7 @@ describe("HeroReading", () => {
     expect(screen.getByTestId("codex-hero-reading-input")).toHaveValue("");
     expect(screen.getByTestId("codex-hero-reading-input")).toHaveAttribute(
       "placeholder",
-      "codex.readings.heroPlaceholder",
+      "読みを入力…",
     );
   });
 
