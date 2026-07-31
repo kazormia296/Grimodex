@@ -259,6 +259,50 @@ test("large module runtime import counting follows TypeScript runtime semantics"
   assert.deepEqual(snapshot.findings, []);
 });
 
+test("large module runtime import counting includes default bindings and excludes type-only import-equals", async () => {
+  const fixture = await fixtureRepo();
+  const mixedRelative = "src/application/chat/mixed-default.ts";
+  const typeOnlyRelative = "src/application/chat/type-only-equals.ts";
+  const emptyRelative = "src/application/chat/empty-module-bindings.ts";
+  await writeSource(
+    fixture.root,
+    mixedRelative,
+    'import DefaultValue, { type OnlyType } from "./dependency";',
+  );
+  await writeSource(
+    fixture.root,
+    typeOnlyRelative,
+    'import type AssignedType = require("./dependency");',
+  );
+  await writeSource(
+    fixture.root,
+    emptyRelative,
+    'import {} from "./dependency"; export {} from "./dependency";',
+  );
+  const manifest = {
+    schemaVersion: 1,
+    modules: {
+      [mixedRelative]: { maxLines: 1, maxRuntimeImports: 1 },
+      [typeOnlyRelative]: { maxLines: 1, maxRuntimeImports: 0 },
+      [emptyRelative]: { maxLines: 1, maxRuntimeImports: 2 },
+    },
+  };
+
+  const snapshot = await collectLargeModuleSnapshot({
+    repoRoot: fixture.root,
+    manifest,
+  });
+  const runtimeImports = Object.fromEntries(
+    snapshot.modules.map((module) => [module.relative, module.runtimeImports]),
+  );
+  assert.deepEqual(runtimeImports, {
+    [mixedRelative]: 1,
+    [typeOnlyRelative]: 0,
+    [emptyRelative]: 2,
+  });
+  assert.deepEqual(snapshot.findings, []);
+});
+
 test("cycle graph includes relative imports and index.tsx targets", async () => {
   const fixture = await fixtureRepo();
   const alphaStore = await writeSource(

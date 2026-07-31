@@ -97,10 +97,11 @@ function runtimeImportSpecifiers(source, fileName = "file.ts") {
   };
   const importClauseHasRuntimeBindings = (importClause) => {
     if (!importClause) return true;
-    if (importClause.isTypeOnly || !importClause.namedBindings) {
-      return !importClause.isTypeOnly;
-    }
+    if (importClause.isTypeOnly) return false;
+    if (importClause.name) return true;
+    if (!importClause.namedBindings) return true;
     if (ts.isNamespaceImport(importClause.namedBindings)) return true;
+    if (importClause.namedBindings.elements.length === 0) return true;
     return importClause.namedBindings.elements.some(
       (element) => !element.isTypeOnly,
     );
@@ -109,6 +110,7 @@ function runtimeImportSpecifiers(source, fileName = "file.ts") {
     if (exportDeclaration.isTypeOnly) return false;
     const exportClause = exportDeclaration.exportClause;
     if (!exportClause || !ts.isNamedExports(exportClause)) return true;
+    if (exportClause.elements.length === 0) return true;
     return exportClause.elements.some((element) => !element.isTypeOnly);
   };
 
@@ -123,6 +125,7 @@ function runtimeImportSpecifiers(source, fileName = "file.ts") {
       }
     } else if (ts.isImportEqualsDeclaration(node)) {
       if (
+        !node.isTypeOnly &&
         ts.isExternalModuleReference(node.moduleReference) &&
         ts.isStringLiteralLike(node.moduleReference.expression)
       ) {
