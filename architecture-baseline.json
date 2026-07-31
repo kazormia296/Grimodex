@@ -23,7 +23,7 @@
     "app-root-lines": 81,
     "largest-host-lines": 292,
     "chat-store-lines": 406,
-    "chat-store-runtime-imports": 23,
+    "chat-store-runtime-imports": 21,
     "renderer-drizzle-mutation": 179,
     "renderer-raw-sql-read": 0,
     "renderer-raw-sql-write": 0,
