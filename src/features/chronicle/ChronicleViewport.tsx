@@ -290,6 +290,7 @@ export function ChronicleViewport({
   const edgeWorldLayerRef = useRef<SVGSVGElement | null>(null);
   const markerWorldLayerRef = useRef<HTMLDivElement | null>(null);
   const thumbRef = useRef<HTMLDivElement | null>(null);
+  const middlePanCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const viewPreviewFrameRef = useRef<number | null>(null);
   const viewPreviewDirtyRef = useRef(false);
   const continuousPreviewRef = useRef(false);
@@ -552,10 +553,12 @@ export function ChronicleViewport({
     eventId: string | null;
   } | null>(null);
   const setMiddlePanning = useCallback((active: boolean) => {
-    // This cursor is interaction-local DOM state. Keeping it out of React avoids
-    // rebuilding 1,000 marker elements on middle-button down/up.
-    if (trackElRef.current) {
-      trackElRef.current.style.cursor = active ? "grabbing" : "";
+    // `cursor` is inherited. Mutating it on the track invalidates computed
+    // style for every rendered marker/edge descendant, which can turn the
+    // pointer-down task into a multi-second Long Task on a contended runner.
+    // Keep the interaction cursor on one pre-mounted overlay instead.
+    if (middlePanCursorOverlayRef.current) {
+      middlePanCursorOverlayRef.current.hidden = !active;
     }
   }, []);
   const cancelTransientInteraction = useCallback(() => {
@@ -801,8 +804,10 @@ export function ChronicleViewport({
       const scrollEl = scrollAreaRef.current;
       const startScrollTop = scrollEl?.scrollTop ?? 0;
       let pendingView = startView;
-      startContinuousPreview();
-      setMiddlePanning(true);
+      measurePerfSync("chronicle.pan.start", () => {
+        startContinuousPreview();
+        setMiddlePanning(true);
+      });
       bindDrag(
         (ev) => {
           const dx = ev.clientX - startX;
@@ -812,10 +817,12 @@ export function ChronicleViewport({
             scrollEl.scrollTop = startScrollTop - (ev.clientY - startY);
         },
         () => {
-          stopContinuousPreview();
-          pendingPreviewViewRef.current = pendingView;
-          commitPreviewView();
-          setMiddlePanning(false);
+          measurePerfSync("chronicle.pan.commit", () => {
+            stopContinuousPreview();
+            pendingPreviewViewRef.current = pendingView;
+            commitPreviewView();
+            setMiddlePanning(false);
+          });
         },
         1,
         () => {
@@ -1657,7 +1664,8 @@ export function ChronicleViewport({
           tabIndex={0}
           className="relative flex-1 select-none overflow-x-clip outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           // minHeight=コンテンツ高、flex stretch で残り高さまで伸ばしレーン外も操作可能に。
-          // 本体ドラッグ追従中（dragPreview）/ 中ボタンパン中はトラック全体を grabbing に。
+          // 本体ドラッグ追従中はトラックを grabbing にする。中ボタンパンは
+          // descendant の継承 style を無効化しない専用 overlay が担う。
           style={{
             minHeight: contentHeight,
             cursor: dragPreview ? "grabbing" : undefined,
@@ -1665,6 +1673,14 @@ export function ChronicleViewport({
           role="application"
           aria-label={t("chronicle.viewportLabel", "作中年表")}
         >
+          <div
+            ref={middlePanCursorOverlayRef}
+            data-testid="chronicle-middle-pan-cursor-overlay"
+            className="absolute inset-0 z-[40] cursor-grabbing"
+            aria-hidden="true"
+            hidden
+          />
+
           {/* viewport projection: pan preview はこの軽量 layer と ruler/world の
               transform だけを rAF で更新し、event/lane layout は再構築しない。 */}
           <div

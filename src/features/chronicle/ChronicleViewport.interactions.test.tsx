@@ -119,6 +119,12 @@ function track(container: HTMLElement) {
   return container.querySelector("#chronicle-track") as HTMLElement;
 }
 
+function middlePanCursorOverlay(container: HTMLElement) {
+  return container.querySelector(
+    '[data-testid="chronicle-middle-pan-cursor-overlay"]',
+  ) as HTMLElement;
+}
+
 describe("ChronicleViewport interactions (happy-dom math)", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());
@@ -1787,12 +1793,13 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 100 });
     fireEvent.mouseMove(document, { clientX: 160, clientY: 40 });
     frame(0);
-    expect(tr.style.cursor).toBe("grabbing");
+    expect(middlePanCursorOverlay(container).hidden).toBe(false);
+    expect(tr.style.cursor).not.toBe("grabbing");
     expect(world.style.transform).not.toBe(initialTransform);
     expect(scrollArea.scrollTop).toBe(160);
 
     fireEvent.blur(window);
-    expect(tr.style.cursor).not.toBe("grabbing");
+    expect(middlePanCursorOverlay(container).hidden).toBe(true);
     expect(world.style.transform).toBe(initialTransform);
     expect(scrollArea.scrollTop).toBe(100);
     fireEvent.mouseUp(document, { button: 1, clientX: 160, clientY: 40 });
@@ -1858,14 +1865,15 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
     fireEvent.mouseMove(document, { clientX: 124, clientY: 20 });
     expect(requestFrame).toHaveBeenCalledTimes(1);
-    expect(tr.style.cursor).toBe("grabbing");
+    expect(middlePanCursorOverlay(container).hidden).toBe(false);
+    expect(tr.style.cursor).not.toBe("grabbing");
 
     rerender(
       <ChronicleViewport {...(props as unknown as VP)} isActive={false} />,
     );
     expect(cancelFrame).toHaveBeenCalledWith(1);
     expect(pendingFrames.size).toBe(0);
-    expect(tr.style.cursor).not.toBe("grabbing");
+    expect(middlePanCursorOverlay(container).hidden).toBe(true);
     fireEvent.mouseUp(document, {
       button: 1,
       buttons: 0,
@@ -1877,7 +1885,7 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
     fireEvent.mouseMove(document, { clientX: 140, clientY: 20 });
     expect(requestFrame).toHaveBeenCalledTimes(1);
-    expect(tr.style.cursor).not.toBe("grabbing");
+    expect(middlePanCursorOverlay(container).hidden).toBe(true);
   });
 
   it("閾値未満の空白パン preview は mouseup で解除される", () => {
@@ -1912,7 +1920,7 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     expect(world.style.transform).toBe(initialTransform);
   });
 
-  it("中ボタンドラッグで横パン（onViewChange）＋トラックが grabbing", () => {
+  it("中ボタンドラッグで横パンし、独立overlayだけを grabbing にする", () => {
     const onViewChange = vi.fn();
     const props = makeProps({ onViewChange });
     const { container } = render(
@@ -1920,7 +1928,8 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     );
     const tr = track(container);
     fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
-    expect(tr.style.cursor).toBe("grabbing");
+    expect(middlePanCursorOverlay(container).hidden).toBe(false);
+    expect(tr.style.cursor).not.toBe("grabbing");
     fireEvent.mouseMove(document, { clientX: 160, clientY: 20 });
     // pointermove 中は DOM transform のみ。global/local view 通知は操作終了時に集約。
     expect(onViewChange).not.toHaveBeenCalled();
@@ -1930,7 +1939,7 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
       viewStartDay: number;
     };
     expect(lastCall.viewStartDay).toBeCloseTo(-30);
-    expect(tr.style.cursor).not.toBe("grabbing");
+    expect(middlePanCursorOverlay(container).hidden).toBe(true);
   });
 
   it("pan 対象 layer は初回 rAF 前から transform origin を確定する", () => {
@@ -2000,6 +2009,8 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     expect(
       perfSession?.counters["chronicle.viewportFrame.interval.count"],
     ).toBe(3);
+    expect(perfSession?.counters["chronicle.pan.start.count"]).toBe(1);
+    expect(perfSession?.counters["chronicle.pan.commit.count"]).toBe(1);
     expect(
       perfSession?.markStats.find(
         (entry) => entry.label === "chronicle.viewportFrame.interval",
