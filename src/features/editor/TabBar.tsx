@@ -368,6 +368,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   return (
     <div
       data-phone-tab-bar={phoneWorkspace ? "true" : undefined}
+      data-editor-tool-surface
       className="editor-background-glass glass-editor-chrome flex items-center border-b border-border"
     >
       {/* Scrollable tab list */}

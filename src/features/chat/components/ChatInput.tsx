@@ -933,7 +933,10 @@ export function ChatInput({
     reasoningLockedOn || (aiSettings?.thinkingEnabled ?? true);
 
   return (
-    <div className="border-t border-border p-3">
+    <div
+      data-testid="chat-input-region"
+      className="border-t border-border px-3 pb-2 pt-3"
+    >
       {/* @メンション補完ポップアップ */}
       {mentionPopup && (
         <MentionPopup
@@ -986,15 +989,22 @@ export function ChatInput({
           </div>
         )}
 
-      {/* shadcn chat-01 風: 入力欄＋下段ツール列を 1 枚の角丸カードに内包 */}
-      <div className="rounded-2xl border border-input bg-background shadow-sm transition-colors focus-within:ring-1 focus-within:ring-ring">
+      {/* 1px border + 8px inset + 16px action radius = 25px. The shell and
+          Send/Stop arcs therefore share the same bottom-right centre. */}
+      <div
+        data-testid="chat-input-shell"
+        className="rounded-[25px] border border-input bg-background shadow-sm transition-colors focus-within:ring-1 focus-within:ring-ring"
+      >
         {/* TipTap エディタ */}
         <div className="chat-input-editor" data-testid="chat-input">
           <EditorContent editor={editor} />
         </div>
 
         {/* 下段ツール列（カード内）。狭い幅では chip を縦に割らず次の行へ折り返す。 */}
-        <div className="flex flex-wrap items-center gap-1 px-2 pb-1.5 pt-0.5">
+        <div
+          data-testid="chat-input-toolbar"
+          className="flex flex-wrap items-center gap-1 p-2"
+        >
           {/* Agent mode chip: 非対応モデルでも ON から OFF へ戻す操作は許可する。 */}
           <button
             type="button"

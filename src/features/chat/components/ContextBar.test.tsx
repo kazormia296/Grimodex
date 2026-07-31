@@ -157,6 +157,15 @@ function readyPreview(
 }
 
 describe("ContextBar model capability scope", () => {
+  it("centers the pill row with equal vertical insets", () => {
+    render(<ContextBar {...defaultProps} pinnedEntries={[]} />);
+    expect(screen.getByTestId("context-bar-pills")).toHaveClass(
+      "items-center",
+      "pt-1",
+      "pb-0.5",
+    );
+  });
+
   it("uses the provider-scoped Ollama window while no finalized override exists", () => {
     registerDynamicModelCaps(
       "ollama",

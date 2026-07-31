@@ -212,7 +212,10 @@ export function ZenShaderSurface({
       data-glass-feather={layouts.glass.feather.join(" ")}
       data-glass-corner-radius={layouts.glass.cornerRadius}
       data-glass-refraction={config.glass.enabled ? config.glass.refraction : 0}
-      data-ui-glass-surface-count={layouts.uiSurfaces.length}
+      data-ui-glass-surface-count={
+        layouts.uiSurfaces.filter(({ refracts }) => refracts !== false).length
+      }
+      data-ui-contrast-surface-count={layouts.uiSurfaces.length}
       className="zen-shader-surface absolute inset-0 overflow-hidden"
       style={{
         opacity: config.opacity / 100,

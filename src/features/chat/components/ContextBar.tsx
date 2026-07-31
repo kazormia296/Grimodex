@@ -733,7 +733,10 @@ export function ContextBar({
 
         {/* ピル行 */}
         {!collapsed && (
-          <div className="flex items-start px-4 pb-1.5">
+          <div
+            data-testid="context-bar-pills"
+            className="flex items-center px-4 pb-0.5 pt-1"
+          >
             {/* エントリピル: 外側は幅測定の基準のみ。内側コンテナで overflow-hidden + flex-nowrap */}
             <div ref={pillsColumnRef} className="relative min-w-0 flex-1">
               {/* 幅計測用: フラットモードの全ピルを非表示で描画して scrollWidth を測定 */}

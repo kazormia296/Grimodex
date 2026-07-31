@@ -30,8 +30,8 @@ export function BubbleButton({
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       className={cn(
-        "flex items-center justify-center rounded text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-        phone ? "min-h-11 min-w-11 px-2" : "h-7 min-w-[28px] px-1",
+        "flex items-center justify-center rounded text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+        phone ? "min-h-11 min-w-11 px-2" : "h-6 min-w-[24px] px-1",
         active && "bg-accent text-foreground",
         disabled && "cursor-not-allowed opacity-50",
       )}

@@ -167,6 +167,7 @@ export function Breadcrumb() {
     <div
       data-panel-header
       data-editor-breadcrumb
+      data-editor-tool-surface
       className="glass-editor-chrome flex h-8 min-w-0 items-center border-b border-border px-3 text-xs text-muted-foreground"
     >
       <FileText className="mr-1.5 size-3.5 shrink-0 opacity-70" aria-hidden />

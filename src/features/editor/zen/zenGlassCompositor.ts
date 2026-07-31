@@ -22,9 +22,10 @@ export function buildZenGlassMask(
   uiSurfaces: readonly ZenGlassLayout[],
 ) {
   if (surfaceSize.width <= 0 || surfaceSize.height <= 0) return "none";
-  const regions = [editor, ...uiSurfaces].filter(
-    ({ rect }) => rect[2] > rect[0] && rect[3] > rect[1],
-  );
+  const regions = [
+    editor,
+    ...uiSurfaces.filter(({ refracts }) => refracts !== false),
+  ].filter(({ rect }) => rect[2] > rect[0] && rect[3] > rect[1]);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${surfaceSize.width} ${surfaceSize.height}" preserveAspectRatio="none">${regions.map((region) => svgRect(region, surfaceSize)).join("")}</svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }

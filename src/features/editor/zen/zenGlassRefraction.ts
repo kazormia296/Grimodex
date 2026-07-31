@@ -239,7 +239,15 @@ vec2 zenGlassOffsetPixels() {
       u_zenUiSurfaceParams[index].x,
       candidateMask
     );
-    zenUiSurfaceMaskCache = max(zenUiSurfaceMaskCache, candidateMask);
+    float visibleCandidateMask =
+      u_zenUiSurfaceParams[index].y < 0.5
+        ? candidateMask * editorMask
+        : candidateMask;
+    zenUiSurfaceMaskCache = max(
+      zenUiSurfaceMaskCache,
+      visibleCandidateMask
+    );
+    if (u_zenUiSurfaceParams[index].y < 0.5) continue;
     float candidateLength = dot(candidate, candidate);
     if (candidateLength > strongestLength) {
       strongestOffset = candidate;

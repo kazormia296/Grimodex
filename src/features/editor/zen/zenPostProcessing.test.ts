@@ -39,6 +39,10 @@ describe("Zen shader post-processing", () => {
     expect(combined).toContain("uniform float u_zenUiSurfaceCount");
     expect(combined).toContain("uniform vec4 u_zenUiSurfaceRects[32]");
     expect(combined).toContain("uniform vec4 u_zenUiSurfaceParams[32]");
+    expect(combined).toContain(
+      "if (u_zenUiSurfaceParams[index].y < 0.5) continue;",
+    );
+    expect(combined).toContain("candidateMask * editorMask");
     expect(combined).toContain("uniform vec3 u_zenUiContrastTextColor");
     expect(combined).toContain("uniform float u_zenUiContrastMix");
     expect(combined).toContain("applyZenDither");
@@ -195,7 +199,7 @@ describe("Zen shader post-processing", () => {
       [0, 0.2, 0.15, 0.8, 0.85, 0.2, 1, 0.8].map(Math.fround),
     );
     expect([...uniforms["u_zenUiSurfaceParams[0]"].slice(0, 8)]).toEqual([
-      12, 0, 0, 0, 12, 0, 0, 0,
+      12, 1, 0, 0, 12, 1, 0, 0,
     ]);
 
     const disabled = parseZenShaderConfig({

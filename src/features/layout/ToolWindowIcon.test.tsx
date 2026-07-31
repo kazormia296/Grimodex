@@ -82,6 +82,26 @@ describe("ToolWindowIcon context menu", () => {
       true,
     );
   });
+
+  it("uses the active surface without rendering a left indicator bar", () => {
+    const slotId = findPanelLocation(
+      useLayoutStore.getState().layout,
+      "scenes",
+    )!.slot.id;
+    render(
+      <ToolWindowIcon
+        region="left"
+        panelId="scenes"
+        slotId={slotId}
+        active
+        slotOpen
+      />,
+    );
+
+    const button = screen.getByRole("button");
+    expect(button.className).toContain("bg-accent");
+    expect(button.querySelector("span[aria-hidden]")).toBeNull();
+  });
 });
 
 describe("ToolWindowIcon 校閲実行中バッジ", () => {

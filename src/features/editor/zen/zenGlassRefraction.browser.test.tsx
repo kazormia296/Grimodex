@@ -702,6 +702,52 @@ describe("Zen glass refraction (real Chromium WebGL)", () => {
     ).toBeLessThanOrEqual(1);
   });
 
+  it("uses contrast-only Editor tool surfaces without adding inner refraction", async () => {
+    const emptyEditorRect: ZenContrastGuardRect = [0, 0, 0, 0];
+    const contrastOnlySurfaces = DISJOINT_UI_SURFACES.map((surface) => ({
+      ...surface,
+      refracts: false,
+    }));
+    const { container } = render(
+      <div>
+        <RefractionProbe
+          name="tool-flat"
+          refraction={0}
+          glassRect={emptyEditorRect}
+          uiSurfaces={contrastOnlySurfaces}
+        />
+        <RefractionProbe
+          name="tool-bent"
+          refraction={24}
+          glassRect={emptyEditorRect}
+          uiSurfaces={contrastOnlySurfaces}
+        />
+      </div>,
+    );
+
+    await waitForShaderState(() => {
+      expectShaderDrawn(container, '[data-refraction-probe="tool-bent"]');
+    });
+
+    const flat = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="tool-flat"] canvas',
+    )!;
+    const bent = container.querySelector<HTMLCanvasElement>(
+      '[data-refraction-probe="tool-bent"] canvas',
+    )!;
+
+    for (const [u, v] of [
+      [0.11, 0.5],
+      [0.29, 0.5],
+      [0.71, 0.5],
+      [0.89, 0.5],
+    ] as const) {
+      expect(
+        Math.abs(pixelAt(bent, u, v)[0] - pixelAt(flat, u, v)[0]),
+      ).toBeLessThanOrEqual(1);
+    }
+  });
+
   it("keeps CSS-sized UI corners aligned when the canvas is pixel-capped", async () => {
     const emptyEditorRect: ZenContrastGuardRect = [0, 0, 0, 0];
     const leftSurface = [DISJOINT_UI_SURFACES[0]];

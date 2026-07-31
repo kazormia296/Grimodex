@@ -250,6 +250,51 @@ function WorkspaceSurfaceProbe({
   );
 }
 
+function EditorToolSurfaceProbe({ glass = true }: { glass?: boolean }) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const layouts = useZenShaderLayouts(surfaceRef);
+
+  return (
+    <div
+      ref={surfaceRef}
+      data-testid="editor-tool-surface-layout"
+      data-ui-surface-rects={JSON.stringify(
+        layouts.uiSurfaces.map((surface) => ({
+          rect: surface.rect,
+          refracts: surface.refracts,
+        })),
+      )}
+      style={{ position: "relative", width: 1_000, height: 600 }}
+    >
+      <section
+        data-editor-fluid-glass={glass ? "true" : "false"}
+        style={{ position: "absolute", inset: 0 }}
+      >
+        <header
+          data-editor-tool-surface
+          style={{
+            position: "absolute",
+            left: 300,
+            top: 60,
+            width: 400,
+            height: 40,
+          }}
+        />
+        <aside
+          data-editor-tool-surface
+          style={{
+            position: "absolute",
+            left: 580,
+            top: 100,
+            width: 120,
+            height: 440,
+          }}
+        />
+      </section>
+    </div>
+  );
+}
+
 function TransientWorkspaceSurfaceProbe({
   visible,
   ancestorVisible = true,
@@ -815,6 +860,35 @@ describe("Zen shader non-editor Glass geometry (real Chromium)", () => {
       expectRects(parseRects(probe.getAttribute("data-ui-surface-rects")), [
         [0, 1 / 15, 1, 2 / 15],
       ]);
+    });
+  });
+});
+
+describe("Zen shader Editor tool contrast geometry (real Chromium)", () => {
+  it("tracks Editor chrome only while Fluid Glass is enabled", async () => {
+    const view = render(<EditorToolSurfaceProbe />);
+    const probe = view.getByTestId("editor-tool-surface-layout");
+    const readSurfaces = () =>
+      JSON.parse(probe.getAttribute("data-ui-surface-rects") ?? "[]") as Array<{
+        rect: number[];
+        refracts: boolean;
+      }>;
+
+    await waitFor(() => {
+      const surfaces = readSurfaces();
+      expectRects(
+        surfaces.map(({ rect }) => rect),
+        [
+          [0.3, 5 / 6, 0.7, 0.9],
+          [0.58, 0.1, 0.7, 5 / 6],
+        ],
+      );
+      expect(surfaces.map(({ refracts }) => refracts)).toEqual([false, false]);
+    });
+
+    view.rerender(<EditorToolSurfaceProbe glass={false} />);
+    await waitFor(() => {
+      expect(readSurfaces()).toEqual([]);
     });
   });
 });

@@ -56,7 +56,7 @@ export function BubbleAiMenu({ onCommand }: BubbleAiMenuProps) {
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "flex h-7 min-w-[28px] items-center justify-center rounded px-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+          "flex h-6 min-w-[24px] items-center justify-center rounded px-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
           open && "bg-accent text-foreground",
         )}
       >

@@ -69,6 +69,22 @@ describe("mutationAffectsZenShaderLayout", () => {
     expect(mutationAffectsZenShaderLayout(unmounted)).toBe(true);
   });
 
+  it("remeasures when an Editor tool contrast surface mounts or unmounts", () => {
+    const root = document.createElement("main");
+    const surface = document.createElement("header");
+    surface.dataset.editorToolSurface = "";
+
+    const mounted = mutationRecords(root, () => {
+      root.append(surface);
+    });
+    const unmounted = mutationRecords(root, () => {
+      surface.remove();
+    });
+
+    expect(mutationAffectsZenShaderLayout(mounted)).toBe(true);
+    expect(mutationAffectsZenShaderLayout(unmounted)).toBe(true);
+  });
+
   it("remeasures when removing a sibling moves a surviving layout target", () => {
     const root = document.createElement("main");
     const dock = document.createElement("section");

@@ -642,12 +642,27 @@ button[role="switch"][aria-checked="true"] {
   overflow: visible;
 }
 
-/* Stripe (side/bottom) は .gx-panel の 1px border をオフにする。border が
-   あると stripe 内側の flex 配分域が両端 1px ずつ縮み、content 側の Slot
-   Splitter 位置と divider 位置がズレる（content には border が無い）。
-   center stripe は data-stripe-region を持たないため対象外。 */
-.app-shell [data-stripe-region].gx-panel {
+/* Stripe は四辺とも同じ 1px rim を持つ。ただし通常の border は内側の flex /
+   grid 配分域を両端 1px ずつ縮め、content 側の Slot Splitter と divider を
+   ずらす。全 Stripe を borderless にした上で inset shadow で rim を描き、
+   36px の幾何と分割位置を保つ。 */
+.app-shell [data-ambient-glass-surface="stripe"].gx-panel {
   border: none;
+}
+
+.app-shell [data-center-stripe].gx-panel,
+.app-shell [data-stripe-region="bottom"].gx-panel {
+  border-radius: 17.5px;
+}
+
+.app-shell [data-ambient-glass-surface="stripe"].gx-panel::after {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
 }
 
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
