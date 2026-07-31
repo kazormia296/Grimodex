@@ -63,7 +63,9 @@ import {
   type EditorInputScopeKey,
 } from "@/features/editor/editorInputReady";
 import { createRevision } from "@/features/revision/api";
+import { scheduleAutoRevision } from "@/features/revision/autoRevisionScheduler";
 import { useRevisionStore } from "@/features/revision/revisionStore";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { parseClipboardHtml } from "@/lib/clipboardAttribution";
 import {
@@ -161,7 +163,12 @@ import {
   createDocumentSaveSession,
   runCoordinatedDocumentSave,
 } from "@/features/editor/document/documentSaveCoordinator";
-import { markStart, markEnd, recordMark } from "@/lib/perfLog";
+import {
+  checkpointPerfSession,
+  markStart,
+  markEnd,
+  recordMark,
+} from "@/lib/perfLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
@@ -545,7 +552,6 @@ export function EditorPane({
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
   // stable getter（inline arrow だと footer の購読が毎レンダー再構築される）。
   const getStatsSceneId = useCallback(() => saveSceneIdRef.current, []);
-  const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   // Prevent feedback loop when applying external content sync.
   const isApplyingExternalUpdate = useRef(false);
@@ -616,82 +622,63 @@ export function EditorPane({
     } finally {
       setIsSaving(false);
     }
-    // Persisted version always advances for the same loaded document. Edits
-    // that arrived while the write was in flight keep dirty set and will use
-    // the new baseVersion on the coalesced follow-up save.
-    if (mutationGate.commitSave(snapshot, result.binding)) {
-      setIsDirtyRef.current(false);
-      useEditorSessionStore
-        .getState()
-        .setDocumentDirty(
-          documentKeyFromBinding(result.binding),
-          false,
-          editorInstanceIdRef.current,
-        );
-    }
-    announcePersistedBinding(
-      documentKeyFromBinding(result.binding),
-      editorInstanceIdRef.current,
-      result.binding,
-    );
-
-    // Auto-revision is non-critical — don't let it trigger "save failed" toast
-    // Codex/snippet tabs don't use the revision system
-    if (snapshot.binding.kind === "tree") {
-      try {
-        const id = snapshot.binding.id;
-        if (!id) return true;
-        const intervalMs =
-          useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
-          60 *
-          1000;
-        if (shouldAutoRevision(id, intervalMs)) {
-          // Revision content must match the immutable document that actually
-          // reached persistence, not newer keystrokes that arrived meanwhile.
-          const content = JSON.stringify(doc.toJSON());
-          const rev = await createRevision({
-            entityType: "scene",
-            entityId: id,
-            content,
-            snapshotType: "auto",
-          });
-          if (rev) {
-            recordAutoRevision(id);
-            const keepCount = useSettingsStore
-              .getState()
-              .getNumber("revision.keepCount", 50);
-            import("@/features/revision/api").then(({ pruneRevisions }) => {
-              pruneRevisions("scene", id, keepCount).catch((error) => {
-                // Pruning is best-effort maintenance. A renderer teardown may
-                // close the DB after the durable editor save but before this
-                // detached query finishes; keep that non-critical outcome out
-                // of the fail-closed renderer error channel.
-                debugLog.warn(
-                  "AutoSave",
-                  "revision prune failed",
-                  errorDetail(error),
-                );
-              });
-            });
-          }
-        }
-      } catch (e) {
-        debugLog.warn(
-          "AutoSave",
-          "revision failed (content saved)",
-          errorDetail(e),
-        );
+    markStart("editor.save.durableComplete");
+    try {
+      // Persisted version always advances for the same loaded document. Edits
+      // that arrived while the write was in flight keep dirty set and will use
+      // the new baseVersion on the coalesced follow-up save.
+      if (mutationGate.commitSave(snapshot, result.binding)) {
+        setIsDirtyRef.current(false);
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(
+            documentKeyFromBinding(result.binding),
+            false,
+            editorInstanceIdRef.current,
+          );
       }
+      announcePersistedBinding(
+        documentKeyFromBinding(result.binding),
+        editorInstanceIdRef.current,
+        result.binding,
+      );
+    } finally {
+      markEnd("editor.save.durableComplete");
+    }
+    checkpointPerfSession("durableSave");
+
+    // Auto-revision is non-critical and uses the exact JSON that reached the
+    // durable scene write. The scoped queue flushes before workspace switches.
+    if (
+      snapshot.binding.kind === "tree" &&
+      result.persistedSceneBody &&
+      useTreeStore.getState().projectId
+    ) {
+      const id = snapshot.binding.id;
+      const intervalMs =
+        useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+        60 *
+        1000;
+      // Retain the historical attribution label for the former serialization
+      // stage. It should now measure only the exact-string handoff and remain
+      // near zero because `doc.toJSON()` is not called here.
+      markStart("editor.autoRevision.serialize");
+      const revisionContentJson = result.persistedSceneBody.contentJson;
+      markEnd("editor.autoRevision.serialize");
+      scheduleAutoRevision({
+        workspaceIdentity: getCurrentWorkspaceIdentity(),
+        projectId: useTreeStore.getState().projectId,
+        sceneId: id,
+        contentVersion: result.persistedSceneBody.contentVersion,
+        contentJson: revisionContentJson,
+        intervalMs,
+        keepCount: useSettingsStore
+          .getState()
+          .getNumber("revision.keepCount", 50),
+      });
     }
     return true;
-  }, [
-    coreSave,
-    mutationGate,
-    setIsDirtyRef,
-    setIsSaving,
-    shouldAutoRevision,
-    recordAutoRevision,
-  ]);
+  }, [coreSave, mutationGate, setIsDirtyRef, setIsSaving]);
   const saveFn = useCallback(async () => {
     const saveKey = activeLoadedDocumentKey ?? loadedDocumentKeyRef.current;
     if (!saveKey) {

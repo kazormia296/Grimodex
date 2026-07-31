@@ -7,6 +7,8 @@ function deepFreeze(value) {
 }
 
 export const RUNTIME_PERFORMANCE_INPUT_TEXT = "性能回帰入力".repeat(8);
+export const RUNTIME_PERFORMANCE_STEADY_INPUT_TEXT = "定常保存入力".repeat(8);
+export const RUNTIME_PERFORMANCE_AUTOSAVE_SAMPLE_COUNT = 3;
 
 /**
  * Full review matrix from the performance review. These are deterministic
@@ -472,7 +474,10 @@ export function buildRuntimePerformanceFixtureProfile(
       throw new Error(`runtime performance profile ${label} must be >= 0`);
     }
   }
-  if (mapNodeCount > collectionSceneCount + 1) {
+  if (
+    mapNodeCount >
+    collectionSceneCount + RUNTIME_PERFORMANCE_AUTOSAVE_SAMPLE_COUNT
+  ) {
     throw new Error(
       "runtime performance profile map.nodeCount exceeds available scenes",
     );
@@ -488,6 +493,34 @@ export function buildRuntimePerformanceFixtureProfile(
     );
   }
 
+  const autosaveSampleScenes = Object.freeze(
+    Array.from(
+      { length: RUNTIME_PERFORMANCE_AUTOSAVE_SAMPLE_COUNT },
+      (_, index) => {
+        const collectionIndex = index - 1;
+        const isCollectionScene =
+          collectionIndex >= 0 && collectionIndex < collectionSceneCount;
+        return Object.freeze({
+          id:
+            index === 0
+              ? "grimodex-runtime-perf-seeded-scene"
+              : isCollectionScene
+                ? `grimodex-runtime-perf-scene-${String(collectionIndex).padStart(3, "0")}`
+                : `grimodex-runtime-perf-autosave-scene-${index + 1}`,
+          title:
+            index === 0
+              ? "PERF AUTOSAVE SAMPLE 1"
+              : isCollectionScene
+                ? `PERF SCENE ${String(collectionIndex + 1).padStart(3, "0")}`
+                : `PERF AUTOSAVE SAMPLE ${index + 1}`,
+          isCollectionScene,
+        });
+      },
+    ),
+  );
+  const autosaveExtraSceneCount = autosaveSampleScenes.filter(
+    (scene, index) => index > 0 && !scene.isCollectionScene,
+  ).length;
   return Object.freeze({
     id: definition.id,
     reviewFixtureId: definition.reviewFixtureId ?? null,
@@ -496,8 +529,10 @@ export function buildRuntimePerformanceFixtureProfile(
       definition.reviewCardinality == null
         ? null
         : JSON.stringify(definition.reviewCardinality),
-    sceneId: "grimodex-runtime-perf-seeded-scene",
-    sceneTitle: "PERF READY SCENE",
+    sceneId: autosaveSampleScenes[0].id,
+    sceneTitle: autosaveSampleScenes[0].title,
+    autosaveSampleScenes,
+    autosaveExtraSceneCount,
     folderId: "grimodex-runtime-perf-scenes",
     boardId: "grimodex-runtime-perf-board",
     inputAnchorText: "今日は晴れです。",
@@ -567,14 +602,16 @@ export function buildRuntimePerformanceFixtureForReview(reviewFixtureId) {
       definition.editor.beatCount = plan.cardinality.beatCount;
       break;
     case "treeGrid":
-      // Seeded Tree nodes are: primary editor scene + fixture folder + children.
+      // The primary editor scene and fixture folder sit outside the requested
+      // collection cardinality. Autosave samples 2/3 reuse collection scenes.
       definition.project.collectionSceneCount = Math.max(
         0,
         plan.cardinality.nodeCount - 2,
       );
       break;
     case "linear":
-      // The primary editor scene participates in Linear mode.
+      // The primary editor scene participates in Linear mode; autosave samples
+      // 2/3 reuse the first collection scenes.
       definition.project.collectionSceneCount = Math.max(
         0,
         plan.cardinality.sceneCount - 1,
@@ -713,13 +750,11 @@ export function measureRuntimeEditorSerializedBytesAfterInput(
 
 function buildSeededEditorTabState(profile = RUNTIME_PERFORMANCE_FIXTURE) {
   return JSON.stringify({
-    tabs: [
-      {
-        nodeId: profile.sceneId,
-        isPreview: false,
-        contentType: "scene",
-      },
-    ],
+    tabs: profile.autosaveSampleScenes.map((scene) => ({
+      nodeId: scene.id,
+      isPreview: false,
+      contentType: "scene",
+    })),
     activeTabId: profile.sceneId,
     secondaryTabs: [],
     secondaryActiveTabId: null,
@@ -774,23 +809,47 @@ export function buildRuntimeFixtureStatements(
     },
   ];
 
-  const sceneIds = [profile.sceneId];
+  for (const [index, scene] of profile.autosaveSampleScenes.entries()) {
+    if (scene.id === profile.sceneId || scene.isCollectionScene) continue;
+    statements.push({
+      sql: `INSERT INTO tree_nodes
+        (id, project_id, parent_id, node_type, title, content, char_count, sort_order,
+         chronicle_start_time, chronicle_start_granularity)
+        VALUES (?, 'default-project', ?, 'scene', ?, ?, ?, ?, 0, 'day')`,
+      params: [
+        scene.id,
+        profile.folderId,
+        scene.title,
+        longDocument,
+        profile.seededTextChars,
+        `a0-${index}`,
+      ],
+      method: "run",
+    });
+  }
+
+  const sceneIds = profile.autosaveSampleScenes.map((scene) => scene.id);
   for (let index = 0; index < profile.collectionSceneCount; index += 1) {
     const sceneId = `grimodex-runtime-perf-scene-${String(index).padStart(3, "0")}`;
+    const sampleScene = profile.autosaveSampleScenes.find(
+      (scene) => scene.id === sceneId,
+    );
     const sceneText =
       `PERF scene ${String(index + 1).padStart(3, "0")} virtualized body. `.repeat(
         20,
       );
-    const sceneDocument = JSON.stringify({
-      type: "doc",
-      content: [
-        {
-          type: "paragraph",
-          content: [{ type: "text", text: sceneText }],
-        },
-      ],
-    });
-    sceneIds.push(sceneId);
+    const sceneDocument = sampleScene
+      ? longDocument
+      : JSON.stringify({
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: sceneText }],
+            },
+          ],
+        });
+    if (!sceneIds.includes(sceneId)) sceneIds.push(sceneId);
     statements.push({
       sql: `INSERT INTO tree_nodes
         (id, project_id, parent_id, node_type, title, content, char_count, sort_order, story_time_order)
@@ -798,9 +857,10 @@ export function buildRuntimeFixtureStatements(
       params: [
         sceneId,
         profile.folderId,
-        `PERF SCENE ${String(index + 1).padStart(3, "0")}`,
+        sampleScene?.title ??
+          `PERF SCENE ${String(index + 1).padStart(3, "0")}`,
         sceneDocument,
-        sceneText.length,
+        sampleScene ? profile.seededTextChars : sceneText.length,
         String(index).padStart(4, "0"),
       ],
       method: "run",

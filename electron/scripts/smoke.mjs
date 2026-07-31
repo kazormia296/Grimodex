@@ -32,6 +32,7 @@ import {
 } from "./process-memory.mjs";
 import {
   RUNTIME_PERFORMANCE_INPUT_TEXT,
+  RUNTIME_PERFORMANCE_STEADY_INPUT_TEXT,
   buildRuntimePerformanceFixtureForReview,
   buildRuntimeFixtureActualCardinalityQuery,
   buildRuntimeFixtureStatements,
@@ -54,7 +55,10 @@ const RUNTIME_BENCHMARK_FIXTURE = buildRuntimePerformanceFixtureForReview(
 );
 const SMOKE_TEXT = `SMOKE-${Date.now()}-スモーク本文`;
 const PERF_INPUT_TEXT = RUNTIME_PERFORMANCE_INPUT_TEXT;
+const PERF_STEADY_INPUT_TEXT = RUNTIME_PERFORMANCE_STEADY_INPUT_TEXT;
 const PERF_INPUT_ANCHOR_TEXT = RUNTIME_BENCHMARK_FIXTURE.inputAnchorText;
+const PERF_AUTOSAVE_SAMPLE_SCENES =
+  RUNTIME_BENCHMARK_FIXTURE.autosaveSampleScenes;
 const PERF_SCENE_ID = RUNTIME_BENCHMARK_FIXTURE.sceneId;
 const PERF_FOLDER_ID = RUNTIME_BENCHMARK_FIXTURE.folderId;
 const PERF_SCENE_COUNT = RUNTIME_BENCHMARK_FIXTURE.collectionSceneCount;
@@ -171,6 +175,9 @@ const performanceMetrics = {
     mapEdgeCount: RUNTIME_BENCHMARK_FIXTURE.mapEdgeCount,
     chatMessageCount: RUNTIME_BENCHMARK_FIXTURE.chatMessageCount,
     chatSessionId: RUNTIME_BENCHMARK_FIXTURE.chatSessionId,
+    autosaveSampleSceneIds: PERF_AUTOSAVE_SAMPLE_SCENES.map(
+      (scene) => scene.id,
+    ),
     editorInputSceneId: null,
     autosaveSceneId: null,
     editorInputTargetVerified: false,
@@ -202,6 +209,11 @@ const performanceMetrics = {
     },
   },
   longTask: null,
+  performanceSamples: {
+    initialAutosave: [],
+    steadyStateAutosave: [],
+    postSaveDrain: [],
+  },
   interactions: {
     treeFilter: null,
     linearScroll: null,
@@ -382,7 +394,7 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
   } else {
     delete env.GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN;
   }
-  const args = [mainCjs];
+  const args = [];
   if (performanceOutputPath) {
     // Runtime frame budgets model an active foreground editor. Codex or another
     // host window may cover the benchmark window while automation is running;
@@ -395,6 +407,10 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
     // backend instead of letting a Wayland host select a different GPU stack.
     args.push("--ozone-platform=x11");
   }
+  // Electron parses Chromium switches as executable options only before the
+  // application entry. Arguments after main.cjs belong to the application and
+  // do not disable renderer/occlusion throttling.
+  args.push(mainCjs);
 
   const app = await _electron.launch({
     executablePath: electronBin,
@@ -607,6 +623,11 @@ async function drivePointerMoveFrames(
     buttons,
   },
 ) {
+  // Reassert foreground immediately before the measured rAF sequence. Large
+  // keepalive panels can spend long enough in setup for the desktop compositor
+  // to deprioritize the Electron page even though it was foregrounded when the
+  // target was acquired.
+  await ensureBenchmarkPageForeground(page);
   await page.evaluate(
     async ({
       startX,
@@ -619,6 +640,11 @@ async function drivePointerMoveFrames(
       frameCount,
     }) => {
       for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        if (document.visibilityState !== "visible") {
+          throw new Error(
+            "runtime performance gesture lost foreground visibility",
+          );
+        }
         document.dispatchEvent(
           new MouseEvent("mousemove", {
             button,
@@ -648,7 +674,10 @@ async function drivePointerMoveFrames(
   );
 }
 
-async function focusRuntimeInputAnchor(page) {
+async function focusRuntimeInputAnchor(
+  page,
+  anchorText = PERF_INPUT_ANCHOR_TEXT,
+) {
   const result = await page.evaluate(async (anchorText) => {
     const paragraphs = Array.from(
       document.querySelectorAll('.ProseMirror[contenteditable="true"] > p'),
@@ -705,7 +734,7 @@ async function focusRuntimeInputAnchor(page) {
       reason: "selection did not remain at the input anchor end",
       initialChars: paragraph.textContent?.length ?? 0,
     };
-  }, PERF_INPUT_ANCHOR_TEXT);
+  }, anchorText);
 
   if (!result.ok) {
     throw new Error(`runtime input target is invalid: ${result.reason}`);
@@ -713,7 +742,11 @@ async function focusRuntimeInputAnchor(page) {
   return result;
 }
 
-async function assertRuntimeInputLandedInAnchor(page) {
+async function assertRuntimeInputLandedInAnchor(
+  page,
+  anchorText = PERF_INPUT_ANCHOR_TEXT,
+  inputText = PERF_INPUT_TEXT,
+) {
   const result = await page.evaluate(
     ({ anchorText, inputText }) => {
       const expected = `${anchorText}${inputText}`;
@@ -727,8 +760,8 @@ async function assertRuntimeInputLandedInAnchor(page) {
       };
     },
     {
-      anchorText: PERF_INPUT_ANCHOR_TEXT,
-      inputText: PERF_INPUT_TEXT,
+      anchorText,
+      inputText,
     },
   );
   if (!result.ok) {
@@ -737,6 +770,138 @@ async function assertRuntimeInputLandedInAnchor(page) {
     );
   }
   return result;
+}
+
+async function activateRuntimeAutosaveSample(page, scene) {
+  const currentSurface = page.locator(
+    `[data-editor-loaded-document-id="${scene.id}"][data-editor-document-loading="false"]`,
+  );
+  if (!(await currentSurface.isVisible())) {
+    await page.locator(`[data-editor-tab-id="${scene.id}"]`).click();
+    await currentSurface.waitFor({ state: "visible", timeout: 30_000 });
+  }
+  const editor = currentSurface
+    .locator('.ProseMirror[contenteditable="true"]')
+    .first();
+  await editor.waitFor({ state: "visible", timeout: 30_000 });
+}
+
+async function waitForRuntimePostSaveDrain(page, requireAutoRevision) {
+  try {
+    await page.waitForFunction(
+      (needsAutoRevision) => {
+        const counters = globalThis.snapshotPerfSession?.()?.counters ?? {};
+        return (
+          (counters["editor.postSave.bodyMention.settled"] ?? 0) >= 1 &&
+          (counters["editor.postSave.derived.settled"] ?? 0) >= 1 &&
+          (counters["editor.postSave.semantic.settled"] ?? 0) >= 1 &&
+          (!needsAutoRevision ||
+            (counters["editor.postSave.autoRevision.settled"] ?? 0) >= 1)
+        );
+      },
+      requireAutoRevision,
+      // rAF polling continuously manufactures foreground frame work while we
+      // are explicitly waiting for background-priority lanes. Timer polling
+      // observes settlement without starving scheduler.postTask/idle work.
+      { polling: 100, timeout: 30_000 },
+    );
+  } catch (error) {
+    const evidence = page.isClosed()
+      ? { pageClosed: true }
+      : await page.evaluate(() => {
+          const snapshot = globalThis.snapshotPerfSession?.();
+          return {
+            pageClosed: false,
+            visibilityState: document.visibilityState,
+            documentHidden: document.hidden,
+            documentHasFocus: document.hasFocus(),
+            counters: snapshot?.counters ?? null,
+            topMarks: snapshot?.topMarks ?? null,
+          };
+        });
+    throw new Error(
+      `runtime post-save background drain did not settle: ${JSON.stringify(evidence)}`,
+      { cause: error },
+    );
+  }
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const afterIdle = () =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        if (typeof requestIdleCallback === "function") {
+          requestIdleCallback(afterIdle, { timeout: 2_000 });
+        } else {
+          afterIdle();
+        }
+      }),
+  );
+}
+
+async function measureRuntimeAutosaveSample(
+  page,
+  {
+    sceneId,
+    anchorText,
+    inputText,
+    requireAutoRevision,
+    cpuProfilePath = null,
+  },
+) {
+  // Each sample is independent evidence. Reassert active-page scheduling just
+  // before opening its session so background-priority post-save tasks are not
+  // measured under Chromium's occluded-window timer policy.
+  await ensureBenchmarkPageForeground(page);
+  const inputTarget = await focusRuntimeInputAnchor(page, anchorText);
+  await page.evaluate(() => globalThis.startPerfSession?.());
+  const cpuProfiler = cpuProfilePath
+    ? await page.context().newCDPSession(page)
+    : null;
+  if (cpuProfiler) {
+    await cpuProfiler.send("Profiler.enable");
+    await cpuProfiler.send("Profiler.setSamplingInterval", {
+      interval: 1_000,
+    });
+    await cpuProfiler.send("Profiler.start");
+  }
+  try {
+    await page.keyboard.type(inputText, { delay: 10 });
+  } finally {
+    if (cpuProfiler && cpuProfilePath) {
+      const { profile } = await cpuProfiler.send("Profiler.stop");
+      await mkdir(path.dirname(cpuProfilePath), { recursive: true });
+      await writeFile(cpuProfilePath, `${JSON.stringify(profile)}\n`);
+      await cpuProfiler.detach();
+      log(`  input CPU profile: ${cpuProfilePath}`);
+    }
+  }
+  await assertRuntimeInputLandedInAnchor(page, anchorText, inputText);
+  await page.evaluate(() => globalThis.checkpointPerfSession?.("typing"));
+  await waitUntil(
+    () => sceneContainsTextInDb(page, sceneId, inputText),
+    `${sceneId} autosave reaches tree_nodes.content`,
+    30_000,
+  );
+  await waitForRuntimePostSaveDrain(page, requireAutoRevision);
+  await page.evaluate(() =>
+    globalThis.checkpointPerfSession?.("postSaveDrain"),
+  );
+  const session = await page.evaluate(() => globalThis.endPerfSession?.());
+  if (!session?.segments?.durableSave || !session?.segments?.postSaveDrain) {
+    throw new Error(`${sceneId} performance segment evidence is incomplete`);
+  }
+  return { inputTarget, session };
+}
+
+function aggregateRuntimeLongTaskSamples(samples) {
+  return samples.reduce(
+    (aggregate, sample) => ({
+      count: Math.max(aggregate.count, sample?.longtask?.count ?? 0),
+      totalMs: aggregate.totalMs + (sample?.longtask?.totalMs ?? 0),
+      maxMs: Math.max(aggregate.maxMs, sample?.longtask?.maxMs ?? 0),
+    }),
+    { count: 0, totalMs: 0, maxMs: 0 },
+  );
 }
 
 async function assertTreeAndGridVirtualization(page) {
@@ -814,6 +979,7 @@ async function assertTreeAndGridVirtualization(page) {
     maxNodesVisited,
     longTaskCount: treeFilterSession?.longtask?.count ?? null,
     longTaskMaxMs: treeFilterSession?.longtask?.maxMs ?? null,
+    longTaskEntries: treeFilterSession?.longTaskEntries ?? [],
   };
   log(
     `  Tree filter: ${derivationCount} derive(s), max ${maxNodesVisited} node visits, ${treeFilterSession?.longtask?.count ?? "missing"} long task(s)`,
@@ -938,6 +1104,7 @@ async function measureTimelineDrag(page, memorySampler) {
       Number.isFinite(timelineRenderMaxMs),
     gestureLongTaskCount: timelineSession?.longtask?.count ?? null,
     gestureLongTaskMaxMs: timelineSession?.longtask?.maxMs ?? null,
+    gestureLongTaskEntries: timelineSession?.longTaskEntries ?? [],
     gestureSlowEvent: timelineSession?.slowEvent ?? null,
     gestureTopMarks: timelineSession?.topMarks ?? [],
     gestureMarkStats: timelineSession?.markStats ?? [],
@@ -1178,6 +1345,7 @@ async function measureChroniclePan(page, memorySampler) {
       finalRenderedMarkerCount < markerProjection.totalEventCount,
     gestureLongTaskCount: chronicleSession?.longtask?.count ?? null,
     gestureLongTaskMaxMs: chronicleSession?.longtask?.maxMs ?? null,
+    gestureLongTaskEntries: chronicleSession?.longTaskEntries ?? [],
     gestureSlowEvent: chronicleSession?.slowEvent ?? null,
     gestureTopMarks: chronicleSession?.topMarks ?? [],
     gestureMarkStats: chronicleSession?.markStats ?? [],
@@ -2052,7 +2220,7 @@ async function phaseSeed() {
           actualCardinalityResult?.rows ?? [],
         );
       log(
-        `  runtime performance fixture ${RUNTIME_BENCHMARK_FIXTURE.id} seeded (${PERF_SCENE_COUNT + 1} scenes / ${RUNTIME_BENCHMARK_FIXTURE.timelineThreadCount} threads / ${PERF_TIMELINE_MARKER_LINK_COUNT} marker-links / ${PERF_CHRONICLE_EVENT_COUNT} events / ${PERF_MAP_NODE_COUNT} map nodes + ${RUNTIME_BENCHMARK_FIXTURE.mapEdgeCount} edges / ${RUNTIME_BENCHMARK_FIXTURE.chatMessageCount} chat messages / ${RUNTIME_BENCHMARK_FIXTURE.seededTextChars} chars + ${RUNTIME_BENCHMARK_FIXTURE.seededBeatCount} Beats)`,
+        `  runtime performance fixture ${RUNTIME_BENCHMARK_FIXTURE.id} seeded (${PERF_SCENE_COUNT + RUNTIME_BENCHMARK_FIXTURE.autosaveExtraSceneCount + 1} scenes / ${RUNTIME_BENCHMARK_FIXTURE.timelineThreadCount} threads / ${PERF_TIMELINE_MARKER_LINK_COUNT} marker-links / ${PERF_CHRONICLE_EVENT_COUNT} events / ${PERF_MAP_NODE_COUNT} map nodes + ${RUNTIME_BENCHMARK_FIXTURE.mapEdgeCount} edges / ${RUNTIME_BENCHMARK_FIXTURE.chatMessageCount} chat messages / ${RUNTIME_BENCHMARK_FIXTURE.seededTextChars} chars + ${RUNTIME_BENCHMARK_FIXTURE.seededBeatCount} Beats)`,
       );
     }
   } finally {
@@ -2161,45 +2329,46 @@ async function phaseWrite() {
       // Memory resumes after autosave; otherwise the benchmark would include
       // its own getAppMetrics/page.evaluate polling in input and long-task data.
       await memorySampler.pause();
-      const inputTarget = await focusRuntimeInputAnchor(page);
-      performanceMetrics.fixture.editorInputParagraphCharsBefore =
-        inputTarget.initialChars;
-      await page.evaluate(() => globalThis.startPerfSession?.());
-      performanceMetrics.fixture.editorInputSceneId = PERF_SCENE_ID;
-      const cpuProfiler = performanceCpuProfilePath
-        ? await page.context().newCDPSession(page)
-        : null;
-      if (cpuProfiler) {
-        await cpuProfiler.send("Profiler.enable");
-        await cpuProfiler.send("Profiler.setSamplingInterval", {
-          interval: 1_000,
+      let firstInitialSession = null;
+      for (const [index, scene] of PERF_AUTOSAVE_SAMPLE_SCENES.entries()) {
+        await activateRuntimeAutosaveSample(page, scene);
+        await waitForRuntimeEditorIdle(page);
+        const initial = await measureRuntimeAutosaveSample(page, {
+          sceneId: scene.id,
+          anchorText: PERF_INPUT_ANCHOR_TEXT,
+          inputText: PERF_INPUT_TEXT,
+          requireAutoRevision: true,
+          cpuProfilePath: index === 0 ? performanceCpuProfilePath : null,
         });
-        await cpuProfiler.send("Profiler.start");
-      }
-      try {
-        await page.keyboard.type(PERF_INPUT_TEXT, { delay: 10 });
-      } finally {
-        if (cpuProfiler && performanceCpuProfilePath) {
-          const { profile } = await cpuProfiler.send("Profiler.stop");
-          await mkdir(path.dirname(performanceCpuProfilePath), {
-            recursive: true,
-          });
-          await writeFile(
-            performanceCpuProfilePath,
-            `${JSON.stringify(profile)}\n`,
-          );
-          await cpuProfiler.detach();
-          log(`  input CPU profile: ${performanceCpuProfilePath}`);
+        firstInitialSession ??= initial.session;
+        performanceMetrics.performanceSamples.initialAutosave.push(
+          initial.session,
+        );
+        performanceMetrics.performanceSamples.postSaveDrain.push(
+          initial.session.segments.postSaveDrain,
+        );
+        if (index === 0) {
+          performanceMetrics.fixture.editorInputParagraphCharsBefore =
+            initial.inputTarget.initialChars;
+          performanceMetrics.fixture.editorInputSceneId = scene.id;
+          performanceMetrics.fixture.autosaveSceneId = scene.id;
         }
+
+        const steady = await measureRuntimeAutosaveSample(page, {
+          sceneId: scene.id,
+          anchorText: `${PERF_INPUT_ANCHOR_TEXT}${PERF_INPUT_TEXT}`,
+          inputText: PERF_STEADY_INPUT_TEXT,
+          requireAutoRevision: false,
+        });
+        performanceMetrics.performanceSamples.steadyStateAutosave.push(
+          steady.session,
+        );
       }
-      await assertRuntimeInputLandedInAnchor(page);
       performanceMetrics.fixture.editorInputTargetVerified = true;
-      const editorInputSession = await page.evaluate(() =>
-        globalThis.snapshotPerfSession?.(),
-      );
-      const inputDispatch = editorInputSession?.markStats?.find(
-        (entry) => entry.label === "editor.viewDispatch",
-      );
+      const inputDispatch =
+        firstInitialSession?.segments?.typing?.markStats?.find(
+          (entry) => entry.label === "editor.viewDispatch",
+        );
       performanceMetrics.editorInput = inputDispatch
         ? {
             p50Ms: inputDispatch.p50Ms,
@@ -2207,33 +2376,27 @@ async function phaseWrite() {
             p99Ms: inputDispatch.p99Ms,
           }
         : null;
-      log(
-        `  ${RUNTIME_BENCHMARK_FIXTURE.seededTextChars}文字 / ${RUNTIME_BENCHMARK_FIXTURE.seededBeatCount} Beat scene の本文入力完了`,
-      );
-
-      await waitUntil(
-        () => sceneContainsTextInDb(page, PERF_SCENE_ID, PERF_INPUT_TEXT),
-        "長文 scene のオートセーブが tree_nodes.content に着弾する",
-        30_000,
-      );
-      performanceMetrics.fixture.autosaveSceneId = PERF_SCENE_ID;
-      const perfSession = await page.evaluate(() =>
-        globalThis.endPerfSession?.(),
-      );
-      performanceMetrics.autosave = extractAutosaveMetrics(perfSession);
-      performanceMetrics.longTask = perfSession?.longtask ?? null;
-      performanceMetrics.diagnostics = perfSession
-        ? {
-            durationMs: perfSession.durationMs,
-            slowEvent: perfSession.slowEvent,
-            topMarks: perfSession.topMarks,
-            markStats: perfSession.markStats,
-            counters: perfSession.counters,
-          }
-        : null;
+      performanceMetrics.autosave = extractAutosaveMetrics(firstInitialSession);
+      performanceMetrics.longTask = aggregateRuntimeLongTaskSamples([
+        ...performanceMetrics.performanceSamples.initialAutosave,
+        ...performanceMetrics.performanceSamples.steadyStateAutosave,
+      ]);
+      performanceMetrics.diagnostics = {
+        sampleSceneIds: PERF_AUTOSAVE_SAMPLE_SCENES.map((scene) => scene.id),
+        initialAutosave: performanceMetrics.performanceSamples.initialAutosave,
+        steadyStateAutosave:
+          performanceMetrics.performanceSamples.steadyStateAutosave,
+      };
+      // Restore the canonical root Scene before the independent persistence
+      // scenario. The two additional samples live inside the large fixture
+      // folder; leaving one active would create the smoke Scene among 500
+      // siblings instead of exercising the existing root-level contract.
+      await activateRuntimeAutosaveSample(page, PERF_AUTOSAVE_SAMPLE_SCENES[0]);
       memorySampler.resume();
       await memorySampler.sampleFresh(true);
-      log("  長文 scene の入力 / autosave metrics を記録");
+      log(
+        `  ${PERF_AUTOSAVE_SAMPLE_SCENES.length} scene × initial/steady autosave metrics を記録`,
+      );
       // Chat fixtures are scene-scoped to the seeded editor document. Exercise
       // them before the independent persistence scenario changes activeSceneId.
       if (
@@ -2251,6 +2414,18 @@ async function phaseWrite() {
     if (typeof maximized !== "boolean") {
       throw new Error("windowControls.isMaximized がブール値を返しません");
     }
+
+    const loadedDocumentIdsBeforeCreate = await page
+      .locator(
+        '[data-editor-loaded-document-id][data-editor-document-loading="false"]',
+      )
+      .evaluateAll((elements) =>
+        elements
+          .map((element) =>
+            element.getAttribute("data-editor-loaded-document-id"),
+          )
+          .filter(Boolean),
+      );
 
     // シーン作成: パネルヘッダの「＋」→ New scene → インライン rename を Enter で確定
     await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
@@ -2272,19 +2447,33 @@ async function phaseWrite() {
     // The newly created Scene becomes the active Editor document even when
     // its virtualized Tree row is outside the mounted viewport. Capture that
     // exact ID from the Editor boundary, then prove the row exists in SQLite.
+    const smokeSceneIdHandle = await page.waitForFunction(
+      (knownDocumentIds) => {
+        const known = new Set(knownDocumentIds);
+        const surface = Array.from(
+          document.querySelectorAll(
+            '[data-editor-loaded-document-id][data-editor-document-loading="false"]',
+          ),
+        ).find((element) => {
+          const id = element.getAttribute("data-editor-loaded-document-id");
+          return id && !known.has(id);
+        });
+        return surface?.getAttribute("data-editor-loaded-document-id") ?? false;
+      },
+      loadedDocumentIdsBeforeCreate,
+      { timeout: 30_000 },
+    );
+    const smokeSceneId = await smokeSceneIdHandle.jsonValue();
     const smokeEditorSurface = page
       .locator(
-        `[data-editor-loaded-document-id][data-editor-document-loading="false"]:not([data-editor-loaded-document-id="${PERF_SCENE_ID}"]):visible`,
+        `[data-editor-loaded-document-id="${smokeSceneId}"][data-editor-document-loading="false"]`,
       )
       .first();
     await smokeEditorSurface.waitFor({
       state: "visible",
       timeout: 30_000,
     });
-    const smokeSceneId = await smokeEditorSurface.getAttribute(
-      "data-editor-loaded-document-id",
-    );
-    if (!smokeSceneId) {
+    if (typeof smokeSceneId !== "string" || smokeSceneId.length === 0) {
       throw new Error("新規 Scene の loaded document ID を取得できません");
     }
     const createdSmokeScene = await waitUntil(

@@ -58,7 +58,7 @@ const h = vi.hoisted(() => ({
   refreshContextLayers: vi.fn(() => Promise.resolve()),
   scheduleEditorAnalysisTask: vi.fn(),
   deriveSceneAiRatio: vi.fn(() => 37 as number | undefined),
-  deriveSceneBodySnapshot: vi.fn(() => ({
+  deriveSceneBodySnapshot: vi.fn((_doc: ProseMirrorNode) => ({
     contentJson: JSON.stringify({ type: "doc", content: [] }),
     charCount: 42,
     placedBeatPreview: null,
@@ -259,6 +259,39 @@ describe("persistSceneBody — committed-body publication", () => {
 });
 
 describe("persistSceneBody — DB-native scene", () => {
+  it("serializes an Electron tree save once and returns that exact durable snapshot", async () => {
+    h.state.electron = true;
+    const toJSON = vi.fn(() => DOC_JSON);
+    h.deriveSceneBodySnapshot.mockImplementationOnce((doc) => ({
+      contentJson: JSON.stringify(doc.toJSON()),
+      charCount: 42,
+      placedBeatPreview: null,
+      unplacedBeatsDoc: "[]",
+      unplacedBeatPreview: null,
+      authorshipSpans: [],
+      foreshadowSetups: [],
+      foreshadowPayoffs: [],
+      annotationAnchors: [],
+      beatMentions: [],
+      beatPovOverrides: [],
+      docContentSize: 2,
+    }));
+
+    const persisted = await persistSceneBody("scene-1", {
+      toJSON,
+    } as unknown as ProseMirrorNode);
+
+    expect(toJSON).toHaveBeenCalledOnce();
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ contentJson: JSON.stringify(DOC_JSON) }),
+    );
+    expect(persisted).toEqual({
+      contentJson: JSON.stringify(DOC_JSON),
+      contentVersion: 2,
+      contentUpdatedAt: "2026-07-28T00:00:00.000Z",
+    });
+  });
+
   it("Electron uses one derived snapshot and one domain IPC for content + sidecars", async () => {
     h.state.electron = true;
 

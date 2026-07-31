@@ -45,6 +45,7 @@ describe("semantic-search/scheduler", () => {
   it("fires semantic_index_scene once after the debounce elapses", () => {
     scheduleSceneIndex("scene-1");
     vi.advanceTimersByTime(DEBOUNCE_MS);
+    vi.advanceTimersByTime(17);
     expect(mockInvoke).toHaveBeenCalledTimes(1);
     expect(mockInvoke).toHaveBeenCalledWith("semantic_index_scene", {
       sceneId: "scene-1",
@@ -61,23 +62,54 @@ describe("semantic-search/scheduler", () => {
     vi.advanceTimersByTime(DEBOUNCE_MS - 1);
     expect(mockInvoke).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
+    vi.advanceTimersByTime(17);
     expect(mockInvoke).toHaveBeenCalledTimes(1);
   });
 
-  it("debounces per scene_id independently", () => {
+  it("debounces per scene_id independently", async () => {
     scheduleSceneIndex("scene-1");
     vi.advanceTimersByTime(1000);
     scheduleSceneIndex("scene-2");
     vi.advanceTimersByTime(DEBOUNCE_MS - 1000); // scene-1 だけ満了
+    vi.advanceTimersByTime(17);
     expect(mockInvoke).toHaveBeenCalledTimes(1);
     expect(mockInvoke).toHaveBeenCalledWith("semantic_index_scene", {
       sceneId: "scene-1",
     });
+    await Promise.resolve();
+    await Promise.resolve();
     vi.advanceTimersByTime(1000); // scene-2 もそろそろ満了
     expect(mockInvoke).toHaveBeenCalledTimes(2);
     expect(mockInvoke).toHaveBeenLastCalledWith("semantic_index_scene", {
       sceneId: "scene-2",
     });
+  });
+
+  it("does not wait for one scene's async indexing before launching another", () => {
+    let finishFirst: (() => void) | undefined;
+    mockInvoke
+      .mockImplementationOnce(
+        () =>
+          new Promise<number>((resolve) => {
+            finishFirst = () => resolve(1);
+          }),
+      )
+      .mockResolvedValue(1);
+
+    scheduleSceneIndex("scene-1");
+    scheduleSceneIndex("scene-2");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    vi.advanceTimersByTime(17);
+    vi.advanceTimersByTime(17);
+
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(mockInvoke).toHaveBeenCalledWith("semantic_index_scene", {
+      sceneId: "scene-1",
+    });
+    expect(mockInvoke).toHaveBeenLastCalledWith("semantic_index_scene", {
+      sceneId: "scene-2",
+    });
+    finishFirst?.();
   });
 
   it("cancelSceneIndex prevents the pending fire", () => {
@@ -103,9 +135,11 @@ describe("semantic-search/scheduler", () => {
     scheduleSceneIndex("scene-2");
     expect(_pendingCount()).toBe(2);
     vi.advanceTimersByTime(DEBOUNCE_MS);
-    // Simultaneously due editor analysis starts one task per tick.
+    // Simultaneously due background work starts one task per frame.
+    expect(_pendingCount()).toBe(2);
+    vi.advanceTimersByTime(17);
     expect(_pendingCount()).toBe(1);
-    vi.advanceTimersByTime(1);
+    vi.advanceTimersByTime(17);
     expect(_pendingCount()).toBe(0);
   });
 
@@ -161,6 +195,8 @@ describe("semantic-search/scheduler", () => {
     scheduleCodexIndex("codex-1");
     expect(_pendingCount()).toBe(2);
     vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(_pendingCount()).toBe(1);
+    vi.advanceTimersByTime(17);
     expect(_pendingCount()).toBe(0);
     expect(mockInvoke).toHaveBeenCalledWith("semantic_index_scene", {
       sceneId: "scene-1",
@@ -213,6 +249,8 @@ describe("semantic-search/scheduler", () => {
     scheduleChatIndex("msg-1");
     expect(_pendingCount()).toBe(3);
     vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(_pendingCount()).toBe(1);
+    vi.advanceTimersByTime(17);
     expect(_pendingCount()).toBe(0);
     expect(mockInvoke).toHaveBeenCalledWith("chat_index_message", {
       messageId: "msg-1",

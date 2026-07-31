@@ -8,6 +8,7 @@ import {
   evaluateRuntimePerformance,
   extractAutosaveMetrics,
   extractInteractionFrameMetrics,
+  formatRuntimeBudgetReport,
 } from "./runtime-performance-budget.mjs";
 import {
   RUNTIME_PERFORMANCE_FIXTURE,
@@ -16,6 +17,18 @@ import {
   measureRuntimeEditorSerializedBytesAfterInput,
 } from "../electron/scripts/runtime-performance-fixture.mjs";
 import { appMemoryMeasurement } from "../electron/scripts/process-memory.mjs";
+
+function passingLongTaskSample() {
+  return {
+    durationMs: 100,
+    longtask: { count: 0, totalMs: 0, maxMs: 0 },
+    longTaskEntries: [],
+    slowEvent: { count: 0, p95Ms: 0, maxMs: 0 },
+    topMarks: [],
+    markStats: [],
+    counters: {},
+  };
+}
 
 function passingMetrics(fixture = RUNTIME_PERFORMANCE_FIXTURE) {
   return {
@@ -35,6 +48,9 @@ function passingMetrics(fixture = RUNTIME_PERFORMANCE_FIXTURE) {
       mapEdgeCount: fixture.mapEdgeCount,
       chatMessageCount: fixture.chatMessageCount,
       chatSessionId: fixture.chatSessionId,
+      autosaveSampleSceneIds: fixture.autosaveSampleScenes.map(
+        (scene) => scene.id,
+      ),
       editorInputSceneId: fixture.sceneId,
       autosaveSceneId: fixture.sceneId,
       editorInputTargetVerified: true,
@@ -92,6 +108,11 @@ function passingMetrics(fixture = RUNTIME_PERFORMANCE_FIXTURE) {
       },
     },
     longTask: { count: 0, maxMs: 0 },
+    performanceSamples: {
+      initialAutosave: Array.from({ length: 3 }, passingLongTaskSample),
+      steadyStateAutosave: Array.from({ length: 3 }, passingLongTaskSample),
+      postSaveDrain: Array.from({ length: 3 }, passingLongTaskSample),
+    },
     interactions: {
       treeFilter: {
         targetVerified: true,
@@ -172,6 +193,106 @@ test("runtime performance budgets accept a complete passing sample", () => {
   assert.equal(
     result.checks.every((check) => check.ok),
     true,
+  );
+});
+
+test("long-task samples accept two of three at 75ms while retaining the outlier", () => {
+  const metrics = passingMetrics();
+  // The former single-session count cap is not meaningful after expanding the
+  // same-process gate to independent samples. Completeness, target pass count,
+  // and the catastrophic max own the decision instead.
+  metrics.longTask.count = 99;
+  metrics.performanceSamples.initialAutosave[0].longtask = {
+    count: 1,
+    totalMs: 84,
+    maxMs: 84,
+  };
+  metrics.performanceSamples.initialAutosave[0].longTaskEntries = [
+    {
+      startTime: 10,
+      duration: 84,
+      overlappingMarks: [
+        {
+          label: "editor.autoRevision.insert",
+          start: 12,
+          duration: 22,
+        },
+      ],
+      unattributedMs: 62,
+    },
+  ];
+
+  const result = evaluateRuntimePerformance(metrics);
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.checks.some((check) => check.name === "longTask.count"),
+    false,
+  );
+  assert.equal(
+    result.checks.find(
+      (check) =>
+        check.name === "performanceSamples.initialAutosave.targetPassCount",
+    )?.actual,
+    2,
+  );
+});
+
+test("long-task samples reject a catastrophic outlier and print attribution", () => {
+  const metrics = passingMetrics();
+  metrics.performanceSamples.postSaveDrain[2].longtask = {
+    count: 1,
+    totalMs: 91,
+    maxMs: 91,
+  };
+  metrics.performanceSamples.postSaveDrain[2].longTaskEntries = [
+    {
+      startTime: 20,
+      duration: 91,
+      overlappingMarks: [
+        {
+          label: "editor.postSave.bodyMention",
+          start: 24,
+          duration: 41,
+        },
+      ],
+      unattributedMs: 50,
+    },
+  ];
+
+  const result = evaluateRuntimePerformance(metrics);
+  const report = formatRuntimeBudgetReport(result);
+
+  assert.equal(result.ok, false);
+  assert.match(report, /FAIL longTask\.maxMs: 91ms \(postSaveDrain\)/);
+  assert.match(report, /editor\.postSave\.bodyMention 41ms/);
+  assert.match(report, /unattributed: 50ms/);
+});
+
+test("long-task evidence rejects an entry without attribution fields", () => {
+  const metrics = passingMetrics();
+  metrics.performanceSamples.initialAutosave[0].longtask = {
+    count: 1,
+    totalMs: 60,
+    maxMs: 60,
+  };
+  metrics.performanceSamples.initialAutosave[0].longTaskEntries = [
+    {
+      startTime: 20,
+      duration: 60,
+    },
+  ];
+
+  const result = evaluateRuntimePerformance(metrics);
+
+  assert.equal(result.ok, false);
+  assert.equal(
+    result.checks.find(
+      (check) =>
+        check.name ===
+        "performanceSamples.initialAutosave.evidenceComplete",
+    )?.actual,
+    false,
   );
 });
 

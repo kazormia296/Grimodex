@@ -17,18 +17,17 @@
 
 type MarkRecord = { label: string; start: number; duration: number };
 
-type SessionState = {
-  startedAt: number;
-  longtasks: { startTime: number; duration: number }[];
-  slowEvents: { duration: number }[];
-  marks: MarkRecord[];
-  counters: Map<string, number>;
-  eventObserver: PerformanceObserver | null;
-};
+export interface LongTaskEvidence {
+  startTime: number;
+  duration: number;
+  overlappingMarks: MarkRecord[];
+  unattributedMs: number;
+}
 
-export type PerfSessionResult = {
+export interface PerfSessionMetrics {
   durationMs: number;
   longtask: { count: number; totalMs: number; maxMs: number };
+  longTaskEntries: LongTaskEvidence[];
   // Slow events are events whose `duration` exceeds 16ms (one frame) per the
   // Event Timing API. This is NOT "p95 of every keystroke" — it is "p95 of
   // events that already exceeded one frame". Below the threshold the API
@@ -45,7 +44,28 @@ export type PerfSessionResult = {
     maxMs: number;
   }[];
   counters: Record<string, number>;
+}
+
+type SessionState = {
+  startedAt: number;
+  longtasks: { startTime: number; duration: number }[];
+  slowEvents: { duration: number }[];
+  marks: MarkRecord[];
+  counters: Map<string, number>;
+  eventObserver: PerformanceObserver | null;
+  segments: Record<string, PerfSessionMetrics>;
+  segmentCursor: {
+    startedAt: number;
+    longtaskIndex: number;
+    slowEventIndex: number;
+    markIndex: number;
+    counters: Map<string, number>;
+  };
 };
+
+export interface PerfSessionResult extends PerfSessionMetrics {
+  segments: Record<string, PerfSessionMetrics>;
+}
 
 const STORAGE_KEY = "grimodex.perfLog";
 const MAX_MARKS = 300;
@@ -269,12 +289,79 @@ function collectEventEntries(
   }
 }
 
+function findOverlappingMarks(
+  longtask: { startTime: number; duration: number },
+  marks: readonly MarkRecord[],
+): Array<MarkRecord & { overlapMs: number }> {
+  const longtaskEnd = longtask.startTime + longtask.duration;
+  return marks.flatMap((mark) => {
+    const overlapMs =
+      Math.min(mark.start + mark.duration, longtaskEnd) -
+      Math.max(mark.start, longtask.startTime);
+    return overlapMs > 0 ? [{ ...mark, overlapMs }] : [];
+  });
+}
+
+function coveredLongTaskMs(
+  longtask: { startTime: number; duration: number },
+  overlaps: readonly (MarkRecord & { overlapMs: number })[],
+): number {
+  const longtaskEnd = longtask.startTime + longtask.duration;
+  const intervals = overlaps
+    .map((mark) => ({
+      start: Math.max(mark.start, longtask.startTime),
+      end: Math.min(mark.start + mark.duration, longtaskEnd),
+    }))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  let coveredMs = 0;
+  let coveredUntil = longtask.startTime;
+  for (const interval of intervals) {
+    if (interval.end <= coveredUntil) continue;
+    coveredMs += interval.end - Math.max(interval.start, coveredUntil);
+    coveredUntil = interval.end;
+  }
+  return Math.min(longtask.duration, coveredMs);
+}
+
+/**
+ * Build durable attribution for one Long Task API entry.
+ *
+ * `unattributedMs` uses the union of every overlapping mark, so nested marks
+ * cannot double-count coverage. Only the ten strongest overlaps are persisted
+ * to keep runtime artifacts bounded.
+ */
+export function buildLongTaskEvidence(
+  longtask: { startTime: number; duration: number },
+  marks: readonly MarkRecord[],
+): LongTaskEvidence {
+  const overlaps = findOverlappingMarks(longtask, marks);
+  const overlappingMarks = overlaps
+    .sort(
+      (left, right) =>
+        right.overlapMs - left.overlapMs ||
+        right.duration - left.duration ||
+        left.start - right.start,
+    )
+    .slice(0, 10)
+    .map(({ label, start, duration }) => ({ label, start, duration }));
+  return {
+    startTime: longtask.startTime,
+    duration: longtask.duration,
+    overlappingMarks,
+    unattributedMs: Math.max(
+      0,
+      longtask.duration - coveredLongTaskMs(longtask, overlaps),
+    ),
+  };
+}
+
 function attributeLongtaskToConsole(entry: PerformanceEntry): void {
   const ltStart = entry.startTime;
   const ltEnd = ltStart + entry.duration;
   const now = performance.now();
-  const overlap = recentMarks.filter(
-    (m) => m.start + m.duration >= ltStart && m.start <= ltEnd,
+  const overlap = findOverlappingMarks(
+    { startTime: entry.startTime, duration: entry.duration },
+    recentMarks,
   );
 
   // Aggregate by label so 16 GridSceneCard renders show as one line
@@ -385,7 +472,16 @@ export function startPerfSession(): void {
     marks: [],
     counters: new Map(),
     eventObserver: null,
+    segments: {},
+    segmentCursor: {
+      startedAt: 0,
+      longtaskIndex: 0,
+      slowEventIndex: 0,
+      markIndex: 0,
+      counters: new Map(),
+    },
   };
+  next.segmentCursor.startedAt = next.startedAt;
   animationFrameTimestamps.clear();
   ensureLongtaskObserver();
   if (typeof PerformanceObserver !== "undefined") {
@@ -415,19 +511,23 @@ function flushPerfSessionObservers(s: SessionState): void {
   }
 }
 
-function summarizePerfSession(
-  s: SessionState,
+function summarizePerfWindow(
+  startedAt: number,
+  longtasks: readonly { startTime: number; duration: number }[],
+  slowEvents: readonly { duration: number }[],
+  marks: readonly MarkRecord[],
+  counters: ReadonlyMap<string, number>,
   sampledAt: number,
-): PerfSessionResult {
-  const ltCount = s.longtasks.length;
+): PerfSessionMetrics {
+  const ltCount = longtasks.length;
   let ltTotal = 0;
   let ltMax = 0;
-  for (const lt of s.longtasks) {
+  for (const lt of longtasks) {
     ltTotal += lt.duration;
     if (lt.duration > ltMax) ltMax = lt.duration;
   }
 
-  const evDurations = s.slowEvents.map((e) => e.duration).sort((a, b) => a - b);
+  const evDurations = slowEvents.map((e) => e.duration).sort((a, b) => a - b);
   const evCount = evDurations.length;
   const evMax = evCount ? evDurations[evCount - 1] : 0;
   const evP95 = evCount
@@ -435,7 +535,7 @@ function summarizePerfSession(
     : 0;
 
   const byLabel = new Map<string, number[]>();
-  for (const m of s.marks) {
+  for (const m of marks) {
     const durations = byLabel.get(m.label) ?? [];
     durations.push(m.duration);
     byLabel.set(m.label, durations);
@@ -467,13 +567,69 @@ function summarizePerfSession(
     .map(({ label, totalMs, count }) => ({ label, totalMs, count }));
 
   return {
-    durationMs: sampledAt - s.startedAt,
+    durationMs: sampledAt - startedAt,
     longtask: { count: ltCount, totalMs: ltTotal, maxMs: ltMax },
+    longTaskEntries: longtasks.map((longtask) =>
+      buildLongTaskEvidence(longtask, marks),
+    ),
     slowEvent: { count: evCount, p95Ms: evP95, maxMs: evMax },
     topMarks,
     markStats,
-    counters: Object.fromEntries(s.counters),
+    counters: Object.fromEntries(counters),
   };
+}
+
+function summarizePerfSession(
+  s: SessionState,
+  sampledAt: number,
+): PerfSessionResult {
+  return {
+    ...summarizePerfWindow(
+      s.startedAt,
+      s.longtasks,
+      s.slowEvents,
+      s.marks,
+      s.counters,
+      sampledAt,
+    ),
+    segments: { ...s.segments },
+  };
+}
+
+/**
+ * Close the current named segment while leaving the overall session active.
+ * Segment counters are deltas. Max-style counters remain overall diagnostics
+ * and should not be interpreted as per-segment maxima.
+ */
+export function checkpointPerfSession(
+  label: string,
+): PerfSessionMetrics | null {
+  const s = session;
+  if (!s || !label) return null;
+  flushPerfSessionObservers(s);
+  const sampledAt = performance.now();
+  const counters = new Map<string, number>();
+  for (const [name, value] of s.counters) {
+    const delta = value - (s.segmentCursor.counters.get(name) ?? 0);
+    if (delta !== 0) counters.set(name, delta);
+  }
+  const segment = summarizePerfWindow(
+    s.segmentCursor.startedAt,
+    s.longtasks.slice(s.segmentCursor.longtaskIndex),
+    s.slowEvents.slice(s.segmentCursor.slowEventIndex),
+    s.marks.slice(s.segmentCursor.markIndex),
+    counters,
+    sampledAt,
+  );
+  s.segments[label] = segment;
+  s.segmentCursor = {
+    startedAt: sampledAt,
+    longtaskIndex: s.longtasks.length,
+    slowEventIndex: s.slowEvents.length,
+    markIndex: s.marks.length,
+    counters: new Map(s.counters),
+  };
+  return segment;
 }
 
 /**
@@ -504,6 +660,7 @@ declare global {
     enablePerfLog?: () => void;
     disablePerfLog?: () => void;
     startPerfSession?: () => void;
+    checkpointPerfSession?: (label: string) => PerfSessionMetrics | null;
     snapshotPerfSession?: () => PerfSessionResult | null;
     endPerfSession?: () => PerfSessionResult | null;
     invokeRuntimePerformanceControl?: (
@@ -518,6 +675,7 @@ if (typeof window !== "undefined") {
   window.enablePerfLog = enablePerfLog;
   window.disablePerfLog = disablePerfLog;
   window.startPerfSession = startPerfSession;
+  window.checkpointPerfSession = checkpointPerfSession;
   window.snapshotPerfSession = snapshotPerfSession;
   window.endPerfSession = endPerfSession;
   if (runtimePerformanceOwnerToken) {

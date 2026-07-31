@@ -8,6 +8,7 @@ import {
 } from "@/db/schema";
 import { eq, and, desc, sql, inArray, isNotNull } from "drizzle-orm";
 import type { ContentVersion } from "@/db/schema";
+import { markEnd, markStart } from "@/lib/perfLog";
 
 export type EntityType = "scene" | "note" | "codex_entry" | "snippet";
 export type SnapshotType = "auto" | "manual";
@@ -43,7 +44,13 @@ export async function createRevision(params: {
   const { entityType, entityId, content, snapshotType } = params;
 
   // Skip if content is identical to latest revision
-  const latest = await getLatestRevisionContent(entityType, entityId);
+  markStart("editor.autoRevision.lookupLatest");
+  let latest: string | null;
+  try {
+    latest = await getLatestRevisionContent(entityType, entityId);
+  } finally {
+    markEnd("editor.autoRevision.lookupLatest");
+  }
   if (latest === content) return null;
 
   // 採番は INSERT 内のサブクエリで原子的に行う。JS 側で max+1 を先読みすると
@@ -51,23 +58,29 @@ export async function createRevision(params: {
   // (entity_type, entity_id, version_number) 衝突になり、リビジョンが
   // 保存されない (実機で auto-revision が全滅していた)。
   const now = new Date().toISOString();
-  const rows = await db
-    .insert(contentVersions)
-    .values({
-      id: crypto.randomUUID(),
-      entityType,
-      entityId,
-      content,
-      versionNumber: sql<number>`(
-        select coalesce(max(${contentVersions.versionNumber}), 0) + 1
-        from ${contentVersions}
-        where ${contentVersions.entityType} = ${entityType}
-          and ${contentVersions.entityId} = ${entityId}
-      )`,
-      snapshotType,
-      createdAt: now,
-    })
-    .returning();
+  markStart("editor.autoRevision.insert");
+  let rows: ContentVersion[];
+  try {
+    rows = await db
+      .insert(contentVersions)
+      .values({
+        id: crypto.randomUUID(),
+        entityType,
+        entityId,
+        content,
+        versionNumber: sql<number>`(
+          select coalesce(max(${contentVersions.versionNumber}), 0) + 1
+          from ${contentVersions}
+          where ${contentVersions.entityType} = ${entityType}
+            and ${contentVersions.entityId} = ${entityId}
+        )`,
+        snapshotType,
+        createdAt: now,
+      })
+      .returning();
+  } finally {
+    markEnd("editor.autoRevision.insert");
+  }
   return rows[0];
 }
 

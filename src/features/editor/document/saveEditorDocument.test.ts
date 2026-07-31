@@ -8,6 +8,12 @@ import {
 import type { LoadedEditorBinding } from "./types";
 import type { VersionedSaveOutcome } from "@/lib/saveOutcome";
 
+const persistedSceneBody = {
+  contentJson: '{"type":"doc","content":[]}',
+  contentVersion: 9,
+  contentUpdatedAt: "2026-07-31T00:00:00.000Z",
+};
+
 function makeDoc(): ProseMirrorNode {
   return {
     toJSON: () => ({ type: "doc", content: [] }),
@@ -25,7 +31,7 @@ function makeServices(
   serializeSnippet: ReturnType<typeof vi.fn>;
 } {
   return {
-    persistSceneBody: vi.fn().mockResolvedValue(undefined),
+    persistSceneBody: vi.fn().mockResolvedValue(persistedSceneBody),
     updateCodexPhase: vi.fn().mockResolvedValue({ version: 5 }),
     updateCodexText: vi.fn().mockResolvedValue({ persisted: true, version: 4 }),
     updateSnippet: vi.fn().mockResolvedValue(snippetResult),
@@ -63,6 +69,7 @@ describe("saveEditorDocument", () => {
       expect(services.updateCodexText).not.toHaveBeenCalled();
       expect(services.updateSnippet).not.toHaveBeenCalled();
       expect(result.binding).toEqual(binding);
+      expect(result.persistedSceneBody).toEqual(persistedSceneBody);
     },
   );
 

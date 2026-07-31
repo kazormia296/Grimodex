@@ -10,6 +10,7 @@ import {
   cancelEditorAnalysisTask,
   scheduleEditorAnalysisTask,
 } from "@/lib/editorAnalysisScheduler";
+import { markEnd, markStart, recordCounter } from "@/lib/perfLog";
 
 /**
  * シーン保存後にデバウンス付きでセマンティックインデックスを走らせるスケジューラ。
@@ -39,23 +40,31 @@ function sceneTaskKey(sceneId: string): string {
 export function scheduleSceneIndex(sceneId: string): void {
   if (!sceneId) return;
   sceneTaskIds.add(sceneId);
+  recordCounter("editor.postSave.semantic.scheduled");
   scheduleEditorAnalysisTask({
     key: sceneTaskKey(sceneId),
     kind: "semantic",
     delayMs: INDEX_DEBOUNCE_MS,
-    run: async () => {
+    run: () => {
       sceneTaskIds.delete(sceneId);
-      try {
-        await semanticIndexScene(sceneId);
-      } catch (e) {
-        // model 不在 / workspace 未オープン等は dev で通常発生する。
-        // 静かに debugLog にだけ残す (ユーザー UI には出さない)。
-        debugLog.warn(
-          "semantic-search",
-          `semantic_index_scene failed: ${sceneId}`,
-          errorDetail(e),
-        );
-      }
+      recordCounter("editor.postSave.semantic.started");
+      markStart("editor.postSave.semantic.launch");
+      const indexing = semanticIndexScene(sceneId);
+      markEnd("editor.postSave.semantic.launch");
+      return indexing
+        .then(() => undefined)
+        .catch((e) => {
+          // model 不在 / workspace 未オープン等は dev で通常発生する。
+          // 静かに debugLog にだけ残す (ユーザー UI には出さない)。
+          debugLog.warn(
+            "semantic-search",
+            `semantic_index_scene failed: ${sceneId}`,
+            errorDetail(e),
+          );
+        })
+        .finally(() => {
+          recordCounter("editor.postSave.semantic.settled");
+        });
     },
   });
 }

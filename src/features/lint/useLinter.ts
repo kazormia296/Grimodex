@@ -144,17 +144,34 @@ export function useLinter(
   // Push diagnostics → editor decorations whenever they change.
   useEffect(() => {
     if (!isEditorViewReady(editor)) return;
-    const view = editor.view;
-    const tr = view.state.tr.setMeta(lintDecorationKey, {
-      type: "lintDecoration/set",
-      diagnostics,
+    const projectionKey = `${schedulerKey}:projection`;
+    scheduleEditorAnalysisTask({
+      key: projectionKey,
+      kind: "lint",
+      delayMs: 0,
+      run: () => {
+        if (!isEditorViewReady(editor)) return;
+        markStart("linter.resultProjection");
+        try {
+          const view = editor.view;
+          const tr = view.state.tr.setMeta(lintDecorationKey, {
+            type: "lintDecoration/set",
+            diagnostics,
+          });
+          view.dispatch(tr);
+        } finally {
+          markEnd("linter.resultProjection");
+        }
+      },
     });
-    view.dispatch(tr);
     // Build a fresh DecorationSet in case the editor was idle during the
     // store update. buildLintDecorations is invoked here only for type
     // retention; the plugin itself rebuilds from the meta payload.
     void buildLintDecorations;
-  }, [editor, diagnostics]);
+    return () => {
+      cancelEditorAnalysisTask(projectionKey);
+    };
+  }, [editor, diagnostics, schedulerKey]);
 
   // Debounced lint driver.
   useEffect(() => {

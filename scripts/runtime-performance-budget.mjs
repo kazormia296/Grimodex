@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   RUNTIME_PERFORMANCE_FIXTURE,
+  RUNTIME_PERFORMANCE_AUTOSAVE_SAMPLE_COUNT,
   buildRuntimePerformanceFixtureForReview,
   measureRuntimeEditorSerializedBytesAfterInput,
 } from "../electron/scripts/runtime-performance-fixture.mjs";
@@ -25,8 +26,10 @@ const BASE_RUNTIME_BUDGETS = Object.freeze({
   timelinePeakMemoryBytes: 2_500_000_000,
   linearPeakMemoryBytes: 2_500_000_000,
   chatPeakMemoryBytes: 2_500_000_000,
-  longTaskCount: 2,
   longTaskMaxMs: 75,
+  longTaskCatastrophicMaxMs: 90,
+  longTaskSampleCount: RUNTIME_PERFORMANCE_AUTOSAVE_SAMPLE_COUNT,
+  longTaskMinimumPassingSamples: 2,
   treeFilterLongTaskCount: 0,
   treeFilterLongTaskMaxMs: 50,
   linearMaxVisibleRects: 64,
@@ -95,8 +98,10 @@ export function buildExpectedRuntimeActualCardinality(
   return Object.freeze({
     textChars: fixture.seededTextChars,
     beatCount: fixture.seededBeatCount,
-    treeNodeCount: fixture.collectionSceneCount + 2,
-    sceneCount: fixture.collectionSceneCount + 1,
+    treeNodeCount:
+      fixture.collectionSceneCount + fixture.autosaveExtraSceneCount + 2,
+    sceneCount:
+      fixture.collectionSceneCount + fixture.autosaveExtraSceneCount + 1,
     threadCount: fixture.timelineThreadCount,
     markerLinkCount: fixture.timelineMarkerLinkCount,
     eventCount: fixture.chronicleEventCount,
@@ -263,6 +268,58 @@ export function extractInteractionFrameMetrics(
   };
 }
 
+const LONG_TASK_SAMPLE_SCENARIOS = Object.freeze([
+  "initialAutosave",
+  "steadyStateAutosave",
+  "postSaveDrain",
+]);
+
+function summarizeLongTaskScenario(samples, budgets) {
+  const safeSamples = Array.isArray(samples) ? samples : [];
+  const targetPassCount = safeSamples.filter(
+    (sample) =>
+      finite(sample?.longtask?.maxMs) &&
+      sample.longtask.maxMs <= budgets.longTaskMaxMs,
+  ).length;
+  const catastrophicMaxMs = safeSamples.reduce(
+    (maximum, sample) =>
+      finite(sample?.longtask?.maxMs)
+        ? Math.max(maximum, sample.longtask.maxMs)
+        : Number.POSITIVE_INFINITY,
+    0,
+  );
+  const evidenceComplete = safeSamples.every(
+    (sample) =>
+      Number.isInteger(sample?.longtask?.count) &&
+      Array.isArray(sample?.longTaskEntries) &&
+      sample.longTaskEntries.length === sample.longtask.count &&
+      sample.longTaskEntries.every(
+        (entry) =>
+          finite(entry?.startTime) &&
+          finite(entry?.duration) &&
+          entry.duration >= 0 &&
+          Array.isArray(entry?.overlappingMarks) &&
+          entry.overlappingMarks.every(
+            (mark) =>
+              typeof mark?.label === "string" &&
+              mark.label.length > 0 &&
+              finite(mark?.start) &&
+              finite(mark?.duration) &&
+              mark.duration >= 0,
+          ) &&
+          finite(entry?.unattributedMs) &&
+          entry.unattributedMs >= 0 &&
+          entry.unattributedMs <= entry.duration,
+      ),
+  );
+  return {
+    sampleCount: safeSamples.length,
+    targetPassCount,
+    catastrophicMaxMs,
+    evidenceComplete,
+  };
+}
+
 export function evaluateRuntimePerformance(
   metrics,
   budgets = DEFAULT_RUNTIME_BUDGETS,
@@ -271,6 +328,15 @@ export function evaluateRuntimePerformance(
   const requires = (scenario) =>
     expectedFixture.reviewScenario === null ||
     expectedFixture.reviewScenario === scenario;
+  const longTaskScenarios = Object.fromEntries(
+    LONG_TASK_SAMPLE_SCENARIOS.map((scenario) => [
+      scenario,
+      summarizeLongTaskScenario(
+        metrics.performanceSamples?.[scenario],
+        budgets,
+      ),
+    ]),
+  );
   const exactCheckInputs = [
     ["fixture.id", metrics.fixture?.id, expectedFixture.id],
     [
@@ -340,6 +406,13 @@ export function evaluateRuntimePerformance(
       expectedFixture.chatSessionId,
     ],
     [
+      "fixture.autosaveSampleSceneIds",
+      JSON.stringify(metrics.fixture?.autosaveSampleSceneIds),
+      JSON.stringify(
+        expectedFixture.autosaveSampleScenes.map((scene) => scene.id),
+      ),
+    ],
+    [
       "fixture.editorInputSceneId",
       metrics.fixture?.editorInputSceneId,
       expectedFixture.sceneId,
@@ -370,6 +443,20 @@ export function evaluateRuntimePerformance(
       budgets.autosaveDbTransactionCount,
     ],
   ];
+  for (const scenario of LONG_TASK_SAMPLE_SCENARIOS) {
+    exactCheckInputs.push(
+      [
+        `performanceSamples.${scenario}.sampleCount`,
+        longTaskScenarios[scenario].sampleCount,
+        budgets.longTaskSampleCount,
+      ],
+      [
+        `performanceSamples.${scenario}.evidenceComplete`,
+        longTaskScenarios[scenario].evidenceComplete,
+        true,
+      ],
+    );
+  }
   const memoryPlatform = metrics.memory?.platform;
   const expectedMemoryMeasurement =
     APP_MEMORY_MEASUREMENT_BY_PLATFORM[memoryPlatform] ?? null;
@@ -612,9 +699,14 @@ export function evaluateRuntimePerformance(
       budgets.startupMemoryBytes,
     ],
     ["memory.peakBytes", metrics.memory?.peakBytes, budgets.peakMemoryBytes],
-    ["longTask.count", metrics.longTask?.count, budgets.longTaskCount],
-    ["longTask.maxMs", metrics.longTask?.maxMs, budgets.longTaskMaxMs],
   ];
+  for (const scenario of LONG_TASK_SAMPLE_SCENARIOS) {
+    budgetCheckInputs.push([
+      `performanceSamples.${scenario}.catastrophicMaxMs`,
+      longTaskScenarios[scenario].catastrophicMaxMs,
+      budgets.longTaskCatastrophicMaxMs,
+    ]);
+  }
   if (requires("map")) {
     budgetCheckInputs.push([
       "memory.peakByViewBytes.map",
@@ -742,7 +834,11 @@ export function evaluateRuntimePerformance(
     ok: finite(actual) && actual <= max,
     missing: !finite(actual),
   }));
-  const minimumCheckInputs = [];
+  const minimumCheckInputs = LONG_TASK_SAMPLE_SCENARIOS.map((scenario) => [
+    `performanceSamples.${scenario}.targetPassCount`,
+    longTaskScenarios[scenario].targetPassCount,
+    budgets.longTaskMinimumPassingSamples,
+  ]);
   if (requires("treeGrid")) {
     minimumCheckInputs.push([
       "interactions.treeFilter.derivationCount",
@@ -837,23 +933,57 @@ export function evaluateRuntimePerformance(
   return {
     ok: checks.every((check) => check.ok),
     checks,
+    longTaskSamples: metrics.performanceSamples ?? null,
   };
 }
 
 export function formatRuntimeBudgetReport(result) {
-  return result.checks
-    .map((check) => {
-      const status = check.ok ? "PASS" : "FAIL";
-      const actual = check.missing ? "missing" : check.actual;
-      const expectation =
-        "expected" in check
-          ? `expected ${check.expected}`
-          : "min" in check
-            ? `min ${check.min}`
-            : `max ${check.max}`;
-      return `[runtime-perf] ${status} ${check.name}: ${actual} (${expectation})`;
-    })
-    .join("\n");
+  const lines = result.checks.map((check) => {
+    const status = check.ok ? "PASS" : "FAIL";
+    const actual = check.missing ? "missing" : check.actual;
+    const expectation =
+      "expected" in check
+        ? `expected ${check.expected}`
+        : "min" in check
+          ? `min ${check.min}`
+          : `max ${check.max}`;
+    return `[runtime-perf] ${status} ${check.name}: ${actual} (${expectation})`;
+  });
+  const longTaskFailed = result.checks.some(
+    (check) =>
+      !check.ok &&
+      (check.name.endsWith(".targetPassCount") ||
+        check.name.endsWith(".catastrophicMaxMs")),
+  );
+  if (longTaskFailed && result.longTaskSamples) {
+    const entries = Object.entries(result.longTaskSamples).flatMap(
+      ([scenario, samples]) =>
+        (Array.isArray(samples) ? samples : []).flatMap((sample) =>
+          (sample?.longTaskEntries ?? []).map((entry) => ({
+            scenario,
+            ...entry,
+          })),
+        ),
+    );
+    const worst = entries.sort(
+      (left, right) => right.duration - left.duration,
+    )[0];
+    if (worst) {
+      lines.push(
+        `[runtime-perf] FAIL longTask.maxMs: ${worst.duration}ms (${worst.scenario})`,
+      );
+      lines.push("  overlap:");
+      if (worst.overlappingMarks.length === 0) {
+        lines.push("    none");
+      } else {
+        for (const mark of worst.overlappingMarks) {
+          lines.push(`    ${mark.label} ${mark.duration}ms`);
+        }
+      }
+      lines.push(`  unattributed: ${worst.unattributedMs}ms`);
+    }
+  }
+  return lines.join("\n");
 }
 
 export function parseRuntimeBudgetArguments(argv) {

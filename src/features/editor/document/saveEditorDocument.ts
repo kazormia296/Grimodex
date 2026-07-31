@@ -1,7 +1,10 @@
 import { DOMSerializer } from "@tiptap/pm/model";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { uiUpdateEvent } from "@/features/agent-writes/event";
-import { persistSceneBody } from "@/features/editor/persistSceneBody";
+import {
+  persistSceneBody,
+  type PersistedSceneBody,
+} from "@/features/editor/persistSceneBody";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
@@ -12,7 +15,10 @@ import { AlreadyNotifiedSaveError } from "./saveErrors";
 import type { LoadedEditorBinding } from "./types";
 
 export interface EditorDocumentServices {
-  persistSceneBody: (id: string, doc: ProseMirrorNode) => Promise<void>;
+  persistSceneBody: (
+    id: string,
+    doc: ProseMirrorNode,
+  ) => Promise<PersistedSceneBody>;
   updateCodexPhase: (
     phaseId: string,
     data: { contentOverride: string },
@@ -38,6 +44,7 @@ export interface EditorDocumentServices {
 
 export interface SaveEditorDocumentResult {
   binding: LoadedEditorBinding;
+  persistedSceneBody?: PersistedSceneBody;
 }
 
 /** Serialize with the same ProseMirror schema used by the live editor. */
@@ -81,8 +88,10 @@ export async function saveEditorDocument(
 ): Promise<SaveEditorDocumentResult> {
   switch (binding.kind) {
     case "tree":
-      await services.persistSceneBody(binding.id, doc);
-      return { binding };
+      return {
+        binding,
+        persistedSceneBody: await services.persistSceneBody(binding.id, doc),
+      };
 
     case "codex": {
       const content = JSON.stringify(doc.toJSON());
