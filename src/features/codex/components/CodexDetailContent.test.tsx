@@ -252,8 +252,7 @@ describe("CodexDetailContent draft integrity", () => {
       ...INITIAL_ENTRY,
       name: "刹那",
       aliases: '["剣聖"]',
-      readings:
-        '{"刹那":["せつな","せちな"],"剣聖":["けんせい"]}',
+      readings: '{"刹那":["せつな","せちな"],"剣聖":["けんせい"]}',
     };
     const update = vi.fn(async () => ({ persisted: true, version: 2 }));
     useCodexStore.setState({ entries: [entry], selectedEntry: entry, update });
@@ -271,8 +270,7 @@ describe("CodexDetailContent draft integrity", () => {
     expect(update).toHaveBeenCalledWith(
       entry.id,
       {
-        readings:
-          '{"刹那":["せつなあらた","せちな"],"剣聖":["けんせい"]}',
+        readings: '{"刹那":["せつなあらた","せちな"],"剣聖":["けんせい"]}',
       },
       { baseVersion: 1 },
     );

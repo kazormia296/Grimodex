@@ -2498,6 +2498,8 @@
       "placeholder": "Reading...",
       "estimate": "Estimate with AI",
       "manage": "Manage readings",
+      "heroLabel": "Primary reading",
+      "heroPlaceholder": "Add reading…",
       "auto": "Auto: {{yomi}}",
       "noSurfaces": "Set a name or aliases to add readings",
       "backfillTitle": "Bulk reading estimation",

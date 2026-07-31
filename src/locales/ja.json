@@ -2492,6 +2492,8 @@
       "placeholder": "ふりがな…",
       "estimate": "AIで推定",
       "manage": "読みを管理",
+      "heroLabel": "代表読み",
+      "heroPlaceholder": "読みを入力…",
       "auto": "自動: {{yomi}}",
       "noSurfaces": "名前や別名を設定すると読みを登録できます",
       "backfillTitle": "読みの一括推定",

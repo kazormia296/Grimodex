@@ -51,6 +51,7 @@ interface CodexEntryHeaderProps {
   tagsLoading?: boolean;
   onNameChange: (value: string) => void;
   onNameCommit: () => void;
+  onPrimaryReadingCommit: (reading: string) => void;
   onTypeChange: (type: CodexEntryType) => void;
   onIconChange: (icon: string | null) => void;
   onAliasesChange: (aliases: string[]) => void;
@@ -74,6 +75,7 @@ export function CodexEntryHeader({
   tagsLoading = false,
   onNameChange,
   onNameCommit,
+  onPrimaryReadingCommit,
   onTypeChange,
   onIconChange,
   onAliasesChange,
@@ -162,6 +164,7 @@ export function CodexEntryHeader({
             name={name}
             readings={readings}
             enabled={showReading}
+            onCommit={onPrimaryReadingCommit}
             onOpen={onOpenReadings}
           />
           {/* 計測専用: 常に BASE サイズ・1 行・max-content。可視 textarea とは独立

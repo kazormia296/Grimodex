@@ -700,6 +700,33 @@ export function CodexDetailContent({
     await persistStructuralPatch({ readings: serializeReadings(next) });
   };
 
+  const handlePrimaryReadingCommit = async (rawReading: string) => {
+    const surface = name.trim();
+    if (!surface) return;
+
+    const primary = rawReading.trim();
+    const current = readings[surface] ?? [];
+    const alternates = current
+      .slice(1)
+      .map((reading) => reading.trim())
+      .filter(
+        (reading, index, all) =>
+          reading.length > 0 &&
+          reading !== primary &&
+          all.indexOf(reading) === index,
+      );
+    const nextForSurface = primary ? [primary, ...alternates] : alternates;
+    const next = { ...readings };
+    if (nextForSurface.length > 0) {
+      next[surface] = nextForSurface;
+    } else {
+      delete next[surface];
+    }
+
+    if (serializeReadings(next) === serializeReadings(readings)) return;
+    await handleReadingsChange(next);
+  };
+
   // entry.type (slug) を表示用カテゴリラベルへ。AI 読み推定の曖昧性解消ヒント。
   const resolveCategoryLabel = useCallback((): string => {
     const ct = useCodexStore
@@ -865,6 +892,9 @@ export function CodexDetailContent({
         tagsLoading={tagsLoading}
         onNameChange={setName}
         onNameCommit={() => void handleNameBlur()}
+        onPrimaryReadingCommit={(reading) =>
+          void handlePrimaryReadingCommit(reading)
+        }
         onTypeChange={(newType) => void handleTypeChange(newType)}
         onIconChange={(newIcon) => {
           setIcon(newIcon);
