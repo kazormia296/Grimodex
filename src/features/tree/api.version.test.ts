@@ -10,12 +10,10 @@ import {
   getSceneVersion,
 } from "./api";
 
-// scene 本文 writer (saveSceneContent) の無条件 version bump を browser-mock の
-// 実 SQLite で検証する (M4: OCC version bump 配線)。
-// - bump は set への 1 キー追加のみで、WHERE への version 条件 (OCC 検査) は
-//   付けない — 保存 hot path を絶対に落とさない設計判断。
-// - 本文を書かない writer (beats のみ / preview のみ / 構造メタ updateNode) は
-//   bump しないことも同時に担保する。
+// scene 本文 writer (saveSceneContent) の version bump と、editor が渡す
+// baseVersion の OCC 検査を browser-mock の実 SQLite で検証する。
+// baseVersion を省略する headless writer は無条件保存を維持する。
+// - beats-only writer も tree_nodes aggregate の OCC version を進める。
 
 const PROJECT = "tree-version-project";
 const SCENE = "tree-version-scene";
@@ -80,14 +78,47 @@ describe("saveSceneContent version bump", () => {
     await expect(getSceneVersion(SCENE)).resolves.toBe(2);
     await expect(getSceneVersion("no-such-scene")).resolves.toBe(0);
   });
+
+  it("stale baseVersion は本文と version を変更しない", async () => {
+    const currentVersion = await getSceneVersion(SCENE);
+    await expect(
+      saveSceneContent(SCENE, {
+        content: "first",
+        baseVersion: currentVersion,
+      }),
+    ).resolves.toMatchObject({ contentVersion: currentVersion + 1 });
+
+    await expect(
+      saveSceneContent(SCENE, {
+        content: "stale",
+        baseVersion: currentVersion,
+      }),
+    ).rejects.toThrow(/conflict/i);
+    await expect(versionOf(SCENE)).resolves.toBe(currentVersion + 1);
+  });
 });
 
-describe("本文を書かない writer は version を bump しない", () => {
-  it("saveSceneBeatsOnly / savePlacedBeatPreviewOnly / updateNode", async () => {
-    await saveSceneBeatsOnly(SCENE_NO_BUMP, { unplacedBeatsDoc: "[]" });
+describe("本文を書かない writer の version 契約", () => {
+  it("saveSceneBeatsOnly は OCC version を bump し、preview-only/metadata は bump しない", async () => {
+    await saveSceneBeatsOnly(SCENE_NO_BUMP, {
+      unplacedBeatsDoc: "[]",
+      projectId: PROJECT,
+      baseVersion: 0,
+    });
     await savePlacedBeatPreviewOnly(SCENE_NO_BUMP, null);
     await updateNode(SCENE_NO_BUMP, { title: "renamed", synopsis: "s" });
-    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(0);
+    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(1);
+  });
+
+  it("saveSceneBeatsOnly は stale baseVersion を拒否する", async () => {
+    await expect(
+      saveSceneBeatsOnly(SCENE_NO_BUMP, {
+        unplacedBeatsDoc: "[1]",
+        projectId: PROJECT,
+        baseVersion: 0,
+      }),
+    ).rejects.toThrow(/conflict/i);
+    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(1);
   });
 
   it("同一millisecondの連続metadata writeにも単調増加するISO OCC tokenを付ける", async () => {

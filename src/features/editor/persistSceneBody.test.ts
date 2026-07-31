@@ -83,6 +83,7 @@ const h = vi.hoisted(() => ({
   recordCounter: vi.fn(),
   recordSerializedByteCounter: vi.fn(),
   publishTreeNodeMutation: vi.fn(),
+  nextTreeNodeMutationTimestamp: vi.fn(() => "2026-07-28T00:00:00.000Z"),
 }));
 
 vi.mock("@/lib/perfLog", () => ({
@@ -184,6 +185,7 @@ vi.mock("@/features/matrix/matrixDataVersion", () => ({
   bumpMatrixDataVersion: h.bumpMatrixDataVersion,
 }));
 vi.mock("@/lib/treeNodeMutationRegistry", () => ({
+  nextTreeNodeMutationTimestamp: h.nextTreeNodeMutationTimestamp,
   publishTreeNodeMutation: h.publishTreeNodeMutation,
 }));
 
@@ -283,7 +285,10 @@ describe("persistSceneBody — DB-native scene", () => {
 
     expect(toJSON).toHaveBeenCalledOnce();
     expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
-      expect.objectContaining({ contentJson: JSON.stringify(DOC_JSON) }),
+      expect.objectContaining({
+        contentJson: JSON.stringify(DOC_JSON),
+        updatedAt: expect.any(String),
+      }),
     );
     expect(persisted).toEqual({
       contentJson: JSON.stringify(DOC_JSON),
@@ -306,6 +311,7 @@ describe("persistSceneBody — DB-native scene", () => {
         includeSidecars: true,
         contentJson: JSON.stringify(DOC_JSON),
         charCount: 42,
+        updatedAt: expect.any(String),
       }),
     );
     expect(h.saveSceneContent).not.toHaveBeenCalled();
@@ -339,6 +345,18 @@ describe("persistSceneBody — DB-native scene", () => {
     expect(h.refreshAiRatio).not.toHaveBeenCalled();
   });
 
+  it("forwards the loaded OCC version through the browser fallback", async () => {
+    await persistSceneBody("scene-1", fakeDoc, { baseVersion: 7 });
+
+    expect(h.saveSceneContent).toHaveBeenCalledWith("scene-1", {
+      content: JSON.stringify(DOC_JSON),
+      unplacedBeatsDoc: "[]",
+      charCount: 42,
+      updatedAt: "2026-07-28T00:00:00.000Z",
+      baseVersion: 7,
+    });
+  });
+
   it("saves content with serialized doc JSON + char count", async () => {
     await persistSceneBody("scene-1", fakeDoc);
     expect(h.saveSceneContent).toHaveBeenCalledTimes(1);
@@ -346,6 +364,7 @@ describe("persistSceneBody — DB-native scene", () => {
       content: JSON.stringify(DOC_JSON),
       unplacedBeatsDoc: "[]",
       charCount: 42,
+      updatedAt: "2026-07-28T00:00:00.000Z",
     });
     expect(h.publishTreeNodeMutation).not.toHaveBeenCalled();
   });
@@ -578,6 +597,7 @@ describe("persistSceneBody — file-backed scene", () => {
       expect.objectContaining({
         sceneId: "scene-1",
         includeSidecars: false,
+        updatedAt: expect.any(String),
       }),
     );
     expect(h.saveSceneContent).not.toHaveBeenCalled();

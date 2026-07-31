@@ -41,7 +41,10 @@ import {
   type WorkspaceIdentity,
 } from "@/runtime/workspaceIdentity";
 import { publishSceneBodyCommit } from "@/lib/sceneBodyCommitRegistry";
-import { publishTreeNodeMutation } from "@/lib/treeNodeMutationRegistry";
+import {
+  nextTreeNodeMutationTimestamp,
+  publishTreeNodeMutation,
+} from "@/lib/treeNodeMutationRegistry";
 import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import { scheduleEditorAnalysisTask } from "@/lib/editorAnalysisScheduler";
@@ -58,6 +61,11 @@ export interface PersistedSceneBody {
   contentJson: string;
   contentVersion: number;
   contentUpdatedAt: string;
+}
+
+export interface PersistSceneBodyOptions {
+  /** Loaded scene version for editor OCC; omit for authoritative headless writes. */
+  baseVersion?: number;
 }
 
 interface ScheduledBodyMentionScan extends BodyMentionScanRequest {
@@ -318,6 +326,7 @@ registerQuiescenceProvider({
 export async function persistSceneBody(
   id: string,
   doc: ProseMirrorNode,
+  options: PersistSceneBodyOptions = {},
 ): Promise<PersistedSceneBody> {
   const beats = useUnplacedBeatsStore.getState().getBeats(id);
   const projectId = useTreeStore.getState().projectId;
@@ -371,6 +380,10 @@ export async function persistSceneBody(
     contentUpdatedAt,
   } = await serializeSceneWrite(id, async () => {
     markStart("editor.coreSave.invokeSave");
+    // Generate one authoritative renderer-wide tree token for both the native
+    // bundle and the browser fallback. Native must not independently sample
+    // wall clock time after the JS monotonic clock has advanced past it.
+    const contentUpdatedAt = nextTreeNodeMutationTimestamp();
     let previews: DerivedPreviews;
     if (nativeSnapshot) {
       recordCounter("editor.coreSave.domainIpc");
@@ -379,6 +392,10 @@ export async function persistSceneBody(
         sceneId: id,
         projectId,
         includeSidecars: !isFileBacked,
+        updatedAt: contentUpdatedAt,
+        ...(options.baseVersion !== undefined && {
+          baseVersion: options.baseVersion,
+        }),
       });
       recordCounter(
         "editor.coreSave.dbTransaction",
@@ -390,6 +407,10 @@ export async function persistSceneBody(
         content: sceneJsonStr,
         unplacedBeatsDoc,
         charCount,
+        updatedAt: contentUpdatedAt,
+        ...(options.baseVersion !== undefined && {
+          baseVersion: options.baseVersion,
+        }),
       });
     }
     markEnd("editor.coreSave.invokeSave");

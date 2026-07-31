@@ -1,15 +1,26 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useEditor } from "@tiptap/react";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { createEditorProjectionGuardExtension } from "@/features/editor/editorProjectionGuard";
 import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { savePlacedBeatPreviewOnly } from "@/features/tree/api";
+import {
+  getSceneVersion,
+  savePlacedBeatPreviewOnly,
+} from "@/features/tree/api";
 import { extractPlacedBeatPreview } from "@/features/editor/beat/placedBeatPreview";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
@@ -88,7 +99,10 @@ import { useCodexCompletion } from "@/features/editor/codexCompletion/useCodexCo
 import { handleZenEscapeKeyDown } from "@/features/editor/zenEscape";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
-import { shouldHandleEditorUpdate } from "@/features/editor/editorEventPolicy";
+import {
+  isInlineAiSaveBlocked,
+  shouldHandleEditorUpdate,
+} from "@/features/editor/editorEventPolicy";
 import {
   handleSceneEditorTransaction,
   type SceneBeatIndexState,
@@ -109,7 +123,10 @@ import {
   getLogicalScrollOffset,
   setLogicalScrollOffset,
 } from "@/features/editor/editorLayout";
-import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
+import {
+  rollbackInlineAiSession,
+  useInlineAiDiff,
+} from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useAgentProseStaging } from "@/features/editor/inlineAi/useAgentProseStaging";
 import {
   buildSystemPrompt as buildInlineSystemPrompt,
@@ -194,6 +211,16 @@ import {
 } from "@/features/editor/EditorPaneOverlays";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import {
+  AlreadyNotifiedSaveError,
+  INLINE_AI_SAVE_BLOCKED_MESSAGE,
+} from "@/features/editor/document/saveErrors";
+import {
+  shouldClearRetainedEditorRecoveryDraft,
+  type EditorSaveAttemptResult,
+} from "@/features/editor/document/editorSaveResult";
+import { handlePreSwitchFlushFailure } from "@/features/editor/document/editorSwitchPolicy";
 
 /** Read the vertical-mode flag at call time — scroll save/restore runs inside
  *  async effects and editor callbacks where a captured value could be stale. */
@@ -273,6 +300,7 @@ export function EditorPane({
   // Chronicle event tabs: title is loaded on demand (events have no global store).
   const [chronicleEventTitle, setChronicleEventTitle] = useState("");
   const prevSceneIdRef = useRef(nodeId);
+  const preserveCurrentLoadedDocumentRef = useRef<string | null>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   // Per-scene editor state: cursor position + scroll (session-only, no persistence).
   // scrollOffset is the logical block-axis offset (scrollTop when horizontal,
@@ -393,6 +421,18 @@ export function EditorPane({
   const [loadedInputProjectionKey, setLoadedInputProjectionKey] = useState("");
   const [loadedInputScopeKey, setLoadedInputScopeKey] = useState("");
   const loadedDocumentKeyRef = useRef<DocumentKey | null>(null);
+  const loadedCodexTabOverrideRef = useRef<string | null>(null);
+  const inputProjectionKeyRef = useRef("");
+  const inputProjectionReadyRef = useRef(false);
+  const editorWritableRef = useRef(false);
+  const inlineAiProjection = useMemo(
+    () => ({
+      keyRef: inputProjectionKeyRef,
+      readyRef: inputProjectionReadyRef,
+      writableRef: editorWritableRef,
+    }),
+    [],
+  );
   const [documentSaveSession] = useState(createDocumentSaveSession);
 
   // Trash Bin drop target: scene-editor / codex-editor / snippet-editor。
@@ -407,7 +447,11 @@ export function EditorPane({
   // editorRef.current (line ~700 で代入される) を参照しても安全。
   const trashEditorDropRef = useDropTarget(editorDropId, editorDropKind, {
     getEditor: () =>
-      loadedDocumentKeyRef.current?.id === nodeId ? editorRef.current : null,
+      editorWritableRef.current
+        ? inputProjectionReadyRef.current
+          ? editorRef.current
+          : null
+        : null,
   });
   const setPaneRef = useCallback(
     (el: HTMLDivElement | null) => {
@@ -416,6 +460,10 @@ export function EditorPane({
     },
     [trashEditorDropRef],
   );
+  const canMutateBeats = useCallback(
+    () => inputProjectionReadyRef.current && editorWritableRef.current,
+    [],
+  );
   const toolbarActionsRef = useRef<ToolbarActions | null>(null);
   const {
     sensors: beatSensors,
@@ -423,7 +471,12 @@ export function EditorPane({
     draggingBeat,
     onDragStart: handleBeatDragStart,
     onDragEnd: handleBeatDragEnd,
-  } = useBeatDragDrop({ editorRef, nodeId });
+  } = useBeatDragDrop({
+    editorRef,
+    nodeId,
+    canMutate: canMutateBeats,
+    projectionKeyRef: inputProjectionKeyRef,
+  });
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleEditingRef = useRef(false);
@@ -547,6 +600,14 @@ export function EditorPane({
     isCodexMode ? codexPhaseStructureKey : null,
     externalReloadNonce,
   ]);
+  const inputProjectionReady =
+    !isSceneContentLoading &&
+    activeLoadedDocumentKey !== null &&
+    loadedInputProjectionKey === inputTargetProjectionKey &&
+    loadedInputScopeKey === effectiveInputScopeKey;
+  inputProjectionKeyRef.current = inputTargetProjectionKey;
+  inputProjectionReadyRef.current = inputProjectionReady;
+  const inlineAiProjectionKeySeenRef = useRef("");
 
   const saveSceneIdRef = useRef(nodeId);
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
@@ -555,6 +616,7 @@ export function EditorPane({
 
   // Prevent feedback loop when applying external content sync.
   const isApplyingExternalUpdate = useRef(false);
+  const isApplyingProgrammaticProjectionUpdate = useRef(false);
   const externalUpdateDepthRef = useRef(0);
   const beginApplyingExternalUpdate = useCallback(() => {
     externalUpdateDepthRef.current += 1;
@@ -569,6 +631,14 @@ export function EditorPane({
       );
       isApplyingExternalUpdate.current = externalUpdateDepthRef.current > 0;
     };
+  }, []);
+  const runProgrammaticProjectionUpdate = useCallback((fn: () => void) => {
+    isApplyingProgrammaticProjectionUpdate.current = true;
+    try {
+      fn();
+    } finally {
+      isApplyingProgrammaticProjectionUpdate.current = false;
+    }
   }, []);
 
   // Auto-draft: true when scene was empty at load time
@@ -604,95 +674,109 @@ export function EditorPane({
     [],
   );
 
-  const saveLatestFn = useCallback(async () => {
-    const snapshot = mutationGate.captureSave();
-    const doc = editorRef.current?.state.doc;
-    if (!snapshot || !doc) {
-      // coreSave 側でも skip するが、ここで弾かないと後続の auto-revision が
-      // 未ロードの空 doc を getJSON してリビジョン履歴に書き込んでしまう
-      // (実機ログで確認: save skipped 直後に空 doc の revision insert)。
-      // dirty 解除も「保存していないのに消す」ことになるので丸ごと skip する。
-      debugLog.warn("EditorPane", "saveFn skipped: document is not loaded");
-      return false;
-    }
-    setIsSaving(true);
-    let result: Awaited<ReturnType<typeof coreSave>>;
-    try {
-      result = await coreSave(snapshot, doc);
-    } finally {
-      setIsSaving(false);
-    }
-    markStart("editor.save.durableComplete");
-    try {
-      // Persisted version always advances for the same loaded document. Edits
-      // that arrived while the write was in flight keep dirty set and will use
-      // the new baseVersion on the coalesced follow-up save.
-      if (mutationGate.commitSave(snapshot, result.binding)) {
-        setIsDirtyRef.current(false);
-        useEditorSessionStore
-          .getState()
-          .setDocumentDirty(
-            documentKeyFromBinding(result.binding),
-            false,
-            editorInstanceIdRef.current,
-          );
+  const saveLatestFn =
+    useCallback(async (): Promise<EditorSaveAttemptResult> => {
+      const snapshot = mutationGate.captureSave();
+      const doc = editorRef.current?.state.doc;
+      if (!snapshot || !doc) {
+        // coreSave 側でも skip するが、ここで弾かないと後続の auto-revision が
+        // 未ロードの空 doc を getJSON してリビジョン履歴に書き込んでしまう
+        // (実機ログで確認: save skipped 直後に空 doc の revision insert)。
+        // dirty 解除も「保存していないのに消す」ことになるので丸ごと skip する。
+        debugLog.warn("EditorPane", "saveFn skipped: document is not loaded");
+        return { persisted: false, committed: false };
       }
-      announcePersistedBinding(
-        documentKeyFromBinding(result.binding),
-        editorInstanceIdRef.current,
-        result.binding,
-      );
-    } finally {
-      markEnd("editor.save.durableComplete");
-    }
-    checkpointPerfSession("durableSave");
+      const inlineAi = useInlineAiStore.getState();
+      if (
+        isInlineAiSaveBlocked({
+          inlineAiStatus: inlineAi.status,
+          activeEditor: inlineAi.activeEditor,
+          editor: editorRef.current,
+        })
+      ) {
+        guardInlineAiPending();
+        throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
+      }
+      setIsSaving(true);
+      let result: Awaited<ReturnType<typeof coreSave>>;
+      try {
+        result = await coreSave(snapshot, doc);
+      } finally {
+        setIsSaving(false);
+      }
+      markStart("editor.save.durableComplete");
+      let committed: boolean;
+      try {
+        // Persisted version always advances for the same loaded document. Edits
+        // that arrived while the write was in flight keep dirty set and will use
+        // the new baseVersion on the coalesced follow-up save.
+        committed = mutationGate.commitSave(snapshot, result.binding);
+        if (committed) {
+          setIsDirtyRef.current(false);
+          useEditorSessionStore
+            .getState()
+            .setDocumentDirty(
+              documentKeyFromBinding(result.binding),
+              false,
+              editorInstanceIdRef.current,
+            );
+        }
+        announcePersistedBinding(
+          documentKeyFromBinding(result.binding),
+          editorInstanceIdRef.current,
+          result.binding,
+        );
+      } finally {
+        markEnd("editor.save.durableComplete");
+      }
+      checkpointPerfSession("durableSave");
 
-    // Auto-revision is non-critical and uses the exact JSON that reached the
-    // durable scene write. The scoped queue flushes before workspace switches.
-    if (
-      snapshot.binding.kind === "tree" &&
-      result.persistedSceneBody &&
-      useTreeStore.getState().projectId
-    ) {
-      const id = snapshot.binding.id;
-      const intervalMs =
-        useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
-        60 *
-        1000;
-      // Retain the historical attribution label for the former serialization
-      // stage. It should now measure only the exact-string handoff and remain
-      // near zero because `doc.toJSON()` is not called here.
-      markStart("editor.autoRevision.serialize");
-      const revisionContentJson = result.persistedSceneBody.contentJson;
-      markEnd("editor.autoRevision.serialize");
-      scheduleAutoRevision({
-        workspaceIdentity: getCurrentWorkspaceIdentity(),
-        projectId: useTreeStore.getState().projectId,
-        sceneId: id,
-        contentVersion: result.persistedSceneBody.contentVersion,
-        contentJson: revisionContentJson,
-        intervalMs,
-        keepCount: useSettingsStore
-          .getState()
-          .getNumber("revision.keepCount", 50),
-      });
-    }
-    return true;
-  }, [coreSave, mutationGate, setIsDirtyRef, setIsSaving]);
+      // Auto-revision is non-critical and uses the exact JSON that reached the
+      // durable scene write. The scoped queue flushes before workspace switches.
+      if (
+        snapshot.binding.kind === "tree" &&
+        result.persistedSceneBody &&
+        useTreeStore.getState().projectId
+      ) {
+        const id = snapshot.binding.id;
+        const intervalMs =
+          useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+          60 *
+          1000;
+        // Retain the historical attribution label for the former serialization
+        // stage. It should now measure only the exact-string handoff and remain
+        // near zero because `doc.toJSON()` is not called here.
+        markStart("editor.autoRevision.serialize");
+        const revisionContentJson = result.persistedSceneBody.contentJson;
+        markEnd("editor.autoRevision.serialize");
+        scheduleAutoRevision({
+          workspaceIdentity: getCurrentWorkspaceIdentity(),
+          projectId: useTreeStore.getState().projectId,
+          sceneId: id,
+          contentVersion: result.persistedSceneBody.contentVersion,
+          contentJson: revisionContentJson,
+          intervalMs,
+          keepCount: useSettingsStore
+            .getState()
+            .getNumber("revision.keepCount", 50),
+        });
+      }
+      return { persisted: true, committed };
+    }, [coreSave, mutationGate, setIsDirtyRef, setIsSaving]);
   const saveFn = useCallback(async () => {
     const saveKey = activeLoadedDocumentKey ?? loadedDocumentKeyRef.current;
     if (!saveKey) {
-      const persisted = await saveLatestFn();
-      if (!persisted && isDirtyRef.current) {
+      const result = await saveLatestFn();
+      if (!result.persisted && isDirtyRef.current) {
         throw new Error("Cannot save an editor document before it is loaded");
       }
       return;
     }
-    const persisted = await runCoordinatedDocumentSave(saveKey, saveLatestFn, {
+    const result = await runCoordinatedDocumentSave(saveKey, saveLatestFn, {
       session: documentSaveSession,
-      didPersist: Boolean,
+      didPersist: (attempt) => attempt.persisted,
     });
-    if (persisted) {
+    if (shouldClearRetainedEditorRecoveryDraft(result)) {
       clearRetainedEditorRecoveryDraft(saveKey, editorInstanceIdRef.current);
     }
   }, [activeLoadedDocumentKey, documentSaveSession, isDirtyRef, saveLatestFn]);
@@ -721,6 +805,12 @@ export function EditorPane({
     const persistedBindingHandler = (
       binding: Parameters<typeof mutationGate.advancePeerSave>[0],
     ) => {
+      // A peer's persisted version is not safe to adopt while this editor
+      // still has an unsaved local document. The following peer content
+      // callback may be queued behind this notification; adopting the
+      // version here would let that stale full-document write overwrite the
+      // local draft on the next save.
+      if (!inputProjectionReadyRef.current || isDirtyRef.current) return;
       mutationGate.advancePeerSave(binding);
     };
     registerPersistedBindingHandler(
@@ -820,18 +910,24 @@ export function EditorPane({
     !readOnly;
   const treeNodeType = activeNode?.nodeType === "note" ? "note" : "scene";
 
-  const editorExtensions = useMemo(
-    () =>
-      isFileBacked
-        ? getFileBackedEditorExtensions()
-        : getEditorExtensions({
-            setMentionPopup: (s) => {
-              setMentionPopupState(s);
-              setMentionIndex(0);
-            },
-          }),
-    [isFileBacked],
-  );
+  const editorExtensions = useMemo(() => {
+    const extensions = isFileBacked
+      ? getFileBackedEditorExtensions()
+      : getEditorExtensions({
+          setMentionPopup: (s) => {
+            setMentionPopupState(s);
+            setMentionIndex(0);
+          },
+        });
+    extensions.push(
+      createEditorProjectionGuardExtension(
+        inputProjectionReadyRef,
+        isApplyingProgrammaticProjectionUpdate,
+        editorWritableRef,
+      ),
+    );
+    return extensions;
+  }, [isFileBacked]);
   const sceneBeatIndexRef = useRef<SceneBeatIndexState | null>(null);
   const editor = useEditor(
     {
@@ -848,6 +944,9 @@ export function EditorPane({
           // 「書式設定なし」フラグは paste 種別に関わらず必ず消費する。
           // (Case 1/2 で early-return しても arm が次の paste に漏れないように)
           const wantPlain = consumePlainPaste();
+          if (!inputProjectionReadyRef.current || !editorWritableRef.current) {
+            return true;
+          }
 
           if (html) {
             // Case 1: Grimodex 固有コピー（Codex/Snippet/Chat パネル）
@@ -908,6 +1007,10 @@ export function EditorPane({
           return false;
         },
         handleDrop(view, event) {
+          if (!inputProjectionReadyRef.current || !editorWritableRef.current) {
+            event.preventDefault();
+            return true;
+          }
           const snippetData = event.dataTransfer?.getData(
             "application/x-grimodex-snippet",
           );
@@ -947,6 +1050,16 @@ export function EditorPane({
       },
       onUpdate({ editor: e, transaction }) {
         const ai = useInlineAiStore.getState();
+        if (
+          !inputProjectionReadyRef.current ||
+          (!editorWritableRef.current && !isApplyingExternalUpdate.current)
+        ) {
+          // A reused editor can still emit a programmatic transaction during a
+          // same-node projection switch. The old binding remains the save
+          // authority for a pre-switch flush, but it is not an input target for
+          // the new Phase/scene projection.
+          return;
+        }
         // TipTap は setEditable 等の「doc 未変更」イベントでも 'update' を
         // emit する (transaction.steps が空)。これを保存に流すと、未ロードの
         // 空 doc に pending が arm され本文消失の引き金になる (実機で
@@ -956,6 +1069,8 @@ export function EditorPane({
           !shouldHandleEditorUpdate({
             docChanged: transaction.docChanged,
             isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+            isInlineAiRollback:
+              transaction.getMeta("inlineAiRollback") === true,
             inlineAiStatus: ai.status,
             activeEditor: ai.activeEditor,
             editor: e,
@@ -1073,7 +1188,9 @@ export function EditorPane({
         // A read-only placeholder can still receive programmatic focus while a
         // scene is loading. Do not publish it as the active mutation target or
         // consume a deferred cursor restore until the canonical body exists.
-        if (loadedDocumentKeyRef.current?.id !== nodeId) return;
+        if (!inputProjectionReadyRef.current || !editorWritableRef.current) {
+          return;
+        }
         onFocus();
         // Trash bin の D&D 復元先として「最後にフォーカスしていたエディタ」を共有。
         // editor 参照も渡し、text-fragment 挿入時に直接 chain().insertContent を呼べるように。
@@ -1121,14 +1238,38 @@ export function EditorPane({
   const editorViewReady = useEditorViewReady(editor);
   const editorReadOnly = useLicenseEditableSync(
     editor,
-    readOnly || !activeLoadedDocumentKey,
+    readOnly || !inputProjectionReady,
     documentLeaseKey,
   );
+  const editorWritable = inputProjectionReady && !editorReadOnly;
+  editorWritableRef.current = editorWritable;
   /** Editor handle safe for PM view access (plugins, dom listeners, dispatch). */
   const mountedEditor =
     editorViewReady && isEditorViewReady(editor) ? editor : null;
   /** Mutating UI/global insertion may target only a successfully loaded body. */
-  const loadedMountedEditor = activeLoadedDocumentKey ? mountedEditor : null;
+  const loadedMountedEditor = inputProjectionReady ? mountedEditor : null;
+  const writableMountedEditor = editorWritable ? loadedMountedEditor : null;
+  useLayoutEffect(() => {
+    const projectionChanged =
+      inlineAiProjectionKeySeenRef.current !== "" &&
+      inlineAiProjectionKeySeenRef.current !== inputTargetProjectionKey;
+    inlineAiProjectionKeySeenRef.current = inputTargetProjectionKey;
+    if (!projectionChanged && inputProjectionReady && editorWritable) return;
+
+    const ai = useInlineAiStore.getState();
+    if (ai.activeEditor === editor && ai.status !== "idle") {
+      rollbackInlineAiSession(editor, inlineAiProjection, ai.sessionId);
+    }
+    setAbInline((current) => (current ? null : current));
+    setPaletteOpen(false);
+    setPalettePreselect(null);
+  }, [
+    editor,
+    editorWritable,
+    inlineAiProjection,
+    inputProjectionReady,
+    inputTargetProjectionKey,
+  ]);
   const inputReadyMarkedDocumentRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -1136,7 +1277,7 @@ export function EditorPane({
       !activeLoadedDocumentKey ||
       loadedInputProjectionKey !== inputTargetProjectionKey ||
       loadedInputScopeKey !== effectiveInputScopeKey ||
-      !loadedMountedEditor ||
+      !writableMountedEditor ||
       editorReadOnly ||
       isSceneContentLoading
     ) {
@@ -1161,7 +1302,7 @@ export function EditorPane({
     // both reflected in the mounted ProseMirror DOM before publishing ready.
     const frame = requestAnimationFrame(() => {
       if (
-        loadedMountedEditor.isDestroyed ||
+        writableMountedEditor.isDestroyed ||
         inputReadyMarkedDocumentRef.current === markKey
       ) {
         return;
@@ -1169,8 +1310,8 @@ export function EditorPane({
       if (
         markEditorInputReady(
           activeLoadedDocumentKey,
-          loadedMountedEditor.view.dom,
-          loadedMountedEditor.isEditable,
+          writableMountedEditor.view.dom,
+          writableMountedEditor.isEditable,
           {
             authority: inputProjectionAuthority,
             groupIndex,
@@ -1194,11 +1335,11 @@ export function EditorPane({
     isSceneContentLoading,
     loadedInputProjectionKey,
     loadedInputScopeKey,
-    loadedMountedEditor,
+    writableMountedEditor,
   ]);
   /** DB-native-only features (authorship, inline AI) — not on file-backed scenes. */
   const dbNativeEditor =
-    loadedMountedEditor && !isFileBacked ? loadedMountedEditor : null;
+    writableMountedEditor && !isFileBacked ? writableMountedEditor : null;
 
   const paragraphReorder = useParagraphReorderOverlay(
     dbNativeEditor,
@@ -1226,18 +1367,26 @@ export function EditorPane({
   // (stale な activeEditor / generatedRange が別 doc に幽霊 diff を出し、Accept/
   // Reject が別シーンを壊すのを防ぐ)。reset は editor に触れないので破棄順に依存
   // せず安全 (useLinearInlineAi の cleanup と同契約)。
+  useLayoutEffect(() => {
+    if (
+      (!inputProjectionReady || !editorWritable) &&
+      getFocusedEditor() === editorRef.current
+    ) {
+      useFocusedContentEditorStore.getState().setCurrent(null, null);
+    }
+  }, [editorWritable, inputProjectionReady]);
   useEffect(() => {
     return () => {
       const ai = useInlineAiStore.getState();
       if (ai.status !== "idle" && ai.activeEditor === editor) {
-        ai.reset();
+        rollbackInlineAiSession(editor, inlineAiProjection, ai.sessionId);
       }
     };
     // nodeId も依存に含める: EditorPane は activeTabId 変更で remount せず同じ
     // editor インスタンスに別 doc をロードしうる。通常はナビゲーションガードが
     // pending 中の nodeId 変更を止めるが、万一すり抜けても stale な activeEditor /
     // generatedRange を残さないよう、doc swap 時にも owner セッションを畳む。
-  }, [editor, nodeId]);
+  }, [editor, inlineAiProjection, nodeId]);
 
   // Wrap view.dispatch to time the full TipTap dispatch cycle: state.apply +
   // plugin.appendTransactions + view.updateState (DOM patching) + listeners.
@@ -1282,11 +1431,21 @@ export function EditorPane({
   // are NOT the primary scene editor and must not claim this slot — otherwise
   // two groupIndex=0 panes fight over it and chat inserts misroute.
   const setGlobalEditor = useEditorStore((s) => s.setEditor);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (groupIndex !== 0 || phaseIdOverride !== undefined) return;
-    setGlobalEditor(loadedMountedEditor);
+    if (writableMountedEditor) {
+      setGlobalEditor(loadedMountedEditor);
+    } else {
+      setGlobalEditor(null);
+    }
     return () => setGlobalEditor(null);
-  }, [loadedMountedEditor, setGlobalEditor, groupIndex, phaseIdOverride]);
+  }, [
+    loadedMountedEditor,
+    writableMountedEditor,
+    setGlobalEditor,
+    groupIndex,
+    phaseIdOverride,
+  ]);
   useEffect(() => {
     return () => {
       if (getFocusedEditor() === editor) {
@@ -1406,6 +1565,17 @@ export function EditorPane({
 
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {
+    const inlineAi = useInlineAiStore.getState();
+    if (
+      isInlineAiSaveBlocked({
+        inlineAiStatus: inlineAi.status,
+        activeEditor: inlineAi.activeEditor,
+        editor: editorRef.current,
+      })
+    ) {
+      guardInlineAiPending();
+      throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
+    }
     await flush();
     if (isEntryMode) return; // Codex/snippet entries: no revision on manual save
     // 未ロード doc は手動保存リビジョンにも残さない (空 doc 汚染防止)
@@ -1615,7 +1785,11 @@ export function EditorPane({
       };
     }
   }, [verticalMode]);
-  const inlineAiDiff = useInlineAiDiff(dbNativeEditor, groupIndex);
+  const inlineAiDiff = useInlineAiDiff(
+    dbNativeEditor,
+    groupIndex,
+    inlineAiProjection,
+  );
   const { generate, retry, showProvidedText } = inlineAiDiff;
   // 分割ビューで両ペインが同じツールバーを二重表示しないよう、pending セッションを
   // 所有するペイン (activeEditor === このペインの editor) でだけ Toolbar を出す。
@@ -1634,8 +1808,8 @@ export function EditorPane({
   // しまう (無帰属 AI テキストの焼き込み + version bump)。accept/reject で
   // idle に戻ると reset+dispatch の onUpdate が改めて schedule するので、
   // ここで消した「打鍵分の保存」は取りこぼされない。
-  // 既知の残余 (スコープ外): diff 表示中の unmount flush / workspace 切替
-  // quiesce はプレビュー込み doc を保存しうる pre-existing の穴。
+  // saveLatestFn 側でも同じ owner 判定を行うため、unmount flush / workspace
+  // quiesce を含む全てのこのペイン経由の保存入口でプレビューを拒否する。
   const inlineAiStatus = useInlineAiStore((s) => s.status);
   useEffect(() => {
     if (inlineAiStatus !== "idle" && inlineAiOwnerEditor === editor) {
@@ -1686,6 +1860,9 @@ export function EditorPane({
       if (version === null) {
         throw new Error(`Event '${snapshot.binding.id}' no longer exists`);
       }
+      persistedBinding = { ...snapshot.binding, loadedVersion: version };
+    } else if (snapshot.binding.kind === "tree") {
+      const version = await getSceneVersion(snapshot.binding.id);
       persistedBinding = { ...snapshot.binding, loadedVersion: version };
     }
 
@@ -1776,18 +1953,35 @@ export function EditorPane({
   // one full-doc setContent per frame on the mirror, instead of one per keystroke.
   useEffect(() => {
     if (!editor || !activeLoadedDocumentKey) return;
+    const subscribedProjectionKey = inputProjectionKeyRef.current;
+    const subscribedDocumentKey = encodeDocumentKey(activeLoadedDocumentKey);
     return subscribeLiveContentRafCoalesced(
       activeLoadedDocumentKey,
       editorInstanceIdRef.current,
       (next) => {
+        if (
+          !inputProjectionReadyRef.current ||
+          inputProjectionKeyRef.current !== subscribedProjectionKey ||
+          encodeDocumentKey(
+            loadedDocumentKeyRef.current ?? activeLoadedDocumentKey,
+          ) !== subscribedDocumentKey
+        ) {
+          return;
+        }
+        // Full-document peer sync is only a mirror update. Never replace a
+        // local dirty draft or advance its OCC baseline from a queued peer
+        // snapshot; the local writer must resolve the conflict explicitly.
+        if (isDirtyRef.current) return;
         const finishExternalUpdate = beginApplyingExternalUpdate();
         try {
           mutationGate.runProgrammatic(() => {
             markStart("editor.externalSync.setContent");
-            editor.commands.setContent(
-              next as Parameters<typeof editor.commands.setContent>[0],
-              { emitUpdate: false },
-            );
+            runProgrammaticProjectionUpdate(() => {
+              editor.commands.setContent(
+                next as Parameters<typeof editor.commands.setContent>[0],
+                { emitUpdate: false },
+              );
+            });
             markEnd("editor.externalSync.setContent");
           });
         } finally {
@@ -1799,17 +1993,33 @@ export function EditorPane({
     activeLoadedDocumentKey,
     beginApplyingExternalUpdate,
     editor,
+    isDirtyRef,
     mutationGate,
+    runProgrammaticProjectionUpdate,
   ]);
 
   // Subscribe to unplaced beats changes → mark dirty and schedule save,
   // and live-sync the Grid preview cache for immediate UI feedback.
   useEffect(() => {
-    if (!nodeId || isEntryMode) return;
+    const expectedDocumentKey =
+      activeLoadedDocumentKey?.kind === "tree" &&
+      activeLoadedDocumentKey.id === nodeId
+        ? activeLoadedDocumentKey
+        : null;
+    if (!nodeId || isEntryMode || !inputProjectionReady || !expectedDocumentKey)
+      return;
+    const expectedDocumentKeyEncoded = encodeDocumentKey(expectedDocumentKey);
     const unsubscribe = useUnplacedBeatsStore
       .getState()
       .subscribe(nodeId, () => {
-        if (mutationGate.captureSave() === null) {
+        const snapshot = mutationGate.captureSave();
+        if (
+          !inputProjectionReadyRef.current ||
+          !snapshot ||
+          snapshot.binding.kind !== "tree" ||
+          encodeDocumentKey(documentKeyFromBinding(snapshot.binding)) !==
+            expectedDocumentKeyEncoded
+        ) {
           // Loading sidecar hydration itself updates this store before the
           // canonical document binding is committed. Never turn that internal
           // update (or a load-failure bystander) into an unsaveable dirty draft.
@@ -1838,7 +2048,15 @@ export function EditorPane({
         });
       });
     return unsubscribe;
-  }, [nodeId, isEntryMode, schedule, mutationGate, setIsDirtyRef]);
+  }, [
+    activeLoadedDocumentKey,
+    inputProjectionReady,
+    isEntryMode,
+    mutationGate,
+    nodeId,
+    schedule,
+    setIsDirtyRef,
+  ]);
 
   // Load content when nodeId changes
   useEffect(() => {
@@ -1849,8 +2067,14 @@ export function EditorPane({
 
     async function switchScene() {
       markStart("editor.switchScene");
+      const prevId = prevSceneIdRef.current;
+      let loadStarted = false;
       try {
-        const prevId = prevSceneIdRef.current;
+        if (preserveCurrentLoadedDocumentRef.current === nodeId) {
+          preserveCurrentLoadedDocumentRef.current = null;
+          setIsSceneContentLoading(false);
+          return;
+        }
         // The render-time key reset above keeps this ref aligned with the
         // currently loaded canonical document without making this load effect
         // re-run merely because commitLoad published its key.
@@ -1892,6 +2116,7 @@ export function EditorPane({
         saveSceneIdRef.current = nodeId;
         // Invalidate the save binding before loading the next document. The
         // old binding remains valid only until the pre-switch flush completes.
+        loadStarted = true;
         mutationGate.beginLoad();
         loadedDocumentKeyRef.current = null;
         setLoadedDocumentKey(null);
@@ -1983,7 +2208,11 @@ export function EditorPane({
               nodeId,
               useTreeStore.getState().projectId,
             );
-            applySceneSidecars(editor!, nodeId, sidecars, () => cancelled);
+            mutationGate.runProgrammatic(() => {
+              runProgrammaticProjectionUpdate(() => {
+                applySceneSidecars(editor!, nodeId, sidecars, () => cancelled);
+              });
+            });
           }
 
           // Publish the canonical binding only after every awaited setup step
@@ -1996,6 +2225,9 @@ export function EditorPane({
             loadedBinding.kind === "codex" ? loadedBinding.phaseId : null,
           );
           mutationGate.commitLoad(loadedBinding);
+          if (isCodexMode && phaseIdOverride === undefined) {
+            loadedCodexTabOverrideRef.current = overridePhaseId ?? null;
+          }
           const nextDocumentKey = documentKeyFromBinding(loadedBinding);
           loadedDocumentKeyRef.current = nextDocumentKey;
           setLoadedDocumentKey(nextDocumentKey);
@@ -2137,6 +2369,85 @@ export function EditorPane({
         }
       } catch (err) {
         if (!cancelled) {
+          if (!loadStarted) {
+            // The old binding remains authoritative until the pre-switch
+            // flush succeeds. Restore the tab target and keep the live draft;
+            // invalidating the mutation gate here would strand that draft.
+            const handled = handlePreSwitchFlushFailure({
+              loadStarted,
+              previousId: prevId,
+              currentId: nodeId,
+              groupIndex,
+              // Do not use the normal guarded setters here. A failed flush can
+              // itself be caused by a pending inline-AI session, so those
+              // setters would reject the restoration and leave the new tab
+              // selected while the old document is still mounted.
+              restorePrimary: (id) => {
+                const state = useTabStore.getState();
+                if (state.activeTabId === nodeId) {
+                  useTabStore.setState({
+                    activeTabId: id,
+                    activeGroupIndex: 0,
+                  });
+                }
+              },
+              restoreSecondary: (id) => {
+                const state = useTabStore.getState();
+                if (state.secondaryActiveTabId === nodeId) {
+                  useTabStore.setState({ secondaryActiveTabId: id });
+                }
+              },
+              restoreDocumentProjection: () => {
+                if (
+                  !isCodexMode ||
+                  phaseIdOverride !== undefined ||
+                  prevId !== nodeId
+                ) {
+                  return;
+                }
+                const state = useTabStore.getState();
+                const failedOverride = overridePhaseId ?? null;
+                const previousOverride = loadedCodexTabOverrideRef.current;
+                const tabs =
+                  groupIndex === 0 ? state.tabs : state.secondaryTabs;
+                const activeId =
+                  groupIndex === 0
+                    ? state.activeTabId
+                    : state.secondaryActiveTabId;
+                const currentTab = tabs.find((tab) => tab.nodeId === nodeId);
+                if (
+                  activeId !== nodeId ||
+                  currentTab?.contentType !== "codex" ||
+                  (currentTab.overridePhaseId ?? null) !== failedOverride
+                ) {
+                  return;
+                }
+                const restoredTabs = tabs.map((tab) =>
+                  tab.nodeId === nodeId
+                    ? { ...tab, overridePhaseId: previousOverride }
+                    : tab,
+                );
+                if (groupIndex === 0) {
+                  useTabStore.setState({ tabs: restoredTabs });
+                } else {
+                  useTabStore.setState({ secondaryTabs: restoredTabs });
+                }
+              },
+            });
+            if (handled) {
+              // A same-id Phase restoration also changes this effect's
+              // dependency. Skip its second flush/load pass; the old document
+              // is still mounted and remains the authoritative draft.
+              preserveCurrentLoadedDocumentRef.current = prevId;
+            }
+            setIsSceneContentLoading(false);
+            debugLog.error(
+              "EditorPane",
+              `pre-switch save failed ${prevId.slice(0, 8)}`,
+              errorDetail(err),
+            );
+            return;
+          }
           mutationGate.failLoad();
           loadedDocumentKeyRef.current = null;
           setLoadedDocumentKey(null);
@@ -2184,6 +2495,7 @@ export function EditorPane({
     treeNodeType,
     contentType,
     overridePhaseId,
+    phaseIdOverride,
     groupIndex,
     effectiveInputScopeKey,
     externalReloadNonce,
@@ -2194,6 +2506,7 @@ export function EditorPane({
     phaseResolutionMode,
     beginApplyingExternalUpdate,
     mutationGate,
+    runProgrammaticProjectionUpdate,
     setIsDirtyRef,
     setLoadedPhaseId,
   ]);
@@ -2526,7 +2839,13 @@ export function EditorPane({
 
   const handlePaletteSubmitAb = useCallback(
     (command: InlineAiCommand, prompt: string) => {
-      if (!editor) return;
+      if (
+        !editor ||
+        !inputProjectionReadyRef.current ||
+        !editorWritableRef.current
+      ) {
+        return;
+      }
       const node = useTreeStore
         .getState()
         .nodes.find((candidate) => candidate.id === nodeId);
@@ -2561,6 +2880,8 @@ export function EditorPane({
         originalRange: isReplace ? { from, to } : null,
         insertPos: isReplace ? null : from,
         projectId: getCurrentProjectId(),
+        projectionKey: inputProjectionKeyRef.current,
+        documentSnapshot: editor.state.doc,
       });
     },
     [editor, nodeId],
@@ -2568,7 +2889,16 @@ export function EditorPane({
 
   const handleAdoptAb = useCallback(
     (text: string) => {
-      if (!abInline) return;
+      if (
+        !abInline ||
+        !inputProjectionReadyRef.current ||
+        !editorWritableRef.current ||
+        abInline.projectionKey !== inputProjectionKeyRef.current ||
+        !editor.state.doc.eq(abInline.documentSnapshot)
+      ) {
+        setAbInline(null);
+        return;
+      }
       showProvidedText(text, {
         mode: abInline.mode,
         originalRange: abInline.originalRange ?? undefined,
@@ -2576,7 +2906,7 @@ export function EditorPane({
       });
       setAbInline(null);
     },
-    [abInline, showProvidedText],
+    [abInline, editor?.state.doc, showProvidedText],
   );
 
   const handleStatusChange = useCallback(

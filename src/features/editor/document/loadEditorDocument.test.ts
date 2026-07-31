@@ -43,6 +43,7 @@ describe("loadEditorDocument", () => {
     const loadSceneFull = vi.fn().mockResolvedValue({
       content: '{"type":"doc","content":[]}',
       unplacedBeatsDoc: "[]",
+      version: 12,
     });
 
     const loaded = await loadEditorDocument(
@@ -62,6 +63,7 @@ describe("loadEditorDocument", () => {
         id: "scene-1",
         nodeType: "scene",
         storage: "database",
+        loadedVersion: 12,
       },
       content: { type: "doc", content: [] },
       unplacedBeatsDoc: "[]",

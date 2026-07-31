@@ -40,7 +40,9 @@ export type EditorDocumentIdentity =
   | { kind: "chronicle-event"; id: string };
 
 export type LoadedEditorBinding =
-  | Extract<EditorDocumentIdentity, { kind: "tree" }>
+  | (Extract<EditorDocumentIdentity, { kind: "tree" }> & {
+      loadedVersion: number;
+    })
   | (Extract<EditorDocumentIdentity, { kind: "codex" }> & {
       loadedVersion: number;
     })
@@ -82,6 +84,7 @@ export function createLoadedEditorBinding(
         id,
         nodeType: tree?.nodeType ?? "scene",
         storage: tree?.storage ?? "database",
+        loadedVersion,
       };
   }
 }

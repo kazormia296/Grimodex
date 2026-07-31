@@ -1443,6 +1443,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       sceneId: "s1",
       projectId: "p1",
       includeSidecars: true,
+      updatedAt: "2026-07-28T00:00:00.000Z",
+      baseVersion: 4,
       contentJson: '{"type":"doc"}',
       charCount: 3,
       placedBeatPreview: null,
@@ -1474,6 +1476,37 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("save_scene_body_bundle: invalid baseVersion は native 呼び出し前に拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "save_scene_body_bundle",
+      {
+        payload: {
+          sceneId: "s1",
+          projectId: "p1",
+          includeSidecars: true,
+          updatedAt: "2026-07-28T00:00:00.000Z",
+          baseVersion: -1,
+          contentJson: "{}",
+          charCount: 0,
+          placedBeatPreview: null,
+          unplacedBeatsDoc: "[]",
+          unplacedBeatPreview: null,
+          authorshipSpans: [],
+          foreshadowSetups: [],
+          foreshadowPayoffs: [],
+          annotationAnchors: [],
+          beatMentions: [],
+          beatPovOverrides: [],
+          docContentSize: 2,
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   it("save_scene_body_bundle: malformed arrays are rejected before native", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -1483,6 +1516,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
           sceneId: "s1",
           projectId: "p1",
           includeSidecars: true,
+          updatedAt: "2026-07-28T00:00:00.000Z",
           contentJson: "{}",
           charCount: 0,
           placedBeatPreview: null,
@@ -1512,6 +1546,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
           sceneId: "s1",
           projectId: "p1",
           includeSidecars: true,
+          updatedAt: "2026-07-28T00:00:00.000Z",
           contentJson: "{}",
           charCount: 0,
           placedBeatPreview: null,

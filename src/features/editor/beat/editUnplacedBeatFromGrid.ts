@@ -2,7 +2,10 @@ import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
 import type { UnplacedBeat } from "./unplacedBeatsStore";
 import { saveSceneBeatsOnly } from "@/features/tree/api";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { prepareUnplacedBeatsForGrid } from "./addUnplacedBeatFromGrid";
+import {
+  prepareUnplacedBeatsForGrid,
+  type GridBeatWriteSnapshot,
+} from "./addUnplacedBeatFromGrid";
 import { runGridBeatMutation } from "./gridBeatMutationQueue";
 
 export function beatToPlainText(beat: UnplacedBeat): string {
@@ -11,9 +14,14 @@ export function beatToPlainText(beat: UnplacedBeat): string {
     .join("");
 }
 
-async function hydrateIfEmpty(sceneId: string): Promise<UnplacedBeat[]> {
-  await prepareUnplacedBeatsForGrid(sceneId);
-  return useUnplacedBeatsStore.getState().getBeats(sceneId);
+async function hydrateIfEmpty(
+  sceneId: string,
+): Promise<{ beats: UnplacedBeat[]; writeSnapshot: GridBeatWriteSnapshot }> {
+  const writeSnapshot = await prepareUnplacedBeatsForGrid(sceneId);
+  return {
+    beats: useUnplacedBeatsStore.getState().getBeats(sceneId),
+    writeSnapshot,
+  };
 }
 
 /**
@@ -24,7 +32,7 @@ export async function loadBeatTextByIndex(
   sceneId: string,
   index: number,
 ): Promise<{ id: string; text: string } | null> {
-  const beats = await hydrateIfEmpty(sceneId);
+  const { beats } = await hydrateIfEmpty(sceneId);
   const target = beats[index];
   if (!target) return null;
   return { id: target.id, text: beatToPlainText(target) };
@@ -44,7 +52,7 @@ export async function editUnplacedBeatFromGrid(
 ): Promise<void> {
   await runGridBeatMutation(sceneId, async () => {
     const trimmed = newText.trim();
-    await hydrateIfEmpty(sceneId);
+    const { writeSnapshot } = await hydrateIfEmpty(sceneId);
 
     const store = useUnplacedBeatsStore.getState();
     const prevBeats = store.getBeats(sceneId);
@@ -68,6 +76,8 @@ export async function editUnplacedBeatFromGrid(
     try {
       ({ unplacedBeatPreview } = await saveSceneBeatsOnly(sceneId, {
         unplacedBeatsDoc,
+        projectId: writeSnapshot.projectId,
+        baseVersion: writeSnapshot.baseVersion,
       }));
     } catch (error) {
       store.setBeats(sceneId, prevBeats);

@@ -1974,6 +1974,19 @@ function requireSceneBodyBundlePayload(args: CommandArgs): CommandArgs {
     }
   }
   requireBoolean(payload, "includeSidecars", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  if (payload.baseVersion !== undefined && payload.baseVersion !== null) {
+    const baseVersion = requireNumber(payload, "baseVersion", command);
+    if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
+      throw new Error(
+        `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
+  } else if (payload.baseVersion === null) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer when present`,
+    );
+  }
   requireString(payload, "contentJson", command);
   requireString(payload, "unplacedBeatsDoc", command);
   for (const key of ["charCount", "docContentSize"] as const) {

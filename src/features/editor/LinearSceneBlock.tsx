@@ -12,6 +12,7 @@ import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { createEditorProjectionGuardExtension } from "@/features/editor/editorProjectionGuard";
 import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import {
   getFileBackedEditorExtensions,
@@ -23,7 +24,7 @@ import {
   notePlainPasteKeyDown,
 } from "@/features/editor/markdownPaste";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { loadSceneFull } from "@/features/tree/api";
+import { getSceneVersion, loadSceneFull } from "@/features/tree/api";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import {
   registerDiscardHandler,
@@ -35,6 +36,8 @@ import {
   unregisterRecoveryDraftProvider,
   unregisterSaveHandler,
   dirtyGatedSaveHandler,
+  registerPersistedBindingHandler,
+  unregisterPersistedBindingHandler,
 } from "@/features/editor/editorSaveRegistry";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { subscribeLiveContentRafCoalesced } from "@/features/editor/sceneContentStore";
@@ -85,7 +88,20 @@ import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
-import { shouldHandleEditorUpdate } from "@/features/editor/editorEventPolicy";
+import {
+  isInlineAiSaveBlocked,
+  shouldHandleEditorUpdate,
+} from "@/features/editor/editorEventPolicy";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import {
+  AlreadyNotifiedSaveError,
+  INLINE_AI_SAVE_BLOCKED_MESSAGE,
+} from "@/features/editor/document/saveErrors";
+import type { LoadedEditorBinding } from "@/features/editor/document/types";
+import {
+  shouldClearRetainedEditorRecoveryDraft,
+  type EditorSaveAttemptResult,
+} from "@/features/editor/document/editorSaveResult";
 import {
   createEditorInstanceId,
   encodeDocumentKey,
@@ -229,6 +245,7 @@ function MountedSceneBlock({
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const isApplyingExternalUpdate = useRef(false);
+  const isApplyingProgrammaticProjectionUpdate = useRef(false);
   const externalUpdateDepthRef = useRef(0);
   const beginApplyingExternalUpdate = useCallback(() => {
     externalUpdateDepthRef.current += 1;
@@ -244,6 +261,14 @@ function MountedSceneBlock({
       isApplyingExternalUpdate.current = externalUpdateDepthRef.current > 0;
     };
   }, []);
+  const runProgrammaticProjectionUpdate = useCallback((fn: () => void) => {
+    isApplyingProgrammaticProjectionUpdate.current = true;
+    try {
+      fn();
+    } finally {
+      isApplyingProgrammaticProjectionUpdate.current = false;
+    }
+  }, []);
   const sceneBeatIndexRef = useRef<SceneBeatIndexState | null>(null);
   const wasEmptyRef = useRef(false);
   // 「ロードに成功した本物の doc」以外は保存禁止 — 空/欠損 doc の autosave が
@@ -258,6 +283,7 @@ function MountedSceneBlock({
   // 外部 flush の dirty ゲート (dirtyGatedSaveHandler) が clean 誤判定 →
   // headless 適用の resync がその編集を上書き消失させる。
   const editGenerationRef = useRef(0);
+  const sceneVersionRef = useRef(0);
   const [charCount, setCharCount] = useState(0);
   // タイピング中の文字数同期 debounce タイマー (EditorStatsFooter と同じ
   // 200ms trailing)。
@@ -268,28 +294,63 @@ function MountedSceneBlock({
   const [loadReady, setLoadReady] = useState(false);
   const [loadedInputProjectionKey, setLoadedInputProjectionKey] = useState("");
   const loadReadyRef = useRef(false);
+  const inputProjectionReadyRef = useRef(false);
+  const editorWritableRef = useRef(false);
+  const inputProjectionKeyRef = useRef("");
+  const inlineAiProjection = useMemo(
+    () => ({
+      keyRef: inputProjectionKeyRef,
+      readyRef: inputProjectionReadyRef,
+      writableRef: editorWritableRef,
+    }),
+    [],
+  );
   const publishLoadReady = useCallback((ready: boolean) => {
     loadReadyRef.current = ready;
     setLoadReady(ready);
   }, []);
 
+  const inputProjectionReady =
+    loadReady && loadedInputProjectionKey === inputTargetProjectionKey;
+  inputProjectionReadyRef.current = inputProjectionReady;
+  inputProjectionKeyRef.current = inputTargetProjectionKey;
+
   // EditorPane と同じスキーマ選択。file-backed scene に full schema を使うと
   // (逆方向も同様に) 未知ノードで setContent が空 doc に化ける。
-  const editorExtensions = useMemo(
-    () =>
-      isFileBacked ? getFileBackedEditorExtensions() : getEditorExtensions(),
-    [isFileBacked],
-  );
+  const editorExtensions = useMemo(() => {
+    const extensions = isFileBacked
+      ? getFileBackedEditorExtensions()
+      : getEditorExtensions();
+    extensions.push(
+      createEditorProjectionGuardExtension(
+        inputProjectionReadyRef,
+        isApplyingProgrammaticProjectionUpdate,
+        editorWritableRef,
+      ),
+    );
+    return extensions;
+  }, [isFileBacked]);
 
-  const coreSave = useCallback(async (): Promise<boolean> => {
+  const coreSave = useCallback(async (): Promise<EditorSaveAttemptResult> => {
     const ed = editorRef.current;
-    if (!ed) return false;
+    if (!ed) return { persisted: false, committed: false };
     if (loadFailedRef.current) {
       debugLog.warn(
         "LinearSceneBlock",
         `save skipped: load failed ${sceneId.slice(0, 8)}`,
       );
-      return false;
+      return { persisted: false, committed: false };
+    }
+    const inlineAi = useInlineAiStore.getState();
+    if (
+      isInlineAiSaveBlocked({
+        inlineAiStatus: inlineAi.status,
+        activeEditor: inlineAi.activeEditor,
+        editor: ed,
+      })
+    ) {
+      guardInlineAiPending();
+      throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
     }
     debugLog.info(
       "LinearSceneBlock",
@@ -301,25 +362,31 @@ function MountedSceneBlock({
     // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
     // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
     // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
-    await persistSceneBody(sceneId, ed.state.doc);
+    const persisted = await persistSceneBody(sceneId, ed.state.doc, {
+      baseVersion: sceneVersionRef.current,
+    });
+    if (persisted?.contentVersion !== undefined) {
+      sceneVersionRef.current = persisted.contentVersion;
+    }
     // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
     // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
     // (editGenerationRef のコメント参照)。
-    if (editGenerationRef.current === editGenAtStart) {
+    const committed = editGenerationRef.current === editGenAtStart;
+    if (committed) {
       isDirtyRef.current = false;
       useEditorSessionStore
         .getState()
         .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
     }
-    return true;
+    return { persisted: true, committed };
   }, [documentKey, sceneId]);
 
   const saveFn = useCallback(async () => {
-    const persisted = await runCoordinatedDocumentSave(documentKey, coreSave, {
+    const result = await runCoordinatedDocumentSave(documentKey, coreSave, {
       session: documentSaveSession,
-      didPersist: Boolean,
+      didPersist: (attempt) => attempt.persisted,
     });
-    if (persisted) {
+    if (shouldClearRetainedEditorRecoveryDraft(result)) {
       clearRetainedEditorRecoveryDraft(
         documentKey,
         editorInstanceIdRef.current,
@@ -342,9 +409,10 @@ function MountedSceneBlock({
     else resume();
   }, [hasExternalConflict, pause, resume]);
 
-  const handleKeepExternalEdit = useCallback(() => {
+  const handleKeepExternalEdit = useCallback(async () => {
+    sceneVersionRef.current = await getSceneVersion(sceneId);
     schedule();
-  }, [schedule]);
+  }, [schedule, sceneId]);
 
   const handleReloadExternalEdit = useCallback(() => {
     cancel();
@@ -383,12 +451,20 @@ function MountedSceneBlock({
       },
       onUpdate({ editor: e, transaction }) {
         const aiState = useInlineAiStore.getState();
+        if (
+          !inputProjectionReadyRef.current ||
+          (!editorWritableRef.current && !isApplyingExternalUpdate.current)
+        ) {
+          return;
+        }
         // setEditable 等の doc 未変更 'update' を保存に流さない
         // (EditorPane.onUpdate と同じガード — 詳細はそちらのコメント参照)。
         if (
           !shouldHandleEditorUpdate({
             docChanged: transaction.docChanged,
             isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+            isInlineAiRollback:
+              transaction.getMeta("inlineAiRollback") === true,
             inlineAiStatus: aiState.status,
             activeEditor: aiState.activeEditor,
             editor: e,
@@ -478,13 +554,33 @@ function MountedSceneBlock({
         const ed = editorRef.current;
         // useEditor callback configuration is stable across renders, so avoid
         // capturing the initial `loadReady=false` state forever.
-        if (ed && loadReadyRef.current) onFocus(sceneId, ed);
+        if (
+          ed &&
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current
+        ) {
+          onFocus(sceneId, ed);
+        }
       },
     },
     [editorExtensions],
   );
 
   editorRef.current = editor;
+
+  const editorReadOnly = useLicenseEditableSync(
+    editor,
+    !inputProjectionReady,
+    documentKey,
+  );
+  const editorWritable = inputProjectionReady && !editorReadOnly;
+  editorWritableRef.current = editorWritable;
+  useLayoutEffect(() => {
+    const state = useLinearEditorStore.getState();
+    if (!editorWritable && state.focusedSceneId === sceneId) {
+      state.setFocusedEditor(null, null);
+    }
+  }, [editorWritable, sceneId]);
 
   // inline-AI がこのブロックで生成/プレビュー中 (非 idle = 未 accept の
   // テキストが doc に入っている) は、arm 済みの autosave タイマーも解除する
@@ -494,8 +590,8 @@ function MountedSceneBlock({
   // onUpdate と同じ activeEditor 一致 (リニアは複数エディタがグローバル単一
   // store を共有するため status だけでは不可)。accept/reject で idle に戻る
   // と reset+dispatch の onUpdate が改めて schedule するので、消した打鍵分の
-  // 保存は取りこぼされない。既知の残余 (スコープ外): diff 表示中の unmount
-  // flush はプレビュー込み doc を保存しうる pre-existing の穴。
+  // 保存は取りこぼされない。save 関数側でも owner 判定を行うため、unmount
+  // flush / workspace quiesce を含む全てのこのブロック経由の入口で拒否する。
   const inlineAiStatus = useInlineAiStore((s) => s.status);
   const inlineAiOwnerEditor = useInlineAiStore((s) => s.activeEditor);
   useEffect(() => {
@@ -503,16 +599,6 @@ function MountedSceneBlock({
       cancel();
     }
   }, [inlineAiStatus, inlineAiOwnerEditor, editor, cancel]);
-
-  // active シーンの editor を Toolbar / SceneMetaPanel がフォーカス無しで
-  // 参照できるよう registry へ登録する (linearEditorStore.editorsById)。
-  useEffect(() => {
-    if (!editor || !loadReady) return;
-    useLinearEditorStore.getState().registerEditor(sceneId, editor);
-    return () => {
-      useLinearEditorStore.getState().unregisterEditor(sceneId, editor);
-    };
-  }, [sceneId, editor, loadReady]);
 
   // contenteditable の accessible name。editorProps.attributes は生成時に固定
   // されるため、リネームに追従できるよう view.dom へ動的に付与する
@@ -536,6 +622,10 @@ function MountedSceneBlock({
     sceneId,
     editor,
     inlineAiEditor: isFileBacked ? null : editor,
+    projection: inlineAiProjection,
+    projectionKey: inputTargetProjectionKey,
+    projectionReady: inputProjectionReady,
+    projectionWritable: editorWritable,
   });
 
   // saveScene(sceneId) で外部から flush 可能にする (EditorPane と同じ契約)。
@@ -573,6 +663,30 @@ function MountedSceneBlock({
       );
     };
   }, [documentKey, saveFn]);
+
+  // A split tab editor can persist the same scene while this linear block is
+  // mounted. Adopt its returned OCC version before the next linear save.
+  useEffect(() => {
+    const instanceId = editorInstanceIdRef.current;
+    const persistedBindingHandler = (binding: LoadedEditorBinding) => {
+      if (binding.kind !== "tree" || binding.id !== sceneId) return;
+      if (isDirtyRef.current) return;
+      if (binding.loadedVersion >= sceneVersionRef.current) {
+        sceneVersionRef.current = binding.loadedVersion;
+      }
+    };
+    registerPersistedBindingHandler(
+      documentKey,
+      instanceId,
+      persistedBindingHandler,
+    );
+    return () =>
+      unregisterPersistedBindingHandler(
+        documentKey,
+        instanceId,
+        persistedBindingHandler,
+      );
+  }, [documentKey, sceneId]);
 
   useEffect(() => {
     const instanceId = editorInstanceIdRef.current;
@@ -616,10 +730,21 @@ function MountedSceneBlock({
   // 次の autosave が agent/改名の書き込みを上書きして消す (lost update)。
   useEffect(() => {
     if (!editor) return;
+    const subscribedProjectionKey = inputProjectionKeyRef.current;
     return subscribeLiveContentRafCoalesced(
       documentKey,
       LINEAR_LIVE_GROUP,
       (next) => {
+        if (
+          !inputProjectionReadyRef.current ||
+          inputProjectionKeyRef.current !== subscribedProjectionKey
+        ) {
+          return;
+        }
+        // Do not replace a local draft with a queued full-document mirror
+        // update. The dirty editor remains the writer and must rebase or
+        // surface an OCC conflict instead of adopting the peer version.
+        if (isDirtyRef.current) return;
         const finishExternalUpdate = beginApplyingExternalUpdate();
         try {
           editor.commands.setContent(
@@ -634,18 +759,28 @@ function MountedSceneBlock({
         useTreeStore.getState().setCharCount(sceneId, count);
       },
     );
-  }, [beginApplyingExternalUpdate, documentKey, editor, sceneId]);
+  }, [
+    beginApplyingExternalUpdate,
+    documentKey,
+    editor,
+    inputTargetProjectionKey,
+    sceneId,
+  ]);
 
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });
   // EditorPane と同じく帰属系は DB-native 限定 (file-backed schema に
   // authorship mark が無い)。
   useAttribution(isFileBacked ? null : editor);
-  const editorReadOnly = useLicenseEditableSync(
-    editor,
-    !loadReady,
-    documentKey,
-  );
+  // active シーンの editor を Toolbar / SceneMetaPanel がフォーカス無しで
+  // 参照できるよう registry へ登録する (linearEditorStore.editorsById)。
+  useEffect(() => {
+    if (!editor || !inputProjectionReady || !editorWritable) return;
+    useLinearEditorStore.getState().registerEditor(sceneId, editor);
+    return () => {
+      useLinearEditorStore.getState().unregisterEditor(sceneId, editor);
+    };
+  }, [sceneId, editor, editorWritable, inputProjectionReady]);
   const inputReadyMarkedRef = useRef(false);
   useEffect(() => {
     if (
@@ -725,6 +860,7 @@ function MountedSceneBlock({
       try {
         const full = await loadSceneFull(sceneId);
         if (cancelled) return;
+        sceneVersionRef.current = full.version ?? 0;
         const content = full.content;
         // persistSceneBody が unplacedBeatsDoc を store から読んで書き戻す
         // ため、保存前に必ず store へロードしておく (空のままだと beat 消失)。
@@ -785,25 +921,27 @@ function MountedSceneBlock({
           if (authorshipType) {
             const finishExternalUpdate = beginApplyingExternalUpdate();
             try {
-              editor!
-                .chain()
-                .command(({ tr }) => {
-                  tr.setMeta("programmaticInsert", true);
-                  for (const { from, to, attrs } of markData) {
-                    const docSize = tr.doc.content.size;
-                    const clampedFrom = Math.min(from, docSize);
-                    const clampedTo = Math.min(to, docSize);
-                    if (clampedFrom < clampedTo) {
-                      tr.addMark(
-                        clampedFrom,
-                        clampedTo,
-                        authorshipType.create(attrs),
-                      );
+              runProgrammaticProjectionUpdate(() => {
+                editor!
+                  .chain()
+                  .command(({ tr }) => {
+                    tr.setMeta("programmaticInsert", true);
+                    for (const { from, to, attrs } of markData) {
+                      const docSize = tr.doc.content.size;
+                      const clampedFrom = Math.min(from, docSize);
+                      const clampedTo = Math.min(to, docSize);
+                      if (clampedFrom < clampedTo) {
+                        tr.addMark(
+                          clampedFrom,
+                          clampedTo,
+                          authorshipType.create(attrs),
+                        );
+                      }
                     }
-                  }
-                  return true;
-                })
-                .run();
+                    return true;
+                  })
+                  .run();
+              });
             } finally {
               finishExternalUpdate();
             }
@@ -849,6 +987,7 @@ function MountedSceneBlock({
     inputTargetProjectionKey,
     publishLoadReady,
     beginApplyingExternalUpdate,
+    runProgrammaticProjectionUpdate,
   ]);
 
   // Report block-axis size changes. contentBoxSize is logical (resolved

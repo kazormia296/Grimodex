@@ -63,6 +63,8 @@ pub struct SaveSceneBodyBundlePayload {
     pub scene_id: String,
     pub project_id: String,
     pub include_sidecars: bool,
+    pub base_version: Option<i64>,
+    pub updated_at: String,
     pub content_json: String,
     pub char_count: i64,
     pub placed_beat_preview: Option<String>,
@@ -94,6 +96,14 @@ fn validate_payload(payload: &SaveSceneBodyBundlePayload) -> anyhow::Result<()> 
     }
     if payload.char_count < 0 || payload.doc_content_size < 0 {
         anyhow::bail!("scene document sizes must be non-negative");
+    }
+    if payload.base_version.is_some_and(|version| version < 0) {
+        anyhow::bail!("scene base version must be non-negative");
+    }
+    if payload.updated_at.trim().is_empty()
+        || chrono::DateTime::parse_from_rfc3339(&payload.updated_at).is_err()
+    {
+        anyhow::bail!("scene updatedAt must be a valid RFC3339 timestamp");
     }
     for span in &payload.authorship_spans {
         if span.from_pos < 0
@@ -153,8 +163,6 @@ pub fn save_scene_body_bundle(
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<SaveSceneBodyBundleResult> {
-            let updated_at =
-                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
             let updated = conn
                 .query_row(
                     "UPDATE tree_nodes
@@ -166,6 +174,7 @@ pub fn save_scene_body_bundle(
                             version = version + 1,
                             updated_at = ?6
                       WHERE id = ?7 AND project_id = ?8
+                        AND (?9 IS NULL OR version = ?9)
                   RETURNING version, updated_at",
                     params![
                         payload.content_json,
@@ -173,16 +182,17 @@ pub fn save_scene_body_bundle(
                         payload.char_count,
                         payload.placed_beat_preview,
                         payload.unplaced_beat_preview,
-                        updated_at,
+                        payload.updated_at,
                         payload.scene_id,
                         payload.project_id,
+                        payload.base_version,
                     ],
                     |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "scene not found in project: {} / {}",
+                        "scene content conflict or scene not found in project: {} / {}",
                         payload.project_id,
                         payload.scene_id
                     )
@@ -217,12 +227,38 @@ pub fn save_scene_body_bundle(
                 let mut valid_setup_ids = Vec::new();
                 for setup in &payload.foreshadow_setups {
                     let exists: bool = conn.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM foreshadows WHERE id = ?1)",
-                        params![setup.foreshadow_id],
+                        "SELECT EXISTS(
+                            SELECT 1 FROM foreshadows
+                             WHERE id = ?1 AND project_id = ?2
+                        )",
+                        params![setup.foreshadow_id, payload.project_id],
                         |row| row.get(0),
                     )?;
                     if !exists {
-                        continue;
+                        anyhow::bail!(
+                            "foreshadow setup '{}' is not owned by project '{}'",
+                            setup.id,
+                            payload.project_id
+                        );
+                    }
+                    let existing: Option<(String, String)> = conn
+                        .query_row(
+                            "SELECT foreshadow_id, scene_id
+                               FROM foreshadow_setups
+                              WHERE id = ?1",
+                            params![setup.id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()?;
+                    if let Some((existing_foreshadow_id, existing_scene_id)) = existing {
+                        if existing_foreshadow_id != setup.foreshadow_id
+                            || existing_scene_id != payload.scene_id
+                        {
+                            anyhow::bail!(
+                                "foreshadow setup '{}' belongs to a different anchor",
+                                setup.id
+                            );
+                        }
                     }
                     conn.execute(
                         "INSERT INTO foreshadow_setups
@@ -247,19 +283,35 @@ pub fn save_scene_body_bundle(
                     valid_setup_ids.push(setup.id.clone());
                 }
                 for payoff in &payload.foreshadow_payoffs {
+                    let exists: bool = conn.query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM foreshadows
+                             WHERE id = ?1 AND project_id = ?2
+                        )",
+                        params![payoff.foreshadow_id, payload.project_id],
+                        |row| row.get(0),
+                    )?;
+                    if !exists {
+                        anyhow::bail!(
+                            "foreshadow payoff '{}' is not owned by project '{}'",
+                            payoff.foreshadow_id,
+                            payload.project_id
+                        );
+                    }
                     conn.execute(
                         "UPDATE foreshadows
                             SET payoff_scene_id = ?1,
                                 payoff_from_pos = ?2,
                                 payoff_to_pos = ?3,
                                 updated_at = ?4
-                          WHERE id = ?5",
+                          WHERE id = ?5 AND project_id = ?6",
                         params![
                             payload.scene_id,
                             payoff.from_pos,
                             payoff.to_pos,
                             now_ms,
                             payoff.foreshadow_id,
+                            payload.project_id,
                         ],
                     )?;
                 }
@@ -494,6 +546,8 @@ mod tests {
             scene_id: "s1".into(),
             project_id: "p1".into(),
             include_sidecars: true,
+            base_version: None,
+            updated_at: "2026-07-28T00:00:00.000Z".into(),
             content_json: "{\"type\":\"doc\"}".into(),
             char_count: 12,
             placed_beat_preview: Some("[\"beat\"]".into()),
@@ -635,6 +689,145 @@ mod tests {
             .expect("load POV cache");
         assert_eq!(povs.len(), 1);
         assert_eq!(povs[0]["pov_character_id"], "c1");
+    }
+
+    #[test]
+    fn rejects_stale_base_version_without_mutating_content() {
+        let db = test_db();
+        let mut first = payload();
+        first.base_version = Some(0);
+        save_scene_body_bundle(&db, first).expect("first versioned save");
+
+        let mut stale = payload();
+        stale.base_version = Some(0);
+        stale.content_json = "{\"stale\":true}".into();
+        let error = save_scene_body_bundle(&db, stale).expect_err("stale save");
+        assert!(error.to_string().contains("conflict"));
+
+        let rows = db
+            .execute(
+                "SELECT content, version FROM tree_nodes WHERE id = ?",
+                &[Value::String("s1".into())],
+                "load after stale save",
+            )
+            .expect("load scene");
+        assert_eq!(rows[0]["content"], "{\"type\":\"doc\"}");
+        assert_eq!(rows[0]["version"], 1);
+    }
+
+    #[test]
+    fn uses_renderer_timestamp_for_monotonic_content_tokens() {
+        let db = test_db();
+        let mut first = payload();
+        first.include_sidecars = false;
+        first.updated_at = "2026-07-28T00:00:00.000Z".into();
+        save_scene_body_bundle(&db, first).expect("first save");
+
+        let mut second = payload();
+        second.include_sidecars = false;
+        second.updated_at = "2026-07-28T00:00:00.001Z".into();
+        let result = save_scene_body_bundle(&db, second).expect("second save");
+
+        assert_eq!(result.content_updated_at, "2026-07-28T00:00:00.001Z");
+        let rows = db
+            .execute(
+                "SELECT version, updated_at FROM tree_nodes WHERE id = 's1'",
+                &[],
+                "load timestamp token",
+            )
+            .expect("load timestamp token");
+        assert_eq!(rows[0]["version"], 2);
+        assert_eq!(rows[0]["updated_at"], "2026-07-28T00:00:00.001Z");
+    }
+
+    #[test]
+    fn rejects_foreign_foreshadow_setup_without_mutating_scene() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES ('p2', 'Other Project')",
+            &[],
+            "insert other project",
+        )
+        .expect("insert other project");
+        db.execute(
+            "INSERT INTO foreshadows
+                (id, project_id, title, payoff_confirmed, abandoned, secret, created_at, updated_at)
+             VALUES ('f-foreign', 'p2', 'Foreign', 0, 0, 0, 1, 1)",
+            &[],
+            "insert foreign foreshadow",
+        )
+        .expect("insert foreign foreshadow");
+
+        let mut foreign = payload();
+        foreign.foreshadow_setups[0].foreshadow_id = "f-foreign".into();
+        let error = save_scene_body_bundle(&db, foreign).expect_err("foreign setup");
+        assert!(error.to_string().contains("not owned by project"));
+
+        let rows = db
+            .execute(
+                "SELECT content, version FROM tree_nodes WHERE id = 's1'",
+                &[],
+                "load after foreign setup",
+            )
+            .expect("load after foreign setup");
+        assert_eq!(rows[0]["content"], "{\"old\":true}");
+        assert_eq!(rows[0]["version"], 0);
+    }
+
+    #[test]
+    fn rejects_setup_id_rebinding_without_mutating_existing_anchor() {
+        let db = test_db();
+        let mut rebinding = payload();
+        rebinding.foreshadow_setups[0].id = "setup-stale".into();
+        rebinding.foreshadow_setups[0].foreshadow_id = "f2".into();
+        let error = save_scene_body_bundle(&db, rebinding).expect_err("setup rebinding");
+        assert!(error.to_string().contains("different anchor"));
+
+        let rows = db
+            .execute(
+                "SELECT from_pos, to_pos, is_orphan
+                   FROM foreshadow_setups WHERE id = 'setup-stale'",
+                &[],
+                "load after setup rebinding",
+            )
+            .expect("load after setup rebinding");
+        assert_eq!(rows[0]["from_pos"], 0);
+        assert_eq!(rows[0]["to_pos"], 1);
+        assert_eq!(rows[0]["is_orphan"], 0);
+    }
+
+    #[test]
+    fn rejects_foreign_foreshadow_payoff_without_mutating_scene() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES ('p2', 'Other Project')",
+            &[],
+            "insert other project",
+        )
+        .expect("insert other project");
+        db.execute(
+            "INSERT INTO foreshadows
+                (id, project_id, title, payoff_confirmed, abandoned, secret, created_at, updated_at)
+             VALUES ('f-foreign', 'p2', 'Foreign', 0, 0, 0, 1, 1)",
+            &[],
+            "insert foreign foreshadow",
+        )
+        .expect("insert foreign foreshadow");
+
+        let mut foreign = payload();
+        foreign.foreshadow_payoffs[0].foreshadow_id = "f-foreign".into();
+        let error = save_scene_body_bundle(&db, foreign).expect_err("foreign payoff");
+        assert!(error.to_string().contains("not owned by project"));
+
+        let rows = db
+            .execute(
+                "SELECT content, version FROM tree_nodes WHERE id = 's1'",
+                &[],
+                "load after foreign payoff",
+            )
+            .expect("load after foreign payoff");
+        assert_eq!(rows[0]["content"], "{\"old\":true}");
+        assert_eq!(rows[0]["version"], 0);
     }
 
     #[test]

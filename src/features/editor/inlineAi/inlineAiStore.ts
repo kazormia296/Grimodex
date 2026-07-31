@@ -37,7 +37,11 @@ interface InlineAiStoreState extends InlineAiState {
     /** 生成を所有するエディタ。省略時は null = ゲート無効 (旧挙動)。 */
     activeEditor?: Editor | null;
     activeEditorGroup?: GroupIndex | null;
-  }) => void;
+    /** Exact editor projection that owns this session. */
+    projectionKey?: string | null;
+    /** Unique identity for this generation/preview session. */
+    sessionId?: string;
+  }) => boolean;
   appendChunk: (chunk: string) => void;
   finishGeneration: (model: string) => void;
   setGeneratedRange: (range: { from: number; to: number }) => void;
@@ -51,6 +55,7 @@ interface InlineAiStoreState extends InlineAiState {
 }
 
 const INITIAL_STATE: InlineAiState = {
+  sessionId: null,
   status: "idle",
   mode: "insert",
   activeCommandId: null,
@@ -62,6 +67,7 @@ const INITIAL_STATE: InlineAiState = {
   error: null,
   model: null,
   stagingId: null,
+  projectionKey: null,
 };
 
 export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
@@ -84,8 +90,16 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
     abortController,
     activeEditor = null,
     activeEditorGroup = null,
+    projectionKey = null,
+    sessionId = crypto.randomUUID(),
   }) {
+    // A preview has already inserted text into an editor. Replacing the
+    // global session would orphan its range and let a later accept/reject act
+    // on the wrong document. Callers must explicitly accept, reject, or
+    // rollback before starting another session.
+    if (get().status !== "idle") return false;
     set({
+      sessionId,
       status: "generating",
       mode,
       activeCommandId: commandId,
@@ -100,7 +114,9 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
       abortController,
       activeEditor,
       activeEditorGroup,
+      projectionKey,
     });
+    return true;
   },
 
   appendChunk(chunk) {

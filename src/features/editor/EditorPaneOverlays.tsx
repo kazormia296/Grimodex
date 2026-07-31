@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import type { RefObject } from "react";
 import type { Editor } from "@tiptap/react";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import type {
   CodexMentionPopupState,
@@ -25,6 +26,9 @@ export interface AbInlineState {
   originalRange: { from: number; to: number } | null;
   insertPos: number | null;
   projectId: string;
+  projectionKey: string;
+  /** Immutable document generation captured when the A/B request started. */
+  documentSnapshot: ProseMirrorNode;
 }
 
 interface EditorPaneOverlaysProps {

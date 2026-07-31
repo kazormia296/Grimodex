@@ -5,6 +5,10 @@ export interface SaveSceneBodyBundlePayload extends SceneBodyDerivedSnapshot {
   sceneId: string;
   projectId: string;
   includeSidecars: boolean;
+  /** Loaded scene version for editor OCC; omitted by headless writers. */
+  baseVersion?: number;
+  /** Renderer-wide monotonic tree token for the authoritative content row. */
+  updatedAt: string;
 }
 
 export interface SaveSceneBodyBundleResult {

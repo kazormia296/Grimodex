@@ -299,6 +299,17 @@ export interface SaveScenePayload {
   content: string;
   unplacedBeatsDoc?: string;
   charCount?: number;
+  /** Loaded scene version for editor OCC. Omit for authoritative headless writers. */
+  baseVersion?: number;
+  /** Renderer-wide monotonic tree token shared with the native bundle. */
+  updatedAt?: string;
+}
+
+export class SceneContentConflictError extends Error {
+  constructor(sceneId: string) {
+    super(`Scene content conflict or missing scene: ${sceneId}`);
+    this.name = "SceneContentConflictError";
+  }
 }
 
 export interface DerivedPreviews {
@@ -370,7 +381,7 @@ export async function saveSceneContentInner(
     JSON.stringify({ contentLen: payload.content.length }),
   );
 
-  const contentUpdatedAt = nextTreeNodeMutationTimestamp();
+  const contentUpdatedAt = payload.updatedAt ?? nextTreeNodeMutationTimestamp();
 
   // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
   // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
@@ -387,15 +398,20 @@ export async function saveSceneContentInner(
           charCount: payload.charCount,
         }),
         placedBeatPreview,
-        // OCC 在庫: 本文を書くたび無条件で version を +1 する。WHERE への
-        // version 条件 (OCC 検査) は付けない — 保存 hot path を絶対に落とさない。
-        // 読み手は prose_staging.base_version との突き合わせ (autoApplyProse の
-        // stale 検知)。human-human 競合は change_events ベースの
-        // externalWriteFeed ガードが従来通り担当する。
+        // Editor saves provide the version observed at load time. Headless
+        // authoritative writers omit it and intentionally retain the legacy
+        // unconditional write contract.
         version: sql`${treeNodes.version} + 1`,
         updatedAt: contentUpdatedAt,
       })
-      .where(eq(treeNodes.id, sceneId))
+      .where(
+        payload.baseVersion === undefined
+          ? eq(treeNodes.id, sceneId)
+          : and(
+              eq(treeNodes.id, sceneId),
+              eq(treeNodes.version, payload.baseVersion),
+            ),
+      )
       .returning({
         id: treeNodes.id,
         projectId: treeNodes.projectId,
@@ -406,6 +422,9 @@ export async function saveSceneContentInner(
   trackSceneContentWrite(sceneId, write);
   const rows = await write;
   const persisted = rows[0];
+  if (!persisted && payload.baseVersion !== undefined) {
+    throw new SceneContentConflictError(sceneId);
+  }
   publishPersistedTreeNodeMutation(
     persisted
       ? {
@@ -454,20 +473,29 @@ export async function loadSceneContent(sceneId: string): Promise<string> {
 }
 
 /**
- * Save unplaced beats doc + preview without touching content.
- * Used by Grid "Add unplaced beat" to avoid overwriting in-Editor unsaved changes.
- */
-/**
- * Save unplaced beats doc only (no `content` write). The cached preview is
- * derived internally so callers can't forget. Returns the new preview value.
+ * Save unplaced beats doc + preview without touching `content`.
+ *
+ * This still mutates the same tree_nodes aggregate as a full scene save, so it
+ * participates in the same OCC version stream. A Grid writer must provide the
+ * project identity and version it observed when loading the aggregate; without
+ * that predicate a stale Grid edit could be followed by a full-editor save and
+ * silently restore the old unplaced-beats document.
  *
  * Does NOT touch `placed_beat_preview` — that cache is derived from `content`,
  * which this function never modifies.
  */
 export async function saveSceneBeatsOnly(
   sceneId: string,
-  payload: { unplacedBeatsDoc: string },
-): Promise<{ unplacedBeatPreview: string | null }> {
+  payload: {
+    unplacedBeatsDoc: string;
+    projectId: string;
+    baseVersion: number;
+  },
+): Promise<{
+  unplacedBeatPreview: string | null;
+  contentVersion: number;
+  contentUpdatedAt: string;
+}> {
   const unplacedBeatPreview = deriveUnplacedPreview(payload.unplacedBeatsDoc);
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
@@ -478,18 +506,41 @@ export async function saveSceneBeatsOnly(
         .set({
           unplacedBeatsDoc: payload.unplacedBeatsDoc,
           unplacedBeatPreview,
+          version: sql`${treeNodes.version} + 1`,
           updatedAt: nextTreeNodeMutationTimestamp(),
         })
-        .where(eq(treeNodes.id, sceneId))
+        .where(
+          and(
+            eq(treeNodes.id, sceneId),
+            eq(treeNodes.projectId, payload.projectId),
+            eq(treeNodes.version, payload.baseVersion),
+          ),
+        )
         .returning({
           id: treeNodes.id,
           projectId: treeNodes.projectId,
-          updatedAt: treeNodes.updatedAt,
+          contentVersion: treeNodes.version,
+          contentUpdatedAt: treeNodes.updatedAt,
         }),
     ),
   );
-  publishPersistedTreeNodeMutation(rows[0], workspaceIdentity);
-  return { unplacedBeatPreview };
+  const persisted = rows[0];
+  if (!persisted) {
+    throw new SceneContentConflictError(sceneId);
+  }
+  publishPersistedTreeNodeMutation(
+    {
+      id: persisted.id,
+      projectId: persisted.projectId,
+      updatedAt: persisted.contentUpdatedAt,
+    },
+    workspaceIdentity,
+  );
+  return {
+    unplacedBeatPreview,
+    contentVersion: persisted.contentVersion,
+    contentUpdatedAt: persisted.contentUpdatedAt,
+  };
 }
 
 /**
@@ -523,21 +574,28 @@ export async function savePlacedBeatPreviewOnly(
 }
 
 /** Load scene content + unplaced beats doc in one query. */
-export async function loadSceneFull(
-  sceneId: string,
-): Promise<{ content: string; unplacedBeatsDoc: string }> {
+export async function loadSceneFull(sceneId: string): Promise<{
+  content: string;
+  unplacedBeatsDoc: string;
+  projectId: string;
+  version: number;
+}> {
   // loadSceneContent と同じ read-after-write バリア (pendingSceneWrites 参照)。
   await awaitPendingSceneContentWrite(sceneId);
   const rows = await db
     .select({
       content: treeNodes.content,
       unplacedBeatsDoc: treeNodes.unplacedBeatsDoc,
+      projectId: treeNodes.projectId,
+      version: treeNodes.version,
     })
     .from(treeNodes)
     .where(eq(treeNodes.id, sceneId));
   return {
     content: rows[0]?.content ?? "",
     unplacedBeatsDoc: rows[0]?.unplacedBeatsDoc ?? "[]",
+    projectId: rows[0]?.projectId ?? "",
+    version: rows[0]?.version ?? 0,
   };
 }
 
