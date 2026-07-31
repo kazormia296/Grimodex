@@ -4335,6 +4335,9 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   "updater_check",
   "updater_download",
   "updater_install",
+  // Mozkey IbG: official GitHub Release selection, checksum verification,
+  // and native installer launch are owned by one stateful main manager.
+  "mozkey_download_and_install",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

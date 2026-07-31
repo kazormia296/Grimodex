@@ -30,6 +30,7 @@ import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
+import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
   buildMcpConfigShellHandlers,
   prepareMcpSidecarForStartup,
@@ -329,6 +330,7 @@ if (!gotSingleInstanceLock) {
     const updater = createElectronUpdaterManager(broadcastMainEvent, {
       availability: updaterAvailability,
     });
+    const mozkeyInstaller = createMozkeyInstallerManager();
     const licenseValidation = createLicenseValidationScheduler(
       backend,
       broadcastBackendEvent,
@@ -352,6 +354,7 @@ if (!gotSingleInstanceLock) {
       ...cliAi.handlers,
       ...vivliostyle.handlers,
       ...updater.handlers,
+      ...mozkeyInstaller.handlers,
       ...mcpConfigHandlers,
     };
     const codexOwnerLifecycleBound = new Set<number>();
