@@ -11,7 +11,7 @@
       "maxLines": 2395
     },
     "src/features/chat/chatApi.ts": {
-      "maxLines": 1482
+      "maxLines": 1467
     },
     "src/features/project/projectStore.ts": {
       "maxLines": 940
