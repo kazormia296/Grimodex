@@ -9,9 +9,11 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexEntry } from "../api";
 import { getCodexEntry } from "../api";
+import { inferReadings } from "../codexYomi";
 import { useCodexStore } from "../codexStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   awaitPendingEditorWrites,
   hasUnresolvedEditorChanges,
@@ -23,6 +25,10 @@ vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
   return { ...actual, getCodexEntry: vi.fn() };
 });
+
+vi.mock("../codexYomi", () => ({
+  inferReadings: vi.fn(() => Promise.resolve(new Map())),
+}));
 
 vi.mock("../tagApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../tagApi")>();
@@ -43,6 +49,7 @@ vi.mock("./CodexEntryHeader", () => ({
     type: string;
     aliases: string[];
     onNameChange: (value: string) => void;
+    onNameCommit: () => void;
     onTypeChange: (value: "location") => void;
     onAliasesChange: (value: string[]) => void;
   }) => (
@@ -54,6 +61,9 @@ vi.mock("./CodexEntryHeader", () => ({
       />
       <output data-testid="draft-type">{props.type}</output>
       <output data-testid="draft-aliases">{props.aliases.join(",")}</output>
+      <button data-testid="commit-name" onClick={props.onNameCommit}>
+        commit name
+      </button>
       <button
         data-testid="change-type"
         onClick={() => props.onTypeChange("location")}
@@ -65,6 +75,12 @@ vi.mock("./CodexEntryHeader", () => ({
         onClick={() => props.onAliasesChange(["local-alias"])}
       >
         aliases
+      </button>
+      <button
+        data-testid="change-kanji-aliases"
+        onClick={() => props.onAliasesChange(["剣聖"])}
+      >
+        kanji aliases
       </button>
     </div>
   ),
@@ -96,7 +112,13 @@ vi.mock("./CodexEditLockBanner", () => ({
 }));
 
 vi.mock("./RelationsTab", () => ({ RelationsTab: () => null }));
-vi.mock("./TrackingTab", () => ({ TrackingTab: () => null }));
+vi.mock("./TrackingTab", () => ({
+  TrackingTab: (props: { onEstimateReadings: () => void }) => (
+    <button data-testid="estimate-readings" onClick={props.onEstimateReadings}>
+      estimate
+    </button>
+  ),
+}));
 vi.mock("./MentionsTab", () => ({ MentionsTab: () => null }));
 vi.mock("./ResearchTab", () => ({ ResearchTab: () => null }));
 vi.mock("./TimelineTab", () => ({ TimelineTab: () => null }));
@@ -144,10 +166,12 @@ const INITIAL_ENTRY: CodexEntry = {
 const originalUpdate = useCodexStore.getState().update;
 const originalUpdateText = useCodexStore.getState().updateText;
 const mockGetCodexEntry = vi.mocked(getCodexEntry);
+const mockInferReadings = vi.mocked(inferReadings);
 
 describe("CodexDetailContent draft integrity", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useSettingsStore.setState({ projectLanguage: "ja" });
     useEditorSessionStore.getState().resetForProject();
     useExternalWriteStore.getState().clear();
     useCodexStore.setState({
@@ -157,6 +181,53 @@ describe("CodexDetailContent draft integrity", () => {
       updateText: vi.fn(async () => ({ persisted: true, version: 2 })),
     });
     mockGetCodexEntry.mockResolvedValue(INITIAL_ENTRY);
+  });
+
+  it("does not estimate readings automatically when a name is committed", async () => {
+    render(<CodexDetailContent entry={INITIAL_ENTRY} onDelete={vi.fn()} />);
+
+    fireEvent.change(screen.getByTestId("draft-name"), {
+      target: { value: "刹那" },
+    });
+    fireEvent.click(screen.getByTestId("commit-name"));
+    await act(async () => {
+      await awaitPendingEditorWrites();
+      await Promise.resolve();
+    });
+
+    expect(mockInferReadings).not.toHaveBeenCalled();
+  });
+
+  it("does not estimate readings automatically when an alias is added", async () => {
+    render(<CodexDetailContent entry={INITIAL_ENTRY} onDelete={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId("change-kanji-aliases"));
+    await act(async () => {
+      await awaitPendingEditorWrites();
+      await Promise.resolve();
+    });
+
+    expect(mockInferReadings).not.toHaveBeenCalled();
+  });
+
+  it("estimates missing readings when the AI estimate button is used", async () => {
+    render(
+      <CodexDetailContent
+        entry={{ ...INITIAL_ENTRY, name: "刹那" }}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("estimate-readings"));
+
+    await waitFor(() => expect(mockInferReadings).toHaveBeenCalledTimes(1));
+    expect(mockInferReadings).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: INITIAL_ENTRY.id,
+        surfaces: ["刹那"],
+      }),
+    ]);
   });
 
   afterEach(async () => {

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { TrackingTab } from "./TrackingTab";
 
 const baseProps = {
@@ -20,6 +21,18 @@ describe("TrackingTab Japanese reading gate", () => {
     render(<TrackingTab {...baseProps} showReadings />);
     expect(screen.getByText("刹那")).toBeInTheDocument();
     expect(screen.getByText("セツナ")).toBeInTheDocument();
+  });
+
+  it("uses a furigana placeholder for reading inputs", async () => {
+    const user = userEvent.setup();
+    render(<TrackingTab {...baseProps} showReadings />);
+
+    await user.click(screen.getByTestId("reading-0-add-button"));
+
+    expect(screen.getByTestId("reading-0-input")).toHaveAttribute(
+      "placeholder",
+      "ふりがな…",
+    );
   });
 
   it("hides reading management for non-Japanese projects", () => {
