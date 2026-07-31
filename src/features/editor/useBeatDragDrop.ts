@@ -50,6 +50,8 @@ export function useBeatDragDrop({
   const dragContextRef = useRef<{
     nodeId: string;
     projectionKey: string | null;
+    unplacedSceneId: string;
+    unplacedBeatsFingerprint: string;
   } | null>(null);
 
   const sensors = useSensors(
@@ -71,9 +73,15 @@ export function useBeatDragDrop({
         dragContextRef.current = null;
         return;
       }
+      const unplacedSceneId =
+        (event.active.data.current?.sceneId as string | undefined) ?? nodeId;
       dragContextRef.current = {
         nodeId,
         projectionKey: projectionKeyRef?.current ?? null,
+        unplacedSceneId,
+        unplacedBeatsFingerprint: JSON.stringify(
+          useUnplacedBeatsStore.getState().getBeats(unplacedSceneId),
+        ),
       };
       setDraggingBeat(
         (event.active.data.current?.beat as UnplacedBeat | undefined) ?? null,
@@ -93,6 +101,17 @@ export function useBeatDragDrop({
         (!dragContext ||
           dragContext.nodeId !== nodeId ||
           dragContext.projectionKey !== (projectionKeyRef?.current ?? null))
+      ) {
+        return;
+      }
+      if (
+        dragContext &&
+        dragContext.unplacedBeatsFingerprint !==
+          JSON.stringify(
+            useUnplacedBeatsStore
+              .getState()
+              .getBeats(dragContext.unplacedSceneId),
+          )
       ) {
         return;
       }

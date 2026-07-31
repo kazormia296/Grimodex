@@ -43,6 +43,7 @@ describe("loadEditorDocument", () => {
     const loadSceneFull = vi.fn().mockResolvedValue({
       content: '{"type":"doc","content":[]}',
       unplacedBeatsDoc: "[]",
+      projectId: "project-1",
       version: 12,
     });
 
@@ -67,6 +68,7 @@ describe("loadEditorDocument", () => {
       },
       content: { type: "doc", content: [] },
       unplacedBeatsDoc: "[]",
+      projectId: "project-1",
     });
   });
 

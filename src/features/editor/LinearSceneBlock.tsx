@@ -38,6 +38,7 @@ import {
   dirtyGatedSaveHandler,
   registerPersistedBindingHandler,
   unregisterPersistedBindingHandler,
+  announcePersistedBinding,
 } from "@/features/editor/editorSaveRegistry";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { subscribeLiveContentRafCoalesced } from "@/features/editor/sceneContentStore";
@@ -204,6 +205,7 @@ function MountedSceneBlock({
     scene ? null : (getTreeIndex(s.nodes).nodeById.get(sceneId) ?? null),
   );
   const activeNode = scene ?? fallbackNode;
+  const treeNodeType = activeNode?.nodeType === "note" ? "note" : "scene";
   const nodeStatusRef = useRef<SceneStatus | null>(
     (activeNode?.status as SceneStatus | null | undefined) ?? null,
   );
@@ -362,11 +364,25 @@ function MountedSceneBlock({
     // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
     // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
     // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
-    const persisted = await persistSceneBody(sceneId, ed.state.doc, {
+    const docAtStart = ed.state.doc;
+    const persistedContent = docAtStart.toJSON();
+    const persisted = await persistSceneBody(sceneId, docAtStart, {
       baseVersion: sceneVersionRef.current,
     });
     if (persisted?.contentVersion !== undefined) {
       sceneVersionRef.current = persisted.contentVersion;
+      announcePersistedBinding(
+        documentKey,
+        editorInstanceIdRef.current,
+        {
+          kind: "tree",
+          id: sceneId,
+          nodeType: treeNodeType,
+          storage: isFileBacked ? "file" : "database",
+          loadedVersion: persisted.contentVersion,
+        },
+        persistedContent,
+      );
     }
     // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
     // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
@@ -379,7 +395,7 @@ function MountedSceneBlock({
         .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
     }
     return { persisted: true, committed };
-  }, [documentKey, sceneId]);
+  }, [documentKey, isFileBacked, sceneId, treeNodeType]);
 
   const saveFn = useCallback(async () => {
     const result = await runCoordinatedDocumentSave(documentKey, coreSave, {
@@ -668,12 +684,38 @@ function MountedSceneBlock({
   // mounted. Adopt its returned OCC version before the next linear save.
   useEffect(() => {
     const instanceId = editorInstanceIdRef.current;
-    const persistedBindingHandler = (binding: LoadedEditorBinding) => {
+    const persistedBindingHandler = (
+      binding: LoadedEditorBinding,
+      persistedContent?: object,
+    ) => {
       if (binding.kind !== "tree" || binding.id !== sceneId) return;
       if (isDirtyRef.current) return;
-      if (binding.loadedVersion >= sceneVersionRef.current) {
-        sceneVersionRef.current = binding.loadedVersion;
+      if (binding.loadedVersion < sceneVersionRef.current) return;
+      const currentEditor = editorRef.current;
+      if (persistedContent && currentEditor && !currentEditor.isDestroyed) {
+        const finishExternalUpdate = beginApplyingExternalUpdate();
+        try {
+          runProgrammaticProjectionUpdate(() => {
+            currentEditor.commands.setContent(persistedContent, {
+              emitUpdate: false,
+              errorOnInvalidContent: true,
+            });
+          });
+        } catch (error) {
+          debugLog.error(
+            "LinearSceneBlock",
+            `peer snapshot failed ${sceneId.slice(0, 8)}`,
+            errorDetail(error),
+          );
+          return;
+        } finally {
+          finishExternalUpdate();
+        }
+        const count = getDocText(currentEditor.state.doc).length;
+        setCharCount(count);
+        useTreeStore.getState().setCharCount(sceneId, count);
       }
+      sceneVersionRef.current = binding.loadedVersion;
     };
     registerPersistedBindingHandler(
       documentKey,
@@ -686,7 +728,12 @@ function MountedSceneBlock({
         instanceId,
         persistedBindingHandler,
       );
-  }, [documentKey, sceneId]);
+  }, [
+    beginApplyingExternalUpdate,
+    documentKey,
+    runProgrammaticProjectionUpdate,
+    sceneId,
+  ]);
 
   useEffect(() => {
     const instanceId = editorInstanceIdRef.current;

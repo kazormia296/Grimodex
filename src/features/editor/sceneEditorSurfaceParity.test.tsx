@@ -195,9 +195,11 @@ vi.mock("@/features/editor/document/loadEditorDocument", () => ({
       id: harness.sceneId,
       nodeType: "scene",
       storage: harness.storage,
+      loadedVersion: 0,
     },
     content: harness.sceneContent,
     unplacedBeatsDoc: "[]",
+    projectId: "project-1",
   })),
 }));
 
@@ -234,8 +236,13 @@ vi.mock("@/features/tree/api", async (importOriginal) => {
     loadSceneFull: vi.fn(async () => ({
       content: JSON.stringify(harness.sceneContent),
       unplacedBeatsDoc: "[]",
+      projectId: "project-1",
+      version: 0,
     })),
-    savePlacedBeatPreviewOnly: vi.fn(async () => {}),
+    savePlacedBeatPreviewOnly: vi.fn(async () => ({
+      contentVersion: 1,
+      contentUpdatedAt: "2100-01-01T00:00:00.000Z",
+    })),
   };
 });
 

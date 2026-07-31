@@ -99,15 +99,21 @@ describe("saveSceneContent version bump", () => {
 });
 
 describe("本文を書かない writer の version 契約", () => {
-  it("saveSceneBeatsOnly は OCC version を bump し、preview-only/metadata は bump しない", async () => {
+  it("beats-only と preview-only は同じ aggregate の OCC version を進める", async () => {
     await saveSceneBeatsOnly(SCENE_NO_BUMP, {
       unplacedBeatsDoc: "[]",
       projectId: PROJECT,
       baseVersion: 0,
     });
-    await savePlacedBeatPreviewOnly(SCENE_NO_BUMP, null);
+    await expect(
+      savePlacedBeatPreviewOnly(SCENE_NO_BUMP, {
+        placedBeatPreview: null,
+        projectId: PROJECT,
+        baseVersion: 1,
+      }),
+    ).resolves.toMatchObject({ contentVersion: 2 });
     await updateNode(SCENE_NO_BUMP, { title: "renamed", synopsis: "s" });
-    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(1);
+    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(2);
   });
 
   it("saveSceneBeatsOnly は stale baseVersion を拒否する", async () => {
@@ -118,7 +124,18 @@ describe("本文を書かない writer の version 契約", () => {
         baseVersion: 0,
       }),
     ).rejects.toThrow(/conflict/i);
-    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(1);
+    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(2);
+  });
+
+  it("savePlacedBeatPreviewOnly は stale baseVersion を拒否する", async () => {
+    await expect(
+      savePlacedBeatPreviewOnly(SCENE_NO_BUMP, {
+        placedBeatPreview: "[]",
+        projectId: PROJECT,
+        baseVersion: 1,
+      }),
+    ).rejects.toThrow(/conflict/i);
+    await expect(versionOf(SCENE_NO_BUMP)).resolves.toBe(2);
   });
 
   it("同一millisecondの連続metadata writeにも単調増加するISO OCC tokenを付ける", async () => {
