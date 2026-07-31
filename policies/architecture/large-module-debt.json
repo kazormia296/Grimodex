@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "scope": "Explicit ceilings for application services and lifecycle modules whose size is intentionally above the ordinary component budget.",
+  "policy": "These are migration ceilings, not approved complexity targets. Any growth fails architecture validation; after a reduction, refresh the ceiling.",
+  "modules": {
+    "src/application/chat/chatTurnStoreActions.ts": {
+      "maxLines": 2786,
+      "maxRuntimeImports": 38
+    },
+    "src/features/chat/contextBuilder.ts": {
+      "maxLines": 2395
+    },
+    "src/features/chat/chatApi.ts": {
+      "maxLines": 1482
+    },
+    "src/features/project/projectStore.ts": {
+      "maxLines": 940
+    },
+    "src/features/concurrency/externalWriteFeed.ts": {
+      "maxLines": 696
+    },
+    "src/features/workspace/store.ts": {
+      "maxLines": 564
+    }
+  }
+}

@@ -3,18 +3,28 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   collectFindings,
   collectArchitectureSnapshot,
+  collectLargeModuleSnapshot,
   compareArchitectureBaseline,
   createArchitectureBaseline,
+  createLargeModuleDebtManifest,
   createPersistenceDebtManifest,
   createGrowthWaivers,
   findNewFindings,
+  findLargeModuleDebtChanges,
   findPersistenceDebtChanges,
   growthWaiverOptionsAreValid,
   resolveImport,
+  validateLargeModuleDebtManifest,
 } from "./validate-architecture.mjs";
+
+const checkoutRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 
 async function fixtureRepo() {
   const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-architecture-"));
@@ -96,6 +106,157 @@ test("application root and lifecycle hosts have explicit size ceilings", async (
   ]);
   assert.equal(snapshot.metrics["app-root-lines"], 201);
   assert.equal(snapshot.metrics["largest-host-lines"], 301);
+});
+
+test("large module debt tracks ceilings and requires ratcheting reductions", async () => {
+  const fixture = await fixtureRepo();
+  const relative = "src/application/chat/turns.ts";
+  const manifest = {
+    schemaVersion: 1,
+    modules: {
+      [relative]: {
+        maxLines: 4,
+        maxRuntimeImports: 2,
+      },
+    },
+  };
+
+  await writeSource(
+    fixture.root,
+    relative,
+    [
+      "import { alpha } from './alpha';",
+      "export const first = alpha;",
+      "export const second = 2;",
+    ].join("\n"),
+  );
+
+  const reduced = await collectLargeModuleSnapshot({
+    repoRoot: fixture.root,
+    manifest,
+  });
+  assert.deepEqual(reduced.findings, []);
+  assert.deepEqual(findLargeModuleDebtChanges(reduced), {
+    introduced: [],
+    improvements: [
+      `${relative}:maxLines#manifest-4-observed-3`,
+      `${relative}:maxRuntimeImports#manifest-2-observed-1`,
+    ],
+  });
+  assert.deepEqual(createLargeModuleDebtManifest(reduced).modules[relative], {
+    maxLines: 3,
+    maxRuntimeImports: 1,
+  });
+
+  await writeSource(
+    fixture.root,
+    relative,
+    [
+      "import { alpha } from './alpha';",
+      "import { beta } from './beta';",
+      "import { gamma } from './gamma';",
+      "export const first = alpha;",
+      "export const second = beta;",
+    ].join("\n"),
+  );
+
+  const grown = await collectLargeModuleSnapshot({
+    repoRoot: fixture.root,
+    manifest,
+  });
+  assert.deepEqual(findLargeModuleDebtChanges(grown), {
+    introduced: [`${relative}:lines:5>4`, `${relative}:runtime-imports:3>2`],
+    improvements: [],
+  });
+});
+
+test("checked-in large module ceilings match the current checkout", async () => {
+  const manifest = JSON.parse(
+    await readFile(
+      path.join(checkoutRoot, "policies/architecture/large-module-debt.json"),
+      "utf8",
+    ),
+  );
+  validateLargeModuleDebtManifest(manifest);
+  const snapshot = await collectLargeModuleSnapshot({
+    repoRoot: checkoutRoot,
+    manifest,
+  });
+
+  assert.deepEqual(findLargeModuleDebtChanges(snapshot), {
+    introduced: [],
+    improvements: [],
+  });
+});
+
+test("large module manifest validation fails closed", () => {
+  assert.throws(
+    () => validateLargeModuleDebtManifest({ schemaVersion: 1, modulez: {} }),
+    /modules must be a plain object/,
+  );
+  assert.throws(
+    () =>
+      validateLargeModuleDebtManifest({
+        schemaVersion: 999,
+        modules: {},
+      }),
+    /schemaVersion must be 1/,
+  );
+  assert.throws(
+    () =>
+      validateLargeModuleDebtManifest({
+        schemaVersion: 1,
+        modules: {
+          "src/example.ts": { maxLines: "1" },
+        },
+      }),
+    /maxLines must be a positive integer/,
+  );
+  assert.throws(
+    () =>
+      validateLargeModuleDebtManifest({
+        schemaVersion: 1,
+        modules: {
+          "src/example.ts": { maxLines: 1, unexpected: true },
+        },
+      }),
+    /unknown config key unexpected/,
+  );
+});
+
+test("large module runtime import counting follows TypeScript runtime semantics", async () => {
+  const fixture = await fixtureRepo();
+  const relative = "src/application/chat/runtime-imports.ts";
+  await writeSource(
+    fixture.root,
+    relative,
+    [
+      'import type { TypeOnly } from "./type-only";',
+      'import { type InlineOnly } from "./inline-type";',
+      'import { value } from "./value";',
+      'export type { Exported } from "./exported";',
+      '/* import { Commented } from "./commented"; */',
+      'const lazy = import("./lazy");',
+      'const commonjs = require("./commonjs");',
+      'import assigned = require("./import-equals");',
+    ].join("\n"),
+  );
+  const manifest = {
+    schemaVersion: 1,
+    modules: {
+      [relative]: {
+        maxLines: 8,
+        maxRuntimeImports: 4,
+      },
+    },
+  };
+
+  const snapshot = await collectLargeModuleSnapshot({
+    repoRoot: fixture.root,
+    manifest,
+  });
+  assert.equal(snapshot.modules[0].runtimeImports, 4);
+  assert.deepEqual(snapshot.findings, []);
 });
 
 test("cycle graph includes relative imports and index.tsx targets", async () => {

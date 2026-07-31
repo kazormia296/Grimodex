@@ -10,6 +10,10 @@ const persistenceDebtManifestPath = path.join(
   repoRoot,
   "policies/architecture/renderer-persistence-debt.json",
 );
+const largeModuleDebtManifestPath = path.join(
+  repoRoot,
+  "policies/architecture/large-module-debt.json",
+);
 const PERSISTENCE_DEBT_CATEGORIES = [
   "renderer-drizzle-mutation",
   "renderer-raw-sql-read",
@@ -19,6 +23,7 @@ const PERSISTENCE_DEBT_CATEGORIES = [
   "store-direct-persistence",
 ];
 const ARCHITECTURE_BASELINE_SCHEMA_VERSION = 2;
+const LARGE_MODULE_DEBT_SCHEMA_VERSION = 1;
 const ARCHITECTURE_FINDING_RULES = [
   "cross-feature-store-import",
   "cross-feature-store-mutation",
@@ -76,29 +81,249 @@ function importSpecifiers(source) {
   ].map((match) => match[1]);
 }
 
-function runtimeImportSpecifiers(source) {
+function runtimeImportSpecifiers(source, fileName = "file.ts") {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
   const result = [];
-  const pattern =
-    /(?:^|[\n;])\s*import\s+(?!type\b)(?!["'])([\s\S]*?)\s+from\s+["']([^"']+)["']/g;
-  for (const match of source.matchAll(pattern)) {
-    result.push(match[2]);
+  const addModuleSpecifier = (moduleSpecifier) => {
+    if (moduleSpecifier && ts.isStringLiteralLike(moduleSpecifier)) {
+      result.push(moduleSpecifier.text);
+    }
+  };
+  const importClauseHasRuntimeBindings = (importClause) => {
+    if (!importClause) return true;
+    if (importClause.isTypeOnly || !importClause.namedBindings) {
+      return !importClause.isTypeOnly;
+    }
+    if (ts.isNamespaceImport(importClause.namedBindings)) return true;
+    return importClause.namedBindings.elements.some(
+      (element) => !element.isTypeOnly,
+    );
+  };
+  const exportDeclarationHasRuntimeBindings = (exportDeclaration) => {
+    if (exportDeclaration.isTypeOnly) return false;
+    const exportClause = exportDeclaration.exportClause;
+    if (!exportClause || !ts.isNamedExports(exportClause)) return true;
+    return exportClause.elements.some((element) => !element.isTypeOnly);
+  };
+
+  function visit(node) {
+    if (ts.isImportDeclaration(node)) {
+      if (importClauseHasRuntimeBindings(node.importClause)) {
+        addModuleSpecifier(node.moduleSpecifier);
+      }
+    } else if (ts.isExportDeclaration(node)) {
+      if (exportDeclarationHasRuntimeBindings(node)) {
+        addModuleSpecifier(node.moduleSpecifier);
+      }
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      if (
+        ts.isExternalModuleReference(node.moduleReference) &&
+        ts.isStringLiteralLike(node.moduleReference.expression)
+      ) {
+        addModuleSpecifier(node.moduleReference.expression);
+      }
+    } else if (ts.isCallExpression(node)) {
+      if (
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length > 0
+      ) {
+        addModuleSpecifier(node.arguments[0]);
+      } else if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "require" &&
+        node.arguments.length > 0
+      ) {
+        addModuleSpecifier(node.arguments[0]);
+      }
+    }
+    ts.forEachChild(node, visit);
   }
-  for (const match of source.matchAll(
-    /(?:^|[\n;])\s*import\s*["']([^"']+)["']/g,
-  )) {
-    result.push(match[1]);
-  }
-  for (const match of source.matchAll(
-    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-  )) {
-    result.push(match[1]);
-  }
-  for (const match of source.matchAll(
-    /(?:^|[\n;])\s*export\s+(?!type\b)([\s\S]*?)\s+from\s+["']([^"']+)["']/g,
-  )) {
-    result.push(match[2]);
-  }
+
+  visit(sourceFile);
   return result;
+}
+
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+export function validateLargeModuleDebtManifest(manifest) {
+  const errors = [];
+  if (!isPlainObject(manifest)) {
+    throw new Error(
+      "Invalid large-module debt manifest: root must be an object",
+    );
+  }
+  if (manifest.schemaVersion !== LARGE_MODULE_DEBT_SCHEMA_VERSION) {
+    errors.push(`schemaVersion must be ${LARGE_MODULE_DEBT_SCHEMA_VERSION}`);
+  }
+  if (!isPlainObject(manifest.modules)) {
+    errors.push("modules must be a plain object");
+  }
+  for (const field of ["scope", "policy"]) {
+    if (field in manifest && typeof manifest[field] !== "string") {
+      errors.push(`${field} must be a string when present`);
+    }
+  }
+
+  if (isPlainObject(manifest.modules)) {
+    for (const [relative, config] of Object.entries(manifest.modules)) {
+      if (
+        relative.length === 0 ||
+        relative.includes("\\") ||
+        path.posix.isAbsolute(relative) ||
+        path.posix.normalize(relative) !== relative ||
+        relative.split("/").includes("..")
+      ) {
+        errors.push(
+          `${relative || "<empty>"} must be a normalized repo-relative path`,
+        );
+      }
+      if (!isPlainObject(config)) {
+        errors.push(`${relative}: config must be a plain object`);
+        continue;
+      }
+      const unknownKeys = Object.keys(config).filter(
+        (key) => !["maxLines", "maxRuntimeImports"].includes(key),
+      );
+      if (unknownKeys.length > 0) {
+        errors.push(`${relative}: unknown config key ${unknownKeys[0]}`);
+      }
+      if (!Number.isInteger(config.maxLines) || config.maxLines <= 0) {
+        errors.push(`${relative}: maxLines must be a positive integer`);
+      }
+      if (
+        Object.hasOwn(config, "maxRuntimeImports") &&
+        (!Number.isInteger(config.maxRuntimeImports) ||
+          config.maxRuntimeImports < 0)
+      ) {
+        errors.push(
+          `${relative}: maxRuntimeImports must be a non-negative integer`,
+        );
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Invalid large-module debt manifest: ${errors.join("; ")}`);
+  }
+  return manifest;
+}
+
+function largeModuleManifestEntries(manifest) {
+  return Object.entries(manifest.modules);
+}
+
+/**
+ * Measure the explicitly tracked large modules independently of the ordinary
+ * architecture baseline. The manifest is a ceiling: a reduction is reported
+ * so the ceiling can ratchet down, while growth is always a hard failure.
+ */
+export async function collectLargeModuleSnapshot(options = {}) {
+  const currentRepoRoot = options.repoRoot ?? repoRoot;
+  const manifest = validateLargeModuleDebtManifest(
+    options.manifest ?? {
+      schemaVersion: LARGE_MODULE_DEBT_SCHEMA_VERSION,
+      modules: {},
+    },
+  );
+  const modules = [];
+  const findings = [];
+
+  for (const [relative, rawConfig] of largeModuleManifestEntries(manifest)) {
+    const config = rawConfig;
+    const absolute = path.join(currentRepoRoot, relative);
+    if (!isFile(absolute)) {
+      modules.push({ relative, lines: null, runtimeImports: null, config });
+      findings.push(`${relative}:missing`);
+      continue;
+    }
+
+    const source = await readFile(absolute, "utf8");
+    const lines = source.split(/\r?\n/).length;
+    const runtimeImports = runtimeImportSpecifiers(source, relative).length;
+    modules.push({ relative, lines, runtimeImports, config });
+
+    if (Number.isInteger(config.maxLines) && lines > config.maxLines) {
+      findings.push(`${relative}:lines:${lines}>${config.maxLines}`);
+    }
+    if (
+      Number.isInteger(config.maxRuntimeImports) &&
+      runtimeImports > config.maxRuntimeImports
+    ) {
+      findings.push(
+        `${relative}:runtime-imports:${runtimeImports}>${config.maxRuntimeImports}`,
+      );
+    }
+  }
+
+  return {
+    modules,
+    findings: findings.sort(),
+  };
+}
+
+export function findLargeModuleDebtChanges(snapshot) {
+  const introduced = [...(snapshot.findings ?? [])];
+  const improvements = [];
+
+  for (const entry of snapshot.modules ?? []) {
+    const config = entry.config ?? {};
+    if (entry.lines === null) continue;
+    if (Number.isInteger(config.maxLines) && entry.lines < config.maxLines) {
+      improvements.push(
+        `${entry.relative}:maxLines#manifest-${config.maxLines}-observed-${entry.lines}`,
+      );
+    }
+    if (
+      Number.isInteger(config.maxRuntimeImports) &&
+      entry.runtimeImports < config.maxRuntimeImports
+    ) {
+      improvements.push(
+        `${entry.relative}:maxRuntimeImports#manifest-${config.maxRuntimeImports}-observed-${entry.runtimeImports}`,
+      );
+    }
+  }
+
+  return {
+    introduced: [...new Set(introduced)].sort(),
+    improvements: [...new Set(improvements)].sort(),
+  };
+}
+
+export function createLargeModuleDebtManifest(snapshot) {
+  const modules = Object.fromEntries(
+    (snapshot.modules ?? [])
+      .filter((entry) => entry.lines !== null)
+      .sort((left, right) => left.relative.localeCompare(right.relative))
+      .map((entry) => [
+        entry.relative,
+        {
+          maxLines: entry.lines,
+          ...(Number.isInteger(entry.config?.maxRuntimeImports)
+            ? { maxRuntimeImports: entry.runtimeImports }
+            : {}),
+        },
+      ]),
+  );
+  return {
+    schemaVersion: LARGE_MODULE_DEBT_SCHEMA_VERSION,
+    scope:
+      "Explicit ceilings for application services and lifecycle modules whose size is intentionally above the ordinary component budget.",
+    policy:
+      "These are migration ceilings, not approved complexity targets. Any growth fails architecture validation; after a reduction, refresh the ceiling.",
+    modules,
+  };
 }
 
 function importedStoreBindings(source) {
@@ -773,8 +998,10 @@ export async function collectArchitectureSnapshot(options = {}) {
 
     if (relative === "src/features/chat/chatStore.ts") {
       trackedMetrics["chat-store-lines"] = lineCount;
-      trackedMetrics["chat-store-runtime-imports"] =
-        runtimeImportSpecifiers(source).length;
+      trackedMetrics["chat-store-runtime-imports"] = runtimeImportSpecifiers(
+        source,
+        relative,
+      ).length;
     }
 
     for (const specifier of importSpecifiers(source)) {
@@ -1475,6 +1702,12 @@ async function main() {
   const persistenceDebtManifest = JSON.parse(
     await readFile(persistenceDebtManifestPath, "utf8"),
   );
+  const largeModuleDebtManifest = validateLargeModuleDebtManifest(
+    JSON.parse(await readFile(largeModuleDebtManifestPath, "utf8")),
+  );
+  const largeModuleSnapshot = await collectLargeModuleSnapshot({
+    manifest: largeModuleDebtManifest,
+  });
   const architectureComparison = compareArchitectureBaseline(
     snapshot,
     baseline,
@@ -1483,18 +1716,34 @@ async function main() {
     persistenceFindings,
     persistenceDebtManifest,
   );
+  const largeModuleChanges = findLargeModuleDebtChanges(largeModuleSnapshot);
   const introduced = [
     ...architectureComparison.introduced,
     ...persistenceChanges.introduced,
+    ...largeModuleChanges.introduced.map(
+      (finding) => `large-module:${finding}`,
+    ),
   ];
   const improvements = [
     ...architectureComparison.improvements,
     ...persistenceChanges.improvements,
+    ...largeModuleChanges.improvements.map(
+      (finding) => `large-module:${finding}`,
+    ),
   ];
 
   if (hasCliFlag("--write-baseline")) {
+    if (largeModuleChanges.introduced.length > 0) {
+      console.error(
+        "Large-module ceiling growth cannot be waived by --write-baseline.",
+      );
+      printList("Large-module growth", largeModuleChanges.introduced);
+      process.exitCode = 1;
+      return;
+    }
     const growth = [
-      ...introduced,
+      ...architectureComparison.introduced,
+      ...persistenceChanges.introduced,
       ...architectureComparison.metricIncreases.map(
         ({ metric, baseline: previous, current }) =>
           `metric:${metric}:${previous}->${current}`,
@@ -1535,8 +1784,12 @@ async function main() {
         2,
       )}\n`,
     );
+    await writeFile(
+      largeModuleDebtManifestPath,
+      `${JSON.stringify(createLargeModuleDebtManifest(largeModuleSnapshot), null, 2)}\n`,
+    );
     console.log(
-      `Wrote ${baselinePath} and ${persistenceDebtManifestPath} (architecture debt ratchet baseline).`,
+      `Wrote ${baselinePath}, ${persistenceDebtManifestPath}, and ${largeModuleDebtManifestPath} (architecture debt ratchet baseline).`,
     );
     return;
   }

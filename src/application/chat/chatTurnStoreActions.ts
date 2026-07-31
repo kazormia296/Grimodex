@@ -947,7 +947,11 @@ function createChatTurnStoreActions(
             ? snapshotInputTokenRoute(turnRoute)
             : null;
           const tokenEstimatorFamily = getTokenEstimatorFamily();
-          const agentContextPlanDigest = get().contextPlan?.digest ?? null;
+          // The prepared context is the immutable payload for this turn. The
+          // live store publication may be suppressed when authority changes
+          // while preparation is awaiting I/O, so telemetry must never read
+          // the mutable UI projection here.
+          const agentContextPlanDigest = prepared?.contextPlan?.digest ?? null;
           const agentApiVariant = turnRoute
             ? turnRoute.apiVariant
             : xprov
@@ -1831,7 +1835,10 @@ function createChatTurnStoreActions(
           content:
             m.role === "assistant" ? stripToolProtocol(m.content) : m.content,
         }));
-        const chatContextPlanDigest = get().contextPlan?.digest ?? null;
+        // `prepared` is the context that is actually finalized and sent. The
+        // live `contextPlan` is only a UI projection and can intentionally be
+        // stale when authority changed during preparation.
+        const chatContextPlanDigest = prepared?.contextPlan?.digest ?? null;
         const turnTransport =
           turnRoute?.transport ??
           (turnRoute?.provider === "cli" ? "cli-exec" : "http");

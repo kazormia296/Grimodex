@@ -3352,6 +3352,68 @@ describe("useChatStore", () => {
       );
     });
 
+    it("records the prepared context digest when live publication is suppressed", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        contextPlan: null,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      mockBuildSystemPrompt.mockImplementationOnce(() => {
+        // Force local UI authority to become stale after preparation captured
+        // its immutable source. The send may continue with `prepared`, but the
+        // contextPlan store projection must remain unpublished.
+        useChatStore.setState({ activeSceneId: "scene-2" });
+        return {
+          prompt: "prepared system prompt",
+          totalTokens: 42,
+          layers: [],
+          contextPlan: {
+            requestId: "request-prepared-digest",
+            items: [],
+            decisions: [],
+            usage: {
+              candidateTokens: 0,
+              selectedTokens: 0,
+              trimmedTokens: 0,
+              budgetTokens: 1_000,
+            },
+            digest: "ctx-prepared-digest",
+          },
+        };
+      });
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          callbacks.onDone({
+            stopReason: "end_turn",
+            inputTokens: 50,
+            outputTokens: 10,
+          });
+          return () => {};
+        },
+      );
+
+      await useChatStore.getState().sendMessage("authority race");
+
+      const usage = mockRecordAiUsage.mock.calls.find(
+        ([input]) => input.surface === "chat",
+      )?.[0];
+      const drift = usage?.metadata?.["inputTokenDrift"] as
+        | Record<string, unknown>
+        | undefined;
+      expect(useChatStore.getState().contextPlan).toBeNull();
+      expect(drift?.contextPlanDigest).toBe("ctx-prepared-digest");
+    });
+
     it("非エージェント送信は chatModelOverride(一時モデル)を transport へ渡し、既定モデルは書き換えない", async () => {
       // 回帰: 一時モデルが送信に効かず既定へフォールバックしていた(非エージェント
       // 経路で override を transport に渡し忘れていた)バグの gate。
