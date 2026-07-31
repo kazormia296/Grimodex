@@ -48,8 +48,10 @@ vi.mock("./CodexEntryHeader", () => ({
     name: string;
     type: string;
     aliases: string[];
+    readings: Record<string, string[]>;
     onNameChange: (value: string) => void;
     onNameCommit: () => void;
+    onPrimaryReadingCommit: (value: string) => void;
     onTypeChange: (value: "location") => void;
     onAliasesChange: (value: string[]) => void;
   }) => (
@@ -63,6 +65,21 @@ vi.mock("./CodexEntryHeader", () => ({
       <output data-testid="draft-aliases">{props.aliases.join(",")}</output>
       <button data-testid="commit-name" onClick={props.onNameCommit}>
         commit name
+      </button>
+      <output data-testid="draft-primary-reading">
+        {props.readings[props.name]?.[0] ?? ""}
+      </output>
+      <button
+        data-testid="commit-primary-reading"
+        onClick={() => props.onPrimaryReadingCommit("せつなあらた")}
+      >
+        commit reading
+      </button>
+      <button
+        data-testid="clear-primary-reading"
+        onClick={() => props.onPrimaryReadingCommit("")}
+      >
+        clear reading
       </button>
       <button
         data-testid="change-type"
@@ -228,6 +245,63 @@ describe("CodexDetailContent draft integrity", () => {
         surfaces: ["刹那"],
       }),
     ]);
+  });
+
+  it("saves a hero reading edit while preserving alternate and alias readings", async () => {
+    const entry: CodexEntry = {
+      ...INITIAL_ENTRY,
+      name: "刹那",
+      aliases: '["剣聖"]',
+      readings:
+        '{"刹那":["せつな","せちな"],"剣聖":["けんせい"]}',
+    };
+    const update = vi.fn(async () => ({ persisted: true, version: 2 }));
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry, update });
+
+    render(<CodexDetailContent entry={entry} onDelete={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("commit-primary-reading"));
+
+    await act(async () => {
+      await awaitPendingEditorWrites();
+    });
+
+    expect(screen.getByTestId("draft-primary-reading")).toHaveTextContent(
+      "せつなあらた",
+    );
+    expect(update).toHaveBeenCalledWith(
+      entry.id,
+      {
+        readings:
+          '{"刹那":["せつなあらた","せちな"],"剣聖":["けんせい"]}',
+      },
+      { baseVersion: 1 },
+    );
+  });
+
+  it("promotes an alternate when the hero representative reading is cleared", async () => {
+    const entry: CodexEntry = {
+      ...INITIAL_ENTRY,
+      name: "刹那",
+      readings: '{"刹那":["せつな","せちな"]}',
+    };
+    const update = vi.fn(async () => ({ persisted: true, version: 2 }));
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry, update });
+
+    render(<CodexDetailContent entry={entry} onDelete={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("clear-primary-reading"));
+
+    await act(async () => {
+      await awaitPendingEditorWrites();
+    });
+
+    expect(screen.getByTestId("draft-primary-reading")).toHaveTextContent(
+      "せちな",
+    );
+    expect(update).toHaveBeenCalledWith(
+      entry.id,
+      { readings: '{"刹那":["せちな"]}' },
+      { baseVersion: 1 },
+    );
   });
 
   afterEach(async () => {
