@@ -212,6 +212,7 @@ export async function declineCodexApprovals(
 
 interface ChatMessageViewportProps {
   activeSessionId: string | null;
+  isViewportActive: boolean;
   codexApproval: CodexApproval | null;
   onCodexApprovalDecision: (decision: "accept" | "decline") => Promise<void>;
   renderMessage: (message: ChatMessageType, isStreaming: boolean) => ReactNode;
@@ -354,6 +355,7 @@ export function createRuntimeChatStreamingDraftControl() {
  */
 function ChatMessageViewport({
   activeSessionId,
+  isViewportActive,
   codexApproval,
   onCodexApprovalDecision,
   renderMessage,
@@ -380,11 +382,13 @@ function ChatMessageViewport({
     visibleMessages,
     virtualizer,
     entranceAnim,
+    measureMessageElement,
     handleListScroll,
   } = useChatMessageViewport({
     messages,
     isLoadingMessages,
     activeSessionId,
+    isViewportActive,
   });
   const transcriptMessages = useMemo(
     () => messages.filter((message) => message.role !== "system"),
@@ -445,7 +449,7 @@ function ChatMessageViewport({
                     }
                     aria-setsize={transcriptMessages.length}
                     data-index={virtualItem.index}
-                    ref={virtualizer.measureElement}
+                    ref={measureMessageElement}
                     className="absolute left-0 top-0 w-full pb-4"
                     style={{
                       transform: `translateY(${virtualItem.start}px)`,
@@ -506,6 +510,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const chatGate = useAiGate("chat");
+  const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
+  const isMessageViewportActive =
+    isActive && (maximizedPanelId === null || maximizedPanelId === "chat");
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
     (s) => s.workspaceOpenRevision,
@@ -1269,6 +1276,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
       <ChatMessageViewport
         activeSessionId={activeSessionId}
+        isViewportActive={isMessageViewportActive}
         codexApproval={codexApproval}
         onCodexApprovalDecision={handleCodexApprovalDecision}
         renderMessage={renderViewportMessage}
