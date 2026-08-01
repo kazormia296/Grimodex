@@ -32,11 +32,11 @@ test("package.json exposes deterministic Electron runtime performance contracts"
 
   assert.equal(
     packageJson.scripts["test:electron-perf"],
-    "node --test scripts/electron-runtime-performance-workflow.test.mjs scripts/runtime-performance-fixture.test.mjs scripts/runtime-performance-budget.test.mjs",
+    "node --test scripts/electron-runtime-performance-workflow.test.mjs scripts/runtime-performance-fixture.test.mjs scripts/runtime-performance-budget.test.mjs scripts/runtime-performance-retry.test.mjs",
   );
   assert.equal(
     packageJson.scripts["electron:perf:ci"],
-    `node electron/scripts/performance-benchmark.mjs --output ${metricsPath}`,
+    `node electron/scripts/performance-benchmark.mjs --retry-transient-once --output ${metricsPath}`,
   );
 });
 
@@ -66,7 +66,7 @@ test("CI runs a fixed Linux Electron runtime gate and always publishes its evide
   );
   assert.ok(upload, "runtime metrics must be uploaded");
   assert.equal(upload.if, "always()");
-  assert.equal(upload.with.path, metricsPath);
+  assert.equal(upload.with.path, ".artifacts/electron-runtime-performance/");
   assert.equal(upload.with["if-no-files-found"], "error");
   assert.equal(upload.with["retention-days"], 14);
 });

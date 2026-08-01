@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
@@ -9,12 +15,28 @@ import process from "node:process";
 
 import { rootDir } from "./build.mjs";
 import { buildRuntimePerformanceFixtureForReview } from "./runtime-performance-fixture.mjs";
+import {
+  buildRuntimePerformanceAttemptPaths,
+  runRuntimePerformanceWithRetry,
+} from "./runtime-performance-retry.mjs";
+import {
+  buildRuntimeBudgets,
+  evaluateRuntimePerformance,
+} from "../../scripts/runtime-performance-budget.mjs";
 
 export function parsePerformanceBenchmarkArguments(argv) {
   let outputPath = null;
   let reviewFixtureId = null;
+  let retryTransientOnce = false;
   for (let index = 2; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === "--retry-transient-once") {
+      if (retryTransientOnce) {
+        throw new Error("--retry-transient-once may only be specified once");
+      }
+      retryTransientOnce = true;
+      continue;
+    }
     if (argument === "--output") {
       const value = argv[index + 1];
       if (!value || value.startsWith("--")) {
@@ -37,7 +59,7 @@ export function parsePerformanceBenchmarkArguments(argv) {
     }
     throw new Error(`unknown argument: ${argument}`);
   }
-  return { outputPath, reviewFixtureId };
+  return { outputPath, reviewFixtureId, retryTransientOnce };
 }
 
 export function buildPerformanceBenchmarkInvocation(
@@ -70,7 +92,10 @@ export function runPerformanceBenchmark(argv = process.argv) {
   const metricsPath =
     options.outputPath ?? path.join(temporaryDirectory, "metrics.json");
   mkdirSync(path.dirname(metricsPath), { recursive: true });
-  rmSync(metricsPath, { force: true });
+  const attemptPaths = buildRuntimePerformanceAttemptPaths(metricsPath);
+  for (const candidate of Object.values(attemptPaths)) {
+    rmSync(candidate, { force: true });
+  }
   const smokePath = path.join(rootDir, "electron", "scripts", "smoke.mjs");
   const budgetPath = path.join(
     rootDir,
@@ -78,37 +103,118 @@ export function runPerformanceBenchmark(argv = process.argv) {
     "runtime-performance-budget.mjs",
   );
   const invocation = buildPerformanceBenchmarkInvocation(options, metricsPath);
-  const smokeEnv = { ...process.env, ...invocation.smokeEnvironment };
-  if (!options.reviewFixtureId) {
-    delete smokeEnv.GRIMODEX_PERF_REVIEW_FIXTURE;
-  }
-
-  const smoke = spawnSync(process.execPath, [smokePath], {
-    cwd: rootDir,
-    env: smokeEnv,
-    stdio: "inherit",
-  });
-  if (smoke.status !== 0) {
-    console.error(
-      `[electron:perf] smoke/measurement failed; metrics target: ${metricsPath}`,
-    );
-    return smoke.status ?? 1;
-  }
-
-  const budget = spawnSync(
-    process.execPath,
-    [budgetPath, ...invocation.budgetArguments],
-    {
-      cwd: rootDir,
-      stdio: "inherit",
-    },
+  const expectedFixture = buildRuntimePerformanceFixtureForReview(
+    options.reviewFixtureId,
   );
-  if (budget.status !== 0) {
-    console.error(
-      `[electron:perf] budget failed; metrics retained: ${metricsPath}`,
+  const executeAttempt = ({ attempt, metricsPath: attemptMetricsPath }) => {
+    rmSync(attemptMetricsPath, { force: true });
+    const smokeEnvironment = {
+      ...invocation.smokeEnvironment,
+      GRIMODEX_PERF_OUTPUT: attemptMetricsPath,
+    };
+    const smokeEnv = { ...process.env, ...smokeEnvironment };
+    if (!options.reviewFixtureId) {
+      delete smokeEnv.GRIMODEX_PERF_REVIEW_FIXTURE;
+    }
+
+    const useFreshXvfb =
+      attempt === 2 &&
+      options.retryTransientOnce &&
+      process.platform === "linux";
+    const smokeCommand = useFreshXvfb ? "xvfb-run" : process.execPath;
+    const smokeArguments = useFreshXvfb
+      ? [
+          "--auto-servernum",
+          "--server-args=-screen 0 1920x1080x24",
+          process.execPath,
+          smokePath,
+        ]
+      : [smokePath];
+    console.log(
+      `[electron:perf] measurement attempt ${attempt}${useFreshXvfb ? " (fresh Electron + Xvfb)" : ""}`,
     );
-    return budget.status ?? 1;
-  }
+    const smoke = spawnSync(smokeCommand, smokeArguments, {
+      cwd: rootDir,
+      env: smokeEnv,
+      stdio: "inherit",
+    });
+    if (smoke.status !== 0) {
+      console.error(
+        `[electron:perf] smoke/measurement failed on attempt ${attempt}; metrics target: ${attemptMetricsPath}`,
+      );
+      return {
+        status: smoke.status ?? 1,
+        phase: "measurement",
+        metrics: null,
+        evaluation: null,
+      };
+    }
+
+    const budgetArguments = [attemptMetricsPath];
+    if (options.reviewFixtureId) {
+      budgetArguments.push("--review-fixture", options.reviewFixtureId);
+    }
+    const budget = spawnSync(
+      process.execPath,
+      [budgetPath, ...budgetArguments],
+      {
+        cwd: rootDir,
+        stdio: "inherit",
+      },
+    );
+    let metrics = null;
+    let evaluation = null;
+    try {
+      metrics = JSON.parse(readFileSync(attemptMetricsPath, "utf8"));
+      evaluation = evaluateRuntimePerformance(
+        metrics,
+        buildRuntimeBudgets(expectedFixture),
+        expectedFixture,
+      );
+    } catch (error) {
+      console.error(
+        `[electron:perf] could not read attempt ${attempt} metrics: ${error.message}`,
+      );
+    }
+
+    if (budget.status !== 0 || !evaluation?.ok) {
+      console.error(
+        `[electron:perf] budget failed on attempt ${attempt}; metrics retained: ${attemptMetricsPath}`,
+      );
+      return {
+        status: budget.status === 0 ? 1 : (budget.status ?? 1),
+        phase: "budget",
+        metrics,
+        evaluation,
+      };
+    }
+
+    return {
+      status: 0,
+      phase: "complete",
+      metrics,
+      evaluation,
+    };
+  };
+
+  const result = runRuntimePerformanceWithRetry({
+    outputPath: metricsPath,
+    retryTransientOnce: options.retryTransientOnce,
+    executeAttempt,
+    copyMetrics: copyFileSync,
+    onRecovered: (decision) => {
+      const message =
+        `Recovered after one transient performance retry: ` +
+        `${decision.interaction} ${decision.durationMs}ms Long Task, ` +
+        `${(decision.unattributedRatio * 100).toFixed(2)}% unattributed. ` +
+        `Both attempt artifacts were retained.`;
+      console.warn(`[electron:perf] WARNING ${message}`);
+      if (process.env.GITHUB_ACTIONS === "true") {
+        console.warn(`::warning title=Transient performance retry::${message}`);
+      }
+    },
+  });
+  if (result.status !== 0) return result.status;
 
   if (temporaryDirectory) {
     rmSync(temporaryDirectory, { recursive: true, force: true });
