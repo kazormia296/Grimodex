@@ -14,29 +14,29 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cpu = ["torch==2.11.0"]
-cu128 = ["torch==2.11.0"]
+cpu = ["torch==2.13.0"]
+cu130 = ["torch==2.13.0"]
 rocm72 = [
   "pytorch-triton-rocm",
-  "torch==2.11.0",
+  "torch==2.13.0",
   "triton-rocm",
 ]
 
 [build-system]
-requires = ["setuptools==81.0.0"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["grimodex_lfm_eval*"]
 
 [dependency-groups]
-dev = ["pytest==9.0.2"]
+dev = ["pytest==9.0.3"]
 
 [tool.uv]
 conflicts = [
   [
     { extra = "cpu" },
-    { extra = "cu128" },
+    { extra = "cu130" },
     { extra = "rocm72" },
   ],
 ]
@@ -44,7 +44,7 @@ conflicts = [
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu", extra = "cpu" },
-  { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cu130", extra = "cu130" },
   { index = "pytorch-rocm72", extra = "rocm72" },
 ]
 pytorch-triton-rocm = [
@@ -60,8 +60,8 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [[tool.uv.index]]
