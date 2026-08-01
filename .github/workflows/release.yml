@@ -667,7 +667,7 @@ jobs:
           ref: ${{ needs.release-gate.outputs.checkout_ref }}
 
       - name: Install Arch packaging tools
-        run: pacman -Syu --noconfirm --needed pacman-contrib jq git
+        run: pacman -Syu --noconfirm --needed pacman-contrib patchelf jq git
 
       - name: Download Electron Linux artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -708,7 +708,18 @@ jobs:
           mkdir package-check
           bsdtar -xf "${PACKAGES[0]}" -C package-check
           test -x package-check/opt/Grimodex/grimodex
+          test -x package-check/opt/Grimodex/grimodex-bin
           test "$(readlink package-check/usr/bin/grimodex)" = '/opt/Grimodex/grimodex'
+          test -f package-check/opt/Grimodex/libgrimodex-ime-identity.so
+          grep -Fq -- '--ozone-platform=x11' \
+            package-check/opt/Grimodex/grimodex
+          readelf -d package-check/opt/Grimodex/grimodex-bin \
+            | grep -Fq 'Shared library: [libgrimodex-ime-identity.so]'
+          nm -D --defined-only \
+            package-check/opt/Grimodex/libgrimodex-ime-identity.so \
+            | grep -Fq ' g_get_prgname'
+          grep -Fqx 'Exec=/usr/bin/grimodex %U' \
+            package-check/usr/share/applications/grimodex.desktop
           test "$(cat package-check/opt/Grimodex/resources/grimodex-package-channel)" = arch
           test "$(stat -c '%a' package-check/opt/Grimodex/chrome-sandbox)" = 755
           ls -l "${PACKAGES[0]}"

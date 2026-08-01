@@ -15,8 +15,13 @@ describe("Arch packaging transition", () => {
     assert.match(pkgbuild, /Electron \+ React/);
     assert.match(pkgbuild, /Grimodex-\$\{pkgver\}-linux-amd64\.deb/);
     assert.doesNotMatch(pkgbuild, /webkit2gtk/);
+    assert.match(pkgbuild, /'alsa-lib'/);
+    assert.match(pkgbuild, /makedepends=\('patchelf'\)/);
     assert.match(pkgbuild, /\/usr\/bin\/grimodex/);
-    assert.match(pkgbuild, /\/opt\/Grimodex\/grimodex/);
+    assert.match(pkgbuild, /grimodex-launcher/);
+    assert.match(pkgbuild, /grimodex-ime-identity/);
+    assert.match(pkgbuild, /patchelf --add-needed/);
+    assert.match(pkgbuild, /Exec=\/usr\/bin\/grimodex %U/);
     assert.match(pkgbuild, /grimodex-package-channel/);
     assert.match(pkgbuild, /printf 'arch\\n'/);
     for (const dependency of [
@@ -32,6 +37,19 @@ describe("Arch packaging transition", () => {
     ]) {
       assert.match(pkgbuild, new RegExp(`'${dependency}'`));
     }
+
+    const launcher = await readFile(
+      path.join(root, "packaging/arch/grimodex-launcher"),
+      "utf8",
+    );
+    const identitySource = await readFile(
+      path.join(root, "packaging/arch/grimodex-ime-identity.c"),
+      "utf8",
+    );
+    assert.match(launcher, /--ozone-platform=x11/);
+    assert.match(launcher, /exec \/opt\/Grimodex\/grimodex-bin/);
+    assert.match(identitySource, /const char \*g_get_prgname\(void\)/);
+    assert.match(identitySource, /return "grimodex"/);
   });
 
   it("documents the package-manager-only migration path for existing Tauri Arch users", async () => {
@@ -63,7 +81,11 @@ describe("Arch packaging transition", () => {
       .map((step) => step.run)
       .filter(Boolean)
       .join("\n");
-    assert.match(commands, /readlink package-check\/usr\/bin\/grimodex/);
+    assert.match(commands, /libgrimodex-ime-identity\.so/);
+    assert.match(commands, /g_get_prgname/);
+    assert.match(commands, /--ozone-platform=x11/);
+    assert.match(commands, /Shared library: \[libgrimodex-ime-identity\.so\]/);
+    assert.match(commands, /Exec=\/usr\/bin\/grimodex %U/);
     assert.match(commands, /grimodex-package-channel/);
     assert.match(commands, /chrome-sandbox/);
   });
