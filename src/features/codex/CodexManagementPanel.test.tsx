@@ -438,6 +438,28 @@ describe("CodexManagementPanel", () => {
       expect(screen.getByTestId("context-mode-selector")).toBeInTheDocument();
     });
 
+    it("keeps the selected detail tab when switching entries", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+
+      await waitFor(() => {
+        expect(screen.getByText("アリス")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+      await user.click(screen.getByTestId("detail-tab-tracking"));
+      expect(screen.getByTestId("context-mode-selector")).toBeInTheDocument();
+
+      await user.click(screen.getByTestId("codex-entry-codex-2"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("codex-detail-name")).toHaveValue(
+          "不思議の国",
+        );
+        expect(screen.getByTestId("context-mode-selector")).toBeInTheDocument();
+      });
+    });
+
     it("shows aliases field in Details tab (default)", async () => {
       const user = userEvent.setup();
       mockListCodexEntries.mockResolvedValue(mockEntries);
