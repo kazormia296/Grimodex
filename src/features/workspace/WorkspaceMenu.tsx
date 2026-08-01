@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 
 export function WorkspaceMenu() {
   const { t } = useTranslation();
@@ -14,6 +15,12 @@ export function WorkspaceMenu() {
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
     (s) => s.workspaceOpenRevision,
+  );
+  const workspaceOpenRequestInProgress = useWorkspaceStore(
+    (s) => s.workspaceOpenRequestInProgress,
+  );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (s) => s.workspaceSwitchInProgress,
   );
 
   const [isOpen, setIsOpen] = useState(false);
@@ -34,16 +41,26 @@ export function WorkspaceMenu() {
   const recentWorkspaces = (globalSettings?.recentWorkspaces ?? [])
     .filter((ws) => ws.path !== activeWorkspacePath)
     .slice(0, 4);
+  const workspaceBusy =
+    workspaceOpenRequestInProgress || workspaceSwitchInProgress;
 
   async function handleOpenOther() {
+    if (workspaceBusy) return;
     setIsOpen(false);
-    const path = await openFolderDialog();
-    if (path) {
-      await requestOpenWorkspace(path);
+    try {
+      const path = await openFolderDialog();
+      if (path) await requestOpenWorkspace(path);
+    } catch (error) {
+      debugLog.error(
+        "workspaceMenu",
+        "workspace picker request failed",
+        errorDetail(error),
+      );
     }
   }
 
   function handleShowLauncher() {
+    if (workspaceBusy) return;
     setIsOpen(false);
     showLauncher();
   }
@@ -60,6 +77,7 @@ export function WorkspaceMenu() {
         data-testid="workspace-menu-trigger"
         data-workspace-open-revision={workspaceOpenRevision}
         onClick={() => setIsOpen(!isOpen)}
+        disabled={workspaceBusy}
         className="flex items-center gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
       >
         <span className="max-w-40 truncate">
@@ -88,9 +106,10 @@ export function WorkspaceMenu() {
             <button
               key={ws.path}
               type="button"
+              disabled={workspaceBusy}
               onClick={() => {
                 setIsOpen(false);
-                openRecentWorkspace(ws.path);
+                void openRecentWorkspace(ws.path);
               }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             >
@@ -104,6 +123,7 @@ export function WorkspaceMenu() {
           <button
             type="button"
             onClick={handleOpenOther}
+            disabled={workspaceBusy}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <span className="w-4" />
@@ -112,6 +132,7 @@ export function WorkspaceMenu() {
           <button
             type="button"
             onClick={handleOpenOther}
+            disabled={workspaceBusy}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <span className="w-4" />
@@ -123,6 +144,7 @@ export function WorkspaceMenu() {
           <button
             type="button"
             onClick={handleShowLauncher}
+            disabled={workspaceBusy}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <span className="w-4" />

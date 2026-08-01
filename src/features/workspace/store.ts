@@ -34,6 +34,11 @@ import {
 } from "@/features/project/projectLoadGate";
 import { hydrateWorkspaceStores } from "@/application/workspace/workspaceHydration";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import {
+  beginWorkspaceOpenRequest,
+  runWorkspaceOpenRequest,
+  type WorkspaceOpenOutcome,
+} from "./workspaceOpenRequest";
 
 export type {
   GlobalSettings,
@@ -42,6 +47,8 @@ export type {
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
 
+export type { WorkspaceOpenOutcome } from "./workspaceOpenRequest";
+
 interface OpenWorkspaceResult {
   name: string;
   isExisting: boolean;
@@ -49,7 +56,7 @@ interface OpenWorkspaceResult {
   workspaceId?: string;
 }
 
-interface WorkspaceState {
+export interface WorkspaceState {
   view: AppView;
   globalSettings: GlobalSettings | null;
   activeWorkspacePath: string | null;
@@ -63,6 +70,8 @@ interface WorkspaceState {
   workspaceOpenRevision: number;
   /** True from pre-open quiesce until all post-swap store hydration settles. */
   workspaceSwitchInProgress: boolean;
+  /** True from the first path validation until that user request settles. */
+  workspaceOpenRequestInProgress: boolean;
   /** True only after the active DB's project/settings hydration completed. */
   workspaceHydrated: boolean;
   activeWorkspaceName: string | null;
@@ -72,7 +81,7 @@ interface WorkspaceState {
   showSampleTour: boolean;
 
   initialize: () => Promise<void>;
-  openWorkspace: (path: string) => Promise<void>;
+  openWorkspace: (path: string) => Promise<WorkspaceOpenOutcome>;
   requestOpenWorkspace: (path: string) => Promise<void>;
   openRecentWorkspace: (path: string) => Promise<void>;
   trustAndOpen: () => Promise<void>;
@@ -89,10 +98,7 @@ interface WorkspaceState {
   seedAndOpenSample: (language: string, aiPolicy: string) => Promise<void>;
 }
 
-/**
- * openWorkspace の JS 側 in-flight ガード。連打で open_workspace が Rust の
- * open_lock 待ちに積まれるのと、quiesce / recorder suspend の多重実行を防ぐ。
- */
+// JS側でも多重openとquiesce／recorder suspendの重複を防ぐ。
 let openWorkspaceInFlight = false;
 
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
@@ -102,6 +108,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   activeWorkspaceId: null,
   workspaceOpenRevision: 0,
   workspaceSwitchInProgress: false,
+  workspaceOpenRequestInProgress: false,
   workspaceHydrated: false,
   activeWorkspaceName: null,
   error: null,
@@ -129,14 +136,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // welcome/launcher の好みは無視し、最後に開いていたワークスペース
       // （= main 窓が開いているもの）を直接開いて editor へ。
       if (isPanelWindow() && settings.lastActiveWorkspace) {
-        const valid = await invoke<boolean>("validate_workspace_path", {
-          path: settings.lastActiveWorkspace,
-        });
-        if (valid) {
-          await get().requestOpenWorkspace(settings.lastActiveWorkspace);
-          if (get().view === "loading") set({ view: "launcher" });
-          return;
-        }
+        await get().openRecentWorkspace(settings.lastActiveWorkspace);
+        if (get().view === "loading") set({ view: "launcher" });
+        return;
       }
 
       // No workspaces at all → welcome screen
@@ -153,17 +155,12 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
 
       // Try to open last active workspace
       if (settings.lastActiveWorkspace) {
-        const valid = await invoke<boolean>("validate_workspace_path", {
-          path: settings.lastActiveWorkspace,
-        });
-        if (valid) {
-          await get().requestOpenWorkspace(settings.lastActiveWorkspace);
-          // Defensive: if requestOpenWorkspace failed internally, don't stay on loading
-          if (get().view === "loading") {
-            set({ view: "launcher" });
-          }
-          return;
+        await get().openRecentWorkspace(settings.lastActiveWorkspace);
+        // Defensive: if opening failed internally, don't stay on loading.
+        if (get().view === "loading") {
+          set({ view: "launcher" });
         }
+        return;
       }
 
       // Last workspace invalid → launcher
@@ -184,14 +181,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         path,
       );
       toast.info(i18next.t("workspace.openInProgress"));
-      return;
+      return "in-progress";
     }
-    if (guardInlineAiPending()) return;
+    if (guardInlineAiPending()) return "blocked";
     openWorkspaceInFlight = true;
     const previousWorkspaceHydrated = get().workspaceHydrated;
     const previousImeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
     const previousProjectId = getCurrentProjectId();
     let swapDone = false;
+    let openResult: OpenWorkspaceResult | null = null;
+    let targetOpenRevision: number | null = null;
+    let targetSettings: GlobalSettings | null = null;
     let projectLoadLease: WorkspaceProjectLoadLease | null = null;
     let quiescenceLease: QuiescenceLease | null = null;
     try {
@@ -256,13 +256,12 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // 束縛を書けるが、その init は swap 済みの新 DB から tail を読むため
       // 「旧 workspace の束縛で新 chain に書く」誤束縛にはならない。
       beginWorkspaceSwitch();
-      let result: OpenWorkspaceResult;
       try {
         // Runtime benchmark origin: native workspace open starts here. The
         // consumer ends the interval only after a seeded scene is visible, so
         // this cannot accidentally regress to measuring bridge/header readiness.
         performance.mark("grimodex.workspaceOpen.start");
-        result = await invoke<OpenWorkspaceResult>("open_workspace", {
+        openResult = await invoke<OpenWorkspaceResult>("open_workspace", {
           path,
         });
         // swap 完了。Rust 側 open_workspace は swap 以降 infallible
@@ -270,12 +269,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         // 「invoke エラー ⟹ swap 未実行」が成立し、下の restoreBinding 判定が
         // 安全になる。
         swapDone = true;
+        targetOpenRevision = get().workspaceOpenRevision + 1;
       } finally {
         // swap 未実行の失敗 = 旧 workspace 続行なので旧束縛は依然正しい →
         // 復元して記録をそのまま再開する。swap 済みなら束縛は無効のまま =
         // 正規 rebind (initRecorderForProject) の完了だけが記録を再開する。
         endWorkspaceSwitch({ restoreBinding: !swapDone });
       }
+      if (!openResult || targetOpenRevision === null) {
+        throw new Error("Workspace swap completed without target identity");
+      }
+      const result = openResult;
+      const nextOpenRevision = targetOpenRevision;
       // The native binding now points at the target Workspace and the old UI
       // remains semantically unavailable. Permit this controlled target
       // hydration phase; reads are sealed again before identity publication.
@@ -285,12 +290,12 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       const projectId = await initializeWorkspaceProject();
       // Re-read global settings after open_workspace updated them
       const settings = await globalSettingsRepository.read();
+      targetSettings = settings;
       await hydrateWorkspaceStores({
         projectId,
         settings,
         isExisting: result.isExisting,
       });
-      const nextOpenRevision = get().workspaceOpenRevision + 1;
       if (!projectLoadLease) {
         throw new Error("Workspace Project-load lease was released too early");
       }
@@ -336,27 +341,41 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       quiescenceLease.transition?.advance("new-scope-hydrated");
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
+      return "opened";
     } catch (e) {
       // open 失敗時も recorder への命令的な復帰はしない (r5)。束縛の扱いは
       // swap を括る endWorkspaceSwitch({restoreBinding}) が一元的に決めた。
       // swap 後の後続処理の失敗では束縛は無効のまま = 次の正規 rebind まで
       // イベントは warn 付きで破棄される (誤束縛での混入より安全側)。
-      set({
-        error: e instanceof Error ? e.message : String(e),
+      const error = e instanceof Error ? e.message : String(e);
+      if (swapDone && openResult && targetOpenRevision !== null) {
+        // Native authority has already changed. Publish the target session's
+        // metadata even though hydration failed, so every renderer guard sees
+        // a new DB generation instead of presenting the previous Workspace as
+        // active. Identity remains null and hydration false until a retry.
+        set({
+          view: "launcher",
+          activeWorkspacePath: path,
+          activeWorkspaceId: openResult.workspaceId ?? path,
+          workspaceOpenRevision: targetOpenRevision,
+          activeWorkspaceName: openResult.name,
+          ...(targetSettings ? { globalSettings: targetSettings } : {}),
+          error,
+          workspaceHydrated: false,
+        });
+      } else {
         // Native open rejected before swap: the previous DB/UI binding remains
-        // valid, so restore its semantic-ready state. A post-swap hydration
-        // failure is unrecoverable in-place because the native DB has already
-        // changed: stay unhydrated and leave the stale editor UI.
-        workspaceHydrated: swapDone ? false : previousWorkspaceHydrated,
-        // Post-swap failures always leave the editor. Pre-swap failures only
-        // need this fallback when initialize was still showing loading.
-        ...(swapDone || get().view === "loading"
-          ? { view: "launcher" as const }
-          : {}),
-      });
+        // valid, so restore its semantic-ready state.
+        set({
+          error,
+          workspaceHydrated: previousWorkspaceHydrated,
+          ...(get().view === "loading" ? { view: "launcher" as const } : {}),
+        });
+      }
       if (!swapDone && previousWorkspaceHydrated) {
         setCurrentImeWorkspaceIdentity(previousImeWorkspaceIdentity);
       }
+      return "failed";
     } finally {
       projectLoadLease?.release();
       quiescenceLease?.release();
@@ -368,41 +387,34 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   },
 
   async requestOpenWorkspace(path: string) {
-    const isExisting = await invoke<boolean>("validate_workspace_path", {
-      path,
-    });
-    if (!isExisting) {
-      // New workspace — open first (creates DB, updates recentWorkspaces)
-      await get().openWorkspace(path);
-      // Add to trusted list so next launch skips the trust dialog
-      const currentTrusted = get().globalSettings?.trustedWorkspaces ?? [];
-      if (!currentTrusted.includes(path)) {
-        await get().updateGlobalSettings({
-          trustedWorkspaces: [...currentTrusted, path],
-        });
-      }
-      return;
-    }
-    // Existing workspace — check trust list
-    const settings = get().globalSettings;
-    const trusted = settings?.trustedWorkspaces ?? [];
-    if (trusted.includes(path)) {
-      await get().openWorkspace(path);
-    } else {
-      set({ pendingTrustPath: path });
-    }
+    await runWorkspaceOpenRequest({ path, recent: false }, get, set);
   },
 
   async trustAndOpen() {
     const path = get().pendingTrustPath;
     if (!path) return;
-    const settings = get().globalSettings;
-    const trusted = settings?.trustedWorkspaces ?? [];
-    await get().updateGlobalSettings({
-      trustedWorkspaces: [...trusted, path],
-    });
-    set({ pendingTrustPath: null });
-    await get().openWorkspace(path);
+    const finish = beginWorkspaceOpenRequest(path, (inProgress) =>
+      set({ workspaceOpenRequestInProgress: inProgress }),
+    );
+    if (!finish) return;
+    try {
+      const trusted = get().globalSettings?.trustedWorkspaces ?? [];
+      const saved = await get().updateGlobalSettings({
+        trustedWorkspaces: [...trusted, path],
+      });
+      if (!saved) return;
+      set({ pendingTrustPath: null });
+      await get().openWorkspace(path);
+    } catch (error) {
+      debugLog.error(
+        "workspaceStore",
+        "trusted workspace open failed",
+        errorDetail(error),
+      );
+      set({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      finish();
+    }
   },
 
   cancelTrust() {
@@ -410,22 +422,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   },
 
   async openRecentWorkspace(path: string) {
-    const isValid = await invoke<boolean>("validate_workspace_path", { path });
-    if (!isValid) {
-      const current = get().globalSettings;
-      if (current) {
-        await get().updateGlobalSettings({
-          recentWorkspaces: current.recentWorkspaces.filter(
-            (ws) => ws.path !== path,
-          ),
-        });
-      }
-      set({
-        error: i18next.t("workspace.invalidPath", { path }),
-      });
-      return;
-    }
-    await get().requestOpenWorkspace(path);
+    await runWorkspaceOpenRequest({ path, recent: true }, get, set);
   },
 
   async updateGlobalSettings(updates: Partial<GlobalSettings>) {
@@ -545,7 +542,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           trustedWorkspaces: nextTrusted,
         });
       }
-      await get().openWorkspace(result.path);
+      const openOutcome = await get().openWorkspace(result.path);
+      if (openOutcome !== "opened") {
+        throw new Error(`Tutorial workspace open ${openOutcome}`);
+      }
       if (!(await ensureProjectActive(result.projectId))) {
         throw new Error("Tutorial project did not become active");
       }
