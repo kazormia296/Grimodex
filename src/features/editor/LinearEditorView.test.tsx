@@ -41,12 +41,40 @@ vi.mock("./LinearSceneBlock", () => ({
 }));
 
 vi.mock("@/features/editor/Toolbar", () => ({
-  Toolbar: ({ editor }: { editor: unknown }) => (
-    <div data-testid="toolbar" data-has-editor={editor ? "true" : "false"} />
+  Toolbar: ({
+    editor,
+    onFindReplace,
+  }: {
+    editor: unknown;
+    onFindReplace: () => void;
+  }) => (
+    <div data-testid="toolbar" data-has-editor={editor ? "true" : "false"}>
+      <button type="button" onClick={onFindReplace}>
+        find
+      </button>
+    </div>
   ),
 }));
 vi.mock("@/features/editor/FindReplaceBar", () => ({
   FindReplaceBar: () => null,
+}));
+vi.mock("@/features/editor/FindScrollbarMarkers", () => ({
+  FindScrollbarMarkers: ({
+    editor,
+    enabled,
+    verticalMode,
+  }: {
+    editor: unknown;
+    enabled: boolean;
+    verticalMode: boolean;
+  }) => (
+    <div
+      data-testid="find-scrollbar-markers-mock"
+      data-has-editor={editor ? "true" : "false"}
+      data-enabled={enabled ? "true" : "false"}
+      data-vertical={verticalMode ? "true" : "false"}
+    />
+  ),
 }));
 vi.mock("@/features/editor/CodexPopover", () => ({
   CodexPopover: () => null,
@@ -700,6 +728,27 @@ describe("LinearEditorView — toolbar editor 供給", () => {
         .querySelector("[data-testid='toolbar']")
         ?.getAttribute("data-has-editor"),
     ).toBe("false");
+  });
+});
+
+describe("LinearEditorView — find scrollbar markers", () => {
+  it("uses the active editor and follows find-open and vertical-mode state", () => {
+    settingsOverride.current = { verticalMode: true };
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+    useLinearEditorStore.getState().registerEditor("S1", {} as Editor);
+
+    render(<LinearEditorView />);
+    const markers = screen.getByTestId("find-scrollbar-markers-mock");
+    expect(markers).toHaveAttribute("data-has-editor", "true");
+    expect(markers).toHaveAttribute("data-enabled", "false");
+    expect(markers).toHaveAttribute("data-vertical", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "find" }));
+
+    expect(markers).toHaveAttribute("data-enabled", "true");
   });
 });
 
