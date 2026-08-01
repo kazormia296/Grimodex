@@ -47,24 +47,9 @@ import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload
 import type { AiProvider } from "./types";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
+import { invokeSingleShotChat } from "./singleShotTransport";
 
 // --- AI message sending (existing) ---
-
-interface ChatResponsePayload {
-  blocks: Array<
-    | { type: "text"; content: string }
-    | { type: "tool_use"; id: string; name: string; input: unknown }
-    | {
-        type: "thinking";
-        content: string;
-        summary?: string;
-        signature?: string;
-      }
-  >;
-  stopReason: string;
-  inputTokens?: number;
-  outputTokens?: number;
-}
 
 export async function sendChatMessage(
   messages: ChatMessage[],
@@ -72,7 +57,7 @@ export async function sendChatMessage(
   model?: string | null,
 ): Promise<void> {
   const payload = messages.map((m) => ({ role: m.role, content: m.content }));
-  const response = await invoke<ChatResponsePayload>("send_chat_message", {
+  const response = await invokeSingleShotChat({
     messages: payload,
     thinking: null,
     effort: null,
@@ -112,7 +97,7 @@ export async function sendChatMessageOnceAb(
    */
   endpointId?: string | null,
 ): Promise<{ text: string; inputTokens?: number; outputTokens?: number }> {
-  const response = await invoke<ChatResponsePayload>("send_chat_message", {
+  const response = await invokeSingleShotChat({
     messages,
     thinking: null,
     effort: null,
@@ -155,7 +140,7 @@ export async function generateSynopsisFromContent(
     },
   ];
   const ov = resolveRoleSendOverride("synopsis");
-  const response = await invoke<ChatResponsePayload>("send_chat_message", {
+  const response = await invokeSingleShotChat({
     messages,
     thinking: null,
     effort: null,
@@ -278,7 +263,7 @@ export async function sendChatMessageWithThinking(
   /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
   expectedOllamaEndpoint?: string | null,
 ): Promise<ChatMessageResult> {
-  const response = await invoke<ChatResponsePayload>("send_chat_message", {
+  const response = await invokeSingleShotChat({
     messages,
     thinking: thinkingParams?.thinking ?? null,
     effort: thinkingParams?.effort ?? null,
@@ -476,7 +461,7 @@ export async function generateSessionTitle(
         ),
       },
     ];
-    const response = await invoke<ChatResponsePayload>("send_chat_message", {
+    const response = await invokeSingleShotChat({
       messages,
       thinking: thinkingParams.thinking ?? null,
       effort: thinkingParams.effort ?? null,

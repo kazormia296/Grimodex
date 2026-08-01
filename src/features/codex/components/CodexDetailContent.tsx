@@ -700,6 +700,33 @@ export function CodexDetailContent({
     await persistStructuralPatch({ readings: serializeReadings(next) });
   };
 
+  const handlePrimaryReadingCommit = async (rawReading: string) => {
+    const surface = name.trim();
+    if (!surface) return;
+
+    const primary = rawReading.trim();
+    const current = readings[surface] ?? [];
+    const alternates = current
+      .slice(1)
+      .map((reading) => reading.trim())
+      .filter(
+        (reading, index, all) =>
+          reading.length > 0 &&
+          reading !== primary &&
+          all.indexOf(reading) === index,
+      );
+    const nextForSurface = primary ? [primary, ...alternates] : alternates;
+    const next = { ...readings };
+    if (nextForSurface.length > 0) {
+      next[surface] = nextForSurface;
+    } else {
+      delete next[surface];
+    }
+
+    if (serializeReadings(next) === serializeReadings(readings)) return;
+    await handleReadingsChange(next);
+  };
+
   // entry.type (slug) を表示用カテゴリラベルへ。AI 読み推定の曖昧性解消ヒント。
   const resolveCategoryLabel = useCallback((): string => {
     const ct = useCodexStore
@@ -717,12 +744,21 @@ export function CodexDetailContent({
         (s) => needsAiReading(s) && !(base[s]?.length ?? 0),
       );
       if (need.length === 0) return;
-      // inferReadings は内部で例外を握り潰し空 Map を返す (reject しない)。
-      // estimating フラグは promise の finally で確実に戻す。
       setEstimatingReadings(true);
-      const m = await inferReadings([
-        { id: entry.id, category: resolveCategoryLabel(), surfaces: need },
-      ]).finally(() => setEstimatingReadings(false));
+      let m: Awaited<ReturnType<typeof inferReadings>>;
+      try {
+        m = await inferReadings([
+          { id: entry.id, category: resolveCategoryLabel(), surfaces: need },
+        ]);
+      } catch (error) {
+        toast.error(i18next.t("codex.readings.estimateFailed"), {
+          description: rootCause(error),
+        });
+        debugLog.error("CodexReading", "estimate failed", errorDetail(error));
+        return;
+      } finally {
+        setEstimatingReadings(false);
+      }
       const results = m.get(entry.id);
       if (!results?.length) return;
       // 最新の永続 readings (store が真実源) へ非破壊マージする。AI 応答待ちの間に
@@ -865,6 +901,9 @@ export function CodexDetailContent({
         tagsLoading={tagsLoading}
         onNameChange={setName}
         onNameCommit={() => void handleNameBlur()}
+        onPrimaryReadingCommit={(reading) =>
+          void handlePrimaryReadingCommit(reading)
+        }
         onTypeChange={(newType) => void handleTypeChange(newType)}
         onIconChange={(newIcon) => {
           setIcon(newIcon);

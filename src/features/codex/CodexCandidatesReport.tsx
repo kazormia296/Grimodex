@@ -29,6 +29,7 @@ import {
   loadDismissedCandidateKeys,
   saveDismissedCandidateKeys,
 } from "./codexCandidateDismissals";
+import { rootCause } from "@/lib/debugLog";
 
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -139,7 +140,7 @@ export function CodexCandidatesReport() {
     } catch (e) {
       if (!isLicenseRestrictedError(e)) {
         toast.error(t("codex.candidates.judgeFailed"), {
-          description: String(e),
+          description: rootCause(e),
         });
       }
     } finally {

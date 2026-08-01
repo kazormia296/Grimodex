@@ -3,6 +3,7 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { buildVsInstruction, type VsOptions } from "@/lib/verbalizedSampling";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
+import { assertSingleShotTransportSupported } from "@/features/chat/singleShotTransport";
 import type { AiBranchCard } from "./mapApi";
 
 interface LLMResponsePayload {
@@ -419,6 +420,7 @@ export async function generateAiBranchCards(
   ];
 
   const ov = resolveRoleSendOverride("map_branch");
+  assertSingleShotTransportSupported(ov.provider);
   const response = await invoke<LLMResponsePayload>("send_chat_message", {
     messages,
     thinking: null,
