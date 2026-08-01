@@ -302,6 +302,38 @@ describe("editorAnalysisScheduler", () => {
     expect(runs).toEqual(["save", "lint"]);
   });
 
+  it("keeps codex highlight latency independent of a future autosave", async () => {
+    const runs: string[] = [];
+    const postTask = vi.fn(() => new Promise<void>(() => {}));
+    vi.stubGlobal("scheduler", { postTask });
+
+    scheduleEditorAnalysisTask({
+      key: "codex-match:scene-1",
+      kind: "codex-match",
+      delayMs: 150,
+      run: () => {
+        runs.push("codex-match");
+      },
+    });
+    scheduleEditorAnalysisTask({
+      key: "autosave:scene-1",
+      kind: "save",
+      delayMs: 2_000,
+      run: () => {
+        runs.push("save");
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(149);
+    expect(runs).toEqual([]);
+    await vi.advanceTimersByTimeAsync(18);
+    expect(runs).toEqual(["codex-match"]);
+    expect(postTask).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_833);
+    expect(runs).toEqual(["codex-match", "save"]);
+  });
+
   it("falls back once when an accepted background postTask is starved", async () => {
     const run = vi.fn();
     const postTask = vi.fn(() => new Promise<void>(() => {}));
