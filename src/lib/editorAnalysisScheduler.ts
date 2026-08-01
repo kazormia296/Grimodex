@@ -202,9 +202,11 @@ function launchBackgroundTask(task: ScheduledEditorAnalysisTask): void {
     cancelPendingBackgroundLaunch = null;
     pendingBackgroundTask = null;
 
-    // Durable persistence owns the critical lane from debounce scheduling
-    // through completion. Move this background task behind the earliest save
-    // unless a newer payload for the same key already replaced it.
+    // Durable persistence owns the critical lane once it is due and through
+    // completion. Non-interactive background work also stays behind an
+    // upcoming save, but Codex highlighting is latency-sensitive UI feedback:
+    // let it use the idle window before a future autosave while still yielding
+    // to a save that is already due or in flight.
     let pendingSaveDueAt: number | null = null;
     for (const candidate of tasks.values()) {
       if (
@@ -214,7 +216,11 @@ function launchBackgroundTask(task: ScheduledEditorAnalysisTask): void {
         pendingSaveDueAt = candidate.dueAt;
       }
     }
-    if (activeCriticalSaveCount > 0 || pendingSaveDueAt !== null) {
+    const pendingSaveIsDue =
+      pendingSaveDueAt !== null && pendingSaveDueAt <= Date.now();
+    const waitsForFutureSave =
+      task.kind !== "codex-match" && pendingSaveDueAt !== null;
+    if (activeCriticalSaveCount > 0 || pendingSaveIsDue || waitsForFutureSave) {
       if (!tasks.has(task.key)) {
         tasks.set(task.key, {
           ...task,
@@ -233,7 +239,7 @@ function launchBackgroundTask(task: ScheduledEditorAnalysisTask): void {
     armWakeTimer();
   };
   cancelPendingBackgroundLaunch =
-    task.kind === "lint"
+    task.kind === "lint" || task.kind === "codex-match"
       ? scheduleAnimationFrameTask(launch)
       : scheduleBackgroundTask(launch);
 }
