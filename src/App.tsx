@@ -24,12 +24,12 @@ const WebEditorWorkspaceImportDialog = lazy(() =>
   })),
 );
 
-/* ── App root ── */
-
+// Root composition remains deliberately thin.
 function App() {
   const runtimeCapabilities = useRuntimeCapabilities();
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
+  const revision = useWorkspaceStore((s) => s.workspaceOpenRevision);
   const { t } = useTranslation();
   const [showWebEditorImport, setShowWebEditorImport] = useState(false);
   const requestWebEditorImport = useCallback(
@@ -59,7 +59,7 @@ function App() {
       {view === "welcome" && <WelcomeScreen />}
       {view === "launcher" && <LauncherScreen />}
       {view === "editor" && (
-        <EditorWorkspaceController key={activeWorkspacePath ?? ""} />
+        <EditorWorkspaceController key={`${activeWorkspacePath}:${revision}`} />
       )}
       <WorkspaceTrustDialog />
       <EulaConsentDialog />

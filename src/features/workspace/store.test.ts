@@ -56,6 +56,7 @@ function resetStore() {
     activeWorkspaceId: null,
     workspaceOpenRevision: 0,
     workspaceSwitchInProgress: false,
+    workspaceOpenRequestInProgress: false,
     workspaceHydrated: false,
     activeWorkspaceName: null,
     error: null,
@@ -155,9 +156,7 @@ describe("useWorkspaceStore", () => {
           // Pre-trust the path so migration is skipped
           trustedWorkspaces: ["D:\\Novels\\Test"],
         })
-        // validate_workspace_path (initialize: lastActiveWorkspace check)
-        .mockResolvedValueOnce(true)
-        // validate_workspace_path (requestOpenWorkspace: existing check)
+        // validate_workspace_path (openRecentWorkspace)
         .mockResolvedValueOnce(true)
         // open_workspace fails
         .mockRejectedValueOnce(new Error("DB open failed"));
@@ -490,9 +489,9 @@ describe("useWorkspaceStore", () => {
 
         expect(useWorkspaceStore.getState()).toMatchObject({
           view: "launcher",
-          activeWorkspacePath: previousPath,
-          activeWorkspaceName: "Existing",
-          workspaceOpenRevision: 3,
+          activeWorkspacePath: replacementPath,
+          activeWorkspaceName: "Replacement",
+          workspaceOpenRevision: 4,
           workspaceSwitchInProgress: false,
           workspaceHydrated: false,
           error: "settings hydration failed",
@@ -532,9 +531,9 @@ describe("useWorkspaceStore", () => {
 
       expect(useWorkspaceStore.getState()).toMatchObject({
         view: "launcher",
-        activeWorkspacePath: previousPath,
-        activeWorkspaceName: "Existing",
-        workspaceOpenRevision: 3,
+        activeWorkspacePath: replacementPath,
+        activeWorkspaceName: "Replacement",
+        workspaceOpenRevision: 4,
         workspaceSwitchInProgress: false,
         workspaceHydrated: false,
         error: expect.stringContaining("Failed query: select"),
@@ -593,7 +592,7 @@ describe("useWorkspaceStore", () => {
           view: "launcher",
           activeWorkspacePath: samePath,
           activeWorkspaceName: "Same",
-          workspaceOpenRevision: 7,
+          workspaceOpenRevision: 8,
           workspaceSwitchInProgress: false,
           workspaceHydrated: false,
           error: "Project rebind failed",
@@ -979,6 +978,173 @@ describe("useWorkspaceStore", () => {
   });
 
   describe("requestOpenWorkspace", () => {
+    it("serializes requests before validation so a later selection cannot overtake the first", async () => {
+      const firstPath = "D:\\Novels\\First";
+      const secondPath = "D:\\Novels\\Second";
+      let resolveFirstValidation!: (valid: boolean) => void;
+      const firstValidation = new Promise<boolean>((resolve) => {
+        resolveFirstValidation = resolve;
+      });
+      useWorkspaceStore.setState({
+        globalSettings: {
+          recentWorkspaces: [
+            { path: firstPath, lastOpened: "2026-08-02T00:00:00Z" },
+            { path: secondPath, lastOpened: "2026-08-01T00:00:00Z" },
+          ],
+          lastActiveWorkspace: null,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 1,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [firstPath, secondPath],
+        },
+      });
+      mockInvoke.mockImplementation(
+        async (command: string, args?: Record<string, unknown>) => {
+          if (command === "validate_workspace_path") {
+            return args?.path === firstPath ? firstValidation : true;
+          }
+          if (command === "open_workspace") {
+            const path = String(args?.path);
+            return {
+              name: path === firstPath ? "First" : "Second",
+              isExisting: true,
+            };
+          }
+          if (command === "get_global_settings") {
+            return useWorkspaceStore.getState().globalSettings;
+          }
+          if (command === "db_execute") return { rows: [] };
+          return undefined;
+        },
+      );
+
+      const firstRequest = useWorkspaceStore
+        .getState()
+        .requestOpenWorkspace(firstPath);
+      await vi.waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith("validate_workspace_path", {
+          path: firstPath,
+        }),
+      );
+
+      await useWorkspaceStore.getState().requestOpenWorkspace(secondPath);
+      resolveFirstValidation(true);
+      await firstRequest;
+
+      expect(
+        mockInvoke.mock.calls
+          .filter(([command]) => command === "open_workspace")
+          .map(([, args]) => args?.path),
+      ).toEqual([firstPath]);
+      expect(useWorkspaceStore.getState().activeWorkspacePath).toBe(firstPath);
+    });
+
+    it("validates a recent workspace only once before opening it", async () => {
+      const path = "D:\\Novels\\Recent";
+      useWorkspaceStore.setState({
+        globalSettings: {
+          recentWorkspaces: [{ path, lastOpened: "2026-08-02T00:00:00Z" }],
+          lastActiveWorkspace: null,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 1,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [path],
+        },
+      });
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "validate_workspace_path") return true;
+        if (command === "open_workspace") {
+          return { name: "Recent", isExisting: true };
+        }
+        if (command === "get_global_settings") {
+          return useWorkspaceStore.getState().globalSettings;
+        }
+        if (command === "db_execute") return { rows: [] };
+        return undefined;
+      });
+
+      await useWorkspaceStore.getState().openRecentWorkspace(path);
+
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command]) => command === "validate_workspace_path",
+        ),
+      ).toHaveLength(1);
+      expect(useWorkspaceStore.getState().activeWorkspacePath).toBe(path);
+    });
+
+    it("does not trust a new workspace when opening is blocked", async () => {
+      const path = "D:\\Novels\\Blocked";
+      useWorkspaceStore.setState({
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: null,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 1,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [],
+        },
+      });
+      useInlineAiStore.setState({ status: "diffShown" });
+      mockInvoke.mockResolvedValueOnce(false);
+
+      await useWorkspaceStore.getState().requestOpenWorkspace(path);
+
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "open_workspace",
+        expect.anything(),
+      );
+      expect(
+        useWorkspaceStore.getState().globalSettings?.trustedWorkspaces,
+      ).not.toContain(path);
+    });
+
+    it("releases request admission after path validation fails", async () => {
+      const failedPath = "D:\\Novels\\Unavailable";
+      const nextPath = "D:\\Novels\\Available";
+      useWorkspaceStore.setState({
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: null,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 1,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [nextPath],
+        },
+      });
+      mockInvoke.mockRejectedValueOnce(new Error("validation unavailable"));
+
+      await useWorkspaceStore.getState().requestOpenWorkspace(failedPath);
+
+      expect(useWorkspaceStore.getState()).toMatchObject({
+        workspaceOpenRequestInProgress: false,
+        error: "validation unavailable",
+      });
+
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "validate_workspace_path") return true;
+        if (command === "open_workspace") {
+          return { name: "Available", isExisting: true };
+        }
+        if (command === "get_global_settings") {
+          return useWorkspaceStore.getState().globalSettings;
+        }
+        if (command === "db_execute") return { rows: [] };
+        return undefined;
+      });
+
+      await useWorkspaceStore.getState().requestOpenWorkspace(nextPath);
+
+      expect(useWorkspaceStore.getState()).toMatchObject({
+        activeWorkspacePath: nextPath,
+        workspaceOpenRequestInProgress: false,
+      });
+    });
+
     it("auto-trusts a brand-new workspace so next launch skips the trust dialog", async () => {
       useWorkspaceStore.setState({
         globalSettings: {
@@ -1065,7 +1231,7 @@ describe("useWorkspaceStore", () => {
       const userWorkspace = "/novels/main";
       const originalOpenWorkspace = useWorkspaceStore.getState().openWorkspace;
       const originalLoadProject = useProjectStore.getState().loadProject;
-      const openWorkspace = vi.fn().mockResolvedValue(undefined);
+      const openWorkspace = vi.fn().mockResolvedValue("opened");
       const loadProject = vi.fn(async (projectId: string) => {
         useProjectStore.setState({ currentProjectId: projectId });
       });
@@ -1132,7 +1298,7 @@ describe("useWorkspaceStore", () => {
       const samplePath = "/data/sample-workspace";
       const originalOpenWorkspace = useWorkspaceStore.getState().openWorkspace;
       const originalLoadProject = useProjectStore.getState().loadProject;
-      const openWorkspace = vi.fn().mockResolvedValue(undefined);
+      const openWorkspace = vi.fn().mockResolvedValue("opened");
       const loadProject = vi.fn().mockResolvedValue(undefined);
       useWorkspaceStore.setState({
         openWorkspace,
