@@ -330,6 +330,48 @@ describe("LinearEditorView — scene ordering", () => {
   });
 });
 
+describe("LinearEditorView — initial navigation", () => {
+  it("autosave 相当の updatedAt 更新で入場時シーンへ再スクロールしない", async () => {
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+    const { container } = render(<LinearEditorView />);
+    const scrollContainer =
+      container.querySelector<HTMLElement>(".glass-editor-body");
+    expect(scrollContainer).not.toBeNull();
+    const row = container.querySelector<HTMLElement>(
+      '[data-linear-scene-id="S1"]',
+    );
+    expect(row).not.toBeNull();
+
+    // Let the legitimate mount-time navigation settle before simulating a
+    // user who has scrolled within the same scene.
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 50)));
+    vi.spyOn(scrollContainer!, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 500, 500),
+    );
+    vi.spyOn(row!, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, -500, 500, 300),
+    );
+    scrollContainer!.scrollTop = 500;
+
+    await act(async () => {
+      useTreeStore.setState({
+        nodes: [
+          makeNode({
+            id: "S1",
+            updatedAt: "2024-01-01T00:00:01Z",
+          }),
+        ],
+      });
+      await Promise.resolve();
+    });
+
+    expect(scrollContainer!.scrollTop).toBe(500);
+  });
+});
+
 describe("LinearEditorView — accessible all-scenes reader", () => {
   it("batch loads every scene and prefers dirty mounted editor content", async () => {
     useTreeStore.setState({

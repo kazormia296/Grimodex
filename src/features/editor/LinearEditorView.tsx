@@ -97,6 +97,7 @@ export function LinearEditorView() {
   const activeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Capture the active scene at mount time before any observer overwrites it
   const initialActiveSceneIdRef = useRef(activeSceneId);
+  const initialNavigationStartedRef = useRef(false);
   // プログラムスクロール (タブ切替ナビ / 初期スクロール) の進行中ターゲット。
   // 進行中はスクロール由来の active 検出を止める — placeholder 高さ確定で
   // 着地点がズレる途中経過を「ユーザーが見ているシーン」と誤認すると、
@@ -340,6 +341,9 @@ export function LinearEditorView() {
   useEffect(() => {
     return () => {
       navCleanupRef.current?.();
+      // React Strict Mode replays mount effects after cleanup. Let that replay
+      // restart the initial navigation that this cleanup just cancelled.
+      initialNavigationStartedRef.current = false;
     };
   }, []);
 
@@ -348,9 +352,16 @@ export function LinearEditorView() {
   // be scrollable yet — navigateToScene's grow-retry handles it.
   useEffect(() => {
     const targetId = initialActiveSceneIdRef.current;
-    if (!targetId) return;
+    if (
+      initialNavigationStartedRef.current ||
+      !targetId ||
+      !sceneIndexById.has(targetId)
+    ) {
+      return;
+    }
+    initialNavigationStartedRef.current = true;
     navigateToScene(targetId);
-  }, [navigateToScene]);
+  }, [navigateToScene, sceneIndexById]);
 
   // --- External navigation: scroll to scene ---
   useEffect(() => {
