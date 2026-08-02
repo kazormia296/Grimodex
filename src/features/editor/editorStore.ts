@@ -301,7 +301,9 @@ export const useEditorStore = create<EditorState>()((set, get) => {
         .chain()
         .focus()
         .command(({ tr }) => {
-          tr.setMeta("programmaticInsert", true);
+          tr.setMeta("programmaticInsert", true)
+            .setMeta("paste", true)
+            .setMeta("uiEvent", "paste");
           return true;
         })
         .command(({ tr, editor: ed }) => {

@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { KouetsuPanel } from "./KouetsuPanel";
 import { useKouetsuStore } from "./kouetsuStore";
+import { usePostEffectRunStore } from "@/features/post-effect/runStore";
 
 // Radix Tabs のトリガは click ではなく mousedown で選択される。
 function clickTab(el: HTMLElement) {
@@ -29,6 +30,7 @@ vi.mock("./BlockerTab", () => ({
 describe("KouetsuPanel タブの ARIA tablist パターン", () => {
   beforeEach(() => {
     useKouetsuStore.setState({ activeTab: "issues", panelActive: true });
+    usePostEffectRunStore.setState({ runs: {} });
   });
 
   it("tablist/tab/tabpanel のロールと aria-selected を持つ", () => {
@@ -47,6 +49,31 @@ describe("KouetsuPanel タブの ARIA tablist パターン", () => {
     const panel = screen.getByRole("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe(tabs[0].id);
     expect(tabs[0].getAttribute("aria-controls")).toBe(panel.id);
+  });
+
+  it("ライブ読者コメント実行中はコメントタブにインジケーターを出す", () => {
+    usePostEffectRunStore.setState({
+      runs: {
+        live: {
+          runId: "live",
+          projectId: "project-1",
+          effectType: "pseudo_comment",
+          scopeType: "scene",
+          scopeTargetId: "scene-1",
+          live: true,
+          progress: 0.4,
+          stage: "streaming",
+          message: null,
+          startedAt: Date.now(),
+        },
+      } as never,
+    });
+
+    render(<KouetsuPanel />);
+
+    expect(
+      screen.getByTestId("comments-live-reader-indicator"),
+    ).toBeInTheDocument();
   });
 
   it("roving tabindex: フォーカスしたタブが tab stop（tabIndex=0）になる", () => {

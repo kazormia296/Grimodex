@@ -175,6 +175,7 @@ const INTENT_DRIFT_PROMPT_VERSION: &str = "intent_drift_v1.1";
 // v2.0: ペルソナを bare label から genre/想定読者プロフィールを織り込んだ
 // brief 注入へ刷新 (TS pseudoCommentPayloadBuilder と同期)。
 const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v2.1";
+const LIVE_PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_live_v1.0";
 const META_STRUCTURE_PROMPT_VERSION: &str = "meta_structure_v1.2";
 
 // システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、
@@ -193,7 +194,7 @@ pub struct StartPostEffectRunArgs {
     scope_type: String,
     scope_target_id: Option<String>,
     model: String,
-    /// 機能別モデル: review ロールの override（None/空 = 既定モデル）。実 API 呼び出しの
+    /// 機能別モデル: 対応ロールの override（None/空 = 既定モデル）。実 API 呼び出しの
     /// モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
     #[serde(default)]
     model_override: Option<String>,
@@ -216,6 +217,10 @@ pub struct StartPostEffectRunArgs {
     /// pseudo_comment の読者ペルソナ名 (他 effect_type では None)。
     #[serde(default)]
     persona: Option<String>,
+    /// リアルタイム読者コメント。通常の pseudo_comment annotation として保存し、
+    /// partial イベントでも生成順に通知する。
+    #[serde(default)]
+    live: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -258,7 +263,7 @@ pub struct StartPostEffectRunMultiArgs {
     scope_type: String,
     scope_target_id: Option<String>,
     model: String,
-    /// 機能別モデル: review ロールの override（None/空 = 既定モデル）。実 API 呼び出しの
+    /// 機能別モデル: 対応ロールの override（None/空 = 既定モデル）。実 API 呼び出しの
     /// モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
     #[serde(default)]
     model_override: Option<String>,
@@ -298,6 +303,24 @@ struct PartialEvent<'a> {
 }
 
 #[derive(Clone, Serialize)]
+struct LiveCommentEvent {
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persona: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found_context: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct LivePartialEvent<'a> {
+    run_id: &'a str,
+    annotation_id: String,
+    live_comment: LiveCommentEvent,
+}
+
+#[derive(Clone, Serialize)]
 struct DoneEvent<'a> {
     run_id: &'a str,
     annotation_count: usize,
@@ -322,7 +345,7 @@ fn emit_event<R: PostEffectRuntime, T: Serialize>(runtime: &R, channel: &str, pa
     }
 }
 
-/// 機能別モデル（review ロール）のプロバイダ横断 override。model_override と並走する
+/// 機能別モデルのプロバイダ横断 override。model_override と並走する
 /// provider / API 経路 / エンドポイントの割り当て。全 None/空なら従来挙動（model だけ
 /// 差し替え or 既定）= wire 差分ゼロ。
 #[derive(Clone, Default)]
@@ -335,7 +358,7 @@ pub struct RoleProviderOverride {
     pub endpoint_id: Option<String>,
 }
 
-/// 機能別モデル（review ロール）の override を AiSettings に適用する。
+/// 機能別モデルの override を AiSettings に適用する。
 /// `model_override` が Some かつ非空のときだけ実呼び出しの `model` を差し替える。
 /// `prov` が provider/endpoint/variant の横断割り当てを表す（送信先プロバイダ・キー・
 /// 経路を差し替える。send_chat_message と同契約: provider override 時はグローバル
@@ -4451,6 +4474,183 @@ async fn run_pseudo_comment_task<R, A>(
     .await;
 }
 
+/// リアルタイム読者コメントを生成された順に partial イベントへ流しつつ、
+/// 通常の pseudo_comment と同じ annotation 行へ保存する。
+/// `scene_text` は full scene ではなく、FE が作った近傍コンテキストを受け取るため、
+/// range は renderer の本文 mark/autosave で後から確定する。
+#[allow(clippy::too_many_arguments)]
+async fn process_live_pseudo_comment_scene<R, A>(
+    runtime: &R,
+    ai: &A,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    scene_text: &str,
+    system_prompt: &str,
+    persona: Option<&str>,
+    model_override: Option<&str>,
+    prov: &RoleProviderOverride,
+    on_stage: impl Fn(f32, &str) + Send,
+) -> Result<usize, anyhow::Error>
+where
+    R: PostEffectRuntime,
+    A: PostEffectAiClient,
+{
+    tracing::info!(
+        run_id = run_id,
+        persona = persona.unwrap_or(""),
+        context_len = scene_text.chars().count(),
+        "[post_effect] live pseudo_comment: calling AI"
+    );
+    let ai_output = ai
+        .call(PostEffectAiRequest {
+            model_override,
+            role_override: prov,
+            system_prompt,
+            codex_content: None,
+            scene_content: scene_text,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
+
+    let detected_model = ai_output.detected_model.clone();
+    on_stage(0.5, "parsing");
+    let raw_response = ai_output.raw_response;
+    let json_str = extract_json(&raw_response);
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            extracted_preview = %json_str.chars().take(2000).collect::<String>(),
+            error = %e,
+            "[post_effect] live pseudo_comment: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
+    let comments = extract_array_field(&parsed, "comments")
+        .map_err(|e| anyhow::anyhow!("LLM 出力の構造が不正: {e}"))?;
+
+    // 永続 run と同じ dedupe 契約を保つ。
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<&Value> = comments
+        .iter()
+        .filter(|comment| {
+            let found_text = strong_normalize(comment["found_text"].as_str().unwrap_or(""));
+            let content = strong_normalize(comment["content"].as_str().unwrap_or(""));
+            !content.is_empty() && seen.insert(format!("{found_text}|{content}"))
+        })
+        .collect();
+
+    on_stage(0.7, "streaming");
+    let mut count = 0usize;
+    for comment in deduped {
+        let content = comment["content"].as_str().unwrap_or("").trim();
+        if content.is_empty() {
+            continue;
+        }
+        let found_text = comment["found_text"].as_str().unwrap_or("").trim();
+        let found_context = comment["found_context"].as_str().unwrap_or("").trim();
+        let annotation_id = Uuid::new_v4().to_string();
+        let metadata = serde_json::json!({
+            "live": true,
+            "persona": persona,
+            "found_text": found_text,
+            "found_context": found_context,
+            "detected_by_model": detected_model,
+            "orphaned": found_text.is_empty(),
+        });
+
+        runtime.with_db(|db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO post_effect_annotations
+                        (id, project_id, run_id, anchor_type, scene_id,
+                         range_start, range_end, text_snapshot,
+                         category, persona, severity, content, author_role,
+                         status, metadata, created_at, updated_at)
+                     VALUES (?, ?, ?, 'scene_range', ?,
+                             0, 0, ?,
+                             'pseudo_comment', ?, NULL, ?, 'ai',
+                             'open', ?, datetime('now'), datetime('now'))",
+                    params![
+                        annotation_id,
+                        project_id,
+                        run_id,
+                        scene_id,
+                        (!found_text.is_empty()).then_some(found_text),
+                        persona,
+                        content,
+                        metadata.to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+        })?;
+        emit_event(
+            runtime,
+            "post_effect:partial",
+            LivePartialEvent {
+                run_id,
+                annotation_id,
+                live_comment: LiveCommentEvent {
+                    content: content.to_string(),
+                    persona: persona.map(ToOwned::to_owned),
+                    found_text: (!found_text.is_empty()).then(|| found_text.to_string()),
+                    found_context: (!found_context.is_empty()).then(|| found_context.to_string()),
+                },
+            },
+        );
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_live_pseudo_comment_task<R, A>(
+    runtime: R,
+    ai: A,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    scene_text: String,
+    system_prompt: String,
+    persona: Option<String>,
+    model_override: Option<String>,
+    prov: RoleProviderOverride,
+) where
+    R: PostEffectRuntime,
+    A: PostEffectAiClient,
+{
+    run_effect_task(runtime, run_id, |runtime, run_id| async move {
+        process_live_pseudo_comment_scene(
+            &runtime,
+            &ai,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &scene_text,
+            &system_prompt,
+            persona.as_deref(),
+            model_override.as_deref(),
+            &prov,
+            |progress, stage| {
+                emit_event(
+                    &runtime,
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage,
+                        progress,
+                        message: None,
+                    },
+                );
+            },
+        )
+        .await
+    })
+    .await;
+}
+
 // ---------------------------------------------------------------------------
 // meta_structure run (プロット構造・ペーシングの俯瞰診断)
 // ---------------------------------------------------------------------------
@@ -5214,6 +5414,48 @@ enum EnsureRunOutcome {
     Created(String),
 }
 
+/// ライブ run は同じ本文を再入力したときでも新しい partial を流すため、
+/// 通常 run の completed-cache 照合を行わず、running 行だけを作る。
+#[allow(clippy::too_many_arguments)]
+fn create_post_effect_run(
+    runtime: &impl PostEffectRuntime,
+    project_id: &str,
+    effect_type: &str,
+    scope_type: &str,
+    scope_target_id: Option<&str>,
+    model: &str,
+    prompt_version: &str,
+    input_hash: &str,
+) -> Result<String, AppError> {
+    if let Some(target_id) = scope_target_id {
+        ensure_tree_node_belongs_to_project(runtime, project_id, target_id, "scope_target_id")?;
+    }
+
+    let run_id = Uuid::new_v4().to_string();
+    runtime.with_db(|db| {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, scope_target_id,
+                     model, prompt_version, input_hash, status, started_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', datetime('now'))",
+                params![
+                    run_id,
+                    project_id,
+                    effect_type,
+                    scope_type,
+                    scope_target_id,
+                    model,
+                    prompt_version,
+                    input_hash,
+                ],
+            )?;
+            Ok(())
+        })
+    })?;
+    Ok(run_id)
+}
+
 const IMPACT_SOURCE_CHANGED_MARKER: &str = "IMPACT_SOURCE_CHANGED";
 
 fn parse_canonical_u64(field: &str, value: &str) -> anyhow::Result<u64> {
@@ -5507,14 +5749,18 @@ where
         );
     }
 
-    let prompt_version = match effect_type {
-        "consistency" => CONSISTENCY_PROMPT_VERSION,
-        "typo_detection" => TYPO_PROMPT_VERSION,
-        "review" => REVIEW_PROMPT_VERSION,
-        "intent_drift" => INTENT_DRIFT_PROMPT_VERSION,
-        "pseudo_comment" => PSEUDO_COMMENT_PROMPT_VERSION,
-        "meta_structure" => META_STRUCTURE_PROMPT_VERSION,
-        _ => INTRA_PROMPT_VERSION,
+    let prompt_version = if args.live && effect_type == "pseudo_comment" {
+        LIVE_PSEUDO_COMMENT_PROMPT_VERSION
+    } else {
+        match effect_type {
+            "consistency" => CONSISTENCY_PROMPT_VERSION,
+            "typo_detection" => TYPO_PROMPT_VERSION,
+            "review" => REVIEW_PROMPT_VERSION,
+            "intent_drift" => INTENT_DRIFT_PROMPT_VERSION,
+            "pseudo_comment" => PSEUDO_COMMENT_PROMPT_VERSION,
+            "meta_structure" => META_STRUCTURE_PROMPT_VERSION,
+            _ => INTRA_PROMPT_VERSION,
+        }
     };
     if args.prompt_version != prompt_version {
         tracing::warn!(
@@ -5522,6 +5768,86 @@ where
             args.prompt_version,
             prompt_version
         );
+    }
+
+    // ライブ読者コメントは短い近傍コンテキストを使う。通常の pseudo_comment と
+    // 同じ run/annotation 型・AI/API 経路・partial/done/error チャンネルを共有する。
+    if args.live {
+        if effect_type != "pseudo_comment" {
+            return Err(anyhow::anyhow!("live mode is only supported for pseudo_comment").into());
+        }
+        if args.scope_type != "scene"
+            || args
+                .scope_target_id
+                .as_deref()
+                .map(str::is_empty)
+                .unwrap_or(true)
+        {
+            return Err(
+                anyhow::anyhow!("live pseudo_comment requires a scene scope_target_id").into(),
+            );
+        }
+
+        // 同一 input_hash の completed cache は使わず、毎回 partial を生成する。
+        // 生成物自体は通常の post_effect_runs / post_effect_annotations に保存する。
+        let runtime = runtime.pin_database()?;
+        let scene_id = args.scope_target_id.clone().unwrap_or_default();
+        let run_id = create_post_effect_run(
+            &runtime,
+            &args.project_id,
+            &args.effect_type,
+            &args.scope_type,
+            Some(&scene_id),
+            &args.model,
+            prompt_version,
+            &args.input_hash,
+        )?;
+        runtime.bind_abort_database(&run_id);
+        let project_id = args.project_id.clone();
+        let scene_text = args.scene_text.clone();
+        let system_prompt = args.system_prompt.clone();
+        let persona = args.persona.clone();
+        let model_override = args.model_override.clone();
+        let prov = RoleProviderOverride {
+            provider: args.provider_override.clone(),
+            api_variant: args.api_variant_override.clone(),
+            endpoint_id: args.endpoint_id_override.clone(),
+        };
+        let rid = run_id.clone();
+        let runtime_clone = runtime.clone();
+        let rid_clone = rid.clone();
+        tokio::task::spawn(async move {
+            let join = tokio::task::spawn(async move {
+                run_live_pseudo_comment_task(
+                    runtime,
+                    ai,
+                    rid,
+                    project_id,
+                    scene_id,
+                    scene_text,
+                    system_prompt,
+                    persona,
+                    model_override,
+                    prov,
+                )
+                .await;
+            })
+            .await;
+            if let Err(join_err) = join {
+                let msg = if join_err.is_panic() {
+                    format!("post-effect ライブタスクが panic しました: {join_err}")
+                } else {
+                    format!("post-effect ライブタスクが異常終了しました: {join_err}")
+                };
+                finish_failure(&runtime_clone, &rid_clone, &msg);
+            }
+            runtime_clone.clear_abort(&rid_clone);
+        });
+
+        return Ok(StartPostEffectRunResult {
+            run_id,
+            from_cache: false,
+        });
     }
 
     // cache照合・running INSERT・detached worker を同じ workspace DBへ固定する。
@@ -6021,6 +6347,23 @@ mod runtime_contract_tests {
     }
 
     #[derive(Clone, Default)]
+    struct LiveFakeAi;
+
+    impl PostEffectAiClient for LiveFakeAi {
+        fn call<'a>(
+            &'a self,
+            _request: PostEffectAiRequest<'a>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<PostEffectAiOutput>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(PostEffectAiOutput {
+                    raw_response: r#"{"comments":[{"content":"気になる！","found_text":"本文","found_context":"本文"}]}"#.to_string(),
+                    detected_model: "live-model".to_string(),
+                })
+            })
+        }
+    }
+
+    #[derive(Clone, Default)]
     struct GatedAi {
         entered: Arc<Notify>,
         release: Arc<Notify>,
@@ -6100,6 +6443,7 @@ mod runtime_contract_tests {
             scene_text: "本文".to_string(),
             system_prompt: "review".to_string(),
             persona: None,
+            live: false,
         }
     }
 
@@ -6295,6 +6639,73 @@ mod runtime_contract_tests {
         assert_eq!(run_count(&runtime), 0);
         assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
         assert!(event_channels(&runtime).is_empty());
+    }
+
+    #[tokio::test]
+    async fn live_pseudo_comment_is_persisted_with_live_metadata_before_partial() {
+        let runtime = runtime();
+        let prov = RoleProviderOverride::default();
+        runtime
+            .with_db(|db| {
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO post_effect_runs
+                            (id, project_id, effect_type, scope_type, scope_target_id,
+                             model, prompt_version, input_hash, status, started_at)
+                         VALUES ('live-run', ?, 'pseudo_comment', 'scene', 'scene-own',
+                                 'live-model', ?, 'live-input', 'running', datetime('now'))",
+                        params![PROJECT, LIVE_PSEUDO_COMMENT_PROMPT_VERSION],
+                    )?;
+                    Ok(())
+                })
+            })
+            .expect("insert live run");
+
+        let count = process_live_pseudo_comment_scene(
+            &runtime,
+            &LiveFakeAi,
+            "live-run",
+            PROJECT,
+            "scene-own",
+            "本文",
+            "live reader",
+            Some("一般読者"),
+            None,
+            &prov,
+            |_, _| {},
+        )
+        .await
+        .expect("live comments should be saved");
+
+        assert_eq!(count, 1);
+        let row = runtime
+            .with_db(|db| {
+                db.with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT category, run_id, text_snapshot, content, metadata
+                           FROM post_effect_annotations
+                          WHERE run_id = 'live-run'",
+                        [],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                            ))
+                        },
+                    )?)
+                })
+            })
+            .expect("load live annotation");
+        assert_eq!(row.0, "pseudo_comment");
+        assert_eq!(row.1, "live-run");
+        assert_eq!(row.2.as_deref(), Some("本文"));
+        assert_eq!(row.3, "気になる！");
+        assert!(row.4.contains("\"live\":true"));
+        assert!(row.4.contains("\"detected_by_model\":\"live-model\""));
+        assert_eq!(event_channels(&runtime), vec!["post_effect:partial"]);
     }
 
     #[tokio::test]

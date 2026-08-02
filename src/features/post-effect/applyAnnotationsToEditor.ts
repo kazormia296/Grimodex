@@ -2,6 +2,7 @@ import type { Editor } from "@tiptap/core";
 import type { PostEffectAnnotation } from "./types";
 import { resolveAnnotationRange } from "./resolveAnnotationRange";
 import { ANNOTATION_REBUILD_META } from "./AnnotationPlugin";
+import { isLiveReaderAnnotation } from "./liveReaderAnnotation";
 
 /**
  * Applies annotation marks to the TipTap editor as peAnnotation marks.
@@ -50,6 +51,7 @@ export function applyAnnotationsToEditor(
             category: ann.category,
             severity: ann.severity ?? "warning",
             status: ann.status,
+            live: isLiveReaderAnnotation(ann),
           }),
         );
       }

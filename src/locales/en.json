@@ -931,7 +931,7 @@
       "sameChatModel": "Same as chat model",
       "roleModel": {
         "title": "Per-Feature Models (by role)",
-        "intro": "Assign a model to each of six semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model. Each role can also be assigned a model from a different provider (only providers with a saved key are selectable).",
+        "intro": "Assign a model to each of seven semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model. Each role can also be assigned a model from a different provider (only providers with a saved key are selectable).",
         "providerLabel": "Provider",
         "sameProvider": "Same provider as chat",
         "unavailableProvider": "The selected provider/endpoint is no longer available (key or endpoint removed). Sends will fail or go to a different target.",
@@ -4014,6 +4014,7 @@
       "autoFollowHint": "Automatically match layer visibility to open panels",
       "attribution": "Attribution highlight",
       "comments": "Comments",
+      "pseudoComments": "Pseudo comments",
       "readerComments": "Reader comments",
       "foreshadow": "Foreshadow marks",
       "review": "Review issues",

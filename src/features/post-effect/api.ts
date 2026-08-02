@@ -267,6 +267,7 @@ export async function runPostEffect(
     effectType: req.effect_type,
     scopeType: req.scope_type,
     scopeTargetId: req.scope_target_id ?? null,
+    live: req.live === true,
   });
 }
 
@@ -286,6 +287,7 @@ export async function runPostEffectMulti(
     scopeType: req.scope_type,
     scopeTargetId: req.scope_target_id ?? null,
     totalScenes: req.scenes.length,
+    live: false,
   });
 }
 
@@ -296,6 +298,7 @@ interface RunTrackMeta {
   scopeType: string;
   scopeTargetId: string | null;
   totalScenes?: number;
+  live?: boolean;
 }
 
 async function runPostEffectInternal(
@@ -472,6 +475,7 @@ async function runPostEffectInternal(
         scopeType: meta.scopeType,
         scopeTargetId: meta.scopeTargetId,
         totalScenes: meta.totalScenes,
+        live: meta.live,
       });
       const synthetic: PostEffectDoneEvent = {
         run_id: result.run_id,
@@ -489,6 +493,7 @@ async function runPostEffectInternal(
       scopeType: meta.scopeType,
       scopeTargetId: meta.scopeTargetId,
       totalScenes: meta.totalScenes,
+      live: meta.live,
     });
     // 通知権限は run 開始時 = ユーザーがボタンを押した直後 (フォーカス中) に
     // 確保しておく。終端時の通知 (非フォーカス中) では権限プロンプトを出さない。

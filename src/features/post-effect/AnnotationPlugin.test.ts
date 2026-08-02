@@ -23,6 +23,7 @@ const schema = new Schema({
         category: { default: "review" },
         severity: { default: "warning" },
         status: { default: "open" },
+        live: { default: false },
       },
     },
   },
@@ -65,6 +66,21 @@ function decoClasses(state: EditorState): string[] {
 
 function rebuild(state: EditorState): EditorState {
   return state.apply(state.tr.setMeta(ANNOTATION_REBUILD_META, true));
+}
+
+function makeLiveState(): EditorState {
+  const doc = schema.nodes.doc.create({}, [
+    schema.nodes.paragraph.create({}, [
+      schema.text("ライブ読者コメント", [
+        schema.marks.peAnnotation.create({
+          annotationId: "live1",
+          category: "pseudo_comment",
+          live: true,
+        }),
+      ]),
+    ]),
+  ]);
+  return EditorState.create({ doc, plugins: [createAnnotationPlugin()] });
 }
 
 beforeEach(() => {
@@ -111,6 +127,16 @@ describe("AnnotationPlugin のレイヤーゲート", () => {
       showReaderComments: false,
     });
     expect(decoClasses(makeState())).toHaveLength(0);
+  });
+
+  it("ライブ読者コメントは本文レイヤーをOFFにしても常に装飾する", () => {
+    useAnnotationStore.setState({
+      showAnnotations: false,
+      showReaderComments: false,
+    });
+    const classes = decoClasses(makeLiveState());
+    expect(classes).toHaveLength(1);
+    expect(classes[0]).toContain("pe-annotation-pseudo_comment");
   });
 
   it("ANNOTATION_REBUILD_META でトグル変更が反映される", () => {

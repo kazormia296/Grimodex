@@ -870,6 +870,107 @@ mod tests {
     }
 
     #[test]
+    fn keeps_live_annotations_whose_body_anchor_is_missing() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, scene_id, range_start, range_end,
+                     text_snapshot, category, content, metadata)
+                 VALUES ('live-a1', 'p1', 's1', 0, 3, '本文',
+                         'pseudo_comment', 'ライブ', '{\"live\":true}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, scene_id, range_start, range_end,
+                     text_snapshot, category, content, metadata)
+                 VALUES ('manual-a1', 'p1', 's1', 0, 3, '本文',
+                         'pseudo_comment', '手動疑似', '{\"live\":false}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("insert live annotations");
+
+        save_scene_body_bundle(&db, payload()).expect("save without live anchor");
+
+        let rows = db
+            .execute(
+                "SELECT id FROM post_effect_annotations
+                  WHERE scene_id = 's1' ORDER BY id",
+                &[],
+                "load annotations",
+            )
+            .expect("load annotations");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["id"], "a1");
+        assert_eq!(rows[1]["id"], "live-a1");
+        assert_eq!(rows[2]["id"], "manual-a1");
+    }
+
+    #[test]
+    fn keeps_live_annotation_when_target_text_remains_without_body_mark() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, scene_id, range_start, range_end,
+                     text_snapshot, category, content, metadata)
+                 VALUES ('live-a1', 'p1', 's1', 0, 3, '本文',
+                         'pseudo_comment', 'ライブ', '{\"live\":true}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("insert live annotation");
+
+        let mut payload = payload();
+        payload.content_json =
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"本文"}]}]}"#
+                .into();
+        payload.annotation_anchors.clear();
+        save_scene_body_bundle(&db, payload).expect("save without visible mark");
+
+        let rows = db
+            .execute(
+                "SELECT id FROM post_effect_annotations WHERE id = 'live-a1'",
+                &[],
+                "load retained annotation",
+            )
+            .expect("load annotations");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn keeps_live_annotation_without_a_text_snapshot() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, scene_id, range_start, range_end,
+                     text_snapshot, category, content, metadata)
+                 VALUES ('live-a1', 'p1', 's1', 0, 0, NULL,
+                         'pseudo_comment', 'シーン全体の感想', '{\"live\":true}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("insert scene-level live annotation");
+
+        save_scene_body_bundle(&db, payload()).expect("save scene-level annotation");
+
+        let rows = db
+            .execute(
+                "SELECT id FROM post_effect_annotations WHERE id = 'live-a1'",
+                &[],
+                "load scene-level annotation",
+            )
+            .expect("load annotations");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
     fn rolls_content_back_when_a_sidecar_insert_fails_after_update() {
         let db = test_db();
         db.with_conn(|conn| {

@@ -425,6 +425,13 @@ describe("runPostEffect run_id フィルタリング", () => {
     expect(done.outcome).toEqual({ kind: "done", annotationCount: 4 });
   });
 
+  it("live run は runStore に live フラグを引き継ぐ", async () => {
+    mockInvoke.mockResolvedValue({ run_id: "live-1", from_cache: false });
+    await runPostEffect({ ...baseReq, live: true }, {});
+
+    expect(usePostEffectRunStore.getState().runs["live-1"].live).toBe(true);
+  });
+
   it("error で outcome=error になる", async () => {
     mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: false });
     await runPostEffect(baseReq, {});

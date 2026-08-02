@@ -29,6 +29,8 @@ export interface ActivePostEffectRun {
   effectType: string;
   scopeType: string;
   scopeTargetId: string | null;
+  /** true only for the automatic live reader comment path. */
+  live?: boolean;
   /** multi 実行のシーン総数（単一シーンは undefined）。 */
   totalScenes?: number;
   /** 0..1 のベストエフォート進捗。 */
@@ -218,5 +220,14 @@ export function useIsPostEffectRunning(
 export function useAnyPostEffectRunning(): boolean {
   return usePostEffectRunStore((s) =>
     Object.values(s.runs).some((r) => r.outcome === undefined),
+  );
+}
+
+/** Automatic live reader runs only (manual pseudo-comment runs are excluded). */
+export function useIsLiveReaderRunning(): boolean {
+  return usePostEffectRunStore((s) =>
+    Object.values(s.runs).some(
+      (r) => r.live === true && r.outcome === undefined,
+    ),
   );
 }

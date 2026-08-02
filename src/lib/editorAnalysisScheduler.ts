@@ -6,7 +6,8 @@ export type EditorAnalysisTaskKind =
   | "lint"
   | "derived"
   | "revision"
-  | "semantic";
+  | "semantic"
+  | "live-reader";
 
 export interface EditorAnalysisTask {
   /** Stable owner identity. Re-scheduling the same key replaces its payload. */
@@ -30,6 +31,7 @@ const PRIORITY: Readonly<Record<EditorAnalysisTaskKind, number>> = {
   derived: 3,
   revision: 4,
   semantic: 5,
+  "live-reader": 6,
 };
 
 const tasks = new Map<string, ScheduledEditorAnalysisTask>();

@@ -110,6 +110,8 @@ vi.mock("../hooks/useProjectSettings", () => ({
 vi.mock("@/features/settings/settingsStore", () => {
   const cache: Record<string, string> = {
     "ai.modelWhitelist": "[]",
+    "ai.liveReaderTriggerMode": "characters",
+    "ai.liveReaderThreshold": "80",
     "ai.webSearch.domainMode": "off",
     "ai.webSearch.domains": "[]",
     "ai.webSearch.maxContentTokens": "",
@@ -187,6 +189,28 @@ describe("AiCategory — Beat セクション", () => {
     ).toBeTruthy();
     // Slider value: 0.7 * 100 = 70%
     expect(screen.getByText("70%")).toBeTruthy();
+  });
+});
+
+describe("AiCategory — リアルタイム読者コメント", () => {
+  it("発火条件と文字数閾値を Settings から変更できる", () => {
+    renderDesktopAiCategory();
+
+    const readerModel = screen.getByText("settings.ai.roleModel.reader.label");
+    const liveReaderTitle = screen.getByText("settings.ai.liveReader.title");
+    expect(
+      readerModel.compareDocumentPosition(liveReaderTitle) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const trigger = screen.getByRole("combobox", {
+      name: "settings.ai.liveReader.triggerMode",
+    }) as HTMLSelectElement;
+    expect(trigger.value).toBe("characters");
+
+    const threshold = screen.getByRole("spinbutton", {
+      name: "settings.ai.liveReader.threshold",
+    }) as HTMLInputElement;
+    expect(threshold.value).toBe("80");
   });
 });
 
