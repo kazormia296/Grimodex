@@ -43,6 +43,19 @@ describe("classifyLiveReaderChange", () => {
       classifyLiveReaderChange("本文", "本文追記", { isProgrammatic: true }),
     ).toMatchObject({ kind: "ignored" });
   });
+
+  it("帰属保護用の programmatic な貼り付けはユーザー追記として受け付ける", () => {
+    expect(
+      classifyLiveReaderChange("本文", "本文追記", {
+        isProgrammatic: true,
+        isUserInitiatedPaste: true,
+      }),
+    ).toEqual({
+      kind: "insert",
+      addedText: "追記",
+      removedText: "",
+    });
+  });
 });
 
 describe("live reader trigger accumulation", () => {

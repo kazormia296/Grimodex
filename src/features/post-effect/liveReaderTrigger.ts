@@ -24,6 +24,8 @@ export interface LiveReaderChangeOptions {
   isComposing?: boolean;
   /** AI/貼り付け変換/外部 projection などの programmatic transaction。 */
   isProgrammatic?: boolean;
+  /** 帰属マークを付けるための programmatic transaction だが、ユーザーが行った貼り付け。 */
+  isUserInitiatedPaste?: boolean;
 }
 
 function ignoredChange(): LiveReaderChange {
@@ -42,7 +44,7 @@ export function classifyLiveReaderChange(
   if (
     options.docChanged === false ||
     options.isComposing === true ||
-    options.isProgrammatic === true
+    (options.isProgrammatic === true && options.isUserInitiatedPaste !== true)
   ) {
     return ignoredChange();
   }

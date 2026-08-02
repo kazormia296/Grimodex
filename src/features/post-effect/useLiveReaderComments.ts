@@ -271,6 +271,9 @@ export function useLiveReaderComments({
         isProgrammatic:
           transaction.getMeta("programmaticInsert") === true ||
           transaction.getMeta("externalUpdate") === true,
+        isUserInitiatedPaste:
+          transaction.getMeta("paste") === true ||
+          transaction.getMeta("uiEvent") === "paste",
       });
       previousText = nextText;
 
