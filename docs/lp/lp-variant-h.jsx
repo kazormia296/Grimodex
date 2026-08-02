@@ -1166,7 +1166,7 @@ function HWorkspaceSection() {
             pointerEvents: "none",
           }}
         >
-          ONE WORKSPACE · ONE DESK
+          18 PANELS · ONE DESK
         </div>
 
         <div
@@ -1202,7 +1202,7 @@ function HWorkspaceSection() {
                 lineHeight: 0.95,
               }}
             >
-              A WORKSPACE.
+              18 PANELS.
             </span>
             <br />
             ONE DESK.
@@ -1331,7 +1331,7 @@ function HWorkspaceSection() {
                 letterSpacing: ".06em",
               }}
             >
-              {lang === "en" ? "↓ OPEN FROM THE WORKSPACE" : "↓ WORKSPACE から開く"}
+              {lang === "en" ? "↓ OPEN FROM 18 PANELS" : "↓ 18 PANELS から開く"}
             </span>
           </div>
 
@@ -1361,7 +1361,7 @@ function HWorkspaceSection() {
                 marginRight: 4,
               }}
             >
-              ALL PANELS ↓
+              ALL 18 PANELS ↓
             </span>
             {WS_ALL_PANEL_KEYS.map((k) => (
               <button
