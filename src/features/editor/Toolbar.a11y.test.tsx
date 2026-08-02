@@ -71,6 +71,16 @@ describe("Toolbar container semantics", () => {
     ).toBeNull();
     editor.destroy();
   });
+
+  it("does not expose app fullscreen as an editor toolbar action", () => {
+    const editor = createTestEditor();
+    renderToolbar(editor);
+
+    expect(
+      screen.queryByRole("button", { name: "editor.toolbar.fullscreenMode" }),
+    ).toBeNull();
+    editor.destroy();
+  });
 });
 
 describe("Toolbar overflow menu", () => {

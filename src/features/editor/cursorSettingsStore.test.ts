@@ -13,11 +13,6 @@ const settings = vi.hoisted(() => {
   };
 });
 
-const fullscreen = vi.hoisted(() => ({
-  toggleFullscreenWindow: vi.fn<() => Promise<boolean>>(),
-  isWindowFullscreen: vi.fn<() => Promise<boolean>>(),
-}));
-
 // Mock settingsStore to avoid Tauri dependency
 vi.mock("@/features/settings/settingsStore", () => ({
   useSettingsStore: {
@@ -25,26 +20,16 @@ vi.mock("@/features/settings/settingsStore", () => ({
   },
 }));
 
-vi.mock("@/lib/windowControls", () => ({
-  toggleFullscreenWindow: fullscreen.toggleFullscreenWindow,
-  isWindowFullscreen: fullscreen.isWindowFullscreen,
-}));
-
 describe("useCursorSettingsStore", () => {
   beforeEach(() => {
     settings.values.clear();
     settings.set.mockClear();
     settings.getBoolean.mockClear();
-    fullscreen.toggleFullscreenWindow.mockReset();
-    fullscreen.toggleFullscreenWindow.mockResolvedValue(false);
-    fullscreen.isWindowFullscreen.mockReset();
-    fullscreen.isWindowFullscreen.mockResolvedValue(false);
     useCursorSettingsStore.setState({
       cursorAnimation: true,
       focusMode: false,
       typewriterMode: false,
       zenMode: false,
-      fullscreenMode: false,
       showComments: false,
     });
   });
@@ -164,39 +149,5 @@ describe("useCursorSettingsStore", () => {
       "editor.zenMode",
       expect.any(String),
     );
-  });
-
-  it("updates fullscreen state from the native window result", async () => {
-    fullscreen.toggleFullscreenWindow.mockResolvedValue(true);
-
-    useCursorSettingsStore.getState().toggleFullscreenMode();
-
-    await vi.waitFor(() => {
-      expect(useCursorSettingsStore.getState().fullscreenMode).toBe(true);
-    });
-    expect(fullscreen.toggleFullscreenWindow).toHaveBeenCalledOnce();
-  });
-
-  it("resynchronizes fullscreen state after an OS-level change", async () => {
-    fullscreen.isWindowFullscreen.mockResolvedValue(true);
-
-    await useCursorSettingsStore.getState().syncFullscreenMode();
-
-    expect(useCursorSettingsStore.getState().fullscreenMode).toBe(true);
-    expect(fullscreen.isWindowFullscreen).toHaveBeenCalledOnce();
-  });
-
-  it("keeps the last confirmed fullscreen state when switching is rejected", async () => {
-    fullscreen.toggleFullscreenWindow.mockRejectedValue(
-      new Error("fullscreen denied"),
-    );
-    useCursorSettingsStore.setState({ fullscreenMode: true });
-
-    useCursorSettingsStore.getState().toggleFullscreenMode();
-    await vi.waitFor(() => {
-      expect(fullscreen.toggleFullscreenWindow).toHaveBeenCalledOnce();
-    });
-
-    expect(useCursorSettingsStore.getState().fullscreenMode).toBe(true);
   });
 });
