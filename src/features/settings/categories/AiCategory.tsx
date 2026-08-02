@@ -1066,51 +1066,6 @@ export function AiCategory() {
           )}
       </SettingSection>
 
-      {/* Live reader comments trigger policy (global) */}
-      <SettingSection title={t("settings.ai.liveReader.title")}>
-        <SettingRow
-          label={t("settings.ai.liveReader.triggerMode")}
-          description={t("settings.ai.liveReader.triggerModeDesc")}
-        >
-          <SettingDropdown
-            settingKey="ai.liveReaderTriggerMode"
-            defaultValue={LIVE_READER_DEFAULT_TRIGGER_MODE}
-            options={[
-              {
-                value: "characters",
-                label: t("settings.ai.liveReader.modeCharacters"),
-              },
-              {
-                value: "sentence",
-                label: t("settings.ai.liveReader.modeSentence"),
-              },
-              {
-                value: "paragraph",
-                label: t("settings.ai.liveReader.modeParagraph"),
-              },
-              {
-                value: "idle",
-                label: t("settings.ai.liveReader.modeIdle"),
-              },
-            ]}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t("settings.ai.liveReader.threshold")}
-          description={t("settings.ai.liveReader.thresholdDesc")}
-          disabled={liveReaderTriggerMode !== "characters"}
-        >
-          <SettingNumberInput
-            settingKey="ai.liveReaderThreshold"
-            min={LIVE_READER_THRESHOLD_MIN_CHARS}
-            max={LIVE_READER_THRESHOLD_MAX_CHARS}
-            defaultValue={LIVE_READER_MIN_PENDING_CHARS}
-            unit={t("settings.ai.liveReader.charsUnit")}
-            disabled={liveReaderTriggerMode !== "characters"}
-          />
-        </SettingRow>
-      </SettingSection>
-
       {/* Models */}
       <SettingSection title={t("settings.ai.models")}>
         {(() => {
@@ -1575,6 +1530,50 @@ export function AiCategory() {
             ));
           })()}
         </div>
+        {/* 発火条件は reader モデルの直下にまとめ、モデルと挙動を続けて設定できるようにする。 */}
+        <SettingSection title={t("settings.ai.liveReader.title")}>
+          <SettingRow
+            label={t("settings.ai.liveReader.triggerMode")}
+            description={t("settings.ai.liveReader.triggerModeDesc")}
+          >
+            <SettingDropdown
+              settingKey="ai.liveReaderTriggerMode"
+              defaultValue={LIVE_READER_DEFAULT_TRIGGER_MODE}
+              options={[
+                {
+                  value: "characters",
+                  label: t("settings.ai.liveReader.modeCharacters"),
+                },
+                {
+                  value: "sentence",
+                  label: t("settings.ai.liveReader.modeSentence"),
+                },
+                {
+                  value: "paragraph",
+                  label: t("settings.ai.liveReader.modeParagraph"),
+                },
+                {
+                  value: "idle",
+                  label: t("settings.ai.liveReader.modeIdle"),
+                },
+              ]}
+            />
+          </SettingRow>
+          <SettingRow
+            label={t("settings.ai.liveReader.threshold")}
+            description={t("settings.ai.liveReader.thresholdDesc")}
+            disabled={liveReaderTriggerMode !== "characters"}
+          >
+            <SettingNumberInput
+              settingKey="ai.liveReaderThreshold"
+              min={LIVE_READER_THRESHOLD_MIN_CHARS}
+              max={LIVE_READER_THRESHOLD_MAX_CHARS}
+              defaultValue={LIVE_READER_MIN_PENDING_CHARS}
+              unit={t("settings.ai.liveReader.charsUnit")}
+              disabled={liveReaderTriggerMode !== "characters"}
+            />
+          </SettingRow>
+        </SettingSection>
         <p className="mt-3 text-xs text-muted-foreground">
           {t("settings.ai.roleModel.cacheNote")}
         </p>

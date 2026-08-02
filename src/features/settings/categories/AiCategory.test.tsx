@@ -196,9 +196,7 @@ describe("AiCategory — リアルタイム読者コメント", () => {
   it("発火条件と文字数閾値を Settings から変更できる", () => {
     renderDesktopAiCategory();
 
-    const readerModel = screen.getByText(
-      "settings.ai.roleModel.reader.label",
-    );
+    const readerModel = screen.getByText("settings.ai.roleModel.reader.label");
     const liveReaderTitle = screen.getByText("settings.ai.liveReader.title");
     expect(
       readerModel.compareDocumentPosition(liveReaderTitle) &

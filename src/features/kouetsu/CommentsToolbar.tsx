@@ -104,6 +104,7 @@ export function CommentsToolbar({
         <div
           data-testid="comments-toolbar-reader"
           className="flex min-w-0 items-center gap-1.5 overflow-hidden"
+          title={t("kouetsu.comments.liveReaderHelp")}
         >
           <div className="min-w-0 flex-1">
             <PseudoCommentRunControl onCompleted={onPseudoCompleted} />
