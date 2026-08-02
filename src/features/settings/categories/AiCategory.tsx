@@ -1484,7 +1484,7 @@ export function AiCategory() {
         )}
       </SettingSection>
 
-      {/* 機能別モデル（ロール単位）— 各 AI 経路を 6 意味ロールに束ねてモデル指定。
+      {/* 機能別モデル（ロール単位）— 各 AI 経路を 7 意味ロールに束ねてモデル指定。
           空 = 既定チャットモデルにフォールバック。解決は modelRouting.ts が正本。 */}
       <SettingSection title={t("settings.ai.roleModel.title")}>
         <p className="mb-3 text-xs text-muted-foreground">

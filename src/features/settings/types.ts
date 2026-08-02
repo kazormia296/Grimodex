@@ -204,6 +204,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "aiModel.role.cheap": "global",
   "aiModel.role.structured": "global",
   "aiModel.role.review": "global",
+  "aiModel.role.reader": "global",
   // 機能別モデルのプロバイダ横断: 各ロールに別プロバイダ/別エンドポイントを
   // 割り当てる JSON マップ Record<role,{provider?,endpointId?}>。空 {} なら全ロール
   // アクティブ provider 据え置き(後方互換)。解決は resolveRolePathConfig が正本 (global)。
@@ -500,6 +501,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "aiModel.role.cheap": "",
   "aiModel.role.structured": "",
   "aiModel.role.review": "",
+  "aiModel.role.reader": "",
   // 機能別モデルのプロバイダ横断マップ。既定は空 {} = 全ロール アクティブ provider。
   "aiModel.roleProviders": "{}",
   "ai.webSearch.domainMode": "off",

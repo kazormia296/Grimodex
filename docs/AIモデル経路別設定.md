@@ -18,11 +18,11 @@ Grimodex には LLM を実際に叩く経路が約 25 ある（正本は
 つまり「もっと細かくモデルを指定したい」というニーズに対し、現状は名目すら破綻して
 いた。本機能はこれを正す。
 
-## 設計の核 — 粒度は「意味ロール (6)」
+## 設計の核 — 粒度は「意味ロール (7)」
 
 経路ごとに 25 個の ModelPicker を並べる案は UX が破綻する（10〜15 画面分のスクロール・
 決定疲労・どの slot がどの経路かの暗記負荷）。代わりに、経路を **能力要件と品質/コスト
-特性が近い 6 つの意味ロール**に束ねる。ロールは `aiPrompt.custom.*` の 6 バケット前例と
+特性が近い 7 つの意味ロール**に束ねる。ロールは `aiPrompt.custom.*` の既存バケット前例と
 同じ意味分類で揃え、プロンプト軸とモデル軸の語彙を一致させる。
 
 | ロール | 性格 | 能力制約 |
@@ -33,6 +33,7 @@ Grimodex には LLM を実際に叩く経路が約 25 ある（正本は
 | `cheap` | 短い・高頻度・低品質要求（安価モデル誘導） | — |
 | `structured` | JSON 構造化出力 | （構造化信頼性。ゲートは Phase 2） |
 | `review` | 校閲 post-effect | （構造化信頼性。ゲートは Phase 2） |
+| `reader` | 本文を読む最中の擬似／リアルタイム読者コメント | （構造化信頼性。ゲートは Phase 2） |
 
 ### 不変条件
 
@@ -49,7 +50,7 @@ Grimodex には LLM を実際に叩く経路が約 25 ある（正本は
 
 正本実装は `src/features/chat/modelRouting.ts`（`PATH_TO_ROLE` /
 `resolveModelForPath` / `isModelCapableForRole`）。設定キーは
-`aiModel.role.{conversation,agent,inline,cheap,structured,review}`（global / 既定 `""`）。
+`aiModel.role.{conversation,agent,inline,cheap,structured,review,reader}`（global / 既定 `""`）。
 
 ## 経路 → ロール対応表（凍結。再分類は本ドキュメント更新を伴うこと）
 
@@ -60,7 +61,8 @@ Grimodex には LLM を実際に叩く経路が約 25 ある（正本は
 | inline | `inline_ai_stream` |
 | cheap | `session_title`, `summarization`, `beat_role` |
 | structured | `synopsis`, `foreshadow_audit_chapter`, `foreshadow_propose_past_setups`, `foreshadow_evaluate_setup_strength`, `map_branch`, `tree_scaffold`, `codex_judgment` |
-| review | `post_effect_intent_drift`, `post_effect_review`, `post_effect_consistency`, `post_effect_timeline_consistency`, `post_effect_pseudo_comment`, `post_effect_impact_review` |
+| review | `post_effect_intent_drift`, `post_effect_review`, `post_effect_consistency`, `post_effect_timeline_consistency`, `post_effect_impact_review` |
+| reader | `post_effect_pseudo_comment`（手動／リアルタイム共通） |
 | （対象外） | `semantic_search`, `fts_search`, `cli_chat_stream`, `relation_injection`, `agent_call_limit` |
 
 この対応の完全性（generation-layer の全経路が role か excluded のどちらか一方に属する）
@@ -73,7 +75,7 @@ Grimodex には LLM を実際に叩く経路が約 25 ある（正本は
 ### Phase 1（本 PR）— 解決層と配線、機能は既定固定
 
 - `modelRouting.ts`（解決層・能力ガード）＋単体テスト＋完全性メタテスト。
-- ロール 6 キーを `settings/types.ts` に追加（既定 `""`）。**UI は未露出。**
+- ロール 7 キーを `settings/types.ts` に追加（既定 `""`）。**UI は未露出。**
 - FE で送信点を `resolveModelForPath` 経由に配線。Rust が `model:Option` を受理済の
   経路のみ:
   - 配線済: `chat_stream_non_agent`, `inline_ai_stream`, `session_title`,
@@ -86,7 +88,7 @@ Grimodex には LLM を実際に叩く経路が約 25 ある（正本は
 
 ### Phase 2 — ロール UI と能力フィルタ、旧キー吸収、Rust 配線（出荷済）
 
-- `AiCategory.tsx` に 6 ロールの ModelPicker（`MODEL_ROLES.map`）。旧 2 死にピッカー
+- `AiCategory.tsx` に 7 ロールの ModelPicker（`MODEL_ROLES.map`）。旧 2 死にピッカー
   （ai.inlineModel / ai.sessionTitleModel）は撤去し、`settings.ai.roleModel.*`（ja/en）を新設。
 - ロール ModelPicker の options を `modelWhitelist ∩ ロールの能力適合モデル`（`isModelCapableForRole`）
   で絞る（whitelist 空なら全モデル）。

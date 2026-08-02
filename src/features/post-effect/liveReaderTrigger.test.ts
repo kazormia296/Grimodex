@@ -26,7 +26,9 @@ describe("classifyLiveReaderChange", () => {
     expect(classifyLiveReaderChange("古い本文", "新しい本文")).toMatchObject({
       kind: "replace",
     });
-    expect(classifyLiveReaderChange("本文", "本文", { docChanged: false })).toEqual({
+    expect(
+      classifyLiveReaderChange("本文", "本文", { docChanged: false }),
+    ).toEqual({
       kind: "ignored",
       addedText: "",
       removedText: "",
@@ -57,7 +59,7 @@ describe("live reader trigger accumulation", () => {
   });
 
   it("境界がなくても大きな追記では発火し、take 後に空へ戻る", () => {
-    let state = accumulateLiveReaderInsertion(
+    const state = accumulateLiveReaderInsertion(
       createLiveReaderAccumulator(),
       "a".repeat(LIVE_READER_MAX_PENDING_CHARS),
     );

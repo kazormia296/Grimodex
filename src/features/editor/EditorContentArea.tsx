@@ -11,6 +11,10 @@ import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
 import { CodexSemanticLinkPopover } from "@/features/editor/CodexSemanticLinkPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
+import { LiveReaderCommentRail } from "@/features/post-effect/LiveReaderCommentRail";
+import { useLiveReaderComments } from "@/features/post-effect/useLiveReaderComments";
+import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { personasForLang } from "@/features/post-effect/pseudoCommentPayloadBuilder";
 import { AnnotationHoverPopover } from "@/features/post-effect/AnnotationHoverPopover";
 import { LintHoverPopover } from "@/features/lint/LintHoverPopover";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
@@ -100,7 +104,19 @@ export function EditorContentArea({
   const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
   // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
-  const isEnglish = useCurrentProject()?.language === "en";
+  const currentProject = useCurrentProject();
+  const isEnglish = currentProject?.language === "en";
+  const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
+  const projectLanguage = currentProject?.language ?? "ja";
+  useLiveReaderComments({
+    editor,
+    sceneId,
+    enabled: !phoneWorkspace && showReaderComments,
+    persona: personasForLang(projectLanguage)[0] ?? "一般読者",
+    genre: currentProject?.genre ?? null,
+    targetReaders: currentProject?.targetReaders ?? null,
+    lang: projectLanguage,
+  });
   // 縦書きではホイールの縦回転を読み進み方向 (横) のスクロールに変換する
   useVerticalWheelScroll(editorContainerRef, editorSettings.verticalMode);
   return (
@@ -267,6 +283,13 @@ export function EditorContentArea({
             )}
           </EditorBodyWithLoading>
         </div>
+        {!phoneWorkspace && (
+          <LiveReaderCommentRail
+            editor={editor}
+            containerRef={editorContainerRef}
+            sceneId={sceneId}
+          />
+        )}
       </EditorDropDiv>
     </>
   );

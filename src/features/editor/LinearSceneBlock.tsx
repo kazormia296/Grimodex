@@ -121,6 +121,10 @@ import {
   handleSceneEditorTransaction,
   type SceneBeatIndexState,
 } from "@/features/editor/sceneEditorTransactionPipeline";
+import { LiveReaderCommentRail } from "@/features/post-effect/LiveReaderCommentRail";
+import { useLiveReaderComments } from "@/features/post-effect/useLiveReaderComments";
+import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { personasForLang } from "@/features/post-effect/pseudoCommentPayloadBuilder";
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -190,6 +194,7 @@ function MountedSceneBlock({
   const currentProject = useCurrentProject();
   const currentProjectId = useCurrentProjectId();
   const lang = currentProject?.language;
+  const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
   const workspacePath = useWorkspaceStore((state) => state.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
     (state) => state.workspaceOpenRevision,
@@ -1073,6 +1078,16 @@ function MountedSceneBlock({
   const primaryCount = primaryUnit === "word" ? wordCount : charCount;
   const primaryUnitLabel = i18next.t(countUnitLabelKey(primaryUnit));
 
+  useLiveReaderComments({
+    editor,
+    sceneId,
+    enabled: isActive && loadReady && !isLoading && showReaderComments,
+    persona: personasForLang(lang ?? "ja")[0] ?? "一般読者",
+    genre: currentProject?.genre ?? null,
+    targetReaders: currentProject?.targetReaders ?? null,
+    lang: lang ?? "ja",
+  });
+
   return (
     <div
       ref={containerRef}
@@ -1175,6 +1190,13 @@ function MountedSceneBlock({
           onRetry={inlineAi.onRetry}
           anchorRef={containerRef}
           isOwner={inlineAi.isOwner}
+        />
+      )}
+      {isActive && (
+        <LiveReaderCommentRail
+          editor={editor}
+          containerRef={containerRef}
+          sceneId={sceneId}
         />
       )}
     </div>
