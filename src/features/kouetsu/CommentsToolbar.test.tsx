@@ -57,6 +57,10 @@ describe("CommentsToolbar", () => {
     const reader = within(actions).getByTestId("comments-toolbar-reader");
     const list = within(actions).getByTestId("comments-toolbar-list");
     expect(reader).toBeVisible();
+    expect(
+      within(reader).getByText("本文入力に併せて生成"),
+    ).toBeVisible();
+    expect(reader).toHaveAttribute("title");
     expect(list).toBeVisible();
     expect(
       within(reader).getByTestId("pseudo-comment-run-control"),

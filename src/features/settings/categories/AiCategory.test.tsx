@@ -196,7 +196,14 @@ describe("AiCategory — リアルタイム読者コメント", () => {
   it("発火条件と文字数閾値を Settings から変更できる", () => {
     renderDesktopAiCategory();
 
-    expect(screen.getByText("settings.ai.liveReader.title")).toBeTruthy();
+    const readerModel = screen.getByText(
+      "settings.ai.roleModel.reader.label",
+    );
+    const liveReaderTitle = screen.getByText("settings.ai.liveReader.title");
+    expect(
+      readerModel.compareDocumentPosition(liveReaderTitle) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     const trigger = screen.getByRole("combobox", {
       name: "settings.ai.liveReader.triggerMode",
     }) as HTMLSelectElement;
