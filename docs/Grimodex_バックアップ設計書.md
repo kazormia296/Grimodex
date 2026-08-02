@@ -1,37 +1,38 @@
 # Grimodex 自動バックアップ／リストア設計書
 
-> 目的: 自動バックアップの**ディスク肥大**を解消しつつ、バックアップの本来価値
-> （DB 破損・全損からの復旧手段）を損なわない。あわせて現状欠けている
-> **アプリ内リストア**を提供する。
+> 目的: 自動バックアップのディスク使用量を抑えつつ、DB破損・全損からの復旧手段を提供する。
+> あわせて、アプリ内リストアと復元後の再構築を提供する。
 >
-> 状態: 設計フェーズ（未実装）。実装は Phase 1 → 2 → 3 の順で独立出荷する。
-> 対応方針は「差分不採用・圧縮＋派生データ除外」（Opus/Fable 双方のレビュー一致）。
+> 状態: 実装済み（v2.0.10時点）。以下のPhase表記は実装履歴を示し、未実装計画を示さない。
+> 現行方針は「差分不採用・圧縮＋派生データ除外」。
 
 ---
 
-## 1. 背景と現状の実装
+## 1. 背景と現行実装
 
-### 1.1 自動バックアップの実態
+### 1.1 現行の自動バックアップ
 
 - **トリガ**: `open_workspace`（アプリ起動時＆ワークスペース切替時）内で
   `maybe_auto_backup(&ws_path, &database)` を呼ぶ。**バックグラウンドタイマーではない**。
-  （`src-tauri/src/commands/workspace.rs:81`, 呼び出しは `open_workspace` 本体）
+  （`src-tauri/crates/grimodex-db/src/open.rs:294`, 呼び出しは `open_workspace` 本体）
 - **間引き**: `data.backupInterval`（既定 60 分）。`backups/` 内の最新バックアップが
   この間隔より**古いときだけ**新規作成する。
-  （`workspace.rs:85-98`。判定は `newest_backup_age_secs` = ファイル **mtime** ベース）
+  （`open.rs:95-108`。判定は `newest_backup_age_secs` = ファイル **mtime** ベース）
   → 1 日 1 回の起動なら実質「毎起動 1 本増える」体感になる。
-- **保存内容**: `grimodex.db` **全体**を `VACUUM INTO` で作った**無圧縮の完全コピー .db**。
-  ワークスペース丸ごと（＝全プロジェクト）。選択的除外はしていない。
-  （`database.rs:62` `backup_to()` → `conn.execute("VACUUM INTO ?1", ...)`）
-- **保存先／命名**: `<ws>/backups/grimodex-<UTC:YYYYMMDD-HHMMSS>.db`
-  （`workspace.rs:92,103-104`）。ファイル名の辞書順＝時系列順。
+- **保存内容**: `grimodex.db` 全体を `VACUUM INTO` で一貫したコピーにした後、
+  再生成可能な埋め込み・FTS派生データを除外し、gzip圧縮する。ワークスペース丸ごと
+  （全プロジェクト）が対象で、既存の無圧縮 `.db` も互換対象とする。
+  （`grimodex-db/src/lib.rs:334-365`）
+- **保存先／命名**: `<ws>/backups/grimodex-<UTC timestamp>.db.gz`。
+  `.db` と `.db.gz` は同じ世代集合として列挙・ローテーションする。
 - **保持世代**: `data.maxBackups`（既定 10、下限 1）。`rotate_backups` が
-  **ファイル名ソート**で古い順に削除。（`workspace.rs:52-74,116`）
+  **ファイル名ソート**で古い順に削除。（`open.rs:61-78,132`）
 - **書き込み前チェック**: `db.quick_check()`。破損検知しても「復旧用に**あえて**」
-  バックアップは実行する。（`workspace.rs:105-111`）
+  バックアップは実行する。（`open.rs:122-130`）
 - **ベストエフォート**: 失敗は `tracing::warn!` のみでワークスペース open は止めない。
-- **現状のリストア**: **アプリ内手段なし**。ユーザーが手動で `grimodex-*.db` を
-  `grimodex.db` へコピーして戻す想定（`database.rs:58-61` のコメント）。
+- **現状のリストア**: Settings > Data > Backupから `.db` または `.db.gz` を選び、
+  安全退避、検証、原子置換、FTS再構築を行って復元する。復元後はセッションを再読み込みする。
+  ワークスペース全体が置き換わる破壊的操作である。
 
 ### 1.2 設定キー（app_settings、global scope）
 
@@ -296,7 +297,7 @@ slim バックアップはscene/codex/chat埋め込みとFTS索引が空なの�
 
 ## 7. 実装順序（サマリ）
 
-**全 Phase 実装済み**（branch `feat/backup-restore-phase1`）。各 Phase は独立コミット。
+**全Phase実装済み**（現行コード）。各Phaseは実装履歴として記載している。
 
 | Phase | 状態 | 内容 | 主な変更点 |
 |---|---|---|---|

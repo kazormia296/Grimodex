@@ -1166,7 +1166,7 @@ function HWorkspaceSection() {
             pointerEvents: "none",
           }}
         >
-          18 PANELS · ONE DESK
+          ONE WORKSPACE · ONE DESK
         </div>
 
         <div
@@ -1202,7 +1202,7 @@ function HWorkspaceSection() {
                 lineHeight: 0.95,
               }}
             >
-              18 PANELS.
+              A WORKSPACE.
             </span>
             <br />
             ONE DESK.
@@ -1331,7 +1331,7 @@ function HWorkspaceSection() {
                 letterSpacing: ".06em",
               }}
             >
-              {lang === "en" ? "↓ OPEN FROM 18 PANELS" : "↓ 18 PANELS から開く"}
+              {lang === "en" ? "↓ OPEN FROM THE WORKSPACE" : "↓ WORKSPACE から開く"}
             </span>
           </div>
 
@@ -1361,7 +1361,7 @@ function HWorkspaceSection() {
                 marginRight: 4,
               }}
             >
-              ALL 18 PANELS ↓
+              ALL PANELS ↓
             </span>
             {WS_ALL_PANEL_KEYS.map((k) => (
               <button
@@ -1890,8 +1890,8 @@ function LPVariantH() {
       },
       en: "Local-first, account-free.",
       body: {
-        ja: "原稿は SQLite にローカル保存。アカウント不要。通信が起きるのは、自分で呼んだ AI と、ライセンス確認の小さな ping だけ。ローカルLLMも対応。",
-        en: "Your manuscript is stored locally in SQLite. No account. The only traffic is the AI you call yourself and a small license-check ping. Local LLMs are supported too.",
+        ja: "原稿は SQLite にローカル保存。原稿本文が端末外へ出るのは、接続先を確認して自分でAI処理を実行した場合。Electron版では、ライセンス検証、更新確認、意味検索モデル取得の通信も発生する場合がある。ローカルLLMにも対応。",
+        en: "Your manuscript is stored locally in SQLite. Context leaves the device when you explicitly send it to a configured AI. Electron may also contact services for license validation, update checks, and semantic-model downloads. Local LLMs are supported too.",
       },
       chip: "LOCAL",
       moveTag: "(INFRA)",
@@ -2516,7 +2516,7 @@ function LPVariantH() {
                       >
                         <span>STATUS</span>
                         <b style={{ background: HZ_HL, padding: "0 4px" }}>
-                          v2.0.7
+                          v2.0.10
                         </b>
                       </div>
                     </div>
@@ -3362,8 +3362,8 @@ function LPVariantH() {
               }}
             >
               {lang === "en"
-                ? "GRIMODEX v2.0.7 · ONE-TIME PURCHASE"
-                : "GRIMODEX v2.0.7 · 買い切り"}
+                ? "GRIMODEX v2.0.10 · ONE-TIME PURCHASE"
+                : "GRIMODEX v2.0.10 · 買い切り"}
             </div>
             <div
               style={{
@@ -3589,7 +3589,7 @@ function LPVariantH() {
             <HZBar
               items={[
                 { t: "GRIMODEX", k: true },
-                { t: "v2.0.7" },
+                { t: "v2.0.10" },
                 { t: "ELECTRON" },
                 {
                   t: "GITHUB ↗",
