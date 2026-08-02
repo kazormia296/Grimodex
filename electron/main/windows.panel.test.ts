@@ -28,10 +28,14 @@ class FakeBrowserWindow {
   loadedUrl: string | null = null;
   destroyed = false;
   minimized = false;
+  fullScreen = false;
 
   focus = vi.fn();
   show = vi.fn();
   maximize = vi.fn();
+  setFullScreen = vi.fn((active: boolean) => {
+    this.fullScreen = active;
+  });
   setPosition = vi.fn();
   restore = vi.fn(() => {
     this.minimized = false;
@@ -99,6 +103,9 @@ class FakeBrowserWindow {
   }
   isMaximized(): boolean {
     return false;
+  }
+  isFullScreen(): boolean {
+    return this.fullScreen;
   }
   getBounds(): { x: number; y: number; width: number; height: number } {
     return { x: 0, y: 0, width: 480, height: 900 };
@@ -231,14 +238,120 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
     win.emit("enter-full-screen");
     win.emit("leave-full-screen");
 
-    expect(win.webContents.send).toHaveBeenNthCalledWith(
-      1,
-      IPC.windowResized,
+    expect(win.webContents.send).toHaveBeenNthCalledWith(1, IPC.windowResized);
+    expect(win.webContents.send).toHaveBeenNthCalledWith(2, IPC.windowResized);
+  });
+
+  it("plain F11 keydown は現在のアプリ窓の fullscreen を切り替える", () => {
+    const win = FakeBrowserWindow.instances[0];
+    const beforeInput = win.webContents.on.mock.calls.find(
+      ([event]) => event === "before-input-event",
+    )?.[1] as
+      | ((
+          event: { preventDefault: () => void },
+          input: Record<string, unknown>,
+        ) => void)
+      | undefined;
+    expect(beforeInput).toBeTypeOf("function");
+
+    const enterEvent = { preventDefault: vi.fn() };
+    beforeInput?.(enterEvent, {
+      type: "keyDown",
+      key: "F11",
+      code: "F11",
+      isAutoRepeat: false,
+      shift: false,
+      control: false,
+      alt: false,
+      meta: false,
+    });
+    expect(enterEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(win.setFullScreen).toHaveBeenLastCalledWith(true);
+
+    const leaveEvent = { preventDefault: vi.fn() };
+    beforeInput?.(leaveEvent, {
+      type: "keyDown",
+      key: "F11",
+      code: "F11",
+      isAutoRepeat: false,
+      shift: false,
+      control: false,
+      alt: false,
+      meta: false,
+    });
+    expect(leaveEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(win.setFullScreen).toHaveBeenLastCalledWith(false);
+  });
+
+  it.each([
+    ["keyup", { type: "keyUp", isAutoRepeat: false }],
+    ["キーリピート", { type: "keyDown", isAutoRepeat: true }],
+  ])("plain F11 の %s は消費するが再切替しない", (_label, overrides) => {
+    const win = FakeBrowserWindow.instances[0];
+    const beforeInput = win.webContents.on.mock.calls.find(
+      ([event]) => event === "before-input-event",
+    )?.[1] as
+      | ((
+          event: { preventDefault: () => void },
+          input: Record<string, unknown>,
+        ) => void)
+      | undefined;
+    expect(beforeInput).toBeTypeOf("function");
+
+    win.setFullScreen.mockClear();
+    const event = { preventDefault: vi.fn() };
+    beforeInput?.(
+      event,
+      Object.assign(
+        {
+          type: "keyDown",
+          key: "F11",
+          code: "F11",
+          isAutoRepeat: false,
+          shift: false,
+          control: false,
+          alt: false,
+          meta: false,
+        },
+        overrides,
+      ),
     );
-    expect(win.webContents.send).toHaveBeenNthCalledWith(
-      2,
-      IPC.windowResized,
-    );
+
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(win.setFullScreen).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["別キー", { key: "F10", code: "F10" }],
+    ["修飾付き", { control: true }],
+  ])("%s は fullscreen shortcut として扱わない", (_label, overrides) => {
+    const win = FakeBrowserWindow.instances[0];
+    const beforeInput = win.webContents.on.mock.calls.find(
+      ([event]) => event === "before-input-event",
+    )?.[1] as
+      | ((
+          event: { preventDefault: () => void },
+          input: Record<string, unknown>,
+        ) => void)
+      | undefined;
+    expect(beforeInput).toBeTypeOf("function");
+
+    win.setFullScreen.mockClear();
+    const event = { preventDefault: vi.fn() };
+    beforeInput?.(event, {
+      type: "keyDown",
+      key: "F11",
+      code: "F11",
+      isAutoRepeat: false,
+      shift: false,
+      control: false,
+      alt: false,
+      meta: false,
+      ...overrides,
+    });
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(win.setFullScreen).not.toHaveBeenCalled();
   });
 
   it("メイン窓 closed で全パネル窓へ close が伝播し、registry から消える", () => {
