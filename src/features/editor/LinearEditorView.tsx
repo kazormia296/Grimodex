@@ -8,6 +8,7 @@ import { LinearSceneBlock } from "./LinearSceneBlock";
 import { AccessibleLinearReaderDialog } from "./AccessibleLinearReaderDialog";
 import { Toolbar } from "@/features/editor/Toolbar";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
+import { FindScrollbarMarkers } from "@/features/editor/FindScrollbarMarkers";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CodexSemanticLinkPopover } from "@/features/editor/CodexSemanticLinkPopover";
@@ -485,63 +486,71 @@ export function LinearEditorView() {
   }, []);
 
   const scrollContainer = (
-    <div
-      ref={scrollRef}
-      className={`glass-editor-body relative isolate flex-1 overflow-auto bg-transparent text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
-    >
+    <div className="relative min-h-0 flex-1 overflow-hidden">
       <div
-        ref={editorContainerRef}
-        data-zen-editor-column={zenMode ? "true" : undefined}
-        className="zen-editor-paper"
-        style={{
-          ...buildEditorMeasureStyle(editorSettings.maxContentWidth),
-          ...buildEditorPaperStyle({
-            enabled: backgroundEnabled,
-          }),
-          blockSize: `${linearVirtualizer.getTotalSize()}px`,
-        }}
+        ref={scrollRef}
+        className={`glass-editor-body relative isolate h-full overflow-auto bg-transparent text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
       >
-        {linearVirtualizer.getVirtualItems().map((virtualItem) => {
-          const scene = scenes[virtualItem.index];
-          if (!scene) return null;
-          return (
-            <div
-              key={scene.id}
-              ref={(element) => registerRowElement(scene.id, element)}
-              data-index={virtualItem.index}
-              data-linear-scene-id={scene.id}
-              data-linear-virtual-row=""
-              style={{
-                position: "absolute",
-                insetBlockStart: 0,
-                insetInline: 0,
-                inlineSize: "100%",
-                transform: verticalMode
-                  ? `translateX(${-virtualItem.start}px)`
-                  : `translateY(${virtualItem.start}px)`,
-              }}
-            >
-              {virtualItem.index > 0 && (
-                <div className="editor-scene-separator" />
-              )}
-              <LinearSceneBlock
-                sceneId={scene.id}
-                scene={scene}
-                // Only virtual rows exist in the DOM. Dirty/conflicted ids are
-                // pinned by rangeExtractor, so their local TipTap owner remains
-                // mounted even when it is far outside the viewport.
-                isMounted
-                isActive={scene.id === activeId}
-                placeholderHeight={
-                  heightMapRef.current.get(scene.id) ?? DEFAULT_HEIGHT
-                }
-                onHeightChange={handleHeightChange}
-                onFocus={handleFocus}
-              />
-            </div>
-          );
-        })}
+        <div
+          ref={editorContainerRef}
+          data-zen-editor-column={zenMode ? "true" : undefined}
+          className="zen-editor-paper"
+          style={{
+            ...buildEditorMeasureStyle(editorSettings.maxContentWidth),
+            ...buildEditorPaperStyle({
+              enabled: backgroundEnabled,
+            }),
+            blockSize: `${linearVirtualizer.getTotalSize()}px`,
+          }}
+        >
+          {linearVirtualizer.getVirtualItems().map((virtualItem) => {
+            const scene = scenes[virtualItem.index];
+            if (!scene) return null;
+            return (
+              <div
+                key={scene.id}
+                ref={(element) => registerRowElement(scene.id, element)}
+                data-index={virtualItem.index}
+                data-linear-scene-id={scene.id}
+                data-linear-virtual-row=""
+                style={{
+                  position: "absolute",
+                  insetBlockStart: 0,
+                  insetInline: 0,
+                  inlineSize: "100%",
+                  transform: verticalMode
+                    ? `translateX(${-virtualItem.start}px)`
+                    : `translateY(${virtualItem.start}px)`,
+                }}
+              >
+                {virtualItem.index > 0 && (
+                  <div className="editor-scene-separator" />
+                )}
+                <LinearSceneBlock
+                  sceneId={scene.id}
+                  scene={scene}
+                  // Only virtual rows exist in the DOM. Dirty/conflicted ids are
+                  // pinned by rangeExtractor, so their local TipTap owner remains
+                  // mounted even when it is far outside the viewport.
+                  isMounted
+                  isActive={scene.id === activeId}
+                  placeholderHeight={
+                    heightMapRef.current.get(scene.id) ?? DEFAULT_HEIGHT
+                  }
+                  onHeightChange={handleHeightChange}
+                  onFocus={handleFocus}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
+      <FindScrollbarMarkers
+        editor={activeEditor}
+        scrollContainerRef={scrollRef}
+        enabled={findOpen}
+        verticalMode={verticalMode}
+      />
     </div>
   );
 

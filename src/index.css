@@ -67,6 +67,9 @@
   --content-foreground-muted: oklch(0.556 0 0);
   --content-accent: oklch(0.205 0 0);
   --content-border: oklch(0.922 0 0);
+  --find-match-background: oklch(0.9 0.12 85);
+  --find-current-background: oklch(0.75 0.18 60);
+  --find-current-outline: oklch(0.55 0.18 60);
   /* Attribution highlight blend amount (overridden by JS from display.attributionHighlightOpacity) */
   --attribution-pct: 20%;
   /* Attribution semantic hues — single source of truth shared by the inline
@@ -180,6 +183,9 @@
   --content-foreground-muted: oklch(0.708 0 0);
   --content-accent: oklch(0.985 0 0);
   --content-border: oklch(0.269 0 0);
+  --find-match-background: oklch(0.4 0.12 85);
+  --find-current-background: oklch(0.55 0.18 60);
+  --find-current-outline: oklch(0.72 0.16 60);
   --switch-track-on: var(--sidebar-primary);
   --switch-thumb: oklch(0.985 0 0);
   /* Dark-mode attribution hues: same hue as :root (blue/teal/amber) but brighter
@@ -2053,19 +2059,30 @@ button[role="switch"][aria-checked="true"] {
 
 /* Find & Replace decorations (C-7) */
 .find-match {
-  background-color: oklch(0.9 0.12 85);
+  background-color: var(--find-match-background);
   border-radius: 2px;
-}
-.dark .find-match {
-  background-color: oklch(0.4 0.12 85);
 }
 .find-current {
-  background-color: oklch(0.75 0.18 60);
+  background-color: var(--find-current-background);
   border-radius: 2px;
-  outline: 1px solid oklch(0.55 0.18 60);
+  outline: 1px solid var(--find-current-outline);
 }
-.dark .find-current {
-  background-color: oklch(0.55 0.18 60);
+.find-scrollbar-marker {
+  background-color: var(--find-match-background);
+  box-shadow: 0 0 0 1px
+    color-mix(in oklch, var(--find-current-outline) 45%, transparent);
+  opacity: 0.95;
+}
+.find-scrollbar-marker-current {
+  background-color: var(--find-current-background);
+  box-shadow: 0 0 0 1px var(--find-current-outline);
+  opacity: 1;
+}
+[data-orientation="vertical"] .find-scrollbar-marker-current {
+  width: 0.5rem;
+}
+[data-orientation="horizontal"] .find-scrollbar-marker-current {
+  height: 0.5rem;
 }
 
 /* Chat input TipTap editor */
