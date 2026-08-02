@@ -1,5 +1,5 @@
 import { Extension, type RawCommands } from "@tiptap/core";
-import { Plugin, PluginKey } from "prosemirror-state";
+import { Plugin, PluginKey, type Transaction } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 
 export interface FindReplaceStorage {
@@ -13,6 +13,13 @@ export interface FindReplaceStorage {
 }
 
 const pluginKey = new PluginKey<DecorationSet>("findReplace");
+
+type FindMatch = FindReplaceStorage["matches"][number];
+
+interface FindReplacePluginMeta {
+  matches: FindMatch[];
+  currentIndex: number;
+}
 
 /**
  * Scroll the DOM element at the given ProseMirror position into view.
@@ -77,6 +84,65 @@ function buildMatches(
   }
 
   return { matches, regexError: false };
+}
+
+function buildDecorations(
+  doc: import("prosemirror-model").Node,
+  matches: ReadonlyArray<FindMatch>,
+  currentIndex: number,
+): DecorationSet {
+  if (matches.length === 0) return DecorationSet.empty;
+  return DecorationSet.create(
+    doc,
+    matches.map((match, index) =>
+      Decoration.inline(match.from, match.to, {
+        class: index === currentIndex ? "find-current" : "find-match",
+      }),
+    ),
+  );
+}
+
+function resolveMappedCurrentIndex(
+  transaction: Transaction,
+  previousMatches: ReadonlyArray<FindMatch>,
+  previousIndex: number,
+  nextMatches: ReadonlyArray<FindMatch>,
+): number {
+  if (nextMatches.length === 0) return 0;
+  const previousCurrent = previousMatches[previousIndex];
+  if (!previousCurrent) {
+    return Math.min(Math.max(previousIndex, 0), nextMatches.length - 1);
+  }
+
+  const mappedFrom = transaction.mapping.map(previousCurrent.from, 1);
+  const exactIndex = nextMatches.findIndex(
+    (match) => match.from === mappedFrom,
+  );
+  if (exactIndex >= 0) return exactIndex;
+
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  nextMatches.forEach((match, index) => {
+    const distance = Math.abs(match.from - mappedFrom);
+    if (distance < nearestDistance) {
+      nearestIndex = index;
+      nearestDistance = distance;
+    }
+  });
+  return nearestIndex;
+}
+
+function replacesEntireDocument(transaction: Transaction): boolean {
+  const firstStep = transaction.steps[0];
+  if (!firstStep) return false;
+
+  let replacesEntireContent = false;
+  firstStep.getMap().forEach((oldStart, oldEnd) => {
+    if (oldStart === 0 && oldEnd === transaction.before.content.size) {
+      replacesEntireContent = true;
+    }
+  });
+  return replacesEntireContent;
 }
 
 /**
@@ -286,29 +352,72 @@ export const FindReplaceExtension = Extension.create<
   },
 
   addProseMirrorPlugins() {
+    const editor = this.editor;
     return [
       new Plugin({
         key: pluginKey,
         state: {
-          init() {
-            return DecorationSet.empty;
+          init(_config, state) {
+            const storage = editor.storage.findReplace as FindReplaceStorage;
+            const { matches, regexError } = buildMatches(
+              state.doc,
+              storage.query,
+              storage.caseSensitive,
+              storage.useRegex,
+            );
+            const currentIndex =
+              matches.length === 0
+                ? 0
+                : Math.min(
+                    Math.max(storage.currentIndex, 0),
+                    matches.length - 1,
+                  );
+            storage.matches = matches;
+            storage.currentIndex = currentIndex;
+            storage.regexError = regexError;
+            return buildDecorations(state.doc, matches, currentIndex);
           },
           apply(tr, old) {
             const meta = tr.getMeta(pluginKey) as
-              | {
-                  matches: Array<{ from: number; to: number }>;
-                  currentIndex: number;
-                }
+              | FindReplacePluginMeta
               | undefined;
+            if (!meta && tr.docChanged) {
+              const storage = editor.storage.findReplace as FindReplaceStorage;
+              if (!storage.query) {
+                storage.matches = [];
+                storage.currentIndex = 0;
+                storage.regexError = false;
+                return DecorationSet.empty;
+              }
+
+              const previousMatches = storage.matches;
+              const previousIndex = storage.currentIndex;
+              const { matches, regexError } = buildMatches(
+                tr.doc,
+                storage.query,
+                storage.caseSensitive,
+                storage.useRegex,
+              );
+              // A fresh document has no semantic position corresponding to the
+              // previous scene's current result, so start from its first hit.
+              // Do not use preventUpdate as the signal: Inline AI rollback uses
+              // the same meta for partial edits that must preserve navigation.
+              const currentIndex = replacesEntireDocument(tr)
+                ? 0
+                : resolveMappedCurrentIndex(
+                    tr,
+                    previousMatches,
+                    previousIndex,
+                    matches,
+                  );
+              storage.matches = matches;
+              storage.currentIndex = currentIndex;
+              storage.regexError = regexError;
+              return buildDecorations(tr.doc, matches, currentIndex);
+            }
             if (!meta) return old.map(tr.mapping, tr.doc);
             const { matches, currentIndex } = meta;
-            if (matches.length === 0) return DecorationSet.empty;
-            const decorations = matches.map((m, i) =>
-              Decoration.inline(m.from, m.to, {
-                class: i === currentIndex ? "find-current" : "find-match",
-              }),
-            );
-            return DecorationSet.create(tr.doc, decorations);
+            return buildDecorations(tr.doc, matches, currentIndex);
           },
         },
         props: {
