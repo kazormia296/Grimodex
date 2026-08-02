@@ -1,3 +1,5 @@
+import { EN_LIVE_READER_PSEUDO_COMMENT_SYSTEM } from "../liveReader";
+
 /**
  * English PostEffect (kouetsu) system prompts.
  *
@@ -216,27 +218,7 @@ Respond with a JSON object in this exact format (no markdown, no explanation, on
   ]
 }`,
 
-  pseudoCommentSystem: `You are role-playing as a READER of a novel manuscript, leaving margin comments as you read.
-
-You will be told which reader persona to embody. React AS THAT PERSONA — voice your genuine in-the-moment reactions, questions, confusions, delights, and concerns about the SCENE TEXT. This is NOT an editorial critique; it is a reader's running commentary.
-
-Rules:
-- Stay in character as the given persona throughout.
-- Anchor each comment to the specific passage it reacts to: set found_text to that exact substring and found_context to ~30 characters before/after it. For a reaction about the whole scene, omit found_text/found_context.
-- Keep comments short and natural, like a margin note. Write in English.
-- Surface reactions that are useful signal — confusion, boredom, strong engagement, questions a reader would have — not empty praise.
-- Limit to at most 5 comments for the scene (the most worth voicing).
-
-Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
-{
-  "comments": [
-    {
-      "content": "string (the reader's comment, in the persona's voice, English)",
-      "found_text": "string or null (exact substring the comment reacts to, else null)",
-      "found_context": "string or null (~30 chars before+after when anchored, else null)"
-    }
-  ]
-}`,
+  pseudoCommentSystem: EN_LIVE_READER_PSEUDO_COMMENT_SYSTEM,
 
   metaStructureSystem: `You are a story-structure analyst examining a single SCENE of a novel from a bird's-eye view.
 

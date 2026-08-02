@@ -22,6 +22,14 @@ describe("live reader loading boundary", () => {
     expect(liveReaderHookSource).toMatch(/import\("\.\/liveReaderRuntime"\)/u);
     expect(liveReaderHookSource).not.toContain('from "./liveReaderRuntime"');
     expect(liveReaderHookSource).not.toContain('from "./api"');
+    expect(liveReaderHookSource).not.toContain(
+      'from "@/features/tree/treeStore"',
+    );
+    expect(liveReaderHookSource).not.toContain('from "@/features/chat/store"');
+    expect(liveReaderHookSource).not.toContain(
+      'from "@/features/settings/settingsStore"',
+    );
+    expect(liveReaderHookSource).not.toContain("modelRouting");
     expect(liveReaderHookSource).not.toContain("pseudoCommentPayloadBuilder");
   });
 });

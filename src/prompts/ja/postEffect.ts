@@ -1,3 +1,5 @@
+import { JA_LIVE_READER_PSEUDO_COMMENT_SYSTEM } from "../liveReader";
+
 /**
  * PostEffect (kouetsu) 用 system prompt。
  *
@@ -203,27 +205,7 @@ source_field が "detail" のときは、"detail_name" にそのエントリの 
   ]
 }`,
 
-  pseudoCommentSystem: `あなたは小説原稿の読者になりきって、読みながら欄外コメントを残します。
-
-どの読者ペルソナを演じるかが指示されます。そのペルソナとして反応してください——本文に対する、その瞬間ごとの素直な反応・疑問・戸惑い・喜び・懸念を声にしてください。これは編集上の批評ではありません。読者によるリアルタイムの実況コメントです。
-
-ルール:
-- 終始、与えられたペルソナの役を保ってください。
-- 各コメントを、それが反応している特定の箇所に紐づけてください: found_text にその部分そのままを、found_context にその前後それぞれ約30文字を設定してください。シーン全体についての反応の場合は found_text/found_context を省略してください。
-- コメントは欄外メモのように短く自然にしてください。日本語で書いてください。
-- 有用なシグナルとなる反応——戸惑い、退屈、強い没入、読者が抱くであろう疑問——を挙げてください。空虚な賞賛は不要です。
-- シーンあたり最大5件までに絞ってください（最も声にする価値のあるもの）。
-
-以下の形式の JSON オブジェクトだけを返してください（マークダウン・説明文なし、JSON のみ）:
-{
-  "comments": [
-    {
-      "content": "string (ペルソナの口調による読者のコメント、日本語)",
-      "found_text": "string or null (コメントが反応している該当部分そのまま、それ以外は null)",
-      "found_context": "string or null (紐づく場合は前後それぞれ約30文字、それ以外は null)"
-    }
-  ]
-}`,
+  pseudoCommentSystem: JA_LIVE_READER_PSEUDO_COMMENT_SYSTEM,
 
   metaStructureSystem: `あなたは小説の1つのシーンを俯瞰的に検討する物語構造アナリストです。
 

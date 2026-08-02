@@ -1,8 +1,5 @@
 import { useEffect, useRef } from "react";
 import type { Editor } from "@tiptap/react";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useAiSettingsStore } from "@/features/chat/store";
-import { useSettingsStore } from "@/features/settings/settingsStore";
 
 export interface LiveReaderCommentsParams {
   editor: Editor | null;
@@ -30,16 +27,6 @@ export function useLiveReaderComments({
   lang,
 }: LiveReaderCommentsParams): void {
   const ownerIdRef = useRef<number | null>(null);
-  const projectId = useTreeStore((state) => state.projectId);
-  const aiSettingsReady = useAiSettingsStore(
-    (state) => state.settings !== null,
-  );
-  const liveReaderThreshold = useSettingsStore((state) =>
-    state.getNumber("ai.liveReaderThreshold", 80),
-  );
-  const liveReaderTriggerMode = useSettingsStore((state) =>
-    state.get("ai.liveReaderTriggerMode", "characters"),
-  );
   if (ownerIdRef.current === null) ownerIdRef.current = ++nextLiveReaderOwnerId;
 
   useEffect(() => {
@@ -59,10 +46,6 @@ export function useLiveReaderComments({
           targetReaders,
           lang,
           ownerId: ownerIdRef.current ?? 0,
-          projectId,
-          aiSettingsReady,
-          liveReaderThreshold,
-          liveReaderTriggerMode,
         });
       })
       .catch((error: unknown) => {
@@ -76,17 +59,5 @@ export function useLiveReaderComments({
       cleanup?.();
       cleanup = null;
     };
-  }, [
-    editor,
-    sceneId,
-    enabled,
-    persona,
-    genre,
-    targetReaders,
-    lang,
-    projectId,
-    aiSettingsReady,
-    liveReaderThreshold,
-    liveReaderTriggerMode,
-  ]);
+  }, [editor, sceneId, enabled, persona, genre, targetReaders, lang]);
 }
