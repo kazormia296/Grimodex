@@ -1,19 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence } from "motion/react";
-import {
-  ArrowDownUp,
-  Bot,
-  EyeOff,
-  Loader2,
-  MessageSquare,
-  MessagesSquare,
-  Radio,
-  RefreshCw,
-  User,
-} from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Loader2, MessageSquare } from "lucide-react";
 import { formatShortcut } from "@/lib/platform";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { listAnnotationsForProject } from "@/features/post-effect/api";
@@ -35,12 +23,10 @@ import {
 } from "./commentsAggregation";
 import { useKouetsuStore } from "./kouetsuStore";
 import { jumpToComment } from "./jumpToComment";
-import { KouetsuScopePicker } from "./KouetsuScopePicker";
-import { PseudoCommentRunControl } from "./PseudoCommentRunControl";
+import { CommentsToolbar } from "./CommentsToolbar";
 import { useResolvedKouetsuScope } from "./useResolvedKouetsuScope";
 import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
 import { listProjectSceneDocuments } from "@/features/tree/api";
-import { Switch } from "@/components/ui/switch";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsLiveReaderRunning } from "@/features/post-effect/runStore";
 import { useReducedMotion } from "@/lib/animation";
@@ -168,6 +154,17 @@ export function CommentsTab() {
     }
   }, [reloadAnnotations, scopeSceneIds, activeSceneId, setScope]);
 
+  const handleShowDismissedChange = useCallback(
+    (next: boolean) => {
+      setShowDismissed(next);
+      // 除外ビューで復元(reopen)した annotation は status=open に戻るが
+      // 親の threads state は古いまま。通常ビューへ戻す瞬間に annotation
+      // だけ再取得し、復元分を即スレッドへ反映する（所見: 反映漏れ）。
+      if (!next) void reloadAnnotations();
+    },
+    [reloadAnnotations],
+  );
+
   const totalCount = groups.reduce(
     (n, g) => n + g.human.length + g.threads.length,
     0,
@@ -175,107 +172,19 @@ export function CommentsTab() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* narrow でもレイアウトが崩れないよう flex-wrap で段組みする。 */}
-      <div className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border bg-muted/20 px-2 py-1 text-xs">
-        <KouetsuScopePicker />
-        <div className="flex items-center gap-1">
-          {(
-            [
-              ["all", t("snippets.filterAll"), MessagesSquare],
-              ["human", t("scenes.sortManual"), User],
-              ["ai", t("attribution.columnAi"), Bot],
-            ] as const satisfies readonly [Filter, string, LucideIcon][]
-          ).map(([id, label, Icon]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setFilter(id)}
-              className={cn(
-                "flex items-center gap-1 rounded px-2 py-0.5",
-                filter === id
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent",
-              )}
-            >
-              <Icon size={11} className="shrink-0" />
-              {label}
-            </button>
-          ))}
-          <button
-            type="button"
-            aria-pressed={showDismissed}
-            onClick={() => {
-              const next = !showDismissed;
-              setShowDismissed(next);
-              // 除外ビューで復元(reopen)した annotation は status=open に戻るが
-              // 親の threads state は古いまま。通常ビューへ戻す瞬間に annotation
-              // だけ再取得し、復元分を即スレッドへ反映する（所見: 反映漏れ）。
-              if (!next) void reloadAnnotations();
-            }}
-            className={cn(
-              "flex items-center gap-1 rounded px-2 py-0.5",
-              showDismissed
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-accent",
-            )}
-          >
-            <EyeOff size={11} className="shrink-0" />
-            {t("kouetsu.filter.dismissed")}
-          </button>
-        </div>
-        <div className="ml-auto flex min-w-0 items-center gap-1.5">
-          <div className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground">
-            <ArrowDownUp size={12} className="shrink-0" />
-            <label htmlFor="kouetsu-comments-sort" className="sr-only">
-              {t("kouetsu.comments.sortLabel")}
-            </label>
-            <select
-              id="kouetsu-comments-sort"
-              value={sortOrder}
-              onChange={(event) =>
-                setSortOrder(event.target.value as CommentSortOrder)
-              }
-              aria-label={t("kouetsu.comments.sortLabel")}
-              className="max-w-28 truncate rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-foreground outline-none"
-            >
-              <option value="newest">{t("kouetsu.comments.sortNewest")}</option>
-              <option value="oldest">{t("kouetsu.comments.sortOldest")}</option>
-              <option value="scene">{t("kouetsu.comments.sortScene")}</option>
-            </select>
-          </div>
-          <div className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground">
-            <Radio
-              size={12}
-              className={cn("shrink-0", liveReaderEnabled && "text-primary")}
-            />
-            <span className="whitespace-nowrap text-[10px]">
-              {t("kouetsu.comments.liveReader")}
-            </span>
-            {liveReaderRunning && (
-              <Loader2
-                size={11}
-                className="shrink-0 animate-spin text-primary"
-                aria-label={t("kouetsu.comments.liveReaderRunning")}
-              />
-            )}
-            <Switch
-              size="sm"
-              checked={liveReaderEnabled}
-              onCheckedChange={setLiveReaderEnabled}
-              aria-label={t("kouetsu.comments.liveReader")}
-            />
-          </div>
-          <PseudoCommentRunControl onCompleted={handlePseudoCompleted} />
-          <button
-            type="button"
-            onClick={() => void reload()}
-            title={t("error.reload")}
-            className="rounded p-1 text-muted-foreground hover:bg-accent"
-          >
-            <RefreshCw size={12} />
-          </button>
-        </div>
-      </div>
+      <CommentsToolbar
+        filter={filter}
+        onFilterChange={setFilter}
+        showDismissed={showDismissed}
+        onShowDismissedChange={handleShowDismissedChange}
+        sortOrder={sortOrder}
+        onSortOrderChange={setSortOrder}
+        liveReaderEnabled={liveReaderEnabled}
+        onLiveReaderEnabledChange={setLiveReaderEnabled}
+        liveReaderRunning={liveReaderRunning}
+        onPseudoCompleted={handlePseudoCompleted}
+        onReload={reload}
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {showDismissed ? (
