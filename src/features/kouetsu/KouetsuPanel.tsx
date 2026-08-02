@@ -11,6 +11,9 @@ import { recordMark } from "@/lib/perfLog";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useIsLiveReaderRunning } from "@/features/post-effect/runStore";
+import { ensureLiveReaderTranslations } from "@/locales/liveReader";
+
+ensureLiveReaderTranslations();
 
 const TABS: { id: KouetsuTab; labelKey: string; icon: LucideIcon }[] = [
   { id: "issues", labelKey: "kouetsu.tab.issues", icon: SearchCheck },

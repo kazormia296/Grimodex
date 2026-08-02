@@ -964,10 +964,6 @@
         "review": {
           "label": "Editorial review",
           "description": "Kouetsu post-effects (consistency, intent drift, timeline, etc.). Requires reliable JSON output."
-        },
-        "reader": {
-          "label": "Reader comments",
-          "description": "In-the-moment and pseudo reader comments. Requires concise structured JSON output."
         }
       },
       "thinkingMode": "Thinking Mode",
@@ -989,18 +985,6 @@
       "contextBudgetL4": "L4 Codex & Snippets",
       "contextBudgetL5": "L5 Chat history",
       "contextBudgetReserve": "Response reserve",
-      "liveReader": {
-        "title": "Live reader comments",
-        "triggerMode": "Trigger",
-        "triggerModeDesc": "Choose when appended text is sent for reader-comment generation. Enable live reader comments from the Kouetsu comments panel.",
-        "modeCharacters": "Character count + sentence end",
-        "modeSentence": "Sentence end",
-        "modeParagraph": "Paragraph end",
-        "modeIdle": "After typing stops",
-        "threshold": "Minimum appended characters",
-        "thresholdDesc": "Used only with “Character count + sentence end”. Lower values generate comments more often.",
-        "charsUnit": "chars"
-      },
       "modelWhitelist": "Models shown in chat",
       "modelWhitelistDesc": "Only checked models appear in the chat panel. Leave all unchecked to show every model.",
       "modelWhitelistSearch": "Search models…",
@@ -1772,14 +1756,7 @@
     "comments": {
       "empty": "No comments",
       "emptyHint": "Select text and press {{shortcut}} to add a comment. Generate AI comments with the “AI Comment” button above.",
-      "jumpToLocation": "Open and select location",
-      "liveReader": "Generate with body input",
-      "liveReaderHelp": "When enabled, appended body text is sent for reader-comment generation once the trigger condition configured in Settings is reached. Existing comments are not deleted when this switch is turned off.",
-      "liveReaderRunning": "Generating live reader comments",
-      "sortLabel": "Comment sort order",
-      "sortNewest": "Newest first",
-      "sortOldest": "Oldest first",
-      "sortScene": "Scene order"
+      "jumpToLocation": "Open and select location"
     },
     "scope": {
       "current": "Current scene",

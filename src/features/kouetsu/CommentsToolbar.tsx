@@ -15,6 +15,9 @@ import { KouetsuScopePicker } from "./KouetsuScopePicker";
 import { PseudoCommentRunControl } from "./PseudoCommentRunControl";
 import type { CommentSortOrder, Filter } from "./commentsAggregation";
 import { Switch } from "@/components/ui/switch";
+import { ensureLiveReaderTranslations } from "@/locales/liveReader";
+
+ensureLiveReaderTranslations();
 
 interface Props {
   filter: Filter;

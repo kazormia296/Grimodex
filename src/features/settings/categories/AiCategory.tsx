@@ -73,6 +73,9 @@ import {
   LIVE_READER_THRESHOLD_MIN_CHARS,
   normalizeLiveReaderTriggerMode,
 } from "@/features/post-effect/liveReaderTrigger";
+import { ensureLiveReaderTranslations } from "@/locales/liveReader";
+
+ensureLiveReaderTranslations();
 
 async function archiveActiveCodexThreads(): Promise<void> {
   const projectId = getCurrentProjectId();

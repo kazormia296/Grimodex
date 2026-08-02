@@ -963,10 +963,6 @@
         "review": {
           "label": "校閲レビュー",
           "description": "校閲 post-effect（連続性・意図ずれ・時系列など）。信頼できる JSON 出力が必要。"
-        },
-        "reader": {
-          "label": "読者コメント",
-          "description": "本文を読む最中のリアルタイム／擬似コメント。短い反応を返す JSON 出力が必要。"
         }
       },
       "thinkingMode": "Thinking モード",
@@ -988,18 +984,6 @@
       "contextBudgetL4": "L4 Codex & Snippets",
       "contextBudgetL5": "L5 会話履歴",
       "contextBudgetReserve": "レスポンス予約",
-      "liveReader": {
-        "title": "リアルタイム読者コメント",
-        "triggerMode": "発火条件",
-        "triggerModeDesc": "本文の追記をどのタイミングで読者コメント生成へ送るかを選びます。リアルタイム読者コメント自体は校閲パネルからONにします。",
-        "modeCharacters": "文字数＋文末",
-        "modeSentence": "文末（。！？）",
-        "modeParagraph": "段落末（改行）",
-        "modeIdle": "入力停止後",
-        "threshold": "最小追記文字数",
-        "thresholdDesc": "「文字数＋文末」選択時に使用します。小さくすると生成頻度が上がります。",
-        "charsUnit": "字"
-      },
       "modelWhitelist": "チャットに表示するモデル",
       "modelWhitelistDesc": "チェックしたモデルのみチャットパネルに表示します。未選択の場合はすべてのモデルを表示します。",
       "modelWhitelistSearch": "モデルを検索…",
@@ -1771,14 +1755,7 @@
     "comments": {
       "empty": "コメントはありません",
       "emptyHint": "本文を選択して {{shortcut}} でコメントを追加できます。AIコメントは上の「AIコメント」ボタンから生成できます",
-      "jumpToLocation": "該当箇所を開いて選択",
-      "liveReader": "本文入力に併せて生成",
-      "liveReaderHelp": "本文の追記を検知し、Settingsで設定した発火条件に達すると読者コメントを生成します。生成済みコメントはこのスイッチをOFFにしても削除されません。",
-      "liveReaderRunning": "リアルタイム読者コメントを生成中",
-      "sortLabel": "コメントの並び順",
-      "sortNewest": "新しい順",
-      "sortOldest": "古い順",
-      "sortScene": "シーン順"
+      "jumpToLocation": "該当箇所を開いて選択"
     },
     "scope": {
       "current": "現在シーン",
