@@ -30,7 +30,7 @@ vi.mock("@/components/ui/switch", () => ({
 }));
 
 describe("CommentsToolbar", () => {
-  it("フィルター行と操作行を分け、操作を2列に配置する", () => {
+  it("フィルター行と操作行を分け、操作を2行に配置する", () => {
     render(
       <CommentsToolbar
         filter="all"
@@ -53,12 +53,15 @@ describe("CommentsToolbar", () => {
     ).toBeVisible();
 
     const actions = within(toolbar).getByTestId("comments-toolbar-actions");
-    expect(actions).toHaveClass("grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]");
+    expect(actions).toHaveClass("grid-rows-[auto_auto]");
+    const reader = within(actions).getByTestId("comments-toolbar-reader");
+    const list = within(actions).getByTestId("comments-toolbar-list");
+    expect(reader).toBeVisible();
+    expect(list).toBeVisible();
     expect(
-      within(actions).getByTestId("comments-toolbar-preferences"),
+      within(reader).getByTestId("pseudo-comment-run-control"),
     ).toBeVisible();
-    expect(
-      within(actions).getByTestId("comments-toolbar-generation"),
-    ).toBeVisible();
+    expect(within(reader).getByRole("checkbox")).toBeVisible();
+    expect(within(list).getByRole("combobox")).toBeVisible();
   });
 });

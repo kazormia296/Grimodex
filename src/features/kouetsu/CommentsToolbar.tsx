@@ -99,11 +99,42 @@ export function CommentsToolbar({
 
       <div
         data-testid="comments-toolbar-actions"
-        className="grid min-w-0 grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] items-center gap-1.5"
+        className="grid min-w-0 grid-rows-[auto_auto] gap-y-1"
       >
         <div
-          data-testid="comments-toolbar-preferences"
+          data-testid="comments-toolbar-reader"
           className="flex min-w-0 items-center gap-1.5 overflow-hidden"
+        >
+          <div className="min-w-0 flex-1">
+            <PseudoCommentRunControl onCompleted={onPseudoCompleted} />
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground">
+            <Radio
+              size={12}
+              className={cn("shrink-0", liveReaderEnabled && "text-primary")}
+            />
+            <span className="whitespace-nowrap text-[10px]">
+              {t("kouetsu.comments.liveReader")}
+            </span>
+            {liveReaderRunning && (
+              <Loader2
+                size={11}
+                className="shrink-0 animate-spin text-primary"
+                aria-label={t("kouetsu.comments.liveReaderRunning")}
+              />
+            )}
+            <Switch
+              size="sm"
+              checked={liveReaderEnabled}
+              onCheckedChange={onLiveReaderEnabledChange}
+              aria-label={t("kouetsu.comments.liveReader")}
+            />
+          </div>
+        </div>
+
+        <div
+          data-testid="comments-toolbar-list"
+          className="flex min-w-0 items-center justify-between gap-1.5"
         >
           <div className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground">
             <ArrowDownUp size={12} className="shrink-0" />
@@ -124,44 +155,11 @@ export function CommentsToolbar({
               <option value="scene">{t("kouetsu.comments.sortScene")}</option>
             </select>
           </div>
-          <div className="flex min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground">
-            <Radio
-              size={12}
-              className={cn("shrink-0", liveReaderEnabled && "text-primary")}
-            />
-            <span
-              className="min-w-0 truncate text-[10px]"
-              title={t("kouetsu.comments.liveReader")}
-            >
-              {t("kouetsu.comments.liveReader")}
-            </span>
-            {liveReaderRunning && (
-              <Loader2
-                size={11}
-                className="shrink-0 animate-spin text-primary"
-                aria-label={t("kouetsu.comments.liveReaderRunning")}
-              />
-            )}
-            <Switch
-              size="sm"
-              checked={liveReaderEnabled}
-              onCheckedChange={onLiveReaderEnabledChange}
-              aria-label={t("kouetsu.comments.liveReader")}
-            />
-          </div>
-        </div>
-
-        <div
-          data-testid="comments-toolbar-generation"
-          className="flex min-w-0 items-center justify-end gap-1"
-        >
-          <div className="min-w-0 flex-1">
-            <PseudoCommentRunControl onCompleted={onPseudoCompleted} />
-          </div>
           <button
             type="button"
             onClick={() => void onReload()}
             title={t("error.reload")}
+            aria-label={t("error.reload")}
             className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent"
           >
             <RefreshCw size={12} />
