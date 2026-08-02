@@ -6,8 +6,19 @@
 
 export const LIVE_READER_MIN_PENDING_CHARS = 80;
 export const LIVE_READER_MAX_PENDING_CHARS = 160;
+export const LIVE_READER_THRESHOLD_MIN_CHARS = 20;
+export const LIVE_READER_THRESHOLD_MAX_CHARS = LIVE_READER_MAX_PENDING_CHARS;
 export const LIVE_READER_CONTEXT_MAX_CHARS = 2_800;
 export const LIVE_READER_IDLE_DELAY_MS = 1_100;
+
+export type LiveReaderTriggerMode =
+  | "characters"
+  | "sentence"
+  | "paragraph"
+  | "idle";
+
+export const LIVE_READER_DEFAULT_TRIGGER_MODE: LiveReaderTriggerMode =
+  "characters";
 
 export type LiveReaderChangeKind = "insert" | "delete" | "replace" | "ignored";
 
@@ -102,14 +113,63 @@ export function accumulateLiveReaderInsertion(
   };
 }
 
+function containsSentenceBoundary(text: string): boolean {
+  return /[。！？.!?]/u.test(text);
+}
+
+function containsParagraphBoundary(text: string): boolean {
+  return text.includes("\n");
+}
+
 function containsNaturalBoundary(text: string): boolean {
-  return /[。！？.!?\n]/u.test(text);
+  return containsSentenceBoundary(text) || containsParagraphBoundary(text);
+}
+
+export function normalizeLiveReaderTriggerMode(
+  value: string,
+): LiveReaderTriggerMode {
+  switch (value) {
+    case "sentence":
+    case "paragraph":
+    case "idle":
+    case "characters":
+      return value;
+    default:
+      return LIVE_READER_DEFAULT_TRIGGER_MODE;
+  }
+}
+
+export function normalizeLiveReaderThreshold(value: number): number {
+  if (!Number.isFinite(value)) return LIVE_READER_MIN_PENDING_CHARS;
+  return Math.min(
+    LIVE_READER_THRESHOLD_MAX_CHARS,
+    Math.max(LIVE_READER_THRESHOLD_MIN_CHARS, Math.floor(value)),
+  );
 }
 
 /** 閾値到達か、十分な長さのまとまりを読者へ渡せる状態か。 */
-export function shouldTriggerLiveReader(state: LiveReaderAccumulator): boolean {
+export function shouldTriggerLiveReader(
+  state: LiveReaderAccumulator,
+  minimumPendingChars: number = LIVE_READER_MIN_PENDING_CHARS,
+  triggerMode: LiveReaderTriggerMode = LIVE_READER_DEFAULT_TRIGGER_MODE,
+): boolean {
+  if (state.pendingChars <= 0) return false;
+
+  switch (normalizeLiveReaderTriggerMode(triggerMode)) {
+    case "sentence":
+      return containsSentenceBoundary(state.pendingText);
+    case "paragraph":
+      return containsParagraphBoundary(state.pendingText);
+    case "idle":
+      return true;
+    case "characters":
+    default:
+      break;
+  }
+
+  const threshold = normalizeLiveReaderThreshold(minimumPendingChars);
   return (
-    state.pendingChars >= LIVE_READER_MIN_PENDING_CHARS &&
+    state.pendingChars >= threshold &&
     (state.pendingChars >= LIVE_READER_MAX_PENDING_CHARS ||
       containsNaturalBoundary(state.pendingText))
   );

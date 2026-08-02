@@ -59,11 +59,20 @@ import { McpIntegrationSection } from "../components/McpIntegrationSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { ControlledToggle, SettingToggle } from "../components/SettingToggle";
+import { SettingDropdown } from "../components/SettingDropdown";
+import { SettingNumberInput } from "../components/SettingNumberInput";
 import { Switch } from "@/components/ui/switch";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "@/features/chat/browserProviderPolicy";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import {
+  LIVE_READER_DEFAULT_TRIGGER_MODE,
+  LIVE_READER_MIN_PENDING_CHARS,
+  LIVE_READER_THRESHOLD_MAX_CHARS,
+  LIVE_READER_THRESHOLD_MIN_CHARS,
+  normalizeLiveReaderTriggerMode,
+} from "@/features/post-effect/liveReaderTrigger";
 
 async function archiveActiveCodexThreads(): Promise<void> {
   const projectId = getCurrentProjectId();
@@ -515,6 +524,12 @@ export function AiCategory() {
   const budgetError = budgetTotal > 100;
 
   const providerLabel = (p: AiProvider) => getProviderLabel(p, t);
+  const liveReaderTriggerMode = normalizeLiveReaderTriggerMode(
+    settingsStore.get(
+      "ai.liveReaderTriggerMode",
+      LIVE_READER_DEFAULT_TRIGGER_MODE,
+    ),
+  );
 
   if (!localSettings) {
     return (
@@ -1049,6 +1064,51 @@ export function AiCategory() {
               )}
             </SettingRow>
           )}
+      </SettingSection>
+
+      {/* Live reader comments trigger policy (global) */}
+      <SettingSection title={t("settings.ai.liveReader.title")}>
+        <SettingRow
+          label={t("settings.ai.liveReader.triggerMode")}
+          description={t("settings.ai.liveReader.triggerModeDesc")}
+        >
+          <SettingDropdown
+            settingKey="ai.liveReaderTriggerMode"
+            defaultValue={LIVE_READER_DEFAULT_TRIGGER_MODE}
+            options={[
+              {
+                value: "characters",
+                label: t("settings.ai.liveReader.modeCharacters"),
+              },
+              {
+                value: "sentence",
+                label: t("settings.ai.liveReader.modeSentence"),
+              },
+              {
+                value: "paragraph",
+                label: t("settings.ai.liveReader.modeParagraph"),
+              },
+              {
+                value: "idle",
+                label: t("settings.ai.liveReader.modeIdle"),
+              },
+            ]}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.ai.liveReader.threshold")}
+          description={t("settings.ai.liveReader.thresholdDesc")}
+          disabled={liveReaderTriggerMode !== "characters"}
+        >
+          <SettingNumberInput
+            settingKey="ai.liveReaderThreshold"
+            min={LIVE_READER_THRESHOLD_MIN_CHARS}
+            max={LIVE_READER_THRESHOLD_MAX_CHARS}
+            defaultValue={LIVE_READER_MIN_PENDING_CHARS}
+            unit={t("settings.ai.liveReader.charsUnit")}
+            disabled={liveReaderTriggerMode !== "characters"}
+          />
+        </SettingRow>
       </SettingSection>
 
       {/* Models */}

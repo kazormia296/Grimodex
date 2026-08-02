@@ -197,6 +197,8 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "ai.sessionTitleModel": "global",
   "ai.modelWhitelist": "global",
   "ai.liveReaderComments": "global",
+  "ai.liveReaderThreshold": "global",
+  "ai.liveReaderTriggerMode": "global",
   // AI — 機能別モデル（ロール単位）。空 = 既定チャットモデルにフォールバック (global)。
   // 解決は src/features/chat/modelRouting.ts の resolveModelForPath が正本。
   "aiModel.role.conversation": "global",
@@ -495,7 +497,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",
   "ai.modelWhitelist": "[]",
-  "ai.liveReaderComments": "true",
+  "ai.liveReaderComments": "false",
+  "ai.liveReaderThreshold": "80",
+  "ai.liveReaderTriggerMode": "characters",
   // 機能別モデル（ロール単位）。空 = 既定チャットモデルにフォールバック。
   "aiModel.role.conversation": "",
   "aiModel.role.agent": "",

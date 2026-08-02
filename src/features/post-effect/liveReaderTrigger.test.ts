@@ -6,6 +6,7 @@ import {
   buildLiveReaderContext,
   classifyLiveReaderChange,
   createLiveReaderAccumulator,
+  normalizeLiveReaderTriggerMode,
   shouldTriggerLiveReader,
   takeLiveReaderInsertion,
 } from "./liveReaderTrigger";
@@ -81,6 +82,57 @@ describe("live reader trigger accumulation", () => {
       text: "a".repeat(LIVE_READER_MAX_PENDING_CHARS),
       next: createLiveReaderAccumulator(),
     });
+  });
+
+  it("Settings で指定した最小追記文字数を発火判定へ反映する", () => {
+    const state = accumulateLiveReaderInsertion(
+      createLiveReaderAccumulator(),
+      "あ".repeat(40) + "。",
+    );
+
+    expect(shouldTriggerLiveReader(state, 80)).toBe(false);
+    expect(shouldTriggerLiveReader(state, 40)).toBe(true);
+  });
+
+  it("文末モードは文字数に関係なく句読点で発火する", () => {
+    const withoutSentenceEnd = accumulateLiveReaderInsertion(
+      createLiveReaderAccumulator(),
+      "短い追記",
+    );
+    const withSentenceEnd = accumulateLiveReaderInsertion(
+      createLiveReaderAccumulator(),
+      "短い追記。",
+    );
+
+    expect(shouldTriggerLiveReader(withoutSentenceEnd, 80, "sentence")).toBe(
+      false,
+    );
+    expect(shouldTriggerLiveReader(withSentenceEnd, 80, "sentence")).toBe(true);
+  });
+
+  it("段落末モードは改行で発火する", () => {
+    const state = accumulateLiveReaderInsertion(
+      createLiveReaderAccumulator(),
+      "短い段落\n",
+    );
+
+    expect(shouldTriggerLiveReader(state, 80, "paragraph")).toBe(true);
+  });
+
+  it("入力停止後モードは追記があれば発火候補になる", () => {
+    const state = accumulateLiveReaderInsertion(
+      createLiveReaderAccumulator(),
+      "一文字",
+    );
+
+    expect(shouldTriggerLiveReader(state, 80, "idle")).toBe(true);
+    expect(
+      shouldTriggerLiveReader(createLiveReaderAccumulator(), 80, "idle"),
+    ).toBe(false);
+  });
+
+  it("未知のモードは文字数モードへフォールバックする", () => {
+    expect(normalizeLiveReaderTriggerMode("unknown")).toBe("characters");
   });
 });
 

@@ -28,10 +28,15 @@ import {
   accumulateLiveReaderInsertion,
   classifyLiveReaderChange,
   createLiveReaderAccumulator,
+  LIVE_READER_DEFAULT_TRIGGER_MODE,
   LIVE_READER_IDLE_DELAY_MS,
+  LIVE_READER_MIN_PENDING_CHARS,
+  normalizeLiveReaderThreshold,
+  normalizeLiveReaderTriggerMode,
   shouldTriggerLiveReader,
   takeLiveReaderInsertion,
   type LiveReaderAccumulator,
+  type LiveReaderTriggerMode,
 } from "./liveReaderTrigger";
 import { useAnnotationStore } from "./annotationStore";
 import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
@@ -72,6 +77,17 @@ export function useLiveReaderComments({
   const aiSettingsReady = useAiSettingsStore(
     (state) => state.settings !== null,
   );
+  const liveReaderThreshold = useSettingsStore((state) =>
+    normalizeLiveReaderThreshold(
+      state.getNumber("ai.liveReaderThreshold", LIVE_READER_MIN_PENDING_CHARS),
+    ),
+  );
+  const liveReaderTriggerMode: LiveReaderTriggerMode = useSettingsStore(
+    (state) =>
+      normalizeLiveReaderTriggerMode(
+        state.get("ai.liveReaderTriggerMode", LIVE_READER_DEFAULT_TRIGGER_MODE),
+      ),
+  );
   if (ownerIdRef.current === null) ownerIdRef.current = ++nextLiveReaderOwnerId;
 
   useEffect(() => {
@@ -87,7 +103,15 @@ export function useLiveReaderComments({
     let disposed = false;
 
     const maybeScheduleNext = () => {
-      if (!disposed && !activeRun && shouldTriggerLiveReader(accumulator)) {
+      if (
+        !disposed &&
+        !activeRun &&
+        shouldTriggerLiveReader(
+          accumulator,
+          liveReaderThreshold,
+          liveReaderTriggerMode,
+        )
+      ) {
         scheduleEditorAnalysisTask({
           key: taskKey,
           kind: "live-reader",
@@ -101,7 +125,15 @@ export function useLiveReaderComments({
     };
 
     const launch = async (): Promise<void> => {
-      if (disposed || activeRun || !shouldTriggerLiveReader(accumulator)) {
+      if (
+        disposed ||
+        activeRun ||
+        !shouldTriggerLiveReader(
+          accumulator,
+          liveReaderThreshold,
+          liveReaderTriggerMode,
+        )
+      ) {
         return;
       }
       if (
@@ -279,7 +311,15 @@ export function useLiveReaderComments({
           accumulator,
           change.addedText,
         );
-        if (shouldTriggerLiveReader(accumulator)) maybeScheduleNext();
+        if (
+          shouldTriggerLiveReader(
+            accumulator,
+            liveReaderThreshold,
+            liveReaderTriggerMode,
+          )
+        ) {
+          maybeScheduleNext();
+        }
         return;
       }
 
@@ -318,5 +358,7 @@ export function useLiveReaderComments({
     lang,
     projectId,
     aiSettingsReady,
+    liveReaderThreshold,
+    liveReaderTriggerMode,
   ]);
 }

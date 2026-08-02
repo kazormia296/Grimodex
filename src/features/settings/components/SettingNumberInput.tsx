@@ -11,6 +11,7 @@ interface SettingNumberInputProps {
   unit?: string;
   /** Placeholder shown when the value is 0 (treated as "unset"). */
   placeholder?: string;
+  disabled?: boolean;
 }
 
 /**
@@ -26,6 +27,7 @@ export function SettingNumberInput({
   defaultValue = 0,
   unit,
   placeholder,
+  disabled = false,
 }: SettingNumberInputProps) {
   const { value, setValue } = useSettingNumber(settingKey, defaultValue);
   const rowA11y = useSettingRowA11y();
@@ -39,6 +41,7 @@ export function SettingNumberInput({
         step={step}
         value={value === 0 ? "" : value}
         placeholder={placeholder}
+        disabled={disabled}
         aria-labelledby={rowA11y?.labelId}
         aria-describedby={rowA11y?.descriptionId}
         onChange={(e) => {
@@ -51,7 +54,7 @@ export function SettingNumberInput({
             max != null ? Math.min(max, Math.max(min, v)) : Math.max(min, v);
           setValue(clamped);
         }}
-        className="w-24 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums focus:outline-none"
+        className="w-24 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
       />
       {unit && <span className="text-xs text-muted-foreground">{unit}</span>}
     </div>

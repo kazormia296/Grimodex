@@ -11,6 +11,11 @@ import type {
 
 export type { LayerSetOptions } from "./types";
 
+export interface AnnotationInitOptions {
+  /** 起動・ワークスペース初期化時にリアルタイム読者コメントをOFFへ戻す。 */
+  resetLiveReader?: boolean;
+}
+
 interface AnnotationState {
   /** Annotations for the currently open scene, keyed by sceneId */
   annotationsByScene: Map<string, PostEffectAnnotation[]>;
@@ -41,14 +46,14 @@ interface AnnotationState {
   toggleLiveReaderEnabled: () => void;
   setFocusedAnnotationId: (id: string | null) => void;
   /** Sync runtime state from persisted settings (call after loadAll). */
-  initFromSettings: () => void;
+  initFromSettings: (opts?: AnnotationInitOptions) => void;
 }
 
 export const useAnnotationStore = create<AnnotationState>()((set, get) => ({
   annotationsByScene: new Map(),
   showAnnotations: true,
   showReaderComments: true,
-  liveReaderEnabled: true,
+  liveReaderEnabled: false,
   annotationsRevision: 0,
   focusedAnnotationId: null,
 
@@ -112,17 +117,20 @@ export const useAnnotationStore = create<AnnotationState>()((set, get) => ({
 
   setFocusedAnnotationId: (id) => set({ focusedAnnotationId: id }),
 
-  initFromSettings: () => {
+  initFromSettings: (opts) => {
+    const resetLiveReader = opts?.resetLiveReader === true;
+    if (resetLiveReader) {
+      writeRuntimeSetting("ai.liveReaderComments", "false");
+    }
     set({
       showAnnotations: readRuntimeSettingBoolean("display.layerReview", true),
       showReaderComments: readRuntimeSettingBoolean(
         "display.layerReaderComments",
         true,
       ),
-      liveReaderEnabled: readRuntimeSettingBoolean(
-        "ai.liveReaderComments",
-        true,
-      ),
+      liveReaderEnabled: resetLiveReader
+        ? false
+        : readRuntimeSettingBoolean("ai.liveReaderComments", false),
     });
   },
 }));

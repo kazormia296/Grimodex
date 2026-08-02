@@ -988,6 +988,18 @@
       "contextBudgetL4": "L4 Codex & Snippets",
       "contextBudgetL5": "L5 会話履歴",
       "contextBudgetReserve": "レスポンス予約",
+      "liveReader": {
+        "title": "リアルタイム読者コメント",
+        "triggerMode": "発火条件",
+        "triggerModeDesc": "本文の追記をどのタイミングで読者コメント生成へ送るかを選びます。リアルタイム読者コメント自体は校閲パネルからONにします。",
+        "modeCharacters": "文字数＋文末",
+        "modeSentence": "文末（。！？）",
+        "modeParagraph": "段落末（改行）",
+        "modeIdle": "入力停止後",
+        "threshold": "最小追記文字数",
+        "thresholdDesc": "「文字数＋文末」選択時に使用します。小さくすると生成頻度が上がります。",
+        "charsUnit": "字"
+      },
       "modelWhitelist": "チャットに表示するモデル",
       "modelWhitelistDesc": "チェックしたモデルのみチャットパネルに表示します。未選択の場合はすべてのモデルを表示します。",
       "modelWhitelistSearch": "モデルを検索…",
