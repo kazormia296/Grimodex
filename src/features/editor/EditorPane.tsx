@@ -108,6 +108,7 @@ import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { isLiveReaderAnnotation } from "@/features/post-effect/liveReaderAnnotation";
 import { useFocusMode } from "@/features/editor/useFocusMode";
 import { gutterReserveInlineSize } from "@/features/editor/GutterMarksPlugin";
 import {
@@ -1685,12 +1686,15 @@ export function EditorPane({
   const showReaderCommentsLayer = useAnnotationStore(
     (s) => s.showReaderComments,
   );
+  const hasLiveReaderComments = useAnnotationStore((s) =>
+    (s.annotationsByScene.get(nodeId) ?? []).some(isLiveReaderAnnotation),
+  );
   const gutterReserve = phoneWorkspace
     ? null
     : gutterReserveInlineSize(
         [
           showCommentsLayer,
-          showReaderCommentsLayer,
+          showReaderCommentsLayer || hasLiveReaderComments,
           showForeshadowMarks,
           // review チャネルは 校閲アノテーション ∨ Lint のどちらでも出るので、
           // showLint のみ ON でもガター記号分の幅を予約する (GutterMarksPlugin と同義)。

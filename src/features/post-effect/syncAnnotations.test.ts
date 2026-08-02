@@ -17,6 +17,7 @@ import {
   extractAnnotationMarks,
   saveAnnotationAnchors,
 } from "./syncAnnotations";
+import { useAnnotationStore } from "./annotationStore";
 
 function createTestEditor(content = "<p>テスト</p>") {
   return new Editor({
@@ -100,12 +101,20 @@ describe("saveAnnotationAnchors", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockInvoke.mockResolvedValue(undefined);
+    useAnnotationStore.setState({ annotationsByScene: new Map() });
   });
 
-  it("アノテーションなしの場合は invoke を呼ばない", async () => {
+  it("アノテーションなしでも invoke して、消えた live annotation を掃除する", async () => {
     const editor = createTestEditor("<p>テキスト</p>");
     await saveAnnotationAnchors("proj-1", "scene-1", editor.state.doc);
-    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "save_post_effect_annotations",
+      expect.objectContaining({
+        projectId: "proj-1",
+        sceneId: "scene-1",
+        annotations: [],
+      }),
+    );
     editor.destroy();
   });
 
@@ -122,6 +131,42 @@ describe("saveAnnotationAnchors", () => {
         annotations: expect.arrayContaining([
           expect.objectContaining({ id: "ann-001" }),
         ]),
+      }),
+    );
+    editor.destroy();
+  });
+
+  it("解決済みライブコメントは対象本文が残っていれば隠しアンカーとして保持する", async () => {
+    const editor = createTestEditor("<p>テスト</p>");
+    useAnnotationStore.setState({
+      annotationsByScene: new Map([
+        [
+          "scene-1",
+          [
+            {
+              id: "live-closed",
+              category: "pseudo_comment",
+              textSnapshot: "テスト",
+              rangeStart: 1,
+              rangeEnd: 4,
+              metadata: JSON.stringify({ live: true }),
+            },
+          ] as never,
+        ],
+      ]),
+    });
+
+    await saveAnnotationAnchors("proj-1", "scene-1", editor.state.doc);
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "save_post_effect_annotations",
+      expect.objectContaining({
+        annotations: [
+          expect.objectContaining({
+            id: "live-closed",
+            text_snapshot: "テスト",
+          }),
+        ],
       }),
     );
     editor.destroy();

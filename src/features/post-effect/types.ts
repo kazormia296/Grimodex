@@ -163,6 +163,7 @@ export interface TimelineAnnotationMeta {
  * persona はペルソナ名。スレッド返信は annotation.parent_id で表現する。
  */
 export interface PseudoCommentAnnotationMeta {
+  live?: boolean;
   persona?: string;
   found_text?: string;
   found_context?: string;
@@ -246,7 +247,7 @@ export interface StartPostEffectRunRequest {
   system_prompt: string;
   /** pseudo_comment の読者ペルソナ名 (他 effect_type では省略)。 */
   persona?: string | null;
-  /** true のとき、保存せず post_effect:partial に一時コメントを流す。 */
+  /** true のとき、疑似コメント annotation として保存しつつ partial でも通知する。 */
   live?: boolean;
 }
 

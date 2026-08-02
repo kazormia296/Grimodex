@@ -31,6 +31,12 @@ export const AnnotationMark = Mark.create({
         renderHTML: (attrs) =>
           attrs.status ? { "data-pe-status": attrs.status } : {},
       },
+      live: {
+        default: false,
+        parseHTML: (el) => el.getAttribute("data-pe-live") === "true",
+        renderHTML: (attrs) =>
+          attrs.live === true ? { "data-pe-live": "true" } : {},
+      },
     };
   },
 

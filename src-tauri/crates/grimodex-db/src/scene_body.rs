@@ -90,6 +90,48 @@ pub struct SaveSceneBodyBundleResult {
     pub db_transaction_count: u32,
 }
 
+/// Extract the plain text represented by the ProseMirror JSON document.
+///
+/// Live annotation anchors may be intentionally absent from `annotation_anchors`
+/// after a user resolves/dismisses a comment. The body text is the authority for
+/// deciding whether the generated comment's target still exists.
+fn scene_text_from_content_json(content_json: &str) -> Option<String> {
+    fn append_node_text(node: &serde_json::Value, output: &mut String) {
+        let node_type = node.get("type").and_then(serde_json::Value::as_str);
+        if node_type == Some("sceneBeat") {
+            return;
+        }
+        if node_type == Some("text") {
+            if let Some(text) = node.get("text").and_then(serde_json::Value::as_str) {
+                output.push_str(text);
+            }
+            return;
+        }
+        if let Some(children) = node.get("content").and_then(serde_json::Value::as_array) {
+            for child in children {
+                append_node_text(child, output);
+            }
+        }
+    }
+
+    let document: serde_json::Value = serde_json::from_str(content_json).ok()?;
+    if document.get("type").and_then(serde_json::Value::as_str) != Some("doc") {
+        return None;
+    }
+    let mut text = String::new();
+    let Some(children) = document.get("content") else {
+        return Some(text);
+    };
+    let children = children.as_array()?;
+    for (index, child) in children.iter().enumerate() {
+        if index > 0 {
+            text.push('\n');
+        }
+        append_node_text(child, &mut text);
+    }
+    Some(text)
+}
+
 fn validate_payload(payload: &SaveSceneBodyBundlePayload) -> anyhow::Result<()> {
     if payload.scene_id.is_empty() || payload.project_id.is_empty() {
         anyhow::bail!("sceneId and projectId must not be empty");
@@ -361,6 +403,53 @@ pub fn save_scene_body_bundle(
                             payload.scene_id,
                         ],
                     )?;
+                }
+
+                // ライブ読者コメントは本文 mark が消えたら保存対象からも消す。
+                // ただし、解決/却下で mark だけが外れた場合は本文の text_snapshot が
+                // 残っていれば保持する。手動/通常の疑似コメントは orphaned として
+                // 残す既存仕様を維持する。
+                let anchored_annotation_ids: HashSet<&str> = payload
+                    .annotation_anchors
+                    .iter()
+                    .map(|annotation| annotation.id.as_str())
+                    .collect();
+                let scene_text = scene_text_from_content_json(&payload.content_json);
+                let live_ids = conn
+                    .prepare(
+                        "SELECT id, text_snapshot FROM post_effect_annotations
+                          WHERE project_id = ?1 AND scene_id = ?2
+                            AND category = 'pseudo_comment'
+                            AND json_extract(metadata, '$.live') = 1",
+                    )?
+                    .query_map(params![payload.project_id, payload.scene_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                for (id, text_snapshot) in live_ids {
+                    // 不正な本文JSONでは誤削除を避け、次回の正常な保存へ委ねる。
+                    if scene_text.is_none() {
+                        continue;
+                    }
+                    // found_text が空のシーン全体コメントは、消えた本文を
+                    // 指しているとは判定できないため、生成物を保持する。
+                    let Some(snapshot) = text_snapshot.as_deref().filter(|text| !text.is_empty())
+                    else {
+                        continue;
+                    };
+                    let target_still_exists = scene_text.as_deref().is_some_and(|text| {
+                        text.contains(snapshot)
+                    });
+                    if target_still_exists {
+                        continue;
+                    }
+                    if !anchored_annotation_ids.contains(id.as_str()) {
+                        conn.execute(
+                            "DELETE FROM post_effect_annotations
+                              WHERE id = ?1 AND project_id = ?2 AND scene_id = ?3",
+                            params![id, payload.project_id, payload.scene_id],
+                        )?;
+                    }
                 }
 
                 let mut wanted_mentions = HashSet::new();
@@ -867,6 +956,106 @@ mod tests {
         assert_eq!(sidecars[0]["annotation"], "old");
         assert_eq!(sidecars[0]["mention"], "c2");
         assert_eq!(sidecars[0]["pov"], "c2");
+    }
+
+    #[test]
+    fn deletes_live_annotations_whose_body_anchor_is_missing() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, scene_id, range_start, range_end,
+                     text_snapshot, category, content, metadata)
+                 VALUES ('live-a1', 'p1', 's1', 0, 3, '本文',
+                         'pseudo_comment', 'ライブ', '{\"live\":true}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, scene_id, range_start, range_end,
+                     text_snapshot, category, content, metadata)
+                 VALUES ('manual-a1', 'p1', 's1', 0, 3, '本文',
+                         'pseudo_comment', '手動疑似', '{\"live\":false}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("insert live annotations");
+
+        save_scene_body_bundle(&db, payload()).expect("save without live anchor");
+
+        let rows = db
+            .execute(
+                "SELECT id FROM post_effect_annotations
+                  WHERE scene_id = 's1' ORDER BY id",
+                &[],
+                "load annotations",
+            )
+            .expect("load annotations");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], "a1");
+        assert_eq!(rows[1]["id"], "manual-a1");
+    }
+
+    #[test]
+    fn keeps_live_annotation_when_target_text_remains_without_body_mark() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, scene_id, range_start, range_end,
+                     text_snapshot, category, content, metadata)
+                 VALUES ('live-a1', 'p1', 's1', 0, 3, '本文',
+                         'pseudo_comment', 'ライブ', '{\"live\":true}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("insert live annotation");
+
+        let mut payload = payload();
+        payload.content_json =
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"本文"}]}]}"#
+                .into();
+        payload.annotation_anchors.clear();
+        save_scene_body_bundle(&db, payload).expect("save without visible mark");
+
+        let rows = db
+            .execute(
+                "SELECT id FROM post_effect_annotations WHERE id = 'live-a1'",
+                &[],
+                "load retained annotation",
+            )
+            .expect("load annotations");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn keeps_live_annotation_without_a_text_snapshot() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, scene_id, range_start, range_end,
+                     text_snapshot, category, content, metadata)
+                 VALUES ('live-a1', 'p1', 's1', 0, 0, NULL,
+                         'pseudo_comment', 'シーン全体の感想', '{\"live\":true}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("insert scene-level live annotation");
+
+        save_scene_body_bundle(&db, payload()).expect("save scene-level annotation");
+
+        let rows = db
+            .execute(
+                "SELECT id FROM post_effect_annotations WHERE id = 'live-a1'",
+                &[],
+                "load scene-level annotation",
+            )
+            .expect("load annotations");
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]

@@ -6,6 +6,7 @@ import {
   Loader2,
   MessageSquare,
   MessagesSquare,
+  Radio,
   RefreshCw,
   User,
 } from "lucide-react";
@@ -35,6 +36,9 @@ import { PseudoCommentRunControl } from "./PseudoCommentRunControl";
 import { useResolvedKouetsuScope } from "./useResolvedKouetsuScope";
 import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
 import { listProjectSceneDocuments } from "@/features/tree/api";
+import { Switch } from "@/components/ui/switch";
+import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useIsLiveReaderRunning } from "@/features/post-effect/runStore";
 
 async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
   const rows = await listProjectSceneDocuments(projectId);
@@ -61,6 +65,12 @@ export function CommentsTab() {
   // 除外（dismiss 済み）疑似コメント表示のトグル。Filter 型（human/ai/all）とは
   // 直交する軸なので別 state で持つ。ON のとき本文を除外ビューに差し替える。
   const [showDismissed, setShowDismissed] = useState(false);
+  const liveReaderEnabled = useAnnotationStore((s) => s.liveReaderEnabled);
+  const setLiveReaderEnabled = useAnnotationStore(
+    (s) => s.setLiveReaderEnabled,
+  );
+  const annotationsRevision = useAnnotationStore((s) => s.annotationsRevision);
+  const liveReaderRunning = useIsLiveReaderRunning();
 
   const sceneTitle = useCallback(
     (sceneId: string) => scenes.find((s) => s.id === sceneId)?.title ?? sceneId,
@@ -107,6 +117,10 @@ export function CommentsTab() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (annotationsRevision > 0) void reloadAnnotations();
+  }, [annotationsRevision, reloadAnnotations]);
 
   // スコープ内シーン集合（project = null で全件）。読み込みは常に project 全体
   // で行い、表示だけを絞る（スコープ切替時の再フェッチ不要）。
@@ -190,6 +204,28 @@ export function CommentsTab() {
           </button>
         </div>
         <div className="ml-auto flex min-w-0 items-center gap-1.5">
+          <div className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground">
+            <Radio
+              size={12}
+              className={cn("shrink-0", liveReaderEnabled && "text-primary")}
+            />
+            <span className="whitespace-nowrap text-[10px]">
+              {t("kouetsu.comments.liveReader")}
+            </span>
+            {liveReaderRunning && (
+              <Loader2
+                size={11}
+                className="shrink-0 animate-spin text-primary"
+                aria-label={t("kouetsu.comments.liveReaderRunning")}
+              />
+            )}
+            <Switch
+              size="sm"
+              checked={liveReaderEnabled}
+              onCheckedChange={setLiveReaderEnabled}
+              aria-label={t("kouetsu.comments.liveReader")}
+            />
+          </div>
           <PseudoCommentRunControl onCompleted={handlePseudoCompleted} />
           <button
             type="button"

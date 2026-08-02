@@ -1760,7 +1760,9 @@
     "comments": {
       "empty": "No comments",
       "emptyHint": "Select text and press {{shortcut}} to add a comment. Generate AI comments with the “AI Comment” button above.",
-      "jumpToLocation": "Open and select location"
+      "jumpToLocation": "Open and select location",
+      "liveReader": "Live reader comments",
+      "liveReaderRunning": "Generating live reader comments"
     },
     "scope": {
       "current": "Current scene",
@@ -4018,6 +4020,7 @@
       "autoFollowHint": "Automatically match layer visibility to open panels",
       "attribution": "Attribution highlight",
       "comments": "Comments",
+      "pseudoComments": "Pseudo comments",
       "readerComments": "Reader comments",
       "foreshadow": "Foreshadow marks",
       "review": "Review issues",

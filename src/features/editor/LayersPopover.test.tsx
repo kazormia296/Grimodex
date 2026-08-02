@@ -167,7 +167,7 @@ describe("LayersPopover", () => {
     await waitFor(() => {
       expect(screen.getAllByRole("switch")).toHaveLength(6);
     });
-    expect(screen.queryByLabelText("editor.layers.readerComments")).toBeNull();
+    expect(screen.queryByLabelText("editor.layers.pseudoComments")).toBeNull();
     expect(screen.getByLabelText("editor.layers.review")).toBeTruthy();
   });
 
@@ -198,7 +198,7 @@ describe("LayersPopover", () => {
 
   it("読者コメントトグルで showReaderComments 反転 + 設定へ write-through", async () => {
     const { dispatch } = renderPopover();
-    const sw = await screen.findByLabelText("editor.layers.readerComments");
+    const sw = await screen.findByLabelText("editor.layers.pseudoComments");
     fireEvent.click(sw);
     expect(useAnnotationStore.getState().showReaderComments).toBe(false);
     expect(dispatch).toHaveBeenCalledTimes(1);

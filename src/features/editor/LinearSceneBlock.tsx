@@ -121,7 +121,6 @@ import {
   handleSceneEditorTransaction,
   type SceneBeatIndexState,
 } from "@/features/editor/sceneEditorTransactionPipeline";
-import { LiveReaderCommentRail } from "@/features/post-effect/LiveReaderCommentRail";
 import { useLiveReaderComments } from "@/features/post-effect/useLiveReaderComments";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { personasForLang } from "@/features/post-effect/pseudoCommentPayloadBuilder";
@@ -194,7 +193,7 @@ function MountedSceneBlock({
   const currentProject = useCurrentProject();
   const currentProjectId = useCurrentProjectId();
   const lang = currentProject?.language;
-  const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
+  const liveReaderEnabled = useAnnotationStore((s) => s.liveReaderEnabled);
   const workspacePath = useWorkspaceStore((state) => state.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
     (state) => state.workspaceOpenRevision,
@@ -1081,7 +1080,7 @@ function MountedSceneBlock({
   useLiveReaderComments({
     editor,
     sceneId,
-    enabled: isActive && loadReady && !isLoading && showReaderComments,
+    enabled: isActive && loadReady && !isLoading && liveReaderEnabled,
     persona: personasForLang(lang ?? "ja")[0] ?? "一般読者",
     genre: currentProject?.genre ?? null,
     targetReaders: currentProject?.targetReaders ?? null,
@@ -1190,13 +1189,6 @@ function MountedSceneBlock({
           onRetry={inlineAi.onRetry}
           anchorRef={containerRef}
           isOwner={inlineAi.isOwner}
-        />
-      )}
-      {isActive && (
-        <LiveReaderCommentRail
-          editor={editor}
-          containerRef={containerRef}
-          sceneId={sceneId}
         />
       )}
     </div>

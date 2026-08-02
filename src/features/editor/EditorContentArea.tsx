@@ -11,7 +11,6 @@ import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
 import { CodexSemanticLinkPopover } from "@/features/editor/CodexSemanticLinkPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
-import { LiveReaderCommentRail } from "@/features/post-effect/LiveReaderCommentRail";
 import { useLiveReaderComments } from "@/features/post-effect/useLiveReaderComments";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { personasForLang } from "@/features/post-effect/pseudoCommentPayloadBuilder";
@@ -106,12 +105,12 @@ export function EditorContentArea({
   // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
   const currentProject = useCurrentProject();
   const isEnglish = currentProject?.language === "en";
-  const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
+  const liveReaderEnabled = useAnnotationStore((s) => s.liveReaderEnabled);
   const projectLanguage = currentProject?.language ?? "ja";
   useLiveReaderComments({
     editor,
     sceneId,
-    enabled: !phoneWorkspace && showReaderComments,
+    enabled: !phoneWorkspace && liveReaderEnabled,
     persona: personasForLang(projectLanguage)[0] ?? "一般読者",
     genre: currentProject?.genre ?? null,
     targetReaders: currentProject?.targetReaders ?? null,
@@ -283,13 +282,6 @@ export function EditorContentArea({
             )}
           </EditorBodyWithLoading>
         </div>
-        {!phoneWorkspace && (
-          <LiveReaderCommentRail
-            editor={editor}
-            containerRef={editorContainerRef}
-            sceneId={sceneId}
-          />
-        )}
       </EditorDropDiv>
     </>
   );

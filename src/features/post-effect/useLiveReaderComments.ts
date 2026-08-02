@@ -13,7 +13,12 @@ import {
   LIVE_PSEUDO_COMMENT_PROMPT_VERSION,
   resolvePersonaBrief,
 } from "./pseudoCommentPayloadBuilder";
-import { runPostEffect, type PostEffectRunCallbacks } from "./api";
+import {
+  abortPostEffectRun,
+  listAnnotationsForScene,
+  runPostEffect,
+  type PostEffectRunCallbacks,
+} from "./api";
 import { getPromptCatalog } from "@/prompts/index";
 import {
   cancelEditorAnalysisTask,
@@ -28,7 +33,12 @@ import {
   takeLiveReaderInsertion,
   type LiveReaderAccumulator,
 } from "./liveReaderTrigger";
-import { useLiveReaderStore } from "./liveReaderStore";
+import { useAnnotationStore } from "./annotationStore";
+import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
+import {
+  buildLiveReaderAnnotation,
+  isLiveReaderAnnotation,
+} from "./liveReaderAnnotation";
 
 interface Params {
   editor: Editor | null;
@@ -47,8 +57,9 @@ function editorText(editor: Editor): string {
 }
 
 /**
- * 追記だけを低頻度で AI へ渡す本文側の接続。コメントは DB に保存せず
- * `useLiveReaderStore` に置き、シーン切替・置換・削除で寿命を終える。
+ * 追記だけを低頻度で AI へ渡す本文側の接続。コメントは DB に保存し、
+ * 通常の pseudo_comment annotation と同じ DB/本文 mark/校閲パネル経路へ渡す。
+ * `enabled` は新規生成だけを制御し、既に生成されたコメントは削除しない。
  */
 export function useLiveReaderComments({
   editor,
@@ -70,12 +81,11 @@ export function useLiveReaderComments({
     if (!editor || !sceneId || !enabled) return;
 
     const taskKey = `live-reader:${sceneId}:${ownerIdRef.current}`;
-    const clearScene = useLiveReaderStore.getState().clearScene;
-    const addComment = useLiveReaderStore.getState().addComment;
     let previousText = editorText(editor);
     let accumulator: LiveReaderAccumulator = createLiveReaderAccumulator();
     let sourceRevision = 0;
     let activeRun = false;
+    let activeRunId: string | null = null;
     let activeCleanup: (() => void) | null = null;
     let disposed = false;
 
@@ -147,24 +157,54 @@ export function useLiveReaderComments({
             }
             const live = event.live_comment;
             if (!live) return;
-            addComment({
-              id: event.annotation_id,
-              runId: event.run_id,
+            const annotation = buildLiveReaderAnnotation({
+              annotationId: event.annotation_id,
+              projectId,
               sceneId,
+              runId: event.run_id,
+              model,
               content: live.content,
               persona: live.persona ?? null,
               foundText: live.found_text ?? "",
               foundContext: live.found_context ?? "",
-              createdAt: Date.now(),
+              createdAt: new Date().toISOString(),
             });
+            const state = useAnnotationStore.getState();
+            const current = state.annotationsByScene.get(sceneId) ?? [];
+            if (current.some((item) => item.id === annotation.id)) return;
+            const next = [...current, annotation];
+            state.setAnnotations(sceneId, next);
+            // Keep the active editor in sync immediately. The next autosave also
+            // records the resolved PM anchor in SQLite.
+            applyAnnotationsToEditor(editor, next);
           },
-          onDone: () => {
+          onDone: async () => {
             activeRun = false;
+            activeRunId = null;
             activeCleanup = null;
+            if (
+              !disposed &&
+              capturedRevision === sourceRevision &&
+              sourceText === editorText(editor)
+            ) {
+              try {
+                const response = await listAnnotationsForScene({
+                  projectId,
+                  sceneId,
+                });
+                useAnnotationStore
+                  .getState()
+                  .setAnnotations(sceneId, response.annotations);
+                applyAnnotationsToEditor(editor, response.annotations);
+              } catch (error) {
+                console.warn("live reader annotation reload failed", error);
+              }
+            }
             maybeScheduleNext();
           },
           onError: (event) => {
             activeRun = false;
+            activeRunId = null;
             activeCleanup = null;
             console.warn("live reader generation failed", event.error);
             maybeScheduleNext();
@@ -198,9 +238,19 @@ export function useLiveReaderComments({
           },
           callbacks,
         );
+        activeRunId = started.runId;
         activeCleanup = started.cleanup;
+        if (disposed) {
+          // Keep the terminal listeners alive until the backend emits the
+          // cancelled error; otherwise the global Stripe/comment indicators
+          // would retain an apparently running run forever.
+          void abortPostEffectRun(started.runId, projectId).catch(
+            () => undefined,
+          );
+        }
       } catch (error) {
         activeRun = false;
+        activeRunId = null;
         activeCleanup = null;
         console.warn("live reader launch failed", error);
         maybeScheduleNext();
@@ -236,7 +286,24 @@ export function useLiveReaderComments({
       if (change.kind === "delete" || change.kind === "replace") {
         accumulator = createLiveReaderAccumulator();
         cancelEditorAnalysisTask(taskKey);
-        clearScene(sceneId);
+        if (activeRunId && projectId) {
+          void abortPostEffectRun(activeRunId, projectId).catch(
+            () => undefined,
+          );
+        }
+        const state = useAnnotationStore.getState();
+        const current = state.annotationsByScene.get(sceneId) ?? [];
+        const next = current.filter(
+          (annotation) =>
+            !isLiveReaderAnnotation(annotation) ||
+            !annotation.textSnapshot ||
+            annotation.textSnapshot === "" ||
+            nextText.includes(annotation.textSnapshot),
+        );
+        if (next.length !== current.length) {
+          state.setAnnotations(sceneId, next);
+          applyAnnotationsToEditor(editor, next);
+        }
       }
     };
 
@@ -245,9 +312,14 @@ export function useLiveReaderComments({
       disposed = true;
       editor.off("update", handleUpdate);
       cancelEditorAnalysisTask(taskKey);
-      activeCleanup?.();
+      if (activeRunId && projectId) {
+        // abort_post_effect_run emits the terminal error that also clears the
+        // global runStore entry. Do not remove its listeners before that event.
+        void abortPostEffectRun(activeRunId, projectId).catch(() => undefined);
+      } else {
+        activeCleanup?.();
+      }
       activeCleanup = null;
-      clearScene(sceneId);
     };
   }, [
     editor,
