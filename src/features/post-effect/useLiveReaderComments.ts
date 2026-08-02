@@ -35,10 +35,7 @@ import {
 } from "./liveReaderTrigger";
 import { useAnnotationStore } from "./annotationStore";
 import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
-import {
-  buildLiveReaderAnnotation,
-  isLiveReaderAnnotation,
-} from "./liveReaderAnnotation";
+import { buildLiveReaderAnnotation } from "./liveReaderAnnotation";
 
 interface Params {
   editor: Editor | null;
@@ -293,19 +290,6 @@ export function useLiveReaderComments({
           void abortPostEffectRun(activeRunId, projectId).catch(
             () => undefined,
           );
-        }
-        const state = useAnnotationStore.getState();
-        const current = state.annotationsByScene.get(sceneId) ?? [];
-        const next = current.filter(
-          (annotation) =>
-            !isLiveReaderAnnotation(annotation) ||
-            !annotation.textSnapshot ||
-            annotation.textSnapshot === "" ||
-            nextText.includes(annotation.textSnapshot),
-        );
-        if (next.length !== current.length) {
-          state.setAnnotations(sceneId, next);
-          applyAnnotationsToEditor(editor, next);
         }
       }
     };

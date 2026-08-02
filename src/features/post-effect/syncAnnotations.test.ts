@@ -104,7 +104,7 @@ describe("saveAnnotationAnchors", () => {
     useAnnotationStore.setState({ annotationsByScene: new Map() });
   });
 
-  it("アノテーションなしでも invoke して、消えた live annotation を掃除する", async () => {
+  it("アノテーションなしでも保存 API を呼び出す", async () => {
     const editor = createTestEditor("<p>テキスト</p>");
     await saveAnnotationAnchors("proj-1", "scene-1", editor.state.doc);
     expect(mockInvoke).toHaveBeenCalledWith(
@@ -136,7 +136,7 @@ describe("saveAnnotationAnchors", () => {
     editor.destroy();
   });
 
-  it("解決済みライブコメントは対象本文が残っていれば隠しアンカーとして保持する", async () => {
+  it("マークから外れたライブコメントを特別扱いせず本文のマークだけ保存する", async () => {
     const editor = createTestEditor("<p>テスト</p>");
     useAnnotationStore.setState({
       annotationsByScene: new Map([
@@ -161,12 +161,9 @@ describe("saveAnnotationAnchors", () => {
     expect(mockInvoke).toHaveBeenCalledWith(
       "save_post_effect_annotations",
       expect.objectContaining({
-        annotations: [
-          expect.objectContaining({
-            id: "live-closed",
-            text_snapshot: "テスト",
-          }),
-        ],
+        projectId: "proj-1",
+        sceneId: "scene-1",
+        annotations: [],
       }),
     );
     editor.destroy();

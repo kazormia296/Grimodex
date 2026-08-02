@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { AnimatePresence } from "motion/react";
 import {
+  ArrowDownUp,
   Bot,
   EyeOff,
   Loader2,
@@ -18,13 +20,15 @@ import { listAnnotationsForProject } from "@/features/post-effect/api";
 import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
 import {
   groupPseudoThreads,
-  PseudoCommentThread,
   type PseudoThread,
 } from "@/features/post-effect/PseudoCommentThread";
 import {
   buildCommentGroups,
+  commentListItemKey,
   humanCommentsFromDoc,
   isActiveSceneOutOfScope,
+  sortCommentGroups,
+  type CommentSortOrder,
   type Filter,
   type HumanComment,
   type SceneGroup,
@@ -39,6 +43,8 @@ import { listProjectSceneDocuments } from "@/features/tree/api";
 import { Switch } from "@/components/ui/switch";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsLiveReaderRunning } from "@/features/post-effect/runStore";
+import { useReducedMotion } from "@/lib/animation";
+import { CommentListItem } from "./CommentListItem";
 
 async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
   const rows = await listProjectSceneDocuments(projectId);
@@ -71,6 +77,16 @@ export function CommentsTab() {
   );
   const annotationsRevision = useAnnotationStore((s) => s.annotationsRevision);
   const liveReaderRunning = useIsLiveReaderRunning();
+  const reducedMotion = useReducedMotion();
+  const [sortOrder, setSortOrder] = useState<CommentSortOrder>(
+    liveReaderEnabled ? "newest" : "scene",
+  );
+
+  // リアルタイム読者コメントを有効にしたときの既定は新着順にする。
+  // ソートセレクタで手動変更でき、OFF→ON の再有効化時は既定へ戻す。
+  useEffect(() => {
+    if (liveReaderEnabled) setSortOrder("newest");
+  }, [liveReaderEnabled]);
 
   const sceneTitle = useCallback(
     (sceneId: string) => scenes.find((s) => s.id === sceneId)?.title ?? sceneId,
@@ -132,8 +148,12 @@ export function CommentsTab() {
   }, [scope, nodes, activeSceneId]);
 
   const groups = useMemo<SceneGroup[]>(
-    () => buildCommentGroups(human, threads, filter, sceneTitle, scopeSceneIds),
-    [human, threads, filter, sceneTitle, scopeSceneIds],
+    () =>
+      sortCommentGroups(
+        buildCommentGroups(human, threads, filter, sceneTitle, scopeSceneIds),
+        sortOrder,
+      ),
+    [human, threads, filter, sceneTitle, scopeSceneIds, sortOrder],
   );
 
   // 疑似コメント生成の対象は常にアクティブシーン（スコープ非依存）。folder
@@ -204,6 +224,25 @@ export function CommentsTab() {
           </button>
         </div>
         <div className="ml-auto flex min-w-0 items-center gap-1.5">
+          <div className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground">
+            <ArrowDownUp size={12} className="shrink-0" />
+            <label htmlFor="kouetsu-comments-sort" className="sr-only">
+              {t("kouetsu.comments.sortLabel")}
+            </label>
+            <select
+              id="kouetsu-comments-sort"
+              value={sortOrder}
+              onChange={(event) =>
+                setSortOrder(event.target.value as CommentSortOrder)
+              }
+              aria-label={t("kouetsu.comments.sortLabel")}
+              className="max-w-28 truncate rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-foreground outline-none"
+            >
+              <option value="newest">{t("kouetsu.comments.sortNewest")}</option>
+              <option value="oldest">{t("kouetsu.comments.sortOldest")}</option>
+              <option value="scene">{t("kouetsu.comments.sortScene")}</option>
+            </select>
+          </div>
           <div className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground">
             <Radio
               size={12}
@@ -280,39 +319,25 @@ export function CommentsTab() {
                   </span>
                 </div>
                 <div className="flex flex-col gap-2 p-2">
-                  {g.human.map((c, i) => (
-                    <button
-                      key={`h-${g.sceneId}-${i}`}
-                      type="button"
-                      onClick={() => jumpToComment(c)}
-                      title={t("kouetsu.comments.jumpToLocation")}
-                      className="flex items-start gap-1.5 rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-accent/30"
-                    >
-                      <User
-                        size={13}
-                        className="mt-0.5 shrink-0 text-amber-500"
+                  <AnimatePresence initial={false} mode="popLayout">
+                    {g.items.map((item) => (
+                      <CommentListItem
+                        key={commentListItemKey(item)}
+                        item={item}
+                        reducedMotion={reducedMotion}
+                        jumpToHumanComment={jumpToComment}
+                        onPseudoChanged={() => void reloadAnnotations()}
+                        onPseudoJump={() =>
+                          item.kind === "pseudo" &&
+                          item.thread.root.sceneId &&
+                          useTreeStore
+                            .getState()
+                            .setActiveScene(item.thread.root.sceneId)
+                        }
+                        jumpTitle={t("kouetsu.comments.jumpToLocation")}
                       />
-                      <div className="flex min-w-0 flex-col gap-1">
-                        <p className="leading-snug">{c.text}</p>
-                        {c.quote && (
-                          <blockquote className="border-l-2 border-muted-foreground/30 pl-2 text-xs text-muted-foreground line-clamp-2">
-                            {c.quote}
-                          </blockquote>
-                        )}
-                      </div>
-                    </button>
-                  ))}
-                  {g.threads.map((t) => (
-                    <PseudoCommentThread
-                      key={t.root.id}
-                      thread={t}
-                      onChanged={() => void reloadAnnotations()}
-                      onJump={() =>
-                        t.root.sceneId &&
-                        useTreeStore.getState().setActiveScene(t.root.sceneId)
-                      }
-                    />
-                  ))}
+                    ))}
+                  </AnimatePresence>
                 </div>
               </div>
             ))}

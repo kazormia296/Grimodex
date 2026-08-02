@@ -1762,7 +1762,11 @@
       "emptyHint": "Select text and press {{shortcut}} to add a comment. Generate AI comments with the “AI Comment” button above.",
       "jumpToLocation": "Open and select location",
       "liveReader": "Live reader comments",
-      "liveReaderRunning": "Generating live reader comments"
+      "liveReaderRunning": "Generating live reader comments",
+      "sortLabel": "Comment sort order",
+      "sortNewest": "Newest first",
+      "sortOldest": "Oldest first",
+      "sortScene": "Scene order"
     },
     "scope": {
       "current": "Current scene",

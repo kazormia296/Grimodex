@@ -12,8 +12,6 @@
 //! ネットワーク / AI 応答解析を含む `start_post_effect_run` 系と
 //! `PostEffectAbortRegistry` を要する `abort_post_effect_run` はバッチ3で移す。
 
-use std::collections::HashSet;
-
 use rusqlite::params;
 use serde_json::Value;
 use uuid::Uuid;
@@ -355,10 +353,6 @@ pub fn save_post_effect_annotations(
     annotations: Vec<Value>,
 ) -> anyhow::Result<()> {
     db.with_conn(|conn| {
-        let anchored_ids: HashSet<&str> = annotations
-            .iter()
-            .filter_map(|ann| ann["id"].as_str())
-            .collect();
         for ann in &annotations {
             let id = ann["id"].as_str().unwrap_or("");
             let range_start = ann["range_start"].as_i64().unwrap_or(0);
@@ -380,26 +374,6 @@ pub fn save_post_effect_annotations(
             )?;
         }
 
-        // ライブ読者コメントだけは、本文から mark が消えた時点で寿命を終える。
-        // 通常の疑似コメントは orphaned として校閲パネルに残す既存仕様を維持する。
-        let live_ids = conn
-            .prepare(
-                "SELECT id FROM post_effect_annotations
-                  WHERE project_id = ? AND scene_id = ?
-                    AND category = 'pseudo_comment'
-                    AND json_extract(metadata, '$.live') = 1",
-            )?
-            .query_map(params![project_id, scene_id], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for id in live_ids {
-            if !anchored_ids.contains(id.as_str()) {
-                conn.execute(
-                    "DELETE FROM post_effect_annotations
-                      WHERE id = ? AND project_id = ? AND scene_id = ?",
-                    params![id, project_id, scene_id],
-                )?;
-            }
-        }
         Ok(())
     })
 }

@@ -1312,6 +1312,9 @@ impl Database {
         Self::migrate_post_effect_timeline_categories(&conn)?;
         // impact-review: timeline migration の **後** に走る (target は 'timeline_*')。順序厳守。
         Self::migrate_post_effect_impact_review_categories(&conn)?;
+        // ライブ読者コメントの初期実装で、既存 annotation に永続マーカーを
+        // 付けずに保存された行を補修する。通常の疑似コメントへは影響しない。
+        Self::migrate_live_pseudo_comment_metadata(&conn)?;
 
         // impact-review 差分基準テーブル（Codex エントリ単位の前回レビュー時スナップショット）。
         conn.execute_batch(
@@ -2623,6 +2626,43 @@ impl Database {
             anyhow::bail!("integrity_check failed after impact_review CHECK widening: {integrity}");
         }
 
+        Ok(())
+    }
+
+    /// ライブ読者コメントの初期版で保存された annotation を補修する。
+    ///
+    /// ライブ実行は通常の `pseudo_comment` と同じテーブルを使うため、annotation
+    /// 単体には種別が残らない。`run_id` の prompt_version を正本として `live` を
+    /// metadata に付与し、本文レイヤーを OFF にしても表示できる状態へ戻す。
+    /// SQLite の JSON 関数は壊れた metadata で失敗し得るため、invalid JSON は
+    /// 空オブジェクトから補修する。
+    pub(super) fn migrate_live_pseudo_comment_metadata(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute(
+            "UPDATE post_effect_annotations
+                SET metadata = json_set(
+                        CASE
+                          WHEN json_valid(metadata) THEN metadata
+                          ELSE '{}'
+                        END,
+                        '$.live', 1
+                    ),
+                    updated_at = datetime('now')
+              WHERE category = 'pseudo_comment'
+                AND run_id IN (
+                    SELECT id
+                      FROM post_effect_runs
+                     WHERE prompt_version = 'pseudo_comment_live_v1.0'
+                )
+                AND COALESCE(
+                      CASE
+                        WHEN json_valid(metadata)
+                        THEN json_extract(metadata, '$.live')
+                        ELSE NULL
+                      END,
+                      0
+                    ) != 1",
+            [],
+        )?;
         Ok(())
     }
 
@@ -4053,5 +4093,65 @@ mod tests {
             [],
         )
         .expect("intent column writable");
+    }
+
+    #[test]
+    fn migrate_marks_legacy_live_pseudo_comments_without_touching_manual_ones() {
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().expect("initial migrate");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('p1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, model, prompt_version, status)
+                 VALUES ('live-run', 'p1', 'pseudo_comment', 'scene', 'model',
+                         'pseudo_comment_live_v1.0', 'completed')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, model, prompt_version, status)
+                 VALUES ('manual-run', 'p1', 'pseudo_comment', 'scene', 'model',
+                         'pseudo_comment_v2.1', 'completed')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, run_id, category, content, metadata)
+                 VALUES ('live-ann', 'p1', 'live-run', 'pseudo_comment', 'ライブ', '{}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, run_id, category, content, metadata)
+                 VALUES ('manual-ann', 'p1', 'manual-run', 'pseudo_comment', '通常', '{}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("insert fixtures");
+
+        db.migrate().expect("repair migrate");
+        db.with_conn(|conn| {
+            let live: i64 = conn.query_row(
+                "SELECT json_extract(metadata, '$.live')
+                   FROM post_effect_annotations WHERE id = 'live-ann'",
+                [],
+                |row| row.get(0),
+            )?;
+            let manual: Option<i64> = conn.query_row(
+                "SELECT json_extract(metadata, '$.live')
+                   FROM post_effect_annotations WHERE id = 'manual-ann'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(live, 1);
+            assert_eq!(manual, None);
+            Ok(())
+        })
+        .expect("verify metadata repair");
     }
 }
