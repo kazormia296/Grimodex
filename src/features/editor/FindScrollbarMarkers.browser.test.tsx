@@ -92,10 +92,11 @@ describe("FindScrollbarMarkers browser geometry", () => {
     paper.className = "zen-editor-paper";
     const editorDom = document.createElement("div");
     editorDom.style.cssText =
-      "writing-mode:vertical-rl;height:44px;width:240px;font:16px/20px sans-serif";
+      "writing-mode:vertical-rl;height:44px;width:240px;font:16px/20px monospace;overflow-wrap:anywhere";
     const current = document.createElement("span");
     current.className = "find-current";
-    current.textContent = "検索位置検索位置検索位置検索位置";
+    // Keep wrapping independent of installed CJK fonts and line-break data.
+    current.textContent = "needle".repeat(8);
     editorDom.append(current);
     paper.append(editorDom);
     scrollContainer.append(paper);
