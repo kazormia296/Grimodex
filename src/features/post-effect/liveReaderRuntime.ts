@@ -4,6 +4,10 @@ import type { AiSettings } from "@/features/chat/types";
 import { isAiFeatureBlockedByPolicy } from "@/features/ai-policy/policyGuard";
 import { isWriteRestrictedByLicense } from "@/features/license/gate";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { useEditorStore } from "@/features/editor/editorStore";
+import { useLinearEditorStore } from "@/features/editor/linearEditorStore";
+import { useProjectStore } from "@/features/project/projectStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { getLoadedProjectId } from "@/application/project/currentProjectAuthority";
 import { appendKouetsuGuidance } from "./customInstruction";
 import {
@@ -96,6 +100,180 @@ interface LiveReaderRuntimeOptions {
   targetReaders: string | null;
   lang: string;
   ownerId: number;
+}
+
+interface LiveReaderServiceTarget {
+  editor: Editor;
+  sceneId: string;
+  persona: string;
+  genre: string | null;
+  targetReaders: string | null;
+  lang: string;
+  signature: string;
+}
+
+interface LiveReaderServiceAttachment {
+  sceneId: string;
+  signature: string;
+  cleanup: () => void;
+}
+
+let liveReaderServiceStop: (() => void) | null = null;
+let nextLiveReaderServiceOwnerId = 0;
+
+function currentLiveReaderProjectContext(): Omit<
+  LiveReaderServiceTarget,
+  "editor" | "sceneId" | "signature"
+> {
+  const state = useProjectStore.getState();
+  const project = state.projects.find(
+    (item) => item.id === state.currentProjectId,
+  );
+  const lang = project?.language ?? "ja";
+  return {
+    persona: lang.startsWith("en") ? "General Reader" : "一般読者",
+    genre: project?.genre ?? null,
+    targetReaders: project?.targetReaders ?? null,
+    lang,
+  };
+}
+
+function collectLiveReaderServiceTargets(): LiveReaderServiceTarget[] {
+  const context = currentLiveReaderProjectContext();
+  const targets = new Map<Editor, string>();
+  const linear = useLinearEditorStore.getState();
+  const activeSceneId = useTreeStore.getState().activeSceneId;
+  const activeLinearEditor = activeSceneId
+    ? linear.editorsById[activeSceneId]
+    : undefined;
+  if (activeLinearEditor && activeSceneId) {
+    targets.set(activeLinearEditor, activeSceneId);
+  } else if (linear.focusedEditor && linear.focusedSceneId) {
+    targets.set(linear.focusedEditor, linear.focusedSceneId);
+  }
+
+  const activeEditor = useEditorStore.getState().editor;
+  if (activeEditor && activeSceneId && !targets.has(activeEditor)) {
+    targets.set(activeEditor, activeSceneId);
+  }
+
+  return Array.from(targets, ([editor, sceneId]) => ({
+    editor,
+    sceneId,
+    ...context,
+    signature: [
+      sceneId,
+      context.persona,
+      context.genre,
+      context.targetReaders,
+      context.lang,
+    ]
+      .map((value) => value ?? "")
+      .join("\u0000"),
+  }));
+}
+
+/**
+ * Start the editor subscriptions only after the Review panel enables the
+ * feature. Keeping this service behind that lazy boundary prevents the
+ * editor startup graph from loading the reader runtime or extra editor chunks.
+ */
+export function startLiveReaderComments(): void {
+  if (
+    liveReaderServiceStop ||
+    !useAnnotationStore.getState().liveReaderEnabled
+  ) {
+    return;
+  }
+
+  const attachments = new Map<Editor, LiveReaderServiceAttachment>();
+  let disposed = false;
+
+  const reconcile = () => {
+    if (disposed || !useAnnotationStore.getState().liveReaderEnabled) return;
+    const targets = collectLiveReaderServiceTargets();
+    const desired = new Map(targets.map((target) => [target.editor, target]));
+
+    for (const [editor, attachment] of attachments) {
+      const target = desired.get(editor);
+      if (
+        !target ||
+        target.sceneId !== attachment.sceneId ||
+        target.signature !== attachment.signature
+      ) {
+        attachment.cleanup();
+        attachments.delete(editor);
+      }
+    }
+
+    for (const target of targets) {
+      if (attachments.has(target.editor)) continue;
+      attachments.set(target.editor, {
+        sceneId: target.sceneId,
+        signature: target.signature,
+        cleanup: attachLiveReaderComments({
+          ...target,
+          enabled: true,
+          ownerId: ++nextLiveReaderServiceOwnerId,
+        }),
+      });
+    }
+  };
+
+  const stop = () => {
+    if (disposed) return;
+    disposed = true;
+    unsubscribeEditor();
+    unsubscribeLinear();
+    unsubscribeTree();
+    unsubscribeProject();
+    unsubscribeAnnotation();
+    for (const attachment of attachments.values()) attachment.cleanup();
+    attachments.clear();
+    if (liveReaderServiceStop === stop) liveReaderServiceStop = null;
+  };
+
+  const unsubscribeEditor = useEditorStore.subscribe((state, previous) => {
+    if (state.editor !== previous.editor) reconcile();
+  });
+  const unsubscribeLinear = useLinearEditorStore.subscribe(
+    (state, previous) => {
+      if (
+        state.focusedEditor !== previous.focusedEditor ||
+        state.focusedSceneId !== previous.focusedSceneId ||
+        state.editorsById !== previous.editorsById
+      ) {
+        reconcile();
+      }
+    },
+  );
+  const unsubscribeTree = useTreeStore.subscribe((state, previous) => {
+    if (state.activeSceneId !== previous.activeSceneId) reconcile();
+  });
+  const unsubscribeProject = useProjectStore.subscribe((state, previous) => {
+    if (
+      state.currentProjectId !== previous.currentProjectId ||
+      state.projects !== previous.projects
+    ) {
+      reconcile();
+    }
+  });
+  const unsubscribeAnnotation = useAnnotationStore.subscribe(
+    (state, previous) => {
+      if (state.liveReaderEnabled !== previous.liveReaderEnabled) {
+        if (state.liveReaderEnabled) reconcile();
+        else stopLiveReaderComments();
+      }
+    },
+  );
+
+  liveReaderServiceStop = stop;
+  reconcile();
+}
+
+/** Stop all active editor attachments when the Review panel switch is turned off. */
+export function stopLiveReaderComments(): void {
+  liveReaderServiceStop?.();
 }
 
 function editorText(editor: Editor): string {

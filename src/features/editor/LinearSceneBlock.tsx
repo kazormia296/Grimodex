@@ -6,8 +6,6 @@ import {
   useCallback,
   useMemo,
   memo,
-  lazy,
-  Suspense,
 } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
@@ -123,11 +121,6 @@ import {
   handleSceneEditorTransaction,
   type SceneBeatIndexState,
 } from "@/features/editor/sceneEditorTransactionPipeline";
-import { useAnnotationStore } from "@/features/post-effect/annotationStore";
-
-const LiveReaderCommentsEffect = lazy(
-  () => import("@/features/post-effect/LiveReaderCommentsEffect"),
-);
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -197,7 +190,6 @@ function MountedSceneBlock({
   const currentProject = useCurrentProject();
   const currentProjectId = useCurrentProjectId();
   const lang = currentProject?.language;
-  const liveReaderEnabled = useAnnotationStore((s) => s.liveReaderEnabled);
   const workspacePath = useWorkspaceStore((state) => state.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
     (state) => state.workspaceOpenRevision,
@@ -1105,19 +1097,6 @@ function MountedSceneBlock({
       }
       data-editor-input-foreground={isActive ? "true" : "false"}
     >
-      {isActive && loadReady && !isLoading && liveReaderEnabled && (
-        <Suspense fallback={null}>
-          <LiveReaderCommentsEffect
-            editor={editor}
-            sceneId={sceneId}
-            enabled
-            persona={lang?.startsWith("en") ? "General Reader" : "一般読者"}
-            genre={currentProject?.genre ?? null}
-            targetReaders={currentProject?.targetReaders ?? null}
-            lang={lang ?? "ja"}
-          />
-        </Suspense>
-      )}
       {/* 外部 write conflict の解決 UI (タブモードは EditorPane が表示)。
           conflict が無ければ null を返すだけ。Reload は reloadNonce 経由で
           上の load effect に届く。 */}

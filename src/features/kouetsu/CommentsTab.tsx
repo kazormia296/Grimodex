@@ -32,6 +32,24 @@ import { useIsLiveReaderRunning } from "@/features/post-effect/runStore";
 import { useReducedMotion } from "@/lib/animation";
 import { CommentListItem } from "./CommentListItem";
 
+type LiveReaderRuntimeModule =
+  typeof import("@/features/post-effect/liveReaderRuntime");
+
+let liveReaderRuntimePromise: Promise<LiveReaderRuntimeModule> | null = null;
+
+function loadLiveReaderRuntime(): Promise<LiveReaderRuntimeModule> {
+  if (!liveReaderRuntimePromise) {
+    liveReaderRuntimePromise =
+      import("@/features/post-effect/liveReaderRuntime").catch(
+        (error: unknown) => {
+          liveReaderRuntimePromise = null;
+          throw error;
+        },
+      );
+  }
+  return liveReaderRuntimePromise;
+}
+
 async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
   const rows = await listProjectSceneDocuments(projectId);
 
@@ -165,6 +183,33 @@ export function CommentsTab() {
     [reloadAnnotations],
   );
 
+  const handleLiveReaderEnabledChange = useCallback(
+    (enabled: boolean) => {
+      setLiveReaderEnabled(enabled);
+      if (enabled) {
+        void loadLiveReaderRuntime()
+          .then(({ startLiveReaderComments }) => {
+            startLiveReaderComments();
+          })
+          .catch((error: unknown) => {
+            console.warn("live reader runtime load failed", error);
+          });
+        return;
+      }
+
+      if (liveReaderRuntimePromise) {
+        void liveReaderRuntimePromise
+          .then(({ stopLiveReaderComments }) => {
+            stopLiveReaderComments();
+          })
+          .catch((error: unknown) => {
+            console.warn("live reader runtime stop failed", error);
+          });
+      }
+    },
+    [setLiveReaderEnabled],
+  );
+
   const totalCount = groups.reduce(
     (n, g) => n + g.human.length + g.threads.length,
     0,
@@ -180,7 +225,7 @@ export function CommentsTab() {
         sortOrder={sortOrder}
         onSortOrderChange={setSortOrder}
         liveReaderEnabled={liveReaderEnabled}
-        onLiveReaderEnabledChange={setLiveReaderEnabled}
+        onLiveReaderEnabledChange={handleLiveReaderEnabledChange}
         liveReaderRunning={liveReaderRunning}
         onPseudoCompleted={handlePseudoCompleted}
         onReload={reload}

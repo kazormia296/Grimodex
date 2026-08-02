@@ -1,4 +1,3 @@
-import { lazy, Suspense } from "react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { EditorContent } from "@tiptap/react";
@@ -12,7 +11,6 @@ import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
 import { CodexSemanticLinkPopover } from "@/features/editor/CodexSemanticLinkPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
-import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { AnnotationHoverPopover } from "@/features/post-effect/AnnotationHoverPopover";
 import { LintHoverPopover } from "@/features/lint/LintHoverPopover";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
@@ -29,10 +27,6 @@ import { useCurrentProject } from "@/features/project/projectStore";
 import { buildEditorPaperStyle } from "@/features/editor/editorPaperStyle";
 import { useZenBackgroundEnabled } from "@/features/editor/zen/useZenBackgroundAppearance";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
-
-const LiveReaderCommentsEffect = lazy(
-  () => import("@/features/post-effect/LiveReaderCommentsEffect"),
-);
 
 export interface EditorContentAreaProps {
   editor: Editor | null;
@@ -106,29 +100,11 @@ export function EditorContentArea({
   const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
   // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
-  const currentProject = useCurrentProject();
-  const isEnglish = currentProject?.language === "en";
-  const liveReaderEnabled = useAnnotationStore((s) => s.liveReaderEnabled);
-  const projectLanguage = currentProject?.language ?? "ja";
+  const isEnglish = useCurrentProject()?.language === "en";
   // 縦書きではホイールの縦回転を読み進み方向 (横) のスクロールに変換する
   useVerticalWheelScroll(editorContainerRef, editorSettings.verticalMode);
   return (
     <>
-      {!phoneWorkspace && liveReaderEnabled && (
-        <Suspense fallback={null}>
-          <LiveReaderCommentsEffect
-            editor={editor}
-            sceneId={sceneId}
-            enabled
-            persona={
-              projectLanguage.startsWith("en") ? "General Reader" : "一般読者"
-            }
-            genre={currentProject?.genre ?? null}
-            targetReaders={currentProject?.targetReaders ?? null}
-            lang={projectLanguage}
-          />
-        </Suspense>
-      )}
       <FindReplaceBar
         editor={editor}
         open={findOpen}

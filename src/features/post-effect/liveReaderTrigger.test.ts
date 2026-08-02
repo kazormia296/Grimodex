@@ -12,25 +12,19 @@ import {
   takeLiveReaderInsertion,
 } from "./liveReaderTrigger";
 
-const liveReaderHookSource = readFileSync(
-  new URL("./useLiveReaderComments.ts", import.meta.url),
+const commentsTabSource = readFileSync(
+  new URL("../kouetsu/CommentsTab.tsx", import.meta.url),
   "utf8",
 );
 
 describe("live reader loading boundary", () => {
   it("keeps the generation runtime out of the eager editor graph", () => {
-    expect(liveReaderHookSource).toMatch(/import\("\.\/liveReaderRuntime"\)/u);
-    expect(liveReaderHookSource).not.toContain('from "./liveReaderRuntime"');
-    expect(liveReaderHookSource).not.toContain('from "./api"');
-    expect(liveReaderHookSource).not.toContain(
-      'from "@/features/tree/treeStore"',
+    expect(commentsTabSource).toMatch(
+      /import\(\s*"@\/features\/post-effect\/liveReaderRuntime"\s*\)/u,
     );
-    expect(liveReaderHookSource).not.toContain('from "@/features/chat/store"');
-    expect(liveReaderHookSource).not.toContain(
-      'from "@/features/settings/settingsStore"',
+    expect(commentsTabSource).not.toContain(
+      'from "@/features/post-effect/liveReaderRuntime"',
     );
-    expect(liveReaderHookSource).not.toContain("modelRouting");
-    expect(liveReaderHookSource).not.toContain("pseudoCommentPayloadBuilder");
   });
 });
 
