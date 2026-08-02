@@ -1052,8 +1052,8 @@ AIコンテキストに含まれないプライベートノート。執筆上の
 summaryはSQLiteの `codex_entries.summary` カラムに直接保存。contentもSQLiteの `codex_entries.content` カラムに直接保存。アイコン画像はDBの `codex_entries.icon` TEXTカラムにbase64 WebPデータURL文字列として格納（128×128 WebP）。
 
 ```
-MyNovel.novel/
-└── project.db            ← codex_entries に全データ（content, icon含む）を格納
+<workspace>/
+└── grimodex.db           ← codex_entries に全データ（content, icon含む）を格納
 ```
 
 ### 自動保存
