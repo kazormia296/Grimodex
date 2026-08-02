@@ -5416,6 +5416,7 @@ enum EnsureRunOutcome {
 
 /// ライブ run は同じ本文を再入力したときでも新しい partial を流すため、
 /// 通常 run の completed-cache 照合を行わず、running 行だけを作る。
+#[allow(clippy::too_many_arguments)]
 fn create_post_effect_run(
     runtime: &impl PostEffectRuntime,
     project_id: &str,
@@ -5798,7 +5799,7 @@ where
             &args.scope_type,
             Some(&scene_id),
             &args.model,
-            &prompt_version,
+            prompt_version,
             &args.input_hash,
         )?;
         runtime.bind_abort_database(&run_id);

@@ -123,7 +123,6 @@ import {
 } from "@/features/editor/sceneEditorTransactionPipeline";
 import { useLiveReaderComments } from "@/features/post-effect/useLiveReaderComments";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
-import { personasForLang } from "@/features/post-effect/pseudoCommentPayloadBuilder";
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -1081,7 +1080,7 @@ function MountedSceneBlock({
     editor,
     sceneId,
     enabled: isActive && loadReady && !isLoading && liveReaderEnabled,
-    persona: personasForLang(lang ?? "ja")[0] ?? "一般読者",
+    persona: lang?.startsWith("en") ? "General Reader" : "一般読者",
     genre: currentProject?.genre ?? null,
     targetReaders: currentProject?.targetReaders ?? null,
     lang: lang ?? "ja",

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   LIVE_READER_MAX_PENDING_CHARS,
@@ -10,6 +11,20 @@ import {
   shouldTriggerLiveReader,
   takeLiveReaderInsertion,
 } from "./liveReaderTrigger";
+
+const liveReaderHookSource = readFileSync(
+  new URL("./useLiveReaderComments.ts", import.meta.url),
+  "utf8",
+);
+
+describe("live reader loading boundary", () => {
+  it("keeps the generation runtime out of the eager editor graph", () => {
+    expect(liveReaderHookSource).toMatch(/import\("\.\/liveReaderRuntime"\)/u);
+    expect(liveReaderHookSource).not.toContain('from "./liveReaderRuntime"');
+    expect(liveReaderHookSource).not.toContain('from "./api"');
+    expect(liveReaderHookSource).not.toContain("pseudoCommentPayloadBuilder");
+  });
+});
 
 describe("classifyLiveReaderChange", () => {
   it("純粋な追記だけを insertion として返す", () => {

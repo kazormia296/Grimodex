@@ -13,7 +13,6 @@ import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
 import { useLiveReaderComments } from "@/features/post-effect/useLiveReaderComments";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
-import { personasForLang } from "@/features/post-effect/pseudoCommentPayloadBuilder";
 import { AnnotationHoverPopover } from "@/features/post-effect/AnnotationHoverPopover";
 import { LintHoverPopover } from "@/features/lint/LintHoverPopover";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
@@ -111,7 +110,7 @@ export function EditorContentArea({
     editor,
     sceneId,
     enabled: !phoneWorkspace && liveReaderEnabled,
-    persona: personasForLang(projectLanguage)[0] ?? "一般読者",
+    persona: projectLanguage.startsWith("en") ? "General Reader" : "一般読者",
     genre: currentProject?.genre ?? null,
     targetReaders: currentProject?.targetReaders ?? null,
     lang: projectLanguage,
