@@ -26,8 +26,10 @@ const virtualizerCapture = vi.hoisted(() => ({
   opts: null as null | {
     count: number;
     estimateSize: () => number;
+    getScrollElement?: () => HTMLElement | null;
     getItemKey?: (index: number) => string | number;
   },
+  measuredNodes: [] as Array<Element | null>,
 }));
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: (opts: NonNullable<typeof virtualizerCapture.opts>) => {
@@ -42,7 +44,9 @@ vi.mock("@tanstack/react-virtual", () => ({
     return {
       getVirtualItems: () => items,
       getTotalSize: () => opts.count * size,
-      measureElement: () => {},
+      measureElement: (node: Element | null) => {
+        virtualizerCapture.measuredNodes.push(node);
+      },
       scrollToIndex: () => {},
     };
   },
@@ -120,6 +124,7 @@ import { useChatStore } from "./chatStore";
 import { useAiSettingsStore } from "./store";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import * as chatApi from "./chatApi";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 
 function msg(
   id: string,
@@ -169,7 +174,9 @@ describe("ChatPanel virtualization contract", () => {
       refreshContextLayers: async () => null,
     });
     useAiSettingsStore.setState({ loadSettings: async () => {} });
+    useLayoutStore.setState({ maximizedPanelId: null });
     virtualizerCapture.opts = null;
+    virtualizerCapture.measuredNodes.length = 0;
     perfCapture.marks.length = 0;
     perfCapture.counters.length = 0;
     perfCapture.runtimeControl = null;
@@ -198,6 +205,49 @@ describe("ChatPanel virtualization contract", () => {
     expect(opts!.count).toBe(2);
     expect(opts!.getItemKey?.(0)).toBe("u1");
     expect(opts!.getItemKey?.(1)).toBe("a1");
+  });
+
+  it("非Chat最大化中だけ virtualizer の scroll element を切り離す", () => {
+    useChatStore.setState({ messages: [msg("u1", "user")] });
+    render(<ChatPanel />);
+
+    const scroller = screen.getByTestId("chat-scroll-container");
+    expect(virtualizerCapture.opts?.getScrollElement?.()).toBe(scroller);
+
+    act(() => {
+      useLayoutStore.setState({ maximizedPanelId: "codex" });
+    });
+    expect(virtualizerCapture.opts?.getScrollElement?.()).toBeNull();
+
+    act(() => {
+      useLayoutStore.setState({ maximizedPanelId: "chat" });
+    });
+    expect(virtualizerCapture.opts?.getScrollElement?.()).toBe(scroller);
+  });
+
+  it("非Chat最大化中は新しく描画した行も測定しない", () => {
+    useChatStore.setState({ messages: [msg("u1", "user")] });
+    render(<ChatPanel />);
+
+    act(() => {
+      useLayoutStore.setState({ maximizedPanelId: "codex" });
+    });
+    virtualizerCapture.measuredNodes.length = 0;
+
+    act(() => {
+      useChatStore.setState({
+        messages: [msg("u1", "user"), msg("a1", "assistant")],
+      });
+    });
+    expect(virtualizerCapture.measuredNodes.filter(Boolean)).toHaveLength(0);
+
+    act(() => {
+      useLayoutStore.setState({ maximizedPanelId: "chat" });
+    });
+    const measuredIndexes = virtualizerCapture.measuredNodes
+      .filter((node): node is HTMLElement => node instanceof HTMLElement)
+      .map((node) => node.dataset.index);
+    expect(measuredIndexes).toContain("1");
   });
 
   it("virtual rows expose ordered-list position and the dialog exposes every loaded message", async () => {
