@@ -5,10 +5,6 @@ import {
   writeRuntimeSetting,
 } from "@/features/settings/runtimeSettings";
 import type { LayerSetOptions } from "@/features/post-effect/types";
-import {
-  isWindowFullscreen,
-  toggleFullscreenWindow,
-} from "@/lib/windowControls";
 
 interface CursorSettingsState {
   cursorAnimation: boolean;
@@ -22,10 +18,6 @@ interface CursorSettingsState {
   zenMode: boolean;
   setZenMode: (active: boolean) => void;
   toggleZenMode: () => void;
-  fullscreenMode: boolean;
-  setFullscreenMode: (active: boolean) => void;
-  syncFullscreenMode: () => Promise<void>;
-  toggleFullscreenMode: () => void;
   showComments: boolean;
   setShowComments: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleShowComments: () => void;
@@ -105,24 +97,6 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
     setZenMode: (active) => set({ zenMode: active }),
     toggleZenMode: () => set((s) => ({ zenMode: !s.zenMode })),
 
-    fullscreenMode: false,
-    setFullscreenMode: (active) => set({ fullscreenMode: active }),
-    syncFullscreenMode: async () => {
-      try {
-        set({ fullscreenMode: await isWindowFullscreen() });
-      } catch {
-        // Keep the last state confirmed by the runtime. A transient native
-        // query failure must not flip the toolbar indicator optimistically.
-      }
-    },
-    toggleFullscreenMode: () => {
-      void toggleFullscreenWindow()
-        .then((active) => set({ fullscreenMode: active }))
-        .catch(() => {
-          // Preserve the last confirmed state when the OS rejects a transition.
-        });
-    },
-
     showComments: false,
     setShowComments: (visible, opts) => {
       if (opts?.persist !== false) {
@@ -196,7 +170,6 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
         // Zen is a transient view projection. Never reopen an application
         // session with all navigation chrome hidden.
         zenMode: false,
-        fullscreenMode: false,
         showComments: readRuntimeSettingBoolean("display.layerComments", false),
         showForeshadowMarks: readRuntimeSettingBoolean(
           "display.layerForeshadow",

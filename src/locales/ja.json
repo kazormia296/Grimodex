@@ -3832,8 +3832,7 @@
       "codexReadingPromptDisable": "今後は確認しない",
       "urlPlaceholder": "https://...",
       "label": "エディタツールバー",
-      "zenMode": "Zenモード",
-      "fullscreenMode": "フルスクリーン"
+      "zenMode": "Zenモード"
     },
     "reorder": {
       "title": "推敲 — 段落内並べ替え",

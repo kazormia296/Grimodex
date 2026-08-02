@@ -3838,8 +3838,7 @@
       "codexReadingPromptDisable": "Don't ask again",
       "urlPlaceholder": "https://...",
       "label": "Editor toolbar",
-      "zenMode": "Zen mode",
-      "fullscreenMode": "Fullscreen"
+      "zenMode": "Zen mode"
     },
     "reorder": {
       "title": "Reorder — within paragraph",
