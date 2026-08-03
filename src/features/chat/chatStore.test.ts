@@ -9,7 +9,10 @@ import {
 import { useAiSettingsStore, DEFAULT_AI_SETTINGS } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { setCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
+import {
+  getCurrentImeWorkspaceIdentity,
+  setCurrentImeWorkspaceIdentity,
+} from "@/features/ime/workspaceScope";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 import type { AiModel } from "./types";
 import { toast } from "sonner";
@@ -314,6 +317,8 @@ const mockAdvanceCodexHistoryRevision = vi.mocked(
   codexAppApi.advanceCodexHistoryRevision,
 );
 const mockSendAgentMessage = vi.mocked(chatApi.sendAgentMessage);
+const mockGenerateSessionTitle = vi.mocked(chatApi.generateSessionTitle);
+const mockUpdateSessionTitle = vi.mocked(chatApi.updateSessionTitle);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
 const mockCountTokens = vi.mocked(contextBuilder.countTokens);
 const mockRecordAiUsage = vi.mocked(recordAiUsage);
@@ -2520,6 +2525,74 @@ describe("useChatStore", () => {
         persistence.resolve();
         unsubscribe();
         Reflect.deleteProperty(globalThis, LIFECYCLE_TRACE_OPT_IN_KEY);
+      }
+    });
+
+    it("holds workspace quiescence until first-response title persistence finishes", async () => {
+      let callbacks: StreamCallbacks | undefined;
+      const titleGeneration = deferred<string | null>();
+      const titleUpdateWorkspacePaths: Array<string | null> = [];
+      mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
+      mockUpdateSessionTitle.mockImplementationOnce(async () => {
+        titleUpdateWorkspacePaths.push(
+          getCurrentImeWorkspaceIdentity()?.path ?? null,
+        );
+      });
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+      });
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("workspace-scoped title");
+      await vi.waitFor(() => expect(callbacks).toBeDefined());
+      const providerEntered = deferred<void>();
+      let switchSettled = false;
+      const switching = flushStrictQuiescence(
+        chatQuiescenceDependencies({
+          onScopedMutations: () => providerEntered.resolve(),
+        }),
+      ).then(() => {
+        setCurrentImeWorkspaceIdentity({
+          path: "/workspace/next",
+          openRevision: 2,
+        });
+        switchSettled = true;
+      });
+
+      try {
+        await providerEntered.promise;
+        callbacks?.onTextDelta("first response");
+        callbacks?.onDone({ stopReason: "end_turn" });
+        await send;
+        await vi.waitFor(() =>
+          expect(mockGenerateSessionTitle).toHaveBeenCalledOnce(),
+        );
+        await Promise.resolve();
+
+        expect(switchSettled).toBe(false);
+
+        titleGeneration.resolve("Scoped title");
+        await switching;
+
+        expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+          session1.id,
+          "Scoped title",
+        );
+        expect(titleUpdateWorkspacePaths).toEqual([
+          "/workspace/chat-store-test",
+        ]);
+      } finally {
+        titleGeneration.resolve("Scoped title");
+        await switching;
       }
     });
 
@@ -4975,6 +5048,83 @@ describe("useChatStore", () => {
         }
       },
     );
+
+    it("holds workspace quiescence until first Agent title persistence finishes", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        agentMode: true,
+        ragEnabled: false,
+      });
+      const agentResponse =
+        deferred<Awaited<ReturnType<typeof chatApi.sendAgentMessage>>>();
+      const titleGeneration = deferred<string | null>();
+      const titleUpdateWorkspacePaths: Array<string | null> = [];
+      mockSendAgentMessage.mockImplementationOnce(() => agentResponse.promise);
+      mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
+      mockUpdateSessionTitle.mockImplementationOnce(async () => {
+        titleUpdateWorkspacePaths.push(
+          getCurrentImeWorkspaceIdentity()?.path ?? null,
+        );
+      });
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("workspace-scoped Agent title");
+      await vi.waitFor(() => expect(mockSendAgentMessage).toHaveBeenCalled());
+      const providerEntered = deferred<void>();
+      let switchSettled = false;
+      const switching = flushStrictQuiescence(
+        chatQuiescenceDependencies({
+          onScopedMutations: () => providerEntered.resolve(),
+        }),
+      ).then(() => {
+        setCurrentImeWorkspaceIdentity({
+          path: "/workspace/next",
+          openRevision: 2,
+        });
+        switchSettled = true;
+      });
+
+      try {
+        await providerEntered.promise;
+        agentResponse.resolve({
+          blocks: [{ type: "text", content: "first Agent response" }],
+          stopReason: "end_turn",
+        });
+        await send;
+        await vi.waitFor(() =>
+          expect(mockGenerateSessionTitle).toHaveBeenCalledOnce(),
+        );
+        await Promise.resolve();
+
+        expect(switchSettled).toBe(false);
+
+        titleGeneration.resolve("Scoped Agent title");
+        await switching;
+
+        expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+          session1.id,
+          "Scoped Agent title",
+        );
+        expect(titleUpdateWorkspacePaths).toEqual([
+          "/workspace/chat-store-test",
+        ]);
+      } finally {
+        titleGeneration.resolve("Scoped Agent title");
+        await switching;
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
 
     it("public RAGはprivate historyを除外しつつcommandInstructionを保持する", async () => {
       useAiSettingsStore.setState({
