@@ -3,12 +3,20 @@ import type { EditorState, Transaction } from "@tiptap/pm/state";
 import { closeHistory, isHistoryTransaction } from "@tiptap/pm/history";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { EditorView } from "@tiptap/pm/view";
-import type { ResolvedPos } from "@tiptap/pm/model";
+import type {
+  Fragment,
+  Node as ProseMirrorNode,
+  ResolvedPos,
+} from "@tiptap/pm/model";
+import { ReplaceStep } from "@tiptap/pm/transform";
 import type {
   CodexCompletionCandidate,
   CodexCompletionIndex,
 } from "./codexCompletionIndex";
-import { findCodexCompletionMatch } from "./codexCompletionMatch";
+import {
+  findCodexCompletionMatch,
+  hasCompleteCodexCompletionPrefixWindow,
+} from "./codexCompletionMatch";
 
 export interface CodexCompletionState {
   candidate: CodexCompletionCandidate | null;
@@ -87,33 +95,78 @@ interface TextblockPrefix {
   positions: number[];
 }
 
+const INITIAL_PREFIX_WINDOW_POSITIONS = 128;
+
 /**
  * `Node.textContent` omits inline atoms while ProseMirror positions count each
  * atom as one offset. Preserve those boundaries with a sentinel and retain an
  * explicit text-offset → document-position mapping.
  */
-function textblockPrefix($from: ResolvedPos): TextblockPrefix {
+function textblockPrefixFrom(
+  $from: ResolvedPos,
+  fromParentOffset: number,
+): TextblockPrefix {
   const blockStart = $from.start();
   let text = "";
   const positions: number[] = [];
 
-  $from.parent.forEach((node, offset) => {
-    if (offset >= $from.parentOffset) return;
-    if (node.isText && node.text) {
-      const length = Math.min(node.text.length, $from.parentOffset - offset);
-      text += node.text.slice(0, length);
-      for (let index = 0; index < length; index += 1) {
-        positions.push(blockStart + offset + index);
+  $from.parent.nodesBetween(
+    fromParentOffset,
+    $from.parentOffset,
+    (node, offset) => {
+      if (node.isText && node.text) {
+        const nodeFrom = Math.max(fromParentOffset, offset);
+        const nodeTo = Math.min($from.parentOffset, offset + node.nodeSize);
+        const textFrom = nodeFrom - offset;
+        const length = Math.max(0, nodeTo - nodeFrom);
+        text += node.text.slice(textFrom, textFrom + length);
+        for (let index = 0; index < length; index += 1) {
+          positions.push(blockStart + nodeFrom + index);
+        }
+        return false;
       }
-      return;
-    }
-    if (node.isInline) {
-      text += "\uFFFC";
-      positions.push(blockStart + offset);
-    }
-  });
+      if (
+        node.isInline &&
+        offset >= fromParentOffset &&
+        offset < $from.parentOffset
+      ) {
+        text += "\uFFFC";
+        positions.push(blockStart + offset);
+      }
+      return false;
+    },
+  );
 
   return { text, positions };
+}
+
+/**
+ * Read only the suffix that can affect the 64-grapheme completion horizon.
+ * The window grows geometrically for long emoji/combining graphemes, retaining
+ * exact behavior without scanning an ordinary long paragraph from its start.
+ */
+export function buildCodexCompletionTextblockPrefix(
+  $from: ResolvedPos,
+): TextblockPrefix {
+  let distance = Math.min($from.parentOffset, INITIAL_PREFIX_WINDOW_POSITIONS);
+
+  for (;;) {
+    const fromParentOffset = $from.parentOffset - distance;
+    const prefix = textblockPrefixFrom($from, fromParentOffset);
+    if (
+      fromParentOffset === 0 ||
+      hasCompleteCodexCompletionPrefixWindow(prefix.text)
+    ) {
+      return prefix;
+    }
+
+    const nextDistance = Math.min(
+      $from.parentOffset,
+      Math.max(distance + 1, distance * 2),
+    );
+    if (nextDistance === distance) return prefix;
+    distance = nextDistance;
+  }
 }
 
 function computeState(
@@ -137,7 +190,7 @@ function computeState(
   const { $from } = state.selection;
   if (!canCompleteAt($from)) return emptyState(false, focused, activeInput);
 
-  const prefix = textblockPrefix($from);
+  const prefix = buildCodexCompletionTextblockPrefix($from);
 
   const match = findCodexCompletionMatch(
     prefix.text,
@@ -202,21 +255,59 @@ function isProgrammaticOrBulkTransaction(tr: Transaction): boolean {
   );
 }
 
-function isDirectTextInput(
-  tr: Transaction,
-  oldEditorState: EditorState,
-  newEditorState: EditorState,
+function fragmentContainsText(fragment: Fragment): boolean {
+  let containsText = false;
+  fragment.descendants((node) => {
+    if (node.isText && (node.text?.length ?? 0) > 0) {
+      containsText = true;
+      return false;
+    }
+    return !containsText;
+  });
+  return containsText;
+}
+
+function rangeContainsText(
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
 ): boolean {
-  return (
-    !isProgrammaticOrBulkTransaction(tr) &&
-    oldEditorState.doc.textContent !== newEditorState.doc.textContent
-  );
+  if (from >= to) return false;
+  let containsText = false;
+  doc.nodesBetween(from, to, (node) => {
+    if (node.isText && (node.text?.length ?? 0) > 0) {
+      containsText = true;
+      return false;
+    }
+    return !containsText;
+  });
+  return containsText;
+}
+
+function isDirectTextInput(tr: Transaction): boolean {
+  if (isProgrammaticOrBulkTransaction(tr)) return false;
+  return tr.steps.some((step, index) => {
+    if (!(step instanceof ReplaceStep)) return false;
+    return (
+      fragmentContainsText(step.slice.content) ||
+      rangeContainsText(tr.docs[index], step.from, step.to)
+    );
+  });
+}
+
+function preservesTextAndPositions(tr: Transaction): boolean {
+  return tr.steps.every((step) => {
+    let mapsPositions = false;
+    step.getMap().forEach(() => {
+      mapsPositions = true;
+    });
+    return !mapsPositions;
+  });
 }
 
 function applyMeta(
   oldState: CodexCompletionState,
   tr: Transaction,
-  oldEditorState: EditorState,
   newState: EditorState,
   index: CodexCompletionIndex,
   enabled: boolean,
@@ -257,15 +348,12 @@ function applyMeta(
   }
   if (tr.docChanged) {
     // Authorship and similar append-transactions may only change marks after a
-    // direct keystroke. They keep both text and positions stable, so preserve
-    // the candidate produced by the originating text transaction.
-    if (
-      oldEditorState.doc.textContent === newState.doc.textContent &&
-      oldEditorState.doc.content.size === newState.doc.content.size
-    ) {
+    // direct keystroke. Empty StepMaps prove positions remain stable, without
+    // walking both complete documents through Node.textContent.
+    if (preservesTextAndPositions(tr)) {
       return oldState;
     }
-    if (!oldState.focused || !isDirectTextInput(tr, oldEditorState, newState)) {
+    if (!oldState.focused || !isDirectTextInput(tr)) {
       return emptyState(oldState.composing, oldState.focused, false);
     }
     return computeState(
@@ -289,15 +377,8 @@ export function createCodexCompletionPlugin(
     key: codexCompletionKey,
     state: {
       init: () => emptyState(false, isFocused(), false),
-      apply: (tr, oldState, oldEditorState, newEditorState) =>
-        applyMeta(
-          oldState,
-          tr,
-          oldEditorState,
-          newEditorState,
-          getIndex(),
-          isEnabled(),
-        ),
+      apply: (tr, oldState, _oldEditorState, newEditorState) =>
+        applyMeta(oldState, tr, newEditorState, getIndex(), isEnabled()),
     },
     props: {
       decorations(state) {

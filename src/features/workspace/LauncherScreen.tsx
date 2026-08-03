@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
@@ -8,6 +8,8 @@ import { TitleBar } from "@/components/TitleBar";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
 import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { recordActiveWorkspaceLauncherPaint } from "./workspaceOpenTrace";
 
 export function LauncherScreen() {
   const { t } = useTranslation();
@@ -17,23 +19,63 @@ export function LauncherScreen() {
   const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
   const error = useWorkspaceStore((s) => s.error);
   const clearError = useWorkspaceStore((s) => s.clearError);
+  const workspaceOpenRequestInProgress = useWorkspaceStore(
+    (s) => s.workspaceOpenRequestInProgress,
+  );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (s) => s.workspaceSwitchInProgress,
+  );
   const [opening, setOpening] = useState<string | null>(null);
 
   const recentWorkspaces = globalSettings?.recentWorkspaces ?? [];
+  const workspaceBusy =
+    workspaceOpenRequestInProgress || workspaceSwitchInProgress;
+
+  useEffect(() => {
+    let paintedFrame: number | null = null;
+    const committedFrame = requestAnimationFrame(() => {
+      paintedFrame = requestAnimationFrame(() => {
+        recordActiveWorkspaceLauncherPaint();
+      });
+    });
+    return () => {
+      cancelAnimationFrame(committedFrame);
+      if (paintedFrame !== null) cancelAnimationFrame(paintedFrame);
+    };
+  }, []);
 
   async function handleOpenRecent(path: string) {
+    if (workspaceBusy) return;
     clearError();
     setOpening(path);
-    await openRecentWorkspace(path);
-    setOpening(null);
+    try {
+      await openRecentWorkspace(path, "launcher-card");
+    } catch (error) {
+      debugLog.error(
+        "workspaceLauncher",
+        "recent workspace request failed",
+        errorDetail(error),
+      );
+    } finally {
+      setOpening(null);
+    }
   }
 
   async function handleBrowse() {
+    if (workspaceBusy) return;
     clearError();
-    const path = await openFolderDialog();
-    if (path) {
+    try {
+      const path = await openFolderDialog();
+      if (!path) return;
       setOpening(path);
-      await requestOpenWorkspace(path);
+      await requestOpenWorkspace(path, "folder-picker");
+    } catch (error) {
+      debugLog.error(
+        "workspaceLauncher",
+        "workspace picker request failed",
+        errorDetail(error),
+      );
+    } finally {
       setOpening(null);
     }
   }
@@ -59,6 +101,7 @@ export function LauncherScreen() {
                   key={ws.path}
                   workspace={ws}
                   isOpening={opening === ws.path}
+                  disabled={workspaceBusy}
                   onOpen={() => handleOpenRecent(ws.path)}
                 />
               ))}
@@ -72,6 +115,7 @@ export function LauncherScreen() {
           <button
             type="button"
             onClick={handleBrowse}
+            disabled={workspaceBusy}
             className="flex-1 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
           >
             {t("launcher.openFolder")}
@@ -79,6 +123,7 @@ export function LauncherScreen() {
           <button
             type="button"
             onClick={handleBrowse}
+            disabled={workspaceBusy}
             className="flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             {t("launcher.newWorkspace")}
@@ -101,10 +146,12 @@ export function LauncherScreen() {
 function WorkspaceItem({
   workspace,
   isOpening,
+  disabled,
   onOpen,
 }: {
   workspace: RecentWorkspace;
   isOpening: boolean;
+  disabled: boolean;
   onOpen: () => void;
 }) {
   function folderName(path: string): string {
@@ -116,9 +163,10 @@ function WorkspaceItem({
     <li
       className={cn(
         "flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-accent/50",
-        isOpening && "opacity-50",
+        (isOpening || disabled) && "opacity-50",
       )}
-      onClick={isOpening ? undefined : onOpen}
+      aria-disabled={disabled || undefined}
+      onClick={isOpening || disabled ? undefined : onOpen}
     >
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">

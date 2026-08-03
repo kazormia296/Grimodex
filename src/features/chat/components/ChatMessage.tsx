@@ -12,8 +12,14 @@ import { formatCost } from "../modelPricing";
 import { looksLikeMissingInfo } from "../agentSuggestion";
 import { stripToolProtocol } from "../toolProtocol";
 import { useChatStore } from "../chatStore";
-import { getModelCapabilities } from "../agent/modelLimits";
+import { resolveModelCapabilities } from "../agent/modelLimits";
 import { useAiSettingsStore } from "../store";
+import {
+  resolveRolePathConfig,
+  roleSettingKey,
+  ROLE_PROVIDERS_KEY,
+} from "../modelRouting";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { AnsweredQuestionBlock } from "./AnsweredQuestionBlock";
@@ -99,6 +105,14 @@ function ChatMessageImpl({
   const { t } = useTranslation();
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
+  // 生成中本文は確定 messages 配列から分離されている。各行が自分の id だけを
+  // selector で購読するため、draft 更新で再描画されるのは末尾 assistant 1 行だけ。
+  const streamingContent = useChatStore((state) =>
+    state.streamingDraft?.messageId === msg.id
+      ? state.streamingDraft.content
+      : null,
+  );
+  const messageContent = streamingContent ?? msg.content;
   const parsedMeta = useMemo(() => parseMetadata(msg.metadata), [msg.metadata]);
   const isSummary = "summary_id" in parsedMeta;
   // 一部モデルが本文に吐き出す擬似ツール記法 (<tool_call>/<tool_response>) を
@@ -106,8 +120,10 @@ function ChatMessageImpl({
   // assistant 本文のみ対象（user 投稿やサマリは原文のまま）。
   const safeContent = useMemo(
     () =>
-      isAssistant && !isSummary ? stripToolProtocol(msg.content) : msg.content,
-    [isAssistant, isSummary, msg.content],
+      isAssistant && !isSummary
+        ? stripToolProtocol(messageContent)
+        : messageContent,
+    [isAssistant, isSummary, messageContent],
   );
   const showActions = !isStreaming && safeContent.length > 0 && !isSummary;
   const toolCalls =
@@ -126,7 +142,46 @@ function ChatMessageImpl({
 
   // Agent mode 未使用 (toolCalls なし) で「情報が足りない」っぽい応答に
   // 限り、再試行ボタンを表示。永続トグルは変えず一回限りの再生成。
-  const currentModel = useAiSettingsStore((s) => s.settings?.model ?? "");
+  const aiSettings = useAiSettingsStore((s) => s.settings);
+  const chatModelOverride = useAiSettingsStore((s) => s.chatModelOverride);
+  const chatProviderOverride = useAiSettingsStore(
+    (s) => s.chatProviderOverride,
+  );
+  const chatModelVariantOverride = useAiSettingsStore(
+    (s) => s.chatModelVariantOverride,
+  );
+  const chatEndpointIdOverride = useAiSettingsStore(
+    (s) => s.chatEndpointIdOverride,
+  );
+  useAiSettingsStore((s) => s.modelCapsRevision);
+  useSettingsStore((s) => s.get(roleSettingKey("agent"), ""));
+  useSettingsStore((s) => s.get(ROLE_PROVIDERS_KEY, ""));
+  const agentRole = chatModelOverride
+    ? undefined
+    : resolveRolePathConfig("chat_agent_main", undefined, aiSettings?.provider);
+  const agentModel =
+    chatModelOverride ?? agentRole?.model ?? aiSettings?.model ?? "";
+  const agentProvider = chatModelOverride
+    ? (chatProviderOverride ?? aiSettings?.provider)
+    : (agentRole?.provider ?? aiSettings?.provider);
+  const agentCapabilitySettings =
+    aiSettings && agentProvider
+      ? {
+          ...aiSettings,
+          provider: agentProvider,
+          model: agentModel,
+          ...(chatEndpointIdOverride
+            ? { activeOpenaiCompatibleEndpointId: chatEndpointIdOverride }
+            : {}),
+        }
+      : aiSettings;
+  const agentSupportsTools = resolveModelCapabilities(
+    agentModel,
+    agentCapabilitySettings,
+    agentRole?.provider
+      ? agentRole.variant
+      : (chatModelVariantOverride ?? undefined),
+  ).supportsTools;
   const agentMode = useChatStore((s) => s.agentMode);
   const showAgentRetry =
     isAssistant &&
@@ -135,7 +190,7 @@ function ChatMessageImpl({
     !agentMode &&
     toolCalls.length === 0 &&
     !!onRetryWithAgent &&
-    getModelCapabilities(currentModel).supportsTools &&
+    agentSupportsTools &&
     looksLikeMissingInfo(safeContent);
 
   // G2 + G23: Copy with attribution MIME
@@ -176,7 +231,7 @@ function ChatMessageImpl({
         onContextMenu={handleContextMenu}
       >
         {isAssistant && isSummary ? (
-          <SummaryBlock summary={msg.content} />
+          <SummaryBlock summary={messageContent} />
         ) : isAssistant ? (
           <>
             {thinkingBlocks.length > 0 && (
@@ -284,7 +339,9 @@ function ChatMessageImpl({
                   // (isAssistant && selectionInfo)。素の writeText だと "ai"
                   // provenance が乗らず paste で "unknown" 化するため、
                   // フルメッセージコピー (handleCopy) と同じ経路に揃える。
-                  void copyChatMessageWithAttribution(text, msg.id, msg.model);
+                  void copyChatMessageWithAttribution(text, msg.id, msg.model)
+                    .then(() => toast.success(t("chat.copied")))
+                    .catch(() => toast.error(t("chat.copyFailed")));
                 }}
               />
             )}
@@ -296,7 +353,7 @@ function ChatMessageImpl({
                 remarkPlugins={[remarkGfm]}
                 components={codexComponents}
               >
-                {msg.content}
+                {messageContent}
               </ReactMarkdown>
             </div>
             {showActions && (
@@ -311,7 +368,7 @@ function ChatMessageImpl({
           </>
         ) : (
           <p className="text-center text-xs text-muted-foreground">
-            {msg.content}
+            {messageContent}
           </p>
         )}
         {(isAssistant || isUser) && <MessageBadge messageId={msg.id} />}
@@ -326,9 +383,6 @@ function ChatMessageImpl({
   return __renderResult;
 }
 
-// ストリーミング中は messages 配列が delta 毎に新参照になるが、確定済みの
-// 過去メッセージは msg 参照が保たれる。memo 化しておくと streaming bubble
-// 以外は再レンダー（= ReactMarkdown 再パース + codex matcher 再走査）を
-// スキップできる。前提として ChatPanel 側で渡すコールバックが安定参照で
-// あること（handleExtract*/handleSaveSnippet* は messages 依存を外し済み）。
+// 確定 messages 配列は streaming draft の更新では変わらない。memo と行内の
+// id selector により、再パース対象は生成中 assistant 1 行だけに閉じる。
 export const ChatMessage = memo(ChatMessageImpl);

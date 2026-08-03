@@ -6,7 +6,7 @@ import {
 } from "./nonSceneContextPlanner";
 import type { NonSceneContextSourceDeps } from "./sources/nonSceneContextSource";
 
-function request() {
+function request(overrides: Record<string, unknown> = {}) {
   return createNonSceneTurnContextRequest({
     requestId: "non-scene-request",
     purpose: "live",
@@ -42,10 +42,12 @@ function request() {
       semanticRecallEnabled: false,
       episodicRecallEnabled: false,
       hybridRecallEnabled: false,
+      semanticRerankerMode: "off",
       customChatInstruction: "house style",
     },
     trackRecallPromote: false,
     sourceSnapshot: { treeNodes: [], plotThreadIds: [], plotThreadLinks: [] },
+    ...overrides,
   });
 }
 
@@ -87,6 +89,7 @@ describe("planNonSceneChatContext", () => {
         maxOutputTokens: 1_024,
         outputReservationTokens: 512,
         customChatInstruction: "house style",
+        tokenCountingMode: "live-estimate",
       }),
     );
     expect(result.prompt).toBe("rendered");
@@ -95,5 +98,35 @@ describe("planNonSceneChatContext", () => {
     expect(result.contextPlan.requestId).toBe("non-scene-request");
     expect(result.projectOutline).toBe("Outline");
     expect(result.diagnostics).toEqual([]);
+  });
+
+  it("keeps provider-bound non-scene planning on exact token counts", async () => {
+    const renderPrompt = vi.fn(() => ({
+      prompt: "rendered",
+      totalTokens: 9,
+      layers: [],
+    }));
+    const deps: NonSceneContextPlannerDeps = {
+      ensureTokenizer: async () => {},
+      collectContext: async () => ({
+        promptInput: {
+          scene: { id: "", title: "", content: "" },
+        },
+        detectedEntries: [],
+        alwaysEntries: [],
+        scopeAnchor: null,
+        projectOutline: undefined,
+        chapterOutlines: [],
+        diagnostics: [],
+      }),
+      source: {} as NonSceneContextSourceDeps,
+      renderPrompt,
+    };
+
+    await planNonSceneChatContext(request({ purpose: "send" }), deps);
+
+    expect(renderPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenCountingMode: "exact" }),
+    );
   });
 });

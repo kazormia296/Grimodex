@@ -22,8 +22,10 @@ import {
   type HashRoute,
 } from "./canonicalize";
 import { kouetsuScopeSuffix } from "./customInstruction";
+import { buildLiveReaderContext } from "./liveReaderTrigger";
 
 export const PSEUDO_COMMENT_PROMPT_VERSION = "pseudo_comment_v2.1";
+export const LIVE_PSEUDO_COMMENT_PROMPT_VERSION = "pseudo_comment_live_v1.0";
 
 /** brief 解決に必要なプロジェクト文脈。 */
 export interface PersonaBriefContext {
@@ -255,4 +257,50 @@ export function buildPseudoCommentSystemPrompt(
   brief: string,
 ): string {
   return `${basePrompt}\n\nREADER PERSONA: ${brief}`;
+}
+
+export interface LivePseudoCommentPayloadResult {
+  /** 直近の追記を中心に切り出したモデル入力。 */
+  sceneText: string;
+  inputHash: string;
+}
+
+/**
+ * ライブ読者コメント用の payload。DB の本文を再読せず、現在の editor 本文から
+ * 近傍だけを送る。live run は Rust 側で永続 cache を作らないが、hash にはモデル・
+ * persona・追記・route を含めて診断可能性と将来のキャッシュ導入余地を保つ。
+ */
+export async function buildLivePseudoCommentPayload(
+  fullText: string,
+  addedText: string,
+  model: string,
+  persona: string,
+  brief: string,
+  customInstruction: string = "",
+  route?: HashRoute,
+): Promise<LivePseudoCommentPayloadResult> {
+  const sceneText = buildLiveReaderContext(fullText, addedText);
+  const inputHash = await computeInputHash({
+    promptVersion: LIVE_PSEUDO_COMMENT_PROMPT_VERSION,
+    model,
+    effectType: "pseudo_comment",
+    provider: route?.provider,
+    endpointId: route?.endpointId,
+    scene: normalizeText(sceneText),
+    scope:
+      `live|persona:${persona}|brief:${normalizeText(brief)}|` +
+      `added:${normalizeText(addedText)}${kouetsuScopeSuffix(customInstruction)}`,
+  });
+  return { sceneText, inputHash };
+}
+
+/** 擬似コメントの既存 JSON 契約に、近傍抜粋を読むモードだけを追加する。 */
+export function buildLivePseudoCommentSystemPrompt(
+  basePrompt: string,
+  brief: string,
+): string {
+  return `${buildPseudoCommentSystemPrompt(basePrompt, brief)}
+
+LIVE READING MODE:
+The scene_text is a local excerpt, not the whole scene. React only to the text inside [RECENTLY_ADDED]...[/RECENTLY_ADDED]. The surrounding text is context. Return at most three short in-the-moment reader reactions. Every found_text must be copied from the provided excerpt.`;
 }

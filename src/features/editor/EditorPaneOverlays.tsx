@@ -1,14 +1,13 @@
 import { createPortal } from "react-dom";
-import type { RefObject } from "react";
+import { lazy, Suspense, type RefObject } from "react";
 import type { Editor } from "@tiptap/react";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import type {
   CodexMentionPopupState,
   MentionItem,
   MentionRole,
 } from "@/features/codex/CodexMentionExtension";
-import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
-import { AbInlineDialog } from "@/features/ab-test/AbInlineDialog";
 import type { AbMessage } from "@/features/ab-test/abHarness";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
@@ -19,12 +18,25 @@ import type {
   ReorderUnit,
 } from "@/features/editor/reorder/types";
 
+const AbInlineDialog = lazy(async () => {
+  const module = await import("@/features/ab-test/AbInlineDialog");
+  return { default: module.AbInlineDialog };
+});
+
+const InlineAIPalette = lazy(async () => {
+  const module = await import("@/features/editor/inlineAi/InlineAIPalette");
+  return { default: module.InlineAIPalette };
+});
+
 export interface AbInlineState {
   messages: AbMessage[];
   mode: "insert" | "replace";
   originalRange: { from: number; to: number } | null;
   insertPos: number | null;
   projectId: string;
+  projectionKey: string;
+  /** Immutable document generation captured when the A/B request started. */
+  documentSnapshot: ProseMirrorNode;
 }
 
 interface EditorPaneOverlaysProps {
@@ -93,26 +105,30 @@ export function EditorPaneOverlays({
 }: EditorPaneOverlaysProps) {
   return (
     <>
-      {editor && (
-        <InlineAIPalette
-          editor={editor}
-          open={paletteOpen}
-          preselectedCommand={palettePreselect}
-          onClose={onClosePalette}
-          onSubmit={onSubmitPalette}
-          onSubmitAb={onSubmitPaletteAb}
-        />
+      {editor && paletteOpen && (
+        <Suspense fallback={null}>
+          <InlineAIPalette
+            editor={editor}
+            open
+            preselectedCommand={palettePreselect}
+            onClose={onClosePalette}
+            onSubmit={onSubmitPalette}
+            onSubmitAb={onSubmitPaletteAb}
+          />
+        </Suspense>
       )}
       {abInline && (
-        <AbInlineDialog
-          open
-          onOpenChange={(next) => {
-            if (!next) onCloseAb();
-          }}
-          projectId={abInline.projectId}
-          messages={abInline.messages}
-          onAdopt={onAdoptAb}
-        />
+        <Suspense fallback={null}>
+          <AbInlineDialog
+            open
+            onOpenChange={(next) => {
+              if (!next) onCloseAb();
+            }}
+            projectId={abInline.projectId}
+            messages={abInline.messages}
+            onAdopt={onAdoptAb}
+          />
+        </Suspense>
       )}
       <InlineAIToolbar
         onAccept={onAccept}

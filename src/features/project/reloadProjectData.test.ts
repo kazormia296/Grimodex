@@ -93,10 +93,25 @@ vi.mock("@/features/codex/phaseStore", () => ({
   usePhaseStore: phaseHarness.usePhaseStore,
 }));
 
+import { registerProjectLifecycle } from "@/application/project/projectLifecycle";
 import {
   resetChatForProject,
   resetPhaseStateForProject,
+  resetUnplacedBeatsForProject,
 } from "./reloadProjectData";
+import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
+import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
+
+registerProjectLifecycle(
+  { reload: vi.fn(async () => ({ cancelled: false, degraded: [] })) },
+  {
+    resetChatForProject: (projectId) => chatHarness.resetForProject(projectId),
+    resetPhaseStateForProject: () =>
+      phaseHarness.usePhaseStore.getState().resetForProject(),
+    resetUnplacedBeatsForProject: () =>
+      useUnplacedBeatsStore.getState().resetForProject(),
+  },
+);
 
 describe("resetChatForProject", () => {
   beforeEach(() => {
@@ -166,5 +181,30 @@ describe("resetPhaseStateForProject", () => {
     expect(phaseHarness.state.resolutionMode).toBe("story");
     expect(phaseHarness.state.projectEpoch).toBe(5);
     expect(phaseHarness.resetForProject).toHaveBeenCalledOnce();
+  });
+});
+
+describe("resetUnplacedBeatsForProject", () => {
+  beforeEach(() => {
+    useUnplacedBeatsStore.getState().resetForProject();
+  });
+
+  it("Project lifecycle で同一 scene id の旧 Workspace cache を破棄する", () => {
+    const oldBeat: UnplacedBeat = {
+      id: "old-workspace-beat",
+      beatType: "free",
+      pov: null,
+      collapsed: false,
+      content: [{ type: "text", text: "old workspace" }],
+    };
+    useUnplacedBeatsStore
+      .getState()
+      .setBeats("shared-scene-id", [oldBeat], "load");
+
+    resetUnplacedBeatsForProject();
+
+    expect(
+      useUnplacedBeatsStore.getState().getBeats("shared-scene-id"),
+    ).toEqual([]);
   });
 });

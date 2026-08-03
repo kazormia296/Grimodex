@@ -66,6 +66,7 @@ export function ToolWindowIcon({
   const stripeSwapSlotId = useLayoutStore((s) => s.stripeSwapSlotId);
   const stripeSwapOffsets = useLayoutStore((s) => s.stripeSwapOffsets);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
+  const compact = region === "center" || region === "bottom";
   const passThroughDrop =
     draggingPanel != null && draggingPanel !== panelId && !layoutLocked;
 
@@ -118,7 +119,8 @@ export function ToolWindowIcon({
               : undefined
           }
           className={cn(
-            "relative z-30 flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors",
+            "relative z-30 flex shrink-0 items-center justify-center rounded-full transition-colors",
+            compact ? "h-[27px] w-[27px]" : "h-7 w-7",
             "transition-transform duration-75 active:scale-[0.94]",
             "touch-none select-none",
             passThroughDrop && "pointer-events-none",
@@ -128,10 +130,7 @@ export function ToolWindowIcon({
             active
               ? "bg-accent text-foreground"
               : "hover:bg-accent/30 hover:text-foreground",
-            !active &&
-              (slotOpen
-                ? "text-muted-foreground/60"
-                : "text-muted-foreground/35"),
+            !active && (slotOpen ? "text-foreground" : "text-muted-foreground"),
           )}
         >
           <Icon className="h-4 w-4" />
@@ -140,12 +139,6 @@ export function ToolWindowIcon({
               aria-hidden
               data-testid="stripe-busy-badge"
               className="pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 animate-pulse rounded-full bg-primary"
-            />
-          )}
-          {active && (
-            <span
-              aria-hidden
-              className="pointer-events-none absolute left-0 top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-full bg-primary"
             />
           )}
         </button>

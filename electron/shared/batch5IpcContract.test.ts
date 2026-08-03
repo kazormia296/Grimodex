@@ -46,6 +46,12 @@ describe("Phase 3 Batch 5 IPC contract", () => {
     expect(result).toEqual({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method seedSampleWorkspace`,
+      errorInfo: {
+        code: "IPC_BACKEND_UNAVAILABLE",
+        message: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method seedSampleWorkspace`,
+        retryable: false,
+        outcome: "failed",
+      },
     });
   });
 

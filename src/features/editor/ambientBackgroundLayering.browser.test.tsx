@@ -6,6 +6,8 @@ function renderLayering(
   enabled: boolean,
   glassEnabled = true,
   palette?: ThemePalette,
+  sharedCompositor = false,
+  backgroundRenderer: "initializing" | "webgl" | "fallback" = "webgl",
 ) {
   return render(
     <div
@@ -17,7 +19,10 @@ function renderLayering(
         <div
           data-editor-ambient
           data-background-enabled={enabled ? "true" : "false"}
-        />
+          data-background-renderer={backgroundRenderer}
+        >
+          {sharedCompositor && <div data-zen-glass-compositor />}
+        </div>
         <div
           data-workspace-glass-root
           data-layout-shell
@@ -273,6 +278,46 @@ describe("editor ambient background layering (real Chromium)", () => {
         "rgba(0, 0, 0, 0)",
       );
       expect(getComputedStyle(surface).backdropFilter).toBe("none");
+    }
+  });
+
+  it("gives the shared compositor exclusive ownership of Glass filtering", () => {
+    const { container } = renderLayering(true, true, undefined, true);
+    const editorFilter = container.querySelector<HTMLElement>(
+      "[data-editor-fluid-glass-filter]",
+    );
+    const glassSurfaces = container.querySelectorAll<HTMLElement>(
+      "[data-ambient-glass-surface]",
+    );
+
+    expect(editorFilter).not.toBeNull();
+    expect(glassSurfaces.length).toBeGreaterThan(0);
+    expect(getComputedStyle(editorFilter!).backdropFilter).toBe("none");
+    for (const surface of glassSurfaces) {
+      expect(getComputedStyle(surface).backdropFilter).toBe("none");
+    }
+  });
+
+  it("keeps native Glass filters active while WebGL is initializing", () => {
+    const { container } = renderLayering(
+      true,
+      true,
+      undefined,
+      false,
+      "initializing",
+    );
+    const editorFilter = container.querySelector<HTMLElement>(
+      "[data-editor-fluid-glass-filter]",
+    );
+    const glassSurfaces = container.querySelectorAll<HTMLElement>(
+      "[data-ambient-glass-surface]",
+    );
+
+    expect(getComputedStyle(editorFilter!).backdropFilter).toContain(
+      "blur(14px)",
+    );
+    for (const surface of glassSurfaces) {
+      expect(getComputedStyle(surface).backdropFilter).toContain("blur(22px)");
     }
   });
 

@@ -41,6 +41,8 @@ function ports(nodes: TreeNodeData[]): CreateTreeNodePorts & {
     createPersisted: vi.fn(async (record) => makeNode(record.id, record.title)),
     deletePersisted: vi.fn().mockResolvedValue(undefined),
     recreatePersisted: vi.fn(async (node) => node),
+    tryAcquireCreationAuthority: () => ({ release: vi.fn() }),
+    tryAcquireNavigationAuthority: () => ({ release: vi.fn() }),
     applyCreated: (node) => {
       state.nodes = [...state.nodes, node];
     },
@@ -64,12 +66,17 @@ describe("createTreeNode", () => {
       testPorts,
     );
 
-    expect(created.title).toBe("シーン 1");
+    expect(created).not.toBeNull();
+    expect(created!.title).toBe("シーン 1");
     expect(testPorts.history).toHaveLength(1);
+    expect(testPorts.history[0]).toMatchObject({
+      kind: "scenes",
+      entityId: created!.id,
+    });
     await testPorts.history[0]!.undo();
-    expect(testPorts.closeTabs).toHaveBeenCalledWith(created.id);
+    expect(testPorts.closeTabs).toHaveBeenCalledWith(created!.id);
     await testPorts.history[0]!.redo();
-    expect(testPorts.revealEditorDocument).toHaveBeenCalledWith(created.id);
+    expect(testPorts.revealEditorDocument).toHaveBeenCalledWith(created!.id);
   });
 
   it("keeps mobile creation undoable without revealing a desktop tab on redo", async () => {
@@ -88,7 +95,7 @@ describe("createTreeNode", () => {
     await testPorts.history[0]!.redo();
 
     expect(testPorts.recreatePersisted).toHaveBeenCalledWith(
-      expect.objectContaining({ id: created.id }),
+      expect.objectContaining({ id: created!.id }),
     );
     expect(testPorts.revealEditorDocument).not.toHaveBeenCalled();
   });

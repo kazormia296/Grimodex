@@ -1,4 +1,9 @@
 import { invoke } from "@/lib/tauri";
+import {
+  getCurrentWorkspaceIdentity,
+  isCurrentWorkspaceIdentity,
+  type WorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
 
 /**
  * 本文セマンティック検索の Rust ↔ JS ブリッジ。
@@ -32,9 +37,60 @@ export interface SemanticIndexStatus {
   currentChunkerVersion: string;
 }
 
+export interface SemanticIndexAuthority {
+  expectedWorkspacePath: string;
+  projectId: string;
+}
+
+interface SemanticInferenceAuthority {
+  readonly expectedWorkspacePath: string;
+  readonly workspaceIdentity: WorkspaceIdentity;
+}
+
+function captureSemanticInferenceAuthority(): SemanticInferenceAuthority {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  if (!workspaceIdentity) {
+    throw new Error(
+      "SEMANTIC_WORKSPACE_UNAVAILABLE: no renderer workspace identity",
+    );
+  }
+  return {
+    expectedWorkspacePath: workspaceIdentity.path,
+    workspaceIdentity,
+  };
+}
+
+async function invokeSemanticInference<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  const authority = captureSemanticInferenceAuthority();
+  const result = await invoke<T>(command, {
+    expectedWorkspacePath: authority.expectedWorkspacePath,
+    ...args,
+  });
+  if (!isCurrentWorkspaceIdentity(authority.workspaceIdentity)) {
+    throw new Error(
+      "SEMANTIC_WORKSPACE_CHANGED: renderer workspace changed during inference",
+    );
+  }
+  return result;
+}
+
+/**
+ * 実行中の再構築可能な semantic index 処理を協調停止する。
+ * 戻り値は切り替え後の runtime epoch。文書の正本データは変更しない。
+ */
+export function semanticCancelBackground(): Promise<number> {
+  return invoke<number>("semantic_cancel_background", {});
+}
+
 /** シーン 1 件をインデックス再構築。戻り値は投入チャンク数 (0 = race/非 scene)。 */
-export function semanticIndexScene(sceneId: string): Promise<number> {
-  return invoke<number>("semantic_index_scene", { sceneId });
+export function semanticIndexScene(
+  sceneId: string,
+  authority: SemanticIndexAuthority,
+): Promise<number> {
+  return invoke<number>("semantic_index_scene", { sceneId, ...authority });
 }
 
 /**
@@ -50,7 +106,7 @@ export function semanticSearch(args: {
   sceneScope?: string | null;
   descriptionMode?: boolean;
 }): Promise<SemanticSearchHit[]> {
-  return invoke<SemanticSearchHit[]>("semantic_search", {
+  return invokeSemanticInference<SemanticSearchHit[]>("semantic_search", {
     projectId: args.projectId,
     query: args.query,
     limit: args.limit,
@@ -68,7 +124,7 @@ export function semanticReindexAll(
   projectId: string,
   runId?: string,
 ): Promise<number> {
-  return invoke<number>("semantic_reindex_all", {
+  return invokeSemanticInference<number>("semantic_reindex_all", {
     projectId,
     ...(runId ? { runId } : {}),
   });
@@ -104,7 +160,7 @@ export function codexSemanticSearch(args: {
   query: string;
   limit: number;
 }): Promise<CodexSearchHit[]> {
-  return invoke<CodexSearchHit[]>("codex_semantic_search", {
+  return invokeSemanticInference<CodexSearchHit[]>("codex_semantic_search", {
     projectId: args.projectId,
     query: args.query,
     limit: args.limit,
@@ -112,8 +168,11 @@ export function codexSemanticSearch(args: {
 }
 
 /** Codex エントリ 1 件を index 再構築。戻り値は投入ベクトル数 (0 = race/欠落)。 */
-export function codexIndexEntry(entryId: string): Promise<number> {
-  return invoke<number>("codex_index_entry", { entryId });
+export function codexIndexEntry(
+  entryId: string,
+  authority: SemanticIndexAuthority,
+): Promise<number> {
+  return invoke<number>("codex_index_entry", { entryId, ...authority });
 }
 
 /**
@@ -132,7 +191,7 @@ export function codexIndexStatus(projectId: string): Promise<CodexIndexStatus> {
 
 /** project 内の全 codex エントリを一括再 index。戻り値は投入ベクトル総数。 */
 export function codexReindexAll(projectId: string): Promise<number> {
-  return invoke<number>("codex_reindex_all", { projectId });
+  return invokeSemanticInference<number>("codex_reindex_all", { projectId });
 }
 
 /**
@@ -153,7 +212,7 @@ export function eventsSemanticSearch(args: {
   query: string;
   limit: number;
 }): Promise<EventSearchHit[]> {
-  return invoke<EventSearchHit[]>("events_semantic_search", {
+  return invokeSemanticInference<EventSearchHit[]>("events_semantic_search", {
     projectId: args.projectId,
     query: args.query,
     limit: args.limit,
@@ -161,8 +220,11 @@ export function eventsSemanticSearch(args: {
 }
 
 /** Chronicle event 1 件を index 再構築。戻り値は投入ベクトル数 (0 = race/欠落)。 */
-export function eventsIndexEntry(eventId: string): Promise<number> {
-  return invoke<number>("events_index_entry", { eventId });
+export function eventsIndexEntry(
+  eventId: string,
+  authority: SemanticIndexAuthority,
+): Promise<number> {
+  return invoke<number>("events_index_entry", { eventId, ...authority });
 }
 
 /**
@@ -183,7 +245,7 @@ export function eventsIndexStatus(
 
 /** project 内の全 Chronicle event を一括再 index。戻り値は投入ベクトル総数。 */
 export function eventsReindexAll(projectId: string): Promise<number> {
-  return invoke<number>("events_reindex_all", { projectId });
+  return invokeSemanticInference<number>("events_reindex_all", { projectId });
 }
 
 /**
@@ -208,16 +270,22 @@ export function chatMessageSearch(args: {
   query: string;
   limit: number;
 }): Promise<ChatMessageSearchHit[]> {
-  return invoke<ChatMessageSearchHit[]>("chat_message_search", {
-    projectId: args.projectId,
-    query: args.query,
-    limit: args.limit,
-  });
+  return invokeSemanticInference<ChatMessageSearchHit[]>(
+    "chat_message_search",
+    {
+      projectId: args.projectId,
+      query: args.query,
+      limit: args.limit,
+    },
+  );
 }
 
 /** チャットメッセージ 1 件を index 再構築。戻り値は投入ベクトル数 (0 = race/対象外)。 */
-export function chatIndexMessage(messageId: string): Promise<number> {
-  return invoke<number>("chat_index_message", { messageId });
+export function chatIndexMessage(
+  messageId: string,
+  authority: SemanticIndexAuthority,
+): Promise<number> {
+  return invoke<number>("chat_index_message", { messageId, ...authority });
 }
 
 /**
@@ -236,7 +304,7 @@ export function chatIndexStatus(projectId: string): Promise<ChatIndexStatus> {
 
 /** project 内の全 index 対象メッセージを一括再 index。戻り値は投入ベクトル総数。 */
 export function chatReindexAll(projectId: string): Promise<number> {
-  return invoke<number>("chat_reindex_all", { projectId });
+  return invokeSemanticInference<number>("chat_reindex_all", { projectId });
 }
 
 /** 指定 project の scene_chunks 状態を取得。Embedder ロード不要、軽量。 */

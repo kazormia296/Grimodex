@@ -2,6 +2,48 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserMock } from "./browser-mock";
 
+function browserAuditContext(executionId: string) {
+  return {
+    expectedWorkspacePath: "/dev/workspace",
+    projectId: "default-project",
+    operationId: `operation-${executionId}`,
+    executionId,
+    parentExecutionId: null,
+    pathId: "browser_byok_web",
+  } as const;
+}
+
+async function prepareAuditedDispatch(
+  mock: Awaited<ReturnType<typeof createBrowserMock>>,
+  executionId: string,
+) {
+  const context = browserAuditContext(executionId);
+  const event = (eventType: string, sequence: number) => ({
+    eventId: `${executionId}-${sequence}`,
+    executionId,
+    operationId: context.operationId,
+    parentExecutionId: context.parentExecutionId,
+    pathId: context.pathId,
+    eventType,
+    timestamp: sequence,
+    payload: {
+      captureState: "complete",
+      credentialsExcluded: true,
+      request: { messages: [{ role: "user", content: executionId }] },
+    },
+  });
+  await mock.invoke("ai_audit_append_batch", {
+    expectedWorkspacePath: context.expectedWorkspacePath,
+    projectId: context.projectId,
+    events: [
+      event("execution.started", 1),
+      event("request.prepared", 2),
+      event("request.dispatched", 3),
+    ],
+  });
+  return context;
+}
+
 describe("BrowserMock web AI runtime contract", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -94,6 +136,7 @@ describe("BrowserMock web AI runtime contract", () => {
 
     await mock.invoke("send_chat_message", {
       messages: [{ role: "user", content: "hello" }],
+      auditContext: await prepareAuditedDispatch(mock, "compatible-endpoint"),
     });
 
     expect(complete).toHaveBeenCalledWith(
@@ -110,6 +153,49 @@ describe("BrowserMock web AI runtime contract", () => {
         hasApiKey: false,
       }),
     );
+    mock.close();
+  });
+
+  it("rejects an Ollama route snapshot after the configured endpoint changes", async () => {
+    const complete = vi.fn().mockResolvedValue({
+      blocks: [{ type: "text", content: "must not send" }],
+      stopReason: "end_turn",
+    });
+    const listModels = vi.fn().mockResolvedValue([]);
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete, listModels },
+    });
+    await mock.invoke("save_ai_settings", {
+      settings: {
+        provider: "ollama",
+        model: "shared-model:latest",
+        ollamaEndpoint: "http://127.0.0.1:21434",
+      },
+    });
+
+    await expect(
+      mock.invoke("send_chat_message", {
+        messages: [{ role: "user", content: "hello" }],
+        provider: "ollama",
+        model: "shared-model:latest",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+        auditContext: await prepareAuditedDispatch(
+          mock,
+          "ollama-endpoint-mismatch",
+        ),
+      }),
+    ).rejects.toThrow(/Ollama endpoint changed before request/u);
+    await expect(
+      mock.invoke("list_ai_models", {
+        provider: "ollama",
+        selectedModelId: "shared-model:latest",
+        expectedOllamaEndpoint: "http://127.0.0.1:11434",
+      }),
+    ).rejects.toThrow(/Ollama endpoint changed before request/u);
+
+    expect(complete).not.toHaveBeenCalled();
+    expect(listModels).not.toHaveBeenCalled();
     mock.close();
   });
 
@@ -143,13 +229,21 @@ describe("BrowserMock web AI runtime contract", () => {
     ).not.toHaveProperty("browserAiMode");
 
     await expect(
-      mock.invoke("list_ai_models", { provider: "ollama" }),
+      mock.invoke("list_ai_models", {
+        provider: "ollama",
+        selectedModelId: "qwen3:8b",
+      }),
     ).resolves.toEqual([{ id: "qwen3:8b", name: "qwen3:8b" }]);
     await mock.invoke("send_chat_message", {
       messages: [{ role: "user", content: "hello" }],
+      auditContext: await prepareAuditedDispatch(mock, "retired-webgpu"),
     });
 
     expect(listModels).toHaveBeenCalledOnce();
+    expect(listModels.mock.calls[0]?.[0]).toMatchObject({
+      model: "qwen3:8b",
+      selectedModelId: "qwen3:8b",
+    });
     expect(complete).toHaveBeenCalledOnce();
     expect(listModels.mock.calls[0]?.[0]).not.toHaveProperty("browserAiMode");
     expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("browserAiMode");
@@ -183,6 +277,7 @@ describe("BrowserMock web AI runtime contract", () => {
 
     await mock.invoke("send_chat_message", {
       messages: [{ role: "user", content: "hello" }],
+      auditContext: await prepareAuditedDispatch(mock, "responses-fallback"),
     });
 
     expect(complete).toHaveBeenCalledWith(
@@ -215,6 +310,7 @@ describe("BrowserMock web AI runtime contract", () => {
       provider: "openai",
       model: "gpt-4.1-mini",
       endpointId: "primary",
+      auditContext: await prepareAuditedDispatch(mock, "structured-chat"),
     });
 
     expect(authorizeAiRequest).toHaveBeenCalledWith(
@@ -250,6 +346,7 @@ describe("BrowserMock web AI runtime contract", () => {
         messages: [{ role: "user", content: "private manuscript" }],
         provider: "openai",
         model: "gpt-5-mini",
+        auditContext: await prepareAuditedDispatch(mock, "consent-rejected"),
       }),
     ).rejects.toThrow("ai-data-consent-required");
     expect(complete).not.toHaveBeenCalled();
@@ -309,10 +406,14 @@ describe("BrowserMock web AI runtime contract", () => {
     });
 
     await mock.invoke("list_ai_models", { provider: "ollama" });
-    await mock.invoke("test_ai_connection", { provider: "ollama" });
+    await mock.invoke("test_ai_connection", {
+      provider: "ollama",
+      auditContext: await prepareAuditedDispatch(mock, "ollama-connection"),
+    });
     await mock.invoke("send_agent_message", {
       messages: [{ role: "user", content: "hello" }],
       tools: [],
+      auditContext: await prepareAuditedDispatch(mock, "ollama-agent"),
     });
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
@@ -353,7 +454,13 @@ describe("BrowserMock web AI runtime contract", () => {
         sink.done({ stopReason: "end_turn", inputTokens: 3, outputTokens: 1 });
       },
     );
-    const abort = vi.fn(() => releaseStream?.());
+    const abort = vi.fn(async () => {
+      releaseStream?.();
+      return {
+        abortCommandAcknowledged: true as const,
+        transportTerminationObserved: true,
+      };
+    });
     const mock = await createBrowserMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream, abort },
@@ -368,19 +475,37 @@ describe("BrowserMock web AI runtime contract", () => {
     });
 
     const running = mock.invoke("send_chat_message_stream", {
+      streamId: "stream-chat-1",
+      auditContext: await prepareAuditedDispatch(mock, "stream-chat-1"),
       messages: [{ role: "user", content: "continue" }],
       provider: "ollama",
       model: "local-model",
     });
     await vi.waitFor(() =>
-      expect(chunks).toEqual([{ delta: "本物", block_type: "text" }]),
+      expect(chunks).toEqual([
+        {
+          streamId: "stream-chat-1",
+          delta: "本物",
+          block_type: "text",
+        },
+      ]),
     );
-    await mock.invoke("abort_chat_stream");
+    await expect(
+      mock.invoke("abort_chat_stream", { streamId: "stream-chat-1" }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
     await running;
 
-    expect(abort).toHaveBeenCalledWith("chat");
+    expect(abort).toHaveBeenCalledWith("stream-chat-1");
     expect(done).toEqual([
-      { stop_reason: "end_turn", input_tokens: 3, output_tokens: 1 },
+      {
+        streamId: "stream-chat-1",
+        stop_reason: "stopped",
+        input_tokens: 3,
+        output_tokens: 1,
+      },
     ]);
   });
 
@@ -400,7 +525,7 @@ describe("BrowserMock web AI runtime contract", () => {
     );
     const mock = await createBrowserMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
-      aiTransport: { complete: vi.fn(), stream, abort: vi.fn() },
+      aiTransport: { complete: vi.fn(), stream },
     });
     const chunks: unknown[] = [];
     const done: unknown[] = [];
@@ -412,14 +537,482 @@ describe("BrowserMock web AI runtime contract", () => {
     });
 
     await mock.invoke("send_inline_ai_stream", {
+      streamId: "stream-inline-1",
+      auditContext: await prepareAuditedDispatch(mock, "stream-inline-1"),
       messages: [{ role: "user", content: "continue" }],
       provider: "ollama",
       model: "local-model",
     });
 
-    expect(chunks).toEqual([{ delta: "続き", block_type: "text" }]);
+    expect(chunks).toEqual([
+      {
+        streamId: "stream-inline-1",
+        delta: "続き",
+        block_type: "text",
+      },
+    ]);
     expect(done).toEqual([
       {
+        streamId: "stream-inline-1",
+        stop_reason: "end_turn",
+        input_tokens: null,
+        output_tokens: null,
+      },
+    ]);
+  });
+
+  it("turns a consent-time abort tombstone into zero provider dispatch and one correlated stopped event", async () => {
+    let releaseConsent!: () => void;
+    const authorizeAiRequest = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseConsent = resolve;
+        }),
+    );
+    const stream = vi.fn(async () => undefined);
+    const transportAbort = vi.fn(async () => ({
+      abortCommandAcknowledged: true as const,
+      transportTerminationObserved: false,
+    }));
+    const mock = await createBrowserMock({
+      authorizeAiRequest,
+      aiTransport: { complete: vi.fn(), stream, abort: transportAbort },
+    });
+    const done: unknown[] = [];
+    window.addEventListener("chat:stream-done", (event) => {
+      done.push((event as CustomEvent).detail);
+    });
+
+    const running = mock.invoke("send_chat_message_stream", {
+      streamId: "stream-consent",
+      auditContext: await prepareAuditedDispatch(mock, "stream-consent"),
+      messages: [{ role: "user", content: "continue" }],
+      provider: "ollama",
+      model: "local-model",
+    });
+    await vi.waitFor(() => expect(authorizeAiRequest).toHaveBeenCalledOnce());
+    let abortResolved = false;
+    const abort = mock
+      .invoke("abort_chat_stream", { streamId: "stream-consent" })
+      .then((receipt) => {
+        abortResolved = true;
+        return receipt;
+      });
+    await Promise.resolve();
+    expect(abortResolved).toBe(false);
+
+    releaseConsent();
+    await expect(abort).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
+    await running;
+    expect(stream).not.toHaveBeenCalled();
+    expect(transportAbort).not.toHaveBeenCalled();
+    expect(done).toEqual([
+      {
+        streamId: "stream-consent",
+        stop_reason: "stopped",
+        input_tokens: null,
+        output_tokens: null,
+      },
+    ]);
+  });
+
+  it("keeps an unknown abort tombstone pending so a later same-ID send performs zero provider dispatch", async () => {
+    const stream = vi.fn(async () => undefined);
+    const transportAbort = vi.fn(async () => ({
+      abortCommandAcknowledged: true as const,
+      transportTerminationObserved: false,
+    }));
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete: vi.fn(), stream, abort: transportAbort },
+    });
+    const done: unknown[] = [];
+    window.addEventListener("inline-ai:stream-done", (event) => {
+      done.push((event as CustomEvent).detail);
+    });
+
+    await expect(
+      mock.invoke("abort_inline_ai_stream", {
+        streamId: "stream-before-send",
+      }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+    await mock.invoke("send_inline_ai_stream", {
+      streamId: "stream-before-send",
+      auditContext: await prepareAuditedDispatch(mock, "stream-before-send"),
+      messages: [{ role: "user", content: "continue" }],
+      provider: "ollama",
+      model: "local-model",
+    });
+
+    expect(stream).not.toHaveBeenCalled();
+    expect(transportAbort).not.toHaveBeenCalled();
+    expect(done).toEqual([
+      {
+        streamId: "stream-before-send",
+        stop_reason: "stopped",
+        input_tokens: null,
+        output_tokens: null,
+      },
+    ]);
+  });
+
+  it("keeps the outer lifecycle receipt when transport abort rejects", async () => {
+    let release!: () => void;
+    const stream = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const abort = vi.fn(async () => {
+      release();
+      throw new Error("Authorization: Bearer must-not-surface");
+    });
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete: vi.fn(), stream, abort },
+    });
+    const done: unknown[] = [];
+    const errors: unknown[] = [];
+    window.addEventListener("chat:stream-done", (event) => {
+      done.push((event as CustomEvent).detail);
+    });
+    window.addEventListener("chat:stream-error", (event) => {
+      errors.push((event as CustomEvent).detail);
+    });
+    const running = mock.invoke("send_chat_message_stream", {
+      streamId: "stream-abort-error",
+      auditContext: await prepareAuditedDispatch(mock, "stream-abort-error"),
+      messages: [{ role: "user", content: "continue" }],
+      provider: "ollama",
+      model: "local-model",
+    });
+    await vi.waitFor(() => expect(stream).toHaveBeenCalledOnce());
+
+    await expect(
+      mock.invoke("abort_chat_stream", { streamId: "stream-abort-error" }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
+    await running;
+    expect(done).toEqual([
+      {
+        streamId: "stream-abort-error",
+        stop_reason: "stopped",
+        input_tokens: null,
+        output_tokens: null,
+      },
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it("isolates concurrent same-operation streams and keeps late aborted deltas correlated for audit", async () => {
+    type Sink = {
+      text(delta: string): void;
+      done(payload: { stopReason: string }): void;
+    };
+    const controls = new Map<string, { sink: Sink; resolve: () => void }>();
+    const stream = vi.fn(
+      (request: { streamId?: string }, sink: Sink) =>
+        new Promise<void>((resolve) => {
+          const streamId = request.streamId ?? "missing";
+          controls.set(streamId, { sink, resolve });
+          sink.text(`${streamId}:start`);
+        }),
+    );
+    const abort = vi.fn(async (streamId: string) => {
+      const control = controls.get(streamId);
+      if (!control) {
+        return {
+          abortCommandAcknowledged: true as const,
+          transportTerminationObserved: false,
+        };
+      }
+      control.sink.text(`${streamId}:late-after-abort`);
+      control.resolve();
+      return {
+        abortCommandAcknowledged: true as const,
+        transportTerminationObserved: true,
+      };
+    });
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete: vi.fn(), stream, abort },
+    });
+    const events: Array<{ channel: string; detail: Record<string, unknown> }> =
+      [];
+    for (const channel of ["chat:stream-chunk", "chat:stream-done"]) {
+      window.addEventListener(channel, (event) => {
+        events.push({
+          channel,
+          detail: (event as CustomEvent).detail as Record<string, unknown>,
+        });
+      });
+    }
+    await prepareAuditedDispatch(mock, "A");
+    await prepareAuditedDispatch(mock, "B");
+    const request = (streamId: string) => ({
+      streamId,
+      auditContext: browserAuditContext(streamId),
+      messages: [{ role: "user", content: streamId }],
+      provider: "ollama",
+      model: "local-model",
+    });
+
+    const runningA = mock.invoke("send_chat_message_stream", request("A"));
+    await vi.waitFor(() => expect(controls.has("A")).toBe(true));
+    const runningB = mock.invoke("send_chat_message_stream", request("B"));
+    await vi.waitFor(() => expect(controls.has("B")).toBe(true));
+
+    await expect(
+      mock.invoke("abort_chat_stream", { streamId: "wrong" }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+    expect(controls.get("A")).toBeDefined();
+    expect(controls.get("B")).toBeDefined();
+    await expect(
+      mock.invoke("abort_chat_stream", { streamId: "A" }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
+    await runningA;
+
+    controls.get("B")?.sink.text("B:finish");
+    controls.get("B")?.sink.done({ stopReason: "end_turn" });
+    controls.get("B")?.resolve();
+    await runningB;
+
+    expect(events).toEqual([
+      {
+        channel: "chat:stream-chunk",
+        detail: { streamId: "A", delta: "A:start", block_type: "text" },
+      },
+      {
+        channel: "chat:stream-chunk",
+        detail: { streamId: "B", delta: "B:start", block_type: "text" },
+      },
+      {
+        channel: "chat:stream-chunk",
+        detail: {
+          streamId: "A",
+          delta: "A:late-after-abort",
+          block_type: "text",
+        },
+      },
+      {
+        channel: "chat:stream-done",
+        detail: {
+          streamId: "A",
+          stop_reason: "stopped",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+      {
+        channel: "chat:stream-chunk",
+        detail: { streamId: "B", delta: "B:finish", block_type: "text" },
+      },
+      {
+        channel: "chat:stream-done",
+        detail: {
+          streamId: "B",
+          stop_reason: "end_turn",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+    ]);
+  });
+
+  it("preserves provider success when its terminal is observed before abort", async () => {
+    let release!: () => void;
+    const stream = vi.fn(
+      async (
+        _request: unknown,
+        sink: { done(payload: { stopReason: string }): void },
+      ) => {
+        sink.done({ stopReason: "end_turn" });
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+    );
+    const abort = vi.fn(async () => {
+      release();
+      return {
+        abortCommandAcknowledged: true as const,
+        transportTerminationObserved: true,
+      };
+    });
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete: vi.fn(), stream, abort },
+    });
+    const done: unknown[] = [];
+    window.addEventListener("chat:stream-done", (event) => {
+      done.push((event as CustomEvent).detail);
+    });
+    const running = mock.invoke("send_chat_message_stream", {
+      streamId: "stream-provider-first",
+      auditContext: await prepareAuditedDispatch(mock, "stream-provider-first"),
+      messages: [{ role: "user", content: "continue" }],
+      provider: "ollama",
+      model: "local-model",
+    });
+    await vi.waitFor(() => expect(done).toHaveLength(1));
+
+    await expect(
+      mock.invoke("abort_chat_stream", {
+        streamId: "stream-provider-first",
+      }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
+    await running;
+    expect(done).toEqual([
+      {
+        streamId: "stream-provider-first",
+        stop_reason: "end_turn",
+        input_tokens: null,
+        output_tokens: null,
+      },
+    ]);
+  });
+
+  it("preserves a provider terminal marker delivered during abort quiescence", async () => {
+    let release!: () => void;
+    let activeSink:
+      | {
+          done(payload: {
+            stopReason: string;
+            providerTerminalObservedBeforeAbort?: boolean;
+          }): void;
+        }
+      | undefined;
+    const stream = vi.fn(
+      (
+        _request: unknown,
+        sink: {
+          done(payload: {
+            stopReason: string;
+            providerTerminalObservedBeforeAbort?: boolean;
+          }): void;
+        },
+      ) =>
+        new Promise<void>((resolve) => {
+          activeSink = sink;
+          release = resolve;
+        }),
+    );
+    const abort = vi.fn(async () => {
+      activeSink?.done({
+        stopReason: "end_turn",
+        providerTerminalObservedBeforeAbort: true,
+      });
+      release();
+      return {
+        abortCommandAcknowledged: true as const,
+        transportTerminationObserved: true,
+      };
+    });
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete: vi.fn(), stream, abort },
+    });
+    const done: unknown[] = [];
+    window.addEventListener("chat:stream-done", (event) => {
+      done.push((event as CustomEvent).detail);
+    });
+    const running = mock.invoke("send_chat_message_stream", {
+      streamId: "stream-provider-marker-first",
+      auditContext: await prepareAuditedDispatch(
+        mock,
+        "stream-provider-marker-first",
+      ),
+      messages: [{ role: "user", content: "continue" }],
+      provider: "ollama",
+      model: "local-model",
+    });
+    await vi.waitFor(() => expect(stream).toHaveBeenCalledOnce());
+
+    await expect(
+      mock.invoke("abort_chat_stream", {
+        streamId: "stream-provider-marker-first",
+      }),
+    ).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: true,
+    });
+    await running;
+    expect(done).toEqual([
+      {
+        streamId: "stream-provider-marker-first",
+        stop_reason: "end_turn",
+        input_tokens: null,
+        output_tokens: null,
+      },
+    ]);
+  });
+
+  it("keeps the first done event and suppresses late content or transport error", async () => {
+    const stream = vi.fn(
+      async (
+        _request: unknown,
+        sink: {
+          text(delta: string): void;
+          done(payload: { stopReason: string }): void;
+        },
+      ) => {
+        sink.done({ stopReason: "end_turn" });
+        sink.text("must-not-escape");
+        throw new Error("Authorization: Bearer must-not-surface");
+      },
+    );
+    const mock = await createBrowserMock({
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: { complete: vi.fn(), stream },
+    });
+    const chunks: unknown[] = [];
+    const done: unknown[] = [];
+    const errors: unknown[] = [];
+    window.addEventListener("chat:stream-chunk", (event) => {
+      chunks.push((event as CustomEvent).detail);
+    });
+    window.addEventListener("chat:stream-done", (event) => {
+      done.push((event as CustomEvent).detail);
+    });
+    window.addEventListener("chat:stream-error", (event) => {
+      errors.push((event as CustomEvent).detail);
+    });
+
+    await expect(
+      mock.invoke("send_chat_message_stream", {
+        streamId: "stream-terminal-error",
+        auditContext: await prepareAuditedDispatch(
+          mock,
+          "stream-terminal-error",
+        ),
+        messages: [{ role: "user", content: "continue" }],
+        provider: "ollama",
+        model: "local-model",
+      }),
+    ).resolves.toBeUndefined();
+    expect(chunks).toEqual([]);
+    expect(errors).toEqual([]);
+    expect(done).toEqual([
+      {
+        streamId: "stream-terminal-error",
         stop_reason: "end_turn",
         input_tokens: null,
         output_tokens: null,
@@ -463,6 +1056,7 @@ describe("BrowserMock web AI runtime contract", () => {
     const result = await mock.invoke("send_agent_message", {
       messages,
       tools,
+      auditContext: await prepareAuditedDispatch(mock, "byok-agent"),
     });
 
     expect(completeAgent).toHaveBeenCalledWith(

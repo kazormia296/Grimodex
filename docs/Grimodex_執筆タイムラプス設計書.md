@@ -292,7 +292,7 @@ async function saveWebmBlob(blob: Blob, filename: string): Promise<boolean> {
 
 ## 10. プラットフォーム / CSP
 
-- **VP9 WebM 録画**は3 OSとも Electron Chromium の `MediaRecorder` を使う。ただし配布物ごとの codec 可否はユニットテスト（`MediaRecorderCtor` stub）で検出できないため、Windows / macOS / Linux の署名済み package で実機確認する。
+- **VP9 WebM 録画**は3 OSとも Electron Chromium の `MediaRecorder` を使う。ただし配布物ごとの codec 可否はユニットテスト（`MediaRecorderCtor` stub）で検出できないため、Windows / macOS / Linux の packaged build で実機確認する。
   - 対策: `MediaRecorder.isTypeSupported('video/webm;codecs=vp9')` を feature-detect → 非対応なら mime フォールバック列（`video/webm;codecs=vp8` → `video/webm`）を試し、全滅ならボタンを無効化＋`videoUnsupported` を表示。
 - **CSP に `media-src` 無し**（`electron/main/protocol.ts`）→ media は `default-src 'self'` にフォールバック。**`blob:` の `<video>` プレビューは現状ブロックされる**。アプリ内で録画結果をプレビューしたいなら CSP に `media-src 'self' blob:` を追加。保存（main processのsave handler）はプレビュー不要なので CSP 変更なしで可。
 - sandbox egress とは無関係（ローカル生成のみ）。[[grimodex-sandbox-egress-firewall]] / [[grimodex-csp-ipc-fallback]] の方針に矛盾しないこと。

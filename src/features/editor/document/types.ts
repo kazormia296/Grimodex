@@ -28,7 +28,7 @@ export type EditorDocumentTarget =
  * to persist. Keep this as one discriminated value so id, kind, and phase
  * identity cannot drift apart between saves.
  */
-export type LoadedEditorBinding =
+export type EditorDocumentIdentity =
   | {
       kind: "tree";
       id: string;
@@ -39,6 +39,20 @@ export type LoadedEditorBinding =
   | { kind: "snippet"; id: string }
   | { kind: "chronicle-event"; id: string };
 
+export type LoadedEditorBinding =
+  | (Extract<EditorDocumentIdentity, { kind: "tree" }> & {
+      loadedVersion: number;
+    })
+  | (Extract<EditorDocumentIdentity, { kind: "codex" }> & {
+      loadedVersion: number;
+    })
+  | (Extract<EditorDocumentIdentity, { kind: "snippet" }> & {
+      loadedVersion: number;
+    })
+  | (Extract<EditorDocumentIdentity, { kind: "chronicle-event" }> & {
+      loadedVersion: number;
+    });
+
 export type EditorDocumentContent = string | Record<string, unknown>;
 
 export interface LoadedEditorDocument {
@@ -47,6 +61,8 @@ export interface LoadedEditorDocument {
   content: EditorDocumentContent;
   title?: string;
   unplacedBeatsDoc?: string;
+  /** Present for tree documents so aggregate backfills retain project OCC. */
+  projectId?: string;
 }
 
 /** Build the loaded binding for the current tab after its content is applied. */
@@ -55,20 +71,22 @@ export function createLoadedEditorBinding(
   id: string,
   tree?: { nodeType: "scene" | "note"; storage: "database" | "file" },
   phaseId: string | null = null,
+  loadedVersion = 0,
 ): LoadedEditorBinding {
   switch (contentType) {
     case "codex":
-      return { kind: "codex", id, phaseId };
+      return { kind: "codex", id, phaseId, loadedVersion };
     case "snippet":
-      return { kind: "snippet", id };
+      return { kind: "snippet", id, loadedVersion };
     case "chronicle_event":
-      return { kind: "chronicle-event", id };
+      return { kind: "chronicle-event", id, loadedVersion };
     case "scene":
       return {
         kind: "tree",
         id,
         nodeType: tree?.nodeType ?? "scene",
         storage: tree?.storage ?? "database",
+        loadedVersion,
       };
   }
 }

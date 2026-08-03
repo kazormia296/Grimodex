@@ -1,30 +1,9 @@
 import { Node, mergeAttributes, type RawCommands } from "@tiptap/core";
 import { ReactNodeViewRenderer } from "@tiptap/react";
 import { SceneBeatNodeView } from "./SceneBeatNodeView";
+import { isBeatType, type BeatType } from "./beat/beatTypes";
 
-export type BeatType =
-  | "free"
-  | "summary"
-  | "guided"
-  | "dialogue"
-  | "setting"
-  | "micro";
-
-export const BEAT_TYPES: readonly BeatType[] = [
-  "free",
-  "summary",
-  "guided",
-  "dialogue",
-  "setting",
-  "micro",
-] as const;
-
-function isBeatType(value: unknown): value is BeatType {
-  return (
-    typeof value === "string" &&
-    (BEAT_TYPES as readonly string[]).includes(value)
-  );
-}
+export { BEAT_TYPES, type BeatType } from "./beat/beatTypes";
 
 /**
  * SceneBeatNode — Placed beat (本文中の Beat block).

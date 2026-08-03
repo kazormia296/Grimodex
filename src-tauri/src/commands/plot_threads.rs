@@ -12,8 +12,9 @@
 use serde_json::Value;
 
 use crate::database::plot_threads::{
-    self, PlotThreadCreatePayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
-    PlotThreadPatch,
+    self, PlotThreadBranchCreatePayload, PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload,
+    PlotThreadLinkCreatePayload, PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload,
+    PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
 };
 
 use super::{with_db, AppError, WorkspaceState};
@@ -86,4 +87,43 @@ pub(crate) fn plot_thread_list_links(
     project_id: String,
 ) -> Result<Vec<Value>, AppError> {
     with_db(&ws_state, |db| plot_threads::list_links(db, project_id))
+}
+
+// ─────────────────────── branch create ───────────────────────
+
+/// Compatibility wrapper for the frozen Tauri shell. Domain logic remains in
+/// the shared crate used by Electron/N-API and BrowserMock exposes the same
+/// typed command, so every runtime shares one renderer contract.
+#[tauri::command(async)]
+pub(crate) fn plot_thread_branch_create(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: PlotThreadBranchCreatePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| plot_threads::branch_create(db, payload))
+}
+
+#[tauri::command(async)]
+pub(crate) fn plot_thread_move_marker_bundle(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: PlotThreadMoveMarkerBundlePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        plot_threads::move_marker_bundle(db, payload)
+    })
+}
+
+#[tauri::command(async)]
+pub(crate) fn plot_thread_restore_snapshot(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: PlotThreadRestoreSnapshotPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| plot_threads::restore_snapshot(db, payload))
+}
+
+#[tauri::command(async)]
+pub(crate) fn plot_thread_delete_snapshot(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: PlotThreadDeleteSnapshotPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| plot_threads::delete_snapshot(db, payload))
 }

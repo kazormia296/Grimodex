@@ -41,15 +41,23 @@ export function DebugLogViewer() {
     return parts.join(" ");
   }
 
-  function copyAll() {
+  async function copyAll() {
     const text = entries.map(formatEntry).join("\n");
-    navigator.clipboard.writeText(text);
-    toast.success(t("debugLog.logCopied"));
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(t("debugLog.logCopied"));
+    } catch {
+      toast.error(t("debugLog.copyFailed"));
+    }
   }
 
-  function copyLine(entry: LogEntry) {
-    navigator.clipboard.writeText(formatEntry(entry));
-    toast.success(t("debugLog.lineCopied"));
+  async function copyLine(entry: LogEntry) {
+    try {
+      await navigator.clipboard.writeText(formatEntry(entry));
+      toast.success(t("debugLog.lineCopied"));
+    } catch {
+      toast.error(t("debugLog.copyFailed"));
+    }
   }
 
   return (

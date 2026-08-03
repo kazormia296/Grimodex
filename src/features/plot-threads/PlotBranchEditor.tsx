@@ -2,8 +2,9 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Trash2, GitBranch, GitMerge } from "lucide-react";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { PLOT_BRANCH_KINDS, type PlotBranchKind } from "@/db/schema";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { toast } from "sonner";
 import { usePlotThreadStore } from "./plotThreadStore";
 import type { PlotThreadRow } from "./api";
 
@@ -31,7 +32,7 @@ export function PlotBranchEditor({
   const branches = usePlotThreadStore((s) => s.branches);
   const addBranch = usePlotThreadStore((s) => s.addBranch);
   const deleteBranch = usePlotThreadStore((s) => s.deleteBranch);
-  const updateMarker = usePlotThreadStore((s) => s.updateMarker);
+  const moveMarkerBundle = usePlotThreadStore((s) => s.moveMarkerBundle);
 
   const others = threads.filter((th) => th.id !== thread.id);
   const [kind, setKind] = useState<PlotBranchKind>("branch");
@@ -118,34 +119,42 @@ export function PlotBranchEditor({
                   b.kind === kind,
               );
               if (dup) return;
-              // エッジ追加 + マーカーを対象(to)スレッドへ移動 を 1 Undo にまとめる
-              // （D&D 経路と同じ終端状態・同じ単一履歴エントリにする）。
-              void useGlobalHistoryStore.getState().runAsTransaction(
-                {
-                  kind: "plot",
-                  label: t("plotThread.history.addBranch", "分岐 / 合流を追加"),
-                },
-                async () => {
-                  const ops: Array<Promise<void>> = [
-                    addBranch({
-                      projectId: getCurrentProjectId(),
-                      fromThreadId: thread.id,
-                      toThreadId: targetId,
-                      atNodeId,
-                      kind,
-                    }),
-                  ];
-                  if (linkId) {
-                    ops.push(
-                      updateMarker(linkId, {
-                        threadId: targetId,
-                        nodeId: atNodeId,
-                      }),
-                    );
-                  }
-                  await Promise.all(ops);
-                },
-              );
+              const operation = linkId
+                ? moveMarkerBundle({
+                    markerId: linkId,
+                    markerPatch: {
+                      threadId: targetId,
+                      nodeId: atNodeId,
+                    },
+                    branchCreates: [
+                      {
+                        fromThreadId: thread.id,
+                        toThreadId: targetId,
+                        atNodeId,
+                        kind,
+                      },
+                    ],
+                  })
+                : addBranch({
+                    projectId: getCurrentProjectId(),
+                    fromThreadId: thread.id,
+                    toThreadId: targetId,
+                    atNodeId,
+                    kind,
+                  });
+              void operation.catch((error: unknown) => {
+                debugLog.error(
+                  "plot-thread",
+                  "Atomic branch creation failed",
+                  errorDetail(error),
+                );
+                toast.error(
+                  t(
+                    "plotThread.branchCreateFailed",
+                    "分岐 / 合流の追加に失敗しました",
+                  ),
+                );
+              });
             }}
             className="shrink-0 rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50"
           >

@@ -19,13 +19,10 @@ vi.mock("@/features/ai-policy/policyGuard", () => ({
   blockIfPolicyOff: mockBlockIfPolicyOff,
   isAiFeatureBlockedByPolicy: mockIsBlocked,
 }));
-vi.mock("@/features/tree/treeStore", () => ({
-  useTreeStore: {
-    getState: () => ({
-      nodes: [{ id: "s1", title: "T" }],
-      updateSynopsis: mockUpdateSynopsis,
-    }),
-  },
+vi.mock("@/features/tree/treeProjection", () => ({
+  findTreeNodeSummary: (id: string) =>
+    id === "s1" ? { id: "s1", title: "T", nodeType: "scene" } : null,
+  updateTreeSynopsis: mockUpdateSynopsis,
 }));
 vi.mock("@/features/tree/api", () => ({ loadSceneContent: mockLoadScene }));
 vi.mock("@/features/chat/chatApi", () => ({

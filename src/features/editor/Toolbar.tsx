@@ -6,7 +6,6 @@ import {
   Check,
   EllipsisVertical,
   Focus,
-  Maximize2,
   Hash,
   Italic,
   Keyboard,
@@ -49,9 +48,9 @@ import { primaryCountUnit } from "@/features/editor/charCountStats";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { resolveReadingForSurface } from "@/features/codex/reading";
 import { useCodexReadingRegistrationPrompt } from "@/features/editor/useCodexReadingRegistrationPrompt";
-import { onWindowResized } from "@/lib/windowControls";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
+import { RubyToolbarGlyph } from "./RubyToolbarGlyph";
 
 function ToolbarButton({
   active,
@@ -255,38 +254,12 @@ export function Toolbar({
     toggleTypewriterMode,
     zenMode,
     toggleZenMode,
-    fullscreenMode,
-    syncFullscreenMode,
-    toggleFullscreenMode,
     showComments,
     showForeshadowMarks,
     showLint,
   } = useCursorSettingsStore();
   const showAnnotations = useAnnotationStore((s) => s.showAnnotations);
   const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlistenNative: (() => void) | undefined;
-    const sync = () => {
-      void syncFullscreenMode();
-    };
-    sync();
-    document.addEventListener("fullscreenchange", sync);
-    void onWindowResized(sync)
-      .then((unlisten) => {
-        if (disposed) unlisten();
-        else unlistenNative = unlisten;
-      })
-      .catch(() => {
-        // Web Editor has no native window bridge; fullscreenchange covers it.
-      });
-    return () => {
-      disposed = true;
-      document.removeEventListener("fullscreenchange", sync);
-      unlistenNative?.();
-    };
-  }, [syncFullscreenMode]);
 
   // パネル連動 (Auto) モード: layerAutoFollow ON の間、パネル可視状態に
   // レイヤー表示を追従させる。Toolbar はエディタごとに1つなので、split view
@@ -607,6 +580,7 @@ export function Toolbar({
       aria-label={t("editor.toolbar.label")}
       data-phone-toolbar={phoneWorkspace ? "true" : undefined}
       data-phone-toolbar-headless={phoneWorkspace ? "true" : undefined}
+      data-editor-tool-surface
       hidden={phoneWorkspace}
       aria-hidden={phoneWorkspace ? true : undefined}
       inert={phoneWorkspace ? true : undefined}
@@ -740,12 +714,7 @@ export function Toolbar({
               >
                 {/* ふり仮名の2段グリフ — 日本語固有機能はアイコン化せず
                     文字のまま (デザイン 1a) */}
-                <span className="flex flex-col items-center leading-none">
-                  <span className="text-[6.5px] tracking-wide text-muted-foreground">
-                    ふり
-                  </span>
-                  <span className="text-[10px] font-semibold">仮名</span>
-                </span>
+                <RubyToolbarGlyph />
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.link")}
@@ -809,13 +778,6 @@ export function Toolbar({
                 onClick={toggleZenMode}
               >
                 Zen
-              </ToolbarButton>
-              <ToolbarButton
-                label={t("editor.toolbar.fullscreenMode")}
-                active={fullscreenMode}
-                onClick={toggleFullscreenMode}
-              >
-                <Maximize2 size={13} />
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.focusMode")}

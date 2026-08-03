@@ -4,9 +4,9 @@ import type {
   ProjectContext,
   SceneContext,
 } from "../contextBuilder";
+import type { SystemPromptResult } from "../contextBuilder";
 import type { CodexContextEntry } from "@/features/codex/api";
 import type { SceneTurnContextRequest } from "./turnContextRequest";
-import type { LegacyPromptResult } from "./legacyPromptAdapter";
 
 export interface RecalledMessageForPromotion {
   messageId: string;
@@ -46,7 +46,7 @@ export interface ContextPlannerDeps {
     request: SceneTurnContextRequest,
     required: RequiredSceneContext,
   ) => Promise<OptionalSceneContext>;
-  renderPrompt: (input: BuildSystemPromptInput) => LegacyPromptResult;
+  renderPrompt: (input: BuildSystemPromptInput) => SystemPromptResult;
 }
 
 function missingRequiredSource(): Promise<RequiredSceneContext> {

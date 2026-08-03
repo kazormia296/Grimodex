@@ -5,6 +5,10 @@ import { NoteContextControls } from "@/features/editor/NoteContextControls";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { LicenseRestrictionBanner } from "@/features/license/LicenseRestrictionBanner";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import type {
+  DocumentKey,
+  EditorInstanceId,
+} from "@/features/editor/document/documentKey";
 
 interface CodexRibbonEntry {
   name: string;
@@ -26,6 +30,10 @@ interface EditorPaneRibbonProps {
   activeSnippetEntry: SnippetRibbonEntry | null | undefined;
   loadedPhaseLabel: string | null;
   chronicleEventTitle: string;
+  documentKey: DocumentKey | null;
+  editorInstanceId: EditorInstanceId;
+  onKeepExternalEdit?: () => void | Promise<void>;
+  onReloadExternalEdit?: () => void | Promise<void>;
 }
 
 /** Render-only context banners above the editor body. */
@@ -41,6 +49,10 @@ export function EditorPaneRibbon({
   activeSnippetEntry,
   loadedPhaseLabel,
   chronicleEventTitle,
+  documentKey,
+  editorInstanceId,
+  onKeepExternalEdit,
+  onReloadExternalEdit,
 }: EditorPaneRibbonProps) {
   const { t } = useTranslation();
   const zenMode = useCursorSettingsStore((state) => state.zenMode);
@@ -49,7 +61,13 @@ export function EditorPaneRibbon({
     return (
       <>
         <LicenseRestrictionBanner />
-        <ExternalEditConflictBanner nodeId={nodeId} />
+        <ExternalEditConflictBanner
+          nodeId={nodeId}
+          documentKey={documentKey}
+          editorInstanceId={editorInstanceId}
+          onKeepMine={onKeepExternalEdit}
+          onReload={onReloadExternalEdit}
+        />
       </>
     );
   }
@@ -58,7 +76,13 @@ export function EditorPaneRibbon({
     <>
       <LicenseRestrictionBanner />
       {isFileBacked && !isEntryMode && <FileBackedSceneBanner />}
-      <ExternalEditConflictBanner nodeId={nodeId} />
+      <ExternalEditConflictBanner
+        nodeId={nodeId}
+        documentKey={documentKey}
+        editorInstanceId={editorInstanceId}
+        onKeepMine={onKeepExternalEdit}
+        onReload={onReloadExternalEdit}
+      />
       {isNote && (
         <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
           <span className="font-medium">{t("editor.ribbon.noteEditing")}</span>

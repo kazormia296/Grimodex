@@ -140,11 +140,12 @@ describe("RegionStripe", () => {
       "[data-stripe-leading-shift]",
     );
     expect(shift).not.toBeNull();
-    expect(parseFloat(shift!.style.top)).toBeGreaterThanOrEqual(28);
+    expect(parseFloat(shift!.style.top)).toBe(36);
   });
 
-  it("does not wrap icons when there is no leading collapsed cluster", () => {
-    // 先頭 slot が open のときは shift wrapper 不要 (overlay と重ならない)。
+  it("insets the first open icon without changing the band's flex box", () => {
+    // 先頭 slot が open のときも、stripe の 18px 円弧と 28px icon の
+    // 円弧を 4px offset で同心にする。band outer の flex 寸法は変えない。
     const { container } = render(
       <RegionStripe region="left" orientation="vertical" segments={segments} />,
     );
@@ -152,7 +153,11 @@ describe("RegionStripe", () => {
       ...container.querySelectorAll<HTMLElement>("[data-drop-segment]"),
     ];
     expect(groups[0].style.paddingTop).toBe("");
-    expect(groups[0].querySelector("[data-stripe-leading-shift]")).toBeNull();
+    const shift = groups[0].querySelector<HTMLElement>(
+      "[data-stripe-leading-shift]",
+    );
+    expect(shift).not.toBeNull();
+    expect(shift!.style.top).toBe("4px");
   });
 
   it("sizes the open-slot divider band to the content Splitter thickness", () => {
@@ -238,7 +243,7 @@ describe("RegionStripe", () => {
     },
   );
 
-  it("dims collapsed-slot icons more than open-slot icons", () => {
+  it("keeps inactive icon ink opaque while distinguishing open and collapsed slots", () => {
     const { container } = render(
       <RegionStripe region="left" orientation="vertical" segments={segments} />,
     );
@@ -246,8 +251,10 @@ describe("RegionStripe", () => {
       container.querySelector(`[data-stripe-icon="${panel}"]`)?.className ?? "";
 
     expect(cls("scenes")).toContain("bg-accent"); // open + active
-    expect(cls("codex-quick")).toContain("text-muted-foreground/60"); // open + inactive
-    expect(cls("timeline")).toContain("text-muted-foreground/35"); // collapsed
+    expect(cls("codex-quick")).toContain("text-foreground"); // open + inactive
+    expect(cls("timeline")).toContain("text-muted-foreground"); // collapsed
+    expect(cls("codex-quick")).not.toMatch(/text-[^\s]+\/\d+/);
+    expect(cls("timeline")).not.toMatch(/text-[^\s]+\/\d+/);
   });
 
   it("opens stripe band context menu on right click", async () => {
@@ -312,7 +319,7 @@ describe("RegionStripe", () => {
     expect(cluster).not.toBeNull();
     const overlay = cluster!.querySelector<HTMLElement>(".absolute");
     expect(overlay).not.toBeNull();
-    expect(overlay!.style.bottom).toBe("28px");
+    expect(overlay!.style.bottom).toBe("32px");
   });
 
   it("offsets leading/trailing cluster overlays on the inline axis when horizontal", () => {
@@ -363,8 +370,8 @@ describe("RegionStripe", () => {
     expect(clusters.length).toBe(2);
     const leadingOverlay = clusters[0].querySelector<HTMLElement>(".absolute");
     const trailingOverlay = clusters[1].querySelector<HTMLElement>(".absolute");
-    expect(leadingOverlay!.style.left).toBe("28px");
-    expect(trailingOverlay!.style.right).toBe("28px");
+    expect(leadingOverlay!.style.left).toBe("32px");
+    expect(trailingOverlay!.style.right).toBe("32px");
   });
 
   it("offsets the first open band when reserveStartPx clears a corner toggle", () => {
@@ -393,7 +400,7 @@ describe("RegionStripe", () => {
       "[data-stripe-leading-shift]",
     );
     expect(shift).not.toBeNull();
-    expect(parseFloat(shift!.style.left)).toBe(28);
+    expect(parseFloat(shift!.style.left)).toBe(32);
   });
 
   it("includes reserveStartPx in the first open band shift after a leading collapsed cluster", () => {
@@ -429,8 +436,8 @@ describe("RegionStripe", () => {
       "[data-stripe-leading-shift]",
     );
     expect(shift).not.toBeNull();
-    // 1 collapsed icon span (28 + 4) + corner clearance (28).
-    expect(parseFloat(shift!.style.left)).toBe(60);
+    // base inset 4 + 1 horizontal icon span (27 + 4) + corner clearance 28.
+    expect(parseFloat(shift!.style.left)).toBe(63);
   });
 
   it("exposes a full-cover drop zone on an empty stripe while dragging", async () => {

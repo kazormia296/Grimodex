@@ -442,7 +442,7 @@ impl GrimodexServer {
 
     /// List chronicle events in story (ordinal) order. Optional kind filter.
     #[tool(
-        description = "List chronicle (作中年表) events in story order (ordinal). Each item: id, title, kind, ordinal, startTime, startDate (calendar-formatted date string; null when there is no calendar or the granularity is unset), primaryCharacter (resolved codex name). Optional kind filter: 'birth'|'death'|'generic'."
+        description = "List chronicle (作中年表) events in story order (ordinal). Each item includes id, title, kind, ordinal, version, startTime, startDate (calendar-formatted date string; null when there is no calendar or the granularity is unset), and primaryCharacter (resolved codex name). Pass an item's version unchanged as base_version to the next update_event, delete_event, or set_event_participants call. Optional kind filter: 'birth'|'death'|'generic'."
     )]
     async fn list_events(
         &self,
@@ -453,7 +453,7 @@ impl GrimodexServer {
 
     /// Get one event's full detail: participants, scene links, causal relations.
     #[tool(
-        description = "Get a chronicle event's full detail by event_id: title, note, kind, ordinal, start/end time, startDate/endDate (calendar-formatted date strings; null when there is no calendar or the granularity is unset), precision, primaryCharacter and location (resolved names), participants (codexId/name/role), stamped scenes (sceneId/title), and causal relations (cause/effect titles). Returns null if the event is not in this project."
+        description = "Get a chronicle event's full detail by event_id: title, note, kind, ordinal, version, start/end time, startDate/endDate (calendar-formatted date strings; null when there is no calendar or the granularity is unset), precision, primaryCharacter and location (resolved names), participants (codexId/name/role), stamped scenes (sceneId/title), and causal relations (cause/effect titles). Pass version unchanged as base_version to the next Event aggregate write. Returns null if the event is not in this project."
     )]
     async fn get_event_detail(
         &self,
@@ -486,7 +486,7 @@ impl GrimodexServer {
 
     /// Create a chronicle event (tracked; undo-able). knowledgeWrite gate.
     #[tool(
-        description = "Create a chronicle event: title (required), note, kind ('generic'|'birth'|'death', default generic), primary_codex_id, location_codex_id, start_time/end_time (days from epoch), start_minute/end_minute (time of day, 0-1439, 24h clock), start_granularity/end_granularity ('none'|'season'|'year'|'month'|'day'|'time', default 'none'), participant_codex_ids, scene_ids. Tracked (undo_journal + change_event). Disabled in readonly mode."
+        description = "Create a chronicle event: title (required), note, kind ('generic'|'birth'|'death', default generic), primary_codex_id, location_codex_id, start_time/end_time (days from epoch), start_minute/end_minute (time of day, 0-1439, 24h clock), start_granularity/end_granularity ('none'|'season'|'year'|'month'|'day'|'time', default 'none'), participant_codex_ids, scene_ids. Returns id, title, and the initial version; pass that version as base_version to the next Event aggregate write. Tracked (undo_journal + change_event). Disabled in readonly mode."
     )]
     async fn create_event(
         &self,
@@ -497,7 +497,7 @@ impl GrimodexServer {
 
     /// Update a chronicle event (only provided fields). knowledgeWrite gate.
     #[tool(
-        description = "Update a chronicle event by event_id. Only provided fields change (title, note, kind, primary_codex_id, location_codex_id, start_time, end_time, start_minute/end_minute (0-1439, 24h clock), start_granularity/end_granularity ('none'|'season'|'year'|'month'|'day'|'time')). Scoped to the active project. Tracked. Disabled in readonly mode."
+        description = "Update a chronicle event by event_id. base_version is required and must equal the version returned by create/list/detail/the previous write; stale versions fail without mutation. Only provided fields change (title, note, kind, primary_codex_id, location_codex_id, start_time, end_time, start_minute/end_minute (0-1439, 24h clock), start_granularity/end_granularity ('none'|'season'|'year'|'month'|'day'|'time')). Returns the incremented version for the next write. Scoped to the active project. Tracked. Disabled in readonly mode."
     )]
     async fn update_event(
         &self,
@@ -508,7 +508,7 @@ impl GrimodexServer {
 
     /// Delete a chronicle event (cascade snapshot; undo restores). knowledgeWrite gate.
     #[tool(
-        description = "Delete a chronicle event by event_id. Its participants, scene links, and causal relations cascade; a full snapshot is captured first so undo restores everything. Scoped to the active project. Tracked. Disabled in readonly mode."
+        description = "Delete a chronicle event by event_id. base_version is required and must equal the latest version returned by create/list/detail/a previous write; stale versions fail without mutation. Its participants, scene links, and causal relations cascade; a full snapshot is captured first so undo restores everything. Scoped to the active project. Tracked. Disabled in readonly mode."
     )]
     async fn delete_event(
         &self,
@@ -541,7 +541,7 @@ impl GrimodexServer {
 
     /// Replace an event's participant set. knowledgeWrite gate.
     #[tool(
-        description = "Replace a chronicle event's participant set with codex_entry_ids (full replacement). Tracked. Disabled in readonly mode."
+        description = "Replace a chronicle event's participant set with codex_entry_ids (full replacement). base_version is required and must equal the version returned by create/list/detail/the previous write; stale versions fail without mutation. Returns the incremented version for the next write. Tracked. Disabled in readonly mode."
     )]
     async fn set_event_participants(
         &self,

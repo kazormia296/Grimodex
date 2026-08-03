@@ -35,8 +35,7 @@ export interface TreeRendererProps {
   showLabelDots: boolean;
   showPlotThreadTrack: boolean;
   showAiAttribution: boolean;
-  /** For folder ids, the flat list of leaf descendant ids — used by
-   *  TreeNodeItem to compute its own running total via per-id selector. */
+  /** @deprecated Folder totals now use the shared post-order selector cache. */
   leafDescendantsByFolder: Record<string, string[]>;
   /** Shift+Click 範囲選択用の可視ノード列。ref 渡し (TreeNodeItem 参照)。 */
   orderedNodesRef: RefObject<TreeNodeData[]>;
@@ -110,7 +109,6 @@ export function TreeRenderer({
           isActive: node.id === activeSceneId,
           isSelected: selectedIds.includes(id),
           isExpanded,
-          leafDescendants: leafDescendantsByFolder[id],
           showWordCounts,
           showStatusDots,
           showLabelDots,

@@ -44,6 +44,16 @@ export function FindReplaceBar({
     };
   }, [editor, open]);
 
+  // Linear view can switch the active TipTap instance while this bar remains
+  // open. Remove highlights from the previous instance before applying the
+  // same local query state to the next one.
+  useEffect(() => {
+    if (!editor || !supportsFindReplace(editor)) return;
+    return () => {
+      if (!editor.isDestroyed) editor.commands.clearFind();
+    };
+  }, [editor]);
+
   // Focus on open
   useEffect(() => {
     if (open) {

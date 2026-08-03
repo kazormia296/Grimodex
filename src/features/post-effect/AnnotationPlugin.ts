@@ -16,7 +16,6 @@ export const ANNOTATION_REBUILD_META = "annotationUpdate";
 
 function buildDecorations(doc: ProseMirrorNode): DecorationSet {
   const { showAnnotations, showReaderComments } = useAnnotationStore.getState();
-  if (!showAnnotations && !showReaderComments) return DecorationSet.empty;
 
   const decos: Decoration[] = [];
 
@@ -28,10 +27,14 @@ function buildDecorations(doc: ProseMirrorNode): DecorationSet {
     const category = (mark.attrs.category as string) ?? "";
     const severity = (mark.attrs.severity as string) ?? "warning";
     const status = (mark.attrs.status as string) ?? "open";
+    const live = mark.attrs.live === true;
 
     if (status === "dismissed") return;
     // pseudo_comment (読者コメント) は「校閲の指摘」とは別レイヤーでゲートする
-    if (category === "pseudo_comment" ? !showReaderComments : !showAnnotations)
+    if (
+      !live &&
+      (category === "pseudo_comment" ? !showReaderComments : !showAnnotations)
+    )
       return;
 
     const classes = [
@@ -48,6 +51,7 @@ function buildDecorations(doc: ProseMirrorNode): DecorationSet {
         "data-pe-ann-id": mark.attrs.annotationId as string,
         "data-pe-category": category,
         "data-pe-severity": severity,
+        ...(live ? { "data-pe-live": "true" } : {}),
       }),
     );
   });

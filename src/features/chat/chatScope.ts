@@ -1,10 +1,27 @@
-export type ChatScope = "scene" | "folder" | "project" | "codex" | "snippet";
+import chatScopeRegistry from "./chatScopeRegistry.json";
+
+export type ChatScope = keyof typeof chatScopeRegistry;
+
+export const CHAT_SCOPES = Object.freeze(
+  Object.keys(chatScopeRegistry) as ChatScope[],
+);
 
 export interface ScopeSessionKey {
   /** scene/folder: anchor node。project: null (= node_id IS NULL)。それ以外: undefined */
   nodeId: string | null | undefined;
   codexAnchorId: string | undefined;
   snippetAnchorId: string | undefined;
+}
+
+export function scopeSessionKeysEqual(
+  left: ScopeSessionKey,
+  right: ScopeSessionKey,
+): boolean {
+  return (
+    left.nodeId === right.nodeId &&
+    left.codexAnchorId === right.codexAnchorId &&
+    left.snippetAnchorId === right.snippetAnchorId
+  );
 }
 
 export function resolveScopeSessionKey(

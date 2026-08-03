@@ -146,6 +146,13 @@ export interface TrimResult {
 
 export interface BuildSystemPromptInput {
   scene: SceneContext;
+  /**
+   * Live ContextBar refreshes are a display cache, never a provider payload.
+   * They may use the same conservative estimator as the tokenizer-unavailable
+   * fallback so a long scene cannot monopolize the renderer main thread.
+   * Send/copy/preview callers must keep the default exact mode.
+   */
+  tokenCountingMode?: "exact" | "live-estimate";
   /** Immutable turn/request identity attached to the typed ContextPlan only. */
   contextRequestId?: string;
   /** Explicit temporal provenance for typed context items. Non-scene scopes
@@ -544,6 +551,93 @@ export async function ensureTokenizer(): Promise<void> {
 const _tokenCache = new Map<string, number>();
 const _TOKEN_CACHE_MAX = 500;
 
+type ActiveTokenCountingMode = "exact" | "live-estimate";
+let _activeTokenCountingMode: ActiveTokenCountingMode = "exact";
+
+function isEstimatedBmpCjk(codeUnit: number): boolean {
+  return (
+    (codeUnit >= 0x3000 && codeUnit <= 0x30ff) ||
+    (codeUnit >= 0x3400 && codeUnit <= 0x9fff) ||
+    (codeUnit >= 0xf900 && codeUnit <= 0xfaff) ||
+    (codeUnit >= 0xff00 && codeUnit <= 0xffef)
+  );
+}
+
+/**
+ * Conservative live token estimate used by ContextBar-only refreshes.
+ *
+ * Keep this byte-for-byte equivalent to the previous Unicode regexp count.
+ * `String#match(/.../gu)` materialized one array entry per CJK code point,
+ * which allocated a 200k-element array every time a long Japanese scene was
+ * measured (and L3 trimming measures several candidates). Walking UTF-16 once
+ * avoids that allocation while retaining the historical astral-character
+ * accounting: an Ext-B code point counts as one CJK character plus one
+ * remaining UTF-16 code unit in the ASCII `/ 3` term below.
+ */
+export function estimateTokens(text: string): number {
+  let cjkCount = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const codeUnit = text.charCodeAt(index);
+    if (isEstimatedBmpCjk(codeUnit)) {
+      cjkCount += 1;
+      continue;
+    }
+    if (codeUnit >= 0xd840 && codeUnit <= 0xd87f && index + 1 < text.length) {
+      const lowSurrogate = text.charCodeAt(index + 1);
+      if (lowSurrogate >= 0xdc00 && lowSurrogate <= 0xdfff) {
+        cjkCount += 1;
+        index += 1;
+      }
+    }
+  }
+  return Math.ceil(cjkCount + (text.length - cjkCount) / 3);
+}
+
+/**
+ * Find the longest code-point-aligned suffix that fits the live estimator.
+ *
+ * `estimateTokens` is `ceil((utf16Length + 2 * cjkCount) / 3)`, so a suffix
+ * fits an integer token budget exactly when its accumulated estimator units
+ * fit `budget * 3`. Scanning those units once from the tail avoids allocating
+ * a code-point array and rebuilding O(log n) candidate suffix strings.
+ */
+function findLiveEstimateSuffixStart(
+  text: string,
+  targetTokens: number,
+): number {
+  const maxUnits = Math.floor(targetTokens) * 3;
+  let usedUnits = 0;
+  let suffixStart = text.length;
+
+  while (suffixStart > 0) {
+    const trailingCodeUnit = text.charCodeAt(suffixStart - 1);
+    let nextStart = suffixStart - 1;
+    let utf16Length = 1;
+    let isCjk = isEstimatedBmpCjk(trailingCodeUnit);
+
+    if (
+      trailingCodeUnit >= 0xdc00 &&
+      trailingCodeUnit <= 0xdfff &&
+      nextStart > 0
+    ) {
+      const leadingCodeUnit = text.charCodeAt(nextStart - 1);
+      if (leadingCodeUnit >= 0xd800 && leadingCodeUnit <= 0xdbff) {
+        nextStart -= 1;
+        utf16Length = 2;
+        isCjk = leadingCodeUnit >= 0xd840 && leadingCodeUnit <= 0xd87f;
+      }
+    }
+
+    const nextUnits = utf16Length + (isCjk ? 2 : 0);
+    if (usedUnits + nextUnits > maxUnits) break;
+
+    usedUnits += nextUnits;
+    suffixStart = nextStart;
+  }
+
+  return suffixStart;
+}
+
 /**
  * TipTap HTMLからAuthorshipMarkのspanタグ（data-authorship属性）を除去する。
  * ルビ・傍点等のHTMLタグは保持する。
@@ -751,6 +845,15 @@ export function trimL3Text(
   const bodyBudget = targetTokens - headerTokens;
 
   // Trim from the front of scene body, keeping the tail.
+  if (_activeTokenCountingMode === "live-estimate") {
+    return (
+      sceneHeader +
+      sceneBody.slice(findLiveEstimateSuffixStart(sceneBody, bodyBudget))
+    );
+  }
+
+  // Provider-bound exact mode deliberately keeps the established BPE search
+  // byte-for-byte; only the non-payload live estimator uses the linear path.
   // Array.from でコードポイント単位に分割する（split("") は UTF-16 コードユニット
   // 単位で astral 文字 = CJK 拡張B漢字・絵文字を境界でサロゲート分割し壊すため）。
   const words = Array.from(sceneBody);
@@ -1038,7 +1141,7 @@ export function trimToFit(
   };
 }
 
-export function buildSystemPrompt(
+function buildSystemPromptWithActiveTokenMode(
   input: BuildSystemPromptInput,
 ): SystemPromptResult {
   const s = getPromptCatalog(input.lang ?? "ja").chatSystem;
@@ -1798,6 +1901,12 @@ export function buildSystemPrompt(
     // author-controlled layers here; speculative layers are commonly removed
     // by this pass, so their wrappers are handled by the final measurement.
     let hardeningOverhead = countTokens(s.dataBoundaryReminder) + 1;
+    if (input.tokenCountingMode === "live-estimate") {
+      // Layer-wise estimates do not model token merges at concatenation
+      // boundaries. Keep the display plan conservatively inside the same
+      // provider budget instead of compensating by widening that budget.
+      hardeningOverhead += 8;
+    }
     if (effectiveL1.trim())
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l1);
     if (effectiveL2.trim())
@@ -2190,14 +2299,29 @@ export function buildSystemPrompt(
   };
 }
 
-// CJK 全角記号・かな・統合漢字・互換漢字・Ext B 以降 (astral 面)。
-// heuristic 専用: o200k で CJK はほぼ 1 文字 ≒ 1 トークンになるため、
-// length/2 では日本語本文のトークン数を半分に過小評価し予算超過を招く。
-const CJK_CHAR_RE =
-  /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{2ffff}]/gu;
+/**
+ * Scope the cheap counter to one synchronous live render. buildSystemPrompt is
+ * intentionally synchronous, so nested calls restore the previous mode and no
+ * async work can observe this module-local switch.
+ */
+export function buildSystemPrompt(
+  input: BuildSystemPromptInput,
+): SystemPromptResult {
+  const previousMode = _activeTokenCountingMode;
+  _activeTokenCountingMode = input.tokenCountingMode ?? "exact";
+  try {
+    return buildSystemPromptWithActiveTokenMode(input);
+  } finally {
+    _activeTokenCountingMode = previousMode;
+  }
+}
 
 export function countTokens(text: string): number {
   if (!text) return 0;
+  if (_activeTokenCountingMode === "live-estimate") {
+    // Do not pollute the exact BPE cache with estimates.
+    return estimateTokens(text);
+  }
   const cached = _tokenCache.get(text);
   if (cached !== undefined) return cached;
   let result: number;
@@ -2213,8 +2337,7 @@ export function countTokens(text: string): number {
         "[contextBuilder] countTokens called before ensureTokenizer(); using heuristic.",
       );
     }
-    const cjkCount = text.match(CJK_CHAR_RE)?.length ?? 0;
-    result = Math.ceil(cjkCount + (text.length - cjkCount) / 3);
+    result = estimateTokens(text);
   }
   if (_tokenCache.size >= _TOKEN_CACHE_MAX) {
     _tokenCache.delete(_tokenCache.keys().next().value!);

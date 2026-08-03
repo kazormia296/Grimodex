@@ -1,11 +1,41 @@
 import { describe, expect, it } from "vitest";
 import {
   getEditorTimelapseCapture,
+  isInlineAiSaveBlocked,
   serializeTransactionSteps,
   shouldHandleEditorUpdate,
 } from "./editorEventPolicy";
 
 const editor = {};
+
+describe("isInlineAiSaveBlocked", () => {
+  it("blocks the owning editor until inline AI returns to idle", () => {
+    expect(
+      isInlineAiSaveBlocked({
+        inlineAiStatus: "diffShown",
+        activeEditor: editor,
+        editor,
+      }),
+    ).toBe(true);
+  });
+
+  it("allows idle and non-owner saves", () => {
+    expect(
+      isInlineAiSaveBlocked({
+        inlineAiStatus: "idle",
+        activeEditor: editor,
+        editor,
+      }),
+    ).toBe(false);
+    expect(
+      isInlineAiSaveBlocked({
+        inlineAiStatus: "generating",
+        activeEditor: {},
+        editor,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("shouldHandleEditorUpdate", () => {
   it("requires a document-changing transaction", () => {

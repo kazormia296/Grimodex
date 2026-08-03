@@ -11,6 +11,17 @@ export interface ResolvedTurnRoute {
   apiVariant: string | null;
   toolProtocol: TurnToolProtocol;
   contextWindow: number;
+  /** Provider-advertised model maximum; may differ from a local runtime allocation. */
+  modelContextWindow?: number;
+  /** Whether contextWindow is the effective limit for this exact route. */
+  contextWindowIsEffective?: boolean;
+  /** Diagnostic provenance for contextWindow. */
+  contextWindowSource?: string;
+  /**
+   * An Agent-origin turn that fell back to plain chat still requires an exact
+   * Ollama runner allocation before local validation/HTTP dispatch.
+   */
+  requiresEffectiveOllamaContext?: boolean;
   /** Exact request limit placed on the provider wire for HTTP routes. */
   wireOutputTokens: number;
   /** Internal transport selected for this turn. Legacy fixtures may omit it. */
@@ -94,6 +105,102 @@ export class ContextWindowExceededError extends Error {
     this.overflowTokens = overflowTokens;
     this.usage = usage;
   }
+}
+
+export class OllamaContextWindowUnknownError extends Error {
+  readonly code = "OLLAMA_CONTEXT_WINDOW_UNKNOWN" as const;
+  readonly usage: TurnPayloadUsage;
+  readonly requiredTokens: number;
+  readonly modelContextWindow: number | null;
+
+  constructor(route: ResolvedTurnRoute, usage: TurnPayloadUsage) {
+    const modelMaximumKnown =
+      route.contextWindowSource !== "default" &&
+      Number.isSafeInteger(route.modelContextWindow) &&
+      (route.modelContextWindow ?? 0) > 0;
+    const modelContextWindow = modelMaximumKnown
+      ? (route.modelContextWindow ?? null)
+      : null;
+    const maximumLabel =
+      modelContextWindow === null
+        ? "unknown"
+        : `${modelContextWindow.toLocaleString()} tokens`;
+    super(
+      `Ollama context allocation is unknown for ${route.model}. ` +
+        `This request requires ${usage.reservedTotalTokens.toLocaleString()} tokens; ` +
+        `${formatUsageBreakdown(usage)} The model maximum is ${maximumLabel}. ` +
+        "Load the model so Grimodex can inspect " +
+        "the runner allocation. If automatic detection is unavailable, first set " +
+        "Ollama via Modelfile PARAMETER num_ctx or OLLAMA_CONTEXT_LENGTH and reload " +
+        "the model, then set the Grimodex fallback to that same verified value.",
+    );
+    this.name = "OllamaContextWindowUnknownError";
+    this.usage = usage;
+    this.requiredTokens = usage.reservedTotalTokens;
+    this.modelContextWindow = modelContextWindow;
+  }
+}
+
+export class OllamaContextWindowTooSmallError extends Error {
+  readonly code = "OLLAMA_CONTEXT_WINDOW_TOO_SMALL" as const;
+  readonly usage: TurnPayloadUsage;
+  readonly overflowTokens: number;
+  readonly limitKind: "effective" | "model-maximum";
+  readonly availableContextWindow: number;
+  readonly modelContextWindow: number | null;
+
+  constructor(
+    route: ResolvedTurnRoute,
+    usage: TurnPayloadUsage,
+    limitKind: "effective" | "model-maximum",
+  ) {
+    const overflowTokens = Math.max(0, -usage.remainingTokens);
+    const modelContextWindow =
+      Number.isSafeInteger(route.modelContextWindow) &&
+      (route.modelContextWindow ?? 0) > 0
+        ? (route.modelContextWindow ?? null)
+        : null;
+    const maximumDetail =
+      modelContextWindow === null
+        ? ""
+        : ` (model maximum ${modelContextWindow.toLocaleString()})`;
+    const remedy =
+      limitKind === "effective"
+        ? "Increase Ollama via Modelfile PARAMETER num_ctx or OLLAMA_CONTEXT_LENGTH, " +
+          "reload the model, then refresh Grimodex. Only set the Grimodex fallback " +
+          "to the same verified effective value."
+        : "Use a model with a larger context window or reduce the Agent payload.";
+    super(
+      `Ollama ${limitKind === "effective" ? "effective" : "model maximum"} ` +
+        `context window is ${route.contextWindow.toLocaleString()} tokens${maximumDetail}, ` +
+        `but this request requires ${usage.reservedTotalTokens.toLocaleString()} tokens. ` +
+        `${formatUsageBreakdown(usage)} ${remedy}`,
+    );
+    this.name = "OllamaContextWindowTooSmallError";
+    this.usage = usage;
+    this.overflowTokens = overflowTokens;
+    this.limitKind = limitKind;
+    this.availableContextWindow = route.contextWindow;
+    this.modelContextWindow = modelContextWindow;
+  }
+}
+
+function formatUsageBreakdown(usage: TurnPayloadUsage): string {
+  const promptAndHistory = usage.systemTokens + usage.conversationTokens;
+  const parts = [
+    `prompt/history ${promptAndHistory.toLocaleString()}`,
+    ...(usage.toolTokens > 0
+      ? [`Agent tools ${usage.toolTokens.toLocaleString()}`]
+      : []),
+    ...(usage.envelopeTokens > 0
+      ? [`message framing ${usage.envelopeTokens.toLocaleString()}`]
+      : []),
+    `output reserve ${usage.outputReservedTokens.toLocaleString()}`,
+    ...(usage.safetyMarginTokens > 0
+      ? [`safety margin ${usage.safetyMarginTokens.toLocaleString()}`]
+      : []),
+  ];
+  return `Breakdown: ${parts.join("; ")}.`;
 }
 
 function requirePositiveSafeInteger(value: number, name: string): void {
@@ -231,6 +338,35 @@ export function finalizeTurnPayload(
     (input.system.cacheSegments ?? []).filter(Boolean).length > 4
   ) {
     cacheDowngradeReason = "too-many-blocks";
+  }
+
+  if (input.route.provider === "ollama") {
+    if (input.route.contextWindowIsEffective === false) {
+      if (
+        usage.remainingTokens < 0 &&
+        input.route.contextWindowSource === "model-maximum"
+      ) {
+        throw new OllamaContextWindowTooSmallError(
+          input.route,
+          usage,
+          "model-maximum",
+        );
+      }
+      // A model maximum is never evidence of the allocation used by the
+      // OpenAI-compatible Ollama runner. Both plain and Agent requests must use
+      // `/api/ps`, Modelfile `num_ctx`, or the explicit verified fallback.
+      throw new OllamaContextWindowUnknownError(input.route, usage);
+    }
+    if (
+      input.route.contextWindowIsEffective === true &&
+      usage.remainingTokens < 0
+    ) {
+      throw new OllamaContextWindowTooSmallError(
+        input.route,
+        usage,
+        "effective",
+      );
+    }
   }
 
   if (usage.remainingTokens < 0) {

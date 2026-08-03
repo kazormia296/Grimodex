@@ -4,30 +4,52 @@ import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
-import { flushAllAutoSaves } from "@/hooks/useAutoSave";
-import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
 import {
-  flushNow as flushTimelapseRecorder,
   beginWorkspaceSwitch,
   endWorkspaceSwitch,
 } from "@/features/timelapse/recorder";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
-import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
-import { loadAndSyncChronicleSettings } from "@/features/chronicle/chronicleStore";
-import { useMapStore } from "@/features/map/mapStore";
-import { useGridStore } from "@/features/grid/gridStore";
 import {
-  useProjectStore,
-  getCurrentProjectId,
-} from "@/features/project/projectStore";
+  ensureProjectActive,
+  hydrateWorkspaceProject,
+  initializeWorkspaceProject,
+  invalidateWorkspaceProjectLoads,
+} from "@/application/project/workspaceProjectCommands";
 import { toast } from "sonner";
-import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
-import { cancelScheduledImeExports } from "@/features/ime/scheduler";
 import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
+import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
+import {
+  acquireQuiescenceLease,
+  type QuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import { clearRetainedEditorRecoveryDraftsForScopeChange } from "@/features/editor/editorSaveRegistry";
+import {
+  acquireWorkspaceProjectLoadLease,
+  type WorkspaceProjectLoadLease,
+} from "@/features/project/projectLoadGate";
+import { hydrateWorkspaceStores } from "@/application/workspace/workspaceHydration";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { cancelWorkspaceScopedSchedules } from "@/application/workspace/workspaceScheduleQuiescence";
+import {
+  beginWorkspaceOpenRequest,
+  runWorkspaceOpenRequest,
+  type WorkspaceOpenOutcome,
+} from "./workspaceOpenRequest";
+import {
+  beginWorkspaceOpenTrace,
+  getActiveWorkspaceOpenTrace,
+  type WorkspaceOpenTraceSource,
+} from "./workspaceOpenTrace";
+import { initializeWorkspaceStore } from "./workspaceInitialization";
+import {
+  createWorkspaceOpenProjectLifecycleTiming,
+  runWorkspaceOpenTraceStep,
+  setWorkspaceOpenTraceTarget,
+  startRuntimeCompositionTrace,
+} from "./workspaceOpenTraceIntegration";
 
 export type {
   GlobalSettings,
@@ -36,15 +58,21 @@ export type {
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
 
+export type { WorkspaceOpenOutcome } from "./workspaceOpenRequest";
+
 interface OpenWorkspaceResult {
   name: string;
   isExisting: boolean;
+  /** Stable UUID from `.grimodex/workspace.json` (missing only on an old backend). */
+  workspaceId?: string;
 }
 
-interface WorkspaceState {
+export interface WorkspaceState {
   view: AppView;
   globalSettings: GlobalSettings | null;
   activeWorkspacePath: string | null;
+  /** Stable persisted Workspace identity; unlike openRevision, survives restarts. */
+  activeWorkspaceId: string | null;
   /**
    * In-memory identity for the currently opened DB instance. Incremented on
    * every successful open, including a same-path reopen after sample reseed or
@@ -53,6 +81,8 @@ interface WorkspaceState {
   workspaceOpenRevision: number;
   /** True from pre-open quiesce until all post-swap store hydration settles. */
   workspaceSwitchInProgress: boolean;
+  /** True from the first path validation until that user request settles. */
+  workspaceOpenRequestInProgress: boolean;
   /** True only after the active DB's project/settings hydration completed. */
   workspaceHydrated: boolean;
   activeWorkspaceName: string | null;
@@ -62,9 +92,18 @@ interface WorkspaceState {
   showSampleTour: boolean;
 
   initialize: () => Promise<void>;
-  openWorkspace: (path: string) => Promise<void>;
-  requestOpenWorkspace: (path: string) => Promise<void>;
-  openRecentWorkspace: (path: string) => Promise<void>;
+  openWorkspace: (
+    path: string,
+    source?: WorkspaceOpenTraceSource,
+  ) => Promise<WorkspaceOpenOutcome>;
+  requestOpenWorkspace: (
+    path: string,
+    source?: WorkspaceOpenTraceSource,
+  ) => Promise<void>;
+  openRecentWorkspace: (
+    path: string,
+    source?: WorkspaceOpenTraceSource,
+  ) => Promise<void>;
   trustAndOpen: () => Promise<void>;
   cancelTrust: () => void;
   // 保存成否を返す（true=永続化成功 / false=失敗してリバート済み）。fire-and-forget
@@ -79,91 +118,25 @@ interface WorkspaceState {
   seedAndOpenSample: (language: string, aiPolicy: string) => Promise<void>;
 }
 
-/**
- * openWorkspace の JS 側 in-flight ガード。連打で open_workspace が Rust の
- * open_lock 待ちに積まれるのと、quiesce / recorder suspend の多重実行を防ぐ。
- */
 let openWorkspaceInFlight = false;
 
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   view: "loading",
   globalSettings: null,
   activeWorkspacePath: null,
+  activeWorkspaceId: null,
   workspaceOpenRevision: 0,
   workspaceSwitchInProgress: false,
+  workspaceOpenRequestInProgress: false,
   workspaceHydrated: false,
   activeWorkspaceName: null,
   error: null,
   pendingTrustPath: null,
   showSampleTour: false,
 
-  initialize: async () => {
-    try {
-      let settings = await globalSettingsRepository.read();
-      set({ globalSettings: settings });
+  initialize: () => initializeWorkspaceStore(get, set),
 
-      // Migration: trust all existing recent workspaces for existing users
-      if (
-        settings.recentWorkspaces.length > 0 &&
-        (!settings.trustedWorkspaces || settings.trustedWorkspaces.length === 0)
-      ) {
-        const trusted = settings.recentWorkspaces.map((ws) => ws.path);
-        const migrated = { ...settings, trustedWorkspaces: trusted };
-        await globalSettingsRepository.write(migrated);
-        settings = migrated;
-        set({ globalSettings: settings });
-      }
-
-      // フローティング パネル窓は main 窓と同じワークスペースに追従する。
-      // welcome/launcher の好みは無視し、最後に開いていたワークスペース
-      // （= main 窓が開いているもの）を直接開いて editor へ。
-      if (isPanelWindow() && settings.lastActiveWorkspace) {
-        const valid = await invoke<boolean>("validate_workspace_path", {
-          path: settings.lastActiveWorkspace,
-        });
-        if (valid) {
-          await get().requestOpenWorkspace(settings.lastActiveWorkspace);
-          if (get().view === "loading") set({ view: "launcher" });
-          return;
-        }
-      }
-
-      // No workspaces at all → welcome screen
-      if (settings.recentWorkspaces.length === 0) {
-        set({ view: "welcome" });
-        return;
-      }
-
-      // User prefers launcher on startup
-      if (settings.showLauncherOnStartup) {
-        set({ view: "launcher" });
-        return;
-      }
-
-      // Try to open last active workspace
-      if (settings.lastActiveWorkspace) {
-        const valid = await invoke<boolean>("validate_workspace_path", {
-          path: settings.lastActiveWorkspace,
-        });
-        if (valid) {
-          await get().requestOpenWorkspace(settings.lastActiveWorkspace);
-          // Defensive: if requestOpenWorkspace failed internally, don't stay on loading
-          if (get().view === "loading") {
-            set({ view: "launcher" });
-          }
-          return;
-        }
-      }
-
-      // Last workspace invalid → launcher
-      set({ view: "launcher" });
-    } catch {
-      // On any error, show welcome (fresh start)
-      set({ view: "welcome", globalSettings: null });
-    }
-  },
-
-  openWorkspace: async (path: string) => {
+  openWorkspace: async (path: string, source = "direct") => {
     // 連打・多重呼び出しの in-flight ガード (Rust 側は open_lock で直列化
     // されるが、JS 側でも二重 open のキュー積みと quiesce の多重実行を防ぐ)。
     if (openWorkspaceInFlight) {
@@ -173,44 +146,74 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         path,
       );
       toast.info(i18next.t("workspace.openInProgress"));
-      return;
+      return "in-progress";
+    }
+    const trace =
+      getActiveWorkspaceOpenTrace() ?? beginWorkspaceOpenTrace(source);
+    if (guardInlineAiPending()) {
+      trace.fail();
+      return "blocked";
     }
     openWorkspaceInFlight = true;
-    // R4-1 系列A 検出用: 「エディタ表示中の同一パス再オープン」は
-    // EditorScreen の key (activeWorkspacePath) が変わらず remount しない。
-    const wasSamePathReopen =
-      get().view === "editor" && get().activeWorkspacePath === path;
     const previousWorkspaceHydrated = get().workspaceHydrated;
     const previousImeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
+    const previousProjectId = getCurrentProjectId();
     let swapDone = false;
+    let openResult: OpenWorkspaceResult | null = null;
+    let targetOpenRevision: number | null = null;
+    let targetSettings: GlobalSettings | null = null;
+    let projectLoadLease: WorkspaceProjectLoadLease | null = null;
+    let quiescenceLease: QuiescenceLease | null = null;
     try {
+      quiescenceLease = acquireQuiescenceLease("workspace-open", {
+        transition: {
+          kind: "workspace",
+          from: {
+            workspacePath: get().activeWorkspacePath,
+            workspaceOpenRevision: get().workspaceOpenRevision,
+            projectId: previousProjectId,
+          },
+          to: {
+            workspacePath: path,
+            workspaceOpenRevision: null,
+            projectId: null,
+          },
+        },
+      });
       // Debounced snapshot writes carry the old Project id. Stop them before
       // any await so they cannot wake up against the replacement database.
-      cancelScheduledImeExports();
-      setCurrentImeWorkspaceIdentity(null);
+      cancelWorkspaceScopedSchedules();
       set({
         error: null,
         workspaceSwitchInProgress: true,
         workspaceHydrated: false,
       });
+      // Exclude new Project loads, invalidate every load bound to the old DB,
+      // and await the complete load operation before quiescing/switching. The
+      // lease remains held through initCurrentProject + identity publication.
+      projectLoadLease = await runWorkspaceOpenTraceStep(
+        trace,
+        "project-load-gate",
+        () => acquireWorkspaceProjectLoadLease(invalidateWorkspaceProjectLoads),
+      );
       // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
       // swap を跨いだ in-flight write が旧 workspace の内容を新 workspace の
       // DB に落とさないよう、切替前に書き込みを静止させる:
       // (a) マウント中の全 AutoSave を flush、(b) pending scene write の完了
-      // 待ち、(c) timelapse recorder の flush。ここで save が失敗しても既存の
-      // 失敗 toast + dirty 維持 (リトライ) に任せ、切替自体は続行する
-      // (Rust 側の switching ガードが最後の砦)。
-      try {
-        await flushAllAutoSaves();
-        await awaitAllPendingSceneWrites();
-        await flushTimelapseRecorder();
-      } catch (e) {
-        debugLog.warn(
-          "workspaceStore",
-          "pre-switch quiesce failed; proceeding with switch",
-          errorDetail(e),
-        );
-      }
+      // 待ち、(c) timelapse recorder の flush。1 件でも失敗した場合は例外を
+      // outer catch へ伝え、native open_workspace より前に切替を中断する。
+      // 旧 DB/UI binding と dirty editor はそのまま維持される。
+      await runWorkspaceOpenTraceStep(trace, "strict-quiescence", () =>
+        flushStrictQuiescence(undefined, {
+          transition: quiescenceLease?.transition,
+        }),
+      );
+      clearRetainedEditorRecoveryDraftsForScopeChange();
+      // Existing Project lifecycles and every old-scope persistence surface
+      // have now settled. Keep the old identity published until this point so
+      // an interrupted create/update can complete or roll back against the
+      // database it actually owns; only the native swap window is unbound.
+      setCurrentImeWorkspaceIdentity(null);
       // 切替開始 (r5 状態機械): recorder のキュー破棄 + 束縛無効化。切替中の
       // flush 再試行が open 完了後に新 workspace の hash chain へ旧イベントを
       // 混入させるのを防ぐ (C1)。記録の再開は「命令」ではなく、正規 rebind
@@ -227,116 +230,149 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // 束縛を書けるが、その init は swap 済みの新 DB から tail を読むため
       // 「旧 workspace の束縛で新 chain に書く」誤束縛にはならない。
       beginWorkspaceSwitch();
-      let result: OpenWorkspaceResult;
       try {
-        result = await invoke<OpenWorkspaceResult>("open_workspace", {
-          path,
-        });
-        // swap 完了。Rust 側 open_workspace は swap 以降 infallible
-        // (src-tauri/src/commands/workspace.rs の不変条件コメント参照) なので
-        // 「invoke エラー ⟹ swap 未実行」が成立し、下の restoreBinding 判定が
-        // 安全になる。
+        // Runtime benchmark origin: native workspace open starts here. The
+        // consumer ends the interval only after a seeded scene is visible, so
+        // this cannot accidentally regress to measuring bridge/header readiness.
+        performance.mark("grimodex.workspaceOpen.start");
+        const compositionReady = startRuntimeCompositionTrace(trace);
+        void compositionReady.catch(() => undefined);
+        openResult = await runWorkspaceOpenTraceStep(trace, "native-ipc", () =>
+          invoke<OpenWorkspaceResult>("open_workspace", {
+            path,
+          }),
+        );
         swapDone = true;
+        targetOpenRevision = get().workspaceOpenRevision + 1;
+        await compositionReady;
       } finally {
         // swap 未実行の失敗 = 旧 workspace 続行なので旧束縛は依然正しい →
         // 復元して記録をそのまま再開する。swap 済みなら束縛は無効のまま =
         // 正規 rebind (initRecorderForProject) の完了だけが記録を再開する。
         endWorkspaceSwitch({ restoreBinding: !swapDone });
       }
+      if (!openResult || targetOpenRevision === null) {
+        throw new Error("Workspace swap completed without target identity");
+      }
+      const result = openResult;
+      const nextOpenRevision = targetOpenRevision;
+      // The native binding now points at the target Workspace and the old UI
+      // remains semantically unavailable. Permit this controlled target
+      // hydration phase; reads are sealed again before identity publication.
+      quiescenceLease.openTargetReadPhase();
       // Resolve the current Project before the editor view renders so that
       // panels reading currentProjectId have a value to work with.
-      await useProjectStore.getState().initCurrentProject();
+      const projectId = await runWorkspaceOpenTraceStep(
+        trace,
+        "project-resolution",
+        initializeWorkspaceProject,
+      );
       // Re-read global settings after open_workspace updated them
-      const settings = await globalSettingsRepository.read();
-      // Publish path + DB revision only after currentProjectId is rebound. The
-      // editor is keyed by activeWorkspacePath, so exposing the new path before
-      // initCurrentProject would mount the new DB with the old project's state.
-      set((state) => ({
-        view: "editor",
-        activeWorkspacePath: path,
-        workspaceOpenRevision: state.workspaceOpenRevision + 1,
-        activeWorkspaceName: result.name,
-        globalSettings: settings,
-        workspaceSwitchInProgress: false,
-        workspaceHydrated: true,
-      }));
+      const settings = await runWorkspaceOpenTraceStep(
+        trace,
+        "settings-reread",
+        () => globalSettingsRepository.read(),
+      );
+      targetSettings = settings;
+      await runWorkspaceOpenTraceStep(trace, "workspace-hydration", () =>
+        hydrateWorkspaceStores({
+          projectId,
+          settings,
+          isExisting: result.isExisting,
+        }),
+      );
+      if (!projectLoadLease) {
+        throw new Error("Workspace Project-load lease was released too early");
+      }
+      // Hydrate the replacement Project for every Workspace open while the
+      // Workspace-owned gate still excludes user Project switches. This path
+      // deliberately skips a second strict flush: the old UI was drained
+      // before native open, and flushing it after the swap could write stale
+      // content into the replacement database.
+      await hydrateWorkspaceProject(
+        projectId,
+        projectLoadLease.projectLoadContext,
+        nextOpenRevision,
+        createWorkspaceOpenProjectLifecycleTiming(trace),
+      );
+      setWorkspaceOpenTraceTarget(trace, {
+        projectId,
+        workspacePath: path,
+        workspaceOpenRevision: nextOpenRevision,
+      });
+      const authorityPublishSpan = trace.startSpan("authority-publish");
+      quiescenceLease.transition?.updateTarget({
+        workspaceOpenRevision: nextOpenRevision,
+        projectId,
+      });
+      // Publish identity/ready only after Project critical snapshots and every
+      // other mandatory Workspace surface have committed. The gate stays held
+      // through this publication, so a queued Project load cannot supersede
+      // the mandatory hydrate in between.
+      quiescenceLease.sealReadsForAuthorityCommit();
       setCurrentImeWorkspaceIdentity({
         path,
-        openRevision: get().workspaceOpenRevision,
+        openRevision: nextOpenRevision,
       });
-      // Migrate app_settings → userPreferences + project_settings (runs once per workspace)
-      const {
-        migrateAppSettingsToScopedStores,
-        migrateModelRoleKeys,
-        removeRetiredDisplaySettings,
-        seedProjectSettingsFromDefaults,
-      } = await import("@/features/settings/migration");
-      await migrateAppSettingsToScopedStores();
-      await removeRetiredDisplaySettings();
-      await migrateModelRoleKeys();
-      // Seed project defaults for brand-new workspaces
-      if (!result.isExisting) {
-        await seedProjectSettingsFromDefaults();
-      }
-      // Load persisted editor settings and apply to runtime stores
-      await useSettingsStore.getState().loadAll();
-      useCursorSettingsStore.getState().initFromSettings();
-      {
-        const { useCodexHighlightStore } =
-          await import("@/features/editor/codexHighlightStore");
-        useCodexHighlightStore.getState().initFromSettings();
-        // 本文レイヤーの表示トグル (帰属 / 校閲) も設定から復元する
-        const { useAttributionStore } =
-          await import("@/features/attribution/attributionStore");
-        useAttributionStore.getState().initFromSettings();
-        const { useAnnotationStore } =
-          await import("@/features/post-effect/annotationStore");
-        useAnnotationStore.getState().initFromSettings();
-      }
-      // Lint config depends on settings being loaded first.
-      const { useLintConfigStore } =
-        await import("@/features/lint/lintConfigStore");
-      useLintConfigStore.getState().load();
-      if (settings.timeline) {
-        loadAndSyncTimelineSettings(settings.timeline);
-      }
-      if (settings.chronicle) {
-        loadAndSyncChronicleSettings(settings.chronicle);
-      }
-      useMapStore.getState().loadFromSettings(settings);
-      useGridStore.getState().loadFromSettings(settings);
-      const { useMatrixStore } = await import("@/features/matrix/matrixStore");
-      useMatrixStore.getState().loadFromSettings(settings);
-      // R4-1 系列A: 同一パスの再オープン (例: チュートリアル再実行 = seed で
-      // DB を作り直して同じ path を open) では EditorScreen が remount せず、
-      // mount 時の loadProject (正規 rebind の唯一の経路) が走らない。ここで
-      // 明示的に再ロードする。loadProject は再実行安全: generation ガードが
-      // 外部フィードの多重購読を防ぎ、reloadProjectData が in-memory 状態を
-      // 作り直す。切替は上で終了済みなので、この rebind は bystander 扱い
-      // されず束縛を書ける。
-      if (wasSamePathReopen) {
-        await useProjectStore.getState().loadProject(getCurrentProjectId());
-      }
+      set({
+        view: "editor",
+        activeWorkspacePath: path,
+        // Keep an old native binding usable during a rolling development
+        // upgrade. Current backends always return workspaceId.
+        activeWorkspaceId: result.workspaceId ?? path,
+        workspaceOpenRevision: nextOpenRevision,
+        activeWorkspaceName: result.name,
+        globalSettings: settings,
+        workspaceHydrated: false,
+      });
+      quiescenceLease.transition?.advance("authority-commit");
+      set({
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: true,
+      });
+      quiescenceLease.transition?.advance("new-scope-hydrated");
+      authorityPublishSpan.finish();
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
+      return "opened";
     } catch (e) {
+      trace.fail();
       // open 失敗時も recorder への命令的な復帰はしない (r5)。束縛の扱いは
       // swap を括る endWorkspaceSwitch({restoreBinding}) が一元的に決めた。
       // swap 後の後続処理の失敗では束縛は無効のまま = 次の正規 rebind まで
       // イベントは warn 付きで破棄される (誤束縛での混入より安全側)。
-      set({
-        error: e instanceof Error ? e.message : String(e),
+      const error = e instanceof Error ? e.message : String(e);
+      if (swapDone && openResult && targetOpenRevision !== null) {
+        // Native authority has already changed. Publish the target session's
+        // metadata even though hydration failed, so every renderer guard sees
+        // a new DB generation instead of presenting the previous Workspace as
+        // active. Identity remains null and hydration false until a retry.
+        set({
+          view: "launcher",
+          activeWorkspacePath: path,
+          activeWorkspaceId: openResult.workspaceId ?? path,
+          workspaceOpenRevision: targetOpenRevision,
+          activeWorkspaceName: openResult.name,
+          ...(targetSettings ? { globalSettings: targetSettings } : {}),
+          error,
+          workspaceHydrated: false,
+        });
+      } else {
         // Native open rejected before swap: the previous DB/UI binding remains
-        // valid, so restore its semantic-ready state. A post-swap hydration
-        // failure must stay false to avoid issuing commands through stale UI.
-        ...(!swapDone ? { workspaceHydrated: previousWorkspaceHydrated } : {}),
-        // If still on loading screen (called from initialize), recover to launcher
-        ...(get().view === "loading" ? { view: "launcher" as const } : {}),
-      });
+        // valid, so restore its semantic-ready state.
+        set({
+          error,
+          workspaceHydrated: previousWorkspaceHydrated,
+          ...(get().view === "loading" ? { view: "launcher" as const } : {}),
+        });
+      }
       if (!swapDone && previousWorkspaceHydrated) {
         setCurrentImeWorkspaceIdentity(previousImeWorkspaceIdentity);
       }
+      return "failed";
     } finally {
+      projectLoadLease?.release();
+      quiescenceLease?.release();
       if (get().workspaceSwitchInProgress) {
         set({ workspaceSwitchInProgress: false });
       }
@@ -344,65 +380,49 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     }
   },
 
-  async requestOpenWorkspace(path: string) {
-    const isExisting = await invoke<boolean>("validate_workspace_path", {
-      path,
-    });
-    if (!isExisting) {
-      // New workspace — open first (creates DB, updates recentWorkspaces)
-      await get().openWorkspace(path);
-      // Add to trusted list so next launch skips the trust dialog
-      const currentTrusted = get().globalSettings?.trustedWorkspaces ?? [];
-      if (!currentTrusted.includes(path)) {
-        await get().updateGlobalSettings({
-          trustedWorkspaces: [...currentTrusted, path],
-        });
-      }
-      return;
-    }
-    // Existing workspace — check trust list
-    const settings = get().globalSettings;
-    const trusted = settings?.trustedWorkspaces ?? [];
-    if (trusted.includes(path)) {
-      await get().openWorkspace(path);
-    } else {
-      set({ pendingTrustPath: path });
-    }
+  async requestOpenWorkspace(path: string, source = "folder-picker") {
+    await runWorkspaceOpenRequest({ path, recent: false, source }, get, set);
   },
 
   async trustAndOpen() {
     const path = get().pendingTrustPath;
     if (!path) return;
-    const settings = get().globalSettings;
-    const trusted = settings?.trustedWorkspaces ?? [];
-    await get().updateGlobalSettings({
-      trustedWorkspaces: [...trusted, path],
-    });
-    set({ pendingTrustPath: null });
-    await get().openWorkspace(path);
+    const finish = beginWorkspaceOpenRequest(path, (inProgress) =>
+      set({ workspaceOpenRequestInProgress: inProgress }),
+    );
+    if (!finish) return;
+    const trace = beginWorkspaceOpenTrace("trust-confirmed");
+    try {
+      const trusted = get().globalSettings?.trustedWorkspaces ?? [];
+      const saved = await get().updateGlobalSettings({
+        trustedWorkspaces: [...trusted, path],
+      });
+      if (!saved) {
+        trace.fail();
+        return;
+      }
+      set({ pendingTrustPath: null });
+      const outcome = await get().openWorkspace(path, "trust-confirmed");
+      if (outcome !== "opened") trace.fail();
+    } catch (error) {
+      trace.fail();
+      debugLog.error(
+        "workspaceStore",
+        "trusted workspace open failed",
+        errorDetail(error),
+      );
+      set({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      finish();
+    }
   },
 
   cancelTrust() {
     set({ pendingTrustPath: null });
   },
 
-  async openRecentWorkspace(path: string) {
-    const isValid = await invoke<boolean>("validate_workspace_path", { path });
-    if (!isValid) {
-      const current = get().globalSettings;
-      if (current) {
-        await get().updateGlobalSettings({
-          recentWorkspaces: current.recentWorkspaces.filter(
-            (ws) => ws.path !== path,
-          ),
-        });
-      }
-      set({
-        error: i18next.t("workspace.invalidPath", { path }),
-      });
-      return;
-    }
-    await get().requestOpenWorkspace(path);
+  async openRecentWorkspace(path: string, source = "direct") {
+    await runWorkspaceOpenRequest({ path, recent: true, source }, get, set);
   },
 
   async updateGlobalSettings(updates: Partial<GlobalSettings>) {
@@ -522,11 +542,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           trustedWorkspaces: nextTrusted,
         });
       }
-      await get().openWorkspace(result.path);
-      if (useProjectStore.getState().currentProjectId !== result.projectId) {
-        await useProjectStore.getState().loadProject(result.projectId);
+      const openOutcome = await get().openWorkspace(result.path);
+      if (openOutcome !== "opened") {
+        throw new Error(`Tutorial workspace open ${openOutcome}`);
       }
-      if (useProjectStore.getState().currentProjectId !== result.projectId) {
+      if (!(await ensureProjectActive(result.projectId))) {
         throw new Error("Tutorial project did not become active");
       }
       set({ showSampleTour: true });

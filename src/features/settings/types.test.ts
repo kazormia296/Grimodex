@@ -54,6 +54,16 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — chat episodic recall toggle", () => {
   });
 });
 
+describe("DEFAULT_SETTINGS / KEY_SCOPE — semantic reranker opt-in", () => {
+  it("ai.semanticReranker is project-scoped", () => {
+    expect(KEY_SCOPE["ai.semanticReranker"]).toBe("project");
+  });
+
+  it("ai.semanticReranker is disabled by default", () => {
+    expect(DEFAULT_SETTINGS["ai.semanticReranker"]).toBe("false");
+  });
+});
+
 describe("DEFAULT_SETTINGS / KEY_SCOPE — IME integration Phase 2", () => {
   it("IME settings are global user preferences", () => {
     expect(KEY_SCOPE["ime.integrationMode"]).toBe("global");

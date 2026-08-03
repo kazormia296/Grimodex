@@ -66,8 +66,11 @@ ipcRenderer.on(IPC.event, (_event, channel: unknown, payload: unknown) => {
   for (const cb of [...set]) {
     try {
       cb(payload);
-    } catch (e) {
-      console.error(`[grimodex] event listener failed (${channel}):`, e);
+    } catch {
+      // Renderer callbacks may throw document-derived values. Keep the
+      // allowlisted channel for diagnosis, but never forward the thrown value
+      // across this production console boundary.
+      console.error(`[grimodex] event listener failed (${channel})`);
     }
   }
 });
@@ -90,9 +93,11 @@ ipcRenderer.on(IPC.closeRequested, () => {
   for (const cb of [...closeHandlers]) {
     try {
       veto = cb() || veto;
-    } catch (e) {
+    } catch {
       // ハンドラ例外で窓が閉じられなくなる事故を避ける（veto しない側に倒す）
-      console.error("[grimodex] close-requested handler failed:", e);
+      // Error.message / cause can contain document text or local paths. The
+      // preload boundary reports only a fixed operation/outcome label.
+      console.error("[grimodex] close-requested handler failed");
     }
   }
   ipcRenderer.send(IPC.closeReply, { veto });
@@ -106,8 +111,8 @@ ipcRenderer.on(IPC.windowResized, () => {
   for (const cb of [...resizeHandlers]) {
     try {
       cb();
-    } catch (e) {
-      console.error("[grimodex] resize handler failed:", e);
+    } catch {
+      console.error("[grimodex] resize handler failed");
     }
   }
 });
@@ -126,8 +131,21 @@ function assertAllowedRendererEventChannel(channel: string): void {
   }
 }
 
+const runtimePerformanceOwnerToken =
+  process.env.GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN;
+const runtimePerformanceCapability =
+  typeof runtimePerformanceOwnerToken === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    runtimePerformanceOwnerToken,
+  )
+    ? Object.freeze({ ownerToken: runtimePerformanceOwnerToken })
+    : null;
+
 const bridge = {
   shell: "electron" as const,
+  ...(runtimePerformanceCapability
+    ? { runtimePerformance: runtimePerformanceCapability }
+    : {}),
 
   invoke(cmd: string, args?: Record<string, unknown>): Promise<Envelope> {
     return ipcRenderer.invoke(IPC.invoke, cmd, args) as Promise<Envelope>;

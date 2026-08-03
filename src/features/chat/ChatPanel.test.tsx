@@ -8,6 +8,7 @@ import {
   enqueueCodexApproval,
   removeCodexApproval,
   removeCodexApprovalsForTurn,
+  saveChatScopeBeforeSend,
   selectSceneFromChat,
   type CodexApproval,
 } from "./ChatPanel";
@@ -20,6 +21,10 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useProjectStore } from "@/features/project/projectStore";
+import {
+  registerSaveHandler,
+  unregisterSaveHandler,
+} from "@/features/editor/editorSaveRegistry";
 
 // ChatInput を軽量なtextareaモックで置換（TipTapはhappy-domで動作不安定なため）
 vi.mock("./components/ChatInput", async () => {
@@ -30,7 +35,7 @@ vi.mock("./components/ChatInput", async () => {
         onSend,
         disabled,
       }: {
-        onSend: (markdown: string) => void;
+        onSend: (markdown: string) => Promise<boolean>;
         disabled?: boolean;
       }) => {
         const [val, setVal] = useState("");
@@ -42,12 +47,12 @@ vi.mock("./components/ChatInput", async () => {
               value={val}
               disabled={isStreaming}
               onChange={(e) => setVal(e.target.value)}
-              onKeyDown={(e) => {
+              onKeyDown={async (e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   if (val.trim() && !isStreaming) {
-                    onSend(val);
-                    setVal("");
+                    const accepted = await onSend(val);
+                    if (accepted) setVal("");
                   }
                 }
               }}
@@ -61,10 +66,10 @@ vi.mock("./components/ChatInput", async () => {
                 type="button"
                 aria-label="送信"
                 disabled={!val.trim()}
-                onClick={() => {
+                onClick={async () => {
                   if (val.trim()) {
-                    onSend(val);
-                    setVal("");
+                    const accepted = await onSend(val);
+                    if (accepted) setVal("");
                   }
                 }}
               >
@@ -132,6 +137,7 @@ vi.mock("./chatApi", () => {
     listPinnedSnippetEntries: vi.fn(() => Promise.resolve([])),
     listPinnedStickyEntries: vi.fn(() => Promise.resolve([])),
     generateSessionTitle: vi.fn(() => Promise.resolve(null)),
+    assertMessageMutationAllowed: vi.fn(),
     updateMessageMetadata: vi.fn(() => Promise.resolve()),
   };
 });
@@ -234,8 +240,11 @@ const mockSendChatMessage = vi.mocked(chatApi.sendChatMessage);
 function resetStore() {
   useChatStore.setState({
     messages: [],
+    streamingDraft: null,
     sessions: [],
     isStreaming: false,
+    isLoadingSessions: false,
+    isLoadingMessages: false,
     error: null,
     chatScope: "scene",
     scopeAnchorId: null,
@@ -258,6 +267,22 @@ describe("ChatPanel", () => {
     render(<ChatPanel />);
     expect(screen.getByRole("textbox")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /送信/i })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["セッション読込中", { isLoadingSessions: true }],
+    ["メッセージ読込中", { isLoadingMessages: true }],
+    ["生成中", { isStreaming: true }],
+  ])("%s は Spotlight trigger を無効化する", (_label, state) => {
+    useChatStore.setState(state);
+
+    render(<ChatPanel />);
+
+    expect(
+      screen.getByRole("button", {
+        name: "Codex/Snippet を Spotlight",
+      }),
+    ).toBeDisabled();
   });
 
   it("renders empty state when no messages", () => {
@@ -328,6 +353,217 @@ describe("ChatPanel", () => {
     });
   });
 
+  it.each([false, true])(
+    "clears an accepted draft after delayed preflight (Agent %s)",
+    async (agentMode) => {
+      const user = userEvent.setup();
+      const originalSendMessage = useChatStore.getState().sendMessage;
+      let releasePreflight!: () => void;
+      const preflight = new Promise<void>((resolve) => {
+        releasePreflight = resolve;
+      });
+      const delayedSend = vi.fn(
+        async (
+          _content: string,
+          _commandInstruction?: string,
+          options?: { _onAccepted?: () => void },
+        ) => {
+          await preflight;
+          options?._onAccepted?.();
+        },
+      );
+      useChatStore.setState({
+        agentMode,
+        sendMessage: delayedSend as typeof originalSendMessage,
+      });
+
+      try {
+        render(<ChatPanel />);
+        const input = screen.getByRole("textbox");
+        await user.type(input, "Ollama preflight draft");
+        await user.click(screen.getByRole("button", { name: /送信/i }));
+        await user.click(screen.getByRole("button", { name: /送信/i }));
+
+        await waitFor(() => expect(delayedSend).toHaveBeenCalledOnce());
+        expect(input).toHaveValue("Ollama preflight draft");
+
+        act(() => releasePreflight());
+        await waitFor(() => expect(input).toHaveValue(""));
+      } finally {
+        useChatStore.setState({
+          agentMode: false,
+          sendMessage: originalSendMessage,
+        });
+      }
+    },
+  );
+
+  it("retains a draft when delayed preflight declines it", async () => {
+    const user = userEvent.setup();
+    const originalSendMessage = useChatStore.getState().sendMessage;
+    const declinedSend = vi.fn(async () => {});
+    useChatStore.setState({
+      sendMessage: declinedSend as typeof originalSendMessage,
+    });
+
+    try {
+      render(<ChatPanel />);
+      const input = screen.getByRole("textbox");
+      await user.type(input, "retry this draft{Enter}");
+
+      await waitFor(() => expect(declinedSend).toHaveBeenCalledOnce());
+      expect(input).toHaveValue("retry this draft");
+    } finally {
+      useChatStore.setState({ sendMessage: originalSendMessage });
+    }
+  });
+
+  it("flushes every Codex phase or the exact Snippet before a scoped send", async () => {
+    const codexSave = vi.fn(async () => {});
+    const codexPhaseSave = vi.fn(async () => {});
+    const snippetSave = vi.fn(async () => {});
+    const codexKey = { kind: "codex", id: "codex-1", phaseId: null } as const;
+    const codexPhaseKey = {
+      kind: "codex",
+      id: "codex-1",
+      phaseId: "phase-1",
+    } as const;
+    const snippetKey = { kind: "snippet", id: "snippet-1" } as const;
+    registerSaveHandler(codexKey, codexSave);
+    registerSaveHandler(codexPhaseKey, codexPhaseSave);
+    registerSaveHandler(snippetKey, snippetSave);
+
+    try {
+      await saveChatScopeBeforeSend("codex", null, "codex-1");
+      expect(codexSave).toHaveBeenCalledOnce();
+      expect(codexPhaseSave).toHaveBeenCalledOnce();
+      expect(snippetSave).not.toHaveBeenCalled();
+
+      await saveChatScopeBeforeSend("snippet", null, "snippet-1");
+      expect(snippetSave).toHaveBeenCalledOnce();
+    } finally {
+      unregisterSaveHandler(codexKey, codexSave);
+      unregisterSaveHandler(codexPhaseKey, codexPhaseSave);
+      unregisterSaveHandler(snippetKey, snippetSave);
+    }
+  });
+
+  it("flushes mounted tree documents for folder and project sends", async () => {
+    const treeSave = vi.fn(async () => {});
+    const codexSave = vi.fn(async () => {});
+    const treeKey = {
+      kind: "tree",
+      id: "scene-child",
+      storage: "database",
+    } as const;
+    const codexKey = {
+      kind: "codex",
+      id: "scene-child",
+      phaseId: null,
+    } as const;
+    registerSaveHandler(treeKey, treeSave);
+    registerSaveHandler(codexKey, codexSave);
+
+    try {
+      await saveChatScopeBeforeSend("folder", null, "folder-1");
+      await saveChatScopeBeforeSend("project", null, null);
+      expect(treeSave).toHaveBeenCalledTimes(2);
+      expect(codexSave).not.toHaveBeenCalled();
+    } finally {
+      unregisterSaveHandler(treeKey, treeSave);
+      unregisterSaveHandler(codexKey, codexSave);
+    }
+  });
+
+  it("propagates a scoped save failure so chat sending can stop", async () => {
+    const failure = new Error("disk full");
+    const save = vi.fn(async () => {
+      throw failure;
+    });
+    const key = { kind: "codex", id: "codex-failed", phaseId: null } as const;
+    registerSaveHandler(key, save);
+
+    try {
+      await expect(
+        saveChatScopeBeforeSend("codex", null, "codex-failed"),
+      ).rejects.toBe(failure);
+      expect(save).toHaveBeenCalledOnce();
+    } finally {
+      unregisterSaveHandler(key, save);
+    }
+  });
+
+  it("keeps the composer draft when a scoped save fails", async () => {
+    const user = userEvent.setup();
+    const failure = new Error("disk full");
+    const key = {
+      kind: "codex",
+      id: "codex-failed-ui",
+      phaseId: null,
+    } as const;
+    registerSaveHandler(
+      key,
+      vi.fn(async () => Promise.reject(failure)),
+    );
+    useChatStore.setState({
+      chatScope: "codex",
+      scopeAnchorId: "codex-failed-ui",
+    });
+
+    try {
+      render(<ChatPanel />);
+      const input = screen.getByRole("textbox");
+      await waitFor(() => expect(input).toBeEnabled());
+      await user.type(input, "失われない下書き{Enter}");
+
+      await waitFor(() => {
+        expect(input).toHaveValue("失われない下書き");
+      });
+      expect(useChatStore.getState().messages).toEqual([]);
+    } finally {
+      unregisterSaveHandler(key);
+    }
+  });
+
+  it("keeps the draft and aborts when scope authority changes during save", async () => {
+    const user = userEvent.setup();
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    const save = vi.fn(() => saveGate);
+    const key = {
+      kind: "codex",
+      id: "codex-authority",
+      phaseId: null,
+    } as const;
+    registerSaveHandler(key, save);
+    useChatStore.setState({
+      chatScope: "codex",
+      scopeAnchorId: "codex-authority",
+    });
+
+    try {
+      render(<ChatPanel />);
+      const input = screen.getByRole("textbox");
+      await waitFor(() => expect(input).toBeEnabled());
+      await user.type(input, "旧スコープの下書き{Enter}");
+      await waitFor(() => expect(save).toHaveBeenCalledOnce());
+
+      act(() => {
+        useChatStore.getState().setChatScope("project");
+        releaseSave();
+      });
+
+      await waitFor(() => {
+        expect(input).toHaveValue("旧スコープの下書き");
+      });
+      expect(useChatStore.getState().messages).toEqual([]);
+    } finally {
+      unregisterSaveHandler(key, save);
+    }
+  });
+
   it("does not send on Shift+Enter (allows newline)", async () => {
     const user = userEvent.setup();
 
@@ -341,16 +577,33 @@ describe("ChatPanel", () => {
 
   it("clears input after sending", async () => {
     const user = userEvent.setup();
-    mockSendChatMessage.mockImplementation(async () => {});
-
-    render(<ChatPanel />);
-
-    const input = screen.getByRole("textbox");
-    await user.type(input, "送信テスト{Enter}");
-
-    await waitFor(() => {
-      expect(input).toHaveValue("");
+    const originalSendMessage = useChatStore.getState().sendMessage;
+    const acceptedSend = vi.fn(
+      async (
+        _content: string,
+        _commandInstruction?: string,
+        options?: { _onAccepted?: () => void },
+      ) => {
+        options?._onAccepted?.();
+      },
+    );
+    useChatStore.setState({
+      sendMessage: acceptedSend as typeof originalSendMessage,
     });
+
+    try {
+      render(<ChatPanel />);
+
+      const input = screen.getByRole("textbox");
+      await user.type(input, "送信テスト{Enter}");
+
+      await waitFor(() => {
+        expect(input).toHaveValue("");
+      });
+      expect(acceptedSend).toHaveBeenCalledOnce();
+    } finally {
+      useChatStore.setState({ sendMessage: originalSendMessage });
+    }
   });
 
   it("shows stop button while streaming", () => {

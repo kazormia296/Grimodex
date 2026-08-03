@@ -1,17 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("./recorder", () => ({ recordChangeEvent: vi.fn() }));
+vi.mock("./recorder", () => ({
+  recordChangeEvent: vi.fn(),
+  reserveChangeEvents: vi.fn(),
+}));
 
-import { recordChangeEvent } from "./recorder";
+import { recordChangeEvent, reserveChangeEvents } from "./recorder";
 import {
   recordChatMessageAdd,
   recordChatMessageDelete,
   recordChatMessagesDeleteFrom,
+  reserveChatMessageAdds,
 } from "./captureChat";
 
 const rec = vi.mocked(recordChangeEvent);
+const reserve = vi.mocked(reserveChangeEvents);
 
-beforeEach(() => rec.mockClear());
+beforeEach(() => {
+  rec.mockClear();
+  reserve.mockReset();
+});
 
 describe("captureChat", () => {
   it("records chat.message.add with role/text/sessionId baked inline, sceneId null", () => {
@@ -30,6 +38,7 @@ describe("captureChat", () => {
       entityType: "chat_message",
       entityId: "msg-1",
       sceneId: null,
+      timestamp: Date.parse("2026-05-30T00:00:00.000Z"),
       payload: {
         sessionId: "sess-1",
         messageId: "msg-1",
@@ -52,6 +61,73 @@ describe("captureChat", () => {
     const payload = rec.mock.calls[0][0].payload as Record<string, unknown>;
     expect("model" in payload).toBe(false);
     expect(payload.role).toBe("user");
+  });
+
+  it("reserves a completed turn as one ordered Chronicle group", () => {
+    const reservation = {
+      commit: vi.fn(),
+      discard: vi.fn(),
+    };
+    reserve.mockReturnValue(reservation);
+
+    expect(
+      reserveChatMessageAdds([
+        {
+          projectId: "project-1",
+          sessionId: "session-1",
+          messageId: "user-1",
+          role: "user",
+          text: "question",
+          createdAt: "2026-05-30T00:00:00.000Z",
+        },
+        {
+          projectId: "project-1",
+          sessionId: "session-1",
+          messageId: "assistant-1",
+          role: "assistant",
+          text: "answer",
+          model: "model-1",
+          createdAt: "2026-05-30T00:00:00.001Z",
+        },
+      ]),
+    ).toBe(reservation);
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(reserve).toHaveBeenCalledWith([
+      {
+        domain: "chat",
+        opType: "chat.message.add",
+        projectId: "project-1",
+        entityType: "chat_message",
+        entityId: "user-1",
+        sceneId: null,
+        timestamp: Date.parse("2026-05-30T00:00:00.000Z"),
+        payload: {
+          sessionId: "session-1",
+          messageId: "user-1",
+          role: "user",
+          text: "question",
+          createdAt: "2026-05-30T00:00:00.000Z",
+        },
+      },
+      {
+        domain: "chat",
+        opType: "chat.message.add",
+        projectId: "project-1",
+        entityType: "chat_message",
+        entityId: "assistant-1",
+        sceneId: null,
+        timestamp: Date.parse("2026-05-30T00:00:00.001Z"),
+        payload: {
+          sessionId: "session-1",
+          messageId: "assistant-1",
+          role: "assistant",
+          text: "answer",
+          model: "model-1",
+          createdAt: "2026-05-30T00:00:00.001Z",
+        },
+      },
+    ]);
+    expect(rec).not.toHaveBeenCalled();
   });
 
   it("records chat.message.delete with sessionId when provided", () => {

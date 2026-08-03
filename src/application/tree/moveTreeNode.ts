@@ -8,7 +8,7 @@ export interface MoveTreeNodePorts {
   persist(
     id: string,
     patch: { parentId: string | null; sortOrder: string },
-  ): Promise<void>;
+  ): Promise<{ updatedAt?: string } | void>;
   recomputeSceneOrder(nodes: readonly TreeNodeData[]): void;
   isReplaying(): boolean;
   pushHistory(command: HistoryCommand): void;
@@ -65,14 +65,21 @@ export async function moveTreeNode(
   const oldParentId = node.parentId;
   const oldSortOrder = node.sortOrder;
   const sortOrder = nextSortOrder(nodes, id, newParentId, afterId);
-  const apply = (parentId: string | null, nextSortOrderValue: string) => {
-    const next = ports
-      .getNodes()
-      .map((candidate) =>
-        candidate.id === id
-          ? { ...candidate, parentId, sortOrder: nextSortOrderValue }
-          : candidate,
-      );
+  const apply = (
+    parentId: string | null,
+    nextSortOrderValue: string,
+    updatedAt?: string,
+  ) => {
+    const next = ports.getNodes().map((candidate) =>
+      candidate.id === id
+        ? {
+            ...candidate,
+            parentId,
+            sortOrder: nextSortOrderValue,
+            ...(updatedAt === undefined ? {} : { updatedAt }),
+          }
+        : candidate,
+    );
     ports.applyNodes(next);
     ports.recomputeSceneOrder(next);
   };
@@ -95,24 +102,29 @@ export async function moveTreeNode(
     ports.pushHistory({
       kind: "scenes",
       label: ports.movedLabel,
+      entityId: id,
       async undo() {
-        await ports.persist(id, {
+        const persisted = await ports.persist(id, {
           parentId: oldParentId,
           sortOrder: oldSortOrder,
         });
-        apply(oldParentId, oldSortOrder);
+        apply(oldParentId, oldSortOrder, persisted?.updatedAt);
       },
       async redo() {
-        await ports.persist(id, {
+        const persisted = await ports.persist(id, {
           parentId: newParentId,
           sortOrder,
         });
-        apply(newParentId, sortOrder);
+        apply(newParentId, sortOrder, persisted?.updatedAt);
       },
     });
   }
 
   // Keep null as null: undefined would make Drizzle omit parent_id and break
   // moves to the project root.
-  await ports.persist(id, { parentId: newParentId, sortOrder });
+  const persisted = await ports.persist(id, {
+    parentId: newParentId,
+    sortOrder,
+  });
+  apply(newParentId, sortOrder, persisted?.updatedAt);
 }

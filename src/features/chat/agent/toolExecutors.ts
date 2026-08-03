@@ -1,17 +1,16 @@
 import { invoke } from "@/lib/tauri";
 import { loadSceneContent, loadSceneContents } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import {
-  tokenizeFtsQuery as tokenizeQuery,
-  codepointLength,
-  ftsOrMatch as ftsPhraseOrQuery,
-} from "@/lib/fts";
+import { tokenizeFtsQuery as tokenizeQuery, codepointLength } from "@/lib/fts";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { db } from "@/db/client";
 import {
   codexEntries,
+  codexEntryTags,
+  codexTags,
   codexDetailDefinitions,
   codexDetailValues,
+  snippets,
   treeNodes,
   foreshadows,
   foreshadowSetups,
@@ -21,10 +20,27 @@ import {
   PLOT_PHASE_TYPES,
   type PlotPhaseType,
 } from "@/db/schema";
-import { eq, inArray, and } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  like,
+  ne,
+  or,
+  type AnyColumn,
+  type SQL,
+} from "drizzle-orm";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { countTokens } from "../contextBuilder";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  captureMutationAuthority,
+  isCurrentMutationAuthority,
+} from "@/features/concurrency/mutationAuthority";
 import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
 import type { ToolResult } from "./agentTypes";
 import {
@@ -32,6 +48,7 @@ import {
   agentUpdateCodexEntry,
 } from "@/features/agent-writes/codex";
 import { agentCreateSnippet } from "@/features/agent-writes/snippet";
+import { agentMarkdownToProseMirrorJson } from "@/features/agent-writes/richTextInput";
 import {
   agentCreateForeshadow,
   agentUpdateForeshadow,
@@ -73,8 +90,9 @@ import {
   invalidateChronicleToolCache,
 } from "./chronicleToolCache";
 
-interface QueryResult<T = Record<string, unknown>> {
-  rows: T[];
+interface SparseSearchHit {
+  sourceType: string;
+  id: string;
 }
 
 /**
@@ -138,16 +156,43 @@ function plainTextExcerpt(content: unknown, tokens: string[]): string {
  * 形の WHERE 断片と束縛パラメータ配列を組み立てる。
  * trigram で扱えない短いトークンが混じっている場合のフォールバックに使う。
  */
-function buildLikeOrClause(
-  tokens: string[],
-  columns: string[],
-): { clause: string; params: string[] } {
-  const perToken = tokens.map(
-    () => `(${columns.map((c) => `${c} LIKE ?`).join(" OR ")})`,
+function buildLikeOrCondition(tokens: string[], columns: AnyColumn[]): SQL {
+  const condition = or(
+    ...tokens.flatMap((token) =>
+      columns.map((column) => like(column, `%${token}%`)),
+    ),
   );
-  const clause = perToken.join(" OR ");
-  const params = tokens.flatMap((t) => columns.map(() => `%${t}%`));
-  return { clause, params };
+  if (!condition) {
+    throw new Error("search requires at least one token and column");
+  }
+  return condition;
+}
+
+async function sparseSearchIds(
+  projectId: string,
+  query: string,
+  scope: "codex" | "scenes" | "snippets",
+  limit: number,
+): Promise<string[]> {
+  const rows = await invoke<SparseSearchHit[]>("fts_search", {
+    projectId,
+    query,
+    scope,
+    limit,
+  });
+  const sourceType =
+    scope === "scenes" ? "scene" : scope === "snippets" ? "snippet" : "codex";
+  return rows
+    .filter((row) => row.sourceType === sourceType)
+    .map((row) => row.id);
+}
+
+function orderByIds<T extends { id: string }>(rows: T[], ids: string[]): T[] {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return ids.flatMap((id) => {
+    const row = byId.get(id);
+    return row ? [row] : [];
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -183,43 +228,67 @@ async function searchCodex(
   const allTrigramFriendly =
     tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
 
-  let rows: Record<string, unknown>[];
+  let rows: Array<{
+    id: string;
+    name: string;
+    type: string;
+    summary: string | null;
+  }>;
   if (allTrigramFriendly) {
-    const ftsQuery = ftsPhraseOrQuery(tokens);
-    const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT ce.id, ce.name, ce.type, ce.summary
-            FROM codex_entries ce
-            JOIN codex_fts fts ON ce.rowid = fts.rowid
-            WHERE codex_fts MATCH ? AND ce.project_id = ?
-            ORDER BY fts.rank
-            LIMIT 20`,
-      params: [ftsQuery, projectId],
-      method: "all",
-    });
-    rows = result.rows;
+    const hitIds = await sparseSearchIds(projectId, query, "codex", 20);
+    if (hitIds.length === 0) {
+      rows = [];
+    } else {
+      rows = orderByIds(
+        await db
+          .select({
+            id: codexEntries.id,
+            name: codexEntries.name,
+            type: codexEntries.type,
+            summary: codexEntries.summary,
+          })
+          .from(codexEntries)
+          .where(
+            and(
+              eq(codexEntries.projectId, projectId),
+              inArray(codexEntries.id, hitIds),
+            ),
+          ),
+        hitIds,
+      );
+    }
   } else {
     // `content` (ProseMirror body) is matched too so short (1-2 codepoint)
     // tokens — the LIKE-fallback case, common for Japanese — can hit body text,
     // not just metadata. The FTS path already covers content via codex_fts.
-    const { clause, params: likeParams } = buildLikeOrClause(
-      tokens.length > 0 ? tokens : [query],
-      ["name", "summary", "tags_cache", "aliases", "content"],
-    );
-    const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT id, name, type, summary FROM codex_entries
-            WHERE project_id = ? AND (${clause})
-            LIMIT 20`,
-      params: [projectId, ...likeParams],
-      method: "all",
-    });
-    rows = result.rows;
+    rows = await db
+      .select({
+        id: codexEntries.id,
+        name: codexEntries.name,
+        type: codexEntries.type,
+        summary: codexEntries.summary,
+      })
+      .from(codexEntries)
+      .where(
+        and(
+          eq(codexEntries.projectId, projectId),
+          buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
+            codexEntries.name,
+            codexEntries.summary,
+            codexEntries.tagsCache,
+            codexEntries.aliases,
+            codexEntries.content,
+          ]),
+        ),
+      )
+      .limit(20);
   }
 
   const sparse: CodexHybridResult[] = rows.map((r) => ({
-    id: String(r["id"] ?? ""),
-    name: String(r["name"] ?? ""),
-    type: String(r["type"] ?? ""),
-    summary: String(r["summary"] ?? ""),
+    id: r.id,
+    name: r.name,
+    type: r.type,
+    summary: r.summary ?? "",
   }));
 
   // dense arm (段階3): codex_semantic_search を sparse(FTS/LIKE) と RRF 融合する。
@@ -473,31 +542,33 @@ async function listCodexTags(
       tokensUsed: 0,
     };
 
-  const sql = typeFilter
-    ? `SELECT ct.id, ct.name, ct.color, ct.type_filter, COUNT(cet.entry_id) as usage_count
-       FROM codex_tags ct
-       LEFT JOIN codex_entry_tags cet ON ct.id = cet.tag_id
-       WHERE ct.project_id = ? AND (ct.type_filter IS NULL OR ct.type_filter LIKE ?)
-       GROUP BY ct.id
-       ORDER BY usage_count DESC`
-    : `SELECT ct.id, ct.name, ct.color, ct.type_filter, COUNT(cet.entry_id) as usage_count
-       FROM codex_tags ct
-       LEFT JOIN codex_entry_tags cet ON ct.id = cet.tag_id
-       WHERE ct.project_id = ?
-       GROUP BY ct.id
-       ORDER BY usage_count DESC`;
+  const usageCount = count(codexEntryTags.entryId);
+  const rows = await db
+    .select({
+      id: codexTags.id,
+      name: codexTags.name,
+      usageCount,
+    })
+    .from(codexTags)
+    .leftJoin(codexEntryTags, eq(codexTags.id, codexEntryTags.tagId))
+    .where(
+      and(
+        eq(codexTags.projectId, projectId),
+        typeFilter
+          ? or(
+              isNull(codexTags.typeFilter),
+              like(codexTags.typeFilter, `%${typeFilter}%`),
+            )
+          : undefined,
+      ),
+    )
+    .groupBy(codexTags.id)
+    .orderBy(desc(usageCount));
 
-  const queryParams = typeFilter ? [projectId, `%${typeFilter}%`] : [projectId];
-  const result = await invoke<QueryResult>("db_execute", {
-    sql,
-    params: queryParams,
-    method: "all",
-  });
-
-  const content = result.rows.map((r) => ({
-    id: r["id"],
-    name: r["name"],
-    usageCount: r["usage_count"],
+  const content = rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    usageCount: row.usageCount,
   }));
   const json = JSON.stringify(content);
   return {
@@ -531,22 +602,25 @@ async function searchCodexByTags(
       tokensUsed: 0,
     };
 
-  const placeholders = tags.map(() => "?").join(", ");
-  const result = await invoke<QueryResult>("db_execute", {
-    sql: `SELECT DISTINCT ce.id, ce.name, ce.type, ce.summary
-          FROM codex_entries ce
-          JOIN codex_entry_tags cet ON ce.id = cet.entry_id
-          JOIN codex_tags ct ON cet.tag_id = ct.id
-          WHERE ce.project_id = ? AND ct.name IN (${placeholders})`,
-    params: [projectId, ...tags],
-    method: "all",
-  });
+  const rows = await db
+    .selectDistinct({
+      id: codexEntries.id,
+      name: codexEntries.name,
+      type: codexEntries.type,
+      summary: codexEntries.summary,
+    })
+    .from(codexEntries)
+    .innerJoin(codexEntryTags, eq(codexEntries.id, codexEntryTags.entryId))
+    .innerJoin(codexTags, eq(codexEntryTags.tagId, codexTags.id))
+    .where(
+      and(eq(codexEntries.projectId, projectId), inArray(codexTags.name, tags)),
+    );
 
-  const content = result.rows.map((r) => ({
-    id: r["id"],
-    name: r["name"],
-    type: r["type"],
-    summary: r["summary"] ?? "",
+  const content = rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    summary: row.summary ?? "",
   }));
   const json = JSON.stringify(content);
   return {
@@ -621,33 +695,34 @@ async function findRelatedEntries(
 
   const typeFilter = params["type"] ? String(params["type"]).trim() : undefined;
 
-  const { clause, params: likeParams } = buildLikeOrClause(terms, [
-    "name",
-    "summary",
-    "aliases",
-    "tags_cache",
-  ]);
+  const rows = await db
+    .select({
+      id: codexEntries.id,
+      name: codexEntries.name,
+      type: codexEntries.type,
+      summary: codexEntries.summary,
+    })
+    .from(codexEntries)
+    .where(
+      and(
+        eq(codexEntries.projectId, projectId),
+        ne(codexEntries.id, id),
+        buildLikeOrCondition(terms, [
+          codexEntries.name,
+          codexEntries.summary,
+          codexEntries.aliases,
+          codexEntries.tagsCache,
+        ]),
+        typeFilter ? eq(codexEntries.type, typeFilter) : undefined,
+      ),
+    )
+    .limit(20);
 
-  const sqlParams: unknown[] = [projectId, id, ...likeParams];
-  let sql = `SELECT id, name, type, summary FROM codex_entries
-             WHERE project_id = ? AND id != ? AND (${clause})`;
-  if (typeFilter) {
-    sql += ` AND type = ?`;
-    sqlParams.push(typeFilter);
-  }
-  sql += ` LIMIT 20`;
-
-  const result = await invoke<QueryResult>("db_execute", {
-    sql,
-    params: sqlParams,
-    method: "all",
-  });
-
-  const content = result.rows.map((r) => ({
-    id: r["id"],
-    name: r["name"],
-    type: r["type"],
-    summary: r["summary"] ?? "",
+  const content = rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    summary: row.summary ?? "",
   }));
   const json = JSON.stringify(content);
   return {
@@ -784,39 +859,55 @@ async function searchScenes(
   const allTrigramFriendly =
     tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
 
-  let rows: Record<string, unknown>[];
+  let rows: Array<{ id: string; title: string; content: string }>;
   if (allTrigramFriendly) {
-    const ftsQuery = ftsPhraseOrQuery(tokens);
-    const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT tn.id, tn.title, tn.content
-            FROM tree_nodes tn
-            JOIN tree_nodes_fts fts ON tn.rowid = fts.rowid
-            WHERE tree_nodes_fts MATCH ? AND tn.node_type = 'scene' AND tn.project_id = ?
-            LIMIT 10`,
-      params: [ftsQuery, projectId],
-      method: "all",
-    });
-    rows = result.rows;
+    const hitIds = await sparseSearchIds(projectId, query, "scenes", 10);
+    if (hitIds.length === 0) {
+      rows = [];
+    } else {
+      rows = orderByIds(
+        await db
+          .select({
+            id: treeNodes.id,
+            title: treeNodes.title,
+            content: treeNodes.content,
+          })
+          .from(treeNodes)
+          .where(
+            and(
+              eq(treeNodes.projectId, projectId),
+              eq(treeNodes.nodeType, "scene"),
+              inArray(treeNodes.id, hitIds),
+            ),
+          ),
+        hitIds,
+      );
+    }
   } else {
-    const { clause, params: likeParams } = buildLikeOrClause(
-      tokens.length > 0 ? tokens : [query],
-      ["title", "content"],
-    );
-    const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT id, title, content
-            FROM tree_nodes
-            WHERE project_id = ? AND node_type = 'scene' AND (${clause})
-            LIMIT 10`,
-      params: [projectId, ...likeParams],
-      method: "all",
-    });
-    rows = result.rows;
+    rows = await db
+      .select({
+        id: treeNodes.id,
+        title: treeNodes.title,
+        content: treeNodes.content,
+      })
+      .from(treeNodes)
+      .where(
+        and(
+          eq(treeNodes.projectId, projectId),
+          eq(treeNodes.nodeType, "scene"),
+          buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
+            treeNodes.title,
+            treeNodes.content,
+          ]),
+        ),
+      )
+      .limit(10);
   }
 
-  const content = rows.map((r) => ({
-    id: r["id"],
-    title: r["title"],
-    excerpt: plainTextExcerpt(r["content"], tokens),
+  const content = rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    excerpt: plainTextExcerpt(row.content, tokens),
   }));
   const json = JSON.stringify(content);
   return {
@@ -857,41 +948,62 @@ async function searchSnippets(
   const allTrigramFriendly =
     tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
 
-  let rows: Record<string, unknown>[];
+  let rows: Array<{
+    id: string;
+    title: string;
+    tagsCache: string | null;
+    content: string;
+  }>;
   if (allTrigramFriendly) {
-    const ftsQuery = ftsPhraseOrQuery(tokens);
-    const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT s.id, s.title, s.tags_cache, s.content
-            FROM snippets s
-            JOIN snippets_fts fts ON s.rowid = fts.rowid
-            WHERE snippets_fts MATCH ? AND s.project_id = ?
-            ORDER BY fts.rank
-            LIMIT 10`,
-      params: [ftsQuery, projectId],
-      method: "all",
-    });
-    rows = result.rows;
+    const hitIds = await sparseSearchIds(projectId, query, "snippets", 10);
+    if (hitIds.length === 0) {
+      rows = [];
+    } else {
+      rows = orderByIds(
+        await db
+          .select({
+            id: snippets.id,
+            title: snippets.title,
+            tagsCache: snippets.tagsCache,
+            content: snippets.content,
+          })
+          .from(snippets)
+          .where(
+            and(
+              eq(snippets.projectId, projectId),
+              inArray(snippets.id, hitIds),
+            ),
+          ),
+        hitIds,
+      );
+    }
   } else {
-    const { clause, params: likeParams } = buildLikeOrClause(
-      tokens.length > 0 ? tokens : [query],
-      ["title", "content", "tags_cache"],
-    );
-    const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT id, title, tags_cache, content
-            FROM snippets
-            WHERE project_id = ? AND (${clause})
-            LIMIT 10`,
-      params: [projectId, ...likeParams],
-      method: "all",
-    });
-    rows = result.rows;
+    rows = await db
+      .select({
+        id: snippets.id,
+        title: snippets.title,
+        tagsCache: snippets.tagsCache,
+        content: snippets.content,
+      })
+      .from(snippets)
+      .where(
+        and(
+          eq(snippets.projectId, projectId),
+          buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
+            snippets.title,
+            snippets.content,
+            snippets.tagsCache,
+          ]),
+        ),
+      )
+      .limit(10);
   }
 
-  const content = rows.map((r) => ({
-    id: r["id"],
-    title: r["title"],
-    tags: parseTagsCacheNames(r["tags_cache"] as string | null),
-    preview: plainTextExcerpt(r["content"], tokens),
+  const content = rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    tags: parseTagsCacheNames(row.tagsCache),
+    preview: plainTextExcerpt(row.content, tokens),
   }));
   const json = JSON.stringify(content);
   return {
@@ -1215,8 +1327,36 @@ async function getSceneTimelineNeighbors(
 // Mutating executors (knowledgeWrite policy gated)
 // ---------------------------------------------------------------------------
 
+const MAX_CODEX_ALIASES = 100;
+const MAX_CODEX_ALIAS_BYTES = 64_000;
+
+function optionalMarkdownBody(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error("content must be a Markdown string");
+  }
+  return agentMarkdownToProseMirrorJson(value);
+}
+
+function optionalAliases(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error("aliases must be an array of strings");
+  }
+  if (value.length > MAX_CODEX_ALIASES) {
+    throw new Error(`aliases must contain at most ${MAX_CODEX_ALIASES} items`);
+  }
+  const aliases = value.map((item) => item.trim()).filter(Boolean);
+  const serialized = JSON.stringify(aliases);
+  if (new TextEncoder().encode(serialized).byteLength > MAX_CODEX_ALIAS_BYTES) {
+    throw new Error(`aliases exceed ${MAX_CODEX_ALIAS_BYTES} bytes`);
+  }
+  return serialized;
+}
+
 async function createCodexEntryTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const type = String(params["type"] ?? "").trim();
   const name = String(params["name"] ?? "").trim();
@@ -1231,11 +1371,12 @@ async function createCodexEntryTool(
   }
   try {
     const entry = await agentCreateCodexEntry({
+      requestId,
       type,
       name,
       summary: params["summary"] ? String(params["summary"]) : undefined,
-      content: params["content"] ? String(params["content"]) : undefined,
-      aliases: params["aliases"] ? String(params["aliases"]) : undefined,
+      content: optionalMarkdownBody(params["content"]),
+      aliases: optionalAliases(params["aliases"]),
       parentId: params["parentId"] ? String(params["parentId"]) : undefined,
     });
     const content = { id: entry.id, name: entry.name, type: entry.type };
@@ -1281,9 +1422,10 @@ async function updateCodexEntryTool(
       summary:
         params["summary"] !== undefined ? String(params["summary"]) : undefined,
       content:
-        params["content"] !== undefined ? String(params["content"]) : undefined,
-      aliases:
-        params["aliases"] !== undefined ? String(params["aliases"]) : undefined,
+        params["content"] !== undefined
+          ? optionalMarkdownBody(params["content"])
+          : undefined,
+      aliases: optionalAliases(params["aliases"]),
     });
     const content = { id: entry.id, name: entry.name, type: entry.type };
     const json = JSON.stringify(content);
@@ -1546,6 +1688,7 @@ async function getThreadScenes(
 
 type Executor = (
   params: Record<string, unknown>,
+  requestId?: string,
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
 /**
@@ -1592,6 +1735,7 @@ Object.freeze(READ_ONLY_EXECUTORS);
 
 async function createSnippetTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1605,8 +1749,9 @@ async function createSnippetTool(
   }
   try {
     const snippet = await agentCreateSnippet({
+      requestId,
       title,
-      content: params["content"] ? String(params["content"]) : undefined,
+      content: optionalMarkdownBody(params["content"]),
       sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
     });
     const content = { id: snippet.id, title: snippet.title };
@@ -1728,6 +1873,7 @@ async function proposeSceneBodyTool(
 
 async function createForeshadowTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1741,6 +1887,7 @@ async function createForeshadowTool(
   }
   try {
     const item = await agentCreateForeshadow({
+      requestId,
       title,
       intent: params["intent"] ? String(params["intent"]) : undefined,
       notes: params["notes"] ? String(params["notes"]) : undefined,
@@ -1859,6 +2006,28 @@ export const EXECUTORS: Record<string, Executor> = {
 // 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
 Object.freeze(EXECUTORS);
 
+const IDEMPOTENT_CREATE_TOOLS: ReadonlySet<string> = new Set([
+  "create_codex_entry",
+  "create_snippet",
+  "create_foreshadow",
+  "create_event",
+]);
+
+async function toolCreateRequestId(
+  toolName: string,
+  toolCallId: string,
+  projectId: string,
+): Promise<string> {
+  const bytes = new TextEncoder().encode(
+    `${toolName}\0${projectId}\0${toolCallId}`,
+  );
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `agent-tool:${hex}`;
+}
+
 /** Execute a named tool and return a ToolResult (always succeeds — errors are wrapped). */
 export async function executeTool(
   name: string,
@@ -1878,7 +2047,18 @@ export async function executeTool(
     };
   }
   try {
-    const result = await executor(params);
+    const createAuthority = IDEMPOTENT_CREATE_TOOLS.has(name)
+      ? captureMutationAuthority(getCurrentProjectId(), getCurrentProjectId)
+      : null;
+    const requestId = createAuthority
+      ? await toolCreateRequestId(name, toolCallId, createAuthority.projectId)
+      : undefined;
+    // SHA-256 yields before the domain writer captures its own Project. Do not
+    // let a pre-switch tool call resume against a replacement Project/Workspace.
+    if (createAuthority && !isCurrentMutationAuthority(createAuthority)) {
+      throw new Error("agent tool create authority changed");
+    }
+    const result = await executor(params, requestId);
     return { toolCallId, ...result };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

@@ -8,6 +8,7 @@ import {
   updateCenterToolSegment,
   updateRegion,
   validateLayoutState,
+  withoutCollapsedActivePanels,
 } from "./layoutStateUtils";
 import { clampRegionSize } from "./layoutConstants";
 import type {
@@ -101,7 +102,7 @@ function reduceToolPanel(
     }));
   }
   return updateRegion(state, location.region, (region) => ({
-    ...region,
+    ...withoutCollapsedActivePanels(region),
     slots: region.slots.map((slot) =>
       slot.id === location.slot.id
         ? { ...slot, activePanel: nextActive ? panel : null }

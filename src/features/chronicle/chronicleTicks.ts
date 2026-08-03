@@ -49,6 +49,8 @@ export function adaptiveTicks(args: {
   pxPerDay: number;
   viewStartDay: number;
   trackW: number;
+  /** Pan preview 中に端を露出させないため、可視域の外へ追加生成する幅。 */
+  overscanPx?: number;
   calendar: ChronicleCalendar;
   hasCalendarAxis: boolean;
   lang?: DateLang;
@@ -58,6 +60,7 @@ export function adaptiveTicks(args: {
     pxPerDay,
     viewStartDay,
     trackW,
+    overscanPx,
     calendar,
     hasCalendarAxis,
     lang,
@@ -65,15 +68,19 @@ export function adaptiveTicks(args: {
   } = args;
   const MIN = minTickPx ?? 82;
   const ja = (lang ?? "ja") === "ja";
+  const overscan = Math.max(0, overscanPx ?? 0);
+  const minX = -overscan - 2;
+  const maxX = trackW + overscan + 2;
+  const renderStartDay = viewStartDay - overscan / pxPerDay;
+  const renderEndDay = viewStartDay + (trackW + overscan) / pxPerDay;
 
   // --- SEQUENCE MODE（暦軸なし） ---
   if (!hasCalendarAxis) {
     const minor: Tick[] = [];
     const stride = Math.max(1, Math.ceil(MIN / Math.max(pxPerDay, 1e-9)));
-    const ve = viewStartDay + trackW / pxPerDay;
-    for (let d = Math.ceil(viewStartDay); d <= ve; d += stride) {
+    for (let d = Math.ceil(renderStartDay); d <= renderEndDay; d += stride) {
       const x = (d - viewStartDay) * pxPerDay;
-      if (x >= -2 && x <= trackW + 2) {
+      if (x >= minX && x <= maxX) {
         minor.push({ x, label: `#${Math.round(d) + 1}` });
       }
     }
@@ -123,7 +130,7 @@ export function adaptiveTicks(args: {
     { d: 1 / 1440, level: "minute" },
   ];
 
-  const ve = viewStartDay + trackW / pxPerDay;
+  const ve = renderEndDay;
   const needMin = MIN / pxPerDay;
 
   // 最も細かい "nice" 刻みで、画面間隔が MIN 以上を保てるものを選ぶ。
@@ -200,7 +207,7 @@ export function adaptiveTicks(args: {
   const hasMonths = (calendar.months?.length ?? 0) > 0;
   const inX = (d: number): number => (d - viewStartDay) * pxPerDay;
   const startYearAt = (off = 0): number =>
-    dayNumberToDate(Math.floor(viewStartDay), calendar).year + off;
+    dayNumberToDate(Math.floor(renderStartDay), calendar).year + off;
 
   // --- minor（年/月は実暦境界で生成。均等 monthDays は非均等月/閏でずれるため。
   //      日/時/分は固定ステップ） ---
@@ -211,8 +218,8 @@ export function adaptiveTicks(args: {
     for (; ; y += everyN) {
       const d = dateToDayNumber({ year: y }, calendar);
       const x = inX(d);
-      if (x > trackW + 2) break;
-      if (x >= -2) minor.push({ x, label: tickLabel(d, "year") });
+      if (x > maxX) break;
+      if (x >= minX) minor.push({ x, label: tickLabel(d, "year") });
     }
   } else if (step.level === "month" && hasMonths) {
     const everyN = Math.max(1, Math.round(stepDays / monthDays));
@@ -224,21 +231,21 @@ export function adaptiveTicks(args: {
           calendar,
         );
         const x = inX(d);
-        if (x > trackW + 2) {
+        if (x > maxX) {
           done = true;
           break;
         }
-        if (x >= -2) minor.push({ x, label: tickLabel(d, "month") });
+        if (x >= minX) minor.push({ x, label: tickLabel(d, "month") });
       }
     }
   } else {
     // day/hour/minute、または月概念なし暦の month: 固定日ステップ。
-    const first = Math.ceil(viewStartDay / stepDays - 1e-9) * stepDays;
+    const first = Math.ceil(renderStartDay / stepDays - 1e-9) * stepDays;
     const n = Math.floor((ve - first) / stepDays) + 2;
     for (let i = 0; i <= n; i++) {
       const d = first + i * stepDays;
       const x = inX(d);
-      if (x < -2 || x > trackW + 2) continue;
+      if (x < minX || x > maxX) continue;
       minor.push({ x, label: tickLabel(d, step.level) });
     }
   }
@@ -250,8 +257,8 @@ export function adaptiveTicks(args: {
     for (let y = startYearAt(-1); ; y++) {
       const d = dateToDayNumber({ year: y }, calendar);
       const x = inX(d);
-      if (x > trackW + 2) break;
-      if (x >= -2) major.push({ x, label: majorLabel(d, "year") });
+      if (x > maxX) break;
+      if (x >= minX) major.push({ x, label: majorLabel(d, "year") });
     }
   };
   if (majorUnit === "year") {
@@ -265,11 +272,11 @@ export function adaptiveTicks(args: {
           calendar,
         );
         const x = inX(d);
-        if (x > trackW + 2) {
+        if (x > maxX) {
           done = true;
           break;
         }
-        if (x < -2) continue;
+        if (x < minX) continue;
         const label =
           mi === 0
             ? majorLabel(d, "month")
@@ -281,10 +288,10 @@ export function adaptiveTicks(args: {
     // 月概念なし暦: 年境界を major に。
     pushYearMajor();
   } else if (majorUnit === "day") {
-    for (let d = Math.floor(viewStartDay); ; d += 1) {
+    for (let d = Math.floor(renderStartDay); ; d += 1) {
       const x = inX(d);
-      if (x > trackW + 2) break;
-      if (x >= -2) major.push({ x, label: majorLabel(d, "day") });
+      if (x > maxX) break;
+      if (x >= minX) major.push({ x, label: majorLabel(d, "day") });
     }
   }
 

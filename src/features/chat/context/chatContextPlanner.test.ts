@@ -36,6 +36,7 @@ function request(overrides: Record<string, unknown> = {}) {
       semanticRecallEnabled: false,
       episodicRecallEnabled: false,
       hybridRecallEnabled: false,
+      semanticRerankerMode: "off",
       customChatInstruction: "",
     },
     trackRecallPromote: false,
@@ -64,17 +65,18 @@ describe("planChatContext", () => {
       recalledMessages: [],
       diagnostics: [],
     }));
+    const renderPrompt = vi.fn(() => ({
+      prompt: "exact prompt",
+      totalTokens: 7,
+      layers: [],
+      cacheSegments: ["stable"],
+      volatileTail: "tail",
+    }));
     const deps = createContextPlannerDeps({
       ensureTokenizer: async () => {},
       collectRequiredSceneContext: collectScene,
       collectOptionalSceneContext: async () => ({}),
-      renderPrompt: () => ({
-        prompt: "exact prompt",
-        totalTokens: 7,
-        layers: [],
-        cacheSegments: ["stable"],
-        volatileTail: "tail",
-      }),
+      renderPrompt,
     });
 
     const result = await planChatContext(request(), deps);
@@ -87,6 +89,41 @@ describe("planChatContext", () => {
     expect(result.volatileTail).toBe("tail");
     expect(result.contextPlan.requestId).toBe("request-1");
     expect(result.diagnostics).toEqual([]);
+    expect(renderPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenCountingMode: "exact" }),
+    );
+  });
+
+  it("uses the cheap token estimator only for the live UI cache", async () => {
+    const renderPrompt = vi.fn(() => ({
+      prompt: "live prompt",
+      totalTokens: 7,
+      layers: [],
+    }));
+    const deps = createContextPlannerDeps({
+      ensureTokenizer: async () => {},
+      collectRequiredSceneContext: async () => ({
+        scene: { id: "scene-1", title: "Scene", content: "Body" },
+        project: { title: "Project", language: "en" },
+        promptInput: {
+          scene: { id: "scene-1", title: "Scene", content: "Body" },
+        },
+        detectedEntries: [],
+        alwaysEntries: [],
+        stableCodexIds: [],
+        projectOutline: undefined,
+        chapterOutlines: [],
+        recalledMessages: [],
+        diagnostics: [],
+      }),
+      renderPrompt,
+    });
+
+    await planChatContext(request({ purpose: "live" }), deps);
+
+    expect(renderPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenCountingMode: "live-estimate" }),
+    );
   });
 
   it("reports an optional source failure without discarding the required scene", async () => {

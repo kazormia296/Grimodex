@@ -16,7 +16,8 @@ import { render, act, waitFor } from "@testing-library/react";
 import type { PanelId } from "./panelIds";
 import { LayoutStoryPanelStub } from "./stories/LayoutStoryPanelStub";
 
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn(async () => ({})),
   // ブラウザモードはネイティブ ESM リンクのため、import graph 内で使われる
   // named export が factory に無いと SyntaxError になる。

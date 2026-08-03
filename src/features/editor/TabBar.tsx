@@ -21,7 +21,7 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { TabContextMenu } from "./TabContextMenu";
 import { UnsavedDialog } from "./UnsavedDialog";
-import { saveScene } from "./editorSaveRegistry";
+import { discardDocumentInGroup, saveScene } from "./editorSaveRegistry";
 import type { GroupIndex, TabEntry } from "./tabStore";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
 import { resolveApplicablePhases } from "@/features/codex/context/resolveApplicablePhases";
@@ -191,10 +191,17 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     const isSceneTab = clickedTab?.contentType === "scene";
     if (isPrimary) {
       useTabStore.getState().setActiveTab(nodeId);
-      if (isSceneTab) useTreeStore.getState().setActiveScene(nodeId);
+      if (isSceneTab && useTabStore.getState().activeTabId === nodeId) {
+        useTreeStore.getState().setActiveScene(nodeId);
+      }
     } else {
       useTabStore.getState().setSecondaryActiveTab(nodeId);
-      if (isSceneTab) useTreeStore.getState().setActiveScene(nodeId);
+      if (
+        isSceneTab &&
+        useTabStore.getState().secondaryActiveTabId === nodeId
+      ) {
+        useTreeStore.getState().setActiveScene(nodeId);
+      }
     }
   }
 
@@ -361,6 +368,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   return (
     <div
       data-phone-tab-bar={phoneWorkspace ? "true" : undefined}
+      data-editor-tool-surface
       className="editor-background-glass glass-editor-chrome flex items-center border-b border-border"
     >
       {/* Scrollable tab list */}
@@ -438,6 +446,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               >
                 <div
                   draggable
+                  data-editor-tab-id={tab.nodeId}
                   className={cn(
                     "group relative flex shrink-0 cursor-pointer items-center gap-1",
                     "border-r border-border px-3 py-1.5 text-xs",
@@ -759,6 +768,9 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
             setPendingClose(null);
           }}
           onCloseWithoutSave={() => {
+            for (const id of pendingClose.nodeIds) {
+              discardDocumentInGroup(id, groupIndex);
+            }
             executeClose(
               pendingClose.nodeIds,
               pendingClose.closeSecondaryGroupAfter,

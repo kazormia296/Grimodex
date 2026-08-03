@@ -1,14 +1,20 @@
 import * as chronicleApi from "@/features/chronicle/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { tiptapContentFromDb } from "@/lib/prosemirror";
-import type { LoadedEditorBinding, LoadedEditorDocument } from "../types";
+import type { EditorDocumentIdentity, LoadedEditorDocument } from "../types";
 
 export interface ChronicleEventDocumentLoadServices {
   getEvent: (
     projectId: string,
     id: string,
   ) => Promise<
-    { title?: string | null; detail?: string | null } | null | undefined
+    | {
+        title?: string | null;
+        detail?: string | null;
+        version: number;
+      }
+    | null
+    | undefined
   >;
   getCurrentProjectId: () => string;
 }
@@ -20,16 +26,19 @@ const defaultChronicleEventDocumentLoadServices: ChronicleEventDocumentLoadServi
   };
 
 export async function loadChronicleEventDocument(
-  binding: Extract<LoadedEditorBinding, { kind: "chronicle-event" }>,
+  binding: Extract<EditorDocumentIdentity, { kind: "chronicle-event" }>,
   services: ChronicleEventDocumentLoadServices = defaultChronicleEventDocumentLoadServices,
 ): Promise<LoadedEditorDocument> {
   const event = await services.getEvent(
     services.getCurrentProjectId(),
     binding.id,
   );
+  if (!event) {
+    throw new Error(`Chronicle Event '${binding.id}' was not found`);
+  }
   return {
-    binding,
-    content: tiptapContentFromDb(event?.detail),
-    title: event?.title ?? "",
+    binding: { ...binding, loadedVersion: event.version },
+    content: tiptapContentFromDb(event.detail),
+    title: event.title ?? "",
   };
 }

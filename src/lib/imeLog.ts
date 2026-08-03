@@ -38,7 +38,7 @@ export type ImeEventSnapshot = {
   type: ImeEventType;
   /** performance.now() の取得は呼び出し側 (純関数性の維持)。 */
   at: number;
-  /** CompositionEvent.data (build 時に切り詰める)。 */
+  /** CompositionEvent.data (build 時に本文を破棄し、長さだけ残す)。 */
   data: string | null;
   selectionFrom: number;
   selectionTo: number;
@@ -69,8 +69,11 @@ export type ImeLogEntry = Omit<
   | "appCaretRect"
   | "pmCaretRect"
   | "containerRect"
+  | "data"
 > & {
   seq: number;
+  /** Composition text is manuscript content; retain only its length. */
+  dataLength: number | null;
   domSelectionRect: RectLog | null;
   domSelectionRects: RectLog[];
   appCaretRect: RectLog | null;
@@ -80,8 +83,6 @@ export type ImeLogEntry = Omit<
 
 const STORAGE_KEY = "grimodex.imeLog";
 const MAX_ENTRIES = 300;
-/** 未確定文字列は本文そのもの — ログへの混入は先頭だけに留める。 */
-const MAX_DATA_CHARS = 32;
 
 let enabled = false;
 let nextSeq = 1;
@@ -104,13 +105,6 @@ export function roundRect(r: RectLike): RectLog {
   };
 }
 
-function truncateData(data: string | null): string | null {
-  if (data == null) return null;
-  return data.length > MAX_DATA_CHARS
-    ? `${data.slice(0, MAX_DATA_CHARS)}…`
-    : data;
-}
-
 export function buildImeLogEntry(
   s: ImeEventSnapshot,
 ): Omit<ImeLogEntry, "seq"> {
@@ -119,7 +113,7 @@ export function buildImeLogEntry(
   return {
     type: s.type,
     at: Math.round(s.at),
-    data: truncateData(s.data),
+    dataLength: s.data?.length ?? null,
     selectionFrom: s.selectionFrom,
     selectionTo: s.selectionTo,
     pmComposing: s.pmComposing,
@@ -147,7 +141,7 @@ export function formatImeLogEntry(e: Omit<ImeLogEntry, "seq">): string {
   const parts = [
     e.type,
     e.vertical ? "vertical" : "horizontal",
-    `data=${e.data == null ? "null" : JSON.stringify(e.data)}`,
+    `dataLength=${e.dataLength ?? "null"}`,
     `sel=${e.selectionFrom}..${e.selectionTo}`,
     `pmComposing=${e.pmComposing}`,
     `dom=${fmtRect(e.domSelectionRect)}`,
@@ -163,7 +157,7 @@ export function formatImeLogEntry(e: Omit<ImeLogEntry, "seq">): string {
 /**
  * エントリを記録する (ゲート OFF なら null)。debugLog へミラーするので
  * devtools が開けない production でも DebugLogViewer (Ctrl+Shift+D) で
- * 閲覧・コピーできる。detail は JSON 全文 — Copy all で QA 結果ごと回収。
+ * 閲覧・コピーできる。composition 本文は保持せず文字数だけを記録する。
  */
 export function recordImeEvent(
   entry: Omit<ImeLogEntry, "seq">,
@@ -172,7 +166,13 @@ export function recordImeEvent(
   const full: ImeLogEntry = { ...entry, seq: nextSeq++ };
   entries.push(full);
   if (entries.length > MAX_ENTRIES) entries.shift();
-  debugLog.info("IME", formatImeLogEntry(full), JSON.stringify(full));
+  debugLog.info("IME", "composition diagnostics", {
+    sensitivity: "safe",
+    fields: {
+      summary: formatImeLogEntry(full),
+      entry: full,
+    },
+  });
   return full;
 }
 

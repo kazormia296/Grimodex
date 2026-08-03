@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, fireEvent } from "@testing-library/react";
+import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import type { EventRow } from "./api";
 
 // 重い子コンポーネントは軽量スタブへ（key の重複検出は親側で起きるので実装不要）。
@@ -27,8 +27,15 @@ vi.mock("@/components/ui/popover", () => ({
 }));
 
 import { ChronicleInspector, DraftTextField } from "./ChronicleInspector";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { flushAllAutoSaves } from "@/hooks/useAutoSave";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 const NOW = "2026-06-27T00:00:00.000Z";
+const draftDocumentKey = {
+  kind: "chronicle-event",
+  id: "draft-event",
+} as const;
 
 function ev(over: Partial<EventRow> = {}): EventRow {
   return {
@@ -51,6 +58,7 @@ function ev(over: Partial<EventRow> = {}): EventRow {
     kind: "generic",
     secret: false,
     revealSceneId: null,
+    version: 0,
     createdAt: NOW,
     updatedAt: NOW,
     ...over,
@@ -76,16 +84,22 @@ function renderInspector() {
 }
 
 afterEach(() => {
+  useEditorSessionStore.getState().resetForProject();
+  useExternalWriteStore.getState().clear();
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe("DraftTextField — ローカル下書き＋trailing debounce commit", () => {
-  it("打鍵は即時に入力へ反映され、commit は debounce 後に最終値で 1 回だけ", () => {
+  it("打鍵は即時に入力へ反映され、commit は debounce 後に最終値で 1 回だけ", async () => {
     vi.useFakeTimers();
     const onCommit = vi.fn();
     const { getByRole } = render(
-      <DraftTextField value="初期" onCommit={onCommit} />,
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
     );
     const input = getByRole("textbox") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "あ" } });
@@ -94,20 +108,25 @@ describe("DraftTextField — ローカル下書き＋trailing debounce commit", 
     // 打鍵中は即時反映・未 commit（per-keystroke DB 書込を出さない）。
     expect(input.value).toBe("あいう");
     expect(onCommit).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(500);
+    await vi.advanceTimersByTimeAsync(500);
     expect(onCommit).toHaveBeenCalledTimes(1);
     expect(onCommit).toHaveBeenCalledWith("あいう");
   });
 
-  it("blur で pending を即 flush する", () => {
+  it("blur で pending を即 flush する", async () => {
     vi.useFakeTimers();
     const onCommit = vi.fn();
     const { getByRole } = render(
-      <DraftTextField value="初期" onCommit={onCommit} />,
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
     );
     const input = getByRole("textbox") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "編集後" } });
     fireEvent.blur(input);
+    await vi.advanceTimersByTimeAsync(0);
     expect(onCommit).toHaveBeenCalledTimes(1);
     expect(onCommit).toHaveBeenCalledWith("編集後");
     // debounce 満了後の二重 commit なし。
@@ -115,29 +134,44 @@ describe("DraftTextField — ローカル下書き＋trailing debounce commit", 
     expect(onCommit).toHaveBeenCalledTimes(1);
   });
 
-  it("unmount（選択切替の remount）でも pending を flush して編集を失わない", () => {
+  it("unmount（選択切替の remount）でも pending を flush して編集を失わない", async () => {
     vi.useFakeTimers();
     const onCommit = vi.fn();
     const { getByRole, unmount } = render(
-      <DraftTextField value="初期" onCommit={onCommit} />,
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
     );
     fireEvent.change(getByRole("textbox"), { target: { value: "途中" } });
     unmount();
+    await vi.advanceTimersByTimeAsync(0);
     expect(onCommit).toHaveBeenCalledTimes(1);
     expect(onCommit).toHaveBeenCalledWith("途中");
   });
 
-  it("flush はスケジュール時点の commit 関数を使う（選択切替後の誤書込防止）", () => {
+  it("flush はスケジュール時点の commit 関数を使う（選択切替後の誤書込防止）", async () => {
     vi.useFakeTimers();
     const commitA = vi.fn();
     const commitB = vi.fn();
     const { getByRole, rerender } = render(
-      <DraftTextField value="初期" onCommit={commitA} />,
+      <DraftTextField
+        value="初期"
+        onCommit={commitA}
+        documentKey={draftDocumentKey}
+      />,
     );
     fireEvent.change(getByRole("textbox"), { target: { value: "Aの編集" } });
     // 打鍵後に onCommit prop が差し替わっても、pending は旧 commit へ流れる。
-    rerender(<DraftTextField value="初期" onCommit={commitB} />);
-    vi.advanceTimersByTime(500);
+    rerender(
+      <DraftTextField
+        value="初期"
+        onCommit={commitB}
+        documentKey={draftDocumentKey}
+      />,
+    );
+    await vi.advanceTimersByTimeAsync(500);
     expect(commitA).toHaveBeenCalledWith("Aの編集");
     expect(commitB).not.toHaveBeenCalled();
   });
@@ -145,9 +179,19 @@ describe("DraftTextField — ローカル下書き＋trailing debounce commit", 
   it("pending なしのときは外部更新（undo 等）を下書きへ取り込む", () => {
     const onCommit = vi.fn();
     const { getByRole, rerender } = render(
-      <DraftTextField value="v1" onCommit={onCommit} />,
+      <DraftTextField
+        value="v1"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
     );
-    rerender(<DraftTextField value="v2" onCommit={onCommit} />);
+    rerender(
+      <DraftTextField
+        value="v2"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
+    );
     expect((getByRole("textbox") as HTMLInputElement).value).toBe("v2");
     expect(onCommit).not.toHaveBeenCalled();
   });
@@ -156,7 +200,11 @@ describe("DraftTextField — ローカル下書き＋trailing debounce commit", 
     vi.useFakeTimers();
     const onCommit = vi.fn();
     const { getByRole } = render(
-      <DraftTextField value="初期" onCommit={onCommit} />,
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
     );
     const input = getByRole("textbox") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "初期x" } });
@@ -165,17 +213,163 @@ describe("DraftTextField — ローカル下書き＋trailing debounce commit", 
     expect(onCommit).not.toHaveBeenCalled();
   });
 
-  it("multiline は textarea として描画され同じ debounce で commit する", () => {
+  it("multiline は textarea として描画され同じ debounce で commit する", async () => {
     vi.useFakeTimers();
     const onCommit = vi.fn();
     const { getByRole } = render(
-      <DraftTextField value="" onCommit={onCommit} multiline rows={3} />,
+      <DraftTextField
+        value=""
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+        multiline
+        rows={3}
+      />,
     );
     const area = getByRole("textbox") as HTMLTextAreaElement;
     expect(area.tagName.toLowerCase()).toBe("textarea");
     fireEvent.change(area, { target: { value: "あらすじ" } });
-    vi.advanceTimersByTime(500);
+    await vi.advanceTimersByTimeAsync(500);
     expect(onCommit).toHaveBeenCalledWith("あらすじ");
+  });
+
+  it("commit 失敗後も同じ下書きを blur で再試行できる", async () => {
+    vi.useFakeTimers();
+    const onCommit = vi
+      .fn<(value: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("write failed"))
+      .mockResolvedValue(undefined);
+    const { getByRole } = render(
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
+    );
+    const input = getByRole("textbox") as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: "保持する下書き" } });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(
+      useEditorSessionStore.getState().isDocumentDirty(draftDocumentKey),
+    ).toBe(true);
+
+    fireEvent.blur(input);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onCommit).toHaveBeenCalledTimes(2);
+    expect(onCommit).toHaveBeenLastCalledWith("保持する下書き");
+    expect(
+      useEditorSessionStore.getState().isDocumentDirty(draftDocumentKey),
+    ).toBe(false);
+  });
+
+  it("unmount 時の失敗下書きを quiesce が再試行して回収する", async () => {
+    const onCommit = vi
+      .fn<(value: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("write failed"))
+      .mockResolvedValue(undefined);
+    const { getByRole, unmount } = render(
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
+    );
+
+    fireEvent.change(getByRole("textbox"), {
+      target: { value: "閉じても残る下書き" },
+    });
+    unmount();
+    await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));
+
+    expect(
+      useEditorSessionStore.getState().isDocumentDirty(draftDocumentKey),
+    ).toBe(true);
+
+    await flushAllAutoSaves();
+
+    expect(onCommit).toHaveBeenCalledTimes(2);
+    expect(onCommit).toHaveBeenLastCalledWith("閉じても残る下書き");
+    expect(
+      useEditorSessionStore.getState().isDocumentDirty(draftDocumentKey),
+    ).toBe(false);
+  });
+
+  it("外部競合中は draft autosave を停止し、Keep 後だけ再開する", async () => {
+    vi.useFakeTimers();
+    const onCommit = vi.fn();
+    const { getByRole } = render(
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
+    );
+
+    fireEvent.change(getByRole("textbox"), {
+      target: { value: "ローカル下書き" },
+    });
+    act(() => {
+      useExternalWriteStore.getState().pushConflict({
+        documentKey: draftDocumentKey,
+        sceneId: draftDocumentKey.id,
+        domain: "event",
+        opType: "event.update",
+        entityId: draftDocumentKey.id,
+      });
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onCommit).not.toHaveBeenCalled();
+
+    act(() => {
+      useExternalWriteStore.getState().shiftConflict(draftDocumentKey);
+    });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(onCommit).toHaveBeenCalledOnce();
+    expect(onCommit).toHaveBeenCalledWith("ローカル下書き");
+  });
+
+  it("Reload nonce は競合中の draft を破棄し、外部 value を採用する", async () => {
+    vi.useFakeTimers();
+    const onCommit = vi.fn();
+    const { getByRole, rerender } = render(
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
+    );
+
+    fireEvent.change(getByRole("textbox"), {
+      target: { value: "破棄する下書き" },
+    });
+    act(() => {
+      useExternalWriteStore.getState().pushConflict({
+        documentKey: draftDocumentKey,
+        sceneId: draftDocumentKey.id,
+        domain: "event",
+        opType: "event.update",
+        entityId: draftDocumentKey.id,
+      });
+      useExternalWriteStore.getState().bumpReloadNonce(draftDocumentKey);
+    });
+    rerender(
+      <DraftTextField
+        value="外部の値"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(onCommit).not.toHaveBeenCalled();
+    expect((getByRole("textbox") as HTMLInputElement).value).toBe("外部の値");
+    expect(
+      useEditorSessionStore.getState().isDocumentDirty(draftDocumentKey),
+    ).toBe(false);
   });
 });
 
@@ -198,6 +392,15 @@ describe("ChronicleInspector — 子要素の React key", () => {
     // 詳細欄・参照シーン節はそれぞれ 1 つだけ（増殖しない）。
     expect(getAllByTestId("detail-field").length).toBe(1);
     expect(getAllByTestId("scene-link").length).toBe(1);
+  });
+});
+
+describe("ChronicleInspector — Workspace Glass", () => {
+  it("外枠は透過し、内部の操作面だけはカード塗りを維持する", () => {
+    const { getByTestId } = renderInspector();
+    const inspector = getByTestId("chronicle-inspector");
+    expect(inspector.className).not.toContain("bg-card");
+    expect(inspector.querySelector('[class*="bg-card"]')).not.toBeNull();
   });
 });
 

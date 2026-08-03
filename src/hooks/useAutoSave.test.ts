@@ -18,14 +18,22 @@ import { toast } from "sonner";
 import { announce } from "@/lib/a11y/announcer";
 import i18next from "@/lib/i18n";
 import { debugLog } from "@/lib/debugLog";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
+import { _resetEditorAnalysisSchedulerForTests } from "@/lib/editorAnalysisScheduler";
 
 describe("createAutoSave", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    _resetEditorAnalysisSchedulerForTests();
   });
 
   afterEach(() => {
+    _resetQuiescenceLeasesForTests();
+    _resetEditorAnalysisSchedulerForTests();
     vi.useRealTimers();
   });
 
@@ -75,6 +83,83 @@ describe("createAutoSave", () => {
     expect(saveFn).not.toHaveBeenCalled();
   });
 
+  it("rejects a new schedule while a destructive lifecycle lease is active", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 500);
+    const lease = acquireQuiescenceLease("workspace-open");
+
+    expect(autoSave.schedule()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(saveFn).not.toHaveBeenCalled();
+
+    lease.release();
+    expect(autoSave.schedule()).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledOnce();
+  });
+
+  it("pause keeps the queued edit, blocks quiesce, and resume persists it", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    autoSave.pause();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(saveFn).not.toHaveBeenCalled();
+
+    await expect(autoSave.flush()).rejects.toThrow(
+      "unresolved external edit conflict",
+    );
+    expect(saveFn).not.toHaveBeenCalled();
+
+    autoSave.resume();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledOnce();
+  });
+
+  it("edits scheduled while paused remain queued", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.pause();
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(saveFn).not.toHaveBeenCalled();
+
+    autoSave.resume();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledOnce();
+  });
+
+  it("pause during an in-flight save holds the coalesced rerun", async () => {
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const saveFn = vi
+      .fn()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledOnce();
+
+    autoSave.schedule();
+    autoSave.pause();
+    releaseFirst();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(saveFn).toHaveBeenCalledOnce();
+    await expect(autoSave.flush()).rejects.toThrow(
+      "unresolved external edit conflict",
+    );
+
+    autoSave.resume();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledTimes(2);
+  });
+
   it("flush triggers immediate save and clears pending timer", async () => {
     const saveFn = vi.fn().mockResolvedValue(undefined);
     const autoSave = createAutoSave(saveFn, 2000);
@@ -109,12 +194,12 @@ describe("createAutoSave", () => {
     );
   });
 
-  it("shows toast on flush failure", async () => {
+  it("shows toast and propagates a flush failure", async () => {
     const saveFn = vi.fn().mockRejectedValue(new Error("disk full"));
     const autoSave = createAutoSave(saveFn, 5000);
 
     autoSave.schedule();
-    await autoSave.flush();
+    await expect(autoSave.flush()).rejects.toThrow("disk full");
 
     expect(toast.error).toHaveBeenCalledWith(
       "自動保存に失敗しました: disk full",
@@ -218,7 +303,7 @@ describe("createAutoSave", () => {
     expect(saveFn).toHaveBeenCalledTimes(1);
   });
 
-  it("flush は await 中にタイマー発火で始まった run2 も待つ (R4-2)", async () => {
+  it("保存中の再 schedule は並行実行せず、完了後に最新状態を1回保存する", async () => {
     const gates: Array<() => void> = [];
     const saveFn = vi.fn(
       () =>
@@ -236,14 +321,14 @@ describe("createAutoSave", () => {
     const flushing = autoSave.flush().then(() => {
       flushed = true;
     });
-    // flush が run1 を await している間に再武装 → タイマー発火 → run2 開始
+    // run1 中の再武装は rerun request に畳み込み、run2 を並行開始しない。
     autoSave.schedule();
     await vi.advanceTimersByTimeAsync(500);
-    expect(saveFn).toHaveBeenCalledTimes(2);
+    expect(saveFn).toHaveBeenCalledTimes(1);
 
     gates[0](); // run1 完了
     await vi.advanceTimersByTimeAsync(0);
-    // 1 回だけの await 実装はここで resolve していた (run2 のすり抜け)
+    expect(saveFn).toHaveBeenCalledTimes(2);
     expect(flushed).toBe(false);
 
     gates[1](); // run2 完了
@@ -251,7 +336,7 @@ describe("createAutoSave", () => {
     expect(flushed).toBe(true);
   });
 
-  it("契約(e): flush ループは 20 周で打ち切って warn する (livelock 防止)", async () => {
+  it("flush の drain が上限に達したら reject して quiesce 失敗を伝える", async () => {
     const warnSpy = vi.spyOn(debugLog, "warn");
     // save のたびに schedule を再誘発する病的ケース (持続タイピング相当)
     const holder: { schedule?: () => void } = {};
@@ -262,7 +347,9 @@ describe("createAutoSave", () => {
     holder.schedule = autoSave.schedule;
 
     autoSave.schedule();
-    await expect(autoSave.flush()).resolves.toBeUndefined();
+    await expect(autoSave.flush()).rejects.toThrow(
+      "AutoSave queue did not reach quiescence",
+    );
 
     expect(saveFn.mock.calls.length).toBeLessThanOrEqual(21);
     expect(
@@ -275,12 +362,30 @@ describe("createAutoSave", () => {
     warnSpy.mockRestore();
   });
 
+  it("setDelay は待機中の debounce を新しい遅延で再武装する", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 2000);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(100);
+    autoSave.setDelay(250);
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(saveFn).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(saveFn).toHaveBeenCalledOnce();
+  });
+
   it("WORKSPACE_SWITCHING 拒否は i18n 済みの切替中文言で toast する", async () => {
     const saveFn = vi
       .fn()
       .mockRejectedValue(
-        new Error(
-          "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
+        Object.assign(
+          new Error(
+            "workspace is switching; DB access is temporarily rejected",
+          ),
+          { code: "WORKSPACE_SWITCHING" },
         ),
       );
     const autoSave = createAutoSave(saveFn, 500);
@@ -298,9 +403,11 @@ describe("flushAllAutoSaves (workspace 切替前 quiesce)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    _resetEditorAnalysisSchedulerForTests();
   });
 
   afterEach(() => {
+    _resetEditorAnalysisSchedulerForTests();
     vi.useRealTimers();
   });
 
@@ -336,16 +443,62 @@ describe("flushAllAutoSaves (workspace 切替前 quiesce)", () => {
     autoSave.cancel();
   });
 
-  it("save の失敗があっても reject しない (既存の toast フローに委ねる)", async () => {
+  it("同じinstanceの重複登録は片方のcleanupで失われない", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 2000);
+    const unregisterA = registerAutoSaveForQuiesce(autoSave);
+    const unregisterB = registerAutoSaveForQuiesce(autoSave);
+    unregisterA();
+
+    autoSave.schedule();
+    await flushAllAutoSaves();
+    expect(saveFn).toHaveBeenCalledOnce();
+
+    unregisterB();
+  });
+
+  it("1件でも save に失敗したら reject して切替元へ伝える", async () => {
     const saveFn = vi.fn().mockRejectedValue(new Error("switching"));
     const autoSave = createAutoSave(saveFn, 2000);
     const unregister = registerAutoSaveForQuiesce(autoSave);
 
     autoSave.schedule();
-    await expect(flushAllAutoSaves()).resolves.toBeUndefined();
+    await expect(flushAllAutoSaves()).rejects.toThrow("switching");
     expect(saveFn).toHaveBeenCalledTimes(1);
     expect(toast.error).toHaveBeenCalled();
 
     unregister();
+  });
+
+  it("失敗があっても全instanceのsettleを待ってからrejectする", async () => {
+    let release!: () => void;
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const failed = createAutoSave(
+      vi.fn().mockRejectedValue(new Error("disk full")),
+      2000,
+    );
+    const slowSave = vi.fn(() => delayed);
+    const slow = createAutoSave(slowSave, 2000);
+    const unregisterFailed = registerAutoSaveForQuiesce(failed);
+    const unregisterSlow = registerAutoSaveForQuiesce(slow);
+    failed.schedule();
+    slow.schedule();
+
+    let settled = false;
+    const quiesce = flushAllAutoSaves().finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(slowSave).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    release();
+    await expect(quiesce).rejects.toThrow("disk full");
+
+    unregisterFailed();
+    unregisterSlow();
   });
 });

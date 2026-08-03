@@ -27,6 +27,7 @@ const schema = new Schema({
         category: { default: "consistency_anchor" },
         severity: { default: "warning" },
         status: { default: "open" },
+        live: { default: false },
       },
     },
   },
@@ -119,6 +120,27 @@ describe("applyAnnotationsToEditor", () => {
     expect(mockChain).toHaveBeenCalled();
     expect(mockCommand).toHaveBeenCalled();
     expect(mockRun).toHaveBeenCalled();
+  });
+
+  it("live metadata is propagated to the peAnnotation mark", () => {
+    const { editor, invokeCommand, makeMockTr } = makeMockEditor();
+    const tr = makeMockTr();
+    applyAnnotationsToEditor(editor, [
+      makeAnnotation({
+        id: "live-1",
+        category: "pseudo_comment",
+        textSnapshot: "abc",
+        metadata: JSON.stringify({ live: true }),
+      }),
+    ]);
+    invokeCommand(tr);
+    expect(tr.addMark).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      expect.objectContaining({
+        attrs: expect.objectContaining({ live: true }),
+      }),
+    );
   });
 
   it("sets programmaticInsert and annotationUpdate meta", () => {
@@ -228,6 +250,7 @@ describe("applyAnnotationsToEditor", () => {
       category: "consistency_anchor",
       severity: "error",
       status: "open",
+      live: false,
     });
   });
 

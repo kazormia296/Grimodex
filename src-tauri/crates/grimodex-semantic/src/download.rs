@@ -282,6 +282,7 @@ fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedding::Embedder;
     use crate::spec::{SPEC_EN, SPEC_JA};
 
     const VALID_TOKENIZER_JSON: &str = r#"{
@@ -335,6 +336,48 @@ mod tests {
         std::fs::write(bundled.join(MODEL_FILE), b"model").unwrap();
         std::fs::write(bundled.join("tokenizer.json"), VALID_TOKENIZER_JSON).unwrap();
         assert_eq!(bundled_model_dir(&paths, &SPEC_JA), Some(bundled));
+        let _ = std::fs::remove_dir_all(paths.models_root.parent().unwrap());
+    }
+
+    #[test]
+    fn bundled_model_with_wrong_artifact_bytes_fails_cold_load_verification() {
+        let paths = temp_paths("bundled-artifact-mismatch");
+        let bundled = paths.resource_semantic_root.join(SPEC_JA.dir_name);
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join(MODEL_FILE), b"wrong bundled model bytes").unwrap();
+        std::fs::write(bundled.join("tokenizer.json"), VALID_TOKENIZER_JSON).unwrap();
+
+        let resolved = bundled_model_dir(&paths, &SPEC_JA).expect("bundled model candidate");
+        let error = Embedder::load(
+            &resolved.join(MODEL_FILE),
+            &resolved.join("tokenizer.json"),
+            &SPEC_JA,
+        )
+        .err()
+        .expect("wrong bundled artifact must fail before ORT load");
+        assert!(error.to_string().contains("ONNX artifact sha256 mismatch"));
+        let _ = std::fs::remove_dir_all(paths.models_root.parent().unwrap());
+    }
+
+    #[test]
+    fn downloaded_model_with_matching_sidecar_but_wrong_bytes_fails_cold_load_verification() {
+        let paths = temp_paths("downloaded-artifact-mismatch");
+        let downloaded = paths.models_root.join(SPEC_EN.dir_name);
+        std::fs::create_dir_all(&downloaded).unwrap();
+        std::fs::write(downloaded.join(MODEL_FILE), b"wrong downloaded model bytes").unwrap();
+        std::fs::write(downloaded.join(SIDECAR_FILE), SPEC_EN.artifact_sha256).unwrap();
+        std::fs::write(downloaded.join("tokenizer.json"), VALID_TOKENIZER_JSON).unwrap();
+
+        let resolved =
+            installed_download_dir(&paths, &SPEC_EN).expect("sidecar-matched model candidate");
+        let error = Embedder::load(
+            &resolved.join(MODEL_FILE),
+            &resolved.join("tokenizer.json"),
+            &SPEC_EN,
+        )
+        .err()
+        .expect("wrong downloaded artifact must fail before ORT load");
+        assert!(error.to_string().contains("ONNX artifact sha256 mismatch"));
         let _ = std::fs::remove_dir_all(paths.models_root.parent().unwrap());
     }
 

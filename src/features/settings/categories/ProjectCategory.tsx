@@ -15,7 +15,6 @@ import { notifyLanguageChangedReindex } from "@/features/semantic-search/reindex
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { PhaseResolutionMode } from "@/features/codex/phaseResolver";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { PROJECT_ID } from "@/features/project/constants";
 import { GENRE_VALUES } from "@/features/project/genreOptions";
 
 const LANGUAGE_OPTIONS = [
@@ -99,7 +98,7 @@ export function ProjectCategory() {
 
   async function handleSaveAsDefaults() {
     try {
-      const all = await getAllProjectSettings(PROJECT_ID);
+      const all = await getAllProjectSettings(getCurrentProjectId());
       const ok = await updateProjectDefaults(all);
       // updateProjectDefaults は失敗を内部で握りつぶしてリバートするため、成功トースト
       // を無条件で出すと「保存できていないのに成功表示」になる。戻り値で分岐する。

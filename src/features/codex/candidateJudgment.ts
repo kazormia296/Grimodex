@@ -18,6 +18,8 @@ import { getProject } from "@/features/project/api";
 import { parseAliases } from "./codexMatcher";
 import { candidateKey } from "./codexCandidates";
 import type { CodexCandidate } from "./candidateExtractor";
+import i18next from "@/lib/i18n";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 export type SuggestedType = "character" | "location" | "item" | "lore";
 
@@ -40,11 +42,24 @@ const SUGGESTED_TYPES: readonly SuggestedType[] = [
 const MAX_CANDIDATES = 50;
 const MAX_ENTRIES = 200;
 
+export const CODEX_JUDGMENT_NO_VALID_RESULT =
+  "CODEX_JUDGMENT_NO_VALID_RESULT" as const;
+
+export class CandidateJudgmentNoValidResultError extends Error {
+  readonly code = CODEX_JUDGMENT_NO_VALID_RESULT;
+
+  constructor() {
+    super(i18next.t("codex.candidates.judgeNoResult"));
+    this.name = "CandidateJudgmentNoValidResultError";
+  }
+}
+
 type EntryLike = { id: string; name: string | null; aliases: string | null };
 
 /**
  * 候補を一括判定し、`candidateKey(surface) → CandidateJudgment` の Map を返す。
- * policy off / 候補なし / AI 失敗時は空 Map (UI は決定的な候補一覧のまま動く)。
+ * policy off / 候補なしは空 Map。送信失敗・有効結果なしは reject し、UI が通知する。
+ * いずれの場合も決定的な候補一覧自体は維持される。
  */
 export async function judgeCandidates(
   candidates: ReadonlyArray<CodexCandidate>,
@@ -82,29 +97,30 @@ export async function judgeCandidates(
     })),
   });
 
-  let response;
-  try {
-    const ov = resolveRoleSendOverride("codex_judgment");
-    response = await sendChatMessageWithThinking(
-      [{ role: "user", content: prompt }],
-      undefined, // thinkingParams
-      undefined, // systemCacheSegments
-      ov.apiVariant, // apiVariant（横断割り当て時のみ）
-      undefined, // systemVolatileTail
-      ov.model,
-      ov.provider,
-      ov.endpointId,
-    );
-  } catch {
-    return result;
-  }
+  const ov = resolveRoleSendOverride("codex_judgment");
+  const response = await sendChatMessageWithThinking(
+    [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "codex_judgment",
+    },
+    undefined, // thinkingParams
+    undefined, // systemCacheSegments
+    ov.apiVariant, // apiVariant（横断割り当て時のみ）
+    undefined, // systemVolatileTail
+    ov.model,
+    ov.provider,
+    ov.endpointId,
+  );
   void recordAiUsage({
     surface: "codex_judgment",
     tokensIn: response.inputTokens,
     tokensOut: response.outputTokens,
   });
 
-  return parseJudgmentResponse(response.text, validSurfaces, knownIds);
+  const parsed = parseJudgmentResponse(response.text, validSurfaces, knownIds);
+  if (parsed.size === 0) throw new CandidateJudgmentNoValidResultError();
+  return parsed;
 }
 
 /**

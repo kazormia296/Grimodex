@@ -1,8 +1,31 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   buildCrossReferenceFromMentionRows,
   buildCrossReferenceFromTexts,
+  loadCrossReferenceSceneContents,
 } from "./crossReference";
+
+describe("loadCrossReferenceSceneContents", () => {
+  it("loads the report's scenes once and degrades batch failure to empty", async () => {
+    const contents = new Map([["scene-a", "alpha"]]);
+    const loadBatch = vi.fn(async (sceneIds: string[]) => {
+      expect(sceneIds).toEqual(["scene-a", "scene-b"]);
+      return contents;
+    });
+
+    await expect(
+      loadCrossReferenceSceneContents(["scene-a", "scene-b"], loadBatch),
+    ).resolves.toBe(contents);
+    expect(loadBatch).toHaveBeenCalledOnce();
+
+    const failingBatch = vi.fn(async (_sceneIds: string[]) => {
+      throw new Error("database unavailable");
+    });
+    await expect(
+      loadCrossReferenceSceneContents(["scene-a"], failingBatch),
+    ).resolves.toEqual(new Map());
+  });
+});
 
 describe("buildCrossReferenceFromTexts", () => {
   const entries = [

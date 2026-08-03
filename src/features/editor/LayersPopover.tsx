@@ -28,6 +28,7 @@ import {
 } from "@/features/settings/useSettingControl";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { isLiveReaderAnnotation } from "@/features/post-effect/liveReaderAnnotation";
 import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin";
 import { useLintStore } from "@/features/lint/lintStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -185,7 +186,10 @@ export function LayersPopover({
   const readerCommentCount = useAnnotationStore((s) =>
     sceneId
       ? (s.annotationsByScene.get(sceneId) ?? []).filter(
-          (a) => a.status !== "dismissed" && a.category === "pseudo_comment",
+          (a) =>
+            a.status !== "dismissed" &&
+            a.category === "pseudo_comment" &&
+            !isLiveReaderAnnotation(a),
         ).length
       : 0,
   );
@@ -360,7 +364,7 @@ export function LayersPopover({
               style={{ color: "var(--deco-reader-comment)" }}
             />
           }
-          label={t("editor.layers.readerComments")}
+          label={t("editor.layers.pseudoComments")}
           count={readerCommentCount}
           checked={showReaderComments}
           onToggle={() => {

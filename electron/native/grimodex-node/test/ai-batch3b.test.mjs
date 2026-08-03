@@ -3,7 +3,13 @@
 // ローカル OpenAI 互換モックで end-to-end 検証する。
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -46,7 +52,80 @@ function makeBackend() {
   const events = [];
   const backend = new Backend(appDataDir);
   backend.onEvent((channel, payload) => events.push({ channel, payload }));
-  return { backend, events };
+  return { backend, events, root };
+}
+
+let auditExecutionCounter = 0;
+
+async function auditedArgs(
+  backend,
+  root,
+  args,
+  pathId,
+  { stream = false } = {},
+) {
+  const workspace = join(root, "workspace");
+  await backend.openWorkspace(workspace);
+  const expectedWorkspacePath = realpathSync(workspace);
+  auditExecutionCounter += 1;
+  const executionId = `batch3b-execution-${auditExecutionCounter}`;
+  const operationId = `batch3b-operation-${auditExecutionCounter}`;
+  const projectId = null;
+  const auditContext = {
+    expectedWorkspacePath,
+    projectId,
+    operationId,
+    executionId,
+    parentExecutionId: null,
+    pathId,
+  };
+  await backend.aiAuditAppendBatch(expectedWorkspacePath, projectId, [
+    {
+      eventId: `batch3b-start-${auditExecutionCounter}`,
+      executionId,
+      operationId,
+      parentExecutionId: null,
+      pathId,
+      eventType: "execution.started",
+      timestamp: Date.now(),
+      payload: {
+        captureState: "complete",
+        appVersion: "2.0.10",
+      },
+    },
+    {
+      eventId: `batch3b-prepared-${auditExecutionCounter}`,
+      executionId,
+      operationId,
+      parentExecutionId: null,
+      pathId,
+      eventType: "request.prepared",
+      timestamp: Date.now(),
+      payload: {
+        captureState: "complete",
+        credentialsExcluded: true,
+        request: { messages: args.messages ?? [] },
+      },
+    },
+    {
+      eventId: `batch3b-dispatched-${auditExecutionCounter}`,
+      executionId,
+      operationId,
+      parentExecutionId: null,
+      pathId,
+      eventType: "request.dispatched",
+      timestamp: Date.now(),
+      payload: {
+        captureState: "complete",
+        dispatchBoundary: "before_electron_native_ipc_invoke",
+      },
+    },
+  ]);
+  return {
+    ...args,
+    ...(stream ? { streamId: executionId } : {}),
+    auditContext,
+  };
 }
 
 function startMockServer(handler) {
@@ -170,7 +249,7 @@ test("sendAgentMessage がcamelCase tool履歴を送り、低信頼providerのwr
     );
   });
   try {
-    const { backend } = makeBackend();
+    const { backend, root } = makeBackend();
     const settings = {
       ...settingsWithEndpoints("http://127.0.0.1:1", baseUrl),
       // A settings re-read would choose Hermes. The turn-start snapshot below
@@ -186,8 +265,14 @@ test("sendAgentMessage がcamelCase tool履歴を送り、低信頼providerのwr
       webSearch: null,
       resolvedToolProtocol: "native",
     };
+    const audited = await auditedArgs(
+      backend,
+      root,
+      args,
+      "napi_agent_message",
+    );
     const result = JSON.parse(
-      await backend.sendAgentMessage(args, settings, "sk-agent"),
+      await backend.sendAgentMessage(audited, settings, "sk-agent"),
     );
 
     assert.equal(request.url, "/chat/completions");
@@ -227,21 +312,23 @@ test("sendAgentMessage がcamelCase tool履歴を送り、低信頼providerのwr
 });
 
 test("sendAgentMessage は unresolved tool protocol をN-API境界で拒否する", async () => {
-  const { backend } = makeBackend();
+  const { backend, root } = makeBackend();
   const settings = settingsWithEndpoints(
     "http://127.0.0.1:1",
     "http://127.0.0.1:1",
   );
+  const args = await auditedArgs(
+    backend,
+    root,
+    {
+      messages: [],
+      tools: [],
+      resolvedToolProtocol: "auto",
+    },
+    "napi_agent_invalid_protocol",
+  );
   await assert.rejects(
-    backend.sendAgentMessage(
-      {
-        messages: [],
-        tools: [],
-        resolvedToolProtocol: "auto",
-      },
-      settings,
-      "sk-agent",
-    ),
+    backend.sendAgentMessage(args, settings, "sk-agent"),
     /failed to deserialize args|unknown variant.*auto/,
   );
 });
@@ -271,6 +358,180 @@ test("listAiModels はendpoint overrideを使い、空キーならAuthorization�
   }
 });
 
+test("listAiModels は選択Ollamaモデルだけをロードしてrunner contextを再取得する", async () => {
+  const shownModels = [];
+  const requestedRoutes = [];
+  let psCalls = 0;
+  let preloadBody;
+  const { server, baseUrl } = await startMockServer(async (req, res) => {
+    requestedRoutes.push(req.url);
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/tags") {
+      res.end(
+        JSON.stringify({
+          models: [
+            { name: "gemma4:latest" },
+            { name: "slow-unrelated:latest" },
+          ],
+        }),
+      );
+      return;
+    }
+    if (req.url === "/api/ps") {
+      psCalls += 1;
+      res.end(
+        JSON.stringify({
+          models:
+            psCalls === 1
+              ? []
+              : [
+                  {
+                    name: "gemma4:latest",
+                    model: "gemma4:latest",
+                    context_length: 16384,
+                  },
+                ],
+        }),
+      );
+      return;
+    }
+    if (req.url === "/api/show") {
+      const body = await readJson(req);
+      shownModels.push(body.model);
+      res.end(
+        JSON.stringify({
+          model_info: {
+            "general.architecture": "gemma4",
+            "gemma4.context_length": 131072,
+          },
+          capabilities: ["completion", "tools"],
+        }),
+      );
+      return;
+    }
+    if (req.url === "/api/generate") {
+      preloadBody = await readJson(req);
+      res.end(JSON.stringify({ done: true, done_reason: "load" }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+  try {
+    const { backend } = makeBackend();
+    const settings = {
+      ...settingsWithEndpoints(baseUrl, baseUrl, "ollama"),
+      model: "gemma4:latest",
+      ollamaEndpoint: baseUrl,
+    };
+    const models = JSON.parse(
+      await backend.listAiModels(
+        {
+          provider: "ollama",
+          endpointId: null,
+          selectedModelId: "gemma4:latest",
+          expectedOllamaEndpoint: baseUrl,
+        },
+        settings,
+        "",
+      ),
+    );
+    assert.deepEqual(shownModels, ["gemma4:latest"]);
+    assert.deepEqual(requestedRoutes, [
+      "/api/tags",
+      "/api/ps",
+      "/api/show",
+      "/api/generate",
+      "/api/ps",
+    ]);
+    assert.deepEqual(preloadBody, {
+      model: "gemma4:latest",
+      stream: false,
+    });
+    assert.equal(models.length, 1);
+    assert.equal(models[0].id, "gemma4:latest");
+    assert.equal(models[0].contextLength, 131072);
+    assert.equal(models[0].effectiveContextLength, 16384);
+    assert.equal(models[0].effectiveContextSource, "runner");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("同名Ollamaモデルのendpoint A/B driftをplain/stream/agent/models全境界で拒否する", async () => {
+  const { backend, root } = makeBackend();
+  const endpointA = "http://127.0.0.1:11434";
+  const endpointB = "http://127.0.0.1:21434";
+  const settings = {
+    ...settingsWithEndpoints(endpointB, endpointB, "ollama"),
+    model: "shared-model:latest",
+    ollamaEndpoint: endpointB,
+  };
+  const messages = [{ role: "user", content: "hello" }];
+  const expected = /Ollama endpoint changed before request/;
+  const plainArgs = await auditedArgs(
+    backend,
+    root,
+    {
+      messages,
+      provider: "ollama",
+      model: "shared-model:latest",
+      expectedOllamaEndpoint: endpointA,
+    },
+    "napi_chat_endpoint_drift",
+  );
+  const streamArgs = await auditedArgs(
+    backend,
+    root,
+    {
+      messages,
+      provider: "ollama",
+      model: "shared-model:latest",
+      expectedOllamaEndpoint: endpointA,
+    },
+    "napi_chat_stream_endpoint_drift",
+    { stream: true },
+  );
+  const agentArgs = await auditedArgs(
+    backend,
+    root,
+    {
+      messages,
+      tools: [],
+      provider: "ollama",
+      model: "shared-model:latest",
+      expectedOllamaEndpoint: endpointA,
+      resolvedToolProtocol: "native",
+    },
+    "napi_agent_endpoint_drift",
+  );
+
+  await assert.rejects(
+    backend.sendChatMessage(plainArgs, settings, ""),
+    expected,
+  );
+  await assert.rejects(
+    backend.sendChatMessageStream(streamArgs, settings, ""),
+    expected,
+  );
+  await assert.rejects(
+    backend.sendAgentMessage(agentArgs, settings, ""),
+    expected,
+  );
+  await assert.rejects(
+    backend.listAiModels(
+      {
+        provider: "ollama",
+        selectedModelId: "shared-model:latest",
+        expectedOllamaEndpoint: endpointA,
+      },
+      settings,
+      "",
+    ),
+    expected,
+  );
+});
+
 test("testAiConnection はendpoint/model/key overrideを保ち、応答文字列を返す", async () => {
   let request;
   const { server, baseUrl } = await startMockServer(async (req, res) => {
@@ -287,15 +548,21 @@ test("testAiConnection はendpoint/model/key overrideを保ち、応答文字列
     );
   });
   try {
-    const { backend } = makeBackend();
+    const { backend, root } = makeBackend();
     const settings = settingsWithEndpoints("http://127.0.0.1:1", baseUrl);
-    const message = await backend.testAiConnection(
+    const args = await auditedArgs(
+      backend,
+      root,
       {
         provider: "openai-compatible",
         model: "probe-model",
         apiVariant: "v1",
         endpointId: "other",
       },
+      "ai_connection_test",
+    );
+    const message = await backend.testAiConnection(
+      args,
       settings,
       "sk-probe",
     );
@@ -303,6 +570,29 @@ test("testAiConnection はendpoint/model/key overrideを保ち、応答文字列
     assert.equal(request.url, "/chat/completions");
     assert.equal(request.authorization, "Bearer sk-probe");
     assert.equal(request.body.model, "probe-model");
+    const snapshot = JSON.parse(
+      await backend.aiAuditReadSnapshot(
+        args.auditContext.expectedWorkspacePath,
+        null,
+        0,
+        undefined,
+        100,
+      ),
+    );
+    const effectiveReceipt = snapshot.events.find(
+      (event) =>
+        event.executionId === args.auditContext.executionId &&
+        event.eventId.startsWith("native-effective-request:"),
+    );
+    assert.ok(effectiveReceipt, "native effective request receipt must exist");
+    assert.deepEqual(effectiveReceipt.payload.request.body, request.body);
+    assert.equal(effectiveReceipt.payload.captureState, "complete");
+    assert.equal(effectiveReceipt.payload.route.provider, "openai-compatible");
+    assert.equal(effectiveReceipt.payload.route.endpointId, "other");
+    assert.equal(
+      JSON.stringify(effectiveReceipt.payload).includes("sk-probe"),
+      false,
+    );
   } finally {
     await closeServer(server);
   }
@@ -324,20 +614,34 @@ test("inline abortはinlineだけを停止し、同時実行chatを止めない"
     if (responses.size === 2) markBothStarted();
   });
   try {
-    const { backend, events } = makeBackend();
+    const { backend, events, root } = makeBackend();
     const settings = settingsWithEndpoints(
       baseUrl,
       baseUrl,
       "openai-compatible",
     );
     const messages = [{ role: "user", content: "continue" }];
-    const chat = backend.sendChatMessageStream(
+    const chatArgs = await auditedArgs(
+      backend,
+      root,
       { messages, model: "chat-model" },
+      "napi_concurrent_chat_stream",
+      { stream: true },
+    );
+    const inlineArgs = await auditedArgs(
+      backend,
+      root,
+      { messages, model: "inline-model" },
+      "napi_concurrent_inline_stream",
+      { stream: true },
+    );
+    const chat = backend.sendChatMessageStream(
+      chatArgs,
       settings,
       "",
     );
     const inline = backend.sendInlineAiStream(
-      { messages, model: "inline-model" },
+      inlineArgs,
       settings,
       "",
     );
@@ -345,13 +649,7 @@ test("inline abortはinlineだけを停止し、同時実行chatを止めない"
     await bothStarted;
     await waitForEvent(events, "chat:stream-chunk");
     await waitForEvent(events, "inline-ai:stream-chunk");
-    backend.abortInlineAiStream();
-
-    const inlineResponse = responses.get("inline-model");
-    inlineResponse.write(
-      sseFrame({ choices: [{ delta: { content: "inline-must-not-arrive" } }] }),
-    );
-    inlineResponse.end();
+    assert.equal(await backend.abortInlineAiStream(inlineArgs.streamId), true);
 
     const chatResponse = responses.get("chat-model");
     chatResponse.write(
@@ -395,18 +693,21 @@ test("inline HTTP errorはinline-ai:stream-errorをemitしてrejectする", asyn
     res.end(JSON.stringify({ error: "inline boom" }));
   });
   try {
-    const { backend, events } = makeBackend();
+    const { backend, events, root } = makeBackend();
     const settings = settingsWithEndpoints(
       baseUrl,
       baseUrl,
       "openai-compatible",
     );
+    const args = await auditedArgs(
+      backend,
+      root,
+      { messages: [{ role: "user", content: "continue" }] },
+      "napi_inline_stream_error",
+      { stream: true },
+    );
     await assert.rejects(
-      backend.sendInlineAiStream(
-        { messages: [{ role: "user", content: "continue" }] },
-        settings,
-        "",
-      ),
+      backend.sendInlineAiStream(args, settings, ""),
     );
     const event = await waitForEvent(events, "inline-ai:stream-error");
     assert.match(JSON.parse(event.payload).message, /HTTP 500/);

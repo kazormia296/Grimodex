@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, fireEvent, act } from "@testing-library/react";
-import type { TreeNodeData } from "@/features/tree/treeStore";
+import { render, fireEvent, act, waitFor } from "@testing-library/react";
+import { Profiler } from "react";
+import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { TimelineViewport } from "./TimelineViewport";
 import { zoomFactorFromWheel, computeZoomScrollLeft } from "./timelineZoom";
 import { useTimelineStore } from "./timelineStore";
@@ -9,12 +10,19 @@ import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { buildPlotLaneModel } from "@/features/plot-threads/plotThreadLaneModel";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { endPerfSession, startPerfSession } from "@/lib/perfLog";
 
 /** reduced-motion を強制（アニメ無し＝即時確定）して toggle/settled を決定的に検証する。 */
 function setReduceMotion(on: boolean) {
   useSettingsStore.setState((s) => ({
     cache: { ...s.cache, "display.reduceMotion": on ? "true" : "false" },
   }));
+}
+
+function svgTranslateY(element: Element): number {
+  const transform = element.getAttribute("transform") ?? "";
+  const match = /translate\(0[ ,](-?\d+(?:\.\d+)?)\)/.exec(transform);
+  return match ? Number(match[1]) : 0;
 }
 
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
@@ -54,6 +62,7 @@ const mockScene: TreeNodeData = {
 };
 
 function resetStore() {
+  useTreeStore.setState({ activeSceneId: "" });
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
@@ -265,6 +274,43 @@ describe("TimelineViewport – threads モード", () => {
     fireEvent.mouseDown(marker, { clientX: 50, clientY: 50 });
     fireEvent.mouseUp(document, { clientX: 50, clientY: 50 });
     expect(onSelectMarker).toHaveBeenCalledWith("l1");
+  });
+
+  it("固定スレッドタイトル列とカプセルの背景を半透明で描画する", () => {
+    useTimelineStore.setState({ showThreads: true });
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "proj-1",
+          name: "復讐の糸",
+          color: "#c33",
+          description: null,
+          sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [],
+      loading: false,
+    });
+
+    const { getByTestId } = render(
+      <TimelineViewport scenes={[mockScene]} onSelectScene={vi.fn()} />,
+    );
+
+    expect(
+      getByTestId("timeline-thread-label-backdrop").getAttribute(
+        "fill-opacity",
+      ),
+    ).toBe("0.7");
+    expect(
+      getByTestId("plot-lane-label-t1")
+        .querySelector("rect")
+        ?.getAttribute("fill-opacity"),
+    ).toBe("0.84");
   });
 
   it("オーバーレイ: スレッド表示中でもシーンのドットは描画する", () => {
@@ -753,6 +799,336 @@ describe("TimelineViewport – 中ボタン(ホイール)ドラッグでパン",
     expect(remove).toHaveBeenCalledWith("mouseup", upFn, true);
     add.mockRestore();
     remove.mockRestore();
+  });
+});
+
+describe("TimelineViewport – シーンドラッグ", () => {
+  beforeEach(resetStore);
+
+  const scenes = [
+    { ...mockScene, id: "s1", storyTimeOrder: "a0" },
+    { ...mockScene, id: "s2", storyTimeOrder: "a1" },
+    { ...mockScene, id: "s3", storyTimeOrder: "a2" },
+  ];
+
+  it("高頻度 mousemove を1フレームへ集約し、React再描画なしで最新座標へ追従する", () => {
+    setReduceMotion(true);
+    let frame: FrameRequestCallback = () => {};
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      frame = callback;
+      return 1;
+    });
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const add = vi.spyOn(document, "addEventListener");
+    try {
+      const onDropStoryTime = vi.fn();
+      let renderCount = 0;
+      const { getByTestId } = render(
+        <Profiler
+          id="timeline-scene-drag"
+          onRender={() => {
+            renderCount += 1;
+          }}
+        >
+          <TimelineViewport
+            scenes={scenes}
+            onSelectScene={vi.fn()}
+            onDropStoryTime={onDropStoryTime}
+          />
+        </Profiler>,
+      );
+      const dot = getByTestId("timeline-scene-dot-s1");
+      const svg = dot.closest("svg");
+      expect(svg).not.toBeNull();
+      const rectRead = vi.spyOn(svg!, "getBoundingClientRect");
+      const rendersBeforeStart = renderCount;
+      fireEvent.mouseDown(dot, { button: 0, clientX: 48, clientY: 60 });
+      expect(rectRead).toHaveBeenCalledTimes(1);
+      expect(renderCount).toBe(rendersBeforeStart);
+      const rendersAfterStart = renderCount;
+      const mainSvgAfterStart = svg!.outerHTML;
+      const dragLayer = getByTestId("timeline-scene-drag-layer");
+      expect(dragLayer.parentElement).toBe(
+        getByTestId("timeline-viewport-frame"),
+      );
+      expect(dragLayer.parentElement).not.toBe(
+        getByTestId("timeline-scroll-container"),
+      );
+      expect(dragLayer.style.contain).toBe("strict");
+      expect(dragLayer.style.visibility).toBe("visible");
+      expect(dragLayer).not.toBe(svg);
+      // Keep the large static Timeline SVG paint-stable. The source dot stays
+      // visible while the moving preview lives in its own bounded SVG layer.
+      expect(dot.getAttribute("opacity")).toBeNull();
+      const listenerAddsAfterStart = add.mock.calls.filter(
+        ([type]) => type === "mousemove",
+      ).length;
+      startPerfSession();
+
+      // Four raw samples collapse into one frame and only the latest is painted.
+      fireEvent.mouseMove(document, { clientX: 180, clientY: 97 });
+      fireEvent.mouseMove(document, { clientX: 181, clientY: 98 });
+      fireEvent.mouseMove(document, { clientX: 182, clientY: 99 });
+      fireEvent.mouseMove(document, { clientX: 183, clientY: 100 });
+      expect(requestFrame).toHaveBeenCalledTimes(1);
+      act(() => frame(0));
+      // Once movement begins, the gesture owns a pre-armed frame clock. The
+      // next pointer sample does not need to register a late rAF callback.
+      expect(requestFrame).toHaveBeenCalledTimes(2);
+      // The 5k-marker SVG remains byte-for-byte static. Only the isolated
+      // preview layer receives a compositor transform / guide endpoint update.
+      expect(dot.getAttribute("cx")).toBe("48");
+      expect(dot.getAttribute("cy")).toBe("60");
+      expect(svg!.outerHTML).toBe(mainSvgAfterStart);
+      expect(getByTestId("timeline-scene-drag-marker").style.transform).toBe(
+        "translate3d(177px, 94px, 0)",
+      );
+      const ghost = getByTestId("timeline-scene-drag-ghost");
+      expect(ghost.parentElement).toBe(dragLayer);
+      expect(ghost.style.transform).toContain("translate3d(48px, 60px, 0)");
+      expect(ghost.style.transform).toContain("rotate(");
+      expect(ghost.style.transform).toContain("scaleX(");
+      expect(renderCount).toBe(rendersAfterStart);
+      expect(
+        add.mock.calls.filter(([type]) => type === "mousemove").length,
+      ).toBe(listenerAddsAfterStart);
+
+      // An input-free presentation frame remains part of the pre-armed clock,
+      // but does not repeat DOM work. Sparse driver/input timing therefore
+      // cannot be mistaken for a 32 ms rendered frame.
+      act(() => frame(16));
+      expect(requestFrame).toHaveBeenCalledTimes(3);
+      expect(getByTestId("timeline-scene-drag-marker").style.transform).toBe(
+        "translate3d(177px, 94px, 0)",
+      );
+      expect(svg!.outerHTML).toBe(mainSvgAfterStart);
+      expect(renderCount).toBe(rendersAfterStart);
+
+      // The next frame remains imperative and preserves the axis-lock behavior.
+      fireEvent.mouseMove(document, { clientX: 184, clientY: 61 });
+      act(() => frame(32));
+      expect(requestFrame).toHaveBeenCalledTimes(4);
+      expect(getByTestId("timeline-scene-drag-marker").style.transform).toBe(
+        "translate3d(178px, 54px, 0)",
+      );
+      expect(ghost.style.transform).toContain("translate3d(48px, 60px, 0)");
+      expect(ghost.style.transform).toContain("rotate(0rad)");
+      expect(svg!.outerHTML).toBe(mainSvgAfterStart);
+      // Pointer-frequency updates use the origin captured at mousedown rather
+      // than forcing SVG layout after each geometry write.
+      expect(rectRead).toHaveBeenCalledTimes(1);
+      expect(renderCount).toBe(rendersAfterStart);
+      const perfSession = endPerfSession();
+      expect(perfSession?.counters["timeline.pointerFrame.work.count"]).toBe(2);
+      expect(
+        perfSession?.markStats.find(
+          (entry) => entry.label === "timeline.pointerFrame.work",
+        )?.count,
+      ).toBe(2);
+      expect(
+        perfSession?.counters["timeline.pointerFrame.interval.count"],
+      ).toBe(2);
+      expect(
+        perfSession?.markStats.find(
+          (entry) => entry.label === "timeline.pointerFrame.interval",
+        ),
+      ).toMatchObject({ count: 2, maxMs: 16 });
+
+      fireEvent.mouseUp(document, {
+        button: 0,
+        clientX: 200,
+        clientY: 60,
+      });
+      expect(onDropStoryTime).toHaveBeenCalledWith("s1", "a1", "a2", false);
+      expect(dragLayer.style.visibility).toBe("hidden");
+    } finally {
+      endPerfSession();
+      add.mockRestore();
+      vi.unstubAllGlobals();
+      setReduceMotion(false);
+    }
+  });
+
+  it("独立レイヤーは scroll/zoom 座標と active ring を保ち、元の hit target を維持する", () => {
+    setReduceMotion(true);
+    let frame: FrameRequestCallback = () => {};
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frame = callback;
+        return 1;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    useTreeStore.setState({ activeSceneId: "s2" });
+    try {
+      const { getByTestId, queryByTestId } = render(
+        <TimelineViewport
+          scenes={scenes}
+          onSelectScene={vi.fn()}
+          onDropStoryTime={vi.fn()}
+        />,
+      );
+      const container = getByTestId("timeline-scroll-container");
+      Object.defineProperty(container, "scrollLeft", {
+        configurable: true,
+        writable: true,
+        value: 40,
+      });
+      Object.defineProperty(container, "scrollTop", {
+        configurable: true,
+        writable: true,
+        value: 0,
+      });
+      const dot = getByTestId("timeline-scene-dot-s2");
+      const svg = getByTestId("timeline-main-svg");
+      vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({
+        x: -40,
+        y: 0,
+        left: -40,
+        top: 0,
+        right: 328,
+        bottom: 130,
+        width: 368,
+        height: 130,
+        toJSON: () => ({}),
+      });
+
+      // s2 is x=144 at zoom=1; with scrollLeft=40 it is at clientX=104.
+      fireEvent.mouseDown(dot, { button: 0, clientX: 104, clientY: 60 });
+      const dragLayer = getByTestId("timeline-scene-drag-layer");
+      expect(dragLayer.style.visibility).toBe("visible");
+      expect(dragLayer.style.left).toBe("");
+      expect(
+        queryByTestId("timeline-scene-drag-active-ring")?.style.display,
+      ).toBe("");
+
+      // Scrolling by +20 while dragging must be included in content coordinates.
+      container.scrollLeft = 60;
+      fireEvent.mouseMove(document, { clientX: 128, clientY: 100 });
+      act(() => frame(0));
+      expect(getByTestId("timeline-scene-drag-marker").style.transform).toBe(
+        "translate3d(122px, 94px, 0)",
+      );
+
+      // Zoom moves the scene anchor from x=144 to x=240. The preview offset is
+      // recomputed in layout so its screen position remains at the pointer.
+      act(() => useTimelineStore.setState({ zoom: 2 }));
+      expect(getByTestId("timeline-scene-drag-marker").style.transform).toBe(
+        "translate3d(122px, 94px, 0)",
+      );
+      expect(
+        getByTestId("timeline-scene-drag-ghost").style.transform,
+      ).toContain("translate3d(180px, 60px, 0)");
+
+      fireEvent.blur(window);
+      expect(dragLayer.style.visibility).toBe("hidden");
+      expect(dot.getAttribute("opacity")).toBeNull();
+      // The original interactive circle was never replaced by the overlay.
+      expect(getByTestId("timeline-scene-dot-s2")).toBe(dot);
+    } finally {
+      vi.unstubAllGlobals();
+      setReduceMotion(false);
+    }
+  });
+
+  it("keepalive-hidden 遷移でシーンドラッグの rAF と document listener を取消す", () => {
+    setReduceMotion(true);
+    let nextFrameId = 0;
+    const requestFrame = vi.fn(() => {
+      nextFrameId += 1;
+      return nextFrameId;
+    });
+    const cancelFrame = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+    const onDropStoryTime = vi.fn();
+    try {
+      const { getByTestId, rerender } = render(
+        <TimelineViewport
+          scenes={scenes}
+          onSelectScene={vi.fn()}
+          onDropStoryTime={onDropStoryTime}
+          isActive
+        />,
+      );
+      fireEvent.mouseDown(getByTestId("timeline-scene-dot-s1"), {
+        button: 0,
+        clientX: 48,
+        clientY: 60,
+      });
+      fireEvent.mouseMove(document, { clientX: 180, clientY: 90 });
+      expect(requestFrame).toHaveBeenCalledTimes(1);
+      expect(getByTestId("timeline-scene-drag-layer").style.visibility).toBe(
+        "visible",
+      );
+
+      rerender(
+        <TimelineViewport
+          scenes={scenes}
+          onSelectScene={vi.fn()}
+          onDropStoryTime={onDropStoryTime}
+          isActive={false}
+        />,
+      );
+      expect(cancelFrame).toHaveBeenCalledWith(1);
+      expect(getByTestId("timeline-scene-drag-layer").style.visibility).toBe(
+        "hidden",
+      );
+      fireEvent.mouseUp(document, {
+        button: 0,
+        clientX: 180,
+        clientY: 90,
+      });
+      expect(onDropStoryTime).not.toHaveBeenCalled();
+
+      fireEvent.mouseDown(getByTestId("timeline-scene-dot-s1"), {
+        button: 0,
+        clientX: 48,
+        clientY: 60,
+      });
+      fireEvent.mouseMove(document, { clientX: 200, clientY: 90 });
+      expect(requestFrame).toHaveBeenCalledTimes(1);
+      expect(getByTestId("timeline-scene-drag-layer").style.visibility).toBe(
+        "hidden",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      setReduceMotion(false);
+    }
+  });
+
+  it("window blur で保留中のシーンドラッグを取消し、復帰後は再度ドロップできる", () => {
+    const onDropStoryTime = vi.fn();
+    const { getByTestId } = render(
+      <TimelineViewport
+        scenes={scenes}
+        onSelectScene={vi.fn()}
+        onDropStoryTime={onDropStoryTime}
+      />,
+    );
+    const dot = getByTestId("timeline-scene-dot-s1");
+    fireEvent.mouseDown(dot, { button: 0, clientX: 48, clientY: 60 });
+    fireEvent.mouseMove(document, { clientX: 200, clientY: 100 });
+    fireEvent.blur(window);
+    expect(getByTestId("timeline-scene-drag-layer").style.visibility).toBe(
+      "hidden",
+    );
+    fireEvent.mouseUp(document, {
+      button: 0,
+      clientX: 200,
+      clientY: 100,
+    });
+    expect(onDropStoryTime).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(dot, { button: 0, clientX: 48, clientY: 60 });
+    fireEvent.mouseUp(document, {
+      button: 0,
+      clientX: 200,
+      clientY: 60,
+    });
+    expect(onDropStoryTime).toHaveBeenCalledWith("s1", "a1", "a2", false);
   });
 });
 
@@ -1275,10 +1651,10 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
   }
 
-  it("同レーンで横ドラッグ → updateMarker でシーン移動", () => {
+  it("同レーンで横ドラッグ → atomic bundle でシーン移動", () => {
     seed();
-    const updateMarker = vi.fn();
-    usePlotThreadStore.setState({ updateMarker });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1286,15 +1662,17 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 158 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 158 });
-    expect(updateMarker).toHaveBeenCalledWith("l1", { nodeId: "s2" });
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "l1",
+      markerPatch: { nodeId: "s2" },
+    });
   });
 
-  it("マーカードラッグ中はグラフを再計算しプレビューのコネクタが出る（確定前）", () => {
+  it("マーカードラッグ中はグラフを再計算しプレビューのコネクタが出る（確定前）", async () => {
     seed();
     usePlotThreadStore.setState({
-      updateMarker: vi.fn(),
+      moveMarkerBundle: vi.fn(async () => {}),
       addMarker: vi.fn(),
-      addBranch: vi.fn(),
     });
     const { getByTestId, container } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
@@ -1307,16 +1685,15 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     // t2(下,y214) の s2(x246) へドラッグ → branch。mouseup 前にコネクタが出る。
     fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
-    expect(conns()).toBeGreaterThan(0); // ライブ再計算でプレビュー・コネクタ
+    await waitFor(() => expect(conns()).toBeGreaterThan(0)); // rAF後にライブ再計算
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
   });
 
   it("下のレーンへドラッグ → branch: ドラッグ点を先(to)へ移動・元に点は作らない", () => {
     seed();
-    const updateMarker = vi.fn();
+    const moveMarkerBundle = vi.fn(async () => {});
     const addMarker = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    usePlotThreadStore.setState({ moveMarkerBundle, addMarker });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1325,27 +1702,29 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
-    expect(updateMarker).toHaveBeenCalledWith("l1", {
-      threadId: "t2",
-      nodeId: "s2",
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "l1",
+      markerPatch: {
+        threadId: "t2",
+        nodeId: "s2",
+      },
+      branchCreates: [
+        {
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "s2",
+          kind: "branch",
+        },
+      ],
     });
     expect(addMarker).not.toHaveBeenCalled(); // 第2の点は作らない
-    expect(addBranch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fromThreadId: "t1",
-        toThreadId: "t2",
-        atNodeId: "s2",
-        kind: "branch",
-      }),
-    );
   });
 
   it("上のレーンへドラッグ → merge: ドラッグ点を移動先(to)へ移す・元に点は作らない", () => {
     seed();
-    const updateMarker = vi.fn();
+    const moveMarkerBundle = vi.fn(async () => {});
     const addMarker = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    usePlotThreadStore.setState({ moveMarkerBundle, addMarker });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1354,19 +1733,22 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 158 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 158 });
-    expect(updateMarker).toHaveBeenCalledWith("l2", {
-      threadId: "t1",
-      nodeId: "s2",
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "l2",
+      markerPatch: {
+        threadId: "t1",
+        nodeId: "s2",
+      },
+      branchCreates: [
+        {
+          fromThreadId: "t2",
+          toThreadId: "t1",
+          atNodeId: "s2",
+          kind: "merge",
+        },
+      ],
     });
     expect(addMarker).not.toHaveBeenCalled();
-    expect(addBranch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fromThreadId: "t2",
-        toThreadId: "t1",
-        atNodeId: "s2",
-        kind: "merge",
-      }),
-    );
   });
 
   it("動かさず mousedown→mouseup なら選択（マーカー＋そのシーン）", () => {
@@ -1407,10 +1789,9 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
       loading: false,
     });
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
-    const updateMarker = vi.fn();
+    const moveMarkerBundle = vi.fn(async () => {});
     const addMarker = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    usePlotThreadStore.setState({ moveMarkerBundle, addMarker });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1420,36 +1801,90 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
     // dup なので何も起きない（source も動かない）
-    expect(updateMarker).not.toHaveBeenCalled();
+    expect(moveMarkerBundle).not.toHaveBeenCalled();
     expect(addMarker).not.toHaveBeenCalled();
-    expect(addBranch).not.toHaveBeenCalled();
   });
 
   it("同じドロップ先への mousemove ではレーンモデルを再構築しない（離散キーで抑制）", () => {
-    seed();
-    usePlotThreadStore.setState({
-      updateMarker: vi.fn(),
-      addMarker: vi.fn(),
-      addBranch: vi.fn(),
+    setReduceMotion(true);
+    let frame: FrameRequestCallback = () => {};
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      frame = callback;
+      return 1;
     });
-    const spy = vi.mocked(buildPlotLaneModel);
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    try {
+      seed();
+      usePlotThreadStore.setState({
+        moveMarkerBundle: vi.fn(async () => {}),
+        addMarker: vi.fn(),
+      });
+      const spy = vi.mocked(buildPlotLaneModel);
+      let renderCount = 0;
+      const { getByTestId } = render(
+        <Profiler
+          id="timeline-marker-drag"
+          onRender={() => {
+            renderCount += 1;
+          }}
+        >
+          <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />
+        </Profiler>,
+      );
+      const m = getByTestId("plot-marker-l1"); // t1(上,y158)@s1
+      fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
+      // Four raw samples in one frame collapse to one drop resolution/render.
+      fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
+      fireEvent.mouseMove(document, { clientX: 247, clientY: 215 });
+      fireEvent.mouseMove(document, { clientX: 244, clientY: 213 });
+      fireEvent.mouseMove(document, { clientX: 248, clientY: 214 });
+      expect(requestFrame).toHaveBeenCalledTimes(1);
+      act(() => frame(0));
+      const afterFirst = spy.mock.calls.length;
+      const rendersAfterFirst = renderCount;
+      expect(getByTestId("plot-marker-ghost").getAttribute("cx")).toBe("248");
+      expect(getByTestId("plot-marker-ghost").getAttribute("cy")).toBe("214");
+
+      // The same discrete destination in the next frame only moves the ghost.
+      fireEvent.mouseMove(document, { clientX: 247, clientY: 213 });
+      act(() => frame(16));
+      expect(spy.mock.calls.length).toBe(afterFirst);
+      expect(renderCount).toBe(rendersAfterFirst);
+
+      // ドロップ先（列）が変われば再構築される（プレビューは追従したまま）。
+      fireEvent.mouseMove(document, { clientX: 150, clientY: 214 });
+      act(() => frame(32));
+      expect(spy.mock.calls.length).toBeGreaterThan(afterFirst);
+      fireEvent.mouseUp(document, { clientX: 150, clientY: 214 });
+    } finally {
+      vi.unstubAllGlobals();
+      setReduceMotion(false);
+    }
+  });
+
+  it("window blur は保留中のマーカードラッグを取消し、復帰後のクリックを妨げない", () => {
+    seed();
+    const moveMarkerBundle = vi.fn(async () => {});
+    const onSelectMarker = vi.fn();
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
-      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+      <TimelineViewport
+        scenes={scenes}
+        onSelectScene={vi.fn()}
+        onSelectMarker={onSelectMarker}
+      />,
     );
-    const m = getByTestId("plot-marker-l1"); // t1(上,y158)@s1
-    fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
-    // t2(下,y214) の s2(x246) へ → branch プレビューを構築。
+    const marker = getByTestId("plot-marker-l1");
+    fireEvent.mouseDown(marker, { clientX: 150, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
-    const afterFirst = spy.mock.calls.length;
-    // 同じドロップ先（同列・同レーン）内の微小移動では再構築しない。
-    fireEvent.mouseMove(document, { clientX: 247, clientY: 215 });
-    fireEvent.mouseMove(document, { clientX: 244, clientY: 213 });
-    fireEvent.mouseMove(document, { clientX: 248, clientY: 214 });
-    expect(spy.mock.calls.length).toBe(afterFirst);
-    // ドロップ先（列）が変われば再構築される（プレビューは追従したまま）。
-    fireEvent.mouseMove(document, { clientX: 150, clientY: 214 });
-    expect(spy.mock.calls.length).toBeGreaterThan(afterFirst);
-    fireEvent.mouseUp(document, { clientX: 150, clientY: 214 });
+    fireEvent.blur(window);
+    fireEvent.mouseUp(document, { button: 0, clientX: 246, clientY: 214 });
+    expect(moveMarkerBundle).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(marker, { clientX: 150, clientY: 158 });
+    fireEvent.mouseUp(document, { button: 0, clientX: 150, clientY: 158 });
+    expect(onSelectMarker).toHaveBeenCalledWith("l1");
   });
 });
 
@@ -1517,24 +1952,60 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
   });
 
   it("ドラッグ中はラベルとグラフが一緒にカーソル Y へ即時追従する（X固定）", () => {
-    seed();
-    usePlotThreadStore.setState({ reorderThread: vi.fn() });
-    const { getByTestId } = render(
-      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
-    );
-    const l1 = getByTestId("plot-lane-label-t1");
-    // t1(行0,y158) を y200 へドラッグ（2スレッドの帯 [158,214] 内）。mouseup 前を検証。
-    fireEvent.mouseDown(l1, { clientX: 70, clientY: 158 });
-    fireEvent.mouseMove(document, { clientX: 70, clientY: 200 });
-    // 左ガターのラベルの丸がカーソル Y へ即時追従。
-    const circle = getByTestId("plot-lane-label-t1").querySelector("circle");
-    expect(circle?.getAttribute("cy")).toBe("200");
-    // グラフ側のレーン（ヒット領域 = lane.y - LANE_HEIGHT/2 = 200-28）も一緒に動く。
-    expect(getByTestId("plot-lane-hit-t1").getAttribute("y")).toBe("172");
-    fireEvent.mouseUp(document, { clientX: 70, clientY: 200 });
+    setReduceMotion(true);
+    let frame: FrameRequestCallback = () => {};
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      frame = callback;
+      return 1;
+    });
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    try {
+      seed();
+      usePlotThreadStore.setState({ reorderThread: vi.fn() });
+      let renderCount = 0;
+      const { getByTestId } = render(
+        <Profiler
+          id="timeline-label-drag"
+          onRender={() => {
+            renderCount += 1;
+          }}
+        >
+          <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />
+        </Profiler>,
+      );
+      const l1 = getByTestId("plot-lane-label-t1");
+      // One frame consumes only the latest of three pointer samples.
+      fireEvent.mouseDown(l1, { clientX: 70, clientY: 158 });
+      fireEvent.mouseMove(document, { clientX: 70, clientY: 200 });
+      fireEvent.mouseMove(document, { clientX: 70, clientY: 202 });
+      fireEvent.mouseMove(document, { clientX: 70, clientY: 203 });
+      expect(requestFrame).toHaveBeenCalledTimes(1);
+      act(() => frame(0));
+      const rendersAfterFirst = renderCount;
+      fireEvent.mouseMove(document, { clientX: 70, clientY: 204 });
+      act(() => frame(16));
+      expect(renderCount).toBe(rendersAfterFirst);
+      // topology 座標は不変のまま、ラベル/グラフ双方の group transform が同じ
+      // display Y を与える（rAF で React 全体を render しない）。
+      const labelGroup = getByTestId("plot-lane-label-t1");
+      const circle = labelGroup.querySelector("circle");
+      expect(
+        Number(circle?.getAttribute("cy")) + svgTranslateY(labelGroup),
+      ).toBe(204);
+      const hit = getByTestId("plot-lane-hit-t1");
+      const laneGroup = hit.closest("[data-lane-transform-id]")!;
+      expect(Number(hit.getAttribute("y")) + svgTranslateY(laneGroup)).toBe(
+        176,
+      );
+      fireEvent.mouseUp(document, { clientX: 70, clientY: 204 });
+    } finally {
+      vi.unstubAllGlobals();
+      setReduceMotion(false);
+    }
   });
 
-  it("ドラッグ点を列の外（下端より下）へ動かしても帯内にクランプされ見切れない", () => {
+  it("ドラッグ点を列の外（下端より下）へ動かしても帯内にクランプされ見切れない", async () => {
     seed();
     usePlotThreadStore.setState({ reorderThread: vi.fn() });
     const { getByTestId } = render(
@@ -1544,13 +2015,38 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     // 2スレッドの最終行 Y = 158 + 56 = 214。はるか下(2000)へドラッグ。
     fireEvent.mouseDown(l1, { clientX: 70, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 70, clientY: 2000 });
-    const cy = Number(
-      getByTestId("plot-lane-label-t1")
-        .querySelector("circle")
-        ?.getAttribute("cy"),
-    );
-    expect(cy).toBe(214); // 最終行へクランプ（2000 まで追従しない）
+    const labelGroup = getByTestId("plot-lane-label-t1");
+    await waitFor(() => {
+      const cy =
+        Number(labelGroup.querySelector("circle")?.getAttribute("cy")) +
+        svgTranslateY(labelGroup);
+      expect(cy).toBe(214); // 最終行へクランプ（2000 まで追従しない）
+    });
     fireEvent.mouseUp(document, { clientX: 70, clientY: 2000 });
+  });
+
+  it("window blur は保留中のヘッダードラッグを取消し、復帰後の選択を妨げない", () => {
+    seed();
+    const reorderThread = vi.fn();
+    const onSelectThread = vi.fn();
+    usePlotThreadStore.setState({ reorderThread });
+    const { getByTestId } = render(
+      <TimelineViewport
+        scenes={scenes}
+        onSelectScene={vi.fn()}
+        onSelectThread={onSelectThread}
+      />,
+    );
+    const label = getByTestId("plot-lane-label-t1");
+    fireEvent.mouseDown(label, { clientX: 70, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 70, clientY: 214 });
+    fireEvent.blur(window);
+    fireEvent.mouseUp(document, { button: 0, clientX: 70, clientY: 214 });
+    expect(reorderThread).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(label, { clientX: 70, clientY: 158 });
+    fireEvent.mouseUp(document, { button: 0, clientX: 70, clientY: 158 });
+    expect(onSelectThread).toHaveBeenCalledWith("t1");
   });
 
   it("動かさず mousedown→mouseup なら選択（並べ替えしない）", () => {
@@ -1692,10 +2188,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
 
   it("同レーンでドラッグ → エッジの at_node が追従する", () => {
     seedBranch();
-    const updateMarker = vi.fn();
-    const updateBranch = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1704,17 +2198,18 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 }); // 同 B レーンの s2
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
-    expect(updateMarker).toHaveBeenCalledWith("lB", { nodeId: "s2" });
-    expect(updateBranch).toHaveBeenCalledWith("br1", { atNodeId: "s2" });
-    expect(addBranch).not.toHaveBeenCalled();
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB",
+      markerPatch: { nodeId: "s2" },
+      branchUpdates: [{ id: "br1", patch: { atNodeId: "s2" } }],
+      branchDeletes: [],
+    });
   });
 
   it("別スレッドへドロップ → エッジの構造側を付け替え（新規作らない）", () => {
     seedBranch();
-    const updateMarker = vi.fn();
-    const updateBranch = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1723,15 +2218,23 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     fireEvent.mouseMove(document, { clientX: 246, clientY: 270 }); // C レーンの s2
     fireEvent.mouseUp(document, { clientX: 246, clientY: 270 });
     // マーカーは C へ、branch の to を C へ付け替え＋at_node 追従
-    expect(updateMarker).toHaveBeenCalledWith("lB", {
-      threadId: "C",
-      nodeId: "s2",
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB",
+      markerPatch: {
+        threadId: "C",
+        nodeId: "s2",
+      },
+      branchUpdates: [
+        {
+          id: "br1",
+          patch: {
+            toThreadId: "C",
+            atNodeId: "s2",
+          },
+        },
+      ],
+      branchDeletes: [],
     });
-    expect(updateBranch).toHaveBeenCalledWith("br1", {
-      toThreadId: "C",
-      atNodeId: "s2",
-    });
-    expect(addBranch).not.toHaveBeenCalled();
   });
 
   it("merge エッジも to 側マーカーで追従・付け替えする（統一アンカー）", () => {
@@ -1754,10 +2257,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
       loading: false,
     });
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
-    const updateMarker = vi.fn();
-    const updateBranch = vi.fn();
-    const addBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1767,15 +2268,23 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     fireEvent.mouseMove(document, { clientX: 246, clientY: 270 });
     fireEvent.mouseUp(document, { clientX: 246, clientY: 270 });
     // マーカーは C へ、merge の to を C へ付け替え＋at_node 追従（新規作らない）。
-    expect(updateMarker).toHaveBeenCalledWith("lB", {
-      threadId: "C",
-      nodeId: "s2",
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB",
+      markerPatch: {
+        threadId: "C",
+        nodeId: "s2",
+      },
+      branchUpdates: [
+        {
+          id: "mg1",
+          patch: {
+            toThreadId: "C",
+            atNodeId: "s2",
+          },
+        },
+      ],
+      branchDeletes: [],
     });
-    expect(updateBranch).toHaveBeenCalledWith("mg1", {
-      toThreadId: "C",
-      atNodeId: "s2",
-    });
-    expect(addBranch).not.toHaveBeenCalled();
   });
 
   it("付け替えで既存エッジと重複するなら rebind せず削除する", () => {
@@ -1807,10 +2316,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
       loading: false,
     });
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
-    const updateMarker = vi.fn();
-    const updateBranch = vi.fn();
-    const deleteBranch = vi.fn();
-    usePlotThreadStore.setState({ updateMarker, updateBranch, deleteBranch });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -1820,9 +2327,12 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     fireEvent.mouseMove(document, { clientX: 246, clientY: 214 }); // B レーンの s2
     fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
     // br1 が A→B@s2 になり br2 と重複 → rebind せず br1 を削除
-    expect(deleteBranch).toHaveBeenCalledWith("br1");
-    expect(updateBranch).not.toHaveBeenCalled();
-    expect(updateMarker).toHaveBeenCalledWith("lB1", { nodeId: "s2" });
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB1",
+      markerPatch: { nodeId: "s2" },
+      branchUpdates: [],
+      branchDeletes: ["br1"],
+    });
   });
 });
 

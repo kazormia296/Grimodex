@@ -1,5 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { resolveScopeSessionKey } from "./chatScope";
+import { CHAT_SCOPES, resolveScopeSessionKey } from "./chatScope";
+
+describe("CHAT_SCOPES", () => {
+  it("exposes every scope from the authoritative registry", () => {
+    expect(CHAT_SCOPES).toEqual([
+      "scene",
+      "folder",
+      "project",
+      "codex",
+      "snippet",
+    ]);
+  });
+});
 
 describe("resolveScopeSessionKey", () => {
   it("scene scope uses active scene nodeId", () => {

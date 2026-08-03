@@ -4,7 +4,6 @@ import type { CodexContextMode } from "@/db/schema";
 import { ContextModeSelector } from "@/features/codex/components/ContextModeSelector";
 import { AliasesField } from "@/features/codex/components/AliasesField";
 import { ExcludedAliasesField } from "@/features/codex/components/ExcludedAliasesField";
-import { updateNode } from "@/features/tree/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 
 interface NoteContextControlsProps {
@@ -26,6 +25,7 @@ function parseJsonArray(raw: string | null | undefined): string[] {
 export function NoteContextControls({ nodeId }: NoteContextControlsProps) {
   const { t } = useTranslation();
   const node = useTreeStore((s) => s.nodes.find((n) => n.id === nodeId));
+  const patchNode = useTreeStore((s) => s.patchNode);
   const [contextMode, setContextMode] = useState<CodexContextMode>("mentioned");
   const [aliases, setAliases] = useState<string[]>([]);
   const [excludedAliases, setExcludedAliases] = useState<string[]>([]);
@@ -43,7 +43,7 @@ export function NoteContextControls({ nodeId }: NoteContextControlsProps) {
       aliases?: string[];
       excludedAliases?: string[];
     }) => {
-      await updateNode(nodeId, {
+      await patchNode(nodeId, {
         ...(patch.contextMode !== undefined && {
           contextMode: patch.contextMode,
         }),
@@ -54,26 +54,8 @@ export function NoteContextControls({ nodeId }: NoteContextControlsProps) {
           excludedAliases: JSON.stringify(patch.excludedAliases),
         }),
       });
-      useTreeStore.setState((state) => ({
-        nodes: state.nodes.map((n) =>
-          n.id === nodeId
-            ? {
-                ...n,
-                ...(patch.contextMode !== undefined && {
-                  contextMode: patch.contextMode,
-                }),
-                ...(patch.aliases !== undefined && {
-                  aliases: JSON.stringify(patch.aliases),
-                }),
-                ...(patch.excludedAliases !== undefined && {
-                  excludedAliases: JSON.stringify(patch.excludedAliases),
-                }),
-              }
-            : n,
-        ),
-      }));
     },
-    [nodeId],
+    [nodeId, patchNode],
   );
 
   if (!node || node.nodeType !== "note") return null;

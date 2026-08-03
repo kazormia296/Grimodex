@@ -76,13 +76,67 @@ export class BrowserAiConnectionError extends Error {
 
 export interface BrowserAiConnectionOptions {
   ollamaEndpoint?: string | null;
+  /** Ollama model-list probe only; omitted means enrich the full catalog. */
+  selectedModelId?: string | null;
   /** OpenAI-compatible only. This is the user-selected endpoint base URL. */
   baseUrl?: string | null;
   apiVariant?: string | null;
 }
 
+/** Correlates one final browser provider request with its durable audit run. */
+export interface BrowserAiAuditContext {
+  readonly expectedWorkspacePath: string;
+  readonly projectId: string | null;
+  readonly operationId: string;
+  readonly executionId: string;
+  readonly parentExecutionId: string | null;
+  readonly pathId: string;
+}
+
+export type BrowserAiEffectiveRequestKind =
+  | "connection"
+  | "single"
+  | "stream"
+  | "agent";
+
+/**
+ * Credential-free transport-observer receipt carrying the one JSON string
+ * passed to fetch. BrowserMock persists the complete parsed JSON value, not
+ * this string's whitespace, key order, or byte representation. Headers, API
+ * keys, cookies, and environment values never enter this shape.
+ */
+export interface BrowserAiEffectiveRequestReceipt {
+  readonly kind: BrowserAiEffectiveRequestKind;
+  readonly provider: AiProvider;
+  readonly model: string;
+  readonly apiVariant: string | null;
+  readonly endpointId: string | null;
+  readonly endpointOrigin: string | null;
+  readonly auditContext?: BrowserAiAuditContext;
+  readonly bodyJson: string;
+}
+
+export type BrowserAiEffectiveRequestObserver = (
+  receipt: BrowserAiEffectiveRequestReceipt,
+) => Promise<void>;
+
+export interface BrowserAiDispatchHooks {
+  readonly auditContext?: BrowserAiAuditContext;
+  readonly onEffectiveRequest?: BrowserAiEffectiveRequestObserver;
+}
+
+export interface BrowserAiTransportOptions {
+  readonly onEffectiveRequest?: BrowserAiEffectiveRequestObserver;
+}
+
+const OLLAMA_SELECTED_METADATA_TIMEOUT_MS = 95_000;
+const OLLAMA_CATALOG_METADATA_TIMEOUT_MS = 45_000;
+const OLLAMA_MODEL_LOAD_TIMEOUT_MS = 60_000;
+
 export interface BrowserAiRequest {
   operation: BrowserAiOperation;
+  /** Required for streaming; identifies one independently cancellable run. */
+  streamId?: string;
   provider: AiProvider;
   model: string;
   endpointId?: string | null;
@@ -90,9 +144,12 @@ export interface BrowserAiRequest {
   messages: ChatMessage[];
   maxOutputTokens?: number | null;
   ollamaEndpoint?: string | null;
+  selectedModelId?: string | null;
   baseUrl?: string | null;
   apiVariant?: string | null;
   toolProtocolMode?: ToolProtocolMode;
+  /** Runtime-only correlation. It is never serialized into a provider body. */
+  auditContext?: BrowserAiAuditContext;
 }
 
 export type BrowserAiCompletion = AgentLLMResponse;
@@ -101,11 +158,18 @@ export interface BrowserAiStreamDone {
   stopReason: AgentLLMResponse["stopReason"] | "stopped";
   inputTokens?: number;
   outputTokens?: number;
+  /** Internal transport evidence used when abort races provider completion. */
+  providerTerminalObservedBeforeAbort?: boolean;
 }
 
 export interface BrowserAiStreamSink {
   text(delta: string, blockType?: "text" | "thinking"): void;
   done(payload: BrowserAiStreamDone): void;
+}
+
+export interface BrowserAiAbortReceipt {
+  readonly abortCommandAcknowledged: true;
+  readonly transportTerminationObserved: boolean;
 }
 
 export interface BrowserAiTransport {
@@ -122,7 +186,7 @@ export interface BrowserAiTransport {
   ): Promise<BrowserAiCompletion>;
   stream?(request: BrowserAiRequest, sink: BrowserAiStreamSink): Promise<void>;
   listModels?(request: BrowserAiRequest): Promise<AiModel[]>;
-  abort?(operation: BrowserAiOperation): void;
+  abort?(streamId: string): Promise<BrowserAiAbortReceipt>;
   dispose?(): void;
 }
 
@@ -383,6 +447,133 @@ export function normalizeOllamaEndpoint(endpoint?: string | null): string {
   return base.replace(/\/+$/, "");
 }
 
+function ollamaApiEndpoint(
+  path: `/${string}`,
+  options: BrowserAiConnectionOptions,
+): string {
+  const endpoint = normalizeOllamaEndpoint(options.ollamaEndpoint);
+  const useDevelopmentProxy =
+    isViteDevelopment && endpoint === "http://localhost:11434";
+  return useDevelopmentProxy ? `/api/ollama${path}` : `${endpoint}${path}`;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function ollamaModelContextLength(modelInfo: unknown): number | undefined {
+  if (!modelInfo || typeof modelInfo !== "object") return undefined;
+  const info = modelInfo as Record<string, unknown>;
+  const architecture =
+    typeof info["general.architecture"] === "string"
+      ? info["general.architecture"]
+      : undefined;
+  if (architecture) {
+    const declared = positiveInteger(info[`${architecture}.context_length`]);
+    if (declared) return declared;
+  }
+  const suffixMatches = Object.entries(info)
+    .filter(([key]) => key.endsWith(".context_length"))
+    .sort(
+      ([left], [right]) => left.split(".").length - right.split(".").length,
+    );
+  for (const [, value] of suffixMatches) {
+    const declared = positiveInteger(value);
+    if (declared) return declared;
+  }
+  return undefined;
+}
+
+function ollamaNumCtx(parameters: unknown): number | undefined {
+  if (parameters && typeof parameters === "object") {
+    return positiveInteger(
+      (parameters as Record<string, unknown>).num_ctx ??
+        (parameters as Record<string, unknown>).numCtx,
+    );
+  }
+  if (typeof parameters !== "string") return undefined;
+  const match = parameters.match(
+    /(?:^|\n)\s*(?:PARAMETER\s+)?num_ctx\s*(?:=|\s)\s*(\d+)/iu,
+  );
+  return positiveInteger(match?.[1]);
+}
+
+function normalizeOllamaModelName(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/:latest$/u, "");
+}
+
+function ollamaSupportedParameters(
+  capabilities: unknown,
+): string[] | undefined {
+  if (!Array.isArray(capabilities)) return undefined;
+  const result: string[] = [];
+  if (capabilities.includes("tools")) result.push("tools");
+  if (capabilities.includes("thinking")) result.push("reasoning");
+  // An explicit capability list is authoritative even when it advertises no
+  // tool/reasoning support. `[]` must not fall back to supportsTools=true.
+  return result;
+}
+
+async function optionalOllamaJson(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 5_000,
+): Promise<unknown | undefined> {
+  const controller = new AbortController();
+  const parentSignal = init.signal;
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await browserAiFetch(
+      url,
+      { ...init, signal: controller.signal },
+      "models",
+    );
+    if (!response.ok) return undefined;
+    return await response.json();
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  limit: number,
+  transform: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const result = new Array<R>(values.length);
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < values.length) {
+      const index = cursor;
+      cursor += 1;
+      result[index] = await transform(values[index]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, values.length) }, () => worker()),
+  );
+  return result;
+}
+
 function chatEndpoint(
   provider: AiProvider,
   options: BrowserAiConnectionOptions = {},
@@ -551,6 +742,37 @@ function buildChatBody(request: BrowserAiRequest): Record<string, unknown> {
   return { model, max_tokens: maxTokens, messages: chatMessages };
 }
 
+function credentialFreeEndpointOrigin(url: string): string | null {
+  if (!/^[a-z][a-z\d+.-]*:/iu.test(url.trim())) return null;
+  try {
+    // URL.origin excludes user info, path, query, and fragment by definition.
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+async function serializeEffectiveRequestBody(
+  request: BrowserAiRequest,
+  kind: BrowserAiEffectiveRequestKind,
+  url: string,
+  body: Record<string, unknown>,
+  onEffectiveRequest?: BrowserAiEffectiveRequestObserver,
+): Promise<string> {
+  const bodyJson = JSON.stringify(body);
+  await onEffectiveRequest?.({
+    kind,
+    provider: request.provider,
+    model: request.model,
+    apiVariant: request.apiVariant ?? null,
+    endpointId: request.endpointId ?? null,
+    endpointOrigin: credentialFreeEndpointOrigin(url),
+    ...(request.auditContext ? { auditContext: request.auditContext } : {}),
+    bodyJson,
+  });
+  return bodyJson;
+}
+
 function isAiNovelistLegacy(request: {
   provider: AiProvider;
   model: string;
@@ -632,18 +854,27 @@ function normalizeStopReason(value: unknown): AgentLLMResponse["stopReason"] {
 export async function completeBrowserAiRequest(
   request: BrowserAiRequest,
   signal?: AbortSignal,
+  onEffectiveRequest?: BrowserAiEffectiveRequestObserver,
+  receiptKind: BrowserAiEffectiveRequestKind = "single",
 ): Promise<BrowserAiCompletion> {
   requireBrowserAiRequest(request);
   const headers = buildHeaders(request.provider, request.apiKey ?? "");
   const url = chatEndpoint(request.provider, request);
   const body = buildChatBody(request);
+  const bodyJson = await serializeEffectiveRequestBody(
+    request,
+    receiptKind,
+    url,
+    body,
+    onEffectiveRequest,
+  );
 
   const resp = await browserAiFetch(
     url,
     {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: bodyJson,
       signal,
     },
     "chat",
@@ -748,10 +979,17 @@ async function streamBrowserAiRequest(
   request: BrowserAiRequest,
   sink: BrowserAiStreamSink,
   signal: AbortSignal,
+  onProviderTerminal?: (payload: BrowserAiStreamDone) => void,
+  onEffectiveRequest?: BrowserAiEffectiveRequestObserver,
 ): Promise<void> {
   requireBrowserAiRequest(request);
   if (isAiNovelistLegacy(request)) {
-    const response = await completeBrowserAiRequest(request, signal);
+    const response = await completeBrowserAiRequest(
+      request,
+      signal,
+      onEffectiveRequest,
+      "stream",
+    );
     for (const block of response.blocks) {
       if (block.type === "text" || block.type === "thinking") {
         sink.text(block.content, block.type);
@@ -774,12 +1012,19 @@ async function streamBrowserAiRequest(
   }
 
   const url = chatEndpoint(request.provider, request);
+  const bodyJson = await serializeEffectiveRequestBody(
+    request,
+    "stream",
+    url,
+    body,
+    onEffectiveRequest,
+  );
   const response = await browserAiFetch(
     url,
     {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: bodyJson,
       signal,
     },
     "chat",
@@ -799,13 +1044,25 @@ async function streamBrowserAiRequest(
   let outputTokens: number | undefined;
   let stopReason: BrowserAiStreamDone["stopReason"] = "end_turn";
   let finished = false;
+  let providerTerminalObserved = false;
+  const observeProviderTerminal = (): void => {
+    providerTerminalObserved = true;
+    onProviderTerminal?.({ stopReason, inputTokens, outputTokens });
+  };
+  const refreshProviderTerminal = (): void => {
+    if (providerTerminalObserved) {
+      onProviderTerminal?.({ stopReason, inputTokens, outputTokens });
+    }
+  };
   const finish = (): void => {
     if (finished) return;
     finished = true;
+    if (!providerTerminalObserved) observeProviderTerminal();
     sink.done({ stopReason, inputTokens, outputTokens });
   };
 
   await readSse(response, (data) => {
+    if (finished) return;
     if (data === "[DONE]") {
       finish();
       return;
@@ -829,6 +1086,7 @@ async function streamBrowserAiRequest(
           inputTokens = usage.input_tokens;
         }
       } else if (eventType === "content_block_delta") {
+        if (providerTerminalObserved) return;
         const delta =
           (event.delta as Record<string, unknown> | undefined) ?? {};
         if (delta.type === "text_delta" && typeof delta.text === "string") {
@@ -844,9 +1102,14 @@ async function streamBrowserAiRequest(
           (event.delta as Record<string, unknown> | undefined) ?? {};
         const usage =
           (event.usage as Record<string, unknown> | undefined) ?? {};
-        stopReason = normalizeStopReason(delta.stop_reason);
         if (typeof usage.output_tokens === "number") {
           outputTokens = usage.output_tokens;
+        }
+        if (delta.stop_reason != null && !providerTerminalObserved) {
+          stopReason = normalizeStopReason(delta.stop_reason);
+          observeProviderTerminal();
+        } else {
+          refreshProviderTerminal();
         }
       } else if (eventType === "message_stop") {
         finish();
@@ -858,15 +1121,24 @@ async function streamBrowserAiRequest(
     const choice = choices[0];
     if (choice) {
       const delta = (choice.delta as Record<string, unknown> | undefined) ?? {};
-      if (typeof delta.content === "string" && delta.content) {
+      if (
+        !providerTerminalObserved &&
+        typeof delta.content === "string" &&
+        delta.content
+      ) {
         sink.text(delta.content, "text");
       }
       const thinking = delta.reasoning_content ?? delta.reasoning;
-      if (typeof thinking === "string" && thinking) {
+      if (
+        !providerTerminalObserved &&
+        typeof thinking === "string" &&
+        thinking
+      ) {
         sink.text(thinking, "thinking");
       }
-      if (choice.finish_reason != null) {
+      if (choice.finish_reason != null && !providerTerminalObserved) {
         stopReason = normalizeStopReason(choice.finish_reason);
+        observeProviderTerminal();
       }
     }
     const usage = (event.usage as Record<string, unknown> | undefined) ?? {};
@@ -876,35 +1148,180 @@ async function streamBrowserAiRequest(
     if (typeof usage.completion_tokens === "number") {
       outputTokens = usage.completion_tokens;
     }
+    refreshProviderTerminal();
   });
   finish();
 }
 
-export function createBrowserAiTransport(): BrowserAiTransport {
-  const controllers = new Map<BrowserAiOperation, AbortController>();
+export function createBrowserAiTransport(
+  options: BrowserAiTransportOptions = {},
+): BrowserAiTransport {
+  const MAX_STREAM_TOMBSTONES = 256;
+  const ABORT_QUIESCENCE_TIMEOUT_MS = 2_250;
+  interface ActiveBrowserStream {
+    readonly controller: AbortController;
+    readonly settled: Promise<void>;
+    readonly resolveSettled: () => void;
+  }
+  const activeStreams = new Map<string, ActiveBrowserStream>();
+  const pendingAbortIds = new Set<string>();
+  const completedAbortReceipts = new Map<string, boolean>();
+
+  const requireStreamId = (value: unknown): string => {
+    if (typeof value !== "string" || !value || value !== value.trim()) {
+      throw new Error("Browser AI streamId must be a trimmed non-empty string");
+    }
+    return value;
+  };
+  const addBoundedSet = (target: Set<string>, value: string): void => {
+    target.delete(value);
+    target.add(value);
+    while (target.size > MAX_STREAM_TOMBSTONES) {
+      const oldest = target.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      target.delete(oldest);
+    }
+  };
+  const addCompletedReceipt = (streamId: string, observed: boolean): void => {
+    completedAbortReceipts.delete(streamId);
+    completedAbortReceipts.set(streamId, observed);
+    while (completedAbortReceipts.size > MAX_STREAM_TOMBSTONES) {
+      const oldest = completedAbortReceipts.keys().next().value as
+        | string
+        | undefined;
+      if (oldest === undefined) break;
+      completedAbortReceipts.delete(oldest);
+    }
+  };
+  const waitForSettled = async (promise: Promise<void>): Promise<boolean> => {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      promise.then(() => true),
+      new Promise<false>((resolve) => {
+        timeout = setTimeout(() => resolve(false), ABORT_QUIESCENCE_TIMEOUT_MS);
+      }),
+    ]);
+    if (timeout !== null) clearTimeout(timeout);
+    return settled;
+  };
 
   return {
-    complete: (request) => completeBrowserAiRequest(request),
+    complete: (request) =>
+      completeBrowserAiRequest(
+        request,
+        undefined,
+        options.onEffectiveRequest,
+        "single",
+      ),
+    completeAgent: (request, messages, tools) =>
+      completeBrowserAgentRequest(
+        request,
+        messages,
+        tools,
+        options.onEffectiveRequest,
+      ),
     stream: async (request, sink) => {
-      controllers.get(request.operation)?.abort();
+      const streamId = requireStreamId(request.streamId);
+      if (activeStreams.has(streamId)) {
+        throw new Error(`Browser AI streamId is already active: ${streamId}`);
+      }
+      completedAbortReceipts.delete(streamId);
+      if (pendingAbortIds.delete(streamId)) {
+        addCompletedReceipt(streamId, true);
+        sink.done({ stopReason: "stopped" });
+        return;
+      }
       const controller = new AbortController();
-      controllers.set(request.operation, controller);
+      let resolveSettled!: () => void;
+      const settled = new Promise<void>((resolve) => {
+        resolveSettled = resolve;
+      });
+      const active: ActiveBrowserStream = {
+        controller,
+        settled,
+        resolveSettled,
+      };
+      activeStreams.set(streamId, active);
+      let terminalObserved = false;
+      const providerTerminal: { value: BrowserAiStreamDone | null } = {
+        value: null,
+      };
+      const terminalAwareSink: BrowserAiStreamSink = {
+        text: (delta, blockType) => sink.text(delta, blockType),
+        done: (payload) => {
+          if (terminalObserved) return;
+          terminalObserved = true;
+          sink.done(payload);
+        },
+      };
       try {
-        await streamBrowserAiRequest(request, sink, controller.signal);
+        await streamBrowserAiRequest(
+          request,
+          terminalAwareSink,
+          controller.signal,
+          (payload) => {
+            providerTerminal.value = payload;
+          },
+          options.onEffectiveRequest,
+        );
       } catch (error) {
+        const terminal = providerTerminal.value;
+        if (terminal) {
+          if (!terminalObserved) {
+            terminalAwareSink.done(
+              controller.signal.aborted
+                ? {
+                    ...terminal,
+                    providerTerminalObservedBeforeAbort: true,
+                  }
+                : terminal,
+            );
+          }
+          return;
+        }
         if (controller.signal.aborted) {
-          sink.done({ stopReason: "stopped" });
+          if (!terminalObserved) {
+            terminalAwareSink.done({ stopReason: "stopped" });
+          }
           return;
         }
         throw error;
       } finally {
-        if (controllers.get(request.operation) === controller) {
-          controllers.delete(request.operation);
+        if (activeStreams.get(streamId) === active) {
+          activeStreams.delete(streamId);
         }
+        addCompletedReceipt(streamId, true);
+        active.resolveSettled();
       }
     },
-    abort: (operation) => {
-      controllers.get(operation)?.abort();
+    abort: async (rawStreamId) => {
+      const streamId = requireStreamId(rawStreamId);
+      const active = activeStreams.get(streamId);
+      if (!active) {
+        const completed = completedAbortReceipts.get(streamId);
+        if (completed !== undefined) {
+          return {
+            abortCommandAcknowledged: true,
+            transportTerminationObserved: completed,
+          };
+        }
+        addBoundedSet(pendingAbortIds, streamId);
+        return {
+          abortCommandAcknowledged: true,
+          transportTerminationObserved: false,
+        };
+      }
+      active.controller.abort();
+      return {
+        abortCommandAcknowledged: true,
+        transportTerminationObserved: await waitForSettled(active.settled),
+      };
+    },
+    dispose: () => {
+      for (const active of activeStreams.values()) {
+        active.controller.abort();
+      }
+      pendingAbortIds.clear();
     },
   };
 }
@@ -913,6 +1330,35 @@ export async function fetchModels(
   provider: AiProvider,
   apiKey: string,
   options: BrowserAiConnectionOptions = {},
+): Promise<AiModel[]> {
+  if (provider !== "ollama") {
+    return fetchModelsInternal(provider, apiKey, options);
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.selectedModelId?.trim()
+      ? OLLAMA_SELECTED_METADATA_TIMEOUT_MS
+      : OLLAMA_CATALOG_METADATA_TIMEOUT_MS,
+  );
+  try {
+    return await fetchModelsInternal(
+      provider,
+      apiKey,
+      options,
+      controller.signal,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchModelsInternal(
+  provider: AiProvider,
+  apiKey: string,
+  options: BrowserAiConnectionOptions,
+  ollamaMetadataSignal?: AbortSignal,
 ): Promise<AiModel[]> {
   requireBrowserDirectProvider(provider);
   // Anthropic: static list
@@ -949,7 +1395,14 @@ export async function fetchModels(
 
   let resp: Response;
   try {
-    resp = await browserAiFetch(url, { headers }, "models");
+    resp = await browserAiFetch(
+      url,
+      {
+        headers,
+        ...(ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {}),
+      },
+      "models",
+    );
   } catch (error) {
     if (provider === "ai-novelist") {
       return [
@@ -988,11 +1441,153 @@ export async function fetchModels(
   const body = await resp.json();
 
   if (provider === "ollama") {
-    const models = body?.models ?? [];
-    return models.map((m: { name: string }) => ({
-      id: m.name,
-      name: m.name,
-    }));
+    type OllamaTag = {
+      name: string;
+      model?: string;
+      digest?: string;
+      capabilities?: string[];
+    };
+    type OllamaRunner = {
+      name?: string;
+      model?: string;
+      digest?: string;
+      context_length?: number;
+    };
+    const taggedModels: unknown[] = Array.isArray(body?.models)
+      ? body.models
+      : [];
+    const selectedModelId = options.selectedModelId?.trim() ?? "";
+    const normalizedSelectedModel = normalizeOllamaModelName(selectedModelId);
+    const models = taggedModels.filter((model: unknown): model is OllamaTag => {
+      if (
+        !model ||
+        typeof model !== "object" ||
+        typeof (model as OllamaTag).name !== "string"
+      ) {
+        return false;
+      }
+      if (!selectedModelId) return true;
+      const tag = model as OllamaTag;
+      return (
+        tag.name === selectedModelId ||
+        tag.model === selectedModelId ||
+        normalizeOllamaModelName(tag.name) === normalizedSelectedModel ||
+        normalizeOllamaModelName(tag.model) === normalizedSelectedModel
+      );
+    });
+    if (models.length === 0) return [];
+    const runningBodyPromise = optionalOllamaJson(
+      ollamaApiEndpoint("/api/ps", options),
+      ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {},
+    );
+    const modelsWithShowPromise = mapWithConcurrency(
+      models,
+      4,
+      async (model) => {
+        const showBody = await optionalOllamaJson(
+          ollamaApiEndpoint("/api/show", options),
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ model: model.name }),
+            ...(ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {}),
+          },
+        );
+        const show =
+          showBody && typeof showBody === "object"
+            ? (showBody as Record<string, unknown>)
+            : undefined;
+        return { model, show };
+      },
+    );
+    const [runningBody, modelsWithShow] = await Promise.all([
+      runningBodyPromise,
+      modelsWithShowPromise,
+    ]);
+    const parseRunningModels = (value: unknown): OllamaRunner[] =>
+      value &&
+      typeof value === "object" &&
+      Array.isArray((value as { models?: unknown }).models)
+        ? ((value as { models: OllamaRunner[] }).models ?? [])
+        : [];
+    let runningModels = parseRunningModels(runningBody);
+    const findRunner = (model: OllamaTag): OllamaRunner | undefined => {
+      const normalizedName = normalizeOllamaModelName(
+        model.model ?? model.name,
+      );
+      return runningModels.find((candidate) => {
+        if (
+          model.digest &&
+          candidate.digest &&
+          model.digest === candidate.digest
+        ) {
+          return true;
+        }
+        return (
+          normalizedName.length > 0 &&
+          [candidate.model, candidate.name].some(
+            (candidateName) =>
+              normalizeOllamaModelName(candidateName) === normalizedName,
+          )
+        );
+      });
+    };
+
+    // Loading every catalog entry would consume VRAM and surprise the user.
+    // Only the selected send-time probe may issue this prompt-free control
+    // request to load a cold runner so `/api/ps` can report the allocation
+    // Ollama chose. The body intentionally has no prompt and requests no token
+    // generation/model output, so this is not an inference-ledger execution.
+    const selectedModel = selectedModelId ? models[0] : undefined;
+    if (selectedModel && !findRunner(selectedModel)) {
+      const loaded = await optionalOllamaJson(
+        ollamaApiEndpoint("/api/generate", options),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: selectedModel.name, stream: false }),
+          ...(ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {}),
+        },
+        OLLAMA_MODEL_LOAD_TIMEOUT_MS,
+      );
+      if (loaded !== undefined) {
+        const refreshedRunningBody = await optionalOllamaJson(
+          ollamaApiEndpoint("/api/ps", options),
+          ollamaMetadataSignal ? { signal: ollamaMetadataSignal } : {},
+        );
+        runningModels = parseRunningModels(refreshedRunningBody);
+      }
+    }
+
+    return modelsWithShow.map(({ model, show }) => {
+      const modelMaximum = ollamaModelContextLength(show?.model_info);
+      const modelParameterContext = ollamaNumCtx(show?.parameters);
+      const runner = findRunner(model);
+      const runnerContext = positiveInteger(runner?.context_length);
+      const rawEffectiveContext = runnerContext ?? modelParameterContext;
+      const effectiveContextLength =
+        rawEffectiveContext && modelMaximum
+          ? Math.min(rawEffectiveContext, modelMaximum)
+          : rawEffectiveContext;
+      const supportedParameters =
+        ollamaSupportedParameters(show?.capabilities ?? model.capabilities) ??
+        (show ? [] : undefined);
+
+      return {
+        id: model.name,
+        name: model.name,
+        ...(modelMaximum ? { contextLength: modelMaximum } : {}),
+        ...(effectiveContextLength
+          ? {
+              effectiveContextLength,
+              effectiveContextSource: runnerContext
+                ? ("runner" as const)
+                : ("model-parameter" as const),
+            }
+          : {}),
+        ...(supportedParameters ? { supportedParameters } : {}),
+      };
+    });
   }
 
   const data = body?.data ?? [];
@@ -1259,25 +1854,56 @@ export async function sendChatWithTools(
   tools: AgentToolDefinition[],
   toolProtocolMode: ToolProtocolMode = "auto",
   options: BrowserAiConnectionOptions = {},
+  hooks: BrowserAiDispatchHooks = {},
 ): Promise<AgentLLMResponse> {
+  return completeBrowserAgentRequest(
+    {
+      operation: "chat",
+      provider,
+      model,
+      apiKey,
+      messages: [],
+      toolProtocolMode,
+      ...options,
+      ...(hooks.auditContext ? { auditContext: hooks.auditContext } : {}),
+    },
+    messages,
+    tools,
+    hooks.onEffectiveRequest,
+  );
+}
+
+async function completeBrowserAgentRequest(
+  request: BrowserAiRequest,
+  messages: AgentMessagePayload[],
+  tools: AgentToolDefinition[],
+  onEffectiveRequest?: BrowserAiEffectiveRequestObserver,
+): Promise<AgentLLMResponse> {
+  requireBrowserAiRequest(request);
+  const { provider, model } = request;
   if (
     isAiNovelistLegacy({
       provider,
       model,
-      apiVariant: options.apiVariant,
+      apiVariant: request.apiVariant,
     })
   ) {
     throw new Error("AI のべりすと (legacy) は Tool Use に対応していません");
   }
-  const headers = buildHeaders(provider, apiKey);
-  const url = chatEndpoint(provider, options);
+  const headers = buildHeaders(provider, request.apiKey ?? "");
+  const url = chatEndpoint(provider, request);
+  const maxTokens = request.maxOutputTokens ?? 4096;
 
   // Rust parity: provider ゲート + auto/native/hermes を一度だけ解決し、
   // 送信側 (tools[] 省略 + <tools> XML) と受信側パースの両方で使う。
   const resolved: "native" | "hermes" =
     provider === "anthropic"
       ? "native"
-      : resolveToolProtocol(provider, model, toolProtocolMode);
+      : resolveToolProtocol(
+          provider,
+          model,
+          request.toolProtocolMode ?? "auto",
+        );
 
   let body: Record<string, unknown>;
 
@@ -1295,7 +1921,7 @@ export async function sendChatWithTools(
     }));
     body = {
       model,
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       messages: buildAnthropicMessages(messages),
       tools: anthropicTools,
     };
@@ -1305,7 +1931,7 @@ export async function sendChatWithTools(
     // <tools> system XML + <tool_call>/<tool_response> テキストで授受する。
     body = {
       model,
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       messages: buildHermesOpenAIMessages(messages, tools),
     };
   } else {
@@ -1319,18 +1945,26 @@ export async function sendChatWithTools(
     }));
     body = {
       model,
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       messages: buildOpenAIMessages(messages),
       tools: openaiTools,
     };
   }
+
+  const bodyJson = await serializeEffectiveRequestBody(
+    request,
+    "agent",
+    url,
+    body,
+    onEffectiveRequest,
+  );
 
   const resp = await browserAiFetch(
     url,
     {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: bodyJson,
     },
     "chat",
   );
@@ -1357,47 +1991,41 @@ export async function testConnection(
   model: string,
   apiKey: string,
   options: BrowserAiConnectionOptions = {},
+  hooks: BrowserAiDispatchHooks = {},
 ): Promise<string> {
   const headers = buildHeaders(provider, apiKey);
-  const request = {
+  const request: BrowserAiRequest = {
+    operation: "chat",
     provider,
     model,
-    apiVariant: options.apiVariant,
+    apiKey,
+    messages: [{ role: "user", content: "Reply with exactly: Connection OK" }],
+    maxOutputTokens: 32,
+    ...options,
+    ...(hooks.auditContext ? { auditContext: hooks.auditContext } : {}),
   };
   const url = chatEndpoint(provider, options);
-
-  let body: Record<string, unknown>;
-
-  if (isAiNovelistLegacy(request)) {
-    body = {
-      text: "Reply with exactly: Connection OK",
-      model,
-      length: 32,
-    };
-  } else if (provider === "anthropic") {
-    body = {
-      model,
-      max_tokens: 32,
-      messages: [
-        { role: "user", content: "Reply with exactly: Connection OK" },
-      ],
-    };
-  } else {
-    body = {
-      model,
-      max_tokens: 32,
-      messages: [
-        { role: "user", content: "Reply with exactly: Connection OK" },
-      ],
-    };
-  }
+  const body = isAiNovelistLegacy(request)
+    ? {
+        text: "Reply with exactly: Connection OK",
+        model,
+        length: 32,
+      }
+    : buildChatBody(request);
+  const bodyJson = await serializeEffectiveRequestBody(
+    request,
+    "connection",
+    url,
+    body,
+    hooks.onEffectiveRequest,
+  );
 
   const resp = await browserAiFetch(
     url,
     {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: bodyJson,
     },
     "chat",
   );

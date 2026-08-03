@@ -40,11 +40,13 @@ function makeFakeItem(id: string): TrashItemData {
 
 function setupStore(items: Map<string, TrashItemData>, isLoading = false) {
   const state = {
+    activeProjectId: "p",
     items,
     selectedItemId: null,
     isCapturing: true,
     isLoading,
     pendingQueue: [],
+    resetForProject: vi.fn(),
     loadItems: vi.fn().mockResolvedValue(undefined),
     enqueuePending: vi.fn(),
     cancelPending: vi.fn(),

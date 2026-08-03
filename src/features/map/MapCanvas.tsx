@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -8,6 +8,7 @@ import {
   MiniMap,
   ViewportPortal,
   type Node,
+  type NodeProps,
   BackgroundVariant,
   useReactFlow,
   ConnectionMode,
@@ -25,6 +26,11 @@ import {
   getCurrentProjectId,
   useCurrentProjectId,
 } from "@/features/project/projectStore";
+import {
+  assertAiOperationAuthorityCurrent,
+  captureAiOperationAuthority,
+  type AiOperationAuthority,
+} from "@/features/ai-audit/projectScope";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureMapStickyDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
@@ -111,6 +117,14 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
+import {
+  hasRuntimePerformanceCapability,
+  registerRuntimePerformanceControl,
+} from "@/lib/perfLog";
+import {
+  createRuntimeMapDragIdentityControl,
+  recordRuntimeMapNodeRender,
+} from "./runtimeMapPerformance";
 
 /** Pure classification used by onDeleteSelected — exported for tests. */
 export function partitionDeletableNodes(nodes: Node[]) {
@@ -145,6 +159,18 @@ const NODE_TYPES = {
   ai_branch: AIBranchNode,
 };
 
+const RuntimePerformanceSceneNode = memo(function RuntimePerformanceSceneNode(
+  props: NodeProps,
+) {
+  recordRuntimeMapNodeRender(props.id);
+  return <SceneNode {...props} />;
+});
+
+const RUNTIME_PERFORMANCE_NODE_TYPES = {
+  ...NODE_TYPES,
+  scene: RuntimePerformanceSceneNode,
+};
+
 const EDGE_TYPES = {
   user: UserEdge,
 };
@@ -153,6 +179,7 @@ type PaletteMode = "default" | "frame" | "connect";
 
 // Must be rendered inside ReactFlowProvider
 export function MapCanvas() {
+  const runtimePerformanceEnabled = hasRuntimePerformanceCapability();
   const { t } = useTranslation();
   const treeNodes = useTreeStore((s) => s.nodes);
   const codexEntries = useCodexStore((s) => s.entries);
@@ -204,6 +231,9 @@ export function MapCanvas() {
     boardId,
     positions,
     setPositions,
+    setPositionCoordinates,
+    positionsStructureRevision,
+    positionsLayoutRevision,
     userEdges,
     setUserEdges,
     frames,
@@ -270,6 +300,8 @@ export function MapCanvas() {
     seedNodeIds: string[];
     seedNodeTitles: string[];
     seeds: AiBranchSeed[];
+    /** Authority captured together with the frozen seed snapshot. */
+    authority: AiOperationAuthority;
   } | null>(null);
   // null = idle. spinner は seed ノード直下（indicatorPosition）に
   // ViewportPortal で flow 座標固定で出すため pan/zoom に追従する。
@@ -544,6 +576,8 @@ export function MapCanvas() {
   useMapNodes({
     boardId,
     positions,
+    positionsStructureRevision,
+    positionsLayoutRevision,
     userEdges: layoutUserEdges,
     treeNodes,
     codexEntries,
@@ -625,6 +659,7 @@ export function MapCanvas() {
       mode,
       getNodes,
       setPositions,
+      setPositionCoordinates,
       setFrames,
       setNodes,
       setUserEdges,
@@ -893,6 +928,22 @@ export function MapCanvas() {
     setViewport,
     fitView,
   });
+  const runtimeMapNodesRef = useRef<readonly Node[]>(nodesWithFocus);
+  runtimeMapNodesRef.current = nodesWithFocus;
+  useEffect(() => {
+    if (!runtimePerformanceEnabled) return;
+    const control = createRuntimeMapDragIdentityControl(
+      () => runtimeMapNodesRef.current,
+    );
+    const unregister = registerRuntimePerformanceControl(
+      "map.dragIdentity",
+      control.invoke,
+    );
+    return () => {
+      unregister();
+      control.dispose();
+    };
+  }, [runtimePerformanceEnabled]);
 
   // Map 専属エンティティ（Sticky / AI Branch）の本体削除。
   // Scene / Note / Codex / Snippet はマップ外に存在するため Delete キー
@@ -1494,6 +1545,18 @@ export function MapCanvas() {
   const handleOpenAiBranch = useCallback(
     (explicitSeedNodeId?: string) => {
       if (!boardId) return;
+      let authority: AiOperationAuthority;
+      try {
+        // Seeds are a synchronous snapshot. Capture the board/project/workspace
+        // authority in the same turn so the confirmation dialog cannot later
+        // retarget those seeds to a replacement board.
+        authority = captureAiOperationAuthority(getCurrentProjectId(), boardId);
+      } catch (error) {
+        toast.error(t("map.toast.aiBranchGenerateFailed"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+        return;
+      }
       // When invoked from a node context menu (explicitSeedNodeId), seed
       // from that node regardless of selection state. Otherwise fall back
       // to the current multi-node selection (Palette / keyboard path).
@@ -1541,9 +1604,10 @@ export function MapCanvas() {
         seedNodeIds,
         seedNodeTitles,
         seeds,
+        authority,
       });
     },
-    [boardId, getNodes, getSpawnPosition, stickies, aiBranches],
+    [aiBranches, boardId, getNodes, getSpawnPosition, stickies, t],
   );
 
   const handleAiBranchConfirm = useCallback(
@@ -1552,17 +1616,37 @@ export function MapCanvas() {
       if (blockIfPolicyOff("chat")) return;
       const dialogState = aiBranchDialog;
       setAiBranchDialog(null);
-      setGeneratingAiBranch({
-        indicatorPosition: dialogState.indicatorPosition,
-      });
 
       try {
+        const assertDialogAuthority = (): void => {
+          assertAiOperationAuthorityCurrent(
+            dialogState.authority,
+            getCurrentProjectId(),
+          );
+          if (boardId !== dialogState.authority.resourceId) {
+            throw new Error(
+              "AI Branch board changed before the confirmation completed",
+            );
+          }
+        };
+
+        // The dialog may have remained open across a project/workspace/board
+        // switch. Reject before any context read or provider dispatch.
+        assertDialogAuthority();
+        setGeneratingAiBranch({
+          indicatorPosition: dialogState.indicatorPosition,
+        });
+
         // project info と Spotlight pins を並列 fetch。失敗時はそれぞれ
         // null / [] にフォールバックして prompt のセクションが落ちるだけ。
         const [projectCtx, spotlight] = await Promise.all([
-          fetchAiBranchProjectContext(getCurrentProjectId()),
+          fetchAiBranchProjectContext(dialogState.authority.projectId),
           fetchActiveSessionSpotlight(),
         ]);
+        // Context/spotlight are asynchronous and may have observed a stale
+        // store during a switch. The authority check must happen again before
+        // any provider call can consume them.
+        assertDialogAuthority();
         // Verbalized Sampling: 意外性ノブが標準 (null) のときは VS オフで従来挙動。
         // CoT 前置きは小型/ローカル (cli) では認知負荷で品質が落ちうるため切る。
         const provider = useAiSettingsStore.getState().settings?.provider;
@@ -1570,6 +1654,7 @@ export function MapCanvas() {
           vsThreshold != null
             ? { threshold: vsThreshold, cot: provider !== "cli" }
             : null;
+        assertDialogAuthority();
         const cards = await generateAiBranchCards(
           prompt,
           count,
@@ -1577,6 +1662,7 @@ export function MapCanvas() {
           projectCtx,
           spotlight,
           vs,
+          dialogState.authority,
         );
 
         const pos = dialogState.spawnPosition;
@@ -1588,8 +1674,9 @@ export function MapCanvas() {
           cards.length,
           positionsRef.current.map((p) => ({ x: p.x, y: p.y })),
         );
+        assertDialogAuthority();
         const result = await createAiBranch(
-          boardId,
+          dialogState.authority.resourceId,
           prompt,
           dialogState.seedNodeIds,
           cards,
@@ -1697,6 +1784,14 @@ export function MapCanvas() {
   useMapExport(pendingExport, setPendingExport, getNodes, getEdges);
 
   const isCorkboard = visualTheme === "corkboard";
+  const stickyCountByBranchId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const sticky of stickies) {
+      if (!sticky.aiBranchId) continue;
+      counts.set(sticky.aiBranchId, (counts.get(sticky.aiBranchId) ?? 0) + 1);
+    }
+    return counts;
+  }, [stickies]);
 
   // Trash Bin の Map ペインへの drop ターゲット登録。
   // PhysicsView から渡される client 座標を screenToFlowPosition で flow 座標に変換し、
@@ -1716,6 +1811,8 @@ export function MapCanvas() {
     <div
       ref={setRootRef}
       data-droptarget-id="map-panel"
+      data-map-rendered-node-count={nodes.length}
+      data-map-rendered-edge-count={edges.length}
       className={`${isCorkboard ? "map-corkboard " : ""}data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset`}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onKeyDown={onKeyDown}
@@ -1725,7 +1822,11 @@ export function MapCanvas() {
       <ReactFlow
         nodes={nodesWithFocus}
         edges={edges}
-        nodeTypes={NODE_TYPES}
+        nodeTypes={
+          runtimePerformanceEnabled
+            ? RUNTIME_PERFORMANCE_NODE_TYPES
+            : NODE_TYPES
+        }
         edgeTypes={EDGE_TYPES}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
@@ -1911,11 +2012,9 @@ export function MapCanvas() {
           }
           derivedStickyCount={
             contextMenu.nodeId.startsWith("ai_branch:")
-              ? stickies.filter(
-                  (s) =>
-                    s.aiBranchId ===
-                    contextMenu.nodeId.slice("ai_branch:".length),
-                ).length
+              ? (stickyCountByBranchId.get(
+                  contextMenu.nodeId.slice("ai_branch:".length),
+                ) ?? 0)
               : 0
           }
         />

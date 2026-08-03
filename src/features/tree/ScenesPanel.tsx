@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { GripVertical } from "lucide-react";
@@ -13,13 +21,10 @@ import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { buildSceneThreadTracks } from "@/features/plot-threads/sceneThreadTracks";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useLensStore } from "@/features/post-effect/lensStore";
-import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
 import type { OpenAiTreeArgs } from "./ScenesPanelContext";
-import { AiTreeDialog } from "./aiScaffold/AiTreeDialog";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useTabStore } from "@/features/editor/tabStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { NodeIcon } from "./TreeNodeItem";
@@ -30,7 +35,7 @@ import type { NodeType } from "./treeStore";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { BottomDropZone } from "./BottomDropZone";
-import { TreeRenderer } from "./TreeRenderer";
+import { VirtualTree } from "./VirtualTree";
 import { RootContextMenu } from "./RootContextMenu";
 import { ScenesToolbar } from "./ScenesToolbar";
 import { ScenesFilterBar } from "./ScenesFilterBar";
@@ -38,19 +43,29 @@ import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { recordMark } from "@/lib/perfLog";
-import { useExternalRootStore } from "@/features/external-mount/externalRootStore";
 import { TreeRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import {
   selectProviderReadiness,
   useAiSettingsStore,
 } from "@/features/chat/store";
+import { useScenesPanelNodes } from "./useScenesPanelNodes";
+
+const AiTreeDialog = lazy(async () => {
+  const module = await import("./aiScaffold/AiTreeDialog");
+  return { default: module.AiTreeDialog };
+});
+
+const ManageLabelsDialog = lazy(async () => {
+  const module = await import("@/features/labels/ManageLabelsDialog");
+  return { default: module.ManageLabelsDialog };
+});
 
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
 export function ScenesPanel() {
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  const nodes = useTreeStore((s) => s.nodes);
+  const nodes = useScenesPanelNodes();
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const selectedIds = useTreeStore((s) => s.selectedIds);
   const isLoading = useTreeStore((s) => s.isLoading);
@@ -78,7 +93,6 @@ export function ScenesPanel() {
   const projectId = useTreeStore((s) => s.projectId);
   const aiReadiness = useAiSettingsStore(selectProviderReadiness);
   const loadLens = useLensStore((s) => s.load);
-  const mountInitialized = useExternalRootStore((s) => s.isInitialized);
   const createNode = useTreeStore((s) => s.createNode);
   const expandAll = useTreeStore((s) => s.expandAll);
   const collapseAll = useTreeStore((s) => s.collapseAll);
@@ -147,6 +161,15 @@ export function ScenesPanel() {
 
   const filterRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+  const [treeScrollElement, setTreeScrollElement] =
+    useState<HTMLDivElement | null>(null);
+  const bindTreeScrollElement = useCallback(
+    (element: HTMLDivElement | null) => {
+      treeRef.current = element;
+      setTreeScrollElement(element);
+    },
+    [],
+  );
   const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
   const [aiTree, setAiTree] = useState<OpenAiTreeArgs | null>(null);
   const scenesPanelContextValue = useMemo(
@@ -158,35 +181,18 @@ export function ScenesPanel() {
   );
   const [deleteConfirm, setDeleteConfirm] = useState<string[] | null>(null);
 
-  // Tab restore runs after external-mount reconcile so node IDs in the tree
-  // match persisted tab nodeIds (initializeExternalMounts → loadTree in App).
-  useEffect(() => {
-    if (!mountInitialized) return;
-    const nodeIds = new Set(useTreeStore.getState().nodes.map((n) => n.id));
-    void useTabStore
-      .getState()
-      .loadTabState(nodeIds)
-      .then(() => {
-        useTabStore.getState().initAutoSave();
-      });
-    return () => {
-      useTabStore.getState().disposeAutoSave?.();
-    };
-  }, [mountInitialized]);
-
-  const { childMap, nodeMap, leafDescendantsByFolder, flatNodes } =
-    useScenesDerivedData({
-      nodes,
-      sortMode,
-      charCounts,
-      expandedIds,
-      filterQuery,
-      statusFilter,
-      labelFilter,
-      nodeLabels,
-      threadFilter,
-      nodeThreadIds,
-    });
+  const { childMap, nodeMap, flatRows, flatNodes } = useScenesDerivedData({
+    nodes,
+    sortMode,
+    charCounts,
+    expandedIds,
+    filterQuery,
+    statusFilter,
+    labelFilter,
+    nodeLabels,
+    threadFilter,
+    nodeThreadIds,
+  });
 
   // 縦版ミニ・タイムラインのトラックモデル（可視行の並び flatNodes に従う）。
   const trackModel = useMemo(
@@ -209,34 +215,9 @@ export function ScenesPanel() {
   const trackCellByNode = trackModel.cellByNode;
   const trackConnectorByNode = trackModel.connectorByNode;
 
-  // Auto-reveal active scene: scroll it into view when activeSceneId changes
-  useEffect(() => {
-    if (!autoRevealActiveScene || !treeRef.current) return;
-    const el = treeRef.current.querySelector(
-      `[data-node-id="${activeSceneId}"]`,
-    );
-    if (el) {
-      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
-  }, [activeSceneId, autoRevealActiveScene]);
-
-  // Force-reveal when requested from outside (e.g. "Show in Scenes" tab context menu)
-  useEffect(() => {
-    if (!pendingRevealId || !treeRef.current) return;
-    const id = pendingRevealId;
+  const handlePendingRevealHandled = useCallback(() => {
     useTreeStore.setState({ pendingRevealId: null });
-    // Retry scroll until the element appears in the DOM (panel may still be mounting)
-    let attempts = 0;
-    const tryScroll = () => {
-      const el = treeRef.current?.querySelector(`[data-node-id="${id}"]`);
-      if (el) {
-        el.scrollIntoView({ block: "center", behavior: "smooth" });
-      } else if (attempts++ < 10) {
-        requestAnimationFrame(tryScroll);
-      }
-    };
-    requestAnimationFrame(tryScroll);
-  }, [pendingRevealId]);
+  }, []);
 
   const handleToggleAll = useCallback(() => {
     const folderIds = nodes
@@ -259,6 +240,7 @@ export function ScenesPanel() {
       }
       createNode({ nodeType: type, parentId, afterId: activeSceneId })
         .then((newNode) => {
+          if (!newNode) return;
           if (newNode.nodeType === "scene" || newNode.nodeType === "note") {
             openEditorDocument(
               {
@@ -391,7 +373,7 @@ export function ScenesPanel() {
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <div
-                ref={treeRef}
+                ref={bindTreeScrollElement}
                 className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
                 tabIndex={0}
                 onKeyDown={handleTreeKeyDown}
@@ -424,35 +406,30 @@ export function ScenesPanel() {
                   </div>
                 ) : (
                   <>
-                    <ul className="list-none">
-                      <TreeRenderer
-                        parentId={null}
-                        childMap={childMap}
-                        nodeMap={nodeMap}
-                        depth={0}
-                        activeSceneId={activeSceneId}
-                        selectedIds={selectedIds}
-                        expandedIds={expandedIds}
-                        filterQuery={filterQuery}
-                        statusFilter={statusFilter}
-                        labelFilter={labelFilter}
-                        nodeLabels={nodeLabels}
-                        threadFilter={threadFilter}
-                        nodeThreadIds={nodeThreadIds}
-                        trackColumns={trackColumns}
-                        cellByNode={trackCellByNode}
-                        connectorByNode={trackConnectorByNode}
-                        viewMode={viewMode}
-                        showWordCounts={showWordCounts}
-                        showStatusDots={showStatusDots}
-                        showLabelDots={showLabelDots}
-                        showPlotThreadTrack={showPlotThreadTrack}
-                        showAiAttribution={showAiAttribution}
-                        leafDescendantsByFolder={leafDescendantsByFolder}
-                        orderedNodesRef={flatNodesRef}
-                        dragInProgress={draggingId !== null}
-                      />
-                    </ul>
+                    <VirtualTree
+                      rows={flatRows}
+                      scrollElement={treeScrollElement}
+                      activeSceneId={activeSceneId}
+                      selectedIds={selectedIds}
+                      expandedIds={expandedIds}
+                      trackColumns={trackColumns}
+                      cellByNode={trackCellByNode}
+                      connectorByNode={trackConnectorByNode}
+                      viewMode={viewMode}
+                      showWordCounts={showWordCounts}
+                      showStatusDots={showStatusDots}
+                      showLabelDots={showLabelDots}
+                      showPlotThreadTrack={showPlotThreadTrack}
+                      showAiAttribution={showAiAttribution}
+                      orderedNodesRef={flatNodesRef}
+                      draggingId={draggingId}
+                      autoRevealActiveScene={autoRevealActiveScene}
+                      pendingRevealId={pendingRevealId}
+                      onPendingRevealHandled={handlePendingRevealHandled}
+                      autoExpandFolders={
+                        filterQuery.length > 0 || threadFilter.length > 0
+                      }
+                    />
                     <BottomDropZone />
                   </>
                 )}
@@ -517,19 +494,25 @@ export function ScenesPanel() {
           document.body,
         )}
 
-        <ManageLabelsDialog
-          open={manageLabelsOpen}
-          onClose={() => setManageLabelsOpen(false)}
-        />
+        {manageLabelsOpen && (
+          <Suspense fallback={null}>
+            <ManageLabelsDialog
+              open
+              onClose={() => setManageLabelsOpen(false)}
+            />
+          </Suspense>
+        )}
 
         {aiTree && (
-          <AiTreeDialog
-            open
-            onClose={() => setAiTree(null)}
-            mode={aiTree.mode}
-            rootRef={aiTree.rootRef}
-            rootTitle={aiTree.rootTitle}
-          />
+          <Suspense fallback={null}>
+            <AiTreeDialog
+              open
+              onClose={() => setAiTree(null)}
+              mode={aiTree.mode}
+              rootRef={aiTree.rootRef}
+              rootTitle={aiTree.rootTitle}
+            />
+          </Suspense>
         )}
       </DndContext>
     </ScenesPanelContext.Provider>

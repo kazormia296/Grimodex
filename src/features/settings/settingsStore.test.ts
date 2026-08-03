@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { KEY_SCOPE, DEFAULT_SETTINGS } from "./types";
 import { useSettingsStore } from "./settingsStore";
+import * as api from "./api";
+import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
+import { collectQuiescenceProviderRecovery } from "@/lib/quiescenceProviders";
 
 // loadAll / persistSetting の到達先をモックし、「永続ソースはまだ pending を
 // 反映していない」状況を再現できるようにする（設定ダイアログ巻き戻りレース）。
@@ -108,11 +111,17 @@ describe("KEY_SCOPE routing invariants", () => {
 });
 
 function resetStore(projectLanguage: string) {
+  for (const timer of useSettingsStore.getState()._timers.values()) {
+    clearTimeout(timer);
+  }
   useSettingsStore.setState({
     layers: { legacy: {}, project: {}, global: {} },
     projectLanguage: "__init__",
+    projectId: "default-project",
+    isLoaded: false,
     _timers: new Map(),
     _pending: new Map(),
+    _inFlight: new Map(),
   });
   // Force a cache rebuild for the requested language.
   useSettingsStore.getState().applyProjectLanguage(projectLanguage);
@@ -184,6 +193,14 @@ describe("settingsStore language-linked defaults", () => {
 describe("デバウンス中の loadAll と pending の整合（設定ダイアログ巻き戻りレース）", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.mocked(api.getSettingsByPrefix).mockClear();
+    vi.mocked(api.getAllProjectSettings).mockClear();
+    vi.mocked(api.setProjectSetting).mockClear();
+    vi.mocked(api.setSetting).mockClear();
+    vi.mocked(api.getSettingsByPrefix).mockResolvedValue({});
+    vi.mocked(api.getAllProjectSettings).mockResolvedValue({});
+    vi.mocked(api.setProjectSetting).mockResolvedValue();
+    vi.mocked(api.setSetting).mockResolvedValue();
     updateUserPreferenceSpy.mockClear();
     resetStore("ja");
   });
@@ -234,5 +251,84 @@ describe("デバウンス中の loadAll と pending の整合（設定ダイア�
       "display.layerComments",
       "false",
     );
+  });
+
+  it("destructive lifecycle lease中は新しい設定変更を受け付けない", () => {
+    const before = useSettingsStore
+      .getState()
+      .get("display.layerComments", "false");
+    const attempted = before === "true" ? "false" : "true";
+    const lease = acquireQuiescenceLease("project-load");
+    try {
+      useSettingsStore.getState().set("display.layerComments", attempted);
+    } finally {
+      lease.release();
+    }
+
+    expect(useSettingsStore.getState().get("display.layerComments")).toBe(
+      before,
+    );
+    expect(useSettingsStore.getState()._pending.size).toBe(0);
+  });
+
+  it("loads and publishes the explicitly prepared Project settings", async () => {
+    vi.mocked(api.getAllProjectSettings).mockResolvedValueOnce({
+      "editor.verticalMode": "true",
+    });
+
+    await useSettingsStore.getState().loadAll("project-b");
+
+    expect(api.getAllProjectSettings).toHaveBeenCalledWith("project-b");
+    expect(useSettingsStore.getState()).toMatchObject({
+      projectId: "project-b",
+      isLoaded: true,
+    });
+    expect(useSettingsStore.getState().getBoolean("editor.verticalMode")).toBe(
+      true,
+    );
+  });
+
+  it("captures Project authority when a delayed write is scheduled", async () => {
+    useSettingsStore.setState({ projectId: "project-b" });
+    useSettingsStore.getState().set("editor.verticalMode", "true");
+    useSettingsStore.getState().applyHydration({
+      projectId: "project-c",
+      layers: { legacy: {}, project: {}, global: {} },
+    });
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(api.setProjectSetting).toHaveBeenCalledWith(
+      "project-b",
+      "editor.verticalMode",
+      "true",
+    );
+    expect(useSettingsStore.getState().getBoolean("editor.verticalMode")).toBe(
+      false,
+    );
+  });
+
+  it("retains failed pending settings so strict flush can veto and retry", async () => {
+    vi.mocked(api.setProjectSetting)
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockResolvedValueOnce();
+    useSettingsStore.setState({ projectId: "project-b" });
+    useSettingsStore.getState().set("editor.verticalMode", "true");
+
+    await expect(useSettingsStore.getState().flushPending()).rejects.toThrow(
+      "One or more settings failed to persist",
+    );
+    expect(useSettingsStore.getState()._pending.size).toBe(1);
+    expect(collectQuiescenceProviderRecovery()).toContainEqual({
+      kind: "setting",
+      projectId: "project-b",
+      key: "editor.verticalMode",
+      value: "true",
+    });
+    await expect(
+      useSettingsStore.getState().flushPending(),
+    ).resolves.toBeUndefined();
+    expect(api.setProjectSetting).toHaveBeenCalledTimes(2);
+    expect(useSettingsStore.getState()._pending.size).toBe(0);
   });
 });

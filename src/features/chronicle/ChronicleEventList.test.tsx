@@ -176,4 +176,11 @@ describe("ChronicleEventList", () => {
         .getAttribute("aria-current"),
     ).toBeNull();
   });
+
+  it("Glass ホストを覆う不透明なカード塗りを持たない", () => {
+    const { getByTestId } = renderList([item()]);
+    expect(getByTestId("chronicle-event-list").className).not.toContain(
+      "bg-card",
+    );
+  });
 });

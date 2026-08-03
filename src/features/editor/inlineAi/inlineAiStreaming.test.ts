@@ -19,6 +19,25 @@ vi.mock("@/lib/tauri", () => ({
     listenMock(...(args as [string, ListenHandler])),
 }));
 
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace",
+    operationId: "operation-test",
+    executionId: "execution-test",
+    parentExecutionId: null,
+    startedAt: 1,
+  })),
+  markAiAuditDispatched: vi.fn(async () => undefined),
+  completeAiAuditExecution: vi.fn(async () => undefined),
+  failAiAuditExecution: vi.fn(async () => undefined),
+  cancelAiAuditExecution: vi.fn(async () => undefined),
+  recordAiAuditPartial: vi.fn(async () => undefined),
+  recordAiAuditPartials: vi.fn(async () => undefined),
+}));
+
+const auditContext = { projectId: "project-1", pathId: "inline_ai_stream" };
+
 import { sendInlineAiStream, abortInlineAiStream } from "./inlineAiStreaming";
 
 function emit(event: string, payload: unknown) {
@@ -42,20 +61,32 @@ describe("inlineAiStreaming", () => {
 
     const cleanup = await sendInlineAiStream(
       [{ role: "user", content: "hi" }],
+      auditContext,
       { onTextDelta, onDone, onError },
     );
 
-    emit("inline-ai:stream-chunk", { delta: "Hello", block_type: "text" });
     emit("inline-ai:stream-chunk", {
+      streamId: "execution-test",
+      delta: "Hello",
+      block_type: "text",
+    });
+    emit("inline-ai:stream-chunk", {
+      streamId: "execution-test",
       delta: "ignored",
       block_type: "thinking",
     });
-    emit("inline-ai:stream-chunk", { delta: ", world", block_type: "text" });
+    emit("inline-ai:stream-chunk", {
+      streamId: "execution-test",
+      delta: ", world",
+      block_type: "text",
+    });
     emit("inline-ai:stream-done", {
+      streamId: "execution-test",
       stop_reason: "end_turn",
       input_tokens: 10,
       output_tokens: 5,
     });
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledOnce());
 
     expect(onTextDelta).toHaveBeenCalledTimes(2);
     expect(onTextDelta).toHaveBeenNthCalledWith(1, "Hello");
@@ -78,27 +109,39 @@ describe("inlineAiStreaming", () => {
     const onDone = vi.fn();
     const onError = vi.fn();
 
-    await sendInlineAiStream([{ role: "user", content: "hi" }], {
+    await sendInlineAiStream([{ role: "user", content: "hi" }], auditContext, {
       onTextDelta,
       onDone,
       onError,
     });
 
-    emit("inline-ai:stream-error", { message: "boom" });
+    emit("inline-ai:stream-error", {
+      streamId: "execution-test",
+      message: "boom",
+    });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
 
     expect(onError).toHaveBeenCalledWith("boom");
   });
 
   it("invokes the backend abort command", async () => {
-    invokeMock.mockResolvedValue(undefined);
-    await abortInlineAiStream();
-    expect(invokeMock).toHaveBeenCalledWith("abort_inline_ai_stream");
+    invokeMock.mockResolvedValue({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+    await expect(abortInlineAiStream("execution-test")).resolves.toEqual({
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("abort_inline_ai_stream", {
+      streamId: "execution-test",
+    });
   });
 
   it("calls send_inline_ai_stream with the expected shape", async () => {
     invokeMock.mockResolvedValue(undefined);
 
-    await sendInlineAiStream([{ role: "user", content: "hi" }], {
+    await sendInlineAiStream([{ role: "user", content: "hi" }], auditContext, {
       onTextDelta: vi.fn(),
       onDone: vi.fn(),
       onError: vi.fn(),
@@ -114,6 +157,41 @@ describe("inlineAiStreaming", () => {
       apiVariant: null,
       provider: null,
       endpointId: null,
+      streamId: "execution-test",
+      auditContext: {
+        expectedWorkspacePath: "/workspace",
+        projectId: "project-1",
+        operationId: "operation-test",
+        executionId: "execution-test",
+        parentExecutionId: null,
+        pathId: "inline_ai_stream",
+      },
     });
+  });
+
+  it("registers every stream listener before provider dispatch", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "send_inline_ai_stream") {
+        expect(listeners.has("inline-ai:stream-chunk")).toBe(true);
+        expect(listeners.has("inline-ai:stream-done")).toBe(true);
+        expect(listeners.has("inline-ai:stream-error")).toBe(true);
+      }
+      return undefined;
+    });
+
+    await sendInlineAiStream(
+      [{ role: "user", content: "first event must be observable" }],
+      auditContext,
+      {
+        onTextDelta: vi.fn(),
+        onDone: vi.fn(),
+        onError: vi.fn(),
+      },
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "send_inline_ai_stream",
+      expect.any(Object),
+    );
   });
 });

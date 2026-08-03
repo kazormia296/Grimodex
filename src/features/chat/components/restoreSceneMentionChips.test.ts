@@ -30,7 +30,7 @@ function makeEditor() {
   return new Editor({
     extensions: getChatInputExtensions({
       placeholder: "",
-      onSubmit: () => {},
+      onSubmit: async () => true,
       onStop: () => {},
       setMentionPopup: () => {},
       setCommandPopup: () => {},

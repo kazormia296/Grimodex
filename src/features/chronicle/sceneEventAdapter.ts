@@ -47,6 +47,7 @@ export function buildSceneEventRow(n: TreeNodeData): EventRow {
     kind: "generic", // シーンは誕生/死亡にならない
     secret: false, // 秘匿は event 専用
     revealSceneId: null,
+    version: 0,
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
   };

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
+import { recordCounter } from "@/lib/perfLog";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -113,6 +114,9 @@ export function ChatPanelHeader({
   onToggleRag,
 }: ChatPanelHeaderProps) {
   const { t } = useTranslation();
+  useEffect(() => {
+    recordCounter("chat.header.commit");
+  });
   const privacyRagDisabled = agentMode;
   const effectiveRagDisabled = ragDisabled || privacyRagDisabled;
   const nodes = useTreeStore((s) => s.nodes);
@@ -249,7 +253,8 @@ export function ChatPanelHeader({
   return (
     <div
       data-panel-header
-      className="flex items-center justify-between border-b border-border px-3 py-1.5"
+      data-testid="chat-panel-header"
+      className="flex items-center justify-between border-b border-border px-3 pb-1 pt-2"
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <MessageSquare className="size-3.5 shrink-0 opacity-70" aria-hidden />
@@ -261,6 +266,8 @@ export function ChatPanelHeader({
           <button
             ref={triggerRef}
             type="button"
+            data-testid="chat-scope-picker"
+            data-chat-scope={chatScope}
             onClick={handleToggleOpen}
             className="flex max-w-[200px] items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
             title={t("chat.scope.picker")}

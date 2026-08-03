@@ -9,3 +9,6 @@ export class AlreadyNotifiedSaveError extends Error {
     this.name = "AlreadyNotifiedSaveError";
   }
 }
+
+export const INLINE_AI_SAVE_BLOCKED_MESSAGE =
+  "Resolve the inline-AI preview before saving this document";

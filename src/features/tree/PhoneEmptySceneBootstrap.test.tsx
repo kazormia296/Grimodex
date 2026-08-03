@@ -27,6 +27,7 @@ describe("PhoneEmptySceneBootstrap", () => {
     useChatStore.setState({
       activeSceneId: "",
       chatScope: "scene",
+      agentMode: false,
       isStreaming: false,
       messages: [],
     } as never);
@@ -124,6 +125,42 @@ describe("PhoneEmptySceneBootstrap", () => {
     expect(useEditorSessionStore.getState().consumeEditorFocusRequest(1)).toBe(
       true,
     );
+    expect(useEditorSessionStore.getState().consumeEditorFocusRequest(0)).toBe(
+      false,
+    );
+  });
+
+  it("does not move Chat when Tree rejects activation during an Agent turn", async () => {
+    useChatStore.setState({
+      activeSceneId: "scene-current",
+      agentMode: true,
+      isStreaming: true,
+      messages: [{ id: "streaming-message", content: "draft" }],
+    } as never);
+    useTreeStore.setState({
+      activeSceneId: "scene-current",
+      nodes: [
+        {
+          id: "scene-target",
+          nodeType: "scene",
+          title: "Target",
+        },
+      ] as never,
+    });
+    useCompactNavigationStore.getState().openSurface("scenes");
+
+    render(<PhoneEmptySceneBootstrap />);
+
+    await waitFor(() =>
+      expect(document.querySelector('[role="status"] button')).not.toBeNull(),
+    );
+    expect(useTreeStore.getState().activeSceneId).toBe("scene-current");
+    expect(useChatStore.getState().activeSceneId).toBe("scene-current");
+    expect(useChatStore.getState().isStreaming).toBe(true);
+    expect(useChatStore.getState().messages).toEqual([
+      { id: "streaming-message", content: "draft" },
+    ]);
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("scenes");
     expect(useEditorSessionStore.getState().consumeEditorFocusRequest(0)).toBe(
       false,
     );

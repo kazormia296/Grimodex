@@ -13,6 +13,7 @@ import { ResponsiveAlertDialog } from "@/components/ui/responsive-alert-dialog";
 import { DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { runProjectLoadWithFailureToast } from "./projectLoadFailure";
 
 export function ProjectMenu({
   onOpenImport,
@@ -29,6 +30,8 @@ export function ProjectMenu({
   const currentProjectId = useCurrentProjectId();
   const currentProject = useCurrentProject();
   const projects = useProjectStore((s) => s.projects);
+  const projectLoadStatus = useProjectStore((s) => s.projectLoadStatus);
+  const degradedParticipants = useProjectStore((s) => s.degradedParticipants);
   const loadProject = useProjectStore((s) => s.loadProject);
   const createNewProject = useProjectStore((s) => s.createNewProject);
   const deleteProjectById = useProjectStore((s) => s.deleteProjectById);
@@ -63,11 +66,7 @@ export function ProjectMenu({
       return;
     }
     setIsOpen(false);
-    try {
-      await loadProject(projectId);
-    } catch {
-      toast.error(t("project.switchFailed"));
-    }
+    await runProjectLoadWithFailureToast(() => loadProject(projectId));
   }
 
   async function handleCreate(data: {
@@ -124,9 +123,22 @@ export function ProjectMenu({
           type="button"
           data-testid="project-menu-trigger"
           onClick={() => setIsOpen(!isOpen)}
+          aria-label={
+            projectLoadStatus === "degraded"
+              ? `${displayTitle}: ${t("project.loadDegraded")}`
+              : displayTitle
+          }
           className="flex w-44 items-center justify-between gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
         >
           <span className="min-w-0 truncate">{displayTitle}</span>
+          {projectLoadStatus === "degraded" && (
+            <span
+              aria-hidden
+              className="shrink-0 text-xs font-bold text-amber-600 dark:text-amber-400"
+            >
+              !
+            </span>
+          )}
           <span className="shrink-0 text-xs">▾</span>
         </button>
 
@@ -135,6 +147,40 @@ export function ProjectMenu({
             data-testid="project-menu-dropdown"
             className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover py-1 shadow-lg"
           >
+            {projectLoadStatus === "degraded" && (
+              <div
+                role="status"
+                data-testid="project-load-degraded"
+                className="mx-2 mb-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-2 text-xs"
+              >
+                <p>{t("project.loadDegraded")}</p>
+                <p className="mt-0.5 text-muted-foreground">
+                  {t("project.loadDegradedCount", {
+                    count: degradedParticipants.length,
+                  })}
+                </p>
+                <button
+                  type="button"
+                  className="mt-1 font-medium text-foreground underline underline-offset-2"
+                  onClick={() => {
+                    setIsOpen(false);
+                    void runProjectLoadWithFailureToast(() =>
+                      loadProject(currentProjectId),
+                    );
+                  }}
+                >
+                  {t("common.retry")}
+                </button>
+              </div>
+            )}
+            {projectLoadStatus === "recovering" && (
+              <div
+                role="alert"
+                className="mx-2 mb-1 rounded border border-destructive/40 bg-destructive/10 px-2 py-2 text-xs"
+              >
+                {t("project.recovering")}
+              </div>
+            )}
             {projects.map((project) => (
               <div
                 key={project.id}

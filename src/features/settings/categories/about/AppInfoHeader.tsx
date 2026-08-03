@@ -88,7 +88,8 @@ export function AppInfoHeader() {
   const updateBusy = checkingUpdate || downloading;
   // primary で強調するのは「更新あり」「準備完了」= ユーザーの操作を促したいとき。
   const updateEmphasis = ready || hasUpdate;
-  const downloadPct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+  const downloadPct =
+    total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : 0;
   const onUpdateClick = () => {
     if (ready) void restartApp();
     else if (hasUpdate) void startUpdateDownload();

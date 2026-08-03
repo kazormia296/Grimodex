@@ -77,10 +77,16 @@ describe("agentCreateForeshadow", () => {
   });
 
   it("invokes the tracked command, reloads the store, and pushes undo history", async () => {
-    const result = await agentCreateForeshadow({ title: "刻印の謎" });
+    const result = await agentCreateForeshadow({
+      requestId: "agent-tool:foreshadow-request",
+      foreshadowId: "f1",
+      title: "刻印の謎",
+    });
 
     expect(h.invoke).toHaveBeenCalledWith("agent_foreshadow_create", {
       payload: {
+        requestId: "agent-tool:foreshadow-request",
+        foreshadowId: "f1",
         projectId: "p1",
         sessionId: "sess-1",
         title: "刻印の謎",
@@ -94,6 +100,7 @@ describe("agentCreateForeshadow", () => {
     expect(h.push).toHaveBeenCalledTimes(1);
     expect(h.push.mock.calls[0][0]).toMatchObject({
       kind: "foreshadow",
+      operationId: "j1",
       entityId: "f1",
     });
     expect(result.id).toBe("f1");

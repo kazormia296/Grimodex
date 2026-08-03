@@ -19,6 +19,8 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
 import { normalizeReading, isHiraganaReading } from "./reading";
 import { isJapaneseProjectLanguage } from "@/features/ime/language";
+import i18next from "@/lib/i18n";
+import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
 /** 1 表記の推定結果。yomi はひらがな正規化済み。 */
 export interface YomiResult {
@@ -37,9 +39,21 @@ export interface YomiEstimationEntry {
 // 1 リクエストの上限。バックフィルはこの単位で chunk する。
 export const YOMI_MAX_ENTRIES = 100;
 
+export const CODEX_YOMI_NO_VALID_RESULT = "CODEX_YOMI_NO_VALID_RESULT" as const;
+
+export class YomiNoValidResultError extends Error {
+  readonly code = CODEX_YOMI_NO_VALID_RESULT;
+
+  constructor() {
+    super(i18next.t("codex.readings.estimateNoResult"));
+    this.name = "YomiNoValidResultError";
+  }
+}
+
 /**
  * エントリ群の漢字表記の読みを一括推定する。
- * policy off / 入力なし / AI 失敗時は空 Map (呼び出し側は既存 readings を保つ)。
+ * policy off / 入力なしは空 Map。送信失敗・有効結果なしは reject し、ユーザー操作の
+ * 呼び出し側が理由を通知する（既存 readings は常に保持）。
  * 返り値: entry id → [{surface, yomi}]。
  */
 export async function inferReadings(
@@ -77,29 +91,30 @@ export async function inferReadings(
     })),
   });
 
-  let response;
-  try {
-    const ov = resolveRoleSendOverride("codex_yomi");
-    response = await sendChatMessageWithThinking(
-      [{ role: "user", content: prompt }],
-      undefined, // thinkingParams
-      undefined, // systemCacheSegments
-      ov.apiVariant, // apiVariant（横断割り当て時のみ）
-      undefined, // systemVolatileTail
-      ov.model,
-      ov.provider,
-      ov.endpointId,
-    );
-  } catch {
-    return result;
-  }
+  const ov = resolveRoleSendOverride("codex_yomi");
+  const response = await sendChatMessageWithThinking(
+    [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "codex_yomi",
+    },
+    undefined, // thinkingParams
+    undefined, // systemCacheSegments
+    ov.apiVariant, // apiVariant（横断割り当て時のみ）
+    undefined, // systemVolatileTail
+    ov.model,
+    ov.provider,
+    ov.endpointId,
+  );
   void recordAiUsage({
     surface: "codex_yomi",
     tokensIn: response.inputTokens,
     tokensOut: response.outputTokens,
   });
 
-  return parseYomiResponse(response.text, validSurfacesById);
+  const parsed = parseYomiResponse(response.text, validSurfacesById);
+  if (parsed.size === 0) throw new YomiNoValidResultError();
+  return parsed;
 }
 
 /**

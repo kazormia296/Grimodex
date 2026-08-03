@@ -1,9 +1,242 @@
 use super::*;
+use std::sync::{atomic::Ordering, mpsc, Arc};
+use std::time::{Duration, Instant};
 
 fn test_db() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
     db.migrate().expect("migrate");
     db
+}
+
+#[test]
+fn background_connection_scope_yields_to_a_waiting_foreground_call() {
+    let db = Arc::new(Database::new(Path::new(":memory:")).expect("open in-memory db"));
+    let (first_acquired_tx, first_acquired_rx) = mpsc::channel();
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let (winner_tx, winner_rx) = mpsc::channel();
+
+    let background_db = Arc::clone(&db);
+    let background_winner = winner_tx.clone();
+    let background = std::thread::spawn(move || {
+        background_db
+            .with_background_connection_priority(|| -> anyhow::Result<()> {
+                background_db.with_conn(|_| {
+                    first_acquired_tx.send(()).expect("announce first lock");
+                    release_first_rx.recv().expect("release first lock");
+                    Ok(())
+                })?;
+                background_db.with_conn(|_| {
+                    background_winner
+                        .send("background")
+                        .expect("announce background reacquire");
+                    Ok(())
+                })
+            })
+            .expect("background calls");
+    });
+
+    first_acquired_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("background owns first lock");
+
+    let foreground_db = Arc::clone(&db);
+    let foreground = std::thread::spawn(move || {
+        foreground_db
+            .with_conn(|_| {
+                winner_tx
+                    .send("foreground")
+                    .expect("announce foreground acquisition");
+                Ok(())
+            })
+            .expect("foreground call");
+    });
+
+    for _ in 0..1_000 {
+        if db.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        db.foreground_connection_waiters.load(Ordering::Acquire),
+        1,
+        "foreground waiter must be published before the background hand-off",
+    );
+
+    release_first_tx.send(()).expect("release first lock");
+    assert_eq!(
+        winner_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("a caller acquires next"),
+        "foreground",
+    );
+
+    foreground.join().expect("foreground thread");
+    background.join().expect("background thread");
+}
+
+#[test]
+fn maintenance_prune_fails_fast_behind_an_external_writer_and_restores_timeout() {
+    let dir = std::env::temp_dir().join(format!(
+        "grimodex-maintenance-busy-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).expect("create maintenance fixture");
+    let db_path = dir.join("grimodex.db");
+    let active = Database::new(&db_path).expect("open active db");
+    active.migrate().expect("migrate active db");
+    active
+        .with_conn(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            for index in 0..257 {
+                conn.execute(
+                    "INSERT INTO undo_journal (
+                        id, project_id, surface, entity_kind, entity_id, op_kind,
+                        base_version, result_version, created_at
+                     ) VALUES (
+                        ?1, 'default-project', 'test', 'scene', ?2, 'update',
+                        0, 1, datetime('now', '-120 days')
+                     )",
+                    rusqlite::params![
+                        format!("maintenance-old-{index}"),
+                        format!("scene-old-{index}"),
+                    ],
+                )?;
+            }
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        })
+        .expect("seed bounded prunable rows");
+
+    let maintenance =
+        Database::new_for_workspace_maintenance(&db_path).expect("open maintenance db");
+    let maintenance_timeout: i64 = maintenance
+        .with_conn(|conn| Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?))
+        .expect("read maintenance timeout");
+    assert_eq!(maintenance_timeout, 0);
+
+    let external_writer = Database::new(&db_path).expect("open external writer");
+    let writer_conn = external_writer.lock_conn().expect("lock external writer");
+    writer_conn
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold SQLite writer lock");
+
+    let started = Instant::now();
+    let error = maintenance
+        .prune_old_logs_for_workspace_maintenance(90)
+        .expect_err("maintenance must yield to writer");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "zero-wait prune took {:?}: {error}",
+        started.elapsed()
+    );
+    let restored_maintenance_timeout: i64 = maintenance
+        .with_conn(|conn| Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?))
+        .expect("read restored timeout");
+    assert_eq!(
+        restored_maintenance_timeout, 0,
+        "maintenance busy timeout must be restored"
+    );
+
+    writer_conn
+        .execute_batch("ROLLBACK")
+        .expect("release SQLite writer lock");
+    drop(writer_conn);
+    assert_eq!(
+        maintenance
+            .prune_old_logs_for_workspace_maintenance(90)
+            .expect("retry maintenance"),
+        256,
+        "one open must delete only the bounded per-table batch"
+    );
+    let remaining: i64 = active
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM undo_journal
+                  WHERE created_at < datetime('now', '-90 days')",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count deferred prune rows");
+    assert_eq!(remaining, 1, "remaining work is deferred to a later open");
+
+    drop(external_writer);
+    drop(maintenance);
+    drop(active);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn maintenance_prune_rechecks_retention_after_candidate_selection() {
+    let dir = std::env::temp_dir().join(format!(
+        "grimodex-maintenance-recheck-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).expect("create maintenance recheck fixture");
+    let db_path = dir.join("grimodex.db");
+    let active = Database::new(&db_path).expect("open active db");
+    active.migrate().expect("migrate active db");
+    active
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO undo_journal (
+                    id, project_id, surface, entity_kind, entity_id, op_kind,
+                    base_version, result_version, created_at
+                 ) VALUES (
+                    'reused-key', 'default-project', 'test', 'scene',
+                    'scene-old', 'update', 0, 1, datetime('now', '-120 days')
+                 )",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed old candidate");
+    let maintenance =
+        Database::new_for_workspace_maintenance(&db_path).expect("open maintenance db");
+
+    let mut replaced = false;
+    let deleted = maintenance
+        .prune_old_logs_for_workspace_maintenance_with_hook(90, |table| {
+            if table == "undo_journal" {
+                active.with_conn(|conn| {
+                    conn.execute("DELETE FROM undo_journal WHERE id = 'reused-key'", [])?;
+                    conn.execute(
+                        "INSERT INTO undo_journal (
+                            id, project_id, surface, entity_kind, entity_id, op_kind,
+                            base_version, result_version
+                         ) VALUES (
+                            'reused-key', 'default-project', 'test', 'scene',
+                            'scene-recent', 'update', 0, 1
+                         )",
+                        [],
+                    )?;
+                    Ok(())
+                })?;
+                replaced = true;
+            }
+            Ok(())
+        })
+        .expect("bounded maintenance prune");
+
+    assert!(replaced, "test must replace the selected candidate");
+    assert_eq!(deleted, 0, "recent replacement must not be deleted");
+    let recent_rows: i64 = active
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM undo_journal
+                  WHERE id = 'reused-key'
+                    AND created_at >= datetime('now', '-90 days')",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("query replacement");
+    assert_eq!(recent_rows, 1);
+
+    drop(maintenance);
+    drop(active);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Insert a `default-chapter` folder for tests that historically relied
@@ -1893,6 +2126,11 @@ fn test_migrate_replaces_legacy_cv_triggers() {
         "run",
     )
     .expect("legacy trigger");
+    db.with_conn(|conn| {
+        conn.pragma_update(None, "user_version", 1)?;
+        Ok(())
+    })
+    .expect("mark legacy schema version");
 
     // Re-run migrate(); the helper should replace the legacy trigger.
     db.migrate().expect("re-migrate");
@@ -3288,6 +3526,8 @@ fn test_migrate_map_stickies_ai_derived_backfill() {
                 VALUES ('s-plain', 'b1', NULL);",
         )
         .expect("create legacy map_stickies with data");
+        conn.pragma_update(None, "user_version", 1)
+            .expect("mark legacy schema version");
     }
 
     db.migrate().expect("migrate");

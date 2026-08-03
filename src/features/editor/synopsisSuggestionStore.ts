@@ -1,7 +1,10 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
-import { useTreeStore } from "@/features/tree/treeStore";
+import {
+  findTreeNodeSummary,
+  updateTreeSynopsis,
+} from "@/features/tree/treeProjection";
 import { loadSceneContent } from "@/features/tree/api";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import {
@@ -58,7 +61,7 @@ export const useSynopsisSuggestionStore = create<SynopsisSuggestionState>(
       if (!id) return;
       set({ pendingSceneId: null });
       toast.dismiss(TOAST_ID);
-      const node = useTreeStore.getState().nodes.find((n) => n.id === id);
+      const node = findTreeNodeSummary(id);
       if (!node) return;
       try {
         const rawContent = await loadSceneContent(id);
@@ -71,7 +74,7 @@ export const useSynopsisSuggestionStore = create<SynopsisSuggestionState>(
           node.title,
           content,
         );
-        await useTreeStore.getState().updateSynopsis(id, generated.trim());
+        await updateTreeSynopsis(id, generated.trim());
         toast.success(i18next.t("editor.status.synopsisGenerated"));
       } catch {
         toast.error(i18next.t("editor.status.synopsisGenerateFailed"));

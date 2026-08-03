@@ -21,7 +21,11 @@ import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
-import type { CollisionDetection, DragEndEvent } from "@dnd-kit/core";
+import type {
+  CollisionDetection,
+  DragEndEvent,
+  DragStartEvent,
+} from "@dnd-kit/core";
 import { useBeatDragDrop } from "./useBeatDragDrop";
 import {
   useUnplacedBeatsStore,
@@ -86,6 +90,42 @@ beforeEach(() => {
 });
 
 describe("useBeatDragDrop.onDragEnd (happy-dom: 非 geometry 分岐)", () => {
+  it("projection が drag 中に切り替わった drop は無視する", () => {
+    useUnplacedBeatsStore
+      .getState()
+      .setBeats(SCENE, [beat("b1"), beat("b2")], "load");
+    const projectionKeyRef = { current: "projection-a" };
+    const { result } = renderHook(() =>
+      useBeatDragDrop({
+        editorRef: { current: null },
+        nodeId: SCENE,
+        canMutate: () => true,
+        projectionKeyRef,
+      }),
+    );
+
+    act(() => {
+      result.current.onDragStart({
+        active: {
+          id: "b1",
+          data: { current: { beat: beat("b1"), sceneId: SCENE } },
+        },
+      } as unknown as DragStartEvent);
+      projectionKeyRef.current = "projection-b";
+      result.current.onDragEnd({
+        active: {
+          id: "b1",
+          data: { current: { beat: beat("b1"), sceneId: SCENE } },
+        },
+        over: { id: "b2" },
+        delta: { x: 0, y: 0 },
+        activatorEvent: {} as Event,
+      } as unknown as DragEndEvent);
+    });
+
+    expect(unplacedIds()).toEqual(["b1", "b2"]);
+  });
+
   it("unplaced 同士の並べ替え: reorder で順序が変わる (50ccdb57 回帰)", () => {
     useUnplacedBeatsStore
       .getState()
@@ -108,6 +148,39 @@ describe("useBeatDragDrop.onDragEnd (happy-dom: 非 geometry 分岐)", () => {
     });
 
     expect(unplacedIds()).toEqual(["b2", "b3", "b1"]);
+  });
+
+  it("drag 開始後に unplaced 配列が変わった reorder は拒否する", () => {
+    useUnplacedBeatsStore
+      .getState()
+      .setBeats(SCENE, [beat("b1"), beat("b2"), beat("b3")], "load");
+    const editorRef = { current: createEditor() };
+    const { result } = renderHook(() =>
+      useBeatDragDrop({ editorRef, nodeId: SCENE }),
+    );
+
+    act(() => {
+      result.current.onDragStart({
+        active: {
+          id: "b1",
+          data: { current: { beat: beat("b1"), sceneId: SCENE } },
+        },
+      } as unknown as DragStartEvent);
+      useUnplacedBeatsStore
+        .getState()
+        .setBeats(SCENE, [beat("b3"), beat("b1"), beat("b2")], "sync");
+      result.current.onDragEnd({
+        active: {
+          id: "b1",
+          data: { current: { beat: beat("b1"), sceneId: SCENE } },
+        },
+        over: { id: "b2" },
+        delta: { x: 0, y: 0 },
+        activatorEvent: {} as Event,
+      } as unknown as DragEndEvent);
+    });
+
+    expect(unplacedIds()).toEqual(["b3", "b1", "b2"]);
   });
 
   it("placed → unplaced ドロップ: doc から消え unplaced に戻る", () => {

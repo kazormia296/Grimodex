@@ -16,8 +16,8 @@ use crate::database::Database;
 pub(crate) use grimodex_db::{
     with_db_state, AppError, AppResult, GlobalSettingsPath, QueryResult, WorkspaceState,
 };
-pub(crate) use grimodex_post_effect::PostEffectAbortRegistry;
 pub(crate) use grimodex_license::LicenseRuntime;
+pub(crate) use grimodex_post_effect::PostEffectAbortRegistry;
 
 pub(crate) mod agent_writes;
 pub(crate) mod ai;

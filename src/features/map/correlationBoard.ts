@@ -6,22 +6,17 @@
  *
  *   characters → cross-reference(本文 × rust matcher) → 共起ペア列挙
  *   → authored relations(両端 character) → force layout(in-memory)
- *   → board / positions / edges / frames を 1 tx(db_execute_batch)で snapshot 書き込み
+ *   → board / positions / edges / frames を型付き集約で snapshot 書き込み
  *
  * エッジは board-local の **user-edge** としてスナップショットし、board は
  * `derivedEdges:false` にする。これで (a) 200-cap 回避、(b) overlay 漏れ防止、
  * (c) codex_relations を汚さない、(d) 自動更新不要、を一括達成する。
  */
-import { db } from "@/db/client";
-import {
-  mapBoards,
-  mapNodePositions,
-  mapEdges,
-  mapFrames,
-  type NewMapBoard,
-  type NewMapNodePosition,
-  type NewMapEdge,
-  type NewMapFrame,
+import type {
+  NewMapBoard,
+  NewMapNodePosition,
+  NewMapEdge,
+  NewMapFrame,
 } from "@/db/schema";
 import { invoke } from "@/lib/tauri";
 import { listCodexEntriesForContext } from "@/features/codex/api";
@@ -70,25 +65,9 @@ export interface FrameRect {
 const CODEX_NODE_W = 200;
 const CODEX_NODE_H = 88;
 const FRAME_PADDING = 40;
-// SQLITE_MAX_VARIABLE_NUMBER(保守的ビルド 999)対策。positions は ~14 params/行で
-// 約 70 行で破綻するため、複数行 insert は 50 行ごとに statement を分ける(同一 batch)。
-const INSERT_CHUNK = 50;
-
 const REL_EDGE_COLOR = "#7c3aed";
 const FRAME_BG = "#f5f5f5";
 const FRAME_BORDER = "#cccccc";
-
-type BatchStatement = { sql: string; params: unknown[]; method: string };
-
-function toStatement(q: { sql: string; params: unknown[] }): BatchStatement {
-  return { sql: q.sql, params: q.params, method: "run" };
-}
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
 
 /**
  * 共起エッジと relation エッジで同一キー集合を保証するヘルパ。drizzle の複数行
@@ -363,22 +342,18 @@ export async function generateCorrelationBoard(
       }))
     : [];
 
-  // 10. db_execute_batch で 1 tx 書き込み(空配列は statement を作らない)。
-  const statements: BatchStatement[] = [
-    toStatement(db.insert(mapBoards).values(boardRow).toSQL()),
-  ];
-  for (const part of chunk(positionRows, INSERT_CHUNK)) {
-    statements.push(
-      toStatement(db.insert(mapNodePositions).values(part).toSQL()),
-    );
-  }
-  for (const part of chunk(edgeRows, INSERT_CHUNK)) {
-    statements.push(toStatement(db.insert(mapEdges).values(part).toSQL()));
-  }
-  for (const part of chunk(frameRows, INSERT_CHUNK)) {
-    statements.push(toStatement(db.insert(mapFrames).values(part).toSQL()));
-  }
-  await invoke("db_execute_batch", { statements });
+  // 10. Rust-owned aggregate write で所有権検証と 1 tx 書き込み。
+  await invoke("map_write_bundle", {
+    payload: {
+      kind: "create-board",
+      projectId,
+      board: boardRow,
+      stickies: [],
+      positions: positionRows,
+      edges: edgeRows,
+      frames: frameRows,
+    },
+  });
 
   // boardId はクライアント採番なので読み戻し不要。
   return { boardId };

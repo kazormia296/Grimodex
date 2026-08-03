@@ -10,6 +10,7 @@ import type { PendingProseProposal } from "@/features/agent-writes/proseStagingS
 type Handler = (
   proposal: PendingProseProposal,
   projectId: string,
+  isAuthoritative?: () => boolean,
 ) => boolean | Promise<boolean>;
 
 const h = vi.hoisted(() => ({
@@ -134,6 +135,25 @@ describe("auto-accept gate (live handler)", () => {
     expect(consumed).toBe(true);
     expect(h.autoApplyProseProposal).toHaveBeenCalledTimes(1);
   });
+
+  it("stops a live proposal when feed authority changes during the gate", async () => {
+    h.state.toggleOn = true;
+    let authoritative = true;
+    h.getProject.mockImplementationOnce(async () => {
+      authoritative = false;
+      return { aiPolicy: "" };
+    });
+    setupAutoAcceptProseConsumer();
+
+    const consumed = await h.handler!(
+      proposal(),
+      "proj-1",
+      () => authoritative,
+    );
+
+    expect(consumed).toBe(false);
+    expect(h.autoApplyProseProposal).not.toHaveBeenCalled();
+  });
 });
 
 describe("backlog drain", () => {
@@ -179,6 +199,24 @@ describe("backlog drain", () => {
     h.state.toggleOn = true;
     h.state.backlog = [proposal({ stagingId: "s1" })];
     await drainProposedProse("proj-1");
+    expect(useProseStagingStore.getState().pending).toBeNull();
+  });
+
+  it("authority が変わった時点で残りの backlog 書込みを止める", async () => {
+    h.state.toggleOn = true;
+    h.state.backlog = [
+      proposal({ stagingId: "s1" }),
+      proposal({ stagingId: "s2" }),
+    ];
+    let authoritative = true;
+    h.autoApplyProseProposal.mockImplementationOnce(async () => {
+      authoritative = false;
+      return { applied: true };
+    });
+
+    await drainProposedProse("proj-1", () => authoritative);
+
+    expect(h.autoApplyProseProposal).toHaveBeenCalledTimes(1);
     expect(useProseStagingStore.getState().pending).toBeNull();
   });
 });

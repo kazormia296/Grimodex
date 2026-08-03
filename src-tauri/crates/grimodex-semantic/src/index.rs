@@ -333,17 +333,60 @@ pub fn read_scene_for_index(db: &Database, scene_id: &str) -> Result<Option<(Str
 /// ため、呼び出し側は workspace lock (with_db) の外で呼ぶこと。
 /// 推論中に本文が変わっても、後段の `upsert_scene_chunks` が TX 内で
 /// initial hash を再確認して負けた側を捨てるので整合は保たれる。
-#[cfg(feature = "semantic-embedding")]
+#[cfg(all(feature = "semantic-embedding", test))]
 pub fn embed_scene_payloads(
     embedder: &mut crate::embedding::Embedder,
     scene_id: &str,
     content: &str,
     spec: &'static crate::spec::EmbeddingModelSpec,
 ) -> Result<Vec<ChunkPayload>> {
+    embed_scene_payloads_cancellable(embedder, scene_id, content, spec, || true)?
+        .ok_or_else(|| anyhow::anyhow!("unconditional scene embedding was cancelled unexpectedly"))
+}
+
+/// [`embed_scene_payloads`] の協調キャンセル版。
+///
+/// ONNX の単一推論自体は中断できないため、`should_continue` は各チャンクの
+/// 推論前後に確認する。`None` はキャンセル済みを表し、途中まで構築した payload は
+/// 破棄される。呼び出し側は `None` のとき `upsert_scene_chunks` を呼ばないことで、
+/// 既存の index を部分 payload で置換しない。
+#[cfg(all(feature = "semantic-embedding", test))]
+pub fn embed_scene_payloads_cancellable(
+    embedder: &mut crate::embedding::Embedder,
+    scene_id: &str,
+    content: &str,
+    spec: &'static crate::spec::EmbeddingModelSpec,
+    should_continue: impl FnMut() -> bool,
+) -> Result<Option<Vec<ChunkPayload>>> {
+    embed_scene_payloads_cancellable_with(
+        embedder,
+        scene_id,
+        content,
+        spec,
+        should_continue,
+        |embedder, text| embedder.embed_document(text),
+    )
+}
+
+/// Runtime-owned model boundary variant. The callback is invoked once per
+/// exact document chunk immediately before the tokenizer/ONNX pipeline, which
+/// lets the shell-independent runtime enforce durable audit-before-inference.
+#[cfg(feature = "semantic-embedding")]
+pub fn embed_scene_payloads_cancellable_with(
+    embedder: &mut crate::embedding::Embedder,
+    scene_id: &str,
+    content: &str,
+    spec: &'static crate::spec::EmbeddingModelSpec,
+    mut should_continue: impl FnMut() -> bool,
+    mut embed_document: impl FnMut(&mut crate::embedding::Embedder, &str) -> Result<Vec<f32>>,
+) -> Result<Option<Vec<ChunkPayload>>> {
     use crate::chunker::{chunk_scene, CHUNKER_VERSION};
     use crate::chunker_en::chunk_scene_en;
     use anyhow::anyhow;
 
+    if !should_continue() {
+        return Ok(None);
+    }
     let doc: serde_json::Value = serde_json::from_str(content)
         .map_err(|e| anyhow!("scene_id={scene_id} content JSON parse error: {e}"))?;
     // 言語別チャンカー: ja=ruri 既定の chunk_scene、en=chunk_scene_en。
@@ -353,11 +396,34 @@ pub fn embed_scene_payloads(
     } else {
         chunk_scene_en(&doc, &config)?
     };
+    if !should_continue() {
+        return Ok(None);
+    }
 
-    let embedding_dim = embedder.embedding_dim();
+    embed_chunks_cancellable(
+        &chunks,
+        embedder.embedding_dim(),
+        |text| embed_document(embedder, text),
+        &mut should_continue,
+    )
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn embed_chunks_cancellable(
+    chunks: &[crate::chunker::SceneChunk],
+    embedding_dim: usize,
+    mut embed_document: impl FnMut(&str) -> Result<Vec<f32>>,
+    mut should_continue: impl FnMut() -> bool,
+) -> Result<Option<Vec<ChunkPayload>>> {
     let mut payloads = Vec::with_capacity(chunks.len());
-    for chunk in &chunks {
-        let vec = embedder.embed_document(&chunk.text)?;
+    for chunk in chunks {
+        if !should_continue() {
+            return Ok(None);
+        }
+        let vec = embed_document(&chunk.text)?;
+        if !should_continue() {
+            return Ok(None);
+        }
         ensure!(
             vec.len() == embedding_dim,
             "embedder returned {} dims, expected {}",
@@ -376,14 +442,14 @@ pub fn embed_scene_payloads(
             embedding: bytes,
         });
     }
-    Ok(payloads)
+    Ok(Some(payloads))
 }
 
 /// 読み出し → embed → upsert を一括で行う合成版。テストや「lock 分割が
 /// 不要な呼び出し側」用。Tauri command 側は workspace lock を embed 中に
 /// 保持しないよう、`read_scene_for_index` / `embed_scene_payloads` /
 /// `upsert_scene_chunks` を個別に呼ぶ (commands/semantic.rs 参照)。
-#[cfg(feature = "semantic-embedding")]
+#[cfg(all(feature = "semantic-embedding", test))]
 pub fn index_scene(
     db: &Database,
     embedder: &mut crate::embedding::Embedder,
@@ -515,6 +581,49 @@ mod tests {
             Ok(n)
         })
         .unwrap()
+    }
+
+    #[cfg(feature = "semantic-embedding")]
+    #[test]
+    fn cancellable_embedding_discards_partial_payloads_between_chunks() {
+        use crate::chunker::SceneChunk;
+        use std::cell::Cell;
+
+        let chunks = vec![
+            SceneChunk {
+                chunk_index: 0,
+                text: "first".to_string(),
+                char_start: 0,
+                char_end: 5,
+                dialogue_ratio: 0.0,
+            },
+            SceneChunk {
+                chunk_index: 1,
+                text: "second".to_string(),
+                char_start: 6,
+                char_end: 12,
+                dialogue_ratio: 0.0,
+            },
+        ];
+        let embedded = Cell::new(0);
+        let checks = Cell::new(0);
+        let outcome = embed_chunks_cancellable(
+            &chunks,
+            2,
+            |_| {
+                embedded.set(embedded.get() + 1);
+                Ok(vec![0.25, 0.75])
+            },
+            || {
+                let next = checks.get() + 1;
+                checks.set(next);
+                next < 3
+            },
+        )
+        .unwrap();
+
+        assert!(outcome.is_none());
+        assert_eq!(embedded.get(), 1);
     }
 
     // ── compute_content_hash ─────────────────────────────────────────────

@@ -1,0 +1,23 @@
+schema_version: 1
+
+gate3_config: configs/phase0b-impact-gate3.yaml
+
+benchmark:
+  max_pair_tokens: 512
+  query_token_budget: 128
+  scene_window_tokens: 384
+  scene_window_stride: 256
+  full_scene_count: 30
+  cap_stress_window_count: 30
+  batch_sizes: [1, 2, 4, 8]
+  thread_counts: [1, 2, 4, physical, 8]
+  warmup_count: 3
+  repetitions: 30
+  bootstrap_iterations: 1000
+  target_seconds: 5.0
+  conditional_seconds: 10.0
+  hold_seconds: 20.0
+
+workload:
+  source: data/public/gate31/impact-scenes-ja.json
+  source_sha256: a3d570c6a4f8d870ef2cff8bfd9ffca1dfe182a93203a342464a4ad1874e83e3

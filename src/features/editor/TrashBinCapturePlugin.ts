@@ -6,6 +6,9 @@ import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import type { TrashOrigin, TrashSpan } from "@/features/trash-bin/types";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { markStart, markEnd } from "@/lib/perfLog";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { registerQuiescenceParticipant } from "@/application/lifecycle/quiescenceParticipants";
+import { isQuiescenceLeaseActive } from "@/application/lifecycle/quiescenceLease";
 
 export const trashBinCaptureKey = new PluginKey<TrashBinCaptureState>(
   "trashBinCapture",
@@ -21,6 +24,7 @@ interface TrashBinCaptureState {
 }
 
 interface BackspaceBuffer {
+  projectId: string;
   text: string;
   spans: TrashSpan[];
   lastFrom: number;
@@ -29,6 +33,8 @@ interface BackspaceBuffer {
   origin: TrashOrigin;
   timerId: ReturnType<typeof setTimeout> | null;
   tempId: string;
+  /** Captured before a lifecycle lease and therefore eligible to drain. */
+  preexistingDraft: boolean;
 }
 
 const BUFFER_DEBOUNCE_MS = 500;
@@ -87,7 +93,10 @@ function extractSpans(
  * Backspace 連打バッファのフラッシュ。
  * 2 文字未満なら破棄、それ以上なら trashBinStore.enqueuePending へ。
  */
-function flushBuffer(buffer: BackspaceBuffer): void {
+function flushBuffer(
+  buffer: BackspaceBuffer,
+  options: { preexistingDraft?: boolean } = {},
+): void {
   if (buffer.timerId !== null) {
     clearTimeout(buffer.timerId);
     buffer.timerId = null;
@@ -96,9 +105,15 @@ function flushBuffer(buffer: BackspaceBuffer): void {
   // 空白のみの削除はゴミ箱に積まない
   if (buffer.text.trim().length === 0) return;
 
-  useTrashBinStore.getState().enqueuePending(
+  const trashStore = useTrashBinStore.getState();
+  if (trashStore.activeProjectId !== buffer.projectId) {
+    throw new Error(
+      `Trash capture authority changed before flush: ${buffer.projectId}`,
+    );
+  }
+  const accepted = trashStore.enqueuePending(
     {
-      projectId: getCurrentProjectId(),
+      projectId: buffer.projectId,
       kind: "text-fragment",
       subKind: "text-fragment",
       originSceneId: buffer.origin.kind === "scene" ? buffer.origin.id : null,
@@ -107,19 +122,48 @@ function flushBuffer(buffer: BackspaceBuffer): void {
       previewMeta: null,
       payload: { text: buffer.text, spans: buffer.spans },
     },
-    { tempId: buffer.tempId },
+    {
+      tempId: buffer.tempId,
+      preexistingDraft: options.preexistingDraft,
+    },
   );
+  if (!accepted) {
+    throw new Error(
+      `Trash capture was not admitted for retry: ${buffer.tempId}`,
+    );
+  }
 }
 
 export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
   // バッファは plugin インスタンスごとに 1 つ (closure でエディタ単位)
   let buffer: BackspaceBuffer | null = null;
+  const participantId = nextTempId().replace("trash-pending", "trash-capture");
+
+  const flushCurrentBuffer = (preexistingDraft = false): void => {
+    const current = buffer;
+    if (!current) return;
+    flushBuffer(current, {
+      preexistingDraft: preexistingDraft && current.preexistingDraft,
+    });
+    if (buffer === current) buffer = null;
+  };
 
   const scheduleFlush = (b: BackspaceBuffer) => {
     if (b.timerId !== null) clearTimeout(b.timerId);
     b.timerId = setTimeout(() => {
-      flushBuffer(b);
-      if (buffer === b) buffer = null;
+      try {
+        flushBuffer(b, { preexistingDraft: b.preexistingDraft });
+        if (buffer === b) buffer = null;
+      } catch (error) {
+        // Keep the ref-backed buffer and participant recovery snapshot. A
+        // later strict lifecycle retry can flush it under the captured
+        // Project authority instead of silently assigning it to another one.
+        debugLog.error(
+          "TrashBinCapturePlugin",
+          "buffer flush failed",
+          errorDetail(error),
+        );
+      }
     }, BUFFER_DEBOUNCE_MS);
   };
 
@@ -215,9 +259,11 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
             // 削除範囲のテキスト・spans 抽出
             const { text, spans } = extractSpans(oldState.doc, from, to);
             if (text.length === 0) continue;
+            const projectId = getCurrentProjectId();
 
             if (
               buffer &&
+              buffer.projectId === projectId &&
               Date.now() - buffer.lastUpdatedAt <= BUFFER_DEBOUNCE_MS
             ) {
               const isBackspace = to === buffer.lastFrom; // 直前削除位置の左を削った
@@ -239,11 +285,34 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
                 continue;
               }
               // 非隣接 → 既存をフラッシュして新バッファへ
-              flushBuffer(buffer);
-              buffer = null;
+              try {
+                flushCurrentBuffer();
+              } catch (error) {
+                debugLog.error(
+                  "TrashBinCapturePlugin",
+                  "non-adjacent buffer flush failed",
+                  errorDetail(error),
+                );
+                return null;
+              }
+            } else if (buffer) {
+              // A Project identity change is also a hard coalescing boundary.
+              // Normally strict quiescence drains this first; if it did not,
+              // preserve the old recovery buffer instead of relabeling it.
+              try {
+                flushCurrentBuffer();
+              } catch (error) {
+                debugLog.error(
+                  "TrashBinCapturePlugin",
+                  "project-bound buffer flush failed",
+                  errorDetail(error),
+                );
+                return null;
+              }
             }
 
             buffer = {
+              projectId,
               text,
               spans,
               lastFrom: from,
@@ -252,6 +321,7 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
               origin: state.origin,
               timerId: null,
               tempId: nextTempId(),
+              preexistingDraft: !isQuiescenceLeaseActive(),
             };
             scheduleFlush(buffer);
           }
@@ -262,11 +332,44 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
       }
     },
     view() {
+      let mounted = true;
+      let unregister = () => {};
+      const participant = {
+        id: participantId,
+        flush: async (options?: { preexistingDraft?: boolean }) => {
+          // participant stage precedes the trash store's scoped-mutations
+          // provider, so the latter can durably drain this newly transferred
+          // pre-lease deletion in the same strict lifecycle.
+          flushCurrentBuffer(options?.preexistingDraft === true);
+          if (!mounted && !buffer) unregister();
+        },
+        discard: () => {
+          if (buffer?.timerId != null) clearTimeout(buffer.timerId);
+          buffer = null;
+          if (!mounted) unregister();
+        },
+        recovery: () =>
+          buffer
+            ? {
+                kind: "trash-capture",
+                projectId: buffer.projectId,
+                origin: buffer.origin,
+                text: buffer.text,
+                spans: buffer.spans,
+              }
+            : null,
+      };
+      unregister = registerQuiescenceParticipant(participant);
       return {
         destroy() {
-          // エディタ unmount 時、保留バッファをフラッシュしてから破棄
-          if (buffer) flushBuffer(buffer);
-          buffer = null;
+          mounted = false;
+          if (!buffer) {
+            unregister();
+            return;
+          }
+          // Do not retire a failed detached capture. The participant keeps the
+          // old Project identity and recovery payload for a lifecycle retry.
+          void participant.flush().catch(() => {});
         },
       };
     },

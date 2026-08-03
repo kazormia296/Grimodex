@@ -5,12 +5,22 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { validateWebEditorArtifact } from "./validate-web-editor-artifact.mjs";
 
+const EDITOR_STANDARD_GLASS_CSS =
+  '[data-editor-fluid-glass="true"]>[data-editor-fluid-glass-filter]{backdrop-filter:blur(var(--editor-fluid-glass-blur)) saturate(var(--editor-fluid-glass-saturate)) contrast(1.03)}';
+const WORKSPACE_STANDARD_GLASS_CSS =
+  '[data-workspace-glass-root][data-workspace-fluid-glass="true"] [data-ambient-glass-surface]{backdrop-filter:blur(var(--workspace-fluid-glass-blur,14px)) saturate(var(--workspace-fluid-glass-saturate,1.16)) contrast(1.03)}';
+const VALID_STANDARD_GLASS_CSS =
+  EDITOR_STANDARD_GLASS_CSS + WORKSPACE_STANDARD_GLASS_CSS;
+
 async function createArtifact(files) {
   const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-web-artifact-"));
   const assets = path.join(root, "assets");
   await mkdir(assets);
   await Promise.all(
-    Object.entries(files).map(([name, contents]) =>
+    Object.entries({
+      "index-abc.css": VALID_STANDARD_GLASS_CSS,
+      ...files,
+    }).map(([name, contents]) =>
       writeFile(path.join(assets, name), contents, "utf8"),
     ),
   );
@@ -83,5 +93,35 @@ describe("Web Editor artifact boundary", () => {
       "WebEditorSettingsDialog-ok.js": "Ollama OpenAI Anthropic",
     });
     await assert.rejects(validateWebEditorArtifact(root), /import dialog/i);
+  });
+
+  it("rejects WebKit-only Glass blur declarations", async () => {
+    for (const [label, css] of [
+      [
+        "Editor fluid Glass",
+        EDITOR_STANDARD_GLASS_CSS.replace(
+          "backdrop-filter:",
+          "-webkit-backdrop-filter:",
+        ) + WORKSPACE_STANDARD_GLASS_CSS,
+      ],
+      [
+        "Workspace ambient Glass",
+        EDITOR_STANDARD_GLASS_CSS +
+          WORKSPACE_STANDARD_GLASS_CSS.replace(
+            "backdrop-filter:",
+            "-webkit-backdrop-filter:",
+          ),
+      ],
+    ]) {
+      const root = await createArtifact({
+        "WebEditorSettingsDialog-ok.js": "Ollama OpenAI Anthropic",
+        "WebEditorImportDialog-ok.js": "local browser file import",
+        "index-abc.css": css,
+      });
+      await assert.rejects(
+        validateWebEditorArtifact(root),
+        new RegExp(`${label}.*unprefixed backdrop-filter`, "i"),
+      );
+    }
   });
 });

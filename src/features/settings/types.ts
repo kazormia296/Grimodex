@@ -196,6 +196,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "ai.inlineModel": "global",
   "ai.sessionTitleModel": "global",
   "ai.modelWhitelist": "global",
+  "ai.liveReaderComments": "global",
+  "ai.liveReaderThreshold": "global",
+  "ai.liveReaderTriggerMode": "global",
   // AI — 機能別モデル（ロール単位）。空 = 既定チャットモデルにフォールバック (global)。
   // 解決は src/features/chat/modelRouting.ts の resolveModelForPath が正本。
   "aiModel.role.conversation": "global",
@@ -204,6 +207,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "aiModel.role.cheap": "global",
   "aiModel.role.structured": "global",
   "aiModel.role.review": "global",
+  "aiModel.role.reader": "global",
   // 機能別モデルのプロバイダ横断: 各ロールに別プロバイダ/別エンドポイントを
   // 割り当てる JSON マップ Record<role,{provider?,endpointId?}>。空 {} なら全ロール
   // アクティブ provider 据え置き(後方互換)。解決は resolveRolePathConfig が正本 (global)。
@@ -223,6 +227,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // Hybrid recall: 意味検索 (dense) に FTS5/bm25 (sparse) を RRF 融合し、
   // 固有名詞 (人名・地名) の recall を補う。semanticRecall が前提 (project)
   "ai.hybridRecall": "project",
+  // Experimental local cross-encoder reranking. It may reorder only candidates
+  // admitted by semantic + hybrid recall and is disabled by default (project).
+  "ai.semanticReranker": "project",
   // Chat episodic recall: 過去の対話 (チャット履歴) を意味検索で自動注入する。
   // scene RAG (semanticRecall) とは独立トグルで、記憶だけ切れる (project)
   "ai.chatRecall": "project",
@@ -490,6 +497,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",
   "ai.modelWhitelist": "[]",
+  "ai.liveReaderComments": "false",
+  "ai.liveReaderThreshold": "80",
+  "ai.liveReaderTriggerMode": "characters",
   // 機能別モデル（ロール単位）。空 = 既定チャットモデルにフォールバック。
   "aiModel.role.conversation": "",
   "aiModel.role.agent": "",
@@ -497,6 +507,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "aiModel.role.cheap": "",
   "aiModel.role.structured": "",
   "aiModel.role.review": "",
+  "aiModel.role.reader": "",
   // 機能別モデルのプロバイダ横断マップ。既定は空 {} = 全ロール アクティブ provider。
   "aiModel.roleProviders": "{}",
   "ai.webSearch.domainMode": "off",
@@ -505,6 +516,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.autoAcceptBodyProposals": "false",
   "ai.semanticRecall": "true",
   "ai.hybridRecall": "true",
+  "ai.semanticReranker": "false",
   "ai.chatRecall": "true",
   "ai.contextBudget.l1": "2",
   "ai.contextBudget.l2": "10",

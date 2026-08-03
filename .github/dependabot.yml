@@ -34,3 +34,10 @@ updates:
     directory: "/src-tauri"
     schedule:
       interval: "weekly"
+
+  # uv (offline LFM evaluation harness; security updates only)
+  - package-ecosystem: "uv"
+    directory: "/experiments/lfm25-encoder-phase0"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0

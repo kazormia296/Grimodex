@@ -10,6 +10,16 @@ import {
   META_SKIP,
 } from "./TrashBinCapturePlugin";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
+import { useProjectStore } from "@/features/project/projectStore";
+import {
+  _resetQuiescenceParticipantsForTests,
+  collectQuiescenceParticipantRecovery,
+  flushQuiescenceParticipants,
+} from "@/application/lifecycle/quiescenceParticipants";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 import type {
   TextFragmentPayload,
   TrashOrigin,
@@ -45,8 +55,10 @@ function pendingTexts(): string[] {
 
 describe("TrashBinCapturePlugin", () => {
   beforeEach(() => {
+    useProjectStore.setState({ currentProjectId: null });
     // store をリセット
     useTrashBinStore.setState({
+      activeProjectId: "default-project",
       items: new Map(),
       pendingQueue: [],
       isCapturing: true,
@@ -54,6 +66,8 @@ describe("TrashBinCapturePlugin", () => {
   });
 
   afterEach(() => {
+    _resetQuiescenceParticipantsForTests();
+    _resetQuiescenceLeasesForTests();
     vi.useRealTimers();
   });
 
@@ -75,6 +89,83 @@ describe("TrashBinCapturePlugin", () => {
     expect(pendingTexts()).toEqual(["これはテ"]);
     expect(useTrashBinStore.getState().pendingQueue[0].originSceneId).toBe(
       "scene-1",
+    );
+    editor.destroy();
+  });
+
+  it("strict quiescence は lease 前の削除バッファを pending queue へ移す", async () => {
+    vi.useFakeTimers();
+    const editor = createTestEditor("<p>これはテスト文章です</p>", {
+      kind: "scene",
+      id: "scene-1",
+    });
+    deleteRange(editor, 1, 5);
+    const lease = acquireQuiescenceLease("project-load");
+
+    await flushQuiescenceParticipants();
+
+    expect(pendingTexts()).toEqual(["これはテ"]);
+    lease.release();
+    editor.destroy();
+  });
+
+  it("lease 前に捕捉した timer flush は lease 中でも preexisting として移送する", () => {
+    vi.useFakeTimers();
+    const editor = createTestEditor("<p>これはテスト文章です</p>", {
+      kind: "scene",
+      id: "scene-1",
+    });
+    deleteRange(editor, 1, 5);
+    const lease = acquireQuiescenceLease("project-load");
+
+    vi.advanceTimersByTime(600);
+
+    expect(pendingTexts()).toEqual(["これはテ"]);
+    lease.release();
+    editor.destroy();
+  });
+
+  it("lease 中に始まった拒否済み buffer を保持し、lease 後の retry で移送する", async () => {
+    vi.useFakeTimers();
+    const editor = createTestEditor("<p>これはテスト文章です</p>", {
+      kind: "scene",
+      id: "scene-1",
+    });
+    const lease = acquireQuiescenceLease("project-load");
+    deleteRange(editor, 1, 5);
+
+    vi.advanceTimersByTime(600);
+
+    expect(pendingTexts()).toEqual([]);
+    expect(collectQuiescenceParticipantRecovery()).toEqual([
+      expect.objectContaining({
+        kind: "trash-capture",
+        projectId: "default-project",
+        text: "これはテ",
+      }),
+    ]);
+
+    lease.release();
+    await flushQuiescenceParticipants();
+    expect(pendingTexts()).toEqual(["これはテ"]);
+    editor.destroy();
+  });
+
+  it("削除時の Project identity を保持し、後の current Project で再ラベルしない", async () => {
+    vi.useFakeTimers();
+    useProjectStore.setState({ currentProjectId: "project-a" });
+    useTrashBinStore.setState({ activeProjectId: "project-a" });
+    const editor = createTestEditor("<p>これはテスト文章です</p>", {
+      kind: "scene",
+      id: "scene-1",
+    });
+    deleteRange(editor, 1, 5);
+
+    useProjectStore.setState({ currentProjectId: "project-b" });
+    await flushQuiescenceParticipants();
+
+    expect(useTrashBinStore.getState().pendingQueue[0]?.data.projectId).toBe(
+      "project-a",
     );
     editor.destroy();
   });

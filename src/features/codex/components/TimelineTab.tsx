@@ -63,6 +63,7 @@ export function resolvePhaseContentSeed(input: {
           summaryOverride: null,
           contentOverride: null,
           contextModeOverride: null,
+          version: 0,
           // New siblings are appended by the current createdAt tie-break. A
           // far-future synthetic timestamp models that insertion explicitly.
           createdAt: "9999-12-31T23:59:59.999Z",

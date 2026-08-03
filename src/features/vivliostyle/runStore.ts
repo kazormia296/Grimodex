@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import {
   abortVivliostyleBuild,
   onVivliostylePreviewExited,
@@ -21,9 +21,9 @@ import type { VivliostyleBuildFile, VivliostyleFormat } from "./types";
  * ビルドは同時 1 本（UI 上 running 中は開始ボタンが無効）。プレビューは
  * Rust 側 singleton なので runId を持たない。
  *
- * 終端状態（done/error）はアプリセッション中は保持する（タブ非表示中に
- * 完了したビルドの保存ボタンを、タブへ戻ったときに出すため）。次回の
- * startBuild が初期化する。ただしプロジェクトを跨いでは見せない —
+ * 終端状態（done/error）はアプリセッション中は保持する（タブ切替中も
+ * 完了状態を失わないため）。保存処理はビルド開始時に渡されたコールバックを
+ * 完了イベントから呼び出す。次回の startBuild が初期化する。ただしプロジェクトを跨いでは見せない —
  * build には開始時の projectId をタグ付けし、別プロジェクトでセクションを
  * 開いたときは resetBuild で破棄する（前プロジェクトの成果物を誤って
  * 保存させないため。post-effect runStore の projectId タグと同趣旨）。
@@ -37,6 +37,10 @@ export type VivliostyleBuildPhase =
   | { phase: "running"; runId: string }
   | { phase: "done"; outputToken: string }
   | { phase: "error"; message: string };
+
+type VivliostyleOutputReadyHandler = (
+  outputToken: string,
+) => void | Promise<void>;
 
 // ── モジュールスコープの実行時ハンドル（React ライフサイクル非依存）──
 /** 進行中 run のイベント購読解除。done/error/中止/次回開始で破棄する。 */
@@ -74,11 +78,14 @@ interface VivliostyleRunState {
   buildProjectId: string | null;
   logs: string[];
   previewRunning: boolean;
-  startBuild: (params: {
-    files: VivliostyleBuildFile[];
-    format: VivliostyleFormat;
-    binaryPath?: string | null;
-  }) => Promise<void>;
+  startBuild: (
+    params: {
+      files: VivliostyleBuildFile[];
+      format: VivliostyleFormat;
+      binaryPath?: string | null;
+    },
+    onOutputReady?: VivliostyleOutputReadyHandler,
+  ) => Promise<void>;
   abortBuild: () => Promise<void>;
   /**
    * ビルド状態を破棄する（実行中でも購読ごと破棄。プロセス自体は Rust 側で
@@ -100,7 +107,7 @@ export const useVivliostyleRunStore = create<VivliostyleRunState>()(
     logs: [],
     previewRunning: false,
 
-    startBuild: async (params) => {
+    startBuild: async (params, onOutputReady) => {
       // 再入ガード: invoke（プロセス spawn 込み）解決までの窓での二度押しと、
       // running 中の呼び出しを弾く（二重 spawn + 購読リークの防止）。
       if (buildStarting || get().build.phase === "running") return;
@@ -131,6 +138,13 @@ export const useVivliostyleRunStore = create<VivliostyleRunState>()(
           onDone: (e) => {
             disposeBuildSubscription();
             set({ build: { phase: "done", outputToken: e.outputToken } });
+            if (onOutputReady) {
+              void Promise.resolve(onOutputReady(e.outputToken)).catch(
+                (error: unknown) => {
+                  console.error("vivliostyle output callback failed", error);
+                },
+              );
+            }
           },
           onError: (e) => {
             disposeBuildSubscription();

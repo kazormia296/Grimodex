@@ -13,10 +13,40 @@ function makeBeat(id: string, text = "test"): UnplacedBeat {
 }
 
 beforeEach(() => {
-  useUnplacedBeatsStore.setState({ sceneBeats: {} });
+  useUnplacedBeatsStore.getState().resetForProject();
 });
 
 describe("unplacedBeatsStore", () => {
+  describe("resetForProject", () => {
+    it("same sceneId の旧 scope cache と subscriber を無通知で破棄する", () => {
+      const oldScopeSubscriber = vi.fn();
+      useUnplacedBeatsStore
+        .getState()
+        .subscribe("shared-scene-id", oldScopeSubscriber);
+      useUnplacedBeatsStore
+        .getState()
+        .setBeats("shared-scene-id", [makeBeat("old-workspace-beat")], "load");
+
+      useUnplacedBeatsStore.getState().resetForProject();
+
+      expect(
+        useUnplacedBeatsStore.getState().getBeats("shared-scene-id"),
+      ).toEqual([]);
+      expect(oldScopeSubscriber).not.toHaveBeenCalled();
+
+      useUnplacedBeatsStore
+        .getState()
+        .setBeats("shared-scene-id", [makeBeat("new-workspace-beat")], "user");
+      expect(oldScopeSubscriber).not.toHaveBeenCalled();
+      expect(
+        useUnplacedBeatsStore
+          .getState()
+          .getBeats("shared-scene-id")
+          .map((beat) => beat.id),
+      ).toEqual(["new-workspace-beat"]);
+    });
+  });
+
   describe("getBeats", () => {
     it("存在しないシーンは空配列を返す", () => {
       expect(useUnplacedBeatsStore.getState().getBeats("unknown")).toEqual([]);

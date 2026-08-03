@@ -1,4 +1,4 @@
-import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
+import { BEAT_TYPES } from "@/features/editor/beat/beatTypes";
 import { JSON_ONLY } from "../shared/jsonContract";
 
 export function buildGenerateBeatsMessagesJa(

@@ -1,13 +1,13 @@
 import * as snippetsApi from "@/features/snippets/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { tiptapContentFromDb } from "@/lib/prosemirror";
-import type { LoadedEditorBinding, LoadedEditorDocument } from "../types";
+import type { EditorDocumentIdentity, LoadedEditorDocument } from "../types";
 
 export interface SnippetDocumentLoadServices {
   getSnippet: (
     projectId: string,
     id: string,
-  ) => Promise<{ content?: string | null } | undefined>;
+  ) => Promise<{ content?: string | null; version: number } | undefined>;
   getCurrentProjectId: () => string;
 }
 
@@ -17,15 +17,18 @@ const defaultSnippetDocumentLoadServices: SnippetDocumentLoadServices = {
 };
 
 export async function loadSnippetDocument(
-  binding: Extract<LoadedEditorBinding, { kind: "snippet" }>,
+  binding: Extract<EditorDocumentIdentity, { kind: "snippet" }>,
   services: SnippetDocumentLoadServices = defaultSnippetDocumentLoadServices,
 ): Promise<LoadedEditorDocument> {
   const snippet = await services.getSnippet(
     services.getCurrentProjectId(),
     binding.id,
   );
+  if (!snippet) {
+    throw new Error(`Snippet '${binding.id}' was not found`);
+  }
   return {
-    binding,
-    content: tiptapContentFromDb(snippet?.content),
+    binding: { ...binding, loadedVersion: snippet.version },
+    content: tiptapContentFromDb(snippet.content),
   };
 }

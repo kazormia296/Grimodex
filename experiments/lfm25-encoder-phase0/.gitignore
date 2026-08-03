@@ -1,0 +1,18 @@
+.venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Reproducible inputs are bootstrapped locally and verified by their manifest.
+local/*
+!local/.gitkeep
+
+# Metrics, predictions, host profiles, charts, and reports are local artifacts.
+artifacts/*
+!artifacts/.gitkeep
+
+# Private corpus contents never enter Git.
+data/private/*
+!data/private/.gitkeep

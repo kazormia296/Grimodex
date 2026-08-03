@@ -373,6 +373,7 @@ pub fn save_post_effect_annotations(
                 ],
             )?;
         }
+
         Ok(())
     })
 }

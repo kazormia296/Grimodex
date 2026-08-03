@@ -11,11 +11,14 @@ import {
   LINT_REBUILD_META,
 } from "./LintDecorationPlugin";
 
-function docState(text: string): EditorState {
+function docState(...paragraphs: string[]): EditorState {
   return EditorState.create({
-    doc: schema.nodes.doc.create({}, [
-      schema.nodes.paragraph.create({}, [schema.text(text)]),
-    ]),
+    doc: schema.nodes.doc.create(
+      {},
+      paragraphs.map((text) =>
+        schema.nodes.paragraph.create({}, [schema.text(text)]),
+      ),
+    ),
     plugins: [createLintDecorationPlugin()],
   });
 }
@@ -36,6 +39,19 @@ function diag(
 
 function getDecoSet(state: EditorState): DecorationSet {
   return (lintDecorationKey.getState(state) as { decos: DecorationSet }).decos;
+}
+
+function getDecoRuleIds(state: EditorState): string[] {
+  return getDecoSet(state)
+    .find()
+    .map(
+      (deco) =>
+        (
+          deco as unknown as {
+            type: { attrs: Record<string, string> };
+          }
+        ).type.attrs["data-lint-rule"],
+    );
 }
 
 beforeEach(() => {
@@ -164,5 +180,97 @@ describe("LintDecorationPlugin", () => {
     useCursorSettingsStore.setState({ showLint: false });
     state = state.apply(state.tr.setMeta(LINT_REBUILD_META, true));
     expect(getDecoSet(state).find()).toHaveLength(0);
+  });
+
+  it("drops only stale decorations in the textblock touched by a single inline edit", () => {
+    let state = docState("alpha", "bravo");
+    state = state.apply(
+      state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [
+          diag("first", "warning", 0, 5),
+          diag("second", "warning", 6, 11),
+        ],
+      }),
+    );
+
+    state = state.apply(state.tr.insertText("X", 3));
+
+    expect(getDecoRuleIds(state)).toEqual(["second"]);
+    expect(getDecoSet(state).find()[0]).toMatchObject({ from: 9, to: 14 });
+  });
+
+  it("restores a dropped textblock decoration from fresh diagnostics", () => {
+    let state = docState("alpha", "bravo");
+    state = state.apply(
+      state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [
+          diag("first", "warning", 0, 5),
+          diag("second", "warning", 6, 11),
+        ],
+      }),
+    );
+    state = state.apply(state.tr.insertText("X", 3));
+    expect(getDecoRuleIds(state)).toEqual(["second"]);
+
+    state = state.apply(
+      state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [
+          diag("first-fresh", "warning", 0, 6),
+          diag("second-fresh", "warning", 7, 12),
+        ],
+      }),
+    );
+
+    expect(getDecoRuleIds(state)).toEqual(["first-fresh", "second-fresh"]);
+  });
+
+  it("keeps mapping decorations during IME composition", () => {
+    let state = docState("alpha", "bravo");
+    state = state.apply(
+      state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [
+          diag("first", "warning", 0, 5),
+          diag("second", "warning", 6, 11),
+        ],
+      }),
+    );
+
+    state = state.apply(state.tr.insertText("X", 3).setMeta("composition", 1));
+
+    expect(getDecoRuleIds(state)).toEqual(["first", "second"]);
+  });
+
+  it("keeps the mapping fallback for multi-step and structural edits", () => {
+    const seed = () => {
+      let state = docState("alpha", "bravo");
+      state = state.apply(
+        state.tr.setMeta(lintDecorationKey, {
+          type: "lintDecoration/set",
+          diagnostics: [
+            diag("first", "warning", 0, 5),
+            diag("second", "warning", 6, 11),
+          ],
+        }),
+      );
+      return state;
+    };
+
+    let multiStepState = seed();
+    const multiStep = multiStepState.tr.insertText("X", 3).insertText("Y", 4);
+    expect(multiStep.steps).toHaveLength(2);
+    multiStepState = multiStepState.apply(multiStep);
+    expect(new Set(getDecoRuleIds(multiStepState))).toEqual(
+      new Set(["first", "second"]),
+    );
+
+    let structuralState = seed();
+    structuralState = structuralState.apply(structuralState.tr.split(3));
+    expect(new Set(getDecoRuleIds(structuralState))).toEqual(
+      new Set(["first", "second"]),
+    );
   });
 });

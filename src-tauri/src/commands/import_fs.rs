@@ -124,8 +124,8 @@ fn collect_markdown_from_dir(
     let entries = std::fs::read_dir(dir)
         .map_err(|e| anyhow::anyhow!("failed to read dir {}: {e}", dir.display()))?;
     for entry in entries {
-        let entry = entry
-            .map_err(|e| anyhow::anyhow!("failed to read entry in {}: {e}", dir.display()))?;
+        let entry =
+            entry.map_err(|e| anyhow::anyhow!("failed to read entry in {}: {e}", dir.display()))?;
         let file_type = entry
             .file_type()
             .map_err(|e| anyhow::anyhow!("failed to stat {}: {e}", entry.path().display()))?;
@@ -190,10 +190,8 @@ mod tests {
         let mut out = Vec::new();
         collect_markdown_from_dir(&root, &root, 0, &mut out).expect("walk ok");
 
-        let mut got: Vec<(String, String)> = out
-            .into_iter()
-            .map(|f| (f.rel_path, f.content))
-            .collect();
+        let mut got: Vec<(String, String)> =
+            out.into_iter().map(|f| (f.rel_path, f.content)).collect();
         got.sort();
 
         assert_eq!(

@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { isNodeVisible, flattenVisible } from "./treeVisibility";
+import {
+  deriveVisibleTreeRows,
+  isNodeVisible,
+  flattenVisible,
+} from "./treeVisibility";
+import { getTreeIndex } from "./treeIndex";
 import type { TreeNodeData } from "./treeStore";
+import { endPerfSession, startPerfSession } from "@/lib/perfLog";
 
 function node(over: Partial<TreeNodeData> & { id: string }): TreeNodeData {
   return {
@@ -227,5 +233,58 @@ describe("treeVisibility threadFilter", () => {
     const ids = flat.map((n) => n.id);
     // folderA(s2) and folderB(s3) both contain t2; collapsed but auto-expanded
     expect(ids).toEqual(["folderA", "s2", "folderB", "s3"]);
+  });
+
+  it("indexed derivation propagates search/thread matches once and preserves depth", () => {
+    const rows = deriveVisibleTreeRows(
+      getTreeIndex([folderA, folderB, s1, s2, s3, s4]),
+      {
+        expandedIds: [],
+        query: "",
+        threadFilter: ["t2"],
+        nodeThreadIds,
+      },
+    );
+    expect(rows.map(({ node: item, depth }) => [item.id, depth])).toEqual([
+      ["folderA", 0],
+      ["s2", 1],
+      ["folderB", 0],
+      ["s3", 1],
+    ]);
+  });
+
+  it("records a linear visit bound for a 10k-node search without timing assertions", () => {
+    const folder = node({
+      id: "large-folder",
+      nodeType: "folder",
+      sortOrder: "a0",
+    });
+    const scenes = Array.from({ length: 10_000 }, (_, index) =>
+      node({
+        id: `large-scene-${index}`,
+        parentId: folder.id,
+        title: index === 9_999 ? "unique search target" : `scene ${index}`,
+        sortOrder: `a${String(index).padStart(5, "0")}`,
+      }),
+    );
+    const totalNodes = scenes.length + 1;
+
+    startPerfSession();
+    const rows = deriveVisibleTreeRows(getTreeIndex([folder, ...scenes]), {
+      expandedIds: [],
+      query: "unique search target",
+    });
+    const result = endPerfSession();
+
+    expect(rows.map((row) => row.node.id)).toEqual([
+      folder.id,
+      "large-scene-9999",
+    ]);
+    expect(result?.counters).toMatchObject({
+      "tree.visibility.derive.count": 1,
+      "tree.visibility.nodesVisited": totalNodes * 2,
+      "tree.visibility.maxNodesVisited": totalNodes * 2,
+      "tree.visibility.visibleRows": 2,
+    });
   });
 });

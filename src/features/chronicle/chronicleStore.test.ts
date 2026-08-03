@@ -4,6 +4,7 @@ import {
   loadAndSyncChronicleSettings,
 } from "./chronicleStore";
 import { invoke } from "@/lib/tauri";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
@@ -14,7 +15,14 @@ function reset() {
     zoom: 1,
     scrollOffset: 0,
     showOffpage: true,
+    pxPerDay: null,
+    viewStartDay: null,
+    axisMode: null,
+    viewProjectId: null,
+    viewWorkspaceId: null,
+    viewWorkspacePath: null,
     selectedEventId: null,
+    selectedEventIds: [],
   });
 }
 
@@ -65,11 +73,69 @@ describe("chronicleStore persistent subscriber", () => {
     useChronicleStore.getState().setZoom(0.01);
     expect(useChronicleStore.getState().zoom).toBe(0.25);
   });
+
+  it("setChronicleView は view と現在の axisMode を一体で永続化する", async () => {
+    useChronicleStore
+      .getState()
+      .setChronicleView(
+        4,
+        10,
+        "calendar",
+        "project-a",
+        "workspace-a-id",
+        "/workspace-a",
+      );
+
+    expect(useChronicleStore.getState()).toMatchObject({
+      pxPerDay: 4,
+      viewStartDay: 10,
+      axisMode: "calendar",
+      viewProjectId: "project-a",
+      viewWorkspaceId: "workspace-a-id",
+      viewWorkspacePath: "/workspace-a",
+    });
+    await vi.runAllTimersAsync();
+    expect(invoke).toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          chronicle: expect.objectContaining({
+            pxPerDay: 4,
+            viewStartDay: 10,
+            axisMode: "calendar",
+            viewProjectId: "project-a",
+            viewWorkspaceId: "workspace-a-id",
+            viewWorkspacePath: "/workspace-a",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("axisMode / view owner を持たない legacy view は migration 待ちの null で読む", () => {
+    loadAndSyncChronicleSettings({
+      pxPerDay: 4,
+      viewStartDay: 10,
+    });
+
+    expect(useChronicleStore.getState()).toMatchObject({
+      pxPerDay: 4,
+      viewStartDay: 10,
+      axisMode: null,
+      viewProjectId: null,
+      viewWorkspaceId: null,
+      viewWorkspacePath: null,
+    });
+  });
 });
 
 describe("chronicleStore 選択（単一/複数）", () => {
   beforeEach(() => {
     useChronicleStore.setState({ selectedEventId: null, selectedEventIds: [] });
+    useExternalWriteStore.getState().clear();
+  });
+  afterEach(() => {
+    useExternalWriteStore.getState().clear();
   });
 
   it("setSelectedEventId は集合 [id] と同期、null で全解除", () => {
@@ -116,5 +182,39 @@ describe("chronicleStore 選択（単一/複数）", () => {
     const before = useChronicleStore.getState().selectedEventIds;
     useChronicleStore.getState().sanitizeSelection(new Set(["a", "b"]));
     expect(useChronicleStore.getState().selectedEventIds).toBe(before);
+  });
+
+  it("dirty Event の外部競合中は選択変更と sanitize による owner unmount を拒否する", () => {
+    useChronicleStore.getState().setSelectedEventId("event-a");
+    useExternalWriteStore.getState().pushConflict({
+      documentKey: { kind: "chronicle-event", id: "event-a" },
+      sceneId: "event-a",
+      domain: "event",
+      opType: "event.delete",
+      entityId: "event-a",
+    });
+
+    useChronicleStore.getState().setSelectedEventId("event-b");
+    useChronicleStore.getState().sanitizeSelection(new Set(["event-b"]));
+
+    expect(useChronicleStore.getState().selectedEventId).toBe("event-a");
+    expect(useChronicleStore.getState().selectedEventIds).toEqual(["event-a"]);
+  });
+
+  it("scene:* 選択も canonical tree conflict が解決するまで維持する", () => {
+    useChronicleStore.getState().setSelectedEventId("scene:scene-a");
+    useExternalWriteStore.getState().pushConflict({
+      documentKey: { kind: "tree", id: "scene-a", storage: "database" },
+      sceneId: "scene-a",
+      domain: "grid",
+      opType: "tree.update",
+      entityId: "scene-a",
+    });
+
+    useChronicleStore
+      .getState()
+      .setSelection(["scene:scene-b"], "scene:scene-b");
+
+    expect(useChronicleStore.getState().selectedEventId).toBe("scene:scene-a");
   });
 });

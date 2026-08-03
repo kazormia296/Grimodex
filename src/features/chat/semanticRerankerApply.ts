@@ -1,0 +1,216 @@
+import { useReindexProgressStore } from "@/features/semantic-search/reindexProgressStore";
+import type { SemanticSearchHit } from "@/features/semantic-search/api";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { invoke, IpcInvokeError } from "@/lib/tauri";
+import { isCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
+import { isCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  buildSemanticRerankerAppliedHits,
+  semanticRerankerCandidateId,
+  snapshotSemanticRerankerInput,
+  type SemanticRerankerScoreRequest,
+  type SemanticRerankerScoreResult,
+  type SemanticRerankerShadowInput,
+  type SemanticRerankerShadowScope,
+} from "./semanticRerankerShadow";
+
+export const SEMANTIC_RERANKER_CALLER_WAIT_TIMEOUT_MS = 2_500;
+
+export type SemanticRerankerFallbackReason =
+  | "busy"
+  | "circuit-open"
+  | "empty-candidate-set"
+  | "reindexing"
+  | "scope-stale"
+  | "score-failed"
+  | "superseded"
+  | "timeout";
+
+export type SemanticRerankerApplyResult =
+  | { status: "applied"; hits: SemanticSearchHit[] }
+  | {
+      status: "fallback";
+      reason: SemanticRerankerFallbackReason;
+      hits: SemanticSearchHit[];
+      timedOutButStillRunning?: true;
+      circuitBreakerOpen?: true;
+    };
+
+export interface SemanticRerankerApplyCoordinatorDeps {
+  isReindexing: () => boolean;
+  isScopeCurrent: (scope: SemanticRerankerShadowScope) => boolean;
+  score: (
+    request: SemanticRerankerScoreRequest,
+  ) => Promise<SemanticRerankerScoreResult>;
+  timeoutMs?: number;
+}
+
+const TIMEOUT = Symbol("semantic-reranker-timeout");
+
+class SemanticRerankerApplyCoordinator {
+  private generation = 0;
+  private activeToken: symbol | null = null;
+  private readonly openSessionCircuits = new Set<string>();
+
+  constructor(private readonly deps: SemanticRerankerApplyCoordinatorDeps) {}
+
+  async apply(
+    input: SemanticRerankerShadowInput,
+  ): Promise<SemanticRerankerApplyResult> {
+    const generation = ++this.generation;
+    const baseline = input.baselineInjectedHits;
+    const fallback = (
+      reason: SemanticRerankerFallbackReason,
+      telemetry: {
+        timedOutButStillRunning?: true;
+        circuitBreakerOpen?: true;
+      } = {},
+    ): SemanticRerankerApplyResult => ({
+      status: "fallback",
+      reason,
+      hits: baseline,
+      ...telemetry,
+    });
+
+    if (this.deps.isReindexing()) return fallback("reindexing");
+    if (!this.deps.isScopeCurrent(input.scope)) return fallback("scope-stale");
+    const sessionCircuitKey = this.sessionCircuitKey(input);
+    if (this.openSessionCircuits.has(sessionCircuitKey)) {
+      return fallback("circuit-open", { circuitBreakerOpen: true });
+    }
+    if (this.activeToken) return fallback("busy");
+
+    const snapshot = snapshotSemanticRerankerInput(input);
+    const excluded = new Set(snapshot.excludeSceneIds);
+    const candidates = snapshot.denseHits
+      .filter((hit) => !excluded.has(hit.sceneId))
+      .slice(0, 30)
+      .map((hit) => ({
+        candidateId: semanticRerankerCandidateId(hit),
+        text: hit.chunkText,
+      }));
+    if (candidates.length === 0) return fallback("empty-candidate-set");
+
+    const token = Symbol("semantic-reranker-apply");
+    this.activeToken = token;
+    const scorePromise = Promise.resolve().then(() =>
+      this.deps.score({
+        requestId: snapshot.requestId,
+        expectedWorkspacePath: snapshot.scope.workspaceKey,
+        projectId: snapshot.scope.projectId,
+        auditPathId: "semantic_reranker",
+        language: snapshot.language,
+        userMessage: snapshot.query.userMessage,
+        sceneTail: snapshot.query.sceneTail,
+        candidates,
+      }),
+    );
+    void scorePromise.then(
+      () => this.release(token),
+      () => this.release(token),
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutMs =
+      this.deps.timeoutMs ?? SEMANTIC_RERANKER_CALLER_WAIT_TIMEOUT_MS;
+    const timeoutPromise = new Promise<typeof TIMEOUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);
+    });
+
+    let result: SemanticRerankerScoreResult | typeof TIMEOUT;
+    try {
+      result = await Promise.race([scorePromise, timeoutPromise]);
+    } catch (error) {
+      if (generation !== this.generation) return fallback("superseded");
+      if (error instanceof IpcInvokeError && error.code === "RERANKER_BUSY") {
+        debugLog.debug(
+          "SemanticRerankerApply",
+          "native reranker lane occupied; keeping baseline order",
+        );
+        return fallback("busy");
+      }
+      debugLog.warn(
+        "SemanticRerankerApply",
+        "scoring failed; keeping baseline order",
+        errorDetail(error),
+      );
+      return fallback("score-failed");
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+
+    if (result === TIMEOUT) {
+      this.openSessionCircuits.add(sessionCircuitKey);
+      debugLog.warn(
+        "SemanticRerankerApply",
+        `caller wait timeout after ${timeoutMs}ms; keeping baseline order; ` +
+          "timedOutButStillRunning=true sessionCircuitOpened=true " +
+          `localInferenceExpected=${input.localInferenceExpected}`,
+      );
+      return fallback("timeout", { timedOutButStillRunning: true });
+    }
+    if (generation !== this.generation) return fallback("superseded");
+    if (this.deps.isReindexing()) return fallback("reindexing");
+    if (!this.deps.isScopeCurrent(snapshot.scope)) {
+      return fallback("scope-stale");
+    }
+
+    try {
+      return {
+        status: "applied",
+        hits: buildSemanticRerankerAppliedHits(snapshot, result),
+      };
+    } catch (error) {
+      debugLog.warn(
+        "SemanticRerankerApply",
+        "invalid score result; keeping baseline order",
+        errorDetail(error),
+      );
+      return fallback("score-failed");
+    }
+  }
+
+  private release(token: symbol): void {
+    if (this.activeToken === token) this.activeToken = null;
+  }
+
+  private sessionCircuitKey(input: SemanticRerankerShadowInput): string {
+    return JSON.stringify([
+      input.scope.workspaceKey,
+      input.scope.workspaceOpenRevision,
+      input.scope.projectId,
+      input.sessionId ?? null,
+    ]);
+  }
+}
+
+export function createSemanticRerankerApplyCoordinator(
+  deps: SemanticRerankerApplyCoordinatorDeps,
+): SemanticRerankerApplyCoordinator {
+  return new SemanticRerankerApplyCoordinator(deps);
+}
+
+function currentScopeMatches(scope: SemanticRerankerShadowScope): boolean {
+  return (
+    isCurrentWorkspaceIdentity({
+      path: scope.workspaceKey,
+      openRevision: scope.workspaceOpenRevision,
+    }) && isCurrentRuntimeProjectId(scope.projectId)
+  );
+}
+
+const productionCoordinator = createSemanticRerankerApplyCoordinator({
+  isReindexing: () => useReindexProgressStore.getState().running,
+  isScopeCurrent: currentScopeMatches,
+  score: (request) =>
+    invoke<SemanticRerankerScoreResult>(
+      "semantic_reranker_shadow_score",
+      request,
+    ),
+});
+
+export function applySemanticReranker(
+  input: SemanticRerankerShadowInput,
+): Promise<SemanticRerankerApplyResult> {
+  return productionCoordinator.apply(input);
+}

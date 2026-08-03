@@ -526,8 +526,8 @@ export function CodexManagementPanel({
   const [isWideMode, setIsWideMode] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
   const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
-  // When the user triggers "Find in scenes" we open the Mentions tab
-  const [detailInitialTab, setDetailInitialTab] = useState("details");
+  // Keep the detail tab shared while the selected Codex entry changes.
+  const [activeDetailTab, setActiveDetailTab] = useState("details");
   // S1: tag filter
   const [allTags, setAllTags] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
@@ -699,8 +699,8 @@ export function CodexManagementPanel({
   ]);
 
   const handleSelectEntry = useCallback(
-    (entry: CodexEntry, tab = "details") => {
-      setDetailInitialTab(tab);
+    (entry: CodexEntry, tab?: string) => {
+      if (tab !== undefined) setActiveDetailTab(tab);
       setSelectedEntry(entry);
       if (isStackMode) setShowDetail(true);
     },
@@ -806,7 +806,7 @@ export function CodexManagementPanel({
 
   const handleNewEntry = useCallback(async () => {
     const entry = await create({ type: "character", name: "Untitled" });
-    setDetailInitialTab("details");
+    setActiveDetailTab("details");
     setSelectedEntry(entry);
     setScrollToEntryId(entry.id);
     if (isStackMode) setShowDetail(true);
@@ -839,7 +839,7 @@ export function CodexManagementPanel({
         aliases: entry.aliases ?? undefined,
         excludedAliases: entry.excludedAliases ?? undefined,
       });
-      setDetailInitialTab("details");
+      setActiveDetailTab("details");
       setSelectedEntry(newEntry);
       setScrollToEntryId(newEntry.id);
       if (isStackMode) setShowDetail(true);
@@ -890,7 +890,7 @@ export function CodexManagementPanel({
 
   const handleCommandSelect = useCallback(
     (entry: CodexEntry) => {
-      setDetailInitialTab("details");
+      setActiveDetailTab("details");
       setSelectedEntry(entry);
       if (isStackMode) setShowDetail(true);
     },
@@ -1086,11 +1086,12 @@ export function CodexManagementPanel({
   // --- Detail panel content ---
   const detailPanelContent = selectedEntry ? (
     <CodexDetailContent
-      key={`${selectedEntry.id}-${detailInitialTab}`}
+      key={selectedEntry.id}
       entry={selectedEntry}
       onDelete={handleDelete}
       onBack={isStackMode ? handleBack : undefined}
-      initialTab={detailInitialTab}
+      activeTab={activeDetailTab}
+      onTabChange={setActiveDetailTab}
       readOnly={!canEditSelected}
     />
   ) : (

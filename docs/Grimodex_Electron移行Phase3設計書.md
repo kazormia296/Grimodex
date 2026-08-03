@@ -481,16 +481,17 @@ Phase 3 の完了記録は上記のとおり固定し、申し送りだった配
   Ubuntu 24.04 で build し、`.node` の最大参照 symbol が `GLIBC_2.39` 以下であることと、deb の
   `libc6 (>= 2.39)` / `libstdc++6 (>= 12)` / `libgcc-s1` / `libdbus-1-3` を CI で検証する。
   release-only keyring 移行のため、deb/rpm は libsecret / D-Bus runtime 依存も明示する。
-  Windows は GitHub Actions secrets `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` を
-  electron-builder へ渡して Authenticode 署名し、app exe と NSIS installer の両方が
-  `Status=Valid` でなければ失敗させる。この2 secret は v2 release 実行前の必須設定である。
-  custom NSIS hook は実配布 Tauri v1 の publisher=`miyakey`、product/uninstall key、旧 exe を
+  Windows は意図的に未署名で配布する。electron-builder の証明書自動検出を無効化し、
+  app exe と NSIS installer の両方が `Status=NotSigned` でなければ失敗させる。
+  Windows 用の証明書 secret は要求しない。
+  custom NSIS hook は最終公開 Tauri v0.10.4 の publisher=`miyakey`、product/uninstall key、旧 exe を
   検証して `/P /R /UPDATE /ARGS` を変換する。通常 CI は Windows 上で最終 makensis pass を compile
-  し、release CI は固定 SHA-256 の v1.0.0 installer を使った移行・冪等・fail-closed E2E まで行う。
+  し、release CI は固定 SHA-256 の公開済み v0.10.4 installer を使った移行・冪等・fail-closed E2E まで行う。
   RPM は新 `%post` 後に旧 payload / `%postun` が launcher と AppArmor を消す順序へ対応し、
   `%posttrans` で `/usr/bin/grimodex`、sandbox mode、AppArmor profile を冪等復元する。実 RPM の
-  `rpm -qp --scripts` も gate する。既存 Tauri v1 の Arch 版だけは build-time に deb channel が
-  固定されておりアプリ内 updater が `dpkg` を呼ぶため、pacman / AUR 経由の更新を必須とする。
+  `rpm -qp --scripts` も gate する。最終公開 Tauri v0.10.4 は updater 設定を持たないため、
+  Arch ユーザーには pacman / AUR 経由の更新を必須とする。v1.0.0 Draft の deb channel も
+  Arch 上では `dpkg` を呼ぶため利用しない。
   SemVer prerelease は Arch `pkgver` と安全な版順を共有できないため Arch/AUR成果物を作らず、
   AppImage / deb / rpm の Draft だけを公開する。stable は `build-arch` 成功を公開の必須条件に戻す。
 
@@ -513,11 +514,11 @@ node --test scripts/validate-release-version.test.mjs \
   scripts/linux-release-abi.test.mjs \
   scripts/arch-electron-package.test.mjs \
   scripts/verify-electron-updater-metadata.test.mjs \
-  scripts/windows-signing-workflow.test.mjs
+  scripts/windows-release-workflow.test.mjs
 ```
 
-`pnpm electron:package*` は host-native package のみを生成する。3 OS の署名・notarization・ABI
-検査と GitHub Draft 作成は `.github/workflows/release.yml` が正本であり、release 実行前に
+`pnpm electron:package*` は host-native package のみを生成する。3 OS の配布契約・ABI 検査、
+macOS の署名・notarization、GitHub Draft 作成は `.github/workflows/release.yml` が正本であり、release 実行前に
 `package.json` を v2 系へ更新して同一 tag を付ける必要がある。
 
 ## 7. Phase 5 撤去結果（2026-07-11）

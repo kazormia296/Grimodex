@@ -112,6 +112,19 @@ function attachWindowChrome(
     if (!win.isDestroyed()) win.webContents.send(IPC.windowResized);
   };
 
+  // F11 は renderer のフォーカス位置に依存しないアプリ窓の操作として扱う。
+  // keyup / repeat も消費し、Chromium や renderer で二重に処理されるのを防ぐ。
+  win.webContents.on("before-input-event", (event, input) => {
+    const isF11 = input.key === "F11" || input.code === "F11";
+    const hasModifier = input.shift || input.control || input.alt || input.meta;
+    if (!isF11 || hasModifier) return;
+
+    event.preventDefault();
+    if (input.type !== "keyDown" || input.isAutoRepeat) return;
+
+    win.setFullScreen(!win.isFullScreen());
+  });
+
   // §6.7: 保存は store 側で 500ms debounce。getNormalBounds() により
   // maximized 中も「unmaximize 後に戻るサイズ」を保持する。
   const saveState = (): void => {

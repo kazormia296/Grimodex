@@ -1,11 +1,85 @@
 import { describe, expect, it } from "vitest";
 import {
   BrowserWorkspaceError,
+  computeAiAuditJournalBatchId,
   createFailoverWorkspaceStore,
   createMemoryWorkspaceStore,
 } from "./indexedDbStore";
 
+async function journalBatch(appendArgsJson: string) {
+  return {
+    batchId: await computeAiAuditJournalBatchId(appendArgsJson),
+    appendArgsJson,
+  };
+}
+
 describe("browser workspace snapshot store", () => {
+  it("keeps ordered AI audit batches and exact retries idempotent", async () => {
+    const store = createMemoryWorkspaceStore();
+    const append = async (appendArgsJson: string) =>
+      store.appendAiAuditJournal({
+        workspaceId: "workspace-1",
+        expectedRevision: 0,
+        ...(await journalBatch(appendArgsJson)),
+        createdAt: "2026-08-03T00:00:00.000Z",
+      });
+
+    const firstJson = '{"events":[{"eventId":"1"}]}';
+    const secondJson = '{"events":[{"eventId":"2"}]}';
+    const first = await append(firstJson);
+    const exactRetry = await append(firstJson);
+    const second = await append(secondJson);
+
+    expect(first).toMatchObject({ sequence: 1 });
+    expect(first.batchId).toMatch(/^[0-9a-f]{64}$/u);
+    expect(exactRetry).toEqual(first);
+    expect(second).toMatchObject({ sequence: 2 });
+    await expect(store.readAiAuditJournal("workspace-1")).resolves.toEqual([
+      first,
+      second,
+    ]);
+    await expect(
+      store.appendAiAuditJournal({
+        workspaceId: "workspace-1",
+        expectedRevision: 0,
+        batchId: first.batchId,
+        appendArgsJson: '{"events":[{"eventId":"different"}]}',
+        createdAt: "2026-08-03T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "storage-failed" });
+  });
+
+  it("moves and deletes workspace-scoped AI audit journal records", async () => {
+    const store = createMemoryWorkspaceStore();
+    await store.put({
+      workspaceId: "source",
+      revision: 1,
+      schemaVersion: 1,
+      updatedAt: "2026-08-03T00:00:00.000Z",
+      bytes: new Uint8Array([1]),
+    });
+    const batch = await journalBatch('{"events":[{"eventId":"1"}]}');
+    await store.appendAiAuditJournal({
+      workspaceId: "source",
+      expectedRevision: 1,
+      ...batch,
+      createdAt: "2026-08-03T00:00:01.000Z",
+    });
+
+    await store.rename("source", "renamed");
+    await expect(store.readAiAuditJournal("source")).resolves.toEqual([]);
+    await expect(store.readAiAuditJournal("renamed")).resolves.toEqual([
+      expect.objectContaining({
+        workspaceId: "renamed",
+        sequence: 1,
+        batchId: batch.batchId,
+      }),
+    ]);
+
+    await store.delete("renamed");
+    await expect(store.readAiAuditJournal("renamed")).resolves.toEqual([]);
+  });
+
   it("stores bytes with metadata and restores the latest revision", async () => {
     const store = createMemoryWorkspaceStore();
 

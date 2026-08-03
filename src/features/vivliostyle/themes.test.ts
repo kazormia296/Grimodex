@@ -63,6 +63,16 @@ describe("VIVLIOSTYLE_THEMES — 組版宣言", () => {
     },
   );
 
+  it.each(["bunko-vertical", "shinsho-vertical"] as const)(
+    "%s: 柱の作品タイトルは本文の縦書きから独立して横書きにする",
+    (id) => {
+      const css = VIVLIOSTYLE_THEMES[id].css;
+      expect(css).toMatch(
+        /@top-center\s*\{[^}]*writing-mode:\s*horizontal-tb;[^}]*text-orientation:\s*mixed;[^}]*white-space:\s*nowrap;/s,
+      );
+    },
+  );
+
   it.each(VIVLIOSTYLE_THEME_IDS)(
     "%s: フォントは明朝系フォールバック（同梱フォントに依存しない）",
     (id) => {

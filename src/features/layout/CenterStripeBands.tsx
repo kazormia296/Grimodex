@@ -4,8 +4,11 @@ import { EditorToggleIcon } from "./EditorToggleIcon";
 import { StripeBandContextMenu } from "./StripeBandContextMenu";
 import { ToolWindowIcon } from "./ToolWindowIcon";
 import {
+  HORIZONTAL_STRIPE_ICON_INSET_PX,
+  HORIZONTAL_STRIPE_ICON_SIZE,
   MIN_EDITOR_SIZE,
   MIN_SLOT_SIZE,
+  STRIPE_ICON_GAP_PX,
   slotSplitterPx,
 } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
@@ -229,10 +232,12 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
           0,
         )
       : 0;
-  // h-7 w-7 = 28px / gap-0.5 = 2px / 末尾に小さい呼吸を確保。
+  // icon 実寸 / icon 間 gap / 末尾に小さい呼吸を確保。
   const leadingPaddingPx =
     leadingClusterIconCount > 0
-      ? leadingClusterIconCount * 28 + (leadingClusterIconCount - 1) * 2 + 4
+      ? leadingClusterIconCount * HORIZONTAL_STRIPE_ICON_SIZE +
+        (leadingClusterIconCount - 1) * STRIPE_ICON_GAP_PX +
+        HORIZONTAL_STRIPE_ICON_INSET_PX
       : 0;
 
   return (

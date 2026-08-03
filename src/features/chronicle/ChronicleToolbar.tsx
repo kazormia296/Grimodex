@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Plus,
@@ -33,6 +33,8 @@ export interface ChronicleToolbarProps {
   locked: boolean;
   calendar: ChronicleCalendar | null;
   creating: boolean;
+  /** Snapshot is visible but not mutation-safe (loading/refresh error/hidden). */
+  disabled?: boolean;
   onNew: () => void;
   onExtract: () => void;
   onSaveCalendar: (cal: ChronicleCalendar) => void;
@@ -73,6 +75,9 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
   const { t } = useTranslation();
   const calBtnRef = useRef<HTMLButtonElement>(null);
   const [calOpen, setCalOpen] = useState(false);
+  useEffect(() => {
+    if (props.disabled) setCalOpen(false);
+  }, [props.disabled]);
   const nextDensity = () =>
     props.onSetDensity(
       DENSITIES[(DENSITIES.indexOf(props.density) + 1) % DENSITIES.length],
@@ -82,12 +87,15 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
 
   return (
     <>
-      <div className="@container flex h-12 flex-none items-center gap-1 border-b border-border bg-card px-3">
+      <div
+        data-testid="chronicle-toolbar"
+        className="@container flex h-12 flex-none items-center gap-1 border-b border-border px-3"
+      >
         <button
           type="button"
           data-testid="toolbar-new"
           onClick={props.onNew}
-          disabled={props.creating}
+          disabled={props.creating || props.disabled}
           title={t("chronicle.newEvent", "新しいイベント")}
           className="inline-flex h-8 items-center gap-1 rounded-md px-3 text-xs font-medium disabled:opacity-50"
           style={{
@@ -103,6 +111,7 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
         <button
           type="button"
           onClick={props.onExtract}
+          disabled={props.disabled}
           className={ghost}
           title={t("chronicle.aiExtract", "AI 抽出")}
         >
@@ -116,6 +125,7 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           type="button"
           ref={calBtnRef}
           onClick={() => setCalOpen((o) => !o)}
+          disabled={props.disabled}
           className={toggleCls(calOpen)}
           title={
             hasCalendar
@@ -140,6 +150,7 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
         <button
           type="button"
           onClick={props.onToggleLock}
+          disabled={props.disabled}
           className={toggleCls(props.locked)}
           title={t(
             "chronicle.lockHint",

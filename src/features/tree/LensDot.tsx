@@ -6,6 +6,8 @@ import type {
   PostEffectSeverity,
   SceneLensRecord,
 } from "@/features/post-effect/types";
+import { useTreeStore } from "./treeStore";
+import { getTreeIndex } from "./treeIndex";
 
 const SEVERITY_COLOR: Record<PostEffectSeverity, string> = {
   error: "bg-red-500",
@@ -56,16 +58,13 @@ export function computeLensDotState(
  * Outline (Scenes パネル) の lens バッジ。meta_structure 診断のあるシーンに
  * 重要度色のドットを出す。診断 run 以降に編集されたシーン (stale) は薄く表示。
  */
-export function LensDot({
-  sceneId,
-  updatedAt,
-}: {
-  sceneId: string;
-  updatedAt?: string;
-}) {
+export function LensDot({ sceneId }: { sceneId: string }) {
   const { t } = useTranslation();
   const showLensOverlay = useLensStore((s) => s.showLensOverlay);
   const lenses = useLensStore((s) => s.bySceneId.get(sceneId));
+  const updatedAt = useTreeStore(
+    (state) => getTreeIndex(state.nodes).nodeById.get(sceneId)?.updatedAt,
+  );
 
   if (!showLensOverlay || !lenses || lenses.length === 0) return null;
 

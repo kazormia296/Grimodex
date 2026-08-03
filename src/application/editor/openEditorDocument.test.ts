@@ -65,20 +65,20 @@ describe("openEditorDocument", () => {
 
   it("does not partially update tabs, tree, or layout while blocked", () => {
     const navigation = ports();
-    navigation.isNavigationBlocked = () => true;
+    const isNavigationBlocked = vi.fn(() => true);
+    navigation.isNavigationBlocked = isNavigationBlocked;
+    const command = {
+      target: { kind: "scene" as const, documentId: "scene-2" },
+      mode: "pinned" as const,
+      revealEditor: true,
+      focusEditor: true,
+      syncSceneContext: true,
+    };
 
-    openEditorDocument(
-      {
-        target: { kind: "scene", documentId: "scene-2" },
-        mode: "pinned",
-        revealEditor: true,
-        focusEditor: true,
-        syncSceneContext: true,
-      },
-      navigation,
-    );
+    openEditorDocument(command, navigation);
 
     expect(navigation.calls).toEqual([]);
+    expect(isNavigationBlocked).toHaveBeenCalledWith(command);
   });
 
   it("keeps non-scene identity and opens secondary scenes directionally", () => {

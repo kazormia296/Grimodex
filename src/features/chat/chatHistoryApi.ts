@@ -210,36 +210,14 @@ export async function searchChatMessages(
     session_updated_at: string;
   }
 
-  const sql = `
-    SELECT
-      m.id          AS msg_id,
-      m.session_id,
-      s.title       AS session_title,
-      s.node_id,
-      s.codex_anchor_id,
-      s.snippet_anchor_id,
-      m.role,
-      m.content,
-      snippet(chat_messages_fts, 0, '\x01', '\x02', '...', 20) AS highlighted_content,
-      m.created_at,
-      s.updated_at  AS session_updated_at
-    FROM chat_messages_fts
-    JOIN chat_messages m ON chat_messages_fts.rowid = m.rowid
-    JOIN chat_sessions s ON m.session_id = s.id
-    WHERE chat_messages_fts MATCH ?
-      AND s.project_id = ?
-      AND m.role != 'system'
-    ORDER BY rank
-    LIMIT 50
-  `;
-
-  const result = await invoke<{ rows: RawRow[] }>("db_execute", {
-    sql,
-    params: [matchQuery, projectId],
-    method: "all",
+  const rows = await invoke<RawRow[]>("fts_search", {
+    projectId,
+    query,
+    scope: "chat_history",
+    limit: 50,
   });
 
-  return result.rows.map((row) => ({
+  return rows.map((row) => ({
     msgId: row.msg_id,
     sessionId: row.session_id,
     sessionTitle: row.session_title,

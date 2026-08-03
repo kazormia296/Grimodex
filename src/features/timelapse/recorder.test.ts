@@ -21,6 +21,7 @@ import {
   beginWorkspaceSwitch,
   endWorkspaceSwitch,
   flushNow,
+  flushStrict,
   getRecorderChainHead,
   getRecorderSessionId,
   initRecorderForProject,
@@ -28,7 +29,9 @@ import {
   resetRecorderChain,
   setRecorderEnabled,
 } from "./recorder";
+import { reserveChatMessageAdds } from "./captureChat";
 import { debugLog } from "@/lib/debugLog";
+import { collectQuiescenceProviderRecovery } from "@/lib/quiescenceProviders";
 import {
   bytesToHex,
   computeEventHash,
@@ -210,6 +213,156 @@ describe("recorder", () => {
     expect(getRecorderChainHead()).toBe(3);
   });
 
+  it("retains an original mutation timestamp when persistence is retried later", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-original-time");
+    const originalTimestamp = Date.parse("2026-07-30T00:00:00.123Z");
+
+    recordChangeEvent({
+      domain: "chat",
+      opType: "chat.message.add",
+      payload: { messageId: "message-1" },
+      timestamp: originalTimestamp,
+    });
+    await flushNow();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].timestamp).toBe(originalTimestamp);
+  });
+
+  it("holds automatic flush behind an unresolved completed-Chat reservation", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-chat-order");
+
+    reserveChatMessageAdds([
+      {
+        projectId: "p-chat-order",
+        sessionId: "session-1",
+        messageId: "user-1",
+        role: "user",
+        text: "question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      {
+        projectId: "p-chat-order",
+        sessionId: "session-1",
+        messageId: "assistant-1",
+        role: "assistant",
+        text: "answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+    ]);
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { text: "later edit" },
+    });
+    await flushNow();
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(rows).toEqual([]);
+    expect(collectQuiescenceProviderRecovery()).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "timelapse-event",
+          domain: "chat",
+        }),
+      ]),
+    );
+    await expect(flushStrict()).rejects.toThrow(
+      "Timelapse recorder has an unresolved event reservation",
+    );
+  });
+
+  it("commits a completed Chat turn before later events without duplicates", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-chat-order");
+
+    const reservation = reserveChatMessageAdds([
+      {
+        projectId: "p-chat-order",
+        sessionId: "session-1",
+        messageId: "user-1",
+        role: "user",
+        text: "question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      {
+        projectId: "p-chat-order",
+        sessionId: "session-1",
+        messageId: "assistant-1",
+        role: "assistant",
+        text: "answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+    ]);
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { text: "later edit" },
+    });
+
+    reservation.commit();
+    reservation.commit();
+    reservation.discard();
+    await flushNow();
+    await flushNow();
+
+    expect(
+      rows.map(({ sequence, domain, entityId }) => ({
+        sequence,
+        domain,
+        entityId,
+      })),
+    ).toEqual([
+      { sequence: 1, domain: "chat", entityId: "user-1" },
+      { sequence: 2, domain: "chat", entityId: "assistant-1" },
+      { sequence: 3, domain: "editor", entityId: null },
+    ]);
+  });
+
+  it("discards an unresolved completed Chat reservation without a phantom event", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-chat-discard");
+
+    const reservation = reserveChatMessageAdds([
+      {
+        projectId: "p-chat-discard",
+        sessionId: "session-1",
+        messageId: "user-1",
+        role: "user",
+        text: "question",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      {
+        projectId: "p-chat-discard",
+        sessionId: "session-1",
+        messageId: "assistant-1",
+        role: "assistant",
+        text: "answer",
+        createdAt: "2026-07-30T00:00:00.001Z",
+      },
+    ]);
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { text: "later edit" },
+    });
+
+    reservation.discard();
+    reservation.discard();
+    reservation.commit();
+    await flushNow();
+
+    expect(
+      rows.map(({ sequence, domain, entityId }) => ({
+        sequence,
+        domain,
+        entityId,
+      })),
+    ).toEqual([{ sequence: 1, domain: "editor", entityId: null }]);
+  });
+
   it("resumes from the project tail when initializing", async () => {
     const tailHex = "7c".repeat(32);
     const { rows } = setupAppendCommand({ sequence: 42, hash: tailHex });
@@ -332,6 +485,17 @@ describe("recorder", () => {
     recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
 
     await expect(flushNow()).rejects.toThrow("write failed");
+    expect(collectQuiescenceProviderRecovery()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "timelapse-event",
+          projectId: "p-retry",
+          domain: "editor",
+          opType: "step",
+          payload: { i: 1 },
+        }),
+      ]),
+    );
     await flushNow();
 
     expect(calls).toBe(2);
@@ -397,7 +561,7 @@ describe("recorder", () => {
     expect(getRecorderChainHead()).toBe(2);
   });
 
-  it("drops the batch after MAX_FLUSH_RETRIES consecutive real failures", async () => {
+  it("pauses automatic retry without dropping the batch after repeated failures", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       setupTail({ value: null });
@@ -417,13 +581,14 @@ describe("recorder", () => {
       for (let i = 0; i < 10; i += 1) {
         await expect(flushNow()).rejects.toThrow("boom");
       }
-      await expect(flushNow()).resolves.toBeUndefined();
+      await expect(flushNow()).rejects.toThrow("boom");
       expect(calls).toBe(11);
 
+      invokeMock.mockResolvedValue({ tailSequence: 1, inserted: 1 });
       await flushNow();
-      expect(calls).toBe(11);
+      expect(invokeMock).toHaveBeenCalledTimes(12);
       expect(warn).toHaveBeenCalledWith(
-        "[timelapse] dropping 1 event(s) after 10 failed flush attempts",
+        "[timelapse] pausing automatic retry for 1 event(s) after 10 failed flush attempts",
       );
     } finally {
       warn.mockRestore();
@@ -450,8 +615,11 @@ describe("recorder", () => {
     setupTail({ value: null });
     invokeMock.mockImplementation(() =>
       Promise.reject(
-        new Error(
-          "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
+        Object.assign(
+          new Error(
+            "workspace is switching; DB access is temporarily rejected",
+          ),
+          { code: "WORKSPACE_SWITCHING" },
         ),
       ),
     );
@@ -465,6 +633,96 @@ describe("recorder", () => {
     // 破棄済みなので再 flush で再送されない
     await flushNow();
     expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("strict flush は WORKSPACE_SWITCHING batch を保持して lifecycle を拒否する", async () => {
+    setupTail({ value: null });
+    invokeMock
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error(
+            "workspace is switching; DB access is temporarily rejected",
+          ),
+          { code: "WORKSPACE_SWITCHING" },
+        ),
+      )
+      .mockResolvedValueOnce({ tailSequence: 1 });
+    await initRecorderForProject("p-strict-marker");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { i: 1 },
+    });
+
+    await expect(flushStrict()).rejects.toMatchObject({
+      code: "WORKSPACE_SWITCHING",
+    });
+    expect(
+      collectQuiescenceProviderRecovery().filter(
+        (item) => (item as { kind?: unknown }).kind === "timelapse-event",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "timelapse-event",
+        projectId: "p-strict-marker",
+        domain: "editor",
+        opType: "step",
+        payload: { i: 1 },
+      }),
+    ]);
+
+    await flushStrict();
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(
+      collectQuiescenceProviderRecovery().filter(
+        (item) => (item as { kind?: unknown }).kind === "timelapse-event",
+      ),
+    ).toEqual([]);
+  });
+
+  it("strict flush は実行中の automatic flush も lossless policy に昇格する", async () => {
+    setupTail({ value: null });
+    let rejectWrite!: (reason?: unknown) => void;
+    const inFlightWrite = new Promise<never>((_resolve, reject) => {
+      rejectWrite = reject;
+    });
+    invokeMock
+      .mockReturnValueOnce(inFlightWrite)
+      .mockResolvedValueOnce({ tailSequence: 1 });
+    await initRecorderForProject("p-strict-inflight");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { i: 1 },
+    });
+
+    const automaticFlush = flushNow();
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledOnce());
+    const strictFlush = flushStrict();
+    const switchingError = Object.assign(
+      new Error("workspace is switching; DB access is temporarily rejected"),
+      { code: "WORKSPACE_SWITCHING" },
+    );
+    const automaticFailure =
+      expect(automaticFlush).rejects.toBe(switchingError);
+    const strictFailure = expect(strictFlush).rejects.toBe(switchingError);
+    rejectWrite(switchingError);
+
+    await automaticFailure;
+    await strictFailure;
+    expect(
+      collectQuiescenceProviderRecovery().filter(
+        (item) => (item as { kind?: unknown }).kind === "timelapse-event",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        projectId: "p-strict-inflight",
+        payload: { i: 1 },
+      }),
+    ]);
+
+    await flushStrict();
+    expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
   it("契約(a): 切替成功後は init 完了まで recordChangeEvent が warn 付きで破棄される", async () => {

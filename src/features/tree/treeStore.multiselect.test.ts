@@ -1,5 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTreeStore } from "./treeStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import {
+  __resetChatNavigationGuardForTests,
+  setChatSceneTransitionBlocker,
+} from "@/lib/chatNavigationGuard";
 
 // Mock the API module
 vi.mock("./api", () => ({
@@ -17,6 +23,15 @@ function resetStore() {
     filterQuery: "",
     expandedIds: [],
   });
+  useTabStore.setState({
+    tabs: [],
+    activeTabId: null,
+    secondaryTabs: [],
+    secondaryActiveTabId: null,
+    secondaryGroupOpen: false,
+    isLinearMode: false,
+  });
+  useExternalWriteStore.getState().clear();
 }
 
 const NODE_DEFAULTS = {
@@ -80,7 +95,12 @@ const NODES = [
 
 describe("treeStore multi-selection", () => {
   beforeEach(() => {
+    __resetChatNavigationGuardForTests();
     resetStore();
+  });
+
+  afterEach(() => {
+    __resetChatNavigationGuardForTests();
   });
 
   describe("selectNode (Ctrl+Click)", () => {
@@ -120,6 +140,42 @@ describe("treeStore multi-selection", () => {
       useTreeStore.setState({ nodes: NODES });
       useTreeStore.getState().selectNode("scene-2", false);
       expect(useTreeStore.getState().activeSceneId).toBe("scene-2");
+    });
+
+    it("does not navigate away from the conflict UI via the scene tree", () => {
+      useTreeStore.setState({
+        nodes: NODES,
+        activeSceneId: "scene-1",
+        selectedIds: ["scene-1"],
+      });
+      useTabStore.getState().openPinned("scene-1");
+      useExternalWriteStore.getState().pushConflict({
+        documentKey: { kind: "tree", id: "scene-1", storage: "database" },
+        sceneId: "scene-1",
+        domain: "scene",
+        opType: "update",
+        entityId: "scene-1",
+      });
+
+      useTreeStore.getState().selectNode("scene-2", false);
+
+      expect(useTreeStore.getState().activeSceneId).toBe("scene-1");
+      expect(useTreeStore.getState().selectedIds).toEqual(["scene-1"]);
+    });
+
+    it("does not split Tree and Chat authority while Scene transition is blocked", () => {
+      useTreeStore.setState({
+        nodes: NODES,
+        activeSceneId: "scene-1",
+        selectedIds: ["scene-1"],
+      });
+      setChatSceneTransitionBlocker(() => true);
+
+      useTreeStore.getState().setActiveScene("scene-2");
+      useTreeStore.getState().selectNode("scene-2", false);
+
+      expect(useTreeStore.getState().activeSceneId).toBe("scene-1");
+      expect(useTreeStore.getState().selectedIds).toEqual(["scene-1"]);
     });
   });
 

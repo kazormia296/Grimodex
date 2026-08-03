@@ -2,32 +2,77 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { announce } from "@/lib/a11y/announcer";
 import { fitAll, zoomByCenter, type View } from "./chronicleAxis";
-import { useChronicleStore } from "./chronicleStore";
+import { useChronicleStore, type ChronicleAxisMode } from "./chronicleStore";
 
 interface UseChronicleViewportControllerOptions {
+  workspaceId: string | null;
+  workspacePath: string | null;
+  projectId: string | null;
+  dataReady: boolean;
   dataStart: number;
   dataEnd: number;
   eventCount: number;
   focusDay: number;
+  hasCalendarAxis: boolean;
+}
+
+function persistedViewState(): {
+  view: View;
+  axisMode: ChronicleAxisMode | null;
+  viewProjectId: string | null;
+  viewWorkspaceId: string | null;
+  viewWorkspacePath: string | null;
+} | null {
+  const state = useChronicleStore.getState();
+  return state.pxPerDay != null && state.viewStartDay != null
+    ? {
+        view: {
+          pxPerDay: state.pxPerDay,
+          viewStartDay: state.viewStartDay,
+        },
+        axisMode: state.axisMode,
+        viewProjectId: state.viewProjectId,
+        viewWorkspaceId: state.viewWorkspaceId,
+        viewWorkspacePath: state.viewWorkspacePath,
+      }
+    : null;
 }
 
 export function useChronicleViewportController({
+  workspaceId,
+  workspacePath,
+  projectId,
+  dataReady,
   dataStart,
   dataEnd,
   eventCount,
   focusDay,
+  hasCalendarAxis,
 }: UseChronicleViewportControllerOptions) {
   const { t } = useTranslation();
   const setChronicleView = useChronicleStore((s) => s.setChronicleView);
+  const currentAxisMode: ChronicleAxisMode = hasCalendarAxis
+    ? "calendar"
+    : "sequence";
   const [view, setView] = useState<View>(() => {
-    const state = useChronicleStore.getState();
-    return state.pxPerDay != null && state.viewStartDay != null
-      ? { pxPerDay: state.pxPerDay, viewStartDay: state.viewStartDay }
-      : { pxPerDay: 1, viewStartDay: 0 };
+    return persistedViewState()?.view ?? { pxPerDay: 1, viewStartDay: 0 };
   });
   const [trackW, setTrackW] = useState(0);
   const trackElRef = useRef<HTMLDivElement | null>(null);
-  const fittedRef = useRef(useChronicleStore.getState().pxPerDay != null);
+  const initialPersistedView = persistedViewState();
+  const fittedRef = useRef(initialPersistedView !== null);
+  const displayedAxisModeRef = useRef<ChronicleAxisMode | null>(
+    initialPersistedView?.axisMode ?? null,
+  );
+  const displayedProjectIdRef = useRef<string | null>(
+    initialPersistedView?.viewProjectId ?? null,
+  );
+  const displayedWorkspaceIdRef = useRef<string | null>(
+    initialPersistedView?.viewWorkspaceId ?? null,
+  );
+  const displayedWorkspacePathRef = useRef<string | null>(
+    initialPersistedView?.viewWorkspacePath ?? null,
+  );
   const rulerLevelRef = useRef("day");
   const zoomAnnounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -68,35 +113,167 @@ export function useChronicleViewportController({
 
   const applyView = useCallback(
     (nextView: View) => {
+      // Project 切替中の scene-only projection で pan/zoom を保存すると、
+      // 後着する実 Event に対する初回 fit が抑止されるため操作を受け付けない。
+      if (!dataReady || !projectId || !workspaceId || !workspacePath) return;
       if (nextView.pxPerDay !== lastPxPerDayRef.current) {
         lastPxPerDayRef.current = nextView.pxPerDay;
         scheduleZoomAnnounce();
       }
       setView(nextView);
-      setChronicleView(nextView.pxPerDay, nextView.viewStartDay);
+      fittedRef.current = true;
+      displayedAxisModeRef.current = currentAxisMode;
+      displayedProjectIdRef.current = projectId;
+      displayedWorkspaceIdRef.current = workspaceId;
+      displayedWorkspacePathRef.current = workspacePath;
+      if (projectId && workspaceId && workspacePath) {
+        setChronicleView(
+          nextView.pxPerDay,
+          nextView.viewStartDay,
+          currentAxisMode,
+          projectId,
+          workspaceId,
+          workspacePath,
+        );
+      }
     },
-    [scheduleZoomAnnounce, setChronicleView],
+    [
+      currentAxisMode,
+      dataReady,
+      projectId,
+      scheduleZoomAnnounce,
+      setChronicleView,
+      workspaceId,
+      workspacePath,
+    ],
   );
 
-  const resetForProject = useCallback((projectId: string | null) => {
-    fittedRef.current = projectId
-      ? useChronicleStore.getState().pxPerDay != null
-      : false;
+  const resetForProject = useCallback((nextProjectId: string | null) => {
+    const persisted = nextProjectId ? persistedViewState() : null;
+    fittedRef.current = persisted !== null;
+    displayedAxisModeRef.current = persisted?.axisMode ?? null;
+    displayedProjectIdRef.current = persisted?.viewProjectId ?? null;
+    displayedWorkspaceIdRef.current = persisted?.viewWorkspaceId ?? null;
+    displayedWorkspacePathRef.current = persisted?.viewWorkspacePath ?? null;
+    if (persisted) {
+      lastPxPerDayRef.current = persisted.view.pxPerDay;
+      setView(persisted.view);
+    }
   }, []);
 
   useEffect(() => {
-    if (trackW > 0 && !fittedRef.current && eventCount > 0) {
-      fittedRef.current = true;
-      setView(
-        fitAll({
-          dataStart,
-          dataEnd,
-          trackW,
-          focusDay,
-        }),
+    if (
+      !dataReady ||
+      !workspaceId ||
+      !workspacePath ||
+      !projectId ||
+      trackW <= 0 ||
+      eventCount <= 0
+    )
+      return;
+
+    const persisted = persistedViewState();
+    const initialFit = !fittedRef.current;
+    const persistedModeNeedsMigration =
+      persisted !== null && persisted.axisMode !== currentAxisMode;
+    const persistedProjectNeedsMigration =
+      persisted !== null && persisted.viewProjectId !== projectId;
+    const persistedWorkspaceNeedsMigration =
+      persisted !== null &&
+      (persisted.viewWorkspaceId !== null
+        ? persisted.viewWorkspaceId !== workspaceId
+        : persisted.viewWorkspacePath !== workspacePath);
+    const persistedWorkspaceOwnerNeedsUpgrade =
+      persisted !== null &&
+      persisted.viewWorkspaceId === null &&
+      persisted.viewWorkspacePath === workspacePath;
+    const sessionModeChanged =
+      persisted === null &&
+      displayedAxisModeRef.current !== null &&
+      displayedAxisModeRef.current !== currentAxisMode;
+    const sessionProjectChanged =
+      persisted === null &&
+      displayedProjectIdRef.current !== null &&
+      displayedProjectIdRef.current !== projectId;
+    const sessionWorkspaceChanged =
+      persisted === null &&
+      displayedWorkspaceIdRef.current !== null &&
+      displayedWorkspaceIdRef.current !== workspaceId;
+    if (
+      !initialFit &&
+      !persistedModeNeedsMigration &&
+      !sessionModeChanged &&
+      !persistedProjectNeedsMigration &&
+      !sessionProjectChanged &&
+      !persistedWorkspaceNeedsMigration &&
+      !sessionWorkspaceChanged
+    ) {
+      // 同じ Project / 座標モード内の dataStart/dataEnd 変化では user view を
+      // 保持する。データ外への pan も意図的なナビゲーションとして尊重する。
+      displayedAxisModeRef.current = currentAxisMode;
+      displayedProjectIdRef.current = projectId;
+      displayedWorkspaceIdRef.current = workspaceId;
+      displayedWorkspacePathRef.current = workspacePath;
+      // A path-owned setting from an older build already identifies this
+      // Workspace. Upgrade its owner to the stable UUID without discarding the
+      // user's view.
+      if (persistedWorkspaceOwnerNeedsUpgrade && persisted) {
+        setChronicleView(
+          persisted.view.pxPerDay,
+          persisted.view.viewStartDay,
+          currentAxisMode,
+          projectId,
+          workspaceId,
+          workspacePath,
+        );
+      }
+      return;
+    }
+
+    const nextView = fitAll({
+      dataStart,
+      dataEnd,
+      trackW,
+      focusDay,
+    });
+    fittedRef.current = true;
+    displayedAxisModeRef.current = currentAxisMode;
+    displayedProjectIdRef.current = projectId;
+    displayedWorkspaceIdRef.current = workspaceId;
+    displayedWorkspacePathRef.current = workspacePath;
+    lastPxPerDayRef.current = nextView.pxPerDay;
+    setView(nextView);
+
+    // legacy / 別 mode / 別 Project 所有の persisted view は一度だけ現在の
+    // Project / mode へ移行して保存する。永続値が無い初回/session遷移の fit は
+    // ローカルのみ。
+    if (
+      persistedModeNeedsMigration ||
+      persistedProjectNeedsMigration ||
+      persistedWorkspaceNeedsMigration
+    ) {
+      setChronicleView(
+        nextView.pxPerDay,
+        nextView.viewStartDay,
+        currentAxisMode,
+        projectId,
+        workspaceId,
+        workspacePath,
       );
     }
-  }, [trackW, eventCount, dataStart, dataEnd, focusDay]);
+  }, [
+    currentAxisMode,
+    dataReady,
+    dataEnd,
+    dataStart,
+    eventCount,
+    focusDay,
+    projectId,
+    setChronicleView,
+    trackW,
+    workspaceId,
+    workspacePath,
+  ]);
 
   const fit = useCallback(() => {
     const liveW = trackElRef.current?.clientWidth || trackW;

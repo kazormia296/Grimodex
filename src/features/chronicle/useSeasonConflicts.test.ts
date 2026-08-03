@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   checkInputsFingerprint,
-  collectFulfilledSceneTexts,
+  collectLoadedSceneTexts,
   mergeAgeCheckEvents,
   type EventForCheck,
 } from "./useSeasonConflicts";
@@ -107,15 +107,34 @@ describe("checkInputsFingerprint", () => {
   });
 });
 
-describe("collectFulfilledSceneTexts", () => {
-  it("成功分のみ Map 化する（失敗は無視）", () => {
-    const m = collectFulfilledSceneTexts([
-      { status: "fulfilled", value: ["s1", "本文1"] },
-      { status: "rejected", reason: new Error("x") },
-      { status: "fulfilled", value: ["s2", "本文2"] },
-    ] as PromiseSettledResult<readonly [string, string]>[]);
+describe("collectLoadedSceneTexts", () => {
+  it("batch の成功行を plain text 化し、欠損行は空本文にする", () => {
+    const m = collectLoadedSceneTexts(
+      ["s1", "missing", "s2"],
+      new Map([
+        [
+          "s1",
+          JSON.stringify({
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "本文1" }] },
+            ],
+          }),
+        ],
+        [
+          "s2",
+          JSON.stringify({
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "本文2" }] },
+            ],
+          }),
+        ],
+      ]),
+    );
     expect(m.get("s1")).toBe("本文1");
     expect(m.get("s2")).toBe("本文2");
-    expect(m.size).toBe(2);
+    expect(m.get("missing")).toBe("");
+    expect(m.size).toBe(3);
   });
 });
