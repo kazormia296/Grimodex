@@ -4807,7 +4807,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tauri-apps/plugin-dialog (2.7.1)
+### @tauri-apps/plugin-dialog (2.7.2)
 
 - License: MIT OR Apache-2.0
 - Repository: https://github.com/tauri-apps/plugins-workspace
