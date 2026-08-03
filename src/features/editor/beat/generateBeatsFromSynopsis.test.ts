@@ -4,6 +4,32 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 type ListenHandler = (payload: unknown) => void;
 const listeners = new Map<string, ListenHandler>();
 const invokeMock = vi.fn();
+const auditMocks = vi.hoisted(() => ({
+  begin: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace/test.gdx",
+    operationId: "operation-test",
+    executionId: "execution-test",
+    parentExecutionId: null,
+    startedAt: 1,
+  })),
+  dispatched: vi.fn(async () => undefined),
+  complete: vi.fn(async () => undefined),
+  fail: vi.fn(async () => undefined),
+  cancel: vi.fn(async () => undefined),
+  partials: vi.fn(async () => undefined),
+  recovery: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: auditMocks.begin,
+  markAiAuditDispatched: auditMocks.dispatched,
+  completeAiAuditExecution: auditMocks.complete,
+  failAiAuditExecution: auditMocks.fail,
+  cancelAiAuditExecution: auditMocks.cancel,
+  recordAiAuditPartials: auditMocks.partials,
+  attemptAiAuditPersistenceFailureTerminal: auditMocks.recovery,
+}));
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -53,14 +79,35 @@ vi.mock("@/features/project/api", () => ({
 
 vi.mock("@/features/workspace/store", () => ({
   useWorkspaceStore: {
-    getState: () => ({ activeWorkspaceName: "テスト作品" }),
+    getState: () => ({
+      activeWorkspaceName: "テスト作品",
+      activeWorkspacePath: "/workspace/test.gdx",
+      workspaceSwitchInProgress: false,
+    }),
   },
 }));
 
 import { generateBeatsFromSynopsis } from "./generateBeatsFromSynopsis";
 
 function emit(event: string, payload: unknown) {
-  listeners.get(event)?.(payload);
+  listeners.get(event)?.({
+    streamId: "execution-test",
+    ...(payload as Record<string, unknown>),
+  });
+}
+
+async function waitForStreamListeners() {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (
+      listeners.has("inline-ai:stream-chunk") &&
+      listeners.has("inline-ai:stream-done") &&
+      listeners.has("inline-ai:stream-error")
+    ) {
+      return;
+    }
+    await Promise.resolve();
+  }
+  throw new Error("inline AI stream listeners were not registered");
 }
 
 const validJson = JSON.stringify({
@@ -82,7 +129,7 @@ describe("generateBeatsFromSynopsis", () => {
     const onDone = vi.fn();
 
     const promise = generateBeatsFromSynopsis("scene-1", { onDone });
-    await Promise.resolve();
+    await waitForStreamListeners();
 
     emit("inline-ai:stream-chunk", {
       delta: validJson,
@@ -123,7 +170,7 @@ describe("generateBeatsFromSynopsis", () => {
     const onError = vi.fn();
 
     const promise = generateBeatsFromSynopsis("scene-1", { onError });
-    await Promise.resolve();
+    await waitForStreamListeners();
 
     emit("inline-ai:stream-chunk", {
       delta: "これは JSON ではありません",
@@ -145,7 +192,7 @@ describe("generateBeatsFromSynopsis", () => {
     const onError = vi.fn();
 
     const promise = generateBeatsFromSynopsis("scene-1", { onError });
-    await Promise.resolve();
+    await waitForStreamListeners();
 
     emit("inline-ai:stream-chunk", {
       delta: JSON.stringify({ something: "else" }),
@@ -165,7 +212,7 @@ describe("generateBeatsFromSynopsis", () => {
 
   it("不正な beatType は free にフォールバックする", async () => {
     const promise = generateBeatsFromSynopsis("scene-1");
-    await Promise.resolve();
+    await waitForStreamListeners();
 
     emit("inline-ai:stream-chunk", {
       delta: JSON.stringify({
@@ -189,7 +236,7 @@ describe("generateBeatsFromSynopsis", () => {
     const onError = vi.fn();
 
     const promise = generateBeatsFromSynopsis("scene-1", { onError });
-    await Promise.resolve();
+    await waitForStreamListeners();
 
     emit("inline-ai:stream-error", { message: "API error" });
 
@@ -203,7 +250,7 @@ describe("generateBeatsFromSynopsis", () => {
     const onStart = vi.fn();
 
     const promise = generateBeatsFromSynopsis("scene-1", { onStart });
-    await Promise.resolve();
+    await waitForStreamListeners();
 
     expect(onStart).toHaveBeenCalledOnce();
 
@@ -219,7 +266,7 @@ describe("generateBeatsFromSynopsis", () => {
     const onDone = vi.fn();
 
     const promise = generateBeatsFromSynopsis("scene-1", { onDone });
-    await Promise.resolve();
+    await waitForStreamListeners();
 
     const fencedJson = "```json\n" + validJson + "\n```";
     emit("inline-ai:stream-chunk", {
@@ -242,7 +289,7 @@ describe("generateBeatsFromSynopsis", () => {
     const onDone = vi.fn();
 
     const promise = generateBeatsFromSynopsis("scene-1", { onDone });
-    await Promise.resolve();
+    await waitForStreamListeners();
 
     const withPreamble = "以下が提案です:\n" + validJson;
     emit("inline-ai:stream-chunk", {

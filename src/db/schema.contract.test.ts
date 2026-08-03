@@ -50,8 +50,6 @@ type SchemaContract = {
 };
 
 const RUST_ONLY_TABLES = new Set([
-  "chat_message_chunks",
-  "event_chunks",
   "fts_meta",
   "codex_fts",
   "codex_fts_en",
@@ -63,8 +61,12 @@ const RUST_ONLY_TABLES = new Set([
   "tree_nodes_fts_en",
   "post_effect_annotations_fts",
   "post_effect_annotations_fts_en",
-  "undo_journal",
 ]);
+
+// FTS tables remain native-only physical storage. BrowserMock creates every
+// canonical table read by the audit exporter, even when browser writers do not
+// currently populate it, so a complete empty export remains queryable.
+const BROWSER_UNAVAILABLE_TABLES = new Set([...RUST_ONLY_TABLES]);
 
 const RUST_ONLY_COLUMNS: Record<string, Set<string>> = {
   projects: new Set(["is_sample"]),
@@ -449,7 +451,7 @@ describe("schema contract", () => {
     const tableNames = tableRows.map((row) => String(row.name)).sort();
     expect(tableNames).toEqual(
       Object.keys(schemaContract.tables)
-        .filter((name) => !RUST_ONLY_TABLES.has(name))
+        .filter((name) => !BROWSER_UNAVAILABLE_TABLES.has(name))
         .sort(),
     );
 
@@ -476,7 +478,7 @@ describe("schema contract", () => {
     );
     expect(indexRows).toEqual(
       Object.entries(schemaContract.indexes)
-        .filter(([, index]) => !RUST_ONLY_TABLES.has(index.table))
+        .filter(([, index]) => !BROWSER_UNAVAILABLE_TABLES.has(index.table))
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([name, index]) => ({
           name,
@@ -495,7 +497,7 @@ describe("schema contract", () => {
     expect(triggerRows).toEqual(
       Object.entries(schemaContract.triggers)
         .filter(([, createSql]) =>
-          [...RUST_ONLY_TABLES].every(
+          [...BROWSER_UNAVAILABLE_TABLES].every(
             (tableName) =>
               !new RegExp(
                 `\\b${tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,

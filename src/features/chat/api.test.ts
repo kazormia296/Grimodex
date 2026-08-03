@@ -4,8 +4,33 @@ vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
 
+const runtimeTargetMock = vi.hoisted(() => vi.fn((): "web" | null => null));
+vi.mock("@/runtime/runtimeDocumentTarget", () => ({
+  readDocumentRuntimeTarget: runtimeTargetMock,
+}));
+
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace",
+    operationId: "operation-test",
+    executionId: "execution-test",
+    parentExecutionId: null,
+    startedAt: 1,
+  })),
+  markAiAuditDispatched: vi.fn(async () => undefined),
+  completeAiAuditExecution: vi.fn(async () => undefined),
+  failAiAuditExecution: vi.fn(async () => undefined),
+}));
+
 import { invoke } from "@/lib/tauri";
+import {
+  beginAiAuditExecution,
+  markAiAuditDispatched,
+} from "@/features/ai-audit/api";
 const mockInvoke = vi.mocked(invoke);
+const mockBeginAiAuditExecution = vi.mocked(beginAiAuditExecution);
+const mockMarkAiAuditDispatched = vi.mocked(markAiAuditDispatched);
 
 import {
   getAiSettings,
@@ -21,6 +46,7 @@ import type { AiSettings } from "./types";
 describe("chat/api", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    runtimeTargetMock.mockReturnValue(null);
   });
 
   describe("getAiSettings", () => {
@@ -111,8 +137,86 @@ describe("chat/api", () => {
         model: "gpt-4",
         apiVariant: null,
         endpointId: null,
+        auditContext: {
+          expectedWorkspacePath: "/workspace",
+          projectId: null,
+          operationId: "operation-test",
+          executionId: "execution-test",
+          parentExecutionId: null,
+          pathId: "ai_connection_test",
+        },
       });
+      expect(mockBeginAiAuditExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: null,
+          pathId: "ai_connection_test",
+          captureState: "complete",
+          request: expect.objectContaining({
+            auditMetadata: {
+              purpose: "connection-test",
+              scope: "workspace",
+              runtimeTarget: "electron",
+              providerWireBodyAssemblyBoundary:
+                "electron-native-provider-transport",
+              effectiveRequestReceiptObservedAtRendererStart: false,
+              effectiveRequestReceiptExpected: true,
+              effectiveRequestReceiptDurabilityBoundary:
+                "native-http-observer-before-send",
+            },
+          }),
+        }),
+      );
       expect(result).toBe("Hello! Connection successful.");
+    });
+
+    it("correlates a Web connection probe with its final BrowserMock body receipt", async () => {
+      runtimeTargetMock.mockReturnValue("web");
+      mockInvoke.mockResolvedValueOnce("Connection OK");
+
+      await testAiConnection("anthropic", "claude-4.6-sonnet");
+
+      expect(mockBeginAiAuditExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: null,
+          pathId: "ai_connection_test",
+          captureState: "complete",
+          request: expect.objectContaining({
+            auditMetadata: {
+              purpose: "connection-test",
+              scope: "workspace",
+              runtimeTarget: "web",
+              providerWireBodyAssemblyBoundary: "browser-ai",
+              effectiveRequestReceiptObservedAtRendererStart: false,
+              effectiveRequestReceiptExpected: true,
+              effectiveRequestReceiptDurabilityBoundary:
+                "browser-ai-before-fetch",
+            },
+          }),
+        }),
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "test_ai_connection",
+        expect.objectContaining({
+          auditContext: {
+            expectedWorkspacePath: "/workspace",
+            projectId: null,
+            operationId: "operation-test",
+            executionId: "execution-test",
+            parentExecutionId: null,
+            pathId: "ai_connection_test",
+          },
+        }),
+      );
+      expect(mockMarkAiAuditDispatched).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          runtimeTarget: "web",
+          dispatchBoundary: "before_browser_mock_invoke",
+          transportTarget: "browser-mock",
+          providerReceiptObserved: false,
+          modelDispatched: null,
+        }),
+      );
     });
 
     it("propagates error on failure", async () => {

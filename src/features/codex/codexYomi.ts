@@ -20,6 +20,7 @@ import { getProject } from "@/features/project/api";
 import { normalizeReading, isHiraganaReading } from "./reading";
 import { isJapaneseProjectLanguage } from "@/features/ime/language";
 import i18next from "@/lib/i18n";
+import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
 
 /** 1 表記の推定結果。yomi はひらがな正規化済み。 */
 export interface YomiResult {
@@ -93,6 +94,10 @@ export async function inferReadings(
   const ov = resolveRoleSendOverride("codex_yomi");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "codex_yomi",
+    },
     undefined, // thinkingParams
     undefined, // systemCacheSegments
     ov.apiVariant, // apiVariant（横断割り当て時のみ）

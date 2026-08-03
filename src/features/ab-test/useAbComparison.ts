@@ -1,5 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 import {
+  applyPromptVariant,
+  buildAbReuseIdentity,
+  buildAbSettingsAuthority,
   runAbComparison,
   type AbConfig,
   type AbDispatcher,
@@ -8,6 +11,8 @@ import {
   type AbSurface,
 } from "./abHarness";
 import { createAbRun, setAbRunChosen, type AbRunSlotRecord } from "./api";
+import { snapshotAiAuditWorkspacePath } from "@/features/ai-audit/api";
+import { useAiSettingsStore } from "@/features/chat/store";
 
 export interface UseAbComparisonOptions {
   surface: AbSurface;
@@ -40,16 +45,6 @@ const IDLE: AbComparisonState = {
   recordId: null,
 };
 
-/** 構成が等しいか (key 順非依存の安定比較)。再生成の使い回し判定に使う。 */
-function sameConfig(a: AbConfig, b: AbConfig): boolean {
-  return (
-    (a.provider ?? null) === (b.provider ?? null) &&
-    (a.model ?? null) === (b.model ?? null) &&
-    (a.endpointId ?? null) === (b.endpointId ?? null) &&
-    (a.promptVariant ?? null) === (b.promptVariant ?? null)
-  );
-}
-
 /**
  * N 枠 A/B 比較の orchestration フック。
  * - run(slots): 各枠を (chat=並列 / inline=逐次) 実行 → 結果を id で state へ →
@@ -67,7 +62,10 @@ export function useAbComparison({
   const [state, setState] = useState<AbComparisonState>(IDLE);
   // 最新 run の構成 / 結果を adopt・使い回し判定で参照する ref。
   const lastRunRef = useRef<{
-    byId: Record<string, { config: AbConfig; result: AbRunResult }>;
+    byId: Record<
+      string,
+      { config: AbConfig; result: AbRunResult; reuseIdentity: string | null }
+    >;
     recordId: string | null;
   } | null>(null);
   // 同期的な実行中フラグ。state.running は setState が非同期なので、連打で run() が
@@ -109,21 +107,45 @@ export function useAbComparison({
       if (runningRef.current) return;
       runningRef.current = true;
       try {
-        // 前回と id・構成が一致する ok 枠は再生成しない (基準枠や未編集枠)。
+        const expectedWorkspacePath = snapshotAiAuditWorkspacePath();
+        const auditProjectId = projectId?.trim() || null;
+        const currentAiSettings = useAiSettingsStore.getState().settings;
+        const settingsAuthority =
+          currentAiSettings === null
+            ? null
+            : buildAbSettingsAuthority(currentAiSettings);
+        // Reuse is authorized only by the exact project/workspace/final
+        // messages/config tuple. Slot id or config equality alone is unsafe
+        // when the base prompt or active workspace changed.
         const prev = lastRunRef.current?.byId;
         const reuse = slots.map((slot) => {
           const cached = prev?.[slot.id];
-          return cached &&
-            cached.result.ok &&
-            sameConfig(cached.config, slot.config)
-            ? cached.result
+          const messages = applyPromptVariant(
+            request.messages,
+            slot.config.promptVariant,
+          );
+          const identity =
+            settingsAuthority === null
+              ? null
+              : buildAbReuseIdentity({
+                  projectId: auditProjectId,
+                  expectedWorkspacePath,
+                  pathId: surface === "chat" ? "ab_chat" : "ab_inline",
+                  settingsAuthority,
+                  messages,
+                  config: slot.config,
+                });
+          return identity !== null &&
+            cached?.result.ok &&
+            cached.reuseIdentity === identity
+            ? { result: cached.result, identity }
             : null;
         });
 
         // 使い回す枠は実行中も表示を維持する。
         const initialResults: Record<string, AbRunResult | null> = {};
         slots.forEach((slot, i) => {
-          initialResults[slot.id] = reuse[i] ?? null;
+          initialResults[slot.id] = reuse[i]?.result ?? null;
         });
         setState({
           running: true,
@@ -136,18 +158,66 @@ export function useAbComparison({
         // 使うため、複数同時に走らせると chunk が混線する → 逐次実行に倒す。
         // chat は非ストリーミングで応答が独立しているので並列で安全。
         const parallel = surface !== "inline";
-        const out = await runAbComparison(
-          request,
-          slots.map((s) => s.config),
-          dispatch,
-          { parallel, reuse },
-        );
+        let settingsDriftedDuringRun = false;
+        const unsubscribeSettings = useAiSettingsStore.subscribe((next) => {
+          const nextAuthority =
+            next.settings === null
+              ? null
+              : buildAbSettingsAuthority(next.settings);
+          if (nextAuthority !== settingsAuthority) {
+            settingsDriftedDuringRun = true;
+          }
+        });
+        const out = await (async () => {
+          try {
+            return await runAbComparison(
+              request,
+              slots.map((s) => s.config),
+              dispatch,
+              {
+                parallel,
+                reuse,
+                audit: {
+                  projectId: auditProjectId,
+                  pathId: surface === "chat" ? "ab_chat" : "ab_inline",
+                  expectedWorkspacePath,
+                  settingsAuthority,
+                },
+              },
+            );
+          } finally {
+            unsubscribeSettings();
+          }
+        })();
 
-        const byId: Record<string, { config: AbConfig; result: AbRunResult }> =
-          {};
+        // Defaults may be consulted lazily by each provider dispatch. If AI
+        // settings drifted while slots were running, no single start snapshot
+        // can prove the effective route of every result. Keep the results for
+        // comparison/history, but make them ineligible for later reuse.
+        const settingsAfterRun = useAiSettingsStore.getState().settings;
+        const settingsAuthorityStayedStable =
+          !settingsDriftedDuringRun &&
+          settingsAuthority !== null &&
+          settingsAfterRun !== null &&
+          buildAbSettingsAuthority(settingsAfterRun) === settingsAuthority;
+
+        const byId: Record<
+          string,
+          {
+            config: AbConfig;
+            result: AbRunResult;
+            reuseIdentity: string | null;
+          }
+        > = {};
         const results: Record<string, AbRunResult | null> = {};
         slots.forEach((slot, i) => {
-          byId[slot.id] = { config: slot.config, result: out[i].result };
+          byId[slot.id] = {
+            config: slot.config,
+            result: out[i].result,
+            reuseIdentity: settingsAuthorityStayedStable
+              ? out[i].reuseIdentity
+              : null,
+          };
           results[slot.id] = out[i].result;
         });
 

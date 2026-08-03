@@ -415,6 +415,7 @@ impl Database {
 }
 
 pub mod agent_writes;
+pub mod ai_audit;
 pub mod backup_restore;
 pub mod change_events;
 pub mod chronicle;
@@ -425,9 +426,9 @@ pub mod foreshadow;
 mod fts;
 mod idempotency;
 pub mod ime_export;
+mod integrity;
 pub mod lint_ignores;
 pub mod lint_terms;
-mod integrity;
 pub mod map_writes;
 mod migrate;
 pub mod plot_threads;

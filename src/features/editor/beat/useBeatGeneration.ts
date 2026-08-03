@@ -24,6 +24,8 @@ import { inferMentionRoles } from "./inferMentionRoles";
 import { extractBeatMentions } from "./extractBeatMentions";
 import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
 import type { RoleSuggestionEntry } from "./roleSuggestionsStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -253,6 +255,11 @@ export function useBeatGeneration(
     try {
       const cleanup = await sendInlineAiStream(
         messages,
+        {
+          projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+          pathId: "beat_generation",
+          operationId: traceId,
+        },
         {
           onTextDelta: (delta) => {
             if (orphaned) return;

@@ -131,12 +131,18 @@ export function parseRoleProviders(
 export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   // conversation — 本文チャット（非 agent ストリーミング）
   chat_stream_non_agent: "conversation",
+  codex_app_server: "conversation",
+  codex_app_cli_fallback: "conversation",
   // agent — ツール対応必須
   chat_agent_main: "agent",
   agent_research_subagent: "agent",
   context_creator: "agent",
   // inline — 本文への直接生成
   inline_ai_stream: "inline",
+  beat_generation: "inline",
+  beat_alternative: "inline",
+  beats_from_synopsis: "inline",
+  synopsis_from_beats: "inline",
   // cheap — 短い・高頻度・低品質要求（安価モデル誘導）
   session_title: "cheap",
   summarization: "cheap",
@@ -147,6 +153,7 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   foreshadow_propose_past_setups: "structured",
   foreshadow_evaluate_setup_strength: "structured",
   plot_thread_propose: "structured",
+  chronicle_extract: "structured",
   map_branch: "structured",
   tree_scaffold: "structured",
   codex_judgment: "structured",
@@ -155,10 +162,14 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   post_effect_intent_drift: "review",
   post_effect_review: "review",
   post_effect_consistency: "review",
+  post_effect_intra_scene_consistency: "review",
+  post_effect_typo_detection: "review",
+  post_effect_meta_structure: "review",
   post_effect_timeline_consistency: "review",
   post_effect_impact_review: "review",
   // reader — 本文を読む最中の反応コメント（校閲とは別ロール）
   post_effect_pseudo_comment: "reader",
+  post_effect_live_pseudo_comment: "reader",
 };
 
 /**
@@ -173,6 +184,9 @@ export const MODEL_ROUTING_EXCLUDED: readonly string[] = [
   "semantic_search",
   "fts_search",
   "cli_chat_stream",
+  "ab_chat",
+  "ab_inline",
+  "ai_connection_test",
   "relation_injection",
   "agent_call_limit",
 ];

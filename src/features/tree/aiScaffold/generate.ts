@@ -7,12 +7,12 @@
  * `AiTreePlan` を取り出す。安全性(存在/型/循環/scope)の最終防壁は
  * applyPlan.ts の validateAiTreePlan 側にある。
  */
-import { invoke } from "@/lib/tauri";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
-import { assertSingleShotTransportSupported } from "@/features/chat/singleShotTransport";
+import { invokeSingleShotChat } from "@/features/chat/singleShotTransport";
+import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
 import { cmpKeys } from "../fractionalIndex";
-import type { TreeNodeData, NodeType } from "../treeStore";
+import { useTreeStore, type TreeNodeData, type NodeType } from "../treeStore";
 import type { AiTreePlan, AiTreeOp } from "./types";
 import { TEMP_ID_PREFIX } from "./types";
 
@@ -389,18 +389,23 @@ export async function generateAiTreePlan(
   ];
 
   const ov = resolveRoleSendOverride("tree_scaffold");
-  assertSingleShotTransportSupported(ov.provider);
-  const response = await invoke<LLMResponsePayload>("send_chat_message", {
-    messages,
-    thinking: null,
-    effort: null,
-    reasoningEnabled: null,
-    reasoningEffort: null,
-    apiVariant: ov.apiVariant,
-    model: ov.model,
-    provider: ov.provider,
-    endpointId: ov.endpointId,
-  });
+  const response: LLMResponsePayload = await invokeSingleShotChat(
+    {
+      messages,
+      thinking: null,
+      effort: null,
+      reasoningEnabled: null,
+      reasoningEffort: null,
+      apiVariant: ov.apiVariant,
+      model: ov.model,
+      provider: ov.provider,
+      endpointId: ov.endpointId,
+    },
+    {
+      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      pathId: "tree_scaffold",
+    },
+  );
 
   // N4: tree scaffold 生成の usage を台帳に記録する。
   void recordAiUsage({

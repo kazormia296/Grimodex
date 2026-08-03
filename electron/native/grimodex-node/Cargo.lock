@@ -922,6 +922,7 @@ dependencies = [
  "napi-derive",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -939,6 +940,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

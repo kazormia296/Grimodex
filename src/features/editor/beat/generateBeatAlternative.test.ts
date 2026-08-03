@@ -4,6 +4,32 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 type ListenHandler = (payload: unknown) => void;
 const listeners = new Map<string, ListenHandler>();
 const invokeMock = vi.fn();
+const auditMocks = vi.hoisted(() => ({
+  begin: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace/test.gdx",
+    operationId: "operation-test",
+    executionId: "execution-test",
+    parentExecutionId: null,
+    startedAt: 1,
+  })),
+  dispatched: vi.fn(async () => undefined),
+  complete: vi.fn(async () => undefined),
+  fail: vi.fn(async () => undefined),
+  cancel: vi.fn(async () => undefined),
+  partials: vi.fn(async () => undefined),
+  recovery: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: auditMocks.begin,
+  markAiAuditDispatched: auditMocks.dispatched,
+  completeAiAuditExecution: auditMocks.complete,
+  failAiAuditExecution: auditMocks.fail,
+  cancelAiAuditExecution: auditMocks.cancel,
+  recordAiAuditPartials: auditMocks.partials,
+  attemptAiAuditPersistenceFailureTerminal: auditMocks.recovery,
+}));
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -37,7 +63,10 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { generateBeatAlternative } from "./generateBeatAlternative";
 
 function emit(event: string, payload: unknown) {
-  listeners.get(event)?.(payload);
+  listeners.get(event)?.({
+    streamId: "execution-test",
+    ...(payload as Record<string, unknown>),
+  });
 }
 
 function createEditorWithBeat(
@@ -100,7 +129,11 @@ describe("generateBeatAlternative", () => {
         },
       ],
     });
-    useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
+    useWorkspaceStore.setState({
+      activeWorkspaceName: "テスト作品",
+      activeWorkspacePath: "/workspace/test.gdx",
+      workspaceSwitchInProgress: false,
+    });
     useCodexStore.setState({ entries: [] });
   });
 

@@ -406,6 +406,23 @@ export interface NapiBackendLike {
     sessionId: string,
     events: unknown,
   ): Promise<string>;
+  aiAuditAppendBatch(
+    expectedWorkspacePath: string,
+    projectId: string | null,
+    events: unknown,
+  ): Promise<string>;
+  aiAuditReadSnapshot(
+    expectedWorkspacePath: string,
+    projectId: string | null,
+    afterSequence: number | undefined,
+    highWaterSequence: number | undefined,
+    limit: number | undefined,
+  ): Promise<string>;
+  aiAuditVerify(
+    expectedWorkspacePath: string,
+    projectId: string | null,
+    highWaterSequence: number | undefined,
+  ): Promise<string>;
   imeExportRefresh(
     projectId: string,
     expectedWorkspacePath: string,
@@ -463,8 +480,13 @@ export interface NapiBackendLike {
   // requireNapiMethodで明示エラーにするため。usize相当はIPCでu32へ狭める。
   semanticDownloadModel?(language: string): Promise<string>;
   semanticCancelBackground?(): Promise<string>;
-  semanticIndexScene?(sceneId: string): Promise<string>;
+  semanticIndexScene?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    sceneId: string,
+  ): Promise<string>;
   semanticSearch?(
+    expectedWorkspacePath: string,
     projectId: string,
     query: string,
     limit: number,
@@ -472,32 +494,57 @@ export interface NapiBackendLike {
     descriptionMode?: boolean | null,
   ): Promise<string>;
   semanticRerankerShadowScore?(request: unknown): Promise<string>;
-  codexIndexEntry?(entryId: string): Promise<string>;
+  codexIndexEntry?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    entryId: string,
+  ): Promise<string>;
   codexSemanticSearch?(
+    expectedWorkspacePath: string,
     projectId: string,
     query: string,
     limit: number,
   ): Promise<string>;
   codexIndexStatus?(projectId: string): Promise<string>;
-  codexReindexAll?(projectId: string): Promise<string>;
-  eventsIndexEntry?(eventId: string): Promise<string>;
+  codexReindexAll?(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
+  eventsIndexEntry?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    eventId: string,
+  ): Promise<string>;
   eventsSemanticSearch?(
+    expectedWorkspacePath: string,
     projectId: string,
     query: string,
     limit: number,
   ): Promise<string>;
   eventsIndexStatus?(projectId: string): Promise<string>;
-  eventsReindexAll?(projectId: string): Promise<string>;
-  chatIndexMessage?(messageId: string): Promise<string>;
+  eventsReindexAll?(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
+  chatIndexMessage?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    messageId: string,
+  ): Promise<string>;
   chatMessageSearch?(
+    expectedWorkspacePath: string,
     projectId: string,
     query: string,
     limit: number,
   ): Promise<string>;
   chatIndexStatus?(projectId: string): Promise<string>;
-  chatReindexAll?(projectId: string): Promise<string>;
+  chatReindexAll?(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
   semanticIndexStatus?(projectId: string): Promise<string>;
   semanticReindexAll?(
+    expectedWorkspacePath: string,
     projectId: string,
     runId?: string | null,
   ): Promise<string>;
@@ -640,7 +687,7 @@ export interface NapiBackendLike {
     settings: unknown,
     apiKey: string,
   ): Promise<void>;
-  abortChatStream(): void;
+  abortChatStream(streamId: string): Promise<boolean>;
   // AI Phase 3b（settings snapshot + safeStorage key注入は3a chatと同じ）。
   // optional は旧 .node とのバージョンスキューを型境界で表すため。コマンド実行時は
   // requireNapiMethod が必ず存在確認し、欠落を明示エラーにする。
@@ -650,7 +697,7 @@ export interface NapiBackendLike {
     settings: unknown,
     apiKey: string,
   ): Promise<void>;
-  abortInlineAiStream?(): void;
+  abortInlineAiStream?(streamId: string): Promise<boolean>;
   sendAgentMessage?(
     args: unknown,
     settings: unknown,
@@ -819,6 +866,437 @@ function requireSafeInteger(
     );
   }
   return value;
+}
+
+export const AI_AUDIT_EVENT_TYPES = [
+  "execution.started",
+  "request.prepared",
+  "request.dispatched",
+  "transport.attempt.started",
+  "transport.attempt.finished",
+  "response.partial",
+  "response.completed",
+  "execution.succeeded",
+  "execution.failed",
+  "execution.cancelled",
+  "execution.skipped",
+  "execution.cache_hit",
+  "execution.retrying",
+  "execution.fallback",
+] as const;
+
+const AI_AUDIT_EVENT_TYPE_SET = new Set<string>(AI_AUDIT_EVENT_TYPES);
+const AI_AUDIT_CAPTURE_STATES = new Set([
+  "complete",
+  "partial",
+  "redacted",
+  "truncated",
+  "legacy_missing",
+  "unobservable_provider",
+]);
+
+function normalizedAuditPayloadKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/gu, "");
+}
+
+function segmentedAuditPayloadKey(key: string): string {
+  return key
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "")
+    .toLowerCase();
+}
+
+const AI_AUDIT_STRONG_CREDENTIAL_KEY_MARKERS = [
+  "authorization",
+  "authentication",
+  "headers",
+  "cookie",
+  "environment",
+  "apikey",
+  "accesstoken",
+  "bearer",
+  "accesskeyid",
+  "secretaccesskey",
+  "privatekey",
+  "password",
+  "passwd",
+] as const;
+
+function hasAuditCredentialMarkerAtKeyBoundary(
+  normalized: string,
+  marker: string,
+): boolean {
+  return (
+    normalized === marker ||
+    normalized.startsWith(marker) ||
+    normalized.endsWith(marker)
+  );
+}
+
+function isForbiddenAuditPayloadKey(key: string): boolean {
+  const normalized = normalizedAuditPayloadKey(key);
+  const segmented = segmentedAuditPayloadKey(key);
+  const segments = segmented ? segmented.split("_") : [];
+  if (
+    normalized === "auth" ||
+    normalized.endsWith("auth") ||
+    segments.includes("auth")
+  ) {
+    return true;
+  }
+  if (
+    AI_AUDIT_STRONG_CREDENTIAL_KEY_MARKERS.some((marker) =>
+      hasAuditCredentialMarkerAtKeyBoundary(normalized, marker),
+    )
+  ) {
+    return true;
+  }
+  if (
+    normalized === "env" ||
+    normalized.startsWith("environment") ||
+    normalized.startsWith("processenv") ||
+    normalized.endsWith("env")
+  ) {
+    return true;
+  }
+  if (
+    normalized === "secret" ||
+    normalized.startsWith("secret") ||
+    normalized.endsWith("secret")
+  ) {
+    return true;
+  }
+  return (
+    normalized === "token" ||
+    normalized.endsWith("token") ||
+    (normalized.startsWith("token") &&
+      !/^(?:tokens|(?:token|tokens)(?:usage|count|counts|budget|limit|limits|estimate|estimated|total|totals|used|remaining|input|output|cached|reasoning|billable))$/u.test(
+        normalized,
+      ))
+  );
+}
+
+type AiAuditJsonPathSegment = string | number;
+
+function isAiVisibleAuditPath(
+  eventType: string,
+  path: readonly AiAuditJsonPathSegment[],
+): boolean {
+  if (
+    eventType === "request.prepared" &&
+    path.length === 1 &&
+    path[0] === "input"
+  ) {
+    return true;
+  }
+  if (eventType === "request.prepared" && path[0] === "request") {
+    if (
+      path.length === 2 &&
+      ["body", "input", "tools", "modelVisibleContext"].includes(
+        String(path[1]),
+      )
+    ) {
+      return true;
+    }
+    return (
+      path.length === 3 && path[1] === "messages" && typeof path[2] === "number"
+    );
+  }
+  return (
+    path.length === 1 &&
+    path[0] === "response" &&
+    (eventType === "response.partial" ||
+      eventType === "response.completed" ||
+      eventType === "execution.cache_hit")
+  );
+}
+
+function isAiAuditVisibilityResetPath(
+  eventType: string,
+  path: readonly AiAuditJsonPathSegment[],
+): boolean {
+  return (
+    eventType === "response.partial" &&
+    path.length === 2 &&
+    path[0] === "response" &&
+    path[1] === "runtimeDiagnostic"
+  );
+}
+
+function validateAuditJsonValue(
+  value: unknown,
+  command: string,
+  path: string,
+  eventType: string,
+  jsonPath: readonly AiAuditJsonPathSegment[] = [],
+  seen = new WeakSet<object>(),
+  aiVisibleContent = false,
+): void {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return;
+  }
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return;
+    throw new Error(
+      `invalid args \`${path}\` for command \`${command}\`: expected finite JSON number`,
+    );
+  }
+  if (typeof value !== "object") {
+    throw new Error(
+      `invalid args \`${path}\` for command \`${command}\`: expected JSON-compatible value`,
+    );
+  }
+  if (seen.has(value)) {
+    throw new Error(
+      `invalid args \`${path}\` for command \`${command}\`: cyclic JSON value`,
+    );
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      const childPath = [...jsonPath, index];
+      validateAuditJsonValue(
+        item,
+        command,
+        `${path}[${index}]`,
+        eventType,
+        childPath,
+        seen,
+        aiVisibleContent || isAiVisibleAuditPath(eventType, childPath),
+      );
+    });
+  } else {
+    for (const [key, item] of Object.entries(value)) {
+      if (!aiVisibleContent && isForbiddenAuditPayloadKey(key)) {
+        throw new Error(
+          `invalid args \`${path}.${key}\` for command \`${command}\`: credential and transport-header keys are excluded from AI audit payloads`,
+        );
+      }
+      const childPath = [...jsonPath, key];
+      const childAiVisible = isAiAuditVisibilityResetPath(eventType, childPath)
+        ? false
+        : aiVisibleContent || isAiVisibleAuditPath(eventType, childPath);
+      validateAuditJsonValue(
+        item,
+        command,
+        `${path}.${key}`,
+        eventType,
+        childPath,
+        seen,
+        childAiVisible,
+      );
+    }
+  }
+  seen.delete(value);
+}
+
+function optionalNonNegativeSafeInteger(
+  args: CommandArgs,
+  key: string,
+  command: string,
+): number | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a non-negative safe integer or null`,
+    );
+  }
+  return value as number;
+}
+
+function requireAiAuditProjectId(
+  args: CommandArgs,
+  command: string,
+): string | null {
+  const projectId = requirePresent(args, "projectId", command);
+  if (projectId === null) return null;
+  if (typeof projectId !== "string" || projectId.trim().length === 0) {
+    throw new Error(
+      `invalid args \`projectId\` for command \`${command}\`: expected a non-empty string or null`,
+    );
+  }
+  if (projectId !== projectId.trim()) {
+    throw new Error(
+      `invalid args \`projectId\` for command \`${command}\`: surrounding whitespace is not allowed`,
+    );
+  }
+  return projectId;
+}
+
+function optionalAiAuditPageLimit(
+  args: CommandArgs,
+  command: string,
+): number | undefined {
+  const limit = optionalNonNegativeSafeInteger(args, "limit", command);
+  if (limit !== undefined && (limit < 1 || limit > 1_000)) {
+    throw new Error(
+      `invalid args \`limit\` for command \`${command}\`: expected 1..1000`,
+    );
+  }
+  return limit;
+}
+
+function validateAiAuditRedactions(
+  payload: CommandArgs,
+  command: string,
+  eventIndex: number,
+): void {
+  if (payload.redactions === undefined) return;
+  if (!Array.isArray(payload.redactions)) {
+    throw new Error(
+      `invalid args \`events[${eventIndex}].payload.redactions\` for command \`${command}\`: expected an array`,
+    );
+  }
+  const allowedKeys = new Set([
+    "path",
+    "category",
+    "ruleId",
+    "originalSha256",
+    "originalByteLength",
+    "placeholder",
+    "reversible",
+  ]);
+  payload.redactions.forEach((candidate, redactionIndex) => {
+    const path = `events[${eventIndex}].payload.redactions[${redactionIndex}]`;
+    if (
+      typeof candidate !== "object" ||
+      candidate === null ||
+      Array.isArray(candidate)
+    ) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: expected an object`,
+      );
+    }
+    const record = candidate as CommandArgs;
+    if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: unexpected redaction key`,
+      );
+    }
+    const redactionPath = requireNonEmptyString(record, "path", command);
+    const ruleId = requireNonEmptyString(record, "ruleId", command);
+    const sha256 = requireNonEmptyString(record, "originalSha256", command);
+    const originalByteLength = requireSafeInteger(
+      record,
+      "originalByteLength",
+      command,
+    );
+    if (
+      redactionPath.length === 0 ||
+      ruleId.length === 0 ||
+      !/^[0-9a-f]{64}$/u.test(sha256) ||
+      originalByteLength < 0 ||
+      record.category !== "credential" ||
+      record.placeholder !== "[REDACTED:credential]" ||
+      record.reversible !== false
+    ) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: invalid irreversible credential redaction record`,
+      );
+    }
+  });
+}
+
+function requireAiAuditEvents(args: CommandArgs): CommandArgs[] {
+  const command = "ai_audit_append_batch";
+  const value = requirePresent(args, "events", command);
+  if (!Array.isArray(value) || value.length === 0 || value.length > 256) {
+    throw new Error(
+      `invalid args \`events\` for command \`${command}\`: expected 1..256 events`,
+    );
+  }
+  const allowedKeys = new Set([
+    "eventId",
+    "executionId",
+    "operationId",
+    "parentExecutionId",
+    "pathId",
+    "eventType",
+    "timestamp",
+    "payload",
+  ]);
+  return value.map((candidate, index) => {
+    if (
+      typeof candidate !== "object" ||
+      candidate === null ||
+      Array.isArray(candidate)
+    ) {
+      throw new Error(
+        `invalid args \`events[${index}]\` for command \`${command}\`: expected an object`,
+      );
+    }
+    const event = candidate as CommandArgs;
+    if (Object.keys(event).some((key) => !allowedKeys.has(key))) {
+      throw new Error(
+        `invalid args \`events[${index}]\` for command \`${command}\`: unexpected key`,
+      );
+    }
+    for (const key of [
+      "eventId",
+      "executionId",
+      "operationId",
+      "pathId",
+      "eventType",
+    ]) {
+      requireNonEmptyString(event, key, command);
+    }
+    const parentExecutionId = event.parentExecutionId;
+    if (
+      parentExecutionId !== undefined &&
+      parentExecutionId !== null &&
+      (typeof parentExecutionId !== "string" || parentExecutionId.length === 0)
+    ) {
+      throw new Error(
+        `invalid args \`parentExecutionId\` for command \`${command}\`: expected a non-empty string or null`,
+      );
+    }
+    const eventType = event.eventType as string;
+    if (!AI_AUDIT_EVENT_TYPE_SET.has(eventType)) {
+      throw new Error(
+        `invalid args \`eventType\` for command \`${command}\`: unsupported AI audit event type`,
+      );
+    }
+    const timestamp = requireSafeInteger(event, "timestamp", command);
+    if (timestamp < 0) {
+      throw new Error(
+        `invalid args \`timestamp\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
+    const payload = requireRecord(event, "payload", command);
+    const captureState = requireNonEmptyString(
+      payload,
+      "captureState",
+      command,
+    );
+    if (!AI_AUDIT_CAPTURE_STATES.has(captureState)) {
+      throw new Error(
+        `invalid args \`captureState\` for command \`${command}\`: unsupported capture state`,
+      );
+    }
+    if (
+      eventType === "request.prepared" &&
+      payload.credentialsExcluded !== true
+    ) {
+      throw new Error(
+        `invalid args \`credentialsExcluded\` for command \`${command}\`: request.prepared requires true`,
+      );
+    }
+    validateAiAuditRedactions(payload, command, index);
+    validateAuditJsonValue(
+      payload,
+      command,
+      `events[${index}].payload`,
+      eventType,
+    );
+    return event;
+  });
 }
 
 function requireLintIgnoreCreatePayload(args: CommandArgs): CommandArgs {
@@ -1838,6 +2316,9 @@ function requireSemanticRerankerShadowRequest(args: CommandArgs): CommandArgs {
   const command = "semantic_reranker_shadow_score";
   const allowedRequestKeys = new Set([
     "requestId",
+    "expectedWorkspacePath",
+    "projectId",
+    "auditPathId",
     "language",
     "userMessage",
     "sceneTail",
@@ -1855,6 +2336,31 @@ function requireSemanticRerankerShadowRequest(args: CommandArgs): CommandArgs {
   if (requestId.length > 128) {
     throw new Error(
       `invalid args \`requestId\` for command \`${command}\`: too long`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  if (expectedWorkspacePath.length > 16_384) {
+    throw new Error(
+      `invalid args \`expectedWorkspacePath\` for command \`${command}\`: too long`,
+    );
+  }
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (projectId.length > 512) {
+    throw new Error(
+      `invalid args \`projectId\` for command \`${command}\`: too long`,
+    );
+  }
+  const auditPathId = requireString(args, "auditPathId", command);
+  if (
+    auditPathId !== "semantic_reranker" &&
+    auditPathId !== "semantic_reranker_shadow"
+  ) {
+    throw new Error(
+      `invalid args \`auditPathId\` for command \`${command}\`: unsupported path`,
     );
   }
   const language = requireString(args, "language", command);
@@ -2438,6 +2944,94 @@ function validateOptionalResolvedToolProtocol(
   }
 }
 
+function requireNativeAiAuditContext(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const context = requireRecord(args, "auditContext", command);
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "operationId",
+    "executionId",
+    "parentExecutionId",
+    "pathId",
+  ]);
+  if (
+    Object.keys(context).length !== allowedKeys.size ||
+    Object.keys(context).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args \`auditContext\` for command \`${command}\`: expected the exact native AI audit correlation fields`,
+    );
+  }
+  for (const key of [
+    "expectedWorkspacePath",
+    "operationId",
+    "executionId",
+    "pathId",
+  ]) {
+    const value = context[key];
+    if (
+      typeof value !== "string" ||
+      value.trim().length === 0 ||
+      value !== value.trim()
+    ) {
+      throw new Error(
+        `invalid args \`auditContext.${key}\` for command \`${command}\`: expected a non-empty trimmed string`,
+      );
+    }
+  }
+  for (const key of ["projectId", "parentExecutionId"] as const) {
+    if (!Object.prototype.hasOwnProperty.call(context, key)) {
+      throw new Error(
+        `invalid args \`auditContext.${key}\` for command \`${command}\`: missing required key`,
+      );
+    }
+    const value = context[key];
+    if (
+      value !== null &&
+      (typeof value !== "string" ||
+        value.trim().length === 0 ||
+        value !== value.trim())
+    ) {
+      throw new Error(
+        `invalid args \`auditContext.${key}\` for command \`${command}\`: expected a non-empty trimmed string or null`,
+      );
+    }
+  }
+  return context;
+}
+
+function requireNativeAiStreamCorrelation(
+  args: CommandArgs,
+  command: string,
+): string {
+  const context = requireNativeAiAuditContext(args, command);
+  const streamId = requireNonEmptyString(args, "streamId", command);
+  if (streamId !== streamId.trim()) {
+    throw new Error(
+      `invalid args \`streamId\` for command \`${command}\`: expected a trimmed string`,
+    );
+  }
+  if (streamId !== context.executionId) {
+    throw new Error(
+      `invalid args \`streamId\` for command \`${command}\`: must equal auditContext.executionId`,
+    );
+  }
+  return streamId;
+}
+
+function requireStreamId(args: CommandArgs, command: string): string {
+  const streamId = requireNonEmptyString(args, "streamId", command);
+  if (streamId !== streamId.trim()) {
+    throw new Error(
+      `invalid args \`streamId\` for command \`${command}\`: expected a trimmed string`,
+    );
+  }
+  return streamId;
+}
+
 /** FE生成のrun discriminator。空値/過長値をイベントpayloadへ持ち込ませない。 */
 function optionalOpaqueRunId(
   args: CommandArgs,
@@ -2915,6 +3509,58 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  ai_audit_append_batch: {
+    run: async (b, a) =>
+      parseWire(
+        await b.aiAuditAppendBatch(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "ai_audit_append_batch",
+          ),
+          requireAiAuditProjectId(a, "ai_audit_append_batch"),
+          requireAiAuditEvents(a),
+        ),
+      ),
+  },
+  ai_audit_read_snapshot: {
+    run: async (b, a) =>
+      parseWire(
+        await b.aiAuditReadSnapshot(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "ai_audit_read_snapshot",
+          ),
+          requireAiAuditProjectId(a, "ai_audit_read_snapshot"),
+          optionalNonNegativeSafeInteger(
+            a,
+            "afterSequence",
+            "ai_audit_read_snapshot",
+          ),
+          optionalNonNegativeSafeInteger(
+            a,
+            "highWaterSequence",
+            "ai_audit_read_snapshot",
+          ),
+          optionalAiAuditPageLimit(a, "ai_audit_read_snapshot"),
+        ),
+      ),
+  },
+  ai_audit_verify: {
+    run: async (b, a) =>
+      parseWire(
+        await b.aiAuditVerify(
+          requireNonEmptyString(a, "expectedWorkspacePath", "ai_audit_verify"),
+          requireAiAuditProjectId(a, "ai_audit_verify"),
+          optionalNonNegativeSafeInteger(
+            a,
+            "highWaterSequence",
+            "ai_audit_verify",
+          ),
+        ),
+      ),
+  },
   // IME 連携 Phase 2。status は napi の JSON 文字列を typed renderer の
   // camelCase object に戻し、unit コマンドは null を返す。
   ime_export_refresh: {
@@ -3148,17 +3794,26 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   semantic_index_scene: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.semanticIndexScene,
-          "semanticIndexScene",
-        )(requireString(a, "sceneId", "semantic_index_scene")),
+        await requireNapiMethod(b, b.semanticIndexScene, "semanticIndexScene")(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "semantic_index_scene",
+          ),
+          requireNonEmptyString(a, "projectId", "semantic_index_scene"),
+          requireString(a, "sceneId", "semantic_index_scene"),
+        ),
       ),
   },
   semantic_search: {
     run: async (b, a) =>
       parseWire(
         await requireNapiMethod(b, b.semanticSearch, "semanticSearch")(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "semantic_search",
+          ),
           requireString(a, "projectId", "semantic_search"),
           requireString(a, "query", "semantic_search"),
           requireUnsignedInteger(a, "limit", "semantic_search"),
@@ -3180,11 +3835,15 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   codex_index_entry: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.codexIndexEntry,
-          "codexIndexEntry",
-        )(requireString(a, "entryId", "codex_index_entry")),
+        await requireNapiMethod(b, b.codexIndexEntry, "codexIndexEntry")(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "codex_index_entry",
+          ),
+          requireNonEmptyString(a, "projectId", "codex_index_entry"),
+          requireString(a, "entryId", "codex_index_entry"),
+        ),
       ),
   },
   codex_semantic_search: {
@@ -3195,6 +3854,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.codexSemanticSearch,
           "codexSemanticSearch",
         )(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "codex_semantic_search",
+          ),
           requireString(a, "projectId", "codex_semantic_search"),
           requireString(a, "query", "codex_semantic_search"),
           requireUnsignedInteger(a, "limit", "codex_semantic_search"),
@@ -3218,17 +3882,28 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b,
           b.codexReindexAll,
           "codexReindexAll",
-        )(requireString(a, "projectId", "codex_reindex_all")),
+        )(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "codex_reindex_all",
+          ),
+          requireString(a, "projectId", "codex_reindex_all"),
+        ),
       ),
   },
   events_index_entry: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.eventsIndexEntry,
-          "eventsIndexEntry",
-        )(requireString(a, "eventId", "events_index_entry")),
+        await requireNapiMethod(b, b.eventsIndexEntry, "eventsIndexEntry")(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "events_index_entry",
+          ),
+          requireNonEmptyString(a, "projectId", "events_index_entry"),
+          requireString(a, "eventId", "events_index_entry"),
+        ),
       ),
   },
   events_semantic_search: {
@@ -3239,6 +3914,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.eventsSemanticSearch,
           "eventsSemanticSearch",
         )(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "events_semantic_search",
+          ),
           requireString(a, "projectId", "events_semantic_search"),
           requireString(a, "query", "events_semantic_search"),
           requireUnsignedInteger(a, "limit", "events_semantic_search"),
@@ -3262,23 +3942,39 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b,
           b.eventsReindexAll,
           "eventsReindexAll",
-        )(requireString(a, "projectId", "events_reindex_all")),
+        )(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "events_reindex_all",
+          ),
+          requireString(a, "projectId", "events_reindex_all"),
+        ),
       ),
   },
   chat_index_message: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.chatIndexMessage,
-          "chatIndexMessage",
-        )(requireString(a, "messageId", "chat_index_message")),
+        await requireNapiMethod(b, b.chatIndexMessage, "chatIndexMessage")(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "chat_index_message",
+          ),
+          requireNonEmptyString(a, "projectId", "chat_index_message"),
+          requireString(a, "messageId", "chat_index_message"),
+        ),
       ),
   },
   chat_message_search: {
     run: async (b, a) =>
       parseWire(
         await requireNapiMethod(b, b.chatMessageSearch, "chatMessageSearch")(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "chat_message_search",
+          ),
           requireString(a, "projectId", "chat_message_search"),
           requireString(a, "query", "chat_message_search"),
           requireUnsignedInteger(a, "limit", "chat_message_search"),
@@ -3302,7 +3998,14 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b,
           b.chatReindexAll,
           "chatReindexAll",
-        )(requireString(a, "projectId", "chat_reindex_all")),
+        )(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "chat_reindex_all",
+          ),
+          requireString(a, "projectId", "chat_reindex_all"),
+        ),
       ),
   },
   semantic_index_status: {
@@ -3323,6 +4026,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.semanticReindexAll,
           "semanticReindexAll",
         )(
+          requireNonEmptyString(
+            a,
+            "expectedWorkspacePath",
+            "semantic_reindex_all",
+          ),
           requireString(a, "projectId", "semantic_reindex_all"),
           optionalOpaqueRunId(a, "runId", "semantic_reindex_all"),
         ),
@@ -3917,6 +4625,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   start_post_effect_run: {
     run: async (b, a, d) => {
       const args = requireRecord(a, "args", "start_post_effect_run");
+      const expectedWorkspacePath = requireNonEmptyString(
+        a,
+        "expectedWorkspacePath",
+        "start_post_effect_run",
+      );
       if (args.effect_type === "impact_review") {
         throw new Error(
           "invalid args `effect_type` for command `start_post_effect_run`: impact_review requires start_post_effect_run_multi with source_guard",
@@ -3930,13 +4643,23 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       const { settings, apiKey, apiKeyError } =
         await resolvePostEffectAiSnapshot(b, args, d, "start_post_effect_run");
       return parseWire(
-        await startPostEffectRun(args, settings, apiKey, apiKeyError),
+        await startPostEffectRun(
+          { ...args, expectedWorkspacePath },
+          settings,
+          apiKey,
+          apiKeyError,
+        ),
       );
     },
   },
   start_post_effect_run_multi: {
     run: async (b, a, d) => {
       const args = requireRecord(a, "args", "start_post_effect_run_multi");
+      const expectedWorkspacePath = requireNonEmptyString(
+        a,
+        "expectedWorkspacePath",
+        "start_post_effect_run_multi",
+      );
       validateOptionalSqliteSourceGuard(args, "start_post_effect_run_multi");
       const startPostEffectRunMulti = requireNapiMethod(
         b,
@@ -3951,7 +4674,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           "start_post_effect_run_multi",
         );
       return parseWire(
-        await startPostEffectRunMulti(args, settings, apiKey, apiKeyError),
+        await startPostEffectRunMulti(
+          { ...args, expectedWorkspacePath },
+          settings,
+          apiKey,
+          apiKeyError,
+        ),
       );
     },
   },
@@ -3983,6 +4711,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         "requestMaxOutputTokens",
         "send_chat_message",
       );
+      requireNativeAiAuditContext(a, "send_chat_message");
       const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
         b,
         a,
@@ -4002,6 +4731,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         "requestMaxOutputTokens",
         "send_chat_message_stream",
       );
+      requireNativeAiStreamCorrelation(a, "send_chat_message_stream");
       const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
         b,
         a,
@@ -4013,10 +4743,13 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     },
   },
   abort_chat_stream: {
-    // 純メモリの atomic store（同一 Backend の chat_abort を立てる）。unit 返り。
-    run: async (b) => {
-      b.abortChatStream();
-      return null;
+    run: async (b, a) => {
+      const streamId = requireStreamId(a, "abort_chat_stream");
+      const transportTerminationObserved = await b.abortChatStream(streamId);
+      return {
+        abortCommandAcknowledged: true,
+        transportTerminationObserved,
+      };
     },
   },
   // AI Phase 3b。inline/agent/test は必須キー規則、models だけoptional lookup。
@@ -4033,6 +4766,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   send_inline_ai_stream: {
     run: async (b, a, d) => {
       requirePresent(a, "messages", "send_inline_ai_stream");
+      requireNativeAiStreamCorrelation(a, "send_inline_ai_stream");
       const sendInlineAiStream = requireNapiMethod(
         b,
         b.sendInlineAiStream,
@@ -4049,9 +4783,17 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     },
   },
   abort_inline_ai_stream: {
-    run: async (b) => {
-      requireNapiMethod(b, b.abortInlineAiStream, "abortInlineAiStream")();
-      return null;
+    run: async (b, a) => {
+      const streamId = requireStreamId(a, "abort_inline_ai_stream");
+      const transportTerminationObserved = await requireNapiMethod(
+        b,
+        b.abortInlineAiStream,
+        "abortInlineAiStream",
+      )(streamId);
+      return {
+        abortCommandAcknowledged: true,
+        transportTerminationObserved,
+      };
     },
   },
   send_agent_message: {
@@ -4069,6 +4811,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         "resolvedToolProtocol",
         "send_agent_message",
       );
+      requireNativeAiAuditContext(a, "send_agent_message");
       const sendAgentMessage = requireNapiMethod(
         b,
         b.sendAgentMessage,
@@ -4102,6 +4845,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a, d) => {
       requireString(a, "provider", "test_ai_connection");
       requireString(a, "model", "test_ai_connection");
+      requireNativeAiAuditContext(a, "test_ai_connection");
       const testAiConnection = requireNapiMethod(
         b,
         b.testAiConnection,

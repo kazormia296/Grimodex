@@ -122,6 +122,32 @@ test("AI data consent blocks are proven only by missing consent and zero provide
   );
 });
 
+test("AI audit pre-dispatch blocks are proven only by failed durable start and zero provider calls", async () => {
+  const model = await loadQualityModel({ repoRoot });
+  const target = model.cases.find(
+    (evaluationCase) => evaluationCase.id === "eval-ai-audit-pre-dispatch",
+  );
+  assert.ok(target);
+  assert.equal(target.expected.blockedBy, "audit-unavailable");
+  assert.equal(target.input.auditStartAvailable, false);
+  assert.equal(target.input.providerCalls, 0);
+
+  const leaked = structuredClone(model);
+  const leakedTarget = leaked.cases.find(
+    (evaluationCase) => evaluationCase.id === "eval-ai-audit-pre-dispatch",
+  );
+  assert.ok(leakedTarget);
+  leakedTarget.input.providerCalls = 1;
+  const leakedReport = evaluateFixtureContracts(leaked);
+  assert.ok(
+    leakedReport.results
+      .find((result) => result.id === "eval-ai-audit-pre-dispatch")
+      ?.findings.some(
+        (finding) => finding.code === "provider-called-before-audit",
+      ),
+  );
+});
+
 test("the Web Editor fixture exposes only a user-selected BYOK route", async () => {
   const model = await loadQualityModel({ repoRoot });
   const target = model.cases.find(

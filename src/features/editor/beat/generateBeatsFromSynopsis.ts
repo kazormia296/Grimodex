@@ -79,7 +79,11 @@ export async function generateBeatsFromSynopsis(
 
   callbacks?.onStart?.();
 
-  const result = await streamInlineAiText(messages, { usageSurface: "beat" });
+  const result = await streamInlineAiText(messages, {
+    usageSurface: "beat",
+    projectId: state.projectId,
+    auditPathId: "beats_from_synopsis",
+  });
   if (!result.ok) {
     callbacks?.onError?.(result.error);
     return;

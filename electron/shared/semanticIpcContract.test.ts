@@ -7,6 +7,7 @@ import {
 import type { NapiBackendLike } from "./ipcContract.js";
 
 const noShell = {};
+const expectedWorkspacePath = "/workspace/project.gdx";
 
 const cases = [
   {
@@ -24,32 +25,53 @@ const cases = [
   {
     cmd: "semantic_index_scene",
     method: "semanticIndexScene",
-    args: { sceneId: "scene-1" },
-    nativeArgs: ["scene-1"],
+    args: {
+      expectedWorkspacePath,
+      projectId: "project-1",
+      sceneId: "scene-1",
+    },
+    nativeArgs: [expectedWorkspacePath, "project-1", "scene-1"],
   },
   {
     cmd: "semantic_search",
     method: "semanticSearch",
     args: {
+      expectedWorkspacePath,
       projectId: "project-1",
       query: "雨の夜",
       limit: 12,
       sceneScope: "scene-1",
       descriptionMode: true,
     },
-    nativeArgs: ["project-1", "雨の夜", 12, "scene-1", true],
+    nativeArgs: [
+      expectedWorkspacePath,
+      "project-1",
+      "雨の夜",
+      12,
+      "scene-1",
+      true,
+    ],
   },
   {
     cmd: "codex_index_entry",
     method: "codexIndexEntry",
-    args: { entryId: "entry-1" },
-    nativeArgs: ["entry-1"],
+    args: {
+      expectedWorkspacePath,
+      projectId: "project-1",
+      entryId: "entry-1",
+    },
+    nativeArgs: [expectedWorkspacePath, "project-1", "entry-1"],
   },
   {
     cmd: "codex_semantic_search",
     method: "codexSemanticSearch",
-    args: { projectId: "project-1", query: "主人公", limit: 7 },
-    nativeArgs: ["project-1", "主人公", 7],
+    args: {
+      expectedWorkspacePath,
+      projectId: "project-1",
+      query: "主人公",
+      limit: 7,
+    },
+    nativeArgs: [expectedWorkspacePath, "project-1", "主人公", 7],
   },
   {
     cmd: "codex_index_status",
@@ -60,20 +82,29 @@ const cases = [
   {
     cmd: "codex_reindex_all",
     method: "codexReindexAll",
-    args: { projectId: "project-1" },
-    nativeArgs: ["project-1"],
+    args: { expectedWorkspacePath, projectId: "project-1" },
+    nativeArgs: [expectedWorkspacePath, "project-1"],
   },
   {
     cmd: "events_index_entry",
     method: "eventsIndexEntry",
-    args: { eventId: "event-1" },
-    nativeArgs: ["event-1"],
+    args: {
+      expectedWorkspacePath,
+      projectId: "project-1",
+      eventId: "event-1",
+    },
+    nativeArgs: [expectedWorkspacePath, "project-1", "event-1"],
   },
   {
     cmd: "events_semantic_search",
     method: "eventsSemanticSearch",
-    args: { projectId: "project-1", query: "決戦", limit: 6 },
-    nativeArgs: ["project-1", "決戦", 6],
+    args: {
+      expectedWorkspacePath,
+      projectId: "project-1",
+      query: "決戦",
+      limit: 6,
+    },
+    nativeArgs: [expectedWorkspacePath, "project-1", "決戦", 6],
   },
   {
     cmd: "events_index_status",
@@ -84,20 +115,29 @@ const cases = [
   {
     cmd: "events_reindex_all",
     method: "eventsReindexAll",
-    args: { projectId: "project-1" },
-    nativeArgs: ["project-1"],
+    args: { expectedWorkspacePath, projectId: "project-1" },
+    nativeArgs: [expectedWorkspacePath, "project-1"],
   },
   {
     cmd: "chat_index_message",
     method: "chatIndexMessage",
-    args: { messageId: "message-1" },
-    nativeArgs: ["message-1"],
+    args: {
+      expectedWorkspacePath,
+      projectId: "project-1",
+      messageId: "message-1",
+    },
+    nativeArgs: [expectedWorkspacePath, "project-1", "message-1"],
   },
   {
     cmd: "chat_message_search",
     method: "chatMessageSearch",
-    args: { projectId: "project-1", query: "伏線", limit: 5 },
-    nativeArgs: ["project-1", "伏線", 5],
+    args: {
+      expectedWorkspacePath,
+      projectId: "project-1",
+      query: "伏線",
+      limit: 5,
+    },
+    nativeArgs: [expectedWorkspacePath, "project-1", "伏線", 5],
   },
   {
     cmd: "chat_index_status",
@@ -108,8 +148,8 @@ const cases = [
   {
     cmd: "chat_reindex_all",
     method: "chatReindexAll",
-    args: { projectId: "project-1" },
-    nativeArgs: ["project-1"],
+    args: { expectedWorkspacePath, projectId: "project-1" },
+    nativeArgs: [expectedWorkspacePath, "project-1"],
   },
   {
     cmd: "semantic_index_status",
@@ -120,8 +160,12 @@ const cases = [
   {
     cmd: "semantic_reindex_all",
     method: "semanticReindexAll",
-    args: { projectId: "project-1", runId: "run-1" },
-    nativeArgs: ["project-1", "run-1"],
+    args: {
+      expectedWorkspacePath,
+      projectId: "project-1",
+      runId: "run-1",
+    },
+    nativeArgs: [expectedWorkspacePath, "project-1", "run-1"],
   },
   {
     cmd: "semantic_chunk_context",
@@ -136,6 +180,10 @@ const cases = [
     nativeArgs: ["project-1", "scene-1", 50],
   },
 ] as const;
+
+const workspaceScopedCases = cases.filter(
+  ({ args }) => "expectedWorkspacePath" in args,
+);
 
 function backendWith(method: string, implementation: unknown): NapiBackendLike {
   return { [method]: implementation } as unknown as NapiBackendLike;
@@ -179,29 +227,49 @@ describe("Semantic Phase 3 Batch 4 N-API commands", () => {
     },
   );
 
+  it.each(workspaceScopedCases)(
+    "$cmd は expectedWorkspacePath の欠落・空文字をnative呼び出し前に拒否する",
+    async ({ cmd, method, args }) => {
+      for (const invalid of [undefined, ""]) {
+        const native = vi.fn().mockResolvedValue("null");
+        const env = await dispatchInvoke(
+          cmd,
+          { ...args, expectedWorkspacePath: invalid },
+          { backend: backendWith(method, native), shell: noShell },
+        );
+
+        expect(env.ok).toBe(false);
+        if (!env.ok) {
+          expect(env.error).toContain("invalid args `expectedWorkspacePath`");
+        }
+        expect(native).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   const requiredUnsignedCases = [
     {
       cmd: "semantic_search",
       key: "limit",
-      args: { projectId: "p1", query: "q", limit: 5 },
+      args: { expectedWorkspacePath, projectId: "p1", query: "q", limit: 5 },
       method: "semanticSearch",
     },
     {
       cmd: "codex_semantic_search",
       key: "limit",
-      args: { projectId: "p1", query: "q", limit: 5 },
+      args: { expectedWorkspacePath, projectId: "p1", query: "q", limit: 5 },
       method: "codexSemanticSearch",
     },
     {
       cmd: "events_semantic_search",
       key: "limit",
-      args: { projectId: "p1", query: "q", limit: 5 },
+      args: { expectedWorkspacePath, projectId: "p1", query: "q", limit: 5 },
       method: "eventsSemanticSearch",
     },
     {
       cmd: "chat_message_search",
       key: "limit",
-      args: { projectId: "p1", query: "q", limit: 5 },
+      args: { expectedWorkspacePath, projectId: "p1", query: "q", limit: 5 },
       method: "chatMessageSearch",
     },
     {
@@ -290,6 +358,7 @@ describe("Semantic Phase 3 Batch 4 N-API commands", () => {
     await dispatchInvoke(
       "semantic_search",
       {
+        expectedWorkspacePath,
         projectId: "p1",
         query: "q",
         limit: 3,
@@ -299,6 +368,7 @@ describe("Semantic Phase 3 Batch 4 N-API commands", () => {
       { backend, shell: noShell },
     );
     expect(native).toHaveBeenCalledExactlyOnceWith(
+      expectedWorkspacePath,
       "p1",
       "q",
       3,
@@ -309,7 +379,13 @@ describe("Semantic Phase 3 Batch 4 N-API commands", () => {
     for (const args of [{ sceneScope: 42 }, { descriptionMode: "true" }]) {
       const env = await dispatchInvoke(
         "semantic_search",
-        { projectId: "p1", query: "q", limit: 3, ...args },
+        {
+          expectedWorkspacePath,
+          projectId: "p1",
+          query: "q",
+          limit: 3,
+          ...args,
+        },
         { backend, shell: noShell },
       );
       expect(env.ok).toBe(false);
@@ -323,24 +399,24 @@ describe("Semantic Phase 3 Batch 4 N-API commands", () => {
 
     await dispatchInvoke(
       "semantic_reindex_all",
-      { projectId: "p1", runId: null },
+      { expectedWorkspacePath, projectId: "p1", runId: null },
       { backend, shell: noShell },
     );
     await dispatchInvoke(
       "semantic_reindex_all",
-      { projectId: "p1" },
+      { expectedWorkspacePath, projectId: "p1" },
       { backend, shell: noShell },
     );
     const maxAstralRunId = "😀".repeat(256);
     await dispatchInvoke(
       "semantic_reindex_all",
-      { projectId: "p1", runId: maxAstralRunId },
+      { expectedWorkspacePath, projectId: "p1", runId: maxAstralRunId },
       { backend, shell: noShell },
     );
     expect(native.mock.calls).toEqual([
-      ["p1", undefined],
-      ["p1", undefined],
-      ["p1", maxAstralRunId],
+      [expectedWorkspacePath, "p1", undefined],
+      [expectedWorkspacePath, "p1", undefined],
+      [expectedWorkspacePath, "p1", maxAstralRunId],
     ]);
 
     for (const invalid of [
@@ -354,7 +430,7 @@ describe("Semantic Phase 3 Batch 4 N-API commands", () => {
     ]) {
       const env = await dispatchInvoke(
         "semantic_reindex_all",
-        { projectId: "p1", runId: invalid },
+        { expectedWorkspacePath, projectId: "p1", runId: invalid },
         { backend, shell: noShell },
       );
       expect(env.ok).toBe(false);

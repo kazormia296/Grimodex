@@ -16,6 +16,99 @@ Sakana、AI のべりすと）を runtime route として登録する。認証�
 必須にする。ネイティブ subprocess が必要な CLI provider は Web では提供しない。
 ランタイム経路を追加しても論理サーフェスの model role を重複定義しない。
 
+## 完全監査契約（GDX-AI-AUDIT-001）
+
+この契約の対象は、Grimodex 自身が dispatch／実行する全 production AI path である。
+外部の standalone MCP client 内の prompt／model call や、外部でAI生成した後に
+paste／import された内容は Grimodex から観測できない。MCP の tool／change evidence と
+authorship `unknown` は別契約で保持するが、帰属レポートはこれらを「完全にAI監査済み」
+と表示しない。
+
+経路の「実モデル品質をどう検証するか」と「実行時に何を監査記録するか」は別契約である。
+`AI_PATHS` の全 entry は `auditOwner`、`captureLevel`、`auditTestRef` を持つ。
+`full-observable` / `partial-observable` entry は path 固有の `auditTestName` を実在する
+deterministic contract test へ割り当てる。owner 文字列だけ、同じ IPC command を使う別 surface の暗黙包含、
+または usage 集計だけでは完全監査とみなさない。
+
+`full-observable` は renderer では
+[`src/features/ai-audit/api.ts`](../src/features/ai-audit/api.ts)、native post-effect／semantic では
+同じ append-only AI audit event contract の native writer を使う。provider／local model
+dispatch より前に `execution.started` と
+`request.prepared` を同じ durable batch で保存し、その成功後だけ送信する。request は
+system/developer/user/history messages、RAG/context、tool schema、model/provider、thinking／
+reasoning／output limit 等の options を正規化して含め、`credentialsExcluded: true` を必須に
+する。API key、Authorization header、cookie、secret-bearing environment は含めない。
+renderer 経路ではこれが native 送信直前の typed／normalized args であり、provider の
+raw HTTP JSON envelope や header そのものを保存したとは主張しない。
+project、workspace path、path、operation、execution、parent execution は start 時に固定する。
+workspace switch 後の terminal を新 DB へ書き換えず、start-only execution は report 上
+`ambiguous` とする。
+
+response partial/completed、公開された thinking、tool call/result、usage、stop reason、error、
+cancel、retry、fallback、cache hit を append-only event として同じ execution graph へ記録する。
+renderer の response はアプリが観測した parsed block／delta の完全内容であり、provider の
+raw response envelope の byte-for-byte copy ではない。`captureState: complete` は、このように
+宣言された Grimodex observation boundary での完全性を意味する。
+外部 CLI／Codex runtime が内部で追加し Grimodex から観測できない prompt や provider-private
+chain-of-thought は `full-observable` の範囲外であり、レポートも取得済みと主張しない。
+これらの外部runtimeは path-levelでは「Grimodexから観測可能な全内容」を保存するが、
+個々の execution には `captureState: partial` と
+`external-runtime-internal-prompt-unobservable` / `provider-private-thinking-unobservable` を記録する。
+
+同じ transport を共有しても、Chronicle、A/B 各枠、Beat 本文／代替案／synopsis 変換、
+通常／live pseudo comment、Codex App Server と CLI fallback、background embedding と
+reranker shadow は別 path ID で記録する。semantic embedding／reranker は raw source と
+tokenizer 前の model-visible text、model identity、実際に読み込んで parse した
+`tokenizer.json` の生bytes SHA-256を保存する。この保証は per-input audit session が
+開始した推論に限る。一方、realized token IDs、special-token展開、
+truncation後のtoken列は保持しないことをrequest eventの `tokenizationCapture` と
+`limitations` に明記する。embedding はさらに生vectorを dimension+SHA だけで表現する。
+embedding で cold artifact load が input session 開始前に失敗した場合、その query/chunk は
+tokenization／ONNX へ到達せずモデル利用は発生しないが、試行された高位 semantic operation の
+per-input lifecycle は ledger に残らない。これは成功または推論開始した input の観測契約とは
+別の既知 limitation である。
+reranker のcold loadでは initial `request.prepared`／`request.dispatched` でraw requestを先に
+durable化し、artifact load後かつtokenization／ONNX run前に、実際にloadしたtokenizer identityを
+`requestStage: effective-local-artifacts` の追加 `request.prepared` として保存する。artifact loadが
+失敗した場合もinitial executionを `local-inference-artifact-preparation` failureでterminal化するため、
+embedding の上記 cold-load limitation とは異なり試行自体が ledger に残る。
+このためsemantic model経路は `partial-observable`とする。全文検索 FTS5 は model inference ではないため
+`not-applicable`とする。relation injection live eval は `.live.test.ts` から開発者が
+明示実行する合成 fixture 専用で、製品 bundle、project workspace、帰属レポート
+のどこからも到達できない。そのため賞レース project ledger に混ぜず、
+`evaluation-harness` 所有の `control-event` として明示する。
+
+forward ledger導入前のDBについては完全な実行履歴をbackfillできないため、帰属監査ZIPは
+`selected surviving legacy evidence` として別表示する。AI originを構造的に確認できる現存行だけを
+対象にし、authorship owner content、`in-app-agent` / `mcp` の成功tracked mutation、semantic indexの
+永続化済みsource/chunk textとmetadata、構造的にAIと判定できるtrashを含める。`mcp` surfaceは外部tool invocationだけを
+示し、外部client promptやprovider receiptを示さない。semantic legacy artifactはownerを正準joinし、
+document prefix・tokenizer special token・truncation後のrealized inputは未永続化で復元不能、かつ
+raw embedding BLOBと独立vector SHAを取得できないためpartialとする。trashのparse不能rowは除外して
+件数を開示する。
+
+`content_versions`、named project snapshots、`state_snapshots`、`impact_review_baselines`、chat pins、
+generic output/cache/state tableはAI起源を確定できないhistorical containerなので収録しない。したがって
+監査導入前の完全性は主張しない。ZIPはin-memory生成のため非常に大規模なledgerではmemory不足等で
+失敗し得るが、失敗時にpartial ZIPは生成しない。
+
+設定画面の `test_ai_connection` は project 未選択でも利用できるため、
+`scopeId = workspace` の専用 chain に記録する。便宜的な project ID は付与しない。
+固定 probe prompt、requested route、response/error は保存する。effective-request receiptは
+rendererへの戻り値として返すのではなく、transport ownerが同じexecution chainへ直接追記する。
+WebではBrowserMock/browser-aiが、実際の`fetch`へ渡す`bodyJson`文字列をparseした完全なJSON値を
+credential-free `request.prepared`としてdurable appendし、そのACK前にはprovider dispatchを開始しない。
+Desktopでは計装済みnative JSON送信helperが、最終reqwest JSON値を同じexecutionへdurable appendしてから
+HTTP送信する。いずれもJSON semanticsは保持するが、serialization whitespace、object key order、serialized
+bytesは保持しない。Authorization/API key/Cookie/process environment等のtransport credentialもreceiptへ
+含めない。計装済みhelperを通らないnative HTTP送信はeffective bodyを証明できないため、該当経路は
+個別limitationを残し、`full-observable`とは扱わない。
+
+`list_ai_models`はcontrol-planeでありmodel executionとして数えない。selected Ollama runnerがcoldの場合は
+`/api/generate`へ`{model, stream:false}`を送るprompt-free preloadがweightsのloadやrunner allocationを行い得るが、
+作品/promptを供給せずtoken generationやmodel outputも要求しない。この境界はDesktop/Webで共通であり、Webでは
+外部endpointへのcontrol requestとしてroute consentを通すが、generative/inference ledgerには追加しない。
+
 ## 設計の核心 — 「JS 経路か Rust 経路か」で検証手段が決まる
 
 ライブハーネス [`aiLiveHarness.ts`](../src/features/chat/agent/aiLiveHarness.ts) は
@@ -32,8 +125,8 @@ usage 台帳 / session_id routing）ではない。
 | **① agent loop** (JS が全オーケストレーション)    | Chat Agent 本体・run_research サブエージェント・Context Creator                                 | `runLiveAgent` で忠実再現（ループは JS、`sendToLLM` のみ差し替え）     |
 | **② 単発** (JS でプロンプト構築→Rust で 1 往復)   | synopsis / セッションタイトル / 要約 / 伏線監査ほか / beat role / map / tree                    | `runLiveSingleShot` ＋**本番のプロンプトビルダーと本番パーサ**         |
 | **③ post-effect** (Rust が全オーケストレーション) | 校閲 graders（intent drift / review / consistency / timeline / pseudo_comment / impact review） | **Rust 側ライブテスト**（`call_post_effect_api` を実プロバイダに直接） |
-| **④ CLI**                                         | claude/codex/opencode サブプロセス                                                              | 自動検証不可（stub・実機 smoke のみ）                                  |
-| **➖ 埋め込み/検索**                              | semantic_search / semantic reranker / fts_search                                                | LLM 生成でない（n/a・決定的 eval で別途）                              |
+| **④ CLI/Codex runtime**                           | claude/codex/opencode・Codex App Server・pre-turn fallback                                      | transport audit contract ＋実機 smoke（実モデル品質は stub）           |
+| **➖ 埋め込み/検索**                              | semantic index/search / semantic reranker / fts_search                                          | 生成品質は n/a・推論監査は必須（FTS5 のみ audit n/a）                  |
 
 ## Web Editor AI の同意境界
 
@@ -126,13 +219,15 @@ Local LLM／BYOK runtime route について通常 contract と consent contract 
 
 1. 本番に AI 呼び出しサーフェスを追加する。
 2. `aiPathRegistry.ts` の `AI_PATHS` にエントリを 1 つ足す（layer / transport /
-   verifier / testRef / note）。
+   verifier / testRef / auditOwner / captureLevel / auditTestRef / note）。
 3. verifier に応じて検証を追加:
    - `js-live` → 単発なら `singleShot.live.test.ts` に 1 ケース（本番ビルダー＋パーサ）。
    - `rust-live` → `post_effect_live_tests` に 1 ケース。
    - `covered-by-agent-loop` → agent ループの構成違いなら testRef を既存 E2E に。
    - `stub` → 自動検証不可の理由を note に明示。
 4. `aiPathRegistry.test.ts` が green であることを確認（穴・参照切れを検出）。
+5. `full-observable` の場合は dispatch 前の durable start と全 terminal を実装し、path 固有の
+   `auditTestName` を持つ contract test を追加する。監査 start を await せず送信してはならない。
 
 Web Editor の実行トランスポートを追加または変更する場合は、上記に加えて
 `AI_RUNTIME_ROUTES` の `transport`、`providerAuthority`、`providers`、`capabilityGate`、通常の

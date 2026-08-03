@@ -106,7 +106,12 @@ test("workspace未openではsemantic DB commandsがDB pin時点でfail-closedす
     () => fixture.backend.chatIndexStatus("default-project"),
     () => fixture.backend.semanticChunkContext("scene-1", 0, 1, 10),
     () => fixture.backend.semanticDebugDump("default-project"),
-    () => fixture.backend.semanticIndexScene("scene-1"),
+    () =>
+      fixture.backend.semanticIndexScene(
+        join(fixture.root, "workspace"),
+        "default-project",
+        "scene-1",
+      ),
   ];
   for (const call of calls) {
     await assert.rejects(call(), /No workspace is open/);
@@ -169,7 +174,11 @@ test("resource root欠落でもBackend/pure-DBは生き、embedding commandだ�
   await seedScene(fixture.backend, "scene-missing", "S", "model required");
 
   await assert.rejects(
-    fixture.backend.semanticIndexScene("scene-missing"),
+    fixture.backend.semanticIndexScene(
+      join(fixture.root, "workspace"),
+      "default-project",
+      "scene-missing",
+    ),
     /embedding model .* is not installed/,
   );
   const status = JSON.parse(
@@ -184,11 +193,13 @@ test("resource root欠落でもBackend/pure-DBは生き、embedding commandだ�
 test("空project再indexはresource欠落でもdone progressをEventQueueへ全wire付きで流す", async (t) => {
   const fixture = makeFixture("reindex-event");
   t.after(fixture.cleanup);
-  await fixture.backend.openWorkspace(join(fixture.root, "workspace"));
+  const workspace = join(fixture.root, "workspace");
+  await fixture.backend.openWorkspace(workspace);
 
   assert.equal(
     JSON.parse(
       await fixture.backend.semanticReindexAll(
+        workspace,
         "default-project",
         "run-empty-project",
       ),
@@ -249,6 +260,93 @@ test("openWorkspace後は同一IDでも新DBだけを読み、旧epochの状態�
     "workspace swapはDB由来matcherも破棄する",
   );
   await seedScene(fixture.backend, "collision", "Workspace B", "bravo only");
+  const auditCountBefore = await exec(
+    fixture.backend,
+    "SELECT COUNT(*) AS count FROM ai_audit_events",
+    [],
+    "get",
+  );
+  const staleInferenceCalls = [
+    () =>
+      fixture.backend.semanticSearch(
+        workspaceA,
+        "default-project",
+        "collision",
+        5,
+        null,
+        false,
+      ),
+    () =>
+      fixture.backend.semanticReindexAll(
+        workspaceA,
+        "default-project",
+        "stale-semantic-reindex",
+      ),
+    () =>
+      fixture.backend.codexSemanticSearch(
+        workspaceA,
+        "default-project",
+        "collision",
+        5,
+      ),
+    () => fixture.backend.codexReindexAll(workspaceA, "default-project"),
+    () =>
+      fixture.backend.eventsSemanticSearch(
+        workspaceA,
+        "default-project",
+        "collision",
+        5,
+      ),
+    () => fixture.backend.eventsReindexAll(workspaceA, "default-project"),
+    () =>
+      fixture.backend.chatMessageSearch(
+        workspaceA,
+        "default-project",
+        "collision",
+        5,
+      ),
+    () => fixture.backend.chatReindexAll(workspaceA, "default-project"),
+    () =>
+      fixture.backend.semanticRerankerShadowScore({
+        requestId: "stale-reranker",
+        expectedWorkspacePath: workspaceA,
+        projectId: "default-project",
+        auditPathId: "semantic_reranker_shadow",
+        language: "ja",
+        userMessage: "collision",
+        sceneTail: "",
+        candidates: [{ candidateId: "collision:0:5", text: "bravo" }],
+      }),
+  ];
+  for (const call of staleInferenceCalls) {
+    await assert.rejects(call(), /SEMANTIC_INDEX_WORKSPACE_CHANGED/);
+  }
+  await assert.rejects(
+    fixture.backend.semanticIndexScene(
+      workspaceA,
+      "default-project",
+      "collision",
+    ),
+    /SEMANTIC_INDEX_WORKSPACE_CHANGED/,
+  );
+  await assert.rejects(
+    fixture.backend.semanticIndexScene(
+      workspaceB,
+      "another-project",
+      "collision",
+    ),
+    /SEMANTIC_INDEX_AUTHORITY_MISMATCH/,
+  );
+  assert.deepEqual(
+    await exec(
+      fixture.backend,
+      "SELECT COUNT(*) AS count FROM ai_audit_events",
+      [],
+      "get",
+    ),
+    auditCountBefore,
+    "workspace/project authority mismatch must stop before inference/audit",
+  );
   const fromB = JSON.parse(
     await fixture.backend.semanticChunkContext("collision", 0, 5, 8),
   );

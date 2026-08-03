@@ -8,6 +8,7 @@
  */
 import path from "node:path";
 import { realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 import { app, dialog, safeStorage } from "electron";
 
@@ -296,6 +297,57 @@ if (!gotSingleInstanceLock) {
           ],
           env: {},
         };
+      },
+      appendAuditObservations: async (auditContext, observations) => {
+        if (!backend?.aiAuditAppendBatch) {
+          throw new Error("Native AI audit backend is unavailable");
+        }
+        const appVersion = app.getVersion();
+        const events = observations.map((observation) => ({
+          eventId: randomUUID(),
+          executionId: auditContext.executionId,
+          operationId: auditContext.operationId,
+          parentExecutionId: auditContext.parentExecutionId,
+          pathId: auditContext.pathId,
+          eventType: "request.prepared",
+          timestamp: Date.now(),
+          payload: {
+            captureState: observation.captureState,
+            credentialsExcluded: true,
+            effectiveRequestReceipt: true,
+            request: {
+              provider: observation.provider,
+              ...(observation.model === null
+                ? {}
+                : { model: observation.model }),
+              messages: observation.modelVisibleMessages,
+              options: {
+                runtime: "codex-app-server",
+                rpcMethod: observation.rpcMethod,
+                effort: observation.effort,
+              },
+              auditMetadata: {
+                approvalPolicy: observation.approvalPolicy,
+                sandboxMode: observation.sandboxMode,
+                networkAccess: observation.networkAccess,
+                retryWithoutMcp: observation.retryWithoutMcp,
+                mcpObservation: observation.mcpObservation,
+              },
+            },
+            limitations: observation.limitations,
+            metadata: {
+              source: "electron-main-before-codex-rpc",
+              rpcMethod: observation.rpcMethod,
+              effectiveRequestConfirmedByMain: true,
+            },
+            appVersion,
+          },
+        }));
+        await backend.aiAuditAppendBatch(
+          auditContext.expectedWorkspacePath,
+          auditContext.projectId,
+          events,
+        );
       },
     });
     // Vivliostyle（バッチ5）: build/preview child、成果物token、tempをmain lifetime

@@ -33,9 +33,14 @@ import {
 } from "@/application/lifecycle/lifecycleTrace";
 
 const cancelScheduledImeExportsMock = vi.hoisted(() => vi.fn());
+const cancelAllScheduledSemanticIndexesMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/features/ime/scheduler", () => ({
   cancelScheduledImeExports: cancelScheduledImeExportsMock,
+}));
+
+vi.mock("@/features/semantic-search/scheduler", () => ({
+  cancelAllScheduledSemanticIndexes: cancelAllScheduledSemanticIndexesMock,
 }));
 
 vi.mock("@/lib/tauri", () => ({
@@ -238,10 +243,13 @@ describe("useWorkspaceStore", () => {
       expect(isQuiescenceLeaseActive()).toBe(false);
     });
 
-    it("cancels pending IME exports before invoking the native workspace swap", async () => {
+    it("cancels workspace-scoped schedules before invoking the native workspace swap", async () => {
       const order: string[] = [];
       cancelScheduledImeExportsMock.mockImplementation(() => {
         order.push("cancel-ime");
+      });
+      cancelAllScheduledSemanticIndexesMock.mockImplementation(() => {
+        order.push("cancel-semantic");
       });
       mockInvoke.mockImplementation(async (command: string) => {
         if (command === "open_workspace") {
@@ -264,7 +272,13 @@ describe("useWorkspaceStore", () => {
       await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\MyNovel");
 
       expect(order).toContain("cancel-ime");
+      expect(order).toEqual(
+        expect.arrayContaining(["cancel-ime", "cancel-semantic"]),
+      );
       expect(order.indexOf("cancel-ime")).toBeLessThan(
+        order.indexOf("open-workspace"),
+      );
+      expect(order.indexOf("cancel-semantic")).toBeLessThan(
         order.indexOf("open-workspace"),
       );
     });

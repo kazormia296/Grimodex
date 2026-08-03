@@ -34,6 +34,8 @@ import {
 import { finalizeTurnPayload } from "@/features/ai-context/finalizeTurnPayload";
 import { countTokens, ensureTokenizer } from "./contextBuilder";
 import i18next from "@/lib/i18n";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { requireAuditProjectId } from "@/features/ai-audit/transportContext";
 
 export interface SuggestedEntry {
   id: string;
@@ -268,12 +270,17 @@ export async function runContextCreator(
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: instruction },
   ];
+  const auditProjectId = requireAuditProjectId(
+    useTreeStore.getState().projectId,
+  );
+  const auditOperationId = crypto.randomUUID();
+  let priorAuditExecutionId: string | null = null;
 
   const loopResult = await runAgentLoop({
     messages,
     tools: CREATOR_TOOLS,
     tokenBudget: TOOL_TOKEN_BUDGET,
-    sendToLLM: (msgs, tools) => {
+    sendToLLM: async (msgs, tools) => {
       if (
         blockIfPolicyOff("chat") ||
         blockIfUnlicensed() ||
@@ -303,9 +310,17 @@ export async function runContextCreator(
         },
         countTokens,
       );
-      return sendAgentMessage(
+      const executionId = crypto.randomUUID();
+      const response = await sendAgentMessage(
         msgs,
         tools,
+        {
+          projectId: auditProjectId,
+          pathId: "context_creator",
+          operationId: auditOperationId,
+          executionId,
+          parentExecutionId: priorAuditExecutionId,
+        },
         route.thinking,
         finalized.transport.systemCacheSegments,
         route.apiVariant,
@@ -320,6 +335,8 @@ export async function runContextCreator(
         route.toolProtocol,
         route.resolvedOllamaEndpoint,
       );
+      priorAuditExecutionId = executionId;
+      return response;
     },
     executeTool: async (name, toolCallId, params) => {
       const result = await executeTool(name, toolCallId, params);

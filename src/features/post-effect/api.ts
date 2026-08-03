@@ -8,6 +8,10 @@ import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { usePostEffectRunStore } from "./runStore";
 import {
+  getCurrentWorkspaceIdentity,
+  isCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import {
   ensureNotificationPermission,
   notifyRunTerminalIfUnfocused,
 } from "./desktopNotify";
@@ -54,17 +58,35 @@ export async function flushPendingSceneSaves(sceneId?: string): Promise<void> {
 export async function startPostEffectRun(
   req: StartPostEffectRunRequest,
 ): Promise<StartPostEffectRunResult> {
-  return invoke<StartPostEffectRunResult>("start_post_effect_run", {
+  return invokePostEffectStart("start_post_effect_run", req);
+}
+
+async function invokePostEffectStart(
+  command: "start_post_effect_run" | "start_post_effect_run_multi",
+  req: StartPostEffectRunRequest | StartPostEffectRunMultiRequest,
+): Promise<StartPostEffectRunResult> {
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  if (!workspaceIdentity) {
+    throw new Error(
+      "POST_EFFECT_WORKSPACE_UNAVAILABLE: no renderer workspace identity",
+    );
+  }
+  const result = await invoke<StartPostEffectRunResult>(command, {
+    expectedWorkspacePath: workspaceIdentity.path,
     args: req,
   });
+  if (!isCurrentWorkspaceIdentity(workspaceIdentity)) {
+    throw new Error(
+      "POST_EFFECT_WORKSPACE_CHANGED: renderer workspace changed during start",
+    );
+  }
+  return result;
 }
 
 export async function startPostEffectRunMulti(
   req: StartPostEffectRunMultiRequest,
 ): Promise<StartPostEffectRunResult> {
-  return invoke<StartPostEffectRunResult>("start_post_effect_run_multi", {
-    args: req,
-  });
+  return invokePostEffectStart("start_post_effect_run_multi", req);
 }
 
 export async function abortPostEffectRun(

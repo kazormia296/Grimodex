@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   BrowserWorkspaceError,
+  computeAiAuditJournalBatchId,
   createMemoryWorkspaceStore,
 } from "./browser-db/indexedDbStore";
 import {
@@ -14,6 +15,7 @@ import {
   WEB_EDITOR_WORKSPACE_ID,
   type BrowserRuntimeDependencies,
 } from "./browserRuntime";
+import { createBrowserMock, type PersistentBrowserMock } from "./browser-mock";
 
 function createExclusiveLockManager() {
   const held = new Set<string>();
@@ -45,8 +47,41 @@ function createExclusiveLockManager() {
 
 function createMockDatabase(bytes = new Uint8Array([9])) {
   return {
+    invoke: vi.fn(async () => undefined),
     exportDatabase: vi.fn(() => bytes),
     close: vi.fn(),
+  };
+}
+
+async function auditJournalBatch(
+  eventId: string,
+  eventType = "execution.started",
+) {
+  const appendArgsJson = JSON.stringify({
+    expectedWorkspacePath: "/dev/workspace",
+    projectId: "default-project",
+    events: [
+      {
+        eventId,
+        executionId: "execution-restart",
+        operationId: "operation-restart",
+        parentExecutionId: null,
+        pathId: "browser_byok_web",
+        eventType,
+        timestamp: 1,
+        payload: {
+          captureState: "complete",
+          credentialsExcluded: true,
+          request: {
+            messages: [{ role: "user", content: "restart prompt" }],
+          },
+        },
+      },
+    ],
+  });
+  return {
+    batchId: await computeAiAuditJournalBatchId(appendArgsJson),
+    appendArgsJson,
   };
 }
 
@@ -193,6 +228,218 @@ describe("Web Editor browser runtime", () => {
     });
     await runtime.dispose();
     expect(mock.close).toHaveBeenCalledOnce();
+  });
+
+  it("replays snapshot-unreflected audit journal batches before installing BrowserMock", async () => {
+    const store = createMemoryWorkspaceStore();
+    const baseline = await createBrowserMock({
+      workspaceIdentity: "/dev/workspace",
+    });
+    const baselineBytes = baseline.exportDatabase();
+    baseline.close();
+    await store.put({
+      workspaceId: WEB_EDITOR_WORKSPACE_ID,
+      revision: 1,
+      schemaVersion: 1,
+      updatedAt: "2026-08-03T00:00:00.000Z",
+      bytes: baselineBytes,
+    });
+    await store.appendAiAuditJournal({
+      workspaceId: WEB_EDITOR_WORKSPACE_ID,
+      expectedRevision: 1,
+      createdAt: "2026-08-03T00:00:01.000Z",
+      ...(await auditJournalBatch("journal-only-event")),
+    });
+    let installed: PersistentBrowserMock | null = null;
+    const dependencies: BrowserRuntimeDependencies = {
+      createBrowserMock,
+      installBrowserMock: (database) => {
+        installed = database as PersistentBrowserMock;
+      },
+    };
+
+    const runtime = await initializeBrowserRuntime({
+      store,
+      lifecycleTarget: null,
+      lockManager: createExclusiveLockManager().lockManager,
+      dependencies,
+    });
+
+    expect(installed).not.toBeNull();
+    await expect(
+      installed!.invoke("ai_audit_read_snapshot", {
+        expectedWorkspacePath: "/dev/workspace",
+        projectId: "default-project",
+      }),
+    ).resolves.toMatchObject({
+      highWaterSequence: 1,
+      events: [expect.objectContaining({ eventId: "journal-only-event" })],
+    });
+    await expect(
+      store.readAiAuditJournal(WEB_EDITOR_WORKSPACE_ID),
+    ).resolves.toEqual([]);
+    await expect(store.get(WEB_EDITOR_WORKSPACE_ID)).resolves.toMatchObject({
+      revision: 2,
+    });
+    await runtime.dispose();
+  });
+
+  it("keeps BrowserMock unavailable until startup journal replay completes", async () => {
+    const store = createMemoryWorkspaceStore();
+    await store.appendAiAuditJournal({
+      workspaceId: WEB_EDITOR_WORKSPACE_ID,
+      expectedRevision: 0,
+      createdAt: "2026-08-03T00:00:00.000Z",
+      ...(await auditJournalBatch("startup-gate")),
+    });
+    let releaseReplay!: () => void;
+    let markReplayStarted!: () => void;
+    const replayGate = new Promise<void>((resolve) => {
+      releaseReplay = resolve;
+    });
+    const replayStarted = new Promise<void>((resolve) => {
+      markReplayStarted = resolve;
+    });
+    const database = createMockDatabase();
+    database.invoke.mockImplementation(async () => {
+      markReplayStarted();
+      await replayGate;
+    });
+    const dependencies = createDependencies({
+      createBrowserMock: vi.fn(async () => database),
+    });
+
+    const initializing = initializeBrowserRuntime({
+      store,
+      lifecycleTarget: null,
+      lockManager: createExclusiveLockManager().lockManager,
+      dependencies,
+    });
+    await replayStarted;
+    expect(dependencies.installBrowserMock).not.toHaveBeenCalled();
+
+    releaseReplay();
+    const runtime = await initializing;
+    expect(dependencies.installBrowserMock).toHaveBeenCalledWith(database);
+    await runtime.dispose();
+  });
+
+  it("fails closed without installing BrowserMock when journal replay fails", async () => {
+    const store = createMemoryWorkspaceStore();
+    const invalidReplayArgsJson = JSON.stringify({
+      expectedWorkspacePath: "/different/workspace",
+      projectId: "default-project",
+      events: [],
+    });
+    await store.appendAiAuditJournal({
+      workspaceId: WEB_EDITOR_WORKSPACE_ID,
+      expectedRevision: 0,
+      createdAt: "2026-08-03T00:00:00.000Z",
+      batchId: await computeAiAuditJournalBatchId(invalidReplayArgsJson),
+      appendArgsJson: invalidReplayArgsJson,
+    });
+    const database = createMockDatabase();
+    const replayError = new Error("journal replay rejected");
+    database.invoke.mockRejectedValue(replayError);
+    const dependencies = createDependencies({
+      createBrowserMock: vi.fn(async () => database),
+    });
+    const locks = createExclusiveLockManager();
+
+    await expect(
+      initializeBrowserRuntime({
+        store,
+        lifecycleTarget: null,
+        lockManager: locks.lockManager,
+        dependencies,
+      }),
+    ).rejects.toBe(replayError);
+    expect(database.invoke).toHaveBeenCalledWith("ai_audit_append_batch", {
+      expectedWorkspacePath: "/different/workspace",
+      projectId: "default-project",
+      events: [],
+    });
+    expect(dependencies.installBrowserMock).not.toHaveBeenCalled();
+    expect(database.close).toHaveBeenCalledOnce();
+    expect(locks.held.size).toBe(0);
+  });
+
+  it("rejects a tampered journal digest before replaying it into BrowserMock", async () => {
+    const store = createMemoryWorkspaceStore();
+    const validBatch = await auditJournalBatch("tampered-replay");
+    store.readAiAuditJournal = vi.fn(async () => [
+      {
+        workspaceId: WEB_EDITOR_WORKSPACE_ID,
+        sequence: 1,
+        createdAt: "2026-08-03T00:00:00.000Z",
+        ...validBatch,
+        batchId: "0".repeat(64),
+      },
+    ]);
+    const database = createMockDatabase();
+    const dependencies = createDependencies({
+      createBrowserMock: vi.fn(async () => database),
+    });
+
+    await expect(
+      initializeBrowserRuntime({
+        store,
+        lifecycleTarget: null,
+        lockManager: createExclusiveLockManager().lockManager,
+        dependencies,
+      }),
+    ).rejects.toMatchObject({
+      code: "storage-failed",
+      message: expect.stringMatching(/does not match appendArgsJson/iu),
+    });
+    expect(database.invoke).not.toHaveBeenCalled();
+    expect(dependencies.installBrowserMock).not.toHaveBeenCalled();
+    expect(database.close).toHaveBeenCalledOnce();
+  });
+
+  it("uses journal ACKs for many audit partials without full snapshot exports", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createMemoryWorkspaceStore();
+      const put = vi.spyOn(store, "put");
+      const database = createMockDatabase();
+      let markDirty!: () => void;
+      let acknowledgeAudit!: NonNullable<
+        Parameters<
+          BrowserRuntimeDependencies["createBrowserMock"]
+        >[0]["onAiAuditDurabilityRequired"]
+      >;
+      const dependencies = createDependencies({
+        createBrowserMock: vi.fn(async (options) => {
+          markDirty = options.onDatabaseDirty!;
+          acknowledgeAudit = options.onAiAuditDurabilityRequired!;
+          return database;
+        }),
+      });
+      const runtime = await initializeBrowserRuntime({
+        store,
+        lifecycleTarget: null,
+        lockManager: createExclusiveLockManager().lockManager,
+        debounceMs: 2_000,
+        dependencies,
+      });
+
+      for (let index = 0; index < 128; index += 1) {
+        markDirty();
+        await acknowledgeAudit(await auditJournalBatch(`partial-${index}`));
+      }
+
+      expect(database.exportDatabase).not.toHaveBeenCalled();
+      expect(put).not.toHaveBeenCalled();
+      await expect(
+        store.readAiAuditJournal(WEB_EDITOR_WORKSPACE_ID),
+      ).resolves.toHaveLength(128);
+
+      vi.clearAllTimers();
+      await runtime.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("flushes pending edits before exporting a desktop handoff snapshot", async () => {

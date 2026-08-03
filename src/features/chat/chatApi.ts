@@ -1,4 +1,4 @@
-import { invoke, listen } from "@/lib/tauri";
+import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import {
@@ -47,24 +47,47 @@ import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload
 import type { AiProvider } from "./types";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
-import { invokeSingleShotChat } from "./singleShotTransport";
+import {
+  chatAuditRouteCoverage,
+  invokeSingleShotChat,
+  resolveChatAuditRoute,
+} from "./singleShotTransport";
+import {
+  beginAiAuditExecution,
+  completeAiAuditExecution,
+  failAiAuditExecution,
+  markAiAuditDispatched,
+} from "@/features/ai-audit/api";
+import {
+  auditErrorSnapshot,
+  auditRequestFromChatArgs,
+  beforeIpcDispatchDetails,
+  nativeAiAuditContext,
+  requireAuditProjectId,
+  type AiAuditTransportContext,
+} from "@/features/ai-audit/transportContext";
+import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 
 // --- AI message sending (existing) ---
 
 export async function sendChatMessage(
   messages: ChatMessage[],
   onChunk: (chunk: string) => void,
+  auditContext: AiAuditTransportContext,
   model?: string | null,
 ): Promise<void> {
   const payload = messages.map((m) => ({ role: m.role, content: m.content }));
-  const response = await invokeSingleShotChat({
-    messages: payload,
-    thinking: null,
-    effort: null,
-    reasoningEnabled: null,
-    reasoningEffort: null,
-    model: model ?? null,
-  });
+  const response = await invokeSingleShotChat(
+    {
+      messages: payload,
+      thinking: null,
+      effort: null,
+      reasoningEnabled: null,
+      reasoningEffort: null,
+      model: model ?? null,
+    },
+    auditContext,
+  );
   const text = response.blocks
     .filter((b) => b.type === "text")
     .map((b) => (b as { type: "text"; content: string }).content)
@@ -80,6 +103,7 @@ export async function sendChatMessage(
  */
 export async function sendChatMessageOnceAb(
   messages: { role: string; content: string }[],
+  auditContext: AiAuditTransportContext,
   model?: string | null,
   /**
    * A/B 比較 (③): プロバイダ override。None/空なら設定の既定プロバイダ。
@@ -97,17 +121,20 @@ export async function sendChatMessageOnceAb(
    */
   endpointId?: string | null,
 ): Promise<{ text: string; inputTokens?: number; outputTokens?: number }> {
-  const response = await invokeSingleShotChat({
-    messages,
-    thinking: null,
-    effort: null,
-    reasoningEnabled: null,
-    reasoningEffort: null,
-    apiVariant: apiVariant ?? null,
-    model: model ?? null,
-    provider: provider ?? null,
-    endpointId: endpointId ?? null,
-  });
+  const response = await invokeSingleShotChat(
+    {
+      messages,
+      thinking: null,
+      effort: null,
+      reasoningEnabled: null,
+      reasoningEffort: null,
+      apiVariant: apiVariant ?? null,
+      model: model ?? null,
+      provider: provider ?? null,
+      endpointId: endpointId ?? null,
+    },
+    auditContext,
+  );
   const text = response.blocks
     .filter((b) => b.type === "text")
     .map((b) => (b as { type: "text"; content: string }).content)
@@ -140,17 +167,23 @@ export async function generateSynopsisFromContent(
     },
   ];
   const ov = resolveRoleSendOverride("synopsis");
-  const response = await invokeSingleShotChat({
-    messages,
-    thinking: null,
-    effort: null,
-    reasoningEnabled: null,
-    reasoningEffort: null,
-    apiVariant: ov.apiVariant,
-    model: ov.model,
-    provider: ov.provider,
-    endpointId: ov.endpointId,
-  });
+  const response = await invokeSingleShotChat(
+    {
+      messages,
+      thinking: null,
+      effort: null,
+      reasoningEnabled: null,
+      reasoningEffort: null,
+      apiVariant: ov.apiVariant,
+      model: ov.model,
+      provider: ov.provider,
+      endpointId: ov.endpointId,
+    },
+    {
+      projectId: requireAuditProjectId(projectId),
+      pathId: "synopsis",
+    },
+  );
   // N4: あらすじ生成の usage を台帳に記録する。
   void recordAiUsage({
     surface: "synopsis",
@@ -177,6 +210,7 @@ import { buildThinkingParams, getEffortForTask } from "./agent/modelLimits";
 export async function sendAgentMessage(
   messages: AgentMessagePayload[],
   tools: AgentToolDefinition[],
+  auditContext: AiAuditTransportContext,
   thinkingParams?: ThinkingParams,
   systemCacheSegments?: string[],
   apiVariant?: string | null,
@@ -204,7 +238,7 @@ export async function sendAgentMessage(
   /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
   expectedOllamaEndpoint?: string | null,
 ): Promise<AgentLLMResponse> {
-  return invoke<AgentLLMResponse>("send_agent_message", {
+  const args: Record<string, unknown> = {
     messages,
     tools,
     thinking: thinkingParams?.thinking ?? null,
@@ -221,7 +255,37 @@ export async function sendAgentMessage(
     expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
     ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
     ...(resolvedToolProtocol != null ? { resolvedToolProtocol } : {}),
+  };
+  const route = resolveChatAuditRoute(args);
+  const audit = await beginAiAuditExecution({
+    ...auditContext,
+    request: auditRequestFromChatArgs(args, route),
+    ...chatAuditRouteCoverage(route),
   });
+  args.auditContext = nativeAiAuditContext(audit);
+  await markAiAuditDispatched(
+    audit,
+    beforeIpcDispatchDetails("send_agent_message"),
+  );
+  let response: AgentLLMResponse;
+  try {
+    response = await invoke<AgentLLMResponse>("send_agent_message", args);
+  } catch (error) {
+    await failAiAuditExecution(audit, { error: auditErrorSnapshot(error) });
+    throw error;
+  }
+  await completeAiAuditExecution(audit, {
+    response: response as unknown as AiAuditJsonObject,
+    usage: {
+      inputTokens: response.inputTokens ?? null,
+      outputTokens: response.outputTokens ?? null,
+      cacheReadTokens: response.cacheReadTokens ?? null,
+      cacheWriteTokens: response.cacheWriteTokens ?? null,
+      cost: response.cost ?? null,
+      stopReason: response.stopReason,
+    },
+  });
+  return response;
 }
 
 export interface ChatMessageResult {
@@ -242,6 +306,7 @@ export interface ChatMessageResult {
  */
 export async function sendChatMessageWithThinking(
   messages: { role: string; content: string }[],
+  auditContext: AiAuditTransportContext,
   thinkingParams?: ThinkingParams,
   systemCacheSegments?: string[],
   apiVariant?: string | null,
@@ -263,21 +328,24 @@ export async function sendChatMessageWithThinking(
   /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
   expectedOllamaEndpoint?: string | null,
 ): Promise<ChatMessageResult> {
-  const response = await invokeSingleShotChat({
-    messages,
-    thinking: thinkingParams?.thinking ?? null,
-    effort: thinkingParams?.effort ?? null,
-    reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
-    reasoningEffort: thinkingParams?.reasoningEffort ?? null,
-    systemCacheSegments: systemCacheSegments ?? null,
-    apiVariant: apiVariant ?? null,
-    systemVolatileTail: systemVolatileTail ?? null,
-    model: model ?? null,
-    provider: resolvedProvider ?? provider ?? null,
-    endpointId: resolvedEndpointId ?? endpointId ?? null,
-    expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
-    ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
-  });
+  const response = await invokeSingleShotChat(
+    {
+      messages,
+      thinking: thinkingParams?.thinking ?? null,
+      effort: thinkingParams?.effort ?? null,
+      reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
+      reasoningEffort: thinkingParams?.reasoningEffort ?? null,
+      systemCacheSegments: systemCacheSegments ?? null,
+      apiVariant: apiVariant ?? null,
+      systemVolatileTail: systemVolatileTail ?? null,
+      model: model ?? null,
+      provider: resolvedProvider ?? provider ?? null,
+      endpointId: resolvedEndpointId ?? endpointId ?? null,
+      expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
+      ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
+    },
+    auditContext,
+  );
   const text = response.blocks
     .filter((b) => b.type === "text")
     .map((b) => (b as { type: "text"; content: string }).content)
@@ -305,130 +373,8 @@ export async function sendChatMessageWithThinking(
   };
 }
 
-// ---------------------------------------------------------------------------
-// G1: Streaming API
-// ---------------------------------------------------------------------------
-
-interface StreamChunkPayload {
-  delta: string;
-  block_type: "text" | "thinking";
-}
-
-interface StreamDonePayload {
-  stop_reason: string;
-  input_tokens?: number;
-  output_tokens?: number;
-  /** N4: OpenRouter streaming の usage.cost (USD)。他プロバイダは null/欠落。 */
-  cost?: number;
-  /** N4: prompt cache 読込トークン (cache hit)。欠落=キャッシュ未使用/未到達。 */
-  cache_read_tokens?: number;
-  /** N4: prompt cache 書込トークン (cache write、コスト側)。 */
-  cache_write_tokens?: number;
-}
-
-interface StreamErrorPayload {
-  message: string;
-}
-
-export interface StreamCallbacks {
-  onTextDelta: (delta: string) => void;
-  onThinkingDelta: (delta: string) => void;
-  onDone: (info: {
-    stopReason: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    cost?: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-  }) => void;
-  onError: (message: string) => void;
-}
-
-/**
- * Send a chat message with streaming response.
- * Returns a cleanup function to remove event listeners.
- */
-export async function sendChatMessageStream(
-  messages: { role: string; content: string }[],
-  thinkingParams: ThinkingParams | undefined,
-  callbacks: StreamCallbacks,
-  systemCacheSegments?: string[],
-  apiVariant?: string | null,
-  systemVolatileTail?: string,
-  model?: string | null,
-  /**
-   * Chat の別プロバイダ一時送信: プロバイダ override（null/未指定 = 設定の既定プロバイダ）。
-   * 値は `AiProvider` 文字列。送信モデル(model)と同じプロバイダの名前空間に属していること。
-   */
-  provider?: string | null,
-  /**
-   * OpenAI 互換: このストリームだけ別エンドポイントへ向ける override。
-   * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
-   */
-  endpointId?: string | null,
-  /** Finalized output limit shared with the context reservation. */
-  requestMaxOutputTokens?: number | null,
-  /** Immutable route snapshot; takes precedence over the legacy override. */
-  resolvedProvider?: string | null,
-  resolvedEndpointId?: string | null,
-  /** Ollama endpoint authority snapshot; backend compares but never trusts it as a URL. */
-  expectedOllamaEndpoint?: string | null,
-): Promise<() => void> {
-  const unlisteners = await Promise.all([
-    listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
-      if (payload.block_type === "thinking") {
-        callbacks.onThinkingDelta(payload.delta);
-      } else {
-        callbacks.onTextDelta(payload.delta);
-      }
-    }),
-    listen<StreamDonePayload>("chat:stream-done", (payload) => {
-      callbacks.onDone({
-        stopReason: payload.stop_reason,
-        inputTokens: payload.input_tokens,
-        outputTokens: payload.output_tokens,
-        cost: payload.cost,
-        cacheReadTokens: payload.cache_read_tokens,
-        cacheWriteTokens: payload.cache_write_tokens,
-      });
-    }),
-    listen<StreamErrorPayload>("chat:stream-error", (payload) => {
-      callbacks.onError(payload.message);
-    }),
-  ]);
-
-  const cleanup = () => {
-    unlisteners.forEach((u) => u());
-  };
-
-  // Fire-and-forget the stream command (events arrive via listeners above)
-  invoke<void>("send_chat_message_stream", {
-    messages,
-    thinking: thinkingParams?.thinking ?? null,
-    effort: thinkingParams?.effort ?? null,
-    reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
-    reasoningEffort: thinkingParams?.reasoningEffort ?? null,
-    systemCacheSegments: systemCacheSegments ?? null,
-    apiVariant: apiVariant ?? null,
-    systemVolatileTail: systemVolatileTail ?? null,
-    model: model ?? null,
-    provider: resolvedProvider ?? provider ?? null,
-    endpointId: resolvedEndpointId ?? endpointId ?? null,
-    expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
-    ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
-  }).catch((e: unknown) => {
-    // Error is also emitted as chat:stream-error from Rust, but handle here too
-    const msg = e instanceof Error ? e.message : String(e);
-    callbacks.onError(msg);
-  });
-
-  return cleanup;
-}
-
-/** Abort an in-progress streaming response. */
-export async function abortChatStream(): Promise<void> {
-  await invoke<void>("abort_chat_stream");
-}
+export { abortChatStream, sendChatMessageStream } from "./chatStreamTransport";
+export type { StreamCallbacks } from "./chatStreamTransport";
 
 /**
  * セッションタイトルを軽量モデルで自動生成する (P1-2)
@@ -439,6 +385,7 @@ export async function generateSessionTitle(
   assistantReply: string,
   model: string,
   lang = "ja",
+  projectId?: string | null,
 ): Promise<string | null> {
   try {
     // 機能別モデル: session_title ロールが設定されていればそれを使い、未設定なら
@@ -461,17 +408,25 @@ export async function generateSessionTitle(
         ),
       },
     ];
-    const response = await invokeSingleShotChat({
-      messages,
-      thinking: thinkingParams.thinking ?? null,
-      effort: thinkingParams.effort ?? null,
-      reasoningEnabled: thinkingParams.reasoningEnabled ?? null,
-      reasoningEffort: thinkingParams.reasoningEffort ?? null,
-      apiVariant: ov.apiVariant,
-      model: ov.model,
-      provider: ov.provider,
-      endpointId: ov.endpointId,
-    });
+    const response = await invokeSingleShotChat(
+      {
+        messages,
+        thinking: thinkingParams.thinking ?? null,
+        effort: thinkingParams.effort ?? null,
+        reasoningEnabled: thinkingParams.reasoningEnabled ?? null,
+        reasoningEffort: thinkingParams.reasoningEffort ?? null,
+        apiVariant: ov.apiVariant,
+        model: ov.model,
+        provider: ov.provider,
+        endpointId: ov.endpointId,
+      },
+      {
+        projectId: requireAuditProjectId(
+          projectId ?? useTreeStore.getState().projectId,
+        ),
+        pathId: "session_title",
+      },
+    );
     // N4: セッションタイトル自動生成の usage を台帳に記録する。
     void recordAiUsage({
       surface: "session_title",

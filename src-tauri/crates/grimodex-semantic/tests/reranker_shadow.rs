@@ -5,23 +5,14 @@ use grimodex_semantic::reranker::{
 #[test]
 fn selected_language_specs_are_pinned_to_gate2_models() {
     let ja = model_spec_for_language("ja").expect("Japanese spec");
-    assert_eq!(
-        ja.model_id,
-        "hotchpotch/japanese-reranker-xsmall-v2"
-    );
-    assert_eq!(
-        ja.revision,
-        "de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a"
-    );
+    assert_eq!(ja.model_id, "hotchpotch/japanese-reranker-xsmall-v2");
+    assert_eq!(ja.revision, "de99fd2f16c7b5df1df1bcc1d9ad2c16d88ce93a");
     assert_eq!(ja.batch_size, 4);
     assert_eq!(ja.max_pair_tokens, 512);
 
     let en = model_spec_for_language("en").expect("English spec");
     assert_eq!(en.model_id, "cross-encoder/ms-marco-MiniLM-L4-v2");
-    assert_eq!(
-        en.revision,
-        "777b2f369bc1c2f850df8bd367ed1654bda4497b"
-    );
+    assert_eq!(en.revision, "777b2f369bc1c2f850df8bd367ed1654bda4497b");
     assert!(en.needs_token_type_ids);
 }
 

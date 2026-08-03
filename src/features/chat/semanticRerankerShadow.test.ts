@@ -342,7 +342,11 @@ describe("SemanticRerankerShadowCoordinator", () => {
 
     expect(score).toHaveBeenCalledTimes(1);
     expect(score).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: "request-2" }),
+      expect.objectContaining({
+        requestId: "request-2",
+        projectId: "project-1",
+        auditPathId: "semantic_reranker_shadow",
+      }),
     );
     expect(
       records.map((record) => [

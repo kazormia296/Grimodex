@@ -184,6 +184,7 @@ pub fn build_chat_params<'a>(
         reasoning_effort,
         extra_body,
         retry_429,
+        http_retry_observer: None,
         ai_novelist_mode,
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments,

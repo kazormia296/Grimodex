@@ -1,11 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockBlockIfPolicyOff } = vi.hoisted(() => ({
+const { mockBlockIfPolicyOff, mockInvoke } = vi.hoisted(() => ({
   mockBlockIfPolicyOff: vi.fn(() => false),
+  mockInvoke: vi.fn(),
 }));
 
 vi.mock("@/lib/tauri", () => ({
-  invoke: vi.fn(),
+  invoke: mockInvoke,
 }));
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
@@ -20,12 +21,35 @@ vi.mock("@/features/ai-usage/recordAiUsage", () => ({
 }));
 
 import { invoke } from "@/lib/tauri";
+import { useWorkspaceStore } from "@/features/workspace/store";
+
+let nextChatResponse: unknown;
+
+function mockChatResponse(response: unknown): void {
+  nextChatResponse = response;
+}
+
+beforeEach(() => {
+  nextChatResponse = undefined;
+  mockInvoke.mockReset();
+  mockInvoke.mockImplementation(async (command: string) => {
+    if (command === "send_chat_message") return nextChatResponse;
+    if (command === "ai_audit_append_batch") {
+      return { insertedCount: 1, tailSequence: 1, tailHash: "hash" };
+    }
+    return undefined;
+  });
+  useWorkspaceStore.setState({
+    activeWorkspacePath: "/workspace",
+    workspaceSwitchInProgress: false,
+  });
+});
 
 describe("generateAiBranchCards — LLM レスポンスのパース", () => {
   it("--- 区切りで N 枚のカードに分割する", async () => {
     const llmText = `## タイトル1\n本文1\n\n---\n\n## タイトル2\n本文2\n\n---\n\n## タイトル3\n本文3`;
 
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: llmText }],
       stopReason: "end_turn",
     });
@@ -42,7 +66,7 @@ describe("generateAiBranchCards — LLM レスポンスのパース", () => {
   it("body を ProseMirror doc JSON に変換する", async () => {
     const llmText = `## アイデア\n詳細テキスト`;
 
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: llmText }],
       stopReason: "end_turn",
     });
@@ -59,7 +83,7 @@ describe("generateAiBranchCards — LLM レスポンスのパース", () => {
   it("LLM が count より少なく返したとき空カードで補完する", async () => {
     const llmText = `## アイデア1\n本文1`;
 
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: llmText }],
       stopReason: "end_turn",
     });
@@ -76,7 +100,7 @@ describe("generateAiBranchCards — LLM レスポンスのパース", () => {
   it("# ヘッダーなしのセグメントは先頭行をタイトルにする", async () => {
     const llmText = `タイトルだけ\n\n---\n\n別タイトル\n説明文`;
 
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: llmText }],
       stopReason: "end_turn",
     });
@@ -91,7 +115,7 @@ describe("generateAiBranchCards — LLM レスポンスのパース", () => {
 
 describe("generateAiBranchCards — 空応答ガード (silent-pad 廃止)", () => {
   it("text ブロックが 0 件なら AiBranchEmptyResponseError を投げる(pad で隠さない)", async () => {
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [],
       stopReason: "max_tokens",
     });
@@ -106,7 +130,7 @@ describe("generateAiBranchCards — 空応答ガード (silent-pad 廃止)", () 
   it("thinking ブロックだけ(回答 text 無し)でも空応答として投げる", async () => {
     // 推論モデルは content 空 + reasoning(thinking)のみを返しうる。reasoning は
     // ユーザー向けの回答ではないため、text 0 件は失敗として扱う。
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "thinking", content: "考え中…" }],
       stopReason: "max_tokens",
     });
@@ -119,7 +143,7 @@ describe("generateAiBranchCards — 空応答ガード (silent-pad 廃止)", () 
   });
 
   it("実カードが 1 枚でもあれば従来どおり partial pad する(throw しない)", async () => {
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: "## アイデア1\n本文1" }],
       stopReason: "end_turn",
     });
@@ -133,7 +157,7 @@ describe("generateAiBranchCards — 空応答ガード (silent-pad 廃止)", () 
 
   it("不完全セグメント(タイトルのみ・本文無し)が混じっても throw せず pad で補完する", async () => {
     // 境界: 1 枚でも実セグメントがあれば throw 経路には入らず、従来どおり pad する。
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: "## T1\n本文1\n\n---\n\n## T2" }],
       stopReason: "end_turn",
     });
@@ -187,7 +211,7 @@ describe("generateAiBranchCards — AiPolicy gate (chat)", () => {
   });
 
   it("chat policy が on なら gate を通過して send_chat_message に進む", async () => {
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: "## a\nb" }],
       stopReason: "end_turn",
     });
@@ -215,7 +239,7 @@ describe("generateAiBranchCards — customInstruction (aiPrompt.custom.aiBranch)
   }
 
   it("custom 非空なら system に「# ユーザー追加指示」として入る", async () => {
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: "## a\nb" }],
       stopReason: "end_turn",
     });
@@ -230,7 +254,7 @@ describe("generateAiBranchCards — customInstruction (aiPrompt.custom.aiBranch)
   });
 
   it("custom 空なら「# ユーザー追加指示」は出ず、aiInstructions の「# 追加指示」とは別建て", async () => {
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: "## a\nb" }],
       stopReason: "end_turn",
     });
@@ -336,7 +360,7 @@ describe("Verbalized Sampling — generateAiBranchCards フルチェーン配線
   }
 
   it("vs 指定で system に VS 指示+しきい値、user に確率フォーマットが実際に載る", async () => {
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: "## a\n確率: 0.04\n本文" }],
       stopReason: "end_turn",
     });
@@ -353,7 +377,7 @@ describe("Verbalized Sampling — generateAiBranchCards フルチェーン配線
   });
 
   it("vs 省略時は VS 指示も確率フォーマットも載らない(従来不変)", async () => {
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: "## a\n本文" }],
       stopReason: "end_turn",
     });
@@ -371,7 +395,7 @@ describe("Verbalized Sampling — generateAiBranchCards フルチェーン配線
 
 describe("generateAiBranchCards — per-role 横断の invoke ペイロード配線（finding 10）", () => {
   it("override 未設定でも send_chat_message に provider/endpointId/apiVariant が正しいキーで載る（欠落/誤キー検出・null=byte-identical）", async () => {
-    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    mockChatResponse({
       blocks: [{ type: "text", content: "## a\nb" }],
       stopReason: "end_turn",
     });

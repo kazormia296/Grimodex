@@ -12,6 +12,32 @@ interface Registration {
 
 const registrations: Registration[] = [];
 const invokeMock = vi.fn();
+const auditMocks = vi.hoisted(() => ({
+  begin: vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace",
+    operationId: "operation-test",
+    executionId: "execution-test",
+    parentExecutionId: null,
+    startedAt: 1,
+  })),
+  dispatched: vi.fn(async () => undefined),
+  complete: vi.fn(async () => undefined),
+  fail: vi.fn(async () => undefined),
+  cancel: vi.fn(async () => undefined),
+  partial: vi.fn(async () => undefined),
+  recovery: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: auditMocks.begin,
+  markAiAuditDispatched: auditMocks.dispatched,
+  completeAiAuditExecution: auditMocks.complete,
+  failAiAuditExecution: auditMocks.fail,
+  cancelAiAuditExecution: auditMocks.cancel,
+  recordAiAuditPartials: auditMocks.partial,
+  attemptAiAuditPersistenceFailureTerminal: auditMocks.recovery,
+}));
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -61,13 +87,21 @@ describe("streamInlineAiText", () => {
   });
 
   it("releases all listeners after onDone (regression for the 337521c leak)", async () => {
-    const promise = streamInlineAiText([{ role: "user", content: "hi" }]);
+    const promise = streamInlineAiText([{ role: "user", content: "hi" }], {
+      auditPathId: "beat_alternative",
+      auditExpectedWorkspacePath: "/workspace",
+    });
     await flush();
 
     expect(activeCount()).toBe(3);
 
-    emit("inline-ai:stream-chunk", { delta: "hello", block_type: "text" });
+    emit("inline-ai:stream-chunk", {
+      streamId: "execution-test",
+      delta: "hello",
+      block_type: "text",
+    });
     emit("inline-ai:stream-done", {
+      streamId: "execution-test",
       stop_reason: "end_turn",
       input_tokens: 0,
       output_tokens: 0,
@@ -80,10 +114,16 @@ describe("streamInlineAiText", () => {
   });
 
   it("releases all listeners after onError", async () => {
-    const promise = streamInlineAiText([{ role: "user", content: "hi" }]);
+    const promise = streamInlineAiText([{ role: "user", content: "hi" }], {
+      auditPathId: "beat_alternative",
+      auditExpectedWorkspacePath: "/workspace",
+    });
     await flush();
 
-    emit("inline-ai:stream-error", { message: "boom" });
+    emit("inline-ai:stream-error", {
+      streamId: "execution-test",
+      message: "boom",
+    });
 
     const result = await promise;
 
@@ -93,11 +133,19 @@ describe("streamInlineAiText", () => {
 
   it("running multiple streams sequentially does NOT accumulate listeners", async () => {
     for (let i = 0; i < 3; i++) {
-      const promise = streamInlineAiText([{ role: "user", content: `m${i}` }]);
+      const promise = streamInlineAiText([{ role: "user", content: `m${i}` }], {
+        auditPathId: "beat_alternative",
+        auditExpectedWorkspacePath: "/workspace",
+      });
       await flush();
 
-      emit("inline-ai:stream-chunk", { delta: `r${i}`, block_type: "text" });
+      emit("inline-ai:stream-chunk", {
+        streamId: "execution-test",
+        delta: `r${i}`,
+        block_type: "text",
+      });
       emit("inline-ai:stream-done", {
+        streamId: "execution-test",
         stop_reason: "end_turn",
         input_tokens: 0,
         output_tokens: 0,
@@ -114,12 +162,24 @@ describe("streamInlineAiText", () => {
   });
 
   it("ignores thinking-block deltas", async () => {
-    const promise = streamInlineAiText([{ role: "user", content: "hi" }]);
+    const promise = streamInlineAiText([{ role: "user", content: "hi" }], {
+      auditPathId: "beat_alternative",
+      auditExpectedWorkspacePath: "/workspace",
+    });
     await flush();
 
-    emit("inline-ai:stream-chunk", { delta: "secret", block_type: "thinking" });
-    emit("inline-ai:stream-chunk", { delta: "answer", block_type: "text" });
+    emit("inline-ai:stream-chunk", {
+      streamId: "execution-test",
+      delta: "secret",
+      block_type: "thinking",
+    });
+    emit("inline-ai:stream-chunk", {
+      streamId: "execution-test",
+      delta: "answer",
+      block_type: "text",
+    });
     emit("inline-ai:stream-done", {
+      streamId: "execution-test",
       stop_reason: "end_turn",
       input_tokens: 0,
       output_tokens: 0,
@@ -132,6 +192,8 @@ describe("streamInlineAiText", () => {
   it("forwards model option to invoke", async () => {
     const promise = streamInlineAiText([{ role: "user", content: "hi" }], {
       model: "claude-haiku-4-5-20251001",
+      auditPathId: "beat_alternative",
+      auditExpectedWorkspacePath: "/workspace",
     });
     await flush();
 
@@ -141,6 +203,7 @@ describe("streamInlineAiText", () => {
     );
 
     emit("inline-ai:stream-done", {
+      streamId: "execution-test",
       stop_reason: "end_turn",
       input_tokens: 0,
       output_tokens: 0,
@@ -151,7 +214,10 @@ describe("streamInlineAiText", () => {
   it("invoke rejection surfaces as ok=false and releases listeners", async () => {
     invokeMock.mockRejectedValueOnce(new Error("invoke crashed"));
 
-    const result = await streamInlineAiText([{ role: "user", content: "hi" }]);
+    const result = await streamInlineAiText([{ role: "user", content: "hi" }], {
+      auditPathId: "beat_alternative",
+      auditExpectedWorkspacePath: "/workspace",
+    });
 
     expect(result).toEqual({ ok: false, error: "invoke crashed" });
     expect(activeCount()).toBe(0);

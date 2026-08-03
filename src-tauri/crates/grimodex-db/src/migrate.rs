@@ -1547,6 +1547,49 @@ impl Database {
                 ON change_events(project_id, event_uid);",
         )?;
 
+        // Complete AI-use audit ledger. This is intentionally independent of
+        // scene/message ownership and project snapshots: only deleting the
+        // owning project cascades the forward-only history. Existing AI rows
+        // are not backfilled because their exact request/response payloads are
+        // unknowable.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ai_audit_events (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_id            TEXT NOT NULL,
+                project_id          TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                sequence            INTEGER NOT NULL,
+                event_id            TEXT NOT NULL,
+                execution_id        TEXT NOT NULL,
+                operation_id        TEXT NOT NULL,
+                parent_execution_id TEXT,
+                path_id             TEXT NOT NULL,
+                event_type          TEXT NOT NULL,
+                timestamp           INTEGER NOT NULL,
+                recorded_at         INTEGER NOT NULL,
+                payload             TEXT NOT NULL,
+                payload_sha256      TEXT NOT NULL,
+                prev_hash           TEXT NOT NULL,
+                hash                TEXT NOT NULL,
+                CHECK (
+                    (scope_id = 'workspace' AND project_id IS NULL)
+                    OR
+                    (project_id IS NOT NULL AND scope_id = 'project:' || project_id)
+                )
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_audit_scope_seq
+                ON ai_audit_events(scope_id, sequence);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_audit_scope_event
+                ON ai_audit_events(scope_id, event_id);
+            CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_execution
+                ON ai_audit_events(scope_id, execution_id, sequence);
+            CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_execution_event_type
+                ON ai_audit_events(scope_id, execution_id, event_type);
+            CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_operation
+                ON ai_audit_events(scope_id, operation_id, sequence);
+            CREATE INDEX IF NOT EXISTS idx_ai_audit_scope_timestamp
+                ON ai_audit_events(scope_id, timestamp, sequence);",
+        )?;
+
         // Sticky 採用/不採用 (Plan B): AI由来 provenance を branch 所属から分離。
         // ai_branch_id は採用 (adopt) で NULL 化されるため、「AI が生成した付箋か」
         // という出自は別カラムで保持する。StickyNode の onCopy 帰属ラベルはこれを見る。
